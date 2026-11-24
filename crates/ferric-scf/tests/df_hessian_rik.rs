@@ -34,6 +34,12 @@
 //!   while every analytic-piece test is green; the systems here have a clean
 //!   spectral gap (no metric mode between the cut and the gradient's noise
 //!   floor), checked by `clean_gap`.
+// RI-J pinned to the f64 tensor (`ri_j_precision: Some(F64)` in every config
+// here): these tests validate f64 implementation code against finite
+// differences, another tier or f64 reference values at bars below the f32
+// default's effect (its energy shift is ~1e-6 Ha, and its energy surface jitters
+// by ~1e-7..1e-6 Ha between nearby geometries; site/src/methods/scf.md, "RI-J
+// tensor precision").
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -50,6 +56,7 @@ use ferric_scf::hessian::{rhf_hessian, rhf_hessian_parts, RhfHessianParts};
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::compare::{max_abs, max_abs_diff};
 use ndarray::{s, Array2};
 use ndarray_linalg::{Eigh, UPLO};
 
@@ -80,14 +87,13 @@ fn water() -> Molecule {
 
 /// SCF with RI-K in `k_aux`; RI-J in `j_aux` ("" = exact J).
 fn scf_config(j_aux: &str, k_aux: &str) -> RhfConfig {
-    RhfConfig {
-        max_iter: 200,
-        energy_conv: 1e-14,
-        density_conv: 1e-12,
-        df_j_aux: Some(j_aux.to_string()),
-        df_k_aux: Some(k_aux.to_string()),
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_max_iter(200)
+        .with_energy_conv(1e-14)
+        .with_density_conv(1e-12)
+        .with_df_j_aux(j_aux.to_string())
+        .with_df_k_aux(k_aux.to_string())
 }
 
 struct Setup {
@@ -174,17 +180,6 @@ fn fd_hessian_richardson(
     let a = fd_hessian(mol, h, &mut grad);
     let b = fd_hessian(mol, h / 2.0, &mut grad);
     (4.0 * b - a) / 3.0
-}
-
-fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    assert_eq!(a.dim(), b.dim());
-    a.iter()
-        .zip(b.iter())
-        .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()))
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0f64, |m, x| m.max(x.abs()))
 }
 
 fn assert_close(ctx: &str, got: &Array2<f64>, want: &Array2<f64>, tol: f64) -> f64 {
@@ -502,6 +497,7 @@ fn full_hessian_matches_fd_of_df_gradient_sto3g() {
     check_full(&water(), "sto-3g", "", "def2-universal-jkfit", BAR_OWN);
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn full_hessian_matches_fd_of_df_gradient_631g() {
     if !has_deriv2() {
@@ -821,6 +817,7 @@ fn all_mutants() -> Vec<(&'static str, RikMutants)> {
     ]
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn cphf_kernel_mutants_fail_the_finite_difference_test() {
     // The kernel G of the CPHF is not touched by the skeleton or K^x tests; a
@@ -898,10 +895,12 @@ fn an_inconsistent_density_is_refused_for_the_exchange_factor() {
 #[test]
 fn the_probe_that_auto_consults_is_stricter_than_the_hessian_itself() {
     // Twin-augmented cc-pVDZ-RI (a near-duplicate s function on each H):
-    // eps 1e-2 -> cond 7e7 (accepted), 3e-3 -> lambda_min 1.7e-7, cond 7.9e8
-    // (cond above 1e8: probe refuses, the Hessian still runs with a warning),
-    // 1e-3 -> lambda_min ~2e-8 (a kept mode in [1e-10, 1e-7): probe refuses),
-    // 1e-5 -> modes below 1e-10 (both refuse, naming the count).
+    // eps 1e-2 -> cond 7e7 and 3e-3 -> lambda_min 1.7e-7, cond 7.9e8 (both
+    // below RIK_COND_GATE: accepted, the bound recorded), 1e-3 -> lambda_min
+    // ~2e-8 (a kept mode in [1e-10, 1e-7): probe refuses, the Hessian itself
+    // runs), 1e-5 -> modes below 1e-10 (both refuse, naming the count). The
+    // cond gate itself is tested on synthetic spectra in
+    // df_hessian_rik_conditioning.rs.
     use ferric_scf::hessian::rij_support::{probe_exchange_metric, rik_terms_with_aux};
     if !has_deriv1() {
         return;
@@ -924,10 +923,10 @@ fn the_probe_that_auto_consults_is_stricter_than_the_hessian_itself() {
     let probe = |eps: f64| probe_exchange_metric(&twin_aux(&mol, "cc-pvdz-ri", eps), op);
     probe(1e-2).expect("cond 7e7 is accepted");
     run(1e-2).expect("and the Hessian runs");
-    let e = probe(3e-3).unwrap_err().to_string();
-    eprintln!("probe cond: {e}");
-    assert!(e.contains("cond"), "{e}");
-    run(3e-3).expect("Analytic is strict: the Hessian itself runs (with a warning)");
+    let c = probe(3e-3).expect("cond 7.9e8 is below the derived gate");
+    eprintln!("probe cond: {}", c.describe());
+    assert!(c.cond > 1e8 && c.admits_analytic(), "{}", c.describe());
+    run(3e-3).expect("and the Hessian runs");
     let e = probe(1e-3).unwrap_err().to_string();
     eprintln!("probe band: {e}");
     assert!(e.contains("lie in"), "{e}");
@@ -938,6 +937,7 @@ fn the_probe_that_auto_consults_is_stricter_than_the_hessian_itself() {
     }
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn every_wired_mutant_misses_by_more_than_ten_bars() {
     if !has_deriv2() {
@@ -1065,8 +1065,11 @@ fn unsupported_exchange_fitting_configurations_are_refused() {
     }
     uhf_hessian_preflight(op, &s.cfg).expect("UHF RI-K preflight");
     // External potential next to RI-K.
-    let with_field = RhfConfig {
-        external_potential: Some(ferric_core::external_potential::ExternalPotential {
+    let with_field = s
+        .cfg
+        .clone()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_external_potential(ferric_core::external_potential::ExternalPotential {
             point_charges: vec![ferric_core::external_potential::PointCharge {
                 q: 0.3,
                 x: 5.0,
@@ -1074,9 +1077,7 @@ fn unsupported_exchange_fitting_configurations_are_refused() {
                 z: 0.0,
             }],
             ..Default::default()
-        }),
-        ..s.cfg.clone()
-    };
+        });
     let e = rhf_hessian_preflight(op, &with_field)
         .unwrap_err()
         .to_string();
@@ -1114,14 +1115,13 @@ fn df_off_configurations_are_unchanged_by_the_exchange_branch() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let hess = |df_k: Option<String>| {
-        let cfg = RhfConfig {
-            max_iter: 200,
-            energy_conv: 1e-12,
-            density_conv: 1e-10,
-            df_j_aux: Some(String::new()),
-            df_k_aux: df_k,
-            ..Default::default()
-        };
+        let mut cfg = RhfConfig::default()
+            .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+            .with_max_iter(200)
+            .with_energy_conv(1e-12)
+            .with_density_conv(1e-10)
+            .with_df_j_aux(String::new());
+        cfg.df_k_aux = df_k;
         let rhf = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
         assert!(rhf.df_jk.is_none());
         rhf_hessian(

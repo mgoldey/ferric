@@ -1,8 +1,9 @@
 # RI-MP2 on a density-fitted (RI-JK) RHF reference. The [scf] jk_aux is the
 # SCF's JK-fitting basis; [mp2] auxbasis fits the correlation step. Keep them
 # separate: an MP2-fit basis used for K costs mHa.
-# jk = "rijcosx" uses RI-J + COSX exchange instead; jk = "exact" (or omitting
-# the key) is the four-centre reference.
+# jk = "rijcosx" uses RI-J + COSX exchange instead; jk = "exact" is the
+# four-centre reference. Omitting jk takes RI-JK on the JK-fit set matched to
+# the orbital basis (cc-pvtz-jkfit for cc-pVDZ).
 [molecule]
 xyz = "testdata/molecules/water.xyz"
 

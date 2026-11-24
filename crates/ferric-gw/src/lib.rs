@@ -1,16 +1,14 @@
-//! Ferric GW spike: G0W0, COHSEX, evGW₀, evGW, sc-COHSEX.
+//! Ferric GW: G0W0, COHSEX, evGW₀, evGW and sc-COHSEX on closed-shell
+//! (RHF/RKS) and open-shell (UHF/UKS, ROHF/ROKS) references, plus BSE-TDA.
 //!
 //! Built on top of `ferric-rpa`'s PDEP eigenpotential basis as a low-rank
-//! representation of the screened Coulomb interaction W(iω). See
-//! `docs/superpowers/specs/2026-05-19-rpa-to-gw-spike-design.md`.
-//!
-//! Spike scope: closed-shell, HF reference, cc-pVDZ-scale, validation on H₂O.
+//! representation of the screened Coulomb interaction W(iω). Equations are in
+//! `crates/ferric-gw/theory.md`.
 
 // Self-energy kernels intrinsically thread many quantities (G, W, orbital
 // energies, frequency grid, QP indices); bundling them into structs would only
 // move the boilerplate to the call sites. type_complexity likewise flags the
 // multi-array return tuples, which are self-documenting and used once.
-#![allow(clippy::too_many_arguments)]
 #![allow(clippy::type_complexity)]
 
 // NOTE: no `///` summary here on purpose. `assign.rs` carries its own `//!`
@@ -26,6 +24,8 @@ pub mod bse;
 /// Plane sizes for ferric-gw's large tensors, shared by the pool gates and
 /// their tests so the two cannot drift.
 pub mod budget;
+/// Result certificates of GW, BSE-TDA and RPAx polarizability runs.
+pub mod certificate;
 /// Closed-shell COHSEX (static screened exchange + Coulomb hole).
 pub mod cohsex;
 /// GW method variants: G0W0, evGW0, evGW, COHSEX, sc-COHSEX.
@@ -36,11 +36,12 @@ pub mod mo_b;
 pub mod mpi_gw;
 /// Pade continued-fraction analytic continuation from imaginary to real axis.
 pub mod pade;
-/// Quasiparticle Newton solver: find QP pole of Dyson equation.
+/// Placeholder module; the quasiparticle Newton solve lives in [`sigma`].
 pub mod qp;
 /// Closed-shell GW self-energy: Sigma_c, QP solver, G0W0/evGW0/evGW dispatch.
 pub mod sigma;
-/// TDHF/RPAx static polarizability (dense A/B formulation).
+/// Closed-shell singlet TDA-DFT excitation energies on an RKS reference (a
+/// validated spike; TDHF/RPAx polarizability is in [`bse`]).
 pub mod tddft;
 /// Spin-unrestricted COHSEX.
 pub mod u_cohsex;
@@ -59,7 +60,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_rpa::config::PdepRpaConfig;
 use ferric_rpa::{run_pdep_rpa, PdepRpaResult};
-use ferric_scf::ScfResult;
+use ferric_scf::{PreparedAux, ScfResult};
 use ndarray::Array1;
 
 /// Clone a PDEP-RPA config with `need_inv_dielectric_freq` forced on. Every GW
@@ -72,9 +73,33 @@ fn with_inv_dielectric(cfg: &PdepRpaConfig) -> PdepRpaConfig {
     c
 }
 
+/// Default number of Gauss–Legendre points (u₀ = 0.5) of the W frequency
+/// grid for GW and U-GW, as the CLI `gw` kind and Python `run_gw` /
+/// `run_u_gw` use it when `n_quad` is unset. GW has its own default because it
+/// needs more points than PDEP-RPA correlation energies (20 points there).
+///
+/// Calibrated 2026-11-06 against the validated settings (n_quad = 100,
+/// trunc_thresh = 0) on H2O, NH3, CH4, CO, N2, HF, C2H4 and CH2O at cc-pVDZ
+/// (H2O, NH3 and N2 also at aug-cc-pVDZ), plus OH and NH2. The HOMO/LUMO
+/// error depends on the starting point. From @HF, evGW₀@HF, evGW@HF and
+/// U-G0W0@UHF it is ≤ 0.08 meV at any n_quad ≥ 20. From G0W0@PBE it is
+/// 21.5 meV at 20 points (NH3/cc-pVDZ HOMO), 9.3 meV at 30 and 5.7 meV at 40,
+/// and it does not fall monotonically with n_quad (3.3 meV at 60, 1.5 at 50).
+/// The bar is 10 meV on HOMO and LUMO, and
+/// `tests/validation_gw_defaults.rs` pins it. Those @PBE numbers were taken
+/// with the plain Gauss–Legendre Σc sum, which does not converge in n_quad
+/// for states far from ε_F. Since 2026-11-09 every driver on the default
+/// scaled Gauss–Legendre grid integrates the Σc kernel exactly against the
+/// interpolated W (`sigma::sigma_c_at_z_product`); other grids (e.g.
+/// Chebyshev–Tan) keep the plain sum. Between 40 and 100 points the whole QP
+/// window (HOMO−2 … LUMO+2) of G0W0@PBE (CH2O, NH3) has a 1 meV bar, and so
+/// do the α/β frontier states (HOMO, LUMO) of U-G0W0@UKS (OH, NH2).
+pub const DEFAULT_N_QUAD: usize = 40;
+
 /// Top-level GW configuration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GwConfig {
+    /// GW variant to run. Default [`GwMethod::G0W0`].
     pub method: GwMethod,
     /// Range of MOs (absolute indices into the full MO set) for which to
     /// compute quasiparticle energies. Defaults to {HOMO-2..LUMO+2}.
@@ -83,8 +108,10 @@ pub struct GwConfig {
     pub max_ev_iter: usize,
     /// evGW convergence threshold on |Δε^QP|_max (Ha).
     pub ev_conv_thresh: f64,
-    /// Number of Padé continued-fraction coefficients (must equal N_quad).
-    /// 0 → use N_quad from PdepRpaConfig.
+    /// Number of Padé (Thiele) nodes, picked with PySCF's `_get_ac_idx` rule
+    /// from a fixed {0} ∪ 100-point Gauss–Legendre grid (u₀ = 0.5) that does
+    /// not depend on the W quadrature. 0 → 18 nodes (`sigma::solve_qp_for_mo`),
+    /// the PySCF `gw_ac` default.
     pub pade_npts: usize,
     /// Newton-step damping for QP solver.
     pub qp_newton_damp: f64,
@@ -159,9 +186,12 @@ pub struct GwResult {
     pub eps_qp: Array1<f64>,
     /// Exchange self-energy Σ_x (diagonal MO), Ha.
     pub sigma_x: Array1<f64>,
-    /// Correlation self-energy Σ_c evaluated at the converged QP energy, Ha.
+    /// Correlation self-energy Σ_c, Ha: evaluated at the final QP energy for
+    /// the Newton-solved methods; the static ΔΣ_SEX + Σ_COH for COHSEX.
     pub sigma_c: Array1<f64>,
-    /// Z-factor (renormalization), dimensionless.
+    /// Renormalization factor Z = 1/(1 − ∂Σ_c/∂ω), dimensionless, evaluated
+    /// at the mean-field energy (not the QP root) and clamped to [0, 1.5].
+    /// All 1 for COHSEX.
     pub z_factor: Array1<f64>,
     /// Per-state QP Newton-solve convergence flag, aligned with `mo_indices`.
     /// `false` means the Newton iteration exhausted its step budget (or hit a
@@ -201,26 +231,42 @@ impl std::fmt::Display for GwResult {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct UGwResult {
+    /// Absolute MO indices for which QP energies were computed, shared by both spins.
     pub mo_indices: Vec<usize>,
+    /// α mean-field (input) orbital energies for `mo_indices`, Ha.
     pub eps_mf_a: Array1<f64>,
+    /// α QP energies (final), Ha.
     pub eps_qp_a: Array1<f64>,
+    /// α exchange self-energy Σ_x (diagonal MO), Ha.
     pub sigma_x_a: Array1<f64>,
+    /// α correlation self-energy Σ_c, Ha: at the final QP energy for the
+    /// Newton-solved methods, the static ΔΣ_SEX + Σ_COH for COHSEX.
     pub sigma_c_a: Array1<f64>,
+    /// α renormalization factor Z = 1/(1 − ∂Σ_c/∂ω) evaluated at the
+    /// mean-field energy and clamped to [0, 1.5]; all 1 for COHSEX.
     pub z_factor_a: Array1<f64>,
+    /// β mean-field (input) orbital energies for `mo_indices`, Ha.
     pub eps_mf_b: Array1<f64>,
+    /// β QP energies (final), Ha.
     pub eps_qp_b: Array1<f64>,
+    /// β exchange self-energy Σ_x (diagonal MO), Ha.
     pub sigma_x_b: Array1<f64>,
+    /// β correlation self-energy Σ_c, Ha (same convention as `sigma_c_a`).
     pub sigma_c_b: Array1<f64>,
+    /// β renormalization factor Z (same convention as `z_factor_a`).
     pub z_factor_b: Array1<f64>,
     /// Per-state QP Newton-solve convergence flags, aligned with `mo_indices`
     /// (α/β channels separately — see `GwResult::qp_converged` for the
     /// per-flag meaning). Always all-`true` for COHSEX.
     pub qp_converged_a: Vec<bool>,
+    /// β-channel counterpart of `qp_converged_a`.
     pub qp_converged_b: Vec<bool>,
+    /// Iteration count for the U-evGW/U-evGW₀ outer loop (0 for non-iterative methods).
     pub n_ev_iter: usize,
     /// Whether the U-evGW/U-evGW₀ outer loop met `ev_conv_thresh` within
     /// `max_ev_iter`. Always `true` for non-iterative methods.
     pub outer_converged: bool,
+    /// Underlying spin-summed PDEP result (so callers can inspect W).
     pub pdep: PdepRpaResult,
 }
 
@@ -235,6 +281,30 @@ impl std::fmt::Display for UGwResult {
             na, n, nb, n, self.n_ev_iter
         )
     }
+}
+
+/// [`run_u_gw`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `scf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn run_u_gw_on(
+    aux: &PreparedAux<'_>,
+    scf: &ScfResult,
+    vxc_diag: Option<(&Array1<f64>, &Array1<f64>)>,
+    pdep_cfg: &PdepRpaConfig,
+    gw_cfg: &GwConfig,
+) -> Result<UGwResult, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(scf)?;
+    run_u_gw(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        scf,
+        pdep_cfg,
+        gw_cfg,
+        vxc_diag,
+    )
 }
 
 /// Top-level dispatch — spin-unrestricted. Accepts UHF, ROHF, UKS or ROKS reference.
@@ -259,6 +329,7 @@ impl std::fmt::Display for UGwResult {
 /// KS orbitals and held fixed across the outer loop; for U-COHSEX (static, no
 /// QP root search) it is added to ε_mf + Σ_c. `None` ⇒ HF reference (UHF/ROHF):
 /// no shift, and the QP solve is exactly the shift-zero path.
+#[allow(clippy::too_many_arguments)]
 pub fn run_u_gw(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -281,8 +352,8 @@ pub fn run_u_gw(
     let scf: &ScfResult = &scf_view;
 
     // Fail fast on an out-of-range qp_mos BEFORE the expensive RPA/B̃-tensor
-    // work below — same reasoning as run_gw's identical check (found
-    // 2026-07-18: an out-of-range upper bound used to panic deep inside a
+    // work below — same reasoning as run_gw's identical check (an
+    // out-of-range upper bound would panic deep inside a
     // rayon closure in u_sigma.rs/u_cohsex.rs instead of surfacing a clean
     // error).
     let qp_range = gw_cfg
@@ -290,9 +361,12 @@ pub fn run_u_gw(
         .clone()
         .unwrap_or_else(|| default_u_qp_range(mol, scf));
     let nmo = scf.eps_alpha.len();
-    if qp_range.end > nmo {
+    // The range indexes both spins: bound it by the smaller MO count.
+    let nmo_beta = scf.eps_beta.as_ref().map_or(nmo, Vec::len);
+    let nmo_both = nmo.min(nmo_beta);
+    if qp_range.end > nmo_both {
         return Err(FerricError::General(format!(
-            "run_u_gw: qp_mos upper bound {} exceeds the number of MOs ({nmo})",
+            "run_u_gw: qp_mos upper bound {} exceeds the number of MOs ({nmo_both})",
             qp_range.end
         )));
     }
@@ -400,6 +474,7 @@ fn default_u_qp_range(mol: &Molecule, scf: &ScfResult) -> std::ops::Range<usize>
 /// self-consistency loop — it is a property of the KS reference, not
 /// something that evolves with QP self-consistency (see the doc comments on
 /// `sigma::run_evgw0`/`sigma::run_evgw`).
+#[allow(clippy::too_many_arguments)]
 pub fn run_gw(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -418,8 +493,8 @@ pub fn run_gw(
     // Fail fast on an out-of-range qp_mos BEFORE the expensive RPA/B̃-tensor
     // work below — qp_range is a plain user-suppliable Range<usize> with no
     // upper-bound validation anywhere else, and an out-of-range upper bound
-    // used to panic deep inside a rayon closure in sigma.rs/cohsex.rs
-    // instead of surfacing a clean error (found 2026-07-18).
+    // would panic deep inside a rayon closure in sigma.rs/cohsex.rs
+    // instead of surfacing a clean error.
     let qp_range = gw_cfg
         .qp_mos
         .clone()
@@ -485,8 +560,37 @@ pub fn run_gw(
     Ok(result)
 }
 
-/// Surface non-convergence (reliability audit: flags used to be silently
-/// dropped — a stalled evGW or a Newton solve stuck at a Σc pole printed the
+/// [`run_gw`] on the system `aux` was prepared on; see [`PreparedAux`] for
+/// what such an entry point reads from the system.
+/// A closed-shell system with no virtual orbitals is refused
+/// ([`PreparedAux::check_virtual_orbitals`]).
+pub fn run_gw_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    vxc_diag: Option<&Array1<f64>>,
+    pdep_cfg: &PdepRpaConfig,
+    gw_cfg: &GwConfig,
+) -> Result<GwResult, FerricError> {
+    aux.check_reference(rhf)?;
+    // The kernel refuses an open-shell reference with its own message.
+    if rhf.spin == ferric_scf::Spin::Restricted {
+        aux.check_virtual_orbitals("run_gw_on", rhf)?;
+    }
+    let sys = aux.system();
+    run_gw(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        rhf,
+        pdep_cfg,
+        gw_cfg,
+        vxc_diag,
+    )
+}
+
+/// Surface non-convergence (reliability audit: unreported flags hide that
+/// a stalled evGW or a Newton solve stuck at a Σc pole printed the
 /// same table as a converged run).
 fn warn_gw_unconverged(result: &GwResult, gw_cfg: &GwConfig) {
     if !result.outer_converged {

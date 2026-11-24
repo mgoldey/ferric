@@ -58,6 +58,7 @@ use ferric_scf::ks_fixed_grid::{
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::compare::max_abs;
 use ndarray::Array2;
 
 const WATER: &str = "3\nH2O distorted off C2v\n\
@@ -72,6 +73,7 @@ fn grid_cfg() -> AtomicGridConfig {
         n_radial: 50,
         n_angular: 110,
         prune: None,
+        weight_cut: None,
     }
 }
 
@@ -90,24 +92,21 @@ fn water() -> Molecule {
 /// Config handed to the Hessian: names the functional and states that J is
 /// exact (the KS default is RI-J).
 fn hessian_config() -> RhfConfig {
-    RhfConfig {
-        xc: Some("LDA".into()),
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        dft_grid: Some(grid_cfg()),
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc("LDA")
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new())
+        .with_dft_grid(grid_cfg())
 }
 
 /// Production SCF config (grid following the atoms, exact J).
 fn production_config(grid: Option<AtomicGridConfig>) -> RhfConfig {
-    RhfConfig {
-        max_iter: 200,
-        energy_conv: 1e-13,
-        density_conv: 1e-11,
-        dft_grid: grid,
-        ..hessian_config()
-    }
+    let mut c = hessian_config()
+        .with_max_iter(200)
+        .with_energy_conv(1e-13)
+        .with_density_conv(1e-11);
+    c.dft_grid = grid;
+    c
 }
 
 struct Pt {
@@ -124,13 +123,11 @@ fn fixed_grid_scf(grid: &FixedGridKs, mol: &Molecule, basis_name: &str) -> Pt {
     let prep = PreparedBasis::new(mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        use_sad_guess: false,
-        max_iter: 200,
-        energy_conv: 1e-13,
-        density_conv: 1e-11,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_max_iter(200)
+        .with_energy_conv(1e-13)
+        .with_density_conv(1e-11);
     let res = solve_rks_fixed_grid(&ctx, mol, &prep, op, &bounds, grid, &cfg).unwrap();
     assert!(
         res.converged,
@@ -161,10 +158,6 @@ fn rich(h: f64, mut f: impl FnMut(f64) -> Array2<f64>) -> Array2<f64> {
     let coarse = d(h);
     let fine = d(0.5 * h);
     (4.0 * fine - coarse) / 3.0
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0f64, |m, x| m.max(x.abs()))
 }
 
 fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
@@ -257,10 +250,7 @@ fn analytic(r: &Ref, m: &KsFixedGridMutants) -> Array2<f64> {
 
 /// [`analytic`] on a caller-built `grid` (same SCF, same functional name).
 fn analytic_on(r: &Ref, grid: &FixedGridKs, m: &KsFixedGridMutants) -> Array2<f64> {
-    let cfg = RhfConfig {
-        xc: Some(r.xc.clone()),
-        ..hessian_config()
-    };
+    let cfg = hessian_config().with_xc(r.xc.clone());
     rks_fixed_grid_hessian_parts_with(
         &ParallelContext::default(),
         &r.mol,
@@ -348,6 +338,7 @@ fn frozen_pieces(xc: &str) {
 /// a missing term: halving the step must shrink it by close to 2^4 = 16 (the
 /// Richardson-extrapolated stencil), which a wrong or missing term (a constant
 /// miss, independent of the step) cannot do.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn xc_skeleton_difference_error_is_truncation_that_scales_with_the_step() {
     skeleton_truncation_scales("LDA");
@@ -454,6 +445,7 @@ fn fixed_grid_scf_reproduces_the_production_energy_at_the_reference_geometry() {
     assert!(de < 1e-8, "{de:.3e}");
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gradient_matches_central_difference_of_the_fixed_grid_energy() {
     for basis_name in ["sto-3g", "6-31g"] {
@@ -469,6 +461,7 @@ fn gradient_matches_central_difference_of_the_fixed_grid_energy() {
     }
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn hessian_matches_central_difference_of_the_fixed_grid_gradient() {
     if !has_deriv2() {
@@ -529,6 +522,7 @@ const TOL_SCF_NOISE: f64 = 5e-11;
 /// miss of at least `MUTANT_FACTOR` times the agreement bar.
 const MUTANT_FACTOR: f64 = 10.0;
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn production_wired_mutants_each_fail_the_hessian_anchor() {
     if !has_deriv2() {
@@ -604,6 +598,7 @@ fn production_wired_mutants_each_fail_the_hessian_anchor() {
 /// #428), so a smaller SCF grid here would pair the SCF and this call on
 /// different grids. The gap includes the default grid's own quadrature
 /// error, which closes with grid refinement along with the weight response.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn production_gradient_difference_differs_by_the_weight_response_scale() {
     if !has_deriv2() {
@@ -623,18 +618,11 @@ fn production_gradient_difference_differs_by_the_weight_response_scale() {
         (prep, bounds, res)
     };
     let (prep, bounds, res) = setup(&mol);
-    let fixed = rks_fixed_grid_hessian(
-        &ctx,
-        &mol,
-        &prep,
-        op,
-        &bounds,
-        &res,
-        &RhfConfig {
-            dft_grid: None,
-            ..hessian_config()
-        },
-    )
+    let fixed = rks_fixed_grid_hessian(&ctx, &mol, &prep, op, &bounds, &res, &{
+        let mut c = hessian_config();
+        c.dft_grid = None;
+        c
+    })
     .unwrap();
     let n3 = 9;
     let mut prod = Array2::<f64>::zeros((n3, n3));
@@ -686,10 +674,7 @@ fn refusal_with(config: &RhfConfig, r: &Ref, res: &ScfResult) -> String {
 fn unsupported_configurations_are_refused_naming_the_next_unit() {
     let r = reference("sto-3g");
     let res = &r.fixed.res;
-    let with_xc = |name: &str| RhfConfig {
-        xc: Some(name.into()),
-        ..hessian_config()
-    };
+    let with_xc = |name: &str| hessian_config().with_xc(name);
     for (xc, needle) in [
         ("HSE06", "range-separated"),
         ("wB97X-V", "VV10"),
@@ -705,9 +690,10 @@ fn unsupported_configurations_are_refused_naming_the_next_unit() {
         );
     }
     let msg = refusal_with(
-        &RhfConfig {
-            xc: None,
-            ..hessian_config()
+        &{
+            let mut c = hessian_config();
+            c.xc = None;
+            c
         },
         &r,
         res,
@@ -728,10 +714,7 @@ fn unsupported_configurations_are_refused_naming_the_next_unit() {
         )
         .unwrap()
     };
-    let inert = run(&RhfConfig {
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        ..hessian_config()
-    });
+    let inert = run(&hessian_config().with_df_k_aux("def2-universal-jkfit"));
     let d = max_abs_diff(&inert, &run(&hessian_config()));
     assert!(
         d < 1e-12,
@@ -740,22 +723,18 @@ fn unsupported_configurations_are_refused_naming_the_next_unit() {
     // An exact-J SCF presented as an RI-J one: the rebuilt Fock matrix differs
     // by the fitting error (RI-J itself is supported: ks_rij_fixed_grid_hessian.rs).
     let msg = refusal_with(
-        &RhfConfig {
-            df_j_aux: Some("def2-universal-jkfit".into()),
-            ..hessian_config()
-        },
+        &hessian_config().with_df_j_aux("def2-universal-jkfit"),
         &r,
         res,
     );
     assert!(msg.contains("not a converged"), "{msg}");
     let msg = refusal_with(
-        &RhfConfig {
-            external_potential: Some(ferric_core::external_potential::ExternalPotential {
+        &hessian_config().with_external_potential(
+            ferric_core::external_potential::ExternalPotential {
                 field: Some([0.0, 0.0, 0.01]),
                 ..Default::default()
-            }),
-            ..hessian_config()
-        },
+            },
+        ),
         &r,
         res,
     );
@@ -805,6 +784,7 @@ fn without_second_derivative_integrals_the_hessian_is_a_typed_error() {
 /// d functions (the second-derivative path at l = 2 for both the XC AO
 /// derivatives and the integrals) at a step small enough for the tight cc-pVDZ
 /// oxygen s functions.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn hessian_with_d_functions_matches_the_fixed_grid_gradient_difference() {
     if !has_deriv2() {
@@ -844,22 +824,25 @@ fn double_hybrids_are_refused_by_the_grid_constructor() {
 // Wrong-reference guards, pruned grids, ECP and point charges
 // ---------------------------------------------------------------------------
 
+/// A pruned grid is honoured, not silently flattened: the fixed-grid object
+/// carries exactly the points and weights the pruned SCF grid has.
 #[test]
-fn a_pruned_grid_is_refused_not_silently_flattened() {
+fn a_pruned_grid_is_honoured_not_silently_flattened() {
     let mol = water();
     let cfg = AtomicGridConfig {
         prune: Some(ferric_dft::prune::PruneScheme::NwchemLike),
         ..grid_cfg()
     };
-    let msg = FixedGridKs::new(&mol, "LDA", &cfg)
-        .err()
-        .expect("a pruned grid must be refused")
-        .to_string();
-    eprintln!("{msg}");
-    assert!(
-        msg.contains("pruned") && msg.contains("prune = None"),
-        "{msg}"
-    );
+    let ks = FixedGridKs::new(&mol, "LDA", &cfg).expect("pruned grids are supported");
+    let scf_grid = ferric_dft::grid::build_atomic_grid_pruned(&mol, &cfg, cfg.prune).unwrap();
+    let flat = ferric_dft::grid::build_atomic_grid(&mol, &grid_cfg());
+    assert!(scf_grid.len() < flat.len(), "pruning must remove points");
+    assert_eq!(ks.npts(), scf_grid.len());
+    let (pts, w) = ks.points_and_weights();
+    for (i, g) in scf_grid.iter().enumerate() {
+        assert_eq!(pts[i], g.xyz, "point {i}");
+        assert_eq!(w[i], g.weight, "weight {i}");
+    }
 }
 
 /// The configuration only NAMES the functional; the result must really be the
@@ -873,10 +856,10 @@ fn a_result_of_another_energy_is_refused_by_the_fock_consistency_guard() {
     let r = reference("sto-3g");
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
-    let exact = |xc: Option<&str>, ext: Option<ExternalPotential>| RhfConfig {
-        xc: xc.map(str::to_string),
-        external_potential: ext,
-        ..production_config(Some(grid_cfg()))
+    let exact = |xc: Option<&str>, ext: Option<ExternalPotential>| {
+        let mut c = production_config(Some(grid_cfg())).with_external_potential(ext);
+        c.xc = xc.map(str::to_string);
+        c
     };
     let solve = |cfg: &RhfConfig| solve_rhf(&ctx, &r.mol, &r.prep, op, &r.bounds, cfg).unwrap();
     let charges = ExternalPotential {
@@ -912,11 +895,11 @@ fn a_result_of_another_energy_is_refused_by_the_fock_consistency_guard() {
     assert!(legit_inj < 1e-8 && legit_prod < 1e-8);
     // A loosely converged but legitimate SCF (the library default,
     // density_conv = 1e-6) must stay well below the guard.
-    let loose = solve(&RhfConfig {
-        density_conv: RhfConfig::default().density_conv,
-        energy_conv: RhfConfig::default().energy_conv,
-        ..exact(Some("LDA"), None)
-    });
+    let loose = solve(
+        &exact(Some("LDA"), None)
+            .with_density_conv(RhfConfig::default().density_conv)
+            .with_energy_conv(RhfConfig::default().energy_conv),
+    );
     let legit_loose = rks_fixed_grid_fock_residual(
         &ctx,
         &r.mol,
@@ -961,7 +944,11 @@ fn a_result_of_another_energy_is_refused_by_the_fock_consistency_guard() {
 }
 
 #[test]
-fn an_ecp_system_is_refused() {
+/// ECPs are supported (the ECP skeleton and `∂V_ECP/∂x`, validated by FD in
+/// the ECP Hessian suite), so an ECP system is no longer refused. A result
+/// converged for another molecule and basis is: it used to reach an ndarray
+/// index panic.
+fn a_result_for_another_basis_is_refused() {
     let r = reference("sto-3g");
     let bs = basis::bundled("def2-svp").unwrap();
     let mut mol = Molecule::parse_xyz(
@@ -982,9 +969,9 @@ fn an_ecp_system_is_refused() {
         &r.fixed.res,
         &hessian_config(),
     )
-    .expect_err("an ECP system must be refused");
+    .expect_err("a result for another basis must be refused");
     let msg = err.to_string();
-    assert!(msg.contains("ECP") && msg.contains("next unit:"), "{msg}");
+    assert!(msg.contains("functions"), "{msg}");
 }
 
 #[test]
@@ -992,18 +979,15 @@ fn point_charges_in_the_configuration_are_refused() {
     use ferric_core::external_potential::{ExternalPotential, PointCharge};
     let r = reference("sto-3g");
     let msg = refusal_with(
-        &RhfConfig {
-            external_potential: Some(ExternalPotential {
-                point_charges: vec![PointCharge {
-                    q: 0.5,
-                    x: 0.0,
-                    y: 0.3,
-                    z: 4.0,
-                }],
-                ..Default::default()
-            }),
-            ..hessian_config()
-        },
+        &hessian_config().with_external_potential(ExternalPotential {
+            point_charges: vec![PointCharge {
+                q: 0.5,
+                x: 0.0,
+                y: 0.3,
+                z: 4.0,
+            }],
+            ..Default::default()
+        }),
         &r,
         &r.fixed.res,
     );
@@ -1029,6 +1013,7 @@ fn the_grid_reports_the_exact_exchange_fraction() {
     assert_eq!(pure.exact_exchange(), 0.0);
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn hybrid_gradient_matches_central_difference_of_the_fixed_grid_energy() {
     for basis_name in ["sto-3g", "6-31g"] {
@@ -1041,6 +1026,7 @@ fn hybrid_gradient_matches_central_difference_of_the_fixed_grid_energy() {
     }
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn hybrid_hessian_matches_central_difference_of_the_fixed_grid_gradient() {
     if !has_deriv2() {
@@ -1057,6 +1043,7 @@ fn hybrid_hessian_matches_central_difference_of_the_fixed_grid_gradient() {
 }
 
 /// Each exact-exchange scaling site, dropped or doubled, fails the FD anchor.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn hybrid_exchange_mutants_each_fail_the_hessian_anchor() {
     if !has_deriv2() {
@@ -1097,6 +1084,7 @@ fn hybrid_exchange_mutants_each_fail_the_hessian_anchor() {
 // GGA and hybrid-GGA (PBE, PBE0, B3LYP): third AO derivatives, the sigma kernel
 // ---------------------------------------------------------------------------
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gga_xc_pieces_match_frozen_density_differences() {
     frozen_pieces("PBE0");
@@ -1109,6 +1097,7 @@ fn gga_kernel_response_matches_difference_of_vxc_in_the_density() {
     kernel_response("PBE");
 }
 
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gga_gradient_matches_central_difference_of_the_fixed_grid_energy() {
     for basis_name in ["sto-3g", "6-31g"] {
@@ -1132,10 +1121,7 @@ fn gga_fixed_grid_scf_reproduces_the_production_energy() {
         &r.prep,
         Operator::coulomb(),
         &r.bounds,
-        &RhfConfig {
-            xc: Some("PBE0".into()),
-            ..production_config(Some(grid_cfg()))
-        },
+        &production_config(Some(grid_cfg())).with_xc("PBE0"),
     )
     .unwrap();
     let de = (prod.energy - r.fixed.res.energy).abs();
@@ -1143,6 +1129,7 @@ fn gga_fixed_grid_scf_reproduces_the_production_energy() {
     assert!(de < 1e-8, "{de:.3e}");
 }
 
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gga_hessian_matches_central_difference_of_the_fixed_grid_gradient() {
     if !has_deriv2() {
@@ -1190,6 +1177,7 @@ fn lda_through_the_gradient_path_equals_the_lda_path() {
 
 /// Each GGA-specific and exchange site, dropped or distorted, fails the FD
 /// anchor on a hybrid GGA.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gga_mutants_each_fail_the_hessian_anchor() {
     if !has_deriv2() {

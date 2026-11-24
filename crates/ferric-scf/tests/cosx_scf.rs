@@ -59,12 +59,10 @@ fn run(cfg: RhfConfig) -> ScfResult {
 /// energy (-76.026739578782). `density_conv` is UNCHANGED at 1e-8: nothing
 /// here got looser in the criterion that governs the answer.
 fn tight() -> RhfConfig {
-    RhfConfig {
-        energy_conv: 1e-7,
-        density_conv: 1e-8,
-        cosx: cosx_default(),
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_energy_conv(1e-7)
+        .with_density_conv(1e-8)
+        .with_cosx(cosx_default())
 }
 
 /// `COSX_ANCHOR_HALF=dense` runs this suite on the DENSE half transform
@@ -84,27 +82,24 @@ fn cosx_default() -> CosxConfig {
             n_radial: 50,
             n_angular: 110,
             prune: None,
+            weight_cut: None,
         },
         final_grid: None,
         ..CosxConfig::flat_reference()
     }
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn cosx_rhf_water_ccpvdz_vs_direct() {
     let direct = run(tight());
-    let cosx = run(RhfConfig {
-        k_builder: Some("cosx".into()),
-        ..tight()
-    });
-    let cosx_nofit = run(RhfConfig {
-        k_builder: Some("cosx".into()),
-        cosx: CosxConfig {
+    let cosx = run(tight().with_k_builder(ferric_scf::options::KBuilderKind::Cosx));
+    let cosx_nofit = run(tight()
+        .with_k_builder(ferric_scf::options::KBuilderKind::Cosx)
+        .with_cosx(CosxConfig {
             overlap_fit: false,
             ..cosx_default()
-        },
-        ..tight()
-    });
+        }));
     assert!(direct.converged && cosx.converged && cosx_nofit.converged);
     let de = cosx.energy - direct.energy;
     let de_nofit = cosx_nofit.energy - direct.energy;
@@ -130,6 +125,7 @@ fn cosx_rhf_water_ccpvdz_vs_direct() {
 
 /// Refinement: the SCF energy error must fall with the grid (the SCF-level
 /// echo of anchor (a)).
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn cosx_rhf_energy_error_falls_with_grid() {
     let direct = run(tight());
@@ -138,11 +134,9 @@ fn cosx_rhf_energy_error_falls_with_grid() {
         let mut cosx = cosx_default();
         cosx.grid.n_radial = nr;
         cosx.grid.n_angular = na;
-        let r = run(RhfConfig {
-            k_builder: Some("cosx".into()),
-            cosx,
-            ..tight()
-        });
+        let r = run(tight()
+            .with_k_builder(ferric_scf::options::KBuilderKind::Cosx)
+            .with_cosx(cosx));
         assert!(r.converged);
         let e = (r.energy - direct.energy).abs();
         println!("COSX ({nr},{na}) + fit: |dE| = {e:.3e} Ha");
@@ -172,12 +166,10 @@ fn cosx_with_a_named_df_k_is_refused() {
     let prep = PreparedBasis::new(&mol, &bs).expect("prep");
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).expect("schwarz");
-    let cfg = RhfConfig {
-        df_j_aux: Some(aux.into()),
-        df_k_aux: Some(aux.into()),
-        k_builder: Some("cosx".into()),
-        ..tight()
-    };
+    let cfg = tight()
+        .with_df_j_aux(aux)
+        .with_df_k_aux(aux)
+        .with_k_builder(ferric_scf::options::KBuilderKind::Cosx);
     let err = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap_err();
     assert!(
         format!("{err}").contains("conflicts with df_k_aux"),
@@ -185,8 +177,9 @@ fn cosx_with_a_named_df_k_is_refused() {
     );
 }
 
-/// Unknown k_builder values are a hard error, and an untabulated COSX grid
-/// order is a typed error rather than a Lebedev-table panic.
+/// Unknown k_builder spellings are a hard error (at the parse, so no config
+/// can hold one), and an untabulated COSX grid order is a typed error rather
+/// than a Lebedev-table panic.
 #[test]
 fn cosx_config_errors_are_typed() {
     let mol = Molecule::parse_xyz(WATER, 0, 1).expect("water");
@@ -195,17 +188,11 @@ fn cosx_config_errors_are_typed() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).expect("schwarz");
     let ctx = ParallelContext::default();
-    let bad = RhfConfig {
-        k_builder: Some("cosxx".into()),
-        ..Default::default()
-    };
-    assert!(solve_rhf(&ctx, &mol, &prep, op, &bounds, &bad).is_err());
+    assert!(ferric_scf::options::KBuilderKind::parse("cosxx").is_err());
     let mut cosx = cosx_default();
-    cosx.grid.n_angular = 146;
-    let bad_grid = RhfConfig {
-        k_builder: Some("cosx".into()),
-        cosx,
-        ..Default::default()
-    };
+    cosx.grid.n_angular = 147;
+    let bad_grid = RhfConfig::default()
+        .with_k_builder(ferric_scf::options::KBuilderKind::Cosx)
+        .with_cosx(cosx);
     assert!(solve_rhf(&ctx, &mol, &prep, op, &bounds, &bad_grid).is_err());
 }

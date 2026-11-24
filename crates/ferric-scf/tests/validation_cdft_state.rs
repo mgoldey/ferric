@@ -110,6 +110,7 @@ use ferric_scf::rhf::{build_jk, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::stability::{uhf_internal_stability, StabilityConfig};
 use ferric_scf::uhf_newton::UhfNewtonInputs;
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -198,12 +199,6 @@ fn reference(system: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn matrix(v: &Value, ptr: &str, ctx: &str) -> Array2<f64> {
     let rows = v
         .pointer(ptr)
@@ -255,7 +250,7 @@ fn load_system(system: &str) -> System {
     );
     let mol = Molecule::load_xyz_with_charge(xyz.to_str().unwrap(), charge, mult)
         .unwrap_or_else(|e| panic!("{}: {e:?}", xyz.display()));
-    let enuc_ref = num(&r, "/nuclear_repulsion", &tag);
+    let enuc_ref = num_ctx(&r, "/nuclear_repulsion", &tag);
     let enuc = mol.nuclear_repulsion();
     assert!(
         (enuc - enuc_ref).abs() < TOL_ENUC,
@@ -275,7 +270,7 @@ fn load_system(system: &str) -> System {
         .iter()
         .map(|v| v.as_u64().unwrap() as usize)
         .collect();
-    let target = num(&r, "/target", &tag);
+    let target = num_ctx(&r, "/target", &tag);
     let nocc: Vec<usize> = r["nocc"]
         .as_array()
         .expect("nocc")
@@ -336,8 +331,8 @@ fn state_base(state: &str, variant: &str) -> String {
 fn nwchem_state(s: &System, state: &str, variant: &str, grid: &str) -> (f64, f64) {
     let b = state_base(state, variant);
     (
-        num(&s.r, &format!("{b}/{grid}/energy_extrapolated"), &s.tag),
-        num(&s.r, &format!("{b}/{grid}/lambda_extrapolated"), &s.tag),
+        num_ctx(&s.r, &format!("{b}/{grid}/energy_extrapolated"), &s.tag),
+        num_ctx(&s.r, &format!("{b}/{grid}/lambda_extrapolated"), &s.tag),
     )
 }
 
@@ -402,23 +397,22 @@ fn ferric_population(s: &System, w: &Array2<f64>, ca: &Array2<f64>, cb: &Array2<
 
 /// Constrained pure-UHF config for this row. Exact J/K, 99×302 W grid.
 fn cdft_cfg(s: &System, descent: bool) -> RhfConfig {
-    RhfConfig {
-        constraints: vec![Constraint {
-            fragment: s.fragment.clone(),
-            target: s.target,
-            spin: SpinChannel::Total,
-        }],
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        level_shift: LEVEL_SHIFT,
-        cdft_lambda_tol: CDFT_LAMBDA_TOL,
-        cdft_max_outer: CDFT_MAX_OUTER,
-        cdft_stability_descent: descent,
-        use_sad_guess: false,
-        dft_grid: Some(grid_cfg()),
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_level_shift(LEVEL_SHIFT)
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_dft_grid(grid_cfg());
+    c.constraints = vec![Constraint {
+        fragment: s.fragment.clone(),
+        target: s.target,
+        spin: SpinChannel::Total,
+    }];
+    c.cdft_lambda_tol = CDFT_LAMBDA_TOL;
+    c.cdft_max_outer = CDFT_MAX_OUTER;
+    c.cdft_stability_descent = descent;
+    c
 }
 
 /// How a seeded solve starts.
@@ -492,6 +486,8 @@ fn augmented_lambda_min(s: &System, r: &CdftResult) -> (f64, String) {
         fxc: None,
         thresh: RhfConfig::default().integral_thresh,
         ooc_budget: 0,
+        j_response: None,
+        k_response: None,
     };
     let res = uhf_internal_stability(&s.ctx, &inputs, &StabilityConfig::default())
         .unwrap_or_else(|e| panic!("{}: stability analysis failed: {e:?}", s.tag));
@@ -598,7 +594,7 @@ fn ao_map_and_one_shot_energy_anchor() {
 
         // (c) one-shot UHF energy of NWChem's UNCONSTRAINED orbitals.
         let (ca_u, cb_u) = nwchem_mos(&s, "/unconstrained");
-        let e_unc_ref = num(&s.r, "/unconstrained/energy", &ctx);
+        let e_unc_ref = num_ctx(&s.r, "/unconstrained/energy", &ctx);
         check_close(
             &ctx,
             "one-shot E(unconstrained)",
@@ -625,7 +621,7 @@ fn ao_map_and_one_shot_energy_anchor() {
                 );
                 let n_f = ferric_population(&s, &w, &ca, &cb);
                 // JSON-pointer key "low/native": the '/' is escaped as "~1".
-                let n_pyscf = num(
+                let n_pyscf = num_ctx(
                     &s.r,
                     &format!("/pyscf_checks/{st}~1{v}/becke_population/ferric_radii"),
                     &ctx,
@@ -830,10 +826,7 @@ fn unseeded_hene_paths_land_on_nwchem_states() {
             .unwrap_or_else(|e| panic!("{ctx}: {e:?}"));
         assert_on_state(&s, &ctx, &r, expect, &pred);
     }
-    let cfg = RhfConfig {
-        use_sad_guess: true,
-        ..cdft_cfg(&s, true)
-    };
+    let cfg = cdft_cfg(&s, true).with_guess(ferric_scf::options::Guess::Sad);
     match solve_cdft_uhf(&s.ctx, &s.mol, &s.prep, &s.bs, &s.bounds, &cfg) {
         Ok(r) => eprintln!(
             "{} unseeded (MINAO, descent ON) [MEASURE]: E {:.10} λ {:+.8} vs low {:+.3e} Ha, \
@@ -864,10 +857,8 @@ fn unseeded_lih_cation_paths_land_on_low() {
         .collect();
     for (label, sad) in [("hcore, descent ON", false), ("MINAO, descent ON", true)] {
         let ctx = format!("{} unseeded ({label})", s.tag);
-        let cfg = RhfConfig {
-            use_sad_guess: sad,
-            ..cdft_cfg(&s, true)
-        };
+        let mut cfg = cdft_cfg(&s, true);
+        cfg.use_sad_guess = sad;
         let r = solve_cdft_uhf(&s.ctx, &s.mol, &s.prep, &s.bs, &s.bounds, &cfg)
             .unwrap_or_else(|e| panic!("{ctx}: {e:?}"));
         assert_on_state(&s, &ctx, &r, "low", &pred);

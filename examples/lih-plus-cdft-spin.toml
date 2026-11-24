@@ -1,0 +1,27 @@
+# Constrained DFT, spin channel: hold N_alpha - N_beta on the Li atom of the
+# LiH+ doublet at 0.45 (the unconstrained value is about 0.27).
+#
+# kind = "spin" constrains N_alpha - N_beta of the fragment, where kind =
+# "charge" constrains N_alpha + N_beta. Configuration of
+# crates/ferric-scf/tests/cdft_uhf.rs (spin_constraint_is_satisfied_lih_plus).
+
+[molecule]
+xyz = "testdata/molecules/lih.xyz"
+charge = 1
+multiplicity = 2
+
+[basis]
+name = "def2-svp"
+
+[method]
+kind = "uhf"
+task = "energy"
+
+[cdft]
+lambda_tol = 1e-5
+max_outer = 40
+
+[[cdft.constraint]]
+atoms = [0]
+target = 0.45
+kind = "spin"

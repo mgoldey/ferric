@@ -45,12 +45,12 @@
 //!
 //!    (the `v_σαβ` cross term feeds the OTHER spin's gradient into `c^σ`). Gates
 //!    are the energy's ([`crate::kuks::KPeriodicXcPolarized`]): spin `σ`'s
-//!    `v_ρσ`, `c^σ` are zeroed where `ρ_σ ≤ DENSITY_FLOOR`; `ε_g` is ungated. In
+//!    `v_ρσ`, `c^σ` are zeroed where `ρ_σ` is at or below the functional's `DensityFloor`; `ε_g` is ungated. In
 //!    the closed-shell limit the two spins sum to the closed-shell term
 //!    ([`crate::kxcstress`]) to roundoff.
 //! 3. **Meta-GGA (UKS) per-spin tau.** `τ_σ` is linear in `D_σ` alone, so the
 //!    closed-shell tau strain of [`crate::kxcstress`] (item 3) applies per spin
-//!    with `v_τσ` (gated on `ρ_σ > DENSITY_FLOOR`, as the energy's `V^τ_σ`):
+//!    with `v_τσ` (gated on `ρ_σ` above the functional's `DensityFloor`, as the energy's `V^τ_σ`):
 //!
 //!    ```text
 //!    xc_ao[a,b] += (1/N_k) Σ_g w_g Σ_σ v_τσ Σ_k Re Σ_{μ,i} m2^k[3i+a,b]_μ md^{σ,k,i}_μ

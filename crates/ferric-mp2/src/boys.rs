@@ -8,7 +8,7 @@
 //! union of domains for a given μ index gives the sparsity pattern of the
 //! Laplace pseudo-densities P(t) and Q(t).
 
-use ndarray::Array2;
+use ndarray::{s, Array2};
 
 /// Result of Boys localization.
 #[derive(Debug, Clone)]
@@ -32,10 +32,9 @@ pub struct BoysResult {
 ///
 /// Returns localized orbitals and Boys centers.
 pub fn boys_localize(c_occ: &Array2<f64>, dip: &[Array2<f64>; 3], max_iter: usize) -> BoysResult {
-    let nbas = c_occ.nrows();
     let nocc = c_occ.ncols();
 
-    // Working copy of the coefficient matrix.
+    // Output buffer, same layout as the input copy (filled at the end).
     let mut c = c_occ.to_owned();
 
     // Compute MO dipole matrices in the occupied subspace: d[alpha]_ij = C^T @ dip_alpha @ C
@@ -45,6 +44,12 @@ pub fn boys_localize(c_occ: &Array2<f64>, dip: &[Array2<f64>; 3], max_iter: usiz
         let dip_c: Array2<f64> = dip[alpha].dot(&c); // (nbas, nocc)
         c.t().dot(&dip_c) // (nocc, nocc)
     });
+
+    // Working copy TRANSPOSED, (nocc, nbas) row-major: a Jacobi rotation of
+    // orbitals i, j then sweeps two contiguous rows instead of two
+    // stride-nocc columns. Every element sees the same two-term update as
+    // before, so the result is bitwise the column-major sweep's.
+    let mut ct: Array2<f64> = c.t().as_standard_layout().into_owned();
 
     let mut converged = false;
     let mut iterations = 0;
@@ -97,12 +102,15 @@ pub fn boys_localize(c_occ: &Array2<f64>, dip: &[Array2<f64>; 3], max_iter: usiz
                 let cos_t = theta.cos();
                 let sin_t = theta.sin();
 
-                // Rotate coefficient columns i and j.
-                for mu in 0..nbas {
-                    let ci = c[(mu, i)];
-                    let cj = c[(mu, j)];
-                    c[(mu, i)] = cos_t * ci - sin_t * cj;
-                    c[(mu, j)] = sin_t * ci + cos_t * cj;
+                // Rotate coefficient columns i and j (rows of `ct`).
+                {
+                    let (mut ri, mut rj) = ct.multi_slice_mut((s![i, ..], s![j, ..]));
+                    for (x, y) in ri.iter_mut().zip(rj.iter_mut()) {
+                        let ci = *x;
+                        let cj = *y;
+                        *x = cos_t * ci - sin_t * cj;
+                        *y = sin_t * ci + cos_t * cj;
+                    }
                 }
 
                 // Update MO dipole matrices for all alpha.
@@ -135,6 +143,8 @@ pub fn boys_localize(c_occ: &Array2<f64>, dip: &[Array2<f64>; 3], max_iter: usiz
         }
     }
 
+    c.assign(&ct.t());
+
     // Extract Boys centers: ⟨i|r_alpha|i⟩ = d[alpha][i,i]
     let mut centers = Array2::zeros((nocc, 3));
     for i in 0..nocc {
@@ -149,6 +159,300 @@ pub fn boys_localize(c_occ: &Array2<f64>, dip: &[Array2<f64>; 3], max_iter: usiz
         iterations,
         converged,
     }
+}
+
+/// [`boys_localize`] that refuses an unconverged localization.
+///
+/// The sparse Laplace formulations mask the pseudo-densities by the localized
+/// orbitals' domains; orbitals from a localization that stopped short of its
+/// tolerance still span the occupied space but give domains that were not
+/// meant to be used, so the run errors instead of continuing.
+pub fn boys_localize_checked(
+    c_occ: &Array2<f64>,
+    dip: &[Array2<f64>; 3],
+    max_iter: usize,
+) -> Result<BoysResult, ferric_core::FerricError> {
+    let res = boys_localize(c_occ, dip, max_iter);
+    if res.converged {
+        Ok(res)
+    } else {
+        Err(ferric_core::FerricError::Convergence(format!(
+            "Boys localization did not converge in {} sweeps (max {max_iter}); the \
+             domain-truncated Laplace formulation needs converged localized orbitals",
+            res.iterations
+        )))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// λ-Boys: Boys plus a penalty on the off-diagonal occupied Fock coupling
+// ---------------------------------------------------------------------------
+
+/// Default λ (Bohr²/Ha²) of the λ-Boys occupied localization in
+/// amplitude-threshold local MP2. `0` is plain Boys.
+pub const LAMBDA_BOYS_DEFAULT: f64 = 10.0;
+
+/// λ of PLAIN Boys (the λ-Boys optimiser does not run): the occupied
+/// localization of the dRPA / LinLCCD / rCCD members of the amplitude family.
+pub const LAMBDA_BOYS_PLAIN: f64 = 0.0;
+
+/// Convergence target of [`lambda_boys_rotation`]: the largest pair
+/// gradient `|∂G/∂κ_pq|` (Bohr², the units of the Boys term) after a sweep.
+pub const LAMBDA_BOYS_GRAD_TOL: f64 = 1e-8;
+
+/// Jacobi-sweep cap of the λ-Boys optimiser in the LMP2 drivers.
+pub const LAMBDA_BOYS_MAX_SWEEPS: usize = 2000;
+
+/// What a λ-Boys localization did, recorded on every LMP2 result.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct LambdaBoysReport {
+    /// The weight λ of `Σ_i F_ii²` (Bohr²/Ha²). `0` = plain Boys (the
+    /// optimiser does not run and the Boys orbitals are used bit for bit).
+    pub lambda: f64,
+    /// Jacobi sweeps the λ-Boys optimiser ran (0 at λ = 0).
+    pub sweeps: usize,
+    /// Largest pair gradient at the returned orbitals (0 at λ = 0).
+    pub max_grad: f64,
+    /// `G` at the Boys start and at the returned orbitals.
+    pub objective_start: f64,
+    /// `G` at the returned orbitals.
+    pub objective_end: f64,
+    /// Wall seconds of the λ-Boys optimiser alone (the Boys start excluded).
+    pub t_s: f64,
+}
+
+/// The λ-Boys objective `G = Σ_x Σ_i (r^x_ii)² + λ Σ_i F_ii²` of
+/// symmetric matrices `x = [r^x, r^y, r^z]`, `f = F_oo`, all in the same
+/// orbital basis (WLLH25 Eq 9; book section
+/// `amplitude-lmp2-lambda-boys`).
+pub fn lambda_boys_objective(x: &[Array2<f64>; 3], f: &Array2<f64>, lambda: f64) -> f64 {
+    let diag2 = |m: &Array2<f64>| (0..m.nrows()).map(|i| m[(i, i)] * m[(i, i)]).sum::<f64>();
+    x.iter().map(diag2).sum::<f64>() + lambda * diag2(f)
+}
+
+/// Analytic `∂G/∂θ` at `θ = 0` for the plane rotation of orbitals `p < q`
+/// with the convention of [`lambda_boys_rotation`] (`p' = c p + s q`,
+/// `q' = −s p + c q`): `4 Σ_X w_X (X_pp − X_qq) X_pq`. This is
+/// `−∂G/∂κ_pq` of the book's `U = 1 + κ` parametrization.
+pub fn lambda_boys_pair_gradient(
+    x: &[Array2<f64>; 3],
+    f: &Array2<f64>,
+    lambda: f64,
+    p: usize,
+    q: usize,
+) -> f64 {
+    let term = |m: &Array2<f64>| (m[(p, p)] - m[(q, q)]) * m[(p, q)];
+    4.0 * (x.iter().map(term).sum::<f64>() + lambda * term(f))
+}
+
+/// Largest `|∂G/∂θ_pq|` over all pairs.
+fn lambda_boys_max_grad(x: &[Array2<f64>; 3], f: &Array2<f64>, lambda: f64) -> f64 {
+    let n = f.nrows();
+    let mut g = 0.0f64;
+    for p in 0..n {
+        for q in p + 1..n {
+            g = g.max(lambda_boys_pair_gradient(x, f, lambda, p, q).abs());
+        }
+    }
+    g
+}
+
+/// The Jacobi angle maximizing `G` in the `(p, q)` plane:
+/// `θ = atan2(b, a)/4` with `d_X = (X_pp − X_qq)/2`, `c_X = X_pq`,
+/// `a = Σ w (d² − c²)`, `b = 2 Σ w d c` (book eq `lmp2-combined-lambda-boys`).
+fn lambda_boys_pair_angle(
+    x: &[Array2<f64>; 3],
+    f: &Array2<f64>,
+    lambda: f64,
+    p: usize,
+    q: usize,
+) -> f64 {
+    let (mut a, mut b) = (0.0, 0.0);
+    let mut add = |m: &Array2<f64>, w: f64| {
+        let d = 0.5 * (m[(p, p)] - m[(q, q)]);
+        let c = m[(p, q)];
+        a += w * (d * d - c * c);
+        b += w * 2.0 * d * c;
+    };
+    for m in x {
+        add(m, 1.0);
+    }
+    add(f, lambda);
+    0.25 * b.atan2(a)
+}
+
+/// `M ← Rᵀ M R` for the plane rotation `p' = c p + s q`, `q' = −s p + c q`.
+fn rotate_sym_pair(m: &mut Array2<f64>, p: usize, q: usize, c: f64, s: f64) {
+    let n = m.nrows();
+    for k in 0..n {
+        let (a, b) = (m[(k, p)], m[(k, q)]);
+        m[(k, p)] = c * a + s * b;
+        m[(k, q)] = -s * a + c * b;
+    }
+    for k in 0..n {
+        let (a, b) = (m[(p, k)], m[(q, k)]);
+        m[(p, k)] = c * a + s * b;
+        m[(q, k)] = -s * a + c * b;
+    }
+}
+
+/// Result of [`lambda_boys_rotation`].
+#[derive(Debug, Clone)]
+#[must_use]
+pub struct LambdaBoysRotation {
+    /// Orthogonal (n, n) rotation: column `i` is new orbital `i` in the
+    /// input orbital basis.
+    pub u: Array2<f64>,
+    /// Sweeps run.
+    pub sweeps: usize,
+    /// Largest pair gradient at the returned rotation.
+    pub max_grad: f64,
+    /// Whether `max_grad < grad_tol` was reached within `max_sweeps`.
+    pub converged: bool,
+    /// `G` before and after.
+    pub objective_start: f64,
+    /// `G` at the returned rotation.
+    pub objective_end: f64,
+}
+
+/// Jacobi maximization of the λ-Boys objective over orthogonal rotations of
+/// the orbitals in which `x` (dipole matrices) and `f` (occupied Fock block)
+/// are expressed.
+///
+/// Each pair step is the exact maximum of `G` in its plane, so `G` never
+/// decreases. Pairs are visited in the fixed order `p < q`, row by row, in
+/// one thread: the result does not depend on the thread count. Converged
+/// when the largest pair gradient after a full sweep is below `grad_tol`.
+/// Errors on a negative or non-finite λ.
+pub fn lambda_boys_rotation(
+    x: &[Array2<f64>; 3],
+    f: &Array2<f64>,
+    lambda: f64,
+    grad_tol: f64,
+    max_sweeps: usize,
+) -> Result<LambdaBoysRotation, ferric_core::FerricError> {
+    check_lambda_boys(lambda)?;
+    let n = f.nrows();
+    let mut x = x.clone();
+    let mut f = f.clone();
+    let mut u = Array2::<f64>::eye(n);
+    let objective_start = lambda_boys_objective(&x, &f, lambda);
+    let mut max_grad = lambda_boys_max_grad(&x, &f, lambda);
+    let mut sweeps = 0;
+    while max_grad >= grad_tol && sweeps < max_sweeps {
+        sweeps += 1;
+        for p in 0..n {
+            for q in p + 1..n {
+                // θ* = atan2(b, a)/4: the maximum of G in the (p, q) plane
+                let th = lambda_boys_pair_angle(&x, &f, lambda, p, q);
+                if th == 0.0 {
+                    continue; // b = 0 and a > 0: already the in-plane maximum
+                }
+                let (c, s) = (th.cos(), th.sin());
+                // r^x ← Rᵀ r^x R and f ← Rᵀ f R
+                for m in x.iter_mut() {
+                    rotate_sym_pair(m, p, q, c, s);
+                }
+                rotate_sym_pair(&mut f, p, q, c, s);
+                // U ← U R: p' = c p + s q, q' = −s p + c q
+                for k in 0..n {
+                    let (a, b) = (u[(k, p)], u[(k, q)]);
+                    u[(k, p)] = c * a + s * b;
+                    u[(k, q)] = -s * a + c * b;
+                }
+            }
+        }
+        // stop on max over p < q of |∂G/∂θ_pq| after the whole sweep
+        max_grad = lambda_boys_max_grad(&x, &f, lambda);
+    }
+    Ok(LambdaBoysRotation {
+        u,
+        sweeps,
+        max_grad,
+        converged: max_grad < grad_tol,
+        objective_start,
+        objective_end: lambda_boys_objective(&x, &f, lambda),
+    })
+}
+
+/// λ must be finite and ≥ 0 (0 = plain Boys).
+pub fn check_lambda_boys(lambda: f64) -> Result<(), ferric_core::FerricError> {
+    if lambda.is_finite() && lambda >= 0.0 {
+        Ok(())
+    } else {
+        Err(ferric_core::FerricError::General(format!(
+            "lambda_boys must be finite and >= 0 (0 = plain Boys), got {lambda}"
+        )))
+    }
+}
+
+/// λ-Boys localization of occupied orbitals: converged Boys first
+/// ([`boys_localize_checked`]), then [`lambda_boys_rotation`] from the Boys
+/// orbitals with `f_ao` the AO Fock matrix.
+///
+/// `lambda = 0` returns the Boys result unchanged, bit for bit (the
+/// optimiser is not run). A λ-Boys optimiser that misses
+/// [`LAMBDA_BOYS_GRAD_TOL`] in `max_sweeps` is a `Convergence` error, the
+/// same rule as the Boys refusal: the orbitals would still span the
+/// occupied space, but every locality map built from them would differ.
+pub fn lambda_boys_localize_checked(
+    c_occ: &Array2<f64>,
+    dip: &[Array2<f64>; 3],
+    f_ao: &Array2<f64>,
+    lambda: f64,
+    boys_max_sweeps: usize,
+    max_sweeps: usize,
+) -> Result<(BoysResult, LambdaBoysReport), ferric_core::FerricError> {
+    check_lambda_boys(lambda)?;
+    let boys = boys_localize_checked(c_occ, dip, boys_max_sweeps)?;
+    if lambda == 0.0 {
+        return Ok((
+            boys,
+            LambdaBoysReport {
+                lambda,
+                ..Default::default()
+            },
+        ));
+    }
+    let t0 = std::time::Instant::now();
+    let c = &boys.c_loc;
+    let x: [Array2<f64>; 3] = std::array::from_fn(|k| c.t().dot(&dip[k].dot(c)));
+    let f = c.t().dot(&f_ao.dot(c));
+    let rot = lambda_boys_rotation(&x, &f, lambda, LAMBDA_BOYS_GRAD_TOL, max_sweeps)?;
+    if !rot.converged {
+        return Err(ferric_core::FerricError::Convergence(format!(
+            "lambda-Boys localization (lambda = {lambda}) did not converge in {} sweeps \
+             (max |gradient| {:.2e} >= {LAMBDA_BOYS_GRAD_TOL:.0e}); the local truncation \
+             needs converged localized orbitals",
+            rot.sweeps, rot.max_grad
+        )));
+    }
+    let c_loc = c.dot(&rot.u).as_standard_layout().into_owned();
+    let n = c_loc.ncols();
+    let mut centers = Array2::zeros((n, 3));
+    for (k, d) in dip.iter().enumerate() {
+        let dc = d.dot(&c_loc);
+        for i in 0..n {
+            centers[(i, k)] = c_loc.column(i).dot(&dc.column(i));
+        }
+    }
+    let report = LambdaBoysReport {
+        lambda,
+        sweeps: rot.sweeps,
+        max_grad: rot.max_grad,
+        objective_start: rot.objective_start,
+        objective_end: rot.objective_end,
+        t_s: t0.elapsed().as_secs_f64(),
+    };
+    Ok((
+        BoysResult {
+            c_loc,
+            centers,
+            iterations: boys.iterations,
+            converged: true,
+        },
+        report,
+    ))
 }
 
 /// LMP2 domain for a set of Boys-localized orbitals.
@@ -262,12 +566,14 @@ pub fn build_domains(
 /// `c_loc`: **localized** occupied MOs (nbas × nocc), from [`boys_localize`].
 /// `f_loc`: occupied-block Fock in that SAME localized basis (nocc × nocc).
 /// `domains`: orbital domains, indexed consistently with `c_loc`'s columns.
+///
+/// Errors if `f_loc` cannot be diagonalized (not square, or non-finite).
 pub fn build_pseudo_density_occ_sparse(
     c_loc: &Array2<f64>,
     f_loc: &Array2<f64>,
     t: f64,
     domains: &LmpDomains,
-) -> Array2<f64> {
+) -> Result<Array2<f64>, ferric_core::FerricError> {
     let nbas = c_loc.nrows();
     let nocc = c_loc.ncols();
     debug_assert_eq!(f_loc.dim(), (nocc, nocc));
@@ -276,7 +582,7 @@ pub fn build_pseudo_density_occ_sparse(
     // exp(+t F_loc): the localized-basis generalization of the canonical
     // scalar exp(t·ε_i). Done once per quadrature point on the small
     // (nocc × nocc) block.
-    let expf = sym_matrix_exp(f_loc, t);
+    let expf = sym_matrix_exp(f_loc, t)?;
 
     // Element mask, as the doc has always promised: keep (μ,ν) iff μ and ν lie
     // in a COMMON orbital domain. This masks the FINAL matrix, not per-orbital
@@ -300,19 +606,21 @@ pub fn build_pseudo_density_occ_sparse(
             }
         }
     }
-    p
+    Ok(p)
 }
 
 /// `exp(scale · A)` for symmetric `A`, via eigendecomposition.
-fn sym_matrix_exp(a: &Array2<f64>, scale: f64) -> Array2<f64> {
+///
+/// Returns an error (never panics) if the eigensolve fails, e.g. for a
+/// non-square or non-finite block: that must not feed garbage into an energy.
+fn sym_matrix_exp(a: &Array2<f64>, scale: f64) -> Result<Array2<f64>, ferric_core::FerricError> {
     use ndarray_linalg::{Eigh, UPLO};
     let n = a.nrows();
-    // Symmetric eigensolve on the small occupied block. A failure here means
-    // the caller passed a non-symmetric Fock block — a caller bug that must
-    // not silently feed garbage into an energy expression.
-    let (vals, vecs) = a
-        .eigh(UPLO::Lower)
-        .expect("occupied-block Fock must be symmetric and diagonalizable");
+    let (vals, vecs) = a.eigh(UPLO::Lower).map_err(|e| {
+        ferric_core::FerricError::Lapack(format!(
+            "sym_matrix_exp: occupied-block Fock eigensolve failed: {e}"
+        ))
+    })?;
     let mut scaled = Array2::zeros((n, n));
     for k in 0..n {
         let w = (scale * vals[k]).exp();
@@ -320,7 +628,7 @@ fn sym_matrix_exp(a: &Array2<f64>, scale: f64) -> Array2<f64> {
             scaled[(i, k)] = vecs[(i, k)] * w;
         }
     }
-    scaled.dot(&vecs.t())
+    Ok(scaled.dot(&vecs.t()))
 }
 
 /// Build a sparse virtual pseudo-density restricted to the active AO union.
@@ -361,6 +669,236 @@ mod tests {
     use ferric_scf::rhf::{solve_rhf, RhfConfig};
     use ferric_scf::screening::SchwarzBounds;
     use ndarray::s;
+
+    #[test]
+    fn sym_matrix_exp_errors_instead_of_panicking() {
+        let bad = Array2::<f64>::zeros((2, 3));
+        assert!(sym_matrix_exp(&bad, 1.0).is_err());
+        let ok = Array2::<f64>::from_diag(&ndarray::arr1(&[0.0, 1.0]));
+        let e = sym_matrix_exp(&ok, 1.0).unwrap();
+        assert!((e[(1, 1)] - 1.0_f64.exp()).abs() < 1e-14);
+    }
+
+    /// Synthetic symmetric matrices for the λ-Boys optimiser: three
+    /// "dipole" components and an "F_oo" with a spread diagonal.
+    fn lambda_boys_model(n: usize) -> ([Array2<f64>; 3], Array2<f64>) {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut rnd = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        };
+        let mut sym = |scale: f64, diag: f64| {
+            let mut m = Array2::<f64>::zeros((n, n));
+            for i in 0..n {
+                for j in i..n {
+                    let v = scale * rnd() + if i == j { diag * i as f64 } else { 0.0 };
+                    m[(i, j)] = v;
+                    m[(j, i)] = v;
+                }
+            }
+            m
+        };
+        let x = [sym(2.0, 0.7), sym(2.0, -0.4), sym(2.0, 0.2)];
+        let f = sym(0.3, -0.5);
+        (x, f)
+    }
+
+    fn rotated(m: &Array2<f64>, u: &Array2<f64>) -> Array2<f64> {
+        u.t().dot(m).dot(u)
+    }
+
+    fn offdiag_frob(f: &Array2<f64>) -> f64 {
+        let mut s = 0.0;
+        for i in 0..f.nrows() {
+            for j in 0..f.ncols() {
+                if i != j {
+                    s += f[(i, j)] * f[(i, j)];
+                }
+            }
+        }
+        s.sqrt()
+    }
+
+    /// The analytic pair gradient matches a central difference of `G` along
+    /// the same plane rotation, at λ = 50 (so the F term is not negligible).
+    /// Mutations seen to fail (2026-11-18): factor 4 dropped from the
+    /// gradient; the F term's weight set to 0 in the gradient; the rotation
+    /// sign flipped in `rotate_sym_pair` (the FD then differentiates a
+    /// different curve).
+    #[test]
+    fn lambda_boys_pair_gradient_matches_central_difference() {
+        let (x, f) = lambda_boys_model(6);
+        let lam = 50.0;
+        for (p, q) in [(0usize, 1usize), (2, 5), (3, 4)] {
+            let g = |th: f64| {
+                let mut xs = x.clone();
+                let mut fs = f.clone();
+                for m in xs.iter_mut() {
+                    rotate_sym_pair(m, p, q, th.cos(), th.sin());
+                }
+                rotate_sym_pair(&mut fs, p, q, th.cos(), th.sin());
+                lambda_boys_objective(&xs, &fs, lam)
+            };
+            let h = 1e-6;
+            let fd = (g(h) - g(-h)) / (2.0 * h);
+            let an = lambda_boys_pair_gradient(&x, &f, lam, p, q);
+            // central difference: O(h²·G''') truncation + O(ε·G/h) rounding,
+            // both ≲ 1e-8 here; 1e-6 relative leaves two decades.
+            assert!(
+                (fd - an).abs() < 1e-6 * an.abs().max(1.0),
+                "pair ({p},{q}): fd {fd} vs analytic {an}"
+            );
+        }
+    }
+
+    /// The Jacobi angle is the in-plane MAXIMUM: G at θ* is ≥ G on a fine
+    /// grid of the same plane, and the optimiser's G never falls. Mutation
+    /// seen to fail (2026-11-18): `b.atan2(a)` → `(-b).atan2(-a)` (the
+    /// in-plane minimum) fails the grid comparison.
+    #[test]
+    fn lambda_boys_pair_angle_is_the_in_plane_maximum() {
+        let (x, f) = lambda_boys_model(5);
+        let lam = 10.0;
+        for (p, q) in [(0usize, 1usize), (1, 3), (2, 4)] {
+            let g = |th: f64| {
+                let mut xs = x.clone();
+                let mut fs = f.clone();
+                for m in xs.iter_mut() {
+                    rotate_sym_pair(m, p, q, th.cos(), th.sin());
+                }
+                rotate_sym_pair(&mut fs, p, q, th.cos(), th.sin());
+                lambda_boys_objective(&xs, &fs, lam)
+            };
+            let th = lambda_boys_pair_angle(&x, &f, lam, p, q);
+            let best = (0..2000)
+                .map(|k| {
+                    g(-std::f64::consts::FRAC_PI_4
+                        + k as f64 * std::f64::consts::FRAC_PI_2 / 2000.0)
+                })
+                .fold(f64::MIN, f64::max);
+            assert!(
+                g(th) >= best - 1e-10,
+                "pair ({p},{q}): G(θ*) {} < grid max {best}",
+                g(th)
+            );
+        }
+    }
+
+    /// λ = 0 restarted from its own optimum stays put; λ > 0 from the λ = 0
+    /// optimum raises G and makes F_oo more diagonal; the optimiser output
+    /// satisfies the stationarity condition (max gradient < tol). Mutations
+    /// seen to fail (2026-11-18): the F weight in the angle set to −λ (F
+    /// becomes LESS diagonal); the F term dropped from the angle (F does not
+    /// move, and the gradient including it never reaches tol).
+    #[test]
+    fn lambda_boys_penalty_direction_and_lambda_zero_fixed_point() {
+        let (x, f) = lambda_boys_model(6);
+        let r0 = lambda_boys_rotation(&x, &f, 0.0, 1e-10, 10_000).unwrap();
+        assert!(r0.converged);
+        let x0: [Array2<f64>; 3] = std::array::from_fn(|k| rotated(&x[k], &r0.u));
+        let f0 = rotated(&f, &r0.u);
+        // λ = 0 from its own optimum: zero sweeps, U = 1 exactly.
+        let again = lambda_boys_rotation(&x0, &f0, 0.0, 1e-10, 10_000).unwrap();
+        assert_eq!(again.sweeps, 0);
+        assert_eq!(again.u, Array2::<f64>::eye(6));
+        // λ = 10 from the Boys optimum.
+        let lam = 10.0;
+        let r1 = lambda_boys_rotation(&x0, &f0, lam, 1e-10, 10_000).unwrap();
+        assert!(r1.converged, "max grad {}", r1.max_grad);
+        assert!(r1.objective_end >= r1.objective_start);
+        let f1 = rotated(&f0, &r1.u);
+        let x1: [Array2<f64>; 3] = std::array::from_fn(|k| rotated(&x0[k], &r1.u));
+        assert!(
+            offdiag_frob(&f1) < 0.9 * offdiag_frob(&f0),
+            "λ > 0 must make F more diagonal: {} -> {}",
+            offdiag_frob(&f0),
+            offdiag_frob(&f1)
+        );
+        assert!(lambda_boys_max_grad(&x1, &f1, lam) < 1e-10);
+        // U orthogonal to rounding: n·ε-scale per element after O(sweeps·n)
+        // plane rotations; 1e-12 is far above that and far below any real
+        // non-orthogonality.
+        let utu = r1.u.t().dot(&r1.u);
+        let dev = (&utu - &Array2::<f64>::eye(6))
+            .mapv(f64::abs)
+            .fold(0.0f64, |a, &b| a.max(b));
+        assert!(dev < 1e-12, "UᵀU − 1 = {dev}");
+    }
+
+    /// An optimiser that misses the gradient target is refused, and a bad λ
+    /// is an error, not a silent default. λ = 0 is the Boys result bit for
+    /// bit: running the optimiser at λ = 0 instead of returning the Boys
+    /// orbitals was seen to fail the bitwise comparison (2026-11-18; the
+    /// Boys stop leaves a ~1e-10 residual rotation the optimiser removes).
+    #[test]
+    fn lambda_boys_refuses_nonconvergence_and_bad_lambda() {
+        let (x, f) = lambda_boys_model(6);
+        let r = lambda_boys_rotation(&x, &f, 10.0, 1e-10, 1).unwrap();
+        assert!(!r.converged && r.sweeps == 1);
+        for bad in [-1.0, f64::NAN, f64::INFINITY] {
+            assert!(lambda_boys_rotation(&x, &f, bad, 1e-10, 10).is_err());
+            assert!(check_lambda_boys(bad).is_err());
+        }
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let rhf = solve_rhf(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default()).unwrap();
+        let c_occ = rhf.mos_r().slice(s![.., 1..5]).to_owned();
+        let dip = dipole(&prep, [0.0, 0.0, 0.0]).unwrap();
+        let f_ao = rhf.fock_r().clone();
+        // λ = 0: the Boys orbitals bit for bit, optimiser not run.
+        let boys = boys_localize_checked(&c_occ, &dip, 200).unwrap();
+        let (b0, rep0) = lambda_boys_localize_checked(&c_occ, &dip, &f_ao, 0.0, 200, 1).unwrap();
+        assert_eq!(b0.c_loc, boys.c_loc);
+        assert_eq!(b0.centers, boys.centers);
+        assert_eq!(rep0.sweeps, 0);
+        // λ = 10 with a one-sweep cap: refused; with the production cap: ok.
+        let e = lambda_boys_localize_checked(&c_occ, &dip, &f_ao, 10.0, 200, 1);
+        assert!(
+            matches!(e, Err(ferric_core::FerricError::Convergence(_))),
+            "{e:?}"
+        );
+        let (b10, rep10) =
+            lambda_boys_localize_checked(&c_occ, &dip, &f_ao, 10.0, 200, LAMBDA_BOYS_MAX_SWEEPS)
+                .unwrap();
+        assert!(rep10.max_grad < LAMBDA_BOYS_GRAD_TOL && rep10.sweeps >= 1);
+        // still orthonormal occupied orbitals spanning the same space
+        let s_ao = ferric_integrals::oneelectron::overlap(&prep);
+        let o = b10.c_loc.t().dot(&s_ao).dot(&b10.c_loc);
+        let dev = (&o - &Array2::<f64>::eye(4))
+            .mapv(f64::abs)
+            .fold(0.0f64, |a, &b| a.max(b));
+        assert!(dev < 1e-12, "CᵀSC − 1 = {dev}");
+        let proj = boys.c_loc.t().dot(&s_ao).dot(&b10.c_loc); // 4×4 orthogonal
+        let pp = proj.t().dot(&proj);
+        let dev = (&pp - &Array2::<f64>::eye(4))
+            .mapv(f64::abs)
+            .fold(0.0f64, |a, &b| a.max(b));
+        assert!(dev < 1e-12, "span changed: {dev}");
+    }
+
+    #[test]
+    fn checked_boys_refuses_an_unconverged_localization() {
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let rhf = solve_rhf(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default()).unwrap();
+        let nocc = mol.nelec() as usize / 2;
+        let c_occ = rhf.mos_r().slice(s![.., ..nocc]).to_owned();
+        let dip = dipole(&prep, [0.0, 0.0, 0.0]).unwrap();
+        // One sweep cannot reach the 1e-8 rotation-angle tolerance.
+        assert!(!boys_localize(&c_occ, &dip, 1).converged);
+        assert!(boys_localize_checked(&c_occ, &dip, 1).is_err());
+        assert!(boys_localize_checked(&c_occ, &dip, 200).is_ok());
+    }
 
     #[test]
     fn test_boys_water_sto3g() {
@@ -508,10 +1046,7 @@ mod tests {
             &prep,
             op,
             &bounds,
-            &RhfConfig {
-                density_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_density_conv(1e-10),
         )
         .unwrap();
 
@@ -555,7 +1090,7 @@ mod tests {
         };
 
         for &t in &[0.05_f64, 0.3, 1.0, 3.0] {
-            let p_loc = build_pseudo_density_occ_sparse(&boys.c_loc, &f_loc, t, &full);
+            let p_loc = build_pseudo_density_occ_sparse(&boys.c_loc, &f_loc, t, &full).unwrap();
             // Canonical reference, built inline so this test does not depend on
             // the laplace module's blocking/frozen-core plumbing.
             let mut p_can: Array2<f64> = Array2::zeros((nbas, nbas));

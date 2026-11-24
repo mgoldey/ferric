@@ -1,15 +1,19 @@
 //! Laplace-separable χ₀ kernel for PDEP-RPA.
 //!
-//! Replaces the explicit `4·e_ia/(ω²+e_ia²)` denominator (the `Dense` path in
-//! `sternheimer::dielectric_matrix_into`) by a minimax-Laplace sum-of-exponentials:
+//! Replaces the explicit `4·e_ia/(u²+e_ia²)` denominator (the `Dense` path in
+//! `sternheimer::dielectric_matrix_into`) by a minimax-Laplace sum-of-exponentials.
+//! The sum is the 1/x approximant `1/x ≈ Σ_l w_l exp(-t_l x)` evaluated at the
+//! complex argument `x = e_ia + i u`, not a quadrature of the cosine integral:
 //!
 //! ```text
-//! e_ia / (ω² + e_ia²)  =  ∫_0^∞ exp(-e_ia · t) cos(ω t) dt
-//!                     ≈  Σ_l w_l · cos(ω t_l) · exp(-t_l · e_ia)
+//! e_ia / (u² + e_ia²)  =  Re[ 1 / (e_ia + i u) ]
+//!                     ≈  Σ_l w_l · cos(u t_l) · exp(-t_l · e_ia)
 //! ```
 //!
 //! with `(t_l, w_l)` the standard minimax-Laplace nodes/weights for `1/x` on the
-//! energy-gap range `[e_ia^min, e_ia^max]` (same machinery as Laplace-MP2).
+//! real energy-gap range `[e_ia^min, e_ia^max]` (same machinery as Laplace-MP2).
+//! The approximant is tuned on the real axis only, so it degrades as `u · t_max`
+//! grows; the kernels fall back to the dense form above `u · t_max = π/2`.
 //!
 //! The closed-shell RHF prefactor is 4, so the dielectric kernel becomes
 //! ```text
@@ -17,15 +21,18 @@
 //! ```
 //!
 //! For each l we build `X^l_α,ia = (V^T B)_α,ia · exp(-t_l · e_ia / 2)` and accumulate
-//! `coeff_l · X^l · X^l^T` into the output. `coeff_l = 4 w_l cos(ω t_l)` can be
-//! negative when `cos(ω t_l) < 0`, so we use a general matmul (not SYRK).
+//! `coeff_l · X^l · X^l^T` into the output, with `coeff_l = 4 w_l cos(u t_l)`.
+//! On the Laplace branch `u · t_l ≤ π/2`, so `cos ≥ 0` and every `coeff_l` is
+//! non-negative (above that the dense kernel is used instead); the update goes
+//! through `general_mat_mul` rather than a symmetric rank-k routine.
 //!
 //! Mathematically, the MO-basis Laplace form is *correctness-equivalent* to the
 //! Dense path with the same arithmetic cost. The cubic-scaling win comes from
 //! the AO-basis reformulation where the occupied/virtual contractions become
 //! pseudo-densities `P̃_μν(t) = Σ_i e^{t ε_i} C_μi C_νi` and
-//! `Q̃_μν(t) = Σ_a e^{-t ε_a} C_μa C_νa`. The AO route is left as a TODO; this
-//! file delivers the MO-basis correctness gate for C6.
+//! `Q̃_μν(t) = Σ_a e^{-t ε_a} C_μa C_νa`. The AO route lives in `ao_rpa.rs`;
+//! this file is the MO-basis kernel, used as its correctness reference and as
+//! the `Chi0Backend::Laplace` PDEP dielectric.
 
 use crate::channel::RpaChannel;
 use ferric_quadrature::LaplaceQuadrature;
@@ -43,11 +50,10 @@ use ndarray::{Array1, Array2, Axis, Zip};
 ///
 /// Currently every caller passes canonical `rhf.eps_r()`-derived values, so
 /// this is a LATENT trap, not a live bug. It is guarded rather than merely
-/// documented because the identical pattern WAS a live bug in `screen.rs`
-/// (`diag(C_locᵀ F C_loc)` from Boys-localized orbitals; discarded coupling
-/// 1.3–2.9% of the diagonal spread; fixed 2026-07-28 in commit 17e994e) and
-/// produced an entirely bogus locality result in the AO-Laplace path
-/// (commit 3693d5d).
+/// documented because the identical pattern is a live bug when `screen.rs`
+/// feeds `diag(C_locᵀ F C_loc)` from Boys-localized orbitals (discarded
+/// coupling 1.3–2.9% of the diagonal spread), and it produces an entirely
+/// bogus locality result in the AO-Laplace path.
 ///
 /// Note this module's own docs (see the header) describe an AO pseudo-density
 /// route as future work — that is precisely the change that would feed rotated
@@ -101,11 +107,13 @@ pub fn build_laplace_for_gaps(
 /// Laplace-separable dielectric matrix builder.
 ///
 /// Same in-place signature as [`crate::sternheimer::dielectric_matrix_from_projection_into`] but
-/// uses the Laplace-quadrature form of `4·e_ia/(ω²+e_ia²)`. Numerically matches
-/// the Dense path to the quadrature tolerance (~1e-3 relative elementwise for
-/// the tabulated `n_quad = 7`). Only `n_quad ∈ {3, 5, 7}` are tabulated — the
-/// previous `n_quad = 12/20` accuracy claims were never real; those sizes
-/// silently fell back to the 7-point table before the TD-QUAD fix.
+/// uses the Laplace-quadrature form of `4·e_ia/(u²+e_ia²)`. Numerically matches
+/// the Dense path to the quadrature tolerance, which falls steeply with the
+/// table size (`laplace_tightens_with_more_points`, a small synthetic system,
+/// max elementwise error: 2e-5 for 3 points, 7e-8 for 5, 9e-11 for 7; it grows
+/// with the ratio of the largest to the smallest gap). Only
+/// `n_quad ∈ {3, 5, 7}` are tabulated — `n_quad = 12/20` is an error (no
+/// silent fallback to the 7-point table).
 ///
 /// # Arguments
 /// * `v_mat` — trial-vector block of shape `(naux, m)`.
@@ -129,7 +137,7 @@ pub fn build_laplace_for_gaps(
 // Laplace grid, and two caller-owned scratch/output buffers for allocation
 // reuse — all distinct, nothing further to bundle.
 #[allow(clippy::too_many_arguments)]
-/// Build the dielectric matrix ε(iω) = I − v^½ χ₀(iω) v^½ via Laplace transform of χ₀, writing into `out`.
+/// Build the dielectric matrix `ε̃(iu) = I + Π(iu)` (Π = −χ₀ in the dressed aux basis, positive semidefinite) with the Laplace kernel, writing into `out`.
 pub fn dielectric_matrix_laplace_into(
     v_mat: &Array2<f64>,
     b_ov: &Array2<f64>,
@@ -327,6 +335,90 @@ pub fn dielectric_matrix_laplace_unrestricted(
     out
 }
 
+/// Apply the Laplace-separable closed-shell dielectric to a block of trial
+/// vectors: returns `ε̃ · V` (shape `(naux, m)`), the operator form the
+/// block-Lanczos eigensolver needs. [`dielectric_matrix_laplace`] returns the
+/// `(m, m)` projected matrix `I + Vᵀ Π V` instead, which equals `ε̃` only when
+/// `V` is the full `naux × naux` identity.
+///
+/// `ε̃ V = V + Σ_l 4 w_l cos(ω t_l) · B · [(Vᵀ B) ∘ exp(-t_l e_ia)]ᵀ`. Above the
+/// same `ω · t_max` threshold as [`dielectric_matrix_laplace_into`] it falls
+/// back to the dense kernel, so `Vᵀ · apply(V) = dielectric_matrix_laplace(V) +
+/// VᵀV − I` holds at every ω.
+pub fn dielectric_apply_laplace(
+    v_mat: &Array2<f64>,
+    b_ov: &Array2<f64>,
+    eps_occ: &[f64],
+    eps_vir: &[f64],
+    omega: f64,
+    laplace: &LaplaceQuadrature,
+) -> Array2<f64> {
+    let t_max = laplace.points.iter().cloned().fold(0.0_f64, f64::max);
+    if omega * t_max > std::f64::consts::FRAC_PI_2 {
+        return crate::sternheimer::dielectric_apply(v_mat, b_ov, eps_occ, eps_vir, omega);
+    }
+    let nov = eps_occ.len() * eps_vir.len();
+    assert_eq!(b_ov.shape()[1], nov);
+    let y_base: Array2<f64> = v_mat.t().dot(b_ov); // (m, nov)
+    let e_ia = build_e_ia(eps_occ, eps_vir);
+    let mut out: Array2<f64> = v_mat.to_owned();
+    let mut y = Array2::<f64>::zeros(y_base.raw_dim());
+    for (&t_l, &w_l) in laplace.points.iter().zip(laplace.weights.iter()) {
+        y.assign(&y_base);
+        let factor: Array1<f64> = e_ia.iter().map(|&e| (-t_l * e).exp()).collect();
+        Zip::from(&mut y)
+            .and_broadcast(factor.view().insert_axis(Axis(0)))
+            .for_each(|x, &f| *x *= f);
+        let coeff = 4.0 * w_l * (omega * t_l).cos();
+        general_mat_mul(coeff, b_ov, &y.t(), 1.0, &mut out);
+    }
+    out
+}
+
+/// Unrestricted counterpart of [`dielectric_apply_laplace`]: `ε̃_U · V` with
+/// `ε̃_U = I + Π_α + Π_β` (naux × m), the operator form block-Lanczos needs.
+/// Same `ω · t_max` dense fallback as
+/// [`dielectric_matrix_laplace_unrestricted_into`].
+pub fn dielectric_apply_laplace_unrestricted(
+    v_mat: &Array2<f64>,
+    chan_a: &RpaChannel,
+    laplace_a: &LaplaceQuadrature,
+    chan_b: &RpaChannel,
+    laplace_b: &LaplaceQuadrature,
+    omega: f64,
+) -> Array2<f64> {
+    let t_max = laplace_a
+        .points
+        .iter()
+        .chain(laplace_b.points.iter())
+        .cloned()
+        .fold(0.0_f64, f64::max);
+    if omega * t_max > std::f64::consts::FRAC_PI_2 {
+        return crate::sternheimer::dielectric_apply_unrestricted(v_mat, chan_a, chan_b, omega);
+    }
+    let mut out: Array2<f64> = v_mat.to_owned();
+    for (chan, laplace) in [(chan_a, laplace_a), (chan_b, laplace_b)] {
+        let nov = chan.eps_occ.len() * chan.eps_vir.len();
+        if nov == 0 {
+            continue;
+        }
+        assert_eq!(chan.b_ov.shape()[1], nov);
+        let y_base: Array2<f64> = v_mat.t().dot(chan.b_ov);
+        let e_ia = build_e_ia(chan.eps_occ, chan.eps_vir);
+        let mut y = Array2::<f64>::zeros(y_base.raw_dim());
+        for (&t_l, &w_l) in laplace.points.iter().zip(laplace.weights.iter()) {
+            y.assign(&y_base);
+            let factor: Array1<f64> = e_ia.iter().map(|&e| (-t_l * e).exp()).collect();
+            Zip::from(&mut y)
+                .and_broadcast(factor.view().insert_axis(Axis(0)))
+                .for_each(|x, &f| *x *= f);
+            let coeff = 2.0 * w_l * (omega * t_l).cos();
+            general_mat_mul(coeff, chan.b_ov, &y.t(), 1.0, &mut out);
+        }
+    }
+    out
+}
+
 /// Allocating convenience wrapper around [`dielectric_matrix_laplace_into`].
 pub fn dielectric_matrix_laplace(
     v_mat: &Array2<f64>,
@@ -446,5 +538,45 @@ mod tests {
             errs[2] <= errs[0],
             "more quadrature points should not increase error"
         );
+    }
+
+    /// `ε̃ V` (operator form) must be consistent with the projected-matrix form:
+    /// `Vᵀ · apply(V) = matrix(V) + VᵀV − I`, in the Laplace branch (ω = 0.5)
+    /// and the dense-fallback branch (ω large), and `apply(I) = matrix(I)`.
+    #[test]
+    fn laplace_apply_matches_projected_matrix() {
+        let (nocc, nvir, naux, m) = (2usize, 3usize, 5usize, 3usize);
+        let b_ov = Array2::from_shape_fn((naux, nocc * nvir), |(p, ia)| {
+            0.1 + 0.03 * (p as f64) - 0.02 * (ia as f64) + 0.01 * ((p * ia) as f64).sin()
+        });
+        let v_mat = Array2::from_shape_fn((naux, m), |(p, a)| {
+            0.3 * ((p + 2 * a) as f64).cos() + if p == a { 1.0 } else { 0.0 }
+        });
+        let eps_occ = vec![-0.6_f64, -0.4];
+        let eps_vir = vec![0.2_f64, 0.7, 1.5];
+        let q = build_laplace_for_gaps(&eps_occ, &eps_vir, 3).unwrap();
+        for omega in [0.0, 0.5, 50.0] {
+            let av = dielectric_apply_laplace(&v_mat, &b_ov, &eps_occ, &eps_vir, omega, &q);
+            assert_eq!(av.shape(), &[naux, m]);
+            let proj = v_mat.t().dot(&av);
+            let mut expect =
+                dielectric_matrix_laplace(&v_mat, &b_ov, &eps_occ, &eps_vir, omega, &q);
+            expect = expect + v_mat.t().dot(&v_mat) - Array2::<f64>::eye(m);
+            let err = proj
+                .iter()
+                .zip(expect.iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0, f64::max);
+            assert!(err < 1e-12, "omega={omega}: err={err:.3e}");
+        }
+        let id = Array2::<f64>::eye(naux);
+        let a_id = dielectric_apply_laplace(&id, &b_ov, &eps_occ, &eps_vir, 0.0, &q);
+        let m_id = dielectric_matrix_laplace(&id, &b_ov, &eps_occ, &eps_vir, 0.0, &q);
+        let err = a_id
+            .iter()
+            .zip(m_id.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f64::max);
+        assert!(err < 1e-12, "apply(I) vs matrix(I): {err:.3e}");
     }
 }

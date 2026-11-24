@@ -51,6 +51,22 @@ def test_standalone_dispersion_is_attractive_and_functional_dependent(water):
     )
 
 
+def test_s9_switches_the_three_body_term(water):
+    """`s9=0` (the default) is the two-body energy bit for bit; `s9=1` adds
+    the ATM term, which for water is the simple-dftd3 value 2.3256505e-10 Ha
+    (crates/ferric-d3/testdata/d3bj_atm_reference.json; this geometry differs,
+    so only its sign and order of magnitude are asserted)."""
+    e2 = ferric.d3bj_energy(water, "PBE")
+    assert ferric.d3bj_energy(water, "PBE", s9=0.0) == e2
+    e3 = ferric.d3bj_energy(water, "PBE", s9=1.0) - e2
+    assert 1e-11 < e3 < 1e-8, f"water three-body term {e3:e} out of range"
+    assert ferric.d3bj_energy(water, "PBE", s9=2.0) - e2 == pytest.approx(
+        2 * e3, rel=1e-6
+    )
+    with pytest.raises(ValueError):
+        ferric.d3bj_energy(water, "PBE", s9=float("nan"))
+
+
 def test_single_atom_has_exactly_zero_dispersion():
     """The exactness anchor, through the Python surface: one atom has no pairs."""
     atom = ferric.Molecule.from_xyz_string("1\nne\nNe 0.0 0.0 0.0\n", 0, 1)
@@ -64,6 +80,15 @@ def test_unknown_functional_raises_rather_than_defaulting(water):
     assert "definitely-not-a-functional" in str(exc.value), (
         "the error must name the functional it rejected so the caller can act"
     )
+
+
+def test_m06_2x_has_no_d3bj_fit_and_is_refused(water, sto3g):
+    """M06-2X has only a zero-damping D3(0) fit; D3(BJ) for it must raise in
+    the standalone call and in run_dft, never return invented numbers."""
+    with pytest.raises(Exception, match="D3\\(0\\)"):
+        ferric.d3bj_energy(water, "M06-2X")
+    with pytest.raises(ValueError, match="(?i)m06-2x.*D3\\(0\\)"):
+        ferric.run_dft(water, sto3g, functional="PBE", dispersion="d3bj(M06-2X)")
 
 
 def test_run_dft_without_dispersion_is_unchanged(water, sto3g):

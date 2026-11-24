@@ -15,7 +15,10 @@ ferric = pytest.importorskip("ferric")
 
 ROOT = Path(__file__).resolve().parents[3]
 REF = ROOT / "testdata" / "reference" / "validation" / "scf_symmetry"
-TIGHT = dict(density_conv=1e-10, energy_conv=1e-8, max_iter=200)
+# RI-J pinned to the f64 tensor: these compare against finite differences or
+# f64 references at bars below the f32 default's effect (site/src/methods/scf.md,
+# "RI-J tensor precision").
+TIGHT = dict(density_conv=1e-10, energy_conv=1e-8, max_iter=200, ri_j_precision="f64")
 
 
 def _water():

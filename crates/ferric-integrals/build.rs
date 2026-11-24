@@ -33,8 +33,17 @@ fn main() {
     // fails here, before the libecpint and shim compiles.
     let boys_override = libint2_boys_override(&libint_root);
 
+    // Target-conditional C++ choices (build_support/cxx_target.rs). Every
+    // non-MSVC target gets the flags this script always passed.
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    let target = CxxTarget {
+        os: &target_os,
+        env: &target_env,
+    };
+
     // --- libecpint: configure + build the vendored static library via CMake ---
-    let (ecpint_lib_dir, ecpint_include_dirs) = build_libecpint();
+    let (ecpint_lib_dir, ecpint_include_dirs) = build_libecpint(target);
 
     // --- libint2 shim ---
     let mut shim_build = cc::Build::new();
@@ -57,7 +66,6 @@ fn main() {
         // $PREFIX/include/eigen3. Listed before the system path so the
         // environment's Eigen wins over any system copy.
         .include(format!("{libint_root}/include/eigen3"))
-        .include("/usr/include/eigen3")
         // STEP 4: opt in to the libint2-native terf operator. Requires a
         // libint2 patched with Operator::terf (see
         // wiki/perf-tasks/patches/libint2-terf-*.patch) selected via
@@ -69,22 +77,34 @@ fn main() {
                 "FERRIC_UNUSED_TERF"
             },
             None,
-        )
-        .flag("-std=c++17")
-        .flag("-O2")
-        .flag("-Wno-deprecated-declarations")
-        .flag("-Wno-unused-parameter")
-        .compile("ferric_shim");
+        );
+    // The system Eigen, after the prefix's. Not on Windows, which has no
+    // /usr/include. cc-rs puts every -I before every -D, so the Linux compile
+    // line is unchanged by adding it here rather than in the chain above.
+    if target_os != "windows" {
+        shim_build.include("/usr/include/eigen3");
+    }
+    if let Some(dir) = compat_header_dir(target) {
+        // Searched last: stands in only for headers the toolchain lacks.
+        shim_build.include(dir);
+    }
+    for def in target.defines() {
+        shim_build.define(def, None);
+    }
+    for flag in target.shim_flags() {
+        shim_build.flag(flag);
+    }
+    shim_build.compile("ferric_shim");
 
     // --- ECP shim (new): wraps libecpint's ECPIntegrator into a C-ABI matrix call ---
     let mut ecp_build = cc::Build::new();
-    ecp_build
-        .cpp(true)
-        .file("shim/ecp_shim.cc")
-        .flag("-std=c++11")
-        .flag("-O2")
-        .flag("-Wno-deprecated-declarations")
-        .flag("-Wno-unused-parameter");
+    ecp_build.cpp(true).file("shim/ecp_shim.cc");
+    for def in target.defines() {
+        ecp_build.define(def, None);
+    }
+    for flag in target.ecp_shim_flags() {
+        ecp_build.flag(flag);
+    }
     for inc in &ecpint_include_dirs {
         ecp_build.include(inc);
     }
@@ -92,12 +112,18 @@ fn main() {
 
     // libint2 + BLAS link
     println!("cargo:rustc-link-search=native={libint_root}/lib");
-    // A prefix with libint2.a (a from-source build, e.g. the old mpqc4
+    // A prefix with libint2.a (a from-source build, e.g. the mpqc4
     // tarball) links statically. scripts/install-libint.sh installs the
     // conda-forge 2.13.1 build, which ships libint2.so only; that script sets
     // its SONAME to the absolute path, so binaries find it at run time without
     // an rpath.
-    if std::path::Path::new(&format!("{libint_root}/lib/libint2.a")).exists() {
+    // MSVC: the static archive is int2.lib (cxx_target.rs).
+    let libint_archive = format!("{libint_root}/lib/{}", target.libint_static_archive());
+    let libint_dll = format!("{libint_root}/bin/int2.dll");
+    if target.libint_is_static(
+        std::path::Path::new(&libint_archive).exists(),
+        std::path::Path::new(&libint_dll).exists(),
+    ) {
         println!("cargo:rustc-link-lib=static=int2");
         println!("cargo:rustc-env=FERRIC_LIBINT_LINKAGE=static");
     } else {
@@ -107,7 +133,9 @@ fn main() {
     // Lets the libint_max_am test read the very params header it compiled against.
     println!("cargo:rustc-env=FERRIC_LIBINT_ROOT={libint_root}");
     println!("cargo:rustc-link-lib=dylib=openblas");
-    println!("cargo:rustc-link-lib=dylib=stdc++");
+    if let Some(runtime) = target.cxx_runtime() {
+        println!("cargo:rustc-link-lib=dylib={runtime}");
+    }
 
     // libecpint link (static): ecpint + its internal Faddeeva
     println!(
@@ -130,6 +158,7 @@ fn main() {
         println!("cargo:rerun-if-changed=shim/libint2_overrides/{version}/libint2/boys.h");
     }
     println!("cargo:rerun-if-changed=build_support/boys_policy.rs");
+    println!("cargo:rerun-if-changed=build_support/cxx_target.rs");
     println!("cargo:rerun-if-changed=shim/shim.h");
     println!("cargo:rerun-if-changed=shim/shim.cc");
     println!("cargo:rerun-if-changed=shim/ecp_shim.h");
@@ -166,6 +195,22 @@ fn libint_root(prefix: &str) -> String {
 // STOCK_BOYS_H_FNV1A64, the env-var names and the pure decision
 // `boys_outcome` (shared with tests/boys_override_policy.rs).
 include!("build_support/boys_policy.rs");
+include!("build_support/cxx_target.rs");
+
+/// An include directory holding `target.compat_headers()`, written under
+/// OUT_DIR, or `None` when the target needs none.
+fn compat_header_dir(target: CxxTarget<'_>) -> Option<PathBuf> {
+    let headers = target.compat_headers();
+    if headers.is_empty() {
+        return None;
+    }
+    let dir = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("compat-include");
+    std::fs::create_dir_all(&dir).expect("create compat include dir");
+    for (name, contents) in headers {
+        std::fs::write(dir.join(name), contents).expect("write compat header");
+    }
+    Some(dir)
+}
 
 /// Decide whether to put `shim/libint2_overrides/<version>` first on the
 /// shim's include path. Each such directory holds a patched copy of that
@@ -241,7 +286,7 @@ fn libint2_boys_override(libint_root: &str) -> Option<(PathBuf, bool)> {
 
 /// Configure and build the vendored libecpint static library with CMake.
 /// Returns (directory containing libecpint.a + libFaddeeva.a, include dirs for the shim).
-fn build_libecpint() -> (PathBuf, Vec<PathBuf>) {
+fn build_libecpint(target: CxxTarget<'_>) -> (PathBuf, Vec<PathBuf>) {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let src_dir = manifest_dir.join("shim/libecpint");
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
@@ -251,7 +296,8 @@ fn build_libecpint() -> (PathBuf, Vec<PathBuf>) {
     // libecpint installs static archives flat into <build>/libecpint.a and
     // external/Faddeeva/libFaddeeva.a. We build in place (no install) and link
     // from the build tree.
-    let ecpint_a = build_dir.join("src/libecpint.a");
+    let (ecpint_name, faddeeva_name) = target.ecpint_archives();
+    let ecpint_a = build_dir.join("src").join(ecpint_name);
 
     if !ecpint_a.exists() {
         // libecpint's code generator writes qgen.hpp into the SOURCE tree
@@ -264,7 +310,11 @@ fn build_libecpint() -> (PathBuf, Vec<PathBuf>) {
         // (#525). Restore the mtime when the bytes did not change.
         let _qgen_guard = MtimeGuard::new(src_dir.join("include/libecpint/qgen.hpp"));
         // Configure.
-        let status = Command::new("cmake")
+        let mut configure = Command::new("cmake");
+        if let Some(generator) = target.cmake_generator() {
+            configure.arg("-G").arg(generator);
+        }
+        let status = configure
             .current_dir(&build_dir)
             .arg(&src_dir)
             .arg("-DCMAKE_BUILD_TYPE=Release")
@@ -297,9 +347,9 @@ fn build_libecpint() -> (PathBuf, Vec<PathBuf>) {
     // both next to each other so a single -L search dir resolves them.
     let lib_out = out_dir.join("libecpint-lib");
     std::fs::create_dir_all(&lib_out).expect("create libecpint lib dir");
-    std::fs::copy(&ecpint_a, lib_out.join("libecpint.a")).expect("copy libecpint.a");
-    let faddeeva_a = build_dir.join("external/Faddeeva/libFaddeeva.a");
-    std::fs::copy(&faddeeva_a, lib_out.join("libFaddeeva.a")).expect("copy libFaddeeva.a");
+    std::fs::copy(&ecpint_a, lib_out.join(ecpint_name)).expect("copy the libecpint archive");
+    let faddeeva_a = build_dir.join("external/Faddeeva").join(faddeeva_name);
+    std::fs::copy(&faddeeva_a, lib_out.join(faddeeva_name)).expect("copy the Faddeeva archive");
 
     // The generated config.hpp lives in the build tree's include dir.
     let include_dirs = vec![

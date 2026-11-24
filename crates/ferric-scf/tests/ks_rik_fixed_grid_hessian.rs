@@ -93,6 +93,7 @@ use ferric_scf::ks_fixed_grid::{
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::compare::max_abs;
 use ndarray::Array2;
 
 const WATER: &str = "3\nH2O distorted off C2v\n\
@@ -107,6 +108,7 @@ fn grid_cfg() -> AtomicGridConfig {
         n_radial: 50,
         n_angular: 110,
         prune: None,
+        weight_cut: None,
     }
 }
 
@@ -121,13 +123,11 @@ fn water() -> Molecule {
 /// Config handed to the Hessian: functional, the SCF's RI-J / RI-K bases
 /// (`None` = exact).
 fn hessian_config(xc: &str, j: Option<&str>, k: Option<&str>) -> RhfConfig {
-    RhfConfig {
-        xc: Some(xc.into()),
-        df_j_aux: Some(j.unwrap_or("").into()),
-        df_k_aux: Some(k.unwrap_or("").into()),
-        dft_grid: Some(grid_cfg()),
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc(xc)
+        .with_df_j_aux(j.unwrap_or(""))
+        .with_df_k_aux(k.unwrap_or(""))
+        .with_dft_grid(grid_cfg())
 }
 
 struct Pt {
@@ -158,13 +158,11 @@ fn scf(
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let (jbs, kbs) = (aux_at(mol, j), aux_at(mol, k));
-    let cfg = RhfConfig {
-        use_sad_guess: false,
-        max_iter: 200,
-        energy_conv: 1e-13,
-        density_conv: 1e-11,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_max_iter(200)
+        .with_energy_conv(1e-13)
+        .with_density_conv(1e-11);
     let res = solve_rks_fixed_grid_dfjk(
         &ctx,
         mol,
@@ -208,10 +206,6 @@ fn rich(h: f64, mut f: impl FnMut(f64) -> Array2<f64>) -> Array2<f64> {
     (4.0 * fine - coarse) / 3.0
 }
 
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0f64, |m, x| m.max(x.abs()))
-}
-
 fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
     max_abs(&(a - b))
 }
@@ -231,7 +225,16 @@ struct Ref {
 }
 
 fn reference(basis_name: &str, xc: &str, j: Option<&str>, k: Option<&str>) -> Ref {
-    let mol = water();
+    reference_at(water(), basis_name, xc, j, k)
+}
+
+fn reference_at(
+    mol: Molecule,
+    basis_name: &str,
+    xc: &str,
+    j: Option<&str>,
+    k: Option<&str>,
+) -> Ref {
     let grid = FixedGridKs::new(&mol, xc, &grid_cfg()).unwrap();
     let pt = scf(&grid, &mol, basis_name, j, k);
     Ref {
@@ -308,8 +311,13 @@ fn analytic(r: &Ref, m: &KsFixedGridMutants) -> Array2<f64> {
 
 /// Step of the finite differences, Bohr.
 const H_FD: f64 = 5e-4;
-/// Gradient vs FD of the energy, Ha/Bohr.
-const TOL_GRAD_FD: f64 = 3e-9;
+/// Gradient vs FD of the energy, Ha/Bohr. The floor is the energy's rounding
+/// noise over the step (~5e-13 Ha / 5e-4 Bohr ~ 1e-9): measured 1.3-1.7e-9 with
+/// the DF-K metric V^-1/2 from dsyev, 2.3-2.7e-9 locally and 4.4e-9 on the CI
+/// runners from dsyevd (bisected to c4b398d4d, 2026-11-08). A missing or wrong
+/// gradient term misses by orders of magnitude more (the RI-K fitting error
+/// alone is ~5e-6 in the Hessian below).
+const TOL_GRAD_FD: f64 = 1e-8;
 /// Hessian vs FD of the RI-K gradient, Ha/Bohr^2 (re-converged SCFs, stencil
 /// second derivatives of the 3c and 2c integrals). Measured 7.3e-11 to
 /// 8.9e-11 at STO-3G and 1.4e-8 (hybrid LDA) to 4.2e-8 (PBE0) at 6-31G, where
@@ -321,6 +329,7 @@ const TOL_HESS_FD: f64 = 5e-7;
 /// A broken construction must miss by this multiple of the bar.
 const MUTANT_FACTOR: f64 = 10.0;
 
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rik_gradient_matches_central_difference_of_the_fixed_grid_energy() {
     for (basis_name, xc, j) in [
@@ -356,6 +365,7 @@ fn fd_case(basis_name: &str, xc: &str, j: Option<&str>, k: &str, tol: f64) -> (R
     (r, fd)
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rik_hessian_matches_fd_pbe0_sto3g_rij() {
     if has_deriv2() {
@@ -363,6 +373,7 @@ fn rik_hessian_matches_fd_pbe0_sto3g_rij() {
     }
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rik_hessian_matches_fd_pbe0_sto3g_exact_j() {
     if has_deriv2() {
@@ -370,6 +381,7 @@ fn rik_hessian_matches_fd_pbe0_sto3g_exact_j() {
     }
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rik_hessian_matches_fd_b3lyp_sto3g_rij() {
     if has_deriv2() {
@@ -377,6 +389,7 @@ fn rik_hessian_matches_fd_b3lyp_sto3g_rij() {
     }
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rik_hessian_matches_fd_hybrid_lda_631g_rij() {
     if has_deriv2() {
@@ -389,11 +402,32 @@ fn rik_hessian_matches_fd_hybrid_lda_631g_rij() {
 /// measured against 1e-9 instead of the 6-31G 5e-7.
 const TOL_HESS_FD_STO3G: f64 = 1e-9;
 
+/// Two analytic Hessians in one process at two geometries: the second still
+/// matches the FD of its own RI-K gradient at the STO-3G bar, so nothing the
+/// CPHF builds from one reference (the occupied half-transformed RI-K tensor)
+/// is reused at another.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
+#[test]
+fn rik_hessian_after_another_geometry_matches_fd() {
+    if has_deriv2() {
+        let other = reference_at(
+            displaced(&water(), 0, 0.05),
+            "sto-3g",
+            "PBE0",
+            Some(AUX),
+            Some(AUX),
+        );
+        let _ = analytic(&other, &KsFixedGridMutants::default());
+        fd_case("sto-3g", "PBE0", Some(AUX), AUX, TOL_HESS_FD_STO3G);
+    }
+}
+
 /// J and K fitted over DIFFERENT auxiliary bases (def2-universal-jkfit for J,
 /// cc-pVTZ-JKFIT for K): every fitted piece must take its own basis. The
 /// mutants fit the RI-K skeleton / `K^x`, or the CPHF `DfK`, over the J basis,
 /// and the response-side exact-K fallbacks are measured here against the
 /// tighter STO-3G bar.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rik_hessian_with_distinct_j_and_k_bases_and_its_mutants() {
     if !has_deriv2() {
@@ -457,6 +491,7 @@ fn ri_k_adds_nothing_to_a_pure_functional() {
     let fit = KsFit {
         aux: &aux,
         budget_bytes: usize::MAX,
+        precision: ferric_scf::df_j::RiJPrecision::F64,
     };
     let run = |fits: KsFits<'_>, m: &KsFixedGridMutants| {
         rks_fixed_grid_hessian_parts_with_aux(
@@ -511,6 +546,7 @@ fn ri_k_adds_nothing_to_a_pure_functional() {
 /// fit's floor for this orbital basis), so the assertion is a 10x drop from
 /// the jkfit difference for BOTH richer fits and a monotone energy, not a
 /// monotone Hessian difference (1.41e-6 vs 1.53e-6 is inside that floor).
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rik_vs_exact_k_is_the_fitting_error_and_shrinks_with_the_aux_basis() {
     if !has_deriv2() {
@@ -552,6 +588,7 @@ fn rik_vs_exact_k_is_the_fitting_error_and_shrinks_with_the_aux_basis() {
     }
 }
 
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn production_wired_rik_mutants_each_fail_the_hessian_anchor() {
     if !has_deriv2() {
@@ -632,14 +669,17 @@ fn production_ri_jk_scf_result_gives_the_same_hessian() {
     }
     let r = reference("sto-3g", "PBE0", Some(AUX), Some(AUX));
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        xc: Some("PBE0".into()),
-        dft_grid: Some(grid_cfg()),
-        max_iter: 200,
-        energy_conv: 1e-13,
-        density_conv: 1e-11,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc("PBE0")
+        .with_dft_grid(grid_cfg())
+        .with_max_iter(200)
+        .with_energy_conv(1e-13)
+        .with_density_conv(1e-11)
+        // The injected reference builds an f64 `DfJ`; the production SCF must
+        // store the same f64 tensor for the two Hessians to agree to 5e-10.
+        // (With the f32 default the production Hessian follows its f32 SCF
+        // and moves by 6.5e-7, measured.)
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64);
     assert!(cfg.df_j_aux.is_none() && cfg.df_k_aux.is_none());
     let prod = solve_rhf(
         &ctx,
@@ -673,12 +713,9 @@ fn production_ri_jk_scf_result_gives_the_same_hessian() {
     assert!(diff < 5e-10, "{diff:.3e}");
 
     // A configuration stating exact K for a fitted-K SCF.
-    let err = run(&RhfConfig {
-        df_k_aux: Some(String::new()),
-        ..cfg.clone()
-    })
-    .unwrap_err()
-    .to_string();
+    let err = run(&cfg.clone().with_df_k_aux(String::new()))
+        .unwrap_err()
+        .to_string();
     assert!(
         err.contains("fitted K over") && err.contains("df_k_aux"),
         "{err}"

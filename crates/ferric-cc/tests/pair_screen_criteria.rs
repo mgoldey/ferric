@@ -67,11 +67,9 @@ fn try_prepare(label: &str, path: &str, bas: &str) -> Result<System, String> {
     )
     .map_err(|e| format!("{e:?}"))?;
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).map_err(|e| format!("{e:?}"))?;
-    let scf = RhfConfig {
-        density_conv: 1e-9,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let scf = RhfConfig::default()
+        .with_density_conv(1e-9)
+        .with_max_iter(200);
     let rhf = solve_rhf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &scf)
         .map_err(|e| format!("{e:?}"))?;
     if !rhf.converged {
@@ -295,6 +293,7 @@ fn distance_vs_pair_energy_screening() {
 /// energy, an order of magnitude inside chemical accuracy. The per-molecule
 /// numbers are printed so a reader can judge for themselves rather than trust
 /// the threshold I picked.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn default_threshold_validated_across_molecules() {
     const KCAL: f64 = 1.593_601e-3; // Ha per kcal/mol

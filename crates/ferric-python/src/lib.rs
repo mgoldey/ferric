@@ -12,54 +12,113 @@
 //! ferric property with a spread. Geometry input there is **Ångström**,
 //! matching RDKit's `GetPositions()` and ferric's XYZ readers.
 //!
-//! Build with `uv run maturin develop --release` (see the README for the venv
-//! caveat).
+//! Build with `uv run maturin develop --release` from the repository root; the
+//! venv caveat is under "Python bindings from source" in
+//! `site/src/using/installation.md`.
 
-use ferric_cc::ccd::ccd as run_ccd_inner;
+use ferric_cc::ccd::ccd_on;
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::att_vv10::{
-    att_mp2_vv10, att_mp2_vv10_scan, AttVv10Attenuator, AttVv10Config, AttVv10ScanArm,
+    att_mp2_vv10_on, att_mp2_vv10_scan_on, AttVv10Attenuator, AttVv10Config, AttVv10ScanArm,
     AttVv10SpinComponents,
 };
-use ferric_mp2::attenuated::{attenuated_ri_mp2, AttenuatedMp2Config};
-use ferric_mp2::double_hybrid::{mp2_double_hybrid, DoubleHybridKind};
-use ferric_mp2::laplace::{laplace_ri_mp2, laplace_sos_mp2, SosFormulation, SosMp2Config};
-use ferric_mp2::mp3::mp3_energy;
-use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config};
-use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
-use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
+use ferric_mp2::attenuated::{attenuated_ri_mp2_on, AttenuatedMp2Config};
+use ferric_mp2::double_hybrid::{mp2_double_hybrid_on, u_mp2_double_hybrid_on, DoubleHybridKind};
+use ferric_mp2::laplace::{laplace_ri_mp2_on, laplace_sos_mp2_on, SosFormulation, SosMp2Config};
+use ferric_mp2::mp3::mp3_energy_on;
+use ferric_mp2::oo_rimp2::{oo_ri_mp2_on, OoRiMp2Config};
+use ferric_mp2::rimp2::{ri_mp2_with_op_on, RiMp2Config};
+use ferric_mp2::scs::{scs_mp2_2terfc_on, scs_mp2_on, ScsMp2Config, ScsMp2TerfcConfig};
 use ferric_scf::ks_gradient::{ks_gradient_closed_with_exchange_on_grids, KsGradGrids};
 use ferric_scf::noise_floor::SolverFamily;
-use ferric_scf::optimize::{optimize_geometry, optimize_geometry_uhf, OptimizeConfig};
+use ferric_scf::optimize::OptimizeConfig;
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::RohfConfig;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::{solve_uhf, UhfConfig};
+use ferric_scf::{EcpMolecule, PrepareOptions, PreparedAux, PreparedSystem};
+use std::sync::Arc;
 // NOTE: the spin-orbital `ferric_cc::ccsd::ccsd` is deliberately NOT imported
-// here. `solve_rhf` always yields a restricted reference, so both `run_ccsd`
-// and `run_ccsd_t` take the spin-adapted solver — the latter by expanding its
-// amplitudes into the spin-orbital convention. An open-shell CC entry point
-// would need to import it again.
-use ferric_cc::ccsd_closed_shell::ccsd_closed_shell as run_ccsd_cs_inner;
-use ferric_cc::ccsd_t_closed_shell::ccsd_t_closed_shell as run_ccsd_t_cs_inner;
+// here. A closed-shell `run_ccsd` / `run_ccsd_t` takes the spin-adapted
+// solvers; an open-shell molecule takes the spin-blocked `ferric_cc::u_ccsd`
+// and `ferric_cc::u_ccsd_t` (see `cc.rs`).
+use ferric_cc::ccsd_closed_shell::ccsd_closed_shell_on;
+use ferric_cc::ccsd_t_closed_shell::ccsd_t_closed_shell_on;
 use ferric_cc::CcConfig;
 use ndarray::{Array2, Array3};
 use numpy::{PyArray1, PyArray2, PyArray3};
 use pyo3::prelude::*;
 
+/// The docstring shared by the `certificate` getters of the post-SCF method
+/// results, written once so the Python-visible text cannot drift.
+macro_rules! method_certificate_doc {
+    () => {
+        "Validation certificate of this result (see `RhfResult.certificate`):\n\
+         the method's grade from the validation page capped by the reference\n\
+         SCF's, its settings as `approximations`, the reference's as\n\
+         `scf <name>`, and its warnings."
+    };
+}
+
+mod errors;
+use errors::{_core_error_variants, _raise_core_error};
+#[macro_use]
+mod method_result;
+
 mod blocks;
+mod cc;
+mod cdft;
+mod ci;
+mod compute_once;
+mod conformers;
+mod dft;
+mod gamma;
+mod geometry;
+mod gw;
+mod integrals;
+mod md;
+mod mp2;
+mod omega_ri;
+mod opmp3;
 mod pbc;
+mod pdep_properties;
+mod properties;
+mod qmmm;
+mod reference_file;
+mod response_modes;
+mod rpa;
+mod scf;
+mod system;
+mod tddft;
+
+use cdft::*;
+use conformers::*;
+use dft::*;
+use gamma::*;
+use geometry::*;
+use gw::*;
+use integrals::*;
+use md::*;
+use mp2::*;
+use omega_ri::*;
+use opmp3::*;
+use properties::*;
+use qmmm::*;
+use rpa::*;
+use scf::*;
+use system::*;
+use tddft::*;
 
 // ── Molecule ──
 
 /// A molecular geometry (atoms, charge, multiplicity). Coordinates are stored
 /// internally in Bohr; XYZ input is in Ångström.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "Molecule")]
 struct PyMolecule {
     inner: Molecule,
@@ -80,9 +139,30 @@ impl PyMolecule {
     #[staticmethod]
     #[pyo3(signature = (s, charge=0, multiplicity=1))]
     fn from_xyz_string(s: &str, charge: i32, multiplicity: usize) -> PyResult<Self> {
-        let mol = Molecule::parse_xyz(s, charge, multiplicity)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
+        let mol = Molecule::parse_xyz(s, charge, multiplicity).map_err(crate::errors::input_err)?;
         Ok(PyMolecule { inner: mol })
+    }
+    /// Build a molecule from arrays: `elements` holds one element symbol
+    /// (`"O"`) or atomic number (`8`) per atom, `coords` the matching
+    /// `(x, y, z)` rows in `units` (`"angstrom"`, the default, or `"bohr"`),
+    /// `ghost` optional per-atom basis-only flags. The result equals
+    /// `from_xyz_string` of the same atoms written with `repr()` coordinates.
+    /// Raises `ValueError` on an unknown element or unit, mismatched lengths,
+    /// a row that is not three finite numbers, a symbol carrying the XYZ `@`
+    /// ghost marker (use `ghost=`) or an impossible charge/multiplicity.
+    #[staticmethod]
+    #[pyo3(signature = (elements, coords, units="angstrom", charge=0, multiplicity=1, ghost=None))]
+    fn from_arrays(
+        elements: Vec<Bound<'_, PyAny>>,
+        coords: Vec<Vec<f64>>,
+        units: &str,
+        charge: i32,
+        multiplicity: usize,
+        ghost: Option<Vec<bool>>,
+    ) -> PyResult<Self> {
+        let inner = molecule_from_arrays(&elements, &coords, units, charge, multiplicity, ghost)
+            .map_err(crate::errors::input_err)?;
+        Ok(PyMolecule { inner })
     }
     /// Classical nuclear repulsion energy in Hartree.
     fn nuclear_repulsion(&self) -> f64 {
@@ -158,6 +238,115 @@ impl PyMolecule {
     fn to_xyz_string(&self) -> String {
         molecule_to_xyz_string(&self.inner)
     }
+    /// Net molecular charge in elementary charges (read-only).
+    #[getter]
+    fn charge(&self) -> i32 {
+        self.inner.charge
+    }
+    /// Spin multiplicity 2S+1 (read-only).
+    #[getter]
+    fn multiplicity(&self) -> usize {
+        self.inner.multiplicity
+    }
+    /// `Molecule(H2O, 3 atoms, charge=0, multiplicity=1)`: Hill-order formula
+    /// of the real (non-ghost) atoms, then the atom count including ghosts.
+    fn __repr__(&self) -> String {
+        let m = &self.inner;
+        let n = m.atoms.len();
+        format!(
+            "Molecule({}, {n} atom{}, charge={}, multiplicity={})",
+            m.hill_formula(),
+            if n == 1 { "" } else { "s" },
+            m.charge,
+            m.multiplicity
+        )
+    }
+}
+
+/// `Molecule.from_arrays`: the per-atom element (symbol or atomic number),
+/// coordinates in `units`, ghost flags, then [`Molecule::from_atoms`]. A
+/// symbol is stored as written (as the XYZ parser stores it); an atomic
+/// number gets its canonical symbol. Ångström rows are multiplied by
+/// `ANGSTROM_TO_BOHR`, the XYZ parser's conversion.
+fn molecule_from_arrays(
+    elements: &[Bound<'_, PyAny>],
+    coords: &[Vec<f64>],
+    units: &str,
+    charge: i32,
+    multiplicity: usize,
+    ghost: Option<Vec<bool>>,
+) -> Result<Molecule, String> {
+    let scale = match units.to_ascii_lowercase().as_str() {
+        "angstrom" => ANGSTROM_TO_BOHR,
+        "bohr" => 1.0,
+        _ => {
+            return Err(format!(
+                "Molecule.from_arrays: units must be \"angstrom\" or \"bohr\", got {units:?}"
+            ))
+        }
+    };
+    let n = elements.len();
+    if coords.len() != n {
+        return Err(format!(
+            "Molecule.from_arrays: {n} elements but {} coordinate rows",
+            coords.len()
+        ));
+    }
+    let ghost = ghost.unwrap_or_else(|| vec![false; n]);
+    if ghost.len() != n {
+        return Err(format!(
+            "Molecule.from_arrays: {n} elements but {} ghost flags",
+            ghost.len()
+        ));
+    }
+    let mut atoms = Vec::with_capacity(n);
+    for (i, ((el, row), &is_ghost)) in elements.iter().zip(coords).zip(&ghost).enumerate() {
+        let (symbol, z) = element_of(el, i)?;
+        let [x, y, zpos] = <[f64; 3]>::try_from(row.as_slice()).map_err(|_| {
+            format!(
+                "Molecule.from_arrays: coordinate row {i} has {} values, expected 3",
+                row.len()
+            )
+        })?;
+        if !(x.is_finite() && y.is_finite() && zpos.is_finite()) {
+            return Err(format!(
+                "Molecule.from_arrays: coordinate row {i} is not finite: ({x}, {y}, {zpos})"
+            ));
+        }
+        atoms.push(ferric_core::mol::Atom {
+            symbol,
+            z,
+            x: x * scale,
+            y: y * scale,
+            zpos: zpos * scale,
+            ghost: is_ghost,
+            n_core_ecp: 0,
+        });
+    }
+    Molecule::from_atoms(atoms, charge, multiplicity).map_err(|e| e.to_string())
+}
+
+/// One `from_arrays` element: a symbol (kept as written) or an atomic number
+/// (given its canonical symbol), with its atomic number.
+fn element_of(el: &Bound<'_, PyAny>, i: usize) -> Result<(String, i32), String> {
+    use ferric_core::elements::{symbol_to_z, z_to_symbol};
+    if let Ok(sym) = el.extract::<String>() {
+        if sym.starts_with('@') {
+            return Err(format!(
+                "Molecule.from_arrays: element {i} is {sym:?}; mark ghost atoms with ghost=, \
+                 not the XYZ '@' prefix"
+            ));
+        }
+        let z = symbol_to_z(&sym)
+            .ok_or_else(|| format!("Molecule.from_arrays: unknown element {sym:?} at atom {i}"))?;
+        return Ok((sym, z));
+    }
+    let z = el.extract::<i32>().map_err(|_| {
+        format!("Molecule.from_arrays: element {i} is neither a symbol nor an atomic number")
+    })?;
+    let sym = z_to_symbol(z)
+        .ok_or_else(|| format!("Molecule.from_arrays: unknown atomic number {z} at atom {i}"))?;
+    Ok((sym.to_string(), z))
 }
 
 /// Render a molecule as an XYZ-format string in Ångström.
@@ -188,7 +377,7 @@ fn molecule_to_xyz_string(mol: &Molecule) -> String {
 // ── BasisSet ──
 
 /// A Gaussian basis set (orbital or auxiliary/RI-fitting).
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "BasisSet")]
 struct PyBasisSet {
     inner: ferric_core::basis::BasisSet,
@@ -208,8 +397,7 @@ impl PyBasisSet {
     /// `gto.M(..., cart=True)` (water/6-31G*: about 1.4 mHa otherwise).
     #[staticmethod]
     fn bundled(name: &str) -> PyResult<Self> {
-        let bs = basis::bundled(name)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
+        let bs = basis::bundled(name).map_err(crate::errors::input_err)?;
         Ok(PyBasisSet { inner: bs })
     }
     /// Primary names of every bundled basis set (aliases such as
@@ -222,6 +410,29 @@ impl PyBasisSet {
     fn elements(&self) -> Vec<i32> {
         self.inner.elements()
     }
+    /// The contracted shells this basis places on element `z`, in the order
+    /// they enter the AO basis on every atom of that element: one
+    /// `(l, pure, exponents, coefficients)` tuple per shell. Exponents are in
+    /// Bohr^-2. Coefficients are the contraction coefficients as stored (after
+    /// the load-time renormalisation to unit self-overlap); libint2 multiplies
+    /// in each primitive's normalisation when it builds the shell, so they are
+    /// coefficients of NORMALISED primitives. Raises `ValueError` when the
+    /// basis has no shells for `z`.
+    fn shells(&self, z: i32) -> PyResult<Vec<(i32, bool, Vec<f64>, Vec<f64>)>> {
+        let shells = self
+            .inner
+            .for_element(z)
+            .ok_or_else(|| crate::errors::input_err(self.inner.missing_element_error(z)))?;
+        Ok(shells
+            .iter()
+            .map(|s| (s.l, s.pure, s.exponents.clone(), s.coefficients.clone()))
+            .collect())
+    }
+    /// Core electrons this basis's ECP replaces on element `z`; 0 when the
+    /// basis carries no ECP for `z` (as the SCF applies it to non-ghost atoms).
+    fn ecp_core_electrons(&self, z: i32) -> i32 {
+        self.inner.ecp_for_element(z).map_or(0, |d| d.n_core)
+    }
     /// Load a basis set from a Basis Set Exchange JSON file (the format of
     /// ferric's bundled sets). Contractions are renormalised to unit
     /// self-overlap exactly as for the bundled sets. Raises `ValueError` on
@@ -232,16 +443,48 @@ impl PyBasisSet {
     /// is visible at the 1e-8 Ha level.
     #[staticmethod]
     fn from_bse_json(path: &str) -> PyResult<Self> {
-        let bs = basis::load_bse_json(path)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
+        let bs = basis::load_bse_json(path).map_err(crate::errors::input_err)?;
         Ok(PyBasisSet { inner: bs })
+    }
+    /// Number of basis functions this set places on `mol` (spherical or
+    /// Cartesian per shell, as the SCF builds them; ghost atoms included).
+    /// For an orbital basis it is the `nbf` of the run; for an auxiliary
+    /// (RI/JK-fit) basis it is `naux`, which sizes the density-fitting
+    /// tensors: a packed `(P|mn)` tensor holds at most
+    /// `naux * nbf * (nbf + 1) / 2` elements (8 bytes each at f64, 4 at f32;
+    /// see `run_dft` for which tensors a run holds and when one is smaller or
+    /// square). Builds no integrals.
+    /// Raises `ValueError` when the basis does not cover an element of `mol`.
+    fn n_functions(&self, mol: &PyMolecule) -> PyResult<usize> {
+        let prep = PreparedBasis::new(&mol.inner, &self.inner).map_err(crate::errors::input_err)?;
+        Ok(prep.nbasis())
     }
 }
 
 // ── Helper ──
 
-fn make_err(e: impl std::fmt::Display) -> PyErr {
-    pyo3::exceptions::PyRuntimeError::new_err(format!("{e}"))
+/// Raise a failure as the `ferric` exception class for it (see `errors`).
+/// A [`ferric_core::FerricError`] is classified by variant; text is a
+/// `ComputationError`.
+/// Every class here was a `RuntimeError` (or a `NotImplementedError`, itself a
+/// `RuntimeError`) before the hierarchy existed, and still is.
+fn make_err<E: std::fmt::Display + 'static>(e: E) -> PyErr {
+    errors::core_or_computation(e)
+}
+
+/// `?`-friendly conversion of a method-crate `Result` into a `PyResult`
+/// with the exception class [`errors::kind_of`] picks for the variant (see
+/// `errors`) and the `Display` message. A crate-local extension trait because `From<FerricError> for
+/// PyErr` would break the orphan rule.
+pub(crate) trait IntoPyResult<T> {
+    /// Convert, classifying by variant (see `errors::from_core`).
+    fn py(self) -> PyResult<T>;
+}
+
+impl<T> IntoPyResult<T> for Result<T, ferric_core::FerricError> {
+    fn py(self) -> PyResult<T> {
+        self.map_err(|e| errors::from_core(&e))
+    }
 }
 
 /// Convert an optional `memory_budget_gb` kwarg (GiB) to the explicit
@@ -259,11 +502,69 @@ fn budget_bytes_from_gb(memory_budget_gb: Option<f64>) -> Option<usize> {
     })
 }
 
-fn rhf_config(k_builder: Option<&str>) -> RhfConfig {
-    rhf_config_budgeted(k_builder, None)
+/// The SCF convergence keywords shared by every `run_*` driver that solves a
+/// reference SCF internally, with the meaning of `run_rhf`'s `max_iter`,
+/// `energy_conv`, `density_conv`. Naming rule: a driver whose method IS the SCF
+/// (`run_rhf`/`run_uhf`/`run_rohf`/`run_dft`/`run_qmmm`, ...) spells them bare;
+/// every other driver (post-SCF methods, geometry/path drivers) spells them
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`, so `max_iter` never
+/// has to guess which stage it caps. `None` leaves the `RhfConfig` default
+/// untouched, so omitting all three is byte-identical to a call that never
+/// had them.
+#[derive(Clone, Copy, Default)]
+struct ScfConv {
+    max_iter: Option<usize>,
+    energy_conv: Option<f64>,
+    density_conv: Option<f64>,
 }
 
-/// [`rhf_config`] plus the caller's resolved memory budget.
+impl ScfConv {
+    fn new(max_iter: Option<usize>, energy_conv: Option<f64>, density_conv: Option<f64>) -> Self {
+        Self {
+            max_iter,
+            energy_conv,
+            density_conv,
+        }
+    }
+
+    /// Overwrite the given fields of `cfg`; unset ones keep `cfg`'s values.
+    fn apply(self, cfg: &mut RhfConfig) {
+        cfg.max_iter = self.max_iter.unwrap_or(cfg.max_iter);
+        cfg.energy_conv = self.energy_conv.unwrap_or(cfg.energy_conv);
+        cfg.density_conv = self.density_conv.unwrap_or(cfg.density_conv);
+    }
+}
+
+/// A `k_builder=` keyword parsed once (`KBuilderKind::parse`). An unknown
+/// spelling is the `RuntimeError` the solver raised for it before the
+/// bindings parsed it ("General error: unknown k_builder ...").
+fn parse_k_builder(k_builder: Option<&str>) -> PyResult<Option<ferric_scf::options::KBuilderKind>> {
+    ferric_scf::options::KBuilderKind::parse_opt(k_builder)
+        .map_err(ferric_core::FerricError::from)
+        .py()
+}
+
+/// `cfg` with the `k_builder=` spelling `raw` parsed into it, for a
+/// binding that prepares its system inside a GIL-released closure: called
+/// there after the preparation, where the SCF refused an unknown spelling
+/// before the bindings parsed it (same error, `FerricError::General`).
+fn with_k_builder(
+    cfg: &RhfConfig,
+    raw: Option<&str>,
+) -> Result<RhfConfig, ferric_core::FerricError> {
+    let mut c = cfg.clone();
+    c.k_builder = ferric_scf::options::KBuilderKind::parse_opt(raw)?;
+    Ok(c)
+}
+
+/// The reference-SCF config of a correlated entry point: its `k_builder=`
+/// (parsed by [`parse_k_builder`]) and the caller's resolved memory budget.
+/// The entry points call it after their other keyword checks and, where the
+/// basis is prepared outside the SCF, after the preparation, which is where
+/// the SCF refused an unknown spelling before the bindings parsed it; the
+/// MP2 family goes through `mp2_reference_config`, before its method
+/// keywords, and the CC drivers that prepare in a GIL-released closure use
+/// [`with_k_builder`] there.
 ///
 /// # Why this exists
 ///
@@ -281,12 +582,28 @@ fn rhf_config(k_builder: Option<&str>) -> RhfConfig {
 /// `RhfConfig::three_index_budget_bytes` is a bare `usize` whose `0` sentinel
 /// means "unset → auto" (see `ferric_scf::rhf::resolve_three_index_budget`),
 /// so an unset kwarg maps to `0` and preserves the previous behaviour exactly.
-fn rhf_config_budgeted(k_builder: Option<&str>, budget_bytes: Option<usize>) -> RhfConfig {
-    RhfConfig {
-        k_builder: k_builder.map(|s| s.to_string()),
-        three_index_budget_bytes: budget_bytes.unwrap_or(0),
+fn rhf_config_budgeted(
+    k_builder: Option<&str>,
+    budget_bytes: Option<usize>,
+) -> PyResult<RhfConfig> {
+    ferric_scf::options::ScfOptions {
+        k_builder: parse_k_builder(k_builder)?,
+        three_index_budget_bytes: budget_bytes,
         ..Default::default()
     }
+    .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
+    .py()
+}
+
+/// [`rhf_config_budgeted`] with the caller's SCF convergence keywords applied.
+fn rhf_config_conv(
+    k_builder: Option<&str>,
+    budget_bytes: Option<usize>,
+    conv: ScfConv,
+) -> PyResult<RhfConfig> {
+    let mut cfg = rhf_config_budgeted(k_builder, budget_bytes)?;
+    conv.apply(&mut cfg);
+    Ok(cfg)
 }
 
 /// Resolve a `df_*_aux` kwarg into an `RhfConfig` auxiliary-basis setting.
@@ -316,6 +633,25 @@ fn resolve_df_aux(requested: Option<&str>, default_aux: &str) -> Option<String> 
     }
 }
 
+/// `df_j_aux` / `df_k_aux` of a geometry driver (`run_optimize`,
+/// `run_frequencies`): the CLI's rule, one for both surfaces. With `xc` an
+/// unset aux is `def2-universal-jkfit` (`ferric_scf::scf_jk::DEFAULT_SCF_JK_AUX`)
+/// for RKS, UKS and ROKS alike, as `[scf]` with a functional resolves it;
+/// without `xc` an unset aux stays exact four-centre J/K. Opt-out spellings
+/// map to the `""` sentinel either way.
+///
+/// Why the CLI's rule and not exact J/K: the restricted solver already fits a
+/// functional's J/K when the aux is unset, so the old Python default gave
+/// RKS the fitted surface and UKS/ROKS the exact one for the same
+/// `run_optimize` call; the KS energy entry points (`run_dft`, `run_uks`,
+/// `run_roks`) and the CLI fit for every spin case.
+fn geometry_df_aux(xc: Option<&str>, requested: Option<&str>) -> Option<String> {
+    match xc {
+        Some(_) => resolve_df_aux(requested, ferric_scf::scf_jk::DEFAULT_SCF_JK_AUX),
+        None => requested.map(ferric_scf::rhf::normalize_df_aux),
+    }
+}
+
 /// One COSX grid kwarg: `(radial, angular)` (flat) or `(radial, angular,
 /// prune)` with `prune` in `"none"` / `"sgx"` / `"nwchem"` (the CLI's
 /// `cosx_grid = { radial, angular, prune }` table). Strict.
@@ -328,12 +664,12 @@ fn parse_cosx_grid(
     } else if let Ok((r, a, p)) = v.extract::<(usize, usize, String)>() {
         (r, a, Some(p))
     } else {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "{name} must be (radial, angular) or (radial, angular, prune)"
         )));
     };
     ferric_scf::cosx_k::grid_from_parts(r, a, p.as_deref())
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{name}: {e}")))
+        .map_err(|e| crate::errors::input_err_msg(&e, format!("{name}: {e}")))
 }
 
 /// The `cosx_*` kwargs of `run_rhf` / `run_uhf` / `run_dft` (same names and
@@ -351,8 +687,11 @@ fn resolve_cosx_kwargs(
         || cosx_final_pass.is_some()
         || cosx_final_grid.is_some()
         || cosx_overlap_fit.is_some();
-    if any && k_builder != Some("cosx") {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+    // `k_builder` as passed, quoted in the message; the entry point parses
+    // it (`parse_k_builder`) after this check, which came first before.
+    let cosx = k_builder.is_some_and(ferric_scf::options::KBuilderKind::spells_cosx);
+    if any && !cosx {
+        return Err(crate::errors::input_err(format!(
             "cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit are only read with \
              k_builder=\"cosx\" (got k_builder={k_builder:?})"
         )));
@@ -365,7 +704,7 @@ fn resolve_cosx_kwargs(
         .map(|v| parse_cosx_grid("cosx_final_grid", v))
         .transpose()?;
     ferric_scf::cosx_k::apply_grid_knobs(&mut cfg, grid, cosx_final_pass, final_grid)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        .map_err(crate::errors::input_err)?;
     if let Some(fit) = cosx_overlap_fit {
         cfg.overlap_fit = fit;
     }
@@ -382,6 +721,114 @@ fn precision_dict(
     let json = py.import("json")?;
     Ok(json
         .call_method1("loads", (r.to_json().to_string(),))?
+        .unbind())
+}
+
+/// The SCF certificate (`ferric_scf::certificate::scf_certificate`) stamped
+/// with this build.
+fn stamped_scf_certificate(
+    mol: &Molecule,
+    r: &ScfResult,
+    config: &RhfConfig,
+) -> ferric_core::certificate::Certificate {
+    ferric_scf::certificate::scf_certificate(mol, r, config).with_build(
+        ferric_core::certificate::BuildStamp::new(
+            ferric_build_info::VERSION,
+            ferric_build_info::COMMIT,
+            ferric_build_info::DIRTY,
+        ),
+    )
+}
+
+/// The certificate an SCF-kind entry point returns (`run_rhf`, `run_uhf`,
+/// `run_rohf`, `run_dft`, `run_ksdft`): [`stamped_scf_certificate`] with a
+/// warning for each way the run on `basis` lies outside the solver's energy
+/// anchor (`ferric_scf::certificate::with_scf_envelope`, the helper the CLI
+/// uses); a post-SCF method's reference carries the same warnings
+/// ([`reference_certificate`]). `fock_hooked`: the solve ran with a `fock_hook`
+/// (`ferric_scf::certificate::with_fock_hook`).
+fn scf_kind_certificate(
+    mol: &Molecule,
+    r: &ScfResult,
+    config: &RhfConfig,
+    basis: &ferric_core::basis::BasisSet,
+    fock_hooked: bool,
+) -> ferric_core::certificate::Certificate {
+    let c = ferric_scf::certificate::with_scf_envelope(
+        stamped_scf_certificate(mol, r, config),
+        mol,
+        r,
+        config,
+        basis,
+    );
+    if fock_hooked {
+        ferric_scf::certificate::with_fock_hook(c)
+    } else {
+        c
+    }
+}
+
+/// The reference certificate a post-SCF method folds in
+/// (`Certificate::with_reference`): [`stamped_scf_certificate`] with the
+/// envelope warnings of the SCF on `basis`
+/// (`ferric_scf::certificate::with_scf_envelope`), so a reference outside its
+/// solver's anchor shows up on the post-SCF certificate.
+fn reference_certificate(
+    mol: &Molecule,
+    r: &ScfResult,
+    config: &RhfConfig,
+    basis: &ferric_core::basis::BasisSet,
+) -> ferric_core::certificate::Certificate {
+    ferric_scf::certificate::with_scf_envelope(
+        stamped_scf_certificate(mol, r, config),
+        mol,
+        r,
+        config,
+        basis,
+    )
+}
+
+/// The method.kind a geometry/frequency run on `spin` with `config` is graded
+/// under, and the stamped certificate of the SCF at `mol` (one extra SCF: the
+/// geometry and frequency drivers do not return theirs). `Err` carries the
+/// warning text when that SCF fails; the run itself is not failed by it.
+fn task_reference_certificate(
+    mol: &Molecule,
+    basis_name: &str,
+    config: &RhfConfig,
+    spin: ferric_scf::Spin,
+) -> (
+    &'static str,
+    Result<ferric_core::certificate::Certificate, String>,
+) {
+    let kind = match (spin, config.xc.is_some()) {
+        (ferric_scf::Spin::Restricted, false) => "rhf",
+        (ferric_scf::Spin::Restricted, true) => "ksdft",
+        (ferric_scf::Spin::Unrestricted, _) => "uhf",
+        (ferric_scf::Spin::RestrictedOpen, _) => "rohf",
+    };
+    let r = ferric_scf::certificate::final_point_scf(
+        &ParallelContext::default(),
+        mol,
+        basis_name,
+        Operator::coulomb(),
+        config,
+        spin,
+    )
+    .map(|(scf, used)| stamped_scf_certificate(mol, &scf, &used))
+    .map_err(|e| format!("the final-point SCF for this certificate failed: {e}"));
+    (kind, r)
+}
+
+/// A certificate as a Python dict, through the same JSON the CLI run log
+/// writes.
+fn certificate_dict(
+    py: Python<'_>,
+    c: &ferric_core::certificate::Certificate,
+) -> PyResult<PyObject> {
+    let json = py.import("json")?;
+    Ok(json
+        .call_method1("loads", (c.to_json().to_string(),))?
         .unbind())
 }
 
@@ -402,65 +849,108 @@ fn cosx_final_dict(
     Ok(Some(d.into()))
 }
 
-/// Resolve the `grid_radial` / `grid_angular` / `grid_prune` kwargs into the
-/// main KS grid config (`RhfConfig::dft_grid`).
+/// Resolve the `grid_radial` / `grid_angular` / `grid_prune` /
+/// `grid_weight_cut` kwargs into the main KS grid config (`RhfConfig::dft_grid`).
 ///
-/// All three `None` returns `None`, which keeps `AtomicGridConfig::default()`
-/// (75x110, unpruned) and so is byte-identical to the path before these kwargs
-/// existed. Any one set materialises an explicit config, with the unset sizes
-/// taken from that same default. It touches the MAIN grid only: the VV10/NLC
-/// grid keeps its own 50x50 unpruned default, where pruning has no valid table
-/// (same scoping as the CLI's `[dft] grid_prune`).
+/// All `None` returns `None`, which every KS path resolves to
+/// `AtomicGridConfig::production()` (75x110, nwchem-radial, 1e-14 weight
+/// cutoff). Any one set materialises an explicit config: unset sizes from that
+/// same grid, and an unset `grid_prune` / `grid_weight_cut` keeps the default
+/// scheme / cutoff (`AtomicGridConfig::production_sized`); `"none"` / `0.0`
+/// turn them off. It touches the MAIN grid only: the VV10/NLC grid keeps its
+/// own flat 50x50 default, where pruning has no valid table (same scoping as
+/// the CLI's `[dft] grid_prune`).
+///
+/// `grid_weight_cut` is ORCA's `WeightCut` (`AtomicGridConfig::weight_cut`):
+/// main-grid points whose final weight has `|w| < grid_weight_cut` are dropped.
 ///
 /// Everything is validated HERE, as a `ValueError`, rather than downstream:
 /// `lebedev()` PANICS on an unsupported angular order, and a prune scheme with
 /// no table at the requested order (`n_angular = 50`) would otherwise surface
 /// only as a generic SCF error after the GIL is released. `grid_prune` goes
-/// through the same strict parser as the CLI (`PruneScheme::parse_config_str`:
-/// "none"/"off"/"flat" or "nwchem"), so an unknown value is an error, never a
-/// silent flat grid.
-fn resolve_dft_grid(
+/// through the same strict parser as the CLI (`PruneScheme::parse_config_str`),
+/// so an unknown value is an error, never a silent flat grid; a negative, NaN
+/// or infinite `grid_weight_cut` is a `ValueError`, mirroring the CLI's
+/// `[dft] grid_weight_cut`.
+fn resolve_dft_grid_with_cut(
     grid_radial: Option<usize>,
     grid_angular: Option<usize>,
     grid_prune: Option<&str>,
+    grid_weight_cut: Option<f64>,
 ) -> PyResult<Option<ferric_dft::grid::AtomicGridConfig>> {
-    use ferric_dft::prune::{region_orders, PruneScheme, SUPPORTED_LEBEDEV_ORDERS};
+    use ferric_dft::prune::{validate_xc_scheme, PruneScheme, SUPPORTED_LEBEDEV_ORDERS};
     let prune = match grid_prune {
         None => None,
         Some(s) => PruneScheme::parse_config_str(s)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("grid_prune: {e}")))?,
+            .map_err(|e| crate::errors::input_err_msg(&e, format!("grid_prune: {e}")))?,
     };
-    if grid_radial.is_none() && grid_angular.is_none() && grid_prune.is_none() {
+    let weight_cut = match grid_weight_cut {
+        None => None,
+        Some(c) if c.is_finite() && c >= 0.0 => (c > 0.0).then_some(c),
+        Some(c) => {
+            return Err(crate::errors::input_err(format!(
+                "grid_weight_cut = {c} is invalid: it must be a finite number >= 0 \
+                 (e.g. 1e-14; 0 or None = no cutoff)"
+            )))
+        }
+    };
+    // Absent keywords mean the production grid (`None`, which every KS path
+    // resolves to `AtomicGridConfig::production`). An explicit size keeps the
+    // default scheme and cutoff unless grid_prune / grid_weight_cut say
+    // otherwise ("none", 0), exactly as the CLI's `[dft]` section does.
+    if grid_radial.is_none()
+        && grid_angular.is_none()
+        && grid_prune.is_none()
+        && grid_weight_cut.is_none()
+    {
         return Ok(None);
     }
-    let default = ferric_dft::grid::AtomicGridConfig::default();
+    let default = ferric_dft::grid::AtomicGridConfig::production();
     let n_radial = grid_radial.unwrap_or(default.n_radial);
     let n_angular = grid_angular.unwrap_or(default.n_angular);
+    let sized = ferric_dft::grid::AtomicGridConfig::production_sized(n_radial, n_angular);
+    let prune = if grid_prune.is_some() {
+        prune
+    } else {
+        sized.prune
+    };
+    let weight_cut = if grid_weight_cut.is_some() {
+        weight_cut
+    } else {
+        sized.weight_cut
+    };
     if n_radial == 0 {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "grid_radial must be > 0",
-        ));
+        return Err(crate::errors::input_err("grid_radial must be > 0"));
     }
     if !SUPPORTED_LEBEDEV_ORDERS.contains(&n_angular) {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "grid_angular = {n_angular} is not a supported Lebedev order \
              (supported: {SUPPORTED_LEBEDEV_ORDERS:?})"
         )));
     }
     if prune == Some(PruneScheme::Sgx) {
-        return Err(pyo3::exceptions::PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "grid_prune = \"sgx\" is the COSX exchange grid's scheme (cosx_grid=); the XC \
-             grid is validated with \"nwchem\" or \"none\" only",
+             grid takes \"none\", \"nwchem\", \"nwchem-radial\" or \"defgrid1/2/3\"",
         ));
     }
-    if prune.is_some() {
-        region_orders(n_angular)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("grid_prune: {e}")))?;
+    if matches!(prune, Some(PruneScheme::DefGrid(_)))
+        && (grid_radial.is_some() || grid_angular.is_some())
+    {
+        return Err(crate::errors::input_err(
+            "grid_prune = \"defgrid1/2/3\" fixes the radial and angular grid; \
+             remove grid_radial / grid_angular",
+        ));
+    }
+    if let Some(scheme) = prune {
+        validate_xc_scheme(scheme, n_angular)
+            .map_err(|e| crate::errors::input_err_msg(&e, format!("grid_prune: {e}")))?;
     }
     Ok(Some(ferric_dft::grid::AtomicGridConfig {
         n_radial,
         n_angular,
         prune,
+        weight_cut,
     }))
 }
 
@@ -494,13 +984,10 @@ fn build_pcm_config(
     };
     let cfg = if let Ok(eps) = obj.extract::<f64>() {
         ferric_pcm::PcmConfig::with_epsilon(eps)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("solvent: {}", msg(e))))?
+            .map_err(|e| crate::errors::input_err(format!("solvent: {}", msg(e))))?
     } else if let Ok(name) = obj.extract::<String>() {
         ferric_pcm::PcmConfig::for_solvent(&name).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!(
-                "solvent: {} (e.g. solvent=78.4)",
-                msg(e)
-            ))
+            crate::errors::input_err(format!("solvent: {} (e.g. solvent=78.4)", msg(e)))
         })?
     } else {
         return Err(pyo3::exceptions::PyTypeError::new_err(
@@ -510,9 +997,9 @@ fn build_pcm_config(
     let cfg = match lebedev_order {
         // Checked here so a bad order is a ValueError naming the kwarg, not a
         // RuntimeError from deep inside RHF setup.
-        Some(order) => cfg.with_lebedev_order(order).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!("pcm_lebedev_order: {}", msg(e)))
-        })?,
+        Some(order) => cfg
+            .with_lebedev_order(order)
+            .map_err(|e| crate::errors::input_err(format!("pcm_lebedev_order: {}", msg(e))))?,
         None => cfg,
     };
     Ok(Some(cfg))
@@ -525,9 +1012,29 @@ fn parse_diis_flavor(diis: Option<&str>) -> PyResult<ferric_scf::diis::DiisFlavo
     use ferric_scf::diis::DiisFlavor;
     match diis {
         None => Ok(DiisFlavor::Pulay),
-        Some(s) => DiisFlavor::parse_config_str(s)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string())),
+        Some(s) => DiisFlavor::parse_config_str(s).map_err(crate::errors::input_err),
     }
+}
+
+/// Parse the `ri_j_precision` / `scf_ri_j_precision` kwarg (strict: `"f32"`
+/// or `"f64"`, anything else is a `ValueError`; `None` = the default: f32,
+/// f64 on the geometry entry points, see [`geometry_task_scf`]).
+fn parse_ri_j_precision(s: Option<&str>) -> PyResult<Option<ferric_scf::df_j::RiJPrecision>> {
+    s.map(ferric_scf::df_j::RiJPrecision::parse_config_str)
+        .transpose()
+        .map_err(crate::errors::input_err)
+}
+
+/// The geometry/frequency entry points' (`run_optimize*`, `run_frequencies`,
+/// `run_saddle`, `run_irc`) one call on their SCF config: mark it a geometry
+/// task, so an unset `scf_ri_j_precision` resolves to f64 (the f32 RI-J
+/// energy surface is jagged between nearby geometries), and apply an explicit
+/// `scf_ri_j_precision`, which always wins. The certificate's `ri-j` entry
+/// records the precision and why.
+fn geometry_task_scf(cfg: &mut RhfConfig, scf_ri_j_precision: Option<&str>) -> PyResult<()> {
+    cfg.ri_j_task = ferric_scf::df_j::RiJTask::Geometry;
+    cfg.ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
+    Ok(())
 }
 
 /// Parse the `guess` kwarg into `RhfConfig::use_sad_guess` (strict — unknown
@@ -538,7 +1045,7 @@ fn parse_guess(guess: Option<&str>) -> PyResult<bool> {
         None => Ok(true),
         Some(s) => ferric_scf::guess::InitialGuess::parse_config_str(s)
             .map(|g| g.use_sad_guess())
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string())),
+            .map_err(crate::errors::input_err),
     }
 }
 
@@ -550,14 +1057,84 @@ fn parse_guess_basis(
     guess_basis: Option<&str>,
     guess_projection: Option<&str>,
 ) -> PyResult<Option<ferric_scf::basis2::GuessBasis>> {
-    let bad = |e: String| pyo3::exceptions::PyValueError::new_err(e);
+    let bad = |e: String| crate::errors::input_err(e);
     match (guess_basis, guess_projection) {
         (None, None) => Ok(None),
         (None, Some(_)) => Err(bad("guess_projection is set but guess_basis is not".into())),
         (Some(b), p) => ferric_scf::basis2::GuessBasis::bundled(b, p.unwrap_or("fock"))
             .map(Some)
-            .map_err(|e| bad(e.to_string())),
+            // Keep the `FerricError` so an unknown basis is a `BasisError`.
+            .map_err(crate::errors::input_err),
     }
+}
+
+/// `(n_alpha, n_beta)` from the molecule's electron count (after
+/// `apply_ecp`) and multiplicity; an impossible pair is a `ValueError`
+/// naming `who`.
+fn spin_counts(mol: &Molecule, who: &str) -> PyResult<(usize, usize)> {
+    let nelec = mol.nelec() as i64;
+    let two_s = mol.multiplicity as i64 - 1;
+    if two_s < 0 || nelec < two_s || (nelec - two_s) % 2 != 0 {
+        return Err(crate::errors::input_err(format!(
+            "{who}: {nelec} electrons cannot have multiplicity {}",
+            mol.multiplicity
+        )));
+    }
+    Ok((
+        ((nelec + two_s) / 2) as usize,
+        ((nelec - two_s) / 2) as usize,
+    ))
+}
+
+/// Refuse `dm0=` next to `guess=` or `guess_basis=`: each names a starting
+/// point, and the SCF would honour only one of them (`dm0` outranks both).
+fn refuse_dm0_with_guess(
+    who: &str,
+    has_dm0: bool,
+    guess: Option<&str>,
+    guess_basis: Option<&str>,
+) -> PyResult<()> {
+    let other = match (guess, guess_basis) {
+        _ if !has_dm0 => return Ok(()),
+        (Some(_), _) => "guess",
+        (None, Some(_)) => "guess_basis",
+        (None, None) => return Ok(()),
+    };
+    Err(crate::errors::input_err(format!(
+        "{who}: dm0 and {other} both set the starting point; pass one of them"
+    )))
+}
+
+/// `who`'s `mom_reference=`, `None` when not passed (the solver's default,
+/// `"previous"`). `"initial"` applies
+/// MOM from the first iteration, so it is refused next to `mom_after_iter > 0`
+/// (a later start) and `stability_descent` (which leaves the start's state).
+fn parse_mom_reference(
+    who: &str,
+    value: Option<&str>,
+    mom_after_iter: Option<usize>,
+    stability_descent: Option<bool>,
+) -> PyResult<Option<ferric_scf::mom::MomReference>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let reference =
+        ferric_scf::mom::MomReference::parse_config_str(value).map_err(crate::errors::input_err)?;
+    // The rule lives in `MomReference::check_initial`; this layer only words
+    // either conflict in kwarg terms (one message naming both kwargs).
+    reference
+        .check_initial(
+            mom_after_iter.unwrap_or(0),
+            stability_descent.unwrap_or(false),
+        )
+        .map_err(|_conflict| {
+            crate::errors::input_err(format!(
+                "{who}: mom_reference=\"initial\" applies MOM from the first iteration and \
+                     holds the starting occupation; pass neither mom_after_iter nor \
+                     stability_descent"
+            ))
+        })?;
+    Ok(Some(reference))
 }
 
 /// The secondary-basis guess report as a dict (`basis`, `projection`,
@@ -632,10635 +1209,10 @@ fn build_external_potential_with_smeared(
     }
 }
 
-// ── RHF ──
-
-/// Default SCF iteration cap of every Python `run_*` that takes `max_iter`:
-/// the Rust `RhfConfig` default itself, so the two cannot drift apart
-/// (they did: Python was 100, Rust 200, until 2026-10-13).
-fn default_scf_max_iter() -> usize {
-    RhfConfig::default().max_iter
-}
-
-/// Emit a `RuntimeWarning`. If warnings are turned into errors (`-W error`)
-/// the warn call returns Err; that is IGNORED on purpose so a diagnostic can
-/// never change control flow (the result is never lost, the SCF still runs).
-fn emit_runtime_warning(py: Python<'_>, msg: String) {
-    let msg = std::ffi::CString::new(msg.replace('\0', " ")).expect("NUL removed");
-    let _ = PyErr::warn(
-        py,
-        &py.get_type::<pyo3::exceptions::PyRuntimeWarning>(),
-        &msg,
-        1,
-    );
-}
-
-/// Warn, once and before the SCF starts, when a USER-SUPPLIED `energy_conv` is
-/// below the estimated noise floor of `dE` for this system (issue #410). Purely
-/// advisory: the threshold is not clamped and the SCF is unchanged. The default
-/// (`energy_conv=None`) never warns.
-fn warn_energy_conv_noise_floor(
-    py: Python<'_>,
-    fname: &str,
-    family: ferric_scf::noise_floor::SolverFamily,
-    user_set: bool,
-    mol: &ferric_core::mol::Molecule,
-    prep: &PreparedBasis,
-    config: &RhfConfig,
-) {
-    if !user_set {
-        return;
-    }
-    if let Some(text) =
-        ferric_scf::noise_floor::energy_conv_warning(mol, prep.nbasis(), config, family)
-    {
-        emit_runtime_warning(py, format!("{fname}: {text}"));
-    }
-}
-
-/// Human-readable SCF exit line: exit reason, iterations, final residuals vs
-/// thresholds and the unmet gate criteria. Shared by `RhfResult.convergence_summary`
-/// and the non-convergence `RuntimeWarning` of `run_rhf`.
-fn scf_exit_summary(r: &ScfResult) -> String {
-    let head = format!("SCF exit {:?} after {} iterations", r.exit, r.iterations);
-    match r.convergence {
-        Some(c) => format!("{head}; last {}", c.describe()),
-        None => format!("{head}; no per-iteration convergence record"),
-    }
-}
-
-/// Result of a closed-shell RHF (or `run_ksdft` KS-DFT) calculation.
-#[pyclass]
-#[pyo3(name = "RhfResult")]
-struct PyRhfResult {
-    /// Total SCF energy in Hartree (electronic + nuclear repulsion).
-    #[pyo3(get)]
-    energy: f64,
-    /// Whether the SCF met both the energy and density convergence thresholds.
-    #[pyo3(get)]
-    converged: bool,
-    /// Number of SCF iterations run.
-    #[pyo3(get)]
-    iterations: usize,
-    /// Number of unique two-electron integral quartets actually computed
-    /// (reflects Schwarz/QQR screening; lower than the naive N^4 count).
-    #[pyo3(get)]
-    computed_quartets: usize,
-    density_data: Array2<f64>,
-    orbital_energies_data: Vec<f64>,
-    scf_data: ScfResult,
-    /// The SCF settings this result was solved with. `hirshfeld_charges`
-    /// solves its free-atom proatoms with the same settings, as ferric-cli does.
-    scf_config: RhfConfig,
-}
-
-#[pymethods]
-impl PyRhfResult {
-    /// The converged AO-basis density matrix as a 2D numpy array (n_bf × n_bf).
-    fn density<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        PyArray2::from_array(py, &self.density_data)
-    }
-    /// Molecular orbital energies (Hartree) as a 1D numpy array, ascending order.
-    fn orbital_energies<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_vec(py, self.orbital_energies_data.clone())
-    }
-    /// MO coefficient matrix C (n_bf × n_mo), column k = MO k in ascending
-    /// energy order — the same matrix the Rust post-HF drivers consume.
-    fn mo_coefficients<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        PyArray2::from_array(py, &self.scf_data.mos_alpha)
-    }
-    /// The COSX final-grid pass (`cosx_final_pass=` / `cosx_final_grid=`):
-    /// `{"e_scf_grid", "e_final", "npts_scf_grid", "npts_final_grid",
-    /// "gradient_differentiates"}`, or `None` when no pass ran. `energy` is
-    /// `e_final` when it ran.
-    #[getter]
-    fn cosx_final_pass(&self, py: Python<'_>) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
-        cosx_final_dict(py, self.scf_data.cosx_final)
-    }
-    /// The secondary-basis guess (`guess_basis=`): `{"basis", "projection",
-    /// "iterations", "energy", "nbasis_guess", "nbasis_target", "converged",
-    /// "unconverged_reason", "used_as_guess"}` describing the secondary SCF,
-    /// or `None` when no secondary-basis guess ran.
-    #[getter]
-    fn guess_basis(&self, py: Python<'_>) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
-        guess_basis_dict(py, self.scf_data.guess_basis.as_ref())
-    }
-    /// Precision provenance of this SCF: `{"precision": "f64", "counter_scope": "process", "kernels": []}`
-    /// for an all-f64 run; otherwise one entry per mixed-precision kernel that
-    /// was allowed or ran (`kernel`, `requested`, `mode`, `device` (`None`
-    /// unless `calls_mixed > 0`), `calls_mixed`, `calls_f64_fallback`,
-    /// `ladder`, `error_bound`). `counter_scope = "process"`: the counts are
-    /// process-wide, so a concurrent calculation in this process is counted
-    /// too (sequential runs are exact). See `configure_precision`.
-    #[getter]
-    fn precision(&self, py: Python<'_>) -> PyResult<PyObject> {
-        precision_dict(py, &self.scf_data.precision)
-    }
-    /// SCF exit reason: the `ScfExit` variant name (`"Converged"`, `"Plateau"`,
-    /// `"Stalled"`, `"Diverged"`, `"MaxIter"`). `converged=False` with
-    /// `"MaxIter"` means the iteration cap (`max_iter`) was reached; the final
-    /// residuals below say how far from the thresholds the run was.
-    #[getter]
-    fn exit_reason(&self) -> String {
-        format!("{:?}", self.scf_data.exit)
-    }
-    /// |E - E_prev| (Hartree) as judged by the convergence gate at the final
-    /// iteration (lags the returned density by one step at MaxIter), or `None` if this
-    /// result carries no convergence record.
-    #[getter]
-    fn final_de(&self) -> Option<f64> {
-        self.scf_data.convergence.map(|c| c.de)
-    }
-    /// RMS density change the gate judged at the final iteration (the primary gate,
-    /// compared against `density_conv`), or `None`.
-    #[getter]
-    fn final_dp_rms(&self) -> Option<f64> {
-        self.scf_data.convergence.map(|c| c.dp_rms)
-    }
-    /// Max-element density change the gate judged at the final iteration (gated at
-    /// `10 * density_conv`), or `None`.
-    #[getter]
-    fn final_dp_max(&self) -> Option<f64> {
-        self.scf_data.convergence.map(|c| c.dp_max)
-    }
-    /// Max |FDS - SDF| (DIIS commutator) at the last iteration. Diagnostic
-    /// only: it is never a convergence gate. `None` if not recorded.
-    #[getter]
-    fn final_diis_err_max(&self) -> Option<f64> {
-        self.scf_data.convergence.map(|c| c.err_max)
-    }
-    /// `(energy_conv, density_conv)` this SCF was judged against, or `None`.
-    #[getter]
-    fn conv_thresholds(&self) -> Option<(f64, f64)> {
-        self.scf_data
-            .convergence
-            .map(|c| (c.energy_conv, c.density_conv))
-    }
-    /// Names of the gate criteria the final iteration did NOT meet, a subset of
-    /// `["dp_rms", "dp_max", "dE", "err_max"]` (empty when all were met), or
-    /// `None` if no convergence record. `"err_max"` appears only when
-    /// ADIIS/EDIIS stalled: the density settled while the DIIS error was still
-    /// above `diis_switch_thresh`, the exit was refused and the run restarted on
-    /// Pulay DIIS (that restart is also named in `convergence_summary`). A run
-    /// can have `converged=False` with an empty list only when it stopped for
-    /// another reason (`exit_reason`).
-    #[getter]
-    fn unmet_criteria(&self) -> Option<Vec<&'static str>> {
-        self.scf_data.convergence.map(|c| c.unmet())
-    }
-    /// One-line human summary of the SCF exit: reason, iteration count and the
-    /// final residuals against their thresholds. This is the text of the
-    /// `RuntimeWarning` `run_rhf` emits when the SCF does not converge.
-    #[getter]
-    fn convergence_summary(&self) -> String {
-        scf_exit_summary(&self.scf_data)
-    }
-    fn __repr__(&self) -> String {
-        format!(
-            "RhfResult(energy={:.10}, converged={})",
-            self.energy, self.converged
-        )
-    }
-    fn __str__(&self) -> String {
-        format!(
-            "RHF Energy: {:.10} Ha (converged: {}, {} iterations)",
-            self.energy, self.converged, self.iterations
-        )
-    }
-}
-
-/// `trah_trigger` must be a positive finite DIIS-error threshold.
-fn check_trah_trigger(t: Option<f64>) -> PyResult<Option<f64>> {
-    match t {
-        Some(v) if !(v.is_finite() && v > 0.0) => Err(pyo3::exceptions::PyValueError::new_err(
-            format!("trah_trigger must be a positive number, got {v}"),
-        )),
-        other => Ok(other),
-    }
-}
-
-/// Apply the opt-in `aurora=` / `trah_trigger=` kwargs (both off when omitted).
-fn apply_accelerators(
-    config: &mut RhfConfig,
-    aurora: Option<bool>,
-    trah_trigger: Option<f64>,
-) -> PyResult<()> {
-    config.aurora.enabled = aurora.unwrap_or(false);
-    config.trah_trigger = check_trah_trigger(trah_trigger)?;
-    Ok(())
-}
-
-/// The non-convergence RuntimeWarning of `run_rhf` (no control-flow change).
-fn warn_rhf_not_converged(py: Python<'_>, r: &ferric_scf::result::ScfResult, config: &RhfConfig) {
-    if !r.converged {
-        // No control-flow change: the caller still gets the best-effort
-        // `RhfResult` with `converged=False`. The warning only names the exit,
-        // iteration count and unmet criteria. If warnings are turned into errors
-        // (`-W error`) the warn call returns Err; that is IGNORED on purpose so
-        // the result is never lost.
-        let msg = format!(
-            "run_rhf: SCF did not converge: {}. Raise max_iter (this call used {}; default {}), or \
-             pass level_shift / soscf / a different guess; see RhfResult.unmet_criteria.",
-            scf_exit_summary(r),
-            config.max_iter,
-            default_scf_max_iter()
-        );
-        emit_runtime_warning(py, msg);
-    }
-}
-
-/// Closed-shell RHF (also UHF/ROHF convergence aids apply to the open-shell
-/// drivers). Exposes the full SCF knob set, matching the CLI `[scf]` TOML section
-/// for parity — same names, same defaults, same units.
-///
-/// SCF controls and defaults (run_rhf / run_uhf / run_rohf):
-///   max_iter        iteration cap, default 200 (the Rust `RhfConfig`
-///                   default, read from it; was 100 before 2026-10-13). Reaching it returns `converged=False`
-///                   (RHF; a RuntimeWarning names the unmet criteria and never raises, even under -W error), so a
-///                   slow-but-draining SCF fails on the cap alone.
-///   density_conv    RMS density change gate, default 1e-6. The max-element
-///                   change is gated at 10x this. THE primary criterion.
-///   energy_conv     |dE| per iteration, default 1e-3: a loose "not still
-///                   descending" sanity bound, not a target. A value below
-///                   the estimated noise floor of dE for the system (about
-///                   0.0125*integral_thresh*nbf^2.25 Ha for closed-shell exact J/K,
-///                   a few eps*|E| otherwise) is legal but is met only by chance;
-///                   run_rhf / run_uhf / run_rohf then emit one RuntimeWarning
-///                   before the SCF starts (never raised, nothing is clamped).
-///   diis_size       DIIS subspace size, default 8.
-/// After an RHF run, `exit_reason`, `final_dp_rms`, `final_dp_max`, `final_de`,
-/// `final_diis_err_max`, `conv_thresholds`, `unmet_criteria` and
-/// `convergence_summary` report where the SCF stopped.
-///
-/// Convergence aids:
-///   level_shift     virtual-virtual block shift in Hartree (open-shell; 0.2 is a
-///                   useful default for OH-like doublets at LDA/PBE). 0 = off.
-///   mom_after_iter  Maximum-Overlap Method: pin the occupied set by AO-overlap
-///                   after this many DIIS iters. 0 = aufbau throughout. Fixes
-///                   occupied-set flip-flop non-convergence.
-///   aurora          False (default). True turns on the AURORA auxiliary-curvature
-///                   accelerator (closed-shell, RHF only): same fixed point as
-///                   DIIS, measured as a speed-up (fewer J/K builds), not a
-///                   convergence rescue. Same as the CLI `[scf] aurora`.
-///   trah_trigger    None (default) = off. A positive DIIS-error threshold turns
-///                   on the trust-region augmented-Hessian (TRAH) solver once the
-///                   DIIS error drops below it (e.g. 1e-2). A convergence RESCUE:
-///                   it wins iterations but costs wall time. Same as the CLI
-///                   `[scf] trah_trigger`.
-/// Fock builders:
-///   k_builder       "direct" (default), "link" (LinK exchange) or "cosx"
-///                   (seminumerical exchange, Coulomb operator only; CLI
-///                   defaults for grid/fit/kernel — not exposed here).
-///                   Honoured by RHF, UHF and ROHF alike.
-///   df_j_aux        auxiliary basis name for density-fitted Coulomb (RI-J).
-///   df_k_aux        auxiliary basis name for density-fitted exchange (RI-K);
-///                   should be a JK-fit basis, not an MP2-fit basis.
-///                   For either, "" / "exact" / "none" / "off" /
-///                   "conventional" select conventional four-centre integrals
-///                   (the same spellings run_dft accepts). Omitted = no DF.
-/// External perturbation:
-///   point_charges   list of (q, x, y, z) classical point charges (Hartree
-///                   atomic units; coordinates in Bohr) added to the one-electron
-///                   Hamiltonian and nuclear repulsion. None/empty = no charges.
-///                   The ORDER of the list changes the one-electron potential
-///                   only by summation roundoff (3e-15..1e-14 relative on 6458
-///                   charges), and ferric does not reorder it. The converged
-///                   energy moves by <= ~6e-12 Ha. A different SCF iteration
-///                   count (64 vs 111) was seen on rc7 for a 6458-charge field
-///                   at energy_conv=1e-10; on main it appears only when the
-///                   closed-shell incremental Fock update is forced on
-///                   (FERRIC_SCF_INCREMENTAL=1) below its noise floor, where
-///                   the order also moves the energy by a few 1e-9 Ha (up to
-///                   8e-9 measured). Main turns
-///                   that update off when energy_conv < 1e4*integral_thresh or
-///                   density_conv < 1e3*integral_thresh (1e-8 / 1e-9 at the
-///                   default integral_thresh), and the energy_conv warning
-///                   names the floor. The iteration-count dependence was
-///                   observed and explained only for this function's closed-shell
-///                   direct-J/K path; run_uhf and run_rohf use a separate
-///                   open-shell incremental path and run_dft's default RI-J does
-///                   not use the direct incremental path, so for those the
-///                   order changes the potential by roundoff (same as above) and
-///                   iteration counts were not measured.
-///   smeared_charges list of (q, x, y, z, width) Gaussian-smeared classical
-///                   charges (Hartree atomic units; coordinates and width in
-///                   Bohr; width = 0 is a point charge, but use
-///                   `point_charges=` for those instead). None/empty = no
-///                   smeared charges.
-///   external_field  uniform (Ex, Ey, Ez) electric field in Hartree atomic units.
-///                   None = no field.
-///   solvent         IEF-PCM implicit solvation: a dielectric constant
-///                   (`solvent=78.4`) or a name (`solvent="water"`). None =
-///                   vacuum. Without it, a ligand and its pocket each leave
-///                   water for free, so burying an ionized group costs
-///                   nothing -- on danuglipron/GLP-1R that overshoots the
-///                   experimental binding free energy by 4.5x. An
-///                   unrecognised name ERRORS rather than falling back to
-///                   vacuum.
-///   pcm_lebedev_order  tesserae per atomic sphere (6/14/26/50/110/302,
-///                   default 110). Lower is faster and coarser.
-/// State selection:
-///   stability_descent False (default). When True, check the converged RHF
-///                   solution's stability and, if the INTERNAL (singlet)
-///                   channel is a SADDLE of the orbital Hessian, follow the
-///                   downhill eigenvector and re-converge, keeping the lowest
-///                   state (`RhfConfig::check_stability` +
-///                   `scf_stability_descent`).
-///                   Costs one Davidson eigensolve per solve plus one SCF per
-///                   descent taken. Needed where the default guess lands on a
-///                   saddle: N2 at 1.6 Å/def2-SVP (19 mHa above the minimum).
-///                   Same as the CLI `[scf] stability_descent`.
-///                   Setting it also enables the EXTERNAL (RHF→UHF, triplet)
-///                   check, whose verdict is PRINTED to stderr but is NOT
-///                   descended along: that instability breaks spin symmetry,
-///                   so no restricted re-convergence can reach the lower
-///                   state — the remedy it names is to run `run_uhf` seeded
-///                   from the triplet eigenvector. Stretched geometries are
-///                   routinely internally stable and externally unstable
-///                   (water at r(OH) = 2.0 Å / 6-31G: +1.97e-2 vs −3.07e-1).
-#[pyfunction]
-#[pyo3(signature = (
-    mol, basis_set,
-    max_iter=None, energy_conv=None, density_conv=None, diis_size=None,
-    integral_thresh=None, k_builder=None, df_j_aux=None, df_k_aux=None,
-    level_shift=None, mom_after_iter=None,
-    guess=None, diis=None, smearing_sigma=None, soscf=None,
-    point_charges=None, external_field=None, smeared_charges=None,
-    memory_budget_gb=None, solvent=None, pcm_lebedev_order=None,
-    stability_descent=None,
-    cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
-    aurora=None, trah_trigger=None, symmetry=false, irrep_nelec=None,
-    fock_hook=None,
-    guess_basis=None, guess_projection=None,
-))]
-#[allow(clippy::too_many_arguments)]
-fn run_rhf(
-    py: Python<'_>,
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
-    diis_size: Option<usize>,
-    integral_thresh: Option<f64>,
-    k_builder: Option<&str>,
-    df_j_aux: Option<&str>,
-    df_k_aux: Option<&str>,
-    level_shift: Option<f64>,
-    mom_after_iter: Option<usize>,
-    guess: Option<&str>,
-    diis: Option<&str>,
-    smearing_sigma: Option<f64>,
-    soscf: Option<bool>,
-    point_charges: Option<Vec<(f64, f64, f64, f64)>>,
-    external_field: Option<(f64, f64, f64)>,
-    smeared_charges: Option<Vec<(f64, f64, f64, f64, f64)>>,
-    memory_budget_gb: Option<f64>,
-    solvent: Option<&Bound<'_, PyAny>>,
-    pcm_lebedev_order: Option<usize>,
-    stability_descent: Option<bool>,
-    cosx_grid: Option<&Bound<'_, PyAny>>,
-    cosx_final_pass: Option<bool>,
-    cosx_final_grid: Option<&Bound<'_, PyAny>>,
-    cosx_overlap_fit: Option<bool>,
-    aurora: Option<bool>,
-    trah_trigger: Option<f64>,
-    symmetry: bool,
-    irrep_nelec: Option<std::collections::BTreeMap<String, usize>>,
-    fock_hook: Option<&Bound<'_, PyAny>>,
-    guess_basis: Option<&str>,
-    guess_projection: Option<&str>,
-) -> PyResult<PyObject> {
-    let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
-    // The descent needs a stability verdict to act on, so the kwarg turns on
-    // both halves (as run_uhf does).
-    let descent = stability_descent.unwrap_or(false);
-    // Apply ECP core-electron counts (no-op without an ECP basis) so nelec()
-    // gives the valence count; the effective nuclear charge is set inside
-    // PreparedBasis::new from basis_set.ecps.
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
-    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    // Defaults mirror the CLI `[scf]` section (config.rs) so CLI and Python agree.
-    let mut config = RhfConfig {
-        max_iter: max_iter.unwrap_or_else(default_scf_max_iter),
-        energy_conv: energy_conv.unwrap_or(1e-3),
-        density_conv: density_conv.unwrap_or(1e-6),
-        diis_size: diis_size.unwrap_or(8),
-        integral_thresh: integral_thresh.unwrap_or(1e-12),
-        k_builder: k_builder.map(|s| s.to_string()),
-        cosx: resolve_cosx_kwargs(
-            k_builder,
-            cosx_grid,
-            cosx_final_pass,
-            cosx_final_grid,
-            cosx_overlap_fit,
-        )?,
-        // Same opt-out spellings as run_dft ("exact"/"none"/"off"/...).
-        df_j_aux: df_j_aux.map(ferric_scf::rhf::normalize_df_aux),
-        df_k_aux: df_k_aux.map(ferric_scf::rhf::normalize_df_aux),
-        level_shift: level_shift.unwrap_or(0.0),
-        mom_after_iter: mom_after_iter.unwrap_or(0),
-        diis_flavor: parse_diis_flavor(diis)?,
-        smearing_sigma,
-        newton_trigger: if soscf.unwrap_or(false) { 1e-3 } else { 0.0 },
-        use_sad_guess: parse_guess(guess)?,
-        guess_basis,
-        external_potential: build_external_potential_with_smeared(
-            point_charges,
-            smeared_charges,
-            external_field,
-        ),
-        pcm: build_pcm_config(solvent, pcm_lebedev_order)?,
-        // 0 means "unset -> auto" (ferric_scf::rhf::resolve_three_index_budget),
-        // so an omitted kwarg preserves the previous auto-detect behaviour.
-        three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb).unwrap_or(0),
-        check_stability: descent,
-        scf_stability_descent: descent,
-        symmetry,
-        irrep_nelec: irrep_nelec.map(|m| m.into_iter().collect()),
-        ..Default::default()
-    };
-    apply_accelerators(&mut config, aurora, trah_trigger)?;
-    let ctx = ParallelContext::default();
-    // Release the GIL for the duration of the SCF. Every argument below is an
-    // owned Rust value (`emol` is a clone; `prep`/`bounds`/`config` are built
-    // above), so nothing Python-borrowed crosses the closure boundary.
-    //
-    // Without this, a second Python thread cannot even ENTER this function
-    // until the first call returns, so independent jobs submitted from a
-    // ThreadPoolExecutor serialize at the FFI boundary no matter how many
-    // cores rayon could use. The compute itself never touches the interpreter.
-    warn_energy_conv_noise_floor(
-        py,
-        "run_rhf",
-        SolverFamily::ClosedShell,
-        energy_conv.is_some(),
-        &emol,
-        &prep,
-        &config,
-    );
-    solve_rhf_outcome(py, &ctx, &emol, &prep, op, &bounds, config, fock_hook)
-}
-
-/// A refusal the library classifies as a bad symmetry request
-/// (`ferric_scf::symmetric::is_symmetry_refusal`) is a `ValueError` naming
-/// `<who>(symmetry=True)`; anything else is a solver failure (`RuntimeError`).
-fn symmetry_err(who: &'static str) -> impl Fn(ferric_core::error::FerricError) -> PyErr {
-    move |e| {
-        if ferric_scf::symmetric::is_symmetry_refusal(&e) {
-            pyo3::exceptions::PyValueError::new_err(format!("{who}(symmetry=True): {e}"))
-        } else {
-            make_err(e)
-        }
-    }
-}
-
-/// Run the point-group-blocked closed-shell solve (`config.symmetry` set) and
-/// wrap it as a `SymmetricRhfResult`. `who` names the Python entry point in
-/// refusals.
-#[allow(clippy::too_many_arguments)]
-fn solve_symmetric_outcome(
-    py: Python<'_>,
-    who: &'static str,
-    ctx: &ParallelContext,
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    op: Operator,
-    bounds: &SchwarzBounds,
-    config: &RhfConfig,
-) -> PyResult<PyObject> {
-    let sym = py
-        .allow_threads(|| {
-            ferric_scf::symmetric::solve_rhf_symmetric(ctx, mol, prep, op, bounds, config)
-        })
-        .map_err(symmetry_err(who))?;
-    warn_rhf_not_converged(py, sym.scf_in_frame(), config);
-    Ok(Py::new(py, PySymmetricRhfResult::from_solution(sym))?.into_any())
-}
-
-/// Solve and wrap: the plain `RhfResult` path (unchanged), or with
-/// `config.symmetry` the blocked solve returned as the distinct frame-aware
-/// `SymmetricRhfResult`. A `fock_hook` takes the hooked solve
-/// (`blocks::solve_rhf_hooked`), which refuses symmetry itself.
-#[allow(clippy::too_many_arguments)]
-fn solve_rhf_outcome(
-    py: Python<'_>,
-    ctx: &ParallelContext,
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    op: Operator,
-    bounds: &SchwarzBounds,
-    config: RhfConfig,
-    fock_hook: Option<&Bound<'_, PyAny>>,
-) -> PyResult<PyObject> {
-    if let Some(hook) = fock_hook {
-        let r = blocks::solve_rhf_hooked(py, ctx, mol, prep, op, bounds, &config, hook)?;
-        return wrap_rhf_result(py, r, config);
-    }
-    if config.irrep_nelec.is_some() && !config.symmetry {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "run_rhf: irrep_nelec requires symmetry=True",
-        ));
-    }
-    if config.symmetry {
-        return solve_symmetric_outcome(py, "run_rhf", ctx, mol, prep, op, bounds, &config);
-    }
-    let r = py
-        .allow_threads(|| solve_rhf(ctx, mol, prep, op, bounds, &config))
-        .map_err(make_err)?;
-    wrap_rhf_result(py, r, config)
-}
-
-/// Warn if unconverged and wrap a closed-shell solve as an `RhfResult`.
-fn wrap_rhf_result(py: Python<'_>, r: ScfResult, config: RhfConfig) -> PyResult<PyObject> {
-    warn_rhf_not_converged(py, &r, &config);
-    let result = PyRhfResult {
-        energy: r.energy,
-        converged: r.converged,
-        iterations: r.iterations,
-        computed_quartets: r.computed_quartets,
-        density_data: r.density_total.clone(),
-        orbital_energies_data: r.eps_alpha.clone(),
-        scf_data: r,
-        scf_config: config,
-    };
-    Ok(Py::new(py, result)?.into_any())
-}
-
-/// Register the two `run_rhf` result types.
-fn add_rhf_result_classes(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<PyRhfResult>()?;
-    m.add_class::<PySymmetricRhfResult>()
-}
-
-/// Result of `run_rhf(..., symmetry=True)` (point-group-blocked closed-shell
-/// RHF) and of `run_dft` / `run_ksdft(..., symmetry=True)` (blocked RKS).
-///
-/// A distinct type from `RhfResult` on purpose. The SCF ran on the
-/// reoriented, SYMMETRIZED geometry, so `energy` belongs to that geometry
-/// (it differs from the input geometry's energy by the effect of
-/// `max_symmetrization_shift`, at most 1e-4 Bohr) and every AO-basis matrix
-/// (density, MO coefficients) would live in a rotated frame. Those accessors
-/// raise instead of returning matrices that look like input-frame data, and
-/// no function that takes an `RhfResult` (gradients, post-HF, Hirshfeld,
-/// properties) accepts this object.
-#[pyclass]
-#[pyo3(name = "SymmetricRhfResult")]
-struct PySymmetricRhfResult {
-    /// Total SCF energy (Hartree) of the symmetrized geometry.
-    #[pyo3(get)]
-    energy: f64,
-    /// Whether the SCF met both convergence thresholds.
-    #[pyo3(get)]
-    converged: bool,
-    /// Number of SCF iterations run.
-    #[pyo3(get)]
-    iterations: usize,
-    /// Schoenflies symbol of the Abelian group used for blocking ("C1" if none).
-    #[pyo3(get)]
-    point_group: String,
-    /// Irrep label of each MO column ("-" for padded linearly dependent columns).
-    #[pyo3(get)]
-    orbital_irreps: Vec<String>,
-    /// Largest atom displacement (Bohr) made by symmetrizing the input geometry.
-    #[pyo3(get)]
-    max_symmetrization_shift: f64,
-    orbital_energies_data: Vec<f64>,
-    irrep_occupations: Vec<(String, usize)>,
-    symbols: Vec<String>,
-    coords_angstrom: Vec<(f64, f64, f64)>,
-    rotation: [[f64; 3]; 3],
-    origin_angstrom: [f64; 3],
-}
-
-impl PySymmetricRhfResult {
-    fn from_solution(sym: ferric_scf::symmetric::SymmetricRhf) -> Self {
-        let mol = sym.molecule();
-        let (rotation, origin_bohr) = sym.frame_transform();
-        let scf = sym.scf_in_frame();
-        PySymmetricRhfResult {
-            energy: sym.energy(),
-            converged: scf.converged,
-            iterations: scf.iterations,
-            point_group: sym.group().to_string(),
-            orbital_irreps: sym.orbital_irreps().to_vec(),
-            max_symmetrization_shift: sym.max_symmetrization_shift(),
-            orbital_energies_data: scf.eps_alpha.clone(),
-            irrep_occupations: sym.irrep_occupations(),
-            symbols: mol.atoms.iter().map(|a| a.symbol.clone()).collect(),
-            coords_angstrom: mol
-                .atoms
-                .iter()
-                .map(|a| {
-                    (
-                        a.x / ANGSTROM_TO_BOHR,
-                        a.y / ANGSTROM_TO_BOHR,
-                        a.zpos / ANGSTROM_TO_BOHR,
-                    )
-                })
-                .collect(),
-            rotation,
-            origin_angstrom: origin_bohr.map(|x| x / ANGSTROM_TO_BOHR),
-        }
-    }
-}
-
-const SYMMETRIC_FRAME_MSG: &str =
-    "not available for a symmetry=True result: the AO matrices live in the \
-reoriented, symmetrized frame (see frame_transform()), not the input frame. Run with \
-symmetry=False for density/MO coefficients/gradients.";
-
-#[pymethods]
-impl PySymmetricRhfResult {
-    /// Orbital energies (Hartree) in MO-column order, aligned with
-    /// `orbital_irreps`. Occupied columns come first (energy-ordered), then
-    /// the virtuals, so with `irrep_nelec` the list need not be globally
-    /// ascending. Padded linearly dependent columns carry 1e6.
-    fn orbital_energies<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_vec(py, self.orbital_energies_data.clone())
-    }
-    /// Electrons per irrep of the converged state, `{label: n}` (virtual-only
-    /// irreps are listed with 0).
-    fn irrep_occupations(&self) -> std::collections::BTreeMap<String, usize> {
-        self.irrep_occupations.iter().cloned().collect()
-    }
-    /// Element symbols of the symmetrized geometry, in input atom order.
-    fn symbols(&self) -> Vec<String> {
-        self.symbols.clone()
-    }
-    /// The symmetrized, reoriented geometry the energy belongs to (Angstrom,
-    /// the symmetry frame), in input atom order.
-    fn symmetrized_coords(&self) -> Vec<(f64, f64, f64)> {
-        self.coords_angstrom.clone()
-    }
-    /// `(R, origin)` with `r_sym = R @ (r_in - origin)`; `origin` is an
-    /// input-frame point in Angstrom (same units as `Molecule.coords()` and
-    /// `symmetrized_coords()`). Identity and zero for C1. The relation holds
-    /// to the symmetrization shift (`max_symmetrization_shift`).
-    fn frame_transform(&self) -> ([[f64; 3]; 3], [f64; 3]) {
-        (self.rotation, self.origin_angstrom)
-    }
-    /// Unavailable: the density is in the symmetry frame.
-    fn density(&self) -> PyResult<()> {
-        Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
-            "density(): {SYMMETRIC_FRAME_MSG}"
-        )))
-    }
-    /// Unavailable: the MO coefficients are in the symmetry frame.
-    fn mo_coefficients(&self) -> PyResult<()> {
-        Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
-            "mo_coefficients(): {SYMMETRIC_FRAME_MSG}"
-        )))
-    }
-    /// Unavailable: no gradient is defined in the symmetry frame.
-    fn gradient(&self) -> PyResult<()> {
-        Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
-            "gradient(): {SYMMETRIC_FRAME_MSG}"
-        )))
-    }
-}
-
-// ── Periodic (Gamma-point) RHF ──
-
-/// Result of `run_rhf_gamma`: closed-shell Gamma-point periodic RHF.
-///
-/// Energies are per unit cell, Hartree. `energy` includes `e_nuc` (Ewald,
-/// neutralising-background convention = PySCF `Cell.energy_nuc()`) and, for
-/// `exxdiv="ewald"`, the Madelung exchange shift `-madelung * N_e / 2`.
-#[pyclass]
-#[pyo3(name = "GammaRhfResult")]
-struct PyGammaRhfResult {
-    /// Total energy per cell (Hartree).
-    #[pyo3(get)]
-    energy: f64,
-    /// Whether the SCF converged.
-    #[pyo3(get)]
-    converged: bool,
-    /// SCF iterations run.
-    #[pyo3(get)]
-    iterations: usize,
-    /// Ewald nuclear repulsion per cell (Hartree).
-    #[pyo3(get)]
-    e_nuc: f64,
-    /// Gamma-point Madelung constant `v_M` of the lattice (Hartree, a.u.);
-    /// matches `pyscf.pbc.tools.madelung`. Reported for BOTH `exxdiv`
-    /// settings; it is only APPLIED (as `K += v_M S D S`) for `"ewald"`.
-    #[pyo3(get)]
-    madelung: f64,
-    /// The exxdiv treatment used, lower-case (`"ewald"` or `"none"`).
-    #[pyo3(get)]
-    exxdiv: String,
-    /// Nuclear-attraction Ewald splitting parameter used, in **Å⁻¹** (the
-    /// same unit the `omega` kwarg takes).
-    #[pyo3(get)]
-    omega: f64,
-    /// Number of AO basis functions in the cell.
-    #[pyo3(get)]
-    nao: usize,
-    /// Half-sphere G vectors in the dense AFT ERI build (`jk="dense"`);
-    /// `None` for `jk="rsgdf"`, whose long-range G list is a different
-    /// quantity and is not reported under this name.
-    #[pyo3(get)]
-    n_g_half: Option<usize>,
-    /// J/K builder used: `"dense"` (pure-AFT nao^4 oracle) or `"rsgdf"`
-    /// (range-separated Gaussian density fitting).
-    #[pyo3(get)]
-    jk: String,
-    /// Aux basis name (`BasisSet.name`) for `jk="rsgdf"`; `None` for dense.
-    #[pyo3(get)]
-    auxbasis: Option<String>,
-    /// Aux functions in the cell (`jk="rsgdf"`); `None` for dense.
-    #[pyo3(get)]
-    naux: Option<usize>,
-    /// Aux-metric eigenvectors kept (`naux - n_dropped`); `None` for dense.
-    #[pyo3(get)]
-    naux_kept: Option<usize>,
-    /// Aux-metric eigenvalues `<= lindep` (1e-10) dropped as linearly
-    /// dependent; `None` for dense.
-    #[pyo3(get)]
-    n_dropped: Option<usize>,
-    overlap_data: Array2<f64>,
-    scf_data: ScfResult,
-    timings_data: ferric_pbc::PbcTimings,
-    gradient_data: Option<Array2<f64>>,
-    stress_data: Option<Array2<f64>>,
-}
-
-#[pymethods]
-impl PyGammaRhfResult {
-    /// Analytic nuclear gradient `dE/dR` (natoms x 3, Hartree/Bohr per cell,
-    /// rows in the Molecule's atom order); `None` unless `with_gradient=True`.
-    fn gradient<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
-        self.gradient_data
-            .as_ref()
-            .map(|g| PyArray2::from_array(py, g))
-    }
-    /// Analytic stress `σ_ab = (1/Ω) dE/dε_ab` (3 x 3, Hartree/Bohr³; strain
-    /// of lattice rows AND atoms; pressure = -tr(σ)/3); `None` unless
-    /// `with_stress=True`.
-    fn stress<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
-        self.stress_data
-            .as_ref()
-            .map(|g| PyArray2::from_array(py, g))
-    }
-    /// Stage timings and counters: hcore (setup, S/T, SR/LR attraction,
-    /// Ewald), the J/K build (RS-GDF: SR metric, SR 3-centre, LR pair FT,
-    /// LR GEMM, G = 0, metric eigh, B; dense: pair FT, GEMM), the SCF's
-    /// J/K calls, and counters (triplets, G vectors, chunks, aux dropped).
-    /// `{"wall_s", "cpu_s", "unattributed_wall_s", "stages": {name: {"wall_s",
-    /// "cpu_s", "calls"}}, "counters": {name: int}}`.
-    #[getter]
-    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
-        pbc::timings_dict(py, &self.timings_data)
-    }
-    /// MO energies (Hartree), ascending, 1D numpy array.
-    fn mo_energy<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_vec(py, self.scf_data.eps_alpha.clone())
-    }
-    /// MO coefficients C (nao x nmo), column k = MO k (ascending energy),
-    /// orthonormal in the LATTICE-SUMMED overlap (`overlap()`).
-    fn mo_coeff<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        PyArray2::from_array(py, &self.scf_data.mos_alpha)
-    }
-    /// Total AO density matrix (nao x nao); `tr(D S) = N_e`.
-    fn density<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        PyArray2::from_array(py, &self.scf_data.density_total)
-    }
-    /// Lattice-summed Gamma-point AO overlap `S` (nao x nao).
-    fn overlap<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        PyArray2::from_array(py, &self.overlap_data)
-    }
-    fn __repr__(&self) -> String {
-        format!(
-            "GammaRhfResult(energy={:.10}, exxdiv={:?}, jk={:?}, converged={})",
-            self.energy, self.exxdiv, self.jk, self.converged
-        )
-    }
-}
-
-/// Reject what any periodic driver cannot represent (a charged cell), as a
-/// `ValueError` naming the offending input, and return the cell's molecule
-/// with the basis set's ECPs applied (`Molecule::apply_ecp`, exactly as the
-/// molecular bindings do), so `n_core_ecp` / `effective_z` are set before
-/// the `Cell` is built. Every periodic driver builds its one-electron
-/// Hamiltonian through `periodic_hcore` / `periodic_hcore_kpts`, which add
-/// the lattice-summed V_ECP and whose `check_ecp_applied` guard stays the
-/// backstop against a bare-Z cell. Without an ECP basis the returned
-/// molecule is a plain clone (`apply_ecp` is a no-op).
-fn validate_periodic_cell(
-    fname: &str,
-    mol: &Molecule,
-    bs: &ferric_core::basis::BasisSet,
-) -> PyResult<Molecule> {
-    if mol.charge != 0 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "{fname}: charged cell (charge = {}) is not supported: a periodic \
-             charged cell needs a neutralising-background correction for the \
-             electrons that is not implemented. Use a neutral cell.",
-            mol.charge
-        )));
-    }
-    let mut emol = mol.clone();
-    emol.apply_ecp(bs);
-    Ok(emol)
-}
-
-/// Reject what a closed-shell periodic driver (RHF/RKS and the correlation
-/// methods on top) cannot represent: [`validate_periodic_cell`] plus an
-/// open shell or an odd electron count. The count is the VALENCE count of
-/// the ECP-applied molecule (what the SCF actually occupies). Returns that
-/// ECP-applied molecule. Kept out of the bindings so their bodies stay thin
-/// dispatch layers.
-fn validate_gamma_cell(
-    fname: &str,
-    mol: &Molecule,
-    bs: &ferric_core::basis::BasisSet,
-) -> PyResult<Molecule> {
-    let bad = |m: String| -> PyResult<Molecule> { Err(pyo3::exceptions::PyValueError::new_err(m)) };
-    let emol = validate_periodic_cell(fname, mol, bs)?;
-    if emol.multiplicity != 1 {
-        return bad(format!(
-            "{fname}: multiplicity {} requested, but this driver is closed-shell \
-             (multiplicity 1) only; use the UHF/ROHF/UKS/ROKS periodic drivers \
-             for an open shell",
-            emol.multiplicity
-        ));
-    }
-    let nelec = emol.nelec();
-    if nelec <= 0 || nelec % 2 != 0 {
-        return bad(format!(
-            "{fname}: {nelec} electrons per cell; a closed-shell driver needs a \
-             positive even count"
-        ));
-    }
-    Ok(emol)
-}
-
-/// What the Gamma-point driver hands back across the GIL boundary.
-struct GammaRun {
-    scf: ScfResult,
-    s: Array2<f64>,
-    enn: f64,
-    omega_bohr: f64,
-    madelung: f64,
-    /// Dense path only.
-    n_g_half: Option<usize>,
-    /// RS-GDF path only: `(naux, naux_kept, n_dropped)`.
-    rsgdf_counts: Option<(usize, usize, usize)>,
-    /// hcore + J/K build + SCF J/K stage timings.
-    timings: ferric_pbc::PbcTimings,
-    /// Analytic forces / stress (when requested).
-    derivs: pbc::Derivs,
-}
-
-/// Which periodic J/K builder `run_rhf_gamma` injects.
-enum GammaJk {
-    /// Dense pure-AFT ERI, hard-capped at `max_bytes`.
-    Dense { max_bytes: usize },
-    /// RS-GDF with `aux` (prepared on the cell's atoms), an optional
-    /// explicit budget (`None` = ferric's unified budget chain) and the
-    /// opt-in range split (`None` = off; energy-only, see
-    /// `pbc::parse_range_split`). `gdf_omega_bohr`: the RS-GDF Ewald split
-    /// (Bohr⁻¹; `None` = `DEFAULT_RSGDF_OMEGA`, bit for bit).
-    /// `sr_column_rotation`: the RESOLVED column rotation of the hcore and
-    /// RS-GDF SR walks (`On` / `Off`, never `Auto`; on by default, forces
-    /// and stress differentiate the same walks, see
-    /// `pbc::parse_sr_column_rotation`).
-    RsGdf {
-        aux: Box<PreparedBasis>,
-        budget_bytes: Option<usize>,
-        range_split: Option<ferric_pbc::RangeSplit>,
-        gdf_omega_bohr: Option<f64>,
-        sr_column_rotation: ferric_pbc::SrColumnRotation,
-    },
-}
-
-impl GammaJk {
-    /// The explicit RS-GDF Ewald split (Bohr⁻¹; `None` = the default, or
-    /// dense AFT).
-    fn gdf_omega_bohr(&self) -> Option<f64> {
-        match self {
-            GammaJk::Dense { .. } => None,
-            GammaJk::RsGdf { gdf_omega_bohr, .. } => *gdf_omega_bohr,
-        }
-    }
-
-    /// The resolved SR column rotation of the hcore and RS-GDF builds
-    /// (`Off` with dense AFT, which never rotates).
-    fn sr_column_rotation(&self) -> ferric_pbc::SrColumnRotation {
-        match self {
-            GammaJk::Dense { .. } => ferric_pbc::SrColumnRotation::Off,
-            GammaJk::RsGdf {
-                sr_column_rotation, ..
-            } => *sr_column_rotation,
-        }
-    }
-}
-
-/// Periodic hcore -> injected J/K (dense AFT or RS-GDF) ->
-/// `solve_rhf_injected`. The same assembly as
-/// `crates/ferric-pbc/tests/common/mod.rs::{gamma_rhf, gamma_rhf_jk}`.
-fn gamma_rhf_driver(
-    cell: &ferric_pbc::Cell,
-    prep: &PreparedBasis,
-    exx: ferric_pbc::ExxDiv,
-    omega_bohr: Option<f64>,
-    jk: &GammaJk,
-    config: &RhfConfig,
-    want: pbc::DerivRequest,
-) -> Result<GammaRun, ferric_core::FerricError> {
-    use ferric_pbc::dense_aft::{DenseAftEri, DEFAULT_DENSE_AFT_PRECISION};
-    use ferric_pbc::hcore::{periodic_hcore, PeriodicHcoreConfig};
-    use ferric_pbc::rsgdf::{RsGdf, RsGdfConfig};
-    let total = ferric_pbc::StageClock::start();
-    // The default hcore split is capped by the RS-GDF LR sphere, so it
-    // follows an explicit gdf_omega (absent: `for_cell`, bit for bit).
-    let w = match omega_bohr {
-        Some(w) => w,
-        None => PeriodicHcoreConfig::for_cell_and_gdf_omega(cell, jk.gdf_omega_bohr()).omega,
-    };
-    let hcfg = PeriodicHcoreConfig {
-        sr_column_rotation: jk.sr_column_rotation(),
-        ..PeriodicHcoreConfig::with_omega(w)
-    };
-    let hc = periodic_hcore(cell, prep, &hcfg)?;
-    let mut timings = ferric_pbc::PbcTimings::default();
-    timings.absorb(&hc.timings);
-    let op = Operator::coulomb();
-    // Never read on the injected path; required by the signature.
-    let bounds = SchwarzBounds::compute(op, prep)?;
-    let ctx = ParallelContext::default();
-    #[allow(clippy::too_many_arguments)]
-    fn inject<'a>(
-        ctx: &ParallelContext,
-        cell: &ferric_pbc::Cell,
-        prep: &PreparedBasis,
-        bounds: &SchwarzBounds,
-        config: &RhfConfig,
-        hc: &ferric_pbc::PeriodicHcore,
-        j: Box<dyn ferric_scf::fock::JBuilder + 'a>,
-        k: Box<dyn ferric_scf::fock::KBuilder + 'a>,
-    ) -> Result<ScfResult, ferric_core::FerricError> {
-        let inj = ferric_scf::rhf::PeriodicInjection {
-            s: hc.s.clone(),
-            h: hc.h.clone(),
-            vnn: hc.enn,
-            j,
-            k,
-            xc: None,
-        };
-        let op = Operator::coulomb();
-        ferric_scf::rhf::solve_rhf_injected(ctx, cell.mol(), prep, op, bounds, config, inj)
-    }
-    let derivs_of = |scf: &ScfResult,
-                     jk: pbc::DerivJk<'_>,
-                     budget_bytes: Option<usize>|
-     -> Result<pbc::Derivs, ferric_core::FerricError> {
-        if !want.any() {
-            return Ok(pbc::Derivs::default());
-        }
-        let ctx = pbc::DerivCtx {
-            cell,
-            prep,
-            hcfg: &hcfg,
-            hc: &hc,
-            jk,
-            scf,
-            budget_bytes,
-            // Read only by a meta-GGA RKS derivative; this is RHF.
-            max_eri_bytes: ferric_pbc::dense_aft::DEFAULT_DENSE_AFT_MAX_BYTES,
-        };
-        pbc::gamma_derivatives(&ctx, pbc::DerivMethod::Rhf(exx), want)
-    };
-    let (scf, n_g_half, rsgdf_counts, derivs) = match jk {
-        GammaJk::Dense { max_bytes } => {
-            let eri = DenseAftEri::build(
-                cell,
-                prep,
-                &hc.s,
-                exx,
-                DEFAULT_DENSE_AFT_PRECISION,
-                *max_bytes,
-            )?;
-            let (j, k) = (Box::new(eri.j_builder()), Box::new(eri.k_builder()));
-            let scf = inject(&ctx, cell, prep, &bounds, config, &hc, j, k)?;
-            timings.absorb(&eri.timings());
-            let d = derivs_of(&scf, pbc::DerivJk::Dense(&eri), None)?;
-            (scf, Some(eri.n_g_half()), None, d)
-        }
-        GammaJk::RsGdf {
-            aux,
-            budget_bytes,
-            range_split,
-            gdf_omega_bohr,
-            sr_column_rotation,
-        } => {
-            let cfg = RsGdfConfig {
-                omega: gdf_omega_bohr.unwrap_or(ferric_pbc::rsgdf::DEFAULT_RSGDF_OMEGA),
-                exxdiv: exx,
-                budget_bytes: *budget_bytes,
-                range_split: *range_split,
-                sr_column_rotation: *sr_column_rotation,
-                ..Default::default()
-            };
-            // The gradient build is bitwise the energy's B plus the metric
-            // pieces the RS-GDF forces/stress need.
-            let gdf = if want.any() {
-                RsGdf::build_for_gradient(cell, prep, aux, &hc.s, &cfg)?
-            } else {
-                RsGdf::build(cell, prep, aux, &hc.s, &cfg)?
-            };
-            let st = gdf.stats();
-            let counts = (st.naux, st.naux_kept, st.n_dropped);
-            let (j, k) = (Box::new(gdf.j_builder()), Box::new(gdf.k_builder()));
-            let scf = inject(&ctx, cell, prep, &bounds, config, &hc, j, k)?;
-            timings.absorb(&gdf.timings());
-            let fit = ferric_pbc::RsGdfGradSource {
-                gdf: &gdf,
-                aux,
-                aux_jac: None,
-            };
-            let d = derivs_of(&scf, pbc::DerivJk::Fit(fit), *budget_bytes)?;
-            (scf, None, Some(counts), d)
-        }
-    };
-    // Reported for both exxdiv settings (the builders only store it for Ewald).
-    let madelung = ferric_pbc::ewald::madelung_constant(cell)?;
-    timings.finish(&total);
-    Ok(GammaRun {
-        scf,
-        s: hc.s,
-        enn: hc.enn,
-        omega_bohr: hc.omega,
-        madelung,
-        n_g_half,
-        rsgdf_counts,
-        timings,
-        derivs,
-    })
-}
-
-/// Resolve `run_rhf_gamma`'s `auxbasis` kwarg: a `BasisSet` object or a
-/// bundled basis name. An unknown name is a `ValueError`.
-fn gamma_auxbasis(fname: &str, obj: &Bound<'_, PyAny>) -> PyResult<ferric_core::basis::BasisSet> {
-    if let Ok(bs) = obj.extract::<PyRef<'_, PyBasisSet>>() {
-        return Ok(bs.inner.clone());
-    }
-    if let Ok(name) = obj.extract::<String>() {
-        return basis::bundled(&name).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!(
-                "{fname}: auxbasis {name:?} is not a bundled basis: {e}"
-            ))
-        });
-    }
-    Err(pyo3::exceptions::PyTypeError::new_err(format!(
-        "{fname}: auxbasis must be a BasisSet or a bundled basis name (str)"
-    )))
-}
-
-/// Parsed and validated `run_rhf_gamma` options (strict: every knob the chosen
-/// J/K path would ignore is an error, never a silent no-op).
-struct GammaOptions {
-    exx: ferric_pbc::ExxDiv,
-    lattice_bohr: [[f64; 3]; 3],
-    omega_bohr: Option<f64>,
-}
-
-#[allow(clippy::too_many_arguments)]
-fn parse_gamma_options(
-    fname: &str,
-    exxdiv: &str,
-    jk: &str,
-    auxbasis_given: bool,
-    max_eri_gb: Option<f64>,
-    memory_budget_gb: Option<f64>,
-    lattice: &[Vec<f64>],
-    omega: Option<f64>,
-) -> PyResult<GammaOptions> {
-    let auxbasis: Option<()> = if auxbasis_given { Some(()) } else { None };
-    let val_err = |m: String| pyo3::exceptions::PyValueError::new_err(m);
-    let exx = ferric_pbc::ExxDiv::parse_config_str(exxdiv).map_err(|e| val_err(format!("{e}")))?;
-    let use_rsgdf = match jk.to_ascii_lowercase().as_str() {
-        "dense" => false,
-        "rsgdf" => true,
-        other => {
-            return Err(val_err(format!(
-                "{fname}: jk must be \"dense\" or \"rsgdf\", got {other:?}"
-            )))
-        }
-    };
-    // Knobs the chosen path would ignore are errors, not silent no-ops.
-    if use_rsgdf {
-        if auxbasis.is_none() {
-            return Err(val_err(format!(
-                "{fname}: jk=\"rsgdf\" requires auxbasis (a BasisSet or a bundled \
-                 name such as \"cc-pvdz-ri\" or \"def2-universal-jkfit\"); there is no \
-                 default aux basis"
-            )));
-        }
-        if let Some(g) = max_eri_gb {
-            return Err(val_err(format!(
-                "{fname}: max_eri_gb={g} caps the dense AFT tensor and is ignored \
-                 by jk=\"rsgdf\"; bound RS-GDF with memory_budget_gb instead"
-            )));
-        }
-    } else {
-        if auxbasis.is_some() {
-            return Err(val_err(format!(
-                "{fname}: auxbasis is only used by jk=\"rsgdf\"; jk=\"dense\" would \
-                 ignore it. Pass jk=\"rsgdf\" or drop auxbasis."
-            )));
-        }
-        if let Some(g) = memory_budget_gb {
-            return Err(val_err(format!(
-                "{fname}: memory_budget_gb={g} bounds RS-GDF and is ignored by \
-                 jk=\"dense\"; bound the dense tensor with max_eri_gb instead"
-            )));
-        }
-    }
-    if lattice.len() != 3 || lattice.iter().any(|r| r.len() != 3) {
-        return Err(val_err(format!(
-            "{fname}: lattice must be 3x3 (three row vectors, Ångström), got {} rows",
-            lattice.len()
-        )));
-    }
-    let mut a = [[0.0_f64; 3]; 3];
-    for (i, row) in lattice.iter().enumerate() {
-        for (j, v) in row.iter().enumerate() {
-            a[i][j] = v * ANGSTROM_TO_BOHR;
-        }
-    }
-    let omega_bohr = match omega {
-        None => None,
-        Some(w) if w.is_finite() && w > 0.0 => Some(w / ANGSTROM_TO_BOHR),
-        Some(w) => {
-            return Err(val_err(format!(
-                "{fname}: omega must be finite and > 0 (Å⁻¹), got {w}"
-            )))
-        }
-    };
-    for (name, v) in [
-        ("max_eri_gb", max_eri_gb),
-        ("memory_budget_gb", memory_budget_gb),
-    ] {
-        if let Some(g) = v {
-            if !(g.is_finite() && g > 0.0) {
-                return Err(val_err(format!(
-                    "{fname}: {name} must be finite and > 0, got {g}"
-                )));
-            }
-        }
-    }
-    Ok(GammaOptions {
-        exx,
-        lattice_bohr: a,
-        omega_bohr,
-    })
-}
-
-/// Closed-shell **Gamma-point periodic RHF** (3-D periodic, one k-point).
-///
-/// Two J/K builders, chosen by `jk` (strict; default `"dense"`):
-///
-///   "dense"  TOY-SCALE ORACLE. The dense pure-AFT ERI (`ferric_pbc::dense_aft`):
-///            an `8 * nao^4`-byte tensor, HARD-capped by `max_eri_gb` (default
-///            0.5 GiB, i.e. nao <= ~90). An oversize cell is a `ValueError`
-///            raised before any integral work. Exact to the AFT precision.
-///   "rsgdf"  Range-separated Gaussian density fitting (`ferric_pbc::rsgdf`,
-///            PySCF RSGDF convention, omega_gdf = 1 Bohr⁻¹ unless
-///            `gdf_omega` is given, lindep 1e-10).
-///            REQUIRES `auxbasis`: a `BasisSet` or a bundled name (e.g.
-///            `"cc-pvdz-ri"`, `"def2-universal-jkfit"`). There is no default
-///            aux basis: the fitting error depends on the aux/orbital pairing
-///            (H2/STO-3G: -2.0e-6 Ha with cc-pvdz-ri, -4.5e-6 with
-///            def2-universal-jkfit), so an implicit choice would hide it.
-///            Memory is gated by ferric's unified budget: `memory_budget_gb`
-///            (None = `FERRIC_MEM_BUDGET_GB` / 0.8 x available RAM).
-///
-/// `auxbasis`/`memory_budget_gb` with `jk="dense"`, or `max_eri_gb` with
-/// `jk="rsgdf"`, is a `ValueError` (a knob the chosen path ignores would be a
-/// silent no-op).
-///
-/// Units (the ferric Python convention):
-///   mol       `Molecule` whose atoms are the reference cell; its coordinates
-///             are Ångström on input (`from_xyz_string`), Bohr internally.
-///   lattice   3x3 lattice vectors as ROWS, in **Ångström**
-///             (`[[ax, ay, az], [bx, by, bz], [cx, cy, cz]]`), converted with
-///             the same factor the XYZ parser uses.
-///   omega     nuclear-attraction Ewald split in **Å⁻¹** (numerical knob;
-///             any value > 0 gives the same energy to ~1e-9 Ha). None =
-///             `min(2.5 sqrt(pi) / volume^(1/3), 0.9636 Bohr^-1)`
-///             (`ferric_pbc::hcore::default_hcore_omega`, converted to
-///             Å⁻¹ in `result.omega`; with `gdf_omega` given, the cap
-///             follows it: `ferric_pbc::hcore::default_hcore_omega_for_gdf`).
-///             Not the RS-GDF split, which is `gdf_omega`.
-///   energies  Hartree per cell.
-///
-/// Arguments:
-///   exxdiv       "ewald" (default; Madelung-corrected exchange, PySCF
-///                `exxdiv='ewald'`, converges as L^-3) or "none" (drop G=0,
-///                converges as 1/L). Strict: anything else is a ValueError.
-///   jk           "dense" (default) or "rsgdf". Strict.
-///   auxbasis     RS-GDF aux basis (BasisSet or bundled name); rsgdf only.
-///   max_eri_gb   cap on the dense ERI tensor in GiB (> 0; default 0.5);
-///                dense only.
-///   memory_budget_gb  RS-GDF memory budget in GiB (> 0); rsgdf only.
-///   max_iter, density_conv   SCF controls (defaults 200, 1e-10). The guess
-///                is the core-Hamiltonian guess on the lattice S/h (the
-///                molecular SAD guess is not periodic).
-///   with_gradient  (default False) also compute the analytic nuclear
-///                gradient: `result.gradient()`, natoms x 3, dE/dR in
-///                Hartree/Bohr per cell (the molecular `gradient()`
-///                convention). `None` when not requested.
-///   with_stress  (default False) also compute the analytic stress:
-///                `result.stress()`, 3 x 3, σ = (1/Ω) dE/dε in Hartree/Bohr³
-///                (strain of lattice rows AND atoms). Both run on the SCF's
-///                own J/K (rsgdf: B built with its gradient pieces, bitwise
-///                the energy's) and need a converged SCF.
-///   range_split  (default None) opt-in RS-GDF range split
-///                (`ferric_pbc::rsgdf::RangeSplit`): None/False = off (the
-///                unsplit build bit for bit), True = lambda 1 (the rigorous
-///                default), a number > 0 = lambda. Moves the SR blocks whose
-///                FT converges in the LR sphere (orbital primitive exponent
-///                <= lambda*omega_gdf^2/2, aux <= lambda*omega_gdf^2) to G
-///                space; lambda <= 1 adds no G vectors. The split's
-///                primitive counters appear in `timings["counters"]`
-///                ("rsgdf split ..."). rsgdf ENERGY only: with jk="dense" or
-///                with_gradient/with_stress it is a ValueError.
-///   gdf_omega    (default None) the RS-GDF Ewald split omega_gdf in **Å⁻¹**
-///                (like `omega`; finite, > 0). None = 1 Bohr⁻¹
-///                (`ferric_pbc::rsgdf::DEFAULT_RSGDF_OMEGA`), the default
-///                build bit for bit. Any value gives the same energy up to the
-///                fit's truncation; it moves work between the SR lattice sums
-///                (radii ~ 1/omega_gdf) and the LR G sphere (|G| <=
-///                2 omega_gdf sqrt(ln(1/1e-13)); `timings["counters"]["rsgdf
-///                LR half-G"]`). The range split's thresholds and the
-///                gradient/stress follow it. rsgdf only: with jk="dense" it is
-///                a ValueError. Every periodic binding takes the same kwarg.
-///   sr_column_rotation (default None = auto) column rotation of generally
-///                contracted shells (cc-pVXZ-style s/p columns) in the Gamma
-///                hcore SR attraction and RS-GDF SR 3-centre walks
-///                (`ferric_pbc::SrColumnRotation`), back-transformed exactly.
-///                Same energy to the screening precision, fewer SR integral
-///                calls; with_gradient / with_stress differentiate the same
-///                rotated walks (forces/stress equal the unrotated ones to the
-///                screening precision). None: ON for a jk="rsgdf" run, OFF
-///                with jk="dense". False: off (the unrotated build bit for
-///                bit, as is any setting on a basis with nothing to rotate).
-///                True: on, a ValueError with jk="dense". Counters
-///                `timings["counters"]["hcore SR rotated columns"]` and
-///                `["rsgdf SR3 rotated columns"]` (present whenever the
-///                rotation was on, 0 = nothing in the basis rotates; absent
-///                when it was off). The Gamma bindings take it; the k-point
-///                bindings do not take the kwarg, and their RS-GDF energy
-///                builds run the library default (rotated, counter
-///                `["k rsgdf SR3 rotated columns"]`).
-///
-/// Hard errors (ValueError): charged cell (charge != 0; no neutralising-
-/// background correction for electrons), multiplicity != 1 or an odd
-/// electron count (RHF only; counted after the ECP), a non-3x3 or singular lattice,
-/// a bad `exxdiv`/`jk`, an unknown bundled `auxbasis`, a knob given to the
-/// path that ignores it, non-positive `omega`/`max_eri_gb`/`memory_budget_gb`,
-/// an oversize dense cell.
-///
-/// Validated (crates/ferric-python/tests/test_pbc_gamma.py, and the Rust
-/// `pbc_dense_aft_scf` / `pbc_rsgdf` suites): H2/STO-3G in a 4 Bohr cube vs
-/// PySCF 2.13 AFTDF, E = -1.658327061049 (ewald) / -0.949002691179 (none),
-/// to 1e-8 (dense); RS-GDF fitting error E_rsgdf - E_dense vs the Rust suite.
-#[pyfunction]
-#[pyo3(signature = (
-    mol, lattice, basis_set, exxdiv="ewald", omega=None, max_eri_gb=None,
-    max_iter=200, density_conv=1e-10, jk="dense", auxbasis=None,
-    memory_budget_gb=None, with_gradient=false, with_stress=false,
-    range_split=None, gdf_omega=None, sr_column_rotation=None,
-))]
-#[allow(clippy::too_many_arguments)]
-fn run_rhf_gamma(
-    py: Python<'_>,
-    mol: &PyMolecule,
-    lattice: Vec<Vec<f64>>,
-    basis_set: &PyBasisSet,
-    exxdiv: &str,
-    omega: Option<f64>,
-    max_eri_gb: Option<f64>,
-    max_iter: usize,
-    density_conv: f64,
-    jk: &str,
-    auxbasis: Option<&Bound<'_, PyAny>>,
-    memory_budget_gb: Option<f64>,
-    with_gradient: bool,
-    with_stress: bool,
-    range_split: Option<&Bound<'_, PyAny>>,
-    gdf_omega: Option<f64>,
-    sr_column_rotation: Option<bool>,
-) -> PyResult<PyGammaRhfResult> {
-    let val_err = |m: String| pyo3::exceptions::PyValueError::new_err(m);
-    let GammaOptions {
-        exx,
-        lattice_bohr: a,
-        omega_bohr,
-    } = parse_gamma_options(
-        "run_rhf_gamma",
-        exxdiv,
-        jk,
-        auxbasis.is_some(),
-        max_eri_gb,
-        memory_budget_gb,
-        &lattice,
-        omega,
-    )?;
-    let want = pbc::DerivRequest {
-        gradient: with_gradient,
-        stress: with_stress,
-    };
-    let range_split =
-        pbc::parse_range_split("run_rhf_gamma", range_split, auxbasis.is_some(), want)?;
-    let gdf_omega_bohr = pbc::parse_gdf_omega("run_rhf_gamma", gdf_omega, auxbasis.is_some())?;
-    let sr_column_rotation =
-        pbc::parse_sr_column_rotation("run_rhf_gamma", sr_column_rotation, auxbasis.is_some())?;
-    let emol = validate_gamma_cell("run_rhf_gamma", &mol.inner, &basis_set.inner)?;
-    let cell = ferric_pbc::Cell::new(emol, a).map_err(|e| val_err(format!("{e}")))?;
-    let prep = PreparedBasis::new(cell.mol(), &basis_set.inner).map_err(make_err)?;
-    let nao = prep.nbasis();
-    let (jk_choice, aux_name) = match auxbasis {
-        Some(obj) => {
-            let aux_bs = gamma_auxbasis("run_rhf_gamma", obj)?;
-            let aux = PreparedBasis::new(cell.mol(), &aux_bs).map_err(|e| {
-                val_err(format!(
-                    "run_rhf_gamma: auxbasis '{}' cannot be placed on this cell: {e}",
-                    aux_bs.name
-                ))
-            })?;
-            let choice = GammaJk::RsGdf {
-                aux: Box::new(aux),
-                budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-                range_split,
-                gdf_omega_bohr,
-                sr_column_rotation,
-            };
-            (choice, Some(aux_bs.name))
-        }
-        None => {
-            let max_bytes = ferric_core::memory::gib_to_bytes(max_eri_gb.unwrap_or(0.5));
-            // Pre-flight the dense tensor BEFORE the hcore lattice sums
-            // (DenseAftEri re-checks the same bound, so this cannot drift into
-            // a silent pass).
-            let need = 8u128 * (nao as u128).pow(4);
-            if need > max_bytes as u128 {
-                return Err(val_err(format!(
-                    "run_rhf_gamma: the dense AFT ERI tensor needs {need} bytes (nao = {nao}) \
-                     > max_eri_gb cap {max_bytes} bytes. This path is a toy-scale oracle; \
-                     use jk=\"rsgdf\" with an auxbasis for larger cells."
-                )));
-            }
-            (GammaJk::Dense { max_bytes }, None)
-        }
-    };
-    let config = RhfConfig {
-        use_sad_guess: false,
-        density_conv,
-        max_iter,
-        ..Default::default()
-    };
-    let run = py
-        .allow_threads(|| {
-            gamma_rhf_driver(&cell, &prep, exx, omega_bohr, &jk_choice, &config, want)
-        })
-        .map_err(make_err)?;
-    let (naux, naux_kept, n_dropped) = match run.rsgdf_counts {
-        Some((n, k, d)) => (Some(n), Some(k), Some(d)),
-        None => (None, None, None),
-    };
-    Ok(PyGammaRhfResult {
-        energy: run.scf.energy,
-        converged: run.scf.converged,
-        iterations: run.scf.iterations,
-        e_nuc: run.enn,
-        madelung: run.madelung,
-        exxdiv: match exx {
-            ferric_pbc::ExxDiv::Ewald => "ewald".into(),
-            ferric_pbc::ExxDiv::None => "none".into(),
-        },
-        omega: run.omega_bohr * ANGSTROM_TO_BOHR,
-        nao,
-        n_g_half: run.n_g_half,
-        jk: if aux_name.is_some() { "rsgdf" } else { "dense" }.into(),
-        auxbasis: aux_name,
-        naux,
-        naux_kept,
-        n_dropped,
-        overlap_data: run.s,
-        scf_data: run.scf,
-        timings_data: run.timings,
-        gradient_data: run.derivs.gradient,
-        stress_data: run.derivs.stress,
-    })
-}
-
-// ── QM/MM ──
-
-/// An explicit-parameter AMBER-form MM force field topology. Thin wrapper
-/// over `ferric_mm::MmTopology`; this class assigns no parameters of its
-/// own (see `ferric-mm`'s crate docs) — every number here is caller-supplied
-/// data, typically produced by `scripts/validation/mm_topology.py::topology_from_openmm`
-/// or a hand-built toy system.
-///
-/// Units: constructor takes AMBER-convention units (kcal/mol, Angstrom,
-/// degrees), matching most published force fields; internally converted
-/// once to Hartree/Bohr/radians.
-#[pyclass]
-#[pyo3(name = "MmTopology")]
-#[derive(Clone)]
-struct PyMmTopology {
-    inner: ferric_mm::MmTopology,
-}
-
-#[pymethods]
-impl PyMmTopology {
-    /// `bonds`: list of `(i, j, k_kcal_per_mol_per_ang2, r0_angstrom)`.
-    /// `angles`: list of `(i, j, k, k_theta_kcal_per_mol_per_rad2, theta0_degrees)`.
-    /// `torsions`: list of `(i, j, k, l, periodicity, k_phi_kcal_per_mol, phase_degrees)`.
-    /// `sigmas_angstrom`/`epsilons_kcal` are per-atom Lennard-Jones parameters
-    /// (Lorentz-Berthelot mixed at evaluation time).
-    #[staticmethod]
-    #[pyo3(signature = (charges, sigmas_angstrom, epsilons_kcal, bonds, angles, torsions))]
-    #[allow(clippy::too_many_arguments)]
-    fn from_amber_units(
-        charges: Vec<f64>,
-        sigmas_angstrom: Vec<f64>,
-        epsilons_kcal: Vec<f64>,
-        bonds: Vec<(usize, usize, f64, f64)>,
-        angles: Vec<(usize, usize, usize, f64, f64)>,
-        torsions: Vec<(usize, usize, usize, usize, u32, f64, f64)>,
-    ) -> PyResult<Self> {
-        if sigmas_angstrom.len() != charges.len() || epsilons_kcal.len() != charges.len() {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "MmTopology.from_amber_units: charges ({}), sigmas_angstrom ({}) and \
-                 epsilons_kcal ({}) must have the same length",
-                charges.len(),
-                sigmas_angstrom.len(),
-                epsilons_kcal.len()
-            )));
-        }
-        let lj_angstrom_kcal: Vec<(f64, f64)> =
-            sigmas_angstrom.into_iter().zip(epsilons_kcal).collect();
-        let inner = ferric_mm::MmTopology::from_amber_units(
-            charges,
-            lj_angstrom_kcal,
-            bonds,
-            angles,
-            torsions,
-        )
-        .map_err(make_err)?;
-        Ok(Self { inner })
-    }
-
-    fn n_atoms(&self) -> usize {
-        self.inner.n_atoms()
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "MmTopology(n_atoms={}, n_bonds={}, n_angles={}, n_torsions={})",
-            self.inner.n_atoms(),
-            self.inner.bonds.len(),
-            self.inner.angles.len(),
-            self.inner.torsions.len()
-        )
-    }
-}
-
-/// A QM/MM partition: a full structure (ligand + pocket, say) split into a
-/// quantum region and fixed MM point charges, with optional link-atom capping
-/// of cut bonds and a boundary-charge scheme. Thin wrapper over
-/// `ferric_scf::qmmm::QmmmSystem`; no new physics.
-///
-/// Units: this constructor takes **Ångström** (like every other geometry
-/// entry point on the Python side); `point_charges()` and `run_rhf`'s
-/// `point_charges=` kwarg are in **Bohr**. `qm_molecule()` /
-/// `point_charges()` feed the existing `run_rhf` / `run_uhf` / `run_optimize`
-/// unchanged, or use `run_qmmm` for energy + gradients in one call.
-#[pyclass]
-#[pyo3(name = "QmmmSystem")]
-#[derive(Clone)]
-struct PyQmmmSystem {
-    inner: ferric_scf::qmmm::QmmmSystem,
-}
-
-#[pymethods]
-impl PyQmmmSystem {
-    /// `symbols`/`coords_angstrom`/`charges` describe the FULL structure, one
-    /// entry per atom. `charges` are the MM partial charges (e); an atom's
-    /// charge is ignored if it lands in the QM region. Symbols that are not
-    /// elements (e.g. `"X"` for a bare charge site) are allowed in the MM
-    /// region only.
-    ///
-    /// Select the QM region with EITHER `qm_indices` OR `qm_seeds` +
-    /// `qm_radius_angstrom` (every atom within that distance of any seed,
-    /// plus the seeds — the "ligand plus everything within R" pocket case;
-    /// selection is by atom, with no residue completion by default). Add
-    /// `residue_ids` (one entry per atom, `PocketCharges.residue_ids` shape)
-    /// alongside `qm_seeds`/`qm_radius_angstrom` to pull in whole residues
-    /// instead — a residue joins if ANY of its atoms is within radius.
-    /// `residue_ids` together with `qm_indices` is an error (an explicit
-    /// index list has no notion of "whole residue" to complete).
-    /// `widths_angstrom`, when given, must have one entry per atom (0.0 =
-    /// point charge, matching [`ferric_scf::qmmm::QmmmAtom`]'s default).
-    /// Ignored for atoms that end up in the QM region, exactly like `charges`.
-    /// `polarizabilities_angstrom3`, when given, must have one entry per
-    /// atom (0.0 = not a polarizable site) — Thole-damped induced-dipole
-    /// polarizable embedding (see `run_qmmm`'s `thole_a` knob); ignored for
-    /// atoms in the QM region, exactly like `charges`/`widths_angstrom`.
-    #[new]
-    #[pyo3(signature = (symbols, coords_angstrom, charges, qm_indices=None, qm_seeds=None, qm_radius_angstrom=None, residue_ids=None, charge=0, multiplicity=1, widths_angstrom=None, polarizabilities_angstrom3=None))]
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        symbols: Vec<String>,
-        coords_angstrom: Vec<Vec<f64>>,
-        charges: Vec<f64>,
-        qm_indices: Option<Vec<usize>>,
-        qm_seeds: Option<Vec<usize>>,
-        qm_radius_angstrom: Option<f64>,
-        residue_ids: Option<Vec<usize>>,
-        charge: i32,
-        multiplicity: usize,
-        widths_angstrom: Option<Vec<f64>>,
-        polarizabilities_angstrom3: Option<Vec<f64>>,
-    ) -> PyResult<Self> {
-        use ferric_scf::qmmm::{QmSelection, QmmmAtom, QmmmSystem};
-        if symbols.len() != coords_angstrom.len() || symbols.len() != charges.len() {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "symbols ({}), coords_angstrom ({}) and charges ({}) must have the same length",
-                symbols.len(),
-                coords_angstrom.len(),
-                charges.len()
-            )));
-        }
-        if let Some(w) = &widths_angstrom {
-            if w.len() != symbols.len() {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "widths_angstrom ({}) must have one entry per atom ({})",
-                    w.len(),
-                    symbols.len()
-                )));
-            }
-        }
-        if let Some(a) = &polarizabilities_angstrom3 {
-            if a.len() != symbols.len() {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "polarizabilities_angstrom3 ({}) must have one entry per atom ({})",
-                    a.len(),
-                    symbols.len()
-                )));
-            }
-        }
-        if let Some((i, bad)) = coords_angstrom
-            .iter()
-            .enumerate()
-            .find(|(_, c)| c.len() != 3)
-        {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "coords_angstrom[{i}] has {} components, expected 3",
-                bad.len()
-            )));
-        }
-        let atoms: Vec<QmmmAtom> = symbols
-            .iter()
-            .zip(coords_angstrom.iter())
-            .zip(charges.iter())
-            .enumerate()
-            .map(|(i, ((sym, c), &q))| {
-                let zn = ferric_core::elements::symbol_to_z(sym).unwrap_or(0);
-                let width_bohr = widths_angstrom
-                    .as_ref()
-                    .map(|w| w[i] * ANGSTROM_TO_BOHR)
-                    .unwrap_or(0.0);
-                let alpha_bohr3 = polarizabilities_angstrom3
-                    .as_ref()
-                    .map(|a| a[i] * ANGSTROM_TO_BOHR.powi(3))
-                    .unwrap_or(0.0);
-                QmmmAtom::new_smeared(
-                    sym.clone(),
-                    zn,
-                    c[0] * ANGSTROM_TO_BOHR,
-                    c[1] * ANGSTROM_TO_BOHR,
-                    c[2] * ANGSTROM_TO_BOHR,
-                    q,
-                    width_bohr,
-                )
-                .with_alpha(alpha_bohr3)
-            })
-            .collect();
-        let selection = match (qm_indices, qm_seeds, qm_radius_angstrom, residue_ids) {
-            (Some(idx), None, None, None) => QmSelection::Indices(idx),
-            (None, Some(seeds), Some(r), None) => QmSelection::WithinRadius {
-                seeds,
-                radius: r * ANGSTROM_TO_BOHR,
-            },
-            (None, Some(seeds), Some(r), Some(residue_ids)) => {
-                QmSelection::WithinRadiusWholeResidues {
-                    seeds,
-                    radius: r * ANGSTROM_TO_BOHR,
-                    residue_ids,
-                }
-            }
-            _ => {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "select the QM region with EITHER qm_indices OR qm_seeds + \
-                     qm_radius_angstrom (+ optional residue_ids)",
-                ))
-            }
-        };
-        let inner = QmmmSystem::new(&atoms, selection, charge, multiplicity).map_err(make_err)?;
-        if let Some(&bad) = inner.qm_indices.iter().find(|&&i| atoms[i].z == 0) {
-            // Say WHY it is there and what to do. A bare-charge site (symbol
-            // "X", z = 0) is how a pocket point charge enters the structure --
-            // it has no basis, so it can never be QM. The common way to hit
-            // this is sizing a QM region by RADIUS: the sphere grows until it
-            // reaches the pocket, and the message then has to distinguish "you
-            // picked a bad atom" from "your radius is too large", which the
-            // bare index did not.
-            let n_bare = atoms.iter().filter(|a| a.z == 0).count();
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "QM atom {bad} has symbol {:?}, which is not an element, so it \
-                 cannot be in the QM region -- a bare-charge site (z = 0) has no \
-                 basis functions. This structure has {n_bare} such site(s), which \
-                 is how MM point charges are represented. If you selected by \
-                 radius, REDUCE qm_radius_angstrom until the sphere holds only \
-                 real atoms, or list the QM atoms explicitly with qm_indices.",
-                atoms[bad].symbol
-            )));
-        }
-        Ok(Self { inner })
-    }
-
-    /// Cap every bond in `bonds` (index pairs into the full structure) that
-    /// the partition cuts with a scaled-position link hydrogen at `scale` of
-    /// the bond length from the QM atom (default 1.09/1.53, the C–C case).
-    /// Returns a new system; `self` is unchanged.
-    #[pyo3(signature = (bonds, scale=None))]
-    fn with_link_atoms(&self, bonds: Vec<(usize, usize)>, scale: Option<f64>) -> PyResult<Self> {
-        let scale = scale.unwrap_or(ferric_scf::qmmm::DEFAULT_LINK_SCALE);
-        Ok(Self {
-            inner: self
-                .inner
-                .clone()
-                .with_link_atoms(&bonds, scale)
-                .map_err(make_err)?,
-        })
-    }
-
-    /// Apply a boundary-charge scheme to the MM host atom of each cut bond:
-    /// `"keep"` (untreated, default), `"delete-host"` (Z1), `"rc"`
-    /// (redistributed charge onto M1–M2 bond midpoints; conserves charge) or
-    /// `"rcd"` (also conserves the M1–M2 dipole). Needs the full bond list to
-    /// find the M2 shell. Returns a new system.
-    fn with_boundary_charges(&self, bonds: Vec<(usize, usize)>, scheme: &str) -> PyResult<Self> {
-        let scheme = ferric_scf::qmmm::BoundaryChargeScheme::parse_config_str(scheme)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-        Ok(Self {
-            inner: self
-                .inner
-                .clone()
-                .with_boundary_charges(&bonds, scheme)
-                .map_err(make_err)?,
-        })
-    }
-
-    /// The QM region (plus link hydrogens, appended last) as a `Molecule`.
-    fn qm_molecule(&self) -> PyMolecule {
-        PyMolecule {
-            inner: self.inner.to_qm_molecule(),
-        }
-    }
-    /// Every POINT embedding charge as `(q, x, y, z)` in **Bohr** — directly
-    /// usable as `point_charges=` for `run_rhf`/`run_uhf`/`run_optimize`.
-    /// Gaussian-smeared charges (`width > 0`) are NOT included here — see
-    /// `smeared_charges()`.
-    fn point_charges(&self) -> Vec<(f64, f64, f64, f64)> {
-        self.inner
-            .to_external_potential()
-            .map(|ep| {
-                ep.point_charges
-                    .iter()
-                    .map(|pc| (pc.q, pc.x, pc.y, pc.z))
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-    /// Every Gaussian-smeared embedding charge as `(q, x, y, z, width_bohr)`
-    /// — directly usable as `smeared_charges=` for `run_rhf`/`run_uhf`.
-    /// Point charges (`width == 0`) are NOT included here — see
-    /// `point_charges()`.
-    fn smeared_charges(&self) -> Vec<(f64, f64, f64, f64, f64)> {
-        self.inner
-            .to_external_potential()
-            .map(|ep| {
-                ep.smeared_charges
-                    .iter()
-                    .map(|sc| (sc.q, sc.x, sc.y, sc.z, sc.width))
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-    /// Positions (Bohr) of every embedding charge that actually enters the
-    /// potential, in the SAME canonical order as `mm_forces()`'s rows:
-    /// atom-centred charges (point AND Gaussian-smeared interleaved, in
-    /// ascending full-structure atom index) first, then any RC/RCD midpoint
-    /// charges. This is NOT the concatenation of `point_charges()` then
-    /// `smeared_charges()` unless every charge in this system is one kind —
-    /// use this method's order, not those two lists', to interpret
-    /// `mm_forces()`.
-    fn mm_charge_positions(&self) -> Vec<(f64, f64, f64)> {
-        self.inner
-            .mm_charge_positions()
-            .into_iter()
-            .map(|[x, y, z]| (x, y, z))
-            .collect()
-    }
-    /// Full-structure indices of the QM atoms (ascending; link atoms excluded).
-    fn qm_indices(&self) -> Vec<usize> {
-        self.inner.qm_indices.clone()
-    }
-    /// Full-structure indices of the MM atoms (ascending).
-    fn mm_indices(&self) -> Vec<usize> {
-        self.inner.mm_indices.clone()
-    }
-    /// Number of real QM atoms (link hydrogens occupy `qm_molecule()` indices
-    /// `qm_atom_count()..`).
-    fn qm_atom_count(&self) -> usize {
-        self.inner.qm_atom_count()
-    }
-    /// Number of atoms in the full structure.
-    fn natoms(&self) -> usize {
-        self.inner.atoms.len()
-    }
-    /// Every atom's current position in **Ångström**, in full-structure
-    /// index order (the same ordering `qm_indices()`/`mm_indices()` index
-    /// into) — regardless of QM/MM role. Useful for comparing a system
-    /// before/after `run_optimize_qmmm` (e.g. to check whether a
-    /// particular MM atom actually moved).
-    fn atom_coords_angstrom(&self) -> Vec<(f64, f64, f64)> {
-        self.inner
-            .atoms
-            .iter()
-            .map(|a| {
-                (
-                    a.x / ANGSTROM_TO_BOHR,
-                    a.y / ANGSTROM_TO_BOHR,
-                    a.z_pos / ANGSTROM_TO_BOHR,
-                )
-            })
-            .collect()
-    }
-    /// Link hydrogen positions in **Ångström**, in `qm_molecule()` order.
-    fn link_atom_positions(&self) -> Vec<(f64, f64, f64)> {
-        self.inner
-            .link_atoms
-            .iter()
-            .map(|l| {
-                (
-                    l.position[0] / ANGSTROM_TO_BOHR,
-                    l.position[1] / ANGSTROM_TO_BOHR,
-                    l.position[2] / ANGSTROM_TO_BOHR,
-                )
-            })
-            .collect()
-    }
-    /// Shortest link-hydrogen-to-MM-charge distance in **Ångström**, or
-    /// `None` without link atoms / charges. A diagnostic: under ~0.5–1 Å you
-    /// want `with_boundary_charges("rcd")`.
-    fn min_link_to_charge_distance(&self) -> Option<f64> {
-        self.inner
-            .min_link_to_charge_distance()
-            .map(|d| d / ANGSTROM_TO_BOHR)
-    }
-    /// The boundary scheme currently applied, as its config string.
-    fn boundary_scheme(&self) -> &'static str {
-        self.inner.boundary_scheme.config_str()
-    }
-    fn __repr__(&self) -> String {
-        format!(
-            "QmmmSystem(n_qm={}, n_mm={}, n_link={}, scheme={:?})",
-            self.inner.qm_atom_count(),
-            self.inner.mm_indices.len(),
-            self.inner.link_atoms.len(),
-            self.inner.boundary_scheme.config_str()
-        )
-    }
-}
-
-/// Result of `run_qmmm`: the embedded SCF energy and the three gradient
-/// views. All gradients are `dE/dR` in Hartree/Bohr except `mm_forces()`,
-/// which is the FORCE (`−dE/dR`) on each embedding charge, because that is
-/// what an MM integrator consumes.
-#[pyclass]
-#[pyo3(name = "QmmmResult")]
-struct PyQmmmResult {
-    #[pyo3(get)]
-    energy: f64,
-    #[pyo3(get)]
-    converged: bool,
-    #[pyo3(get)]
-    iterations: usize,
-    /// Thole-damped polarizable-embedding polarisation energy (Hartree).
-    /// `0.0` when no atom in the system carries a nonzero polarisability
-    /// (`polarizabilities_angstrom3` was omitted or all-zero) — the exact
-    /// non-polarizable code path, matching
-    /// `PolarizableSites{sites: vec![], ..}`'s bit-identical-to-off anchor.
-    #[pyo3(get)]
-    e_pol: f64,
-    qm_gradient_data: Array2<f64>,
-    mm_forces_data: Vec<[f64; 3]>,
-    full_gradient_data: Array2<f64>,
-    mm_energy_data: ferric_mm::MmEnergy,
-    induced_dipoles_data: Option<Array2<f64>>,
-}
-
-#[pymethods]
-impl PyQmmmResult {
-    /// `dE/dR` on the QM molecule as solved: real QM atoms then link
-    /// hydrogens, `(n_qm + n_link, 3)`.
-    fn qm_gradient<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        PyArray2::from_array(py, &self.qm_gradient_data)
-    }
-    /// Force on each embedding charge, `(n_charges, 3)`, in
-    /// `QmmmSystem.mm_charge_positions()` order: atom-centred charges (point
-    /// AND Gaussian-smeared interleaved, ascending full-structure atom
-    /// index), then any RC/RCD midpoint charges. This is **NOT**
-    /// `QmmmSystem.point_charges()` order once any charge is Gaussian-smeared
-    /// (`widths_angstrom`/`smeared_charges()` nonzero) — `point_charges()`
-    /// only lists the point subset, so zipping it with `mm_forces()` silently
-    /// misaligns rows whenever a smeared charge is present. Zipping
-    /// `point_charges()` with `mm_forces()` is only valid when the system has
-    /// no smeared charges at all (`smeared_charges() == []`); otherwise read
-    /// `mm_charge_positions()` alongside this array.
-    fn mm_forces<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        let n = self.mm_forces_data.len();
-        let mut a = Array2::<f64>::zeros((n, 3));
-        for (i, f) in self.mm_forces_data.iter().enumerate() {
-            for k in 0..3 {
-                a[(i, k)] = f[k];
-            }
-        }
-        PyArray2::from_array(py, &a)
-    }
-    /// `dE/dR` over every REAL atom of the full structure, `(natoms, 3)`:
-    /// link-atom rows chain-ruled onto their hosts, MM forces mapped onto the
-    /// atoms carrying the charges (midpoint charges split half/half).
-    fn full_gradient<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        PyArray2::from_array(py, &self.full_gradient_data)
-    }
-    /// The MM force-field energy components (Hartree), as a dict with keys
-    /// `bond`/`angle`/`torsion`/`lj`/`coulomb`/`total`. All-zero when
-    /// `run_qmmm` was not given `mm_topology=` (no MM force field at all —
-    /// the exactness contract: omitting it and passing an all-zero
-    /// topology are indistinguishable here).
-    #[getter]
-    fn mm_energy(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
-        let d = pyo3::types::PyDict::new(py);
-        d.set_item("bond", self.mm_energy_data.bond)?;
-        d.set_item("angle", self.mm_energy_data.angle)?;
-        d.set_item("torsion", self.mm_energy_data.torsion)?;
-        d.set_item("lj", self.mm_energy_data.lj)?;
-        d.set_item("coulomb", self.mm_energy_data.coulomb)?;
-        d.set_item("total", self.mm_energy_data.total)?;
-        Ok(d.into())
-    }
-    /// Converged Thole-damped polarizable-embedding induced dipoles
-    /// (`(n_sites, 3)`, a.u.), in the SAME atom order
-    /// `QmmmSystem.mm_indices()` filtered to `alpha > 0` would produce
-    /// (ascending full-structure index) — `None` when no site was
-    /// polarizable (`e_pol == 0.0` in that case too).
-    fn induced_dipoles<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
-        self.induced_dipoles_data
-            .as_ref()
-            .map(|d| PyArray2::from_array(py, d))
-    }
-    fn __repr__(&self) -> String {
-        format!(
-            "QmmmResult(energy={:.10}, converged={}, e_pol={:.3e}, n_full={})",
-            self.energy,
-            self.converged,
-            self.e_pol,
-            self.full_gradient_data.nrows()
-        )
-    }
-}
-
-/// Embedded SCF energy plus gradients for a `QmmmSystem` in one call.
-///
-/// `method` is `"rhf"` (default), `"uhf"`, `"rks"` or `"uks"`. The SCF knobs
-/// mirror `run_rhf`/`run_ksdft`: `xc` selects the functional for `"rks"`/
-/// `"uks"` (required for those methods; RI-J/RI-K aux is set to
-/// `def2-universal-jkfit` automatically, matching `run_ksdft`) and is
-/// rejected for `"rhf"`/`"uhf"` (passing a functional to a method that
-/// ignores it would silently produce a plain-HF result). No MM force field
-/// is involved (unless `mm_topology=` is given): the energy is `E_QM` in
-/// the field of the fixed charges (plus the classical charge-nuclear term),
-/// and the gradients are its exact derivatives.
-///
-/// **Thole-damped polarizable embedding**: if `system` was built with
-/// `polarizabilities_angstrom3=` (any nonzero entry among the MM atoms),
-/// `thole_a` sets the Thole damping parameter (`None`/omitted = the
-/// standard default `2.1304`; pass `0.0` to disable damping entirely — the
-/// bare point-dipole tensor). `QmmmResult.e_pol`/`.induced_dipoles()`
-/// report the polarisation energy and converged dipoles. The QM gradient
-/// correctly includes the polarizable Fock-term contribution for ALL FOUR
-/// methods (`"rhf"`/`"uhf"`/`"rks"`/`"uks"`, via `rhf_gradient_with_polarizable`/
-/// `uhf_gradient_with_polarizable`/`ks_gradient_closed_with_polarizable`/
-/// `ks_gradient_uks_with_polarizable` — see `ferric_scf::polarizable`'s Task
-/// B3/B4 gradients; the term is a fixed-mu Hellmann-Feynman contraction
-/// depending only on the total spin-summed density, so it applies
-/// identically to every SCF variant, see `polarizable_gradient_term`'s
-/// doc). **`mm_forces()`/`full_gradient()` DO include every
-/// polarizable-embedding force term as of Lane B5**: a polarizable site's
-/// own `dE_pol/dR_site` (`ferric_scf::qmmm::polarizable_site_gradient`) AND
-/// the reaction force every embedding charge feels from the OTHER sites'
-/// induced dipoles (`ferric_scf::qmmm::polarizable_charge_gradient_rows`,
-/// wired via `ferric_scf::polarizable::charge_gradient_contribution` — see
-/// that function's doc for why this is a distinct term from the site's own
-/// row) are both added into `full_gradient()`'s output here, for every
-/// method. Verified against central finite differences of the fully
-/// reconverged total energy on a colocated charge+alpha MM atom (the
-/// realistic force-field case) and a two-site mutual-induction case — see
-/// `crates/ferric-scf/tests/qmmm_polarizable_forces.rs`. Boundary charges
-/// (RC/RCD) combined with a polarizable site are NOT covered by an FD test
-/// (documented gap in that same test file, not a silent one) — the
-/// arithmetic (half the reaction force onto each host) is implemented and
-/// follows the same convention `full_gradient` already uses for
-/// `mm_forces`, but is unverified in combination.
-#[pyfunction]
-#[pyo3(signature = (system, basis_name, method=None, xc=None, max_iter=None, energy_conv=None, density_conv=None, level_shift=None, mom_after_iter=None, guess=None, mm_topology=None, thole_a=None))]
-#[allow(clippy::too_many_arguments)]
-fn run_qmmm(
-    system: &PyQmmmSystem,
-    basis_name: &str,
-    method: Option<&str>,
-    xc: Option<&str>,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
-    level_shift: Option<f64>,
-    mom_after_iter: Option<usize>,
-    guess: Option<&str>,
-    mm_topology: Option<&PyMmTopology>,
-    thole_a: Option<f64>,
-) -> PyResult<PyQmmmResult> {
-    use ferric_scf::gradient::{
-        rhf_gradient, rhf_gradient_with_polarizable, uhf_gradient, uhf_gradient_with_polarizable,
-    };
-    use ferric_scf::ks_gradient::{
-        ks_gradient_closed_with_polarizable_on_grids, ks_gradient_uks_with_exchange_on_grids,
-        ks_gradient_uks_with_polarizable_on_grids,
-    };
-    use ferric_scf::polarizable::{induce, PolarizableSites, DEFAULT_THOLE_A};
-    use ferric_scf::qmmm::{full_gradient_with_mm, mm_forces, qmmm_mm_terms};
-
-    let method = method.unwrap_or("rhf");
-    let is_ks = matches!(method, "rks" | "uks");
-    if xc.is_some() && !is_ks {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "run_qmmm: xc is only valid for method=\"rks\"/\"uks\", got method={method:?}"
-        )));
-    }
-    if is_ks && xc.is_none() {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "run_qmmm: method=\"rks\"/\"uks\" requires xc",
-        ));
-    }
-
-    let sys = &system.inner;
-    let bs = basis::bundled(basis_name).map_err(make_err)?;
-    let mut mol = sys.to_qm_molecule();
-    mol.apply_ecp(&bs);
-    let prep = PreparedBasis::new(&mol, &bs).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let pol_sites = sys.to_polarizable_sites();
-    let polarizable = if pol_sites.is_empty() {
-        None
-    } else {
-        Some(PolarizableSites {
-            sites: pol_sites,
-            thole_a: match thole_a {
-                None => Some(DEFAULT_THOLE_A),
-                Some(a) if a > 0.0 => Some(a),
-                Some(_) => None,
-            },
-            exclusions: Vec::new(),
-            dipole_zeta: 1e4,
-            max_sites_dense: 4000,
-        })
-    };
-    let mut config = RhfConfig {
-        max_iter: max_iter.unwrap_or_else(default_scf_max_iter),
-        energy_conv: energy_conv.unwrap_or(1e-3),
-        density_conv: density_conv.unwrap_or(1e-6),
-        level_shift: level_shift.unwrap_or(0.0),
-        mom_after_iter: mom_after_iter.unwrap_or(0),
-        use_sad_guess: parse_guess(guess)?,
-        external_potential: sys.to_external_potential(),
-        polarizable,
-        ..Default::default()
-    };
-    if is_ks {
-        config.xc = xc.map(|s| s.to_string());
-        // RI-J always on for KS-DFT (matches run_ksdft's density_fit
-        // convention); RI-K only matters for hybrids but is harmless
-        // otherwise (bypassed when k_mix.sr == 0 and k_mix.omega == 0).
-        config.df_j_aux = Some("def2-universal-jkfit".to_string());
-        config.df_k_aux = Some("def2-universal-jkfit".to_string());
-    }
-    let ctx = ParallelContext::default();
-    let ext = config.external_potential.as_ref();
-    let (r, qm_grad) = match method {
-        "rhf" => {
-            let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).map_err(make_err)?;
-            let g = if config.polarizable.is_some() {
-                rhf_gradient_with_polarizable(
-                    &mol,
-                    &prep,
-                    op,
-                    &bounds,
-                    &r,
-                    ext,
-                    config.polarizable.as_ref(),
-                    r.induced_dipoles.as_ref(),
-                )
-                .map_err(make_err)?
-            } else {
-                rhf_gradient(&mol, &prep, op, &bounds, &r, ext).map_err(make_err)?
-            };
-            (r, g)
-        }
-        "uhf" => {
-            let r = solve_uhf(&ctx, &mol, &prep, &bounds, &config).map_err(make_err)?;
-            let g = if config.polarizable.is_some() {
-                uhf_gradient_with_polarizable(
-                    &mol,
-                    &prep,
-                    op,
-                    &bounds,
-                    &r,
-                    ext,
-                    config.polarizable.as_ref(),
-                    r.induced_dipoles.as_ref(),
-                )
-                .map_err(make_err)?
-            } else {
-                uhf_gradient(&mol, &prep, op, &bounds, &r, ext).map_err(make_err)?
-            };
-            (r, g)
-        }
-        "rks" => {
-            let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).map_err(make_err)?;
-            let g = if config.polarizable.is_some() {
-                ks_gradient_closed_with_polarizable_on_grids(
-                    &mol,
-                    &prep,
-                    &bs,
-                    op,
-                    &bounds,
-                    xc.unwrap(),
-                    &r,
-                    ext,
-                    config.polarizable.as_ref(),
-                    r.induced_dipoles.as_ref(),
-                    &KsGradGrids::from_config(&config),
-                )
-                .map_err(make_err)?
-            } else {
-                ks_gradient_closed_with_exchange_on_grids(
-                    &mol,
-                    &prep,
-                    &bs,
-                    op,
-                    &bounds,
-                    xc.unwrap(),
-                    &r,
-                    ext,
-                    None,
-                    &KsGradGrids::from_config(&config),
-                )
-                .map_err(make_err)?
-            };
-            (r, g)
-        }
-        "uks" => {
-            let r = solve_uhf(&ctx, &mol, &prep, &bounds, &config).map_err(make_err)?;
-            let g = if config.polarizable.is_some() {
-                ks_gradient_uks_with_polarizable_on_grids(
-                    &mol,
-                    &prep,
-                    &bs,
-                    op,
-                    &bounds,
-                    xc.unwrap(),
-                    &r,
-                    ext,
-                    config.polarizable.as_ref(),
-                    r.induced_dipoles.as_ref(),
-                    &KsGradGrids::from_config(&config),
-                )
-                .map_err(make_err)?
-            } else {
-                ks_gradient_uks_with_exchange_on_grids(
-                    &mol,
-                    &prep,
-                    &bs,
-                    op,
-                    &bounds,
-                    xc.unwrap(),
-                    &r,
-                    ext,
-                    None,
-                    &KsGradGrids::from_config(&config),
-                )
-                .map_err(make_err)?
-            };
-            (r, g)
-        }
-        m => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "run_qmmm: method must be \"rhf\", \"uhf\", \"rks\" or \"uks\", got {m:?}"
-            )))
-        }
-    };
-    // Recompute e_pol standalone (ScfResult does not carry it directly —
-    // only induced_dipoles) via a single induce() call at the now-converged
-    // density; this reproduces the SAME dipoles the SCF loop's internal
-    // call already used this iteration (see qmmm_polarizable.rs's
-    // matches_pyscf_prototype_* tests, which cross-check this exact
-    // pattern to 1e-7 Ha against the PySCF prototype).
-    let e_pol = if let Some(pol) = config.polarizable.as_ref() {
-        let site_xyz: Vec<[f64; 4]> = pol
-            .sites
-            .iter()
-            .map(|s| [s.x, s.y, s.z, pol.dipole_zeta])
-            .collect();
-        let site_basis_p =
-            ferric_integrals::site_basis::SiteBasis::new(&site_xyz, 1).map_err(make_err)?;
-        let ir =
-            induce(&mol, &prep, ext, pol, &site_basis_p, r.density_total()).map_err(make_err)?;
-        (ir.e_pol, Some(ir.dipoles))
-    } else {
-        (0.0, None)
-    };
-    let (e_pol, induced_dipoles_data) = e_pol;
-
-    let forces = mm_forces(sys, &mol, &prep, r.density_total()).map_err(make_err)?;
-
-    let (mm_energy, mut full) = match mm_topology {
-        Some(top) => {
-            let n = sys.atoms.len();
-            let mut coords_full = Array2::<f64>::zeros((n, 3));
-            for (i, a) in sys.atoms.iter().enumerate() {
-                coords_full[(i, 0)] = a.x;
-                coords_full[(i, 1)] = a.y;
-                coords_full[(i, 2)] = a.z_pos;
-            }
-            let (e_mm, g_mm) = qmmm_mm_terms(sys, &top.inner, &coords_full).map_err(make_err)?;
-            let full = full_gradient_with_mm(sys, &qm_grad, &forces, &g_mm).map_err(make_err)?;
-            (e_mm, full)
-        }
-        None => {
-            let full = ferric_scf::qmmm::full_gradient(sys, &qm_grad, &forces).map_err(make_err)?;
-            (ferric_mm::MmEnergy::default(), full)
-        }
-    };
-
-    // Thole-damped polarizable embedding's own force terms — a polarizable
-    // site's OWN dE_pol/dR_site, plus the reaction force every embedding
-    // charge feels from the OTHER sites' induced dipoles
-    // (`charge_gradient_contribution`) — reusing the SAME dipoles `e_pol`
-    // above just computed (same converged density, same call pattern this
-    // module already documents). See `full_gradient_with_polarizable`'s doc
-    // in `ferric_scf::qmmm` for the full derivation of both terms; this
-    // closes the "mm_forces()/full_gradient() do NOT yet include a
-    // polarizable site's own force" gap this function's doc comment used to
-    // describe.
-    if let Some(pol) = config.polarizable.as_ref() {
-        let dipoles = induced_dipoles_data
-            .as_ref()
-            .expect("polarizable config always produces dipoles");
-        let site_rows = ferric_scf::qmmm::polarizable_site_gradient(
-            sys,
-            &mol,
-            &prep,
-            r.density_total(),
-            ext,
-            pol,
-            dipoles,
-        )
-        .map_err(make_err)?;
-        for (full_idx, g) in site_rows {
-            for k in 0..3 {
-                full[(full_idx, k)] += g[k];
-            }
-        }
-        if let Some(ext) = ext {
-            let charge_rows =
-                ferric_scf::qmmm::polarizable_charge_gradient_rows(sys, ext, pol, dipoles);
-            for (full_idx, g) in charge_rows {
-                for k in 0..3 {
-                    full[(full_idx, k)] += g[k];
-                }
-            }
-        }
-    }
-
-    Ok(PyQmmmResult {
-        energy: r.energy,
-        converged: r.converged,
-        iterations: r.iterations,
-        e_pol,
-        qm_gradient_data: qm_grad,
-        mm_forces_data: forces,
-        full_gradient_data: full,
-        mm_energy_data: mm_energy,
-        induced_dipoles_data,
-    })
-}
-
-/// Result of `run_optimize_qmmm`: the relaxed partition plus its energy
-/// trajectory.
-#[pyclass]
-#[pyo3(name = "QmmmOptimizeResult")]
-struct PyQmmmOptimizeResult {
-    #[pyo3(get)]
-    energy: f64,
-    #[pyo3(get)]
-    converged: bool,
-    #[pyo3(get)]
-    steps: usize,
-    system_data: ferric_scf::qmmm::QmmmSystem,
-    energies_data: Vec<f64>,
-}
-
-#[pymethods]
-impl PyQmmmOptimizeResult {
-    /// The partition at the final (optimized) geometry.
-    fn system(&self) -> PyQmmmSystem {
-        PyQmmmSystem {
-            inner: self.system_data.clone(),
-        }
-    }
-    /// Total energy (Hartree) at every step, in order (length `steps + 1`,
-    /// the first entry being the starting geometry).
-    fn energies(&self) -> Vec<f64> {
-        self.energies_data.clone()
-    }
-    fn __repr__(&self) -> String {
-        format!(
-            "QmmmOptimizeResult(energy={:.10}, converged={}, steps={})",
-            self.energy, self.converged, self.steps
-        )
-    }
-    fn __str__(&self) -> String {
-        format!(
-            "Optimized QM/MM Energy: {:.10} Ha (converged: {}, {} steps)",
-            self.energy, self.converged, self.steps
-        )
-    }
-}
-
-/// Optimize a `QmmmSystem`'s geometry: real QM atoms always move; MM atoms
-/// move per `move_mm`.
-///
-/// `move_mm`: `"none"` (default — only QM atoms move), `"all"` (every MM
-/// atom moves too), `("within", radius_angstrom)` (MM atoms within that
-/// distance of any QM atom, measured once at the starting geometry), or
-/// `("residues", [residue_id, ...])` (requires the system to have been built
-/// with `residue_ids=`, i.e. whole-residue QM selection — `ValueError`
-/// otherwise). Any `move_mm` other than `"none"` requires `mm_topology`
-/// (moving MM atoms with no force field holding their own geometry together
-/// is meaningless).
-///
-/// `method`/`xc` follow `run_qmmm`'s convention: `"rhf"` (default), `"uhf"`,
-/// `"rks"`, `"uks"`; `xc` required for the KS variants, rejected otherwise.
-#[pyfunction]
-#[pyo3(signature = (system, basis_name, method=None, xc=None, move_mm=None, mm_topology=None, max_steps=None, e_conv=None))]
-#[allow(clippy::too_many_arguments)]
-fn run_optimize_qmmm(
-    py: Python<'_>,
-    system: &PyQmmmSystem,
-    basis_name: &str,
-    method: Option<&str>,
-    xc: Option<&str>,
-    move_mm: Option<Bound<'_, PyAny>>,
-    mm_topology: Option<&PyMmTopology>,
-    max_steps: Option<usize>,
-    e_conv: Option<f64>,
-) -> PyResult<PyQmmmOptimizeResult> {
-    use ferric_scf::qmmm::{optimize_qmmm, QmmmMethod, QmmmOptimizeConfig};
-
-    let method_name = method.unwrap_or("rhf");
-    let is_ks = matches!(method_name, "rks" | "uks");
-    if xc.is_some() && !is_ks {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "run_optimize_qmmm: xc is only valid for method=\"rks\"/\"uks\", got method={method_name:?}"
-        )));
-    }
-    if is_ks && xc.is_none() {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "run_optimize_qmmm: method=\"rks\"/\"uks\" requires xc",
-        ));
-    }
-    let qmmm_method = match method_name {
-        "rhf" => QmmmMethod::Rhf,
-        "uhf" => QmmmMethod::Uhf,
-        "rks" => QmmmMethod::Rks(xc.unwrap().to_string()),
-        "uks" => QmmmMethod::Uks(xc.unwrap().to_string()),
-        m => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "run_optimize_qmmm: method must be \"rhf\", \"uhf\", \"rks\" or \"uks\", got {m:?}"
-            )))
-        }
-    };
-
-    let move_mm = parse_move_mm(py, move_mm)?;
-
-    let scf = RhfConfig::default();
-    let opt = OptimizeConfig {
-        max_steps: max_steps.unwrap_or(100),
-        e_conv: e_conv.unwrap_or(1e-6),
-        ..Default::default()
-    };
-    let cfg = QmmmOptimizeConfig {
-        method: qmmm_method,
-        move_mm,
-        opt,
-        mm_topology: mm_topology.map(|t| t.inner.clone()),
-        scf,
-    };
-
-    let ctx = ParallelContext::default();
-    let r = optimize_qmmm(&ctx, &system.inner, basis_name, &cfg).map_err(make_err)?;
-    Ok(PyQmmmOptimizeResult {
-        energy: r.energy,
-        converged: r.converged,
-        steps: r.steps,
-        system_data: r.system,
-        energies_data: r.energies,
-    })
-}
-
-/// Parse the `move_mm=` argument: `None`/`"none"` -> `MoveMm::None`, `"all"`
-/// -> `MoveMm::All`, `("within", radius_angstrom)` -> `MoveMm::WithinRadius`
-/// (converted to Bohr), `("residues", [ids])` -> `MoveMm::Residues`. Any
-/// other value is a `ValueError`, per the repo's config-honesty convention
-/// (never silently default to `"none"` on a typo).
-fn parse_move_mm(
-    py: Python<'_>,
-    move_mm: Option<Bound<'_, PyAny>>,
-) -> PyResult<ferric_scf::qmmm::MoveMm> {
-    use ferric_scf::qmmm::MoveMm;
-    let Some(obj) = move_mm else {
-        return Ok(MoveMm::None);
-    };
-    if let Ok(s) = obj.extract::<String>() {
-        return match s.as_str() {
-            "none" => Ok(MoveMm::None),
-            "all" => Ok(MoveMm::All),
-            other => Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "run_optimize_qmmm: unknown move_mm string {other:?}; expected \"none\", \"all\", \
-                 (\"within\", radius_angstrom), or (\"residues\", [ids])"
-            ))),
-        };
-    }
-    if let Ok((tag, arg)) = obj.extract::<(String, Bound<'_, PyAny>)>() {
-        match tag.as_str() {
-            "within" => {
-                let r: f64 = arg.extract().map_err(|_| {
-                    pyo3::exceptions::PyValueError::new_err(
-                        "run_optimize_qmmm: (\"within\", radius_angstrom) needs a float radius",
-                    )
-                })?;
-                return Ok(MoveMm::WithinRadius(r * ANGSTROM_TO_BOHR));
-            }
-            "residues" => {
-                let ids: Vec<usize> = arg.extract().map_err(|_| {
-                    pyo3::exceptions::PyValueError::new_err(
-                        "run_optimize_qmmm: (\"residues\", [ids]) needs a list of int residue ids",
-                    )
-                })?;
-                return Ok(MoveMm::Residues(ids));
-            }
-            other => {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "run_optimize_qmmm: unknown move_mm tag {other:?}; expected \"within\" or \"residues\""
-                )))
-            }
-        }
-    }
-    let _ = py;
-    Err(pyo3::exceptions::PyValueError::new_err(
-        "run_optimize_qmmm: move_mm must be \"none\", \"all\", (\"within\", radius_angstrom), \
-         or (\"residues\", [ids])",
-    ))
-}
-
-// ── UHF (open-shell) ──
-
-#[pyclass]
-#[pyo3(name = "UhfResult")]
-struct PyUhfResult {
-    #[pyo3(get)]
-    energy: f64,
-    #[pyo3(get)]
-    converged: bool,
-    #[pyo3(get)]
-    iterations: usize,
-    #[pyo3(get)]
-    computed_quartets: usize,
-    density_alpha_data: Array2<f64>,
-    density_beta_data: Array2<f64>,
-    eps_alpha_data: Vec<f64>,
-    eps_beta_data: Vec<f64>,
-    cosx_final: Option<ferric_scf::cosx_k::CosxFinalPass>,
-    guess_basis_report: Option<ferric_scf::basis2::GuessBasisReport>,
-    precision: ferric_core::gpu::provenance::PrecisionRecord,
-}
-
-/// The open-shell result both `run_uhf` and `run_rohf` return. ROHF leaves
-/// `density_beta`/`eps_beta` unset only when the solve has no β channel, so
-/// the fallbacks keep the accessors total.
-impl From<ScfResult> for PyUhfResult {
-    fn from(r: ScfResult) -> Self {
-        PyUhfResult {
-            energy: r.energy,
-            converged: r.converged,
-            iterations: r.iterations,
-            computed_quartets: r.computed_quartets,
-            density_beta_data: r.density_beta.unwrap_or_else(|| r.density_total.clone()),
-            density_alpha_data: r.density_alpha,
-            cosx_final: r.cosx_final,
-            guess_basis_report: r.guess_basis,
-            precision: r.precision,
-            eps_alpha_data: r.eps_alpha,
-            eps_beta_data: r.eps_beta.unwrap_or_default(),
-        }
-    }
-}
-
-#[pymethods]
-impl PyUhfResult {
-    /// The COSX final-grid pass record (see `RhfResult.cosx_final_pass`).
-    #[getter]
-    fn cosx_final_pass(&self, py: Python<'_>) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
-        cosx_final_dict(py, self.cosx_final)
-    }
-    /// The secondary-basis guess (`guess_basis=`): `{"basis", "projection",
-    /// "iterations", "energy", "nbasis_guess", "nbasis_target", "converged",
-    /// "unconverged_reason", "used_as_guess"}` describing the secondary SCF,
-    /// or `None` when no secondary-basis guess ran.
-    #[getter]
-    fn guess_basis(&self, py: Python<'_>) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
-        guess_basis_dict(py, self.guess_basis_report.as_ref())
-    }
-    /// Precision provenance of this SCF (see `RhfResult.precision`).
-    #[getter]
-    fn precision(&self, py: Python<'_>) -> PyResult<PyObject> {
-        precision_dict(py, &self.precision)
-    }
-    fn density_alpha<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        PyArray2::from_array(py, &self.density_alpha_data)
-    }
-    fn density_beta<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        PyArray2::from_array(py, &self.density_beta_data)
-    }
-    fn orbital_energies_alpha<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_vec(py, self.eps_alpha_data.clone())
-    }
-    fn orbital_energies_beta<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_vec(py, self.eps_beta_data.clone())
-    }
-    fn __repr__(&self) -> String {
-        format!(
-            "UhfResult(energy={:.10}, converged={})",
-            self.energy, self.converged
-        )
-    }
-    fn __str__(&self) -> String {
-        format!(
-            "UHF Energy: {:.10} Ha (converged: {}, {} iterations)",
-            self.energy, self.converged, self.iterations
-        )
-    }
-}
-
-/// Unrestricted Hartree-Fock (open-shell). α/β electron counts come from the
-/// molecule's `charge` and `multiplicity` (set via `Molecule.from_xyz_string`).
-/// Exposes the same SCF knob set as `run_rhf`; the convergence aids `level_shift`
-/// and `mom_after_iter` are especially useful for open-shell doublets / radicals
-/// where DIIS plateaus or the occupied set flip-flops.
-///
-///   guess             "minao" (default; "sad" is an alias) or "hcore". The
-///                     bare hcore guess is an explicit opt-in: on some open
-///                     shells (e.g. O2/STO-3G) it converges to a different
-///                     stationary point. An unrecognised value is an error,
-///                     never a silent fallback.
-///   stability_descent False (default). When True, check the converged UHF
-///                     solution's internal stability and, if it is a SADDLE of
-///                     the orbital Hessian, follow the downhill eigenvector and
-///                     re-converge, keeping the lowest state
-///                     (`RhfConfig::check_stability` + `scf_stability_descent`).
-///                     Costs one Davidson eigensolve per solve plus one SCF per
-///                     descent taken. Needed where the default guess lands on a
-///                     saddle: O2 triplet/STO-3G (1.33 mHa above the UHF
-///                     minimum, exactly as PySCF's own default guess does) and
-///                     N2+/6-31G. Before this kwarg the repair was unreachable
-///                     from Python.
-///   trah_trigger    None (default) = off. A positive DIIS-error threshold turns
-///                   on the trust-region augmented-Hessian (TRAH) solver once the
-///                   DIIS error drops below it. A convergence RESCUE: it wins
-///                   iterations but costs wall time. Same as the CLI
-///                   `[scf] trah_trigger`.
-///
-/// Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today; non-convergence raises.
-/// A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts.
-#[pyfunction]
-#[pyo3(signature = (
-    mol, basis_set,
-    max_iter=None, energy_conv=None, density_conv=None, diis_size=None,
-    integral_thresh=None, k_builder=None, df_j_aux=None, df_k_aux=None,
-    level_shift=None, mom_after_iter=None,
-    point_charges=None, external_field=None, memory_budget_gb=None,
-    guess=None, stability_descent=None,
-    cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
-    trah_trigger=None, fock_hook=None, guess_basis=None, guess_projection=None,
-))]
-#[allow(clippy::too_many_arguments)]
-fn run_uhf(
-    py: Python<'_>,
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
-    diis_size: Option<usize>,
-    integral_thresh: Option<f64>,
-    k_builder: Option<&str>,
-    df_j_aux: Option<&str>,
-    df_k_aux: Option<&str>,
-    level_shift: Option<f64>,
-    mom_after_iter: Option<usize>,
-    point_charges: Option<Vec<(f64, f64, f64, f64)>>,
-    external_field: Option<(f64, f64, f64)>,
-    memory_budget_gb: Option<f64>,
-    guess: Option<&str>,
-    stability_descent: Option<bool>,
-    cosx_grid: Option<&Bound<'_, PyAny>>,
-    cosx_final_pass: Option<bool>,
-    cosx_final_grid: Option<&Bound<'_, PyAny>>,
-    cosx_overlap_fit: Option<bool>,
-    trah_trigger: Option<f64>,
-    fock_hook: Option<&Bound<'_, PyAny>>,
-    guess_basis: Option<&str>,
-    guess_projection: Option<&str>,
-) -> PyResult<PyUhfResult> {
-    let trah_trigger = check_trah_trigger(trah_trigger)?;
-    let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
-    // The shared strict parser (same as run_rhf and the CLI): a typo must not
-    // silently select a different SCF state (on O2/STO-3G the two guesses
-    // land on states 0.255 Ha apart).
-    let use_sad_guess = parse_guess(guess)?;
-    // The descent needs a stability verdict to act on, so the kwarg turns on
-    // both halves; `scf_stability_descent` alone only prints a SKIPPED notice.
-    let descent = stability_descent.unwrap_or(false);
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
-    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    // Same defaults as run_rhf / the CLI [scf] section.
-    let config = UhfConfig {
-        max_iter: max_iter.unwrap_or_else(default_scf_max_iter),
-        energy_conv: energy_conv.unwrap_or(1e-3),
-        density_conv: density_conv.unwrap_or(1e-6),
-        diis_size: diis_size.unwrap_or(8),
-        integral_thresh: integral_thresh.unwrap_or(1e-12),
-        k_builder: k_builder.map(|s| s.to_string()),
-        cosx: resolve_cosx_kwargs(
-            k_builder,
-            cosx_grid,
-            cosx_final_pass,
-            cosx_final_grid,
-            cosx_overlap_fit,
-        )?,
-        // Same opt-out spellings as run_dft ("exact"/"none"/"off"/...).
-        df_j_aux: df_j_aux.map(ferric_scf::rhf::normalize_df_aux),
-        df_k_aux: df_k_aux.map(ferric_scf::rhf::normalize_df_aux),
-        level_shift: level_shift.unwrap_or(0.0),
-        mom_after_iter: mom_after_iter.unwrap_or(0),
-        external_potential: build_external_potential(point_charges, external_field),
-        // 0 means "unset -> auto" (resolve_three_index_budget), so an
-        // omitted kwarg preserves the previous auto-detect behaviour.
-        three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb).unwrap_or(0),
-        use_sad_guess,
-        guess_basis,
-        trah_trigger,
-        check_stability: descent,
-        scf_stability_descent: descent,
-        ..Default::default()
-    };
-    let ctx = ParallelContext::default();
-    // Release the GIL for the duration of the SCF. Every argument below is an
-    // owned Rust value (`emol` is a clone; `prep`/`bounds`/`config` are built
-    // above), so nothing Python-borrowed crosses the closure boundary.
-    warn_energy_conv_noise_floor(
-        py,
-        "run_uhf",
-        SolverFamily::OpenShell,
-        energy_conv.is_some(),
-        &emol,
-        &prep,
-        &config,
-    );
-    let r = blocks::solve_open_shell(
-        py,
-        blocks::OpenShell::Uhf,
-        &ctx,
-        &emol,
-        &prep,
-        Operator::coulomb(),
-        &bounds,
-        &config,
-        fock_hook,
-    )?;
-    Ok(r.into())
-}
-
-// ── ROHF (open-shell, spin-pure) ──
-
-/// Restricted Open-Shell Hartree-Fock. α/β occupations come from the
-/// molecule's `charge` and `multiplicity` (set via `Molecule.from_xyz_string`):
-/// `nocc_open = multiplicity - 1` singly-occupied (α) orbitals, the remainder
-/// doubly occupied. Coupling is Guest-Saunders (PySCF default; not a knob).
-/// Returns the same `UhfResult` shape as `run_uhf` — ROHF's `alpha`/`beta`
-/// density and orbital-energy accessors carry the doubly + singly occupied
-/// α set and the doubly-occupied-only β set respectively (single set of
-/// spin-pure MOs, so `mos_alpha`/`mos_beta` coincide internally but the
-/// occupied-orbital semantics differ from UHF). Exposes the same SCF knob
-/// set as `run_rhf`/`run_uhf`.
-///
-/// Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today.
-/// A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts.
-#[pyfunction]
-#[pyo3(signature = (
-    mol, basis_set,
-    max_iter=None, energy_conv=None, density_conv=None, diis_size=None,
-    integral_thresh=None, k_builder=None, df_j_aux=None, df_k_aux=None,
-    level_shift=None, mom_after_iter=None,
-    point_charges=None, external_field=None, memory_budget_gb=None, fock_hook=None,
-    guess_basis=None, guess_projection=None,
-))]
-#[allow(clippy::too_many_arguments)]
-fn run_rohf(
-    py: Python<'_>,
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
-    diis_size: Option<usize>,
-    integral_thresh: Option<f64>,
-    k_builder: Option<&str>,
-    df_j_aux: Option<&str>,
-    df_k_aux: Option<&str>,
-    level_shift: Option<f64>,
-    mom_after_iter: Option<usize>,
-    point_charges: Option<Vec<(f64, f64, f64, f64)>>,
-    external_field: Option<(f64, f64, f64)>,
-    memory_budget_gb: Option<f64>,
-    fock_hook: Option<&Bound<'_, PyAny>>,
-    guess_basis: Option<&str>,
-    guess_projection: Option<&str>,
-) -> PyResult<PyUhfResult> {
-    let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
-    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    // Same defaults as run_rhf / run_uhf / the CLI [scf] section.
-    let config: RohfConfig = RhfConfig {
-        max_iter: max_iter.unwrap_or_else(default_scf_max_iter),
-        energy_conv: energy_conv.unwrap_or(1e-3),
-        density_conv: density_conv.unwrap_or(1e-6),
-        diis_size: diis_size.unwrap_or(8),
-        integral_thresh: integral_thresh.unwrap_or(1e-12),
-        k_builder: k_builder.map(|s| s.to_string()),
-        // Same opt-out spellings as run_dft ("exact"/"none"/"off"/...).
-        df_j_aux: df_j_aux.map(ferric_scf::rhf::normalize_df_aux),
-        df_k_aux: df_k_aux.map(ferric_scf::rhf::normalize_df_aux),
-        level_shift: level_shift.unwrap_or(0.0),
-        mom_after_iter: mom_after_iter.unwrap_or(0),
-        external_potential: build_external_potential(point_charges, external_field),
-        // 0 means "unset -> auto" (resolve_three_index_budget), so an
-        // omitted kwarg preserves the previous auto-detect behaviour.
-        three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb).unwrap_or(0),
-        guess_basis,
-        ..Default::default()
-    };
-    let ctx = ParallelContext::default();
-    // Release the GIL for the duration of the SCF. Every argument below is an
-    // owned Rust value (`emol` is a clone; `prep`/`bounds`/`config` are built
-    // above), so nothing Python-borrowed crosses the closure boundary.
-    warn_energy_conv_noise_floor(
-        py,
-        "run_rohf",
-        SolverFamily::OpenShell,
-        energy_conv.is_some(),
-        &emol,
-        &prep,
-        &config,
-    );
-    let r = blocks::solve_open_shell(
-        py,
-        blocks::OpenShell::Rohf,
-        &ctx,
-        &emol,
-        &prep,
-        op,
-        &bounds,
-        &config,
-        fock_hook,
-    )?;
-    Ok(r.into())
-}
-
-// ── Constrained DFT (cDFT) ──
-
-/// Strict parser for a cDFT constraint `kind`. Unknown values are an error,
-/// never a silent default: "charge" and "spin" select different Lagrangians,
-/// and a typo that quietly picked one would return a converged answer to a
-/// different question.
-fn parse_cdft_kind(kind: &str) -> PyResult<ferric_dft::cdft::SpinChannel> {
-    use ferric_dft::cdft::SpinChannel;
-    match kind.to_ascii_lowercase().as_str() {
-        "charge" => Ok(SpinChannel::Total),
-        "spin" => Ok(SpinChannel::SpinDiff),
-        _ => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "unknown cDFT constraint kind '{kind}': valid options are 'charge' \
-             (N_alpha + N_beta on the fragment) and 'spin' (N_alpha - N_beta)"
-        ))),
-    }
-}
-
-fn cdft_kind_name(spin: ferric_dft::cdft::SpinChannel) -> &'static str {
-    match spin {
-        ferric_dft::cdft::SpinChannel::Total => "charge",
-        ferric_dft::cdft::SpinChannel::SpinDiff => "spin",
-    }
-}
-
-/// One constrained-DFT fragment constraint.
-///
-/// `atoms` are 0-based atom indices forming the fragment (non-empty, no
-/// duplicates). `target` is a Becke fragment POPULATION in electrons, NOT a
-/// net charge:
-///
-///   kind="charge"  target = N_alpha + N_beta on the fragment
-///                  (e.g. 2.0 on a He atom = neutral He; 1.0 = He+).
-///   kind="spin"    target = N_alpha - N_beta on the fragment.
-///
-/// The population is `Tr[W^C D]` with `W^C` the Becke fuzzy-cell weight
-/// operator of the fragment (`ferric_dft::cdft`). With an ECP basis only the
-/// explicitly-treated (valence) electrons are counted. Atom indices are
-/// range-checked against the molecule when the constraint is used.
-#[pyclass]
-#[pyo3(name = "CdftConstraint")]
-#[derive(Clone)]
-struct PyCdftConstraint {
-    atoms: Vec<usize>,
-    target: f64,
-    spin: ferric_dft::cdft::SpinChannel,
-}
-
-#[pymethods]
-impl PyCdftConstraint {
-    #[new]
-    #[pyo3(signature = (atoms, target, kind="charge"))]
-    fn new(atoms: Vec<i64>, target: f64, kind: &str) -> PyResult<Self> {
-        let spin = parse_cdft_kind(kind)?;
-        if atoms.is_empty() {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "CdftConstraint: atoms must be a non-empty list of atom indices",
-            ));
-        }
-        let mut idx = Vec::with_capacity(atoms.len());
-        for &a in &atoms {
-            if a < 0 {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "CdftConstraint: atom index {a} is negative (indices are 0-based)"
-                )));
-            }
-            idx.push(a as usize);
-        }
-        let mut sorted = idx.clone();
-        sorted.sort_unstable();
-        sorted.dedup();
-        if sorted.len() != idx.len() {
-            // The fragment weight is a SUM of per-atom Becke weights, so a
-            // repeated index would count that atom twice.
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "CdftConstraint: duplicate atom index in {atoms:?}; a repeated atom \
-                 would be weighted twice in the fragment population"
-            )));
-        }
-        if !target.is_finite() {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "CdftConstraint: target must be finite, got {target}"
-            )));
-        }
-        Ok(PyCdftConstraint {
-            atoms: idx,
-            target,
-            spin,
-        })
-    }
-
-    /// 0-based atom indices of the fragment.
-    #[getter]
-    fn atoms(&self) -> Vec<usize> {
-        self.atoms.clone()
-    }
-
-    /// Target fragment population in electrons (see the class docstring).
-    #[getter]
-    fn target(&self) -> f64 {
-        self.target
-    }
-
-    /// "charge" or "spin".
-    #[getter]
-    fn kind(&self) -> &'static str {
-        cdft_kind_name(self.spin)
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "CdftConstraint(atoms={:?}, target={}, kind='{}')",
-            self.atoms,
-            self.target,
-            cdft_kind_name(self.spin)
-        )
-    }
-}
-
-/// Result of a constrained UHF/UKS solve (`run_cdft`).
-///
-/// A returned result always has a CONVERGED outer (lambda) loop: when the
-/// lambda-Newton loop exhausts `max_outer` the Rust driver errors and
-/// `run_cdft` raises `RuntimeError` instead of returning. The inner SCF at the
-/// final lambda can still be unconverged, which `scf_converged` reports, and
-/// `converged` is True only when BOTH hold.
-#[pyclass]
-#[pyo3(name = "CdftResult")]
-struct PyCdftResult {
-    /// Total energy (Ha) at the constrained density, WITHOUT the constraint
-    /// term: the ordinary UHF/UKS energy functional evaluated at rho_lambda.
-    #[pyo3(get)]
-    energy: f64,
-    /// `scf_converged` AND every |population - target| < `lambda_tol`.
-    #[pyo3(get)]
-    converged: bool,
-    /// Whether the inner SCF at the final lambda met its thresholds.
-    #[pyo3(get)]
-    scf_converged: bool,
-    /// Inner SCF iterations of the final solve.
-    #[pyo3(get)]
-    iterations: usize,
-    /// Outer lambda-Newton iterations taken.
-    #[pyo3(get)]
-    outer_iterations: usize,
-    /// Lagrange multipliers (Ha per electron), one per constraint, in input order.
-    #[pyo3(get)]
-    lambdas: Vec<f64>,
-    /// Achieved fragment populations Tr[W^C D] (electrons), one per constraint.
-    #[pyo3(get)]
-    populations: Vec<f64>,
-    /// The requested targets, one per constraint.
-    #[pyo3(get)]
-    targets: Vec<f64>,
-    /// Constraint residuals population_C - target_C (electrons), one per
-    /// constraint, in input order.
-    #[pyo3(get)]
-    residuals: Vec<f64>,
-    /// max_C |population_C - target_C| (electrons); NaN if any residual is NaN.
-    #[pyo3(get)]
-    max_constraint_error: f64,
-    /// The outer-loop tolerance the solve used.
-    #[pyo3(get)]
-    lambda_tol: f64,
-    density_alpha_data: Array2<f64>,
-    density_beta_data: Array2<f64>,
-    eps_alpha_data: Vec<f64>,
-    eps_beta_data: Vec<f64>,
-    // Held for `cdft_coupling`; not exposed as attributes.
-    mos_alpha: Array2<f64>,
-    mos_beta: Array2<f64>,
-    nocc_alpha: usize,
-    nocc_beta: usize,
-    spins: Vec<ferric_dft::cdft::SpinChannel>,
-    weight_matrices: Vec<Array2<f64>>,
-    overlap: Array2<f64>,
-    // Every run_cdft input that changes the electronic Hamiltonian (functional,
-    // J/K fitting, exchange builder, XC grid, external potential), rendered
-    // exactly (Debug prints f64 in shortest round-trip form). cdft_coupling
-    // refuses two states whose keys differ: the Wu-Van Voorhis formula assumes
-    // one shared H, and the overlap/occupation checks cannot see these inputs.
-    hamiltonian_key: String,
-}
-
-#[pymethods]
-impl PyCdftResult {
-    fn density_alpha<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        PyArray2::from_array(py, &self.density_alpha_data)
-    }
-    fn density_beta<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        PyArray2::from_array(py, &self.density_beta_data)
-    }
-    fn orbital_energies_alpha<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_vec(py, self.eps_alpha_data.clone())
-    }
-    fn orbital_energies_beta<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_vec(py, self.eps_beta_data.clone())
-    }
-    /// Alpha MO coefficients (n_bf x n_mo, columns = MOs in ascending
-    /// lambda-augmented orbital energy; the first N_alpha are occupied).
-    fn mo_coeff_alpha<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        PyArray2::from_array(py, &self.mos_alpha)
-    }
-    /// Beta MO coefficients (n_bf x n_mo; the first N_beta are occupied).
-    fn mo_coeff_beta<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        PyArray2::from_array(py, &self.mos_beta)
-    }
-    /// Occupied (alpha, beta) orbital counts.
-    #[getter]
-    fn nocc(&self) -> (usize, usize) {
-        (self.nocc_alpha, self.nocc_beta)
-    }
-    /// The AO-basis Becke weight operator W^C of constraint `index`, exactly as
-    /// the solve used it. The fragment population of any UHF density pair is
-    /// `trace(W @ (Da + Db))` (charge) or `trace(W @ (Da - Db))` (spin).
-    fn weight_matrix<'py>(
-        &self,
-        py: Python<'py>,
-        index: usize,
-    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
-        let w = self.weight_matrices.get(index).ok_or_else(|| {
-            pyo3::exceptions::PyIndexError::new_err(format!(
-                "constraint index {index} out of range ({} constraints)",
-                self.weight_matrices.len()
-            ))
-        })?;
-        Ok(PyArray2::from_array(py, w))
-    }
-    /// The constraint kinds ("charge"/"spin"), one per constraint.
-    #[getter]
-    fn kinds(&self) -> Vec<&'static str> {
-        self.spins.iter().map(|s| cdft_kind_name(*s)).collect()
-    }
-    fn __repr__(&self) -> String {
-        format!(
-            "CdftResult(energy={:.10}, converged={}, lambdas={:?}, populations={:?})",
-            self.energy, self.converged, self.lambdas, self.populations
-        )
-    }
-    fn __str__(&self) -> String {
-        format!(
-            "cDFT Energy: {:.10} Ha (converged: {}, {} outer iterations, lambdas {:?}, \
-             populations {:?})",
-            self.energy, self.converged, self.outer_iterations, self.lambdas, self.populations
-        )
-    }
-}
-
-/// The key `cdft_coupling` compares to decide whether two cDFT states share
-/// one Hamiltonian.
-///
-/// Keyed on the EFFECTIVE fitting choice: solve_uhf has no auto-default and
-/// build_df_jk treats Some("") as "do not fit", so unset and "" are the same
-/// exact-J/K Hamiltonian and must not look different here. The nuclear
-/// Hamiltonian too: a ghost centre (`@He`) keeps the basis and AO overlap
-/// identical while removing a nucleus, so the overlap check alone cannot see
-/// it. Key the PHYSICAL fields only (Z, ghost, ECP core count, exact
-/// coordinates via to_bits, charge, multiplicity) from the post-ECP molecule --
-/// not its Debug form, which also carries the symbol as typed ("He" vs "he")
-/// and would refuse two identical Hamiltonians.
-fn cdft_hamiltonian_key(emol: &Molecule, config: &RhfConfig) -> String {
-    let effective_aux = |a: &Option<String>| a.clone().filter(|s| !s.is_empty());
-    let nuclei: Vec<(i32, bool, i32, [u64; 3])> = emol
-        .atoms
-        .iter()
-        .map(|a| {
-            (
-                a.z,
-                a.ghost,
-                a.n_core_ecp,
-                [a.x.to_bits(), a.y.to_bits(), a.zpos.to_bits()],
-            )
-        })
-        .collect();
-    format!(
-        "nuclei={:?} charge={} mult={} xc={:?} df_j_aux={:?} df_k_aux={:?} k_builder={:?} dft_grid={:?} external={:?}",
-        nuclei,
-        emol.charge,
-        emol.multiplicity,
-        config.xc,
-        effective_aux(&config.df_j_aux),
-        effective_aux(&config.df_k_aux),
-        config.k_builder,
-        config.dft_grid,
-        config.external_potential,
-    )
-}
-
-/// Constrained UHF / UKS (Wu–Van Voorhis cDFT): minimize the energy subject to
-/// fragment population constraints, via a nested lambda-Newton loop around an
-/// ordinary UHF/UKS solve with `sum_C lambda_C W^C` added to the Fock matrix.
-///
-///   constraints       non-empty list of `CdftConstraint`. Each `target` is a
-///                     Becke fragment POPULATION in electrons (N_a + N_b for
-///                     kind="charge", N_a - N_b for kind="spin"), not a net
-///                     charge. Validated here: atom indices in range, a charge
-///                     target in [0, N_elec], |spin target| <= N_elec, and no
-///                     two constraints on the same fragment and kind (their
-///                     Jacobian would be singular). Only single-constraint
-///                     solves (k = 1) are exercised by the Rust suite and
-///                     carry the bracket safeguard; k > 1 runs the plain
-///                     k x k Newton.
-///   functional        None or "HF" (default) = UHF. Any other name = UKS with
-///                     that libxc functional (validated up front). The Rust
-///                     cDFT tests validate the UHF path only; UKS-cDFT is
-///                     smoke-level, and the stability descent is SKIPPED on a
-///                     KS reference (it would need the f_xc kernel).
-///   lambda_tol        stop when max |N_C - target_C| < lambda_tol (electrons).
-///                     Default 1e-5. A flat stretch of N(lambda) (e.g. He2+ at
-///                     the localized-hole plateau, dN/dlambda ~ 7e-5) costs
-///                     outer iterations, not accuracy: the six validated He2+
-///                     diabats converge there at 1e-10 from lambda = 0. Loosen
-///                     it only to buy iterations, and read what is returned --
-///                     a looser tolerance accepts a lambda further from the
-///                     root, and on a plateau that is a large distance in
-///                     lambda for a small one in N.
-///   max_outer         outer lambda-Newton iteration cap. Default 30. Exceeding
-///                     it raises RuntimeError; nothing unconverged is returned.
-///                     The default covers a lambda = 0 start on the validated
-///                     He2+ points (deepest 21 iterations); because the Newton
-///                     step is clamped to 1 per iteration, a start far from the
-///                     root needs at least |lambda_root| iterations to arrive.
-///   stability_descent True (default, as in the Rust driver): after the outer
-///                     loop converges, check the lambda-augmented orbital
-///                     Hessian and, if the constrained solution is a saddle,
-///                     descend and re-converge, keeping the lower state that
-///                     still meets the constraint. NOTE the default differs
-///                     from run_uhf's stability_descent (False), which is the
-///                     UNCONSTRAINED descent; see RhfConfig for why.
-///   grid_radial /     Becke/Lebedev grid for the weight operator. Both unset
-///   grid_angular      (default) = 99 x 302 for W (the XC grid, if any, keeps
-///                     its 75 x 110 default). Setting either uses the given
-///                     grid for BOTH W and XC, the unset one defaulting to
-///                     99 / 302. The weight quadrature must resolve
-///                     populations below lambda_tol (75 x 110 floors at ~1e-4).
-///
-/// The SCF knobs (`max_iter` .. `guess`) mean what they do in `run_uhf`; unset
-/// ones take the Rust `RhfConfig` defaults the cDFT suite is validated with
-/// (so `max_iter` defaults to 200 here, as in `run_uhf`). `df_j_aux` /
-/// `df_k_aux` unset = exact J/K, as in `run_uhf`.
-#[pyfunction]
-#[pyo3(signature = (
-    mol, basis_set, constraints,
-    functional=None, lambda_tol=None, max_outer=None, stability_descent=None,
-    max_iter=None, energy_conv=None, density_conv=None, diis_size=None,
-    integral_thresh=None, k_builder=None, df_j_aux=None, df_k_aux=None,
-    level_shift=None, mom_after_iter=None,
-    point_charges=None, external_field=None, memory_budget_gb=None,
-    guess=None, grid_radial=None, grid_angular=None,
-))]
-#[allow(clippy::too_many_arguments)]
-fn run_cdft(
-    py: Python<'_>,
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    constraints: Vec<PyCdftConstraint>,
-    functional: Option<&str>,
-    lambda_tol: Option<f64>,
-    max_outer: Option<usize>,
-    stability_descent: Option<bool>,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
-    diis_size: Option<usize>,
-    integral_thresh: Option<f64>,
-    k_builder: Option<&str>,
-    df_j_aux: Option<&str>,
-    df_k_aux: Option<&str>,
-    level_shift: Option<f64>,
-    mom_after_iter: Option<usize>,
-    point_charges: Option<Vec<(f64, f64, f64, f64)>>,
-    external_field: Option<(f64, f64, f64)>,
-    memory_budget_gb: Option<f64>,
-    guess: Option<&str>,
-    grid_radial: Option<usize>,
-    grid_angular: Option<usize>,
-) -> PyResult<PyCdftResult> {
-    use ferric_dft::cdft::{Constraint, SpinChannel};
-    let value_err = |msg: String| pyo3::exceptions::PyValueError::new_err(msg);
-
-    let use_sad_guess = parse_guess(guess)?;
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
-    let natoms = emol.atoms.len();
-    let nelec = emol.nelec();
-    if nelec <= 0 {
-        return Err(value_err(format!(
-            "run_cdft: the molecule has {nelec} electrons; nothing to constrain"
-        )));
-    }
-    let nelec_f = nelec as f64;
-
-    // ── constraints ──
-    if constraints.is_empty() {
-        return Err(value_err(
-            "run_cdft: constraints must be a non-empty list of CdftConstraint".into(),
-        ));
-    }
-    let mut seen: Vec<(Vec<usize>, SpinChannel)> = Vec::with_capacity(constraints.len());
-    let mut cons: Vec<Constraint> = Vec::with_capacity(constraints.len());
-    for (ci, c) in constraints.iter().enumerate() {
-        if let Some(&bad) = c.atoms.iter().find(|&&a| a >= natoms) {
-            return Err(value_err(format!(
-                "run_cdft: constraint {ci} names atom {bad}, but the molecule has \
-                 {natoms} atoms (indices are 0-based)"
-            )));
-        }
-        match c.spin {
-            SpinChannel::Total => {
-                if c.target < 0.0 || c.target > nelec_f {
-                    return Err(value_err(format!(
-                        "run_cdft: constraint {ci} (charge) target {} is outside \
-                         [0, {nelec}]: the target is a fragment electron POPULATION, \
-                         not a net charge",
-                        c.target
-                    )));
-                }
-            }
-            SpinChannel::SpinDiff => {
-                if c.target.abs() > nelec_f {
-                    return Err(value_err(format!(
-                        "run_cdft: constraint {ci} (spin) target {} exceeds the \
-                         {nelec} electrons in the molecule in magnitude",
-                        c.target
-                    )));
-                }
-            }
-        }
-        let mut key_atoms = c.atoms.clone();
-        key_atoms.sort_unstable();
-        if seen.iter().any(|(a, s)| *a == key_atoms && *s == c.spin) {
-            return Err(value_err(format!(
-                "run_cdft: constraint {ci} repeats the fragment {:?} with kind '{}'; \
-                 two constraints on the same population make the lambda Jacobian \
-                 singular",
-                c.atoms,
-                cdft_kind_name(c.spin)
-            )));
-        }
-        seen.push((key_atoms, c.spin));
-        cons.push(Constraint {
-            fragment: c.atoms.clone(),
-            spin: c.spin,
-            target: c.target,
-        });
-    }
-
-    // ── outer-loop knobs ──
-    let defaults = RhfConfig::default();
-    let lambda_tol = lambda_tol.unwrap_or(defaults.cdft_lambda_tol);
-    if !(lambda_tol.is_finite() && lambda_tol > 0.0) {
-        return Err(value_err(format!(
-            "run_cdft: lambda_tol must be finite and > 0, got {lambda_tol}"
-        )));
-    }
-    let max_outer = max_outer.unwrap_or(defaults.cdft_max_outer);
-    if max_outer == 0 {
-        return Err(value_err("run_cdft: max_outer must be >= 1".into()));
-    }
-
-    // ── functional ──
-    let xc = match functional {
-        None => None,
-        Some(name) if name.eq_ignore_ascii_case("hf") => None,
-        Some(name) => {
-            // Validate the name here, as a ValueError, instead of after the GIL
-            // is released and the weight grid is already built.
-            ferric_dft::libxc::xc_def_from_name_nspin(name, 2)
-                .map_err(|e| value_err(format!("run_cdft: functional: {e}")))?;
-            Some(name.to_string())
-        }
-    };
-
-    // ── grid ──
-    let dft_grid = if grid_radial.is_none() && grid_angular.is_none() {
-        None
-    } else {
-        use ferric_dft::prune::SUPPORTED_LEBEDEV_ORDERS;
-        let n_radial = grid_radial.unwrap_or(99);
-        let n_angular = grid_angular.unwrap_or(302);
-        if n_radial == 0 {
-            return Err(value_err("run_cdft: grid_radial must be > 0".into()));
-        }
-        if !SUPPORTED_LEBEDEV_ORDERS.contains(&n_angular) {
-            return Err(value_err(format!(
-                "run_cdft: grid_angular = {n_angular} is not a supported Lebedev order \
-                 (supported: {SUPPORTED_LEBEDEV_ORDERS:?})"
-            )));
-        }
-        Some(ferric_dft::grid::AtomicGridConfig {
-            n_radial,
-            n_angular,
-            ..Default::default()
-        })
-    };
-
-    let config = RhfConfig {
-        constraints: cons,
-        cdft_lambda_tol: lambda_tol,
-        cdft_max_outer: max_outer,
-        cdft_stability_descent: stability_descent.unwrap_or(defaults.cdft_stability_descent),
-        xc,
-        dft_grid,
-        max_iter: max_iter.unwrap_or(defaults.max_iter),
-        energy_conv: energy_conv.unwrap_or(defaults.energy_conv),
-        density_conv: density_conv.unwrap_or(defaults.density_conv),
-        diis_size: diis_size.unwrap_or(defaults.diis_size),
-        integral_thresh: integral_thresh.unwrap_or(defaults.integral_thresh),
-        k_builder: k_builder.map(|s| s.to_string()),
-        // Same shared parser as run_rhf/run_uhf/run_dft, so "exact"/"off" mean
-        // exact J/K here too and cdft_coupling's Hamiltonian key sees one
-        // spelling for one Hamiltonian.
-        df_j_aux: df_j_aux.map(ferric_scf::rhf::normalize_df_aux),
-        df_k_aux: df_k_aux.map(ferric_scf::rhf::normalize_df_aux),
-        level_shift: level_shift.unwrap_or(defaults.level_shift),
-        mom_after_iter: mom_after_iter.unwrap_or(defaults.mom_after_iter),
-        external_potential: build_external_potential(point_charges, external_field),
-        // 0 means "unset -> auto" (resolve_three_index_budget).
-        three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb).unwrap_or(0),
-        use_sad_guess,
-        ..defaults
-    };
-
-    let hamiltonian_key = cdft_hamiltonian_key(&emol, &config);
-    let bs = basis_set.inner.clone();
-    let prep = PreparedBasis::new(&emol, &bs).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let overlap = ferric_integrals::oneelectron::overlap(&prep);
-    let ctx = ParallelContext::default();
-    // Release the GIL for the whole constrained solve. Everything the closure
-    // touches is an owned Rust value built above.
-    let r = py
-        .allow_threads(|| {
-            ferric_scf::cdft_driver::solve_cdft_uhf(&ctx, &emol, &prep, &bs, &bounds, &config)
-        })
-        .map_err(make_err)?;
-
-    let targets: Vec<f64> = config.constraints.iter().map(|c| c.target).collect();
-    let spins: Vec<SpinChannel> = config.constraints.iter().map(|c| c.spin).collect();
-    let max_constraint_error = r.max_residual();
-    // Same occupation rule as the driver (cdft_driver::occupied_alpha/_beta).
-    let nel = nelec as usize;
-    let nopen = emol.multiplicity.saturating_sub(1);
-    let nocc_alpha = (nel + nopen) / 2;
-    let nocc_beta = (nel - nopen.min(nel)) / 2;
-    let scf = r.scf;
-    let mos_beta = scf
-        .mos_beta
-        .ok_or_else(|| make_err("run_cdft: the UHF solve returned no beta MOs"))?;
-    let density_beta = scf
-        .density_beta
-        .ok_or_else(|| make_err("run_cdft: the UHF solve returned no beta density"))?;
-    Ok(PyCdftResult {
-        energy: scf.energy,
-        converged: scf.converged && max_constraint_error < lambda_tol,
-        scf_converged: scf.converged,
-        iterations: scf.iterations,
-        outer_iterations: r.outer_iters,
-        lambdas: r.lambdas,
-        populations: r.populations,
-        targets,
-        residuals: r.residuals,
-        max_constraint_error,
-        lambda_tol,
-        density_alpha_data: scf.density_alpha,
-        density_beta_data: density_beta,
-        eps_alpha_data: scf.eps_alpha,
-        eps_beta_data: scf.eps_beta.unwrap_or_default(),
-        mos_alpha: scf.mos_alpha,
-        mos_beta,
-        nocc_alpha,
-        nocc_beta,
-        spins,
-        weight_matrices: r.weight_matrices,
-        overlap,
-        hamiltonian_key,
-    })
-}
-
-/// Wu–Van Voorhis electronic coupling between two cDFT diabats.
-#[pyclass]
-#[pyo3(name = "CdftCouplingResult")]
-struct PyCdftCouplingResult {
-    /// Orthogonalized coupling H_ab (Ha). Its SIGN is a determinant-phase
-    /// convention, not physics: compare |h_ab|.
-    #[pyo3(get)]
-    h_ab: f64,
-    /// Determinant overlap <Psi_a|Psi_b> (product of the Lowdin-paired
-    /// singular values over both spins).
-    #[pyo3(get)]
-    s_ab: f64,
-    /// Diabat energies (Ha), each state's `CdftResult.energy`.
-    #[pyo3(get)]
-    e_a: f64,
-    #[pyo3(get)]
-    e_b: f64,
-}
-
-#[pymethods]
-impl PyCdftCouplingResult {
-    fn __repr__(&self) -> String {
-        format!(
-            "CdftCouplingResult(h_ab={:.10}, s_ab={:.6e}, e_a={:.10}, e_b={:.10})",
-            self.h_ab, self.s_ab, self.e_a, self.e_b
-        )
-    }
-}
-
-/// Wu–Van Voorhis electron-transfer coupling H_ab between two `run_cdft`
-/// diabats (J. Chem. Phys. 125, 164105 (2006)):
-///
-///   H_ab = [H_raw - (E_a + E_b) S_ab / 2] / (1 - S_ab^2),
-///   H_raw = ½[(F_b S_ab - λ_b <a|W_b|b>) + (F_a S_ab - λ_a <a|W_a|b>)],
-///   F_x   = E_x + λ_x N_x,   N_x = <x|W_x|x> (the state's own population),
-///
-/// with each state's energy, λ and W taken from its own result. The F form is
-/// invariant under the empty redefinition W -> W - c·N̂ (target N -> N - c·N_e);
-/// the form with E in place of F is not. No two-electron <a|H|b> is built.
-///
-/// Requirements (ValueError otherwise): each state has EXACTLY ONE constraint
-/// and it is kind="charge" (the Rust kernel applies one operator to both spins
-/// and takes a single λ), both states are `converged`, and both come from the
-/// same molecule, geometry, basis, charge and multiplicity (checked through the
-/// AO overlap matrix and the occupations) AND the same Hamiltonian: nuclei
-/// (element, ghost flag, ECP, exact coordinates, charge), functional,
-/// df_j_aux/df_k_aux, k_builder, XC grid, point_charges and external_field must
-/// all match. Two (near-)identical states
-/// (|S_ab| -> 1) make the coupling undefined and also raise.
-#[pyfunction]
-fn cdft_coupling(state_a: &PyCdftResult, state_b: &PyCdftResult) -> PyResult<PyCdftCouplingResult> {
-    use ferric_dft::cdft::SpinChannel;
-    use ferric_scf::cdft_coupling::{coupling_hab, DiabaticState};
-    let value_err = |msg: String| pyo3::exceptions::PyValueError::new_err(msg);
-    for (name, st) in [("state_a", state_a), ("state_b", state_b)] {
-        if st.spins.len() != 1 || st.weight_matrices.len() != 1 || st.lambdas.len() != 1 {
-            return Err(value_err(format!(
-                "cdft_coupling: {name} has {} constraints; the Wu-Van Voorhis kernel \
-                 takes exactly one charge constraint per state",
-                st.spins.len()
-            )));
-        }
-        if st.spins[0] != SpinChannel::Total {
-            return Err(value_err(format!(
-                "cdft_coupling: {name}'s constraint is kind='spin'; the coupling kernel \
-                 supports kind='charge' only (a spin constraint acts with opposite sign \
-                 on the two spins)"
-            )));
-        }
-        if !st.converged {
-            return Err(value_err(format!(
-                "cdft_coupling: {name} is not converged (scf_converged={}, \
-                 max_constraint_error={:.3e}, lambda_tol={:.1e}); a coupling between \
-                 unconverged diabats is not meaningful",
-                st.scf_converged, st.max_constraint_error, st.lambda_tol
-            )));
-        }
-    }
-    if state_a.overlap.dim() != state_b.overlap.dim() {
-        return Err(value_err(format!(
-            "cdft_coupling: the states have different basis sizes ({:?} vs {:?})",
-            state_a.overlap.dim(),
-            state_b.overlap.dim()
-        )));
-    }
-    let s_diff = state_a
-        .overlap
-        .iter()
-        .zip(state_b.overlap.iter())
-        .fold(0.0_f64, |m, (a, b)| m.max((a - b).abs()));
-    if s_diff > 1e-10 {
-        return Err(value_err(format!(
-            "cdft_coupling: the states' AO overlap matrices differ by {s_diff:.3e}; \
-             they were not computed for the same molecule, geometry and basis"
-        )));
-    }
-    if state_a.nocc_alpha != state_b.nocc_alpha || state_a.nocc_beta != state_b.nocc_beta {
-        return Err(value_err(format!(
-            "cdft_coupling: occupations differ (alpha {}/{}, beta {}/{}); the states \
-             must share charge and multiplicity",
-            state_a.nocc_alpha, state_b.nocc_alpha, state_a.nocc_beta, state_b.nocc_beta
-        )));
-    }
-    if state_a.hamiltonian_key != state_b.hamiltonian_key {
-        return Err(value_err(format!(
-            "cdft_coupling: the two states were solved with different Hamiltonians \
-             (nuclei, functional, density fitting, exchange builder, XC grid or \
-             external potential differ); the Wu-Van Voorhis coupling requires one shared H.\n  \
-             state_a: {}\n  state_b: {}",
-            state_a.hamiltonian_key, state_b.hamiltonian_key
-        )));
-    }
-    let da = DiabaticState {
-        c_a: &state_a.mos_alpha,
-        c_b: &state_a.mos_beta,
-        nocc_a: state_a.nocc_alpha,
-        nocc_b: state_a.nocc_beta,
-        energy: state_a.energy,
-        lambda: state_a.lambdas[0],
-        w: &state_a.weight_matrices[0],
-    };
-    let db = DiabaticState {
-        c_a: &state_b.mos_alpha,
-        c_b: &state_b.mos_beta,
-        nocc_a: state_b.nocc_alpha,
-        nocc_b: state_b.nocc_beta,
-        energy: state_b.energy,
-        lambda: state_b.lambdas[0],
-        w: &state_b.weight_matrices[0],
-    };
-    let r = coupling_hab(&da, &db, &state_a.overlap);
-    // The Rust kernel returns E_a as "H_ab" when 1 - S_ab^2 vanishes (the two
-    // states coincide). That is a sentinel, not a coupling; refuse it here.
-    if (1.0 - r.s_ab * r.s_ab).abs() < 1e-10 {
-        return Err(value_err(format!(
-            "cdft_coupling: |S_ab| = {:.12} is 1 to within 1e-10; the two states are \
-             the same determinant and their coupling is undefined",
-            r.s_ab.abs()
-        )));
-    }
-    Ok(PyCdftCouplingResult {
-        h_ab: r.h_ab,
-        s_ab: r.s_ab,
-        e_a: r.e_a,
-        e_b: r.e_b,
-    })
-}
-
-// ── Optimize ──
-
-#[pyclass]
-#[pyo3(name = "OptimizeResult")]
-struct PyOptimizeResult {
-    #[pyo3(get)]
-    energy: f64,
-    #[pyo3(get)]
-    converged: bool,
-    #[pyo3(get)]
-    steps: usize,
-    /// Energy at every point the optimizer EVALUATED, in order.
-    ///
-    /// `energy`/`steps`/`converged` cannot tell "ran out of steps near a
-    /// minimum" from "walked uphill and oscillated". Feed this to
-    /// `tools.viz.energy_plots.optimization_trace`, which flags a climb.
-    #[pyo3(get)]
-    energy_trace: Vec<f64>,
-    mol_data: Molecule,
-}
-
-#[pymethods]
-impl PyOptimizeResult {
-    /// The optimized geometry as a new `Molecule`.
-    fn mol(&self) -> PyMolecule {
-        PyMolecule {
-            inner: self.mol_data.clone(),
-        }
-    }
-    fn __repr__(&self) -> String {
-        format!(
-            "OptimizeResult(energy={:.10}, converged={}, steps={})",
-            self.energy, self.converged, self.steps
-        )
-    }
-    fn __str__(&self) -> String {
-        format!(
-            "Optimized Energy: {:.10} Ha (converged: {}, {} steps)",
-            self.energy, self.converged, self.steps
-        )
-    }
-}
-
-#[pyfunction]
-#[pyo3(signature = (mol, basis_name, max_steps=None, e_conv=None, point_charges=None, external_field=None))]
-fn run_optimize(
-    py: Python<'_>,
-    mol: &PyMolecule,
-    basis_name: &str,
-    max_steps: Option<usize>,
-    e_conv: Option<f64>,
-    point_charges: Option<Vec<(f64, f64, f64, f64)>>,
-    external_field: Option<(f64, f64, f64)>,
-) -> PyResult<PyOptimizeResult> {
-    let ctx = ParallelContext::default();
-    let rhf_config = RhfConfig {
-        external_potential: build_external_potential(point_charges, external_field),
-        ..Default::default()
-    };
-    // Apply the ECP before optimizing: each SCF derives its occupations from
-    // `Molecule::nelec()`, which counts ALL electrons until `apply_ecp` has
-    // run. Without this an ECP basis (aug-cc-pvdz-pp, Z >= 37) would optimize
-    // with the all-electron count against ECP integrals.
-    let bs = basis::bundled(basis_name).map_err(make_err)?;
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&bs);
-    let r = py
-        .allow_threads(|| {
-            optimize_geometry(
-                &ctx,
-                &emol,
-                basis_name,
-                Operator::coulomb(),
-                &rhf_config,
-                &OptimizeConfig {
-                    max_steps: max_steps.unwrap_or(100),
-                    e_conv: e_conv.unwrap_or(1e-6),
-                    ..Default::default()
-                },
-            )
-        })
-        .map_err(make_err)?;
-    Ok(PyOptimizeResult {
-        energy: r.energy,
-        converged: r.converged,
-        steps: r.steps,
-        energy_trace: r.energy_trace,
-        mol_data: r.mol,
-    })
-}
-
-/// Optimize an OPEN-SHELL geometry with a UHF reference.
-///
-/// The spin state comes from the `Molecule` (its multiplicity), exactly as in
-/// `run_uhf` -- there is no `multiplicity` kwarg here, and passing a
-/// closed-shell molecule simply runs UHF on a singlet.
-///
-/// `run_optimize` uses an RHF reference and cannot relax a radical: the
-/// doublet would be forced into a closed-shell density. Use this for any
-/// molecule with unpaired electrons.
-#[pyfunction]
-#[pyo3(signature = (mol, basis_name, max_steps=None, e_conv=None, point_charges=None, external_field=None))]
-fn run_optimize_uhf(
-    py: Python<'_>,
-    mol: &PyMolecule,
-    basis_name: &str,
-    max_steps: Option<usize>,
-    e_conv: Option<f64>,
-    point_charges: Option<Vec<(f64, f64, f64, f64)>>,
-    external_field: Option<(f64, f64, f64)>,
-) -> PyResult<PyOptimizeResult> {
-    let ctx = ParallelContext::default();
-    let uhf_config = RhfConfig {
-        external_potential: build_external_potential(point_charges, external_field),
-        ..Default::default()
-    };
-    // Apply the ECP before optimizing: each SCF derives its occupations from
-    // `Molecule::nelec()`, which counts ALL electrons until `apply_ecp` has
-    // run. Without this an ECP basis (aug-cc-pvdz-pp, Z >= 37) would optimize
-    // with the all-electron count against ECP integrals.
-    let bs = basis::bundled(basis_name).map_err(make_err)?;
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&bs);
-    let r = py
-        .allow_threads(|| {
-            optimize_geometry_uhf(
-                &ctx,
-                &emol,
-                basis_name,
-                Operator::coulomb(),
-                &uhf_config,
-                &OptimizeConfig {
-                    max_steps: max_steps.unwrap_or(100),
-                    e_conv: e_conv.unwrap_or(1e-6),
-                    ..Default::default()
-                },
-            )
-        })
-        .map_err(make_err)?;
-    Ok(PyOptimizeResult {
-        energy: r.energy,
-        converged: r.converged,
-        steps: r.steps,
-        energy_trace: r.energy_trace,
-        mol_data: r.mol,
-    })
-}
-
-#[pyclass]
-#[pyo3(name = "FrequencyResult")]
-struct PyFrequencyResult {
-    /// Vibrational wavenumbers in cm^-1, ascending. `3N-6` entries (`3N-5` if
-    /// linear). A NEGATIVE entry is an imaginary frequency, by the usual
-    /// convention -- it means a mode with a negative force constant, i.e. the
-    /// geometry is not a minimum.
-    #[pyo3(get)]
-    frequencies: Vec<f64>,
-    /// The projected-out translation/rotation modes, cm^-1. Should be ~0;
-    /// retained as a diagnostic.
-    #[pyo3(get)]
-    trans_rot_frequencies: Vec<f64>,
-    #[pyo3(get)]
-    is_linear: bool,
-    /// Largest |H_ij - H_ji| in the raw Cartesian Hessian, Hartree/Bohr^2.
-    /// Zero in exact arithmetic, so this is a direct read on whether `delta`
-    /// and the SCF thresholds suit the system. A large value invalidates the
-    /// frequencies.
-    #[pyo3(get)]
-    asymmetry: f64,
-    #[pyo3(get)]
-    n_gradient_evaluations: usize,
-    /// `"analytic"`, `"analytic-moving-grid"` or `"finite-difference"`: which
-    /// construction produced the Hessian.
-    #[pyo3(get)]
-    hessian_source: String,
-    /// The Cartesian Hessian before mass-weighting, Hartree/Bohr^2,
-    /// `3N x 3N`, rows and columns ordered `[x0,y0,z0,x1,...]` like
-    /// `normal_modes`.
-    #[pyo3(get)]
-    cartesian_hessian: Vec<Vec<f64>>,
-    /// Electronic energy at the undisplaced geometry. With `dispersion=` it is
-    /// the CORRECTED total, KS + dispersion.
-    #[pyo3(get)]
-    energy: f64,
-    /// The dispersion energy at the undisplaced geometry (Hartree), already
-    /// included in `energy`. `None` when `dispersion=` was not given (not
-    /// evaluated), never 0.0.
-    #[pyo3(get)]
-    e_dispersion: Option<f64>,
-    /// Normal-mode displacement vectors in CARTESIAN coordinates: one row per
-    /// entry of `frequencies`, `3N` values each, ordered `[x0,y0,z0,x1,...]`
-    /// to match `Molecule.symbols()`. These are the mass-weighted eigenvectors
-    /// divided back through by `sqrt(m)`, so light atoms visibly move further
-    /// than heavy ones; they are not normalized to any convention.
-    ///
-    /// Needed because `n_imaginary() == 1` is NECESSARY BUT NOT SUFFICIENT for
-    /// a transition state -- a methyl rotor gives one imaginary frequency too.
-    /// Confirming a saddle means checking the imaginary mode displaces the
-    /// atoms along the reaction coordinate, which requires the vector.
-    #[pyo3(get)]
-    normal_modes: Vec<Vec<f64>>,
-}
-
-#[pymethods]
-impl PyFrequencyResult {
-    fn __repr__(&self) -> String {
-        format!(
-            "FrequencyResult(energy={:.10}, n_modes={}, is_linear={})",
-            self.energy,
-            self.frequencies.len(),
-            self.is_linear,
-        )
-    }
-    fn __str__(&self) -> String {
-        let n_imag = self.frequencies.iter().filter(|&&f| f < 0.0).count();
-        format!(
-            "Vibrational Frequencies: {} modes, {} imaginary, energy={:.10} Ha, asymmetry={:.2e}",
-            self.frequencies.len(),
-            n_imag,
-            self.energy,
-            self.asymmetry,
-        )
-    }
-}
-
-/// Harmonic vibrational frequencies, mass-weighted with translations and
-/// rotations projected out.
-///
-/// `df_j_aux` / `df_k_aux` (default: exact J/K) density-fit the Coulomb and
-/// exchange of every SCF the run does, exactly as in `run_rhf`; the analytic
-/// RHF, UHF and ROHF Hessians then differentiate the fitted energy (RI-J,
-/// RI-K or both; ferric_scf::hessian_df / hessian_df_k), and the
-/// finite-difference path differences the fitted analytic gradient. RI with
-/// `point_charges` / `external_field` takes the finite-difference path under
-/// "auto" (`"analytic"` raises).
-///
-/// `hessian`: "auto" (default) uses the analytic Hessian for RHF (closed
-/// shell) or UHF (any multiplicity) with exact J/K, with or without an ECP,
-/// or ROHF with exact J/K and no external potential (an ECP is analytic for all three, also with RI-J / RI-K),
-/// and a basis up to f functions and fixed external point charges or a uniform field (QM/MM, RHF and UHF only,
-/// QM-QM block; this binding takes `point_charges=` / `external_field=` only,
-/// the Gaussian-smeared charges the Hessian also covers are reachable from the
-/// CLI and Rust API) (one SCF plus CPHF); for closed-shell Kohn-Sham (`xc=`
-/// with `reference="rhf"`) the "analytic-moving-grid" Hessian below wherever
-/// it applies; and a finite difference of the ANALYTIC gradient (6N gradient
-/// evaluations) otherwise (UKS, ROKS, meta-GGA, VV10, range-separated
-/// hybrids, ECPs or external potentials with `xc=`, `dispersion=`, and large
-/// systems whose response AO table -- basis functions x grid points x 4 for
-/// a GGA, 8 bytes each -- exceeds 2 GiB: on the default grid a GGA above
-/// about 8,100 basis functions x atoms). The choice is made before the SCF;
-/// an error an analytic path raises after it (a non-converged SCF; for ROHF a
-/// Fock-consistency failure from a loose convergence threshold; a
-/// non-converging response, non-positive curvature) is raised, not retried
-/// with finite differences. "analytic" raises if the Hartree-Fock analytic Hessian does not
-/// apply (it never covers KS); "fd" always differences gradients.
-/// `.hessian_source` says which ran.
-/// "analytic-moving-grid" is the analytic
-/// closed-shell Kohn-Sham Hessian on the production (moving) grid, Becke
-/// weight response included: the Hessian of the surface the KS gradient
-/// differentiates, so it agrees with "fd" to the finite-difference error.
-/// It needs `xc=` (LDA/GGA, pure or global hybrid) and `reference="rhf"`, and
-/// raises before the SCF for Hartree-Fock, "uhf"/"rohf", meta-GGA, VV10,
-/// range-separated hybrids, ECPs, `point_charges=`/`external_field=` and
-/// `dispersion=`.
-///
-/// `reference` selects the SCF: "rhf" (default), "uhf", or "rohf". Setting
-/// `xc` promotes it to the matching KS variant (RKS/UKS/ROKS).
-///
-/// `max_iter`, `energy_conv`, `density_conv`: SCF controls of every SCF the
-/// run does (defaults 200, 1e-3, 1e-6, as in `run_rhf`). A finite-difference
-/// Hessian differentiates SCF gradients, so its noise floor is the SCF's.
-///
-/// `delta` is the central-difference displacement in Bohr (default 5e-3). It is
-/// a real accuracy knob that degrades silently -- too large adds truncation
-/// error, too small amplifies SCF noise. Check `.asymmetry` rather than
-/// assuming.
-///
-/// `dispersion`: the same strict spellings as `run_dft` ("d3bj", "d3(bj)",
-/// "d3bj(<functional>)", "mbd", "mbd(<functional>)"). Requires `xc`; any
-/// reference ("rhf", "uhf", "rohf", i.e. RKS, UKS or ROKS). The Hessian is
-/// then the central difference of the corrected analytic gradient
-/// (KS + dispersion), each from the SCF converged at that displaced geometry,
-/// so `hessian="analytic"` and "analytic-moving-grid" raise and "auto" runs
-/// finite differences. MBD@rsSCS
-/// enters through its exact gradient, including the orbital relaxation of its
-/// Hirshfeld volumes (the reference's own Z-vector: RKS, UKS or ROKS). `.energy` is then the corrected total and
-/// `.e_dispersion` the dispersion part.
-#[pyfunction]
-#[pyo3(signature = (
-    mol, basis_name, reference=None, xc=None, delta=None, multiplicity=None,
-    point_charges=None, external_field=None, hessian="auto", dispersion=None,
-    max_iter=None, energy_conv=None, density_conv=None,
-    df_j_aux=None, df_k_aux=None,
-))]
-#[allow(clippy::too_many_arguments)]
-fn run_frequencies(
-    mol: &PyMolecule,
-    basis_name: &str,
-    reference: Option<&str>,
-    xc: Option<&str>,
-    delta: Option<f64>,
-    multiplicity: Option<u32>,
-    point_charges: Option<Vec<(f64, f64, f64, f64)>>,
-    external_field: Option<(f64, f64, f64)>,
-    hessian: &str,
-    dispersion: Option<&str>,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
-    df_j_aux: Option<&str>,
-    df_k_aux: Option<&str>,
-) -> PyResult<PyFrequencyResult> {
-    use ferric_scf::frequencies::{FrequencyConfig, FrequencyReference, HessianMethod};
-
-    // Strict, like the CLI: an unrecognized reference must ERROR rather than
-    // silently running RHF and handing back frequencies for the wrong system.
-    let refr = match reference {
-        None | Some("rhf") => FrequencyReference::Rhf,
-        Some("uhf") => FrequencyReference::Uhf,
-        Some("rohf") => FrequencyReference::Rohf,
-        Some(other) => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "unknown reference \"{other}\"; expected \"rhf\", \"uhf\" or \"rohf\""
-            )))
-        }
-    };
-    if let Some(d) = delta {
-        if !(d.is_finite() && d > 0.0) {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "delta must be finite and > 0 (got {d})"
-            )));
-        }
-    }
-
-    let mut m = mol.inner.clone();
-    if let Some(mult) = multiplicity {
-        m.multiplicity = mult as usize;
-    }
-    // The MM field. `harmonic_frequencies` already threads
-    // `config.external_potential` into the same gradient calls, so an embedded
-    // Hessian needs no new machinery -- only a way to ask for one. Without
-    // this, CONFIRMING an embedded saddle (exactly one imaginary frequency)
-    // had to be done in vacuum, against a Hessian from a different surface.
-    let mut scf_cfg = RhfConfig {
-        xc: xc.map(|s| s.to_string()),
-        external_potential: build_external_potential(point_charges, external_field),
-        ..Default::default()
-    };
-    // Unset keeps the RhfConfig defaults (200, 1e-3, 1e-6), as before.
-    scf_cfg.max_iter = max_iter.unwrap_or(scf_cfg.max_iter);
-    scf_cfg.energy_conv = energy_conv.unwrap_or(scf_cfg.energy_conv);
-    scf_cfg.density_conv = density_conv.unwrap_or(scf_cfg.density_conv);
-    // Unset = exact J/K (unchanged); same opt-out spellings as run_rhf.
-    scf_cfg.df_j_aux = df_j_aux.map(ferric_scf::rhf::normalize_df_aux);
-    scf_cfg.df_k_aux = df_k_aux.map(ferric_scf::rhf::normalize_df_aux);
-    let mut fcfg = FrequencyConfig {
-        reference: refr,
-        hessian: HessianMethod::parse_config_str(hessian)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?,
-        ..Default::default()
-    };
-    if let Some(d) = delta {
-        fcfg.delta = d;
-    }
-
-    let (r, e_dispersion) =
-        frequencies_with_dispersion(&m, basis_name, &scf_cfg, &fcfg, dispersion, xc)?;
-    Ok(PyFrequencyResult {
-        frequencies: r.frequencies,
-        trans_rot_frequencies: r.trans_rot_frequencies,
-        is_linear: r.is_linear,
-        asymmetry: r.asymmetry,
-        n_gradient_evaluations: r.n_gradient_evaluations,
-        hessian_source: r.hessian_source.label().to_string(),
-        cartesian_hessian: r
-            .cartesian_hessian
-            .rows()
-            .into_iter()
-            .map(|row| row.to_vec())
-            .collect(),
-        energy: r.energy,
-        e_dispersion,
-        // Array2 -> Vec<Vec<f64>>, one row per mode. `.rows()` preserves the
-        // (mode, 3N) layout the Rust field documents; collecting from the flat
-        // slice would silently transpose whenever the array is not square.
-        normal_modes: r
-            .normal_modes
-            .rows()
-            .into_iter()
-            .map(|row| row.to_vec())
-            .collect(),
-    })
-}
-
-/// `run_frequencies(dispersion=...)`, resolved BEFORE any SCF with
-/// `run_dft`'s strict parser. The parameters are fitted per functional, so
-/// there is no dispersion without `xc`; MBD@rsSCS needs its exact (Z-vector)
-/// gradient for the chosen reference.
-fn resolve_frequency_dispersion(
-    dispersion: Option<&str>,
-    xc: Option<&str>,
-    reference: ferric_scf::frequencies::FrequencyReference,
-    scf_cfg: &RhfConfig,
-) -> PyResult<Option<DispersionSpec>> {
-    let Some(spec) = dispersion else {
-        return Ok(None);
-    };
-    let xc_name = xc.ok_or_else(|| {
-        pyo3::exceptions::PyValueError::new_err(
-            "dispersion= requires xc=: D3(BJ) and MBD@rsSCS parameters are fitted per \
-             functional, so there is no dispersion correction for Hartree-Fock",
-        )
-    })?;
-    let spec = resolve_dispersion(spec, xc_name)?;
-    if matches!(spec, DispersionSpec::Mbd(_)) {
-        use ferric_scf::frequencies::FrequencyReference;
-        let unsupported = match reference {
-            FrequencyReference::Rhf => ferric_scf::zvector_ks::unsupported_reason(scf_cfg),
-            FrequencyReference::Uhf => {
-                ferric_scf::zvector_ks::unsupported_reason_unrestricted(scf_cfg)
-            }
-            FrequencyReference::Rohf => ferric_scf::zvector_ks::unsupported_reason_roks(scf_cfg),
-        };
-        if let Some(why) = unsupported {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "dispersion=\"mbd\": the exact MBD@rsSCS gradient is not available: {why}"
-            )));
-        }
-    }
-    Ok(Some(spec))
-}
-
-/// Harmonic frequencies, plain or (with `dispersion`) on the KS + dispersion
-/// surface, with the dispersion energy at the input geometry (`None` without
-/// `dispersion`). See [`resolve_frequency_dispersion`] for what is refused.
-fn frequencies_with_dispersion(
-    mol: &ferric_core::mol::Molecule,
-    basis_name: &str,
-    scf_cfg: &RhfConfig,
-    fcfg: &ferric_scf::frequencies::FrequencyConfig,
-    dispersion: Option<&str>,
-    xc: Option<&str>,
-) -> PyResult<(ferric_scf::frequencies::FrequencyResult, Option<f64>)> {
-    let spec = resolve_frequency_dispersion(dispersion, xc, fcfg.reference, scf_cfg)?;
-    let ctx = ParallelContext::default();
-    let r = match &spec {
-        None => ferric_scf::frequencies::harmonic_frequencies(
-            &ctx,
-            mol,
-            basis_name,
-            Operator::coulomb(),
-            scf_cfg,
-            fcfg,
-        ),
-        Some(spec) => dispersion_frequencies(&ctx, mol, basis_name, scf_cfg, fcfg, spec),
-    }
-    .map_err(make_err)?;
-    let e_dispersion = spec.map(|_| r.correction_energy);
-    Ok((r, e_dispersion))
-}
-
-/// Harmonic frequencies on the KS + `spec` surface: central differences of
-/// the corrected analytic gradient, each from the SCF converged at that
-/// displaced geometry.
-fn dispersion_frequencies(
-    ctx: &ParallelContext,
-    mol: &ferric_core::mol::Molecule,
-    basis_name: &str,
-    scf_cfg: &RhfConfig,
-    fcfg: &ferric_scf::frequencies::FrequencyConfig,
-    spec: &DispersionSpec,
-) -> Result<ferric_scf::frequencies::FrequencyResult, ferric_core::FerricError> {
-    // Refuse an unsupported configuration (e.g. hessian = "analytic") before
-    // the MBD@rsSCS free-atom SCFs below, not after them.
-    ferric_scf::frequencies::check_scf_correction_config(fcfg)?;
-    let op = Operator::coulomb();
-    let bs = ferric_core::basis::bundled(basis_name)?;
-    // MBD@rsSCS free-atom references are per element: built once, not at each
-    // of the 6N + 1 geometries.
-    let cache = match spec {
-        DispersionSpec::Mbd(_) => Some(ferric_rpa::dispersion::mbd_scf::MbdFreeAtomCache::build(
-            ctx, mol, &bs, op, scf_cfg,
-        )?),
-        DispersionSpec::D3Bj(_) => None,
-    };
-    ferric_scf::frequencies::harmonic_frequencies_with_scf_correction(
-        ctx,
-        mol,
-        basis_name,
-        op,
-        scf_cfg,
-        fcfg,
-        |m, scf| {
-            let d = evaluate_dispersion(spec, ctx, m, &bs, op, scf_cfg, scf, true, cache.as_ref())?;
-            Ok((d.energy, d.gradient))
-        },
-    )
-}
-
-// ── Conformer ensembles (Boltzmann-weighted property averaging) ──
-//
-// Thin wrapper over `ferric_core::conformers`. Nothing is reimplemented here:
-// the invariant checks, the E_min-shifted weights, and the shifted-form
-// weighted variance all live in core. This layer only converts Python shapes
-// (lists of coordinate arrays from RDKit, lists of energies) into core's
-// types, and converts core's typed errors into Python exceptions rather than
-// letting a Rust panic cross the pyo3 boundary (which would abort the host
-// interpreter).
-//
-// UNITS. RDKit's `Chem.Conformer.GetPositions()` returns **Ångström**.
-// ferric's `Molecule` stores **Bohr**. `Molecule::parse_xyz` (and therefore
-// `Molecule.from_xyz` / `from_xyz_string`, and `conformers::load_multi_xyz`)
-// take Ångström input and convert. To stay consistent with every other
-// geometry entry point in this module, `ConformerEnsemble.from_coordinates`
-// also takes **Ångström** and converts internally — so an RDKit
-// `GetPositions()` array can be passed straight through with no scaling by
-// the caller. `ConformerEnsemble.coordinates()` returns Ångström again (a
-// ~1-ulp round-trip, not bit-exact: the Å->Bohr multiply has no exact
-// inverse); `coordinates_bohr()` returns the stored Bohr values verbatim for
-// callers who want the raw internal representation.
-
-/// Map a `ConformerError` to a Python exception.
-///
-/// Every variant is a caller/input error, not an internal failure, so
-/// `ValueError` is the right class throughout — the caller can catch it and
-/// fix the input (re-order the conformers, drop the unconverged one). The
-/// message is core's, which already names the offending conformer/atom index.
-fn conformer_err(e: ferric_core::conformers::ConformerError) -> PyErr {
-    pyo3::exceptions::PyValueError::new_err(format!("{e}"))
-}
-
-/// Build a `Molecule` from a coordinate array plus a shared element list.
-///
-/// `coords` is `natoms x 3` in **Ångström**. Rather than constructing `Atom`s
-/// by hand (which would silently bypass core's element lookup, ghost-prefix
-/// handling, and the electron-count/multiplicity parity check), this formats a
-/// standard XYZ frame and hands it to `Molecule::parse_xyz` — the exact same
-/// path `Molecule.from_xyz_string` takes, so the unit convention and all
-/// validation are shared by construction rather than by convention.
-///
-/// The `{:?}` float formatting is Rust's shortest round-trip representation:
-/// `parse::<f64>()` recovers the identical bit pattern, so this is exact, not
-/// an approximation. (Verified over 2e6 random f64 bit patterns.)
-fn molecule_from_coords(
-    coords: &[Vec<f64>],
-    symbols: &[String],
-    charge: i32,
-    multiplicity: usize,
-    conformer_index: usize,
-) -> PyResult<Molecule> {
-    if coords.len() != symbols.len() {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "conformer {conformer_index}: got {} coordinate rows but {} element symbols; \
-             the element list is shared by all conformers and must match each geometry's \
-             atom count",
-            coords.len(),
-            symbols.len()
-        )));
-    }
-    let mut xyz = format!("{}\nconformer {conformer_index}\n", coords.len());
-    for (atom_index, (row, sym)) in coords.iter().zip(symbols).enumerate() {
-        if row.len() != 3 {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "conformer {conformer_index}, atom {atom_index}: expected 3 Cartesian \
-                 coordinates, got {}",
-                row.len()
-            )));
-        }
-        if !row.iter().all(|v| v.is_finite()) {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "conformer {conformer_index}, atom {atom_index}: non-finite coordinate \
-                 {row:?} (NaN/inf geometries produce a plausible-looking but meaningless \
-                 energy, so they are rejected here)"
-            )));
-        }
-        xyz.push_str(&format!("{} {:?} {:?} {:?}\n", sym, row[0], row[1], row[2]));
-    }
-    Molecule::parse_xyz(&xyz, charge, multiplicity).map_err(|e| {
-        pyo3::exceptions::PyValueError::new_err(format!("conformer {conformer_index}: {e}"))
-    })
-}
-
-/// A weighted mean with its spread. Returned by every ensemble-averaging call.
-///
-/// The standard deviation is not optional: an ensemble average without a
-/// spread cannot distinguish "one dominant conformer, the ensemble was
-/// unnecessary" from "fifty comparable conformers, any single-conformer number
-/// is simply wrong". `min`/`max` are the unweighted range, for context.
-#[pyclass]
-#[pyo3(name = "WeightedStats")]
-#[derive(Clone, Copy)]
-struct PyWeightedStats {
-    /// Weighted mean `Σ w_i x_i`.
-    #[pyo3(get)]
-    mean: f64,
-    /// Weighted population standard deviation `sqrt(Σ w_i (x_i - mean)²)`.
-    /// Exactly 0.0 for a one-conformer ensemble.
-    #[pyo3(get)]
-    std_dev: f64,
-    /// Smallest value across conformers (unweighted).
-    #[pyo3(get)]
-    min: f64,
-    /// Largest value across conformers (unweighted).
-    #[pyo3(get)]
-    max: f64,
-}
-
-impl From<ferric_core::conformers::WeightedStats> for PyWeightedStats {
-    fn from(s: ferric_core::conformers::WeightedStats) -> Self {
-        PyWeightedStats {
-            mean: s.mean,
-            std_dev: s.std_dev,
-            min: s.min,
-            max: s.max,
-        }
-    }
-}
-
-#[pymethods]
-impl PyWeightedStats {
-    fn __repr__(&self) -> String {
-        format!(
-            "WeightedStats(mean={:.10e}, std_dev={:.10e}, min={:.10e}, max={:.10e})",
-            self.mean, self.std_dev, self.min, self.max
-        )
-    }
-}
-
-/// Population-structure readout for a Boltzmann-weighted ensemble.
-///
-/// Read `verdict` first: it states in plain language whether the ensemble
-/// mattered. `effective_n_conformers` is the inverse participation ratio
-/// `1 / Σ w_i²` — 1.0 when one conformer carries everything, N when N are
-/// degenerate.
-#[pyclass]
-#[pyo3(name = "EnsembleDiagnostics")]
-struct PyEnsembleDiagnostics {
-    #[pyo3(get)]
-    n_conformers: usize,
-    /// Conformers within `kT` of the minimum (always >= 1: the minimum itself).
-    #[pyo3(get)]
-    n_within_kt: usize,
-    /// Conformers within `2kT` of the minimum.
-    #[pyo3(get)]
-    n_within_2kt: usize,
-    /// Conformers within `5kT` of the minimum.
-    #[pyo3(get)]
-    n_within_5kt: usize,
-    /// Largest single Boltzmann population.
-    #[pyo3(get)]
-    max_weight: f64,
-    /// Index of the conformer carrying `max_weight`.
-    #[pyo3(get)]
-    max_weight_index: usize,
-    /// Inverse participation ratio `1 / Σ w_i²`.
-    #[pyo3(get)]
-    effective_n_conformers: f64,
-    #[pyo3(get)]
-    temperature_k: f64,
-    /// Plain-language verdict on whether the ensemble was needed.
-    #[pyo3(get)]
-    verdict: String,
-    text: String,
-}
-
-#[pymethods]
-impl PyEnsembleDiagnostics {
-    /// `True` when one conformer carries at least `threshold` of the
-    /// population (pass 0.95 for the usual sense) — the ensemble added nothing.
-    #[pyo3(signature = (threshold=0.95))]
-    fn is_single_conformer_dominated(&self, threshold: f64) -> bool {
-        self.max_weight >= threshold
-    }
-    /// Multi-line human-readable summary (same text as the Rust `Display`).
-    fn __str__(&self) -> String {
-        self.text.clone()
-    }
-    fn __repr__(&self) -> String {
-        format!(
-            "EnsembleDiagnostics(n_conformers={}, max_weight={:.6}, effective_n_conformers={:.3}, T={:.2} K)",
-            self.n_conformers, self.max_weight, self.effective_n_conformers, self.temperature_k
-        )
-    }
-}
-
-impl From<ferric_core::conformers::EnsembleDiagnostics> for PyEnsembleDiagnostics {
-    fn from(d: ferric_core::conformers::EnsembleDiagnostics) -> Self {
-        PyEnsembleDiagnostics {
-            n_conformers: d.n_conformers,
-            n_within_kt: d.n_within_kt,
-            n_within_2kt: d.n_within_2kt,
-            n_within_5kt: d.n_within_5kt,
-            max_weight: d.max_weight,
-            max_weight_index: d.max_weight_index,
-            effective_n_conformers: d.effective_n_conformers,
-            temperature_k: d.temperature_k,
-            verdict: d.verdict().to_string(),
-            text: d.to_string(),
-        }
-    }
-}
-
-/// Boltzmann populations of an ensemble at one temperature.
-#[pyclass]
-#[pyo3(name = "BoltzmannWeights")]
-struct PyBoltzmannWeights {
-    /// Normalized populations in ensemble order. Sum to 1.
-    #[pyo3(get)]
-    weights: Vec<f64>,
-    /// Energies relative to the ensemble minimum, in Hartree (all >= 0).
-    #[pyo3(get)]
-    relative_energies: Vec<f64>,
-    #[pyo3(get)]
-    temperature_k: f64,
-    /// `kT` at that temperature, in Hartree.
-    #[pyo3(get)]
-    kt_hartree: f64,
-    /// Index of the lowest-energy conformer.
-    #[pyo3(get)]
-    min_index: usize,
-    /// `Z = Σ exp(-(E_i - E_min)/kT)`, always >= 1.
-    #[pyo3(get)]
-    partition_function: f64,
-    inner: ferric_core::conformers::BoltzmannWeights,
-}
-
-#[pymethods]
-impl PyBoltzmannWeights {
-    /// Population-structure diagnostics for this weighting.
-    fn diagnostics(&self) -> PyEnsembleDiagnostics {
-        self.inner.diagnostics().into()
-    }
-    fn __len__(&self) -> usize {
-        self.weights.len()
-    }
-    fn __repr__(&self) -> String {
-        format!(
-            "BoltzmannWeights(n={}, T={:.2} K, max_weight={:.6})",
-            self.weights.len(),
-            self.temperature_k,
-            self.inner.diagnostics().max_weight
-        )
-    }
-}
-
-impl From<ferric_core::conformers::BoltzmannWeights> for PyBoltzmannWeights {
-    fn from(w: ferric_core::conformers::BoltzmannWeights) -> Self {
-        PyBoltzmannWeights {
-            weights: w.weights.clone(),
-            relative_energies: w.relative_energies.clone(),
-            temperature_k: w.temperature_k,
-            kt_hartree: w.kt_hartree,
-            min_index: w.min_index,
-            partition_function: w.partition_function,
-            inner: w,
-        }
-    }
-}
-
-/// A set of conformers of one chemical species, sharing atom ordering,
-/// composition, charge and multiplicity.
-///
-/// The shared-ordering invariant is enforced at construction and cannot be
-/// bypassed. This matters: averaging a per-atom property (charges, per-atom
-/// C6) across differently-ordered geometries produces a plausible-looking
-/// number that is simply wrong, with no runtime symptom. A violation raises
-/// `ValueError` naming the offending conformer and atom.
-///
-/// # Units
-///
-/// `from_coordinates` takes **Ångström**, matching RDKit's
-/// `Conformer.GetPositions()` and ferric's own XYZ entry points. Coordinates
-/// are stored internally in Bohr (as everywhere in ferric); `coordinates()`
-/// converts back to Ångström (to ~1 ulp — the conversion is a float multiply
-/// with no exact inverse), `coordinates_bohr()` returns the stored Bohr values
-/// verbatim.
-///
-/// # Typical use (the RDKit path)
-///
-/// ```python
-/// from rdkit import Chem
-/// from rdkit.Chem import AllChem
-/// import ferric
-///
-/// m = Chem.AddHs(Chem.MolFromSmiles("CCO"))
-/// AllChem.EmbedMultipleConfs(m, numConfs=20, randomSeed=0xf00d)
-/// symbols = [a.GetSymbol() for a in m.GetAtoms()]
-/// coords  = [c.GetPositions() for c in m.GetConformers()]   # Ångström
-///
-/// ens = ferric.ConformerEnsemble.from_coordinates(coords, symbols)
-///
-/// basis = ferric.BasisSet.bundled("sto-3g")
-/// energies, dipoles = [], []
-/// for mol in ens.molecules():
-///     scf = ferric.run_rhf(mol, basis)
-///     energies.append(scf.energy)
-///     dipoles.append(some_dipole(mol, basis, scf))
-///
-/// w = ens.boltzmann_weights(energies)          # 298.15 K by default
-/// print(w.diagnostics())                       # did the ensemble matter?
-/// mu = ferric.weighted_stats_vector(dipoles, w.weights)
-/// print(mu[0].mean, "+/-", mu[0].std_dev)
-/// ```
-#[pyclass]
-#[pyo3(name = "ConformerEnsemble")]
-struct PyConformerEnsemble {
-    inner: ferric_core::conformers::ConformerEnsemble,
-}
-
-#[pymethods]
-impl PyConformerEnsemble {
-    /// Build an ensemble from a list of `natoms x 3` coordinate arrays plus one
-    /// shared element list — exactly the shape RDKit gives you:
-    ///
-    /// ```python
-    /// coords  = [c.GetPositions() for c in mol.GetConformers()]  # Ångström
-    /// symbols = [a.GetSymbol() for a in mol.GetAtoms()]
-    /// ens = ferric.ConformerEnsemble.from_coordinates(coords, symbols)
-    /// ```
-    ///
-    /// **`coordinates` are in Ångström**, matching RDKit's `GetPositions()`
-    /// and ferric's XYZ readers; they are converted to Bohr internally. Do not
-    /// pre-scale.
-    ///
-    /// `elements` may be symbols (`"C"`, `"@O"` for a ghost center) or atomic
-    /// numbers — pass whichever you have; both are accepted. It is a single
-    /// list, shared by all conformers, because a conformer set is one species
-    /// by definition.
-    ///
-    /// Raises `ValueError` on: an empty conformer list, a coordinate/element
-    /// count mismatch, a row that is not 3 Cartesian components, a non-finite
-    /// coordinate, an unknown element, an inconsistent electron-count /
-    /// multiplicity parity, or (from core's invariant check) any conformer
-    /// disagreeing with conformer 0 on composition, ordering, charge or
-    /// multiplicity.
-    #[staticmethod]
-    #[pyo3(signature = (coordinates, elements, charge=0, multiplicity=1, energies=None))]
-    fn from_coordinates(
-        coordinates: Vec<Vec<Vec<f64>>>,
-        elements: Bound<'_, PyAny>,
-        charge: i32,
-        multiplicity: usize,
-        energies: Option<Vec<f64>>,
-    ) -> PyResult<Self> {
-        if coordinates.is_empty() {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "conformer ensemble is empty (need at least one conformer); \
-                 did EmbedMultipleConfs return zero conformers?",
-            ));
-        }
-        let symbols = extract_element_symbols(&elements)?;
-        let molecules: Vec<Molecule> = coordinates
-            .iter()
-            .enumerate()
-            .map(|(i, c)| molecule_from_coords(c, &symbols, charge, multiplicity, i))
-            .collect::<PyResult<_>>()?;
-
-        let inner = match energies {
-            Some(e) => {
-                if e.len() != molecules.len() {
-                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                        "got {} energies for {} conformers",
-                        e.len(),
-                        molecules.len()
-                    )));
-                }
-                ferric_core::conformers::ConformerEnsemble::from_molecules_and_energies(
-                    molecules, &e,
-                )
-            }
-            None => ferric_core::conformers::ConformerEnsemble::from_molecules(molecules),
-        }
-        .map_err(conformer_err)?;
-        Ok(PyConformerEnsemble { inner })
-    }
-
-    /// Build an ensemble from a **multi-frame** XYZ file (concatenated XYZ
-    /// blocks — what RDKit/OpenBabel write for a conformer set).
-    ///
-    /// `Molecule.from_xyz` reads only the FIRST frame of such a file and
-    /// silently ignores the rest; this reads every frame. Coordinates in the
-    /// file are Ångström, as in any XYZ.
-    ///
-    /// Energies are **not** parsed from the comment lines: the formats vary
-    /// (`E = -155.4`, bare floats, `MMFF94 -12.3`) and guessing would silently
-    /// mis-assign weights. Pass `energies=` explicitly, or compute them with
-    /// ferric and use `boltzmann_weights(energies)`.
-    #[staticmethod]
-    #[pyo3(signature = (path, charge=0, multiplicity=1, energies=None))]
-    fn from_multi_xyz(
-        path: &str,
-        charge: i32,
-        multiplicity: usize,
-        energies: Option<Vec<f64>>,
-    ) -> PyResult<Self> {
-        let molecules = ferric_core::conformers::load_multi_xyz(path, charge, multiplicity)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
-        let inner = match energies {
-            Some(e) => {
-                if e.len() != molecules.len() {
-                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                        "got {} energies for {} frames in {path:?}",
-                        e.len(),
-                        molecules.len()
-                    )));
-                }
-                ferric_core::conformers::ConformerEnsemble::from_molecules_and_energies(
-                    molecules, &e,
-                )
-            }
-            None => ferric_core::conformers::ConformerEnsemble::from_molecules(molecules),
-        }
-        .map_err(conformer_err)?;
-        Ok(PyConformerEnsemble { inner })
-    }
-
-    /// Number of conformers (always >= 1).
-    fn __len__(&self) -> usize {
-        self.inner.len()
-    }
-    /// Number of conformers (always >= 1).
-    fn n_conformers(&self) -> usize {
-        self.inner.len()
-    }
-    /// Number of atoms per conformer (shared by construction).
-    fn n_atoms(&self) -> usize {
-        self.inner.n_atoms()
-    }
-
-    /// The conformer geometries as `Molecule` objects, ready to hand to
-    /// `run_rhf` / `run_ksdft` / any other driver.
-    fn molecules(&self) -> Vec<PyMolecule> {
-        self.inner
-            .conformers()
-            .iter()
-            .map(|c| PyMolecule {
-                inner: c.molecule.clone(),
-            })
-            .collect()
-    }
-
-    /// Geometry of conformer `index` as a `Molecule`.
-    fn molecule(&self, index: usize) -> PyResult<PyMolecule> {
-        self.inner
-            .conformers()
-            .get(index)
-            .map(|c| PyMolecule {
-                inner: c.molecule.clone(),
-            })
-            .ok_or_else(|| {
-                pyo3::exceptions::PyIndexError::new_err(format!(
-                    "conformer index {index} out of range (ensemble has {})",
-                    self.inner.len()
-                ))
-            })
-    }
-
-    /// Element symbols, shared by all conformers, in atom order. Ghost centers
-    /// come back without the `@` prefix (use `is_ghost()` to distinguish them).
-    fn elements(&self) -> Vec<String> {
-        self.inner.conformers()[0]
-            .molecule
-            .atoms
-            .iter()
-            .map(|a| a.symbol.clone())
-            .collect()
-    }
-
-    /// Atomic numbers, shared by all conformers, in atom order.
-    fn atomic_numbers(&self) -> Vec<i32> {
-        self.inner.conformers()[0]
-            .molecule
-            .atoms
-            .iter()
-            .map(|a| a.z)
-            .collect()
-    }
-
-    /// Per-atom ghost flags (basis-only centers), shared by all conformers.
-    fn is_ghost(&self) -> Vec<bool> {
-        self.inner.conformers()[0]
-            .molecule
-            .atoms
-            .iter()
-            .map(|a| a.ghost)
-            .collect()
-    }
-
-    /// All conformer geometries as a list of `natoms x 3` numpy arrays in
-    /// **Ångström** — the same units `from_coordinates` accepts, so this
-    /// round-trips to ~1 ulp (< 1e-14 Å). It is NOT bit-exact: the Å->Bohr
-    /// conversion on the way in is a floating-point multiply, which has no
-    /// exact inverse. Compare with a tolerance, not `==`.
-    fn coordinates<'py>(&self, py: Python<'py>) -> Vec<Bound<'py, PyArray2<f64>>> {
-        self.coords_arrays(py, false)
-    }
-
-    /// All conformer geometries as a list of `natoms x 3` numpy arrays in
-    /// **Bohr** — ferric's internal storage units, returned verbatim with no
-    /// arithmetic applied.
-    fn coordinates_bohr<'py>(&self, py: Python<'py>) -> Vec<Bound<'py, PyArray2<f64>>> {
-        self.coords_arrays(py, true)
-    }
-
-    /// Conformer energies in Hartree, in ensemble order.
-    ///
-    /// Raises `ValueError` if any conformer has no energy set (or a non-finite
-    /// one) — an unconverged SCF must not be silently averaged in.
-    fn energies(&self) -> PyResult<Vec<f64>> {
-        self.inner.energies().map_err(conformer_err)
-    }
-
-    /// Set the energy (Hartree) of one conformer, e.g. as SCF results come
-    /// back. Raises `ValueError` on an out-of-range index or a non-finite
-    /// energy.
-    fn set_energy(&mut self, index: usize, energy: f64) -> PyResult<()> {
-        self.inner.set_energy(index, energy).map_err(conformer_err)
-    }
-
-    /// Boltzmann weights at `temperature_k` Kelvin (default 298.15 K,
-    /// thermochemical standard).
-    ///
-    /// `energies` (Hartree) may be supplied here, or omitted to use energies
-    /// already attached to the ensemble (via `from_coordinates(energies=...)`
-    /// or `set_energy`). Supplying them here does NOT mutate the ensemble.
-    ///
-    /// Weights are `w_i = exp(-(E_i - E_min)/kT) / Z`. The `E_min` shift is
-    /// what makes this safe on absolute electronic energies: raw
-    /// `exp(-E_i/kT)` at E ~ -10^2 Ha and kT ~ 9.4e-4 Ha overflows instantly.
-    ///
-    /// Raises `ValueError` on a non-positive/non-finite temperature, a
-    /// non-finite energy, or an energy-count mismatch.
-    #[pyo3(signature = (energies=None, temperature_k=ferric_core::conformers::DEFAULT_TEMPERATURE_K))]
-    fn boltzmann_weights(
-        &self,
-        energies: Option<Vec<f64>>,
-        temperature_k: f64,
-    ) -> PyResult<PyBoltzmannWeights> {
-        let e = match energies {
-            Some(e) => {
-                if e.len() != self.inner.len() {
-                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                        "got {} energies for {} conformers",
-                        e.len(),
-                        self.inner.len()
-                    )));
-                }
-                e
-            }
-            None => self.inner.energies().map_err(conformer_err)?,
-        };
-        ferric_core::conformers::boltzmann_weights(&e, temperature_k)
-            .map(Into::into)
-            .map_err(conformer_err)
-    }
-
-    /// Population-structure diagnostics at `temperature_k`. Convenience for
-    /// `boltzmann_weights(...).diagnostics()`.
-    #[pyo3(signature = (energies=None, temperature_k=ferric_core::conformers::DEFAULT_TEMPERATURE_K))]
-    fn diagnostics(
-        &self,
-        energies: Option<Vec<f64>>,
-        temperature_k: f64,
-    ) -> PyResult<PyEnsembleDiagnostics> {
-        Ok(self
-            .boltzmann_weights(energies, temperature_k)?
-            .inner
-            .diagnostics()
-            .into())
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "ConformerEnsemble(n_conformers={}, n_atoms={})",
-            self.inner.len(),
-            self.inner.n_atoms()
-        )
-    }
-}
-
-impl PyConformerEnsemble {
-    /// Shared body of `coordinates()` / `coordinates_bohr()`: emit one
-    /// `natoms x 3` array per conformer from the stored Bohr values.
-    ///
-    /// `bohr = true` returns them untouched. `bohr = false` converts to
-    /// Ångström by DIVIDING by `ANGSTROM_TO_BOHR` — the same constant
-    /// `Molecule::parse_xyz` multiplied by — which is the closer inverse than
-    /// multiplying by the reciprocal literal (see `ANGSTROM_TO_BOHR`'s doc).
-    fn coords_arrays<'py>(&self, py: Python<'py>, bohr: bool) -> Vec<Bound<'py, PyArray2<f64>>> {
-        let conv = |v: f64| if bohr { v } else { v / ANGSTROM_TO_BOHR };
-        self.inner
-            .conformers()
-            .iter()
-            .map(|c| {
-                let n = c.molecule.atoms.len();
-                let mut a = Array2::<f64>::zeros((n, 3));
-                for (i, at) in c.molecule.atoms.iter().enumerate() {
-                    a[[i, 0]] = conv(at.x);
-                    a[[i, 1]] = conv(at.y);
-                    a[[i, 2]] = conv(at.zpos);
-                }
-                PyArray2::from_array(py, &a)
-            })
-            .collect()
-    }
-}
-
-/// The Ångström->Bohr factor `ferric_core::mol` applies when parsing XYZ:
-/// ferric's one conversion, [`ferric_core::units::ANGSTROM_TO_BOHR`].
-///
-/// `coordinates()` inverts the conversion by **dividing** by this constant
-/// rather than multiplying by `BOHR_TO_ANGSTROM`. Both are correct
-/// to 1 ulp, but the divide is the better inverse: measured over 3e6 random
-/// coordinates in -20..20 Å, `x * A2B / A2B != x` for 5.0% of values whereas
-/// `x * A2B * BOHR_TO_ANGSTROM != x` for 15.4%; worst-case error is 3.6e-15 Å
-/// either way. Floating-point multiplication is not exactly invertible, so a
-/// round-trip through `from_coordinates` -> `coordinates()` is accurate to
-/// ~1 ulp (< 1e-14 Å), NOT bit-exact — do not assert equality on it.
-use ferric_core::units::ANGSTROM_TO_BOHR;
-
-/// Accept either element symbols (`"C"`, `"@O"`) or atomic numbers (`6`) for
-/// the shared element list — RDKit hands you `GetSymbol()` naturally, but
-/// `GetAtomicNum()` is just as common, and silently accepting only one of them
-/// is a trap. Mixed lists are accepted too (each entry is resolved on its own).
-fn extract_element_symbols(elements: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
-    let items: Vec<Bound<'_, PyAny>> = elements.extract().map_err(|_| {
-        pyo3::exceptions::PyTypeError::new_err(
-            "elements must be a sequence of element symbols (e.g. ['O','H','H']) \
-             or atomic numbers (e.g. [8,1,1])",
-        )
-    })?;
-    if items.is_empty() {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "elements list is empty (need one entry per atom)",
-        ));
-    }
-    items
-        .iter()
-        .enumerate()
-        .map(|(i, item)| {
-            if let Ok(s) = item.extract::<String>() {
-                return Ok(s);
-            }
-            // `bool` is a subclass of `int` in Python; extracting an atomic
-            // number from `True` would silently give hydrogen. Reject it.
-            if item.is_instance_of::<pyo3::types::PyBool>() {
-                return Err(pyo3::exceptions::PyTypeError::new_err(format!(
-                    "element {i} is a bool, not an element symbol or atomic number"
-                )));
-            }
-            if let Ok(z) = item.extract::<i32>() {
-                return ferric_core::elements::z_to_symbol(z)
-                    .map(str::to_string)
-                    .ok_or_else(|| {
-                        pyo3::exceptions::PyValueError::new_err(format!(
-                            "element {i}: atomic number {z} is not a known element"
-                        ))
-                    });
-            }
-            Err(pyo3::exceptions::PyTypeError::new_err(format!(
-                "element {i}: expected an element symbol (str) or atomic number (int), \
-                 got {}",
-                item.get_type()
-                    .name()
-                    .map(|n| n.to_string())
-                    .unwrap_or_else(|_| "?".into())
-            )))
-        })
-        .collect()
-}
-
-/// Boltzmann weights from a bare list of energies (Hartree) at
-/// `temperature_k` Kelvin (default 298.15 K).
-///
-/// Free-function form for callers holding energies without a
-/// `ConformerEnsemble` — e.g. weighting results that came from somewhere else.
-/// `w_i = exp(-(E_i - E_min)/kT) / Z`, computed with the `E_min` shift so
-/// absolute electronic energies do not overflow.
-///
-/// Raises `ValueError` on an empty list, a non-finite energy, or a
-/// non-positive/non-finite temperature.
-#[pyfunction]
-#[pyo3(signature = (energies, temperature_k=ferric_core::conformers::DEFAULT_TEMPERATURE_K))]
-fn boltzmann_weights(energies: Vec<f64>, temperature_k: f64) -> PyResult<PyBoltzmannWeights> {
-    ferric_core::conformers::boltzmann_weights(&energies, temperature_k)
-        .map(Into::into)
-        .map_err(conformer_err)
-}
-
-/// Weighted mean and standard deviation of a **scalar** property across
-/// conformers.
-///
-/// `values[i]` is the property computed on conformer `i`; `weights[i]` its
-/// Boltzmann population (from `boltzmann_weights`). Returns a `WeightedStats`
-/// carrying `mean`, `std_dev`, `min`, `max`.
-///
-/// The variance is computed in the shifted form `Σ w_i (x_i - mean)²`, not
-/// `E[x²] - E[x]²`: the latter loses every significant digit when the values
-/// are large and their spread is small — exactly the regime of absolute
-/// electronic energies.
-///
-/// Raises `ValueError` on a length mismatch, an empty list, or a non-finite
-/// value.
-#[pyfunction]
-fn weighted_stats(values: Vec<f64>, weights: Vec<f64>) -> PyResult<PyWeightedStats> {
-    ferric_core::conformers::weighted_stats(&values, &weights)
-        .map(Into::into)
-        .map_err(conformer_err)
-}
-
-/// Weighted mean and standard deviation of a **vector-valued** property
-/// (a dipole, a per-atom charge array), applied component-wise.
-///
-/// `values[i]` is conformer `i`'s property vector; all must be the same
-/// length. Returns one `WeightedStats` per component.
-///
-/// Component-wise is the right default and the reason the spread is
-/// mandatory: a symmetric ensemble's dipole components can cancel to near
-/// zero while every individual conformer is strongly polar. The mean alone
-/// would report "non-polar"; the per-component `std_dev` exposes the truth.
-/// For the average *magnitude* instead, compute per-conformer magnitudes in
-/// Python and pass them to `weighted_stats` — the two are different physical
-/// questions and this API refuses to conflate them.
-///
-/// Raises `ValueError` on a length mismatch or ragged input.
-#[pyfunction]
-fn weighted_stats_vector(
-    values: Vec<Vec<f64>>,
-    weights: Vec<f64>,
-) -> PyResult<Vec<PyWeightedStats>> {
-    ferric_core::conformers::weighted_stats_vector(&values, &weights)
-        .map(|v| v.into_iter().map(Into::into).collect())
-        .map_err(conformer_err)
-}
-
-/// Weighted mean and standard deviation of a **rank-2 tensor** property
-/// (a 3x3 polarizability, a quadrupole), applied element-wise.
-///
-/// `values[i]` is conformer `i`'s `nrow x ncol` tensor; all conformers must
-/// supply the same shape. Returns an `nrow x ncol` nested list of
-/// `WeightedStats`.
-///
-/// Raises `ValueError` on a length mismatch or inconsistent shapes.
-#[pyfunction]
-fn weighted_stats_tensor(
-    values: Vec<Vec<Vec<f64>>>,
-    weights: Vec<f64>,
-) -> PyResult<Vec<Vec<PyWeightedStats>>> {
-    ferric_core::conformers::weighted_stats_tensor(&values, &weights)
-        .map(|rows| {
-            rows.into_iter()
-                .map(|r| r.into_iter().map(Into::into).collect())
-                .collect()
-        })
-        .map_err(conformer_err)
-}
-
-// ── Electronic properties (ESP / Hirshfeld / Löwdin charges) ──
-
-/// Accepts either an `RhfResult` or a `DftResult` — both carry a converged
-/// closed-shell density, which is all these property functions need. Lets
-/// `esp_at_atoms`/`hirshfeld_charges`/`lowdin_charges` work on any energy
-/// result rather than being RHF-only.
-enum DensitySource<'py> {
-    Rhf(PyRef<'py, PyRhfResult>),
-    Dft(PyRef<'py, PyDftResult>),
-}
-
-impl<'py> DensitySource<'py> {
-    fn density(&self) -> &Array2<f64> {
-        match self {
-            DensitySource::Rhf(r) => &r.density_data,
-            DensitySource::Dft(d) => &d.density_data,
-        }
-    }
-
-    fn scf(&self) -> &ScfResult {
-        match self {
-            DensitySource::Rhf(r) => &r.scf_data,
-            DensitySource::Dft(d) => &d.scf_data,
-        }
-    }
-
-    fn scf_config(&self) -> &RhfConfig {
-        match self {
-            DensitySource::Rhf(r) => &r.scf_config,
-            DensitySource::Dft(d) => &d.scf_config,
-        }
-    }
-}
-
-impl<'py> FromPyObject<'py> for DensitySource<'py> {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
-        if let Ok(r) = ob.extract::<PyRef<'py, PyRhfResult>>() {
-            return Ok(DensitySource::Rhf(r));
-        }
-        if let Ok(d) = ob.extract::<PyRef<'py, PyDftResult>>() {
-            return Ok(DensitySource::Dft(d));
-        }
-        Err(pyo3::exceptions::PyTypeError::new_err(
-            "expected an RhfResult or DftResult",
-        ))
-    }
-}
-
-/// Electrostatic potential at each nucleus, in Hartree atomic units (e/Bohr).
-/// `result` is an `RhfResult` or `DftResult` from a converged SCF.
-#[pyfunction]
-fn esp_at_atoms(
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    result: DensitySource,
-) -> PyResult<Vec<f64>> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    ferric_rpa::properties::esp_at_atoms(&mol.inner, &prep, result.density()).map_err(make_err)
-}
-
-/// Electrostatic potential at ARBITRARY points, in Hartree atomic units
-/// (e/Bohr). `points` is an (N, 3) array of Cartesian positions in **Bohr**.
-///
-/// This is the primitive behind CHELPG/RESP and is what you want for an ESP on
-/// a molecular surface (vdW shell, solvent-accessible grid, ...). Prefer it
-/// over reconstructing the surface potential from partial charges plus induced
-/// dipoles: that is a point-multipole approximation to a quantity computed
-/// here exactly from the density.
-///
-/// `result` is an `RhfResult` or `DftResult` from a converged SCF.
-#[pyfunction]
-fn esp_at_points(
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    result: DensitySource,
-    points: numpy::PyReadonlyArray2<f64>,
-) -> PyResult<Vec<f64>> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let arr = points.as_array();
-    if arr.ncols() != 3 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "points must have shape (N, 3); got (_, {})",
-            arr.ncols()
-        )));
-    }
-    let pts: Vec<[f64; 3]> = arr.rows().into_iter().map(|r| [r[0], r[1], r[2]]).collect();
-    ferric_scf::properties::esp_at_points(&mol.inner, &prep, result.density(), &pts)
-        .map_err(make_err)
-}
-
-/// Electrostatic potential on a molecular van der Waals surface.
-///
-/// A Lebedev sphere of `n_angular` points is placed at `vdw_scale` x the Bondi
-/// radius of every atom; points inside another atom's scaled radius are
-/// dropped. Returns `(points, esp, n_buried)`: `points` is an (M, 3) array in
-/// **Bohr**, `esp` the potential there in Hartree/e (same sign convention as
-/// `esp_at_points`), and `n_buried` the number of sample points dropped as
-/// buried. `result` is an `RhfResult` or `DftResult` from a converged SCF.
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, result, vdw_scale=1.4, n_angular=110))]
-fn esp_on_surface<'py>(
-    py: Python<'py>,
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    result: DensitySource,
-    vdw_scale: f64,
-    n_angular: usize,
-) -> PyResult<(Bound<'py, PyArray2<f64>>, Vec<f64>, usize)> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let (pts, esp, n_buried) = ferric_scf::properties::esp_on_surface_counted(
-        &mol.inner,
-        &prep,
-        result.density(),
-        vdw_scale,
-        n_angular,
-    )
-    .map_err(make_err)?;
-    let mut arr = ndarray::Array2::<f64>::zeros((pts.len(), 3));
-    for (i, p) in pts.iter().enumerate() {
-        for (k, v) in p.iter().enumerate() {
-            arr[(i, k)] = *v;
-        }
-    }
-    Ok((PyArray2::from_array(py, &arr), esp, n_buried))
-}
-
-/// Hirshfeld partial charges (units of e). `result` is an `RhfResult` or
-/// `DftResult` from a converged SCF.
-///
-/// `proatom` selects the free-atom reference density:
-///   "scf"    (default) free-atom SCF densities in the molecule's own basis,
-///            solved with the same SCF settings as `result` (method, functional,
-///            density fitting, thresholds) — the proatom ferric-cli's
-///            `[rpa] compute_hirshfeld_charges` uses
-///            (`ferric_scf::properties::scf_proatom_provider`). An atom whose
-///            free-atom SCF fails falls back to the Slater proatom, with a warning.
-///   "slater" a single-exponential Slater proatom (xi = 1 / Bragg-Slater
-///            radius). Qualitative: 0.23-0.72 e from "scf" on H2O, CO and
-///            CH3OH. Prints a warning.
-/// Any other value raises ValueError.
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, result, proatom="scf"))]
-fn hirshfeld_charges(
-    py: Python<'_>,
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    result: DensitySource,
-    proatom: &str,
-) -> PyResult<Vec<f64>> {
-    let job = HirshfeldJob::new(mol, basis_set, &result, proatom)?;
-    // Owned values only cross the GIL release: the free-atom SCFs can take
-    // seconds per element.
-    py.allow_threads(|| job.run()).map_err(make_err)
-}
-
-/// Owned inputs of one `hirshfeld_charges` call.
-struct HirshfeldJob {
-    mol: ferric_core::mol::Molecule,
-    bs: ferric_core::basis::BasisSet,
-    density: ndarray::Array2<f64>,
-    config: RhfConfig,
-    use_scf: bool,
-}
-
-impl HirshfeldJob {
-    fn new(
-        mol: &PyMolecule,
-        basis_set: &PyBasisSet,
-        result: &DensitySource,
-        proatom: &str,
-    ) -> PyResult<Self> {
-        Ok(Self {
-            use_scf: parse_proatom(proatom)?,
-            mol: mol.inner.clone(),
-            bs: basis_set.inner.clone(),
-            density: result.density().clone(),
-            config: result.scf_config().clone(),
-        })
-    }
-
-    fn run(&self) -> Result<Vec<f64>, ferric_core::FerricError> {
-        hirshfeld_with_proatoms(
-            &self.mol,
-            &self.bs,
-            &self.density,
-            &self.config,
-            self.use_scf,
-        )
-    }
-}
-
-/// `"scf"` → true (free-atom SCF proatoms, the CLI's), `"slater"` → false.
-fn parse_proatom(proatom: &str) -> PyResult<bool> {
-    match proatom {
-        "scf" => Ok(true),
-        "slater" => Ok(false),
-        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "unknown proatom {other:?}: expected \"scf\" or \"slater\""
-        ))),
-    }
-}
-
-fn hirshfeld_with_proatoms(
-    mol: &ferric_core::mol::Molecule,
-    bs: &ferric_core::basis::BasisSet,
-    density: &ndarray::Array2<f64>,
-    config: &RhfConfig,
-    use_scf: bool,
-) -> Result<Vec<f64>, ferric_core::FerricError> {
-    if !use_scf {
-        return ferric_rpa::properties::hirshfeld_charges(mol, bs, density, None);
-    }
-    let ctx = ParallelContext::default();
-    let provider =
-        ferric_scf::properties::scf_proatom_provider(&ctx, bs, Operator::coulomb(), config);
-    let provider: &ferric_rpa::properties::ProatomProvider = &provider;
-    ferric_rpa::properties::hirshfeld_charges(mol, bs, density, Some(provider))
-}
-
-/// Per-orbital centroids <p|r|p> (Bohr, list of [x,y,z]) and spatial spreads
-/// sigma_p = sqrt(<r^2> - |<r>|^2) (Bohr) for the converged restricted MOs.
-/// Mirrors Q-Chem 7's "second moments of orbitals" property; the spreads are
-/// the pair-gate inputs of the amplitude-threshold local-correlation family.
-#[pyfunction]
-fn orbital_moments(
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    result: DensitySource,
-) -> PyResult<(Vec<[f64; 3]>, Vec<f64>)> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let scf = result.scf();
-    if scf.spin != ferric_scf::result::Spin::Restricted {
-        return Err(make_err(ferric_core::FerricError::General(
-            "orbital_moments: restricted (RHF/RKS) results only".into(),
-        )));
-    }
-    let (centers, spreads) =
-        ferric_integrals::oneelectron::orbital_moments(&prep, scf.mos_r()).map_err(make_err)?;
-    let c: Vec<[f64; 3]> = (0..centers.nrows())
-        .map(|p| [centers[(p, 0)], centers[(p, 1)], centers[(p, 2)]])
-        .collect();
-    Ok((c, spreads))
-}
-
-/// Electronic-density second-moment tensor (3x3 nested list, Bohr^2) about
-/// the origin: M_xy = sum_uv D_uv <u|x y|v>; trace = <r^2> of the density.
-#[pyfunction]
-fn density_second_moment(
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    result: DensitySource,
-) -> PyResult<[[f64; 3]; 3]> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    ferric_integrals::oneelectron::density_second_moment(&prep, result.density(), [0.0; 3])
-        .map_err(make_err)
-}
-
-/// Löwdin (symmetric-orthogonalization) partial charges (units of e).
-/// Closed-shell only. `result` is an `RhfResult` or `DftResult` from a
-/// converged SCF.
-#[pyfunction]
-fn lowdin_charges(
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    result: DensitySource,
-) -> PyResult<Vec<f64>> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    ferric_rpa::properties::lowdin_charges(&mol.inner, &prep, result.density()).map_err(make_err)
-}
-
-/// Mulliken partial charges (units of e), the standard textbook population
-/// analysis. Known to be more basis-set-sensitive than Löwdin (prefer
-/// `lowdin_charges` for a more basis-stable partition); included as the
-/// standard baseline every QC package provides. Closed-shell only. `result`
-/// is an `RhfResult` or `DftResult` from a converged SCF.
-#[pyfunction]
-fn mulliken_charges(
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    result: DensitySource,
-) -> PyResult<Vec<f64>> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    ferric_rpa::properties::mulliken_charges(&mol.inner, &prep, result.density()).map_err(make_err)
-}
-
-/// CHELPG (CHarges from Electrostatic Potentials, Grid-based) partial
-/// charges (units of e). Structurally different from
-/// `hirshfeld_charges`/`lowdin_charges`/`mulliken_charges`: those split the
-/// electron density directly among atoms (population partition); CHELPG
-/// instead fits atom-centered point charges to best reproduce the molecular
-/// electrostatic potential on a grid around the molecule (Breneman & Wiberg,
-/// J. Comput. Chem. 11, 361 (1990)). Closed-shell only. `result` is an
-/// `RhfResult` or `DftResult` from a converged SCF.
-#[pyfunction]
-fn chelpg_charges(
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    result: DensitySource,
-) -> PyResult<Vec<f64>> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    ferric_rpa::properties::chelpg_charges(&mol.inner, &prep, result.density()).map_err(make_err)
-}
-
-/// RESP (Restrained ElectroStatic Potential) partial charges (units of e).
-/// Same ESP grid-fitting as `chelpg_charges`, plus a hyperbolic restraint
-/// damping non-hydrogen atomic charges toward zero (Bayly, Cieplak,
-/// Cornell, Kollman, J. Phys. Chem. 97, 10269 (1993)). This is a
-/// single-stage restrained fit with the standard literature weight/
-/// tightness parameters — NOT the full multi-stage/multi-conformer RESP
-/// averaging procedure. Closed-shell only. `result` is an `RhfResult` or
-/// `DftResult` from a converged SCF.
-#[pyfunction]
-fn resp_charges(
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    result: DensitySource,
-) -> PyResult<Vec<f64>> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    ferric_rpa::properties::resp_charges(&mol.inner, &prep, result.density()).map_err(make_err)
-}
-
-/// Per-atom Hirshfeld-partitioned static dipole polarizability tensors
-/// (Bohr^3), via true PDEP-RPA α(ω=0) on a real-space Becke/Hirshfeld grid.
-/// Closed-shell (Restricted) only — `result` must come from `run_rhf` or
-/// `run_dft` on a closed-shell molecule. `auxbasis` is the RI auxiliary basis
-/// (e.g. a `*-rifit`/`*-ri` bundled set, NOT the SCF's own `df_j_aux`).
-///
-/// This is materially more expensive than `esp_at_atoms`/`hirshfeld_charges`/
-/// `lowdin_charges`: it builds RI intermediates plus an AO-value grid over
-/// the whole molecule (`FERRIC_HIRSHFELD_SPACING`/`FERRIC_HIRSHFELD_MARGIN`
-/// env vars control resolution vs. memory; the grid is budget-checked
-/// against `memory_budget_gb`, auto-resolved to 80% of available RAM when
-/// omitted — see `ferric_core::memory::resolve_budget_bytes`).
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, result, memory_budget_gb=None))]
-fn hirshfeld_polarizability<'py>(
-    py: Python<'py>,
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    result: DensitySource,
-    memory_budget_gb: Option<f64>,
-) -> PyResult<Bound<'py, PyArray3<f64>>> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let cfg = ferric_rpa::PdepRpaConfig {
-        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        ..Default::default()
-    };
-    let alpha = ferric_rpa::properties::pdep_polarizability_hirshfeld(
-        &mol.inner,
-        &prep,
-        &basis_set.inner,
-        &dfbs,
-        result.scf(),
-        op,
-        &cfg,
-        None,
-    )
-    .map_err(make_err)?;
-    let natoms = alpha.len();
-    let mut arr = Array3::<f64>::zeros((natoms, 3, 3));
-    for (a, tensor) in alpha.iter().enumerate() {
-        for i in 0..3 {
-            for j in 0..3 {
-                arr[(a, i, j)] = tensor[i][j];
-            }
-        }
-    }
-    Ok(PyArray3::from_owned_array(py, arr))
-}
-
-// ── RI-MP2 ──
-
-/// Result of a `run_rimp2` calculation.
-#[pyclass]
-#[pyo3(name = "RiMp2Result")]
-struct PyRiMp2Result {
-    /// Reference + MP2 correlation energy, Hartree.
-    #[pyo3(get)]
-    total_energy: f64,
-    /// The converged reference SCF energy alone, Hartree: RHF for a
-    /// closed-shell molecule, UHF for an open-shell one (see `reference`).
-    /// The name is kept for compatibility.
-    #[pyo3(get)]
-    rhf_energy: f64,
-    /// MP2 correlation energy alone (always negative), Hartree.
-    #[pyo3(get)]
-    mp2_corr: f64,
-    /// The SCF reference the correlation was built on: "RHF" (closed-shell
-    /// RI-MP2) or "UHF" (unrestricted RI-MP2 for multiplicity > 1).
-    #[pyo3(get)]
-    reference: String,
-    /// The local model: `None` for the exact RI-MP2, else a dict with
-    /// `scheme`, `eps`, `keep_fraction`, `pair_fraction`, `integral_direct`,
-    /// `e_corr_canonical_ri` (the exact reference, or `None` unless
-    /// `compute_reference=True`), the solver counters, and the model
-    /// certificate (`ferric_mp2::lmp2_certificate`: maps, precision, CG
-    /// state, validation grade, eps trust line, warnings, build stamp).
-    /// Read through the `local` getter.
-    local: Option<Py<pyo3::types::PyDict>>,
-    /// How the reference SCF built J/K: "exact", "rijk" or "rijcosx".
-    #[pyo3(get)]
-    scf_jk: String,
-    /// The printout's SCF J/K echo (`ScfJk::label`: names a non-default
-    /// exchange builder on the exact path).
-    jk_label: String,
-    /// The SCF's JK-fitting basis (`None` for "exact").
-    #[pyo3(get)]
-    jk_auxbasis: Option<String>,
-    /// Precision provenance of the correlation energy and of the reference
-    /// SCF; read through the `precision` / `scf_precision` getters.
-    precision_rec: ferric_core::gpu::provenance::PrecisionRecord,
-    scf_precision_rec: ferric_core::gpu::provenance::PrecisionRecord,
-}
-
-#[pymethods]
-impl PyRiMp2Result {
-    /// Precision provenance of the MP2 correlation energy (the
-    /// `rimp2-energy` kernel): `{"precision": "f64", "counter_scope": "process", "kernels": []}` for an
-    /// all-f64 run. See `RhfResult.precision` for the schema.
-    #[getter]
-    fn precision(&self, py: Python<'_>) -> PyResult<PyObject> {
-        precision_dict(py, &self.precision_rec)
-    }
-    /// Precision provenance of the reference SCF (see `RhfResult.precision`).
-    #[getter]
-    fn scf_precision(&self, py: Python<'_>) -> PyResult<PyObject> {
-        precision_dict(py, &self.scf_precision_rec)
-    }
-    /// The local model: `None` for the exact RI-MP2, else a dict with
-    /// `scheme`, `eps`, `keep_fraction`, `pair_fraction`, `integral_direct`,
-    /// `e_corr_canonical_ri` (`None` unless `compute_reference=True`), the
-    /// solver counters and the model certificate (maps, precision, CG
-    /// state, `validation_grade`, `eps_trust`, `warnings`, `build_commit`,
-    /// `build_dirty`).
-    #[getter]
-    fn local(&self, py: Python<'_>) -> Option<Py<pyo3::types::PyDict>> {
-        self.local.as_ref().map(|d| d.clone_ref(py))
-    }
-    fn __repr__(&self) -> String {
-        format!(
-            "RiMp2Result(total_energy={:.10}, mp2_corr={:.10})",
-            self.total_energy, self.mp2_corr
-        )
-    }
-    fn __str__(&self) -> String {
-        format!(
-            "RI-MP2 {} Total Energy: {:.10} Ha ({}: {:.10}, corr: {:.10}, SCF J/K: {})",
-            if self.local.is_some() {
-                "(local)"
-            } else {
-                "(exact)"
-            },
-            self.total_energy,
-            self.reference,
-            self.rhf_energy,
-            self.mp2_corr,
-            self.jk_label,
-        )
-    }
-}
-
-/// Resolve the `local=` / `eps=` / `compute_reference=` / `integral_direct=`
-/// (+ integral-direct knobs) kwargs of `run_rimp2` / `run_drpa` /
-/// `run_linlccd` with the SAME rules as the CLI's `[local]` section
-/// (`ferric_cli::LocalCfg::model`): `local` is `None`/`"none"` (exact) or
-/// `"amplitude-threshold"`; `eps` is required with the threshold and refused
-/// without it; `compute_reference` and every integral-direct knob are refused
-/// on the exact method. `Ok(None)` is the exact method. Errors are
-/// `ValueError`, raised before any SCF.
-fn local_model_from_kwargs(
-    fname: &str,
-    cfg: ferric_cli::LocalCfg,
-) -> PyResult<Option<ferric_cli::LocalModel>> {
-    cfg.model().map_err(|e| {
-        pyo3::exceptions::PyValueError::new_err(format!(
-            "{fname}: {} (Python kwargs mirror the CLI [local] keys: local= is scheme, \
-             compute_reference= is reference)",
-            e.trim_start_matches("[local] ")
-        ))
-    })
-}
-
-/// The `local` dict every local result carries: scheme, threshold, kept
-/// fraction, whether the integral-direct path ran.
-fn local_dict<'py>(
-    py: Python<'py>,
-    eps: f64,
-    keep_fraction: f64,
-    integral_direct: bool,
-) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
-    let d = pyo3::types::PyDict::new(py);
-    d.set_item(
-        "scheme",
-        ferric_cli::LocalScheme::AmplitudeThreshold.as_str(),
-    )?;
-    d.set_item("eps", eps)?;
-    d.set_item("keep_fraction", keep_fraction)?;
-    d.set_item("integral_direct", integral_direct)?;
-    Ok(d)
-}
-
-/// The solver/pattern counters and stage timings of an LMP2 result, into
-/// its `local` dict.
-fn set_lmp2_counters(
-    d: &Bound<'_, pyo3::types::PyDict>,
-    r: &ferric_mp2::lmp2_amplitude::AmplitudeLmp2Result,
-    reference: bool,
-) -> PyResult<()> {
-    d.set_item("pair_fraction", r.pair_fraction)?;
-    d.set_item(
-        "e_corr_canonical_ri",
-        reference.then_some(r.e_corr_canonical_ri),
-    )?;
-    d.set_item("dom_mean", r.dom_mean)?;
-    d.set_item("dom_max", r.dom_max)?;
-    d.set_item("cg_iterations", r.cg_iterations)?;
-    d.set_item("cg_lanczos_kappa_lower", r.cg_lanczos_kappa_est)?;
-    d.set_item("block_density_mean", r.block_density_mean)?;
-    d.set_item("block_density_min", r.block_density_min)?;
-    d.set_item("n_pairs_unique", r.n_pairs_unique)?;
-    d.set_item("gate_on", r.gate_on)?;
-    d.set_item("t_spaces_s", r.timings.t_spaces_s)?;
-    d.set_item("t_assembly_s", r.timings.t_assembly_s)?;
-    d.set_item("t_solve_s", r.timings.t_solve_s)
-}
-
-/// The integral-direct assembly counters and stage timers, into an LMP2
-/// result's `local` dict.
-fn set_direct_stats(
-    d: &Bound<'_, pyo3::types::PyDict>,
-    st: &ferric_mp2::lmp2_direct::DirectStats,
-) -> PyResult<()> {
-    d.set_item("strip_rows_mean", st.strip_rows_mean)?;
-    d.set_item("strip_rows_max", st.strip_rows_max)?;
-    d.set_item("strip_cols_mean", st.strip_cols_mean)?;
-    d.set_item("strip_cols_max", st.strip_cols_max)?;
-    d.set_item("n_eri3_shell_triples", st.n_eri3_shell_triples)?;
-    d.set_item("n_eri3_skipped", st.n_eri3_skipped)?;
-    d.set_item("virt_cand_mean", st.virt_cand_mean)?;
-    d.set_item("virt_cand_max", st.virt_cand_max)?;
-    d.set_item("t_maps_s", st.t_maps_s)?;
-    d.set_item("t_eri3_s", st.t_eri3_s)?;
-    d.set_item("t_eri3_fill_thread_s", st.t_eri3_fill_thread_s)?;
-    d.set_item("t_eri3_eval_thread_s", st.t_eri3_eval_thread_s)?;
-    d.set_item("t_eri3_scatter_thread_s", st.t_eri3_scatter_thread_s)?;
-    d.set_item("t_eri3_transform_thread_s", st.t_eri3_transform_thread_s)?;
-    d.set_item("n_batches", st.n_batches)?;
-    d.set_item("batch_work_max_s", st.batch_work_max_s)?;
-    d.set_item("batch_work_mean_s", st.batch_work_mean_s)?;
-    d.set_item("t_metric_s", st.t_metric_s)?;
-    d.set_item("t_pairs_s", st.t_pairs_s)?;
-    d.set_item("n_pair_groups", st.n_pair_groups)?;
-    d.set_item("n_distinct_occ_per_group", st.n_distinct_occ_per_group)?;
-    d.set_item("n_trsm", st.n_trsm)?;
-    d.set_item("n_w_reused", st.n_w_reused)?;
-    d.set_item("t_loc_s", st.t_loc_s)
-}
-
-/// Set one certificate entry on `d` (`None`, bool, int, float, str, list of
-/// str, or a nested dict).
-fn set_cert_item(
-    py: Python<'_>,
-    d: &Bound<'_, pyo3::types::PyDict>,
-    k: &str,
-    v: &ferric_mp2::lmp2_certificate::CertValue,
-) -> PyResult<()> {
-    use ferric_mp2::lmp2_certificate::CertValue as V;
-    match v {
-        V::Null => d.set_item(k, py.None()),
-        V::Bool(b) => d.set_item(k, *b),
-        V::Usize(n) => d.set_item(k, *n),
-        V::F64(x) => d.set_item(k, *x),
-        V::Str(s) => d.set_item(k, s),
-        V::StrList(l) => d.set_item(k, l),
-        V::Map(m) => {
-            let sub = pyo3::types::PyDict::new(py);
-            for (sk, x) in m {
-                set_cert_item(py, &sub, sk, x)?;
-            }
-            d.set_item(k, sub)
-        }
-    }
-}
-
-/// Put every LMP2 certificate field
-/// ([`ferric_mp2::lmp2_certificate::Lmp2Certificate::fields`]) and the
-/// build stamp (`build_commit`, `build_dirty`) into a result's `local`
-/// dict — the same entries the CLI writes to its run-log JSON.
-fn set_certificate(
-    py: Python<'_>,
-    d: &Bound<'_, pyo3::types::PyDict>,
-    cert: &ferric_mp2::lmp2_certificate::Lmp2Certificate,
-) -> PyResult<()> {
-    for (k, v) in cert.fields() {
-        set_cert_item(py, d, k, &v)?;
-    }
-    d.set_item("build_commit", ferric_build_info::COMMIT)?;
-    d.set_item("build_dirty", ferric_build_info::DIRTY)?;
-    Ok(())
-}
-
-/// `run_rimp2`'s compute: `(reference SCF energy, MP2 correlation, total)`.
-///
-/// multiplicity > 1: UHF + unrestricted RI-MP2 (`solve_rhf` refuses the
-/// molecule; see `ferric_scf::rhf::require_closed_shell`). A non-converged
-/// SCF is an error on both routes.
-fn rimp2_energies(
-    mol: &Molecule,
-    basis_set: &basis::BasisSet,
-    auxbasis: &basis::BasisSet,
-    rhf_config: &RhfConfig,
-    mp2_config: &RiMp2Config,
-) -> Result<Rimp2Energies, ferric_core::FerricError> {
-    let prep = PreparedBasis::new(mol, basis_set)?;
-    let dfbs = PreparedBasis::new(mol, auxbasis)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep)?;
-    let ctx = ParallelContext::default();
-    let open_shell = mol.multiplicity > 1;
-    let scf = if open_shell {
-        solve_uhf(&ctx, mol, &prep, &bounds, rhf_config)?
-    } else {
-        solve_rhf(&ctx, mol, &prep, op, &bounds, rhf_config)?
-    };
-    if !scf.converged {
-        return Err(ferric_core::FerricError::ScfConvergence {
-            iterations: scf.iterations,
-            last_energy: scf.energy,
-        });
-    }
-    let (mp2_corr, total_energy, precision) = if open_shell {
-        let u = ferric_mp2::u_rimp2::u_ri_mp2(mol, &prep, &dfbs, op, &scf, mp2_config)?;
-        (u.mp2_corr, u.total_energy, u.precision)
-    } else {
-        let mp2 = ri_mp2(mol, &prep, &dfbs, op, &scf, mp2_config)?;
-        (mp2.mp2_corr, mp2.total_energy, mp2.precision)
-    };
-    Ok(Rimp2Energies {
-        scf_energy: scf.energy,
-        mp2_corr,
-        total_energy,
-        precision,
-        scf_precision: scf.precision,
-    })
-}
-
-/// What [`rimp2_energies`] returns: the energies and both precision records.
-struct Rimp2Energies {
-    scf_energy: f64,
-    mp2_corr: f64,
-    total_energy: f64,
-    precision: ferric_core::gpu::provenance::PrecisionRecord,
-    scf_precision: ferric_core::gpu::provenance::PrecisionRecord,
-}
-
-/// The attenuated-correlation kwargs of `run_rimp2` as the CLI's `[mp2]`
-/// keys, plus whether any was set.
-fn att_keys_from_kwargs(
-    att_operator: Option<String>,
-    omega: Option<f64>,
-    att_r0: Option<f64>,
-    att_omega: Option<f64>,
-) -> (ferric_cli::Mp2Cfg, bool) {
-    let keys = ferric_cli::Mp2Cfg {
-        att_operator,
-        omega,
-        att_r0,
-        att_omega,
-        ..Default::default()
-    };
-    let sets = keys.att_operator.is_some()
-        || keys.omega.is_some()
-        || keys.att_r0.is_some()
-        || keys.att_omega.is_some();
-    (keys, sets)
-}
-
-fn att_keys_on_exact_error() -> PyErr {
-    pyo3::exceptions::PyValueError::new_err(
-        "run_rimp2: att_operator / omega / att_r0 / att_omega select the attenuated \
-         correlation operator of the LOCAL (amplitude-threshold) MP2 and are not read \
-         by the exact method; use run_terfc_rimp2 / run_attenuated_rimp2 for exact \
-         attenuated RI-MP2, or set local=\"amplitude-threshold\"",
-    )
-}
-
-/// Correlation operator of a local `run_rimp2`: Coulomb unless an attenuator
-/// was selected (the SCF is always full Coulomb). Strict, shared with the
-/// CLI's `Mp2Cfg::att_rimp2_operator`.
-fn local_correlation_operator(
-    att_keys: Option<&ferric_cli::Mp2Cfg>,
-    model: &ferric_cli::LocalModel,
-) -> PyResult<Operator> {
-    let value_err = pyo3::exceptions::PyValueError::new_err;
-    let Some(k) = att_keys else {
-        return Ok(Operator::coulomb());
-    };
-    if k.att_operator.is_none() {
-        return Err(value_err(
-            "run_rimp2: omega / att_r0 / att_omega parameterize an attenuated operator and \
-             would be silently ignored without att_operator; set att_operator=\"erfc\" \
-             (omega) or \"terfc\" (att_r0, att_omega), or remove them"
-                .to_string(),
-        ));
-    }
-    let op = k
-        .att_rimp2_operator()
-        .map_err(|e| value_err(format!("run_rimp2: {e}")))?;
-    if matches!(op.kind, ferric_integrals::operator::OperatorKind::Terfc)
-        && model.direct.as_ref().is_some_and(|d| d.schwarz_skip > 0.0)
-    {
-        ferric_integrals::schwarz::check_terfc_parameters_validated(op)
-            .map_err(|e| value_err(format!("run_rimp2: integral_direct: {e}")))?;
-    }
-    Ok(op)
-}
-
-/// Resolution-of-identity (density-fitted) MP2. Runs its own internal SCF
-/// first (via `k_builder`, same convention as `run_rhf`'s `k_builder`
-/// kwarg), then the RI-MP2 correlation energy using `auxbasis` as the
-/// fitting basis.
-///
-/// EXACT by default. `local="amplitude-threshold"` with `eps=` (required: the
-/// threshold is part of the model and has no default) runs the
-/// amplitude-threshold local MP2 instead (WSHG23 single threshold,
-/// closed-shell, `task` energy only); `eps=0` reproduces the exact RI-MP2.
-/// `compute_reference=True` also computes the exact RI-MP2 and puts it in
-/// `result.local["e_corr_canonical_ri"]`. `integral_direct=True` selects the
-/// integral-direct local MP2, which never forms the global 3-index tensor;
-/// its locality maps are `aux_radius` (Bohr, default 10.0), `virt_radius`
-/// (Bohr, 12.0), `ao_tail` (1e-3), `schwarz_skip` (1e-5; 0 disables the cut), `batch_merge` (4), `gate_cal` (pair gate, off) and
-/// `virt_schwarz_kappa` (off), the same names and defaults as the CLI's
-/// `[local]` keys. The rules are the CLI's: every local kwarg is a
-/// `ValueError` on the exact method, and `kappa` is a `ValueError` on the
-/// local one (it reads only `frozen_core` and `auxbasis`).
-///
-/// Local runs only: `att_operator="erfc"|"terfc"` runs the local MP2 of the
-/// ATTENUATED correlation (SCF stays full Coulomb) with the CLI's
-/// `[mp2]` keys of the same names: `omega` (A^-1, erfc, default 0.420),
-/// `att_r0` (A, terfc, default 1.05) and `att_omega` (A^-1, terfc only: the
-/// decoupled seam sharpness, `Operator::terfc_with_omega`; omitted = the
-/// linked 1/(r0*sqrt2)). Omitted `att_operator` is the Coulomb operator.
-/// terfc needs `FERRIC_TERF_TABLE_DIR`; with `integral_direct=True` it takes
-/// the same `schwarz_skip` cut as the other operators (Schwarz factors from
-/// the terfc engine's own diagonals; `schwarz_skip=0.0` evaluates every
-/// triple). These four are a
-/// `ValueError` on the exact method (use `run_terfc_rimp2` /
-/// `run_attenuated_rimp2` there).
-///
-/// The reference follows the molecule's multiplicity: RHF + closed-shell
-/// RI-MP2 for a singlet, UHF + unrestricted RI-MP2 (UMP2, as PySCF's
-/// `mp.MP2(uhf)`) for multiplicity > 1. `result.reference` says which.
-/// `kappa` (kappa-regularized MP2) exists for the closed-shell kernel only
-/// and raises ValueError on an open-shell molecule rather than being
-/// silently dropped.
-///
-/// `auxbasis` is the RI auxiliary basis (e.g. a bundled `*-ri`/`*-rifit` set
-/// such as `"cc-pvdz-ri"` for orbital basis `"cc-pvdz"`, or `"def2-svp-rifit"`
-/// for `"def2-svp"`) — NOT the SCF's own `df_j_aux`/`df_k_aux`. See
-/// the quickstart (site/src/using/quickstart.md) for a worked pairing.
-///
-/// `frozen_core` (default 0) excludes that many lowest-energy occupied
-/// orbitals from the correlation treatment.
-///
-/// `scf_jk` sets how the reference SCF builds J/K: "exact" (default,
-/// four-centre), "rijk" (RI-J + RI-K) or "rijcosx" (RI-J + COSX K), fitted
-/// on `jk_auxbasis` (a bundled JK-fit name, default "def2-universal-jkfit";
-/// never `auxbasis`). Strict: an unknown mode, `jk_auxbasis` with "exact",
-/// or a `k_builder` the mode overrides raise ValueError. Echoed as
-/// `result.scf_jk` / `result.jk_auxbasis`.
-///
-/// Raises if the internal SCF does not converge.
-///
-/// Returns a [`RiMp2Result`](PyRiMp2Result) with `total_energy` (reference +
-/// MP2 correlation), `rhf_energy` (the reference SCF energy, RHF or UHF),
-/// `mp2_corr` (the correlation energy alone, always negative), `reference`
-/// ("RHF" or "UHF") and `local` (`None` for the exact method, else the
-/// local model dict).
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None, att_operator=None, omega=None, att_r0=None, att_omega=None, scf_jk=None, jk_auxbasis=None))]
-#[allow(clippy::too_many_arguments)]
-fn run_rimp2(
-    py: Python<'_>,
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    frozen_core: Option<usize>,
-    k_builder: Option<&str>,
-    memory_budget_gb: Option<f64>,
-    kappa: Option<f64>,
-    local: Option<String>,
-    eps: Option<f64>,
-    compute_reference: Option<bool>,
-    integral_direct: Option<bool>,
-    aux_radius: Option<f64>,
-    virt_radius: Option<f64>,
-    ao_tail: Option<f64>,
-    schwarz_skip: Option<f64>,
-    batch_merge: Option<usize>,
-    gate_cal: Option<f64>,
-    virt_schwarz_kappa: Option<f64>,
-    att_operator: Option<String>,
-    omega: Option<f64>,
-    att_r0: Option<f64>,
-    att_omega: Option<f64>,
-    scf_jk: Option<&str>,
-    jk_auxbasis: Option<&str>,
-) -> PyResult<PyRiMp2Result> {
-    let (att_keys, sets_att) = att_keys_from_kwargs(att_operator, omega, att_r0, att_omega);
-    let (rhf_config, jk) = mp2_exact_default_config(
-        "run_rimp2",
-        k_builder,
-        memory_budget_gb,
-        scf_jk,
-        jk_auxbasis,
-    )?;
-    let model = local_model_from_kwargs(
-        "run_rimp2",
-        ferric_cli::LocalCfg {
-            scheme: local,
-            eps,
-            eps_sweep: None,
-            reference: compute_reference,
-            integral_direct,
-            aux_radius,
-            virt_radius,
-            ao_tail,
-            schwarz_skip,
-            batch_merge,
-            gate_cal,
-            virt_schwarz_kappa,
-        },
-    )?;
-    if let Some(model) = model {
-        return run_rimp2_local(
-            py,
-            mol,
-            basis_set,
-            auxbasis,
-            frozen_core,
-            (&rhf_config, &jk),
-            memory_budget_gb,
-            kappa,
-            &model,
-            if sets_att { Some(&att_keys) } else { None },
-        );
-    }
-    if sets_att {
-        return Err(att_keys_on_exact_error());
-    }
-    run_rimp2_exact(
-        py,
-        mol,
-        basis_set,
-        auxbasis,
-        frozen_core,
-        memory_budget_gb,
-        kappa,
-        (rhf_config, jk),
-    )
-}
-
-/// `run_rimp2`'s exact (canonical RI-MP2) path: RHF + RI-MP2 for a singlet,
-/// UHF + unrestricted RI-MP2 for multiplicity > 1.
-#[allow(clippy::too_many_arguments)]
-fn run_rimp2_exact(
-    py: Python<'_>,
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    frozen_core: Option<usize>,
-    memory_budget_gb: Option<f64>,
-    kappa: Option<f64>,
-    (rhf_config, jk): (RhfConfig, ferric_scf::scf_jk::ScfJk),
-) -> PyResult<PyRiMp2Result> {
-    let emol = mol.inner.clone();
-    let ebasis = basis_set.inner.clone();
-    let eaux = auxbasis.inner.clone();
-    let mp2_budget = budget_bytes_from_gb(memory_budget_gb);
-    let open_shell = emol.multiplicity > 1;
-    if open_shell && kappa.is_some() {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "run_rimp2: kappa is not supported for an open-shell molecule (multiplicity {}): \
-             kappa-regularization exists for the closed-shell kernel only. Omit kappa for \
-             plain unrestricted RI-MP2.",
-            emol.multiplicity
-        )));
-    }
-    let mp2_config = RiMp2Config {
-        frozen_core: frozen_core.unwrap_or(0),
-        memory_budget_bytes: mp2_budget,
-        kappa,
-        ..Default::default()
-    };
-    // Release the GIL for the SCF + RI-MP2 compute. All captured values are
-    // owned clones/locals built above, so nothing Python-borrowed crosses
-    // the closure boundary.
-    let r = py
-        .allow_threads(|| rimp2_energies(&emol, &ebasis, &eaux, &rhf_config, &mp2_config))
-        .map_err(make_err)?;
-    Ok(PyRiMp2Result {
-        total_energy: r.total_energy,
-        rhf_energy: r.scf_energy,
-        mp2_corr: r.mp2_corr,
-        reference: if open_shell { "UHF" } else { "RHF" }.to_string(),
-        local: None,
-        scf_jk: jk.mode.as_str().to_string(),
-        jk_label: jk.label(),
-        jk_auxbasis: jk.aux,
-        precision_rec: r.precision,
-        scf_precision_rec: r.scf_precision,
-    })
-}
-
-/// The reference-SCF config of every MP2-family entry point: `k_builder`, the
-/// memory budget, and `scf_jk` / `jk_auxbasis` resolved by the ONE shared
-/// rule (`ferric_scf::scf_jk::ScfJk`), so "rijk" means the same `RhfConfig`
-/// in every function. `default` is the entry point's historical J/K mode,
-/// which keeps an unset `scf_jk` bit-identical to before. Errors are
-/// `ValueError` naming `who`, raised before any integral is computed.
-fn mp2_reference_config(
-    who: &str,
-    k_builder: Option<&str>,
-    memory_budget_gb: Option<f64>,
-    scf_jk: Option<&str>,
-    jk_auxbasis: Option<&str>,
-    default: ferric_scf::scf_jk::ScfJkMode,
-) -> PyResult<(RhfConfig, ferric_scf::scf_jk::ScfJk)> {
-    let jk = ferric_scf::scf_jk::ScfJk::resolve(
-        scf_jk,
-        jk_auxbasis,
-        k_builder,
-        default,
-        ferric_scf::scf_jk::ScfJkKeys::PYTHON,
-    )
-    .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{who}: {e}")))?;
-    if let Some(w) = jk.aux_warning(ferric_scf::scf_jk::ScfJkKeys::PYTHON) {
-        eprintln!("[ferric] warning: {who}: {w}");
-    }
-    let mut cfg = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
-    jk.apply(&mut cfg);
-    Ok((cfg, jk))
-}
-
-/// [`mp2_reference_config`] with the exact four-centre default every
-/// MP2-family entry point except `run_rs_mp2_rpa` has always used.
-fn mp2_exact_default_config(
-    who: &str,
-    k_builder: Option<&str>,
-    memory_budget_gb: Option<f64>,
-    scf_jk: Option<&str>,
-    jk_auxbasis: Option<&str>,
-) -> PyResult<(RhfConfig, ferric_scf::scf_jk::ScfJk)> {
-    use ferric_scf::scf_jk::ScfJkMode;
-    mp2_reference_config(
-        who,
-        k_builder,
-        memory_budget_gb,
-        scf_jk,
-        jk_auxbasis,
-        ScfJkMode::Exact,
-    )
-}
-
-/// Solve the closed-shell Coulomb RHF reference, building its Schwarz table.
-fn converged_rhf(
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    config: &RhfConfig,
-) -> PyResult<ferric_scf::result::ScfResult> {
-    let bounds = SchwarzBounds::compute(Operator::coulomb(), prep).map_err(make_err)?;
-    converged_rhf_with_bounds(mol, prep, &bounds, config)
-}
-
-/// Solve the closed-shell Coulomb RHF reference every MP2-family entry point
-/// shares, erroring on non-convergence (same rule as every `run_*` driver).
-fn converged_rhf_with_bounds(
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    bounds: &SchwarzBounds,
-    config: &RhfConfig,
-) -> PyResult<ferric_scf::result::ScfResult> {
-    let ctx = ParallelContext::default();
-    let rhf = solve_rhf(&ctx, mol, prep, Operator::coulomb(), bounds, config).map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
-    Ok(rhf)
-}
-
-/// The exact-J/K RHF reference of the local dRPA / LinLCCD paths.
-fn local_rhf_reference(
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    k_builder: Option<&str>,
-    memory_budget_gb: Option<f64>,
-) -> PyResult<ferric_scf::result::ScfResult> {
-    let config = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
-    converged_rhf(mol, prep, &config)
-}
-
-/// `run_rimp2(local="amplitude-threshold", ...)`: the amplitude-threshold
-/// local MP2 (`ferric_mp2::lmp2_amplitude`), or the integral-direct one
-/// (`ferric_mp2::lmp2_direct`) with `integral_direct=True`. Closed-shell.
-#[allow(clippy::too_many_arguments)]
-fn run_rimp2_local(
-    py: Python<'_>,
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    frozen_core: Option<usize>,
-    (rhf_config, jk): (&RhfConfig, &ferric_scf::scf_jk::ScfJk),
-    memory_budget_gb: Option<f64>,
-    kappa: Option<f64>,
-    model: &ferric_cli::LocalModel,
-    att_keys: Option<&ferric_cli::Mp2Cfg>,
-) -> PyResult<PyRiMp2Result> {
-    use ferric_mp2::lmp2_amplitude::{amplitude_lmp2, AmplitudeLmp2Config};
-    use ferric_mp2::lmp2_direct::{amplitude_lmp2_direct, DirectConfig};
-    if mol.inner.multiplicity > 1 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "run_rimp2: local=\"amplitude-threshold\" is closed-shell only (it localizes a \
-             single restricted occupied space), but the molecule has multiplicity {}. Omit \
-             local= for the exact unrestricted RI-MP2.",
-            mol.inner.multiplicity
-        )));
-    }
-    if let Some(k) = kappa {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "run_rimp2: kappa = {k} is not read by the local (amplitude-threshold) MP2; \
-             kappa-regularized MP2 exists for the exact rimp2 only. Omit kappa or local=."
-        )));
-    }
-    let op = local_correlation_operator(att_keys, model)?;
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let rhf = converged_rhf(&mol.inner, &prep, rhf_config)?;
-    let eps = model.eps[0];
-    let lcfg = AmplitudeLmp2Config {
-        eps,
-        frozen_core: frozen_core.unwrap_or(0),
-        eri3_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        pair_gate_cal: model.direct.as_ref().and_then(|d| d.gate_cal),
-        compute_reference: model.reference,
-        ..Default::default()
-    };
-    let dcfg = model.direct.as_ref().map(|d| DirectConfig {
-        aux_radius_bohr: d.aux_radius,
-        virt_radius_bohr: Some(d.virt_radius),
-        ao_tail: d.ao_tail,
-        schwarz_skip: d.schwarz_skip,
-        batch_merge: d.batch_merge,
-        virt_schwarz_kappa: d.virt_schwarz_kappa,
-        ..Default::default()
-    });
-    let (r, st) = match &dcfg {
-        None => (
-            amplitude_lmp2(&mol.inner, &prep, &basis_set.inner, &dfbs, op, &rhf, &lcfg)
-                .map_err(make_err)?,
-            None,
-        ),
-        Some(dc) => {
-            let (r, st) = amplitude_lmp2_direct(
-                &mol.inner,
-                &prep,
-                &basis_set.inner,
-                &dfbs,
-                op,
-                &rhf,
-                &lcfg,
-                dc,
-            )
-            .map_err(make_err)?;
-            (r, Some(st))
-        }
-    };
-    let cert = ferric_mp2::lmp2_certificate::Lmp2Certificate::new(
-        &lcfg,
-        dcfg.as_ref(),
-        &r,
-        &ferric_mp2::lmp2_certificate::SystemShape::new(&mol.inner, &basis_set.inner),
-        &op,
-    )
-    .with_direct_stats(st.as_ref());
-    let d = local_dict(py, eps, r.keep_fraction, model.direct.is_some())?;
-    set_lmp2_counters(&d, &r, model.reference)?;
-    set_certificate(py, &d, &cert)?;
-    if let Some(st) = st {
-        d.set_item("n_pairs_gated", r.n_pairs_gated)?;
-        set_direct_stats(&d, &st)?;
-    }
-    Ok(PyRiMp2Result {
-        total_energy: r.e_total,
-        rhf_energy: rhf.energy,
-        mp2_corr: r.e_corr,
-        reference: "RHF".to_string(),
-        local: Some(d.unbind()),
-        scf_jk: jk.mode.as_str().to_string(),
-        jk_label: jk.label(),
-        jk_auxbasis: jk.aux.clone(),
-        // The local model's energy is its own CPU f64 kernel, not
-        // `rimp2-energy`: nothing in it can run mixed.
-        precision_rec: ferric_core::gpu::provenance::PrecisionRecord::f64(),
-        scf_precision_rec: rhf.precision.clone(),
-    })
-}
-
-/// Build an `AmplitudeDrpaConfig` from the shared `run_drpa`/`run_drpa_scan`
-/// kwargs. `diis`/`eps_rtol_factor` default ON at the BINDING level
-/// (diis=8, eps_rtol_factor=0.1) — the Rust library default stays
-/// None/off; these are the calibrated values from
-/// wiki/amplitude-threshold-drpa.md's 2026-08-17 DIIS+eps-link session
-/// (70-79 -> 8-11 iterations, energies within the measured subdominance
-/// bound, ~10% of truncation error). `diis=0` maps to `None` (disables
-/// DIIS); `eps_rtol_factor=0.0` maps to `None` (disables the eps-link,
-/// which is also the eps=0 behavior regardless — see the Rust doc).
-#[allow(clippy::too_many_arguments)]
-fn drpa_config(
-    eps: Option<f64>,
-    frozen_core: Option<usize>,
-    memory_budget_gb: Option<f64>,
-    compute_reference: bool,
-    diis: Option<usize>,
-    eps_rtol_factor: Option<f64>,
-) -> ferric_mp2::drpa_amplitude::AmplitudeDrpaConfig {
-    use ferric_mp2::drpa_amplitude::AmplitudeDrpaConfig;
-    let diis_subspace = diis.unwrap_or(8);
-    let eps_rtol = eps_rtol_factor.unwrap_or(0.1);
-    AmplitudeDrpaConfig {
-        // The caller always resolves eps (0.0 for the exact method): there is
-        // no default threshold.
-        eps: eps.unwrap_or(0.0),
-        frozen_core: frozen_core.unwrap_or(0),
-        eri3_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        compute_reference,
-        diis: if diis_subspace == 0 {
-            None
-        } else {
-            Some(diis_subspace)
-        },
-        eps_rtol_factor: if eps_rtol == 0.0 {
-            None
-        } else {
-            Some(eps_rtol)
-        },
-        ..Default::default()
-    }
-}
-
-/// `e_corr_plasmon_canonical` is `None` unless the (opt-in) reference was
-/// computed — the same Optional-float convention as the result classes'
-/// `Option<f64>` getters, never a NaN.
-fn drpa_result_to_dict(
-    py: Python<'_>,
-    r: &ferric_mp2::drpa_amplitude::AmplitudeDrpaResult,
-    rhf_energy: f64,
-    compute_reference: bool,
-) -> PyResult<Py<pyo3::types::PyDict>> {
-    let d = pyo3::types::PyDict::new(py);
-    d.set_item("e_corr", r.e_corr)?;
-    d.set_item(
-        "e_corr_plasmon_canonical",
-        compute_reference.then_some(r.e_corr_plasmon_canonical),
-    )?;
-    d.set_item("total_energy", r.e_total)?;
-    d.set_item("rhf_energy", rhf_energy)?;
-    d.set_item("keep_fraction", r.keep_fraction)?;
-    d.set_item("pair_fraction", r.pair_fraction)?;
-    d.set_item("iterations", r.iterations)?;
-    d.set_item("relres", r.relres)?;
-    d.set_item("converged", r.converged)?;
-    Ok(d.into())
-}
-
-/// Direct RPA correlation (dRPA@HF) by the drCCD Riccati solve on localized
-/// orbitals (proof notebook 12). Closed-shell.
-///
-/// EXACT by default: the Riccati solve with nothing truncated (eps = 0),
-/// anchored to the canonical semicanonicalized plasmon formula. Riccati,
-/// plasmon and full-rank PDEP (`run_pdep_rpa(..., trunc_thresh=0)`) are
-/// algorithms for the same exact dRPA. The exact path holds an `no^3 nv^2`
-/// ring-product plan, so a run that cannot fit the memory budget raises
-/// `MemoryError` BEFORE the SCF and points at `run_pdep_rpa`.
-///
-/// `local="amplitude-threshold"` with `eps=` (required; no default) runs the
-/// amplitude-threshold dRPA: a ~linear, one-sided threshold error (dRPA is
-/// non-variational). `compute_reference=True` (local only) adds the canonical
-/// plasmon reference (a dense eigensolve over a global B) as
-/// `e_corr_plasmon_canonical`; otherwise that key is None.
-///
-/// `diis` (default 8): Pulay/DIIS subspace size accelerating the Riccati
-/// fixed point; `diis=0` disables it. `eps_rtol_factor` (local only, default
-/// 0.1) links the stopping tolerance to eps (effective rtol =
-/// max(1e-12, eps_rtol_factor*eps)); `0.0` disables it. It is a no-op at
-/// eps = 0, so it is a ValueError on the exact method. Both knobs change
-/// which point on the same truncated-equation solution manifold is returned,
-/// calibrated to stay within ~10% of eps's own truncation error
-/// (wiki/amplitude-threshold-drpa.md, "Subdominance calibration").
-///
-/// Returns a dict: e_corr, e_corr_plasmon_canonical, total_energy,
-/// rhf_energy, keep_fraction, pair_fraction, iterations, relres, converged,
-/// and `local` (None for the exact method, else scheme/eps/keep_fraction/
-/// integral_direct).
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, local=None, eps=None, compute_reference=None, diis=None, eps_rtol_factor=None))]
-#[allow(clippy::too_many_arguments)]
-fn run_drpa(
-    py: Python<'_>,
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    frozen_core: Option<usize>,
-    k_builder: Option<&str>,
-    memory_budget_gb: Option<f64>,
-    local: Option<String>,
-    eps: Option<f64>,
-    compute_reference: Option<bool>,
-    diis: Option<usize>,
-    eps_rtol_factor: Option<f64>,
-) -> PyResult<Py<pyo3::types::PyDict>> {
-    use ferric_mp2::drpa_amplitude::{amplitude_drpa, exact_drpa_peak_bytes};
-    let model = local_model_from_kwargs(
-        "run_drpa",
-        ferric_cli::LocalCfg {
-            scheme: local,
-            eps,
-            reference: compute_reference,
-            ..Default::default()
-        },
-    )?;
-    if model.is_none() && eps_rtol_factor.is_some() {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "run_drpa: eps_rtol_factor links the stopping tolerance to eps and is a no-op at \
-             eps = 0, i.e. on the exact method; pass it only with local=\"amplitude-threshold\"",
-        ));
-    }
-    let (eps, compute_reference) = match &model {
-        None => (0.0, false),
-        Some(m) => (m.eps[0], m.reference),
-    };
-    let fc = frozen_core.unwrap_or(0);
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    if model.is_none() {
-        // Refuse an exact run that cannot fit, BEFORE the SCF.
-        let nocc = (mol.inner.nelec() as usize) / 2;
-        let no = nocc.saturating_sub(fc);
-        let nv = prep.nbasis().saturating_sub(nocc);
-        let diis_sub = match diis.unwrap_or(8) {
-            0 => None,
-            n => Some(n),
-        };
-        let need = exact_drpa_peak_bytes(no, nv, diis_sub);
-        let have = ferric_core::memory::resolve_budget(budget_bytes_from_gb(memory_budget_gb));
-        if need > have.bytes {
-            let gib = |b: usize| b as f64 / (1024.0 * 1024.0 * 1024.0);
-            return Err(pyo3::exceptions::PyMemoryError::new_err(format!(
-                "run_drpa: exact dRPA needs ~{:.2} GiB for the Riccati solve (no = {no}, \
-                 nv = {nv}; the no^3*nv^2 ring-product plan dominates), over the {:.2} GiB \
-                 memory budget [source: {}]. run_pdep_rpa(..., trunc_thresh=0) computes the \
-                 same exact dRPA energy (to its frequency-quadrature error) at far lower \
-                 memory; local=\"amplitude-threshold\" with eps= is the local approximation.",
-                gib(need),
-                gib(have.bytes),
-                have.source.label()
-            )));
-        }
-    }
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let rhf = local_rhf_reference(&mol.inner, &prep, k_builder, memory_budget_gb)?;
-    let cfg = drpa_config(
-        Some(eps),
-        frozen_core,
-        memory_budget_gb,
-        compute_reference,
-        diis,
-        eps_rtol_factor,
-    );
-    let r = amplitude_drpa(
-        &mol.inner,
-        &prep,
-        &basis_set.inner,
-        &dfbs,
-        Operator::coulomb(),
-        &rhf,
-        &cfg,
-    )
-    .map_err(make_err)?;
-    let d = drpa_result_to_dict(py, &r, rhf.energy, compute_reference)?;
-    let local_v = match &model {
-        None => None,
-        Some(_) => Some(local_dict(py, eps, r.keep_fraction, false)?),
-    };
-    d.bind(py).set_item("local", local_v)?;
-    Ok(d)
-}
-
-/// The amplitude-threshold (LOCAL) dRPA over a LIST of eps values — an
-/// eps scan of the local scheme by definition, so it takes no `local=`
-/// kwarg; each point is `run_drpa(..., local="amplitude-threshold", eps=e)`.
-/// Reuses ONE
-/// RHF solve + ONE localized-basis assembly (RHF, Boys localization,
-/// VV-HV, Fock blocks, unwhitened RI B — everything eps-INDEPENDENT)
-/// across every point; only the eps-dependent ragged assembly + Riccati
-/// solve reruns per eps. Returns a list of dicts, each with the SAME keys
-/// as `run_drpa`, plus `wall_s` (that point's ragged-assembly+solve wall
-/// time) and `prefix_wall_s` (the ONE shared RHF+localization+assembly
-/// wall time, repeated on every dict for convenience — it is not
-/// re-paid per point). Per-point energies are byte-identical (<1e-12) to
-/// calling `run_drpa` separately at each eps with the same kwargs.
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, eps_list, frozen_core=None, k_builder=None, memory_budget_gb=None, compute_reference=None, diis=None, eps_rtol_factor=None))]
-#[allow(clippy::too_many_arguments)]
-fn run_drpa_scan(
-    py: Python<'_>,
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    eps_list: Vec<f64>,
-    frozen_core: Option<usize>,
-    k_builder: Option<&str>,
-    memory_budget_gb: Option<f64>,
-    compute_reference: Option<bool>,
-    diis: Option<usize>,
-    eps_rtol_factor: Option<f64>,
-) -> PyResult<Py<pyo3::types::PyList>> {
-    use ferric_mp2::drpa_amplitude::amplitude_drpa_scan_timed;
-    // The same eps_sweep rules as the CLI's [local] eps_sweep (non-empty,
-    // finite, >= 0); the points are evaluated in the order given.
-    local_model_from_kwargs(
-        "run_drpa_scan",
-        ferric_cli::LocalCfg {
-            scheme: Some("amplitude-threshold".to_string()),
-            eps_sweep: Some(eps_list.clone()),
-            ..Default::default()
-        },
-    )?;
-    // Opt-in: `None` (the default) and `False` both skip the N^5 reference.
-    let compute_reference = compute_reference.unwrap_or(false);
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-    let rhf = solve_rhf(
-        &ctx,
-        &mol.inner,
-        &prep,
-        op,
-        &bounds,
-        &rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb)),
-    )
-    .map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
-    let base_cfg = drpa_config(
-        None,
-        frozen_core,
-        memory_budget_gb,
-        compute_reference,
-        diis,
-        eps_rtol_factor,
-    );
-    let (results, prefix_wall_s, per_point_walls) = amplitude_drpa_scan_timed(
-        &mol.inner,
-        &prep,
-        &basis_set.inner,
-        &dfbs,
-        op,
-        &rhf,
-        &base_cfg,
-        &eps_list,
-    )
-    .map_err(make_err)?;
-    let out = pyo3::types::PyList::empty(py);
-    for ((r, eps), wall_s) in results.iter().zip(&eps_list).zip(&per_point_walls) {
-        let d = drpa_result_to_dict(py, r, rhf.energy, compute_reference)?;
-        let d_ref = d.bind(py);
-        d_ref.set_item("eps", *eps)?;
-        d_ref.set_item("local", local_dict(py, *eps, r.keep_fraction, false)?)?;
-        d_ref.set_item("wall_s", *wall_s)?;
-        d_ref.set_item("prefix_wall_s", prefix_wall_s)?;
-        out.append(d_ref)?;
-    }
-    Ok(out.into())
-}
-
-/// Linearized ladder CCD on an RHF reference (closed-shell). `variant`:
-/// `"hh"` (default, LinLCCD(hh)), `"drivers-only"` (no ladder; reproduces
-/// RI-MP2) or `"full"` (hh + pp ladders, CCD-like VVVV memory) — the CLI's
-/// `[mp2] linlccd_variant` spellings, parsed by the same strict parser.
-///
-/// EXACT by default (`ferric_cc::linlccd::linlccd`, the CLI `linlccd`).
-/// `local="amplitude-threshold"` with `eps=` (required; no default) runs the
-/// amplitude-threshold LinLCCD in the localized basis; `eps=0` reproduces the
-/// exact method of the same variant. `compute_reference=True` (local only)
-/// also runs the exact LinLCCD and reports it as `local["e_corr_exact"]`.
-///
-/// Returns a dict: e_corr, total_energy, rhf_energy, variant, and `local`
-/// (None for the exact method, else scheme/eps/keep_fraction/integral_direct
-/// plus cg_iterations, converged and e_corr_exact).
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, variant=None, local=None, eps=None, compute_reference=None, frozen_core=None, k_builder=None, memory_budget_gb=None))]
-#[allow(clippy::too_many_arguments)]
-fn run_linlccd(
-    py: Python<'_>,
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    variant: Option<&str>,
-    local: Option<String>,
-    eps: Option<f64>,
-    compute_reference: Option<bool>,
-    frozen_core: Option<usize>,
-    k_builder: Option<&str>,
-    memory_budget_gb: Option<f64>,
-) -> PyResult<Py<pyo3::types::PyDict>> {
-    use ferric_cc::linlccd::{linlccd, LadderVariant};
-    use ferric_cc::linlccd_amplitude::{amplitude_linlccd, AmplitudeLinLccdConfig};
-    let var = match variant {
-        None => LadderVariant::Hh,
-        Some(v) => LadderVariant::parse_config_str(v).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!("run_linlccd: variant: {e}"))
-        })?,
-    };
-    let model = local_model_from_kwargs(
-        "run_linlccd",
-        ferric_cli::LocalCfg {
-            scheme: local,
-            eps,
-            reference: compute_reference,
-            ..Default::default()
-        },
-    )?;
-    if mol.inner.multiplicity > 1 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "run_linlccd: closed-shell (RHF) only, but the molecule has multiplicity {}; \
-             open-shell LinLCCD(hh) is library-only (ferric_cc::linlccd_u)",
-            mol.inner.multiplicity
-        )));
-    }
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let rhf = local_rhf_reference(&mol.inner, &prep, k_builder, memory_budget_gb)?;
-    let op = Operator::coulomb();
-    let fc = frozen_core.unwrap_or(0);
-    let budget = budget_bytes_from_gb(memory_budget_gb);
-    let exact = |var: LadderVariant| -> PyResult<f64> {
-        let cc = linlccd(
-            &mol.inner,
-            &prep,
-            &dfbs,
-            op,
-            &rhf,
-            &ferric_cc::CcConfig {
-                frozen_core: fc,
-                memory_budget_bytes: budget,
-                ..Default::default()
-            },
-            var,
-        )
-        .map_err(make_err)?;
-        Ok(cc.correlation_energy)
-    };
-    let d = pyo3::types::PyDict::new(py);
-    let e_corr = match &model {
-        None => {
-            let e = exact(var)?;
-            d.set_item("local", py.None())?;
-            e
-        }
-        Some(m) => {
-            let eps = m.eps[0];
-            let r = amplitude_linlccd(
-                &mol.inner,
-                &prep,
-                &basis_set.inner,
-                &dfbs,
-                op,
-                &rhf,
-                &AmplitudeLinLccdConfig {
-                    eps,
-                    frozen_core: fc,
-                    eri3_budget_bytes: budget,
-                    ..Default::default()
-                },
-                var,
-            )
-            .map_err(make_err)?;
-            let l = local_dict(py, eps, r.keep_fraction, false)?;
-            l.set_item("cg_iterations", r.cg_iterations)?;
-            l.set_item("converged", r.cg_converged)?;
-            let e_ref = if m.reference { Some(exact(var)?) } else { None };
-            l.set_item("e_corr_exact", e_ref)?;
-            d.set_item("local", l)?;
-            r.e_corr
-        }
-    };
-    d.set_item("e_corr", e_corr)?;
-    d.set_item("total_energy", rhf.energy + e_corr)?;
-    d.set_item("rhf_energy", rhf.energy)?;
-    d.set_item("variant", var.as_str())?;
-    Ok(d.into())
-}
-
-/// Optimal (Baer/Kronik IP-based) tuning of the range-separation omega for
-/// an RSH functional. Closed-shell neutral + doublet cation.
-///
-/// Returns a dict:
-///
-/// * `omega`, `j`, `converged` — the tuned omega (Bohr^-1), its Koopmans
-///   residual J, and whether the golden-section search met `omega_tol`.
-/// * `branch_warning` — `None`, or a string naming every omega whose cation
-///   changed electronic state relative to its nearest evaluated neighbour.
-///   When this is set the J curve was assembled from more than one state and
-///   `omega` is not the tuned omega of either.
-/// * `evals` — one dict per evaluation: `omega`, `eps_homo`, `ip`, `j`,
-///   `e_neutral`, `e_cation`, `cation_iterations`, `neutral_iterations`,
-///   `cation_s_squared`, `cation_spin_asymmetry`
-///   (largest spin-population difference over symmetry-equivalent atoms; ~0
-///   for a hole shared over equivalent centres, O(1) for a localized hole),
-///   `seed` ("default" or "continued"), `seed_from_omega` (the omega continued
-///   from, or `None`), and `branch_changed`.
-///
-/// `continuation` (default `False`) seeds each evaluation's neutral and cation
-/// SCF from the converged orbitals of the NEAREST already-evaluated omega, so
-/// a golden-section search — which visits omega out of order — keeps the
-/// cation on one branch instead of re-solving it from the default guess at
-/// every point. `False` reproduces independent per-omega solves exactly.
-///
-/// `branch_tol` (default 1e-7) is the largest change in cation spin
-/// asymmetry still attributed to omega moving rather than to the cation
-/// changing state; `0` or a negative value disables the check, in which case
-/// `branch_changed` is `False` everywhere because nothing was CHECKED, not
-/// because the states agreed.
-///
-/// `check_cation_stability` (default `True`) runs the UKS internal-stability
-/// analysis on every cation. Each eval dict then carries `cation_lambda_min`
-/// (lowest orbital-Hessian eigenvalue, Ha/rad^2, or `None`), `cation_stability`
-/// (`"stable"`, `"unstable"`, `"marginal"`, `"indeterminate"`, `"not_analysed"`
-/// or `"not_checked"`) and `cation_stability_skip` (the reason when not
-/// analysed). A tuned omega whose cation is an internal SADDLE raises
-/// `RuntimeError` naming omega and lambda_min: it is not a valid result. The
-/// onset is a curvature change that no energy, <S^2> or population observable
-/// can see. Functionals whose Hessian cannot be built (VV10, e.g. wB97X-V;
-/// meta-GGA) are NOT analysed: every eval is `"not_analysed"`, a warning is
-/// printed, `stability_warning` is set, and the returned omega is not
-/// certified stable. `False` skips the analysis and reproduces the previous
-/// results bit for bit.
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, functional, omega_lo=None, omega_hi=None, omega_tol=None, max_evals=None, continuation=None, branch_tol=None, check_cation_stability=None))]
-#[allow(clippy::too_many_arguments)]
-fn tune_omega(
-    py: Python<'_>,
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    functional: &str,
-    omega_lo: Option<f64>,
-    omega_hi: Option<f64>,
-    omega_tol: Option<f64>,
-    max_evals: Option<usize>,
-    continuation: Option<bool>,
-    branch_tol: Option<f64>,
-    check_cation_stability: Option<bool>,
-) -> PyResult<Py<pyo3::types::PyDict>> {
-    use ferric_scf::omega_tuning::{tune_omega as tune, OmegaTuneConfig};
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-    let defaults = OmegaTuneConfig::default();
-    let cfg = OmegaTuneConfig {
-        functional: functional.to_string(),
-        omega_lo: omega_lo.unwrap_or(0.1),
-        omega_hi: omega_hi.unwrap_or(1.0),
-        omega_tol: omega_tol.unwrap_or(5e-3),
-        max_evals: max_evals.unwrap_or(24),
-        continuation: continuation.unwrap_or(defaults.continuation),
-        // A non-positive tolerance is the documented "off" switch; anything
-        // positive is taken literally rather than clamped, so a caller that
-        // asks for an absurdly tight bar gets flags, not a silent default.
-        branch_tol: match branch_tol {
-            None => defaults.branch_tol,
-            Some(t) if t > 0.0 => Some(t),
-            Some(_) => None,
-        },
-        check_cation_stability: check_cation_stability.unwrap_or(defaults.check_cation_stability),
-        ..defaults
-    };
-    let r = tune(&ctx, &mol.inner, &prep, &bounds, &cfg).map_err(make_err)?;
-    let d = pyo3::types::PyDict::new(py);
-    d.set_item("omega", r.omega)?;
-    d.set_item("j", r.j)?;
-    d.set_item("converged", r.converged)?;
-    d.set_item("branch_warning", r.branch_warning.clone())?;
-    d.set_item("stability_warning", r.stability_warning.clone())?;
-    let evals = pyo3::types::PyList::empty(py);
-    for e in &r.evals {
-        evals.append(omega_eval_dict(py, e)?)?;
-    }
-    d.set_item("evals", evals)?;
-    Ok(d.into())
-}
-
-/// The cation-stability keys of an `OmegaEval` dict.
-fn set_stability_items(
-    item: &pyo3::Bound<'_, pyo3::types::PyDict>,
-    cs: &ferric_scf::omega_tuning::CationStability,
-) -> PyResult<()> {
-    item.set_item("cation_stability", cs.label())?;
-    item.set_item("cation_lambda_min", cs.lambda_min())?;
-    item.set_item(
-        "cation_stability_skip",
-        match *cs {
-            ferric_scf::omega_tuning::CationStability::NotAnalysed(sk) => Some(sk.reason()),
-            _ => None,
-        },
-    )?;
-    Ok(())
-}
-
-/// One `OmegaEval` as the dict `tune_omega` returns in its `evals` list.
-fn omega_eval_dict<'py>(
-    py: Python<'py>,
-    e: &ferric_scf::omega_tuning::OmegaEval,
-) -> PyResult<pyo3::Bound<'py, pyo3::types::PyDict>> {
-    use ferric_scf::omega_tuning::OmegaSeed;
-    let item = pyo3::types::PyDict::new(py);
-    item.set_item("omega", e.omega)?;
-    item.set_item("eps_homo", e.eps_homo)?;
-    item.set_item("ip", e.ip_delta_scf)?;
-    item.set_item("j", e.j)?;
-    item.set_item("e_neutral", e.e_neutral)?;
-    item.set_item("e_cation", e.e_cation)?;
-    item.set_item("cation_s_squared", e.cation_s_squared)?;
-    item.set_item("cation_spin_asymmetry", e.cation_spin_asymmetry)?;
-    item.set_item("cation_iterations", e.cation_iterations)?;
-    item.set_item("neutral_iterations", e.neutral_iterations)?;
-    item.set_item("branch_changed", e.branch_changed)?;
-    let (seed, from) = match e.seed {
-        OmegaSeed::Default => ("default", None),
-        OmegaSeed::Continued { from_omega } => ("continued", Some(from_omega)),
-    };
-    set_stability_items(&item, &e.cation_stability)?;
-    item.set_item("seed", seed)?;
-    item.set_item("seed_from_omega", from)?;
-    Ok(item)
-}
-
-// ── OO-RI-MP2 (orbital-optimized) ──
-
-#[pyclass]
-#[pyo3(name = "OoRiMp2Result")]
-struct PyOoRiMp2Result {
-    #[pyo3(get)]
-    total_energy: f64,
-    #[pyo3(get)]
-    hf_energy: f64,
-    #[pyo3(get)]
-    mp2_corr: f64,
-    #[pyo3(get)]
-    converged: bool,
-    #[pyo3(get)]
-    iterations: usize,
-    #[pyo3(get)]
-    grad_norm: f64,
-    /// How the reference SCF built J/K: "exact", "rijk" or "rijcosx".
-    #[pyo3(get)]
-    scf_jk: String,
-    /// The printout's SCF J/K echo (`ScfJk::label`: names a non-default
-    /// exchange builder on the exact path).
-    jk_label: String,
-    /// The SCF's JK-fitting basis (`None` for "exact").
-    #[pyo3(get)]
-    jk_auxbasis: Option<String>,
-}
-
-#[pymethods]
-impl PyOoRiMp2Result {
-    fn __repr__(&self) -> String {
-        format!(
-            "OoRiMp2Result(total_energy={:.10}, converged={}, iterations={})",
-            self.total_energy, self.converged, self.iterations,
-        )
-    }
-    fn __str__(&self) -> String {
-        format!(
-            "OO-RI-MP2 Total Energy: {:.10} Ha (HF: {:.10}, corr: {:.10}, converged: {}, {} iterations, grad_norm: {:.2e}) [SCF J/K: {}]",
-            self.total_energy, self.hf_energy, self.mp2_corr, self.converged, self.iterations, self.grad_norm,
-            self.jk_label,
-        )
-    }
-}
-
-/// Orbital-optimized RI-MP2: jointly minimizes E_HF + E_MP2 over orbital
-/// rotations (level-shifted approximate Newton + DIIS + Cayley rotation).
-/// Starts from a converged RHF reference (same convention as `run_rimp2`).
-/// `max_iter`/`grad_conv`/`level_shift`/`diis_size` control the orbital
-/// rotation loop; the rest of `OoRiMp2Config` (energy_conv, step_size,
-/// use_diis) stays at its library default, matching the CLI's `oo-rimp2`
-/// arm which only threads `frozen_core` + `memory_budget_bytes` through.
-#[pyfunction]
-#[pyo3(signature = (
-    mol, basis_set, auxbasis, frozen_core=None, k_builder=None,
-    max_iter=None, grad_conv=None, level_shift=None, diis_size=None,
-    memory_budget_gb=None, scf_jk=None, jk_auxbasis=None,
-))]
-#[allow(clippy::too_many_arguments)]
-fn run_oo_rimp2(
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    frozen_core: Option<usize>,
-    k_builder: Option<&str>,
-    max_iter: Option<usize>,
-    grad_conv: Option<f64>,
-    level_shift: Option<f64>,
-    diis_size: Option<usize>,
-    memory_budget_gb: Option<f64>,
-    scf_jk: Option<&str>,
-    jk_auxbasis: Option<&str>,
-) -> PyResult<PyOoRiMp2Result> {
-    let (rhf_config, jk) = mp2_exact_default_config(
-        "run_oo_rimp2",
-        k_builder,
-        memory_budget_gb,
-        scf_jk,
-        jk_auxbasis,
-    )?;
-    // OO-MP2 rebuilds exact four-centre J/K at every orbital step (and takes
-    // its HF energy from those builds), so a fitted reference would only
-    // change the starting orbitals: refused, never echoed as if honoured.
-    jk.require_exact(
-        ferric_scf::scf_jk::ScfJkKeys::PYTHON,
-        ferric_scf::scf_jk::OO_REBUILDS_EXACT_JK,
-    )
-    .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("run_oo_rimp2: {e}")))?;
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let rhf = converged_rhf_with_bounds(&mol.inner, &prep, &bounds, &rhf_config)?;
-    // Orbital-rotation loop knobs default to OoRiMp2Config::default() (same
-    // library default the CLI's oo-rimp2 arm uses); frozen_core/memory_budget
-    // follow the run_rimp2 convention.
-    let default_cfg = OoRiMp2Config::default();
-    let cfg = OoRiMp2Config {
-        max_iter: max_iter.unwrap_or(default_cfg.max_iter),
-        grad_conv: grad_conv.unwrap_or(default_cfg.grad_conv),
-        level_shift: level_shift.unwrap_or(default_cfg.level_shift),
-        diis_size: diis_size.unwrap_or(default_cfg.diis_size),
-        frozen_core: frozen_core.unwrap_or(0),
-        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        ..default_cfg
-    };
-    // `run_oo_rimp2` has no point_charges/external_field kwargs today (unlike
-    // run_rhf/run_uhf/run_optimize) — this Python entry point never builds an
-    // ExternalPotential, so `ext` is always None here. Adding QM/MM support to
-    // this binding is out of Lane F1's scope; this just keeps behavior
-    // unchanged after `oo_ri_mp2`'s hcore-bug fix.
-    let r = oo_ri_mp2(&mol.inner, &prep, &dfbs, op, &bounds, &rhf, &cfg, None).map_err(make_err)?;
-    Ok(PyOoRiMp2Result {
-        total_energy: r.total_energy,
-        hf_energy: r.hf_energy,
-        mp2_corr: r.mp2_corr,
-        converged: r.converged,
-        iterations: r.iterations,
-        grad_norm: r.grad_norm,
-        scf_jk: jk.mode.as_str().to_string(),
-        jk_label: jk.label(),
-        jk_auxbasis: jk.aux,
-    })
-}
-
-// ── MP3 (spin-orbital, via einsum!) ──
-
-#[pyclass]
-#[pyo3(name = "Mp3Result")]
-struct PyMp3Result {
-    #[pyo3(get)]
-    e_hf: f64,
-    #[pyo3(get)]
-    e_mp2: f64,
-    #[pyo3(get)]
-    e_mp3: f64,
-    #[pyo3(get)]
-    e_corr: f64,
-    #[pyo3(get)]
-    e_total: f64,
-}
-
-#[pymethods]
-impl PyMp3Result {
-    fn __repr__(&self) -> String {
-        format!(
-            "Mp3Result(e_total={:.10}, e_corr={:.10})",
-            self.e_total, self.e_corr
-        )
-    }
-    fn __str__(&self) -> String {
-        format!(
-            "MP3 Total Energy: {:.10} Ha (HF: {:.10}, MP2: {:.10}, MP3: {:.10})",
-            self.e_total, self.e_hf, self.e_mp2, self.e_mp3,
-        )
-    }
-}
-
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None))]
-fn run_mp3(
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    frozen_core: Option<usize>,
-    k_builder: Option<&str>,
-    memory_budget_gb: Option<f64>,
-) -> PyResult<PyMp3Result> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-    let budget = budget_bytes_from_gb(memory_budget_gb);
-    let rhf = solve_rhf(
-        &ctx,
-        &mol.inner,
-        &prep,
-        op,
-        &bounds,
-        &rhf_config_budgeted(k_builder, budget),
-    )
-    .map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
-    // The VVVV size guard inside mp3_energy used to resolve the budget itself
-    // with a hardcoded `None` (env/auto-detect only), so a caller's budget
-    // never reached it; it is now a parameter.
-    let mp3 = mp3_energy(
-        &mol.inner,
-        &prep,
-        &dfbs,
-        op,
-        &rhf,
-        frozen_core.unwrap_or(0),
-        budget,
-    )
-    .map_err(make_err)?;
-    Ok(PyMp3Result {
-        e_hf: mp3.e_hf,
-        e_mp2: mp3.e_mp2,
-        e_mp3: mp3.e_mp3,
-        e_corr: mp3.e_corr,
-        e_total: mp3.e_total,
-    })
-}
-
-// ── Laplace RI-MP2 ──
-
-#[pyclass]
-#[pyo3(name = "LaplaceMp2Result")]
-struct PyLaplaceMp2Result {
-    #[pyo3(get)]
-    total_energy: f64,
-    #[pyo3(get)]
-    mp2_corr: f64,
-    #[pyo3(get)]
-    e_os: f64,
-    #[pyo3(get)]
-    e_ss: f64,
-    /// How the reference SCF built J/K: "exact", "rijk" or "rijcosx".
-    #[pyo3(get)]
-    scf_jk: String,
-    /// The printout's SCF J/K echo (`ScfJk::label`: names a non-default
-    /// exchange builder on the exact path).
-    jk_label: String,
-    /// The SCF's JK-fitting basis (`None` for "exact").
-    #[pyo3(get)]
-    jk_auxbasis: Option<String>,
-}
-
-#[pymethods]
-impl PyLaplaceMp2Result {
-    fn __repr__(&self) -> String {
-        format!(
-            "LaplaceMp2Result(total_energy={:.10}, mp2_corr={:.10})",
-            self.total_energy, self.mp2_corr
-        )
-    }
-    fn __str__(&self) -> String {
-        format!(
-            "Laplace RI-MP2 Total Energy: {:.10} Ha (corr: {:.10}, OS: {:.10}, SS: {:.10}) [SCF J/K: {}]",
-            self.total_energy, self.mp2_corr, self.e_os, self.e_ss,
-            self.jk_label,
-        )
-    }
-}
-
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, n_quad=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None))]
-fn run_laplace_mp2(
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    n_quad: Option<usize>,
-    frozen_core: Option<usize>,
-    k_builder: Option<&str>,
-    memory_budget_gb: Option<f64>,
-    scf_jk: Option<&str>,
-    jk_auxbasis: Option<&str>,
-) -> PyResult<PyLaplaceMp2Result> {
-    let (rhf_config, jk) = mp2_exact_default_config(
-        "run_laplace_mp2",
-        k_builder,
-        memory_budget_gb,
-        scf_jk,
-        jk_auxbasis,
-    )?;
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let budget = budget_bytes_from_gb(memory_budget_gb);
-    let rhf = converged_rhf(&mol.inner, &prep, &rhf_config)?;
-    let r = laplace_ri_mp2(
-        &mol.inner,
-        &prep,
-        &dfbs,
-        op,
-        &rhf,
-        n_quad.unwrap_or(7),
-        frozen_core.unwrap_or(0),
-        budget,
-    )
-    .map_err(make_err)?;
-    Ok(PyLaplaceMp2Result {
-        total_energy: r.total_energy,
-        mp2_corr: r.mp2_corr,
-        e_os: r.e_os,
-        e_ss: r.e_ss,
-        scf_jk: jk.mode.as_str().to_string(),
-        jk_label: jk.label(),
-        jk_auxbasis: jk.aux,
-    })
-}
-
-// ── Laplace SOS-MP2 ──
-
-#[pyclass]
-#[pyo3(name = "SosMp2Result")]
-struct PySosMp2Result {
-    #[pyo3(get)]
-    total_energy: f64,
-    #[pyo3(get)]
-    rhf_energy: f64,
-    /// The SCALED correlation energy, `c_os * e_os`.
-    #[pyo3(get)]
-    sos_corr: f64,
-    /// The UNSCALED opposite-spin correlation energy. Directly comparable
-    /// against `run_rimp2(..)`'s opposite-spin component.
-    #[pyo3(get)]
-    e_os: f64,
-    /// The `c_os` actually applied, echoed for provenance.
-    #[pyo3(get)]
-    c_os: f64,
-    /// Quadrature points actually used.
-    #[pyo3(get)]
-    n_quad: usize,
-    /// `"mo"` or `"ao"`, echoed so a caller can record which algebra ran.
-    #[pyo3(get)]
-    formulation: String,
-    /// How the reference SCF built J/K: "exact", "rijk" or "rijcosx".
-    #[pyo3(get)]
-    scf_jk: String,
-    /// The printout's SCF J/K echo (`ScfJk::label`: names a non-default
-    /// exchange builder on the exact path).
-    jk_label: String,
-    /// The SCF's JK-fitting basis (`None` for "exact").
-    #[pyo3(get)]
-    jk_auxbasis: Option<String>,
-}
-
-#[pymethods]
-impl PySosMp2Result {
-    fn __repr__(&self) -> String {
-        format!(
-            "SosMp2Result(total_energy={:.10}, sos_corr={:.10}, formulation=\"{}\")",
-            self.total_energy, self.sos_corr, self.formulation,
-        )
-    }
-    fn __str__(&self) -> String {
-        format!(
-            "SOS-MP2 Total Energy: {:.10} Ha (RHF: {:.10}, SOS corr: {:.10}, c_os={}, n_quad={}, formulation={}) [SCF J/K: {}]",
-            self.total_energy, self.rhf_energy, self.sos_corr, self.c_os, self.n_quad, self.formulation,
-            self.jk_label,
-        )
-    }
-}
-
-/// Laplace-transform SOS-MP2: `E = c_os * E_OS`.
-///
-/// `formulation` selects the algebra:
-///   - `"mo"` (default) — τ-weighted `(P|ia)` amplitudes.
-///   - `"ao"` — occupied/virtual pseudo-densities. EXACT: same quantity as
-///     `"mo"`, agreeing to round-off. Dense here, so not a scaling win.
-///   - `"ao-sparse"` — Boys-localized, domain-restricted AO. The one
-///     APPROXIMATE variant: it discards AO pairs outside every orbital domain,
-///     converging to `"ao"` as `domain_cutoff_bohr` grows. Requires that
-///     argument; passing it with `"mo"`/`"ao"` raises rather than being ignored.
-///
-/// An unrecognized value raises rather than silently running the default.
-///
-/// There is deliberately no `c_ss`: SOS-MP2 *is* the `c_ss = 0` limit, which is
-/// exactly what lets the Laplace denominator factorize. `c_os = 1.0` recovers
-/// the bare opposite-spin MP2 energy (the tests' hard internal reference).
-///
-/// `memory_budget_gb` caps the resident 3-index tensors, same meaning as
-/// elsewhere in this module; the AO path fails fast with a clear error rather
-/// than overshooting it.
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, c_os=None, n_quad=None, frozen_core=None,
-                    formulation=None, domain_cutoff_bohr=None, k_builder=None,
-                    memory_budget_gb=None, scf_jk=None, jk_auxbasis=None))]
-#[allow(clippy::too_many_arguments)]
-fn run_laplace_sos_mp2(
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    c_os: Option<f64>,
-    n_quad: Option<usize>,
-    frozen_core: Option<usize>,
-    formulation: Option<&str>,
-    domain_cutoff_bohr: Option<f64>,
-    k_builder: Option<&str>,
-    memory_budget_gb: Option<f64>,
-    scf_jk: Option<&str>,
-    jk_auxbasis: Option<&str>,
-) -> PyResult<PySosMp2Result> {
-    let (rhf_config, jk) = mp2_exact_default_config(
-        "run_laplace_sos_mp2",
-        k_builder,
-        memory_budget_gb,
-        scf_jk,
-        jk_auxbasis,
-    )?;
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let rhf = converged_rhf(&mol.inner, &prep, &rhf_config)?;
-    let form =
-        SosFormulation::parse_config_str(formulation, domain_cutoff_bohr).map_err(make_err)?;
-    let cfg = SosMp2Config {
-        c_os: c_os.unwrap_or(1.3),
-        frozen_core: frozen_core.unwrap_or(0),
-        n_quad: n_quad.unwrap_or(7),
-        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        domain_cutoff_bohr,
-    };
-    let r = laplace_sos_mp2(&mol.inner, &prep, &dfbs, op, &rhf, &cfg, form).map_err(make_err)?;
-    Ok(PySosMp2Result {
-        total_energy: r.total_energy,
-        rhf_energy: rhf.energy,
-        sos_corr: r.sos_corr,
-        e_os: r.e_os,
-        c_os: r.c_os,
-        n_quad: r.n_quad,
-        formulation: match form {
-            SosFormulation::Mo => "mo".to_string(),
-            SosFormulation::Ao => "ao".to_string(),
-            SosFormulation::AoSparse(_) => "ao-sparse".to_string(),
-        },
-        scf_jk: jk.mode.as_str().to_string(),
-        jk_label: jk.label(),
-        jk_auxbasis: jk.aux,
-    })
-}
-
-// ── Attenuated RI-MP2 ──
-
-#[pyclass]
-#[pyo3(name = "AttenuatedMp2Result")]
-struct PyAttenuatedMp2Result {
-    #[pyo3(get)]
-    total_energy: f64,
-    #[pyo3(get)]
-    rhf_energy: f64,
-    #[pyo3(get)]
-    mp2_corr: f64,
-    #[pyo3(get)]
-    e_os: f64,
-    #[pyo3(get)]
-    e_ss: f64,
-    /// How the reference SCF built J/K: "exact", "rijk" or "rijcosx".
-    #[pyo3(get)]
-    scf_jk: String,
-    /// The printout's SCF J/K echo (`ScfJk::label`: names a non-default
-    /// exchange builder on the exact path).
-    jk_label: String,
-    /// The SCF's JK-fitting basis (`None` for "exact").
-    #[pyo3(get)]
-    jk_auxbasis: Option<String>,
-}
-
-#[pymethods]
-impl PyAttenuatedMp2Result {
-    fn __repr__(&self) -> String {
-        format!(
-            "AttenuatedMp2Result(total_energy={:.10}, mp2_corr={:.10})",
-            self.total_energy, self.mp2_corr
-        )
-    }
-    fn __str__(&self) -> String {
-        format!(
-            "Attenuated RI-MP2 Total Energy: {:.10} Ha (RHF: {:.10}, corr: {:.10}, OS: {:.10}, SS: {:.10}) [SCF J/K: {}]",
-            self.total_energy, self.rhf_energy, self.mp2_corr, self.e_os, self.e_ss,
-            self.jk_label,
-        )
-    }
-}
-
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, omega=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None))]
-fn run_attenuated_rimp2(
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    omega: Option<f64>,
-    frozen_core: Option<usize>,
-    k_builder: Option<&str>,
-    memory_budget_gb: Option<f64>,
-    scf_jk: Option<&str>,
-    jk_auxbasis: Option<&str>,
-) -> PyResult<PyAttenuatedMp2Result> {
-    let (rhf_config, jk) = mp2_exact_default_config(
-        "run_attenuated_rimp2",
-        k_builder,
-        memory_budget_gb,
-        scf_jk,
-        jk_auxbasis,
-    )?;
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let rhf = converged_rhf(&mol.inner, &prep, &rhf_config)?;
-    // omega is supplied in Å⁻¹; convert to Bohr⁻¹ for the operator.
-    let cfg = AttenuatedMp2Config {
-        omega: omega.unwrap_or(0.420) * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
-        scaling: 1.0,
-        frozen_core: frozen_core.unwrap_or(0),
-        screen_thresh: None,
-        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-    };
-    let r = attenuated_ri_mp2(&mol.inner, &prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
-    Ok(PyAttenuatedMp2Result {
-        total_energy: r.total_energy,
-        rhf_energy: rhf.energy,
-        mp2_corr: r.mp2_corr,
-        e_os: r.spin_components.e_os,
-        e_ss: r.spin_components.e_ss,
-        scf_jk: jk.mode.as_str().to_string(),
-        jk_label: jk.label(),
-        jk_auxbasis: jk.aux,
-    })
-}
-
-// ── terfc-attenuated RI-MP2 (exact terfc via interpolation tables) ──
-
-/// MP2(terfc): RI-MP2 with the EXACT tempered-erfc operator (Dutoi/Goldey
-/// interpolation tables), a single cutoff `r0` (Å). SCF stays full-Coulomb; only
-/// the MP2 correlation is attenuated. Requires the terfc tables on disk
-/// (FERRIC_TERF_TABLE_DIR). Paper aDZ-optimal r0 = 1.05 Å.
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, r0=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None))]
-fn run_terfc_rimp2(
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    r0: Option<f64>,
-    frozen_core: Option<usize>,
-    k_builder: Option<&str>,
-    memory_budget_gb: Option<f64>,
-    scf_jk: Option<&str>,
-    jk_auxbasis: Option<&str>,
-) -> PyResult<PyRiMp2Result> {
-    let (rhf_config, jk) = mp2_exact_default_config(
-        "run_terfc_rimp2",
-        k_builder,
-        memory_budget_gb,
-        scf_jk,
-        jk_auxbasis,
-    )?;
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let rhf = converged_rhf(&mol.inner, &prep, &rhf_config)?;
-    // r0 supplied in Å; convert to Bohr for the operator.
-    let r0_bohr = r0.unwrap_or(1.05) * ANGSTROM_TO_BOHR;
-    let mp2 = ri_mp2(
-        &mol.inner,
-        &prep,
-        &dfbs,
-        Operator::terfc(r0_bohr),
-        &rhf,
-        &RiMp2Config {
-            frozen_core: frozen_core.unwrap_or(0),
-            memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-            ..Default::default()
-        },
-    )
-    .map_err(make_err)?;
-    Ok(PyRiMp2Result {
-        total_energy: mp2.total_energy,
-        rhf_energy: rhf.energy,
-        mp2_corr: mp2.mp2_corr,
-        reference: "RHF".to_string(),
-        local: None,
-        scf_jk: jk.mode.as_str().to_string(),
-        jk_label: jk.label(),
-        jk_auxbasis: jk.aux,
-        precision_rec: mp2.precision,
-        scf_precision_rec: rhf.precision.clone(),
-    })
-}
-
-// ── SCS-MP2 ──
-
-#[pyclass]
-#[pyo3(name = "ScsMp2Result")]
-struct PyScsMp2Result {
-    #[pyo3(get)]
-    total_energy: f64,
-    #[pyo3(get)]
-    rhf_energy: f64,
-    #[pyo3(get)]
-    scs_corr: f64,
-    #[pyo3(get)]
-    e_os: f64,
-    #[pyo3(get)]
-    e_ss: f64,
-    /// How the reference SCF built J/K: "exact", "rijk" or "rijcosx".
-    #[pyo3(get)]
-    scf_jk: String,
-    /// The printout's SCF J/K echo (`ScfJk::label`: names a non-default
-    /// exchange builder on the exact path).
-    jk_label: String,
-    /// The SCF's JK-fitting basis (`None` for "exact").
-    #[pyo3(get)]
-    jk_auxbasis: Option<String>,
-}
-
-#[pymethods]
-impl PyScsMp2Result {
-    fn __repr__(&self) -> String {
-        format!(
-            "ScsMp2Result(total_energy={:.10}, scs_corr={:.10})",
-            self.total_energy, self.scs_corr
-        )
-    }
-    fn __str__(&self) -> String {
-        format!(
-            "SCS-MP2 Total Energy: {:.10} Ha (RHF: {:.10}, SCS corr: {:.10}, OS: {:.10}, SS: {:.10}) [SCF J/K: {}]",
-            self.total_energy, self.rhf_energy, self.scs_corr, self.e_os, self.e_ss,
-            self.jk_label,
-        )
-    }
-}
-
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, c_os=None, c_ss=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None))]
-fn run_scs_mp2(
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    c_os: Option<f64>,
-    c_ss: Option<f64>,
-    frozen_core: Option<usize>,
-    k_builder: Option<&str>,
-    memory_budget_gb: Option<f64>,
-    scf_jk: Option<&str>,
-    jk_auxbasis: Option<&str>,
-) -> PyResult<PyScsMp2Result> {
-    let (rhf_config, jk) = mp2_exact_default_config(
-        "run_scs_mp2",
-        k_builder,
-        memory_budget_gb,
-        scf_jk,
-        jk_auxbasis,
-    )?;
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let rhf = converged_rhf(&mol.inner, &prep, &rhf_config)?;
-    let cfg = ScsMp2Config {
-        c_os: c_os.unwrap_or(6.0 / 5.0),
-        c_ss: c_ss.unwrap_or(1.0 / 3.0),
-        frozen_core: frozen_core.unwrap_or(0),
-        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-    };
-    let r = scs_mp2(&mol.inner, &prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
-    Ok(PyScsMp2Result {
-        total_energy: r.total_energy,
-        rhf_energy: rhf.energy,
-        scs_corr: r.scs_corr,
-        e_os: r.e_os,
-        e_ss: r.e_ss,
-        scf_jk: jk.mode.as_str().to_string(),
-        jk_label: jk.label(),
-        jk_auxbasis: jk.aux,
-    })
-}
-
-/// SCS-MP2(2terfc): dual-attenuated SCS-MP2 (Goldey & Head-Gordon, J. Phys.
-/// Chem. B 118, 6519 (2014)) using the EXACT terfc operator at two cutoffs `r0_bonded` < `r0_nonbonded`
-/// (Å). E = c_OS·E_OS(r0_1) + c_SS·[E_SS(r0_2) − E_SS(r0_1)]. Requires the terfc
-/// tables (FERRIC_TERF_TABLE_DIR). Paper defaults: r0=0.75/1.05 Å, c_OS=1.27, c_SS=4.05.
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, r0_bonded=None, r0_nonbonded=None, c_os=None, c_ss=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None))]
-#[allow(clippy::too_many_arguments)]
-fn run_scs_mp2_2terfc(
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    r0_bonded: Option<f64>,
-    r0_nonbonded: Option<f64>,
-    c_os: Option<f64>,
-    c_ss: Option<f64>,
-    frozen_core: Option<usize>,
-    k_builder: Option<&str>,
-    memory_budget_gb: Option<f64>,
-    scf_jk: Option<&str>,
-    jk_auxbasis: Option<&str>,
-) -> PyResult<PyScsMp2Result> {
-    let (rhf_config, jk) = mp2_exact_default_config(
-        "run_scs_mp2_2terfc",
-        k_builder,
-        memory_budget_gb,
-        scf_jk,
-        jk_auxbasis,
-    )?;
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let rhf = converged_rhf(&mol.inner, &prep, &rhf_config)?;
-    const ANG2BOHR: f64 = ANGSTROM_TO_BOHR;
-    let cfg = ScsMp2TerfcConfig {
-        r0_bonded: r0_bonded.unwrap_or(0.75) * ANG2BOHR,
-        r0_nonbonded: r0_nonbonded.unwrap_or(1.05) * ANG2BOHR,
-        c_os: c_os.unwrap_or(1.27),
-        c_ss: c_ss.unwrap_or(4.05),
-        frozen_core: frozen_core.unwrap_or(0),
-        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-    };
-    if cfg.r0_nonbonded <= cfg.r0_bonded {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "r0_nonbonded must be > r0_bonded",
-        ));
-    }
-    let r = scs_mp2_2terfc(&mol.inner, &prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
-    Ok(PyScsMp2Result {
-        total_energy: r.total_energy,
-        rhf_energy: rhf.energy,
-        scs_corr: r.scs_corr,
-        e_os: r.e_os,
-        e_ss: r.e_ss,
-        scf_jk: jk.mode.as_str().to_string(),
-        jk_label: jk.label(),
-        jk_auxbasis: jk.aux,
-    })
-}
-
-// ── MP2-V (attenuated MP2 + Eq.-11-damped VV10, JCTC 11, 4159 (2015)) ──
-
-#[pyclass]
-#[pyo3(name = "Mp2VResult")]
-struct PyMp2VResult {
-    /// E_HF + E_c^attMP2 + E_nl^VV10.
-    #[pyo3(get)]
-    total_energy: f64,
-    #[pyo3(get)]
-    rhf_energy: f64,
-    /// Attenuated MP2 correlation energy (terfc/erfc at r0, optionally
-    /// decoupled omega).
-    #[pyo3(get)]
-    att_mp2_corr: f64,
-    /// VV10 nonlocal correlation, damped per `vv10_damping` (Eq. 11 by
-    /// default). NOTE: the damping makes this LESS negative, not more — the
-    /// dispersion it supplies is a difference effect (dimer minus monomers).
-    #[pyo3(get)]
-    vv10_e_nl: f64,
-    #[pyo3(get)]
-    e_os: f64,
-    #[pyo3(get)]
-    e_ss: f64,
-    /// Grid points in the VV10 nonlocal integration (tells a suspiciously
-    /// small E_nl from a suspiciously small grid).
-    #[pyo3(get)]
-    n_nlc_points: usize,
-    /// How the reference SCF built J/K: "exact", "rijk" or "rijcosx".
-    #[pyo3(get)]
-    scf_jk: String,
-    /// The printout's SCF J/K echo (`ScfJk::label`: names a non-default
-    /// exchange builder on the exact path).
-    jk_label: String,
-    /// The SCF's JK-fitting basis (`None` for "exact").
-    #[pyo3(get)]
-    jk_auxbasis: Option<String>,
-}
-
-#[pymethods]
-impl PyMp2VResult {
-    fn __repr__(&self) -> String {
-        format!(
-            "Mp2VResult(total_energy={:.10}, att_mp2_corr={:.10}, vv10_e_nl={:.10})",
-            self.total_energy, self.att_mp2_corr, self.vv10_e_nl,
-        )
-    }
-    fn __str__(&self) -> String {
-        format!(
-            "MP2-V Total Energy: {:.10} Ha (RHF: {:.10}, att-MP2 corr: {:.10}, VV10 E_nl: {:.10}) [SCF J/K: {}]",
-            self.total_energy, self.rhf_energy, self.att_mp2_corr, self.vv10_e_nl,
-            self.jk_label,
-        )
-    }
-}
-
-/// MP2-V (Goldey/Belzunces/Head-Gordon, JCTC 11, 4159 (2015)):
-/// E = E_HF + E_c^attMP2(r0[, omega]) + E_nl^VV10 damped by 1 − terfc(R; r0[, omega])².
-///
-/// Closed-shell RHF references only (the CLI `kind = "mp2-v"` also handles
-/// open shell). Units at this boundary: `r0` in Å (default 1.00, the published
-/// value), `omega` in Å⁻¹ (default None = the Dutoi curvature link
-/// ω = 1/(r0√2), the published method; setting it decouples the terfc seam
-/// sharpness and reaches BOTH halves of Eq. 11 in lockstep — unparameterized
-/// until b is refit). `attenuator`: "terfc" (published; needs
-/// FERRIC_TERF_TABLE_DIR) or "erfc" (table-free control; rejects `omega`).
-/// `vv10_damping`: "terfc" (published Eq. 11) or "none" (bare VV10 —
-/// double-counts short range, measurement-only). b defaults 11.0, c 0.0089.
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, r0=None, b=None, c=None, omega=None, attenuator=None, vv10_damping=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None))]
-#[allow(clippy::too_many_arguments)]
-fn run_mp2_v(
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    r0: Option<f64>,
-    b: Option<f64>,
-    c: Option<f64>,
-    omega: Option<f64>,
-    attenuator: Option<&str>,
-    vv10_damping: Option<&str>,
-    frozen_core: Option<usize>,
-    k_builder: Option<&str>,
-    memory_budget_gb: Option<f64>,
-    scf_jk: Option<&str>,
-    jk_auxbasis: Option<&str>,
-) -> PyResult<PyMp2VResult> {
-    let (rhf_config, jk) = mp2_exact_default_config(
-        "run_mp2_v",
-        k_builder,
-        memory_budget_gb,
-        scf_jk,
-        jk_auxbasis,
-    )?;
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let rhf = converged_rhf(&mol.inner, &prep, &rhf_config)?;
-
-    // Start from the published MP2-V(terfc, aTZ) parameterization and override
-    // only what the caller set (same construction order as the CLI's
-    // build_att_vv10_config: damping BEFORE r0, so from_r0_angstrom sees the
-    // final damping variant and keeps Eq. 11's two halves in lockstep).
-    let mut cfg = AttVv10Config::mp2_v_terfc_atz();
-    cfg.attenuator = match attenuator.unwrap_or("terfc") {
-        "terfc" => AttVv10Attenuator::Terfc,
-        "erfc" => AttVv10Attenuator::Erfc,
-        other => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "unknown attenuator \"{other}\"; expected \"terfc\" (published) or \"erfc\" (control)"
-        )))
-        }
-    };
-    cfg.vv10_damping = match vv10_damping.unwrap_or("terfc") {
-        "terfc" => ferric_dft::vv10::Vv10Damping::Terfc {
-            r0_bohr: cfg.r0_bohr,
-            // Seam sharpness derives from `cfg.omega` at evaluation time
-            // (effective_vv10_damping) — never duplicated here.
-            omega_bohr_inv: None,
-        },
-        "none" => ferric_dft::vv10::Vv10Damping::None,
-        other => return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "unknown vv10_damping \"{other}\"; expected \"terfc\" (published, Eq. 11) or \"none\" (bare VV10, double-counts short range)"
-        ))),
-    };
-    if let Some(r0_ang) = r0 {
-        if !r0_ang.is_finite() || r0_ang <= 0.0 {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "r0 must be finite and > 0 (got {r0_ang} A)"
-            )));
-        }
-        cfg = cfg.from_r0_angstrom(r0_ang);
-    }
-    if let Some(b) = b {
-        cfg.vv10.b = b;
-    }
-    if let Some(c) = c {
-        cfg.vv10.c = c;
-    }
-    // omega is supplied in Å⁻¹ (same boundary convention as run_rs_mp2_rpa's
-    // terf_omega); Bohr⁻¹ internally. Validation (finite/positive, terfc-only)
-    // is the library's, so the error text cannot drift from the CLI's.
-    cfg.omega = omega.map(|w| w * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV);
-    cfg.frozen_core = frozen_core.unwrap_or(0);
-    cfg.memory_budget_bytes = budget_bytes_from_gb(memory_budget_gb);
-
-    let r =
-        att_mp2_vv10(&mol.inner, &prep, &basis_set.inner, &dfbs, &rhf, &cfg).map_err(make_err)?;
-    let (e_os, e_ss) = match &r.spin_components {
-        AttVv10SpinComponents::Restricted(s) => (s.e_os, s.e_ss),
-        AttVv10SpinComponents::Unrestricted(_) => unreachable!("closed-shell entry point"),
-    };
-    Ok(PyMp2VResult {
-        total_energy: r.total,
-        rhf_energy: r.e_hf,
-        att_mp2_corr: r.e_c_att_mp2,
-        vv10_e_nl: r.e_nl_vv10,
-        e_os,
-        e_ss,
-        n_nlc_points: r.n_nlc_points,
-        scf_jk: jk.mode.as_str().to_string(),
-        jk_label: jk.label(),
-        jk_auxbasis: jk.aux,
-    })
-}
-
-/// MP2-V scan on ONE converged RHF reference: the attenuated-MP2 half for
-/// every `(r0, omega)` arm and the damped VV10 half for every arm x `b`.
-///
-/// `arms` is a list of `(r0_angstrom, omega_inverse_angstrom_or_None)`; `None`
-/// is the published linked width. `bs` is the list of VV10 `b` values. SCF is
-/// run once. Returns a dict with `rhf_energy`, `n_nlc_points`, and `arms`: a
-/// list (same order) of dicts `{r0, omega, att_mp2_corr, e_os, e_ss,
-/// vv10_e_nl: [per b]}`. `total(arm, k) = rhf_energy + att_mp2_corr +
-/// vv10_e_nl[k]`. Same units/semantics as `run_mp2_v`; closed shell, terfc
-/// only. `nlc_grid=(n_radial, n_angular)` (default (50, 50), the ferric NLC
-/// default). `df_j_aux`/`df_k_aux` default to def2-universal-jkfit (the A24
-/// grid convention); "exact" selects four-centre J/K. `include_coulomb_mp2=True`
-/// adds `mp2_coulomb_corr` (plain RI-MP2 correlation, same SCF/aux/frozen core).
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, arms, bs, c=None, frozen_core=None, nlc_grid=None, df_j_aux=None, df_k_aux=None, k_builder=None, memory_budget_gb=None, include_coulomb_mp2=false))]
-#[allow(clippy::too_many_arguments)]
-fn run_mp2_v_scan(
-    py: Python<'_>,
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    arms: Vec<(f64, Option<f64>)>,
-    bs: Vec<f64>,
-    c: Option<f64>,
-    frozen_core: Option<usize>,
-    nlc_grid: Option<(usize, usize)>,
-    df_j_aux: Option<&str>,
-    df_k_aux: Option<&str>,
-    k_builder: Option<&str>,
-    memory_budget_gb: Option<f64>,
-    include_coulomb_mp2: bool,
-) -> PyResult<Py<pyo3::types::PyDict>> {
-    use pyo3::types::{PyDict, PyList};
-    for (r0, _) in &arms {
-        if !r0.is_finite() || *r0 <= 0.0 {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "r0 must be finite and > 0 (got {r0} A)"
-            )));
-        }
-    }
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let coul = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(coul, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-    let mut rcfg = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
-    rcfg.df_j_aux = resolve_df_aux(df_j_aux, "def2-universal-jkfit");
-    rcfg.df_k_aux = resolve_df_aux(df_k_aux, "def2-universal-jkfit");
-    let rhf = solve_rhf(&ctx, &mol.inner, &prep, coul, &bounds, &rcfg).map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
-    let mut base = AttVv10Config::mp2_v_terfc_atz();
-    if let Some(c) = c {
-        base.vv10.c = c;
-    }
-    base.frozen_core = frozen_core.unwrap_or(0);
-    base.memory_budget_bytes = budget_bytes_from_gb(memory_budget_gb);
-    if let Some((nr, na)) = nlc_grid {
-        base.nlc_grid.n_radial = nr;
-        base.nlc_grid.n_angular = na;
-    }
-    let scan_arms: Vec<AttVv10ScanArm> = arms
-        .iter()
-        .map(|(r0, w)| AttVv10ScanArm {
-            r0_bohr: r0 * ferric_mp2::att_vv10::BOHR_PER_ANG,
-            omega: w.map(|w| w * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV),
-        })
-        .collect();
-    let r = att_mp2_vv10_scan(
-        &mol.inner,
-        &prep,
-        &basis_set.inner,
-        &dfbs,
-        &rhf,
-        &base,
-        &scan_arms,
-        &bs,
-        include_coulomb_mp2,
-    )
-    .map_err(make_err)?;
-    let out = PyDict::new(py);
-    out.set_item("rhf_energy", r.e_hf)?;
-    out.set_item("n_nlc_points", r.n_nlc_points)?;
-    out.set_item("mp2_coulomb_corr", r.e_c_mp2_coulomb)?;
-    let lst = PyList::empty(py);
-    for (arm, res) in arms.iter().zip(r.arms.iter()) {
-        let d = PyDict::new(py);
-        d.set_item("r0", arm.0)?;
-        d.set_item("omega", arm.1)?;
-        d.set_item("att_mp2_corr", res.e_c_att_mp2)?;
-        d.set_item("e_os", res.e_os)?;
-        d.set_item("e_ss", res.e_ss)?;
-        d.set_item("vv10_e_nl", res.e_nl_vv10.clone())?;
-        lst.append(d)?;
-    }
-    out.set_item("arms", lst)?;
-    Ok(out.unbind())
-}
-
-/// RESEARCH: VV10 E_nl on the plain-HF density of `mol` for alternative pair-kernel
-/// weights (benchmarks/a24-mp2v-refit Addendum A). `specs` = list of
-/// `(kind, r0_angstrom, r0_times_omega_or_None, power)` with kind "none" (bare VV10),
-/// "eq11" (1 - terfc^2, the production Eq. 11 factor) or "terf" (terf^power,
-/// terf = 1 - terfc). `r0_times_omega=None` is the linked width. Returns one E_nl
-/// (Ha) per spec. Closed shell, post-HF; no MP2 is run.
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, specs, b=11.0, c=0.0089, nlc_grid=None, df_j_aux=None, df_k_aux=None))]
-#[allow(clippy::too_many_arguments)]
-fn run_vv10_variants(
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    specs: Vec<(String, f64, Option<f64>, i32)>,
-    b: f64,
-    c: f64,
-    nlc_grid: Option<(usize, usize)>,
-    df_j_aux: Option<&str>,
-    df_k_aux: Option<&str>,
-) -> PyResult<Vec<f64>> {
-    use ferric_dft::vv10::{Vv10Damping, Vv10Weight};
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let coul = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(coul, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-    let mut rcfg = rhf_config_budgeted(None, None);
-    rcfg.df_j_aux = resolve_df_aux(df_j_aux, "def2-universal-jkfit");
-    rcfg.df_k_aux = resolve_df_aux(df_k_aux, "def2-universal-jkfit");
-    let rhf = solve_rhf(&ctx, &mol.inner, &prep, coul, &bounds, &rcfg).map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
-    let mut weights = Vec::new();
-    for (kind, r0, rw, power) in &specs {
-        let r0_bohr = r0 * ferric_mp2::att_vv10::BOHR_PER_ANG;
-        let omega = rw.map(|x| x / r0_bohr);
-        weights.push(match kind.as_str() {
-            "none" => Vv10Weight::Damping(Vv10Damping::None),
-            "eq11" => Vv10Weight::Damping(Vv10Damping::Terfc {
-                r0_bohr,
-                omega_bohr_inv: omega,
-            }),
-            "terf" => Vv10Weight::TerfPower {
-                r0_bohr,
-                omega_bohr_inv: omega,
-                power: *power,
-            },
-            other => {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "unknown kind \"{other}\"; expected none|eq11|terf"
-                )))
-            }
-        });
-    }
-    let mut grid = ferric_dft::grid::AtomicGridConfig {
-        n_radial: 50,
-        n_angular: 50,
-        prune: None,
-    };
-    if let Some((nr, na)) = nlc_grid {
-        grid.n_radial = nr;
-        grid.n_angular = na;
-    }
-    ferric_mp2::att_vv10::vv10_weighted_energies_on_density(
-        &mol.inner,
-        &basis_set.inner,
-        rhf.density_total(),
-        &ferric_dft::libxc::Vv10Params { c, b },
-        &weights,
-        &grid,
-    )
-    .map_err(make_err)
-}
-
-// ── RS-MP2-RPA (SR-MP2 + LR-dRPA, Δ-form B or coupled-rings T) ──
-
-#[pyclass]
-#[pyo3(name = "RsMp2RpaResult")]
-struct PyRsMp2RpaResult {
-    #[pyo3(get)]
-    total_energy: f64,
-    #[pyo3(get)]
-    rhf_energy: f64,
-    #[pyo3(get)]
-    e_corr: f64,
-    /// Diagnostic naive sum E_MP2[erfc] + E_dRPA[erf] (formulation A).
-    /// Only available when `formulation="delta-lr"`; None for coupled-rings.
-    #[pyo3(get)]
-    e_corr_naive: Option<f64>,
-    #[pyo3(get)]
-    e_mp2_full: f64,
-    #[pyo3(get)]
-    e_sr_mp2: f64,
-    #[pyo3(get)]
-    e_lr_mp2: f64,
-    #[pyo3(get)]
-    e_dmp2_lr: f64,
-    /// E_dRPA[erf] (DeltaLr only; None for CoupledRings).
-    #[pyo3(get)]
-    e_drpa_lr: Option<f64>,
-    /// ΔdRPA[Coulomb] = E_dRPA[Coulomb] − 2·E_OS[Coulomb] (CoupledRings only).
-    #[pyo3(get)]
-    e_delta_drpa_full: Option<f64>,
-    /// ΔdRPA[erfc] = E_dRPA[erfc] − 2·E_OS[erfc] (CoupledRings only).
-    #[pyo3(get)]
-    e_delta_drpa_sr: Option<f64>,
-    /// How the reference SCF built J/K: "exact", "rijk" or "rijcosx".
-    #[pyo3(get)]
-    scf_jk: String,
-    /// The printout's SCF J/K echo (`ScfJk::label`: names a non-default
-    /// exchange builder on the exact path).
-    jk_label: String,
-    /// The SCF's JK-fitting basis (`None` for "exact").
-    #[pyo3(get)]
-    jk_auxbasis: Option<String>,
-}
-
-#[pymethods]
-impl PyRsMp2RpaResult {
-    fn __repr__(&self) -> String {
-        format!(
-            "RsMp2RpaResult(total_energy={:.10}, e_corr={:.10})",
-            self.total_energy, self.e_corr,
-        )
-    }
-    fn __str__(&self) -> String {
-        format!(
-            "RS-MP2-RPA Total Energy: {:.10} Ha (RHF: {:.10}, corr: {:.10}, SR-MP2: {:.10}, LR-MP2: {:.10}) [SCF J/K: {}]",
-            self.total_energy, self.rhf_energy, self.e_corr, self.e_sr_mp2, self.e_lr_mp2,
-            self.jk_label,
-        )
-    }
-}
-
-/// SR-MP2 + LR-dRPA on an RHF reference (`formulation` "delta-lr" or
-/// "coupled-rings"; `attenuator` "erf" with `omega` in A^-1, or "terf" with
-/// `r0` in A).
-///
-/// `scf_jk` / `jk_auxbasis` work as in `run_rimp2`, BUT THE DEFAULT DIFFERS:
-/// this entry point has always used RI-JK, so `scf_jk` defaults to "rijk"
-/// (on "def2-universal-jkfit") here, not "exact". Pass `scf_jk="exact"` for
-/// four-centre J/K. A `k_builder` under "rijk" is a ValueError (it used to
-/// be ignored with a warning). The mode actually used is echoed as
-/// `result.scf_jk` / `result.jk_auxbasis`.
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, omega=None, frozen_core=None, k_builder=None, formulation=None, attenuator=None, r0=None, terf_omega=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None))]
-#[allow(clippy::too_many_arguments)]
-fn run_rs_mp2_rpa(
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    omega: Option<f64>,
-    frozen_core: Option<usize>,
-    k_builder: Option<&str>,
-    formulation: Option<&str>,
-    attenuator: Option<&str>,
-    r0: Option<f64>,
-    terf_omega: Option<f64>,
-    memory_budget_gb: Option<f64>,
-    scf_jk: Option<&str>,
-    jk_auxbasis: Option<&str>,
-) -> PyResult<PyRsMp2RpaResult> {
-    // The default differs from the other MP2 entry points: this one has
-    // always used RI-JK on def2-universal-jkfit (same convention as pdep-rpa).
-    let (cfg_rhf, jk) = mp2_reference_config(
-        "run_rs_mp2_rpa",
-        k_builder,
-        memory_budget_gb,
-        scf_jk,
-        jk_auxbasis,
-        ferric_scf::scf_jk::ScfJkMode::RiJk,
-    )?;
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let rhf = converged_rhf(&mol.inner, &prep, &cfg_rhf)?;
-    // Map formulation string to enum.
-    let form = match formulation.unwrap_or("delta-lr") {
-        "delta-lr" => ferric_rpa::RsMp2RpaFormulation::DeltaLr,
-        "coupled-rings" => ferric_rpa::RsMp2RpaFormulation::CoupledRings,
-        other => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "unknown formulation \"{other}\"; expected \"delta-lr\" or \"coupled-rings\""
-            )))
-        }
-    };
-    // attenuator: "erf" (default, ω in Å⁻¹) or "terf" (r0 in Å, ω derived).
-    let atten = match attenuator.unwrap_or("erf") {
-        "erf" => ferric_rpa::rs_mp2_rpa::Attenuator::Erf,
-        "terf" => ferric_rpa::rs_mp2_rpa::Attenuator::Terf,
-        other => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "unknown attenuator \"{other}\"; expected \"erf\" or \"terf\""
-            )))
-        }
-    };
-    // omega is supplied in Å⁻¹; convert to Bohr⁻¹ for the operator. r0 is
-    // supplied in Å (2026-07-21: fixed from Bohr, matching r0_bonded/
-    // r0_nonbonded's existing Å convention elsewhere in this file); convert
-    // to Bohr for RsMp2RpaConfig, which stays Bohr-native.
-    const ANG2BOHR_R0: f64 = ANGSTROM_TO_BOHR;
-    let mut cfg = ferric_rpa::RsMp2RpaConfig {
-        omega: omega.unwrap_or(0.420) * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
-        attenuator: atten,
-        r0: r0.unwrap_or(3.18 / ANG2BOHR_R0) * ANG2BOHR_R0,
-        // terf_omega in Å⁻¹ (same convention as omega); None keeps the
-        // Dutoi curvature link ω = 1/(r0·√2). Terf-only.
-        terf_omega: terf_omega.map(|w| w * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV),
-        frozen_core: frozen_core.unwrap_or(0),
-        formulation: form,
-        ..Default::default()
-    };
-    cfg.drpa.memory_budget_bytes = budget_bytes_from_gb(memory_budget_gb);
-    let r = ferric_rpa::rs_mp2_lr_rpa(&mol.inner, &prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
-    Ok(PyRsMp2RpaResult {
-        total_energy: r.total_energy,
-        rhf_energy: rhf.energy,
-        e_corr: r.e_corr,
-        e_corr_naive: r.e_corr_naive,
-        e_mp2_full: r.e_mp2_full,
-        e_sr_mp2: r.e_sr_mp2,
-        e_lr_mp2: r.e_lr_mp2,
-        e_dmp2_lr: r.e_dmp2_lr,
-        e_drpa_lr: r.e_drpa_lr,
-        e_delta_drpa_full: r.e_delta_drpa_full,
-        e_delta_drpa_sr: r.e_delta_drpa_sr,
-        scf_jk: jk.mode.as_str().to_string(),
-        jk_label: jk.label(),
-        jk_auxbasis: jk.aux,
-    })
-}
-
-// ── KS-DFT ──
-
-#[pyclass]
-#[pyo3(name = "DftResult")]
-struct PyDftResult {
-    /// SCF energy PLUS the dispersion correction, when one was requested.
-    /// Equals `e_scf` exactly when `dispersion=None`.
-    #[pyo3(get)]
-    total_energy: f64,
-    /// The Kohn-Sham SCF energy alone, with no dispersion correction.
-    #[pyo3(get)]
-    e_scf: f64,
-    /// The dispersion correction (D3(BJ) or MBD@rsSCS) in Hartree, or `None`
-    /// when dispersion was not requested.
-    ///
-    /// `None` means UNEVALUATED, not zero. A DFT energy with no dispersion and
-    /// one whose dispersion happens to be small are different claims, and a
-    /// 0.0 here would assert the second while meaning the first.
-    #[pyo3(get)]
-    e_dispersion: Option<f64>,
-    /// Which dispersion model `e_dispersion` came from: `"D3(BJ)"`,
-    /// `"MBD@rsSCS"`, or `None` when dispersion was not requested.
-    #[pyo3(get)]
-    dispersion_model: Option<String>,
-    /// MBD@rsSCS only: the per-atom Hirshfeld volume ratios v_A / v_A^free of
-    /// the converged density that scaled the TS inputs. `None` otherwise.
-    #[pyo3(get)]
-    volume_ratios: Option<Vec<f64>>,
-    #[pyo3(get)]
-    converged: bool,
-    /// The molecule and orbital basis the SCF ran on, kept so `vxc()` /
-    /// `e_xc` can evaluate the XC potential of the converged density on
-    /// demand (with `scf_config`'s functional and grids).
-    xc_mol: Molecule,
-    xc_basis: basis::BasisSet,
-    /// `(E_xc, V_xc)` of the converged density, computed on the first
-    /// `vxc()` / `e_xc` call and cached. Lazy so a caller who never asks for
-    /// it does not pay a grid build + XC evaluation per `run_dft`.
-    xc_cache: std::sync::OnceLock<(f64, Array2<f64>)>,
-    /// Serializes the first evaluation so concurrent first calls build the
-    /// grid once (`OnceLock::get_or_try_init` is not stable).
-    xc_lock: std::sync::Mutex<()>,
-    density_data: Array2<f64>,
-    /// Analytic nuclear gradient (natoms × 3) in Ha/Bohr, when computed
-    /// (i.e. `with_gradient=True` was passed to `run_ksdft`). Closed-shell
-    /// LDA / GGA / hybrid / RSH only; VV10 nonlocal piece is excluded.
-    gradient_data: Option<Array2<f64>>,
-    scf_data: ScfResult,
-    /// The base SCF settings (functional, grid, density fitting, thresholds)
-    /// this result was solved with; see `PyRhfResult::scf_config`.
-    scf_config: RhfConfig,
-}
-
-impl PyDftResult {
-    /// `(E_xc, V_xc)` of the converged density, evaluated once and cached.
-    fn xc_pair(&self, py: Python<'_>) -> PyResult<&(f64, Array2<f64>)> {
-        if let Some(p) = self.xc_cache.get() {
-            return Ok(p);
-        }
-        let (mol, bs, cfg, d) = (
-            &self.xc_mol,
-            &self.xc_basis,
-            &self.scf_config,
-            &self.density_data,
-        );
-        let (cache, lock) = (&self.xc_cache, &self.xc_lock);
-        // One evaluation even under concurrent first calls: the guard is taken
-        // INSIDE allow_threads, so a waiting thread has released the GIL and
-        // cannot deadlock the thread computing (which needs the GIL back).
-        py.allow_threads(|| {
-            let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-            if cache.get().is_none() {
-                let pair = ferric_scf::rhf::ks_vxc_closed(mol, bs, cfg, d)?;
-                let _ = cache.set(pair);
-            }
-            Ok::<(), ferric_core::FerricError>(())
-        })
-        .map_err(make_err)?;
-        Ok(cache.get().expect("xc_cache is set under xc_lock above"))
-    }
-}
-
-#[pymethods]
-impl PyDftResult {
-    /// Precision provenance of this KS-DFT SCF (see `RhfResult.precision`;
-    /// the `xc-vxc` kernel carries a `ladder` record).
-    #[getter]
-    fn precision(&self, py: Python<'_>) -> PyResult<PyObject> {
-        precision_dict(py, &self.scf_data.precision)
-    }
-    /// Exchange-correlation potential V_xc[D] of the converged density `D`
-    /// (`density()`), as an AO matrix (n_bf x n_bf), on the SCF's own XC grid.
-    ///
-    /// Semilocal part (incl. the meta-GGA τ term) plus VV10 V_nl when the
-    /// functional has it; exact exchange is NOT included (for a hybrid this
-    /// is only the DFT exchange-correlation part; for a range-separated
-    /// hybrid the semilocal exchange is the short-range-attenuated one).
-    /// Computed on first call.
-    fn vxc<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
-        let (_, v) = self.xc_pair(py)?;
-        Ok(PyArray2::from_array(py, v))
-    }
-
-    /// E_xc[D] of the converged density on the SCF's XC grid, the energy
-    /// that `vxc()` is the derivative of (semilocal + VV10, no exact
-    /// exchange). Computed on first access, shared with `vxc()`.
-    #[getter]
-    fn e_xc(&self, py: Python<'_>) -> PyResult<f64> {
-        Ok(self.xc_pair(py)?.0)
-    }
-
-    /// The COSX final-grid pass record (see `RhfResult.cosx_final_pass`).
-    #[getter]
-    fn cosx_final_pass(&self, py: Python<'_>) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
-        cosx_final_dict(py, self.scf_data.cosx_final)
-    }
-    /// The secondary-basis guess (`guess_basis=`): `{"basis", "projection",
-    /// "iterations", "energy", "nbasis_guess", "nbasis_target", "converged",
-    /// "unconverged_reason", "used_as_guess"}` describing the secondary SCF,
-    /// or `None` when no secondary-basis guess ran.
-    #[getter]
-    fn guess_basis(&self, py: Python<'_>) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
-        guess_basis_dict(py, self.scf_data.guess_basis.as_ref())
-    }
-
-    fn density<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        PyArray2::from_array(py, &self.density_data)
-    }
-
-    /// Number of SCF iterations actually performed.
-    ///
-    /// Exposed because wall time alone cannot distinguish "each iteration is
-    /// expensive" from "the SCF took many iterations to converge" — a
-    /// distinction with opposite fixes (cheaper grid/basis vs. a better guess,
-    /// level shift, or damping). Note `run_dft` walks a convergence *ladder*,
-    /// so this is the iteration count of the rung that finally succeeded, not
-    /// the total across all rungs — see `ferric_scf::ladder`.
-    #[getter]
-    fn iterations(&self) -> usize {
-        self.scf_data.iterations
-    }
-
-    /// SCF exit reason: one of `"Converged"`, `"Plateau"`, `"Stalled"`,
-    /// `"Diverged"`, `"MaxIter"`, `"NotCertified"` (ROHF/ROKS only) — the
-    /// `ScfExit` variant name. Strictly more
-    /// informative than the `converged` bool, which collapses every failure
-    /// mode into `false` — a `Plateau` and a `Diverged` need different fixes.
-    #[getter]
-    fn exit_reason(&self) -> String {
-        format!("{:?}", self.scf_data.exit)
-    }
-
-    /// Return the cached analytic nuclear gradient as an (natoms, 3) array.
-    /// Returns `None` if the result was produced without `with_gradient=True`.
-    fn gradient<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
-        self.gradient_data
-            .as_ref()
-            .map(|g| PyArray2::from_array(py, g))
-    }
-    fn __repr__(&self) -> String {
-        format!(
-            "DftResult(total_energy={:.10}, converged={})",
-            self.total_energy, self.converged
-        )
-    }
-    fn __str__(&self) -> String {
-        format!(
-            "KS-DFT Energy: {:.10} Ha (converged: {})",
-            self.total_energy, self.converged
-        )
-    }
-}
-
-// ---------------------------------------------------------------------------
-// MP2-based double hybrids (B2PLYP, DSD-PBEP86)
-// ---------------------------------------------------------------------------
-
-#[pyclass]
-#[pyo3(name = "DoubleHybridResult")]
-struct PyDoubleHybridResult {
-    #[pyo3(get)]
-    total_energy: f64,
-    #[pyo3(get)]
-    e_ks: f64,
-    #[pyo3(get)]
-    e_corr_scaled: f64,
-    #[pyo3(get)]
-    e_os: f64,
-    #[pyo3(get)]
-    e_ss: f64,
-    #[pyo3(get)]
-    c_os: f64,
-    #[pyo3(get)]
-    c_ss: f64,
-}
-
-#[pymethods]
-impl PyDoubleHybridResult {
-    fn __repr__(&self) -> String {
-        format!(
-            "DoubleHybridResult(total_energy={:.10}, e_ks={:.10}, e_corr={:.10})",
-            self.total_energy, self.e_ks, self.e_corr_scaled
-        )
-    }
-    fn __str__(&self) -> String {
-        format!(
-            "Double Hybrid Energy: {:.10} Ha (KS: {:.10}, scaled MP2: {:.10})",
-            self.total_energy, self.e_ks, self.e_corr_scaled
-        )
-    }
-}
-
-/// Run an MP2-based double hybrid (B2PLYP or DSD-PBEP86).
-///
-/// `kind`: "b2plyp" or "dsd-pbep86".
-/// Converges the appropriate DFT reference, then adds scaled MP2 correlation.
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, kind="b2plyp", frozen_core=None, k_builder=None, memory_budget_gb=None))]
-fn run_double_hybrid(
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    kind: &str,
-    frozen_core: Option<usize>,
-    k_builder: Option<&str>,
-    memory_budget_gb: Option<f64>,
-) -> PyResult<PyDoubleHybridResult> {
-    let dh_kind = match kind.to_lowercase().replace(['-', '_'], "").as_str() {
-        "b2plyp" => DoubleHybridKind::B2plyp,
-        "dsdpbep86" => DoubleHybridKind::DsdPbep86,
-        _ => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "unknown double hybrid kind '{kind}'; expected 'b2plyp' or 'dsd-pbep86'"
-            )))
-        }
-    };
-
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-
-    let mut cfg = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
-    cfg.xc = Some(dh_kind.xc_name().to_string());
-    cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
-    cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
-
-    let ladder = ferric_scf::ladder::ksdft_ladder(&cfg);
-    let lr = ferric_scf::ladder::solve_rhf_ladder(&ctx, &mol.inner, &prep, op, &bounds, &ladder)
-        .map_err(make_err)?;
-    let ks = lr.result;
-    if !ks.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: ks.iterations,
-            last_energy: ks.energy,
-        }));
-    }
-
-    let mut mp2_cfg = dh_kind.mp2_config();
-    if let Some(fc) = frozen_core {
-        mp2_cfg.frozen_core = fc;
-    }
-    mp2_cfg.memory_budget_bytes = budget_bytes_from_gb(memory_budget_gb);
-
-    let r = mp2_double_hybrid(&mol.inner, &prep, &dfbs, &ks, &mp2_cfg).map_err(make_err)?;
-
-    Ok(PyDoubleHybridResult {
-        total_energy: r.total_energy,
-        e_ks: r.e_ks,
-        e_corr_scaled: r.e_corr_scaled,
-        e_os: r.spin_components.e_os,
-        e_ss: r.spin_components.e_ss,
-        c_os: r.c_os,
-        c_ss: r.c_ss,
-    })
-}
-
-/// Kohn-Sham DFT (closed-shell). `functional` is an XC name (LDA/PBE/B3LYP/
-/// wB97X-V/…). Convergence aids match the CLI `[scf]` section: `level_shift`
-/// (Ha) and `mom_after_iter` help difficult DFT SCFs converge.
-///
-/// Note: the final_* residuals, unmet_criteria and non-convergence RuntimeWarning
-/// are RHF-only today (the result has `exit_reason` and `iterations`).
-///
-/// `symmetry=True`: point-group-blocked closed-shell RKS
-/// (`ferric_scf::symmetric::solve_rhf_symmetric`), returning a
-/// `SymmetricRhfResult` for the symmetrized geometry; `irrep_nelec` pins
-/// electrons per irrep. Refused with `with_gradient` or `dispersion`.
-#[pyfunction]
-#[pyo3(signature = (
-    mol, basis_set, functional=None, k_builder=None, with_gradient=false,
-    max_iter=None, energy_conv=None, density_conv=None,
-    level_shift=None, mom_after_iter=None,
-    point_charges=None, external_field=None, memory_budget_gb=None,
-    dispersion=None, df_j_aux=None, df_k_aux=None,
-    grid_radial=None, grid_angular=None, grid_prune=None,
-    cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
-    symmetry=false, irrep_nelec=None, fock_hook=None,
-    guess_basis=None, guess_projection=None,
-))]
-#[allow(clippy::too_many_arguments)]
-fn run_dft(
-    py: Python<'_>,
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    functional: Option<&str>,
-    k_builder: Option<&str>,
-    with_gradient: bool,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
-    level_shift: Option<f64>,
-    mom_after_iter: Option<usize>,
-    point_charges: Option<Vec<(f64, f64, f64, f64)>>,
-    external_field: Option<(f64, f64, f64)>,
-    memory_budget_gb: Option<f64>,
-    dispersion: Option<&str>,
-    df_j_aux: Option<&str>,
-    df_k_aux: Option<&str>,
-    grid_radial: Option<usize>,
-    grid_angular: Option<usize>,
-    grid_prune: Option<&str>,
-    cosx_grid: Option<&Bound<'_, PyAny>>,
-    cosx_final_pass: Option<bool>,
-    cosx_final_grid: Option<&Bound<'_, PyAny>>,
-    cosx_overlap_fit: Option<bool>,
-    symmetry: bool,
-    irrep_nelec: Option<std::collections::BTreeMap<String, usize>>,
-    fock_hook: Option<&Bound<'_, PyAny>>,
-    guess_basis: Option<&str>,
-    guess_projection: Option<&str>,
-) -> PyResult<PyObject> {
-    let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
-    // Refuse an (E, grad-E) pair that does not belong to the same surface.
-    //
-    // `total_energy` below is `e_scf + e_dispersion`, but `gradient_data` is
-    // Owned clone so the compute closure below never borrows the PyMolecule
-    // pyclass field across the allow_threads boundary.
-    let emol = mol.inner.clone();
-    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-    let mut cfg = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
-    cfg.max_iter = max_iter.unwrap_or(cfg.max_iter);
-    cfg.energy_conv = energy_conv.unwrap_or(cfg.energy_conv);
-    cfg.density_conv = density_conv.unwrap_or(cfg.density_conv);
-    cfg.level_shift = level_shift.unwrap_or(cfg.level_shift);
-    cfg.mom_after_iter = mom_after_iter.unwrap_or(cfg.mom_after_iter);
-    cfg.external_potential = build_external_potential(point_charges, external_field);
-    let xc_name = functional.unwrap_or("LDA").to_string();
-    cfg.xc = Some(xc_name.clone());
-    cfg.guess_basis = guess_basis;
-    // Resolve `dispersion=` BEFORE the SCF: an unknown spelling or a
-    // functional with no published parameters must not cost an SCF first.
-    let dispersion = dispersion
-        .map(|spec| resolve_dispersion(spec, &xc_name))
-        .transpose()?;
-    // RI-J on by DEFAULT (PySCF's density_fit convention), now OVERRIDABLE.
-    // `run_rhf` always exposed these; `run_dft` did not, so there was no way
-    // to request exact Coulomb -- and a caller comparing against an
-    // exact-Coulomb code measured the RI-J FITTING ERROR as a ferric defect.
-    // MEASURED at PBE/STO-3G vs conventional J: water 0.28, benzene 1.16,
-    // 71-atom drug 9.5 kcal/mol. `df_j_aux=""` selects conventional J.
-    cfg.df_j_aux = resolve_df_aux(df_j_aux, "def2-universal-jkfit");
-    // RI-K only matters for ω = 0 hybrids and HF. For a pure functional (and
-    // for RSH, which uses its own SR/LR fitters) `solve_rhf` now skips
-    // building this DfK altogether rather than building it and discarding K.
-    // RIJCOSX: with k_builder="cosx", COSX replaces RI-K, so the RI-K
-    // default is not applied (an explicit df_k_aux next to COSX is a conflict
-    // the SCF refuses); RI-J stays on by default.
-    cfg.df_k_aux = if k_builder == Some("cosx") && df_k_aux.is_none() {
-        None
-    } else {
-        resolve_df_aux(df_k_aux, "def2-universal-jkfit")
-    };
-    cfg.cosx = resolve_cosx_kwargs(
-        k_builder,
-        cosx_grid,
-        cosx_final_pass,
-        cosx_final_grid,
-        cosx_overlap_fit,
-    )?;
-    // Main KS grid. `None` (no grid kwarg) keeps the historical 75x110 flat
-    // grid byte-for-byte; `ksdft_ladder` clones `cfg`, so every rung uses it.
-    cfg.dft_grid = resolve_dft_grid(grid_radial, grid_angular, grid_prune)?;
-    if symmetry || irrep_nelec.is_some() {
-        blocks::refuse_symmetric_dft(
-            symmetry,
-            with_gradient,
-            dispersion.is_some(),
-            fock_hook.is_some(),
-        )?;
-        cfg.symmetry = true;
-        cfg.irrep_nelec = irrep_nelec.map(|m| m.into_iter().collect());
-        return solve_symmetric_outcome(py, "run_dft", &ctx, &emol, &prep, op, &bounds, &cfg);
-    }
-    // The gradient below goes through `restricted_scf_gradient`, which
-    // differentiates `cfg.dft_grid` (pruned or not), the grid the SCF runs on.
-    // COSX exchange (RIJCOSX by default here): the gradient below goes
-    // through `restricted_scf_gradient`, which differentiates the COSX (and
-    // RI-J) energy the SCF built; setups it cannot differentiate (overlap fit
-    // with a functional) are refused BEFORE the SCF. A COSX final-grid pass
-    // is energy-only, so a gradient run drops it (`gradient_task_config`) and
-    // `total_energy` stays on the surface the gradient describes.
-    if with_gradient {
-        ferric_scf::gradient::preflight_cosx_restricted(&cfg)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-        cfg = ferric_scf::gradient::gradient_task_config(&cfg).into_owned();
-    }
-    // MBD@rsSCS's exact gradient needs the Z-vector relaxation term: refuse an
-    // unsupported setup before the SCF and the free-atom solves, not after.
-    if with_gradient && matches!(dispersion, Some(DispersionSpec::Mbd(_))) {
-        if let Some(r) = ferric_scf::zvector_ks::unsupported_reason(&cfg) {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "dispersion=\"mbd\" with with_gradient=True: the exact MBD@rsSCS gradient \
-                 is not available: {r}"
-            )));
-        }
-    }
-    // Run through the level-shift ladder (KS-DFT = solve_rhf with cfg.xc set),
-    // so a hybrid on a hard system that DIIS-limit-cycles at level_shift=0
-    // escalates the virtual-block shift instead of erroring out at max_iter.
-    // The base cfg carries xc / grid / DF-JK aux into every rung. Only surface
-    // a convergence error if the whole ladder fails to converge.
-    let ladder = ferric_scf::ladder::ksdft_ladder(&cfg);
-    // Release the GIL for the duration of the SCF ladder. Every argument
-    // below is an owned Rust value (`emol` is a clone; `ctx`/`prep`/`bounds`/
-    // `ladder` are built above), so nothing Python-borrowed crosses the
-    // closure boundary.
-    let rhf = blocks::solve_ks_ladder(
-        py,
-        &ctx,
-        &emol,
-        &prep,
-        op,
-        &bounds,
-        &ladder,
-        fock_hook.map(|h| (h, with_gradient, dispersion.is_some())),
-    )?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
-    // Dispersion, opt-in: energy, and its gradient when one is requested,
-    // evaluated ONCE from the same resolved parameters (and, for MBD@rsSCS,
-    // the same converged density), so `total_energy` and `gradient()` cannot
-    // come from different surfaces.
-    //
-    // `dispersion=None` leaves the energy BYTE-IDENTICAL to before this
-    // feature existed -- `e_dispersion` is then None (UNEVALUATED), never 0.0,
-    // so a caller cannot mistake "not asked for" for "computed and found to be
-    // zero". Any failure (unknown functional, unparameterised element) is
-    // raised, never swallowed into a neutral-looking zero.
-    let disp = match &dispersion {
-        None => None,
-        Some(spec) => {
-            let bs_owned = basis_set.inner.clone();
-            let scf_ref = &rhf;
-            Some(
-                py.allow_threads(|| {
-                    evaluate_dispersion(
-                        spec,
-                        &ctx,
-                        &emol,
-                        &bs_owned,
-                        op,
-                        &cfg,
-                        scf_ref,
-                        with_gradient,
-                        None,
-                    )
-                })
-                .map_err(make_err)?,
-            )
-        }
-    };
-    let gradient_data = if with_gradient {
-        // Exactly `ks_gradient_closed` unless the SCF's exchange was COSX.
-        let mut g = ferric_scf::gradient::restricted_scf_gradient(
-            &mol.inner,
-            &prep,
-            &basis_set.inner,
-            op,
-            &bounds,
-            &cfg,
-            &rhf,
-        )
-        .map_err(make_err)?;
-        // Dispersion is additive in the ENERGY, so it is additive in the
-        // gradient. Adding it here rather than returning the bare KS gradient
-        // is what makes `total_energy` and `gradient()` describe the SAME
-        // surface -- an optimizer handed a mismatched pair converges to the
-        // wrong geometry with nothing to indicate it.
-        if let Some(d) = &disp {
-            let dg = d.gradient.as_ref().ok_or_else(|| {
-                make_err(ferric_core::FerricError::General(format!(
-                    "{} returned no gradient although one was requested",
-                    d.model
-                )))
-            })?;
-            if dg.nrows() != g.nrows() {
-                return Err(make_err(ferric_core::FerricError::General(format!(
-                    "{} gradient has {} rows but the KS gradient has {}",
-                    d.model,
-                    dg.nrows(),
-                    g.nrows()
-                ))));
-            }
-            for k in 0..dg.nrows() {
-                for a in 0..3 {
-                    g[[k, a]] += dg[[k, a]];
-                }
-            }
-        }
-        Some(g)
-    } else {
-        None
-    };
-    let e_dispersion = disp.as_ref().map(|d| d.energy);
-    let (dispersion_model, volume_ratios) = match disp {
-        None => (None, None),
-        Some(d) => (Some(d.model.to_string()), d.volume_ratios),
-    };
-    let result = PyDftResult {
-        total_energy: rhf.energy + e_dispersion.unwrap_or(0.0),
-        e_scf: rhf.energy,
-        e_dispersion,
-        dispersion_model,
-        volume_ratios,
-        converged: rhf.converged,
-        xc_mol: emol,
-        xc_basis: basis_set.inner.clone(),
-        xc_cache: std::sync::OnceLock::new(),
-        xc_lock: std::sync::Mutex::new(()),
-        density_data: rhf.density_total.clone(),
-        gradient_data,
-        scf_data: rhf,
-        scf_config: cfg,
-    };
-    Ok(Py::new(py, result)?.into_any())
-}
-
-/// `run_dft(symmetry=True)` scoping: `irrep_nelec` needs `symmetry`, and the
-/// result lives in the symmetry frame, so no gradient (input-frame rows) and
-/// no dispersion (its energy would be silently dropped from the blocked
-/// result) are offered.
-fn refuse_dft_symmetry_extras(
-    symmetry: bool,
-    with_gradient: bool,
-    dispersion: bool,
-) -> PyResult<()> {
-    let refuse = |m: &str| Err(pyo3::exceptions::PyValueError::new_err(m.to_string()));
-    if !symmetry {
-        return refuse("run_dft: irrep_nelec requires symmetry=True");
-    }
-    if with_gradient {
-        return refuse(
-            "run_dft(symmetry=True): with_gradient is not available; the blocked SCF runs in \
-             the reoriented, symmetrized frame. Use symmetry=False for gradients.",
-        );
-    }
-    if dispersion {
-        return refuse(
-            "run_dft(symmetry=True): dispersion is not available with the blocked solve; \
-             use symmetry=False or add the correction separately (d3bj_energy).",
-        );
-    }
-    Ok(())
-}
-
-/// Number of points in the main KS integration grid `run_dft` would build for
-/// `mol` with the same `grid_*` kwargs (same resolver, same builder, no
-/// weight screening in between). Lets a caller see what pruning saves on
-/// their own molecule without running an SCF. Counts per radial shell via
-/// `ferric_dft::grid::atomic_grid_point_count`, which resolves the same
-/// per-shell angular orders as the builder but never generates points or
-/// Becke weights.
-#[pyfunction]
-#[pyo3(signature = (mol, grid_radial=None, grid_angular=None, grid_prune=None))]
-fn dft_grid_point_count(
-    mol: &PyMolecule,
-    grid_radial: Option<usize>,
-    grid_angular: Option<usize>,
-    grid_prune: Option<&str>,
-) -> PyResult<usize> {
-    let cfg = resolve_dft_grid(grid_radial, grid_angular, grid_prune)?.unwrap_or_default();
-    ferric_dft::grid::atomic_grid_point_count(&mol.inner, &cfg, cfg.prune).map_err(make_err)
-}
-
-/// Number of points in the COSX exchange grid `cosx_grid=` describes for
-/// `mol` (`None` = the default COSX SCF grid), without building it.
-#[pyfunction]
-#[pyo3(signature = (mol, cosx_grid=None))]
-fn cosx_grid_point_count(
-    mol: &PyMolecule,
-    cosx_grid: Option<&Bound<'_, PyAny>>,
-) -> PyResult<usize> {
-    let g = match cosx_grid {
-        Some(v) => parse_cosx_grid("cosx_grid", v)?,
-        None => ferric_scf::cosx_k::CosxConfig::default().grid,
-    };
-    ferric_dft::grid::atomic_grid_point_count(&mol.inner, &g, g.prune).map_err(make_err)
-}
-
-/// A resolved `dispersion=` request: the model and the functional whose
-/// published parameters it uses.
-enum DispersionSpec {
-    /// Grimme D3(BJ) with `<functional>`'s damping parameters.
-    D3Bj(String),
-    /// MBD@rsSCS with `<functional>`'s published range-separation β.
-    Mbd(String),
-}
-
-/// Resolve a `dispersion=` spec.
-///
-/// Accepts exactly what the CLI's `[dft] dispersion` accepts, so the two
-/// surfaces cannot drift apart (case-insensitive):
-///   * `"d3bj"` / `"d3(bj)"` -- D3(BJ) with the running functional's parameters
-///   * `"d3bj(<name>)"` -- D3(BJ) with `<name>`'s parameters instead, for when
-///     ferric's XC name and the D3 fit's name differ
-///   * `"mbd"` -- MBD@rsSCS with the running functional's published β
-///   * `"mbd(<name>)"` -- MBD@rsSCS with `<name>`'s published β
-///
-/// Anything else is an error, never a silently-skipped correction, and so is
-/// a functional with no published D3(BJ) fit or MBD β (checked here, before
-/// any SCF).
-///
-/// SHARED between the energy and the gradient on purpose: one resolution
-/// feeds both, so they cannot come from different surfaces.
-fn resolve_dispersion(spec: &str, xc_name: &str) -> PyResult<DispersionSpec> {
-    let lower = spec.trim().to_ascii_lowercase();
-    let named = |prefix: &str| -> PyResult<Option<String>> {
-        match lower.strip_prefix(prefix).and_then(|r| r.strip_suffix(')')) {
-            None => Ok(None),
-            Some(inner) if inner.trim().is_empty() => Err(pyo3::exceptions::PyValueError::new_err(
-                format!("dispersion=\"{prefix})\" names no functional"),
-            )),
-            Some(inner) => Ok(Some(inner.trim().to_string())),
-        }
-    };
-    let value_err =
-        |e: ferric_core::FerricError| pyo3::exceptions::PyValueError::new_err(e.to_string());
-    let d3 = |f: String| -> PyResult<DispersionSpec> {
-        ferric_d3::d3bj_params_for_functional(&f).map_err(value_err)?;
-        Ok(DispersionSpec::D3Bj(f))
-    };
-    let mbd = |f: String| -> PyResult<DispersionSpec> {
-        ferric_rpa::dispersion::mbd_rsscs_beta_for_functional(&f).map_err(value_err)?;
-        Ok(DispersionSpec::Mbd(f))
-    };
-    if lower == "d3bj" || lower == "d3(bj)" {
-        return d3(xc_name.to_string());
-    }
-    if lower == "mbd" {
-        return mbd(xc_name.to_string());
-    }
-    if let Some(f) = named("d3bj(")? {
-        return d3(f);
-    }
-    if let Some(f) = named("mbd(")? {
-        return mbd(f);
-    }
-    Err(pyo3::exceptions::PyValueError::new_err(format!(
-        "unknown dispersion scheme {spec:?}; expected \"d3bj\", \"d3(bj)\", \
-         \"d3bj(<functional>)\", \"mbd\" or \"mbd(<functional>)\". Pass \
-         dispersion=None for no correction -- there is no value meaning \"compute zero\"."
-    )))
-}
-
-/// A dispersion correction evaluated at one geometry.
-struct DispersionEval {
-    /// `"D3(BJ)"` or `"MBD@rsSCS"`.
-    model: &'static str,
-    /// Hartree.
-    energy: f64,
-    /// (natoms, 3) Hartree/Bohr, when requested.
-    gradient: Option<Array2<f64>>,
-    /// MBD@rsSCS only: Hirshfeld volume ratios v_A / v_A^free.
-    volume_ratios: Option<Vec<f64>>,
-}
-
-/// Evaluate `spec` at `mol`, given the converged closed-shell SCF (MBD@rsSCS
-/// takes its Hirshfeld volumes from its density; D3(BJ) does not use it).
-/// With `want_gradient` the analytic gradient is returned too; for MBD@rsSCS
-/// it is exact, including the orbital relaxation of the volumes (Z-vector).
-/// `mbd_cache` reuses MBD@rsSCS free-atom references built once by a caller
-/// that evaluates many geometries; `None` builds them here.
-#[allow(clippy::too_many_arguments)]
-fn evaluate_dispersion(
-    spec: &DispersionSpec,
-    ctx: &ParallelContext,
-    mol: &ferric_core::mol::Molecule,
-    bs: &ferric_core::basis::BasisSet,
-    op: Operator,
-    cfg: &RhfConfig,
-    scf: &ScfResult,
-    want_gradient: bool,
-    mbd_cache: Option<&ferric_rpa::dispersion::mbd_scf::MbdFreeAtomCache>,
-) -> Result<DispersionEval, ferric_core::FerricError> {
-    match spec {
-        DispersionSpec::D3Bj(functional) => {
-            let params = ferric_d3::d3bj_params_for_functional(functional)?;
-            let energy = ferric_d3::d3bj_energy_for_molecule(mol, &params)?;
-            let gradient = if want_gradient {
-                let rows = ferric_d3::d3bj_gradient_for_molecule(mol, &params)?;
-                let mut g = Array2::<f64>::zeros((rows.len(), 3));
-                for (k, row) in rows.iter().enumerate() {
-                    for a in 0..3 {
-                        g[[k, a]] = row[a];
-                    }
-                }
-                Some(g)
-            } else {
-                None
-            };
-            Ok(DispersionEval {
-                model: "D3(BJ)",
-                energy,
-                gradient,
-                volume_ratios: None,
-            })
-        }
-        DispersionSpec::Mbd(functional) => {
-            use ferric_rpa::dispersion::mbd_rsscs::MbdRsscsConfig;
-            use ferric_rpa::dispersion::mbd_scf::{
-                mbd_rsscs_for_density, mbd_rsscs_for_scf, MbdFreeAtomCache,
-            };
-            let mcfg = MbdRsscsConfig::for_functional(functional)?;
-            let built;
-            let cache = match mbd_cache {
-                Some(c) => c,
-                None => {
-                    built = MbdFreeAtomCache::build(ctx, mol, bs, op, cfg)?;
-                    &built
-                }
-            };
-            let r = if want_gradient {
-                mbd_rsscs_for_scf(ctx, cache, mol, bs, op, cfg, scf, &mcfg)?
-            } else {
-                mbd_rsscs_for_density(cache, mol, bs, scf.density_total(), &mcfg, false)?
-            };
-            Ok(DispersionEval {
-                model: "MBD@rsSCS",
-                energy: r.energy,
-                gradient: r.gradient,
-                volume_ratios: Some(r.volume_ratios),
-            })
-        }
-    }
-}
-
-/// Alias under the spec's canonical name. Same surface as `run_dft`.
-#[pyfunction]
-#[pyo3(signature = (
-    mol, basis_set, functional=None, k_builder=None, with_gradient=false,
-    max_iter=None, energy_conv=None, density_conv=None,
-    level_shift=None, mom_after_iter=None,
-    point_charges=None, external_field=None, memory_budget_gb=None,
-    dispersion=None, df_j_aux=None, df_k_aux=None,
-    grid_radial=None, grid_angular=None, grid_prune=None,
-    symmetry=false, irrep_nelec=None, guess_basis=None, guess_projection=None,
-))]
-#[allow(clippy::too_many_arguments)]
-fn run_ksdft(
-    py: Python<'_>,
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    functional: Option<&str>,
-    k_builder: Option<&str>,
-    with_gradient: bool,
-    max_iter: Option<usize>,
-    energy_conv: Option<f64>,
-    density_conv: Option<f64>,
-    level_shift: Option<f64>,
-    mom_after_iter: Option<usize>,
-    point_charges: Option<Vec<(f64, f64, f64, f64)>>,
-    external_field: Option<(f64, f64, f64)>,
-    memory_budget_gb: Option<f64>,
-    dispersion: Option<&str>,
-    df_j_aux: Option<&str>,
-    df_k_aux: Option<&str>,
-    grid_radial: Option<usize>,
-    grid_angular: Option<usize>,
-    grid_prune: Option<&str>,
-    symmetry: bool,
-    irrep_nelec: Option<std::collections::BTreeMap<String, usize>>,
-    guess_basis: Option<&str>,
-    guess_projection: Option<&str>,
-) -> PyResult<PyObject> {
-    run_dft(
-        py,
-        mol,
-        basis_set,
-        functional,
-        k_builder,
-        with_gradient,
-        max_iter,
-        energy_conv,
-        density_conv,
-        level_shift,
-        mom_after_iter,
-        point_charges,
-        external_field,
-        memory_budget_gb,
-        dispersion,
-        df_j_aux,
-        df_k_aux,
-        grid_radial,
-        grid_angular,
-        grid_prune,
-        None,
-        None,
-        None,
-        None,
-        symmetry,
-        irrep_nelec,
-        None,
-        guess_basis,
-        guess_projection,
-    )
-}
-
-/// Grimme D3(BJ) dispersion energy for a molecule, in Hartree.
-///
-/// Standalone: this does no SCF, so it is the cheap way to add dispersion to an
-/// energy computed elsewhere, or to inspect the correction on its own.
-///
-/// `functional` names the XC functional whose published D3(BJ) damping
-/// parameters to use -- the correction is FITTED per functional, so this is
-/// required, not a convenience. An unknown functional raises rather than
-/// falling back to a default, and an element outside the D3 parameterisation
-/// raises rather than being silently skipped.
-#[pyfunction]
-#[pyo3(signature = (mol, functional))]
-fn d3bj_energy(mol: &PyMolecule, functional: &str) -> PyResult<f64> {
-    let params = ferric_d3::d3bj_params_for_functional(functional).map_err(make_err)?;
-    ferric_d3::d3bj_energy_for_molecule(&mol.inner, &params).map_err(make_err)
-}
-
-/// Result of `mbd_rsscs_energy`. Atomic units; per-atom lists in atom order.
-#[pyclass]
-#[pyo3(name = "MbdRsscsResult")]
-struct PyMbdRsscsResult {
-    /// MBD@rsSCS dispersion energy (Hartree).
-    #[pyo3(get)]
-    energy: f64,
-    /// β used.
-    #[pyo3(get)]
-    beta: f64,
-    /// TS inputs (volume-ratio scaled): α₀, C6, R_vdW (Bohr).
-    #[pyo3(get)]
-    alpha_0_ts: Vec<f64>,
-    #[pyo3(get)]
-    c6_ts: Vec<f64>,
-    #[pyo3(get)]
-    r_vdw_ts: Vec<f64>,
-    /// Range-separated-screened α₀, C6, R_vdW (Bohr) and ω.
-    #[pyo3(get)]
-    alpha_0_rsscs: Vec<f64>,
-    #[pyo3(get)]
-    c6_rsscs: Vec<f64>,
-    #[pyo3(get)]
-    r_vdw_rsscs: Vec<f64>,
-    #[pyo3(get)]
-    omega_rsscs: Vec<f64>,
-}
-
-#[pymethods]
-impl PyMbdRsscsResult {
-    fn __repr__(&self) -> String {
-        format!(
-            "MbdRsscsResult(energy={:.10e}, beta={}, natoms={})",
-            self.energy,
-            self.beta,
-            self.alpha_0_rsscs.len()
-        )
-    }
-}
-
-/// MBD@rsSCS many-body dispersion energy (Ambrosetti et al., JCP 140,
-/// 18A508 (2014)) for a molecule, in Hartree. Standalone: no SCF.
-///
-/// `volume_ratios` are the per-atom Hirshfeld volume ratios V_A/V_free (one
-/// per atom, from the density functional the correction is paired with).
-/// Exactly one of `beta` (explicit range-separation parameter) or
-/// `functional` (published β: PBE 0.83, PBE0 0.85, HSE06 0.85) is required;
-/// an unlisted functional raises. Ghost atoms are refused. Elements Z > 54
-/// raise (no free-atom reference). A polarization catastrophe (coupled
-/// oscillator matrix not positive definite) raises.
-#[pyfunction]
-#[pyo3(signature = (mol, volume_ratios, beta=None, functional=None))]
-fn mbd_rsscs_energy(
-    mol: &PyMolecule,
-    volume_ratios: Vec<f64>,
-    beta: Option<f64>,
-    functional: Option<&str>,
-) -> PyResult<PyMbdRsscsResult> {
-    use ferric_rpa::dispersion::mbd_rsscs::MbdRsscsConfig;
-    let cfg = match (beta, functional) {
-        (Some(b), None) => MbdRsscsConfig::with_beta(b),
-        (None, Some(f)) => MbdRsscsConfig::for_functional(f)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?,
-        (Some(_), Some(_)) => {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "mbd_rsscs_energy: pass either beta or functional, not both",
-            ))
-        }
-        (None, None) => {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "mbd_rsscs_energy: beta is functional dependent — pass beta=... or \
-                 functional=... (PBE, PBE0, HSE06)",
-            ))
-        }
-    };
-    let atoms = &mol.inner.atoms;
-    if let Some(i) = atoms.iter().position(|a| a.ghost) {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "mbd_rsscs_energy: atom {i} is a ghost; MBD needs a real atom (and a volume \
-             ratio) at every center — remove ghost atoms first"
-        )));
-    }
-    if volume_ratios.len() != atoms.len() {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "mbd_rsscs_energy: {} volume ratios for {} atoms",
-            volume_ratios.len(),
-            atoms.len()
-        )));
-    }
-    let z: Vec<usize> = atoms.iter().map(|a| a.z.max(0) as usize).collect();
-    let pos: Vec<[f64; 3]> = atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
-    let res = ferric_rpa::dispersion::mbd_rsscs::mbd_rsscs_energy(&z, &pos, &volume_ratios, &cfg)
-        .map_err(make_err)?;
-    Ok(PyMbdRsscsResult {
-        energy: res.energy,
-        beta: res.config.beta,
-        alpha_0_ts: res.ts.alpha_0,
-        c6_ts: res.ts.c6,
-        r_vdw_ts: res.ts.r_vdw,
-        alpha_0_rsscs: res.alpha_0_rsscs,
-        c6_rsscs: res.c6_rsscs,
-        r_vdw_rsscs: res.r_vdw_rsscs,
-        omega_rsscs: res.omega_rsscs,
-    })
-}
-
-// ── CC (stub) ──
-
-#[pyclass]
-#[pyo3(name = "CcResult")]
-struct PyCcResult {
-    #[pyo3(get)]
-    correlation_energy: f64,
-    #[pyo3(get)]
-    t_correction: Option<f64>,
-    /// Closed-shell CCSD's particle-particle ladder route: `"dense"` or
-    /// `"ri"` (`None` for CCD). With `ladder="auto"` this says which ran.
-    #[pyo3(get)]
-    ladder_route: Option<String>,
-    /// The RI ladder's `a`-block width (`None` unless `ladder_route == "ri"`).
-    #[pyo3(get)]
-    ladder_block: Option<usize>,
-}
-
-/// `(ladder_route, ladder_block)` for the Python result.
-fn py_ladder_route(r: &ferric_cc::CcResult) -> (Option<String>, Option<usize>) {
-    use ferric_cc::ccsd_closed_shell::LadderRoute;
-    match r.ladder_route {
-        Some(LadderRoute::Dense) => (Some("dense".into()), None),
-        Some(LadderRoute::Ri { block }) => (Some("ri".into()), Some(block)),
-        None => (None, None),
-    }
-}
-
-#[pymethods]
-impl PyCcResult {
-    fn __repr__(&self) -> String {
-        match self.t_correction {
-            Some(t) => format!(
-                "CcResult(correlation_energy={:.10}, t_correction={:.10})",
-                self.correlation_energy, t,
-            ),
-            None => format!(
-                "CcResult(correlation_energy={:.10})",
-                self.correlation_energy,
-            ),
-        }
-    }
-    fn __str__(&self) -> String {
-        match self.t_correction {
-            Some(t) => format!(
-                "CC Correlation Energy: {:.10} Ha, (T) correction: {:.10} Ha, total corr+T: {:.10} Ha",
-                self.correlation_energy, t, self.correlation_energy + t,
-            ),
-            None => format!(
-                "CC Correlation Energy: {:.10} Ha",
-                self.correlation_energy,
-            ),
-        }
-    }
-}
-
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None))]
-fn run_ccd(
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    frozen_core: Option<usize>,
-    k_builder: Option<&str>,
-    memory_budget_gb: Option<f64>,
-) -> PyResult<PyCcResult> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-    let rhf = solve_rhf(
-        &ctx,
-        &mol.inner,
-        &prep,
-        op,
-        &bounds,
-        &rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb)),
-    )
-    .map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
-    let cfg = CcConfig {
-        frozen_core: frozen_core.unwrap_or(0),
-        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        ..Default::default()
-    };
-    let r = run_ccd_inner(&mol.inner, &prep, &dfbs, op, &rhf, &cfg).map_err(make_err)?;
-    Ok(PyCcResult {
-        correlation_energy: r.correlation_energy,
-        t_correction: None,
-        ladder_route: None,
-        ladder_block: None,
-    })
-}
-
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto"))]
-#[allow(clippy::too_many_arguments)]
-fn run_ccsd(
-    py: Python<'_>,
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    frozen_core: Option<usize>,
-    k_builder: Option<&str>,
-    memory_budget_gb: Option<f64>,
-    ladder: &str,
-) -> PyResult<PyCcResult> {
-    let emol = mol.inner.clone();
-    let ebasis = basis_set.inner.clone();
-    let eaux = auxbasis.inner.clone();
-    let rhf_config = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
-    let cfg = CcConfig {
-        frozen_core: frozen_core.unwrap_or(0),
-        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        // Strict: an unknown route is a ValueError before any SCF runs.
-        ladder: ferric_cc::CcsdLadder::parse_config_str(ladder)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?,
-        ..Default::default()
-    };
-    // Release the GIL for the SCF + CCSD compute. All captured values are
-    // owned clones/locals built above, so nothing Python-borrowed crosses
-    // the closure boundary.
-    //
-    // `solve_rhf` always yields a restricted reference, so this is the
-    // spin-adapted path unconditionally: same CCSD energy, but over spatial
-    // orbitals (no/nv) rather than spin orbitals (2no/2nv), so the O(N^6) VVVV
-    // block is 16x smaller. Measured on water/aug-cc-pVDZ: 24.6 s -> 1.10 s
-    // (22x) and peak RSS 1.82 GB -> 0.48 GB.
-    //
-    // NOTE `run_ccsd_t` below deliberately does NOT switch — see its comment.
-    let r = py
-        .allow_threads(|| -> Result<_, ferric_core::FerricError> {
-            let prep = PreparedBasis::new(&emol, &ebasis)?;
-            let dfbs = PreparedBasis::new(&emol, &eaux)?;
-            let op = Operator::coulomb();
-            let bounds = SchwarzBounds::compute(op, &prep)?;
-            let ctx = ParallelContext::default();
-            let rhf = solve_rhf(&ctx, &emol, &prep, op, &bounds, &rhf_config)?;
-            if !rhf.converged {
-                return Err(ferric_core::FerricError::ScfConvergence {
-                    iterations: rhf.iterations,
-                    last_energy: rhf.energy,
-                });
-            }
-            run_ccsd_cs_inner(&emol, &prep, &dfbs, op, &rhf, &cfg)
-        })
-        .map_err(make_err)?;
-    let (ladder_route, ladder_block) = py_ladder_route(&r);
-    Ok(PyCcResult {
-        correlation_energy: r.correlation_energy,
-        t_correction: None,
-        ladder_route,
-        ladder_block,
-    })
-}
-
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto"))]
-#[allow(clippy::too_many_arguments)]
-fn run_ccsd_t(
-    py: Python<'_>,
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    frozen_core: Option<usize>,
-    k_builder: Option<&str>,
-    memory_budget_gb: Option<f64>,
-    ladder: &str,
-) -> PyResult<PyCcResult> {
-    let emol = mol.inner.clone();
-    let ebasis = basis_set.inner.clone();
-    let eaux = auxbasis.inner.clone();
-    let rhf_config = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
-    let cfg = CcConfig {
-        frozen_core: frozen_core.unwrap_or(0),
-        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        // Strict: an unknown route is a ValueError before any SCF runs.
-        ladder: ferric_cc::CcsdLadder::parse_config_str(ladder)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?,
-        ..Default::default()
-    };
-    // Release the GIL for the SCF + CCSD + (T) compute. All captured values
-    // are owned clones/locals built above, so nothing Python-borrowed
-    // crosses the closure boundary.
-    //
-    // `solve_rhf` always yields a restricted reference, so both halves take the
-    // spin-adapted path: `ccsd_closed_shell` for the amplitudes and
-    // `ccsd_t_closed_shell` for the triples. Both work over spatial orbitals
-    // (no/nv) instead of spin orbitals (2no/2nv).
-    //
-    // The amplitudes flow straight through — no `expand_amplitudes_to_spin_orbital`
-    // round-trip, since the spin-adapted (T) consumes the spatial convention
-    // natively (and hard-rejects spin-orbital amplitudes with a typed error).
-    //
-    // Measured on water/aug-cc-pVDZ: CCSD 24.8 -> 0.70 s and (T) 1.87 -> 0.14 s,
-    // i.e. ~26.6 s -> under a second for the pair. The two (T) implementations
-    // agree to 1.9e-16 when fed identical amplitudes, and to 7.8e-10..6.9e-7
-    // against PySCF's `ccsd_t()` — inside the ~5e-6 Ha RI floor.
-    let (r_cs, e_t) = py
-        .allow_threads(|| -> Result<_, ferric_core::FerricError> {
-            let prep = PreparedBasis::new(&emol, &ebasis)?;
-            let dfbs = PreparedBasis::new(&emol, &eaux)?;
-            let op = Operator::coulomb();
-            let bounds = SchwarzBounds::compute(op, &prep)?;
-            let ctx = ParallelContext::default();
-            let rhf = solve_rhf(&ctx, &emol, &prep, op, &bounds, &rhf_config)?;
-            if !rhf.converged {
-                return Err(ferric_core::FerricError::ScfConvergence {
-                    iterations: rhf.iterations,
-                    last_energy: rhf.energy,
-                });
-            }
-            let r_cs = run_ccsd_cs_inner(&emol, &prep, &dfbs, op, &rhf, &cfg)?;
-            let e_t = run_ccsd_t_cs_inner(&emol, &prep, &dfbs, op, &rhf, &r_cs, &cfg)?;
-            Ok((r_cs, e_t))
-        })
-        .map_err(make_err)?;
-    let (ladder_route, ladder_block) = py_ladder_route(&r_cs);
-    Ok(PyCcResult {
-        correlation_energy: r_cs.correlation_energy,
-        t_correction: Some(e_t),
-        ladder_route,
-        ladder_block,
-    })
-}
-
-// ── PDEP-RPA ──
-
-#[pyclass]
-#[pyo3(name = "PdepRpaResult")]
-struct PyPdepRpaResult {
-    #[pyo3(get)]
-    rhf_energy: f64,
-    #[pyo3(get)]
-    e_rpa: f64,
-    #[pyo3(get)]
-    total_energy: f64,
-    #[pyo3(get)]
-    n_eigenpotentials: usize,
-    #[pyo3(get)]
-    e_rpa_dft_diag: Option<f64>,
-    /// Whether the static-dielectric eigensolve (Davidson or Lanczos) met its
-    /// residual-norm convergence tolerance. `false` means `eigenvalues_static`
-    /// / `eigenpotentials` are the eigensolver's best-effort Ritz pairs after
-    /// exhausting its iteration budget, not verified eigenpairs.
-    #[pyo3(get)]
-    eigensolver_converged: bool,
-    eigenvalues_static: Vec<f64>,
-    eigenpotentials: Array2<f64>,
-    quad_freqs: Vec<f64>,
-    quad_weights: Vec<f64>,
-    eigenvalues_freq: Array2<f64>,
-}
-
-#[pymethods]
-impl PyPdepRpaResult {
-    /// Static dielectric eigenvalues λ_α(0), length M (sorted descending).
-    /// Plot `λ - 1` vs α on a log scale for a scree plot of the PDEP basis.
-    #[getter]
-    fn eigenvalues_static<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_slice(py, &self.eigenvalues_static)
-    }
-    /// PDEP eigenpotential coefficients in the RI auxiliary basis, shape (naux, M).
-    /// Column α gives c_α^P such that V_α(r) = Σ_P c_α^P χ_P(r). Orthonormal in
-    /// the aux metric V = (P|Q) (cᵀVc = I), with cᵀ(V+Π)c = diag(λ_α(0)).
-    #[getter]
-    fn eigenpotentials<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        PyArray2::from_owned_array(py, self.eigenpotentials.clone())
-    }
-    /// Imaginary-frequency quadrature points ω_k.
-    #[getter]
-    fn quad_freqs<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_slice(py, &self.quad_freqs)
-    }
-    /// Imaginary-frequency quadrature weights w_k.
-    #[getter]
-    fn quad_weights<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_slice(py, &self.quad_weights)
-    }
-    /// λ_α(iω_k) tensor, shape (N_quad, M).
-    #[getter]
-    fn eigenvalues_freq<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        PyArray2::from_owned_array(py, self.eigenvalues_freq.clone())
-    }
-
-    /// Write a scree plot of the static dielectric eigenvalues to `path` (PNG).
-    ///
-    /// Plots `|λ_α(0) - 1|` on a log y-axis against eigenpotential index α.
-    /// The shape of this curve diagnoses how aggressively PDEP can be truncated.
-    /// Pure-Python implementation: dispatches to matplotlib via the GIL.
-    #[pyo3(signature = (path, title=None))]
-    fn save_scree_plot(&self, py: Python<'_>, path: &str, title: Option<&str>) -> PyResult<()> {
-        let mpl = py.import("matplotlib")?;
-        mpl.call_method1("use", ("Agg",))?;
-        let plt = py.import("matplotlib.pyplot")?;
-
-        let fig = plt.call_method0("figure")?;
-        let _ax = fig.call_method0("gca")?;
-        let alphas: Vec<usize> = (0..self.eigenvalues_static.len()).collect();
-        let deviations: Vec<f64> = self
-            .eigenvalues_static
-            .iter()
-            .map(|&l| (l - 1.0).abs())
-            .collect();
-        let kwargs = pyo3::types::PyDict::new(py);
-        kwargs.set_item("marker", "o")?;
-        kwargs.set_item("markersize", 3)?;
-        kwargs.set_item("linewidth", 1)?;
-        plt.call_method("semilogy", (alphas, deviations), Some(&kwargs))?;
-        plt.call_method1("xlabel", ("Eigenpotential index α",))?;
-        plt.call_method1("ylabel", ("|λ_α(0) − 1|",))?;
-        let default_title = format!(
-            "PDEP scree: {} eigenpotentials, E_c(RPA) = {:.6} Ha",
-            self.n_eigenpotentials, self.e_rpa,
-        );
-        plt.call_method1("title", (title.unwrap_or(&default_title),))?;
-        plt.call_method0("grid")?;
-        let save_kwargs = pyo3::types::PyDict::new(py);
-        save_kwargs.set_item("dpi", 120)?;
-        save_kwargs.set_item("bbox_inches", "tight")?;
-        plt.call_method("savefig", (path,), Some(&save_kwargs))?;
-        plt.call_method0("close")?;
-        Ok(())
-    }
-    fn __repr__(&self) -> String {
-        format!(
-            "PdepRpaResult(total_energy={:.10}, e_rpa={:.10}, n_eigenpotentials={})",
-            self.total_energy, self.e_rpa, self.n_eigenpotentials,
-        )
-    }
-    fn __str__(&self) -> String {
-        format!(
-            "PDEP-RPA Total Energy: {:.10} Ha (RHF: {:.10}, E_RPA: {:.10}, {} eigenpotentials, converged: {})",
-            self.total_energy, self.rhf_energy, self.e_rpa, self.n_eigenpotentials, self.eigensolver_converged,
-        )
-    }
-}
-
-#[pyfunction]
-#[pyo3(signature = (
-    mol, basis_set, auxbasis,
-    frozen_core=None, n_quad=None, quadrature=None, u0=None,
-    trunc_thresh=None, eigensolver_conv_thresh=None,
-    run_diagnostics=false, k_builder=None, chi0_sparsity=None,
-    memory_budget_gb=None, point_charges=None, external_field=None,
-    solvent=None, pcm_lebedev_order=None,
-))]
-#[allow(clippy::too_many_arguments)]
-fn run_pdep_rpa(
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    frozen_core: Option<usize>,
-    n_quad: Option<usize>,
-    quadrature: Option<&str>,
-    u0: Option<f64>,
-    trunc_thresh: Option<f64>,
-    eigensolver_conv_thresh: Option<f64>,
-    run_diagnostics: bool,
-    k_builder: Option<&str>,
-    chi0_sparsity: Option<&str>,
-    memory_budget_gb: Option<f64>,
-    point_charges: Option<Vec<(f64, f64, f64, f64)>>,
-    external_field: Option<(f64, f64, f64)>,
-    solvent: Option<&Bound<'_, PyAny>>,
-    pcm_lebedev_order: Option<usize>,
-) -> PyResult<PyPdepRpaResult> {
-    use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
-    use ferric_rpa::{run_pdep_rpa as run_pdep_rpa_inner, PdepRpaConfig};
-
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-    // The reference SCF must see the ENVIRONMENT, or the dielectric response
-    // computed from it is that of an isolated molecule. Screening a
-    // ligand-pocket interaction needs the response of the ligand AS IT SITS
-    // IN THE POCKET, so the point charges have to reach this SCF.
-    let mut scf_config = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
-    scf_config.external_potential = build_external_potential(point_charges, external_field);
-    scf_config.pcm = build_pcm_config(solvent, pcm_lebedev_order)?;
-    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &scf_config).map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
-
-    // Canonical parser (shared with the CLI): unknown schemes error rather than
-    // silently running Gauss-Legendre.
-    let scheme = QuadratureScheme::parse_config_str(quadrature)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("quadrature: {e}")))?;
-    if u0.is_some() && !scheme.honours_u0() {
-        eprintln!(
-            "warning: u0 is ignored by quadrature='minimax' (it derives u0 from \
-             n_quad); pass quadrature='gauss-legendre' or 'chebyshev-tan' to use it"
-        );
-    }
-    let cfg = PdepRpaConfig {
-        frozen_core: frozen_core.unwrap_or(0),
-        trunc_thresh: trunc_thresh.unwrap_or(1e-4),
-        eigensolver_max_vecs: 0,
-        eigensolver_conv_thresh: lanczos_conv_thresh_or(eigensolver_conv_thresh, 1e-6),
-        quadrature: QuadratureConfig {
-            scheme,
-            n_points: n_quad.unwrap_or(40),
-            u0: u0.unwrap_or(0.5),
-        },
-        sternheimer: SternheimerConfig::default(),
-        run_diagnostics,
-        eigensolver: ferric_rpa::Eigensolver::default(),
-        chi0_backend: ferric_rpa::config::Chi0Backend::default(),
-        chi0_sparsity: ferric_rpa::config::Chi0Sparsity::parse_config_str(chi0_sparsity)
-            .map_err(make_err)?,
-        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        // Python run_pdep_rpa is energy-only; the GW/property paths that consume
-        // the inverse-dielectric stack have their own entry points (M9 gate).
-        need_inv_dielectric_freq: false,
-        need_eigenvalues_freq: true,
-        verbose: false,
-    };
-    let r = run_pdep_rpa_inner(&mol.inner, &prep, &dfbs, op, &rhf, &cfg).map_err(make_err)?;
-    if !r.eigensolver_converged {
-        eprintln!(
-            "warning: PDEP-RPA eigensolver did not fully converge (best-effort Ritz pairs; \
-             eigenvalues_static/eigenpotentials are not verified to residual tolerance)"
-        );
-    }
-    Ok(PyPdepRpaResult {
-        rhf_energy: rhf.energy,
-        e_rpa: r.e_rpa,
-        total_energy: rhf.energy + r.e_rpa,
-        n_eigenpotentials: r.n_eigenpotentials,
-        e_rpa_dft_diag: r.e_rpa_dft_diag,
-        eigensolver_converged: r.eigensolver_converged,
-        eigenvalues_static: r.eigenvalues_static,
-        eigenpotentials: r.eigenpotentials,
-        quad_freqs: r.quad_freqs,
-        quad_weights: r.quad_weights,
-        eigenvalues_freq: r.eigenvalues_freq,
-    })
-}
-
-// ── GW (closed-shell: G0W0 / COHSEX / evGW0 / evGW) ──
-//
-// `run_u_gw` is wired below; `bse.rs`'s `run_bse_tda` is wired further down
-// (see `run_cis_tda`/`run_bse_c6`/`run_bse_c6_ks`'s still-open note there) —
-// see docs/open-work-triage-2026-07-14-open.md #54.
-
-#[pyclass]
-#[pyo3(name = "GwResult")]
-struct PyGwResult {
-    #[pyo3(get)]
-    ref_energy: f64,
-    /// MO indices (absolute) for which QP energies were computed.
-    #[pyo3(get)]
-    mo_indices: Vec<usize>,
-    /// Mean-field (input) orbital energies for those MOs, Ha.
-    eps_mf: Vec<f64>,
-    /// QP energies (final), Ha.
-    eps_qp: Vec<f64>,
-    /// Exchange self-energy Σ_x (diagonal MO), Ha.
-    sigma_x: Vec<f64>,
-    /// Correlation self-energy Σ_c at the converged QP energy, Ha.
-    sigma_c: Vec<f64>,
-    /// Z-factor (renormalization), dimensionless.
-    z_factor: Vec<f64>,
-    /// Per-state QP Newton-solve convergence flag, aligned with `mo_indices`.
-    /// `false` ⇒ that MO's `eps_qp`/`sigma_c`/`z_factor` is the Newton
-    /// solver's last iterate, not a converged root. Always all-`true` for
-    /// COHSEX (closed-form).
-    #[pyo3(get)]
-    qp_converged: Vec<bool>,
-    /// evGW/evGW0 outer eigenvalue self-consistency iteration count (0 for
-    /// G0W0/COHSEX).
-    #[pyo3(get)]
-    n_ev_iter: usize,
-    /// Whether the evGW/evGW0 outer loop met `ev_conv_thresh` within
-    /// `max_ev_iter`. Always `true` for G0W0/COHSEX.
-    #[pyo3(get)]
-    outer_converged: bool,
-}
-
-#[pymethods]
-impl PyGwResult {
-    #[getter]
-    fn eps_mf<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_slice(py, &self.eps_mf)
-    }
-    #[getter]
-    fn eps_qp<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_slice(py, &self.eps_qp)
-    }
-    #[getter]
-    fn sigma_x<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_slice(py, &self.sigma_x)
-    }
-    #[getter]
-    fn sigma_c<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_slice(py, &self.sigma_c)
-    }
-    #[getter]
-    fn z_factor<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_slice(py, &self.z_factor)
-    }
-    fn __repr__(&self) -> String {
-        format!(
-            "GwResult(ref_energy={:.10}, n_qp={}, outer_converged={})",
-            self.ref_energy,
-            self.mo_indices.len(),
-            self.outer_converged,
-        )
-    }
-    fn __str__(&self) -> String {
-        let n_unconverged = self.qp_converged.iter().filter(|&&c| !c).count();
-        format!(
-            "GW: ref_energy={:.10} Ha, {} QP states, {} unconverged QP, outer_converged={}, {} ev iterations",
-            self.ref_energy, self.mo_indices.len(), n_unconverged, self.outer_converged, self.n_ev_iter,
-        )
-    }
-}
-
-/// Closed-shell G0W0/COHSEX/evGW0/evGW on an RHF or RKS reference.
-///
-/// `method`: "g0w0" (default) | "cohsex" | "evgw0" | "evgw" (case-insensitive;
-/// unknown values are a hard `ValueError`, matching this repo's strict-config
-/// convention elsewhere). `qp_mos`: optional `(lo, hi)` absolute-MO range;
-/// unset uses the library default `{HOMO-2..LUMO+2}`. `xc`: `None` (default)
-/// runs an HF reference; setting it (e.g. `"pbe"`) runs the closed-shell
-/// KS-DFT solver first and folds Σx−vxc into the QP self-consistency (see
-/// `ferric_gw::vxc_mo::vxc_diagonal_mo`).
-#[pyfunction]
-#[pyo3(signature = (
-    mol, basis_set, auxbasis,
-    method=None, xc=None, qp_mos=None,
-    max_ev_iter=None, ev_conv_thresh=None, pade_npts=None, qp_newton_damp=None,
-    frozen_core=None, n_quad=None, quadrature=None, u0=None,
-    trunc_thresh=None, eigensolver_conv_thresh=None,
-    k_builder=None, chi0_sparsity=None, memory_budget_gb=None,
-))]
-#[allow(clippy::too_many_arguments)]
-fn run_gw(
-    py: Python<'_>,
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    method: Option<&str>,
-    xc: Option<&str>,
-    qp_mos: Option<(usize, usize)>,
-    max_ev_iter: Option<usize>,
-    ev_conv_thresh: Option<f64>,
-    pade_npts: Option<usize>,
-    qp_newton_damp: Option<f64>,
-    frozen_core: Option<usize>,
-    n_quad: Option<usize>,
-    quadrature: Option<&str>,
-    u0: Option<f64>,
-    trunc_thresh: Option<f64>,
-    eigensolver_conv_thresh: Option<f64>,
-    k_builder: Option<&str>,
-    chi0_sparsity: Option<&str>,
-    memory_budget_gb: Option<f64>,
-) -> PyResult<PyGwResult> {
-    use ferric_gw::{run_gw as run_gw_inner, vxc_mo::vxc_diagonal_mo, GwConfig, GwMethod};
-    use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
-    use ferric_rpa::PdepRpaConfig;
-
-    let gw_method = match method.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
-        None | Some("g0w0") => GwMethod::G0W0,
-        Some("cohsex") => GwMethod::Cohsex,
-        Some("evgw0") => GwMethod::EvGw0,
-        Some("evgw") => GwMethod::EvGw,
-        Some(other) => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "method: unknown value \"{other}\"; expected \"g0w0\", \"cohsex\", \"evgw0\", or \"evgw\""
-            )));
-        }
-    };
-
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-
-    let mut cfg = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
-    let vxc_diag = if let Some(xc_name) = xc {
-        // KS reference: RI-J/RI-K default (matches run_dft/run_ksdft), run
-        // through the level-shift ladder for the same DIIS-oscillation
-        // fallback KS-DFT gets elsewhere.
-        cfg.xc = Some(xc_name.to_string());
-        cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
-        cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
-        let ladder = ferric_scf::ladder::ksdft_ladder(&cfg);
-        let lr =
-            ferric_scf::ladder::solve_rhf_ladder(&ctx, &mol.inner, &prep, op, &bounds, &ladder)
-                .map_err(make_err)?;
-        let scf = lr.result;
-        if !scf.converged {
-            return Err(make_err(ferric_core::FerricError::ScfConvergence {
-                iterations: scf.iterations,
-                last_energy: scf.energy,
-            }));
-        }
-        let (diag, _beta) =
-            vxc_diagonal_mo(&mol.inner, &basis_set.inner, xc_name, &scf).map_err(make_err)?;
-        (scf, Some(diag))
-    } else {
-        let scf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &cfg).map_err(make_err)?;
-        if !scf.converged {
-            return Err(make_err(ferric_core::FerricError::ScfConvergence {
-                iterations: scf.iterations,
-                last_energy: scf.energy,
-            }));
-        }
-        (scf, None)
-    };
-    let (scf, vxc_diag) = vxc_diag;
-
-    let scheme = QuadratureScheme::parse_config_str(quadrature)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("quadrature: {e}")))?;
-    let fc = frozen_core.unwrap_or(0);
-    let pdep_cfg = PdepRpaConfig {
-        frozen_core: fc,
-        trunc_thresh: trunc_thresh.unwrap_or(1e-4),
-        eigensolver_max_vecs: 0,
-        eigensolver_conv_thresh: lanczos_conv_thresh_or(eigensolver_conv_thresh, 1e-6),
-        quadrature: QuadratureConfig {
-            scheme,
-            n_points: n_quad.unwrap_or(20),
-            u0: u0.unwrap_or(0.5),
-        },
-        sternheimer: SternheimerConfig::default(),
-        run_diagnostics: false,
-        eigensolver: ferric_rpa::Eigensolver::default(),
-        chi0_backend: ferric_rpa::config::Chi0Backend::default(),
-        chi0_sparsity: ferric_rpa::config::Chi0Sparsity::parse_config_str(chi0_sparsity)
-            .map_err(make_err)?,
-        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        // run_gw forces this on internally; set explicitly for clarity too.
-        need_inv_dielectric_freq: true,
-        need_eigenvalues_freq: true,
-        verbose: false,
-    };
-    let gw_cfg = GwConfig {
-        method: gw_method,
-        qp_mos: qp_mos.map(|(lo, hi)| lo..hi),
-        max_ev_iter: max_ev_iter.unwrap_or(20),
-        ev_conv_thresh: ev_conv_thresh.unwrap_or(1e-4),
-        pade_npts: pade_npts.unwrap_or(0),
-        qp_newton_damp: qp_newton_damp.unwrap_or(1.0),
-        frozen_core: fc,
-        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        verbose: false,
-    };
-
-    // All closure arguments are owned Rust values (an owned Molecule clone
-    // plus locals built above) so nothing Python-borrowed crosses the
-    // boundary; safe to release the GIL for the expensive GW compute.
-    let emol_gw = mol.inner.clone();
-    let r = py
-        .allow_threads(|| {
-            run_gw_inner(
-                &emol_gw,
-                &prep,
-                &dfbs,
-                op,
-                &scf,
-                &pdep_cfg,
-                &gw_cfg,
-                vxc_diag.as_ref(),
-            )
-        })
-        .map_err(make_err)?;
-    if !r.outer_converged {
-        eprintln!(
-            "warning: {:?} eigenvalue self-consistency did NOT converge in {} \
-             iterations (thresh {:.1e}); QP energies are the last sweep",
-            gw_cfg.method, r.n_ev_iter, gw_cfg.ev_conv_thresh
-        );
-    }
-    let bad: Vec<usize> = r
-        .qp_converged
-        .iter()
-        .enumerate()
-        .filter(|(_, &c)| !c)
-        .map(|(i, _)| r.mo_indices[i])
-        .collect();
-    if !bad.is_empty() {
-        eprintln!(
-            "warning: QP Newton solve did not converge for MO(s) {bad:?}; \
-             those QP energies are best-effort"
-        );
-    }
-    Ok(PyGwResult {
-        ref_energy: scf.energy,
-        mo_indices: r.mo_indices,
-        eps_mf: r.eps_mf.to_vec(),
-        eps_qp: r.eps_qp.to_vec(),
-        sigma_x: r.sigma_x.to_vec(),
-        sigma_c: r.sigma_c.to_vec(),
-        z_factor: r.z_factor.to_vec(),
-        qp_converged: r.qp_converged,
-        n_ev_iter: r.n_ev_iter,
-        outer_converged: r.outer_converged,
-    })
-}
-
-// ── U-GW (open-shell: U-G0W0 / U-COHSEX / U-evGW0 / U-evGW) ──
-//
-// BSE-TDA (`run_bse_tda`) is closed-shell only and wired further down
-// (see the "── BSE-TDA ──" section) — see docs/open-work-triage-2026-07-14-open.md #54.
-
-#[pyclass]
-#[pyo3(name = "UGwResult")]
-struct PyUGwResult {
-    #[pyo3(get)]
-    ref_energy: f64,
-    /// MO indices (absolute) for which QP energies were computed, shared by
-    /// both spin channels.
-    #[pyo3(get)]
-    mo_indices: Vec<usize>,
-    eps_mf_a: Vec<f64>,
-    eps_qp_a: Vec<f64>,
-    sigma_x_a: Vec<f64>,
-    sigma_c_a: Vec<f64>,
-    z_factor_a: Vec<f64>,
-    eps_mf_b: Vec<f64>,
-    eps_qp_b: Vec<f64>,
-    sigma_x_b: Vec<f64>,
-    sigma_c_b: Vec<f64>,
-    z_factor_b: Vec<f64>,
-    /// Per-state QP Newton-solve convergence flags, aligned with `mo_indices`
-    /// (see `PyGwResult::qp_converged` for the per-flag meaning). Always
-    /// all-`true` for COHSEX.
-    #[pyo3(get)]
-    qp_converged_a: Vec<bool>,
-    #[pyo3(get)]
-    qp_converged_b: Vec<bool>,
-    /// evGW/evGW0 outer eigenvalue self-consistency iteration count (0 for
-    /// G0W0/COHSEX).
-    #[pyo3(get)]
-    n_ev_iter: usize,
-    /// Whether the U-evGW/U-evGW0 outer loop met `ev_conv_thresh` within
-    /// `max_ev_iter`. Always `true` for U-G0W0/U-COHSEX.
-    #[pyo3(get)]
-    outer_converged: bool,
-}
-
-#[pymethods]
-impl PyUGwResult {
-    #[getter]
-    fn eps_mf_a<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_slice(py, &self.eps_mf_a)
-    }
-    #[getter]
-    fn eps_qp_a<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_slice(py, &self.eps_qp_a)
-    }
-    #[getter]
-    fn sigma_x_a<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_slice(py, &self.sigma_x_a)
-    }
-    #[getter]
-    fn sigma_c_a<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_slice(py, &self.sigma_c_a)
-    }
-    #[getter]
-    fn z_factor_a<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_slice(py, &self.z_factor_a)
-    }
-    #[getter]
-    fn eps_mf_b<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_slice(py, &self.eps_mf_b)
-    }
-    #[getter]
-    fn eps_qp_b<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_slice(py, &self.eps_qp_b)
-    }
-    #[getter]
-    fn sigma_x_b<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_slice(py, &self.sigma_x_b)
-    }
-    #[getter]
-    fn sigma_c_b<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_slice(py, &self.sigma_c_b)
-    }
-    #[getter]
-    fn z_factor_b<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_slice(py, &self.z_factor_b)
-    }
-    fn __repr__(&self) -> String {
-        format!(
-            "UGwResult(ref_energy={:.10}, n_qp={}, outer_converged={})",
-            self.ref_energy,
-            self.mo_indices.len(),
-            self.outer_converged,
-        )
-    }
-    fn __str__(&self) -> String {
-        let n_unconverged_a = self.qp_converged_a.iter().filter(|&&c| !c).count();
-        let n_unconverged_b = self.qp_converged_b.iter().filter(|&&c| !c).count();
-        format!(
-            "U-GW: ref_energy={:.10} Ha, {} QP states, unconverged QP: {} alpha/{} beta, outer_converged={}, {} ev iterations",
-            self.ref_energy, self.mo_indices.len(), n_unconverged_a, n_unconverged_b, self.outer_converged, self.n_ev_iter,
-        )
-    }
-}
-
-/// Open-shell U-G0W0/U-COHSEX/U-evGW0/U-evGW on a UHF/UKS or ROHF reference.
-///
-/// `reference`: "uhf" (default) | "rohf" (case-insensitive; unknown values
-/// are a hard `ValueError`). `method`/`xc`/`qp_mos`/... mirror `run_gw`'s
-/// kwarg shape exactly; `xc` set runs the open-shell KS-DFT ladder (UKS) and
-/// passes the per-spin v_xc diagonals to `ferric_gw::run_u_gw`, which puts
-/// Σx−vxc inside each spin channel's QP equation (same contract as `run_gw`).
-#[pyfunction]
-#[pyo3(signature = (
-    mol, basis_set, auxbasis,
-    reference=None, method=None, xc=None, qp_mos=None,
-    max_ev_iter=None, ev_conv_thresh=None, pade_npts=None, qp_newton_damp=None,
-    frozen_core=None, n_quad=None, quadrature=None, u0=None,
-    trunc_thresh=None, eigensolver_conv_thresh=None,
-    k_builder=None, chi0_sparsity=None, memory_budget_gb=None,
-))]
-#[allow(clippy::too_many_arguments)]
-fn run_u_gw(
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    reference: Option<&str>,
-    method: Option<&str>,
-    xc: Option<&str>,
-    qp_mos: Option<(usize, usize)>,
-    max_ev_iter: Option<usize>,
-    ev_conv_thresh: Option<f64>,
-    pade_npts: Option<usize>,
-    qp_newton_damp: Option<f64>,
-    frozen_core: Option<usize>,
-    n_quad: Option<usize>,
-    quadrature: Option<&str>,
-    u0: Option<f64>,
-    trunc_thresh: Option<f64>,
-    eigensolver_conv_thresh: Option<f64>,
-    k_builder: Option<&str>,
-    chi0_sparsity: Option<&str>,
-    memory_budget_gb: Option<f64>,
-) -> PyResult<PyUGwResult> {
-    use ferric_gw::{run_u_gw as run_u_gw_inner, vxc_mo::vxc_diagonal_mo, GwConfig, GwMethod};
-    use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
-    use ferric_rpa::PdepRpaConfig;
-    use ferric_scf::rohf::solve_rohf;
-
-    let gw_method = match method.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
-        None | Some("g0w0") => GwMethod::G0W0,
-        Some("cohsex") => GwMethod::Cohsex,
-        Some("evgw0") => GwMethod::EvGw0,
-        Some("evgw") => GwMethod::EvGw,
-        Some(other) => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "method: unknown value \"{other}\"; expected \"g0w0\", \"cohsex\", \"evgw0\", or \"evgw\""
-            )));
-        }
-    };
-    let reference = match reference.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
-        None | Some("uhf") => "uhf",
-        Some("rohf") => "rohf",
-        Some(other) => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "reference: unknown value \"{other}\"; expected \"uhf\" or \"rohf\""
-            )));
-        }
-    };
-
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-
-    let mut cfg = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
-    // MOM after 5 DIIS iters prevents orbital reordering on open-shell atoms
-    // (same precedent as the CLI's "pdep-rpa"/"gw" open-shell dispatch).
-    cfg.mom_after_iter = 5;
-    let vxc_diag = if let Some(xc_name) = xc {
-        cfg.xc = Some(xc_name.to_string());
-        cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
-        cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
-        let scf = if reference == "rohf" {
-            solve_rohf(&ctx, &mol.inner, &prep, op, &bounds, &cfg).map_err(make_err)?
-        } else {
-            solve_uhf(&ctx, &mol.inner, &prep, &bounds, &cfg).map_err(make_err)?
-        };
-        if !scf.converged {
-            return Err(make_err(ferric_core::FerricError::ScfConvergence {
-                iterations: scf.iterations,
-                last_energy: scf.energy,
-            }));
-        }
-        // ROKS -> semi-canonical per-spin orbitals (what run_u_gw uses
-        // internally), so v_xc is diagonalized in the QP equation's own basis;
-        // UKS is unchanged.
-        let scf = ferric_scf::semicanonical::unrestricted_reference(&mol.inner, &scf)
-            .map_err(make_err)?
-            .into_owned();
-        let (diag_a, diag_b) =
-            vxc_diagonal_mo(&mol.inner, &basis_set.inner, xc_name, &scf).map_err(make_err)?;
-        (scf, Some((diag_a, diag_b)))
-    } else {
-        let scf = if reference == "rohf" {
-            solve_rohf(&ctx, &mol.inner, &prep, op, &bounds, &cfg).map_err(make_err)?
-        } else {
-            solve_uhf(&ctx, &mol.inner, &prep, &bounds, &cfg).map_err(make_err)?
-        };
-        if !scf.converged {
-            return Err(make_err(ferric_core::FerricError::ScfConvergence {
-                iterations: scf.iterations,
-                last_energy: scf.energy,
-            }));
-        }
-        (scf, None)
-    };
-    let (scf, vxc_diag) = vxc_diag;
-
-    let scheme = QuadratureScheme::parse_config_str(quadrature)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("quadrature: {e}")))?;
-    let fc = frozen_core.unwrap_or(0);
-    let pdep_cfg = PdepRpaConfig {
-        frozen_core: fc,
-        trunc_thresh: trunc_thresh.unwrap_or(1e-4),
-        eigensolver_max_vecs: 0,
-        eigensolver_conv_thresh: lanczos_conv_thresh_or(eigensolver_conv_thresh, 1e-6),
-        quadrature: QuadratureConfig {
-            scheme,
-            n_points: n_quad.unwrap_or(20),
-            u0: u0.unwrap_or(0.5),
-        },
-        sternheimer: SternheimerConfig::default(),
-        run_diagnostics: false,
-        eigensolver: ferric_rpa::Eigensolver::default(),
-        chi0_backend: ferric_rpa::config::Chi0Backend::default(),
-        chi0_sparsity: ferric_rpa::config::Chi0Sparsity::parse_config_str(chi0_sparsity)
-            .map_err(make_err)?,
-        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        // run_u_gw forces this on internally; set explicitly for clarity too.
-        need_inv_dielectric_freq: true,
-        need_eigenvalues_freq: true,
-        verbose: false,
-    };
-    let gw_cfg = GwConfig {
-        method: gw_method,
-        qp_mos: qp_mos.map(|(lo, hi)| lo..hi),
-        max_ev_iter: max_ev_iter.unwrap_or(20),
-        ev_conv_thresh: ev_conv_thresh.unwrap_or(1e-4),
-        pade_npts: pade_npts.unwrap_or(0),
-        qp_newton_damp: qp_newton_damp.unwrap_or(1.0),
-        frozen_core: fc,
-        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        verbose: false,
-    };
-
-    let r = run_u_gw_inner(
-        &mol.inner,
-        &prep,
-        &dfbs,
-        op,
-        &scf,
-        &pdep_cfg,
-        &gw_cfg,
-        vxc_diag.as_ref().map(|(a, b)| (a, b)),
-    )
-    .map_err(make_err)?;
-    if !r.outer_converged {
-        eprintln!(
-            "warning: U-{:?} eigenvalue self-consistency did NOT converge in {} \
-             iterations (thresh {:.1e}); QP energies are the last sweep",
-            gw_cfg.method, r.n_ev_iter, gw_cfg.ev_conv_thresh
-        );
-    }
-    for (spin_label, flags) in [("alpha", &r.qp_converged_a), ("beta", &r.qp_converged_b)] {
-        let bad: Vec<usize> = flags
-            .iter()
-            .enumerate()
-            .filter(|(_, &c)| !c)
-            .map(|(i, _)| r.mo_indices[i])
-            .collect();
-        if !bad.is_empty() {
-            eprintln!(
-                "warning: QP Newton solve did not converge for {spin_label} MO(s) {bad:?}; \
-                 those QP energies are best-effort"
-            );
-        }
-    }
-    Ok(PyUGwResult {
-        ref_energy: scf.energy,
-        mo_indices: r.mo_indices,
-        eps_mf_a: r.eps_mf_a.to_vec(),
-        eps_qp_a: r.eps_qp_a.to_vec(),
-        sigma_x_a: r.sigma_x_a.to_vec(),
-        sigma_c_a: r.sigma_c_a.to_vec(),
-        z_factor_a: r.z_factor_a.to_vec(),
-        eps_mf_b: r.eps_mf_b.to_vec(),
-        eps_qp_b: r.eps_qp_b.to_vec(),
-        sigma_x_b: r.sigma_x_b.to_vec(),
-        sigma_c_b: r.sigma_c_b.to_vec(),
-        z_factor_b: r.z_factor_b.to_vec(),
-        qp_converged_a: r.qp_converged_a,
-        qp_converged_b: r.qp_converged_b,
-        n_ev_iter: r.n_ev_iter,
-        outer_converged: r.outer_converged,
-    })
-}
-
-// ── BSE-TDA (closed-shell singlet excitation energies on a G0W0@HF reference) ──
-//
-// `run_cis_tda`/`run_bse_c6`/`run_bse_c6_ks` are NOT wired here — see
-// docs/open-work-triage-2026-07-14-open.md #54. `run_cis_tda` is a
-// diagnostic-only assembly cross-check (not a production entry point, per
-// its own doc comment in `ferric_gw::bse`); the C6/dispersion variants are
-// lower-priority per the G9 task brief and still open.
-
-#[pyclass]
-#[pyo3(name = "BseResult")]
-struct PyBseResult {
-    /// Number of occupied / virtual orbitals in the BSE (ia) window
-    /// (frozen-core aware).
-    #[pyo3(get)]
-    nocc: usize,
-    #[pyo3(get)]
-    nvir: usize,
-    /// Singlet excitation energies Ω_n (Hartree), ascending.
-    omega: Vec<f64>,
-    /// GW quasiparticle energies used for the diagonal (active block, Ha).
-    eps_qp: Vec<f64>,
-    /// Length-gauge oscillator strengths f_n (dimensionless), same ordering
-    /// as `omega`. See `ferric_gw::bse::tda_oscillator_strengths` for the
-    /// convention (PySCF-cross-checked, see
-    /// `crates/ferric-gw/tests/bse_oscillator_strength.rs`).
-    oscillator_strength: Vec<f64>,
-    /// Absolute MO indices whose G0W0 quasiparticle solve is poorly determined
-    /// (Newton did not converge, or the Z renormalization was clamped) and
-    /// which still entered the TDA diagonal. Observability only: `omega` is
-    /// unaffected, and the measured effect of these MOs on the lowest
-    /// excitations is ~4 orders of magnitude below their own uncertainty.
-    qp_suspect_mos: Vec<usize>,
-}
-
-#[pymethods]
-impl PyBseResult {
-    #[getter]
-    fn omega<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_slice(py, &self.omega)
-    }
-    #[getter]
-    fn eps_qp<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_slice(py, &self.eps_qp)
-    }
-    #[getter]
-    fn oscillator_strength<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_slice(py, &self.oscillator_strength)
-    }
-    /// Absolute MO indices with a poorly-determined quasiparticle energy on
-    /// the TDA diagonal (empty in the healthy case).
-    #[getter]
-    fn qp_suspect_mos(&self) -> Vec<usize> {
-        self.qp_suspect_mos.clone()
-    }
-    /// Lowest singlet excitation energy in eV.
-    fn lowest_ev(&self) -> f64 {
-        self.omega[0] * 27.211_386_245_988
-    }
-    /// Oscillator strength of the lowest singlet.
-    fn lowest_oscillator_strength(&self) -> f64 {
-        self.oscillator_strength[0]
-    }
-    fn __repr__(&self) -> String {
-        format!(
-            "BseResult(nocc={}, nvir={}, n_excitations={})",
-            self.nocc,
-            self.nvir,
-            self.omega.len(),
-        )
-    }
-    fn __str__(&self) -> String {
-        let lowest_ev = if self.omega.is_empty() {
-            "N/A".to_string()
-        } else {
-            format!("{:.4}", self.omega[0] * 27.211_386_245_988)
-        };
-        format!(
-            "BSE-TDA: {} excitations, lowest={} eV, nocc={}, nvir={}",
-            self.omega.len(),
-            lowest_ev,
-            self.nocc,
-            self.nvir,
-        )
-    }
-}
-
-/// BSE-TDA singlet excitation energies on a closed-shell (RHF) reference.
-///
-/// Computes G0W0@HF quasiparticle energies internally for every MO (so every
-/// particle–hole pair in the active window has a real QP energy), builds the
-/// static-screened TDA matrix, and returns its eigenvalues. Closed-shell
-/// only — `ferric_gw::bse::run_bse_tda` hard-errors on a non-restricted
-/// reference; there is no `reference`/UHF kwarg (mirrors `run_gw`'s HF-only
-/// default path, not `run_u_gw`). Kwargs mirror `run_gw`'s `[rpa]`-equivalent
-/// shape (n_quad/quadrature/u0/trunc_thresh/eigensolver_conv_thresh/
-/// k_builder/chi0_sparsity/memory_budget_gb) plus `frozen_core`, which is
-/// threaded to both the PDEP (W) build and the internal GW self-energy build
-/// for consistency, exactly like the CLI's `"bse-tda"` dispatch arm.
-#[pyfunction]
-#[pyo3(signature = (
-    mol, basis_set, auxbasis,
-    frozen_core=None, n_quad=None, quadrature=None, u0=None,
-    trunc_thresh=None, eigensolver_conv_thresh=None,
-    k_builder=None, chi0_sparsity=None, memory_budget_gb=None,
-))]
-#[allow(clippy::too_many_arguments)]
-fn run_bse_tda(
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    frozen_core: Option<usize>,
-    n_quad: Option<usize>,
-    quadrature: Option<&str>,
-    u0: Option<f64>,
-    trunc_thresh: Option<f64>,
-    eigensolver_conv_thresh: Option<f64>,
-    k_builder: Option<&str>,
-    chi0_sparsity: Option<&str>,
-    memory_budget_gb: Option<f64>,
-) -> PyResult<PyBseResult> {
-    use ferric_gw::bse::run_bse_tda as run_bse_tda_inner;
-    use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
-    use ferric_rpa::PdepRpaConfig;
-
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-
-    let cfg = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
-    let scf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &cfg).map_err(make_err)?;
-    if !scf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: scf.iterations,
-            last_energy: scf.energy,
-        }));
-    }
-
-    let scheme = QuadratureScheme::parse_config_str(quadrature)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("quadrature: {e}")))?;
-    let fc = frozen_core.unwrap_or(0);
-    let pdep_cfg = PdepRpaConfig {
-        frozen_core: fc,
-        trunc_thresh: trunc_thresh.unwrap_or(1e-4),
-        eigensolver_max_vecs: 0,
-        eigensolver_conv_thresh: lanczos_conv_thresh_or(eigensolver_conv_thresh, 1e-6),
-        quadrature: QuadratureConfig {
-            scheme,
-            n_points: n_quad.unwrap_or(20),
-            u0: u0.unwrap_or(0.5),
-        },
-        sternheimer: SternheimerConfig::default(),
-        run_diagnostics: false,
-        eigensolver: ferric_rpa::Eigensolver::default(),
-        chi0_backend: ferric_rpa::config::Chi0Backend::default(),
-        chi0_sparsity: ferric_rpa::config::Chi0Sparsity::parse_config_str(chi0_sparsity)
-            .map_err(make_err)?,
-        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        // run_bse_tda's internal GW build forces this on regardless; set it
-        // explicitly for clarity at the call site too (matches run_gw).
-        need_inv_dielectric_freq: true,
-        need_eigenvalues_freq: true,
-        verbose: false,
-    };
-
-    let r =
-        run_bse_tda_inner(&mol.inner, &prep, &dfbs, op, &scf, &pdep_cfg, fc).map_err(make_err)?;
-    Ok(PyBseResult {
-        nocc: r.nocc,
-        nvir: r.nvir,
-        omega: r.omega,
-        eps_qp: r.eps_qp,
-        oscillator_strength: r.oscillator_strength,
-        qp_suspect_mos: r.qp_suspect_mos,
-    })
-}
-
-// ── TDHF/RPAx static polarizability (closed-shell, KS reference) ──
-//
-// `run_bse_c6`/`run_bse_c6_ks` (the dynamic alpha(iw)/C6 variants of this same
-// kernel) are deliberately NOT wired here. docs/VALIDATION.md's "Correlation /
-// response (RPA, GW, BSE)" table records a validated negative result: C6 from
-// alpha(iw) on this kernel stays ~63% low regardless of the HOMO-LUMO gap,
-// worse than ferric's production dRPA/PDEP C6 pipeline. Only the STATIC
-// (omega=0) polarizability is exposed as a production entry point.
-
-#[pyclass]
-#[pyo3(name = "TdhfStaticPolarizabilityResult")]
-struct PyTdhfStaticPolarizabilityResult {
-    #[pyo3(get)]
-    nocc: usize,
-    #[pyo3(get)]
-    nvir: usize,
-    /// Isotropic average (1/3) Tr(alpha), a.u.
-    #[pyo3(get)]
-    iso: f64,
-    tensor: [[f64; 3]; 3],
-}
-
-#[pymethods]
-impl PyTdhfStaticPolarizabilityResult {
-    /// Cartesian alpha_ij(0) tensor (3x3, a.u.), i,j in {x,y,z}.
-    #[getter]
-    fn tensor<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        let flat: Vec<f64> = self
-            .tensor
-            .iter()
-            .flat_map(|row| row.iter().copied())
-            .collect();
-        let arr = Array2::from_shape_vec((3, 3), flat).expect("3x3 tensor is always well-shaped");
-        PyArray2::from_array(py, &arr)
-    }
-    fn __repr__(&self) -> String {
-        format!(
-            "TdhfStaticPolarizabilityResult(iso={:.6}, nocc={}, nvir={})",
-            self.iso, self.nocc, self.nvir,
-        )
-    }
-    fn __str__(&self) -> String {
-        format!(
-            "TDHF Static Polarizability: iso={:.6} a.u., nocc={}, nvir={}",
-            self.iso, self.nocc, self.nvir,
-        )
-    }
-}
-
-/// RPAx@KS **static** polarizability (omega=0) on a closed-shell KS reference.
-///
-/// **Scope: static polarizability only.** Do not use this method, or its
-/// output, for C6/dispersion — see the module doc above and
-/// `ferric_gw::bse::run_rpax_static_polarizability`'s doc comment for the
-/// full negative-result caveat (site/src/reference/validation.md, "Known
-/// limits and negatives": C6 built
-/// from this same kernel's dynamic alpha(iw) stays ~63% low regardless of
-/// the HOMO-LUMO gap, worse than ferric's production dRPA/PDEP C6 pipeline).
-///
-/// `xc` is REQUIRED (e.g. `"pbe"`): the path is wired and checked for a KS
-/// reference only, so there is no HF-default fallback here (unlike
-/// `run_gw`'s `xc=None` HF default). Static alpha is NOT validated: on
-/// water/cc-pVDZ/PBE with `scissor=0.36` it is 5.20 a.u. against the DOSD
-/// reference 9.64 (46% low). The earlier "9.24 vs 9.64" figure came from
-/// `scissor=0.0`, whose tensor had a negative diagonal element, and is
-/// retracted. `scissor` (Hartree, default 0.0) is added to every virtual
-/// orbital energy before assembling the diagonal — a cheap proxy for
-/// widening the KS gap toward a GW-level gap (0.36 Ha matches water's GW gap
-/// at PBE/cc-pVDZ). At 0.0 the kernel is often excitonically unstable and
-/// the call raises on the resulting negative alpha diagonal; ~0.3-0.4 Ha is
-/// the remedy.
-/// Other kwargs mirror `run_bse_tda`'s `[rpa]`-equivalent shape (n_quad/
-/// quadrature/u0/trunc_thresh/eigensolver_conv_thresh/k_builder/
-/// chi0_sparsity/memory_budget_gb) plus `frozen_core`.
-#[pyfunction]
-#[pyo3(signature = (
-    mol, basis_set, auxbasis, xc,
-    scissor=None, frozen_core=None, n_quad=None, quadrature=None, u0=None,
-    trunc_thresh=None, eigensolver_conv_thresh=None,
-    k_builder=None, chi0_sparsity=None, memory_budget_gb=None,
-))]
-#[allow(clippy::too_many_arguments)]
-fn run_tdhf_static_polarizability(
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    xc: &str,
-    scissor: Option<f64>,
-    frozen_core: Option<usize>,
-    n_quad: Option<usize>,
-    quadrature: Option<&str>,
-    u0: Option<f64>,
-    trunc_thresh: Option<f64>,
-    eigensolver_conv_thresh: Option<f64>,
-    k_builder: Option<&str>,
-    chi0_sparsity: Option<&str>,
-    memory_budget_gb: Option<f64>,
-) -> PyResult<PyTdhfStaticPolarizabilityResult> {
-    use ferric_gw::bse::run_rpax_static_polarizability;
-    use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
-    use ferric_rpa::PdepRpaConfig;
-
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-
-    // KS reference (required — see doc comment above), same ladder path
-    // run_gw's xc branch uses.
-    let mut cfg = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
-    cfg.xc = Some(xc.to_string());
-    cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
-    cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
-    let ladder = ferric_scf::ladder::ksdft_ladder(&cfg);
-    let lr = ferric_scf::ladder::solve_rhf_ladder(&ctx, &mol.inner, &prep, op, &bounds, &ladder)
-        .map_err(make_err)?;
-    let scf = lr.result;
-    if !scf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: scf.iterations,
-            last_energy: scf.energy,
-        }));
-    }
-
-    let scheme = QuadratureScheme::parse_config_str(quadrature)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("quadrature: {e}")))?;
-    let fc = frozen_core.unwrap_or(0);
-    let pdep_cfg = PdepRpaConfig {
-        frozen_core: fc,
-        trunc_thresh: trunc_thresh.unwrap_or(1e-4),
-        eigensolver_max_vecs: 0,
-        eigensolver_conv_thresh: lanczos_conv_thresh_or(eigensolver_conv_thresh, 1e-6),
-        quadrature: QuadratureConfig {
-            scheme,
-            n_points: n_quad.unwrap_or(20),
-            u0: u0.unwrap_or(0.5),
-        },
-        sternheimer: SternheimerConfig::default(),
-        run_diagnostics: false,
-        eigensolver: ferric_rpa::Eigensolver::default(),
-        chi0_backend: ferric_rpa::config::Chi0Backend::default(),
-        chi0_sparsity: ferric_rpa::config::Chi0Sparsity::parse_config_str(chi0_sparsity)
-            .map_err(make_err)?,
-        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        // No GW self-energy build in this path (static screening modes from
-        // run_pdep_rpa only) — does not need the inverse-dielectric
-        // frequency stack that run_bse_tda/run_gw force on.
-        need_inv_dielectric_freq: false,
-        need_eigenvalues_freq: true,
-        verbose: false,
-    };
-
-    let r = run_rpax_static_polarizability(
-        &mol.inner,
-        &prep,
-        &dfbs,
-        op,
-        &scf,
-        &pdep_cfg,
-        fc,
-        scissor.unwrap_or(0.0),
-    )
-    .map_err(make_err)?;
-    Ok(PyTdhfStaticPolarizabilityResult {
-        nocc: r.nocc,
-        nvir: r.nvir,
-        iso: r.iso,
-        tensor: r.tensor,
-    })
-}
-
-// ── TDDFT (closed-shell linear response) ──
-
-#[pyclass]
-#[pyo3(name = "TddftResult")]
-struct PyTddftResult {
-    #[pyo3(get)]
-    n_roots: usize,
-    #[pyo3(get)]
-    method: String,
-    /// Exact-exchange fraction used on the `-c_HF` terms.
-    #[pyo3(get)]
-    c_hf: f64,
-    /// Whether the (ia|f_xc|jb) kernel block was included (true for every KS
-    /// reference, false only for an HF reference).
-    #[pyo3(get)]
-    fxc_included: bool,
-    excitation_energies: Vec<f64>,
-    oscillator_strengths: Vec<f64>,
-}
-
-#[pymethods]
-impl PyTddftResult {
-    #[getter]
-    fn excitation_energies<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_slice(py, &self.excitation_energies)
-    }
-    #[getter]
-    fn oscillator_strengths<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_slice(py, &self.oscillator_strengths)
-    }
-    fn lowest_ev(&self) -> f64 {
-        if self.excitation_energies.is_empty() {
-            0.0
-        } else {
-            self.excitation_energies[0] * 27.211_386_245_988
-        }
-    }
-    fn __repr__(&self) -> String {
-        format!(
-            "TddftResult(method={}, n_roots={}, lowest={:.4} eV)",
-            self.method,
-            self.n_roots,
-            self.lowest_ev(),
-        )
-    }
-    fn __str__(&self) -> String {
-        let ha_to_ev = 27.211_386_245_988;
-        let mut s = format!("TDDFT {} — {} roots:\n", self.method, self.n_roots);
-        for (i, (&e, &f)) in self
-            .excitation_energies
-            .iter()
-            .zip(&self.oscillator_strengths)
-            .enumerate()
-        {
-            s += &format!(
-                "  {}: {:.6} Ha ({:.4} eV)  f = {:.6}\n",
-                i + 1,
-                e,
-                e * ha_to_ev,
-                f
-            );
-        }
-        s
-    }
-}
-
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, functional=None, n_roots=3, method="tda"))]
-fn run_tddft(
-    py: Python<'_>,
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    auxbasis: &PyBasisSet,
-    functional: Option<&str>,
-    n_roots: usize,
-    method: &str,
-) -> PyResult<PyTddftResult> {
-    use ferric_tddft::{TddftConfig, TddftMethod};
-
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-
-    let tddft_method = match method.to_lowercase().as_str() {
-        "tda" | "cis" => TddftMethod::Tda,
-        "casida" | "rpa" | "tddft" | "tdhf" => TddftMethod::Casida,
-        _ => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "Unknown TDDFT method '{method}'; expected 'tda' or 'casida'"
-            )))
-        }
-    };
-
-    // The f_xc kernel is built inside `run_tddft` from `functional` on the
-    // SAME grid the KS reference is converged on (the ladder keeps
-    // `dft_grid`), and the exact-exchange fraction comes from the same
-    // functional. A functional without a complete kernel (meta-GGA, VV10,
-    // range-separated) is refused before the SCF is spent on it.
-    if let Some(xc_name) = functional {
-        ferric_dft::lr_kernel::resolve_singlet_response_xc(xc_name, "run_tddft")
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
-    }
-    let (scf, grid) = if let Some(xc_name) = functional {
-        let mut cfg = rhf_config(None);
-        cfg.xc = Some(xc_name.to_string());
-        cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
-        cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
-        let grid = cfg.dft_grid.clone().unwrap_or_default();
-        let ladder = ferric_scf::ladder::ksdft_ladder(&cfg);
-        let lr =
-            ferric_scf::ladder::solve_rhf_ladder(&ctx, &mol.inner, &prep, op, &bounds, &ladder)
-                .map_err(make_err)?;
-        (lr.result, grid)
-    } else {
-        let cfg = rhf_config(None);
-        let scf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &cfg).map_err(make_err)?;
-        (scf, ferric_dft::grid::AtomicGridConfig::default())
-    };
-    if !scf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: scf.iterations,
-            last_energy: scf.energy,
-        }));
-    }
-
-    let config = TddftConfig {
-        n_roots,
-        method: tddft_method,
-        xc: functional.map(str::to_string),
-        grid,
-        ..Default::default()
-    };
-    // All closure arguments are owned Rust values (an owned Molecule clone
-    // plus locals built above) so nothing Python-borrowed crosses the
-    // boundary; safe to release the GIL for the TDDFT compute.
-    let emol_tddft = mol.inner.clone();
-    let r = py
-        .allow_threads(|| ferric_tddft::run_tddft(&emol_tddft, &prep, &dfbs, &scf, &config))
-        .map_err(make_err)?;
-
-    Ok(PyTddftResult {
-        n_roots: r.excitation_energies.len(),
-        method: format!("{:?}", r.method),
-        c_hf: r.c_hf,
-        fxc_included: r.fxc_included,
-        excitation_energies: r.excitation_energies,
-        oscillator_strengths: r.oscillator_strengths,
-    })
-}
-
-// ── Raw integral access (for Python-side method prototyping) ──
-
-/// Raw 3-center Coulomb integrals (P|μν) as a numpy array of shape
-/// (naux, n_bf, n_bf). Undressed — pair with `compute_metric_2c` and a
-/// V^{-1/2} (or Cholesky L^{-1}) factor on the Python side to form RI
-/// B-tensors. ECPs are applied to the molecule first, matching `run_rhf`.
-#[pyfunction]
-fn compute_eri3<'py>(
-    py: Python<'py>,
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    aux_basis_set: &PyBasisSet,
-) -> PyResult<Bound<'py, PyArray3<f64>>> {
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
-    let obs = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&emol, &aux_basis_set.inner).map_err(make_err)?;
-    let eri3 = ferric_integrals::threeindex::eri3_tensor(Operator::coulomb(), &obs, &dfbs)
-        .map_err(make_err)?;
-    Ok(PyArray3::from_array(py, &eri3))
-}
-
-/// Blocked MO-basis 3-center Coulomb integrals (P|pq), shape
-/// (naux, n_left, n_right), for arbitrary coefficient matrices `c_left` /
-/// `c_right` of shape (n_bf, n_*) — e.g. localized occupieds × canonical
-/// virtuals. Unlike `compute_eri3`, the naux·n_bf² AO tensor is NEVER
-/// materialized: raw aux-row blocks are generated under `memory_budget_gb`
-/// and transformed immediately (`eri3_mo_ov_blocked`, bit-identical to the
-/// dense path). This is what makes C32+/cc-pVDZ domain prototyping possible
-/// from Python — the dense AO tensor is ~13 GB there. ECPs applied first,
-/// matching `run_rhf`.
-/// Resolve a low-level operator spec: name + RAW Bohr-native parameters
-/// (unlike the run_* wrappers, which take Angstrom units). omega in Bohr^-1,
-/// r0 in Bohr. "terfc"/"terf" with omega=None use the Dutoi-linked
-/// omega = 1/(r0*sqrt2); an explicit omega decouples them (tables cover
-/// (omega*r0)^2 <= 80; needs FERRIC_TERF_TABLE_DIR).
-fn resolve_operator(name: &str, omega: Option<f64>, r0: Option<f64>) -> PyResult<Operator> {
-    let need = |o: Option<f64>, what: &str| {
-        o.ok_or_else(|| {
-            pyo3::exceptions::PyValueError::new_err(format!("operator '{name}' requires {what}"))
-        })
-    };
-    Ok(match name {
-        "coulomb" => Operator::coulomb(),
-        "erf" => Operator::erf(need(omega, "omega (Bohr^-1)")?),
-        "erfc" => Operator::erfc(need(omega, "omega (Bohr^-1)")?),
-        "terfc" => match omega {
-            Some(w) => Operator::terfc_with_omega(need(r0, "r0 (Bohr)")?, w),
-            None => Operator::terfc(need(r0, "r0 (Bohr)")?),
-        },
-        "terf" => match omega {
-            Some(w) => Operator::terf_with_omega(need(r0, "r0 (Bohr)")?, w),
-            None => Operator::terf(need(r0, "r0 (Bohr)")?),
-        },
-        other => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "unknown operator '{other}'; expected coulomb|erf|erfc|terf|terfc"
-            )))
-        }
-    })
-}
-
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, aux_basis_set, c_left, c_right, memory_budget_gb=2.0, operator="coulomb", omega=None, r0=None))]
-fn compute_eri3_mo<'py>(
-    py: Python<'py>,
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    aux_basis_set: &PyBasisSet,
-    c_left: numpy::PyReadonlyArray2<f64>,
-    c_right: numpy::PyReadonlyArray2<f64>,
-    memory_budget_gb: f64,
-    operator: &str,
-    omega: Option<f64>,
-    r0: Option<f64>,
-) -> PyResult<Bound<'py, PyArray3<f64>>> {
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
-    let obs = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&emol, &aux_basis_set.inner).map_err(make_err)?;
-    let n_bf = obs.nbasis();
-    let cl = c_left.as_array().to_owned();
-    let cr = c_right.as_array().to_owned();
-    if cl.nrows() != n_bf || cr.nrows() != n_bf {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "coefficient rows must equal n_bf={n_bf} (got c_left {}x{}, c_right {}x{})",
-            cl.nrows(),
-            cl.ncols(),
-            cr.nrows(),
-            cr.ncols()
-        )));
-    }
-    let budget = (memory_budget_gb.max(0.1) * (1u64 << 30) as f64) as usize;
-    let op = resolve_operator(operator, omega, r0)?;
-    let mo = ferric_mp2::rimp2::eri3_mo_ov_blocked(op, &obs, &dfbs, &cl, &cr, budget)
-        .map_err(make_err)?;
-    Ok(PyArray3::from_owned_array(py, mo))
-}
-
-/// Result of Boys localization: localized coefficients, orbital centers,
-/// and convergence info.
-#[pyclass(name = "BoysResult")]
-struct PyBoysResult {
-    c_loc_data: ndarray::Array2<f64>,
-    centers_data: ndarray::Array2<f64>,
-    #[pyo3(get)]
-    converged: bool,
-    #[pyo3(get)]
-    iterations: usize,
-}
-
-#[pymethods]
-impl PyBoysResult {
-    /// Localized MO coefficients, shape (n_bf, n_orb). Orthonormal (a unitary
-    /// rotation of the input orbitals).
-    fn c_loc<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        PyArray2::from_array(py, &self.c_loc_data)
-    }
-    /// Boys centers <i|r|i>, shape (n_orb, 3), in Bohr.
-    fn centers<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        PyArray2::from_array(py, &self.centers_data)
-    }
-    fn __repr__(&self) -> String {
-        format!(
-            "BoysResult(converged={}, iterations={})",
-            self.converged, self.iterations,
-        )
-    }
-    fn __str__(&self) -> String {
-        format!(
-            "Boys Localization: {} orbitals, converged={}, {} iterations",
-            self.c_loc_data.ncols(),
-            self.converged,
-            self.iterations,
-        )
-    }
-}
-
-/// Boys (Foster-Boys) localization of the given orbitals (columns of
-/// `c_orbs`, shape (n_bf, n_orb) — typically the occupied block of
-/// `mo_coefficients()`). Same Jacobi-sweep implementation the Rust probes
-/// use. Returns BoysResult{c_loc(), centers(), converged, iterations}.
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, c_orbs, max_iter=200))]
-fn boys_localize(
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    c_orbs: numpy::PyReadonlyArray2<f64>,
-    max_iter: usize,
-) -> PyResult<PyBoysResult> {
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
-    let obs = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
-    let c = c_orbs.as_array().to_owned();
-    if c.nrows() != obs.nbasis() {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "c_orbs rows must equal n_bf={} (got {})",
-            obs.nbasis(),
-            c.nrows()
-        )));
-    }
-    let dip = ferric_integrals::oneelectron::dipole(&obs, [0.0, 0.0, 0.0]).map_err(make_err)?;
-    let res = ferric_mp2::boys::boys_localize(&c, &dip, max_iter);
-    Ok(PyBoysResult {
-        c_loc_data: res.c_loc,
-        centers_data: res.centers,
-        converged: res.converged,
-        iterations: res.iterations,
-    })
-}
-
-/// Report the CUDA backend's state without touching a device unless
-/// `FERRIC_GPU` asks for one (mode defaults to `off`).
-#[pyfunction]
-fn gpu_status(py: Python<'_>) -> PyResult<Bound<'_, pyo3::types::PyDict>> {
-    use ferric_core::gpu::{gpu_compiled, settings, status, GpuStatus};
-    // The first call may probe the device (FERRIC_GPU=auto|on); release the GIL.
-    let (mode, st) = py.allow_threads(|| (settings().mode.to_string(), status()));
-    let d = pyo3::types::PyDict::new(py);
-    d.set_item("compiled", gpu_compiled())?;
-    d.set_item("mode", mode)?;
-    let s = ferric_core::gpu::settings();
-    d.set_item("precision", s.precision.to_string())?;
-    let kernels: Vec<&str> = s.mixed_kernels.iter().map(|k| k.name()).collect();
-    d.set_item("mixed_kernels", kernels)?;
-    match st {
-        GpuStatus::NotCompiled => {
-            d.set_item("status", "not_compiled")?;
-            d.set_item("reason", py.None())?;
-            d.set_item("device", py.None())?;
-        }
-        GpuStatus::Unavailable { reason } => {
-            d.set_item("status", "unavailable")?;
-            d.set_item("reason", reason)?;
-            d.set_item("device", py.None())?;
-        }
-        GpuStatus::Ready(info) => {
-            d.set_item("status", "ready")?;
-            d.set_item("reason", py.None())?;
-            let dev = pyo3::types::PyDict::new(py);
-            dev.set_item("ordinal", info.ordinal)?;
-            dev.set_item("name", &info.name)?;
-            dev.set_item("cc", format!("{}.{}", info.cc_major, info.cc_minor))?;
-            dev.set_item("free_bytes", info.free_bytes)?;
-            dev.set_item("total_bytes", info.total_bytes)?;
-            d.set_item("device", dev)?;
-        }
-    }
-    Ok(d)
-}
-
-/// A non-negative integer GPU key (`device`, `min_flops`): a negative value is
-/// a `ValueError` naming the key rather than pyo3's bare `OverflowError`.
-fn non_negative_gpu_key(key: &str, v: Option<i64>) -> PyResult<Option<usize>> {
-    v.map(|n| {
-        usize::try_from(n).map_err(|_| {
-            pyo3::exceptions::PyValueError::new_err(format!(
-                "[gpu] {key}: must be a non-negative integer, got {n}"
-            ))
-        })
-    })
-    .transpose()
-}
-
-/// A `mixed_kernels` kwarg as a kernel set: each list item is one name (a
-/// comma inside an item is refused), unknown names and an empty list are
-/// refused with the valid list. `section` is the error prefix.
-fn parse_kernel_list(section: &str, ks: Vec<String>) -> PyResult<ferric_core::gpu::MixedKernelSet> {
-    let bad = |e: String| {
-        pyo3::exceptions::PyValueError::new_err(format!("{section} mixed_kernels: {e}"))
-    };
-    if let Some(item) = ks.iter().find(|k| k.contains(',')) {
-        return Err(bad(format!(
-            "kernel names are separate list items, got {item:?}"
-        )));
-    }
-    ks.join(",")
-        .parse::<ferric_core::gpu::MixedKernelSet>()
-        .map_err(bad)
-}
-
-/// Choose the mixed-precision kernels for this process (the Python side of
-/// `[precision]`), independently of the device: `mode` is `"f64"` (the
-/// default) or `"mixed"`, `mixed_kernels` a list of kernel names (default: the
-/// kernels this build ships). Strict: an unknown value is a `ValueError`.
-///
-/// The request is staged, not installed: only the next `configure_gpu(...)`
-/// installs it, together with the device settings (call this first; a
-/// `configure_gpu` `precision` / `mixed_kernels` alias that disagrees with it
-/// is a `ValueError`). Until then every calculation raises `RuntimeError`
-/// ("configure_precision staged a request; call configure_gpu() to install
-/// it"). Call `configure_gpu()` with no
-/// arguments to install and check the combination now: `mode = "mixed"` with
-/// a device kernel needs a GPU mode, and with the GPU off only kernels with a
-/// CPU mixed path are accepted. After the settings are installed or read this
-/// is a `RuntimeError`. Every result then reports what ran in its `precision`
-/// record. Returns the staged request, `{"mode", "mixed_kernels"}` (`None`
-/// for a key not given).
-#[pyfunction]
-#[pyo3(signature = (mode=None, mixed_kernels=None))]
-fn configure_precision<'py>(
-    py: Python<'py>,
-    mode: Option<&str>,
-    mixed_kernels: Option<Vec<String>>,
-) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
-    use ferric_core::gpu::{Precision, PrecisionExplicit};
-    let request = PrecisionExplicit {
-        mode: mode
-            .map(|s| {
-                s.parse::<Precision>().map_err(|e| {
-                    pyo3::exceptions::PyValueError::new_err(format!("[precision] mode: {e}"))
-                })
-            })
-            .transpose()?,
-        mixed_kernels: mixed_kernels
-            .map(|ks| parse_kernel_list("[precision]", ks))
-            .transpose()?,
-    };
-    ferric_core::gpu::stage_precision(request).map_err(|e| {
-        if e.starts_with(ferric_core::gpu::SETTINGS_ALREADY_INSTALLED) {
-            pyo3::exceptions::PyRuntimeError::new_err(format!(
-                "{e}; call configure_precision before configure_gpu and before any calculation"
-            ))
-        } else {
-            pyo3::exceptions::PyValueError::new_err(e)
-        }
-    })?;
-    let staged = ferric_core::gpu::staged_precision().unwrap_or_default();
-    let d = pyo3::types::PyDict::new(py);
-    d.set_item("mode", staged.mode.map(|p| p.to_string()))?;
-    d.set_item(
-        "mixed_kernels",
-        staged
-            .mixed_kernels
-            .map(|ks| ks.iter().map(|k| k.name()).collect::<Vec<_>>()),
-    )?;
-    Ok(d)
-}
-
-/// Install the CUDA backend for this process from keyword arguments (the
-/// Python side of `[gpu]`): `preset` is one word, the rest are the fine-grained
-/// keys. Resolved through the same machinery as the CLI (explicit > env >
-/// default); a refusal is a `ValueError` naming the keys. Settings are
-/// process-global: the call must precede the first read of the GPU settings
-/// (`gpu_status()` or any GPU path), and a second call must repeat identical
-/// settings, otherwise `RuntimeError`. A request staged by
-/// `configure_precision` is installed with these settings. `precision` and
-/// `mixed_kernels` are deprecated aliases of `configure_precision(mode=...,
-/// mixed_kernels=...)`. Returns `gpu_status()`.
-#[pyfunction]
-#[pyo3(signature = (preset=None, mode=None, precision=None, mixed_kernels=None, device=None, memory_gb=None, min_flops=None))]
-fn configure_gpu<'py>(
-    py: Python<'py>,
-    preset: Option<&str>,
-    mode: Option<&str>,
-    precision: Option<&str>,
-    mixed_kernels: Option<Vec<String>>,
-    device: Option<i64>,
-    memory_gb: Option<f64>,
-    min_flops: Option<i64>,
-) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
-    use ferric_core::gpu::{GpuMode, GpuPreset, GpuSettingsExplicit, Precision};
-    let bad =
-        |k: &str, e: String| pyo3::exceptions::PyValueError::new_err(format!("[gpu] {k}: {e}"));
-    let explicit = GpuSettingsExplicit {
-        // Python has no command line: the `--gpu` flag slot stays empty.
-        cli_preset: None,
-        preset: preset
-            .map(|s| s.parse::<GpuPreset>().map_err(|e| bad("preset", e)))
-            .transpose()?,
-        mode: mode
-            .map(|s| s.parse::<GpuMode>().map_err(|e| bad("mode", e)))
-            .transpose()?,
-        device: non_negative_gpu_key("device", device)?,
-        memory_gb,
-        min_flops: non_negative_gpu_key("min_flops", min_flops)?,
-        precision: precision
-            .map(|s| s.parse::<Precision>().map_err(|e| bad("precision", e)))
-            .transpose()?,
-        mixed_kernels: mixed_kernels
-            .map(|ks| parse_kernel_list("[gpu]", ks))
-            .transpose()?,
-        precision_section: Default::default(),
-    };
-    // The device probe may take a while; release the GIL.
-    py.allow_threads(|| ferric_core::gpu::install(explicit).map(|_| ()))
-        .map_err(|e| {
-            if e.starts_with(ferric_core::gpu::SETTINGS_ALREADY_INSTALLED) {
-                pyo3::exceptions::PyRuntimeError::new_err(format!(
-                    "{e}; GPU settings are process-global: call configure_gpu once, before \
-                     gpu_status() or any GPU work, and repeat identical settings if called again"
-                ))
-            } else {
-                pyo3::exceptions::PyValueError::new_err(e)
-            }
-        })?;
-    gpu_status(py)
-}
-
-/// Shell geometry of `basis_set` on `mol` (works for orbital AND auxiliary
-/// sets): returns (centers, first_function_offsets, n_functions) with shapes
-/// ((n_shells, 3) in Bohr, (n_shells,), (n_shells,)). Enough to build
-/// geometric fitting domains from Python (aux functions within r_cut of an
-/// orbital center).
-#[pyfunction]
-fn shell_info<'py>(
-    py: Python<'py>,
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-) -> PyResult<(
-    Bound<'py, PyArray2<f64>>,
-    Bound<'py, PyArray1<i64>>,
-    Bound<'py, PyArray1<i64>>,
-)> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let centers = prep.shell_centers();
-    let mut c = ndarray::Array2::<f64>::zeros((centers.len(), 3));
-    for (i, xyz) in centers.iter().enumerate() {
-        c[(i, 0)] = xyz[0];
-        c[(i, 1)] = xyz[1];
-        c[(i, 2)] = xyz[2];
-    }
-    let offs: Vec<i64> = prep.shell_offsets().iter().map(|&x| x as i64).collect();
-    let dims: Vec<i64> = prep.shell_dims().iter().map(|&x| x as i64).collect();
-    Ok((
-        PyArray2::from_owned_array(py, c),
-        PyArray1::from_vec(py, offs),
-        PyArray1::from_vec(py, dims),
-    ))
-}
-
-/// 2-center metric (P|w|Q) over the auxiliary basis, shape (naux, naux).
-/// Default w = Coulomb; `operator`/`omega`/`r0` follow the same RAW
-/// Bohr-native conventions as `compute_eri3_mo`.
-#[pyfunction]
-#[pyo3(signature = (mol, basis_set, aux_basis_set, operator="coulomb", omega=None, r0=None))]
-fn compute_metric_2c<'py>(
-    py: Python<'py>,
-    mol: &PyMolecule,
-    basis_set: &PyBasisSet,
-    aux_basis_set: &PyBasisSet,
-    operator: &str,
-    omega: Option<f64>,
-    r0: Option<f64>,
-) -> PyResult<Bound<'py, PyArray2<f64>>> {
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
-    let dfbs = PreparedBasis::new(&emol, &aux_basis_set.inner).map_err(make_err)?;
-    let op = resolve_operator(operator, omega, r0)?;
-    let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, &dfbs).map_err(make_err)?;
-    Ok(PyArray2::from_array(py, &v2c))
-}
-
-/// Entry point for the `ferric` console script (pyproject.toml
-/// `[project.scripts]`) -- calls the SAME CLI logic the standalone
-/// `ferric`/`ferric-cli` Rust binaries call (`ferric_cli::run`), compiled
-/// into THIS `.so` rather than a second binary shipped in the wheel (see the
-/// maturin project's own documented "both binary and library?" guidance:
-/// shipping a second compiled binary would roughly double the wheel, since
-/// ferric-cli would link OpenBLAS/libxc/libint2 independently rather than
-/// reuse what this extension module already links).
-///
-/// Deliberately reconstructs argv from Python's `sys.argv`, NOT
-/// `ferric_cli::main()` (which reads `std::env::args()` itself) -- measured,
-/// not assumed, that those differ here: `std::env::args()` inside this
-/// pyfunction returns THREE elements for a two-argument invocation
-/// (`[python_interpreter_path, script_path, "--help"]`), not the two-element
-/// `[script_path, "--help"]` a native binary's argv has. See
-/// `ferric_cli::run`'s doc comment for the full story (an inline debug
-/// print plus a real `strace -f -e trace=execve` on the wrapper script,
-/// confirming the extra element comes from Python's own runtime, not from
-/// the shebang or the wrapper script maturin/pip generates) and why
-/// `sys.argv` -- not a hand-patched `std::env::args()` -- is the fix:
-/// `sys.argv` is the shape Python itself commits to being stable.
-///
-/// `sys.executable`/`sys.argv[0]` (the wrapper script's own path) is used as
-/// element 0, matching what a native binary's argv[0] would be -- ferric_cli
-/// never actually reads element 0's VALUE (only `args.len()` and
-/// `args[1..]`), so this only needs to be non-empty and present, not any
-/// particular string.
-///
-/// Calls `std::process::exit()` on every error path and on `--help` --
-/// deliberately NOT caught or converted to a Python exception here, because
-/// that IS this command's correct CLI behavior (a shell script or
-/// `subprocess` caller reads $?/returncode, not a Python traceback), and
-/// pyo3 has no supported way to make `std::process::exit` merely raise
-/// instead of terminating the process regardless.
-///
-/// `init_threading()`/the ctrlc handler already ran at `import ferric` (this
-/// module's own init, above) -- `ferric_cli::run` calls `init_threading()`
-/// again internally, which is idempotent (same reasoning as its own doc
-/// comment: it is safe-by-default, not order-sensitive).
-#[pyfunction]
-fn _cli_main(py: Python<'_>) -> PyResult<()> {
-    let argv: Vec<String> = py.import("sys")?.getattr("argv")?.extract()?;
-    ferric_cli::run(argv);
-    Ok(())
-}
-
-/// Which build of ferric is this?
-///
-/// Returns a dict with:
-///
-/// - ``version`` (str): the PEP 440 package version, same as
-///   ``ferric.__version__``. A checkout carries a ``.devN`` version; only a
-///   release wheel built from a ``v*`` tag has the plain version.
-/// - ``commit`` (str): full git hash of the source tree the extension was
-///   compiled from, or ``"unknown"`` when that tree was not a git checkout.
-/// - ``dirty`` (bool or None): whether any tracked file differed from
-///   ``commit`` (untracked files never count); ``None`` when unknown.
-/// - ``profile`` (str): cargo build profile, ``"release"`` or ``"debug"``.
-/// - ``libint_version`` (str): version of the libint2 headers the integral
-///   shim was compiled against, or ``"unknown"``.
-/// - ``libint_max_deriv_order`` (int): ``LIBINT2_MAX_DERIV_ORDER`` of that
-///   libint2 (1 = gradients only, 2 = analytic Hessians too).
-/// - ``libint_max_am`` (dict[str, list[int]]): max angular momentum per
-///   integral class (``"eri"``, ``"eri3"``, ``"eri2"``, ``"onebody"``),
-///   entry ``d`` for derivative order ``d``. Tells the PyPI wheel (small
-///   libint) from a conda-forge 2.13.1 build, which share version and commit.
-/// - ``libint_g12_max_am`` (int or None): ``LIBINT2_MAX_AM_R12kG12``.
-/// - ``libint_linkage`` (str): ``"static"`` or ``"shared"`` libint2.
-///
-/// All values are fixed when the extension is compiled, so they describe the
-/// loaded ``.so`` even when it is a symlink into some other checkout.
-#[pyfunction]
-fn build_info(py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
-    let d = pyo3::types::PyDict::new(py);
-    d.set_item("version", ferric_build_info::VERSION)?;
-    d.set_item("commit", ferric_build_info::COMMIT)?;
-    d.set_item("dirty", ferric_build_info::DIRTY)?;
-    d.set_item("profile", ferric_build_info::PROFILE)?;
-    add_libint_info(&d)?;
-    Ok(d.unbind())
-}
-
-/// The `libint_*` entries of [`build_info`].
-fn add_libint_info(d: &Bound<'_, pyo3::types::PyDict>) -> PyResult<()> {
-    d.set_item("libint_version", ferric_integrals::libint_version())?;
-    d.set_item(
-        "libint_max_deriv_order",
-        ferric_integrals::libint_max_deriv_order(),
-    )?;
-    d.set_item("libint_max_am", ferric_integrals::libint_max_am())?;
-    d.set_item("libint_g12_max_am", ferric_integrals::libint_g12_max_am())?;
-    d.set_item("libint_linkage", ferric_integrals::libint_linkage())
-}
-
-/// `ferric.__build__`: `{"git_sha": str, "dirty": bool}`, or `None` when the
-/// build had no git metadata (an undeterminable dirty flag also gives `None`;
-/// never guess a bool). smeltery reads exactly this shape.
-fn add_build_stamp(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    if let (true, Some(dirty)) = (ferric_build_info::commit_known(), ferric_build_info::DIRTY) {
-        let b = pyo3::types::PyDict::new(m.py());
-        b.set_item("git_sha", ferric_build_info::COMMIT)?;
-        b.set_item("dirty", dirty)?;
-        m.add("__build__", b)
-    } else {
-        m.add("__build__", m.py().None())
-    }
-}
-
-/// Register `__version__`, `__build__` and `build_info`. `m.add` also appends to
-/// the module's `__all__`, which carries `__version__` through maturin's
-/// generated `from .ferric import *`.
-fn add_build_identity(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add("__version__", ferric_build_info::VERSION)?;
-    add_build_stamp(m)?;
-    m.add_function(wrap_pyfunction!(build_info, m)?)
-}
-
 // ── Module ──
 
 /// One direction of an IRC walk.
-#[pyclass(name = "IrcBranch")]
+#[pyclass(frozen, name = "IrcBranch")]
 #[derive(Clone)]
 struct PyIrcBranch {
     /// Symbols at the endpoint.
@@ -11284,7 +1236,7 @@ struct PyIrcBranch {
 }
 
 /// Both directions of an IRC, plus the saddle they came from.
-#[pyclass(name = "IrcResult")]
+#[pyclass(frozen, name = "IrcResult")]
 #[derive(Clone)]
 struct PyIrcResult {
     /// The `+mode` direction.
@@ -11321,7 +1273,7 @@ impl PyIrcResult {
 }
 
 /// Outcome of a P-RFO transition-state search.
-#[pyclass(name = "SaddleResult")]
+#[pyclass(frozen, name = "SaddleResult")]
 #[derive(Clone)]
 struct PySaddleResult {
     /// Symbols of the geometry the search arrived at.
@@ -11358,10 +1310,22 @@ struct PySaddleResult {
     /// `hessian="auto"` with `xc=`) "analytic-moving-grid".
     #[pyo3(get)]
     hessian_source: String,
+    certificate_data: ferric_core::certificate::Certificate,
 }
 
 #[pymethods]
 impl PySaddleResult {
+    /// Validation certificate of this result (dict form of
+    /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
+    /// `capability` is `"saddle:<kind>"` and the grade is `"ungraded"`: the
+    /// validation page does not grade `run_saddle`. The SCF at the returned
+    /// geometry (re-solved) is folded in as the reference; the P-RFO settings
+    /// and the Hessian construction are approximations; a gradient that did not
+    /// converge, or a result that is not a first-order saddle, is a warning.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::certificate_dict(py, &self.certificate_data)
+    }
     /// A first-order transition state: gradient converged AND exactly one
     /// imaginary frequency. Both halves are required.
     fn is_transition_state(&self) -> bool {
@@ -11390,17 +1354,16 @@ fn parse_saddle_hessian(
     delta: Option<f64>,
 ) -> PyResult<ferric_scf::frequencies::HessianMethod> {
     use ferric_scf::frequencies::HessianMethod;
-    let method = HessianMethod::parse_config_str(hessian)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let method = HessianMethod::parse_config_str(hessian).map_err(crate::errors::input_err)?;
     if method == HessianMethod::AnalyticMovingGrid {
-        return Err(pyo3::exceptions::PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "hessian=\"analytic-moving-grid\" is not available in run_saddle as an explicit \
              value; \"auto\" selects the moving-grid Kohn-Sham Hessian wherever it applies \
              (use \"fd\", \"auto\" or \"analytic\")",
         ));
     }
     if delta.is_some() && method != HessianMethod::FiniteDifference {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "delta= is the finite-difference displacement and is ignored by an \
              analytic Hessian; it is only valid with hessian=\"fd\" (got \
              hessian={hessian:?})"
@@ -11432,11 +1395,22 @@ fn parse_saddle_hessian(
 /// which ran.
 /// `delta` is only meaningful with "fd": combining it with "auto" or
 /// "analytic" raises rather than being silently ignored.
+///
+/// `scf_warm_start` (default True): each step's SCF starts from the previous
+/// step's converged orbitals (`ferric_scf::warm_start`); False re-guesses
+/// every step's SCF. The finite-difference Hessians stay cold (as in
+/// `run_frequencies`, warm FD Hessians are noisier at equal convergence).
+///
+/// `scf_ri_j_precision` (`"f32"` or `"f64"`; RI-J runs with `xc`): unset is
+/// `"f64"`, as for every geometry task (the f32 RI-J surface jitters between
+/// nearby geometries); an explicit `"f32"` is honoured.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_name, xc=None, multiplicity=None,
     max_steps=None, trust_radius=None, follow_mode=None, delta=None,
     point_charges=None, external_field=None, hessian="fd",
+    scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
+    scf_warm_start=None, scf_ri_j_precision=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_saddle(
@@ -11451,16 +1425,21 @@ fn run_saddle(
     point_charges: Option<Vec<(f64, f64, f64, f64)>>,
     external_field: Option<(f64, f64, f64)>,
     hessian: &str,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
+    scf_warm_start: Option<bool>,
+    scf_ri_j_precision: Option<&str>,
 ) -> PyResult<PySaddleResult> {
     use ferric_scf::frequencies::{harmonic_frequencies, FrequencyConfig, FrequencyReference};
     use ferric_scf::gradient::rhf_gradient;
-    use ferric_scf::rhf::solve_rhf;
     use ferric_scf::saddle::{find_saddle, SaddleConfig};
     use ferric_scf::screening::SchwarzBounds;
+    use ferric_scf::warm_start::solve_rhf_warm;
 
     if let Some(t) = trust_radius {
         if !(t.is_finite() && t > 0.0) {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "trust_radius must be finite and > 0 (got {t})"
             )));
         }
@@ -11478,7 +1457,7 @@ fn run_saddle(
     // reference and return a confident answer for a state that does not exist.
     // Refuse rather than silently choosing the wrong physics.
     if m.multiplicity != 1 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "run_saddle currently supports closed-shell (multiplicity = 1) \
              references only; got multiplicity = {}. Both the gradient and the \
              Hessian callbacks are restricted, so an open-shell request would \
@@ -11489,10 +1468,10 @@ fn run_saddle(
     // ECP must be applied BEFORE the first SCF: it changes the electron count,
     // so a search started without it optimizes a different molecule than the
     // one the caller asked about.
-    {
+    let m = {
         let bs = ferric_core::basis::bundled(basis_name).map_err(make_err)?;
-        m.apply_ecp(&bs);
-    }
+        EcpMolecule::new(m, &bs).into_mol()
+    };
     // The MM field. Both closures below ALREADY read
     // `scf_g.external_potential` and hand it to `rhf_gradient` /
     // `ks_gradient_closed`, and `harmonic_frequencies` threads it too -- the
@@ -11505,11 +1484,15 @@ fn run_saddle(
     // charge pair makes planar NH3 non-stationary), so searching in vacuum and
     // hoping the barrier transfers is not an approximation, it is a different
     // question.
-    let scf_cfg = RhfConfig {
+    let mut scf_cfg = ferric_scf::options::ScfOptions {
         xc: xc.map(|s| s.to_string()),
         external_potential: build_external_potential(point_charges, external_field),
         ..Default::default()
-    };
+    }
+    .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
+    .py()?;
+    ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut scf_cfg);
+    geometry_task_scf(&mut scf_cfg, scf_ri_j_precision)?;
     let mut cfg = SaddleConfig::default();
     if let Some(v) = max_steps {
         cfg.max_steps = v;
@@ -11527,11 +1510,16 @@ fn run_saddle(
 
     let scf_g = scf_cfg.clone();
     let basis_g = basis.clone();
+    // Each step's SCF starts from the previous step's converged orbitals
+    // (`ferric_scf::warm_start`). The Hessians below stay cold
+    // (`FrequencyConfig::scf_warm_start` default): a warm FD Hessian is
+    // noisier at equal convergence, and the final one decides n_imaginary.
+    let mut warm = ferric_scf::warm_start::ScfWarmStart::new(scf_warm_start.unwrap_or(true));
     let energy_gradient = move |mm: &ferric_core::mol::Molecule| {
         let bs = ferric_core::basis::bundled(&basis_g)?;
         let prep = PreparedBasis::new(mm, &bs)?;
         let bounds = SchwarzBounds::compute(op, &prep)?;
-        let res = solve_rhf(&ctx, mm, &prep, op, &bounds, &scf_g)?;
+        let res = solve_rhf_warm(&ctx, mm, &prep, op, &bounds, &scf_g, &mut warm)?;
         // An unconverged SCF is not a point on any surface. Letting one
         // through hands the optimizer an energy and a gradient from a density
         // that never settled, and the search walks on noise while reporting
@@ -11540,7 +1528,7 @@ fn run_saddle(
             return Err(ferric_core::FerricError::General(
                 "saddle search: the SCF did not converge at this geometry, so \
                  its energy and gradient are not points on the potential \
-                 surface. Loosen the geometry, raise max_iter, or start closer \
+                 surface. Loosen the geometry, raise scf_max_iter, or start closer \
                  to the barrier."
                     .to_string(),
             ));
@@ -11609,6 +1597,28 @@ fn run_saddle(
     let r = find_saddle(&m, &cfg, energy_gradient, hessian_cb).map_err(make_err)?;
     let hessian_source = source_cell.borrow().clone();
 
+    let certificate_data = {
+        let (kind, reference) =
+            task_reference_certificate(&r.mol, basis_name, &scf_cfg, ferric_scf::Spin::Restricted);
+        match reference {
+            Ok(reference) => ferric_scf::certificate::saddle_certificate(
+                kind,
+                &reference,
+                &cfg,
+                &ferric_scf::certificate::SaddleRun {
+                    steps: r.steps,
+                    converged: r.converged,
+                    n_imaginary: r.n_imaginary,
+                    hessian_source: &hessian_source,
+                    delta: Some(delta.unwrap_or(FrequencyConfig::default().delta)),
+                },
+            ),
+            Err(why) => {
+                ferric_core::certificate::Certificate::ungraded(format!("saddle:{kind}")).warn(why)
+            }
+        }
+    };
+
     const BOHR_TO_ANGSTROM: f64 = ferric_core::units::BOHR_TO_ANGSTROM;
     Ok(PySaddleResult {
         symbols: r.mol.atoms.iter().map(|a| a.symbol.clone()).collect(),
@@ -11631,6 +1641,7 @@ fn run_saddle(
         imaginary_mode: r.imaginary_mode.map(|v| v.to_vec()),
         lowest_eigenvalue: r.lowest_eigenvalue,
         hessian_source,
+        certificate_data,
     })
 }
 
@@ -11651,11 +1662,21 @@ fn run_saddle(
 /// Closed-shell only, matching `run_saddle`: the callbacks here are the same
 /// restricted ones, so an open-shell request is refused rather than answered
 /// with the wrong reference.
+///
+/// `scf_warm_start` (default True): each point's SCF starts from the previous
+/// point's converged orbitals (`ferric_scf::warm_start`); False re-guesses
+/// every SCF.
+///
+/// `scf_ri_j_precision` (`"f32"` or `"f64"`; RI-J runs with `xc`): unset is
+/// `"f64"`, as for every geometry task (the f32 RI-J surface jitters between
+/// nearby geometries); an explicit `"f32"` is honoured.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_name, mode, xc=None, multiplicity=None,
     step=None, max_steps=None, g_max_thresh=None, initial_displacement=None,
     point_charges=None, external_field=None,
+    scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None,
+    scf_warm_start=None, scf_ri_j_precision=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_irc(
@@ -11670,11 +1691,16 @@ fn run_irc(
     initial_displacement: Option<f64>,
     point_charges: Option<Vec<(f64, f64, f64, f64)>>,
     external_field: Option<(f64, f64, f64)>,
+    scf_max_iter: Option<usize>,
+    scf_energy_conv: Option<f64>,
+    scf_density_conv: Option<f64>,
+    scf_warm_start: Option<bool>,
+    scf_ri_j_precision: Option<&str>,
 ) -> PyResult<PyIrcResult> {
     use ferric_scf::gradient::rhf_gradient;
     use ferric_scf::irc::{follow_irc, IrcConfig};
-    use ferric_scf::rhf::solve_rhf;
     use ferric_scf::screening::SchwarzBounds;
+    use ferric_scf::warm_start::{solve_rhf_warm, ScfWarmStart};
 
     let mut m = mol.inner.clone();
     if let Some(mult) = multiplicity {
@@ -11684,7 +1710,7 @@ fn run_irc(
     // below is `solve_rhf` plus a closed-shell gradient, so an open-shell
     // request would be answered with a closed-shell reference.
     if m.multiplicity != 1 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "run_irc currently supports closed-shell (multiplicity = 1) \
              references only; got multiplicity = {}.",
             m.multiplicity
@@ -11692,20 +1718,24 @@ fn run_irc(
     }
     // ECP before the first SCF -- it changes the electron count, so a path
     // walked without it is a path on a different molecule.
-    {
+    let m = {
         let bs = ferric_core::basis::bundled(basis_name).map_err(make_err)?;
-        m.apply_ecp(&bs);
-    }
+        EcpMolecule::new(m, &bs).into_mol()
+    };
 
     // The MM field, same as `run_saddle`. An IRC started from an embedded
     // saddle MUST be walked in the same field: the path is a property of the
     // surface, and a gas-phase walk from an embedded saddle descends a
     // different surface than the one the saddle sits on.
-    let scf_cfg = RhfConfig {
+    let mut scf_cfg = ferric_scf::options::ScfOptions {
         xc: xc.map(|s| s.to_string()),
         external_potential: build_external_potential(point_charges, external_field),
         ..Default::default()
-    };
+    }
+    .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
+    .py()?;
+    ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut scf_cfg);
+    geometry_task_scf(&mut scf_cfg, scf_ri_j_precision)?;
     let mut cfg = IrcConfig::default();
     if let Some(v) = step {
         cfg.step = v;
@@ -11722,17 +1752,22 @@ fn run_irc(
 
     let op = Operator::coulomb();
     let basis = basis_name.to_string();
+    // Each point's SCF starts from the previous point's converged orbitals
+    // (`ferric_scf::warm_start`). The jump from the end of the forward branch
+    // back to the saddle region is caught by its overlap test (cold guess).
+    let mut warm = ScfWarmStart::new(scf_warm_start.unwrap_or(true));
     let eg = move |mm: &ferric_core::mol::Molecule| {
         let bs = ferric_core::basis::bundled(&basis)?;
         let prep = PreparedBasis::new(mm, &bs)?;
         let bounds = SchwarzBounds::compute(op, &prep)?;
-        let res = solve_rhf(
+        let res = solve_rhf_warm(
             &ParallelContext::default(),
             mm,
             &prep,
             op,
             &bounds,
             &scf_cfg,
+            &mut warm,
         )?;
         if !res.converged {
             return Err(ferric_core::FerricError::General(
@@ -11813,8 +1848,9 @@ fn run_irc(
 /// ferric property with a spread. Geometry input there is **Ångström**,
 /// matching RDKit's `GetPositions()` and ferric's XYZ readers.
 ///
-/// Build with `uv run maturin develop --release` (see the README for the venv
-/// caveat).
+/// Build with `uv run maturin develop --release` from the repository root; the
+/// venv caveat is under "Python bindings from source" in
+/// `site/src/using/installation.md`.
 ///
 /// NOTE: this docstring is duplicated (not just referenced) from the file-level
 /// `//!` comment at the top of this file. pyo3 only picks up a `///` doc
@@ -11832,10 +1868,10 @@ fn register_mp2v_research(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 #[pymodule]
 fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    // Safe-by-default threading: pin OpenBLAS to 1 thread (rayon owns ferric's
-    // parallelism) unless the host set OPENBLAS_NUM_THREADS. Without this, an
-    // `import ferric` in a host process inherits OpenBLAS's nproc default and
-    // oversubscribes rayon × BLAS (3–5× slowdown, possible stack overflow).
+    // Threading model (see ferric_core::blas_threads): thread stacks large
+    // enough for threaded LAPACK on any thread, and OpenBLAS pinned to 1
+    // thread in parallel regions unless the host set OPENBLAS_NUM_THREADS.
+    // Serial sections raise it per `ferric.set_blas_threads`.
     ferric_integrals::blas_threads::init_threading();
     // Register global signal handler for Ctrl+C
     let _ = ctrlc::set_handler(move || {
@@ -11843,6 +1879,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
         ferric_core::INTERRUPT.store(true, std::sync::atomic::Ordering::SeqCst);
     });
 
+    errors::register(m)?;
     m.add_class::<PyMolecule>()?;
     m.add_class::<PyBasisSet>()?;
     add_rhf_result_classes(m)?;
@@ -11851,6 +1888,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCdftResult>()?;
     m.add_class::<PyCdftCouplingResult>()?;
     m.add_class::<PyOptimizeResult>()?;
+    m.add_class::<PyMdResult>()?;
     m.add_class::<PyQmmmSystem>()?;
     m.add_class::<PyQmmmResult>()?;
     m.add_class::<PyQmmmOptimizeResult>()?;
@@ -11859,13 +1897,14 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRiMp2Result>()?;
     m.add_class::<PyOoRiMp2Result>()?;
     m.add_class::<PyMp3Result>()?;
+    m.add_class::<PyOpmp3Result>()?;
     m.add_class::<PyAttenuatedMp2Result>()?;
     m.add_class::<PyScsMp2Result>()?;
     m.add_class::<PyMp2VResult>()?;
     m.add_class::<PyLaplaceMp2Result>()?;
+    m.add_class::<PyOmegaRiResult>()?;
     m.add_class::<PySosMp2Result>()?;
     m.add_class::<PyDftResult>()?;
-    m.add_class::<PyCcResult>()?;
     m.add_class::<PyPdepRpaResult>()?;
     m.add_class::<PyRsMp2RpaResult>()?;
     m.add_class::<PyGwResult>()?;
@@ -11899,12 +1938,22 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_cli_main, m)?)?;
     add_build_identity(m)?;
     m.add_function(wrap_pyfunction!(run_rhf, m)?)?;
+    m.add_function(wrap_pyfunction!(_scf_refused, m)?)?;
+    m.add_function(wrap_pyfunction!(_raise_core_error, m)?)?;
+    m.add_function(wrap_pyfunction!(_core_error_variants, m)?)?;
+    // Test hooks: reachable as `ferric.ferric._raise_core_error`, not part of the
+    // `ferric` namespace (`from .ferric import *` follows `__all__`).
+    for hook in ["_raise_core_error", "_core_error_variants"] {
+        m.index()?.call_method1("remove", (hook,))?;
+    }
     m.add_function(wrap_pyfunction!(run_rhf_gamma, m)?)?;
     m.add_class::<PyGammaRhfResult>()?;
     pbc::register(m)?;
+    ci::register(m)?;
+    response_modes::register(m)?;
     pbc::register_omega_chooser(m)?;
     m.add_function(wrap_pyfunction!(run_uhf, m)?)?;
-    m.add_function(wrap_pyfunction!(run_rohf, m)?)?;
+    register_open_shell_scf(m)?;
     m.add_function(wrap_pyfunction!(run_cdft, m)?)?;
     m.add_function(wrap_pyfunction!(cdft_coupling, m)?)?;
     m.add_function(wrap_pyfunction!(run_optimize, m)?)?;
@@ -11912,6 +1961,11 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_qmmm, m)?)?;
     m.add_function(wrap_pyfunction!(run_optimize_qmmm, m)?)?;
     m.add_function(wrap_pyfunction!(run_frequencies, m)?)?;
+    m.add_function(wrap_pyfunction!(run_xtb_energy_gradient, m)?)?;
+    m.add_function(wrap_pyfunction!(run_xtb_optimize, m)?)?;
+    m.add_function(wrap_pyfunction!(run_aimd, m)?)?;
+    m.add_function(wrap_pyfunction!(run_ffmd, m)?)?;
+    m.add_function(wrap_pyfunction!(run_xtb_frequencies, m)?)?;
     m.add_function(wrap_pyfunction!(run_saddle, m)?)?;
     m.add_function(wrap_pyfunction!(run_irc, m)?)?;
     m.add_class::<PySaddleResult>()?;
@@ -11928,6 +1982,10 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(tune_omega, m)?)?;
     m.add_function(wrap_pyfunction!(orbital_moments, m)?)?;
     m.add_function(wrap_pyfunction!(density_second_moment, m)?)?;
+    m.add_function(wrap_pyfunction!(eval_ao_on_points, m)?)?;
+    m.add_function(wrap_pyfunction!(eval_density_on_points, m)?)?;
+    m.add_function(wrap_pyfunction!(eval_mo_on_points, m)?)?;
+    m.add_function(wrap_pyfunction!(write_cube, m)?)?;
     m.add_function(wrap_pyfunction!(mulliken_charges, m)?)?;
     m.add_function(wrap_pyfunction!(chelpg_charges, m)?)?;
     m.add_function(wrap_pyfunction!(resp_charges, m)?)?;
@@ -11935,6 +1993,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_rimp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_oo_rimp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_mp3, m)?)?;
+    m.add_function(wrap_pyfunction!(run_opmp3, m)?)?;
     m.add_function(wrap_pyfunction!(run_attenuated_rimp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_terfc_rimp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_scs_mp2, m)?)?;
@@ -11943,6 +2002,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_double_hybrid, m)?)?;
 
     m.add_function(wrap_pyfunction!(run_laplace_mp2, m)?)?;
+    m.add_function(wrap_pyfunction!(run_omega_ri, m)?)?;
     m.add_function(wrap_pyfunction!(run_laplace_sos_mp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_dft, m)?)?;
     m.add_function(wrap_pyfunction!(cosx_grid_point_count, m)?)?;
@@ -11951,9 +2011,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(d3bj_energy, m)?)?;
     m.add_function(wrap_pyfunction!(mbd_rsscs_energy, m)?)?;
     m.add_class::<PyMbdRsscsResult>()?;
-    m.add_function(wrap_pyfunction!(run_ccd, m)?)?;
-    m.add_function(wrap_pyfunction!(run_ccsd, m)?)?;
-    m.add_function(wrap_pyfunction!(run_ccsd_t, m)?)?;
+    cc::register(m)?;
     m.add_function(wrap_pyfunction!(run_pdep_rpa, m)?)?;
     m.add_function(wrap_pyfunction!(run_rs_mp2_rpa, m)?)?;
     m.add_function(wrap_pyfunction!(run_gw, m)?)?;

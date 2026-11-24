@@ -9,8 +9,8 @@
 //! Artifact hypothesis: building the projected dielectric as
 //! I + 4·(UᵀB̃ diag(g))(UᵀB̃ diag(g))ᵀ = I + UᵀB̃ diag(4g²) B̃ᵀU (the pre-fix
 //! code) instead of diag(4g) is off by a factor g = Δε/(ω²+Δε²) per
-//! transition, i.e. O(1) at ω = 0 — this test fails on it. The old spike
-//! test (pdep_c6_truncation.rs, #[ignore]) only bounded C6 to 20%.
+//! transition, i.e. O(1) at ω = 0 — this test fails on it. The spike
+//! test (pdep_c6_truncation.rs, #[ignore]) only bounds C6 to 20%.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;

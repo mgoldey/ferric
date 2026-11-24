@@ -7,6 +7,7 @@
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::RhfConfig;
@@ -40,13 +41,12 @@ fn run_sym(mol: &Molecule, basis_name: &str, cfg: &RhfConfig) -> Result<Symmetri
 }
 
 fn cfg(symmetry: bool) -> RhfConfig {
-    RhfConfig {
-        symmetry,
-        density_conv: 1e-10,
-        energy_conv: 1e-12,
-        max_iter: 200,
-        ..RhfConfig::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_density_conv(1e-10)
+        .with_energy_conv(1e-12)
+        .with_max_iter(200);
+    c.symmetry = symmetry;
+    c
 }
 
 fn occupation(r: &SymmetricRhf, nocc: usize) -> BTreeMap<String, usize> {
@@ -131,19 +131,24 @@ fn matches_pyscf_symmetry_references() {
     eprintln!("max |E_ferric - E_pyscf| = {worst:e}");
 }
 
-/// Blocked RKS PBE on ferric's KS defaults (75x110 grid, RI-J with
-/// def2-universal-jkfit) against PySCF `dft.RKS` with symmetry on the same
+/// Blocked RKS PBE on the flat 75x110 grid and RI-J with
+/// def2-universal-jkfit against PySCF `dft.RKS` with symmetry on the same
 /// recipe (`rks_pbe` blocks of the references).
 fn ks_cfg(irrep_nelec: Option<Vec<(String, usize)>>) -> RhfConfig {
-    RhfConfig {
-        symmetry: true,
-        xc: Some("PBE".into()),
-        density_conv: 1e-10,
-        energy_conv: 1e-8,
-        max_iter: 200,
-        irrep_nelec,
-        ..RhfConfig::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_xc("PBE")
+        // The PySCF references fit J in f64. The f32 RI-J default moves the
+        // energy by 1e-7..1e-6 Ha, above this test's bar.
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_density_conv(1e-10)
+        .with_energy_conv(1e-8)
+        .with_max_iter(200)
+        // The references are PySCF on the flat (75,110) grid (gen_scf_symmetry.py:
+        // prune=None), not the pruned KS default AtomicGridConfig::production().
+        .with_dft_grid(AtomicGridConfig::default());
+    c.symmetry = true;
+    c.irrep_nelec = irrep_nelec;
+    c
 }
 
 #[test]

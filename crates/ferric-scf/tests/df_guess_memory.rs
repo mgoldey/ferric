@@ -45,12 +45,10 @@ fn run(budget: usize, aux: Option<&str>) -> Result<DfGuessResult, FerricError> {
     let (mol, prep) = water();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        three_index_budget_bytes: budget,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8);
+    cfg.three_index_budget_bytes = budget;
     solve_rhf_with_df_guess(
         &ParallelContext::default(),
         &mol,
@@ -193,10 +191,8 @@ fn under_mpi_a_memory_failure_of_the_guess_stays_an_error() {
     let needed = tensor_bytes(&mol, &prep);
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        three_index_budget_bytes: needed * 4,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.three_index_budget_bytes = needed * 4;
     // Two ranks' worth of band, on a pool too small for even one raw tensor.
     let ctx = ParallelContext { rank: 0, size: 2 };
     install_global(MemoryPool::with_capacity_bytes(needed / 8));
@@ -245,8 +241,11 @@ fn memory_policy_refusal_stops_a_guess_run_for_the_dressed_tensor() {
     let (mol, prep) = water();
     let needed = tensor_bytes(&mol, &prep);
     let _policy = MemoryPolicy::set();
-    // Raw fits, its dressed twin does not: this used to spill to disk.
-    install_global(MemoryPool::with_capacity_bytes(needed + needed / 2));
+    // Raw fits, its dressed twin does not: this used to spill to disk. The raw
+    // build is admitted at the square size, then both tensors are held as
+    // packed triangles (about 0.52 x needed each here, FERRIC_OOC_TRACE), so
+    // the band is [needed, ~1.04 x needed): a pool just above the square.
+    install_global(MemoryPool::with_capacity_bytes(needed + needed / 100));
     let got = run(needed * 16, None);
     clear_global();
     let err = got

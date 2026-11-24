@@ -70,7 +70,12 @@ class Box:
         self.slot0 = self.locks / "ferric-compile.lock"
         self.slot1 = self.locks / "ferric-compile.2.lock"
         self.direct = self.locks / "ferric-box.direct"
-        dropped = ("FERRIC_HEAVY_LOCK_HELD", "FERRIC_BOX_LEASE_PID", "FERRIC_LOCK_DIR")
+        dropped = (
+            "FERRIC_HEAVY_LOCK_HELD",
+            "FERRIC_BOX_LEASE_PID",
+            "FERRIC_LOCK_DIR",
+            "FERRIC_CARGO_SHIM_DEPTH",
+        )
         self.env = {k: v for k, v in os.environ.items() if k not in dropped}
         self.env.update(
             PATH=f"{self.shim_dir}:{real}:{os.environ['PATH']}",
@@ -602,7 +607,12 @@ def test_run_returns_the_command_status_and_runs_nothing_on_expiry(make_box):
     box.finish(a)
 
 
-@pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM, signal.SIGHUP])
+# By name: Windows' `signal` has no SIGHUP, and this module must still import
+# there (the pytestmark skip above then applies).
+@pytest.mark.parametrize(
+    "sig",
+    [getattr(signal, n) for n in ("SIGINT", "SIGTERM", "SIGHUP") if hasattr(signal, n)],
+)
 def test_a_signal_stops_the_job_and_only_then_frees_the_lease(make_box, sig):
     box = make_box()
     job = box.lease_job("L")
@@ -718,6 +728,7 @@ READS_75_AS_BUSY = (
     "if [ $rc -ne 75 ]; then",
 )
 SHIM_FINDS_ITSELF = ('  [ "$d" -ef "$SELF_DIR" ] && continue\n', "")
+NO_RECURSION_GUARD = ('if [ "$depth" -ge 4 ]; then', "if false; then")
 
 
 def test_mutant_no_lease_wait_does_not_say_why_it_waits(make_box):
@@ -1207,7 +1218,58 @@ def test_a_misnamed_shim_dir_finds_the_real_cargo(make_box):
 
 
 def test_mutant_a_misnamed_shim_dir_execs_itself(make_box):
-    assert _shim_under_another_name(make_box(shim_edit=SHIM_FINDS_ITSELF)) == 124
+    # The recursion guard now stops the self-exec loop; without it this was 124.
+    box = make_box(shim_edit=SHIM_FINDS_ITSELF)
+    assert _shim_under_another_name(box) == 126
+    assert not box.happened("start cargo")
+
+
+def _wrapper_ahead_of_the_shim(box, body):
+    """A `cargo` wrapper FIRST on PATH that calls the shim back by absolute path:
+    the shim takes it for the real cargo (it is neither a shim dir nor the shim's
+    own dir). The 2026-11-06 hang in test_ci_gate_clippy_scope.py."""
+    wrap = box.tmp / "wrap"
+    wrap.mkdir()
+    box._executable(wrap / "cargo", f"#!/usr/bin/env bash\n{body}\n")
+    env = {"PATH": f"{wrap}:{box.shim_dir}:{box.real}:{os.environ['PATH']}"}
+    # Under `timeout`: without the guard it exec-loops forever.
+    p = box.popen(["timeout", "5", "cargo", "build"], **env)
+    start = time.monotonic()
+    rc, out = box.finish(p, 15)
+    return rc, out, time.monotonic() - start
+
+
+LOOPING_WRAPPER = 'exec {shim} "$@"'
+
+
+def test_a_wrapper_that_calls_the_shim_back_errors_fast(make_box):
+    box = make_box()
+    body = LOOPING_WRAPPER.format(shim=box.shim_dir / "cargo")
+    rc, out, secs = _wrapper_ahead_of_the_shim(box, body)
+    assert rc == 126, out
+    assert "cargo shim: recursion" in out and str(box.tmp / "wrap") in out, out
+    assert secs < 4, f"took {secs:.1f}s: the guard did not stop the loop"
+    assert not box.happened("start cargo")
+
+
+def test_a_wrapper_that_calls_the_shim_once_still_reaches_cargo(make_box):
+    """The normal path: one pass through a wrapper is ordinary nesting."""
+    box = make_box()
+    shim = box.shim_dir / "cargo"
+    body = (
+        f'[ -n "${{WRAPPED:-}}" ] && exec {box.real}/cargo "$@"; '
+        f'WRAPPED=1 exec {shim} "$@"'
+    )
+    rc, out, _ = _wrapper_ahead_of_the_shim(box, body)
+    assert rc == 0, out
+    assert box.happened("start cargo build")
+
+
+def test_mutant_no_recursion_guard_loops_until_killed(make_box):
+    box = make_box(shim_edit=NO_RECURSION_GUARD)
+    body = LOOPING_WRAPPER.format(shim=box.shim_dir / "cargo")
+    rc, out, _ = _wrapper_ahead_of_the_shim(box, body)
+    assert rc == 124, out
 
 
 def _ensure(tmp_path, repo_scripts_ok=True, on_path=True, mutate=False):

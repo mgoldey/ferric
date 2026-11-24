@@ -43,6 +43,26 @@ pub struct Ragged {
     pub by_i: HashMap<usize, Vec<usize>>,
     /// Pairs that share occupied index j → indices into `pairs`.
     pub by_j: HashMap<usize, Vec<usize>>,
+    /// `Some` when the system is split over MPI ranks. `None` is the whole
+    /// system on this process.
+    pub share: Option<RaggedShare>,
+}
+
+/// One rank's share of a ragged system split over MPI ranks.
+///
+/// Every rank lists every block, so the index maps and the masks are whole,
+/// but a block this rank does not own is hollow: its `fvv_aa`, `fvv_bb`,
+/// `j_blk` and `denom` are empty. The PCG ([`solve_ragged_budgeted_steered`]
+/// and its callers) then keeps its vectors over the owned blocks only,
+/// exchanges the search direction each iteration, and sums its dot products
+/// over the ranks. Only the indexed matvec reads a share
+/// ([`matvec_planned`] refuses one).
+#[derive(Debug, Clone)]
+pub struct RaggedShare {
+    /// The MPI context the ranks reduce over.
+    pub ctx: ferric_core::parallel::ParallelContext,
+    /// Per block of `pairs`: this rank holds its integrals and solves for it.
+    pub owned: Vec<bool>,
 }
 
 impl PairBlock {
@@ -61,6 +81,88 @@ impl PairBlock {
 }
 
 impl Ragged {
+    /// The ragged system of `pairs`, in that order, with the `by_i` / `by_j`
+    /// maps listing each occupied index's pairs in ascending position.
+    pub fn from_pairs(pairs: Vec<PairBlock>) -> Self {
+        let mut by_i: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut by_j: HashMap<usize, Vec<usize>> = HashMap::new();
+        for (p, pb) in pairs.iter().enumerate() {
+            by_i.entry(pb.i).or_default().push(p);
+            by_j.entry(pb.j).or_default().push(p);
+        }
+        Ragged {
+            pairs,
+            by_i,
+            by_j,
+            share: None,
+        }
+    }
+
+    /// Whether this rank holds block `p`'s integrals (always, without a
+    /// share).
+    pub fn owns(&self, p: usize) -> bool {
+        self.share.as_ref().is_none_or(|s| s.owned[p])
+    }
+
+    /// A sum this rank took over its owned blocks, summed over the ranks
+    /// (itself without a share). Call from the rank's serial point.
+    pub fn sum_over_ranks(&self, local: f64) -> f64 {
+        match &self.share {
+            None => local,
+            Some(s) => {
+                let mut v = [local];
+                s.ctx.all_reduce_sum(&mut v);
+                v[0]
+            }
+        }
+    }
+
+    /// [`dot_blocks`] over the whole system: over the owned blocks, summed
+    /// over the ranks.
+    pub fn dot(&self, x: &[Array2<f64>], y: &[Array2<f64>]) -> f64 {
+        match &self.share {
+            None => dot_blocks(x, y),
+            Some(s) => {
+                let local = x
+                    .iter()
+                    .zip(y)
+                    .zip(&s.owned)
+                    .filter(|(_, &own)| own)
+                    .map(|((a, b), _)| (a * b).sum())
+                    .sum();
+                self.sum_over_ranks(local)
+            }
+        }
+    }
+
+    /// A zero amplitude vector over the owned blocks (hollow elsewhere).
+    fn owned_zeros(&self) -> Vec<Array2<f64>> {
+        self.pairs
+            .iter()
+            .enumerate()
+            .map(|(p, pb)| {
+                if self.owns(p) {
+                    Array2::zeros((pb.da.len(), pb.db.len()))
+                } else {
+                    Array2::zeros((0, 0))
+                }
+            })
+            .collect()
+    }
+
+    /// Make `v` whole on this rank: give every block it does not own its
+    /// full shape and fill it with its owner's values. Nothing without a
+    /// share.
+    fn spread(&self, v: &mut [Array2<f64>]) {
+        let Some(s) = &self.share else { return };
+        for ((b, pb), &own) in v.iter_mut().zip(&self.pairs).zip(&s.owned) {
+            if !own && b.dim() != (pb.da.len(), pb.db.len()) {
+                *b = Array2::zeros((pb.da.len(), pb.db.len()));
+            }
+        }
+        crate::ragged_transport::exchange_blocks(&s.ctx, v, &s.owned);
+    }
+
     /// Heap bytes the ragged system holds: every block's storage, the
     /// `pairs` vector, and the two index maps (bucket entries plus their
     /// index vectors; the hash table's control bytes are approximated as
@@ -99,10 +201,30 @@ pub const PCG_RESIDENT_VECTORS: usize = 5;
 /// vectors, and the CG coefficient trace (two f64 per iteration, at most
 /// `max_iter`). Per-task matvec temporaries (one block per rayon worker)
 /// are not counted.
+///
+/// Under a [`RaggedShare`] the vectors cover the owned blocks, and two of
+/// them (the search direction during the solve, the amplitudes at its end)
+/// also the blocks of the other ranks.
 pub fn solve_resident_bytes(rg: &Ragged, max_iter: usize) -> usize {
-    rg.heap_bytes()
-        + PCG_RESIDENT_VECTORS * amplitude_vector_bytes(rg)
-        + 2 * std::mem::size_of::<f64>() * max_iter
+    rg.heap_bytes() + pcg_vector_bytes(rg) + 2 * std::mem::size_of::<f64>() * max_iter
+}
+
+/// Bytes of the PCG iteration vectors: [`PCG_RESIDENT_VECTORS`] whole ones,
+/// or under a [`RaggedShare`] that many over the owned blocks plus two over
+/// the other ranks' blocks.
+fn pcg_vector_bytes(rg: &Ragged) -> usize {
+    let whole = amplitude_vector_bytes(rg);
+    let Some(s) = &rg.share else {
+        return PCG_RESIDENT_VECTORS * whole;
+    };
+    let own: usize = rg
+        .pairs
+        .iter()
+        .zip(&s.owned)
+        .filter(|(_, &o)| o)
+        .map(|(pb, _)| pb.da.len() * pb.db.len() * std::mem::size_of::<f64>())
+        .sum();
+    PCG_RESIDENT_VECTORS * own + 2 * whole.saturating_sub(own)
 }
 
 /// THE admission gate for the gather plan: the plan is built only when it
@@ -156,7 +278,7 @@ pub fn pair_block_from_g_cand(
 ///
 /// Seam for ferric-pbc's Gamma LMP2, where the raw integral carries a
 /// distance-independent uniform-field term and a future gate may threshold
-/// on the integral MINUS that term (reference/pbc/FINDINGS.md Iteration 5,
+/// on the integral MINUS that term (wiki/archive/ferric-pbc-residue-2026-10-25/reference/pbc/FINDINGS.md Iteration 5,
 /// recommendation 6). No such gate is implemented here.
 #[allow(clippy::too_many_arguments)]
 pub fn pair_block_from_g_cand_gated(
@@ -251,6 +373,262 @@ pub fn pair_block_from_g_cand_gated(
     })
 }
 
+/// The Fock-propagated gate of one pair block (the `fock_screen` option of
+/// the amplitude-threshold LMP2): over the candidate square of `g = J_ij`,
+///
+/// `g̃ = g + F' t⁰ + t⁰ F'`,  `t⁰ = −g/Δ`,  `F' = F_vv[cand, cand]` with its
+/// diagonal removed, `Δ_ab = f_aa + f_bb − f_ii − f_jj`,
+///
+/// so `−g̃/Δ` is one Jacobi step of the pair's amplitude equation from the
+/// diagonal estimate with the VIRTUAL off-diagonal Fock coupling switched on
+/// (crates/ferric-mp2/theory.md §12.6). The returned gate is
+/// `max(|g|, |g̃|/κ)` elementwise, for [`pair_block_from_g_cand_gated`] at
+/// the same ε: an element is kept when Eq 8 keeps it OR its dressed integral
+/// clears κε. The union never drops an Eq-8 element, the gate is symmetric
+/// under the pair transpose (`gate(gᵀ) = gate(g)ᵀ`, since `Δ` and the two
+/// Fock products swap), and the retained values still come from `g`.
+///
+/// Pair-local by construction: it reads only this pair's candidate square
+/// and the virtual Fock block on it (two `|C|³` GEMMs); the occupied
+/// off-diagonal coupling, which would need other pairs' integrals, is left
+/// out (measured to be the minor driver, theory.md §12.6).
+pub fn fock_dressed_gate(
+    g: &Array2<f64>,
+    cand: &[usize],
+    f_vv: &Array2<f64>,
+    fo_i: f64,
+    fo_j: f64,
+    fv: &[f64],
+    kappa: f64,
+) -> Array2<f64> {
+    let nc = cand.len();
+    assert_eq!(g.dim(), (nc, nc), "fock_dressed_gate: g is not |cand|²");
+    assert!(kappa > 0.0, "fock_dressed_gate: kappa must be positive");
+    let mut fsub = Array2::<f64>::zeros((nc, nc));
+    for (r, &a) in cand.iter().enumerate() {
+        for (c, &b) in cand.iter().enumerate() {
+            if r != c {
+                fsub[(r, c)] = f_vv[(a, b)];
+            }
+        }
+    }
+    let t0 = Array2::from_shape_fn((nc, nc), |(r, c)| {
+        -g[(r, c)] / (fv[cand[r]] + fv[cand[c]] - fo_i - fo_j)
+    });
+    let mut gt = fsub.dot(&t0);
+    gt += &t0.dot(&fsub);
+    gt += g;
+    let inv = 1.0 / kappa;
+    Array2::from_shape_fn((nc, nc), |(r, c)| {
+        g[(r, c)].abs().max(gt[(r, c)].abs() * inv)
+    })
+}
+
+/// [`fock_dressed_gate`] on the candidate square with the Fock sums over
+/// the FULL virtual space: `g_cf = g[cand, :]` (|C| × nv) and
+/// `g_fc = g[:, cand]` (nv × |C|) of the same pair, so
+///
+/// `g̃_rs = g_rs + Σ_{c ≠ a_r} F_{a_r c} t⁰_{c s} + Σ_{c ≠ b_s} t⁰_{r c} F_{c b_s}`
+///
+/// runs `c` over every virtual, not just the candidates. This is the
+/// full-square gate restricted to `cand × cand` (equal to it up to the
+/// GEMM summation order), which a candidate pre-filter must reproduce: a
+/// virtual can sit outside every retained element and still carry a
+/// dressed contribution into one.
+#[allow(clippy::too_many_arguments)]
+pub fn fock_dressed_gate_rect(
+    g_cf: &Array2<f64>,
+    g_fc: &Array2<f64>,
+    cand: &[usize],
+    f_vv: &Array2<f64>,
+    fo_i: f64,
+    fo_j: f64,
+    fv: &[f64],
+    kappa: f64,
+) -> Array2<f64> {
+    let (nc, nv) = (cand.len(), fv.len());
+    assert_eq!(
+        g_cf.dim(),
+        (nc, nv),
+        "fock_dressed_gate_rect: g_cf is not |cand|×nv"
+    );
+    assert_eq!(
+        g_fc.dim(),
+        (nv, nc),
+        "fock_dressed_gate_rect: g_fc is not nv×|cand|"
+    );
+    assert!(
+        kappa > 0.0,
+        "fock_dressed_gate_rect: kappa must be positive"
+    );
+    let oo = fo_i + fo_j;
+    let f_cf = Array2::from_shape_fn((nc, nv), |(r, c)| {
+        if c == cand[r] {
+            0.0
+        } else {
+            f_vv[(cand[r], c)]
+        }
+    });
+    let f_fc = Array2::from_shape_fn((nv, nc), |(c, s)| {
+        if c == cand[s] {
+            0.0
+        } else {
+            f_vv[(c, cand[s])]
+        }
+    });
+    let t_fc = Array2::from_shape_fn((nv, nc), |(c, s)| {
+        -g_fc[(c, s)] / (fv[c] + fv[cand[s]] - oo)
+    });
+    let t_cf = Array2::from_shape_fn((nc, nv), |(r, c)| {
+        -g_cf[(r, c)] / (fv[cand[r]] + fv[c] - oo)
+    });
+    let g_cc = Array2::from_shape_fn((nc, nc), |(r, s)| g_cf[(r, cand[s])]);
+    let mut gt = f_cf.dot(&t_fc);
+    gt += &t_cf.dot(&f_fc);
+    gt += &g_cc;
+    let inv = 1.0 / kappa;
+    Array2::from_shape_fn((nc, nc), |(r, s)| {
+        g_cc[(r, s)].abs().max(gt[(r, s)].abs() * inv)
+    })
+}
+
+/// Per-occupied weights of the Fock-aware Schwarz bound on the dressed gate
+/// (book ch. 13, §amplitude-lmp2-fock-screen-candidates). With `q` the
+/// (no × nv, row-major) Schwarz factors, `|g_ab| ≤ q_ia q_jb`, and
+/// `D_c = f_cc + min_b f_bb − 2 max_k f_kk`, a lower bound on every
+/// denominator `Δ_cb` and `Δ_ac` of any pair,
+///
+/// `w_ia = Σ_{c ≠ a} |F_ac| q_ic / D_c`,
+///
+/// so `|g̃_ab| ≤ q_ia q_jb + q_jb w_ia + q_ia w_jb`. Returns `(w, wmax)`
+/// with `wmax_i = max_a w_ia`, or `None` when some `D_c ≤ 0` (no bound:
+/// the caller keeps every virtual).
+pub fn fock_bound_weights(
+    q: &[f64],
+    no: usize,
+    f_vv: &Array2<f64>,
+    fo: &[f64],
+    fv: &[f64],
+) -> Option<(Vec<f64>, Vec<f64>)> {
+    let nv = fv.len();
+    assert_eq!(q.len(), no * nv, "fock_bound_weights: q is not no·nv");
+    let fv_min = fv.iter().cloned().fold(f64::INFINITY, f64::min);
+    let fo_max = fo.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let d: Vec<f64> = fv.iter().map(|&f| f + fv_min - 2.0 * fo_max).collect();
+    if d.iter().any(|&x| !(x > 0.0)) {
+        return None;
+    }
+    let fabs = Array2::from_shape_fn((nv, nv), |(a, c)| {
+        if a == c {
+            0.0
+        } else {
+            // max of the two orientations: valid even if F_vv is not
+            // symmetric to the last bit (the second term reads |F_cb|)
+            f_vv[(a, c)].abs().max(f_vv[(c, a)].abs())
+        }
+    });
+    // (nv × no) of q_ic / D_c, then |F'| · that
+    let qd = Array2::from_shape_fn((nv, no), |(c, i)| q[i * nv + c] / d[c]);
+    let wt = fabs.dot(&qd);
+    let mut w = vec![0.0f64; no * nv];
+    let mut wmax = vec![0.0f64; no];
+    for i in 0..no {
+        for a in 0..nv {
+            let x = wt[(a, i)];
+            w[i * nv + a] = x;
+            wmax[i] = wmax[i].max(x);
+        }
+    }
+    Some((w, wmax))
+}
+
+/// Whether virtual `a` can index a retained element of pair (i, j) under
+/// the Fock-dressed gate at threshold `eps` (either orientation, either
+/// mirror): the max over `b` of the bound in [`fock_bound_weights`], with
+/// the gate's `max(|g|, |g̃|/κ)`. A `false` here is a proof that the full-
+/// space gate keeps nothing in row or column `a`.
+#[allow(clippy::too_many_arguments)]
+pub fn fock_bound_keeps(
+    q: &[f64],
+    qmax: &[f64],
+    w: &[f64],
+    wmax: &[f64],
+    nv: usize,
+    i: usize,
+    j: usize,
+    a: usize,
+    eps: f64,
+    kappa: f64,
+) -> bool {
+    let (qia, qja) = (q[i * nv + a], q[j * nv + a]);
+    let plain = (qia * qmax[j]).max(qja * qmax[i]);
+    let m1 = qia * qmax[j] + qmax[j] * w[i * nv + a] + qia * wmax[j];
+    let m2 = qja * qmax[i] + qmax[i] * w[j * nv + a] + qja * wmax[i];
+    plain >= eps || m1.max(m2) / kappa >= eps
+}
+
+/// [`pair_block_from_g_cand`] for pair (i, j) AND, when `i ≠ j`, its mirror
+/// (j, i) from `gᵀ`, with the optional Fock-propagated gate
+/// ([`fock_dressed_gate`], `fock_screen = Some(κ)`). `None` is exactly the
+/// two plain calls (the production default). Inert at `eps == 0`, where the
+/// mask already keeps everything.
+#[allow(clippy::too_many_arguments)]
+pub fn pair_blocks_screened(
+    i: usize,
+    j: usize,
+    g: &Array2<f64>,
+    cand: &[usize],
+    nv_full: usize,
+    f_vv: &Array2<f64>,
+    fo: &[f64],
+    fv: &[f64],
+    eps: f64,
+    fock_screen: Option<f64>,
+) -> Vec<PairBlock> {
+    let gate = match fock_screen {
+        Some(kappa) if eps > 0.0 => Some(fock_dressed_gate(g, cand, f_vv, fo[i], fo[j], fv, kappa)),
+        _ => None,
+    };
+    pair_blocks_with_gate(i, j, g, gate.as_ref(), cand, nv_full, f_vv, fo, fv, eps)
+}
+
+/// [`pair_blocks_screened`] with the gate already evaluated (`None`: the
+/// plain Eq-8 mask on `g`). The caller that pre-filters the candidate set
+/// forms the dressed gate with the full-space intermediate sums
+/// ([`fock_dressed_gate_rect`]) and hands it in here.
+#[allow(clippy::too_many_arguments)]
+pub fn pair_blocks_with_gate(
+    i: usize,
+    j: usize,
+    g: &Array2<f64>,
+    gate: Option<&Array2<f64>>,
+    cand: &[usize],
+    nv_full: usize,
+    f_vv: &Array2<f64>,
+    fo: &[f64],
+    fv: &[f64],
+    eps: f64,
+) -> Vec<PairBlock> {
+    let mut out = Vec::with_capacity(if i == j { 1 } else { 2 });
+    let gate_ij = gate.unwrap_or(g);
+    if let Some(pb) =
+        pair_block_from_g_cand_gated(i, j, g, gate_ij, cand, nv_full, f_vv, fo, fv, eps)
+    {
+        out.push(pb);
+    }
+    if i != j {
+        let gt = g.t().to_owned();
+        let gate_t = gate.map(|x| x.t().to_owned());
+        let gate_ji = gate_t.as_ref().unwrap_or(&gt);
+        if let Some(pb) =
+            pair_block_from_g_cand_gated(j, i, &gt, gate_ji, cand, nv_full, f_vv, fo, fv, eps)
+        {
+            out.push(pb);
+        }
+    }
+    out
+}
+
 /// Zero out elements of `x` that lie outside the sparsity pattern `pat`.
 pub fn apply_pattern(x: &mut Array2<f64>, pat: &[bool], nb: usize) {
     for (r, mut row) in x.rows_mut().into_iter().enumerate() {
@@ -260,6 +638,18 @@ pub fn apply_pattern(x: &mut Array2<f64>, pat: &[bool], nb: usize) {
             }
         }
     }
+}
+
+/// Fraction of the full `(no·nv)²` amplitude space the pattern keeps:
+/// retained `(ia, jb)` entries over every pair block, divided by `(no·nv)²`.
+pub fn kept_fraction(rg: &Ragged, no: usize, nv: usize) -> f64 {
+    let kept: u64 = rg
+        .pairs
+        .iter()
+        .map(|pb| pb.pat.iter().filter(|&&x| x).count() as u64)
+        .sum();
+    let total = (no * nv) as u64 * (no * nv) as u64;
+    kept as f64 / total as f64
 }
 
 /// Element-wise dot product summed over a slice of block matrices.
@@ -302,18 +692,28 @@ where
 /// spectrum for free (see [`lanczos_kappa`]).
 #[derive(Debug, Clone, Default)]
 pub struct CgTrace {
+    /// Step length `α_k` of each iteration, in order.
     pub alphas: Vec<f64>,
+    /// Direction-update coefficient `β_k` applied before iteration `k+1`.
     pub betas: Vec<f64>,
 }
 
 /// Everything one ragged PCG solve returns.
 #[derive(Debug, Clone)]
 pub struct RaggedSolve {
+    /// Amplitude blocks, one `(|Da|, |Db|)` array per pair in `rg.pairs` order,
+    /// zero outside the retained pattern.
     pub t: Vec<Array2<f64>>,
+    /// PCG iterations (matvecs) performed.
     pub iterations: usize,
+    /// Recursive relative residual `‖r‖ / ‖P J‖` at the last iteration
+    /// (0 when `‖P J‖ = 0`).
     pub relres: f64,
+    /// Whether the final tolerance was reached within `max_iter`.
     pub converged: bool,
+    /// Multiply-add count per matvec, averaged over the iterations.
     pub flops_per_matvec: u64,
+    /// CG coefficients of the solve.
     pub trace: CgTrace,
 }
 
@@ -322,11 +722,14 @@ pub struct RaggedSolve {
 /// every matvec, no extra memory). Bitwise the same result either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatvecPath {
+    /// Through a prebuilt [`SolvePlan`].
     Planned,
+    /// Through [`matvec_indexed`], with no plan.
     Indexed,
 }
 
 impl MatvecPath {
+    /// Lower-case label for printouts (`"planned"` / `"indexed"`).
     pub fn as_str(self) -> &'static str {
         match self {
             MatvecPath::Planned => "planned",
@@ -341,8 +744,12 @@ impl MatvecPath {
 /// ([`solve_resident_bytes`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlanDecision {
+    /// The matvec the solve ran.
     pub path: MatvecPath,
+    /// Size of the solve plan in bytes, whether or not it was built.
     pub plan_bytes: usize,
+    /// Bytes resident beside the plan for the whole solve (`rg` plus the PCG
+    /// vectors).
     pub resident_bytes: usize,
 }
 
@@ -379,7 +786,9 @@ pub fn solve_ragged_budgeted(
 /// energy needs one more matvec). Holds the plan's pool reservation for as
 /// long as the plan lives.
 pub struct BudgetedSolve {
+    /// The PCG result.
     pub solve: RaggedSolve,
+    /// Which matvec ran and the byte counts behind that choice.
     pub decision: PlanDecision,
     plan: Option<SolvePlan>,
     _charge: Option<ferric_core::memory::pool::Reservation>,
@@ -433,26 +842,81 @@ pub fn solve_ragged_budgeted_steered<S>(
 where
     S: FnMut(f64) -> Option<f64>,
 {
-    let plan_bytes = SolvePlan::bytes_for_with_threshold(rg, f_oo, fvv_rho_star);
+    budgeted_steered_rhs(
+        rg,
+        f_oo,
+        neg_j_rhs(rg),
+        rtol,
+        max_iter,
+        budget_bytes,
+        fvv_rho_star,
+        steer,
+    )
+}
+
+/// Ragged PCG on the Fock operator with a caller-supplied right-hand side:
+/// solves `P A P t = P rhs` (the amplitude equations are `rhs = −J`, which is
+/// what [`solve_ragged`] passes). `rhs` holds one `(|Da|, |Db|)` block per
+/// pair in `rg.pairs` order. Budgeted like [`solve_ragged_traced`] (resolved
+/// default budget, every Fvv product dense), so `rhs = −J` reproduces
+/// [`solve_ragged_traced`] bit for bit.
+pub fn solve_ragged_rhs(
+    rg: &Ragged,
+    f_oo: &Array2<f64>,
+    rhs: &[Array2<f64>],
+    rtol: f64,
+    max_iter: usize,
+) -> RaggedSolve {
+    let budget = ferric_core::memory::resolve_budget_bytes(None);
+    budgeted_steered_rhs(rg, f_oo, rhs.to_vec(), rtol, max_iter, budget, 0.0, |_| {
+        None
+    })
+    .solve
+}
+
+/// [`solve_ragged_budgeted_steered`] with an explicit right-hand side.
+#[allow(clippy::too_many_arguments)]
+fn budgeted_steered_rhs<S>(
+    rg: &Ragged,
+    f_oo: &Array2<f64>,
+    rhs: Vec<Array2<f64>>,
+    rtol: f64,
+    max_iter: usize,
+    budget_bytes: usize,
+    fvv_rho_star: f64,
+    steer: S,
+) -> BudgetedSolve
+where
+    S: FnMut(f64) -> Option<f64>,
+{
     let resident_bytes = solve_resident_bytes(rg, max_iter);
-    let Some(charge) = admit_plan(plan_bytes, resident_bytes, budget_bytes) else {
-        eprintln!(
-            "  ragged PCG: gather plan ({:.3} GB) + resident solve ({:.3} GB) over the memory \
-             budget ({:.3} GB) or the pool; using the plan-free indexed matvec (same result, \
-             slower)",
-            plan_bytes as f64 / 1e9,
-            resident_bytes as f64 / 1e9,
-            budget_bytes as f64 / 1e9
-        );
+    // A system split over ranks runs the indexed matvec: the gather plan is
+    // built over every block and would need them all here.
+    let plan_bytes = match rg.share {
+        None => SolvePlan::bytes_for_with_threshold(rg, f_oo, fvv_rho_star),
+        Some(_) => 0,
+    };
+    let admitted = match rg.share {
+        None => admit_plan(plan_bytes, resident_bytes, budget_bytes),
+        Some(_) => None,
+    };
+    let Some(charge) = admitted else {
+        if rg.share.is_none() {
+            eprintln!(
+                "  ragged PCG: gather plan ({:.3} GB) + resident solve ({:.3} GB) over the \
+                 memory budget ({:.3} GB) or the pool; using the plan-free indexed matvec \
+                 (same result, slower)",
+                plan_bytes as f64 / 1e9,
+                resident_bytes as f64 / 1e9,
+                budget_bytes as f64 / 1e9
+            );
+        }
         let solve = pcg_steered(
             rg,
+            rhs,
             rtol,
             max_iter,
-            |p, ap, flops| {
-                for (slot, v) in ap.iter_mut().zip(matvec_indexed(rg, f_oo, p, flops)) {
-                    *slot = v;
-                }
-            },
+            |p, ap, flops| matvec_indexed_into(rg, f_oo, p, ap, flops),
             steer,
         );
         return BudgetedSolve {
@@ -469,6 +933,7 @@ where
     let plan = SolvePlan::with_fvv_threshold(rg, f_oo, fvv_rho_star);
     let solve = pcg_steered(
         rg,
+        rhs,
         rtol,
         max_iter,
         |p, ap, flops| matvec_planned(rg, &plan, p, ap, flops),
@@ -590,7 +1055,13 @@ fn pcg_core<F>(rg: &Ragged, rtol: f64, max_iter: usize, matvec_into: F) -> Ragge
 where
     F: FnMut(&[Array2<f64>], &mut [Array2<f64>], &mut u64),
 {
-    pcg_steered(rg, rtol, max_iter, matvec_into, |_| None)
+    pcg_steered(rg, neg_j_rhs(rg), rtol, max_iter, matvec_into, |_| None)
+}
+
+/// The amplitude equations' right-hand side `−J`, one block per pair (not
+/// yet pattern-projected; [`pcg_steered`] projects it).
+fn neg_j_rhs(rg: &Ragged) -> Vec<Array2<f64>> {
+    rg.pairs.iter().map(|pb| -pb.j_blk.clone()).collect()
 }
 
 /// [`pcg_core`] with a continuation rule: on reaching the current tolerance,
@@ -599,8 +1070,14 @@ where
 /// step, so stopping and continuing changes no iterate. A tolerance the
 /// current residual already meets ends the solve. Exhausting `max_iter`
 /// leaves `converged` false.
+///
+/// `rhs` is the right-hand side `b` of `P A P t = P b`, one block per pair
+/// in `rg.pairs` order with that pair's `(|Da|, |Db|)` shape; it is
+/// pattern-projected here and becomes the initial residual (taken by value:
+/// no second copy). The amplitude equations pass `−J` ([`neg_j_rhs`]).
 fn pcg_steered<F, S>(
     rg: &Ragged,
+    rhs: Vec<Array2<f64>>,
     rtol: f64,
     max_iter: usize,
     mut matvec_into: F,
@@ -611,25 +1088,31 @@ where
     S: FnMut(f64) -> Option<f64>,
 {
     use ndarray::Zip;
-    let zeros: Vec<Array2<f64>> = rg
-        .pairs
-        .iter()
-        .map(|pb| Array2::<f64>::zeros((pb.da.len(), pb.db.len())))
-        .collect();
-    let mut r: Vec<Array2<f64>> = rg
-        .pairs
-        .iter()
-        .map(|pb| {
-            let mut b = -pb.j_blk.clone();
-            apply_pattern(&mut b, &pb.pat, pb.db.len());
-            b
-        })
-        .collect();
-    let bnorm = dot_blocks(&r, &r).sqrt();
+    let zeros = rg.owned_zeros();
+    assert_eq!(
+        rhs.len(),
+        rg.pairs.len(),
+        "ragged PCG: one rhs block per pair"
+    );
+    let mut r = rhs;
+    for (p, (b, pb)) in r.iter_mut().zip(&rg.pairs).enumerate() {
+        if !rg.owns(p) {
+            continue;
+        }
+        assert_eq!(
+            b.dim(),
+            (pb.da.len(), pb.db.len()),
+            "ragged PCG: rhs block shape"
+        );
+        apply_pattern(b, &pb.pat, pb.db.len());
+    }
+    let bnorm = rg.dot(&r, &r).sqrt();
     let mut trace = CgTrace::default();
     if bnorm == 0.0 {
+        let mut t = zeros;
+        rg.spread(&mut t);
         return RaggedSolve {
-            t: zeros,
+            t,
             iterations: 0,
             relres: 0.0,
             converged: true,
@@ -649,9 +1132,12 @@ where
     let mut t = zeros.clone();
     let mut z = zeros.clone();
     precond_into(&r, &mut z);
+    // Under a share `p` is the one vector every rank holds whole: the
+    // matvec reads the other ranks' blocks of it.
     let mut p = z.clone();
+    rg.spread(&mut p);
     let mut ap = zeros;
-    let mut rz = dot_blocks(&r, &z);
+    let mut rz = rg.dot(&r, &z);
     let (mut it, mut relres) = (0, 1.0);
     let mut target = rtol;
     let converged = loop {
@@ -659,25 +1145,28 @@ where
         while it < max_iter {
             if it > 0 {
                 precond_into(&r, &mut z);
-                let rz_new = dot_blocks(&r, &z);
+                let rz_new = rg.dot(&r, &z);
                 let beta = rz_new / rz;
                 trace.betas.push(beta);
-                for (pk, zk) in p.iter_mut().zip(&z) {
-                    Zip::from(pk)
-                        .and(zk)
-                        .for_each(|pv, &zv| *pv = zv + beta * *pv);
+                for (k, (pk, zk)) in p.iter_mut().zip(&z).enumerate() {
+                    if rg.owns(k) {
+                        Zip::from(pk)
+                            .and(zk)
+                            .for_each(|pv, &zv| *pv = zv + beta * *pv);
+                    }
                 }
+                rg.spread(&mut p);
                 rz = rz_new;
             }
             it += 1;
             matvec_into(&p, &mut ap, &mut flops_total);
-            let alpha = rz / dot_blocks(&p, &ap);
+            let alpha = rz / rg.dot(&p, &ap);
             trace.alphas.push(alpha);
-            for k in 0..p.len() {
+            for k in (0..p.len()).filter(|&k| rg.owns(k)) {
                 t[k].scaled_add(alpha, &p[k]);
                 r[k].scaled_add(-alpha, &ap[k]);
             }
-            relres = dot_blocks(&r, &r).sqrt() / bnorm;
+            relres = rg.dot(&r, &r).sqrt() / bnorm;
             if relres < target {
                 reached = true;
                 break;
@@ -692,6 +1181,9 @@ where
         }
     };
     let flops_per_mv = if it > 0 { flops_total / it as u64 } else { 0 };
+    // The energy's matvec reads every block of the amplitudes.
+    drop((r, z, ap, p));
+    rg.spread(&mut t);
     RaggedSolve {
         t,
         iterations: it,
@@ -716,12 +1208,34 @@ pub fn matvec_indexed(
     t: &[Array2<f64>],
     flops: &mut u64,
 ) -> Vec<Array2<f64>> {
+    let mut out: Vec<Array2<f64>> = rg.pairs.iter().map(|_| Array2::zeros((0, 0))).collect();
+    matvec_indexed_into(rg, f_oo, t, &mut out, flops);
+    out
+}
+
+/// [`matvec_indexed`] writing each block into its slot of `out` (prior
+/// contents replaced) as soon as it is computed, so the matvec holds one
+/// block per rayon worker beside `out` instead of a second full
+/// amplitude-shaped vector. Same per-block arithmetic: bitwise
+/// [`matvec_indexed`].
+pub fn matvec_indexed_into(
+    rg: &Ragged,
+    f_oo: &Array2<f64>,
+    t: &[Array2<f64>],
+    out: &mut [Array2<f64>],
+    flops: &mut u64,
+) {
     use rayon::prelude::*;
-    let results: Vec<(Array2<f64>, u64)> = rg
-        .pairs
-        .par_iter()
+    let fl: u64 = out
+        .par_iter_mut()
+        .zip(rg.pairs.par_iter())
         .enumerate()
-        .map(|(p_idx, pb)| {
+        .map(|(p_idx, (slot, pb))| {
+            if !rg.owns(p_idx) {
+                // another rank's output block
+                *slot = Array2::zeros((0, 0));
+                return 0;
+            }
             let (na, nb) = (pb.da.len(), pb.db.len());
             let mut fl = (na * na * nb + na * nb * nb) as u64;
             let mut r = pb.fvv_aa.dot(&t[p_idx]);
@@ -743,15 +1257,11 @@ pub fn matvec_indexed(
                 gather_into(&mut r, qb, pb, -f, &t[q], &mut fl);
             }
             apply_pattern(&mut r, &pb.pat, nb);
-            (r, fl)
+            *slot = r;
+            fl
         })
-        .collect();
-    let mut out = Vec::with_capacity(results.len());
-    for (r, fl) in results {
-        *flops += fl;
-        out.push(r);
-    }
-    out
+        .sum();
+    *flops += fl;
 }
 
 /// One Fock-coupling edge of an output pair's matvec, pre-resolved from the
@@ -949,6 +1459,11 @@ pub fn matvec_planned(
     flops: &mut u64,
 ) {
     use rayon::prelude::*;
+    assert!(
+        rg.share.is_none(),
+        "matvec_planned: the gather plan covers every block; a system split over ranks runs \
+         the indexed matvec"
+    );
     let fl: u64 = out
         .par_iter_mut()
         .enumerate()
@@ -1368,6 +1883,7 @@ pub fn ring_product(rg: &Ragged, x: &[Array2<f64>], y: &[Array2<f64>]) -> Vec<Ar
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ndarray::{s, Axis};
 
     /// One (1 × m) pair block with a full pattern and the given denominators.
     fn diag_block(denom: &[f64]) -> Ragged {
@@ -1390,7 +1906,60 @@ mod tests {
             pairs: vec![pb],
             by_i: HashMap::from([(0, vec![0])]),
             by_j: HashMap::from([(0, vec![0])]),
+            share: None,
         }
+    }
+
+    /// `kept_fraction` counts retained entries over the FULL `(no·nv)²`
+    /// space: one 1×5 block with 4 of 5 kept, in a no = 1, nv = 5 space, is
+    /// 4/25 exactly (a per-block or per-pair denominator gives 4/5).
+    #[test]
+    fn kept_fraction_is_over_the_full_amplitude_space() {
+        let mut rg = diag_block(&[1.0; 5]);
+        rg.pairs[0].pat[2] = false;
+        assert_eq!(
+            kept_fraction(&rg, 1, 5).to_bits(),
+            (4.0f64 / 25.0).to_bits()
+        );
+    }
+
+    /// The explicit-rhs seam: `rhs = −J` is the amplitude solve bit for bit,
+    /// and the solve is linear in the rhs — doubling it (exact in floating
+    /// point: every CG scalar is scale-invariant) doubles every amplitude
+    /// exactly. A seam that ignored `rhs` (solving −J regardless) fails the
+    /// second check.
+    #[test]
+    fn explicit_rhs_matches_the_amplitude_solve_and_is_linear() {
+        let m = 5;
+        let mut rg = diag_block(&[1.5, 1.8, 2.1, 2.6, 3.0]);
+        let pb = &mut rg.pairs[0];
+        pb.fvv_aa = Array2::from_elem((1, 1), 0.5);
+        pb.fvv_bb = Array2::from_shape_fn(
+            (m, m),
+            |(a, b)| {
+                if a == b {
+                    1.0 + 0.3 * a as f64
+                } else {
+                    0.05
+                }
+            },
+        );
+        let f_oo = Array2::from_elem((1, 1), -0.4);
+        let base = solve_ragged_traced(&rg, &f_oo, 1e-12, 100);
+        assert!(base.converged);
+        let neg_j: Vec<Array2<f64>> = rg.pairs.iter().map(|pb| -&pb.j_blk).collect();
+        let same = solve_ragged_rhs(&rg, &f_oo, &neg_j, 1e-12, 100);
+        let bits = |t: &[Array2<f64>]| -> Vec<u64> {
+            t.iter()
+                .flat_map(|b| b.iter().map(|x| x.to_bits()))
+                .collect()
+        };
+        assert_eq!(bits(&same.t), bits(&base.t));
+        assert_eq!(same.iterations, base.iterations);
+        let twice: Vec<Array2<f64>> = neg_j.iter().map(|b| b * 2.0).collect();
+        let doubled = solve_ragged_rhs(&rg, &f_oo, &twice, 1e-12, 100);
+        let scaled: Vec<Array2<f64>> = base.t.iter().map(|b| b * 2.0).collect();
+        assert_eq!(bits(&doubled.t), bits(&scaled));
     }
 
     /// The CG-coefficient κ estimate on an operator with a KNOWN spectrum:
@@ -1438,6 +2007,7 @@ mod tests {
             pairs: vec![pb],
             by_i: HashMap::from([(0, vec![0])]),
             by_j: HashMap::from([(1, vec![0])]),
+            share: None,
         };
         assert!(check_swap_closed(&rg(pb.clone())).is_ok());
         let off = (0..n * n)
@@ -1505,5 +2075,308 @@ mod tests {
             pair_block_from_g_cand_gated(0, 1, &g, &zero, &cand, nv, &f_vv, &fo, &fv, 1e-4)
                 .is_none()
         );
+    }
+
+    /// Random pair data for the Fock-gate tests: (g, f_vv, fo, fv, cand) on
+    /// a 7-virtual space with a 5-element candidate subset.
+    #[allow(clippy::type_complexity)]
+    fn fock_gate_data() -> (Array2<f64>, Array2<f64>, Vec<f64>, Vec<f64>, Vec<usize>) {
+        let nv = 7;
+        let mut seed = 7u64;
+        let mut rnd = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((seed >> 11) as f64 / (1u64 << 53) as f64) - 0.5
+        };
+        let cand = vec![0usize, 2, 3, 5, 6];
+        let nc = cand.len();
+        // candidate 0 has ZERO integrals with everything (the symmetry-zero
+        // case): Eq 8 can never keep it, its dressed integral is not zero
+        let g = Array2::from_shape_fn((nc, nc), |(a, b)| {
+            let x = 1e-3 * rnd();
+            if a == 0 || b == 0 {
+                0.0
+            } else {
+                x
+            }
+        });
+        let mut f_vv = Array2::from_shape_fn((nv, nv), |_| 0.2 * rnd());
+        f_vv = &f_vv + &f_vv.t();
+        let fv: Vec<f64> = (0..nv).map(|a| 0.5 + 0.3 * a as f64).collect();
+        for a in 0..nv {
+            f_vv[(a, a)] = fv[a];
+        }
+        (g, f_vv, vec![-0.9, -0.6, -0.4], fv, cand)
+    }
+
+    /// The gate against an independent elementwise transcription of
+    /// g̃_ab = g_ab − Σ_{c≠a} F_ac g_cb/Δ_cb − Σ_{c≠b} g_ac F_cb/Δ_ac, and its
+    /// pair-transpose covariance gate(gᵀ, i↔j) = gate(g)ᵀ. Mutation seen to
+    /// fail (2026-11-16): dropping either Fock product breaks both checks.
+    #[test]
+    fn fock_dressed_gate_matches_elementwise_formula_and_is_transpose_covariant() {
+        let (g, f_vv, fo, fv, cand) = fock_gate_data();
+        let nc = cand.len();
+        let (i, j) = (0usize, 2usize);
+        let kappa = 0.3;
+        let gate = fock_dressed_gate(&g, &cand, &f_vv, fo[i], fo[j], &fv, kappa);
+        let d = |r: usize, c: usize| fv[cand[r]] + fv[cand[c]] - fo[i] - fo[j];
+        let mut worst = 0.0f64;
+        for a in 0..nc {
+            for b in 0..nc {
+                let mut gt = g[(a, b)];
+                for c in 0..nc {
+                    if c != a {
+                        gt -= f_vv[(cand[a], cand[c])] * g[(c, b)] / d(c, b);
+                    }
+                    if c != b {
+                        gt -= g[(a, c)] * f_vv[(cand[c], cand[b])] / d(a, c);
+                    }
+                }
+                let want = g[(a, b)].abs().max(gt.abs() / kappa);
+                worst = worst.max((gate[(a, b)] - want).abs());
+                assert!(gate[(a, b)] >= g[(a, b)].abs(), "union never drops Eq 8");
+            }
+        }
+        assert!(worst < 1e-18, "gate vs elementwise formula: {worst:.2e}");
+        let gt = g.t().to_owned();
+        let gate_t = fock_dressed_gate(&gt, &cand, &f_vv, fo[j], fo[i], &fv, kappa);
+        let dev = (&gate_t - &gate.t())
+            .iter()
+            .fold(0.0f64, |m, x| m.max(x.abs()));
+        assert!(dev < 1e-18, "transpose covariance: {dev:.2e}");
+    }
+
+    /// Factorized pair data g = B_iᵀ B_j (so |g_ab| ≤ q_ia q_jb holds
+    /// exactly), a dense symmetric F_vv with diagonal fv, and fo < 0.
+    #[allow(clippy::type_complexity)]
+    fn factorized_pair(
+        nv: usize,
+        naux: usize,
+        seed: u64,
+    ) -> (Array2<f64>, Vec<f64>, Array2<f64>, Vec<f64>, Vec<f64>) {
+        let mut st = seed;
+        let mut rnd = || {
+            st = st
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((st >> 11) as f64 / (1u64 << 53) as f64) - 0.5
+        };
+        // two occupieds; decaying columns so the Schwarz factors spread
+        let mut b = Array2::<f64>::zeros((naux, 2 * nv));
+        for k in 0..2 {
+            for a in 0..nv {
+                let amp = (-(a as f64) * 0.35 * (1.0 + k as f64)).exp();
+                for p in 0..naux {
+                    b[(p, k * nv + a)] = amp * rnd();
+                }
+            }
+        }
+        let g = b.slice(s![.., 0..nv]).t().dot(&b.slice(s![.., nv..2 * nv]));
+        let q: Vec<f64> = (0..2 * nv)
+            .map(|c| b.column(c).dot(&b.column(c)).sqrt())
+            .collect();
+        let mut f = Array2::<f64>::zeros((nv, nv));
+        let fv: Vec<f64> = (0..nv).map(|a| 0.6 + 0.1 * a as f64).collect();
+        for a in 0..nv {
+            f[(a, a)] = fv[a];
+            for c in 0..a {
+                let x = 0.3 * rnd();
+                f[(a, c)] = x;
+                f[(c, a)] = x;
+            }
+        }
+        (g, q, f, fv, vec![-0.5, -0.4])
+    }
+
+    /// The rectangular gate (Fock sums over every virtual) is the full-square
+    /// gate restricted to the candidates, and NOT the candidate-square gate
+    /// (whose sums run over the candidates only — the pre-2026-11-19 bug).
+    #[test]
+    fn rect_gate_is_the_full_square_gate_restricted() {
+        let nv = 12;
+        let (g, _, f, fv, fo) = factorized_pair(nv, 20, 7);
+        let all: Vec<usize> = (0..nv).collect();
+        let cand = vec![0usize, 2, 3, 7, 11];
+        let full = fock_dressed_gate(&g, &all, &f, fo[0], fo[1], &fv, 0.5);
+        let g_cf = g.select(Axis(0), &cand);
+        let g_fc = g.select(Axis(1), &cand);
+        let rect = fock_dressed_gate_rect(&g_cf, &g_fc, &cand, &f, fo[0], fo[1], &fv, 0.5);
+        let g_cc = g_cf.select(Axis(1), &cand);
+        let sq = fock_dressed_gate(&g_cc, &cand, &f, fo[0], fo[1], &fv, 0.5);
+        let (mut dev, mut dsq) = (0.0f64, 0.0f64);
+        for (r, &a) in cand.iter().enumerate() {
+            for (c, &b) in cand.iter().enumerate() {
+                dev = dev.max((rect[(r, c)] - full[(a, b)]).abs());
+                dsq = dsq.max((sq[(r, c)] - full[(a, b)]).abs());
+            }
+        }
+        assert!(dev < 1e-14, "rect vs full-square gate: {dev:.2e}");
+        assert!(
+            dsq > 1e-6,
+            "test cannot see a candidate-only Fock sum: {dsq:.2e}"
+        );
+    }
+
+    /// The Fock-aware bound dominates the full-square gate elementwise, so a
+    /// virtual it rejects has no retained element in either orientation; and
+    /// the plain Eq-8 Schwarz filter does NOT (it misses some virtual on this
+    /// data), which is what made the bound necessary.
+    #[test]
+    fn fock_bound_dominates_the_dressed_gate() {
+        let nv = 14;
+        let kappa = 1.0;
+        let mut plain_misses = 0usize;
+        for seed in 1..40u64 {
+            let (g, q, f, fv, fo) = factorized_pair(nv, 16, seed);
+            let all: Vec<usize> = (0..nv).collect();
+            let gate = fock_dressed_gate(&g, &all, &f, fo[0], fo[1], &fv, kappa);
+            let (w, wmax) = fock_bound_weights(&q, 2, &f, &fo, &fv).unwrap();
+            let qmax: Vec<f64> = (0..2)
+                .map(|k| q[k * nv..(k + 1) * nv].iter().cloned().fold(0.0, f64::max))
+                .collect();
+            for a in 0..nv {
+                for b in 0..nv {
+                    let beta = q[a] * q[nv + b] + q[nv + b] * w[a] + q[a] * w[nv + b];
+                    assert!(
+                        gate[(a, b)] <= (q[a] * q[nv + b]).max(beta / kappa) * (1.0 + 1e-12),
+                        "bound violated at seed {seed} ({a},{b})"
+                    );
+                }
+                // the row/column of a: the largest gate entry anywhere in it
+                let reach = (0..nv).fold(0.0f64, |m, b| m.max(gate[(a, b)]).max(gate[(b, a)]));
+                // just below that, the gate keeps something in row/col a
+                let eps = 0.999 * reach;
+                assert!(
+                    fock_bound_keeps(&q, &qmax, &w, &wmax, nv, 0, 1, a, eps, kappa),
+                    "bound rejected a retained virtual (seed {seed}, a={a})"
+                );
+                if !(q[a] * qmax[1] >= eps || q[nv + a] * qmax[0] >= eps) {
+                    plain_misses += 1;
+                }
+            }
+        }
+        assert!(
+            plain_misses > 0,
+            "plain Schwarz filter never misses: test is vacuous"
+        );
+    }
+
+    /// No bound without a positive denominator floor: `D_c ≤ 0` for some
+    /// `c` returns `None`, and the in-core assembly then keeps every virtual.
+    #[test]
+    fn fock_bound_weights_refuses_a_nonpositive_denominator() {
+        let f = Array2::from_shape_vec((2, 2), vec![0.1, 0.05, 0.05, 0.3]).unwrap();
+        let q = vec![1.0, 1.0];
+        assert!(fock_bound_weights(&q, 1, &f, &[-0.5], &[0.1, 0.3]).is_some());
+        assert!(fock_bound_weights(&q, 1, &f, &[0.2], &[0.1, 0.3]).is_none());
+    }
+
+    /// CodeRabbit's toy (PR #671 review): one occupied, whitened row
+    /// [1e-6, 1], f_oo = −1, f_vv = [[2, 0.5], [0.5, 2]], ε = 1e-4. The plain
+    /// filter keeps only virtual 1; the dressed gate of (0, 1) clears ε, so
+    /// the Fock-aware bound must keep virtual 0.
+    #[test]
+    fn fock_bound_keeps_the_review_toy() {
+        let b = Array2::from_shape_vec((1, 2), vec![1e-6, 1.0]).unwrap();
+        let g = b.t().dot(&b);
+        let f = Array2::from_shape_vec((2, 2), vec![2.0, 0.5, 0.5, 2.0]).unwrap();
+        let (fv, fo) = (vec![2.0, 2.0], vec![-1.0]);
+        let q = vec![1e-6, 1.0];
+        let eps = 1e-4;
+        let gate = fock_dressed_gate(&g, &[0, 1], &f, fo[0], fo[0], &fv, 1.0);
+        assert!(gate[(0, 1)] > eps, "toy gate {:.3e}", gate[(0, 1)]);
+        assert!(
+            q[0] * 1.0 < eps,
+            "plain filter keeps virtual 0: toy is vacuous"
+        );
+        let (w, wmax) = fock_bound_weights(&q, 1, &f, &fo, &fv).unwrap();
+        assert!(fock_bound_keeps(
+            &q,
+            &[1.0],
+            &w,
+            &wmax,
+            2,
+            0,
+            0,
+            0,
+            eps,
+            1.0
+        ));
+    }
+
+    /// `fock_screen = None` is the two plain builder calls, bitwise; `Some`
+    /// keeps a superset of the Eq-8 pattern, keeps the retained values from
+    /// `g`, stays swap-closed, and is inert at eps = 0. A vacuous κ keeps the
+    /// whole candidate square.
+    #[test]
+    fn screened_blocks_none_is_bitwise_plain_and_some_is_a_superset() {
+        let (g, f_vv, fo, fv, cand) = fock_gate_data();
+        let nv = f_vv.nrows();
+        let (i, j) = (0usize, 1usize);
+        let eps = 5e-6;
+        let plain_ij = pair_block_from_g_cand(i, j, &g, &cand, nv, &f_vv, &fo, &fv, eps).unwrap();
+        let gt = g.t().to_owned();
+        let plain_ji = pair_block_from_g_cand(j, i, &gt, &cand, nv, &f_vv, &fo, &fv, eps).unwrap();
+        let none = pair_blocks_screened(i, j, &g, &cand, nv, &f_vv, &fo, &fv, eps, None);
+        assert_eq!(none.len(), 2);
+        for (x, y) in none.iter().zip([&plain_ij, &plain_ji]) {
+            assert_eq!(
+                (x.i, x.j, &x.da, &x.db, &x.pat),
+                (y.i, y.j, &y.da, &y.db, &y.pat)
+            );
+            assert!(x
+                .j_blk
+                .iter()
+                .zip(y.j_blk.iter())
+                .all(|(p, q)| p.to_bits() == q.to_bits()));
+        }
+        let some = pair_blocks_screened(i, j, &g, &cand, nv, &f_vv, &fo, &fv, eps, Some(1.0));
+        let count = |pb: &PairBlock| pb.pat.iter().filter(|&&k| k).count();
+        let mut grew = false;
+        for (x, y) in some.iter().zip([&plain_ij, &plain_ji]) {
+            let nb = x.db.len();
+            let ynb = y.db.len();
+            for (r, &a) in y.da.iter().enumerate() {
+                for (c, &b) in y.db.iter().enumerate() {
+                    if y.pat[r * ynb + c] {
+                        let (xr, xc) = (x.pos_da[a], x.pos_db[b]);
+                        assert!(x.pat[xr * nb + xc], "Eq-8 element dropped by the screen");
+                        assert_eq!(x.j_blk[(xr, xc)].to_bits(), y.j_blk[(r, c)].to_bits());
+                    }
+                }
+            }
+            grew |= count(x) > count(y);
+        }
+        assert!(
+            grew,
+            "test data must exercise the screen (no element added)"
+        );
+        let rg = Ragged {
+            pairs: some,
+            by_i: HashMap::from([(0, vec![0]), (1, vec![1])]),
+            by_j: HashMap::from([(1, vec![0]), (0, vec![1])]),
+            share: None,
+        };
+        check_swap_closed(&rg).unwrap();
+        // vacuous κ: every element with a nonzero dressed integral is kept
+        // (shifted g so that no element is an exact structural zero)
+        let g_nz = g.mapv(|x| x + 1e-9);
+        let vac = pair_blocks_screened(i, j, &g_nz, &cand, nv, &f_vv, &fo, &fv, eps, Some(1e-300));
+        assert!(vac
+            .iter()
+            .all(|pb| pb.pat.iter().all(|&k| k) && pb.da == cand));
+        let at0 = pair_blocks_screened(i, j, &g, &cand, nv, &f_vv, &fo, &fv, 0.0, Some(1.0));
+        let plain0 = pair_block_from_g_cand(i, j, &g, &cand, nv, &f_vv, &fo, &fv, 0.0).unwrap();
+        assert_eq!(at0[0].pat, plain0.pat);
+        // a huge κ silences the dressed term: the union must then be exactly
+        // the plain pattern (mutation seen to fail 2026-11-16: a gate of
+        // |g~|/κ alone, without the |g| arm, drops the plain elements)
+        let big = pair_blocks_screened(i, j, &g, &cand, nv, &f_vv, &fo, &fv, eps, Some(1e12));
+        assert_eq!(big.len(), 2, "the union must keep the plain blocks");
+        for (x, y) in big.iter().zip([&plain_ij, &plain_ji]) {
+            assert_eq!((&x.da, &x.db, &x.pat), (&y.da, &y.db, &y.pat));
+        }
     }
 }

@@ -62,42 +62,33 @@
 //! machinery reuses [`ferric_integrals::engine::Engine::compute_eri3_deriv`]
 //! exactly as Lane A's `smeared_charge_qm_gradient`/`smeared_site_forces` do.
 //!
-//! The exact scalar relating the raw p-shell integral `(mu nu|p_i)` to the
-//! physical field integral `<mu|(r-R_i)/|r-R_i|^3|nu>` was NOT assumed — it
-//! was MEASURED against an independent code path (the nuclear-attraction
-//! derivative-with-respect-to-an-extra-point-charge's-OWN-position, via
-//! `compute_1e_deriv_block_n`) in
-//! `crates/ferric-scf/tests/qmmm_polarizable.rs::p_shell_dipole_potential_matches_charge_derivative_block`,
-//! which ALSO caught a real ordering bug: libint2's cartesian p-shell
-//! function order for this build is **not** `[p_x, p_y, p_z]` matched to
-//! field axes `[x, y, z]` — an exhaustive 9-pairing least-squares fit (every
-//! (field axis, p-shell function) pair) found near-zero residual, shrinking
-//! ~10x per 10x increase in `zeta`, at EVERY `zeta` in
-//! `{1e2,1e3,1e4,1e5,1e6}`, ONLY for
+//! The scalar relating the raw p-shell integral `(mu nu|p_i)` to the physical
+//! field integral `<mu|(r-R_i)/|r-R_i|^3|nu>` follows from the definition of a
+//! pure l=1 shell, and is pinned against an independent code path (the
+//! nuclear-attraction derivative with respect to an extra point charge's OWN
+//! position, via `compute_1e_deriv_block_n`) in
+//! `crates/ferric-scf/tests/qmmm_polarizable.rs::p_shell_dipole_potential_matches_charge_derivative_block`:
+//!
+//! * **Axis order.** libint2's pure l=1 functions run over `m = -1, 0, +1`,
+//!   i.e. `(y, z, x)`, not `(x, y, z)`. The function that pairs with field axis
+//!   `c` (x, y, z = 0, 1, 2) therefore sits at index `(c + 2) mod 3`.
+//! * **Scale.** A normalised p function `N_p (x-R_x) exp(-zeta r^2)` with
+//!   `N_p = (2 zeta/pi)^(3/4) 2 sqrt(zeta)` acts, as `zeta -> infinity`, as a
+//!   gradient-of-delta probe: `int p_x g ~ c_p dg/dx(R)` with
+//!   `c_p = N_p pi^(3/2) / (2 zeta^(5/2)) = 1/norm_int_p(zeta)`. Applying it to
+//!   `g = 1/|r-R|` gives `grad_R (1/|r-R|) = -(r-R)/|r-R|^3`, so
 //!
 //! ```text
 //! field_axis[c] = -norm_int_p(zeta) * (mu nu | p_{(c+2) mod 3})
 //! norm_int_p(zeta) = 2^(1/4) zeta^(5/4) / (2 pi^(3/4))
 //! ```
 //!
-//! i.e. the p-shell function that pairs with field axis `c` is at cartesian
-//! index `(c + 2) mod 3` (a cyclic permutation, not the identity), and the
-//! raw p-shell integral must be MULTIPLIED by `norm_int_p(zeta)` (with a
-//! minus sign), not divided — an earlier symbolic derivation from first
-//! principles (unnormalized `p_x = (x-R_x) exp(-zeta r^2)` vs unnormalized
-//! `g = exp(-zeta r^2)`, both rescaled to unit self-overlap) predicted the
-//! IDENTITY permutation with a POSITIVE sign and a DIVISION by `norm_int_p`
-//! — that symbolic prediction was independently checked against this
-//! MEASURED result and falsified (both individually-verified sub-facts it
-//! was built from checked out under separate probes, but their combination
-//! did not match measurement, meaning the combination step itself, not
-//! either sub-fact, was where the derivation went wrong — an object lesson
-//! in trusting the independent numeric pin over a symbolic derivation that
-//! LOOKS complete). The empirical fit is what ships: `k(zeta) = -79.704,
-//! -1417.0, -25198.0, -448090, -7968290` for `zeta = 1e2..1e6` matches
-//! `-norm_int_p(zeta)` to 4-7 significant figures (converging as
-//! `zeta -> infinity`, tracked in `p_shell_zeta_convergence_sweep`) — see
-//! `p_axis_for_field_axis` and `norm_int_p_shell`.
+//!   the raw integral is MULTIPLIED by `norm_int_p(zeta)` (with a minus sign).
+//!   The relation is exact only as `zeta -> infinity`: the fitted
+//!   `k(zeta) = -79.704, -1417.0, -25198.0, -448090, -7968290` for
+//!   `zeta = 1e2..1e6` matches `-norm_int_p(zeta)` to 4-7 significant figures,
+//!   converging with `zeta` (`p_shell_zeta_convergence_sweep`). See
+//!   `p_axis_for_field_axis` and `norm_int_p_shell`.
 //!
 //! **A second, separate sign subtlety** bit the first implementation of
 //! `build_v_induced` even after this pin passed: the RAW derivative
@@ -112,22 +103,30 @@
 //!
 //! # Exclusions
 //!
-//! `PolarizableSites.exclusions` is a set of unordered `(i, j)` pairs
-//! (indices into `sites`) with:
+//! Two lists, both empty by default (every site sees every other site's
+//! permanent charge and every other site's induced dipole, which is correct
+//! only for isolated, non-bonded polarizable sites such as ions):
 //!
-//! 1. **no mutual induction**: `T_ij` is forced to zero for an excluded pair
-//!    (neither site polarises the other), and
-//! 2. **no permanent-field coupling from the SAME pair**: this is
-//!    implemented by POSITION, not by a separate index map — a permanent
-//!    charge in `ext` located at (within `COLOCATION_TOL` Bohr of) an
-//!    excluded partner site's position is dropped from that site's `E^perm`
-//!    sum. This matches the standard use-case (a polarizable site typically
-//!    IS a permanently-charged MM atom — see `QmmmAtom{x,y,z,charge,alpha}`
-//!    in `crate::qmmm`, one atom, one position, both roles at once) and
-//!    needs no separate site<->ext-charge index field beyond the two lists'
-//!    shared geometry. Default (empty `exclusions`): every site sees every
-//!    other site's permanent charge and every other site's induced dipole,
-//!    which is correct for isolated, non-bonded polarizable sites.
+//! 1. `PolarizableSites.exclusions`, unordered `(i, j)` site-index pairs:
+//!    `T_ij` is forced to zero (neither site polarises the other), and a
+//!    permanent charge colocated with (within `COLOCATION_TOL` Bohr of) the
+//!    excluded partner site is dropped from the site's `E^perm`. This covers
+//!    the case where every atom of a molecule is a polarizable site.
+//! 2. `PolarizableSites.excluded_charges[i]`, positions (Bohr) of permanent
+//!    charges in `ext` whose field site `i` does not feel, matched by the
+//!    same colocation tolerance. This covers charges that are NOT sites
+//!    (TIP3P hydrogens on an oxygen-only polarizable water).
+//!
+//! The polarizable-embedding convention (PE / CPPE exclusion lists) is that
+//! a site feels neither the permanent charges nor the induced dipoles of its
+//! own molecule: a force field's charges already contain the molecule's own
+//! polarization, and an unexcluded water oxygen polarized by its own
+//! hydrogens carries an `E_pol` of about -0.12 Ha that has nothing to do
+//! with the QM region. [`crate::qmmm::QmmmSystem::polarizable_embedding`]
+//! builds both lists from per-atom molecule labels; Python `run_qmmm` and
+//! the CLI use it with same-molecule exclusion on by default. (AMOEBA keeps
+//! intramolecular mutual induction and excludes only the permanent field of
+//! a polarization group; that variant is not offered.)
 
 use crate::qmmm::electric_field_at_points;
 use ferric_core::external_potential::ExternalPotential;
@@ -160,9 +159,9 @@ pub const DEFAULT_MAX_SITES_DENSE: usize = 4000;
 /// module doc's Exclusions section.
 const COLOCATION_TOL: f64 = 1e-8;
 
-/// For field axis `c` (0=x, 1=y, 2=z), the cartesian p-shell FUNCTION index
-/// libint2 (this build) actually produces the matching field response at —
-/// `(c + 2) % 3`, NOT `c`. MEASURED, not assumed: see the module doc's
+/// For field axis `c` (0=x, 1=y, 2=z), the p-shell FUNCTION index at which
+/// libint2's pure l=1 shell (ordered `m = -1, 0, +1`, i.e. `(y, z, x)`) holds
+/// the matching field response: `(c + 2) % 3`, NOT `c`. See the module doc's
 /// "Integrals: the p-shell trick" section and
 /// `crates/ferric-scf/tests/qmmm_polarizable.rs`'s pin test, which fits all
 /// 9 (field axis, p-shell function) pairings and finds this the only one
@@ -175,8 +174,9 @@ pub(crate) fn p_axis_for_field_axis(field_axis: usize) -> usize {
 /// The scaling constant for a p-shell (l=1) site basis at exponent `zeta`:
 /// `field_axis[c] = -norm_int_p_shell(zeta) *
 /// (mu nu|p_{p_axis_for_field_axis(c)})` gives the field-integral component
-/// `<mu|(r-R)_c/|r-R|^3|nu>` directly (see module doc — this relationship
-/// was MEASURED, not derived; multiply by this constant, do not divide).
+/// `<mu|(r-R)_c/|r-R|^3|nu>` (see module doc: it is the reciprocal of the
+/// gradient-of-delta weight of a unit-normalised p function; multiply by this
+/// constant, do not divide).
 #[inline]
 pub(crate) fn norm_int_p_shell(zeta: f64) -> f64 {
     2f64.powf(0.25) * zeta.powf(1.25) / (2.0 * std::f64::consts::PI.powf(0.75))
@@ -186,9 +186,13 @@ pub(crate) fn norm_int_p_shell(zeta: f64) -> f64 {
 /// (Bohr^3).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PolarizableSite {
+    /// x coordinate, Bohr.
     pub x: f64,
+    /// y coordinate, Bohr.
     pub y: f64,
+    /// z coordinate, Bohr.
     pub z: f64,
+    /// Isotropic polarisability, Bohr^3.
     pub alpha: f64,
 }
 
@@ -196,6 +200,7 @@ pub struct PolarizableSite {
 /// doc for the full model.
 #[derive(Debug, Clone)]
 pub struct PolarizableSites {
+    /// The sites; `exclusions` index into this list.
     pub sites: Vec<PolarizableSite>,
     /// Thole damping parameter. `Some(2.1304)` (use [`DEFAULT_THOLE_A`]) is
     /// the conventional default; `None` disables damping (bare 1/r^3
@@ -206,6 +211,12 @@ pub struct PolarizableSites {
     /// partner — see the module doc's Exclusions section. Unordered: `(i,
     /// j)` and `(j, i)` are equivalent; both are accepted.
     pub exclusions: Vec<(usize, usize)>,
+    /// Per-site permanent-charge exclusions: `excluded_charges[i]` holds the
+    /// positions (Bohr) of the `ext` charges whose field site `i` does not
+    /// feel, matched within `COLOCATION_TOL` (see the module doc's
+    /// Exclusions section). Shorter than `sites` (including empty, the
+    /// default) means no extra exclusions for the remaining sites.
+    pub excluded_charges: Vec<Vec<[f64; 3]>>,
     /// Gaussian exponent (Bohr^-2) of the induced-dipole p-shell site basis.
     /// Default [`DEFAULT_DIPOLE_ZETA`] (numerically a point dipole).
     pub dipole_zeta: f64,
@@ -220,6 +231,7 @@ impl Default for PolarizableSites {
             sites: Vec::new(),
             thole_a: Some(DEFAULT_THOLE_A),
             exclusions: Vec::new(),
+            excluded_charges: Vec::new(),
             dipole_zeta: DEFAULT_DIPOLE_ZETA,
             max_sites_dense: DEFAULT_MAX_SITES_DENSE,
         }
@@ -232,6 +244,26 @@ impl PolarizableSites {
         self.exclusions
             .iter()
             .any(|&(a, b)| (a == i && b == j) || (a == j && b == i))
+    }
+
+    /// Whether site `i` feels the field of a permanent charge at `pos`: not
+    /// when the charge sits on site `i` itself or on a site excluded from
+    /// `i`, nor when `pos` is in `excluded_charges[i]`. The one rule the
+    /// energy, the site gradient and the charge gradient all apply.
+    fn sees_charge(&self, i: usize, pos: [f64; 3]) -> bool {
+        let at = |p: [f64; 3]| {
+            let d = [p[0] - pos[0], p[1] - pos[1], p[2] - pos[2]];
+            (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() < COLOCATION_TOL
+        };
+        if let Some(j) = self.sites.iter().position(|s| at([s.x, s.y, s.z])) {
+            if j == i || self.is_excluded(i, j) {
+                return false;
+            }
+        }
+        !self
+            .excluded_charges
+            .get(i)
+            .is_some_and(|list| list.iter().any(|&p| at(p)))
     }
 }
 
@@ -296,7 +328,7 @@ fn thole_tensor(
 }
 
 /// Field of `ext`'s permanent (point + Gaussian-smeared) charges at each
-/// site, honouring colocation-based exclusions (see module doc).
+/// site, honouring both exclusion lists (see module doc).
 fn permanent_field_at_sites(
     sites: &PolarizableSites,
     ext: Option<&ExternalPotential>,
@@ -305,24 +337,11 @@ fn permanent_field_at_sites(
     let mut e_perm = vec![[0.0_f64; 3]; n];
     let Some(ext) = ext else { return e_perm };
 
-    // Colocation lookup: for a given `ext` charge position, which site
-    // indices (if any) sit within COLOCATION_TOL of it.
-    let colocated_site = |x: f64, y: f64, z: f64| -> Option<usize> {
-        sites.sites.iter().position(|s| {
-            let dx = s.x - x;
-            let dy = s.y - y;
-            let dz = s.z - z;
-            (dx * dx + dy * dy + dz * dz).sqrt() < COLOCATION_TOL
-        })
-    };
-
     for (i, site) in sites.sites.iter().enumerate() {
         let ri = [site.x, site.y, site.z];
         for pc in &ext.point_charges {
-            if let Some(j) = colocated_site(pc.x, pc.y, pc.z) {
-                if j == i || sites.is_excluded(i, j) {
-                    continue;
-                }
+            if !sites.sees_charge(i, [pc.x, pc.y, pc.z]) {
+                continue;
             }
             let d = [ri[0] - pc.x, ri[1] - pc.y, ri[2] - pc.z];
             let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
@@ -336,10 +355,8 @@ fn permanent_field_at_sites(
             e_perm[i][2] += inv_r3 * d[2];
         }
         for sc in &ext.smeared_charges {
-            if let Some(j) = colocated_site(sc.x, sc.y, sc.z) {
-                if j == i || sites.is_excluded(i, j) {
-                    continue;
-                }
+            if !sites.sees_charge(i, [sc.x, sc.y, sc.z]) {
+                continue;
             }
             let d = [ri[0] - sc.x, ri[1] - sc.y, ri[2] - sc.z];
             let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
@@ -848,7 +865,7 @@ pub fn polarizable_gradient_term(
 /// 3. `-mu_i . dE_i^perm/dR_i` for every OTHER permanent MM charge in `ext`
 ///    (respecting colocation-based exclusions, same convention as
 ///    `permanent_field_at_sites`), via the same point-charge-field
-///    formula, PLUS `-1/2 sum_{j!=i} mu_i . dT_ij/dR_i . mu_j` (the Thole
+///    formula, PLUS `-sum_{j!=i} mu_i . dT_ij/dR_i . mu_j` (coefficient 1, not 1/2; the Thole
 ///    tensor's OWN geometric derivative — this term has NO analogue in the
 ///    Fock/QM path). `dT_ij/dR` is evaluated by central finite difference
 ///    of the (cheap, closed-form) `thole_tensor` function itself — NOT a
@@ -926,17 +943,6 @@ pub fn site_gradient(
         grad[(i, 2)] += site_grad[2];
     }
 
-    // Colocation lookup for permanent-charge exclusions (same convention as
-    // `permanent_field_at_sites`).
-    let colocated_site = |x: f64, y: f64, z: f64| -> Option<usize> {
-        sites.sites.iter().position(|s| {
-            let dx = s.x - x;
-            let dy = s.y - y;
-            let dz = s.z - z;
-            (dx * dx + dy * dy + dz * dz).sqrt() < COLOCATION_TOL
-        })
-    };
-
     for i in 0..n {
         let ri = [sites.sites[i].x, sites.sites[i].y, sites.sites[i].z];
         let mu_i = [dipoles[(i, 0)], dipoles[(i, 1)], dipoles[(i, 2)]];
@@ -958,10 +964,8 @@ pub fn site_gradient(
         // 3a. Permanent MM point/smeared charges (excluding colocated + excluded pairs).
         if let Some(ext) = ext {
             for pc in &ext.point_charges {
-                if let Some(j) = colocated_site(pc.x, pc.y, pc.z) {
-                    if j == i || sites.is_excluded(i, j) {
-                        continue;
-                    }
+                if !sites.sees_charge(i, [pc.x, pc.y, pc.z]) {
+                    continue;
                 }
                 let rc = [pc.x, pc.y, pc.z];
                 let (contrib, _) = point_charge_field_grad_wrt_site(ri, rc, pc.q, mu_i);
@@ -970,10 +974,8 @@ pub fn site_gradient(
                 g[2] += contrib[2];
             }
             for sc in &ext.smeared_charges {
-                if let Some(j) = colocated_site(sc.x, sc.y, sc.z) {
-                    if j == i || sites.is_excluded(i, j) {
-                        continue;
-                    }
+                if !sites.sees_charge(i, [sc.x, sc.y, sc.z]) {
+                    continue;
                 }
                 // Point-charge approximation for the smeared-charge field
                 // gradient at the site (same simplification documented in
@@ -1088,23 +1090,11 @@ pub fn charge_gradient_contribution(
         return (point_rows, smeared_rows);
     }
 
-    let colocated_site = |x: f64, y: f64, z: f64| -> Option<usize> {
-        sites.sites.iter().position(|s| {
-            let dx = s.x - x;
-            let dy = s.y - y;
-            let dz = s.z - z;
-            (dx * dx + dy * dy + dz * dz).sqrt() < COLOCATION_TOL
-        })
-    };
-
     for (k, pc) in ext.point_charges.iter().enumerate() {
         let rc = [pc.x, pc.y, pc.z];
-        let coloc = colocated_site(pc.x, pc.y, pc.z);
         for i in 0..n {
-            if let Some(j) = coloc {
-                if j == i || sites.is_excluded(i, j) {
-                    continue;
-                }
+            if !sites.sees_charge(i, rc) {
+                continue;
             }
             let ri = [sites.sites[i].x, sites.sites[i].y, sites.sites[i].z];
             let mu_i = [dipoles[(i, 0)], dipoles[(i, 1)], dipoles[(i, 2)]];
@@ -1117,12 +1107,9 @@ pub fn charge_gradient_contribution(
 
     for (k, sc) in ext.smeared_charges.iter().enumerate() {
         let rc = [sc.x, sc.y, sc.z];
-        let coloc = colocated_site(sc.x, sc.y, sc.z);
         for i in 0..n {
-            if let Some(j) = coloc {
-                if j == i || sites.is_excluded(i, j) {
-                    continue;
-                }
+            if !sites.sees_charge(i, rc) {
+                continue;
             }
             let ri = [sites.sites[i].x, sites.sites[i].y, sites.sites[i].z];
             let mu_i = [dipoles[(i, 0)], dipoles[(i, 1)], dipoles[(i, 2)]];

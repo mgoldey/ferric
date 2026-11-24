@@ -72,10 +72,7 @@ fn setup_file(
 }
 
 fn tight_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 200,
-        ..Default::default()
-    }
+    RhfConfig::default().with_max_iter(200)
 }
 
 /// Set the two kill-switches, run `f`, restore. Caller holds ENV_LOCK.

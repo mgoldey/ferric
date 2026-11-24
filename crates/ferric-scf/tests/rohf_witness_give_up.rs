@@ -30,25 +30,21 @@ use ferric_scf::result::ScfExit;
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::rohf::{solve_rohf, solve_rohf_best_effort, ROHF_MAX_AUFBAU_RESTARTS_OVERRIDE};
 use ferric_scf::screening::SchwarzBounds;
-use ndarray::{s, Array2};
+use ferric_testkit::compare::max_abs;
+use ndarray::s;
 
 /// The σ-hole OH/6-31G ROHF stationary point the hcore guess converges to
 /// (pinned in `rohf_state_selection.rs`).
 const OH_631G_EXCITED: f64 = -75.203_724_952_9;
 
 fn cfg(guard: bool) -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        density_conv: 1e-10,
-        energy_conv: 1e-11,
-        use_sad_guess: false,
-        rohf_occupation_guard: guard,
-        ..Default::default()
-    }
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0f64, |m, v| m.max(v.abs()))
+    let mut c = RhfConfig::default()
+        .with_max_iter(400)
+        .with_density_conv(1e-10)
+        .with_energy_conv(1e-11)
+        .with_guess(ferric_scf::options::Guess::Core);
+    c.rohf_occupation_guard = guard;
+    c
 }
 
 #[test]
@@ -131,10 +127,7 @@ fn give_up_exit_returns_one_self_consistent_state() {
         &prep,
         op,
         &bounds,
-        &RhfConfig {
-            init_guess_density: Some(r.density_total.clone()),
-            ..cfg(false)
-        },
+        &cfg(false).with_init_guess_density(r.density_total.clone()),
     )
     .expect("guard-off solve from the returned density");
     println!(

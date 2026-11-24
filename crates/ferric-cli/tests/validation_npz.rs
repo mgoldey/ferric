@@ -9,8 +9,10 @@
 //!
 //! # What this row pins
 //!
-//! The CLI's `[rpa] export_npz` path (`ferric_cli::lib.rs`, the block that
-//! fills `NpzBundle` and calls `ferric_export::ml::export_npz`) writes arrays
+//! The CLI's `[rpa] export_npz` path (`export_pdep_npz_bundle` in
+//! `crates/ferric-cli/src/lib.rs`, which calls `write_pdep_npz` in
+//! `crates/ferric-rpa/src/property_bundle.rs`, the code that fills `NpzBundle`
+//! and calls `ferric_export::ml::export_npz`) writes arrays
 //! that a FOREIGN reader (`numpy.load`) reads back equal to INDEPENDENTLY
 //! computed values, and no requested field is missing. The companion pytest
 //! (`crates/ferric-python/tests/test_validation_npz_export.py`) checks the
@@ -68,12 +70,13 @@
 //! | alpha_atomic_dynamic | TS shape = exported alpha_atomic / its iso average; single London pole whose ω_A = (4/3)C6_free/α_free² from the TS PRL 2009 free-atom table |
 //! | c6_iso, c6_aniso, c6_molecular_iso | recomputed by numpy-side Casimir–Polder from the exported α(iω), freqs, weights; London C6_AA = (3/4)a²ω_A (quadrature) |
 //!
-//! Key set: EXACTLY the documented set for these knobs (30 keys; `boys_coeffs`
-//! is a `NpzBundle` field the CLI never fills; `alpha_ct_dynamic` is written
-//! only for `c6_source = "pdep"`, and this run uses the TS default). Second test: with nine knobs
-//! off, exactly their keys disappear (`compute_density_matrix = false` also
-//! removes `density_second_moment`, which the CLI derives from the density),
-//! and every remaining value still matches the reference.
+//! Key set: EXACTLY the documented set for these knobs (31 keys, with
+//! `certificate`; `boys_coeffs` is a `NpzBundle` field the CLI never fills;
+//! `alpha_ct_dynamic` is written only for `c6_source = "pdep"`, and this run
+//! uses the TS default). Second test: with nine knobs off, exactly their
+//! keys disappear (`compute_density_matrix = false` also removes
+//! `density_second_moment`, which the CLI derives from the density), and
+//! every remaining value still matches the reference.
 //!
 //! # Physics vs artifact hypotheses
 //!
@@ -104,13 +107,15 @@
 //!
 //! # MUTATIONS (documented; each must turn this file red)
 //!
-//! * A — `crates/ferric-cli/src/lib.rs`, in the `NpzBundle` literal:
-//!   `lowdin: lq_vec.as_deref(),` → `lowdin: mq_vec.as_deref(),`
-//!   (Mulliken exported as Löwdin). Fails "lowdin_charges integral" by ~0.17 e.
-//! * B — same literal: `hirshfeld: hq_vec.as_deref(),` → `hirshfeld: None,`.
-//!   The CLI still exits 0 (that arm never records a gap); the key-set check
-//!   fails naming `hirshfeld_charges`.
-//! * C — `crates/ferric-cli/src/lib.rs`, the `coords_arr` block:
+//! * A — `crates/ferric-rpa/src/property_bundle.rs`, in the `NpzBundle`
+//!   literal of `write_pdep_npz`: `lowdin: props.lowdin.as_deref(),` →
+//!   `lowdin: props.mulliken.as_deref(),` (Mulliken exported as Löwdin).
+//!   Fails "lowdin_charges integral" by ~0.17 e.
+//! * B — same literal: `hirshfeld: props.hirshfeld.as_deref(),` →
+//!   `hirshfeld: None,`. The CLI still exits 0 (that arm never records a gap);
+//!   the key-set check fails naming `hirshfeld_charges`.
+//! * C — `crates/ferric-rpa/src/property_bundle.rs`, the `coords` block of
+//!   `compute_pdep_properties`:
 //!   `a[(i, 1)] = atom.y;` → `a[(i, 1)] = atom.zpos;`. Fails the bit-exact
 //!   coords check.
 
@@ -165,7 +170,7 @@ const MUST_MISS: f64 = 1000.0;
 
 /// The documented key set for the full run's knobs (all export defaults on,
 /// plus `compute_esp_surface = true`).
-const FULL_KEYS: [&str; 30] = [
+const FULL_KEYS: [&str; 31] = [
     "mo_coeffs",
     "orbital_energies",
     "pdep_eigenvectors",
@@ -196,6 +201,7 @@ const FULL_KEYS: [&str; 30] = [
     "c6_iso",
     "c6_aniso",
     "c6_molecular_iso",
+    "certificate",
 ];
 
 /// Knobs turned OFF in the second test, and the keys each one owns.
@@ -256,18 +262,9 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// `ferric-cli` binary at RUN time (sibling of the test binary under nextest).
-fn ferric_cli_bin() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(profile_dir) = exe.parent().and_then(Path::parent) {
-            let p = profile_dir.join("ferric-cli");
-            if p.is_file() {
-                return p;
-            }
-        }
-    }
-    PathBuf::from(env!("CARGO_BIN_EXE_ferric-cli"))
-}
+#[path = "support/cli_bin.rs"]
+mod cli_bin;
+use cli_bin::ferric_cli_bin;
 
 /// Run the CLI on the water/cc-pVDZ pdep-rpa export with `rpa_extra` appended
 /// to `[rpa]`. Returns (stdout, stderr, npz path). Panics on a non-zero exit.
@@ -628,7 +625,7 @@ fn check_structure(b: &Bundle, expected: &BTreeSet<String>, c: &mut Checks, ctx:
     for (k, a) in &b.0 {
         let want = match k.as_str() {
             "atomic_numbers" => "<i8",
-            "c6_partition" | "c6_source" => "|u1",
+            "c6_partition" | "c6_source" | "certificate" => "|u1",
             _ => "<f8",
         };
         c.truth(

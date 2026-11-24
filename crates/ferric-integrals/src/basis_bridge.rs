@@ -138,33 +138,104 @@ impl PreparedBasis {
             })
             .collect();
 
+        let mut located: Vec<(usize, &ferric_core::basis::Shell)> = Vec::new();
+        for (ai, atom) in mol.atoms.iter().enumerate() {
+            let tmpls = bs
+                .for_element(atom.z)
+                .ok_or_else(|| bs.missing_element_error(atom.z))?;
+            located.extend(tmpls.iter().map(|sh| (ai, sh)));
+        }
+        Self::from_located(c_atoms, &located, bs.clone())
+    }
+
+    /// The same atoms, shell order and shell-to-atom map as `self`, with each
+    /// shell's contraction replaced by `shells[s]` (same `l` and `pure`; the
+    /// exponent list may differ). Used by
+    /// [`crate::contraction_rotation::RotatedBasis::detect_prepared`] to build
+    /// an internal, column-rotated copy of a basis.
+    ///
+    /// The copy's [`basis_set`](Self::basis_set) is the parent's element
+    /// templates renamed `name`: the rotated contractions are per atom, so they
+    /// are reachable only through the libint handle and
+    /// [`located_shells`](Self::located_shells). Rebuilding a basis from that
+    /// `BasisSet` gives the PARENT basis back.
+    pub fn with_contractions(
+        &self,
+        shells: &[ferric_core::basis::Shell],
+        name: &str,
+    ) -> Result<Self, FerricError> {
+        if shells.len() != self.nshells
+            || shells
+                .iter()
+                .enumerate()
+                .any(|(s, sh)| sh.l != self.shell_l[s] || sh.pure != self.shell_pure[s])
+        {
+            return Err(FerricError::General(format!(
+                "PreparedBasis::with_contractions: {} shells given for a basis of {}, or an \
+                 l / pure flag differs",
+                shells.len(),
+                self.nshells
+            )));
+        }
+        let located: Vec<(usize, &ferric_core::basis::Shell)> =
+            self.shell_to_atom.iter().copied().zip(shells).collect();
+        let bs = BasisSet {
+            name: name.to_string(),
+            shells: self.basis_set.shells.clone(),
+            ecps: self.basis_set.ecps.clone(),
+        };
+        Self::from_located(self.atoms.clone(), &located, bs)
+    }
+
+    /// The libint basis of `located` (`(atom index, shell)` in shell order)
+    /// on `c_atoms`, recorded with `bs`.
+    fn from_located(
+        c_atoms: Vec<CAtom>,
+        located: &[(usize, &ferric_core::basis::Shell)],
+        bs: BasisSet,
+    ) -> Result<Self, FerricError> {
         let mut c_shells = Vec::new();
         let mut shell_to_atom = Vec::new();
         let mut shell_l = Vec::new();
         let mut shell_pure = Vec::new();
         let mut keep_exps = Vec::new();
         let mut keep_coefs = Vec::new();
-        for (ai, atom) in mol.atoms.iter().enumerate() {
-            let tmpls = bs
-                .for_element(atom.z)
-                .ok_or_else(|| bs.missing_element_error(atom.z))?;
-            for sh in tmpls {
-                let exps: Vec<f64> = sh.exponents.clone();
-                let coefs: Vec<f64> = sh.coefficients.clone();
-                c_shells.push(CShell {
-                    l: sh.l as c_int,
-                    nprim: exps.len() as c_int,
-                    atom_index: ai as c_int,
-                    pure: if sh.pure { 1 } else { 0 },
-                    exponents: exps.as_ptr(),
-                    coefficients: coefs.as_ptr(),
-                });
-                shell_to_atom.push(ai);
-                shell_l.push(sh.l);
-                shell_pure.push(sh.pure);
-                keep_exps.push(exps);
-                keep_coefs.push(coefs);
+        // The shim reads `nprim` values from both arrays and indexes the atom
+        // list: refuse a shell that would make it read out of bounds.
+        for (s, &(ai, sh)) in located.iter().enumerate() {
+            if sh.exponents.len() != sh.coefficients.len() {
+                return Err(FerricError::Basis(format!(
+                    "basis {:?}: shell {s} (l = {}) has {} exponents but {} coefficients",
+                    bs.name,
+                    sh.l,
+                    sh.exponents.len(),
+                    sh.coefficients.len()
+                )));
             }
+            if ai >= c_atoms.len() {
+                return Err(FerricError::Basis(format!(
+                    "basis {:?}: shell {s} is on atom {ai}, but there are {} atoms",
+                    bs.name,
+                    c_atoms.len()
+                )));
+            }
+        }
+        for &(ai, sh) in located {
+            let exps: Vec<f64> = sh.exponents.clone();
+            let coefs: Vec<f64> = sh.coefficients.clone();
+            c_shells.push(CShell {
+                l: sh.l as c_int,
+                nprim: exps.len() as c_int,
+                atom_index: ai as c_int,
+                pure: if sh.pure { 1 } else { 0 },
+                exponents: exps.as_ptr(),
+                coefficients: coefs.as_ptr(),
+            });
+            shell_to_atom.push(ai);
+            shell_l.push(sh.l);
+            shell_pure.push(sh.pure);
+            keep_exps.push(exps);
+            keep_coefs.push(coefs);
         }
 
         // SAFETY: c_shells and c_atoms are valid slices with matching lengths.
@@ -212,7 +283,7 @@ impl PreparedBasis {
         unsafe { ffi::scf_basis_max_dims(handle, &mut mp, &mut ml) };
         Ok(PreparedBasis {
             handle,
-            basis_set: bs.clone(),
+            basis_set: bs,
             atoms: c_atoms,
             shell_dims,
             shell_offsets,
@@ -332,6 +403,35 @@ mod tests {
     use ferric_core::basis;
     use ferric_core::mol::Molecule;
 
+    /// A shell whose exponent and coefficient lists differ in length is
+    /// refused with a typed error before anything reaches the shim, through
+    /// `new` and through `with_contractions`.
+    #[test]
+    fn mismatched_primitive_arrays_are_refused() {
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let mut bad = basis::bundled("sto-3g").unwrap();
+        bad.shells.get_mut(&1).unwrap()[0].coefficients.pop();
+        let e = PreparedBasis::new(&mol, &bad).unwrap_err();
+        assert!(matches!(e, FerricError::Basis(_)), "{e}");
+        assert!(e.to_string().contains("exponents but"), "{e}");
+
+        let prep = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+        let mut shells: Vec<ferric_core::basis::Shell> = prep
+            .located_shells()
+            .iter()
+            .map(|p| ferric_core::basis::Shell {
+                l: p.l,
+                pure: p.pure,
+                exponents: p.exponents.to_vec(),
+                coefficients: p.coefficients.to_vec(),
+            })
+            .collect();
+        assert!(prep.with_contractions(&shells, "copy").is_ok());
+        shells[2].exponents.push(0.5);
+        let e = prep.with_contractions(&shells, "bad").unwrap_err();
+        assert!(e.to_string().contains("shell 2"), "{e}");
+    }
+
     #[test]
     fn test_prepared_basis_h2o_sto3g() {
         let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
@@ -380,8 +480,8 @@ mod tests {
         basis::load_bse_json(file.to_str().unwrap()).unwrap()
     }
 
-    /// V_ECP is spherical-only; a Cartesian d shell on an ECP molecule used to
-    /// panic in `ecp_potential`'s `.expect`. It is now a setup error, and the
+    /// V_ECP is spherical-only; a Cartesian d shell on an ECP molecule is
+    /// a setup error (not a panic in `ecp_potential`'s `.expect`), and the
     /// same basis typed spherical is accepted (so the refusal is the d type).
     #[test]
     fn ecp_with_cartesian_d_shell_is_a_clean_setup_error() {

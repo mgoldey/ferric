@@ -54,12 +54,10 @@ fn rhf_energy(xyz: &str, bs: &BasisSet) -> f64 {
     let prep = PreparedBasis::new(&mol, bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let config = RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let config = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_max_iter(200);
     let ctx = ParallelContext::default();
     let res = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
     assert!(res.converged, "RHF did not converge for {xyz}");
@@ -104,6 +102,7 @@ fn ghost_ecp_atom_matches_an_ecp_free_basis() {
 /// ghost Xe, against the same run with ONLY Xe's ECP deleted from the basis.
 /// Unlike the all-ghost case, both runs build a V_ECP here, so the ghost really
 /// goes through the per-atom filter rather than the empty-list early return.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn ghost_ecp_atom_beside_a_real_ecp_atom_matches_a_basis_without_its_ecp() {
     let bs = def2_svp();

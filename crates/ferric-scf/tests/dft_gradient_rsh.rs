@@ -17,14 +17,12 @@ use ndarray::Array2;
 use rayon::prelude::*;
 
 fn cfg() -> RhfConfig {
-    RhfConfig {
-        xc: Some("HYB_GGA_XC_WB97X".into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc("HYB_GGA_XC_WB97X")
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit")
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
 }
 
 fn fd_gradient(xyz: &str, basis_name: &str, delta: f64) -> Array2<f64> {
@@ -164,6 +162,7 @@ fn wb97x_gradient_h2_ccpvdz_vs_fd() {
     );
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn wb97x_gradient_h2o_ccpvdz_vs_fd() {
     run_case(

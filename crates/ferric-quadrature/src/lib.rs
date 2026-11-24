@@ -4,6 +4,10 @@
 //! - [`minimax`] — minimax-Laplace quadrature for `1/x` on `[1, R]`, used by both
 //!   Laplace-MP2 (in `ferric-mp2`) and Laplace-separable χ₀ for PDEP-RPA
 //!   (in `ferric-rpa`).
+//! - [`lebedev`] — Lebedev angular grids (re-exported by `ferric_dft::lebedev`).
+//!
+//! Imaginary-frequency grids for RPA (Gauss-Legendre, MiniMax, Chebyshev-Tan) live
+//! in `ferric_rpa::quadrature`, not in this crate.
 //!
 //! The quadrature points/weights are extracted from the literature tables of
 //! Takatsuka, Ten-no, Hackbusch (JCP 129, 044112, 2008) via the Helmich-Paris
@@ -18,7 +22,8 @@
 /// Minimax-Laplace quadrature for `1/x` on `[1, R]` (Takatsuka/Ten-no/Hackbusch tables).
 pub mod minimax;
 
-/// Lebedev angular quadrature on the unit sphere.
+// Documented by its own inner `//!` docs, whose intra-doc links resolve in
+// the module's scope only when no outer doc comment is attached here.
 pub mod lebedev;
 
 pub use minimax::{select_minimax_points, LaplaceQuadrature};

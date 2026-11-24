@@ -23,7 +23,10 @@ WATER = "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n"
 NH2_ASYM = "3\n\nN 0 0 0\nH 0.12 0.80 0.60\nH -0.05 -0.74 0.52\n"
 # Range-separated: erfc AND erf exact exchange, mix (0.158, 1.0, 0.3).
 WB97X = "HYB_GGA_XC_WB97X"
-TIGHT = {"energy_conv": 1e-11, "density_conv": 1e-10}
+# RI-J pinned to the f64 tensor: these compare against finite differences or
+# f64 references at bars below the f32 default's effect (site/src/methods/scf.md,
+# "RI-J tensor precision").
+TIGHT = {"energy_conv": 1e-11, "density_conv": 1e-10, "ri_j_precision": "f64"}
 EXACT_JK = {"df_j_aux": "none", "df_k_aux": "none"}
 _RNG = np.random.default_rng(3)
 
@@ -75,6 +78,37 @@ def test_rhf_matvec_equals_the_dense_orbital_hessian():
         np.linalg.solve(ab, b.ravel()).reshape(nv, no),
         atol=1e-9,
     )
+
+
+def test_rhf_solve_converges_past_the_absolute_screen():
+    """(A + B) U is linear down to the CG's shrinking directions.
+
+    The exact J/K of the matvec screen quartets by bound * max|D| < 1e-12 on
+    the response density normalized to max|D| in (1/2, 1], so A(sU) = s A(U)
+    to round-off: |A U| is 42 here (max element) and the two differ by 4.5e-14
+    (MEASURED 2026-11-13), a few hundred ulps of |A U|; bar 1e-12. A screen on the bare
+    density drops the two-electron part as max|D| falls below 1e-12 / bound,
+    a change of order |A U| itself. The solve at tol 1e-13 then reaches its
+    tolerance instead of reading the sign of a round-off curvature; the true
+    residual |A x - b| is the recurrence residual plus the drift of CG's
+    updated residual, bar 1e-12.
+    """
+    mol, bs, ints = _ints(WATER, "cc-pvdz")
+    e, c = _rhf_mos(mol, bs, ints)
+    no = ints.nelec // 2
+    cphf = ints.cphf(c, list(e), no)
+    u = _RNG.standard_normal((c.shape[1] - no, no))
+    au = cphf.matvec(u)
+    for s in (1e-8, 1e-13):
+        np.testing.assert_allclose(cphf.matvec(s * u) / s, au, rtol=0, atol=1e-12)
+    for r in ints.dipole():
+        rhs = -c[:, no:].T @ r @ c[:, :no]
+        x = cphf.solve(rhs, tol=1e-13, max_iter=200)
+        assert np.abs(cphf.matvec(x) - rhs).max() < 1e-12
+    # tol = 0 cannot be met: the residual underflows instead (MEASURED:
+    # 1.9e-99 after 100 iterations, 0/0 in the CG coefficients at 167).
+    with pytest.raises(ValueError, match="tol must be positive"):
+        cphf.solve(rhs, tol=0.0)
 
 
 @pytest.mark.parametrize(
@@ -392,9 +426,8 @@ def test_vv10_polarizability_matches_the_finite_field_dipole():
     # wB97X-V: range-separated exchange + VV10. CPKS gives the response of
     # the SCF density under the Fock map the SCF uses, so the anchor is the
     # finite-field derivative of the SCF dipole, alpha_zz = -d Tr[D z]/dF_z
-    # (H' = +F.r). The energy route -d2E/dF2 equals it only if V_nl were
-    # exactly dE_nl/dD, which it is not (the strict xfail in
-    # test_xc_blocks.py); it is checked loosely below as a magnitude check.
+    # (H' = +F.r). V_nl is exactly dE_nl/dD (test_xc_blocks.py), so the energy
+    # route -d2E/dF2 equals it too; both are checked.
     # ferric builds RSH exchange only via RI-K, so everything is RI-JK.
     mol, bs, ints = _ints(WATER, "6-31g")
     aux = ferric.BasisSet.bundled(AUX)
@@ -423,4 +456,10 @@ def test_vv10_polarizability_matches_the_finite_field_dipole():
     )
     assert abs(alpha_wo[2, 2] - ff) > 10 * abs(alpha[2, 2] - ff)
     energy = _alpha_zz_finite_field(lambda f: run(f).total_energy)
-    assert abs(alpha[2, 2] - energy) < 1e-3 * abs(alpha[2, 2])
+    # Bar 2e-8 relative: the Richardson pair (F, 2F) = (2e-3, 4e-3) a.u. is
+    # noise-limited, not truncation-limited. The same estimate at F = 1e-3
+    # misses by 1.2e-7 absolute and the noise scales as 1/F^2, so 3e-8 absolute
+    # (6.5e-9 relative) at F = 2e-3; the bar is 3x that. Measured 8.7e-10.
+    # With the sigma < 1e-8 gate on d(omega_0)/d(sigma) restored in vv10.rs the
+    # energy route misses by 5.1e-5 and the dipole route by 1.3e-5.
+    assert abs(alpha[2, 2] - energy) < 2e-8 * abs(alpha[2, 2])

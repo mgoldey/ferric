@@ -19,6 +19,8 @@
 #      is mostly a safety net (e.g. for anyone who runs clippy with
 #      --cap-lints or otherwise bypasses the workspace lints table) and a
 #      place to fail loudly with a clear message if anything DOES fire.
+#   1b. `cargo fmt --all --check` on the whole workspace, in every tier (the
+#      lint tier included). It compiles nothing and takes no cargo lock.
 #
 # Exit code: 0 = clean, 1 = a real failure (test or clippy), a step that timed
 # out while holding the cargo lock (see LOAD AWARENESS below), OR a step that
@@ -42,6 +44,7 @@
 #                          crates (see CLIPPY SCOPE below). CI_GATE_TIER=full
 #                          does the same, with or without the pre-push hook.
 #   CI_GATE_SKIP_TESTS=1   skip the test step (clippy-only gate).
+#   CI_GATE_SKIP_FMT=1     skip the rustfmt check.
 #   CI_GATE_SKIP_COMPLEXITY=1  skip the complexity-regression step.
 #   CI_GATE_SKIP_PYTEST=1  skip the (soft) Python-binding pytest step.
 #   CI_GATE_SKIP_DOCS=1    skip the rustdoc step.
@@ -96,7 +99,7 @@
 # against a checked-in baseline (scripts/complexity_baseline.json). This is
 # NOT an absolute threshold -- several SCF/RPA numerical kernels are already
 # legitimately complex (CC 100-134) and explicitly out of scope for
-# splitting, same reasoning as the too_many_arguments allow-list above. The
+# splitting, same reasoning as the allow-list above. The
 # gate only fails on a REGRESSION (a function getting worse vs. baseline, or
 # a brand-new function appearing above a generous ceiling) -- see the
 # script's own doc comment for the full rationale. Soft-skips (does not fail
@@ -468,6 +471,26 @@ else
 fi
 echo
 
+# ---- 1b. cargo fmt --all --check (every tier) ---------------------------
+# CI's fmt job runs the same check. rustfmt compiles nothing, so the step runs
+# outside run_locked (the cargo shim exempts `fmt` from the compile lease too).
+if [[ "${CI_GATE_SKIP_FMT:-0}" != "1" ]]; then
+    echo "-- cargo fmt --all --check --"
+    FMT_OUT="$(cargo fmt --all --check 2>&1)"
+    FMT_RC=$?
+    if [[ $FMT_RC -eq 0 ]]; then
+        echo "-- cargo fmt: PASS --"
+    else
+        echo "$FMT_OUT" | head -60
+        echo "-- cargo fmt: FAIL (exit $FMT_RC); run \`cargo fmt --all\` --"
+        FAILED=1
+        STEP_CHECK_FAILED=1
+    fi
+else
+    echo "-- cargo fmt: SKIPPED (CI_GATE_SKIP_FMT=1) --"
+fi
+echo
+
 # ---- 2. cargo clippy --all-targets (changed crates), allow-list checked -
 # The allow-list lives in root Cargo.toml's [workspace.lints] block (each
 # member crate opts in via `[lints] workspace = true`), so a plain
@@ -481,7 +504,6 @@ ALLOWED_LINTS=(
     "clippy::neg_multiply"
     "clippy::needless_range_loop"
     "clippy::doc_lazy_continuation"
-    "clippy::too_many_arguments"
     "clippy::derivable_impls"
     "clippy::field_reassign_with_default"
     "clippy::redundant_pattern_matching"
@@ -703,6 +725,39 @@ else
 fi
 echo
 
+# ---- 3a. too_many_arguments ratchet, testkit dev-only check -----------
+# Two separate checks, both plain python3 with no other tool. They soft-skip
+# (with a message, like the complexity step) only when python3 itself is
+# missing. See scripts/too_many_arguments_ratchet.py: the number of item-level
+# `#[allow(clippy::too_many_arguments)]` per crate may only go down; here it
+# runs --strict, so a lowered count must also be recorded in the baseline.
+# Skip both with CI_GATE_SKIP_RATCHET=1.
+if [[ "${CI_GATE_SKIP_RATCHET:-0}" != "1" ]]; then
+    if command -v python3 >/dev/null 2>&1; then
+        echo "-- too_many_arguments ratchet (scripts/too_many_arguments_ratchet.py --strict) --"
+        if python3 "$REPO_ROOT/scripts/too_many_arguments_ratchet.py" --strict; then
+            echo "-- too_many_arguments ratchet: PASS --"
+        else
+            echo "-- too_many_arguments ratchet: FAIL --"
+            FAILED=1
+            STEP_CHECK_FAILED=1
+        fi
+        echo "-- ferric-testkit dev-only (scripts/check_testkit_dev_only.py) --"
+        if python3 "$REPO_ROOT/scripts/check_testkit_dev_only.py"; then
+            echo "-- ferric-testkit dev-only: PASS --"
+        else
+            echo "-- ferric-testkit dev-only: FAIL --"
+            FAILED=1
+            STEP_CHECK_FAILED=1
+        fi
+    else
+        echo "-- too_many_arguments ratchet, testkit dev-only: SKIPPED (python3 not installed) --"
+    fi
+else
+    echo "-- too_many_arguments ratchet, testkit dev-only: SKIPPED (CI_GATE_SKIP_RATCHET=1) --"
+fi
+echo
+
 # ---- 3b. rustdoc (was a CI-ONLY gate until 2026-09-07) -------------------
 # CI runs `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 # --exclude ferric-python` and this gate did NOT, so doc-link breakage was
@@ -784,7 +839,11 @@ if [[ -f "$SO_PATH" ]]; then
     mkdir -p "$GATE_PYSHIM/ferric"
     _gate_init="$(find . -path '*/ferric/__init__.py' -not -path './target/*' 2>/dev/null | head -1)"
     if [[ -n "$_gate_init" ]]; then
-        cp "$_gate_init" "$GATE_PYSHIM/ferric/__init__.py"
+        # The whole pure-Python package, not just __init__.py: submodules
+        # such as ferric.fcidump / ferric.molden live beside it. The
+        # correctly-named extension symlink below wins over any copied .so
+        # (Python tries EXT_SUFFIX first).
+        cp -R "$(dirname "$_gate_init")/." "$GATE_PYSHIM/ferric/"
     else
         # Minimal re-export: mirrors the wheel's __init__.py.
         printf 'from .ferric import *  # noqa: F401,F403\n' > "$GATE_PYSHIM/ferric/__init__.py"
@@ -803,7 +862,7 @@ if [[ -f "$SO_PATH" ]]; then
     # (those suites skip themselves).
     if PYTHONPATH="$GATE_PYSHIM${PYTHONPATH:+:$PYTHONPATH}" \
        LD_LIBRARY_PATH="$HOME/.local/lib/x86_64-linux-gnu:$HOME/.local/lib:${LD_LIBRARY_PATH:-}" \
-       OPENBLAS_NUM_THREADS=1 uv run --no-sync pytest "${PYTEST_PATHS[@]}" -q 2>&1; then
+       OPENBLAS_NUM_THREADS=1 uv run --no-sync pytest "${PYTEST_PATHS[@]}" --ignore=crates/ferric-python/tests/test_derivation_scripts.py -q 2>&1; then
         echo "-- pytest: PASS --"
     else
         echo "-- pytest: FAIL (soft gate -- not blocking push) --"

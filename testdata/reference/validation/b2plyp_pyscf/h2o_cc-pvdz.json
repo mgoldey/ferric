@@ -1,0 +1,110 @@
+{
+  "row": "B2PLYP",
+  "system": "h2o",
+  "basis": "cc-pvdz",
+  "pt2_aux": "cc-pvdz-ri",
+  "charge": 0,
+  "multiplicity": 1,
+  "nao": 24,
+  "nuclear_repulsion": 9.189193229309746,
+  "c_pt2": 0.27,
+  "ks": {
+    "energy": -76.28847219024071,
+    "homo": -0.3737675991338123,
+    "lumo": 0.10593299311818782
+  },
+  "fc0": {
+    "e_os": -0.18094186837612386,
+    "e_ss": -0.06097445324064793,
+    "e_corr": -0.2419163216167718,
+    "total": -76.35378959707724
+  },
+  "fc1": {
+    "e_os": -0.17931314744565008,
+    "e_ss": -0.060101903479044316,
+    "e_corr": -0.2394150509246944,
+    "total": -76.35311425399038
+  },
+  "reproduction": {
+    "note": "|d| between the minao-guess and atom-guess PySCF runs of this case",
+    "e_ks": 4.263256414560601e-14,
+    "fc0_e_os": 2.546712840612031e-12,
+    "fc0_e_ss": 9.073297668749092e-14,
+    "fc1_e_os": 2.4682755839222636e-12,
+    "fc1_e_ss": 8.484879465697759e-14
+  },
+  "b3lyp_control": {
+    "energy": -76.42041019943689
+  },
+  "provenance": {
+    "code": "PySCF (dft.RKS density_fit + mp.dfmp2.DFMP2)",
+    "version": "2.13.1",
+    "keywords": {
+      "xc": "0.53*HF + 0.47*B88, 0.73*LYP",
+      "functional": "Grimme 2006 B2PLYP: 0.53 HF + 0.47 B88 x, 0.73 LYP c, 0.27 PT2",
+      "ks_jk": "density_fit(auxbasis=def2-universal-jkfit) for J and K",
+      "pt2": "mp.dfmp2.DFMP2 on the KS orbitals, with_df = df.DF(pt2 aux), frozen 0 and 1",
+      "init_guess": "minao (reference), atom (reproduction)",
+      "numpy": "1.26.4"
+    },
+    "grid": {
+      "main": {
+        "atom_grid": [
+          75,
+          110
+        ],
+        "prune": null,
+        "partition": "Becke (original_becke)",
+        "radii_adjust": "becke_atomic_radii_adjust"
+      }
+    },
+    "aux_basis": {
+      "jk": "def2-universal-jkfit",
+      "jk_json": "crates/ferric-core/src/basis/bundled/def2-universal-jkfit.json",
+      "jk_sha256": "a9fcb52ae8a74e80bd3a65c5e12e7a2d2f391fef62c3c81050ae816399b57671",
+      "pt2": "cc-pvdz-ri",
+      "pt2_json": "crates/ferric-core/src/basis/bundled/cc-pvdz-ri.json",
+      "pt2_sha256": "8221d2a31b5bbebd39218fc3f9244917e173a338ff9c56904038443a06e2a250"
+    },
+    "frozen_core": [
+      0,
+      1
+    ],
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-09
+    },
+    "stability": null,
+    "basis": "cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz.json",
+    "basis_sha256": "4c2f450a81a8545e4df9e24a313111642cf70d5f7213fc8e879ef9dacab5da2f",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/h2o.xyz",
+    "geometry_xyz_sha256": "284b6da243e9abcf0aa2d6e13ad7204946feecb55d27b7819f12097095fdd6ae",
+    "geometry_bohr": [
+      [
+        "O",
+        0.0,
+        0.0,
+        0.22259084021251865
+      ],
+      [
+        "H",
+        0.0,
+        1.4275992699810498,
+        -0.8903652505761991
+      ],
+      [
+        "H",
+        0.0,
+        -1.4275992699810498,
+        -0.8903652505761991
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_b2plyp_pyscf.py",
+    "git_head": "d5d0156c7eaee4ca5e3086f9e33f73beadae1bdb",
+    "generated_utc": "2026-11-15T03:17:31+00:00"
+  }
+}

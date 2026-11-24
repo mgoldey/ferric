@@ -16,7 +16,7 @@
 //! parallelizes over `mo_indices` with rayon for exactly this reason. This
 //! mirrors T10's RPA frequency-round-robin (`ferric-rpa::mpi_rpa`, itself
 //! modeled on `direct_j.rs`/`direct_k.rs`'s shell-quartet round-robin,
-//! `docs/superpowers/mpi.md` Section 2): split `0..mo_indices.len()`
+//! `wiki/superpowers/mpi.md` Section 2): split `0..mo_indices.len()`
 //! round-robin across ranks (`local_idx % size == rank`), each rank calls
 //! `solve_qp_for_mo` ONLY for its own MOs (each MO's Padé fit + 30-step
 //! Newton solve is itself fully serial scalar work — no BLAS, no further
@@ -37,7 +37,7 @@
 //! * The upstream W construction (`PdepRpaResult`) — callers get that for
 //!   free by building `pdep` via `ferric_rpa::mpi_rpa::run_pdep_rpa_mpi`
 //!   instead of [`ferric_rpa::run_pdep_rpa`] (T10's own note in
-//!   `docs/superpowers/mpi.md` Section 5).
+//!   `wiki/superpowers/mpi.md` Section 5).
 //! * `m_proj` (the M × n_act × n_act projected B̃ tensor) and
 //!   `inv_diel_freq` are still fully replicated on every rank — this module
 //!   reduces WALL-CLOCK on the per-MO Newton/Padé loop but does NOT reduce

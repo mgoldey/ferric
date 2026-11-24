@@ -73,7 +73,7 @@ fn ready() -> bool {
     static INSTALL: std::sync::Once = std::sync::Once::new();
     INSTALL.call_once(|| {
         install(GpuSettingsExplicit {
-            mode: Some(GpuMode::Auto),
+            mode: Some(GpuMode::On),
             memory_gb: Some(3.5),
             ..Default::default()
         })
@@ -90,7 +90,7 @@ fn shipped_plus_dfj() -> MixedKernelSet {
 fn resolve(kernels: MixedKernelSet, shipped: MixedKernelSet) -> Result<GpuSettings, String> {
     GpuSettings::resolve_with_default(
         GpuSettingsExplicit {
-            mode: Some(GpuMode::Auto),
+            mode: Some(GpuMode::On),
             precision: Some(Precision::Mixed),
             mixed_kernels: Some(kernels),
             memory_gb: Some(3.5),
@@ -719,14 +719,12 @@ type Run = (f64, usize, bool);
 fn rhf(mol: &Molecule, prep: &PreparedBasis, arm: Arm) -> Run {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, prep).unwrap();
-    let cfg = RhfConfig {
-        energy_conv: 1e-3, // a loose "not still descending" bound; dP is the real gate
-        density_conv: 1e-8,
-        max_iter: 200,
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-3) // a loose "not still descending" bound; dP is the real gate
+        .with_density_conv(1e-8)
+        .with_max_iter(200)
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit");
     let _s = if matches!(arm, Arm::Mixed | Arm::Truncated) {
         Seams::allow_dfj()
     } else {

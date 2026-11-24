@@ -46,6 +46,7 @@ use std::f64::consts::PI;
 const PRECISION: f64 = 1e-11;
 const OMEGA: f64 = 0.9;
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn box_residual_is_the_makov_payne_exchange_term() {
     let basis = pyscf_sto3g_h();
@@ -55,10 +56,7 @@ fn box_residual_is_the_makov_payne_exchange_term() {
     let prep_mol = ferric_integrals::basis_bridge::PreparedBasis::new(&mol, &basis).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep_mol).unwrap();
-    let cfg = RhfConfig {
-        density_conv: 1e-10,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default().with_density_conv(1e-10);
     let mr = solve_rhf(
         &ParallelContext::default(),
         &mol,

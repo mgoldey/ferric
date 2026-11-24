@@ -109,7 +109,7 @@
 //!   [`KRksStress::symmetric`] on a grid at least as fine as the default.
 //!
 //! The grid, its weights and `dW/dε` do not depend on `k`; the AO list, the
-//! per-shell extents, the density gates (`ρ > DENSITY_FLOOR`) and the `ε_g`
+//! per-shell extents, the density gates (`ρ` above the functional's `DensityFloor`) and the `ε_g`
 //! (ungated) are the energy's, as in the force.
 //!
 //! # Fock guard
@@ -195,7 +195,7 @@ use crate::stress::{add_into, scaled, Mat3, ZERO3};
 use ferric_core::FerricError;
 use ferric_dft::grid::GridPoint;
 use ferric_dft::libxc::{FunctionalFamily, XcDef};
-use ferric_dft::vxc::{closed_kernel, DENSITY_FLOOR};
+use ferric_dft::vxc::{above_density_floor, closed_kernel};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::{Array2, Axis};
 use num_complex::Complex64 as C64;
@@ -573,7 +573,7 @@ impl KXcStressResponse for GridXc<'_> {
             let dens = chunk_density(d, &bl.chi, &bl.dchi, self.gga);
             let tau = self.mgga.then(|| chunk_tau(d, &bl.dchi));
             let kern = closed_kernel(&dens, tau.as_ref(), &self.xc);
-            let live = |g: usize| dens.rho[g] > DENSITY_FLOOR;
+            let live = |g: usize| above_density_floor(dens.rho[g], kern.floor);
             let mut e = 0.0;
             let mut ne = 0.0;
             for g in 0..np {
@@ -592,7 +592,7 @@ impl KXcStressResponse for GridXc<'_> {
             });
             let wts: Vec<f64> = pts.iter().map(|p| p.weight).collect();
             let mut v = chunk_vxc(&bl.chi, &bl.dchi, &wts, &vr, &c, self.gga);
-            // v_tau, gated like the energy's V^tau (ρ > DENSITY_FLOOR).
+            // v_tau, gated like the energy's V^tau (ρ above the `DensityFloor`).
             let vt: Vec<f64> = (0..np)
                 .map(|g| {
                     if self.mgga && live(g) {

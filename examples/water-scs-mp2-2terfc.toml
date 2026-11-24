@@ -9,9 +9,11 @@ kind = "scs-mp2-2terfc"
 
 [mp2]
 auxbasis = "cc-pvdz-ri"
-# Published SCS-MP2(2terfc, aTZ) defaults (Goldey & Head-Gordon, J. Phys.
+# SCS-MP2(2terfc, aTZ) parameters (Goldey & Head-Gordon, J. Phys.
 # Chem. B 118, 6519 (2014)): r0(1)=0.75 A,
-# r0(2)=1.05 A, c_os=1.27, c_ss=4.05. r0_bonded/r0_nonbonded are in
+# r0(2)=1.05 A, c_os=1.27, c_ss=4.05, fitted in aug-cc-pVTZ only. Omitting r0
+# is allowed only in aug-cc-pVTZ; in this cc-pVDZ run both r0 are explicit and
+# c_os/c_ss keep the aTZ values (the run prints a note). r0_bonded/r0_nonbonded are in
 # Angstroms; r0_nonbonded must be > r0_bonded.
 # Requires the terfc interpolation tables: set FERRIC_TERF_TABLE_DIR to point
 # at the generated *.bin tables (see terf-tables/).

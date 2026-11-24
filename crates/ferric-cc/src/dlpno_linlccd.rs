@@ -722,8 +722,8 @@ pub fn dlpno_linlccd_hh(
 /// `Σ_ijab <ij||ab> t[i,j,a,b]` over the full `no2²` grid, from PNO blocks.
 ///
 /// `basis.pairs` holds each pair once with `i <= j`; the dense sum runs over both
-/// orientations. Both `v` and `t` mirror with the same sign
-/// (`X[j,i,b,a] = −X[i,j,a,b]` for both, being antisymmetrized), so the mirror
+/// orientations. Both `v` and `t` flip sign under the occupied swap
+/// (`X[j,i,a,b] = −X[i,j,a,b]` for both, being antisymmetrized), so the mirror
 /// term equals the stored one and off-diagonal pairs count twice.
 fn pno_energy(v_pno: &[Array2<f64>], t_pno: &[Array2<f64>], basis: &PairPnoBasis) -> f64 {
     let mut e = 0.0;
@@ -952,10 +952,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-11,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-11),
         )
         .unwrap();
         Sys {
@@ -1212,9 +1209,8 @@ mod tests {
     ///    why writing a minus in `so_t2_from_pno` was a bug rather than a
     ///    convention difference.
     ///
-    /// An earlier version of this module asserted (3) was a sign FLIP. It is not,
-    /// and the measured consequence was every mirror block at twice its magnitude
-    /// with the wrong sign.
+    /// (3) is not a sign FLIP: asserting one puts every mirror block at twice its
+    /// magnitude with the wrong sign.
     #[test]
     fn stage1_mirror_convention_is_derived() {
         let s = water("sto-3g");

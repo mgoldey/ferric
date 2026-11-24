@@ -1,6 +1,7 @@
-//! Closed-shell SINGLET linear-response XC kernel in the particle–hole `(ia)`
-//! space — the `(ia|f_xc|jb)` block that TDA-DFT and Casida TDDFT add to their
-//! A (and, for Casida, B) matrices.
+//! Closed-shell linear-response XC kernel in the particle–hole `(ia)` space —
+//! the `(ia|f_xc|jb)` block that TDA-DFT and Casida TDDFT add to their A (and,
+//! for Casida, B) matrices — for singlet (`f_αα + f_αβ`) and `M_S = 0` triplet
+//! (`f_αα − f_αβ`) excitations ([`ResponseSpin`](crate::lr_kernel::ResponseSpin)).
 //!
 //! This is the ONE implementation of that block. It lives here, in the crate
 //! that owns the kernels, so that every response driver shares it:
@@ -18,13 +19,16 @@
 //! [`resolve_singlet_response_xc`](crate::lr_kernel::resolve_singlet_response_xc) decides whether a functional HAS a kernel
 //! ferric can apply, and what exact-exchange fraction goes on the `−c_HF` K-like
 //! terms. It hard-refuses (never silently degrades) every functional whose
-//! response would be incomplete: meta-GGA (no τ f_xc kernel), VV10-carrying
-//! functionals (the nonlocal response is not in the kernel), and
-//! range-separated hybrids (the long-range exchange term needs attenuated
-//! integrals the drivers do not build).
+//! response would be incomplete: VV10-carrying functionals (the nonlocal
+//! response is not in the kernel) and range-separated hybrids (for drivers
+//! that do not build the long-range exchange term; [`resolve_response_xc`](crate::lr_kernel::resolve_response_xc)
+//! accepts them and returns the CAM coefficients for a driver that does).
+//! LDA, GGA, global hybrids and τ-only meta-GGAs (SCAN / r2SCAN / TPSS) pass.
 //!
-//! [`singlet_fxc_ov_block`](crate::lr_kernel::singlet_fxc_ov_block) builds `K_{ia,jb} = (ia| f_αα + f_αβ |jb)` from the
-//! validated [`GgaFxcKernel`](crate::fxc::GgaFxcKernel) AO operator. With real orbitals
+//! [`singlet_fxc_ov_block`](crate::lr_kernel::singlet_fxc_ov_block) builds `K_{ia,jb} = (ia| f_αα + f_αβ |jb)` from a
+//! [`SingletKernel`](crate::lr_kernel::SingletKernel): the validated
+//! [`GgaFxcKernel`](crate::fxc::GgaFxcKernel) AO operator, or the τ-only
+//! [`MggaFxcKernel`](crate::fxc::MggaFxcKernel) for a meta-GGA. With real orbitals
 //! `(ia|f_xc|jb) = (ia|f_xc|bj)`, so the SAME block enters A and B:
 //!
 //! ```text
@@ -38,20 +42,33 @@
 //!
 //! # The adapter
 //!
-//! `GgaFxcKernel` is an AO-density-matrix → AO-potential operator: given a
+//! Each kernel is an AO-density-matrix → AO-potential operator: given a
 //! spin-resolved perturbation (δD_α, δD_β) at a reference density it returns
 //! (δV_α, δV_β). Feeding δD_α = δD_β = the (symmetrized) AO transition density
 //! of pair `jb` makes δV_α = ∫(f_αα + f_αβ) δρ, the singlet combination, and
-//! `K[:, jb] = C_occᵀ δV_α C_vir`. The factor is not asserted from theory — it
+//! `K[:, jb] = C_occᵀ δV_α C_vir`. The triplet block feeds δD_β = −δD_α and
+//! keeps δV_α = ∫(f_αα − f_αβ) δρ, with the same normalization
+//! (`book/src/19-tddft/05-triplets.md#triplets-spin-blocks`). The factor is not asserted from
+//! theory — it
 //! is pinned against PySCF `tddft.TDA` by `ferric-gw/tests/tda_dft_vs_pyscf.rs`
 //! (LDA/PBE/B3LYP water, 1.0e-3 eV) and against PySCF `TDA`/`TDDFT` by
 //! `ferric-tddft/tests/validation_tddft.rs`.
 
-use crate::density_on_grid::UksDensityGrid;
-use crate::fxc::GgaFxcKernel;
+use crate::density_on_grid::{eval_density_uks, eval_tau_closed, UksDensityGrid};
+use crate::fxc::{
+    point_hessians, spin_coefficients, GgaFxcKernel, MggaFxcKernel, MggaFxcReference,
+};
+use crate::grid::{AtomicGridConfig, GridPoint};
 use crate::libxc::{xc_def_from_name_nspin, FunctionalFamily, XcDef};
+use crate::vxc::{above_density_floor, DensityFloor};
+use ferric_core::basis::BasisSet;
+use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
-use ndarray::{s, Array2};
+use ndarray::{s, Array2, Array3};
+use rayon::prelude::*;
+
+mod unrestricted;
+pub use unrestricted::{SpinOrbitals, UksKernel, UksOvFxc};
 
 /// Relative `(ia)`-block asymmetry above which [`singlet_fxc_ov_block`]'s
 /// result must be REJECTED rather than symmetrized.
@@ -61,8 +78,58 @@ use ndarray::{s, Array2};
 /// caught showed up at 3.1e-2 relative, five orders above it.
 pub const FXC_BLOCK_ASYMMETRY_TOL: f64 = 1e-8;
 
+/// The spin of a closed-shell response: which combination of the
+/// spin-resolved kernel a block carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResponseSpin {
+    /// `f_αα + f_αβ` (δD_β = δD_α).
+    #[default]
+    Singlet,
+    /// The `M_S = 0` triplet, `f_αα − f_αβ` (δD_β = −δD_α).
+    Triplet,
+}
+
+impl ResponseSpin {
+    /// `"singlet"` or `"triplet"` (case-insensitive); anything else is an
+    /// error.
+    pub fn parse_config_str(s: &str) -> Result<Self, FerricError> {
+        match s.to_ascii_lowercase().as_str() {
+            "singlet" => Ok(Self::Singlet),
+            "triplet" => Ok(Self::Triplet),
+            other => Err(FerricError::General(format!(
+                "response spin '{other}' is not one of \"singlet\", \"triplet\""
+            ))),
+        }
+    }
+
+    /// Lower-case name, as the config key spells it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Singlet => "singlet",
+            Self::Triplet => "triplet",
+        }
+    }
+}
+
+/// A functional that passed [`resolve_response_xc`]: its exact-exchange
+/// coefficients and the (nspin = 2) XC definition for [`SingletKernel::new`].
+#[derive(Debug)]
+pub struct ResponseXc {
+    /// Exact-exchange fraction of the full Coulomb operator: the global-hybrid
+    /// mix, or the CAM short-range coefficient `c_sr` (0 for a pure
+    /// functional).
+    pub c_sr: f64,
+    /// Long-range (erf) exact-exchange fraction `c_lr`; equal to `c_sr`
+    /// unless the functional is range-separated with `omega != 0`.
+    pub c_lr: f64,
+    /// Range-separation parameter ω (Bohr⁻¹); 0 when not range-separated.
+    pub omega: f64,
+    /// Spin-resolved XC definition, ready for [`SingletKernel::new`].
+    pub xc_kernel: XcDef,
+}
+
 /// A functional that passed [`resolve_singlet_response_xc`]: its exact-exchange
-/// fraction and the (nspin = 2) XC definition for [`GgaFxcKernel::new`](crate::fxc::GgaFxcKernel::new).
+/// fraction and the (nspin = 2) XC definition for [`SingletKernel::new`].
 #[derive(Debug)]
 pub struct SingletResponseXc {
     /// Exact-exchange fraction for the `−c_HF (ij|ab)` (A) and `−c_HF (ib|aj)`
@@ -70,16 +137,87 @@ pub struct SingletResponseXc {
     /// short-range coefficient (ω = 0 is enforced, so it equals the long-range
     /// one), else the global-hybrid mix, else 0.
     pub c_hf: f64,
-    /// Spin-resolved XC definition, ready for [`GgaFxcKernel::new`](crate::fxc::GgaFxcKernel::new) (which
+    /// Spin-resolved XC definition, ready for [`SingletKernel::new`] (which
     /// consumes it).
     pub xc_kernel: XcDef,
 }
 
-/// Decide whether `name` has a complete singlet response kernel in ferric, and
-/// resolve its exact-exchange fraction.
+/// The spin-resolved f_xc kernel of a restricted reference, with its
+/// reference state: GGA-family (LDA / GGA / global hybrid) or τ-only
+/// meta-GGA. Built at D_α = D_β = ½D.
+#[derive(Debug)]
+pub enum SingletKernel {
+    /// No meta-GGA component: the GGA kernel (which also covers LDA and
+    /// global-hybrid semilocal parts).
+    Gga {
+        /// The kernel and its grid / AO data.
+        kernel: GgaFxcKernel,
+        /// Reference α/β densities at D_α = D_β.
+        reference: Box<UksDensityGrid>,
+    },
+    /// At least one meta-GGA component: the τ-only meta-GGA kernel.
+    Mgga {
+        /// The kernel and its grid / AO data.
+        kernel: MggaFxcKernel,
+        /// Reference per-point Hessians, gradients and density-floor mask at
+        /// D_α = D_β.
+        reference: Box<MggaFxcReference>,
+    },
+}
+
+impl SingletKernel {
+    /// Build the kernel for `def` (from [`resolve_singlet_response_xc`]) on
+    /// `grid` — the reference SCF's grid — at the restricted reference
+    /// `d_alpha` (= D_α = D_β).
+    pub fn new(
+        mol: &Molecule,
+        bs: &BasisSet,
+        def: XcDef,
+        grid: &AtomicGridConfig,
+        d_alpha: &Array2<f64>,
+    ) -> Result<Self, String> {
+        if def
+            .funcs
+            .iter()
+            .any(|f| f.family() == FunctionalFamily::MetaGga)
+        {
+            let kernel = MggaFxcKernel::new(mol, bs, def, grid)?;
+            let reference = Box::new(kernel.reference_restricted(d_alpha, d_alpha)?);
+            Ok(Self::Mgga { kernel, reference })
+        } else {
+            let kernel = GgaFxcKernel::new(mol, bs, def, grid)?;
+            let reference = Box::new(kernel.reference_density(d_alpha, d_alpha));
+            Ok(Self::Gga { kernel, reference })
+        }
+    }
+
+    /// The functional, grid and AO values (`(nbf, npts)`) and gradients
+    /// (`(3, nbf, npts)`) this kernel integrates with.
+    fn grid_data(&self) -> (&XcDef, &[GridPoint], &Array2<f64>, &Array3<f64>) {
+        match self {
+            Self::Gga { kernel, .. } => (&kernel.xc, &kernel.grid, &kernel.chi, &kernel.dchi),
+            Self::Mgga { kernel, .. } => (&kernel.xc, &kernel.grid, &kernel.chi, &kernel.dchi),
+        }
+    }
+
+    /// (δV_α, δV_β) for the perturbation (δD_α, δD_β).
+    pub fn apply(&self, dd_a: &Array2<f64>, dd_b: &Array2<f64>) -> (Array2<f64>, Array2<f64>) {
+        match self {
+            Self::Gga { kernel, reference } => {
+                kernel.apply_with_ref_restricted(reference, dd_a, dd_b)
+            }
+            Self::Mgga { kernel, reference } => kernel.apply_with_ref(reference, dd_a, dd_b),
+        }
+    }
+}
+
+/// Decide whether `name` has a complete response kernel in ferric, and
+/// resolve its exact-exchange coefficients, range separation included.
 ///
 /// `caller` prefixes every error message so the user sees which driver
-/// refused.
+/// refused. The caller must assemble the long-range exchange term
+/// `(c_lr − c_sr) K[erf(ω r)/r]` when `omega != 0`; a driver that does not
+/// uses [`resolve_singlet_response_xc`], which refuses those functionals.
 ///
 /// # Errors
 ///
@@ -87,15 +225,10 @@ pub struct SingletResponseXc {
 ///   * an unknown functional name;
 ///   * a functional carrying VV10 nonlocal correlation (its response is not in
 ///     the kernel — the excitation energies would silently omit it);
-///   * a range-separated hybrid (`omega != 0`) — the long-range exact-exchange
-///     response needs erf-attenuated integrals no driver builds;
-///   * any meta-GGA component — ferric has no τ f_xc kernel.
-pub fn resolve_singlet_response_xc(
-    name: &str,
-    caller: &str,
-) -> Result<SingletResponseXc, FerricError> {
+///   * a meta-GGA component libxc has no second derivative for.
+pub fn resolve_response_xc(name: &str, caller: &str) -> Result<ResponseXc, FerricError> {
     // nspin = 2: the kernel is spin-resolved (that IS its API), and the
-    // singlet combination f_αα + f_αβ is extracted by feeding δD_α = δD_β.
+    // singlet / triplet combinations are extracted by feeding δD_β = ±δD_α.
     let probe = xc_def_from_name_nspin(name, 2)
         .map_err(|e| FerricError::General(format!("{caller}: xc '{name}': {e:?}")))?;
 
@@ -106,43 +239,68 @@ pub fn resolve_singlet_response_xc(
              would silently omit it. Refused; use a functional without VV10."
         )));
     }
-    if let Some(cam) = probe.cam {
-        if cam.omega != 0.0 {
-            return Err(FerricError::General(format!(
-                "{caller}: functional '{name}' is range-separated (omega = {}); the \
-                 long-range exact-exchange response term is not assembled, so the \
-                 excitation energies would be wrong. Refused; use a pure functional or \
-                 a global hybrid.",
-                cam.omega
-            )));
-        }
-    }
     if probe
         .funcs
         .iter()
-        .any(|f| f.family() == FunctionalFamily::MetaGga)
+        .any(|f| f.family() == FunctionalFamily::MetaGga && !f.has_fxc())
     {
         return Err(FerricError::General(format!(
-            "{caller}: functional '{name}' is meta-GGA; ferric has no tau f_xc kernel, so \
-             the XC response term cannot be built. Refused rather than returning \
-             excitation energies without it."
+            "{caller}: functional '{name}' is a meta-GGA without a libxc second \
+             derivative, so the tau f_xc response term cannot be built. Refused rather \
+             than returning excitation energies without it."
         )));
     }
 
-    let c_hf = if let Some(cam) = probe.cam {
-        cam.c_sr // omega == 0 checked above, so c_sr == c_lr == the mix
-    } else {
-        probe.b3lyp_mix.unwrap_or(0.0)
+    let (c_sr, c_lr, omega) = match probe.cam {
+        Some(cam) if cam.omega != 0.0 => (cam.c_sr, cam.c_lr, cam.omega),
+        // ω = 0: erf(0) = 0, so only the short-range (= full) term remains.
+        Some(cam) => (cam.c_sr, cam.c_sr, 0.0),
+        None => {
+            let mix = probe.b3lyp_mix.unwrap_or(0.0);
+            (mix, mix, 0.0)
+        }
     };
-
-    Ok(SingletResponseXc {
-        c_hf,
+    Ok(ResponseXc {
+        c_sr,
+        c_lr,
+        omega,
         xc_kernel: probe,
     })
 }
 
+/// [`resolve_response_xc`] for a driver that builds only the full-Coulomb
+/// exchange term: range-separated hybrids (`omega != 0`) are refused.
+///
+/// `caller` prefixes every error message so the user sees which driver
+/// refused.
+///
+/// # Errors
+///
+/// Those of [`resolve_response_xc`], plus a range-separated hybrid — the
+/// long-range exact-exchange response needs erf-attenuated integrals this
+/// caller does not build.
+pub fn resolve_singlet_response_xc(
+    name: &str,
+    caller: &str,
+) -> Result<SingletResponseXc, FerricError> {
+    let r = resolve_response_xc(name, caller)?;
+    if r.omega != 0.0 {
+        return Err(FerricError::General(format!(
+            "{caller}: functional '{name}' is range-separated (omega = {}); this driver \
+             does not assemble the long-range exact-exchange response term, so the \
+             excitation energies would be wrong. Refused; use a pure functional or \
+             a global hybrid (the user-facing TDA/TDDFT handles range separation).",
+            r.omega
+        )));
+    }
+    Ok(SingletResponseXc {
+        c_hf: r.c_sr,
+        xc_kernel: r.xc_kernel,
+    })
+}
+
 /// Build the singlet f_xc coupling block `K_{ia,jb} = (ia| f_αα + f_αβ |jb)` in
-/// the active `(ia)` space, via the validated `GgaFxcKernel` AO adapter.
+/// the active `(ia)` space, via the [`SingletKernel`] AO adapter.
 ///
 /// Index convention: row/column `ia = i*nvir + a` with `i` in
 /// `first_act..nocc_total` (local `0..nocc`) and `a` in
@@ -157,8 +315,30 @@ pub fn resolve_singlet_response_xc(
 /// already-validated kernel unmodified rather than re-deriving the grid-space
 /// contraction. Peak memory is two `(n, n)` matrices (raw + symmetrized).
 pub fn singlet_fxc_ov_block(
-    kernel: &GgaFxcKernel,
-    ref_dens: &UksDensityGrid,
+    kernel: &SingletKernel,
+    mo_coeff: &Array2<f64>,
+    first_act: usize,
+    nocc_total: usize,
+    nocc: usize,
+    nvir: usize,
+) -> (Array2<f64>, f64) {
+    fxc_ov_block(
+        kernel,
+        ResponseSpin::Singlet,
+        mo_coeff,
+        first_act,
+        nocc_total,
+        nocc,
+        nvir,
+    )
+}
+
+/// [`singlet_fxc_ov_block`] for either spin: `K_{ia,jb} = (ia| f_αα ± f_αβ |jb)`,
+/// `+` for [`ResponseSpin::Singlet`] (the same block), `−` for
+/// [`ResponseSpin::Triplet`] (the β perturbation is `−δD`).
+pub fn fxc_ov_block(
+    kernel: &SingletKernel,
+    spin: ResponseSpin,
     mo_coeff: &Array2<f64>,
     first_act: usize,
     nocc_total: usize,
@@ -202,7 +382,10 @@ pub fn singlet_fxc_ov_block(
                 }
                 m
             };
-            let (dv_a, _dv_b) = kernel.apply_with_ref(ref_dens, &dd, &dd);
+            let (dv_a, _dv_b) = match spin {
+                ResponseSpin::Singlet => kernel.apply(&dd, &dd),
+                ResponseSpin::Triplet => kernel.apply(&dd, &(-&dd)),
+            };
             // K[:, jb] = C_occ^T δV_α C_vir, flattened as ia = i*nvir + a.
             let block = orbo.t().dot(&dv_a).dot(&orbv); // (nocc, nvir)
             let jb = j * nvir + b;
@@ -225,6 +408,446 @@ pub fn singlet_fxc_ov_block(
     let asym_rel = asym / scale;
     let k_sym = 0.5 * (&k + &k.t());
     (k_sym, asym_rel)
+}
+
+/// Grid points per block of [`SingletOvFxc`]. A block's MO values and its
+/// per-vector scratch are a few `(nvec·nocc, 256)` arrays, small enough to stay
+/// in cache-sized GEMM panels.
+const OV_BLOCK_PTS: usize = 256;
+
+/// Most partial sums the [`SingletOvFxc::apply`] reduction keeps. The groups
+/// are contiguous block ranges fixed by the block count alone, and are summed
+/// in group order, so the product does not depend on the rayon thread count.
+const OV_REDUCE_GROUPS: usize = 64;
+
+/// One block of grid points: occupied and virtual MO values (and gradients)
+/// there, and the restricted kernel coefficients of
+/// [`restricted_coefficients`](crate::fxc::restricted_coefficients), quadrature
+/// weight folded in and zero below the density floor.
+struct OvBlock {
+    /// `φ_i(r_g)`, `(nocc, nb)`.
+    phi_o: Array2<f64>,
+    /// `φ_a(r_g)`, `(nvir, nb)`.
+    phi_v: Array2<f64>,
+    /// `∂_x φ_i`, `∂_y φ_i`, `∂_z φ_i`; empty for a pure LDA.
+    dphi_o: Vec<Array2<f64>>,
+    /// The same for the virtuals.
+    dphi_v: Vec<Array2<f64>>,
+    /// `(δρ, g·∇δρ, δτ)` coefficients of u.
+    cu: Vec<[f64; 3]>,
+    /// `(δρ, g·∇δρ, δτ)` coefficients of `2δv_σαα + δv_σαβ`.
+    cs: Vec<[f64; 3]>,
+    /// `(δρ, g·∇δρ, δτ)` coefficients of t.
+    ct: Vec<[f64; 3]>,
+    /// ∇δρ coefficient of w, `2v_σαα + v_σαβ`.
+    gam: Vec<f64>,
+    /// Reference `g = ∇ρ_α`.
+    grad: Vec<[f64; 3]>,
+}
+
+/// Matrix-free f_xc product in the `(ia)` space: `y = K x` with `K` the block
+/// [`fxc_ov_block`] builds for the operator's [`ResponseSpin`] (singlet unless
+/// built by [`SingletOvFxc::new_with_spin`]), for a block of vectors at once.
+///
+/// # Same kernel, contracted in the MO basis
+///
+/// For `x` the AO perturbation is `δD = Σ_jb x_jb ½(C_j C_bᵀ + C_b C_jᵀ)`, and
+/// `(K x)_ia = (C_occᵀ δV[δD] C_vir)_ia` by linearity, `δV` the
+/// [`SingletKernel`]'s α response at δD_α = δD_β = δD. With MO values on the
+/// grid, `φ_p = Σ_μ C_μp χ_μ`, the perturbation density and its derivatives
+/// are
+///
+/// ```text
+///   δρ = Σ_jb x_jb φ_j φ_b,   ∇δρ = Σ_jb x_jb ∇(φ_j φ_b),   δτ = ½ Σ_jb x_jb ∇φ_j·∇φ_b
+/// ```
+///
+/// and the kernel's back-projection `Σ_g [u χχ + w·∇(χχ) + ½ t ∇χ·∇χ]`
+/// transforms to
+///
+/// ```text
+///   (K x)_ia = Σ_g [u φ_i φ_a + w·(φ_i ∇φ_a + ∇φ_i φ_a) + ½ t ∇φ_i·∇φ_a]
+/// ```
+///
+/// with the point coefficients `u = c_u·(δρ, g·∇δρ, δτ)`, `t = c_t·(...)`,
+/// `w = (c_s·(...)) g + γ ∇δρ` of the restricted regrouping
+/// `crate::fxc::restricted_coefficients` (pinned against the spin-resolved
+/// `linearize_point` that both dense kernels apply). The Hessians come from
+/// `crate::fxc::point_hessians`, the meta-GGA kernel's evaluator, which on a
+/// τ-free functional is the GGA kernel (`mgga_kernel_on_gga_functional_equals_gga_kernel`).
+/// The density floor is the restricted one both dense kernels use: a point is
+/// live where `ρ_α + ρ_β` is above the functional's floor.
+///
+/// # Cost
+///
+/// Per block and product: `Ψ = X φ_v` (and `X ∇φ_v` for a GGA), the
+/// point-local linearisation, then `L φ_vᵀ` (and `L_x ∇φ_vᵀ`): about
+/// `8·nvec·nocc·nvir·npts` flops for a GGA, against `nocc·nvir` full AO
+/// kernel applications for the dense block. Memory: the MO values,
+/// `(nocc + nvir)·npts` doubles (four times that for a GGA).
+pub struct SingletOvFxc {
+    blocks: Vec<OvBlock>,
+    nocc: usize,
+    nvir: usize,
+    /// The functional has a σ (or τ) dependence: gradient terms are live.
+    gradients: bool,
+    /// The functional has a τ dependence.
+    tau: bool,
+}
+
+impl std::fmt::Debug for SingletOvFxc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SingletOvFxc")
+            .field("nblocks", &self.blocks.len())
+            .field("nocc", &self.nocc)
+            .field("nvir", &self.nvir)
+            .field("gradients", &self.gradients)
+            .field("tau", &self.tau)
+            .finish()
+    }
+}
+
+/// Reference ρ_α, σ and τ on the whole grid, libxc-interleaved (2, 3 and 2
+/// per point), and the reference ∇ρ_α as `(3, npts)`.
+struct RestrictedReference {
+    rho: Vec<f64>,
+    sigma: Vec<f64>,
+    tau: Vec<f64>,
+    grad: Array2<f64>,
+}
+
+fn restricted_reference(
+    d_alpha: &Array2<f64>,
+    chi: &Array2<f64>,
+    dchi: &Array3<f64>,
+    with_tau: bool,
+) -> RestrictedReference {
+    let dens = eval_density_uks(d_alpha, d_alpha, chi, dchi);
+    let npts = chi.ncols();
+    let tau_a = with_tau.then(|| eval_tau_closed(d_alpha, dchi));
+    let mut rho = vec![0.0; 2 * npts];
+    let mut sigma = vec![0.0; 3 * npts];
+    let mut tau = vec![0.0; 2 * npts];
+    for g in 0..npts {
+        rho[2 * g] = dens.rho_a[g];
+        rho[2 * g + 1] = dens.rho_b[g];
+        for c in 0..3 {
+            sigma[3 * g + c] = dens.sigma[(c, g)];
+        }
+        if let Some(t) = &tau_a {
+            tau[2 * g] = t[g];
+            tau[2 * g + 1] = t[g];
+        }
+    }
+    RestrictedReference {
+        rho,
+        sigma,
+        tau,
+        grad: dens.grad_a,
+    }
+}
+
+impl SingletOvFxc {
+    /// Doubles held by an operator over `npts` points: the MO values (and
+    /// gradients when `gradients`) plus 13 coefficients per point. For a
+    /// memory plan, before construction.
+    pub fn resident_doubles(nocc: usize, nvir: usize, npts: usize, gradients: bool) -> usize {
+        let per_mo = if gradients { 4 } else { 1 };
+        (nocc + nvir)
+            .saturating_mul(per_mo)
+            .saturating_add(13)
+            .saturating_mul(npts)
+    }
+
+    /// Whether `kernel`'s functional has gradient (σ or τ) terms, i.e. the
+    /// `gradients` argument of [`Self::resident_doubles`].
+    pub fn kernel_has_gradients(kernel: &SingletKernel) -> bool {
+        kernel
+            .grid_data()
+            .0
+            .funcs
+            .iter()
+            .any(|f| f.family() != FunctionalFamily::Lda)
+    }
+
+    /// Grid size of `kernel` (for [`Self::resident_doubles`]).
+    pub fn kernel_npts(kernel: &SingletKernel) -> usize {
+        kernel.grid_data().1.len()
+    }
+
+    /// Build the operator for `kernel` at the restricted reference `d_alpha`
+    /// (= D_α = D_β, the density the kernel was built at), over the same
+    /// `(ia)` space as [`singlet_fxc_ov_block`] with the same arguments.
+    ///
+    /// # Errors
+    ///
+    /// A libxc meta-GGA second-derivative failure (as the dense kernel).
+    pub fn new(
+        kernel: &SingletKernel,
+        d_alpha: &Array2<f64>,
+        mo_coeff: &Array2<f64>,
+        first_act: usize,
+        nocc_total: usize,
+        nocc: usize,
+        nvir: usize,
+    ) -> Result<Self, String> {
+        Self::new_with_spin(
+            kernel,
+            ResponseSpin::Singlet,
+            d_alpha,
+            mo_coeff,
+            first_act,
+            nocc_total,
+            nocc,
+            nvir,
+        )
+    }
+
+    /// [`Self::new`] for either spin: the product of [`fxc_ov_block`]'s
+    /// `spin` block. The triplet regrouping of the point kernel is
+    /// `crate::fxc::spin_coefficients` (`book/src/19-tddft/05-triplets.md#triplets-spin-blocks`).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::new`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_spin(
+        kernel: &SingletKernel,
+        spin: ResponseSpin,
+        d_alpha: &Array2<f64>,
+        mo_coeff: &Array2<f64>,
+        first_act: usize,
+        nocc_total: usize,
+        nocc: usize,
+        nvir: usize,
+    ) -> Result<Self, String> {
+        let (xc, grid, chi, dchi) = kernel.grid_data();
+        let tau = xc
+            .funcs
+            .iter()
+            .any(|f| f.family() == FunctionalFamily::MetaGga);
+        let gradients = Self::kernel_has_gradients(kernel);
+        let reference = restricted_reference(d_alpha, chi, dchi, tau);
+        let orbo = mo_coeff.slice(s![.., first_act..nocc_total]).to_owned();
+        let orbv = mo_coeff
+            .slice(s![.., nocc_total..(nocc_total + nvir)])
+            .to_owned();
+        let floor = DensityFloor::for_xc(xc);
+        let npts = grid.len();
+        let starts: Vec<usize> = (0..npts).step_by(OV_BLOCK_PTS).collect();
+        let blocks = starts
+            .into_par_iter()
+            .map(|lo| {
+                let hi = (lo + OV_BLOCK_PTS).min(npts);
+                let ctx = BlockInputs {
+                    xc,
+                    grid,
+                    chi,
+                    dchi,
+                    reference: &reference,
+                    orbo: &orbo,
+                    orbv: &orbv,
+                    floor,
+                    gradients,
+                    triplet: spin == ResponseSpin::Triplet,
+                };
+                ctx.block(lo, hi)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(Self {
+            blocks,
+            nocc,
+            nvir,
+            gradients,
+            tau,
+        })
+    }
+
+    /// `K x` for every column of `x` (`(nocc·nvir, nvec)`, rows `ia =
+    /// i·nvir + a`). Deterministic across rayon thread counts.
+    pub fn apply(&self, x: &Array2<f64>) -> Array2<f64> {
+        let (nocc, nvir) = (self.nocc, self.nvir);
+        let nvec = x.ncols();
+        assert_eq!(
+            x.nrows(),
+            nocc * nvir,
+            "SingletOvFxc: x has the wrong length"
+        );
+        // Xs[(n·nocc + i), a] = x[ia, n]: one row-block per vector.
+        let xs = Array2::from_shape_fn((nvec * nocc, nvir), |(r, a)| {
+            x[((r % nocc) * nvir + a, r / nocc)]
+        });
+        let nb = self.blocks.len();
+        let ngroups = nb.clamp(1, OV_REDUCE_GROUPS);
+        let partials: Vec<Array2<f64>> = (0..ngroups)
+            .into_par_iter()
+            .map(|grp| {
+                let mut acc = Array2::<f64>::zeros((nvec * nocc, nvir));
+                for b in &self.blocks[grp * nb / ngroups..(grp + 1) * nb / ngroups] {
+                    self.block_product(b, &xs, nvec, &mut acc);
+                }
+                acc
+            })
+            .collect();
+        let mut acc = Array2::<f64>::zeros((nvec * nocc, nvir));
+        for p in &partials {
+            acc += p;
+        }
+        Array2::from_shape_fn((nocc * nvir, nvec), |(ia, n)| {
+            acc[(n * nocc + ia / nvir, ia % nvir)]
+        })
+    }
+
+    /// One block's contribution to `acc` (`(nvec·nocc, nvir)`, rows
+    /// `n·nocc + i`).
+    fn block_product(&self, b: &OvBlock, xs: &Array2<f64>, nvec: usize, acc: &mut Array2<f64>) {
+        let nocc = self.nocc;
+        let nb = b.phi_o.ncols();
+        let psi = xs.dot(&b.phi_v);
+        let psi_d: Vec<Array2<f64>> = b.dphi_v.iter().map(|d| xs.dot(d)).collect();
+        let mut l0 = Array2::<f64>::zeros((nvec * nocc, nb));
+        let mut lax: Vec<Array2<f64>> = (0..b.dphi_o.len())
+            .map(|_| Array2::<f64>::zeros((nvec * nocc, nb)))
+            .collect();
+        let mut drho = vec![0.0; nb];
+        let mut dgrad = [vec![0.0; nb], vec![0.0; nb], vec![0.0; nb]];
+        let mut dtau = vec![0.0; nb];
+        let mut u = vec![0.0; nb];
+        let mut t = vec![0.0; nb];
+        let mut w = [vec![0.0; nb], vec![0.0; nb], vec![0.0; nb]];
+        for n in 0..nvec {
+            let rows = n * nocc..(n + 1) * nocc;
+            // Perturbation density, gradient and τ at the block's points.
+            drho.fill(0.0);
+            dgrad.iter_mut().for_each(|v| v.fill(0.0));
+            dtau.fill(0.0);
+            for (i, r) in rows.clone().enumerate() {
+                let (po, ps) = (b.phi_o.row(i), psi.row(r));
+                for g in 0..nb {
+                    drho[g] += po[g] * ps[g];
+                }
+                if !self.gradients {
+                    continue;
+                }
+                for ax in 0..3 {
+                    let (dpo, dps) = (b.dphi_o[ax].row(i), psi_d[ax].row(r));
+                    for g in 0..nb {
+                        dgrad[ax][g] += dpo[g] * ps[g] + po[g] * dps[g];
+                    }
+                    if self.tau {
+                        for g in 0..nb {
+                            dtau[g] += 0.5 * dpo[g] * dps[g];
+                        }
+                    }
+                }
+            }
+            // Point-local linearised potential.
+            for g in 0..nb {
+                let gd = [dgrad[0][g], dgrad[1][g], dgrad[2][g]];
+                let gr = b.grad[g];
+                let bb = gr[0] * gd[0] + gr[1] * gd[1] + gr[2] * gd[2];
+                let lin = |k: [f64; 3]| k[0] * drho[g] + k[1] * bb + k[2] * dtau[g];
+                u[g] = lin(b.cu[g]);
+                if self.gradients {
+                    let sc = lin(b.cs[g]);
+                    t[g] = lin(b.ct[g]);
+                    for ax in 0..3 {
+                        w[ax][g] = sc * gr[ax] + b.gam[g] * gd[ax];
+                    }
+                }
+            }
+            // L0 = u φ_o + w·∇φ_o,  L_x = w_x φ_o + ½ t ∂_x φ_o.
+            for (i, r) in rows.enumerate() {
+                let po = b.phi_o.row(i);
+                let mut l0r = l0.row_mut(r);
+                for g in 0..nb {
+                    l0r[g] = u[g] * po[g];
+                }
+                if !self.gradients {
+                    continue;
+                }
+                for ax in 0..3 {
+                    let dpo = b.dphi_o[ax].row(i);
+                    for g in 0..nb {
+                        l0r[g] += w[ax][g] * dpo[g];
+                    }
+                    let mut lr = lax[ax].row_mut(r);
+                    for g in 0..nb {
+                        lr[g] = w[ax][g] * po[g] + 0.5 * t[g] * dpo[g];
+                    }
+                }
+            }
+        }
+        ndarray::linalg::general_mat_mul(1.0, &l0, &b.phi_v.t(), 1.0, acc);
+        for (l, dv) in lax.iter().zip(&b.dphi_v) {
+            ndarray::linalg::general_mat_mul(1.0, l, &dv.t(), 1.0, acc);
+        }
+    }
+}
+
+/// Borrowed inputs of one [`OvBlock`] build.
+struct BlockInputs<'a> {
+    xc: &'a XcDef,
+    grid: &'a [GridPoint],
+    chi: &'a Array2<f64>,
+    dchi: &'a Array3<f64>,
+    reference: &'a RestrictedReference,
+    orbo: &'a Array2<f64>,
+    orbv: &'a Array2<f64>,
+    floor: DensityFloor,
+    gradients: bool,
+    /// Triplet coefficients (`crate::fxc::spin_coefficients`).
+    triplet: bool,
+}
+
+impl BlockInputs<'_> {
+    /// MO values and kernel coefficients on points `lo..hi`.
+    fn block(&self, lo: usize, hi: usize) -> Result<OvBlock, String> {
+        let r = self.reference;
+        let mo = |c: &Array2<f64>, ao: ndarray::ArrayView2<f64>| c.t().dot(&ao);
+        let chi_b = self.chi.slice(s![.., lo..hi]);
+        let (dphi_o, dphi_v) = if self.gradients {
+            (0..3)
+                .map(|ax| {
+                    let d = self.dchi.slice(s![ax, .., lo..hi]);
+                    (mo(self.orbo, d), mo(self.orbv, d))
+                })
+                .unzip()
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        let (hess, vsigma) = point_hessians(
+            self.xc,
+            &r.rho[2 * lo..2 * hi],
+            &r.sigma[3 * lo..3 * hi],
+            &r.tau[2 * lo..2 * hi],
+        )?;
+        let nb = hi - lo;
+        let mut blk = OvBlock {
+            phi_o: mo(self.orbo, chi_b),
+            phi_v: mo(self.orbv, chi_b),
+            dphi_o,
+            dphi_v,
+            cu: vec![[0.0; 3]; nb],
+            cs: vec![[0.0; 3]; nb],
+            ct: vec![[0.0; 3]; nb],
+            gam: vec![0.0; nb],
+            grad: vec![[0.0; 3]; nb],
+        };
+        for k in 0..nb {
+            let g = lo + k;
+            if !above_density_floor(r.rho[2 * g] + r.rho[2 * g + 1], self.floor) {
+                continue;
+            }
+            let (cu, cs, ct, gam) =
+                spin_coefficients(&hess[k], &vsigma[k], self.grid[g].weight, self.triplet);
+            blk.cu[k] = cu;
+            blk.cs[k] = cs;
+            blk.ct[k] = ct;
+            blk.gam[k] = gam;
+            blk.grad[k] = [r.grad[(0, g)], r.grad[(1, g)], r.grad[(2, g)]];
+        }
+        Ok(blk)
+    }
 }
 
 #[cfg(test)]
@@ -253,14 +876,11 @@ mod tests {
     }
 
     #[test]
-    fn meta_gga_is_refused_not_approximated() {
-        for name in ["SCAN", "r2SCAN"] {
-            let err = resolve_singlet_response_xc(name, WHO)
-                .expect_err("meta-GGA has no tau f_xc kernel and must be refused");
-            assert!(
-                err.to_string().contains("meta-GGA"),
-                "{name}: refusal must name the reason, got: {err}"
-            );
+    fn tau_only_meta_ggas_resolve_with_no_exact_exchange() {
+        for name in ["SCAN", "r2SCAN", "TPSS"] {
+            let r = resolve_singlet_response_xc(name, WHO)
+                .unwrap_or_else(|e| panic!("{name} has a tau f_xc kernel: {e}"));
+            assert_eq!(r.c_hf, 0.0, "{name}: a pure meta-GGA has c_HF = 0");
         }
     }
 
@@ -271,5 +891,216 @@ mod tests {
         assert!(resolve_singlet_response_xc("wB97X-V", WHO).is_err());
         // Canonical libxc identifier (no friendly alias exists for CAM-B3LYP).
         assert!(resolve_singlet_response_xc("HYB_GGA_XC_CAM_B3LYP", WHO).is_err());
+    }
+
+    /// [`resolve_response_xc`] accepts range-separated hybrids with libxc's
+    /// CAM coefficients (`c_sr = α + β`, `c_lr = α`), keeps refusing VV10,
+    /// and gives a global hybrid `c_sr = c_lr`, ω = 0.
+    #[test]
+    fn range_separated_hybrids_resolve_with_their_cam_coefficients() {
+        let close = |x: f64, y: f64| (x - y).abs() < 1e-12;
+        let cam = resolve_response_xc("HYB_GGA_XC_CAM_B3LYP", WHO).unwrap();
+        assert!(close(cam.c_sr, 0.19) && close(cam.c_lr, 0.65), "{cam:?}");
+        assert!(close(cam.omega, 0.33), "{cam:?}");
+        let wb = resolve_response_xc("HYB_GGA_XC_WB97X", WHO).unwrap();
+        assert!(
+            close(wb.c_lr, 1.0) && wb.c_sr > 0.15 && wb.c_sr < 0.16,
+            "{wb:?}"
+        );
+        assert!(close(wb.omega, 0.3), "{wb:?}");
+        let b3 = resolve_response_xc("B3LYP", WHO).unwrap();
+        assert!(close(b3.c_sr, 0.2) && b3.c_sr == b3.c_lr && b3.omega == 0.0);
+        assert!(resolve_response_xc("wB97X-V", WHO).is_err(), "VV10");
+    }
+
+    #[test]
+    fn response_spin_parses_strictly() {
+        assert_eq!(
+            ResponseSpin::parse_config_str("Triplet").unwrap(),
+            ResponseSpin::Triplet
+        );
+        assert_eq!(
+            ResponseSpin::parse_config_str("singlet").unwrap(),
+            ResponseSpin::Singlet
+        );
+        assert!(ResponseSpin::parse_config_str("quintet").is_err());
+    }
+
+    /// [`SingletOvFxc`] (MO-space, batched) applied to the identity equals the
+    /// dense AO-route block [`fxc_ov_block`], water/6-31G at an HF density,
+    /// for an LDA, a GGA, a global hybrid and a τ-only meta-GGA, singlet and
+    /// triplet. The two triplet routes share only the point Hessians: the
+    /// dense one feeds δD_β = −δD_α to the spin-resolved AO kernel, the
+    /// matrix-free one uses the regrouped `spin_coefficients`.
+    ///
+    /// Bar: `FXC_BLOCK_ASYMMETRY_TOL · max|K|`, the noise floor the dense
+    /// route is accepted at (its raw block, analytically symmetric, is
+    /// rejected above that asymmetry). The two routes contract the same grid
+    /// sum in different orders (AO then MO against MO directly), so they
+    /// agree to that floor or better; a wrong term (a dropped gradient or τ
+    /// piece, a lost ½) is an O(1) relative change.
+    ///
+    /// Mutations (applied and reverted, 2026-11-13; the loop stops at the
+    /// first failing functional): dropping the `½ t ∂φ_o` τ term passes LDA,
+    /// PBE and B3LYP and fails r2SCAN (2.9e-2 against a 1.3e-9 bar); dropping
+    /// `γ ∇δρ` from w fails PBE (2.6e-2); dropping the u term fails LDA
+    /// (7.9e-2). The triplet γ coefficient with the singlet sign
+    /// (2026-11-14) fails PBE triplet (2.1e-2 against a 7.6e-10 bar).
+    #[test]
+    fn ov_operator_matches_the_dense_block() {
+        use ferric_core::basis;
+        use ferric_core::parallel::ParallelContext;
+        use ferric_integrals::basis_bridge::PreparedBasis;
+        use ferric_integrals::operator::Operator;
+        let _env_guard = crate::TEST_BUDGET_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let xyz = format!(
+            "{}/../../testdata/molecules/water.xyz",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let mol = Molecule::load_xyz(&xyz).unwrap();
+        let bs = basis::bundled("6-31g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = ferric_scf::screening::SchwarzBounds::compute(op, &prep).unwrap();
+        let scf = ferric_scf::rhf::solve_rhf(
+            &ParallelContext::default(),
+            &mol,
+            &prep,
+            op,
+            &bounds,
+            &ferric_scf::rhf::RhfConfig::default(),
+        )
+        .unwrap();
+        let nocc = (mol.nelec() / 2) as usize;
+        let nvir = scf.eps_r().len() - nocc;
+        let dim = nocc * nvir;
+        for (name, spin) in ["LDA", "PBE", "B3LYP", "r2SCAN"]
+            .into_iter()
+            .flat_map(|n| [ResponseSpin::Singlet, ResponseSpin::Triplet].map(|s| (n, s)))
+        {
+            let spec = resolve_singlet_response_xc(name, WHO).unwrap();
+            let grid = AtomicGridConfig::default();
+            let kern =
+                SingletKernel::new(&mol, &bs, spec.xc_kernel, &grid, &scf.density_alpha).unwrap();
+            let (dense, asym) = fxc_ov_block(&kern, spin, scf.mos_r(), 0, nocc, nocc, nvir);
+            assert!(
+                asym < FXC_BLOCK_ASYMMETRY_TOL,
+                "{name}: dense asymmetry {asym:e}"
+            );
+            let ov = SingletOvFxc::new_with_spin(
+                &kern,
+                spin,
+                &scf.density_alpha,
+                scf.mos_r(),
+                0,
+                nocc,
+                nocc,
+                nvir,
+            )
+            .unwrap();
+            let mf = ov.apply(&Array2::eye(dim));
+            let scale = dense.iter().fold(0.0_f64, |m, &x| m.max(x.abs()));
+            let diff = (&mf - &dense).iter().fold(0.0_f64, |m, &x| m.max(x.abs()));
+            eprintln!("{name} {spin:?}: max|K_mf - K_dense| = {diff:.3e} (max|K| = {scale:.3e})");
+            assert!(
+                diff <= FXC_BLOCK_ASYMMETRY_TOL * scale,
+                "{name} {spin:?}: matrix-free f_xc block differs from the dense one by \
+                 {diff:e} (bar {:e})",
+                FXC_BLOCK_ASYMMETRY_TOL * scale
+            );
+        }
+    }
+
+    /// The two spin blocks are the sum and difference of the same-spin and
+    /// cross-spin kernels, so `K_S + K_T = 2 (ia|f_αα|jb)`, where the right
+    /// side comes from the AO kernel fed `(δD, 0)` — a third route that never
+    /// takes a spin sign. Water/6-31G at an HF density, LDA, PBE and r2SCAN.
+    ///
+    /// Bar: `2·FXC_BLOCK_ASYMMETRY_TOL·max|K_αα|`. The three blocks are the
+    /// same grid sum of the same AO kernel at the same reference, combined
+    /// linearly; the symmetrization of each raw block moves it by at most
+    /// that tolerance relative (the guard every block passes).
+    ///
+    /// Mutation (2026-11-14): the triplet block built with the singlet sign
+    /// (`kernel.apply(&dd, &dd)`) fails LDA by 1.9e-2 against a 1.4e-9 bar.
+    #[test]
+    fn singlet_plus_triplet_is_twice_the_same_spin_block() {
+        use ferric_core::basis;
+        use ferric_core::parallel::ParallelContext;
+        use ferric_integrals::basis_bridge::PreparedBasis;
+        use ferric_integrals::operator::Operator;
+        let _env_guard = crate::TEST_BUDGET_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let xyz = format!(
+            "{}/../../testdata/molecules/water.xyz",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let mol = Molecule::load_xyz(&xyz).unwrap();
+        let bs = basis::bundled("6-31g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = ferric_scf::screening::SchwarzBounds::compute(op, &prep).unwrap();
+        let scf = ferric_scf::rhf::solve_rhf(
+            &ParallelContext::default(),
+            &mol,
+            &prep,
+            op,
+            &bounds,
+            &ferric_scf::rhf::RhfConfig::default(),
+        )
+        .unwrap();
+        let nocc = (mol.nelec() / 2) as usize;
+        let nvir = scf.eps_r().len() - nocc;
+        let c = scf.mos_r();
+        for name in ["LDA", "PBE", "r2SCAN"] {
+            let spec = resolve_singlet_response_xc(name, WHO).unwrap();
+            let grid = AtomicGridConfig::default();
+            let kern =
+                SingletKernel::new(&mol, &bs, spec.xc_kernel, &grid, &scf.density_alpha).unwrap();
+            let (ks, _) = fxc_ov_block(&kern, ResponseSpin::Singlet, c, 0, nocc, nocc, nvir);
+            let (kt, _) = fxc_ov_block(&kern, ResponseSpin::Triplet, c, 0, nocc, nocc, nvir);
+            // Same-spin block: δD_β = 0, the AO adapter of `fxc_ov_block`.
+            let orbo = c.slice(s![.., 0..nocc]).to_owned();
+            let orbv = c.slice(s![.., nocc..nocc + nvir]).to_owned();
+            let n = nocc * nvir;
+            let zero = Array2::<f64>::zeros((c.nrows(), c.nrows()));
+            let mut kaa = Array2::<f64>::zeros((n, n));
+            for j in 0..nocc {
+                for b in 0..nvir {
+                    let (cj, cb) = (orbo.column(j), orbv.column(b));
+                    let dd = Array2::from_shape_fn((cj.len(), cj.len()), |(m, v)| {
+                        0.5 * (cj[m] * cb[v] + cb[m] * cj[v])
+                    });
+                    let (dv_a, _) = kern.apply(&dd, &zero);
+                    let blk = orbo.t().dot(&dv_a).dot(&orbv);
+                    for i in 0..nocc {
+                        for a in 0..nvir {
+                            kaa[(i * nvir + a, j * nvir + b)] = blk[(i, a)];
+                        }
+                    }
+                }
+            }
+            let kaa = 0.5 * (&kaa + &kaa.t());
+            let scale = kaa.iter().fold(0.0_f64, |m, &x| m.max(x.abs()));
+            let diff = (&(&ks + &kt) - &(2.0 * &kaa))
+                .iter()
+                .fold(0.0_f64, |m, &x| m.max(x.abs()));
+            let gap = (&ks - &kt).iter().fold(0.0_f64, |m, &x| m.max(x.abs()));
+            let bar = 2.0 * FXC_BLOCK_ASYMMETRY_TOL * scale;
+            eprintln!(
+                "{name}: |K_S + K_T - 2 K_aa| = {diff:.3e} (bar {bar:.3e}, |K_S - K_T| {gap:.3e})"
+            );
+            assert!(
+                gap > 1e3 * bar,
+                "{name}: singlet and triplet blocks coincide"
+            );
+            assert!(
+                diff <= bar,
+                "{name}: K_S + K_T != 2 K_aa by {diff:e} (bar {bar:e})"
+            );
+        }
     }
 }

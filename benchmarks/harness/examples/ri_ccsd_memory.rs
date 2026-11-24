@@ -50,10 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dfbs = PreparedBasis::new(&mol, &basis::bundled(aux_name)?)?;
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs)?;
-    let rhf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
+    let rhf_cfg = RhfConfig::default().with_energy_conv(1e-10);
     let rhf = solve_rhf(
         &ParallelContext::default(),
         &mol,
@@ -70,7 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ladder,
         ..Default::default()
     };
-    let route = closed_shell_ladder_route(&obs, &dfbs, &rhf, &cfg)?;
+    let route = closed_shell_ladder_route(&mol, &obs, &dfbs, &rhf, &cfg)?;
     println!("system={xyz} nbas={nbas} naux={naux} nocc={nocc} nv={nv} route={route:?}");
 
     match mode.as_str() {

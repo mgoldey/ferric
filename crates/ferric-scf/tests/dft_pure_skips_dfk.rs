@@ -26,14 +26,12 @@ fn water(xc: Option<&str>, df_k_aux: &str) -> f64 {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        xc: xc.map(str::to_string),
-        df_j_aux: Some(JKFIT.to_string()),
-        df_k_aux: Some(df_k_aux.to_string()),
-        // Default convergence thresholds on purpose: 1e-10 Ha sits below the
-        // RI noise floor and never converges (see energy_conv's doc).
-        ..Default::default()
-    };
+    // Default convergence thresholds on purpose: 1e-10 Ha sits below the
+    // RI noise floor and never converges (see energy_conv's doc).
+    let mut cfg = RhfConfig::default()
+        .with_df_j_aux(JKFIT.to_string())
+        .with_df_k_aux(df_k_aux.to_string());
+    cfg.xc = xc.map(str::to_string);
     let res = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(
         res.converged,

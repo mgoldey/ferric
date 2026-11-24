@@ -33,8 +33,14 @@ energy change draws a warning (see [sharp bits](../using/sharp-bits.md)).
 
 **What it is.** Kohn–Sham DFT through **libxc**: LDA, GGA, hybrid and
 range-separated hybrid functionals (for example PBE, B3LYP, ωB97X-V), **VV10**
-nonlocal correlation, and the **SCAN / r2SCAN / TPSS** meta-GGAs (τ-dependent;
-no density Laplacian). The solvers cover RKS, UKS and ROKS.
+nonlocal correlation, the **SCAN / r2SCAN / TPSS** meta-GGAs (τ-dependent;
+no density Laplacian), and the hybrid meta-GGAs **TPSSh, M06-2X, SCAN0,
+r2SCAN0** and **ωB97M-V** (range-separated, with VV10).
+Any libxc meta-GGA identifier (`MGGA_*`, `HYB_MGGA_*`) is accepted unless libxc
+flags it as needing the density Laplacian (`XC_FLAGS_NEEDS_LAPLACIAN`, e.g.
+SCAN-L, BR89), which is refused with a message naming that component. A hybrid meta-GGA
+takes its exact-exchange fraction, and range separation if any, from libxc,
+the same way the hybrid GGAs do. The solvers cover RKS, UKS and ROKS.
 
 **Run it.** `method.kind = "ksdft"` with `[dft] functional = "PBE"`
 (`examples/water-wb97xv.toml`, `examples/benzene-dfb3lyp.toml`); Python
@@ -50,11 +56,29 @@ multiplicity > 1), and in Python through
 
 - Functional: LDA if `[dft] functional` is omitted.
 - Grid: Becke partitioning of atom-centred Treutler–Ahlrichs radial ×
-  Lebedev angular grids, **75 × 110** points per atom, **unpruned**.
-- Pruning is **opt-in**: `[dft] grid_prune = "nwchem"`
-  (`examples/water-pbe-pruned-grid.toml`) removes about 23% of points at
-  75 × 110. Optimization and frequency runs differentiate the grid the SCF
-  ran on (pruned or not, including `grid_radial` / `grid_angular`).
+  Lebedev angular grids, up to **75 × 110** points per atom, **pruned** by
+  default (`grid_prune = "nwchem-radial"`: NWChem angular regions, and 50
+  radial shells for H and He, 66 for Li–Ne, 75 for heavier atoms) with a
+  **1e-14 weight cutoff** (`grid_weight_cut`, ORCA's `WeightCut`). That is
+  42-47% fewer points than the flat 75 × 110 grid on organic molecules, with
+  energies within 2e-7 to 4e-6 Ha of it on PBE/def2-SVP (the flat grid's own
+  error against a 99 × 590 grid is 4.5e-4 to 3.3e-3 Ha on C10–C32 alkanes).
+- The flat 75 × 110 grid is `grid_prune = "none"` with `grid_weight_cut = 0`.
+  `"nwchem"` prunes the angular grid only (about 23% fewer points,
+  `examples/water-pbe-pruned-grid.toml`); `"defgrid1"`–`"defgrid3"` are
+  ORCA 6.1's DEFGRIDs, with their own sizes: fewer radial shells than the
+  default (H 30/35/44, Li–Ne 38/44/53, Na–Ar 46/54/63 against 50/66/75) but
+  more angular points (peak orders 194/302/590 for heavier atoms and 110/194/434
+  for H and He, against 110). `defgrid2`, ORCA's default, moved PBE/def2-SVP
+  energies by 1e-3 to 4e-3 Ha from the flat grid. Setting only `grid_radial` /
+  `grid_angular` keeps the default scheme at that size. Optimization,
+  frequency (including the analytic moving-grid Hessian) and TDDFT runs use
+  the grid the SCF ran on.
+- SCAN is the exception to "pruning costs nothing". On water/6-31G its
+  gradient error against a 99 × 590 grid is 2.1e-4 Ha/Bohr on the flat grid
+  and 5.6e-4 on the default, because the hydrogens lose radial shells.
+  r2SCAN (3.7e-4 flat, 3.6e-4 default) and PBE (unchanged) are not
+  affected. For SCAN, use `grid_prune = "nwchem"` or a larger grid.
 - Density fitting: **RI-J and RI-K are on by default** for `ksdft` and
   `run_dft` (`def2-universal-jkfit`), while `rhf` is exact by default. In
   Python, `df_j_aux=""` selects exact Coulomb. The fitting error grows with
@@ -68,30 +92,270 @@ multiplicity > 1), and in Python through
 **Accuracy.** `ksdft` is Proven. SCAN/r2SCAN/TPSS energies are pinned against PySCF
 (`ferric-scf/tests/dft_scan.rs`); the SCAN/r2SCAN closed-shell gradients against
 PySCF with grid response (`dft_gradient_mgga.rs`). TPSS gradients have no
-PySCF pin. Other meta-GGA variants
-(deorbitalized, +VV10, hybrid meta-GGA) are refused, not approximated.
+PySCF pin. Hybrid meta-GGA energies match PySCF to 1e-13..2e-13 Ha with
+exact J/K on the flat 75 × 110 grid (TPSSh, M06-2X, SCAN0; H2O RKS, NH2 UKS,
+TPSSh NH2 ROKS, cc-pVDZ) and wB97M-V to 6e-8 Ha with RI-J/K
+(`dft_hybrid_mgga.rs`); their RKS and UKS gradients match PySCF with grid
+response to 4e-8 Ha/Bohr and finite differences of ferric's energy to 1.4e-7
+(TPSSh, M06-2X, 6-31G; `dft_gradient_hybrid_mgga.rs`). The response consumers
+take the τ kernel plus the libxc fraction of exact exchange: the TPSSh internal
+stability eigenvalue matches PySCF's dense orbital Hessian to 6e-9 (RKS H2O)
+and 7e-10 Ha (UKS NH2), Newton lands on the DIIS energy, the MBD@rsSCS gradient's Z-vector
+(TPSSh, RKS H2O/STO-3G) matches finite differences of the full SCF pipeline to
+3.5e-9 Ha/Bohr, and TDA/Casida
+excitations of water/6-31G match PySCF to 3e-7 eV (TPSSh) and 1e-6 eV
+(M06-2X). Laplacian-dependent
+meta-GGAs are refused, not approximated. Periodic (PBC) routes refuse hybrid
+meta-GGAs. The
+\\( V_{xc} \\), \\( f_{xc} \\), VV10, Becke-weight and gradient formulas are
+derived in [DFT derivations](./dft-derivations.md).
+
+### RI-J tensor precision
+
+The RI-J three-index tensor is stored as **f32 by default for single
+points** and **f64 by default for geometry and frequency tasks**
+(`[scf] ri_j_precision = "f32"|"f64"`; Python `ri_j_precision=`, or
+`scf_ri_j_precision=` on drivers with more than one iterative stage;
+library `RhfConfig::ri_j_precision`). Each integral is rounded to the
+nearest f32 once; both RI-J contractions multiply the stored values by f64
+vectors and accumulate in f64, and the fitted density, the metric solve and
+J itself stay f64. The tensor takes half the memory. `"f64"` stores the
+tensor in f64 and reproduces the former default bit for bit (measured:
+identical energies, gradients and iteration counts for water and
+sulfamethoxazole, PBE and B3LYP, and RHF with RI-J). An explicit value
+always wins. Omitted, the precision is resolved in one place
+(`ferric_scf::df_j::resolve_ri_j_precision`, from `RhfConfig::ri_j_task`):
+
+| task | omitted `ri_j_precision` resolves to |
+|---|---|
+| CLI `task = "optimize"` / `"frequencies"`; Python `run_optimize`, `run_optimize_uhf`, `run_optimize_qmmm`, `run_frequencies`, `run_saddle`, `run_irc`; library `optimize_geometry*`, `harmonic_frequencies*`, `optimize_qmmm` | f64 (geometry-task default) |
+| everything else (energies, SCF, gradients at one geometry, TDDFT, GW, MP2, ...) | f32, or f64 under a `[gpu]` mode that may build J on the device (it needs the f64 tensor) |
+
+The geometry default is f64 because the f32 surface is jagged (below):
+optimizers and finite-difference Hessians compare energies and gradients at
+nearby geometries, where the f32 jitter is as large as the convergence
+criteria. `ri_j_precision = "f32"` in an optimisation is still honoured.
+
+An f32 request falls back
+to f64 (with a notice) when the f32 tensor does not fit in memory or
+`jk_storage` is `disk`/`direct`; Split-RI-J has no tensor. The free-atom
+SCFs of the MINAO guess always use f64.
+
+The SCF converges on the operator built from the rounded tensor, so the
+energy carries a first-order error. Gradients, optimisation, Hessians and
+frequencies **follow the SCF's precision**: they form the fitted density
+from the same rounded integrals (derivative integrals stay f64), so they
+are the gradient of the rounded-tensor energy with each integral's rounding
+held fixed. The rounding itself is not a smooth function of the geometry:
+moving an atom re-rounds every integral, so the f32 energy surface carries a
+small jitter that no analytic gradient can follow. Measured by central finite
+differences of the PBE/def2-SVP energy (SCF converged to 1e-10 Ha): at a
+2e-3 Bohr step the f32 FD-minus-analytic gradient was up to 4.9e-5 Ha/Bohr
+on water and 2.1e-4 Ha/Bohr on sulfamethoxazole, against 5e-7 and 9.5e-7 with
+f64, i.e. an energy jitter of about 2e-7 Ha (water) and 9e-7 Ha
+(sulfamethoxazole) between nearby geometries; at a 5e-3 Bohr step the f32
+residual fell to 3.6e-6 and 2.2e-5 Ha/Bohr. That jitter is the size of the
+optimiser's default energy-change criterion (1e-6 Ha), which is why geometry
+and frequency tasks default to f64; for your own finite-difference work on
+single-point energies, set `ri_j_precision = "f64"`. The precision used and
+why is recorded in the certificate (`ri-j` entry: "aux …, f64 tensor storage
+(requested f64: geometry-task default)"; the reason is `explicit`,
+`geometry-task default`, `gpu default` or `default`), the run log (the
+`run_start` header's `ri_j_precision_resolved` / `ri_j_precision_source` /
+`ri_j_task`, each `ri_j_tensor` record's `precision_source`, plus a
+`dfj-f32` entry in the precision record) and `result.ri_j_precision` in
+Python.
+
+**The default f32 tensor and the memory budget.** The f32 tensor is held in
+memory only. When it does not fit the memory budget, an f32 request (the
+default included) keeps the f64 tensor and says so on stderr ("…
+`ri_j_precision = "f32"` (default) but the tensor stays f64 …") and in the
+certificate. That choice reads the budget alone, never what else the shared
+memory pool happens to hold, so one input under one budget always gets one
+precision. Because the default switches precision with the
+budget, an energy (and everything correlated on that reference) can move by
+up to ~1e-5 Ha between a budget that fits the f32 tensor and one that does
+not: the f32 and f64 tensors of benzene/aug-cc-pVDZ (def2-universal-jkfit)
+give RHF references 5.3e-6 Ha apart and rs-mp2-rpa totals 7.8e-6 Ha apart.
+`ri_j_precision = "f64"` removes the budget-dependent f32 change, but
+energies can still differ in the last bits when the budget changes the
+`jk_storage` tier (with it, the same benzene run agrees to 7e-13 Ha from
+0.12 GiB to an unset budget). The f32 default is kept: it halves the tensor and its error
+is the measured one below.
+
+Measured, def2-SVP, `def2-universal-jkfit`, default grid and thresholds,
+f32 minus f64 (2026-11-07):
+
+| system | atoms | ΔE (Ha) | ΔE / atom | max \|Δg\| (Ha/Bohr) | rms Δg | SCF iterations f64 / f32 |
+|---|---|---|---|---|---|---|
+| water, PBE | 3 | −1.00e-6 | −3.3e-7 | 6.7e-8 | 3.4e-8 | 9 / 9 |
+| water, B3LYP | 3 | −1.00e-6 | −3.3e-7 | 6.7e-8 | 3.4e-8 | 8 / 8 |
+| H2O⁺ doublet, UKS PBE | 3 | −1.09e-6 | −3.6e-7 | 8.5e-8 | 4.9e-8 | 8 / 8 |
+| sulfamethoxazole, PBE | 28 | +2.57e-6 | +9.2e-8 | 3.0e-6 | 5.3e-7 | 15 / 15 |
+| sulfamethoxazole, B3LYP | 28 | +2.51e-6 | +9.0e-8 | 3.1e-6 | 5.6e-7 | 13 / 13 |
+| sulfamethoxazole⁺ doublet, UKS PBE | 28 | +2.50e-6 | +8.9e-8 | 2.6e-6 | 5.1e-7 | 20 / 20 |
+| danuglipron, PBE | 71 | +5.37e-6 | +7.6e-8 | 2.2e-6 | 5.4e-7 | 16 / 16 |
+| danuglipron, B3LYP (RIJCOSX, energy only) | 71 | +5.09e-6 | +7.2e-8 | — | — | 15 / 18 |
+
+Δg is f32 minus f64 of the analytic gradient (each at its own converged
+density). Cost, danuglipron PBE/def2-SVP, CLI, 6 threads, 3 runs each on a
+quiet box: the SCF peak RSS fell from 6.44 to 4.50 GB and its wall time from
+24.1 to 23.7 s (CPU time 110 to 102 s); a one-step optimisation (SCF +
+gradient) peaked at 4.68 against 6.55 GB, with the same wall time (122 s). For danuglipron B3LYP the RI-JK tensors do not fit a 14 GB memory
+cap, so it was run as RIJCOSX (`k_builder = "cosx"`), energy only.
+
+The error is µEh-scale and roughly size-extensive (≈1e-7 Ha per atom on the
+drug-sized molecules), two or more orders of magnitude below the RI-J
+fitting error against exact Coulomb quoted above (4.5e-4 Ha for water,
+1.5e-2 Ha for a 71-atom drug, PBE/STO-3G). At a fixed geometry it is
+deterministic (reproduced bit for bit across runs). The SCF iteration count
+was unchanged in seven of the eight runs; danuglipron B3LYP/RIJCOSX took 18
+instead of 15. f32 rounding also breaks exact point-group degeneracy at the
+1e-8 level (benzene/def2-SVP HF with RI-J: the e1g orbital pair split by
+9.5e-9 Ha). Compare f32 and f64 results with each other only at this level,
+and use `"f64"` when validating against an f64 reference code at tighter
+bars, for finite differences of energies, and for symmetry-blocked work that
+needs exact degeneracies.
+
+### RI-K tensor storage
+
+The RI-K (DF-K) builder keeps the metric-dressed three-index tensor
+`B = M (P|μν)`, `MᵀM = V⁻¹`, for the whole SCF. `M` is the Cholesky `L⁻¹`
+when the factor certifies that no metric eigenvalue lies near the `1e-10`
+linear-dependence cut, and otherwise the truncated `V^{-1/2}` from an
+eigendecomposition (which drops those modes); the two give the same K up to
+rounding (about `1e-13` relative), and the Cholesky route is several times
+cheaper to set up. `FERRIC_DFK_METRIC=eigh` forces the eigendecomposition; it
+is a debug escape hatch for comparing the two routes, not a tuning option
+(`auto`, the default, is the only other value; anything else is an error). That tensor is symmetric in its two orbital indices, and it is
+now held as the **packed symmetric half** (`n_aux × n_bf(n_bf+1)/2`
+elements) rather than the full square: half the memory at f64. Both K
+contractions read only one triangle (the occupied path unpacks each
+auxiliary row into the triangle its symmetric matrix product reads; the
+density path unpacks a few rows at a time), so K is bit-for-bit the square
+tensor's. `[scf] ri_k_precision` (Python `ri_k_precision=`, or
+`scf_ri_k_precision=` on drivers with more than one iterative stage;
+library `RhfConfig::ri_k_precision`) chooses the stored precision:
+
+- `"f64"` (default): the packed f64 tensor. Energies, iteration counts and
+  gradients are those of the former default bit for bit
+  (`ferric-scf/tests/dfk_packed_storage.rs`).
+- `"f32"`: each stored element rounded once to the nearest f32, a quarter of
+  the former memory; the K contractions still run in f64. The SCF converges
+  on the rounded operator, so the energy carries a first-order error,
+  bracketed by the variational sandwich the tests check.
+
+When J and K share one auxiliary basis, the raw tensor RI-J keeps is held
+packed instead of unpacked whenever the unpacked one would not leave room
+for the dressed band beside it. When even the packed raw tensor and the
+dressed band do not fit `[memory] budget_gb` together but the band does
+("dress first", `jk_storage = "auto"` or `"split"`, f64 RI-K, one rank,
+Coulomb operator), the raw tensor is not held at all: its integrals are
+computed once in 128-row blocks and dressed straight into the packed band
+(the same matrix products in the same order, so K is bitwise unchanged).
+J then gets its f32 tensor by a second pass over the integrals when
+`ri_j_precision = "f32"` and it fits beside the band (bitwise the J the
+shared tensor would have given), and Split-RI-J otherwise; a notice names
+the route. A `[gpu]` mode that may build K on the device keeps the square
+f64 tensor (the device upload reads it). A band that does not fit in memory
+is still spilled (packed f64 on disk), with a notice when `"f32"` was asked
+for.
+
+Measured, def2-SVP, `def2-universal-jkfit`, `density_conv = 1e-8`, CLI,
+f32 minus f64 RI-K storage (2026-11-08; RI-J f64 in both):
+
+| system | ΔE (Ha) | SCF iterations f64 / f32 |
+|---|---|---|
+| water, B3LYP | −7.7e-9 | 10 / 10 |
+| water, PBE0 | −9.6e-9 | 10 / 10 |
+| water, CAM-B3LYP | +2.6e-9 | 11 / 11 |
+| H2O⁺ doublet, UKS B3LYP | −6.5e-9 | 10 / 10 |
+| sulfamethoxazole, B3LYP | +8.6e-8 | 19 / 19 |
+| sulfamethoxazole, PBE0 | +1.08e-7 | 19 / 19 |
+| sulfamethoxazole, CAM-B3LYP | +1.0e-8 | 19 / 19 |
+| sulfamethoxazole triplet, UKS B3LYP | +8.6e-8 | 45 / 45 |
+| water, HF / cc-pVDZ (RI-JK) | 2.1e-7 | — |
+
+The error is an order of magnitude below the RI-J f32 error above, but it
+has the same character: the rounding is re-drawn at every geometry, so the
+f32 energy is not smooth at that level. The analytic gradient recomputes the
+f64 integrals, so it is the gradient of the f64 functional at the f32 SCF's
+density: 7.5e-9 Ha/Bohr from the f64 SCF's gradient on HF water/cc-pVDZ,
+while a central finite difference of the f32 energy at h = 1e-3 Bohr missed it
+by 2.0e-4 Ha/Bohr (f64: 1.3e-7). Removing that jitter needs an f64 energy
+exit (the f64 functional evaluated once at the f32 density), which is not
+implemented; this is why `"f32"` is opt-in. Use it for single points and
+analytic-gradient work where the memory matters; keep `"f64"` for finite
+differences of energies, energy-based line searches and tight scans. The
+precision used is recorded in the certificate (`ri-k` entry: "aux …, f32
+tensor storage"), the precision record (`dfk-f32`), the checkpoint route
+and `result.ri_k_precision` in Python.
+
+Memory and wall time, B3LYP, `[memory] budget_gb = 12` (12.88 GB), RI-J
+f64 in every run, CLI, 6 threads, each run started with ≤ 1.5 busy cores
+(2026-11-08; "before" is the square tensor, from the 2026-11-07 scaling
+runs). "spills" means the dressed tensor was written to disk and the run was
+stopped there (each iteration then re-reads it, about a minute of IO per
+iteration for danuglipron):
+
+| system (n_bf) | before: peak RSS, wall | `"f64"`: peak RSS, wall | `"f32"`: peak RSS, wall |
+|---|---|---|---|
+| C32H66 / 6-31G (420) | 11.3 GB, 61 s | 9.3 GB, 49-55 s | 8.1 GB, 48-75 s |
+| C40H82 / 6-31G (524) | spills | 11.9 GB, 106-111 s | 12.9 GB, 116-129 s |
+| C48H98 / 6-31G (628) | spills | spills | 13.4 GB, 224 s |
+| C20H42 / def2-SVP (490) | 9.8 GB, 31 s | 8.2 GB, 30 s | 7.1 GB, 30 s |
+| C24H50 / def2-SVP (586) | spills | 13.0 GB, 74 s | 11.2 GB, 56-65 s |
+| C32H66 / def2-SVP (778) | spills | spills | spills |
+| danuglipron / def2-SVP (724) | spills | spills | 12.1 GB, 174-177 s |
+
+With `"f32"` the raw tensor may stay unpacked where `"f64"` packs it (the
+smaller dressed band leaves room), which is why C40 / 6-31G peaks higher at
+f32. Two runs peaked 0.1-0.5 GB above the 12.88 GB budget (C24 / def2-SVP
+f64, C48 / 6-31G f32): the budget bounds the three-index tensors and their
+scratch, not the whole process.
 
 ## Dispersion correction: D3(BJ)
 
 **What it is.** Grimme's D3 with Becke–Johnson damping, a post-SCF pairwise
-correction, implemented natively in Rust. The two-body term only; the
-three-body (ATM) term is not implemented.
+correction, implemented natively in Rust: the two-body term, plus the
+Axilrod–Teller–Muto three-body term when its scale `s9` is nonzero. `s9`
+defaults to 0 (off), the reference default for a named functional
+(simple-dftd3 without `--atm`).
 
 **Run it.** `[dft] dispersion = "d3bj"` on `method.kind = "ksdft"`
 (`examples/water-pbe-d3bj.toml`); `"d3bj(b3lyp)"` borrows another functional's
 fitted damping parameters. Python: `run_dft(..., dispersion="d3bj")`, or
-`ferric.d3bj_energy(mol, functional)` for the correction alone.
+`ferric.d3bj_energy(mol, functional, s9=0.0)` for the correction alone;
+`s9=1.0` adds the three-body term. The CLI and `run_dft(dispersion=...)` use
+`s9 = 0`.
 
 **Scope.** The damping parameters are fitted per functional, so the key is
-refused on any method other than `ksdft`. `task = "optimize"` works (the D3
+refused on any method other than `ksdft`. Tabulated functionals, each equal
+to simple-dftd3 1.6.0's rational-damping entry: BLYP, BP86, B97-D, PBE, PBE0,
+revPBE, B3LYP, TPSS, TPSS0, B2PLYP, BHLYP, SCAN, r2SCAN, ωB97X. M06-2X has no
+D3(BJ) fit (only zero-damping D3(0)) and is an error. The `wb97x` row is
+ωB97X-D3(BJ) (Najibi and Goerigk, JCTC 14, 5725 (2018)): D3(BJ) fitted to
+replace the VV10 term of ωB97X-V, so it belongs to ωB97X-V's functional
+without VV10, not to the 2008 ωB97X (libxc `HYB_GGA_XC_WB97X`). It is not
+ωB97X-D3 (Lin, Li, Mao and Chai, JCTC 9, 263 (2013)), a separate functional
+fitted with zero damping, nor ωB97X-D (Chai and Head-Gordon, 2008).
+ferric cannot run ωB97X-D3(BJ) as published: `functional = "wB97X-V"` with
+`dispersion = "d3bj"` finds no `wb97x` row (the lookup uses the functional's
+own name), and `dispersion = "d3bj(wb97x)"` adds D3(BJ) on top of the VV10
+term instead of replacing it. ferric has no ωB97X-V-without-VV10 functional,
+so the `wb97x` row is tabulated for comparison with simple-dftd3 only.
+`task = "optimize"` works (the D3
 gradient is implemented; `ferric-d3/tests/gradient_vs_fd.rs`), and so does
 `task = "frequencies"` on RKS, UKS and ROKS: see
 [Frequencies with dispersion](#frequencies-with-dispersion).
 
-**Accuracy.** Agrees with simple-dftd3 1.6.0 to below 1e-12 Ha on water,
-methane, benzene and an argon dimer with the three-body term off on both
-sides (`ferric-d3/tests/vs_reference_dftd3.rs`). The omitted three-body term
-is 0.1% of the two-body energy at benzene and grows with size.
+**Accuracy.** Energy and analytic gradient agree with simple-dftd3 1.6.0
+with the three-body term off and on, on nine molecules from water to benzene
+and CHBr3: 1.2e-13 Ha and 5.5e-13 Ha/Bohr on the totals, 2.6e-15 Ha on the
+three-body part (`ferric-d3/tests/vs_reference_dftd3_atm.rs`). The three-body
+term is 0.1% of the two-body energy at benzene and grows with size. Unlike
+simple-dftd3, no real-space cutoff is applied (it drops triples beyond
+40 Bohr), and the triple sum costs O(N³).
 
 ## Dispersion correction: MBD@rsSCS
 
@@ -164,15 +428,27 @@ frequencies with MBD@rsSCS run through the CLI or `run_frequencies`.
 ## Frequencies with dispersion
 
 **What it is.** Harmonic frequencies on the dispersion-corrected surface
-E(KS) + E(disp), on an RKS, UKS or ROKS reference. The Hessian is the central
-difference of the corrected analytic gradient: at each of the 6N displaced
-geometries the SCF of that reference is converged, the KS gradient and the dispersion gradient
-are evaluated there, and their sum is differenced. For MBD@rsSCS the
-dispersion gradient is the exact one above, with the Z-vector of the
-reference actually solved (RKS, UKS or ROKS), so the response of the Hirshfeld
-volumes to the displacement, through the SCF density, is in the Hessian.
-There is no analytic Hessian on this path: `[frequencies] hessian = "analytic"`
-is an error and `"auto"` runs finite differences.
+E(KS) + E(disp), on an RKS, UKS or ROKS reference.
+
+D3(BJ) depends on the geometry only. Its Hessian is analytic
+(`ferric_d3::d3bj_hessian`, derivation in `book/src/25-dispersion/01-d3bj.md#d3bj-hessian`). The run takes the Hessian route it would take without
+dispersion and adds the D3(BJ) Hessian: under `hessian = "auto"`, the analytic
+moving-grid KS Hessian (RKS or UKS; LDA, GGA, pure or global hybrid; ECPs
+allowed) plus the D3(BJ) Hessian, with no gradient evaluations. Where no
+analytic KS Hessian applies (ROKS, meta-GGA, VV10, range-separated hybrids),
+`auto` differences the KS + D3(BJ) gradient. An explicit
+`hessian = "analytic-moving-grid"` on one of those references is refused
+before the SCF. The ATM three-body term (`s9 != 0`, Rust API only) has no
+Hessian and is refused.
+
+MBD@rsSCS follows the density. Its Hessian is the central difference of the
+corrected analytic gradient: at each of the 6N displaced geometries the SCF
+of that reference is converged, the KS gradient and the MBD gradient are
+evaluated there, and their sum is differenced. The MBD gradient is the exact
+one above, with the Z-vector of the reference solved (RKS, UKS or ROKS), so
+the response of the Hirshfeld volumes to the displacement, through the SCF
+density, is in the Hessian. With MBD, `[frequencies] hessian = "analytic"` and
+`"analytic-moving-grid"` are errors and `"auto"` runs finite differences.
 
 **Run it.** `[dft] dispersion` with `method.task = "frequencies"` on a KS
 SCF: `ksdft`, or `rhf`/`uhf`/`rohf` with `[dft] functional`. The printout gives the corrected `energy`, `E(KS-DFT)`
@@ -210,6 +486,39 @@ uncorrected PBE minimum (1594.35, 3500.27 and 3669.29 cm⁻¹), D3(BJ) shifts
 the three modes by +0.006, −0.077 and −0.095 cm⁻¹, and MBD@rsSCS by +0.107,
 −0.406 and −0.516 cm⁻¹.
 
+## Scalar relativity: X2C-1e
+
+`[scf] relativistic = "x2c1e"` (Python `relativistic="x2c1e"` on `run_rhf`,
+`run_uhf`, `run_rohf`, `run_dft`/`run_ksdft`, `run_uks`, `run_roks`) replaces
+`T + V` by the spin-free X2C-1e core Hamiltonian before the SCF: the
+one-electron Dirac equation of the nuclear potential is decoupled in the
+uncontracted basis (one shell per unique exponent and angular momentum) and
+contracted back, with c = 137.03599967994 a.u. These are the settings of
+PySCF `scf.RHF(mol).sfx2c1e()`. The two-electron interaction and property
+operators stay nonrelativistic (no picture change), and the guesses (SAD,
+MINAO, `basis2`) are nonrelativistic starting points only. The certificate
+lists `x2c1e` among its approximations and grades the run Ungraded; post-SCF
+certificates inherit it.
+
+| Check | System | Result |
+|---|---|---|
+| Driver vs block (constant Fock hook `h_X2C − h_NR`, `E = Tr[D dH]`) | HBr / cc-pVDZ RHF; HBr⁺ UHF, ROHF, UKS/PBE | 4.6e-13 to 9.1e-13 Ha (bar 2e-10) |
+| RHF vs PySCF `sfx2c1e()` | HBr, H2Se at cc-pVDZ and uncontracted cc-pVDZ | 6.7e-11 to 1.6e-10 Ha (bars 2.2e-10 to 2.3e-10); X2C shifts −21.9 to −32.0 Ha |
+| RI-MP2 on the X2C reference vs PySCF DF-MP2 | HBr / cc-pVDZ, `cc-pvdz-ri` | E_corr within 1.3e-11 Ha; X2C moves E_corr by 1.3e-3 Ha |
+| `None` | RHF, UKS, ROHF | energy bit-identical to the build without the option |
+
+What runs on an X2C reference: the SCF energies above, and post-SCF energies
+that read only the orbitals and orbital energies (CLI kinds `rimp2`,
+`scs-mp2`, `ccsd`, `ccsd(t)`). What is refused, with a message naming
+`relativistic = "x2c1e"`: analytic and finite-difference gradients, Hessians
+and frequencies, CLI `task = "optimize"`/`"frequencies"`, Python
+`with_gradient=True`, `run_optimize`/`run_frequencies(scf_relativistic=)`,
+saddle and IRC searches, Z-vector relaxed gradients, orbital-optimized MP2
+(it rebuilds the nonrelativistic core Hamiltonian), periodic cells, and CLI
+kinds outside the list above (`casscf` and `nevpt2` rebuild `h`). An atom
+carrying an ECP is an error: the ECP already holds the core's scalar
+relativity.
+
 ## Implicit solvation
 
 Two independent implementations. Both are threaded uniformly through RHF, UHF,
@@ -218,23 +527,43 @@ when unset.
 
 | Model | What it is | How to run it | Anchor |
 |---|---|---|---|
-| **IEF-PCM** (`ferric-pcm`) | Integral-equation PCM; modified Bondi radii (H 1.10 Å), atom-centred Lebedev spheres | CLI `[pcm] solvent = "water"` (or `epsilon`), energy runs of `rhf`, `uhf`, `rohf`, `ksdft` and `pdep-rpa` (`examples/water-pcm.toml`). Python `run_rhf(..., solvent=78.4)` or a solvent name; also `run_pdep_rpa`. | water / STO-3G, ε = 78.4: −3.813 vs PySCF IEF-PCM −3.8228 kcal/mol |
+| **IEF-PCM** (`ferric-pcm`) | Integral-equation PCM; modified Bondi radii (H 1.10 Å), atom-centred Lebedev spheres | CLI `[pcm] solvent = "water"` (or `epsilon`), energy runs of `rhf`, `uhf`, `rohf`, `ksdft` and `pdep-rpa` (`examples/water-pcm.toml`), and `task = "optimize"` for `rhf`, `uhf`, `rohf` and `ksdft`. Python `run_rhf(..., solvent=78.4)` or a solvent name; also `run_pdep_rpa`. | water / STO-3G, ε = 78.4: −3.813 vs PySCF IEF-PCM −3.8228 kcal/mol |
 | **COSMO** (`ferric_scf::cosmo`) | Conductor-like screening | CLI `[cosmo] epsilon = 78.39` | water / cc-pVDZ, ε = 78.39: −5.955 vs PySCF COSMO −5.94 kcal/mol (`ferric-scf/tests/cosmo_water.rs`) |
 
-Neither has cavitation, dispersion or repulsion terms, and neither has an
-analytic gradient. An unknown solvent name is an error, not a silent vacuum.
+Neither has cavitation, dispersion or repulsion terms. IEF-PCM has an
+analytic nuclear gradient (`ferric_pcm::pcm_gradient`: the tessera-charge
+potential term plus the S/D/area response term, switching-function
+derivatives included; equations in `book/src/22-implicit-solvation/04-gradient.md#gradient-derivative`), added
+to the RHF, UHF, ROHF and KS gradients whenever `RhfConfig.pcm` is set. It
+matches PySCF IEF-PCM `nuc_grad_method()` to 7e-11 Ha/Bohr on PySCF's
+302-point cavity and finite differences of the solvated SCF energy to
+3e-7 Ha/Bohr. It needs the cavity built from the molecule (an injected
+`PcmConfig::cavity` is refused). There is no PCM Hessian: frequencies with
+`[pcm]` are refused. COSMO has no gradient term and no Hessian: every
+analytic-gradient entry (the SCF gradient dispatchers, `optimize_geometry*`,
+`optimize_qmmm`, finite-difference frequencies, and CLI `task = "optimize"` or
+`"frequencies"` with `[cosmo]`) refuses a COSMO SCF with "COSMO has no analytic
+gradient; use [pcm] ... or finite differences". COSMO is energy-only; use
+`[pcm]` for geometry work. An unknown solvent name is an error, not a silent
+vacuum.
 
 ## Gradients, optimization, frequencies, transition states
 
 **Gradients.** Analytic nuclear gradients for RHF, UHF, ROHF and KS-DFT
 (including meta-GGA, with grid response), checked against finite differences
-and, for DFT, against PySCF. RI-MP2 also has an analytic gradient, closed
-shell only (there is no unrestricted MP2 nuclear gradient).
+and, for DFT, against PySCF. RI-MP2 and SCS-MP2 also have analytic
+gradients, closed shell only (there is no unrestricted MP2 nuclear gradient).
 
 **Optimization.** `method.task = "optimize"` for `rhf`, `uhf`, `rohf`,
-`ksdft`, `rimp2` and `pdep-rpa` (`examples/h2_opt.toml`,
-`examples/h2-lda-opt.toml`); on an open-shell molecule only `uhf`, `rohf` and
-`ksdft`. Python `ferric.run_optimize` is RHF.
+`ksdft`, `rimp2`, `scs-mp2`, `oo-rimp2` and `pdep-rpa`
+(`examples/h2_opt.toml`, `examples/h2-lda-opt.toml`); on an open-shell
+molecule only `uhf`, `rohf` and `ksdft`. Python `ferric.run_optimize` covers
+the same SCF and MP2 routes (`reference=`, `xc=`, `dispersion=`, `solvent=`,
+`method="rimp2"`, `"scs-mp2"` (with `c_os=` / `c_ss=`) or `"oo-rimp2"`)
+through the same library drivers. The SCS-MP2 gradient is the relaxed RI-MP2
+gradient with the pair weight `(c_os + c_ss) t − c_ss t̄` in place of
+`2t − t̄` (derivation in `book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-scs-mp2`), checked against
+finite differences of the SCS-MP2 energy.
 
 **Harmonic frequencies.** `method.task = "frequencies"` for `rhf`, `uhf`,
 `rohf` and `ksdft` (`examples/water-frequencies.toml`,
@@ -257,12 +586,13 @@ translations and rotations projected out. The Hessian is:
   needs a libint2 with second derivatives (the build
   `scripts/install-libint.sh` installs).
 - **Analytic on the moving grid** for closed-shell Kohn-Sham (`ksdft`, or
-  `rhf` with a functional): LDA and GGA functionals, pure or global hybrid,
-  exact or density-fitted J and K, Becke weight response included, so it is
-  the Hessian of the surface the KS gradient differentiates. One SCF plus a
-  coupled-perturbed KS solve.
+  `rhf` with a functional) and UKS: LDA and GGA functionals, pure or global
+  hybrid, exact or density-fitted J and K, Becke weight response included, so
+  it is the Hessian of the surface the KS gradient differentiates. One SCF plus
+  a coupled-perturbed KS solve (all nuclear coordinates solved together, one
+  J/K integral pass per iteration).
 - **Central finite differences of the analytic gradient** everywhere else
-  (UKS, ROKS, meta-GGA, VV10, range-separated hybrids, KS with an ECP or an
+  (ROKS, meta-GGA, VV10, range-separated hybrids, KS with an ECP or an
   external potential, pruned grids, `[dft] dispersion`, RI J/K with an
   external potential or an ill-conditioned fitting metric, solvent, polarizable
   embedding, g functions, ROHF with an external potential): 6N gradient
@@ -271,10 +601,11 @@ translations and rotations projected out. The Hessian is:
   is the check that it and the SCF thresholds suit the system.
 
 `[frequencies] hessian` (Python `hessian=`) selects it: `"auto"` (default,
-analytic where it applies, the moving-grid Hessian for closed-shell KS),
+analytic where it applies, the moving-grid Hessian for closed-shell KS
+and UKS),
 `"analytic"` (the Hartree-Fock analytic Hessian; an error where it does not
 apply, including every KS reference), `"analytic-moving-grid"` (the
-closed-shell KS one; an error where it does not apply) or `"fd"`. The output
+KS one, RKS or UKS; an error where it does not apply) or `"fd"`. The output
 names the one that ran (`Hessian = analytic`, `analytic-moving-grid` or
 `finite-difference`; Python `.hessian_source`).
 
@@ -284,7 +615,7 @@ error: ≤ 5e-7 cm⁻¹ against Richardson-extrapolated FD at a tight SCF
 coupled-perturbed KS solve instead of 6N gradients. Against the default
 `"fd"` (step 5e-3 Bohr, default SCF), which `"auto"` ran for KS before, the
 wavenumbers move by ≤ 0.071 cm⁻¹ (water / STO-3G, LDA, PBE, B3LYP). Under
-`"auto"`, open-shell KS, meta-GGA, VV10, range-separated hybrids, ECPs,
+`"auto"`, ROKS, meta-GGA, VV10, range-separated hybrids, ECPs,
 external potentials, pruned grids, `[dft] dispersion`, COSX, implicit solvent,
 fractional occupations, MOM, and systems whose response AO table (basis
 functions × grid points × 4 for a GGA, 8 bytes each) exceeds 2 GiB (on the
@@ -292,13 +623,97 @@ default 75×110 grid, a GGA above about 8,100 basis functions × atoms, e.g.
 about 30 atoms at def2-SVP) run finite differences; `"analytic-moving-grid"`
 refuses them before the SCF.
 
+For UKS, `"auto"` takes the analytic Hessian at every size: measured
+(def2-SVP, default grid, exact J/K, 6 cores, wall seconds including the SCF,
+median of 3 where shown) it is 2.4 to 4.4 times faster than `"fd"`:
+
+| radical | atoms | basis functions | PBE analytic / fd | B3LYP analytic / fd |
+|---|---|---|---|---|
+| NH2 | 3 | 24 | 0.96 / 3.38 | 1.09 / 4.42 |
+| CH3 | 4 | 29 | 1.56 / 6.16 | 1.77 / 7.69 |
+| C2H5 | 7 | 53 | 10.1 / 27.0 | 12.6 / 35.2 |
+| C6H5 | 11 | 109 | 103 / 330 (1 run) | 156 / 407 (1 run) |
+| C4H9 | 13 | 101 | 96.9 / 266 (1 run) | 137 / 331 (1 run) |
+| C9H11 | 20 | 181 | 763 / 2628 (1 run each) | — |
+
+There is no crossover to place: the finite-difference route never won.
+
+The coupled-perturbed KS solve applies the XC kernel to the occupied-virtual
+rotations directly and contracts every density of a block in one pass over the
+RI-J tensor; for closed-shell RHF and RKS the fitted K of the CPHF/CPKS blocks
+is formed from a factored occupied half-transform, so one tensor pass serves a
+whole block. Measured on butane with PBE, interleaved A B B A A B, three
+repetitions each: the Hessian took 43.1 s on def2-SVP and 106.0 s on def2-TZVP
+before the XC kernel change and 19.4 s and 40.3 s after it; the frequencies
+agree to the printed 0.01 cm⁻¹ in all six cases.
+
 The choice is made before the SCF. An error the analytic path raises after the
 SCF (for ROHF: the stored spin Fock matrices differing from those rebuilt from
 the final densities by more than 1e-4 Ha, which a loose `density_conv` can
 cause; a response solve that does not converge; non-positive orbital curvature;
 a first-order rotation above 10 rad/Bohr) is returned as an error under
 `"auto"` too, never retried with finite differences; the same holds for the
-moving-grid KS Hessian (a non-converged SCF included).
+moving-grid KS Hessian (a non-converged SCF included), with one exception: a
+UKS coupled-perturbed solve that fails (non-positive orbital curvature or no
+convergence) makes `"auto"` run `"fd"` instead, with a warning. The measured
+case is OH (²Π): its β π hole rotates about the bond at no energy cost, an
+exact zero mode of the orbital Hessian, and the solve meets a curvature of
+−1.9e-10; `"analytic-moving-grid"` still reports that error.
+
+### Thermochemistry and IR intensities
+
+Every frequency run also reports ideal-gas thermochemistry and, for the SCF
+kinds, IR intensities.
+
+**Thermochemistry.** The rigid-rotor / harmonic-oscillator model, with the
+conventions of PySCF `hessian.thermo`: translational, rotational,
+vibrational and electronic E, H, S and G, and the heat capacities, at
+`[frequencies] temperature` (K, default 298.15) and `pressure` (Pa, default
+101325, one atmosphere). Linear molecules use one rotational constant. The
+electronic entropy is `R ln(2S+1)`. Imaginary modes are left out of the
+vibrational terms with a warning. The masses are those of the frequency
+calculation (isotope-averaged standard atomic weights); the constants are
+CODATA 2018.
+
+The rotational symmetry number `[frequencies] symmetry_number` defaults to 1.
+ferric does not detect it, so set it: 2 for water or CO2, 3 for NH3, 12 for
+CH4. With the default, a molecule whose true number is σ gets an entropy too
+large by `R ln σ` (1.38 cal/(mol K) for σ = 2) and a G too low by `RT ln σ`.
+
+Python: `fr = ferric.run_frequencies(...)`, then
+`fr.thermo(temperature=298.15, pressure=101325.0, symmetry_number=2)`
+returns a dict of the parts (Hartree and Hartree/K per molecule; the
+`.pyi` lists the keys). The CLI prints a table and writes the same numbers
+to the `thermochemistry` field of the run log's `frequencies` record.
+
+Checked against PySCF's `thermo` on the same Hessian, geometry and masses
+(RHF/STO-3G water at 298.15 K and at 500 K, 2e5 Pa; linear CO2; UHF OH
+doublet): every E, H, TS and G term agrees to 8e-13 Hartree once PySCF's
+constants are set to CODATA 2018. With PySCF's own CODATA 2014 constants the
+difference is 8e-9 to 1.5e-8 Hartree, from k_B.
+
+**IR intensities.** The harmonic intensity of each mode in km/mol, from the
+dipole derivative along the normal mode. The dipole derivative comes from
+the analytic nuclear gradient of SCFs solved in a uniform field of ±1e-3
+a.u. (`dμ/dR = −∂²E/∂F∂R`): six extra SCF + gradient evaluations at any
+molecule size, with the SCF density threshold capped at 1e-9. The CLI adds
+an `IR (km/mol)` column and writes `ir_intensities_km_mol` and the dipole
+derivatives to the run log (`[frequencies] ir_intensities = false` skips
+them). Python: `fr.ir_intensities()`, computed on the first call.
+
+This covers `rhf`, `uhf`, `rohf` and `ksdft` (RKS, UKS, ROKS). The correlated
+kinds (`rimp2`, `scs-mp2`, `oo-rimp2`, `pdep-rpa`) have no dipole derivative
+in ferric: the CLI leaves the column out, and `ir_intensities = true` is an
+error. With `[dft] dispersion` the modes come from the corrected Hessian and
+the dipole derivative from the SCF alone.
+
+Checked against a second route, central differences of the SCF dipole along
+every Cartesian displacement, with a bar built from each route's
+Richardson truncation estimate and measured SCF-noise bounds. On water/6-31G
+(RHF, PBE) and OH/6-31G (UHF, ROHF, UKS-PBE) the two routes give dipole
+derivatives within 7.5e-6 to 1.5e-5 e of each other, against bars of 2.2e-5
+to 3.3e-5 e; the intensities agree to 1e-3 km/mol on modes of 1.7 to 98
+km/mol. The field route meets the translational sum rule to 3e-9 e.
 
 **Transition states and IRC (Python only, closed shell).**
 `ferric.run_saddle(mol, basis_name, xc=...)` searches for a first-order saddle
@@ -328,6 +743,40 @@ Butane, one thread; TZ is def2-TZVP (184 functions), QZ is def2-QZVP (528).
 | `k_builder = "link"` | LinK: pair-list-screened direct K | yes (== direct to 9e-12 Ha, butane/def2-SVP) | RHF, UHF, ROHF |
 | `df_j_aux` / `df_k_aux` | density-fitted J and K (RI-JK) | fitting error, grows with size (see *Kohn–Sham DFT* above) | all SCF types |
 | `k_builder = "cosx"` | seminumerical (COSX) K on a grid; with RI-J active this is RIJCOSX | grid-dependent error, see below | RHF/UHF/ROHF and their Kohn–Sham variants, Coulomb operator only; analytic gradient for all six (see below) |
+| `jk = "rijk"` | RI-J + RI-K for the reference SCF of an MP2-family kind, on `jk_aux` | fitting error, below the RI-MP2 fit error on the matched set (see *MP2*) | MP2-family kinds; the default with `jk` omitted for a closed-shell energy and for `rimp2` / `scs-mp2` / `oo-rimp2` optimizations, whose gradient checks its peak memory against `[memory] budget_gb` first |
+
+**Which route runs.** RHF, UHF and ROHF and their Kohn–Sham variants take
+J and K from one decision, made from `df_j_aux`, `df_k_aux`, `k_builder`, the
+functional's exact-exchange mix and the spin case. The run's `SCF J/K` line,
+the JSON log and the certificate state the route that ran, and the certificate
+lists LinK or COSX only when they actually run. For J, `name` is a fitting
+basis such as `def2-universal-jkfit`:
+
+| Functional | Spin | `df_j_aux` omitted | `df_j_aux = ""` | `df_j_aux = name` |
+|---|---|---|---|---|
+| none (Hartree–Fock) | any | four-centre J | four-centre J | RI-J on `name` |
+| any functional | closed shell | RI-J on `def2-universal-jkfit` | four-centre J | RI-J on `name` |
+| any functional | open shell | four-centre J (the CLI and the Python `run_uks` / `run_roks` / `run_dft` entry points name `def2-universal-jkfit`) | four-centre J | RI-J on `name` |
+
+J does not depend on the range-separation parameter ω, so a range-separated
+hybrid fits J exactly as a global hybrid does, for UKS and ROKS as for RKS.
+For K:
+
+| Functional | Spin | `df_k_aux` omitted | `df_k_aux = ""` | `df_k_aux = name` |
+|---|---|---|---|---|
+| none (Hartree–Fock) | any | exact K | exact K | RI-K on `name` |
+| global hybrid | closed shell | RI-K on `def2-universal-jkfit` | exact K | RI-K on `name` |
+| global hybrid | open shell | exact K (as for J, the entry points above name the fit) | exact K | RI-K on `name` |
+| pure (no exact exchange) | any | no K | no K | no K |
+| range-separated (ω > 0) | any | short-range / long-range pair on `def2-universal-jkfit` | error | pair on `name` |
+
+"Exact K" is the four-centre builder, or the one `k_builder` names. In Python,
+`run_optimize` and `run_frequencies` with `xc=` and no `df_*_aux` fit J and K on
+`def2-universal-jkfit` for RKS, UKS and ROKS alike, so a geometry run matches
+`run_uks`, `run_roks`, `run_dft` and the CLI for the same input. Under a
+range-separated hybrid in the CLI, UKS and ROKS therefore run RI-JK (NH2 /
+6-31G CAM-B3LYP moved from −55.8219504993 to −55.8219773531 Ha for UKS when
+J became fitted). `omega` tuning accepts a named `df_j_aux`.
 
 **Time for one exchange build** (seconds, butane, one thread):
 
@@ -347,6 +796,15 @@ Butane, one thread; TZ is def2-TZVP (184 functions), QZ is def2-QZVP (528).
 | RI-JK | not measured | not measured |
 | COSX | 358 | not measured |
 
+**Threads.** COSX splits the grid into 1024-point blocks and each block
+into four 256-point kernel tasks. It runs the tasks of several blocks in one
+parallel region (about eight tasks per thread) and adds the blocks into K
+in grid order. K is bitwise the same for every thread count. Sulfamethoxazole /
+def2-TZVP (599 basis functions), B3LYP energy, 6 threads, default grids, 14
+iterations: RIJCOSX takes 365 s wall (median of 3; 5.5 cores busy, 2.5 GB
+peak RSS), and RI-JK takes 31 s (7.7 GB). The two energies differ by 1.9e-4 Ha.
+The COSX kernel is 93% of the exchange build.
+
 **Energy error against exact exchange:**
 
 | Builder | System / basis | Error |
@@ -362,11 +820,23 @@ Butane, one thread; TZ is def2-TZVP (184 functions), QZ is def2-QZVP (528).
 
 **Start with density fitting** whenever its three-index tensor fits in memory
 (`n_aux × n_bf² × 8` bytes: 1 GB for butane/QZVP, 7 GB for octane/QZVP; half
-that when stored as the packed symmetric triangle). When it does not fit, it is
-spilled to disk or recomputed each iteration, whichever a measurement on the
-machine says is cheaper (`[scf] jk_storage`). It is two to three orders of magnitude faster
+that when stored as the packed symmetric triangle). When it does not fit, J is
+built by Split-RI-J, which stores no tensor and on danuglipron PBE/def2-SVP
+took 81 s for the whole SCF against 46 s with the tensor in memory and about
+590 s spilling or recomputing it. A tensor K still needs is spilled to disk or
+recomputed each iteration, whichever a measurement on the machine says is
+cheaper (`[scf] jk_storage`). It is two to three orders of magnitude faster
 per build than anything else here. Its error is a fitting error, not zero, and
 it grows with system size.
+
+**Direct J/K against PySCF.** The direct four-centre builder digests integrals
+in shell-block tiles and streams its reduction. Measured with the same density,
+a Schwarz threshold of 1e-12 and 12 threads (paired, mean of 3, ferric's
+segmented shells in both codes), one J+K build took 5.20 s for octane /
+cc-pVDZ against 9.47 s for PySCF `get_jk`, and 47.8 s for octane / cc-pVTZ
+against 49.7 s. PySCF integrates cc-pVXZ sets as general contractions, which
+libint2 cannot, so its gap to ferric's segmented-shell timing at those sets
+is a property of the integral library, not of the digestion.
 
 **Need exact exchange?** Direct or LinK; both are exact to the screening
 threshold as *K builders* (butane/def2-SVP: `link` == direct to 9e-12 Ha).
@@ -374,11 +844,18 @@ LinK's cost is being re-measured, so no LinK timing is quoted here.
 `k_builder` is honoured by UHF and ROHF as well as RHF: the open-shell solvers
 build K_α and K_β from one builder instance, refreshing its density-dependent
 state per spin. Whether LinK is the faster choice for a given system is a
-separate question from whether it is honoured — see the cost note above, which
+separate question from whether it is honoured; see the cost note above, which
 is being re-measured. `link` is skipped with a warning, never silently,
-whenever density-fitted J/K is active; both `link` and `cosx` are skipped with
+whenever density-fitted J/K is active, and so is an explicit `direct` whenever
+exchange is not built by the direct four-centre builder (RI-K active, a pure
+functional, or a range-separated one); `direct` with RI-J alone is honoured.
+Both `link` and `cosx` are skipped with
 a warning when the functional uses no exact exchange or is range-separated
-(exchange then comes from the SR/LR fitters).
+(exchange then comes from the SR/LR fitters). For a Kohn–Sham hybrid, whose
+RI-J and RI-K are on by default, `direct` needs `df_k_aux = ""`; `link` needs
+`df_j_aux = ""` as well: the resolver keeps `link` only when J is not density
+fitted (COSX is the one K builder it pairs with RI-J), and with RI-J off J
+comes from the direct four-centre J builder.
 
 **RIJCOSX.** `k_builder = "cosx"` combines with density-fitted Coulomb: when
 RI-J is active (`df_j_aux` named, or the Kohn–Sham default), J comes from RI-J
@@ -437,8 +914,8 @@ most of the error (0.02 kcal/mol on an isodesmic alkane reaction at the flat
   matters most: on butane/def2-TZVP the error falls from
   1.2e-4 Ha at 110 points per shell to 4.0e-6 Ha at 302, while going from 50
   to 100 radial shells changes it by 1e-6 or less. Cost grows with the number
-  of points. `angular` must be one of 6, 14, 26, 50, 110, 194, 302, 434 or
-  590. `prune = "sgx"` prunes the grid the way ORCA's GridX and PySCF's SGX
+  of points. `angular` takes any Lebedev order `grid_angular` does except the
+  negative-weight rules 74, 230 and 266. `prune = "sgx"` prunes the grid the way ORCA's GridX and PySCF's SGX
   do: five radial regions per atom (NWChem boundaries on Bragg radii) with
   Lebedev orders from one row, picked by the peak `angular` — at 194 the
   regions get 26/50/110/194/110 points. ferric's pruned COSX energy equals
@@ -462,9 +939,9 @@ most of the error (0.02 kcal/mol on an isodesmic alkane reaction at the flat
   measured. RHF/UHF and their Kohn–Sham variants; ROHF refuses it.
 - `cosx_overlap_fit = true` (default) applies the Izsák–Neese overlap
   correction. At the default grid it helps; on coarser grids it makes things
-  *worse*, and its benefit is strongly molecule-dependent — large on water,
-  nil to negative on ethane — so do not expect the factor quoted in the
-  literature.
+  worse, and its benefit depends strongly on the molecule (large on water,
+  nil to negative on ethane), so the factor quoted in the literature does
+  not carry over.
 - `cosx_backend = "md3c1e"` (default) is the batched McMurchie–Davidson
   integral kernel. `"cosx-a"` is the per-point libint2 path, about three times
   slower and kept only as the cross-check the kernel is anchored against.
@@ -512,7 +989,7 @@ What the table shows:
 - The pruned `sgx (35,194)` grid uses 0.65× the points of flat (50,110)
   and is more accurate on seven of the eight molecules, by 1.7× (benzene) to
   29× (ethane). On methane it is 1.15× worse (9.2e-6 against 8.0e-6 Ha).
-  This is the grid geometry tasks (optimize, frequencies) use, since they
+  Geometry tasks (optimize, frequencies) use this grid, since they
   run without the final pass.
 - The final pass on `sgx (50,302)` reproduces an SCF converged on that grid to
   4e-8 Ha on seven molecules and 1.5e-7 Ha on sulfamethoxazole, at 0.45–0.59×
@@ -546,9 +1023,49 @@ run without the pass and a gradient of a final-pass result is refused (an
 ORCA-style gradient evaluated on the final grid misses finite differences of
 the final-grid energy by 4.6e-7–7.3e-7 Ha/Bohr on water/6-31G, so it is not
 used). Refused for gradient tasks before the SCF runs: fitted COSX with a
-Kohn–Sham functional (RKS, UKS, ROKS — the fitted energy's response needs the
+Kohn–Sham functional (RKS, UKS, ROKS; the fitted energy's response needs the
 nuclear derivative of the XC Fock matrix) and fitted COSX for ROHF (no
 restricted-open-shell response).
+
+### In-core integrals (`[scf] eri`)
+
+Below about 200 basis functions the whole set of AO integrals fits in a few
+GB. With `[scf] eri = "incore"` (Python `eri=` / `scf_eri=`) the integrals of
+the geometry are computed once, every shell quartet with no screening, and
+stored as the packed lower triangle of the pair matrix (`P(P+1)/2` doubles
+with `P = n(n+1)/2`, about `n⁴/8`: 0.17 GB at 114 functions, 0.57 GB at 154, and
+1.68 GB for octane / cc-pVDZ, which `"auto"` takes at a 10 GB budget), charged to the `[memory]` budget. J is then one
+matrix product per density and K a gathered matrix product, for any number
+of densities, symmetric or not. The SCF, and the CPHF of the analytic
+Hessian, the RI-MP2 Z-vector and the OO-MP2 loop that follow it on the same
+geometry, all read the store. The store belongs to one geometry: each SCF
+builds its own, and every use checks it against the atoms and basis it
+serves.
+
+`"auto"` (the default) takes the store when it needs at most a quarter of the
+budget and J and K are both exact four-centre (no RI, COSX, LinK or range
+separation); otherwise, and under MPI, the build is direct. `"direct"` is the
+screened direct build and gives bit-for-bit the same output as before the key
+existed. `"incore"` on a fitted or seminumerical route is an error. In-core
+and direct J/K agree to a rounding bound derived from the summation length
+(the largest measured ratio to that bound is 9e-3), and the in-core result
+does not depend on the thread count.
+
+On benzene / cc-pVDZ (12 threads) one direct J/K build takes 2.3 s; building
+the store takes 1.1-2.2 s, and J + K from it 0.13 s. End to end, paired runs
+(direct, in-core, in-core, direct, direct, in-core), wall and CPU (user +
+system) seconds, mean ± sd of 3, 12 rayon threads, box load 5-13 from other
+jobs:
+
+| Run | direct wall | in-core wall | direct CPU | in-core CPU | wall ratio |
+|---|---:|---:|---:|---:|---:|
+| benzene / cc-pVDZ RHF energy | 9.43 ± 0.02 | 2.55 ± 0.01 | 103.5 ± 0.1 | 26.7 ± 0.2 | 3.7 |
+| butane / cc-pVDZ RHF analytic frequencies | 58.3 ± 0.3 | 17.8 ± 0.2 | 624 ± 1 | 187 ± 1 | 3.3 |
+| hexane / cc-pVDZ OO-RI-MP2 energy | 80.1 ± 0.5 | 25.2 ± 0.1 | 879 ± 2 | 258 ± 3 | 3.2 |
+
+In the same window PySCF 2.13.1 (in-core by default at these sizes) took
+0.52 ± 0.02 s wall (5.6 s CPU) for the benzene RHF and 39.9 ± 0.5 s wall
+(188 s CPU) for the butane RHF and Hessian.
 
 ## Convergence
 
@@ -559,9 +1076,9 @@ converged; a non-converged SCF is a result with `converged = false`, not an
 error. Downstream code that ignores the flag will happily consume a
 half-converged density.
 
-**Multiple solutions are real.** For systems like alkane chains, different
-initial guesses converge to genuinely different SCF solutions — not a
-convergence failure but a different basin. The guess picks the basin.
+**Multiple solutions.** For systems like alkane chains, different
+initial guesses converge to different SCF solutions, each in its own basin.
+The guess picks the basin.
 
 **Density-fitting has a noise floor.** DF-JK introduces an error floor that
 makes energy-based convergence criteria below roughly 1e-9 meaningless; SCF
@@ -570,6 +1087,73 @@ gates on the density RMS change instead.
 **Near-linear-dependence.** Diffuse (aug-) basis sets on close-packed systems
 can drive the overlap matrix near-singular; the canonical-orthogonalization
 threshold is tunable via `FERRIC_LINDEP_THRESH`.
+
+### Reusing a reference SCF
+
+The reference SCF is often half the cost of a correlated run or more. To
+run several correlated methods on one reference, save it from the first run
+and read it in the next:
+
+```toml
+# run 1: kind = "rimp2"
+[scf]
+save_reference = "water-ref.npz"
+```
+
+```toml
+# run 2: kind = "ccsd", same molecule, basis and [scf] settings
+[scf]
+read_reference = "water-ref.npz"
+```
+
+The second run solves no SCF (`[ferric] SCF reference read from ...; no SCF
+iterations run`; the run log's `run_end` has `scf_iterations = 0` and a
+`scf_reference` entry with the file's checksum, iteration count, convergence
+thresholds and the saving run's thread count, and the certificate gains the
+route `scf reference: read from <file> (checksum ...)`). The correlated stage
+gets the saved orbitals, orbital energies, densities and Fock matrices bit for
+bit, so its energy is bitwise the one the saving run's reference gives. That
+equals a fresh run's energy only when the fresh run would converge to the same
+bits: the same convergence thresholds, thread count, in-core or direct ERI
+route (`eri = "auto"` picks it from the memory budget), BLAS kernel and build.
+The file is read only when it is the reference this run would solve: every
+field of the checkpoint identity must match, and so must the route that
+converges it. Anything else is refused with the differing fields named; the
+file is never used as a guess instead. A file converged tighter than the run
+asks is accepted (the run prints that it was), and then the results are those
+of the tighter reference: on water / `rimp2`, 8.4e-10 Ha from a fresh run at
+the default thresholds. Three things look like the same reference and are
+not: the `rhf`/`ksdft` kinds converge through the convergence ladder and the
+correlated kinds do not (so those kinds refuse the keys); the closed-shell
+MP2-family kinds default to an RI-JK reference (`[scf] jk`) where `ccsd` and
+the other kinds solve with exact J/K after a DF-guess pre-stage, so save from
+`rimp2` with `jk = "exact"` to reuse the reference in `ccsd`; and
+`df_guess = false` or `df_increments = true` is another route to another
+reference. A reference with a COSX final-grid pass or polarizable embedding is
+refused before the SCF, by both keys: the file stores neither. Only a file
+from the same clean build is accepted unless `read_reference_other_build =
+true`. Density-fitting tensors and other integrals are rebuilt by the
+correlated stage, as in a fresh run. Keys and refusals:
+[`[scf]`](../reference/input.md#scf).
+
+In Python, `run_rimp2` (exact energy), `run_ccsd` and `run_ccsd_t` take the
+same three keys as keywords and share their files:
+
+```python
+ferric.run_rimp2(mol, obs, aux, save_reference="water-ref.npz")
+ferric.run_ccsd(mol, obs, aux, read_reference="water-ref.npz")
+```
+
+The rules are the CLI's; a refusal raises `ferric.InputError` (a
+`ValueError`). A Python file and a CLI file name different solve routes, so
+neither reads the other.
+
+Measured on sulfamethoxazole / cc-pVDZ (28 atoms, 297 functions),
+`kind = "rimp2"` with its defaults (RI-JK reference, 15 SCF iterations), on
+4 cores shared with other jobs (load 2.3 to 3) and an `opt-level = 2`
+build (2026-11-24): a fresh run took 17.3 s and 18.3 s, the run that saved
+the reference 18.9 s (the file is 2.8 MB), and a run reading it 5.3 s and
+5.9 s, with the same RI-MP2 energy to the last bit.
 
 ### Secondary-basis guess (Q-Chem `BASIS2`)
 
@@ -595,7 +1179,7 @@ orthogonalizer. A secondary basis missing an element, a mismatched ECP core
 count, or a projected occupied space that is near-singular in the target
 basis are errors. A secondary basis larger than the target is allowed, with
 a warning. The guess is refused with `symmetry = true` and on periodic
-systems. An explicit starting density or MOs take precedence, just as they
+systems. An explicit starting density or MOs take precedence, as they
 do over `guess = "minao"`. With `guess_basis` set, `guess = "minao" | "sad" |
 "hcore"` selects the starting point of the *secondary* SCF only; the target
 starts from the projection. The dual-basis energy correction (Q-Chem
@@ -680,12 +1264,11 @@ own page: [QM/MM](../using/qmmm.md), including [its CLI section](../using/qmmm.m
 
 The Fock build's reduction folds partial matrices in a **strict ascending group
 order**, independent of thread count and of the memory band width. Results are
-bit-identical across `RAYON_NUM_THREADS` — a property pinned by tests, not just
-intended.
+bit-identical across `RAYON_NUM_THREADS`, a property pinned by tests.
 
-This matters more than it might seem: a tree-fold reduction would be equally
-*deterministic* but would produce *different* bits, since floating-point
-addition is not associative. The ascending order is load-bearing.
+A tree-fold reduction would be deterministic but would produce different
+bits, since floating-point addition is not associative, so the sum must run
+in ascending order.
 
 ## Cite
 

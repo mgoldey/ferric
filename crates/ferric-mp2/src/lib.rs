@@ -14,6 +14,8 @@
 
 /// Boys localization of occupied orbitals.
 pub mod boys;
+/// Result certificates of the MP2-family methods.
+pub mod certificate;
 /// DLPNO-MP2 pair screening on localized occupieds (Fock-coupled amplitude solve).
 pub mod dlpno_localized;
 /// DLPNO-MP2 (domain-based local pair natural orbital MP2).
@@ -26,9 +28,13 @@ pub mod lccd_cepa0;
 pub mod lmp2_amplitude;
 /// Model certificate carried by every amplitude-threshold LMP2 result.
 pub mod lmp2_certificate;
+/// Amplitude-threshold local OP-MP3 (one pattern for both orders).
+pub mod local_opmp3;
 /// Ring-CCD family: rCCD, drCCD amplitude solvers.
 pub mod rccd_family;
 
+/// Analytic nuclear gradient of attenuated (erfc) RI-MP2 on a Coulomb RHF.
+pub mod att_rimp2_gradient;
 /// Attenuated MP2 + VV10 nonlocal correlation combination.
 pub mod att_vv10;
 /// Attenuated MP2: erfc(ωr)/r screened correlation energy.
@@ -46,8 +52,14 @@ pub mod f12;
 pub mod ff_polar;
 /// RI-MP2 nuclear gradient via Z-vector response.
 pub mod gradient;
+/// Memory pre-flight of the MP2 gradients on an RI-JK reference.
+pub mod gradient_memory;
+/// hh / pp ladder application on the ragged pair-block pattern (LinLCCD).
+pub mod ladders;
 /// Laplace-transform SOS-MP2 (MO, AO, and AO-sparse formulations).
 pub mod laplace;
+/// Laplace SOS-MP2 `local`: Boys LMOs x VV-HV localized virtuals with orbital domains.
+pub mod laplace_local;
 pub mod lmp2_direct;
 /// Pair natural orbital (PNO) construction and truncation.
 pub mod local_pno;
@@ -58,11 +70,21 @@ pub mod mp3;
 /// MPI-distributed RI-MP2 (aux-band striping across ranks).
 pub mod mpi_rimp2;
 /// Orbital-optimized RI-MP2 with analytic gradients and Cayley rotations.
+pub mod omega_ri;
+pub mod omega_ri_cdd;
 pub mod oo_rimp2;
 /// OO-RI-MP2 analytical nuclear gradient.
 pub mod oo_rimp2_gradient;
+/// Orbital Padé MP3 (OP-MP3, SOP-MP3, SSD-OPMP3): W matrices, matrix Padé, models.
+pub mod opmp3;
+/// OP-MP3 runs shared by the CLI and Python: reference SCF through the models.
+pub mod opmp3_driver;
+/// The OP-MP3 reference: HF Fock of the reference density, semicanonical orbitals, E_NBS.
+pub mod opmp3_reference;
 /// Geometry optimization using MP2 gradients.
 pub mod optimize;
+/// GEMM building blocks of the OO-MP2 orbital gradients and the U-MP2 density.
+pub(crate) mod orbital_gradient_gemm;
 /// Cayley/exponential orbital rotation helpers for OO-MP2.
 pub mod orbital_rotation;
 /// Projected atomic orbital (PAO) domain construction for local correlation.
@@ -71,19 +93,35 @@ pub mod pair_domains;
 pub mod pair_energy_screen;
 /// Ragged per-pair domain-block storage for local correlation.
 pub mod ragged;
+mod ragged_transport;
 /// Resolution-of-identity MP2 (density-fitted) using 3-center integrals.
 pub mod rimp2;
 #[cfg(feature = "gpu")]
 pub mod rimp2_gpu;
 /// Spin-component-scaled MP2 (SCS-MP2 and 2-terfc variants).
 pub mod scs;
+/// Analytic gradient of SCS-MP2(2terfc), closed and open shell.
+pub mod scs_2terfc_gradient;
 /// Spin-orbital integral/amplitude helpers for closed-shell references.
 pub mod spinorbital;
 /// Spin-orbital integral/amplitude helpers for unrestricted references.
 pub mod spinorbital_u;
+pub mod terfc_r0;
+/// Spin-blocked unrestricted MP3 keeping the c^(1) and c^(2) amplitudes.
+pub mod u_mp3;
+/// Spatial MO integral blocks (RI and exact) of the unrestricted MP3 driver.
+pub mod u_mp3_eri;
+/// The spin-blocked MP3 doubles residual.
+pub(crate) mod u_mp3_residual;
 /// Unrestricted orbital-optimized RI-MP2.
 pub mod u_oo_rimp2;
 /// Unrestricted RI-MP2 (α/β spin channels).
 pub mod u_rimp2;
+/// Analytic unrestricted RI-MP2 nuclear gradient (UHF reference).
+pub mod u_rimp2_gradient;
+/// Atom-group block-sparse matrices of the local VV-HV build.
+pub(crate) mod vvhv_bsr;
+/// Opt-in local (threshold-sparse) build of the VV-HV localized virtuals.
+pub mod vvhv_local;
 /// Z-vector response equations for MP2 relaxed density and gradients.
 pub mod zvector;

@@ -12,10 +12,18 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 #[non_exhaustive]
 pub enum GtoEvalError {
+    /// The basis set has no shells for an element present in the molecule.
     #[error("no basis shells for Z={z} in basis set")]
-    MissingElement { z: i32 },
+    MissingElement {
+        /// Atomic number of the uncovered element.
+        z: i32,
+    },
+    /// A shell's angular momentum is beyond what the evaluator implements.
     #[error("angular momentum l={l} not supported for grid evaluation (only s, p, d, f, g)")]
-    UnsupportedL { l: i32 },
+    UnsupportedL {
+        /// The rejected angular momentum.
+        l: i32,
+    },
     /// Pre-flight size guard: the dense AO-on-grid buffer would exceed the memory
     /// budget. Carries the fully-formatted message from
     /// `ferric_core::memory::check_alloc`.
@@ -111,14 +119,14 @@ pub fn check_ao_grid_budget(kind: AoGridKind, nbf: usize, npts: usize) -> Result
 ///
 /// # Why this DEBITS rather than re-reading a ceiling
 ///
-/// The old body resolved `resolve_budget_bytes(None)` — the WHOLE ceiling —
-/// on every call, so the grid cache's question was "do I fit in 4.72 GiB?"
-/// while the DF 3-index tensor asked the identical question against the
-/// identical number. Both passed; the process held the sum and was OOM-killed
-/// at 6.04 GiB. Against a pool the second asker sees only what the first
-/// left.
+/// Resolving `resolve_budget_bytes(None)` — the WHOLE ceiling —
+/// on every call would make the grid cache's question "do I fit in 4.72 GiB?"
+/// while the DF 3-index tensor asks the identical question against the
+/// identical number. Both pass; the process holds the sum and is OOM-killed
+/// (observed at 6.04 GiB). Against a pool the second asker sees only what the
+/// first left.
 ///
-/// With NO pool installed this is EXACTLY the old behaviour: the reservation
+/// With NO pool installed this is EXACTLY the unpooled behaviour: the reservation
 /// is inert and the comparison falls back to the resolved ceiling, so the
 /// unbudgeted path is bit-identical (pinned by
 /// `ferric-scf/tests/mwe_ksdft_pool_is_inert_without_a_pool.rs`).
@@ -132,7 +140,7 @@ pub fn check_ao_grid_budget_reserved(
         .saturating_mul(nbf)
         .saturating_mul(npts)
         .saturating_mul(8);
-    // Pool installed: DEBIT it, so this plane's bytes are no longer available
+    // Pool installed: DEBIT it, so this plane's bytes are not available
     // to the next plane that asks. Refusal carries the pool's own occupancy
     // breakdown, which names the dominant incumbent plane.
     if let Some(pool) = ferric_core::memory::pool::global() {
@@ -168,10 +176,16 @@ pub fn check_ao_grid_budget_reserved(
 /// One contracted GTO shell located in space (centered on its parent atom).
 #[derive(Debug, Clone)]
 pub struct LocatedShell<'a> {
+    /// Angular momentum.
     pub l: i32,
+    /// `true` for spherical-harmonic functions, `false` for Cartesian.
     pub pure: bool,
+    /// Primitive exponents, borrowed from the [`BasisSet`].
     pub exponents: &'a [f64],
+    /// Contraction coefficients as stored in the [`BasisSet`], one per
+    /// exponent; the evaluator applies primitive normalization itself.
     pub coefficients: &'a [f64],
+    /// Centre (the parent atom's position), Bohr.
     pub center: [f64; 3],
 }
 
@@ -277,8 +291,7 @@ pub fn eval_shell(
             //
             // Do NOT relax that gate without fixing this arm: libint2 orders
             // PURE p as (y, z, x) — the m = -1, 0, +1 solid-harmonic order —
-            // not (x, y, z). An earlier version of this comment claimed
-            // libint2 used Cartesian order for pure p too; that was wrong.
+            // not (x, y, z). libint2 does NOT use Cartesian order for pure p.
             out[0] = rad * dx;
             out[1] = rad * dy;
             out[2] = rad * dz;
@@ -931,7 +944,7 @@ pub fn eval_basis_and_grad_on_points_unchecked(
     // chi[(i, g)] lives at offset i*npts + g. dchi is (3, nbf, npts), so
     // dchi[(a, i, g)] lives at offset a*nbf*npts + i*npts + g. We scatter each
     // grid column's values directly into these buffers (no per-point Vec collect
-    // + copy), halving the construction peak vs. the old materialize-then-copy.
+    // + copy), halving the construction peak vs. materialize-then-copy.
     let mut chi = Array2::<f64>::zeros((nbf, npts));
     let mut dchi = Array3::<f64>::zeros((3, nbf, npts));
 
@@ -2038,14 +2051,25 @@ pub fn eval_basis_grad_hess_on_points_unchecked(
 }
 
 /// A 3D Cartesian grid specification for volumetric data.
+///
+/// Point `(ix, iy, iz)` lies at `origin + ix*step_x + iy*step_y + iz*step_z`.
+/// [`eval_basis_on_grid`] reads only the diagonal steps (`step_x[0]`,
+/// `step_y[1]`, `step_z[2]`), so it assumes axis-aligned step vectors.
 #[derive(Debug, Clone)]
 pub struct GridSpec {
+    /// Position of grid point `(0, 0, 0)`, Bohr.
     pub origin: [f64; 3],
+    /// Number of points along the first axis.
     pub n_x: usize,
+    /// Number of points along the second axis.
     pub n_y: usize,
+    /// Number of points along the third axis.
     pub n_z: usize,
+    /// Step vector between consecutive points along the first axis, Bohr.
     pub step_x: [f64; 3],
+    /// Step vector between consecutive points along the second axis, Bohr.
     pub step_y: [f64; 3],
+    /// Step vector between consecutive points along the third axis, Bohr.
     pub step_z: [f64; 3],
 }
 

@@ -6,6 +6,9 @@
 
 use ndarray::Array2;
 
+use crate::libxc::XcDef;
+use crate::xc_batch::ScreenedFxc;
+
 /// What a deferred XC evaluator means to hold, known before RI-J/K setup.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct XcMemoryPlan {
@@ -21,6 +24,8 @@ pub struct XcMemoryPlan {
 /// What `commit_storage` decided.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct XcCommit {
+    /// Whether the main grid's AO blocks are held resident; `false` means
+    /// they are re-evaluated on every Fock build.
     pub resident: bool,
     /// Bytes that run without a pool charge.
     pub uncharged_bytes: usize,
@@ -58,8 +63,13 @@ pub trait XcStorage {
 /// existing `F = h + 2J − K` path with a single full-Coulomb K.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct KMix {
+    /// Exact-exchange coefficient on the short-range (erfc) K; the global
+    /// fraction when `omega == 0`.
     pub sr: f64,
+    /// Exact-exchange coefficient on the long-range (erf) K; equals `sr` for
+    /// a plain hybrid.
     pub lr: f64,
+    /// Range-separation parameter ω (Bohr⁻¹); `0` for no range separation.
     pub omega: f64,
 }
 
@@ -94,6 +104,17 @@ pub trait XcContribution: XcStorage + Send + Sync {
         self.add_xc(d, f)
     }
 
+    /// Whether `add_xc` / `add_xc_occ` change `f` by exactly ONE elementwise
+    /// `*f += &v` with a `v` that does not depend on `f`. When true, calling
+    /// them on a zeroed buffer `b` and then doing `f += &b` is bitwise
+    /// identical to calling them on `f` (`0.0 + v == v`), which lets the SCF
+    /// run the XC digest concurrently with the J build and fold the potential
+    /// in afterwards at the same point. The default `false` keeps the SCF on
+    /// the sequential path.
+    fn adds_single_potential(&self) -> bool {
+        false
+    }
+
     /// How to build the exact-exchange contribution for this functional.
     fn k_mix(&self) -> KMix;
 
@@ -111,6 +132,26 @@ pub trait XcContribution: XcStorage + Send + Sync {
     fn refine_last_to_f64(&self, f: &mut Array2<f64>) -> bool {
         let _ = f;
         false
+    }
+
+    /// The XC-kernel response at the restricted reference `d` (total
+    /// closed-shell density) on this evaluator's own screened grid and AO
+    /// cache, for a second-order SCF step; see [`ScreenedFxc`]. `xc_pol` is
+    /// the functional resolved with `nspin = 2` (and the caller's ω
+    /// override). `None`: this evaluator has no screened grid, and the caller
+    /// must build the dense kernel itself. The default returns `None`.
+    ///
+    /// `no_pool_budget` is evaluated only when no global memory pool is
+    /// installed: the bytes the kernel cache may take (with a pool, the pool
+    /// is charged instead). Over it, the build errors.
+    fn restricted_fxc(
+        &self,
+        xc_pol: &XcDef,
+        d: &Array2<f64>,
+        no_pool_budget: &dyn Fn() -> usize,
+    ) -> Option<Result<ScreenedFxc<'_>, String>> {
+        let _ = (xc_pol, d, no_pool_budget);
+        None
     }
 }
 
@@ -152,5 +193,18 @@ pub trait UksXcContribution: XcStorage + Send + Sync {
     fn refine_last_to_f64_uks(&self, f_a: &mut Array2<f64>, f_b: &mut Array2<f64>) -> bool {
         let _ = (f_a, f_b);
         false
+    }
+
+    /// [`XcContribution::restricted_fxc`] for a spin-polarized reference
+    /// `(d_a, d_b)`. The default returns `None`.
+    fn polarized_fxc(
+        &self,
+        xc_pol: &XcDef,
+        d_a: &Array2<f64>,
+        d_b: &Array2<f64>,
+        no_pool_budget: &dyn Fn() -> usize,
+    ) -> Option<Result<ScreenedFxc<'_>, String>> {
+        let _ = (xc_pol, d_a, d_b, no_pool_budget);
+        None
     }
 }

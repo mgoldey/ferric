@@ -1,16 +1,23 @@
 //! RI-MP2 nuclear gradients: analytical and finite-difference reference.
 
-use crate::rimp2::{compute_mp2_intermediates_ov_only, ri_mp2, RiMp2Config};
-use crate::zvector::solve_zvector;
+use crate::rimp2::{
+    compute_mp2_intermediates_ov_only, ri_mp2, ri_mp2_spin_components, RiMp2Config, SpinScaling,
+};
+use crate::zvector::{solve_zvector_timed, ZvectorControls};
 use ferric_core::basis::BasisSet;
 use ferric_core::external_potential::ExternalPotential;
 use ferric_core::mol::Molecule;
+use ferric_core::timing::PhaseAccumulator;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::Operator;
+use ferric_scf::response_jk::ResponseJk;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
+use ferric_scf::scf_jk::{ScfJk, ScfJkMode};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::warm_start::{solve_rhf_warm, ScfWarmStart};
+use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 use ndarray::Array2;
 
@@ -29,10 +36,7 @@ fn total_energy(
     // density drains cleanly to ~1e-9); energy_conv is only a loose
     // "not-descending" bound and floors above 1e-10 under DF noise, so setting it
     // tight would just hang the SCF at MaxIter (see rhf::scf_converged).
-    let rhf_config = RhfConfig {
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let rhf_config = RhfConfig::gradient_reference(None);
     let ctx = ferric_core::parallel::ParallelContext::default();
     let rhf = solve_rhf(&ctx, mol, &obs, op, &bounds, &rhf_config)?;
     if !rhf.converged {
@@ -86,6 +90,31 @@ pub fn rimp2_gradient_fd(
     Ok(grad)
 }
 
+/// [`rimp2_gradient_analytical`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+pub fn rimp2_gradient_analytical_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+    ext: Option<&ExternalPotential>,
+) -> Result<Array2<f64>, FerricError> {
+    let sys = aux.system();
+    aux.check_restricted_reference(rhf)?;
+    rimp2_gradient_analytical(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        sys.bounds(),
+        rhf,
+        config,
+        ext,
+    )
+}
+
 /// Compute the analytical RI-MP2 nuclear gradient via the real multi-block
 /// Lagrangian, following PySCF's verified `grad/mp2.py::grad_elec` (line numbers
 /// below reference the fetched upstream source), RI-adapted.
@@ -126,9 +155,21 @@ pub fn rimp2_gradient_fd(
 ///    `−2·(V^{-1}b_ov)·y_ov^T·dV` (the extra 2 vs 3-center from the metric
 ///    contracting both fitting legs).
 ///
+/// **Frozen core** (`config.frozen_core > 0`): the correlation density gains the
+/// core–active block `D_{kI} = Imat[k,I]/(ε_k − ε_I)`
+/// (`crate::zvector::frozen_core_block`, PySCF lines 125-129), and the
+/// Z-vector, `zeta` and `im1` span every occupied orbital, core included
+/// (PySCF lines 137-145).
+///
 /// Cross-checked block-by-block against `pyscf/grad/mp2.py::grad_elec`: blocks 1-5
 /// match to ≤1e-4, block 6 to PySCF's `part_dm2·int2e_ip1`, for H2/cc-pVDZ AND
 /// H2O/STO-3G. Both H2 (nocc=1) and H2O (nocc>1) are exact overall (~1e-9 vs FD).
+///
+/// `op` is the correlation operator (the `(P|ia)` integrals, the RI metric and
+/// block 6); block 5 runs on `bounds.op`, the reference SCF's operator. They
+/// are the same operator for RI-MP2; [`crate::att_rimp2_gradient`] passes erfc
+/// on a Coulomb reference.
+#[allow(clippy::too_many_arguments)]
 pub fn rimp2_gradient_analytical(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -139,78 +180,242 @@ pub fn rimp2_gradient_analytical(
     config: &RiMp2Config,
     ext: Option<&ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
-    // ov-only intermediates: the gradient/zvector pipeline never reads
-    // b_oo/b_vv, so the (naux, nvir²) block is never materialized here.
-    let inter = compute_mp2_intermediates_ov_only(mol, obs, dfbs, op, rhf, config)?;
-    let budget_bytes = ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes);
-    let (z, imat) = solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter, budget_bytes)?;
-    let mut grad =
-        mp2_relaxed_lagrangian_gradient(mol, obs, op, bounds, rhf, &inter, &z, &imat, ext)?;
-    grad += &integral_response_gradient_3c2c(mol, obs, dfbs, op, &inter, rhf.mos_r())?;
-    Ok(grad)
+    ferric_scf::x2c::refuse_relativistic(rhf.relativistic, "RI-MP2 analytic gradient")?;
+    let mut acc = PhaseAccumulator::new().report_on_drop("RI-MP2 gradient");
+    rimp2_gradient_analytical_timed(
+        mol,
+        obs,
+        dfbs,
+        op,
+        bounds,
+        rhf,
+        config,
+        SpinScaling::MP2,
+        ext,
+        ZvectorControls::DEFAULT,
+        &mut acc,
+    )
 }
 
-/// Assemble the non-RI part of the MP2 analytical gradient (the four
-/// overlap/hcore/2e-deriv Lagrangian blocks) from the solved z-vector and the RI
-/// Lagrangian matrix `imat`. Shared by the RI-MP2 and SCS-MP2 gradient paths. The
-/// caller adds the RI 3c/2c integral-response term separately.
+/// [`rimp2_gradient_analytical`] of the spin-component-scaled energy
+/// `scaling` ([`SpinScaling`]; `SpinScaling::MP2` is the RI-MP2 gradient
+/// bit for bit) with its phases recorded in `acc` (inert unless
+/// `FERRIC_TIMING` is set; the arithmetic is the same either way) and the
+/// Z-vector solved under `controls`. A Z-vector that misses its tolerance
+/// is an error.
 ///
-/// See [`rimp2_gradient_analytical`] for the block-by-block derivation and PySCF
-/// line citations.
+/// The scaling enters only through the intermediates
+/// ([`crate::rimp2::Mp2Intermediates::apply_spin_scaling`]): the scaled
+/// unrelaxed densities and the pair weight `T̃` of every `x_ov` build. The
+/// Z-vector, the Lagrangian blocks and the 3c/2c response are those of
+/// RI-MP2, on the reference J/K route of `rhf` (four-centre or RI-JK).
 #[allow(clippy::too_many_arguments)]
-fn mp2_relaxed_lagrangian_gradient(
+pub(crate) fn rimp2_gradient_analytical_timed(
     mol: &Molecule,
     obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+    scaling: SpinScaling,
+    ext: Option<&ExternalPotential>,
+    controls: ZvectorControls,
+    acc: &mut PhaseAccumulator,
+) -> Result<Array2<f64>, FerricError> {
+    let inter = rimp2_gradient_intermediates_timed(mol, obs, dfbs, op, rhf, config, acc)?;
+    rimp2_gradient_from_intermediates_timed(
+        mol, obs, dfbs, op, bounds, rhf, config, scaling, inter, ext, controls, acc,
+    )
+}
+
+/// The ov-only intermediates of [`rimp2_gradient_analytical_timed`]: the
+/// gradient/zvector pipeline never reads b_oo/b_vv, so the (naux, nvir²)
+/// block is never materialized here.
+fn rimp2_gradient_intermediates_timed(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+    acc: &mut PhaseAccumulator,
+) -> Result<crate::rimp2::Mp2Intermediates, FerricError> {
+    acc.time("intermediates (b_ov, t2, P)", || {
+        compute_mp2_intermediates_ov_only(mol, obs, dfbs, op, rhf, config)
+    })
+}
+
+/// [`rimp2_gradient_analytical_timed`] on intermediates already built by
+/// [`rimp2_gradient_intermediates_timed`] (unscaled, as built).
+#[allow(clippy::too_many_arguments)]
+fn rimp2_gradient_from_intermediates_timed(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+    scaling: SpinScaling,
+    mut inter: crate::rimp2::Mp2Intermediates,
+    ext: Option<&ExternalPotential>,
+    controls: ZvectorControls,
+    acc: &mut PhaseAccumulator,
+) -> Result<Array2<f64>, FerricError> {
+    acc.time("intermediates: spin scaling", || {
+        inter.apply_spin_scaling(scaling)
+    })?;
+    let budget_bytes = ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes);
+    relaxed_gradient_from_intermediates(
+        mol,
+        obs,
+        dfbs,
+        op,
+        bounds,
+        rhf,
+        &inter,
+        // `inter` is the energy step's on `op` (`rimp2_gradient_intermediates_timed`).
+        Some(crate::oo_rimp2::MetricFactor::of_ov_intermediates(
+            op, &inter,
+        )),
+        budget_bytes,
+        ext,
+        controls,
+        acc,
+    )
+}
+
+/// The analytic gradient of `E_ref + E_c` for any RI correlation energy
+/// whose first variation is carried by `inter` (`x`, `p_oo`, `p_vv`; see
+/// [`crate::rimp2::Mp2Intermediates::from_ri_densities`]): the Z-vector on
+/// the reference J/K route of `rhf`, the relaxed-density Lagrangian terms and
+/// the 3c/2c RI response of the RI-MP2 gradient (theory section 9),
+/// unchanged. The Z-vector runs to `max |r| < 1e-8` within 50 iterations or
+/// the call is an error. `budget_bytes` bounds the Z-vector's J/K scratch.
+#[allow(clippy::too_many_arguments)]
+pub fn relaxed_ri_gradient(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
     op: Operator,
     bounds: &SchwarzBounds,
     rhf: &ScfResult,
     inter: &crate::rimp2::Mp2Intermediates,
-    z: &Array2<f64>,
-    imat: &Array2<f64>,
+    budget_bytes: usize,
+    acc: &mut PhaseAccumulator,
+) -> Result<Array2<f64>, FerricError> {
+    ferric_scf::x2c::refuse_relativistic(rhf.relativistic, "RI correlation analytic gradient")?;
+    relaxed_gradient_from_intermediates(
+        mol,
+        obs,
+        dfbs,
+        op,
+        bounds,
+        rhf,
+        inter,
+        None,
+        budget_bytes,
+        None,
+        ZvectorControls::DEFAULT,
+        acc,
+    )
+}
+
+/// The shared tail of the RI-MP2 and [`relaxed_ri_gradient`] paths.
+/// `metric` is `inter`'s `V^{-1/2}` when it is the factor of `op` on `dfbs`
+/// (see [`crate::zvector::lagrangian_imat_timed`]).
+#[allow(clippy::too_many_arguments)]
+fn relaxed_gradient_from_intermediates(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    rhf: &ScfResult,
+    inter: &crate::rimp2::Mp2Intermediates,
+    metric: Option<crate::oo_rimp2::MetricFactor<'_>>,
+    budget_bytes: usize,
     ext: Option<&ExternalPotential>,
+    controls: ZvectorControls,
+    acc: &mut PhaseAccumulator,
+) -> Result<Array2<f64>, FerricError> {
+    let ctx = ferric_core::parallel::ParallelContext::default();
+    let jk = acc.time("J/K route setup", || {
+        ResponseJk::for_scf(&ctx, mol, obs, bounds, rhf)
+    })?;
+    let zv = solve_zvector_timed(
+        obs,
+        dfbs,
+        op,
+        &jk,
+        rhf,
+        inter,
+        metric,
+        budget_bytes,
+        controls,
+        acc,
+    )?
+    .require_converged()?;
+    // `op` is the CORRELATION operator (the (P|ia) integrals and the RI
+    // metric, so `b_full` in the Z-vector and the 3c/2c response); the
+    // reference's own two-electron derivative runs on the operator its
+    // Schwarz bounds (and SCF) were built for. The two are the same for
+    // RI-MP2 and differ for attenuated RI-MP2 (Coulomb HF, erfc correlation).
+    let mut grad = mp2_relaxed_lagrangian_gradient(
+        mol,
+        obs,
+        bounds.op,
+        &jk,
+        rhf,
+        inter.unrelaxed(),
+        &zv,
+        ext,
+        acc,
+    )?;
+    grad += &integral_response_gradient_3c2c_timed(mol, obs, dfbs, op, inter, rhf.mos_r(), acc)?;
+    Ok(grad)
+}
+
+/// Assemble the non-RI part of the MP2 analytical gradient (the four
+/// overlap/hcore/2e-deriv Lagrangian blocks) from the converged Z-vector
+/// solution `zv` (its `z`, the RI Lagrangian matrix `imat`, and the J/K of the
+/// relaxed correlation density). Shared by the RI-MP2 and SCS-MP2 gradient
+/// paths. The caller adds the RI 3c/2c integral-response term separately.
+///
+/// See [`rimp2_gradient_analytical`] for the block-by-block derivation and PySCF
+/// line citations. `ref_op` is the reference SCF's two-electron operator: it
+/// is the operator of the four-centre derivative term, the only operator this
+/// function reads.
+#[allow(clippy::too_many_arguments)]
+fn mp2_relaxed_lagrangian_gradient(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    ref_op: Operator,
+    jk: &ResponseJk<'_>,
+    rhf: &ScfResult,
+    dens: crate::zvector::UnrelaxedDensity<'_>,
+    zv: &crate::zvector::ZvectorSolution,
+    ext: Option<&ExternalPotential>,
+    acc: &mut PhaseAccumulator,
 ) -> Result<Array2<f64>, FerricError> {
     use ferric_scf::gradient::{
         build_energy_weighted_density, oneelectron_gradient, overlap_deriv_contract,
-        twoelectron_gradient_bilinear,
     };
+    let (z, imat) = (&zv.z, &zv.imat);
     let c = rhf.mos_r();
     let eps = rhf.eps_r();
     let nmo = c.ncols();
-    let crate::rimp2::Mp2Intermediates {
-        nocc,
-        nvir,
-        nocc_total,
-        first_occ,
-        ..
-    } = *inter;
+    let ferric_core::orbitals::OrbitalSpace {
+        nvir, nocc_total, ..
+    } = dens.orb;
 
+    let dens_tok = acc.begin("lagr: densities (MO->AO)");
     // --- dm1mo: full relaxed correlation 1-PDM (MO), no HF 2·I part. ---
-    // occ-occ: doo+doo^T; vir-vir: dvv+dvv^T; occ-vir/vir-occ: z (PySCF lines
-    // 134-135 + _response_dm1). inter.p_oo==doo, inter.p_vv==dvv.
-    let mut dm1mo = Array2::<f64>::zeros((nmo, nmo));
-    for i in 0..nocc {
-        let i_mo = first_occ + i;
-        for j in 0..nocc {
-            let j_mo = first_occ + j;
-            dm1mo[(i_mo, j_mo)] = inter.p_oo[(i, j)] + inter.p_oo[(j, i)];
-        }
-    }
-    for a in 0..nvir {
-        let a_mo = nocc_total + a;
-        for b in 0..nvir {
-            let b_mo = nocc_total + b;
-            dm1mo[(a_mo, b_mo)] = inter.p_vv[(a, b)] + inter.p_vv[(b, a)];
-        }
-    }
-    for a in 0..nvir {
-        let a_mo = nocc_total + a;
-        for i in 0..nocc {
-            let i_mo = first_occ + i;
-            dm1mo[(a_mo, i_mo)] = z[(a, i)];
-            dm1mo[(i_mo, a_mo)] = z[(a, i)];
-        }
-    }
-
+    // occ-occ: doo+doo^T; vir-vir: dvv+dvv^T; the frozen core–active block
+    // (PySCF lines 125-129); occ-vir/vir-occ: z over every occupied orbital,
+    // frozen core included (PySCF lines 134-135 + _response_dm1).
+    let dm1mo = crate::zvector::correlation_density_mo(dens, imat, eps, Some(z))?;
     // Correlation density in AO, and the total (correlation + HF) density.
     let dm1_corr_ao = {
         let cp = c.dot(&dm1mo);
@@ -223,8 +428,7 @@ fn mp2_relaxed_lagrangian_gradient(
     let mut imat_pulay = imat.clone();
     for a in 0..nvir {
         let a_mo = nocc_total + a;
-        for i in 0..nocc {
-            let i_mo = first_occ + i;
+        for i_mo in 0..nocc_total {
             imat_pulay[(a_mo, i_mo)] = imat[(i_mo, a_mo)];
         }
     }
@@ -244,8 +448,7 @@ fn mp2_relaxed_lagrangian_gradient(
     }
     for a in 0..nvir {
         let a_mo = nocc_total + a;
-        for i in 0..nocc {
-            let i_mo = first_occ + i;
+        for i_mo in 0..nocc_total {
             zeta_mo[(a_mo, i_mo)] = eps[i_mo] * dm1mo[(a_mo, i_mo)];
             zeta_mo[(i_mo, a_mo)] = eps[i_mo] * dm1mo[(i_mo, a_mo)];
         }
@@ -261,16 +464,22 @@ fn mp2_relaxed_lagrangian_gradient(
     // --- vhf_s1occ = P_occ · get_veff(dm1_corr + dm1_corr^T) · P_occ (PySCF 161-163) ---
     // dm1_corr symmetric ⇒ dm1_corr+dm1_corr^T = 2·dm1_corr. PySCF's `get_veff(D)`
     // is `J[D] − ½K[D]` (the density D carries its own occupancy factor); here D is
-    // already the doubled 2·dm1_corr, so veff = J[2dm] − ½K[2dm]. build_jk returns
-    // raw J[D]/K[D], so this is `jv − 0.5·kv` — NOT the SCF `2J − K` convention
-    // (which expects the un-doubled electron-count density).
-    let n = c.nrows();
-    let (mut jv, mut kv) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
-    let ctx = ferric_core::parallel::ParallelContext::default();
+    // the doubled 2·dm1_corr, so veff = J[2dm] − ½K[2dm] = 2J[dm] − K[dm] — NOT
+    // the SCF `2J − K` convention on the doubled density. J[dm], K[dm] come from
+    // the Z-vector solve (its right-hand-side build of the unrelaxed part plus
+    // the converged matvec's build of the z part), so no J/K build runs here.
+    acc.stop(dens_tok);
+    let (j_corr, k_corr) = zv.corr_jk.as_ref().ok_or_else(|| {
+        FerricError::Convergence(
+            "RI-MP2 gradient: the Z-vector solution carries no correlation J/K (it did not \
+             converge)"
+                .into(),
+        )
+    })?;
     let two_dm_corr = 2.0 * &dm1_corr_ao;
-    ferric_scf::rhf::build_jk(&ctx, obs, bounds, 1e-12, &two_dm_corr, &mut jv, &mut kv)?;
-    let veff_full = &jv - &(0.5 * &kv); // J[2dm] − ½K[2dm] == PySCF get_veff(dm1+dm1^T)
-                                        // P_occ = C_occ C_occ^T (HF-occupied AO projector).
+    // J[2dm] − ½K[2dm] == PySCF get_veff(dm1+dm1^T).
+    let veff_full = 2.0 * j_corr - k_corr;
+    // P_occ = C_occ C_occ^T (HF-occupied AO projector).
     let c_occ_hf = c.slice(ndarray::s![.., ..nocc_hf]);
     let p_occ = c_occ_hf.dot(&c_occ_hf.t());
     let vhf_s1occ = p_occ.dot(&veff_full).dot(&p_occ);
@@ -288,6 +497,7 @@ fn mp2_relaxed_lagrangian_gradient(
     // z-vector/imat/zeta pipeline above never needs `ext` itself: it is built
     // from `rhf`'s Fock/orbital energies, which already carry the potential
     // via `hcore_with_external` at the SCF stage).
+    let one_tok = acc.begin("lagr: 1e + ECP + overlap derivs");
     let zero_w = Array2::<f64>::zeros((c.nrows(), c.nrows()));
     let mut grad = oneelectron_gradient(mol, obs, &dm1_total_ao, &zero_w, ext)?;
     // ECP term Σ D_relaxed dV_ECP/dR (zero for an all-electron basis): V_ECP
@@ -304,12 +514,15 @@ fn mp2_relaxed_lagrangian_gradient(
     // the RHF EWD term). Combine into one weight matrix.
     let w_overlap = &im1 - &zeta_ao - &vhf_s1occ;
     grad += &overlap_deriv_contract(obs, &w_overlap)?;
+    acc.stop(one_tok);
 
     // 2e-integral-derivative: bilinear Γ(hf_dm1, hf_dm1 + 2·dm1_corr) (PySCF 184,
     // dm1p = hf_dm1 + 2·dm1). ferric's twoelectron_gradient(X) = −∂veff(X)·X for
     // the HF case; the bilinear form generalizes it to −∂veff(hf_dm1)·dm1p.
     let dm1p = hf_dm1 + &two_dm_corr;
-    grad += &twoelectron_gradient_bilinear(obs, op, bounds, hf_dm1, &dm1p)?;
+    grad += &acc.time("lagr: 2e derivs", || {
+        jk.two_electron_gradient_bilinear(mol, ref_op, hf_dm1, &dm1p)
+    })?;
 
     Ok(grad)
 }
@@ -330,16 +543,34 @@ pub(crate) fn integral_response_gradient_3c2c(
     inter: &crate::rimp2::Mp2Intermediates,
     c: &Array2<f64>,
 ) -> Result<Array2<f64>, FerricError> {
-    let mut grad = Array2::<f64>::zeros((mol.atoms.len(), 3));
+    integral_response_gradient_3c2c_timed(
+        mol,
+        obs,
+        dfbs,
+        op,
+        inter,
+        c,
+        &mut PhaseAccumulator::new(),
+    )
+}
 
+/// [`integral_response_gradient_3c2c`] with its phases recorded in `acc`
+/// (inert unless `FERRIC_TIMING` is set; the arithmetic is the same either way).
+fn integral_response_gradient_3c2c_timed(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    inter: &crate::rimp2::Mp2Intermediates,
+    c: &Array2<f64>,
+    acc: &mut PhaseAccumulator,
+) -> Result<Array2<f64>, FerricError> {
     // 3-center derivative: Σ_{P,μ,ν} G3c_{P,μ,ν} * d(P|μν)/dR
     // G3c = "effective density" contracted with t2-weighted amplitudes
     let nocc = inter.nocc;
     let nvir = inter.nvir;
     let naux = inter.naux;
     let nov = nocc * nvir;
-    let t2 = &inter.t2;
-
     // --- memory plane: the (naux, nov) MO-side tensors this function builds.
     //
     // `inter`'s own tensors (t2, b_ov, v_inv_sqrt) are charged by their
@@ -403,7 +634,7 @@ pub(crate) fn integral_response_gradient_3c2c(
     // become `soft + downstream_hard <= available` instead.
     let _worker_charge = {
         let workers = rayon::current_num_threads().max(1);
-        let tt_i = nvir.saturating_mul(nov).saturating_mul(8);
+        let tt_i = crate::zvector::x_ov_worker_bytes(nocc, nvir);
         let max_np = dfbs.shell_dims().iter().copied().max().unwrap_or(0);
         let nbas = obs.nbasis();
         let g3c = max_np
@@ -416,65 +647,83 @@ pub(crate) fn integral_response_gradient_3c2c(
         )
     };
 
-    // Build X^P_{ia} = Σ_{jb} (2*t_{ij,ab} - t_{ij,ba}) * B^P_{jb} via a wide GEMM
-    // per i: X_i[P, a] = B_ov · TT_i^T where TT_i[a, jb] = 2 t_{ij,ab} - t_{ij,ba}.
-    // Replaces the per-element (P,i,a) scalar loop over (j,b): same FLOPs, BLAS3
-    // throughput. t2 layout is t2[(i*nvir+a)*nov + j*nvir+b] = t_{ij,ab}.
-    //
-    // Each i owns a disjoint (naux, nvir) column band of x_ov and reads only its
-    // own TT_i slice of t2, so the i-loop is embarrassingly parallel: fan it over
-    // rayon via axis_chunks_iter_mut on the column-chunked view (order-preserving,
-    // no shared accumulator — bit-identical to the serial loop regardless of
-    // thread count). BLAS stays serial inside each closure (OPENBLAS_NUM_THREADS=1).
-    let mut x_ov = Array2::zeros((naux, nocc * nvir));
-    {
-        use ndarray::Axis;
-        use rayon::prelude::*;
-        // AxisChunksIterMut is an IndexedParallelIterator: chunk i is exactly
-        // columns [i*nvir, (i+1)*nvir), so `enumerate()` recovers i without any
-        // extra bookkeeping, and the disjoint-column writes make this
-        // order-independent/bit-identical to the serial loop.
-        x_ov.axis_chunks_iter_mut(Axis(1), nvir)
-            .into_par_iter()
-            .enumerate()
-            .for_each(|(i, mut x_i_slot)| {
-                // TT_i[a, jb] = 2 t_{ij,ab} - t_{ij,ba}
-                let mut tt_i = Array2::<f64>::zeros((nvir, nov));
-                for a in 0..nvir {
-                    for j in 0..nocc {
-                        for b in 0..nvir {
-                            let jb = j * nvir + b;
-                            let t_ij_ab = t2[(i * nvir + a) * nov + j * nvir + b];
-                            let t_ij_ba = t2[(i * nvir + b) * nov + j * nvir + a];
-                            tt_i[(a, jb)] = 2.0 * t_ij_ab - t_ij_ba;
-                        }
-                    }
-                }
-                // X_i[P, a] = Σ_{jb} B_ov[P, jb] · TT_i[a, jb] = B_ov · TT_i^T  (naux, nvir)
-                let x_i = inter.b_ov.dot(&tt_i.t());
-                x_i_slot.assign(&x_i);
-            });
-    }
+    // X^P_{ia} = Σ_{jb} T̃_{ij,ab} B^P_{jb} (T̃ = 2t − t̄ for MP2, the
+    // spin-scaled pair weight otherwise), one pooled GEMM per occupied i (the
+    // same object the Z-vector's Imat build uses).
+    let xov_tok = acc.begin("resp: x_ov (per-i GEMMs)");
+    let x_ov = inter.x_ov();
+    acc.stop(xov_tok);
+    let y_ov = acc.time("resp: y_ov = V^-1/2 x_ov", || {
+        with_blas_threads(opt_in_blas_threads(), || inter.v_inv_sqrt.t().dot(&*x_ov))
+    });
+    let channel = RiResponseChannel {
+        y_ov: &y_ov,
+        b_ov: &inter.b_ov,
+        c_occ: c
+            .slice(ndarray::s![.., inter.first_occ..inter.first_occ + nocc])
+            .to_owned(),
+        c_vir: c.slice(ndarray::s![.., inter.nocc_total..]).to_owned(),
+        weight: 2.0,
+    };
+    ri_response_gradient_channels(
+        mol,
+        obs,
+        dfbs,
+        op,
+        &inter.v_inv_sqrt,
+        std::slice::from_ref(&channel),
+        acc,
+    )
+}
 
-    // The 3-center DERIVATIVE integrals d(P|μν)/dR are RAW (undressed) 3-center
-    // integrals, but the fitted amplitudes `x_ov` are dressed with V^{-1/2} on the
-    // aux leg (b_ov = V^{-1/2}(P|ov)). The energy `E = ½ Σ Γ B^P_ia B^P_jb` with
-    // `B = V^{-1/2}(Q|ia)` gives `dE/d(Q|ia)_raw = Σ_P V^{-1/2}_QP X^P_ia = y_ov`,
-    // so the 3-center contraction must use `y_ov = V^{-1/2}·x_ov`, NOT `x_ov`
-    // (verified element-by-element in test_3c_density_numerical: diff(y)≈8e-13,
-    // diff(x)≈1.4e-2). V^{-1/2} is symmetric so `v_inv_sqrt.t()` == `v_inv_sqrt`.
-    let y_ov = with_blas_threads(opt_in_blas_threads(), || inter.v_inv_sqrt.t().dot(&x_ov));
+/// One spin channel of the RI 3c/2c integral response
+/// ([`ri_response_gradient_channels`]): the `V^{-1/2}`-dressed amplitude
+/// weight `y_ov = V^{-1/2}ᵀ x_ov` and the dressed `B(P|ia)` of the same
+/// occupied (`c_occ`) and virtual (`c_vir`) orbitals, shape
+/// `(naux, nocc·nvir)` each, and the factor `weight` the channel enters
+/// with. The closed-shell RI-MP2 response is one channel of weight 2 (the
+/// 2-PDM factor `Γ2 = 2·(2t − t̄)`); the unrestricted one is one channel per
+/// spin of weight 1, with `x_ov^σ` the per-spin energy weight.
+pub(crate) struct RiResponseChannel<'a> {
+    /// `V^{-1/2}ᵀ x_ov`, `(naux, nocc·nvir)`.
+    pub(crate) y_ov: &'a Array2<f64>,
+    /// Dressed `B(P|ia)`, `(naux, nocc·nvir)`.
+    pub(crate) b_ov: &'a Array2<f64>,
+    /// Active occupied MO coefficients, `(nao, nocc)`.
+    pub(crate) c_occ: Array2<f64>,
+    /// Virtual MO coefficients, `(nao, nvir)`.
+    pub(crate) c_vir: Array2<f64>,
+    /// The channel's factor.
+    pub(crate) weight: f64,
+}
 
+/// The RI 3c/2c integral-response gradient of a sum of channels:
+///
+/// ```text
+///   3c:  Σ_{P,μν} [Σ_ch w (G_ch + G_chᵀ)]_{P,μν} d(P|μν)/dR,   G_ch,P = C_occ Y_P C_virᵀ
+///   2c:  Σ_{PQ} [−Σ_ch w C_fit,ch y_chᵀ]_{PQ} d(P|Q)/dR,        C_fit = V^{-1/2}ᵀ B
+/// ```
+///
+/// (`Y_P` the row `P` of `y_ov` reshaped `(nocc, nvir)`), for a shared
+/// metric factor `v_inv_sqrt`. One channel of weight 2 is the closed-shell
+/// arithmetic of [`integral_response_gradient_3c2c`] exactly.
+pub(crate) fn ri_response_gradient_channels(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    v_inv_sqrt: &Array2<f64>,
+    channels: &[RiResponseChannel<'_>],
+    acc: &mut PhaseAccumulator,
+) -> Result<Array2<f64>, FerricError> {
+    let mut grad = Array2::<f64>::zeros((mol.atoms.len(), 3));
     // Back-transform X to AO and contract with 3-center derivative integrals,
     // blocked over the aux SHELL index. For each aux shell sp we build only its
     // g3c slab G3c_{p,μ,ν} = Σ_{ia} X^p_{ia} C_{μi} C_{νa} (symmetrized), then
     // contract it with that shell's derivative block. Peak g3c footprint is one
     // aux-shell slab (np, nbf, nbf) instead of the full (naux, nbf, nbf) tensor.
     let nbas = obs.nbasis();
-    let c_occ = c
-        .slice(ndarray::s![.., inter.first_occ..inter.first_occ + nocc])
-        .to_owned();
-    let c_vir = c.slice(ndarray::s![.., inter.nocc_total..]).to_owned();
+    let d3c_tok = acc.begin("resp: 3c derivs");
     {
         use ferric_integrals::engine::Engine;
         use rayon::prelude::*;
@@ -523,25 +772,34 @@ pub(crate) fn integral_response_gradient_3c2c(
                     let mut g3c_sp = ndarray::Array3::<f64>::zeros((np, nbas, nbas));
                     for p in 0..np {
                         let pf = pf0 + p;
-                        let x_p = y_ov
-                            .slice(ndarray::s![pf, ..])
-                            .into_shape_with_order((nocc, nvir))
-                            .unwrap();
-                        // G_raw_{μν} = Σ_{ia} X^p_{ia} C_{μi} C_{νa} = C_occ · X_p · C_vir^T
-                        // Symmetrized: dE/d(P|μν)_raw = g_raw[μν] + g_raw[νμ] (the aux fn P
-                        // couples ia symmetrically; a raw 3c integral (P|μν) and its μ↔ν
-                        // transpose share the derivative). g_raw + g_raw^T doubles the
-                        // diagonal correctly (matches the FD single-element probe).
-                        // The 3-center weight carries the closed-shell 2-PDM factor
-                        // Γ2 = 2·(2t−t̄) (PySCF `part_dm2 = 4t − 2t^T`, grad/mp2.py
-                        // lines 61-62). `x_ov`/`y_ov` are built with the ENERGY weight
-                        // (2t−t̄) (shared with the Imat/energy path), so the separable
-                        // 2-PDM gradient needs an explicit ×2 here. Verified: the term
-                        // then equals PySCF's `dm2buf·int2e_ip1` contribution and drives
-                        // both H2 (nocc=1) and H2O (nocc=5) analytic−FD to ~1e-9.
-                        let g_raw = c_occ.dot(&x_p).dot(&c_vir.t());
-                        let g_sym = 2.0 * (&g_raw + &g_raw.t());
-                        g3c_sp.slice_mut(ndarray::s![p, .., ..]).assign(&g_sym);
+                        let mut g_slot = g3c_sp.slice_mut(ndarray::s![p, .., ..]);
+                        for (n_ch, ch) in channels.iter().enumerate() {
+                            let (nocc, nvir) = (ch.c_occ.ncols(), ch.c_vir.ncols());
+                            let x_p = ch
+                                .y_ov
+                                .slice(ndarray::s![pf, ..])
+                                .into_shape_with_order((nocc, nvir))
+                                .unwrap();
+                            // G_raw_{μν} = Σ_{ia} X^p_{ia} C_{μi} C_{νa} = C_occ · X_p · C_vir^T
+                            // Symmetrized: dE/d(P|μν)_raw = g_raw[μν] + g_raw[νμ] (the aux fn P
+                            // couples ia symmetrically; a raw 3c integral (P|μν) and its μ↔ν
+                            // transpose share the derivative). g_raw + g_raw^T doubles the
+                            // diagonal correctly (matches the FD single-element probe).
+                            // The 3-center weight carries the closed-shell 2-PDM factor
+                            // Γ2 = 2·(2t−t̄) (PySCF `part_dm2 = 4t − 2t^T`, grad/mp2.py
+                            // lines 61-62). `x_ov`/`y_ov` are built with the ENERGY weight
+                            // (2t−t̄) (shared with the Imat/energy path), so the separable
+                            // 2-PDM gradient needs an explicit ×2 here. Verified: the term
+                            // then equals PySCF's `dm2buf·int2e_ip1` contribution and drives
+                            // both H2 (nocc=1) and H2O (nocc=5) analytic−FD to ~1e-9.
+                            let g_raw = ch.c_occ.dot(&x_p).dot(&ch.c_vir.t());
+                            let g_sym = ch.weight * (&g_raw + &g_raw.t());
+                            if n_ch == 0 {
+                                g_slot.assign(&g_sym);
+                            } else {
+                                g_slot += &g_sym;
+                            }
+                        }
                     }
 
                     for s1 in 0..nsh_obs {
@@ -602,7 +860,7 @@ pub(crate) fn integral_response_gradient_3c2c(
     // between two rayon regions (the 3c-derivative fan-out above has already
     // collected/returned; the 2c-derivative fan-out below hasn't started) —
     // outside any rayon region itself. Opt-in BLAS raise via
-    // FERRIC_BLAS_THREADS (default 1, unchanged behavior).
+    // FERRIC_BLAS_THREADS (default: the rayon pool size; 1 on a rayon worker).
     // 2-center metric-derivative weight Γ2c for V^{-1/2} fitting. Deriving the RI
     // energy `E = Σ Γ_ia,jb (ia|P) V^{-1}_PQ (Q|jb)` w.r.t. R gives the 2-center
     // term `Σ_PQ Γ2c_PQ dV_PQ` with base weight `−½·C·y_ov^T`, where
@@ -618,10 +876,22 @@ pub(crate) fn integral_response_gradient_3c2c(
     // contracts symmetrically against the P and Q legs. Verified against PySCF's
     // `part_dm2·int2e_ip1` DF-metric response and the frozen-amplitude FD (H2 + H2O
     // analytic−FD ~1e-9; the pre-fix ×1 weight left H2O ~1e-2 off).
-    let c_fit = with_blas_threads(opt_in_blas_threads(), || {
-        inter.v_inv_sqrt.t().dot(&inter.b_ov)
-    });
-    let gamma_2c = with_blas_threads(opt_in_blas_threads(), || -2.0 * c_fit.dot(&y_ov.t()));
+    acc.stop(d3c_tok);
+    let g2c_tok = acc.begin("resp: Gamma_2c GEMMs");
+    let mut gamma_2c = Array2::<f64>::zeros((v_inv_sqrt.ncols(), v_inv_sqrt.ncols()));
+    for (n_ch, ch) in channels.iter().enumerate() {
+        let c_fit = with_blas_threads(opt_in_blas_threads(), || v_inv_sqrt.t().dot(ch.b_ov));
+        let g = with_blas_threads(opt_in_blas_threads(), || {
+            -ch.weight * c_fit.dot(&ch.y_ov.t())
+        });
+        if n_ch == 0 {
+            gamma_2c = g;
+        } else {
+            gamma_2c += &g;
+        }
+    }
+    acc.stop(g2c_tok);
+    let d2c_tok = acc.begin("resp: 2c derivs");
 
     {
         use ferric_integrals::engine::Engine;
@@ -690,11 +960,23 @@ pub(crate) fn integral_response_gradient_3c2c(
             grad += p;
         }
     }
+    acc.stop(d2c_tok);
 
     Ok(grad)
 }
 
-/// Compute the analytical SCS-MP2 nuclear gradient.
+/// The analytical SCS-MP2 nuclear gradient, `d(E_HF + c_os E_os +
+/// c_ss E_ss)/dR`: the relaxed RI-MP2 gradient with the pair weight
+/// `T̃ = (c_os + c_ss) t − c_ss t̄` in place of `2t − t̄` and the
+/// correspondingly scaled unrelaxed densities ([`SpinScaling`] has the
+/// derivation). `config.c_os = config.c_ss = 1` is
+/// [`rimp2_gradient_analytical`] bit for bit.
+///
+/// Frozen core (`config.frozen_core`) and a density-fitted (RI-JK)
+/// reference are supported exactly as in [`rimp2_gradient_analytical`]:
+/// both act on the Z-vector/Lagrangian side, which the scaling reaches only
+/// through `Imat` and the densities.
+#[allow(clippy::too_many_arguments)]
 pub fn scs_mp2_gradient_analytical(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -705,31 +987,38 @@ pub fn scs_mp2_gradient_analytical(
     config: &crate::scs::ScsMp2Config,
     ext: Option<&ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
-    let mp2_config = RiMp2Config {
+    ferric_scf::x2c::refuse_relativistic(rhf.relativistic, "SCS-MP2 analytic gradient")?;
+    let mut acc = PhaseAccumulator::new().report_on_drop("SCS-MP2 gradient");
+    rimp2_gradient_analytical_timed(
+        mol,
+        obs,
+        dfbs,
+        op,
+        bounds,
+        rhf,
+        &scs_rimp2_config(config),
+        scs_scaling(config),
+        ext,
+        ZvectorControls::DEFAULT,
+        &mut acc,
+    )
+}
+
+/// The RI-MP2 configuration [`crate::scs::scs_mp2`] computes its energy
+/// with.
+fn scs_rimp2_config(config: &crate::scs::ScsMp2Config) -> RiMp2Config {
+    RiMp2Config {
         frozen_core: config.frozen_core,
         memory_budget_bytes: config.memory_budget_bytes,
         ..Default::default()
-    };
-    let inter = compute_mp2_intermediates_ov_only(mol, obs, dfbs, op, rhf, &mp2_config)?;
-    let budget_bytes = ferric_core::memory::resolve_budget_bytes(mp2_config.memory_budget_bytes);
-    let (z, imat) = solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter, budget_bytes)?;
-    // Full (unscaled) RI-MP2 relaxed-Lagrangian gradient + RI 3c/2c response.
-    let mut grad =
-        mp2_relaxed_lagrangian_gradient(mol, obs, op, bounds, rhf, &inter, &z, &imat, ext)?;
-    grad += &integral_response_gradient_3c2c(mol, obs, dfbs, op, &inter, rhf.mos_r())?;
-    // Approximate scaling: multiply MP2 part by average SCS scaling
-    let scale = (config.c_os + config.c_ss) / 2.0;
-    // EXACT-J/K RHF gradient on purpose: `grad` above carries an exact
-    // four-centre HF part, and only a like-for-like subtraction isolates the
-    // MP2 part being scaled (see `rhf_gradient_exact_jk`).
-    let rhf_grad = ferric_scf::gradient::rhf_gradient_exact_jk(mol, obs, op, bounds, rhf, ext)?;
-    for i in 0..mol.atoms.len() {
-        for c in 0..3 {
-            let mp2_part = grad[(i, c)] - rhf_grad[(i, c)];
-            grad[(i, c)] = rhf_grad[(i, c)] + scale * mp2_part;
-        }
     }
-    Ok(grad)
+}
+
+fn scs_scaling(config: &crate::scs::ScsMp2Config) -> SpinScaling {
+    SpinScaling {
+        c_os: config.c_os,
+        c_ss: config.c_ss,
+    }
 }
 
 /// Compute the total RI-MP2 energy and its analytical nuclear gradient at a
@@ -748,27 +1037,334 @@ pub fn total_rimp2_gradient(
     mp2_config: &RiMp2Config,
     ext: Option<&ExternalPotential>,
 ) -> Result<(f64, Array2<f64>), FerricError> {
+    total_rimp2_gradient_warm(
+        mol,
+        obs_basis,
+        aux_basis,
+        op,
+        mp2_config,
+        ext,
+        &mut ScfWarmStart::new(false),
+    )
+}
+
+/// [`total_rimp2_gradient`] with its RHF solved through `warm`
+/// ([`ferric_scf::warm_start::solve_rhf_warm`]): started from the carried
+/// orbitals of the previous geometry when the carrier allows it, retried cold
+/// if that fails, and recorded for the next geometry. A disabled carrier is
+/// exactly [`total_rimp2_gradient`].
+pub fn total_rimp2_gradient_warm(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    op: Operator,
+    mp2_config: &RiMp2Config,
+    ext: Option<&ExternalPotential>,
+    warm: &mut ScfWarmStart,
+) -> Result<(f64, Array2<f64>), FerricError> {
+    total_rimp2_gradient_on(
+        mol,
+        obs_basis,
+        aux_basis,
+        op,
+        mp2_config,
+        ext,
+        &exact_scf_jk(),
+        warm,
+    )
+}
+
+/// The four-centre reference: [`ScfJk`] `"exact"` with the direct exchange
+/// builder.
+pub fn exact_scf_jk() -> ScfJk {
+    ScfJk {
+        mode: ScfJkMode::Exact,
+        aux: None,
+    }
+}
+
+/// [`total_rimp2_gradient_warm`] on the reference J/K route `scf_jk`:
+/// `"exact"` (four-centre, the default of every other entry point) or
+/// `"rijk"` (RI-J + RI-K on `scf_jk.aux`, the SCF, Z-vector and two-electron
+/// derivative terms all fitted;
+/// `book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-fitted-ri-jk-reference`).
+/// The
+/// gradient is that of the energy the fitted SCF and RI-MP2 compute.
+/// `"rijcosx"` is an error: there is no COSX exchange response here.
+#[allow(clippy::too_many_arguments)]
+pub fn total_rimp2_gradient_on(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    op: Operator,
+    mp2_config: &RiMp2Config,
+    ext: Option<&ExternalPotential>,
+    scf_jk: &ScfJk,
+    warm: &mut ScfWarmStart,
+) -> Result<(f64, Array2<f64>), FerricError> {
+    total_mp2_gradient_scaled_on(
+        mol,
+        obs_basis,
+        aux_basis,
+        op,
+        op,
+        mp2_config,
+        SpinScaling::MP2,
+        ext,
+        scf_jk,
+        warm,
+    )
+}
+
+/// The total SCS-MP2 energy `E_HF + c_os E_os + c_ss E_ss` (the energy
+/// [`crate::scs::scs_mp2`] reports, Coulomb operator) and its analytical
+/// nuclear gradient ([`scs_mp2_gradient_analytical`]) at one geometry, the
+/// reference SCF on `scf_jk` (`"exact"` or `"rijk"`, as in
+/// [`total_rimp2_gradient_on`]) and warm-started through `warm`.
+pub fn total_scs_mp2_gradient_on(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    config: &crate::scs::ScsMp2Config,
+    ext: Option<&ExternalPotential>,
+    scf_jk: &ScfJk,
+    warm: &mut ScfWarmStart,
+) -> Result<(f64, Array2<f64>), FerricError> {
+    total_mp2_gradient_scaled_on(
+        mol,
+        obs_basis,
+        aux_basis,
+        Operator::coulomb(),
+        Operator::coulomb(),
+        &scs_rimp2_config(config),
+        scs_scaling(config),
+        ext,
+        scf_jk,
+        warm,
+    )
+}
+
+/// [`total_rimp2_gradient_on`] for the spin-component-scaled energy
+/// `scaling`. `SpinScaling::MP2` takes the energy from [`ri_mp2`]; any
+/// other scaling from [`ri_mp2_spin_components`] as
+/// `E_HF + c_os E_os + c_ss E_ss`, the arithmetic of [`crate::scs::scs_mp2`].
+/// `ref_op` is the reference SCF's operator, `corr_op` the operator of the
+/// correlation energy's `(P|ia)` integrals and RI metric (the same for
+/// RI-MP2 and SCS-MP2; erfc on a Coulomb reference for attenuated RI-MP2).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn total_mp2_gradient_scaled_on(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    ref_op: Operator,
+    corr_op: Operator,
+    mp2_config: &RiMp2Config,
+    scaling: SpinScaling,
+    ext: Option<&ExternalPotential>,
+    scf_jk: &ScfJk,
+    warm: &mut ScfWarmStart,
+) -> Result<(f64, Array2<f64>), FerricError> {
+    let (rhf, obs, dfbs, bounds) = solve_rhf_reference(
+        mol, obs_basis, aux_basis, ref_op, mp2_config, ext, scf_jk, warm,
+    )?;
+    let mut acc = PhaseAccumulator::new().report_on_drop("RI-MP2 energy + gradient");
+    let inter =
+        rimp2_gradient_intermediates_timed(mol, &obs, &dfbs, corr_op, &rhf, mp2_config, &mut acc)?;
+    let energy = if energy_is_the_intermediates(mp2_config, scaling) {
+        // The intermediates hold E_os + E_ss from the same B[P,ia] as the
+        // energy driver, so the 3c integrals are not built a second time.
+        rhf.energy + scaling.c_os * inter.e_mp2
+    } else {
+        acc.time("ri_mp2 energy", || {
+            if scaling == SpinScaling::MP2 {
+                ri_mp2(mol, &obs, &dfbs, corr_op, &rhf, mp2_config).map(|r| r.total_energy)
+            } else {
+                let (sc, _) = ri_mp2_spin_components(mol, &obs, &dfbs, corr_op, &rhf, mp2_config)?;
+                Ok(rhf.energy + (scaling.c_os * sc.e_os + scaling.c_ss * sc.e_ss))
+            }
+        })?
+    };
+    let grad = rimp2_gradient_from_intermediates_timed(
+        mol,
+        &obs,
+        &dfbs,
+        corr_op,
+        &bounds,
+        &rhf,
+        mp2_config,
+        scaling,
+        inter,
+        ext,
+        ZvectorControls::DEFAULT,
+        &mut acc,
+    )?;
+    Ok((energy, grad))
+}
+
+/// Whether the correlation energy `ri_mp2` would report for `config` and
+/// `scaling` is `c · e_mp2` of the gradient's own intermediates: equal spin
+/// scaling `c_os = c_ss = c`, and nothing the intermediates do not apply
+/// (QQR-3 3c screening, a decoupled metric operator, kappa regularization).
+fn energy_is_the_intermediates(config: &RiMp2Config, scaling: SpinScaling) -> bool {
+    scaling.c_os == scaling.c_ss
+        && config.eri3_screen_thresh.is_none_or(|t| t == 0.0)
+        && config.metric_op.is_none()
+        && config.kappa.is_none()
+}
+
+/// The Coulomb (`ref_op`) RHF reference of the closed-shell total-gradient
+/// drivers at `density_conv = 1e-9`, on `scf_jk` (`"exact"` or `"rijk"`;
+/// the fitted route's whole peak is checked against
+/// `mp2_config.memory_budget_bytes` before any integral), warm-started
+/// through `warm`, with its prepared bases and Schwarz bounds.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn solve_rhf_reference(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    ref_op: Operator,
+    mp2_config: &RiMp2Config,
+    ext: Option<&ExternalPotential>,
+    scf_jk: &ScfJk,
+    warm: &mut ScfWarmStart,
+) -> Result<(ScfResult, PreparedBasis, PreparedBasis, SchwarzBounds), FerricError> {
+    if scf_jk.mode == ScfJkMode::RiJCosx {
+        return Err(FerricError::General(
+            "RI-MP2 gradient: scf_jk = \"rijcosx\" is not supported (no COSX exchange \
+             response); use \"exact\" or \"rijk\""
+                .into(),
+        ));
+    }
     let ctx = ferric_core::parallel::ParallelContext::default();
     let obs = PreparedBasis::new(mol, obs_basis)?;
     let dfbs = PreparedBasis::new(mol, aux_basis)?;
-    let bounds = SchwarzBounds::compute(op, &obs)?;
     // Tight SCF via density_conv (reachable under the ΔP gate); energy_conv left
     // at the loose default — a tight 1e-10 would hang at MaxIter. See total_energy above.
-    let rhf_cfg = RhfConfig {
-        density_conv: 1e-9,
-        external_potential: ext.cloned(),
-        ..Default::default()
-    };
-    let rhf = solve_rhf(&ctx, mol, &obs, op, &bounds, &rhf_cfg)?;
+    // A geometry task: an unset RI-J precision resolves to f64 (no effect on
+    // the four-centre route).
+    let mut rhf_cfg = RhfConfig::gradient_reference(ext.cloned()).for_geometry_task();
+    scf_jk.apply(&mut rhf_cfg);
+    if let (ScfJkMode::RiJk, Some(aux)) = (scf_jk.mode, scf_jk.aux.as_deref()) {
+        // The fitted route keeps the reference's RI-J/RI-K tensors through
+        // the gradient: check the whole peak before any integral, and size
+        // the reference's tensors by the same budget.
+        let budget = ferric_core::memory::resolve_budget_bytes(mp2_config.memory_budget_bytes);
+        let shape = crate::gradient_memory::FittedGradientShape::new(
+            mol,
+            &obs,
+            &dfbs,
+            aux,
+            mp2_config.frozen_core,
+        )?;
+        crate::gradient_memory::preflight_fitted_gradient(shape, budget)?;
+        rhf_cfg.three_index_budget_bytes = mp2_config.memory_budget_bytes.unwrap_or(0);
+    }
+    let bounds = SchwarzBounds::compute(ref_op, &obs)?;
+    let rhf = solve_rhf_warm(&ctx, mol, &obs, ref_op, &bounds, &rhf_cfg, warm)?;
     if !rhf.converged {
         return Err(FerricError::ScfConvergence {
             iterations: rhf.iterations,
             last_energy: rhf.energy,
         });
     }
-    let mp2 = ri_mp2(mol, &obs, &dfbs, op, &rhf, mp2_config)?;
-    let grad = rimp2_gradient_analytical(mol, &obs, &dfbs, op, &bounds, &rhf, mp2_config, ext)?;
-    Ok((mp2.total_energy, grad))
+    Ok((rhf, obs, dfbs, bounds))
+}
+
+/// One correlation term of a closed-shell energy that is a sum of
+/// RI-MP2-shaped terms on one Coulomb reference: the spin-component scaling
+/// `scaling` of RI-MP2 with `op` in the `(P|ia)` integrals and the RI metric.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CorrelationTerm {
+    pub(crate) op: Operator,
+    pub(crate) scaling: SpinScaling,
+}
+
+/// `d(E_HF + Σ_k E_k)/dR` on the converged RHF `rhf` (J/K route `bounds`),
+/// `E_k` the correlation energy of `terms[k]`: one relaxed Lagrangian and
+/// ONE Z-vector (`book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient`). Each term
+/// contributes its own `Imat_k`
+/// and unrelaxed density (on `op_k`, with its scaling) and its own 3c/2c
+/// response; the Z-vector right-hand side, the relaxed density and every
+/// reference-side term are linear in `(Σ Imat_k, Σ P_k)`. The terms are
+/// built one at a time, so only one term's intermediates are resident.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rimp2_terms_gradient_timed(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    terms: &[CorrelationTerm],
+    bounds: &SchwarzBounds,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+    ext: Option<&ExternalPotential>,
+    controls: ZvectorControls,
+    acc: &mut PhaseAccumulator,
+) -> Result<Array2<f64>, FerricError> {
+    let mut sum: Option<(
+        ferric_core::orbitals::OrbitalSpace,
+        [Array2<f64>; 3],
+        Array2<f64>,
+    )> = None;
+    for term in terms {
+        let mut inter = acc.time("intermediates (b_ov, t2, P)", || {
+            compute_mp2_intermediates_ov_only(mol, obs, dfbs, term.op, rhf, config)
+        })?;
+        acc.time("intermediates: spin scaling", || {
+            inter.apply_spin_scaling(term.scaling)
+        })?;
+        // `inter` is the energy step's, on `term.op`: its V^-1/2 is b_full's.
+        let imat = crate::zvector::lagrangian_imat_timed(
+            obs,
+            dfbs,
+            term.op,
+            rhf,
+            &inter,
+            Some(crate::oo_rimp2::MetricFactor::of_ov_intermediates(
+                term.op, &inter,
+            )),
+            acc,
+        )?;
+        let g_ri = integral_response_gradient_3c2c_timed(
+            mol,
+            obs,
+            dfbs,
+            term.op,
+            &inter,
+            rhf.mos_r(),
+            acc,
+        )?;
+        let orb = inter.orbital_space();
+        sum = Some(match sum {
+            None => (orb, [imat, inter.p_oo.clone(), inter.p_vv.clone()], g_ri),
+            Some((o, [im, po, pv], g)) => {
+                debug_assert_eq!(o, orb, "terms on one reference share the orbital space");
+                (
+                    o,
+                    [im + &imat, po + &inter.p_oo, pv + &inter.p_vv],
+                    g + &g_ri,
+                )
+            }
+        });
+    }
+    let (orb, [imat, p_oo, p_vv], g_ri) =
+        sum.ok_or_else(|| FerricError::General("correlated gradient: no correlation term".into()))?;
+    let dens = crate::zvector::UnrelaxedDensity {
+        orb,
+        p_oo: &p_oo,
+        p_vv: &p_vv,
+    };
+    let budget_bytes = ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes);
+    let ctx = ferric_core::parallel::ParallelContext::default();
+    let jk = acc.time("J/K route setup", || {
+        ResponseJk::for_scf(&ctx, mol, obs, bounds, rhf)
+    })?;
+    let zv =
+        crate::zvector::solve_zvector_with_imat(&jk, rhf, dens, imat, budget_bytes, controls, acc)?
+            .require_converged()?;
+    let mut grad =
+        mp2_relaxed_lagrangian_gradient(mol, obs, bounds.op, &jk, rhf, dens, &zv, ext, acc)?;
+    grad += &g_ri;
+    Ok(grad)
 }
 
 #[cfg(test)]
@@ -778,6 +1374,148 @@ mod tests {
     use ferric_scf::gradient::{
         hf_gradient_with_density, oneelectron_gradient, twoelectron_gradient,
     };
+
+    /// The total driver takes its energy from the gradient's own
+    /// intermediates when the spin scaling is equal
+    /// ([`energy_is_the_intermediates`]); it must be the energy `ri_mp2`
+    /// reports on the same reference. Both are `E_os + E_ss` of the same
+    /// `B[P,ia]`, built through two MO-transform routes that differ in
+    /// association only: `|ΔE_c| ≲ ε · nocc² nvir² · max|term| ≈ 1e-15` for
+    /// water / cc-pVDZ, so the bar is 1e-12 Ha. The unequal-scaling case
+    /// (SCS) keeps the energy driver and is checked against it too.
+    #[test]
+    fn total_driver_energy_is_ri_mp2_on_the_same_reference() {
+        let mol = Molecule::parse_xyz(
+            "3\nwater\nO 0.02 -0.01 0.117790\nH 0.0 0.785453 -0.451161\nH 0.03 -0.735453 -0.491161\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let obs_bs = basis::bundled("cc-pvdz").unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let cfg = RiMp2Config {
+            frozen_core: 1,
+            ..Default::default()
+        };
+        let cases = [
+            (Operator::coulomb(), SpinScaling::MP2),
+            (
+                Operator::erfc(0.33),
+                SpinScaling {
+                    c_os: 0.8,
+                    c_ss: 0.8,
+                },
+            ),
+            (
+                Operator::coulomb(),
+                SpinScaling {
+                    c_os: 1.2,
+                    c_ss: 0.33,
+                },
+            ),
+        ];
+        for (op, scaling) in cases {
+            let jk = exact_scf_jk();
+            let (e_drv, _) = total_mp2_gradient_scaled_on(
+                &mol,
+                &obs_bs,
+                &aux_bs,
+                Operator::coulomb(),
+                op,
+                &cfg,
+                scaling,
+                None,
+                &jk,
+                &mut ScfWarmStart::new(false),
+            )
+            .unwrap();
+            let (rhf, obs, dfbs, _) = solve_rhf_reference(
+                &mol,
+                &obs_bs,
+                &aux_bs,
+                Operator::coulomb(),
+                &cfg,
+                None,
+                &jk,
+                &mut ScfWarmStart::new(false),
+            )
+            .unwrap();
+            let (sc, _) = ri_mp2_spin_components(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
+            let e = rhf.energy + scaling.c_os * sc.e_os + scaling.c_ss * sc.e_ss;
+            eprintln!(
+                "{:?} {scaling:?}: driver - ri_mp2 = {:.2e}",
+                op.kind,
+                e_drv - e
+            );
+            assert!(
+                (e_drv - e).abs() < 1e-12,
+                "{:?} {scaling:?}: driver {e_drv:.15} vs ri_mp2 {e:.15}",
+                op.kind
+            );
+        }
+    }
+
+    /// The Z-vector's `b_full` on the energy step's `V^{-1/2}` (attenuated
+    /// operator too) is the `b_full` that rebuilds the metric and its
+    /// factor, bit for bit, so the gradient that reuses it is unchanged.
+    #[test]
+    fn b_full_on_the_energy_steps_metric_is_bitwise_the_rebuilt_one() {
+        let mol = Molecule::parse_xyz(
+            "3\nwater\nO 0.02 -0.01 0.117790\nH 0.0 0.785453 -0.451161\nH 0.03 -0.735453 -0.491161\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let obs_bs = basis::bundled("cc-pvdz").unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let cfg = RiMp2Config {
+            frozen_core: 1,
+            ..Default::default()
+        };
+        let (rhf, obs, dfbs, _) = solve_rhf_reference(
+            &mol,
+            &obs_bs,
+            &aux_bs,
+            Operator::coulomb(),
+            &cfg,
+            None,
+            &exact_scf_jk(),
+            &mut ScfWarmStart::new(false),
+        )
+        .unwrap();
+        for op in [Operator::coulomb(), Operator::erfc(0.33)] {
+            let inter =
+                compute_mp2_intermediates_ov_only(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
+            let c = rhf.mos_r();
+            let rebuilt = crate::oo_rimp2::compute_b_full_mo(&obs, &dfbs, op, c).unwrap();
+            let factor = crate::oo_rimp2::MetricFactor::of_ov_intermediates(op, &inter);
+            let reused =
+                crate::oo_rimp2::compute_b_full_mo_with_metric(&obs, &dfbs, op, factor, c).unwrap();
+            assert_eq!(rebuilt.dim(), reused.dim());
+            assert!(
+                rebuilt
+                    .iter()
+                    .zip(reused.iter())
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "{:?}: b_full differs",
+                op.kind
+            );
+        }
+        // A factor of another operator is refused, not used.
+        let inter =
+            compute_mp2_intermediates_ov_only(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &cfg)
+                .unwrap();
+        let coulomb =
+            crate::oo_rimp2::MetricFactor::of_ov_intermediates(Operator::coulomb(), &inter);
+        let err = crate::oo_rimp2::compute_b_full_mo_with_metric(
+            &obs,
+            &dfbs,
+            Operator::erfc(0.33),
+            coulomb,
+            rhf.mos_r(),
+        );
+        assert!(err.is_err());
+    }
 
     #[test]
     fn test_rimp2_gradient_fd_h2_symmetry() {
@@ -905,10 +1643,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let config = RiMp2Config::default();
@@ -959,10 +1694,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let config = RiMp2Config::default();
@@ -1001,10 +1733,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let config = RiMp2Config::default();
@@ -1135,10 +1864,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let config = RiMp2Config::default();
@@ -1181,6 +1907,48 @@ mod tests {
         );
     }
 
+    /// Frozen-core analytic gradient vs FD of ferric's own frozen-core RI-MP2
+    /// energy, H2O/STO-3G, O 1s frozen. Without the core–active density block
+    /// and the core rows of the Z-vector the miss is ~1e-4 Ha/Bohr (H2O/cc-pVDZ:
+    /// 9.8e-5); with them it is the FD floor of the all-electron test (<1e-6).
+    #[test]
+    fn test_analytical_vs_fd_h2o_frozen_core() {
+        let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let obs_bs = basis::bundled("sto-3g").unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig::default().with_density_conv(1e-9),
+        )
+        .unwrap();
+        let config = RiMp2Config {
+            frozen_core: 1,
+            ..Default::default()
+        };
+        let analytical =
+            rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, None).unwrap();
+        let fd = rimp2_gradient_fd(&mol, &obs_bs, &aux_bs, op, &config, 1e-4).unwrap();
+        let max_diff = (&analytical - &fd)
+            .iter()
+            .map(|v| v.abs())
+            .fold(0.0f64, f64::max);
+        eprintln!("H2O/STO-3G frozen-core analytic vs FD: max |d| = {max_diff:.2e}");
+        eprintln!("  analytic {analytical:?}\n  fd       {fd:?}");
+        assert!(
+            max_diff < 1e-6,
+            "H2O frozen-core analytical vs FD max diff = {max_diff:.2e} (expected < 1e-6)"
+        );
+    }
+
     #[test]
     fn test_analytical_vs_fd_ch4() {
         // Third molecule (widens past H2/H2O): CH4/cc-pVDZ, Td symmetry,
@@ -1203,10 +1971,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let config = RiMp2Config::default();
@@ -1264,10 +2029,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let config = RiMp2Config::default();
@@ -1304,6 +2066,59 @@ mod tests {
         }
     }
 
+    /// A Z-vector that stops at its iteration cap is an error on the
+    /// gradient path, not a silently wrong gradient. One CPHF matvec cannot
+    /// reach `max |r| < 1e-8` on water (the first iterate is the uncoupled
+    /// `rhs / Δε`, whose residual is the whole coupling `A·z`); the default
+    /// cap of 50 does. Both arms run so the error cannot come from an
+    /// unrelated failure of the setup.
+    #[test]
+    fn unconverged_zvector_is_a_gradient_error() {
+        let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let obs_bs = basis::bundled("sto-3g").unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig::default().with_density_conv(1e-9),
+        )
+        .unwrap();
+        let config = RiMp2Config::default();
+        let run = |controls| {
+            rimp2_gradient_analytical_timed(
+                &mol,
+                &obs,
+                &dfbs,
+                op,
+                &bounds,
+                &rhf,
+                &config,
+                SpinScaling::MP2,
+                None,
+                controls,
+                &mut PhaseAccumulator::new(),
+            )
+        };
+        let starved = run(ZvectorControls {
+            max_iter: 1,
+            tol: 1e-8,
+        });
+        match starved {
+            Err(FerricError::Convergence(msg)) => {
+                assert!(msg.contains("Z-vector did not converge"), "{msg}")
+            }
+            other => panic!("a 1-iteration Z-vector must be a Convergence error, got {other:?}"),
+        }
+        assert!(run(ZvectorControls::DEFAULT).is_ok());
+    }
+
     #[test]
     fn test_analytical_h2_symmetry() {
         let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
@@ -1319,10 +2134,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let config = RiMp2Config::default();
@@ -1373,10 +2185,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let config = RiMp2Config::default();
@@ -1409,10 +2218,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let nocc = (mol.nelec() / 2) as usize;

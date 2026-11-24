@@ -27,8 +27,10 @@
 //! At ε = 0, on H2/STO-3G (STO-3G aux), water and n-butane at 6-31G and
 //! cc-pVDZ (cc-pVDZ-RI aux), every frozen-core setting the reference carries
 //! (0/1 for water, 0/1/4 for butane), three ferric routes must land on the
-//! reference: the exact method as the CLI and `run_drpa` run it
-//! (`amplitude_drpa`, ε = 0, DIIS 8, ε-linked rtol 0.1), the integral-direct
+//! reference: the exact method as `run_drpa` runs it and as the CLI's
+//! `[local]` route runs at ε = 0 (`amplitude_drpa`, ε = 0, DIIS 8, ε-linked
+//! rtol 0.1; the CLI's exact `drpa` takes the frequency route, validated in
+//! `ferric-rpa/tests/validation_drpa_frequency.rs`), the integral-direct
 //! assembly with trivial locality maps (`amplitude_drpa_direct`), and the
 //! in-crate `canonical_plasmon_drpa` that the unit tests anchor against
 //! (until now compared to no external code).
@@ -114,6 +116,7 @@ use ferric_mp2::lmp2_direct::DirectConfig;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use serde_json::Value;
 
 const ROW_DIR: &str = "testdata/reference/validation/drpa_amplitude";
@@ -135,7 +138,7 @@ const TOL_E_CORR: f64 = 3e-10;
 /// (1.35e-3 Eh). 1e-6 sits 15x below the first and >3000x above the
 /// agreement bar.
 const MUST_MISS: f64 = 1e-6;
-/// The DIIS subspace the CLI and `run_drpa` use for the exact method.
+/// The DIIS subspace `run_drpa` and the CLI's `[local]` route use.
 const DIIS: usize = 8;
 
 fn workspace_root() -> PathBuf {
@@ -170,12 +173,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
 }
 
 fn check_close(ctx: &str, what: &str, got: f64, want: f64, tol: f64) {
@@ -221,7 +218,7 @@ fn setup(system: &str, basis_name: &str, aux_name: &str) -> Setup {
         &ctx,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &ctx),
+        num_ctx(&r, "/nuclear_repulsion", &ctx),
         TOL_ENUC,
     );
     let obs_bs = basis::bundled(basis_name).unwrap();
@@ -242,12 +239,10 @@ fn setup(system: &str, basis_name: &str, aux_name: &str) -> Setup {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     // dRPA is FIRST order in a Fock/orbital inconsistency (proof notebook
     // §3), so the density is converged one decade past the κ-MP2 harness.
-    let cfg = RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10)
+        .with_max_iter(200);
     assert!(
         cfg.df_j_aux.is_none() && cfg.df_k_aux.is_none(),
         "exact J/K expected"
@@ -259,7 +254,7 @@ fn setup(system: &str, basis_name: &str, aux_name: &str) -> Setup {
         &ctx,
         "E_RHF",
         rhf.energy,
-        num(&r, "/e_rhf", &ctx),
+        num_ctx(&r, "/e_rhf", &ctx),
         TOL_E_RHF,
     );
     Setup {
@@ -273,8 +268,8 @@ fn setup(system: &str, basis_name: &str, aux_name: &str) -> Setup {
     }
 }
 
-/// The exact method as the CLI (`method.kind = "drpa"`) and `run_drpa` run
-/// it: ε = 0, DIIS 8, ε-linked stopping tolerance 0.1 (a no-op at ε = 0).
+/// The exact method as `run_drpa` runs it (and the CLI's `[local]` route at
+/// ε = 0): DIIS 8, ε-linked stopping tolerance 0.1 (a no-op at ε = 0).
 fn exact_cfg(frozen_core: usize) -> AmplitudeDrpaConfig {
     AmplitudeDrpaConfig {
         eps: 0.0,
@@ -308,8 +303,8 @@ fn frozen_settings(su: &Setup) -> Vec<(usize, f64, f64)> {
             assert_eq!(b["frozen_core"].as_u64(), Some(fc as u64), "{}", su.ctx);
             (
                 fc,
-                num(b, "/e_corr", &su.ctx),
-                num(b, "/e_corr_ring_dropped", &su.ctx),
+                num_ctx(b, "/e_corr", &su.ctx),
+                num_ctx(b, "/e_corr_ring_dropped", &su.ctx),
             )
         })
         .collect();
@@ -336,7 +331,7 @@ fn check_eps_zero(system: &str, basis_name: &str, aux_name: &str) -> Setup {
         );
         check_close(
             &ctx,
-            "exact Riccati (CLI config)",
+            "exact Riccati (run_drpa config)",
             exact.e_corr,
             e_ref,
             TOL_E_CORR,
@@ -387,7 +382,7 @@ fn check_eps_zero(system: &str, basis_name: &str, aux_name: &str) -> Setup {
 fn drpa_amplitude_h2_sto3g_vs_numpy_plasmon() {
     let su = check_eps_zero("h2", "sto-3g", "sto-3g");
     // The proof notebook's value, recorded by the generator next to its own.
-    let nb = num(&su.r, "/frozen_core/0/proof_notebook_value", &su.ctx);
+    let nb = num_ctx(&su.r, "/frozen_core/0/proof_notebook_value", &su.ctx);
     let e = amplitude_drpa(
         &su.mol,
         &su.obs,

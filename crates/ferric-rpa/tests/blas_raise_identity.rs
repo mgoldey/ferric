@@ -8,6 +8,10 @@
 //! process: a raised count live while any other test thread runs GEMM/eigh
 //! concurrently silently corrupts results. Here the process runs only the
 //! tests in this file, and every test takes ENV_LOCK for its whole body.
+//! (2026-11-08: concurrent callers at a raised count did NOT corrupt results
+//! on OpenBLAS 0.3.26 — 2-4 threads plus a thread flipping the count stayed
+//! within 1.2e-14 of the 1-thread reference; wiki/notes/blas-threads-2026-11-08.
+//! The serialization below is kept so each test compares one count at a time.)
 
 use ferric_rpa::davidson::run_davidson_static;
 use ferric_rpa::lanczos::run_lanczos_seeded;

@@ -94,14 +94,12 @@ const LAMBDA_TOL: f64 = 1e-6;
 /// both verdicts reachable, which `both_verdicts_are_reachable_through_the_
 /// config_flag` exists specifically to demonstrate.
 fn tight(check_stability: bool) -> RhfConfig {
-    RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        max_iter: 400,
-        check_stability,
-        use_sad_guess: false,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_max_iter(400)
+        .with_check_stability(check_stability)
+        .with_guess(ferric_scf::options::Guess::Core)
 }
 
 fn run_uhf(xyz: &str, charge: i32, mult: usize, basis_name: &str, check: bool) -> ScfResult {
@@ -425,19 +423,12 @@ fn unrepresentable_ks_references_are_refused_not_silently_downgraded() {
         ks_reference_is_analysable(Some("wB97X-V"), 0.3),
         Err(StabilitySkip::Vv10Kernel)
     );
-    // Meta-GGA: no tau f_xc kernel, so refuse.
-    assert_eq!(
-        ks_reference_is_analysable(Some("SCAN"), 0.0),
-        Err(StabilitySkip::MetaGga)
-    );
-    assert_eq!(
-        ks_reference_is_analysable(Some("r2SCAN"), 0.0),
-        Err(StabilitySkip::MetaGga)
-    );
+    // τ-only meta-GGA: analysable with the τ kernel (FxcKernelStore::Mgga).
+    assert_eq!(ks_reference_is_analysable(Some("SCAN"), 0.0), Ok(()));
+    assert_eq!(ks_reference_is_analysable(Some("r2SCAN"), 0.0), Ok(()));
     eprintln!(
-        "KS GATE  HF/PBE/B3LYP analysable; wB97X-V -> {:?}; SCAN -> {:?}",
+        "KS GATE  HF/PBE/B3LYP/SCAN/r2SCAN analysable; wB97X-V -> {:?}",
         ks_reference_is_analysable(Some("wB97X-V"), 0.3).unwrap_err(),
-        ks_reference_is_analysable(Some("SCAN"), 0.0).unwrap_err()
     );
 }
 
@@ -482,13 +473,11 @@ fn ks_reference_is_analysed_with_the_xc_kernel_not_the_hf_hessian() {
     // KS-DFT cannot reach `tight()`'s 1e-11 energy_conv (the XC grid floors dE
     // well above it), so this uses the library defaults' loose energy bound
     // with a tight density bound — the gate `scf_converged` actually relies on.
-    let cfg = RhfConfig {
-        density_conv: 1e-9,
-        max_iter: 400,
-        check_stability: true,
-        xc: Some("PBE".to_string()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_density_conv(1e-9)
+        .with_max_iter(400)
+        .with_check_stability(true)
+        .with_xc("PBE");
     let res = solve_rhf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &cfg).unwrap();
     assert!(res.converged, "RKS/PBE must converge");
     let wired = res

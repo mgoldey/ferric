@@ -24,7 +24,7 @@ use crate::lmp2_amplitude::{
 use crate::lmp2_direct::{DirectConfig, DirectStats};
 
 /// Largest ε whose MEASURED recovery is comparable to ORCA DLPNO-MP2
-/// NormalPNO (C4/cc-pVDZ: 99.980% at 1e-5 vs NormalPNO's 99.96-99.98%).
+/// NormalPNO (C4/cc-pVDZ: 99.999% at 1e-5 vs NormalPNO's 99.96-99.98%).
 /// One system, one basis, no independent finite-ε reference: a comparison
 /// point, NOT a validated range (the name is kept for API stability).
 pub const VALIDATED_EPS_MAX: f64 = 1e-5;
@@ -41,19 +41,26 @@ pub const ONE_D_RATIO_MAX: f64 = 0.5;
 pub const DIFFUSE_EXPONENT_MIN: f64 = 0.08;
 
 /// The measured C4/cc-pVDZ recovery of the canonical DF-MP2 correlation
-/// energy, as (ε, percent as recorded).
+/// energy (all electrons, in core, the defaults: λ-Boys λ = 10 and the
+/// Fock-propagated screen κ = 1), as (ε, percent as recorded; measured
+/// 2026-11-18). The integral-direct path at its default maps agrees to
+/// 0.0007 points. Without the screen the in-core path recorded 99.992 /
+/// 99.735 / 95.20, and with plain Boys too 99.980 / 99.671 / 94.99.
 pub const MEASURED_RECOVERY_C4: [(f64, &str); 3] =
-    [(1e-5, "99.980"), (1e-4, "99.671"), (1e-3, "94.99")];
+    [(1e-5, "99.99903"), (1e-4, "99.8930"), (1e-3, "96.5805")];
 
 /// The measured C8 recovery at ε = 1e-3 (the size trend: it LOSES more
-/// than C4 at the same ε), as (ε, percent as recorded).
-pub const MEASURED_RECOVERY_C8: (f64, &str) = (1e-3, "93.81");
+/// than C4 at the same ε), as (ε, percent as recorded). In core, λ = 10,
+/// Fock screen κ = 1; without the screen 94.00, with plain Boys too 93.81.
+pub const MEASURED_RECOVERY_C8: (f64, &str) = (1e-3, "95.57");
 
 /// Log-log slope of the C4 lost fraction per decade of ε, from
-/// [`MEASURED_RECOVERY_C4`]: 0.020% -> 0.329% -> 5.01% lost gives 1.22 and
-/// 1.18, i.e. ~1.2 (superlinear). The 1.2-1.8 range sometimes quoted is the
-/// octane local-dRPA record, not MP2.
-pub const MEASURED_SLOPE_C4: &str = "~1.2 (1.22, 1.18)";
+/// [`MEASURED_RECOVERY_C4`]: 0.00097% -> 0.1070% -> 3.4195% lost gives
+/// 2.04 and 1.50, i.e. ~1.8 (superlinear; without the Fock screen 1.52 and
+/// 1.26, with plain Boys too 1.22 and 1.18). The screen removes more of the
+/// small-ε error, so the slope steepens. The 1.2-1.8 range sometimes quoted
+/// is the octane local-dRPA record, not MP2.
+pub const MEASURED_SLOPE_C4: &str = "~1.8 (2.04, 1.50)";
 
 /// Short label of the two-electron operator, for the certificate.
 pub fn operator_label(op: &Operator) -> String {
@@ -68,11 +75,17 @@ pub fn operator_label(op: &Operator) -> String {
 /// The integral-direct locality maps of a run.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DirectMaps {
+    /// [`DirectConfig::aux_radius_bohr`] (Bohr).
     pub aux_radius: f64,
+    /// [`DirectConfig::virt_radius_bohr`] (Bohr); `None` keeps all virtuals.
     pub virt_radius: Option<f64>,
+    /// [`DirectConfig::ao_tail`].
     pub ao_tail: f64,
+    /// [`DirectConfig::schwarz_skip`].
     pub schwarz_skip: f64,
+    /// [`DirectConfig::batch_merge`].
     pub batch_merge: usize,
+    /// [`DirectConfig::virt_schwarz_kappa`].
     pub virt_schwarz_kappa: Option<f64>,
 }
 
@@ -94,9 +107,13 @@ impl From<&DirectConfig> for DirectMaps {
 /// triangular solves, and whitenings reused from the κ screen.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PairFitCounters {
+    /// [`DirectStats::n_pair_groups`].
     pub n_pair_groups: usize,
+    /// [`DirectStats::n_distinct_occ_per_group`].
     pub n_distinct_occ_per_group: f64,
+    /// [`DirectStats::n_trsm`].
     pub n_trsm: usize,
+    /// [`DirectStats::n_w_reused`].
     pub n_w_reused: usize,
 }
 
@@ -121,6 +138,8 @@ pub struct SystemShape {
 }
 
 impl SystemShape {
+    /// Classify `mol` (gyration ratio of its atom positions) and `obs_bs`
+    /// (smallest primitive exponent over the elements present).
     pub fn new(mol: &Molecule, obs_bs: &BasisSet) -> Self {
         Self {
             gyration_ratio: gyration_ratio(mol),
@@ -128,10 +147,12 @@ impl SystemShape {
         }
     }
 
+    /// `gyration_ratio <= ONE_D_RATIO_MAX`: the alkane-like 1-D shape label.
     pub fn one_d(&self) -> bool {
         self.gyration_ratio <= ONE_D_RATIO_MAX
     }
 
+    /// `min_exponent < DIFFUSE_EXPONENT_MIN`: the basis counts as diffuse.
     pub fn diffuse(&self) -> bool {
         self.min_exponent < DIFFUSE_EXPONENT_MIN
     }
@@ -167,12 +188,19 @@ fn min_exponent(mol: &Molecule, obs_bs: &BasisSet) -> f64 {
 /// One certificate value, typed for both serializers.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CertValue {
+    /// Absent value (JSON `null`, Python `None`).
     Null,
+    /// Boolean.
     Bool(bool),
+    /// Non-negative integer (counts, byte sizes).
     Usize(usize),
+    /// Floating-point value.
     F64(f64),
+    /// String.
     Str(String),
+    /// List of strings (the warning lists).
     StrList(Vec<String>),
+    /// Nested key/value entries, in serialization order.
     Map(Vec<(&'static str, CertValue)>),
 }
 
@@ -185,12 +213,21 @@ impl From<Option<f64>> for CertValue {
 /// The certificate itself; see the module doc.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Lmp2Certificate {
+    /// Local scheme name; always `"amplitude-threshold"`.
     pub scheme: &'static str,
+    /// The amplitude threshold ε of the run.
     pub eps: f64,
+    /// [`AmplitudeLmp2Result::keep_fraction`].
     pub keep_fraction: f64,
+    /// [`AmplitudeLmp2Result::pair_fraction`].
     pub pair_fraction: f64,
+    /// [`AmplitudeLmp2Result::n_pairs_gated`].
     pub n_pairs_gated: usize,
+    /// [`AmplitudeLmp2Config::pair_gate_cal`]; `None` when the gate is off.
     pub gate_cal: Option<f64>,
+    /// [`AmplitudeLmp2Config::fock_screen`] (κ); `None` when the screen is off.
+    pub fock_screen: Option<f64>,
+    /// Whether the run used the integral-direct assembly.
     pub integral_direct: bool,
     /// `None` on the in-core (global-B) path.
     pub maps: Option<DirectMaps>,
@@ -224,19 +261,28 @@ pub struct Lmp2Certificate {
     /// Always true: a PCG that runs out of iterations fails the run, so no
     /// certificate is written for it.
     pub cg_converged: bool,
+    /// Frozen-core orbital count of the run.
     pub frozen_core: usize,
     /// [`operator_label`] of the run's operator; the ε record is Coulomb.
     pub operator: String,
-    /// Size of the PCG gather plan (bytes) and the matvec path the solve
-    /// ran ("planned" or "indexed", the plan-free fallback when the plan
-    /// did not fit the memory budget).
+    /// Size of the PCG gather plan (bytes), reported whether or not it was
+    /// built.
     pub solve_plan_bytes: usize,
     /// Bytes resident beside the plan for the whole solve (ragged system +
     /// PCG vectors); the plan was admitted against the budget minus this.
     pub solve_resident_bytes: usize,
+    /// The matvec path the solve ran: `"planned"`, or `"indexed"` (the
+    /// plan-free fallback when the plan did not fit the memory budget).
     pub matvec_path: &'static str,
+    /// Validation statement: `Proven (narrow)` at ε = 0 (the exactness
+    /// anchor), otherwise "measured error map, not validated".
     pub validation_grade: String,
+    /// The measured C4/C8 recovery record quoted against this ε (with an
+    /// operator caveat when the run is not Coulomb), or the exact-limit
+    /// note at ε = 0.
     pub eps_trust: String,
+    /// Ways the run sits outside the measured record (ε, gate, shape,
+    /// diffuse basis, operator).
     pub warnings: Vec<String>,
     /// Where the solve's tolerance leaves the energy error above, or without,
     /// its bound. Separate from `warnings`, which describe the measured record.
@@ -244,6 +290,9 @@ pub struct Lmp2Certificate {
 }
 
 impl Lmp2Certificate {
+    /// Build the certificate from the run's config, optional integral-direct
+    /// config, result, system classification and operator. `pair_fit` starts
+    /// unset; see [`Self::with_direct_stats`].
     pub fn new(
         cfg: &AmplitudeLmp2Config,
         direct: Option<&DirectConfig>,
@@ -259,6 +308,7 @@ impl Lmp2Certificate {
             pair_fraction: r.pair_fraction,
             n_pairs_gated: r.n_pairs_gated,
             gate_cal: cfg.pair_gate_cal,
+            fock_screen: cfg.fock_screen,
             integral_direct: direct.is_some(),
             maps: direct.map(DirectMaps::from),
             pair_fit: None,
@@ -328,6 +378,7 @@ impl Lmp2Certificate {
             ("pair_fraction", V::F64(self.pair_fraction)),
             ("n_pairs_gated", V::Usize(self.n_pairs_gated)),
             ("gate_cal", self.gate_cal.into()),
+            ("fock_screen", self.fock_screen.into()),
             ("integral_direct", V::Bool(self.integral_direct)),
             ("maps", maps),
             ("pair_fit", pair_fit),
@@ -354,6 +405,49 @@ impl Lmp2Certificate {
             ("warnings", V::StrList(self.warnings.clone())),
             ("solver_warnings", V::StrList(self.solver_warnings.clone())),
         ]
+    }
+}
+
+impl Lmp2Certificate {
+    /// This certificate as a [`ferric_core::certificate::Certificate`]: the
+    /// `rimp2` grade from the validation page, capped for the local scheme
+    /// (`Proven (narrow)` at ε = 0, the exactness anchor; `not graded` at
+    /// finite ε, where only a measured error map exists), the approximations
+    /// in effect, and both warning lists. The detail fields stay on this type.
+    pub fn certificate(&self) -> ferric_core::certificate::Certificate {
+        use ferric_core::certificate::{Certificate, Grade};
+        let mut c =
+            Certificate::for_method_kind("rimp2").with_approximation("ri", "density fitting");
+        c = c.with_approximation(
+            "local",
+            format!(
+                "{} eps = {:e}, keep_fraction = {}, pair_fraction = {}",
+                self.scheme, self.eps, self.keep_fraction, self.pair_fraction
+            ),
+        );
+        if let Some(m) = &self.maps {
+            c = c.with_approximation(
+                "integral-direct",
+                format!(
+                    "aux_radius = {}, ao_tail = {:e}, schwarz_skip = {:e}",
+                    m.aux_radius, m.ao_tail, m.schwarz_skip
+                ),
+            );
+        }
+        if self.frozen_core > 0 {
+            c = c.with_approximation("frozen-core", self.frozen_core.to_string());
+        }
+        if self.precision == "f64" {
+            c = c.with_precision(&ferric_core::gpu::provenance::PrecisionRecord::f64());
+        }
+        c = if self.eps == 0.0 {
+            c.cap_grade(Grade::ProvenNarrow, validation_grade(self.eps))
+        } else {
+            c.cap_grade(Grade::Ungraded, validation_grade(self.eps))
+        };
+        c.extend_warnings(self.warnings.iter().cloned());
+        c.extend_warnings(self.solver_warnings.iter().cloned());
+        c
     }
 }
 
@@ -401,7 +495,7 @@ fn warnings(eps: f64, gate_cal: Option<f64>, shape: &SystemShape, coulomb: bool)
     if eps > VALIDATED_EPS_MAX {
         w.push(format!(
             "eps = {eps:.1e} > {VALIDATED_EPS_MAX:.0e}: looser than the DLPNO-NormalPNO-comparable \
-             range (C4/cc-pVDZ loses 0.33% of the correlation energy at 1e-4, 5.0% at 1e-3)"
+             range (C4/cc-pVDZ loses 0.27% of the correlation energy at 1e-4, 4.8% at 1e-3)"
         ));
     }
     if !coulomb && eps > 0.0 {
@@ -527,12 +621,15 @@ mod tests {
         assert!(validation_grade(1e-6).contains("not validated"));
         assert!(eps_trust(0.0, true).contains("exact"));
         let t = eps_trust(1e-4, true);
-        assert!(t.contains("99.671% at 1e-4") && t.contains("inside"), "{t}");
         assert!(
-            t.contains("slope ~1.2") && t.contains("93.81% at 1e-3"),
+            t.contains("99.8930% at 1e-4") && t.contains("inside"),
             "{t}"
         );
-        assert!(!t.contains("1.8") && !t.contains("CAVEAT"), "{t}");
+        assert!(
+            t.contains("slope ~1.8") && t.contains("95.57% at 1e-3"),
+            "{t}"
+        );
+        assert!(!t.contains("1.2-1.8") && !t.contains("CAVEAT"), "{t}");
         assert!(eps_trust(1e-6, true).contains("outside"));
         assert!(eps_trust(1e-4, false).contains("CAVEAT"));
         assert!(!eps_trust(0.0, false).contains("CAVEAT"));
@@ -549,10 +646,62 @@ mod tests {
         let s1 = (lost[1] / lost[0]).log10();
         let s2 = (lost[2] / lost[1]).log10();
         assert!(
-            (s1 - 1.22).abs() < 0.01 && (s2 - 1.18).abs() < 0.01,
+            (s1 - 2.04).abs() < 0.01 && (s2 - 1.50).abs() < 0.01,
             "{s1} {s2}"
         );
-        assert!(MEASURED_SLOPE_C4.contains("1.22") && MEASURED_SLOPE_C4.contains("1.18"));
+        assert!(MEASURED_SLOPE_C4.contains("2.04") && MEASURED_SLOPE_C4.contains("1.50"));
+    }
+
+    fn cert(eps: f64) -> Lmp2Certificate {
+        Lmp2Certificate {
+            scheme: "amplitude-threshold",
+            eps,
+            keep_fraction: 0.5,
+            pair_fraction: 0.75,
+            n_pairs_gated: 0,
+            gate_cal: None,
+            fock_screen: None,
+            integral_direct: false,
+            maps: None,
+            pair_fit: None,
+            precision: "f64",
+            cg_rtol: 1e-6,
+            cg_rtol_source: "adaptive-default",
+            cg_tightened: false,
+            cg_energy_error_target: None,
+            cg_energy_target_met: None,
+            cg_relres: 1e-7,
+            cg_true_relres: 1e-7,
+            cg_energy_error_bound: 1e-14,
+            cg_converged: true,
+            frozen_core: 0,
+            operator: "coulomb".into(),
+            solve_plan_bytes: 0,
+            solve_resident_bytes: 0,
+            matvec_path: "planned",
+            validation_grade: validation_grade(eps),
+            eps_trust: eps_trust(eps, true),
+            warnings: vec!["w-record".into()],
+            solver_warnings: vec!["w-solver".into(), "w-record".into()],
+        }
+    }
+
+    /// The unified certificate caps the `rimp2` page grade for the local
+    /// scheme (never raises it) and carries both warning lists.
+    #[test]
+    fn unified_certificate_caps_the_grade_for_the_local_scheme() {
+        use ferric_core::certificate::Grade;
+        let exact = cert(0.0).certificate();
+        assert_eq!(exact.capability, "rimp2");
+        assert_eq!(exact.grade, Grade::ProvenNarrow);
+        let finite = cert(1e-5).certificate();
+        assert_eq!(finite.grade, Grade::Ungraded);
+        assert!(finite.warnings[0].starts_with("grade capped from Proven to not graded"));
+        assert_eq!(&finite.warnings[1..], ["w-record", "w-solver"]);
+        assert_eq!(finite.approximations[1].name, "local");
+        assert!(finite.approximations[1].detail.contains("eps = 1e-5"));
+        assert_eq!(finite.precision.as_ref().unwrap()["precision"], "f64");
+        assert!(finite.build.is_none(), "the library never stamps a build");
     }
 
     #[test]

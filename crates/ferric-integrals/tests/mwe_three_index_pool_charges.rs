@@ -26,6 +26,7 @@ use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::three_index_source::ThreeIndexSource;
+use ferric_testkit::molecules::water_xyz;
 
 /// Serializes the tests in THIS binary, which all install the process-global
 /// pool, and clears the slot on entry and exit.
@@ -56,12 +57,8 @@ impl Drop for GlobalPoolGuard {
     }
 }
 
-fn water() -> Molecule {
-    Molecule::load_xyz("../../testdata/molecules/water.xyz").expect("water.xyz")
-}
-
 fn bases() -> (Molecule, PreparedBasis, PreparedBasis) {
-    let mol = water();
+    let mol = water_xyz();
     let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").expect("cc-pvdz")).expect("obs");
     let dfbs =
         PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").expect("cc-pvdz-ri")).expect("dfbs");
@@ -165,7 +162,7 @@ fn two_co_resident_spilled_sources_do_not_refuse_each_other() {
     assert!(!raw.is_incore(), "budget must have forced a spill");
 
     // Dress it while `raw` is still alive -- exactly DfK::from_raw's shape.
-    // Before the fix this returned `memory pool exhausted`.
+    // This must not return `memory pool exhausted`.
     let m = ndarray::Array2::<f64>::eye(naux);
     let dressed = ThreeIndexSource::build_dressed(&mut raw, &m, budget)
         .expect("a co-resident dressed spill must NOT be refused by the pool");

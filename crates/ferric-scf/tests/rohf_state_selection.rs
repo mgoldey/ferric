@@ -197,31 +197,23 @@ fn no2(basis_name: &str) -> Sys {
 /// set: ROHF has no stability operator (see the module doc), so setting it would
 /// only print a skip on every row.
 fn tight_cfg() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        density_conv: 1e-10,
-        energy_conv: 1e-11,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_density_conv(1e-10)
+        .with_energy_conv(1e-11)
 }
 
 /// The PRE-FIX config: the bare hcore guess, which is what `solve_rohf` did
 /// unconditionally until this lane. `use_sad_guess = false` with no explicit
 /// density is the documented way to ask for it.
 fn hcore_cfg() -> RhfConfig {
-    RhfConfig {
-        use_sad_guess: false,
-        ..tight_cfg()
-    }
+    tight_cfg().with_guess(ferric_scf::options::Guess::Core)
 }
 
 /// The MINAO-projection guess, which is what `use_sad_guess = true` resolves to
 /// and what `rhf.rs` has defaulted to for a long time.
 fn minao_cfg() -> RhfConfig {
-    RhfConfig {
-        use_sad_guess: true,
-        ..tight_cfg()
-    }
+    tight_cfg().with_guess(ferric_scf::options::Guess::Sad)
 }
 
 /// The PRE-F6 hcore path: the hcore guess AND `rohf_occupation_guard = false`.
@@ -232,10 +224,9 @@ fn minao_cfg() -> RhfConfig {
 /// NH₂/6-31G) and continues to the ground state. Tests whose claim is about
 /// the PRE-FIX hcore state pin this config instead.
 fn prefix_hcore_cfg() -> RhfConfig {
-    RhfConfig {
-        rohf_occupation_guard: false,
-        ..hcore_cfg()
-    }
+    let mut c = hcore_cfg();
+    c.rohf_occupation_guard = false;
+    c
 }
 
 /// Every system in the sweep, with its PySCF ROHF reference.
@@ -396,6 +387,7 @@ fn run(sys: &Sys, cfg: &RhfConfig) -> Result<f64, String> {
 /// This test asserts CONVERGENCE and the H-ARTIFACT exclusion only. It does NOT
 /// assert the deltas, because the deltas are the measurement; the accuracy
 /// assertions live in `the_fixed_rohf_path_reaches_every_reference`.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rohf_guess_by_system_table() {
     println!("\n=== ROHF guess x system, vs PySCF 2.13.0 ROHF ===");
@@ -500,6 +492,7 @@ fn rohf_guess_by_system_table() {
 /// (6-31G) from 5 of 40 randomized starts, and −92.1818724 (cc-pVDZ) from its
 /// own random starts. CN has at least three ROHF solutions at 6-31G and four at
 /// cc-pVDZ. This is basin selection on a genuinely multi-solution system.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_fixed_rohf_path_reaches_every_reference() {
     // 1e-6 Ha. Loose enough for ferric's own SCF exit criteria against a
@@ -596,6 +589,7 @@ fn the_fixed_rohf_path_reaches_every_reference() {
 /// ROHF has no stability analysis in this workspace (see the module doc), so
 /// there is no descent available to recover the lower basin — the honest report
 /// is this assertion.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn cn_is_the_system_the_guess_fix_costs() {
     let sys = diatomic("C", "N", 1.1718, 0, 2, "6-31g");
@@ -731,6 +725,7 @@ fn ferric_finds_lower_rohf_states_than_pyscfs_standard_guesses() {
 /// guess. From MINAO both converge, and HeNe⁺/6-31G lands on its PySCF
 /// reference. So the fix is not only about which state is found — on these two
 /// the old path produced no answer at all.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_guess_fix_repairs_two_non_convergences() {
     for (name, sys, e_ref) in [
@@ -833,13 +828,11 @@ fn an_explicit_init_guess_density_reaches_the_rohf_solver() {
     // The MINAO density, handed over explicitly instead of via use_sad_guess.
     let d = ferric_scf::guess::minao_projection_guess(&sys.mol, &sys.prep, sys.prep.basis_set())
         .expect("MINAO projection for OH/6-31G");
-    let cfg = RhfConfig {
+    let cfg = tight_cfg()
         // use_sad_guess is OFF, so if the explicit density were ignored this
         // would fall through to hcore and land on the pre-fix answer.
-        use_sad_guess: false,
-        init_guess_density: Some(d),
-        ..tight_cfg()
-    };
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_init_guess_density(d);
     let e = run(&sys, &cfg).expect("OH/6-31G from an explicit guess density");
     println!("OH/6-31G explicit init_guess_density = {e:.10} (ref {OH_631G:.10})");
     assert!(
@@ -859,10 +852,7 @@ fn an_explicit_init_guess_density_reaches_the_rohf_solver() {
 fn a_misshaped_init_guess_density_is_rejected() {
     let sys = diatomic("O", "H", 0.97, 0, 2, "6-31g");
     let n = sys.prep.nbasis();
-    let cfg = RhfConfig {
-        init_guess_density: Some(ndarray::Array2::<f64>::zeros((n + 3, n + 3))),
-        ..tight_cfg()
-    };
+    let cfg = tight_cfg().with_init_guess_density(ndarray::Array2::<f64>::zeros((n + 3, n + 3)));
     let err = run(&sys, &cfg).expect_err("a misshaped init_guess_density must be an error");
     println!("misshaped init_guess_density -> {err}");
     assert!(
@@ -912,14 +902,15 @@ fn the_df_path_reaches_one_state_from_both_guesses() {
         "cc-pvdz",
     );
     let sys = ch3("cc-pvdz");
-    let df = |sad: bool, dconv: f64, econv: f64| RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        max_iter: 2000,
-        use_sad_guess: sad,
-        density_conv: dconv,
-        energy_conv: econv,
-        ..tight_cfg()
+    let df = |sad: bool, dconv: f64, econv: f64| {
+        let mut c = tight_cfg()
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit")
+            .with_max_iter(2000)
+            .with_density_conv(dconv)
+            .with_energy_conv(econv);
+        c.use_sad_guess = sad;
+        c
     };
     // BOTH threshold settings, because one of them is what made the earlier
     // assertion look like a property of the guess.
@@ -1125,11 +1116,9 @@ fn rohf_holds_a_correct_guess_density_so_h_degen_is_refuted() {
         // 2. Hand that density straight back in as the guess. `use_sad_guess`
         //    is off so nothing else can supply a guess: if the field were
         //    ignored we would fall through to hcore.
-        let cfg = RhfConfig {
-            use_sad_guess: false,
-            init_guess_density: Some(r.density_total.clone()),
-            ..tight_cfg()
-        };
+        let cfg = tight_cfg()
+            .with_guess(ferric_scf::options::Guess::Core)
+            .with_init_guess_density(r.density_total.clone());
         let back = run(&sys, &cfg).unwrap_or_else(|m| panic!("{name} re-run: {m}"));
         println!(
             "{name:12} converged {:.10} -> fed back as guess -> {back:.10}  (delta {:.2e})",

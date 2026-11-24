@@ -128,13 +128,11 @@ fn attenuated_water_rpa_pbe_c6_probe() {
     // PBE reference SCF (RI-J/RI-K with def2-universal-jkfit, per CLI convention).
     let scf_op = Operator::coulomb();
     let scf_bounds = SchwarzBounds::compute(scf_op, &obs).unwrap();
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-9,
-        xc: Some("PBE".to_string()),
-        df_j_aux: Some("def2-universal-jkfit".to_string()),
-        df_k_aux: Some("def2-universal-jkfit".to_string()),
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default()
+        .with_energy_conv(1e-9)
+        .with_xc("PBE")
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit");
     let rhf = solve_rhf(&ctx, &mol, &obs, scf_op, &scf_bounds, &scf_cfg).unwrap();
     assert!(rhf.converged, "RPA@PBE reference SCF did not converge");
 
@@ -299,13 +297,11 @@ fn screening_omega_vs_gap() {
         let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
         let scf_op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(scf_op, &obs).unwrap();
-        let scf_cfg = RhfConfig {
-            energy_conv: 1e-9,
-            xc: Some("PBE".to_string()),
-            df_j_aux: Some("def2-universal-jkfit".to_string()),
-            df_k_aux: Some("def2-universal-jkfit".to_string()),
-            ..Default::default()
-        };
+        let scf_cfg = RhfConfig::default()
+            .with_energy_conv(1e-9)
+            .with_xc("PBE")
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         let rhf = solve_rhf(&ctx, &mol, &obs, scf_op, &bounds, &scf_cfg).unwrap();
         assert!(rhf.converged, "{label}: PBE SCF not converged");
 
@@ -363,12 +359,12 @@ fn screening_omega_vs_gap() {
     println!("\n  Verdict: compare the ω/Δ column. Constant ⟹ screening; scattered ⟹ fit.");
 }
 
-// NOTE: a prior `screening_n2_stretch_gap_response` test was removed — using a
+// NOTE: there is no N2 bond-stretch gap-response test — using a
 // bond stretch to vary the gap is confounded by multireference breakdown past
-// the Coulson–Fischer point (~1.2 Å for N2), where the HOMO–LUMO gap is no
-// longer a meaningful valence gap and RHF/PBE+RPA is qualitatively wrong. The
+// the Coulson–Fischer point (~1.2 Å for N2), where the HOMO–LUMO gap is not
+// a meaningful valence gap and RHF/PBE+RPA is qualitatively wrong. The
 // gap must be varied by electronic structure at equilibrium instead — that is
-// what the expanded `screening_omega_vs_gap` valence set above now does.
+// what the `screening_omega_vs_gap` valence set above does.
 
 /// PHYSICS vs CANCELLATION: is the attenuation C6 correction STRUCTURED (real)
 /// or UNIFORM (a scale factor in disguise)?
@@ -429,13 +425,11 @@ fn attenuation_structure_vs_scalar() {
         let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
         let scf_op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(scf_op, &obs).unwrap();
-        let scf_cfg = RhfConfig {
-            energy_conv: 1e-9,
-            xc: Some("PBE".to_string()),
-            df_j_aux: Some("def2-universal-jkfit".to_string()),
-            df_k_aux: Some("def2-universal-jkfit".to_string()),
-            ..Default::default()
-        };
+        let scf_cfg = RhfConfig::default()
+            .with_energy_conv(1e-9)
+            .with_xc("PBE")
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         let rhf = solve_rhf(&ctx, &mol, &obs, scf_op, &bounds, &scf_cfg).unwrap();
 
         let dp0 = pdep_dynamic_polarizability(
@@ -588,13 +582,11 @@ fn erf_rpa_c6_and_structure() {
         let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
         let scf_op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(scf_op, &obs).unwrap();
-        let scf_cfg = RhfConfig {
-            energy_conv: 1e-9,
-            xc: Some("PBE".to_string()),
-            df_j_aux: Some("def2-universal-jkfit".to_string()),
-            df_k_aux: Some("def2-universal-jkfit".to_string()),
-            ..Default::default()
-        };
+        let scf_cfg = RhfConfig::default()
+            .with_energy_conv(1e-9)
+            .with_xc("PBE")
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         let rhf = solve_rhf(&ctx, &mol, &obs, scf_op, &bounds, &scf_cfg).unwrap();
 
         // Full-Coulomb baseline C6 for reference.
@@ -676,10 +668,8 @@ fn erf_rpa_c6_and_structure() {
 /// S3 spike (open triage item #3): pin the SR-RPA CORRELATION-ENERGY recovery
 /// ratio claimed in the `attenuated-rpa-recovers-most-correlation` memory
 /// file: "SR-RPA with erfc(ω=0.222 Bohr⁻¹) on H2O/cc-pVDZ recovers 97.7% of
-/// full Coulomb-RPA correlation energy." That number previously existed only
-/// as a memory-file record from an ad-hoc investigation; no test computed and
-/// asserted this specific ratio (grepped — no `e_rpa` recovery-ratio
-/// computation at ω=0.222 existed anywhere in ferric-rpa's tests or src).
+/// full Coulomb-RPA correlation energy." This test computes and
+/// asserts that ratio.
 ///
 /// Distinct quantity from `attenuated_water_alpha_c6_probe` above: this test
 /// is about the RPA CORRELATION ENERGY (`run_pdep_rpa(...).e_rpa`, the
@@ -806,10 +796,7 @@ fn erfc_rpa_omega_to_zero_matches_coulomb_rpa() {
         &obs,
         scf_op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_energy_conv(1e-10),
     )
     .unwrap();
     assert!(rhf.converged, "H2/cc-pVDZ RHF reference did not converge");
@@ -856,10 +843,7 @@ fn erfc_rpa_omega_to_infinity_vanishes() {
         &obs,
         scf_op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_energy_conv(1e-10),
     )
     .unwrap();
     assert!(rhf.converged, "H2/cc-pVDZ RHF reference did not converge");

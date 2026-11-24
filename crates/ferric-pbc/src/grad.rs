@@ -90,7 +90,7 @@
 //!
 //! The per-spin XC kernels and `V_σ` are ferric-dft's unchanged
 //! `closed_kernel` / `polarized_kernel` / `semilocal_vxc_*` (the SCF's own),
-//! with the same `ρ_σ > DENSITY_FLOOR` gates on the potential-like terms.
+//! with the same `ρ_σ` above the functional's `DensityFloor` gates on the potential-like terms.
 //!
 //! # Consistency with the energy
 //!
@@ -222,7 +222,8 @@ use ferric_dft::density_on_grid::{eval_density_closed, eval_density_uks};
 use ferric_dft::grid::GridPoint;
 use ferric_dft::libxc::{xc_def_from_name_nspin, FunctionalFamily};
 use ferric_dft::vxc::{
-    closed_kernel, polarized_kernel, semilocal_vxc_closed, semilocal_vxc_polarized, DENSITY_FLOOR,
+    above_density_floor, closed_kernel, polarized_kernel, semilocal_vxc_closed,
+    semilocal_vxc_polarized,
 };
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
@@ -614,11 +615,11 @@ impl SpinSet {
             let fds = f.dot(d).dot(s_mat);
             fds.iter()
                 .zip(fds.t().iter())
-                .fold(0.0_f64, |m, (a, b)| m.max((a - b).abs()))
+                .fold(0.0_f64, |m, (a, b)| max_nan(m, (a - b).abs()))
         };
         match self {
             Self::Restricted { d, f } => one(f, d),
-            Self::Unrestricted { da, db, fa, fb } => one(fa, da).max(one(fb, db)),
+            Self::Unrestricted { da, db, fa, fb } => max_nan(one(fa, da), one(fb, db)),
         }
     }
 }
@@ -1745,7 +1746,7 @@ pub(crate) fn hcore_rotation_built(
     }
     if built == 0 {
         if hcore_cfg.sr_column_rotation.is_explicit_on() {
-            let rb = RotatedBasis::detect(cell, prep, ColumnRotation::new(), who)?;
+            let rb = crate::sr_rotation::detect(cell, prep, ColumnRotation::new(), who)?;
             if rb.is_some() {
                 return Err(FerricError::General(format!(
                     "{who}: sr_column_rotation was requested explicitly, but the hcore's SR \
@@ -1762,13 +1763,24 @@ pub(crate) fn hcore_rotation_built(
              built with"
         )));
     };
-    match RotatedBasis::detect(cell, prep, rot, who)? {
+    match crate::sr_rotation::detect(cell, prep, rot, who)? {
         Some(rb) if rb.n_rotated_columns == built => Ok(Some(rb)),
         other => Err(FerricError::General(format!(
             "{who}: the hcore's SR attraction rotated {built} columns but this basis rotates {} \
              (another basis or cell than the hcore's)",
             other.map_or(0, |r| r.n_rotated_columns)
         ))),
+    }
+}
+
+/// `max(a, b)` that propagates NaN (`f64::max` returns the non-NaN operand,
+/// which would let a NaN slip under a refusal bar). Gates compare the result
+/// with `!(x <= bar)` so NaN is refused.
+pub(crate) fn max_nan(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else {
+        a.max(b)
     }
 }
 
@@ -1804,14 +1816,14 @@ fn check_rsgdf_inputs(
     }
     // J3's G = 0 term is c0 S q with B's S: it must be the S whose
     // derivative the overlap term contracts (hc.s).
-    let smax = hc.s.iter().fold(1.0_f64, |m, v| m.max(v.abs()));
+    let smax = hc.s.iter().fold(1.0_f64, |m, v| max_nan(m, v.abs()));
     let ds = f
         .gdf
         .overlap()
         .iter()
         .zip(hc.s.iter())
-        .fold(0.0_f64, |m, (a, b)| m.max((a - b).abs()));
-    if f.gdf.overlap().dim() != (n, n) || ds > 1e-12 * smax {
+        .fold(0.0_f64, |m, (a, b)| max_nan(m, (a - b).abs()));
+    if f.gdf.overlap().dim() != (n, n) || !(ds <= 1e-12 * smax) {
         return Err(FerricError::General(format!(
             "{who}: the RsGdf was built with a different overlap than hc.s \
              (max |ΔS| = {ds:.3e}); build it from the SCF's hcore"
@@ -2599,7 +2611,7 @@ fn xc_gradient(
                 let dens = eval_density_closed(d, &chi, &dchi);
                 let k = closed_kernel(&dens, None, &xc_def);
                 let (e, v) = semilocal_vxc_closed(&pts, &chi, &dchi, &dens, None, &xc_def);
-                let live = |g: usize| dens.rho[g] > DENSITY_FLOOR;
+                let live = |g: usize| above_density_floor(dens.rho[g], k.floor);
                 let vr: Vec<f64> = (0..np)
                     .map(|g| if live(g) { k.vrho[g] } else { 0.0 })
                     .collect();
@@ -2627,7 +2639,13 @@ fn xc_gradient(
                 let (e, va, vb) = semilocal_vxc_polarized(&pts, &chi, &dchi, &dens, None, xp);
                 let gate = |rho: &ndarray::Array1<f64>, v: &ndarray::Array1<f64>| -> Vec<f64> {
                     (0..np)
-                        .map(|g| if rho[g] > DENSITY_FLOOR { v[g] } else { 0.0 })
+                        .map(|g| {
+                            if above_density_floor(rho[g], k.floor) {
+                                v[g]
+                            } else {
+                                0.0
+                            }
+                        })
                         .collect()
                 };
                 let vr_a = gate(&dens.rho_a, &k.vrho_a);
@@ -2635,7 +2653,7 @@ fn xc_gradient(
                 // c^α = 2 v_σαα ∇ρ_α + v_σαβ ∇ρ_β (gated on ρ_α), and α↔β.
                 let (c_a, c_b) = if gga {
                     let ca = Array2::from_shape_fn((3, np), |(i, g)| {
-                        if dens.rho_a[g] > DENSITY_FLOOR {
+                        if above_density_floor(dens.rho_a[g], k.floor) {
                             2.0 * k.vsigma_aa[g] * dens.grad_a[(i, g)]
                                 + k.vsigma_ab[g] * dens.grad_b[(i, g)]
                         } else {
@@ -2643,7 +2661,7 @@ fn xc_gradient(
                         }
                     });
                     let cb = Array2::from_shape_fn((3, np), |(i, g)| {
-                        if dens.rho_b[g] > DENSITY_FLOOR {
+                        if above_density_floor(dens.rho_b[g], k.floor) {
                             2.0 * k.vsigma_bb[g] * dens.grad_b[(i, g)]
                                 + k.vsigma_ab[g] * dens.grad_a[(i, g)]
                         } else {
@@ -2952,4 +2970,74 @@ pub fn overlap_kinetic_force_walk(
 ) -> Result<(Array2<f64>, Array2<f64>, Array2<f64>), FerricError> {
     let ledger = Ledger::new(crate::budget::resolve(None));
     overlap_kinetic_force(prep, images, m, d, m_g0, natoms, serial, &ledger)
+}
+
+#[cfg(test)]
+mod gate_tests {
+    //! The RS-GDF overlap gate of [`check_rsgdf_inputs`]
+    //! (`max|ΔS| <= 1e-12 max(1, max|S|)`), reached without an SCF: the
+    //! `RsGdf` is built from an `s` perturbed by `delta` against `hc.s`.
+    use super::*;
+    use crate::hcore::{periodic_hcore, PeriodicHcoreConfig};
+    use crate::rsgdf::RsGdfConfig;
+    use ferric_core::basis;
+    use ferric_core::mol::{Atom, Molecule};
+
+    fn h(r: [f64; 3]) -> Atom {
+        Atom {
+            symbol: "H".into(),
+            z: 1,
+            x: r[0],
+            y: r[1],
+            zpos: r[2],
+            ghost: false,
+            n_core_ecp: 0,
+        }
+    }
+
+    /// `check_rsgdf_inputs` on a Gamma H2 cell whose RsGdf was built from
+    /// `hc.s` with `delta` added to element (0, 1) (S is not symmetrised: the
+    /// gate compares elementwise).
+    fn run(delta: f64) -> Result<(), FerricError> {
+        let mol = Molecule {
+            atoms: vec![h([0.3, 0.2, 0.1]), h([0.35, 0.12, 1.5])],
+            charge: 0,
+            multiplicity: 1,
+        };
+        let cell = Cell::new(mol, [[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]]).unwrap();
+        let obs_bs = basis::bundled("sto-3g").unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let prep = PreparedBasis::new(cell.mol(), &obs_bs).unwrap();
+        let aux = PreparedBasis::new(cell.mol(), &aux_bs).unwrap();
+        let hc = periodic_hcore(&cell, &prep, &PeriodicHcoreConfig::with_omega(0.8)).unwrap();
+        let mut s = hc.s.clone();
+        s[(0, 1)] += delta;
+        let cfg = RsGdfConfig {
+            omega: 1.0,
+            budget_bytes: Some(1 << 31),
+            ..Default::default()
+        };
+        let gdf = RsGdf::build_for_gradient(&cell, &prep, &aux, &s, &cfg).unwrap();
+        let src = RsGdfGradSource {
+            gdf: &gdf,
+            aux: &aux,
+            aux_jac: None,
+        };
+        check_rsgdf_inputs("t", &cell, &hc, &src, prep.nbasis())
+    }
+
+    #[test]
+    fn rsgdf_overlap_gate_is_one_e_minus_twelve_relative() {
+        // max|S| = 1 (unit diagonal), so the bar is 1e-12 absolute.
+        run(0.0).expect("identical overlap");
+        run(5e-13).expect("5e-13 is inside the gate");
+        let e = run(2e-12)
+            .expect_err("2e-12 is outside the gate")
+            .to_string();
+        assert!(e.contains("different overlap than hc.s"), "{e}");
+        let e = run(f64::NAN)
+            .expect_err("a NaN overlap element is refused")
+            .to_string();
+        assert!(e.contains("different overlap than hc.s"), "{e}");
+    }
 }

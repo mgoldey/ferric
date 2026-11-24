@@ -11,12 +11,11 @@
 //! budget via `block_naux_for`, unlike the RAW path's `spill_block_naux_for`,
 //! which halves it for exactly this two-live-blocks reason).
 //!
-//! Before this fix, the report was only printed when
-//! `plan.check().is_err() && ooc_trace()` — and `ooc_trace()` reads
-//! `FERRIC_OOC_TRACE`, an env var that defaults to `false`. So in every
-//! production run (no one sets a debug trace var) the honest overshoot
-//! report the comment promises ("the honest figure is REPORTED... rather
-//! than enforced") was computed and then silently thrown away.
+//! The report must not be gated on `plan.check().is_err() && ooc_trace()`:
+//! `ooc_trace()` reads `FERRIC_OOC_TRACE`, an env var that defaults to
+//! `false`, so in every production run (no one sets a debug trace var) the
+//! honest overshoot report ("the honest figure is REPORTED... rather than
+//! enforced") would be computed and then silently thrown away.
 //!
 //! # Scope: the decision logic, not the eprintln! side effect
 //!

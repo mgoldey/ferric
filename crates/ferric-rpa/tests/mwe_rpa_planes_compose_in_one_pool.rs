@@ -50,8 +50,6 @@
 //!
 //! The pool is process-global, so these tests serialize and clear the slot.
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
 use ferric_core::basis;
 use ferric_core::memory::pool::{clear_global, install_global, MemoryPool};
 use ferric_core::mol::Molecule;
@@ -63,19 +61,19 @@ use ferric_rpa::{run_pdep_rpa, PdepRpaConfig};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::pool::CleanSlot;
 
 /// Measured pool peak of one `run_pdep_rpa` on the fixture below, bytes.
 /// Recorded, not assumed: see the table in the module doc.
 ///
-/// # Worker-count portability (fixed 2026-09-18)
+/// # Worker-count portability
 ///
 /// The SOFT half of this peak is PER-WORKER frequency scratch, so the total
-/// is a function of `rayon::current_num_threads()`. These constants were
-/// first frozen at the 12 workers of the box they were measured on, and
-/// 3 of this file's 7 tests FAILED at `RAYON_NUM_THREADS=4` -- which is a
-/// typical CI runner, so they would have gone red immediately.
+/// is a function of `rayon::current_num_threads()`. Constants frozen at
+/// the 12 workers of the measuring box would fail 3 of this file's 7 tests at
+/// `RAYON_NUM_THREADS=4` -- a typical CI runner.
 ///
-/// The fix is to derive the worker-dependent part rather than freeze it.
+/// The worker-dependent part is therefore derived rather than frozen.
 /// `MEASURED_RPA_SOFT_PER_WORKER` is the per-worker figure (the measured
 /// 1_443_456 B at 12 workers / 12); `rpa_soft()` and `rpa_peak()` scale it.
 /// The HARD half and the integrals-owned AO tensor are worker-INDEPENDENT
@@ -123,30 +121,6 @@ const MEASURED_BECKE_PEAK: usize = 44_112_624;
 const MEASURED_BECKE_PEAK_FLOOR: usize = 40_000_000;
 /// Upper edge (12 workers) with margin. A peak above this is real drift.
 const MEASURED_BECKE_PEAK_CEIL: usize = 48_000_000;
-
-fn global_lock() -> MutexGuard<'static, ()> {
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    }
-}
-
-struct CleanSlot(#[allow(dead_code)] MutexGuard<'static, ()>);
-
-impl CleanSlot {
-    fn acquire() -> Self {
-        let g = global_lock();
-        clear_global();
-        Self(g)
-    }
-}
-
-impl Drop for CleanSlot {
-    fn drop(&mut self) {
-        clear_global();
-    }
-}
 
 struct Fixture {
     mol: Molecule,
@@ -715,12 +689,11 @@ fn the_soft_charge_leaves_room_for_the_mandatory_plane_that_asks_next() {
 /// The window is therefore `[hard + AO, hard + soft + AO)`, non-empty for any
 /// `soft > 0`, i.e. at every worker count.
 ///
-/// # Why the old constant broke, and the gate bug it exposed
+/// # Why the capacity is derived, and the gate bug a frozen one exposes
 ///
-/// This test used a frozen `MEASURED_RPA_HARD * 2` = 1_045_632 B, which is
-/// BELOW `hard + AO` = 909_888 B... no: it is above it. The constant was not
-/// the whole problem. Binary-searching the smallest completing capacity with
-/// the ORIGINAL greedy `try_reserve` gave:
+/// A frozen `MEASURED_RPA_HARD * 2` = 1_045_632 B is above `hard + AO` =
+/// 909_888 B, but the constant is not the whole story. Binary-searching the
+/// smallest completing capacity with a greedy `try_reserve` gives:
 ///
 /// ```text
 ///   workers   soft        hard+AO    hard+soft+AO   measured minimum
@@ -733,9 +706,9 @@ fn the_soft_charge_leaves_room_for_the_mandatory_plane_that_asks_next() {
 /// enough to fit, so `try_reserve` took it -- and then starved the AO tensor,
 /// which has no fallback. An optional plane was killing a mandatory one, and
 /// the run died at a capacity where the panelled path would have completed.
-/// That is a real over-charge, fixed in `preflight_check_closed_shell` by
-/// making the soft charge reserve the downstream hard plane's headroom. After
-/// the fix the measured minimum is `hard + AO` at 2, 4 AND 12 workers
+/// A greedy soft charge is a real over-charge;
+/// `preflight_check_closed_shell` makes the soft charge reserve the downstream
+/// hard plane's headroom. The measured minimum is `hard + AO` at 2, 4 AND 12 workers
 /// (910_066..910_380 B, the excess being search granularity), so the window
 /// below is valid everywhere.
 #[test]

@@ -1,0 +1,90 @@
+{
+  "row": "meta-GGA response",
+  "system": "nh2",
+  "basis": "6-31g",
+  "nao": 13,
+  "nuclear_repulsion": 7.564094299642846,
+  "uks_r2scan": {
+    "energy": -55.817243640125,
+    "s_squared": 0.7527695549497446,
+    "max_orbital_gradient": 7.619003388403781e-12,
+    "hessian": {
+      "construction": "dense newton_ah.gen_g_hop_uhf h_op (== ferric uhf_internal_stability, factor 1)",
+      "dim": 76,
+      "lowest": [
+        0.07828820587276676,
+        0.2543053997915049,
+        0.26085091528844084,
+        0.3070299759593913,
+        0.3269105194030389,
+        0.3508733348060204,
+        0.40969589966251574,
+        0.4315083477592018
+      ],
+      "max_asymmetry": 1.5959455978986625e-15
+    }
+  },
+  "provenance": {
+    "code": "pyscf",
+    "version": "2.13.1",
+    "keywords": {
+      "method": "dft.UKS r2SCAN",
+      "xc": "MGGA_X_R2SCAN,MGGA_C_R2SCAN",
+      "jk": "EXACT J (4-index), no K"
+    },
+    "grid": {
+      "atom_grid": [
+        75,
+        110
+      ],
+      "prune": null,
+      "partition": "Becke (original_becke)",
+      "radii_adjust": "becke_atomic_radii_adjust"
+    },
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-10
+    },
+    "stability": null,
+    "basis": "6-31g",
+    "basis_json": "crates/ferric-core/src/basis/bundled/6-31g.json",
+    "basis_sha256": "0c5f3f03df3efd000bf8750687caa1c2a6e777015d5c35b5e45aba794249bff8",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/nh2.xyz",
+    "geometry_xyz_sha256": "a93f4ddd65a01379beb9335bab6cbeb2165454f5784960ee705f49ec9c0d28e5",
+    "geometry_bohr": [
+      [
+        "N",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "H",
+        0.0,
+        1.5186047006878538,
+        -1.1993217336336612
+      ],
+      [
+        "H",
+        0.0,
+        -1.5186047006878538,
+        -1.1993217336336612
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_mgga_response.py",
+    "git_head": "ca8656894d08c0efb2fe1eb9d207d8846af6a979",
+    "generated_utc": "2026-11-05T06:06:52+00:00",
+    "basis_self_check": {
+      "nao": 13,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 13,
+      "diag_skipped_cartesian": 0
+    }
+  }
+}

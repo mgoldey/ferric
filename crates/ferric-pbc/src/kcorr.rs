@@ -85,7 +85,9 @@
 //! shifted (MP, even N) meshes run through the same code, unanchored.
 //! NOT measured: meshes > 3 per axis in Rust, real aux fitting error at
 //! scale, cost, the q = 0 head correction (not ported — the prototype's
-//! fixed-k head is exact only for flat bands).
+//! fixed-k head is exact only for flat bands). Spec if ported (#230): the
+//! prototype's E3d with the Bloch-paired Fock head; E_inf from n ≥ 5 or
+//! twist-averaged meshes with an n⁻⁵ two-point extrapolation.
 //!
 //! # Memory
 //!
@@ -703,6 +705,7 @@ pub struct KMp2Result {
     pub madelung: f64,
     /// Shift added to every active occupied ε at every k.
     pub occ_shift: f64,
+    /// Correlated (active) occupied orbitals, the same at every k.
     pub nocc_active: usize,
     /// Virtuals per k.
     pub nvir: Vec<usize>,
@@ -924,9 +927,13 @@ pub struct KDrpaResult {
     pub per_q: Vec<f64>,
     /// `kscf.energy + drpa_corr`.
     pub total_energy: f64,
+    /// Mesh (supercell) Madelung constant.
     pub madelung: f64,
+    /// Shift added to every active occupied ε at every k.
     pub occ_shift: f64,
+    /// Correlated (active) occupied orbitals, the same at every k.
     pub nocc_active: usize,
+    /// Virtuals per k.
     pub nvir: Vec<usize>,
     /// Rows of `Bq` per class.
     pub naux: Vec<usize>,

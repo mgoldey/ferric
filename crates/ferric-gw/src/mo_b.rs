@@ -12,28 +12,28 @@ use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::Operator;
 use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_integrals::threeindex;
+use ferric_mp2::rimp2::cholesky_inverse_sqrt;
 use ferric_scf::{ScfResult, Spin};
 use ndarray::{s, Array2, Array3};
-use ndarray_linalg::{Cholesky, Diag, SolveTriangular, UPLO};
 
 /// Dressed RI integrals over the full active-MO square.
 ///
-/// # Why this is no longer `Clone`
+/// # Why this is not `Clone`
 ///
 /// It carries a [`ferric_core::memory::pool::Reservation`] for `b_full`'s
 /// bytes (see the `_charge` field). A `Clone` would either duplicate the
 /// tensor without duplicating the charge -- letting the pool hand out the same
 /// bytes twice, which is the exact non-composition defect the pool exists to
 /// fix -- or silently re-reserve and be able to fail, which `Clone` cannot
-/// express. `MoB::clone()` had no callers anywhere in the tree (only field
-/// clones: `mo_b.eps_act.clone()`), and the type is not used outside this
-/// crate, so dropping the derive costs nothing.
+/// express. `MoB::clone()` has no callers (only field clones:
+/// `mo_b.eps_act.clone()`), and the type is not used outside this crate.
 #[derive(Debug)]
 pub struct MoB {
     /// Shape (naux, n_act, n_act). `b_full[(P, m, n)] = Σ_Q V^{-1/2}_{PQ} (Q|mn)`.
     pub b_full: Array3<f64>,
     /// V^{-1/2}, shape (naux, naux). Same as `RpaIntermediates.v_inv_sqrt`.
     pub v_inv_sqrt: Array2<f64>,
+    /// Number of auxiliary (RI) basis functions; leading dimension of `b_full`.
     pub naux: usize,
     /// Number of active MOs (= n_total_mo - frozen_core).
     pub n_act: usize,
@@ -92,9 +92,8 @@ impl MoB {
     ///
     /// The `_charge` field is private precisely so that no caller can own a
     /// `b_full` without owning its charge, which means struct-literal
-    /// construction is no longer possible — including in tests, which built
-    /// synthetic fixtures that way at three sites. This is the supported
-    /// replacement: it takes the same fields and does the one thing the
+    /// construction is not possible — including in tests, which build
+    /// synthetic fixtures through this constructor. It takes the same fields and does the one thing the
     /// literal cannot, so a fixture is charged exactly as a real build is.
     /// That is deliberate, not a convenience: a fixture that skipped the
     /// charge would make the pool tests measure a different object from the
@@ -135,18 +134,17 @@ fn b_full_bytes(naux: usize, n_act: usize) -> usize {
 
 /// Fail-fast if the requested `b_full` allocation exceeds the memory budget.
 /// The MoB peak is a single (naux, n_act, n_act) f64 buffer with the aux-blocked
-/// transform (the old code held eri3_mm + b_flat simultaneously → 2×). The AO
+/// transform (holding eri3_mm + b_flat simultaneously would double it). The AO
 /// source is streamed aux-blocked under the same budget, so it is not the peak.
 ///
 /// `memory_budget_bytes` is the caller's explicit ceiling
 /// ([`GwConfig::memory_budget_bytes`](crate::GwConfig::memory_budget_bytes)),
-/// threaded down rather than the `resolve_budget_bytes(None)` this used to
-/// pass. `None` silently DISCARDED a pinned `[memory] budget_gb` and let
+/// threaded down rather than `resolve_budget_bytes(None)`. `None` would
+/// silently DISCARD a pinned `[memory] budget_gb` and let
 /// `resolve_budget` substitute the env / cgroup / RAM-auto-detected value
-/// (~0.8× available RAM) instead, so a job pinned to 4 GB was gated at ~18 GB
-/// on a 23 GB box and the pin did nothing. `ferric_rpa` fixed exactly this
-/// three times (see `ferric_rpa::properties::pdep_polarizability_static`);
-/// ferric-gw was never fixed until now.
+/// (~0.8× available RAM) instead, so a job pinned to 4 GB would be gated at ~18 GB
+/// on a 23 GB box and the pin would do nothing (see also
+/// `ferric_rpa::properties::pdep_polarizability_static`).
 fn guard_b_full(
     naux: usize,
     n_act: usize,
@@ -178,28 +176,6 @@ fn guard_b_full_at(
         )));
     }
     Ok(())
-}
-
-/// Metric Cholesky + triangular solve (naux×naux). Call-path proof: reached
-/// only from `build_full_b_with_mos`/`build_full_b_both_spins`, which are in
-/// turn reached only from top-level GW entry points (lib.rs:211,:279) and
-/// BSE's top-level `build_full_b` calls (bse.rs) — none of which run inside a
-/// rayon `par_iter`. `opt_in_blas_threads()` defaults to 1 (identical to
-/// today) and additionally self-guards to 1 if it is ever invoked from a
-/// rayon worker thread, so this raise is safe even if a future caller's
-/// assumption breaks.
-fn cholesky_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
-    let n = v.nrows();
-    with_blas_threads(opt_in_blas_threads(), || {
-        let l = v
-            .cholesky(UPLO::Lower)
-            .map_err(|e| FerricError::General(format!("V cholesky failed: {e}")))?;
-        let eye = Array2::<f64>::eye(n);
-        let v_inv_sqrt = l
-            .solve_triangular(UPLO::Lower, Diag::NonUnit, &eye)
-            .map_err(|e| FerricError::General(format!("triangular solve failed: {e}")))?;
-        Ok(v_inv_sqrt)
-    })
 }
 
 /// Build B̃^P_{mn} over the full active-MO square (closed-shell RHF reference).
@@ -240,6 +216,7 @@ pub fn build_full_b(
 ///
 /// `nocc_σ` is read from the molecule's nelec + 2S:
 ///   nocc_α = (nelec + 2S) / 2, nocc_β = (nelec − 2S) / 2.
+#[allow(clippy::too_many_arguments)]
 pub fn build_full_b_spin(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -279,6 +256,7 @@ pub fn build_full_b_spin(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_full_b_with_mos(
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
@@ -293,8 +271,8 @@ fn build_full_b_with_mos(
     let v_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
     // Stream the AO 3-index tensor aux-blocked under the SAME budget the
     // `b_full` guard uses, rather than materializing the dense (naux, nbf, nbf)
-    // tensor (~37 GB at dimer/aTZ). The explicit budget is threaded in; this
-    // used to be `resolve_budget_bytes(None)`, which discarded it.
+    // tensor (~37 GB at dimer/aTZ). The explicit budget is threaded in
+    // (`resolve_budget_bytes(None)` would discard it).
     let mut ao_src = ThreeIndexSource::build(
         op,
         obs,
@@ -483,9 +461,11 @@ mod tests {
     }
 
     /// The aux-blocked (spilled, multi-block) transform must reproduce the
-    /// in-core single-block build exactly. Uses an explicit tiny budget for the
-    /// AO source (no env dependence); the MO coefficient matrix is arbitrary —
-    /// both paths consume the same C so any full-rank choice validates equality.
+    /// in-core single-block build up to the reassociation of its aux sum
+    /// (bound derived below; the MO transforms agree bitwise). Uses an
+    /// explicit tiny budget for the AO source (no env dependence); the MO
+    /// coefficient matrix is arbitrary — both paths consume the same C so any
+    /// full-rank choice validates equality.
     #[test]
     fn blocked_build_matches_incore() {
         let (obs, dfbs, op) = water_setup();
@@ -534,14 +514,68 @@ mod tests {
         .unwrap();
 
         assert_eq!(full.b_full.dim(), blocked.b_full.dim());
-        let maxdiff = (&full.b_full - &blocked.b_full)
-            .iter()
-            .map(|v| v.abs())
-            .fold(0.0, f64::max);
+
+        // The two builds are the same contraction b[P,mn] = sum_Q
+        // V^{-1/2}[P,Q] (Q|mn)_MO, summed in a different order: the in-core
+        // source dresses all naux rows in one GEMM (k = naux, at most
+        // MO_STREAM_CHUNK per call), the spilled one accumulates (beta = 1)
+        // one GEMM per ~3-row aux block. The MO transform of each aux row is
+        // the same computation in both (checked bitwise below), so the only
+        // difference is floating-point reassociation of a length-naux dot
+        // product. Each order is within gamma_n * sum_Q |V[P,Q]| |(Q|mn)| of
+        // the exact value (Higham, Accuracy and Stability of Numerical
+        // Algorithms, 2nd ed., eq. 3.5: any summation order, FMA or not),
+        // with gamma_n = n u / (1 - n u), u = eps / 2, so they differ by at
+        // most twice that, element by element. A fixed absolute bar (1e-14
+        // here before) is not a property of the algorithm: V^{-1/2} has large
+        // entries of both signs, so |b| <= 0.61 is a cancellation of terms
+        // whose absolute sum reaches 182. Measured (water/cc-pVDZ-RI, naux =
+        // 84, debug build): max |diff| 1.13e-14, at most 1.7% of the bound
+        // anywhere. An indexing error (a wrong block offset or row) moves an
+        // element by O(|b|), orders of magnitude above the largest bound
+        // (2 gamma_84 * 182 = 3.4e-12), so it still fails here.
+        let identity = Array2::<f64>::eye(v_inv_sqrt.nrows());
+        let undressed = |src: &mut ThreeIndexSource| {
+            let c_act = c.slice(s![.., frozen_core..]).to_owned();
+            ferric_mp2::rimp2::stream_dressed_mo_band(src, &identity, &c_act, &c_act, None).unwrap()
+        };
+        // An identity metric dresses exactly (1*x + 0*y + ... rounds to x).
+        let mo = undressed(&mut src_full);
+        assert_eq!(mo, undressed(&mut src_tiny), "MO transforms differ");
+        let bound = v_inv_sqrt.mapv(f64::abs).dot(&mo.mapv(f64::abs));
+        let n = v_inv_sqrt.nrows() as f64;
+        let u = f64::EPSILON / 2.0;
+        let gamma = n * u / (1.0 - n * u);
+        // Sanity cap: the bound must stay a tight test. If the fixture ever
+        // changed so that the largest tolerance grew past 1e-10 (it is
+        // 3.4e-12 here), an O(|b|) indexing error could start to hide in it.
+        let max_tol = 2.0 * gamma * bound.iter().fold(0.0_f64, |m, v| m.max(*v));
         assert!(
-            maxdiff <= 1e-14,
-            "blocked b_full != in-core b_full, maxdiff={maxdiff:e}"
+            max_tol < 1e-10,
+            "reassociation bound too loose to test with: {max_tol:e}"
         );
+        let (b_full_flat, b_blocked_flat) = (
+            full.b_full
+                .view()
+                .into_shape_with_order(bound.dim())
+                .unwrap(),
+            blocked
+                .b_full
+                .view()
+                .into_shape_with_order(bound.dim())
+                .unwrap(),
+        );
+        for ((a, b), bnd) in b_full_flat
+            .iter()
+            .zip(b_blocked_flat.iter())
+            .zip(bound.iter())
+        {
+            let (d, tol) = ((a - b).abs(), 2.0 * gamma * bnd);
+            assert!(
+                d <= tol,
+                "blocked b_full != in-core b_full beyond reassociation: |diff|={d:e} > {tol:e}"
+            );
+        }
         assert_eq!(full.n_act, blocked.n_act);
         assert_eq!(full.n_occ_act, blocked.n_occ_act);
         assert_eq!(full.eps_act, blocked.eps_act);
@@ -557,12 +591,12 @@ mod tests {
         assert!(guard_b_full_at(need, 100, 50, "test").is_ok());
         let err = guard_b_full_at(need - 1, 100, 50, "test").unwrap_err();
         let msg = format!("{err}");
-        // The message used to name `FERRIC_ERI3_BUDGET_GB` specifically. It now
-        // says "the memory budget", because the ceiling is no longer env-only:
+        // The message says "the memory budget" rather than naming
+        // `FERRIC_ERI3_BUDGET_GB`, because the ceiling is not env-only:
         // `guard_b_full` takes the caller's explicit
         // `GwConfig::memory_budget_bytes` and only falls back to the env /
-        // cgroup / RAM-auto chain when that is `None`. Naming one env var was
-        // actively misleading once a config budget could set it.
+        // cgroup / RAM-auto chain when that is `None`. Naming one env var would
+        // be misleading when a config budget sets it.
         assert!(
             msg.contains("memory budget") && msg.contains("100×50×50"),
             "unexpected guard message: {msg}"

@@ -119,7 +119,15 @@ OPEN_SHELL = {  # system -> (charge, multiplicity)
 OPEN_SHELL_BASES = ("6-31g", "def2-svp")
 OPEN_SHELL_XC = ("pbe", "b3lyp", "wb97x-v")
 
-CLOSED_SHELL = {"h2s": (0, 1), "hcl": (0, 1), "sih4": (0, 1)}
+CLOSED_SHELL = {
+    "h2s": (0, 1),
+    "hcl": (0, 1),
+    "sih4": (0, 1),
+    "ch4": (0, 1),
+    "nh3": (0, 1),
+    "h2o": (0, 1),
+    "hf": (0, 1),
+}
 CLOSED_SHELL_BASES = ("def2-svp", "def2-tzvp")
 CLOSED_SHELL_XC = ("pbe", "b3lyp", "hse06")
 

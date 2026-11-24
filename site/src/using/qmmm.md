@@ -5,23 +5,22 @@ pocket, a reacting site in an enzyme, a solute in explicit solvent. The QM
 atoms get a real wavefunction; everything else becomes point charges that
 polarize it.
 
-**What you get:** QM region selection (by index, by radius, or by whole
+What you get: QM region selection (by index, by radius, or by whole
 residue), link atoms across covalent cuts with four boundary-charge schemes,
 Gaussian-smeared charges, Thole polarizable embedding, an AMBER-form MM crate,
 analytic QM and MM forces, a full-structure gradient across the cut, geometry
 optimization.
 
-**What is missing:** no AMBER `prmtop` reader (go through OpenMM), and no
+What is missing: no AMBER `prmtop` reader (go through OpenMM), and no
 periodic boundary conditions.
 
 ---
 
 ## Before you start: relax the geometry with xtb
 
-**The single highest-value habit in this whole workflow.** DFT on an unrelaxed
-structure wastes hours and often simply fails.
+DFT on an unrelaxed structure wastes hours and often fails.
 
-Measured on this project, a 27-atom carbocation built by hand:
+Measured on a 27-atom carbocation built by hand:
 
 ```text
 hand-built    C7-H24 = 0.902 Å      SCF: Stalled@37, never converged
@@ -29,9 +28,8 @@ xtb GFN2      C7-H24 = 1.084 Å      SCF: converged
                                     545 kcal/mol lower
 ```
 
-A 0.9 Å C–H bond is not a slightly-off geometry; it is a structure whose SCF has
-no reason to converge. xtb finds that in **seconds** where DFT spends hours
-failing.
+An SCF has no reason to converge on a structure with a 0.9 Å C–H bond. xtb
+fixes it in seconds; DFT spends hours failing on it.
 
 ```bash
 xtb input.xyz --opt --gfn 2 --chrg 1        # seconds
@@ -39,10 +37,10 @@ ferric single_point.toml                     # then the expensive step
 ```
 
 Use it for the initial geometry of anything you did not get from a crystal
-structure or a previous optimization — hand-built ligands, docked poses,
+structure or a previous optimization: hand-built ligands, docked poses,
 edited residues, anything from a SMILES string.
 
-> **Build note:** xtb built with `-O3` miscompiles gradients on this platform.
+> Build note: xtb built with `-O3` miscompiles gradients on this platform.
 > Build with `-Doptimization=2`.
 
 ---
@@ -52,7 +50,7 @@ edited residues, anything from a SMILES string.
 ```python
 import ferric
 
-# The FULL structure: every atom, QM and MM alike.
+# The full structure: every atom, QM and MM alike.
 symbols = ["O", "H", "H",   "O", "H", "H"]     # two waters
 coords  = [[0.0, 0.0, 0.0], [0.76, 0.59, 0.0], [-0.76, 0.59, 0.0],
            [0.0, 0.0, 3.0], [0.76, 0.59, 3.0], [-0.76, 0.59, 3.0]]
@@ -70,7 +68,7 @@ full force-field charge set and let the selection decide.
 
 ## Selecting the QM region
 
-Three ways, and the choice matters more than it looks:
+Three ways:
 
 ```python
 # 1. Explicit indices — full control.
@@ -80,7 +78,7 @@ ferric.QmmmSystem(symbols, coords, charges, qm_indices=[0, 1, 2])
 ferric.QmmmSystem(symbols, coords, charges,
                   qm_seeds=[0], qm_radius_angstrom=5.0)
 
-# 3. Whole residues — a residue joins if ANY of its atoms is in range.
+# 3. Whole residues — a residue joins if any of its atoms is in range.
 #    Prefer this for proteins: a radius cut alone will slice through a
 #    residue and leave you with a chemically meaningless fragment.
 ferric.QmmmSystem(symbols, coords, charges,
@@ -88,9 +86,8 @@ ferric.QmmmSystem(symbols, coords, charges,
                   residue_ids=residue_ids)
 ```
 
-`residue_ids` together with `qm_indices` is an **error**, not a silent
-no-op — an explicit index list and a residue expansion are contradictory
-instructions.
+`residue_ids` together with `qm_indices` is an error: an explicit index list
+and a residue expansion are contradictory instructions.
 
 ## Cutting a covalent bond
 
@@ -108,15 +105,15 @@ sys = (ferric.QmmmSystem(symbols, coords, charges, qm_indices=qm)
 | `keep` | leave the host charge in place |
 | `delete-host` | Z1 — delete it |
 | `rc` | Lin–Truhlar redistributed charge |
-| `rcd` | redistributed charge **and dipole** |
+| `rcd` | redistributed charge and dipole |
 
-The parser is strict: an unknown string is an error, never a silent default.
+The parser is strict: an unknown string is an error.
 
 ## Energies, forces, and optimization
 
 ```python
 res = ferric.run_qmmm(sys, "cc-pvdz", method="uhf")
-# KS-DFT: method="rks" or "uks" AND xc, e.g. method="rks", xc="PBE".
+# KS-DFT: method="rks" or "uks" and xc, e.g. method="rks", xc="PBE".
 # xc without rks/uks (or rks/uks without xc) raises ValueError.
 res.energy
 res.qm_gradient()      # dE/dR on the QM atoms
@@ -129,8 +126,16 @@ opt = ferric.run_optimize_qmmm(sys, "cc-pvdz", method="rhf", move_mm="none")
 `move_mm` chooses which MM atoms relax: `"none"` (the default, where only QM
 atoms move), `("within", radius_angstrom)`, `("residues", [ids])` (the system
 must have been built with `residue_ids=`), or `"all"`. Any value other than
-`"none"` requires `mm_topology=`, because moving MM atoms without a force field
-to hold their own geometry together is meaningless.
+`"none"` requires `mm_topology=`: without a force field, nothing holds the
+moving MM atoms' geometry together.
+
+The search is Cartesian BFGS over the atoms that move (internal coordinates cannot follow the net force and torque of the fixed MM charges). It starts from the
+Lindh model Hessian of the whole structure (QM and MM atoms) restricted to
+those atoms, so a bond from a QM frontier atom to a fixed MM host keeps its
+stiffness (`initial_hessian="lindh"`, the default; `"simple"` starts from the
+identity). `trust_update="ratio"` (default) or `"fixed"` sets the trust-radius
+rule. The certificate records the coordinates, the starting Hessian and the
+trust rule.
 
 ## Polarizable embedding
 
@@ -139,22 +144,36 @@ Thole polarizable sites, if fixed charges are not enough:
 ```python
 sys = ferric.QmmmSystem(symbols, coords, charges,
                         qm_indices=qm,
+                        residue_ids=residues,   # one molecule label per atom
                         polarizabilities_angstrom3=alphas)
 res = ferric.run_qmmm(sys, "cc-pvdz", method="rhf", thole_a=2.1304)
 res.e_pol                  # the polarization energy
 res.induced_dipoles()
 ```
 
+A site is not polarized by its own molecule: it ignores the permanent charges
+and the induced dipoles of every atom with its molecule label
+(`polarization_exclusions="molecule"`, the default, as in the PE/CPPE exclusion
+lists). A force-field water's charges already contain its own polarization;
+without the exclusion a TIP3P oxygen with α = 1.44 Å³ is polarized by its own
+hydrogens to about −0.12 Ha, with no QM region involved. The labels come from
+`residue_ids`, or, when the system has none, from the bonds of
+`run_qmmm(mm_topology=...)`; with neither, `run_qmmm` raises `ValueError`
+rather than guess molecules from distances. `polarization_exclusions="none"`
+switches the exclusion off, which is right only for sites that share a
+molecule with no other charge, such as ions. A whole residue is one molecule,
+so a protein residue's sites ignore each other but still see the neighbouring
+residues' bonded atoms.
+
 ## What is validated, and how far
 
-Checked against `pyscf.qmmm.mm_charge`: **energy shift agrees to <1e-8 Ha, MM
-forces to 3e-10**. An empty or all-zero MM region is **bit-identical** to a gas
-phase calculation — the trivial limit is a genuine no-op, not an approximation
-that happens to be small.
+Checked against `pyscf.qmmm.mm_charge`: the energy shift agrees to <1e-8 Ha,
+MM forces to 3e-10. An empty or all-zero MM region is bit-identical to a gas
+phase calculation.
 
 The QM–MM Lennard-Jones term across a covalent cut is checked against OpenMM's
-own exclusion and 1-4 handling (ethanol cut at C–C, realistic LJ): **energy and
-gradient agree to ~1e-18 Ha**. With no bond path between the regions it is
+own exclusion and 1-4 handling (ethanol cut at C–C, realistic LJ): energy and
+gradient agree to ~1e-18 Ha. With no bond path between the regions it is
 bit-identical to the plain every-pair sum.
 
 Not validated: periodic boundary conditions (absent).
@@ -168,7 +187,7 @@ external potential it is solved in. A complete, runnable input is
 
 ```toml
 [molecule]
-xyz = "testdata/molecules/water.xyz"   # required by the parser, NOT read with [qmmm]
+xyz = "testdata/molecules/water.xyz"   # required by the parser, not read with [qmmm]
 charge = 0                             # apply to the QM region
 multiplicity = 1
 
@@ -186,13 +205,12 @@ qm_indices = [0, 1, 2]            # zero-based; or: qm_seeds = [0], qm_radius_an
 # boundary_scheme = "delete-host" # default; also "keep", "rc", "rcd"
 ```
 
-MEASURED on that file (water QM, one Na⁺ 4 Å away as MM, STO-3G): vacuum
-−74.9629466809, embedded **−74.9653197421** Ha (−1.489 kcal/mol). That matches
+Measured on that file (water QM, one Na⁺ 4 Å away as MM, STO-3G): vacuum
+−74.9629466809, embedded −74.9653197421 Ha (−1.489 kcal/mol). That matches
 `ferric.run_rhf(point_charges=...)` to all ten printed digits.
 
-**The geometry and the MM charges both come from the PQR.** An xyz has no
-partial charges, and an MM region without charges is just a set of ignored
-coordinates. `[molecule] xyz` must still be present, because the parser
+The geometry and the MM charges both come from the PQR. An xyz has no
+partial charges, and an MM region without charges contributes nothing. `[molecule] xyz` must still be present, because the parser
 requires it, but it is not read when `[qmmm]` is present. That matters when
 you compute a vacuum reference: delete `[qmmm]` and ferric falls back to the
 xyz. If the xyz holds a different geometry, you are comparing two different
@@ -200,23 +218,58 @@ molecules. In the example above, the xyz is an optimized water that gives
 −74.9631468000, which is 0.13 kcal/mol of error in the difference. Compare at
 one geometry.
 
-**`boundary_scheme` defaults to `"delete-host"`, not `"keep"`.** Keeping the
+`boundary_scheme` defaults to `"delete-host"`, not `"keep"`. Keeping the
 host charge across a covalent cut puts a bare point charge inside the link
-atom's bond length (MEASURED 0.443 Å on an ethane C–C cut). A geometry
+atom's bond length (measured 0.443 Å on an ethane C–C cut). A geometry
 optimization in that field diverges instead of failing with an error. `"keep"`
 is still available and is the right choice when the cut isn't covalent. An
 unknown scheme name is an error.
 
-**`[qmmm]` and `[external_potential]` together are refused.** The MM region
-*is* an external potential, so combining them would silently count a
-contribution twice.
+`[qmmm]` and `[external_potential]` together are refused. The MM region
+is an external potential, so combining them would count a contribution twice.
 
-**Scope of the CLI section.** It reads only a PQR, because it needs charges
-and geometry together. The CLI section does electrostatic embedding only.
-Polarizable sites, smeared charges, the MM force field and MM relaxation are
+### Polarizable embedding from the CLI
+
+`polarizabilities_angstrom3` and `thole_a` add Thole-damped induced dipoles to
+the embedding, the CLI form of `QmmmSystem(polarizabilities_angstrom3=...)` with
+`run_qmmm(thole_a=...)`. A PQR has no polarizability column, so the list holds
+one entry per PQR atom in file order (Å³, 0.0 = not polarizable; entries on
+QM-region atoms are ignored):
+
+```toml
+[qmmm]
+pqr = "testdata/molecules/water_thole_sites.pqr"
+qm_indices = [0, 1, 2]
+polarizabilities_angstrom3 = [0.0, 0.0, 0.0, 0.0740923557432, 0.0740923557432, 0.163003182635]
+thole_a = 2.1304   # default; 0.0 turns the damping off
+polarization_exclusions = "molecule"   # default: a site ignores its own PQR residue
+```
+
+The molecule of each atom is its PQR residue sequence number, so a site is not
+polarized by the charges or sites of its own residue (see the Python section
+above); `polarization_exclusions = "none"` switches that off. The printout and
+the `polarization` record give the number of excluded site pairs and
+site–charge pairs.
+
+`examples/water-qmmm-thole.toml` is this input (STO-3G water, three MM sites).
+The printed energy includes the polarization energy, which is also printed as
+`E_pol` and written, with the induced dipoles, to the run log's `polarization`
+record. The energies and dipoles are the Python run's bit for bit
+(`crates/ferric-python/tests/test_cli_cdft_thole.py`), and the Python run is
+checked against the PySCF prototype in `test_qmmm.py`.
+
+The CLI carries the polarizable terms for `task = "energy"` on `rhf`, `uhf` and
+`ksdft` only. A geometry or frequency task, a correlated kind, `rohf` and
+`[cosmo]` or `[pcm]` are refused, because each would follow a surface that
+omits the induced dipoles. `run_qmmm` and `run_optimize_qmmm` carry the
+polarizable gradient.
+
+Scope of the CLI section: it reads only a PQR, because it needs charges
+and geometry together, and does electrostatic embedding, with optional
+polarizable sites. Smeared charges, the MM force field and MM relaxation are
 Python-only.
 
-## Known limits, stated plainly
+## Known limits
 
 - **No AMBER `prmtop` reader.** Go through OpenMM, or build the arrays.
 - **No periodic boundary conditions.**
@@ -231,11 +284,11 @@ Python-only.
 - **QM–MM Lennard-Jones follows the force field's exclusion rules across the
   cut.** Pairs 1-2 or 1-3 apart through the topology's bond list (the cut bond
   included) get no LJ, and 1-4 pairs are scaled by the topology's
-  `scale_lj_14` (AMBER default 0.5). This is the same bond graph the MM–MM
-  terms use, so the cut bond has to be in the topology's bonds. QM–MM
+  `scale_lj_14` (AMBER default 0.5). The MM–MM terms use the same bond
+  graph, so the cut bond has to be in the topology's bonds. QM–MM
   electrostatics do not use these exclusions or `scale_coul_14`. The
   embedding puts every MM charge in the QM Hamiltonian, and the boundary
-  scheme (`keep`/`delete-host`/`rc`/`rcd`) is what handles the charges next
-  to the cut.
+  scheme (`keep`/`delete-host`/`rc`/`rcd`) handles the charges next to the
+  cut.
 - The MM crate is AMBER-form (harmonic bonds and angles, periodic torsions,
   Lennard-Jones, Coulomb), validated against OpenMM.

@@ -1,0 +1,718 @@
+//! Hand the SCF's raw RI-JK tensor `(P|μν)` to the analytic gradient that
+//! follows it, so the gradient's `dfg:3c-pass` does not regenerate it.
+//!
+//! When RI-J and RI-K share one auxiliary basis (the default for a hybrid),
+//! the SCF builds the raw tensor once: DF-K dresses from it and RI-J keeps it,
+//! unscreened (a source shared with DF-K is never pair-screened, see
+//! `fock_assembly::build_df_jk`) and in f64 on a geometry task. A pure
+//! functional fits no K, and its RI-J tensor is kept the same way when it is
+//! held in memory in f64: whole, or pair-screened. A J-only build pair-screens
+//! its tensor once the screen drops pairs (sulfamethoxazole/def2-TZVP keeps 78%
+//! of the function pairs at the default `integral_thresh`). The gradient reads
+//! that screened tensor as the SCF energy did: a dropped pair contributes
+//! zero to `d_P = Σ (P|μν) D_μν` and to the three-centre derivative pass, so
+//! the result is the gradient of the screened energy, not bitwise the
+//! recomputed unscreened one
+//! (`book/src/14-derivatives/02-df-jk-gradient.md#df-jk-gradient-pair-screened-ri-j`). Building the
+//! tensor unscreened instead made
+//! the SCF slower by what the gradient saved (MEASURED, 3 paired reps: wall
+//! time unchanged within noise, peak RSS 3.4 -> 6.0 GB), so the screen is
+//! left alone. The gradient
+//! contracts exactly these integrals with the converged density, and
+//! regenerating them cost ~1.7 s of a ~10.5 s gradient (n-dodecane/def2-TZVP
+//! B3LYP, 2026-11-10).
+//!
+//! The hand-off is NOT part of [`ScfResult`](crate::result::ScfResult): a
+//! result is public, cloned and returned to Python, and would pin the tensor
+//! for as long as any caller holds it. Instead a driver that runs an SCF and
+//! then its gradient installs a fresh [`RawHandoff`] in the config it hands
+//! both ([`with_fresh_handoff`]); the solver deposits the tensor at its
+//! converged exit, and the gradient dispatchers take it (`with_kept_raw`)
+//! and drop it when the gradient returns. A driver that never asks for a
+//! gradient never installs one, so nothing is held past the SCF.
+//!
+//! Kept only when: RI-J is fitted, one rank, the tensor is held
+//! in memory in f64 (unpacked, packed or pair-screened tier), and the tensor plus the
+//! gradient's metric and exchange intermediates fit the three-index budget.
+//! Otherwise the gradient recomputes exactly as before; under `FERRIC_TIMING`
+//! both sides say which happened and why. Before using a kept tensor the
+//! gradient checks that its aux basis, operator and geometry match
+//! ([`KeptRaw::check`]).
+//!
+//! ## The metric `eigh`
+//!
+//! The same slot carries the `eigh(V)` DF-K computed for `V^{-1/2}` of each
+//! auxiliary metric it built ([`KeptMetric`]: the ω = 0 metric, or the erfc
+//! and erf metrics of a range-separated hybrid), so the DF-K gradient's
+//! `dfg:metric-eigh` does not diagonalise the same matrix again (MEASURED
+//! 2026-11-11: 0.18-0.30 s per evaluation at n-dodecane/def2-TZVP B3LYP,
+//! naux 1368). DF-K offers it
+//! inside `with_metric_capture`, which the solvers wrap around their DF-K
+//! construction only when a hand-off is installed; a sub-solve without one
+//! shadows the capture and keeps nothing. Its `naux²` f64 are an evictable
+//! pool reservation: debited, counted as available by every sizing and
+//! admission check, and freed when a reservation needs the bytes, so keeping
+//! it changes no SCF memory decision. The gradient uses a kept decomposition only when the metric
+//! it builds has the same operator, aux basis name, aux shell centres and
+//! exact element bits (`MetricCandidate`); both sides use the same
+//! `coulomb_metric_2c` + `eigh_dc(Upper)`, so reuse returns what the gradient
+//! would have computed. Independent of the raw tensor: kept also when the
+//! tensor is not (f32 RI-J, Split-RI-J, separate J/K aux, RSH).
+
+use crate::result::DfJkRoute;
+use crate::rhf::RhfConfig;
+use crate::split_rij::RiJ;
+use ferric_core::mol::Molecule;
+use ferric_core::parallel::ParallelContext;
+use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::operator::Operator;
+use ferric_integrals::three_index_source::ThreeIndexSource;
+use ndarray::Array2;
+use std::cell::RefCell;
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, Mutex};
+
+/// A raw `(P|μν)` tensor kept from an SCF, with what it was built for.
+///
+/// Holding it keeps its memory-pool charge (the source owns it), so the
+/// bytes stay accounted for until the gradient drops it.
+pub struct KeptRaw {
+    raw: ThreeIndexSource,
+    aux: String,
+    op: Operator,
+    geometry_hash: u64,
+}
+
+impl std::fmt::Debug for KeptRaw {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeptRaw")
+            .field("aux", &self.aux)
+            .field("op", &self.op)
+            .field("geometry_hash", &self.geometry_hash)
+            .field("bytes", &self.bytes())
+            .finish()
+    }
+}
+
+impl KeptRaw {
+    /// The auxiliary basis name the tensor was built with.
+    pub fn aux(&self) -> &str {
+        &self.aux
+    }
+
+    /// The operator the tensor was built with.
+    pub fn op(&self) -> Operator {
+        self.op
+    }
+
+    /// Resident bytes of the tensor.
+    pub fn bytes(&self) -> usize {
+        self.raw.kept_f64_bytes().unwrap_or(0)
+    }
+
+    /// The tensor itself.
+    pub(crate) fn source(&self) -> &ThreeIndexSource {
+        &self.raw
+    }
+
+    /// `Ok` when this tensor holds `(P|μν)` for `aux`/`op` at `mol` in `obs`
+    /// and `dfbs`; `Err(why)` otherwise (the caller recomputes).
+    pub fn check(
+        &self,
+        mol: &Molecule,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        aux: &str,
+        op: Operator,
+    ) -> Result<(), &'static str> {
+        if self.aux != aux {
+            return Err("auxiliary basis differs");
+        }
+        if self.op != op {
+            return Err("operator differs");
+        }
+        let full = (0, dfbs.nbasis());
+        if self.raw.nao() != obs.nbasis() || self.raw.naux() != dfbs.nbasis() {
+            return Err("tensor shape differs");
+        }
+        if self.raw.band() != full {
+            return Err("tensor holds an aux band, not the full range");
+        }
+        if self.geometry_hash != geometry_hash(mol, obs) {
+            return Err("geometry or orbital basis differs");
+        }
+        Ok(())
+    }
+}
+
+/// `eigh(V)` of one auxiliary metric, as DF-K's `v_inv_sqrt_lindep` computed
+/// it during the SCF, kept so the DF-K gradient (`dfg:metric-eigh`) does not
+/// diagonalise the same matrix again.
+///
+/// Identified by the operator, the aux basis name, the shell centres of the
+/// aux basis and a hash of the exact bits of `V`; the gradient uses it only
+/// when the metric it builds hashes to the same bits (`MetricCandidate`),
+/// so a decomposition of another geometry, basis, operator or `V`
+/// construction is never used.
+///
+/// Its `naux² + naux` f64 are an evictable pool reservation
+/// ([`ferric_core::memory::pool::EvictableReservation`]): debited, but counted
+/// as available, so no SCF sizing or admission decision sees less room than
+/// it would without it, and any reservation that needs the bytes frees the
+/// decomposition first. The gradient then diagonalises `V` itself.
+pub struct KeptMetric {
+    op: Operator,
+    aux: String,
+    v_hash: u64,
+    naux: usize,
+    data: Arc<Mutex<Option<MetricEigh>>>,
+    charge: ferric_core::memory::pool::EvictableReservation,
+}
+
+/// Eigenvalues and eigenvectors (columns) of a metric.
+type MetricEigh = (Vec<f64>, Array2<f64>);
+
+impl std::fmt::Debug for KeptMetric {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeptMetric")
+            .field("aux", &self.aux)
+            .field("op", &self.op)
+            .field("naux", &self.naux)
+            .field("evicted", &self.is_evicted())
+            .finish()
+    }
+}
+
+impl KeptMetric {
+    /// The auxiliary basis name of the metric.
+    pub fn aux(&self) -> &str {
+        &self.aux
+    }
+
+    /// The operator of the metric.
+    pub fn op(&self) -> Operator {
+        self.op
+    }
+
+    /// Has the pool evicted the decomposition (to make room for a
+    /// reservation)?
+    pub fn is_evicted(&self) -> bool {
+        lock_eigh(&self.data).is_none()
+    }
+
+    /// Bytes the pool holds for it (0 once evicted, or with no pool).
+    pub fn reserved_bytes(&self) -> usize {
+        self.charge.bytes()
+    }
+
+    /// The decomposition, leaving it unreserved for the caller to account
+    /// for; `None` when it was evicted.
+    fn into_candidate(self) -> Option<MetricCandidate> {
+        let eigh = lock_eigh(&self.data).take();
+        // Credits the evictable bytes; the caller charges them as its own.
+        drop(self.charge);
+        eigh.map(|(lam, u)| MetricCandidate {
+            v_hash: self.v_hash,
+            lam,
+            u,
+        })
+    }
+}
+
+fn lock_eigh(m: &Mutex<Option<MetricEigh>>) -> std::sync::MutexGuard<'_, Option<MetricEigh>> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// A kept decomposition taken by the gradient for one operator and aux basis,
+/// before the gradient has built `V` ([`take_active_metric`]). It holds no
+/// pool charge: the gradient's metric plane, reserved next, covers its
+/// `naux²` f64.
+pub(crate) struct MetricCandidate {
+    v_hash: u64,
+    lam: Vec<f64>,
+    u: Array2<f64>,
+}
+
+impl MetricCandidate {
+    /// `(λ, U)` when this decomposes exactly `v`, the metric of `dfbs` the
+    /// gradient built (same shape and bits); `None` otherwise.
+    pub(crate) fn accept(self, dfbs: &PreparedBasis, v: &Array2<f64>) -> Option<MetricEigh> {
+        let why = if self.lam.len() != v.nrows() || self.u.dim() != v.dim() {
+            "metric shape differs"
+        } else if self.v_hash != metric_hash(dfbs, v) {
+            "metric bits differ"
+        } else {
+            return Some((self.lam, self.u));
+        };
+        note(&format!("kept metric eigh not used ({why}): recomputing"));
+        None
+    }
+}
+
+/// Identity of a metric matrix: the aux shell centres (exact bits) and the
+/// exact bits of every element of `v`.
+fn metric_hash(dfbs: &PreparedBasis, v: &Array2<f64>) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    dfbs.basis_set().name.hash(&mut h);
+    for c in dfbs.shell_centers() {
+        for x in c {
+            x.to_bits().hash(&mut h);
+        }
+    }
+    v.dim().hash(&mut h);
+    for x in v.iter() {
+        x.to_bits().hash(&mut h);
+    }
+    h.finish()
+}
+
+/// A shared slot through which one SCF hands its raw tensor (and the
+/// `eigh` of its DF-K metrics) to the gradient that follows it (see the
+/// module docs). Clones share the slot.
+#[derive(Clone, Default)]
+pub struct RawHandoff {
+    raw: Arc<Mutex<Option<KeptRaw>>>,
+    metrics: Arc<Mutex<Vec<KeptMetric>>>,
+    offers: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl std::fmt::Debug for RawHandoff {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RawHandoff")
+            .field("filled", &self.is_filled())
+            .field("metrics", &self.metric_count())
+            .finish()
+    }
+}
+
+impl RawHandoff {
+    /// An empty slot.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Take the kept tensor, leaving the slot empty.
+    pub fn take(&self) -> Option<KeptRaw> {
+        self.lock().take()
+    }
+
+    /// Does the slot hold a tensor?
+    pub fn is_filled(&self) -> bool {
+        self.lock().is_some()
+    }
+
+    /// Put `kept` in the slot, dropping whatever it held. Test hook (the
+    /// solvers fill it themselves).
+    #[doc(hidden)]
+    pub fn put_for_test(&self, kept: KeptRaw) {
+        *self.lock() = Some(kept);
+    }
+
+    fn put(&self, kept: KeptRaw) {
+        *self.lock() = Some(kept);
+    }
+
+    /// Take the kept metric decompositions, leaving none.
+    pub fn take_metrics(&self) -> Vec<KeptMetric> {
+        std::mem::take(&mut *self.lock_metrics())
+    }
+
+    /// How many metric decompositions the slot holds.
+    pub fn metric_count(&self) -> usize {
+        self.lock_metrics().len()
+    }
+
+    /// Put `kept` among the metrics, replacing one for the same operator and
+    /// aux basis. Test hook (DF-K fills it itself).
+    #[doc(hidden)]
+    pub fn put_metric_for_test(&self, kept: KeptMetric) {
+        self.put_metric(kept);
+    }
+
+    /// How many metric decompositions DF-K has deposited into this slot
+    /// (replaced ones included). Test hook.
+    #[doc(hidden)]
+    pub fn metric_offers_for_test(&self) -> usize {
+        self.offers.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn count_offer(&self) {
+        self.offers
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn put_metric(&self, kept: KeptMetric) {
+        let mut m = self.lock_metrics();
+        m.retain(|k| !(k.op == kept.op && k.aux == kept.aux));
+        m.push(kept);
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<KeptRaw>> {
+        // A poisoned slot only means a panic elsewhere; its content is whole.
+        self.raw.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn lock_metrics(&self) -> std::sync::MutexGuard<'_, Vec<KeptMetric>> {
+        self.metrics.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// `config` with a fresh, empty [`RawHandoff`]: what a driver that runs an
+/// SCF and then its gradient hands both (one per evaluation, so a tensor
+/// that is never taken is dropped with the config).
+pub fn with_fresh_handoff(config: &RhfConfig) -> RhfConfig {
+    RhfConfig {
+        raw_handoff: Some(RawHandoff::new()),
+        ..config.clone()
+    }
+}
+
+/// `config` with no hand-off: for a sub-solve inside a solver (the
+/// `guess_basis` secondary SCF, stability-descent candidates), whose tensor
+/// must never reach the slot the outer SCF's gradient reads.
+pub(crate) fn without_handoff(config: &RhfConfig) -> RhfConfig {
+    RhfConfig {
+        raw_handoff: None,
+        ..config.clone()
+    }
+}
+
+/// Empty `config`'s slot (dropping any tensor in it). Every solver calls this
+/// before it builds its own RI-JK tensor, so a tensor from an earlier solve
+/// through the same config is never held beside the new one, and never
+/// outlives an SCF that does not keep its own.
+pub(crate) fn clear_slot(config: &RhfConfig) {
+    if let Some(h) = config.raw_handoff.as_ref() {
+        drop(h.take());
+    }
+}
+
+/// Identity of a geometry in an orbital basis: atomic numbers, ghost flags,
+/// ECP cores, the exact coordinate bits, and the basis name and size.
+pub fn geometry_hash(mol: &Molecule, obs: &PreparedBasis) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    mol.atoms.len().hash(&mut h);
+    for a in &mol.atoms {
+        a.z.hash(&mut h);
+        a.ghost.hash(&mut h);
+        a.n_core_ecp.hash(&mut h);
+        a.x.to_bits().hash(&mut h);
+        a.y.to_bits().hash(&mut h);
+        a.zpos.to_bits().hash(&mut h);
+    }
+    obs.basis_set().name.hash(&mut h);
+    obs.nbasis().hash(&mut h);
+    h.finish()
+}
+
+/// Under `FERRIC_TIMING`, one line saying what happened to the raw tensor.
+pub(crate) fn note(msg: &str) {
+    if ferric_core::timing::enabled() {
+        eprintln!("[timing] dfg:raw-handoff {msg}");
+    }
+}
+
+/// Bytes the DF-JK gradient holds beside the three-index tensor (its memory
+/// plane in `df_gradient`): five `(naux, naux)` metric matrices and two
+/// `(naux, m²)` matrices per exchange channel of rank `m`. (A packed kept
+/// tensor also needs one unpacked block, `df_gradient::pass_block_bytes`.)
+#[doc(hidden)]
+pub fn gradient_intermediate_bytes(naux: usize, ranks: &[usize]) -> usize {
+    let k: usize = ranks
+        .iter()
+        .map(|&m| {
+            2usize
+                .saturating_mul(naux)
+                .saturating_mul(m * m)
+                .saturating_mul(8)
+        })
+        .fold(0usize, usize::saturating_add);
+    k.saturating_add(
+        5usize
+            .saturating_mul(naux)
+            .saturating_mul(naux)
+            .saturating_mul(8),
+    )
+}
+
+/// At a converged SCF exit: move RI-J's raw tensor into `config`'s hand-off
+/// when one is installed and the tensor qualifies (module docs). `occ` are
+/// the exchange channels' occupied counts (closed shell: `[nocc]`; open
+/// shell: `[nα, nβ]`), for the gradient's memory estimate. Leaves `df_j`
+/// empty when it keeps the tensor; the SCF must not build J afterwards.
+pub(crate) fn keep_for_gradient(
+    config: &RhfConfig,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    df_j: &mut Option<RiJ<'_>>,
+    route: Option<&DfJkRoute>,
+    occ: &[usize],
+) {
+    let Some(handoff) = config.raw_handoff.as_ref() else {
+        return;
+    };
+    // Whatever the slot held is stale now: this SCF's tensor replaces it, or
+    // nothing does.
+    drop(handoff.take());
+    match kept_raw(ctx, mol, prep, df_j, route, occ) {
+        Ok(kept) => {
+            note(&format!(
+                "kept: {:.2} GB raw tensor ({}) handed to the gradient",
+                kept.bytes() as f64 / 1e9,
+                kept.aux
+            ));
+            handoff.put(kept);
+        }
+        Err(why) => note(&format!("not kept ({why}): the gradient recomputes it")),
+    }
+}
+
+fn kept_raw(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    df_j: &mut Option<RiJ<'_>>,
+    route: Option<&DfJkRoute>,
+    occ: &[usize],
+) -> Result<KeptRaw, &'static str> {
+    let route = route.ok_or("nothing density-fitted")?;
+    let aux = route
+        .j_aux
+        .as_deref()
+        .ok_or("RI-J is not fitted")?
+        .to_owned();
+    // Only a shared aux basis puts exchange channels in the gradient's pass
+    // over this tensor; a pure functional (no fitted K) or a separate K aux
+    // leaves a J-only pass.
+    let exchange_ranks = if route.k_aux.as_deref() == Some(aux.as_str()) {
+        occ
+    } else {
+        &[]
+    };
+    if ctx.size > 1 {
+        return Err("several ranks");
+    }
+    let raw_bytes = match df_j.as_ref() {
+        Some(RiJ::Stored(j)) if j.precision() == crate::df_j::RiJPrecision::F64 => {
+            if j.is_pair_screened() && !exchange_ranks.is_empty() {
+                // DF-K never shares a pair-screened source; refuse rather than
+                // let an exchange pass read a tensor with dropped pairs.
+                return Err("a pair-screened tensor cannot feed an exchange pass");
+            }
+            j.kept_f64_bytes()
+                .ok_or("the tensor is spilled or recomputed, not held in memory in f64")?
+        }
+        Some(RiJ::Stored(_)) => return Err("the RI-J tensor is stored in f32"),
+        Some(RiJ::Split(_)) => return Err("Split-RI-J holds no tensor"),
+        None => return Err("no RI-J builder"),
+    };
+    let (naux, packed) = match df_j.as_ref() {
+        Some(RiJ::Stored(j)) => (j.naux(), j.is_packed_raw()),
+        _ => unreachable!("checked above"),
+    };
+    // A packed tensor is read by unpacking one block at a time.
+    let block = if packed {
+        crate::df_gradient::pass_block_bytes_upper_bound(prep.nbasis(), naux, route.budget_bytes)
+    } else {
+        0
+    };
+    let held = raw_bytes
+        .saturating_add(gradient_intermediate_bytes(naux, exchange_ranks))
+        .saturating_add(block);
+    if held > route.budget_bytes {
+        return Err("tensor and gradient intermediates exceed the three-index budget");
+    }
+    let Some(RiJ::Stored(j)) = df_j.take() else {
+        unreachable!("checked above")
+    };
+    Ok(KeptRaw {
+        raw: j.into_source(),
+        aux,
+        op: route.op,
+        geometry_hash: geometry_hash(mol, prep),
+    })
+}
+
+thread_local! {
+    /// The kept tensor of the gradient running on this thread
+    /// ([`with_kept_raw`]); taken by the first fitted pass that can use it.
+    static ACTIVE: RefCell<Option<KeptRaw>> = const { RefCell::new(None) };
+}
+
+/// Restores [`ACTIVE`] when the gradient returns (or unwinds), dropping a
+/// tensor no pass took.
+struct ActiveGuard(Option<KeptRaw>);
+
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        let prev = self.0.take();
+        ACTIVE.with(|a| *a.borrow_mut() = prev);
+    }
+}
+
+/// Run the gradient `f` with the tensor `config`'s SCF kept (if any) made
+/// available to its fitted pass ([`take_active`]). The tensor is dropped
+/// when `f` returns, used or not.
+///
+/// A scoped thread-local rather than a parameter because the KS and HF
+/// gradient entry points are public, many and deep; the fitted pass runs on
+/// the calling thread (no `rayon::join` around it). A pass on another thread
+/// would simply not see it and recompute, which is the correct fallback.
+///
+/// Without a kept tensor the scope still shadows any outer one with `None`,
+/// so a nested gradient that has no hand-off of its own cannot consume it.
+pub(crate) fn with_kept_raw<T>(config: &RhfConfig, f: impl FnOnce() -> T) -> T {
+    let kept = config.raw_handoff.as_ref().and_then(RawHandoff::take);
+    let metrics = config
+        .raw_handoff
+        .as_ref()
+        .map(RawHandoff::take_metrics)
+        .unwrap_or_default();
+    let _guard = ActiveGuard(ACTIVE.with(|a| a.replace(kept)));
+    let _mguard = ActiveMetricsGuard(ACTIVE_METRICS.with(|a| a.replace(metrics)));
+    f()
+}
+
+/// The kept tensor installed by [`with_kept_raw`] on this thread, taken only
+/// when it was built for `aux`/`op` at `mol` in `obs`/`dfbs`
+/// ([`KeptRaw::check`]); otherwise it is left in place (and reported), so a
+/// pass that cannot use it does not drop a tensor another pass could.
+pub(crate) fn take_active(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    aux: &str,
+    op: Operator,
+) -> Option<KeptRaw> {
+    ACTIVE.with(|a| {
+        let mut slot = a.borrow_mut();
+        match slot.as_ref().map(|k| k.check(mol, obs, dfbs, aux, op)) {
+            Some(Ok(())) => slot.take(),
+            Some(Err(why)) => {
+                note(&format!("kept tensor not used ({why}): recomputing"));
+                None
+            }
+            None => None,
+        }
+    })
+}
+
+thread_local! {
+    /// The kept metric decompositions of the gradient running on this thread
+    /// ([`with_kept_raw`]); each taken by the first DF-K gradient pass whose
+    /// metric matches it (`take_active_metric`).
+    static ACTIVE_METRICS: RefCell<Vec<KeptMetric>> = const { RefCell::new(Vec::new()) };
+
+    /// The hand-off DF-K deposits its metric `eigh` into while
+    /// `with_metric_capture` runs on this thread.
+    static CAPTURE: RefCell<Option<RawHandoff>> = const { RefCell::new(None) };
+}
+
+/// Restores [`ACTIVE_METRICS`] when the gradient returns, dropping the
+/// decompositions no pass took.
+struct ActiveMetricsGuard(Vec<KeptMetric>);
+
+impl Drop for ActiveMetricsGuard {
+    fn drop(&mut self) {
+        let prev = std::mem::take(&mut self.0);
+        ACTIVE_METRICS.with(|a| *a.borrow_mut() = prev);
+    }
+}
+
+/// Restores [`CAPTURE`] when the scope ends.
+struct CaptureGuard(Option<RawHandoff>);
+
+impl Drop for CaptureGuard {
+    fn drop(&mut self) {
+        let prev = self.0.take();
+        CAPTURE.with(|c| *c.borrow_mut() = prev);
+    }
+}
+
+/// Run `f` (a solver's DF-K construction) so that every DF-K it builds on this
+/// thread offers its metric `eigh` to `config`'s hand-off. Without a hand-off
+/// the scope shadows any outer capture with `None`, so a sub-solve that has no
+/// gradient of its own deposits nothing.
+pub(crate) fn with_metric_capture<T>(config: &RhfConfig, f: impl FnOnce() -> T) -> T {
+    let _guard = CaptureGuard(CAPTURE.with(|c| c.replace(config.raw_handoff.clone())));
+    f()
+}
+
+/// Is a hand-off capturing DF-K metric decompositions on this thread
+/// ([`with_metric_capture`] with a hand-off installed)? DF-K then factors its
+/// metric by `eigh` (whose result the gradient reuses) rather than Cholesky.
+pub(crate) fn metric_capture_active() -> bool {
+    CAPTURE.with(|c| c.borrow().is_some())
+}
+
+/// Called by DF-K with the `eigh(V) = (lam, u)` it used for `V^{-1/2}`
+/// (`v` the `op` metric of `dfbs`): kept in the capturing hand-off when one is
+/// installed (`with_metric_capture`) and the memory pool has the bytes free
+/// (an evictable reservation, see [`KeptMetric`]), else dropped.
+pub(crate) fn offer_metric(
+    op: Operator,
+    dfbs: &PreparedBasis,
+    v: &Array2<f64>,
+    lam: Vec<f64>,
+    u: Array2<f64>,
+) {
+    let Some(handoff) = CAPTURE.with(|c| c.borrow().clone()) else {
+        return;
+    };
+    let aux = dfbs.basis_set().name.clone();
+    let naux = lam.len();
+    let bytes = (u.len() + lam.len()) * std::mem::size_of::<f64>();
+    let v_hash = metric_hash(dfbs, v);
+    let data = Arc::new(Mutex::new(Some((lam, u))));
+    let evict_data = Arc::clone(&data);
+    let evict_label = format!("{aux}, {:?} omega {}", op.kind, op.omega);
+    let Some(charge) = ferric_core::memory::pool::reserve_evictable_global(
+        "kept DF-K metric eigh (evictable)",
+        bytes,
+        Box::new(move || {
+            drop(lock_eigh(&evict_data).take());
+            note(&format!(
+                "metric eigh evicted ({evict_label}): a reservation needed the bytes"
+            ));
+        }),
+    ) else {
+        note(&format!(
+            "metric eigh not kept ({aux}): the pool has no free room for it"
+        ));
+        return;
+    };
+    note(&format!(
+        "metric eigh kept: {:.1} MB ({aux}, {:?} omega {}) handed to the gradient",
+        bytes as f64 / 1e6,
+        op.kind,
+        op.omega
+    ));
+    handoff.count_offer();
+    handoff.put_metric(KeptMetric {
+        op,
+        aux,
+        v_hash,
+        naux,
+        data,
+        charge,
+    });
+}
+
+/// The kept decomposition for `op` and the aux basis `aux`, installed by
+/// [`with_kept_raw`] on this thread. Taken before the gradient reserves its
+/// metric plane, so its bytes are counted once: the evictable charge is
+/// credited here and the plane covers `U`. `None` when nothing was kept for
+/// this metric or the pool evicted it; the caller then diagonalises `V`.
+pub(crate) fn take_active_metric(op: Operator, aux: &str) -> Option<MetricCandidate> {
+    let kept = ACTIVE_METRICS.with(|a| {
+        let mut slot = a.borrow_mut();
+        let i = slot.iter().position(|k| k.op == op && k.aux == aux)?;
+        Some(slot.swap_remove(i))
+    })?;
+    let cand = kept.into_candidate();
+    if cand.is_none() {
+        note("kept metric eigh was evicted: recomputing");
+    }
+    cand
+}

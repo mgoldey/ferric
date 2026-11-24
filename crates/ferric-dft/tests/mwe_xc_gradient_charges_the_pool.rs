@@ -29,38 +29,13 @@
 //! unconditionally would fail the refusal. Both directions are exercised, so
 //! the pass condition is a measurement rather than arithmetic.
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
 use ferric_core::basis;
 use ferric_core::memory::pool::{clear_global, global, install_global, MemoryPool};
 use ferric_core::mol::Molecule;
 use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_testkit::pool::CleanSlot;
 use ndarray::Array2;
-
-fn global_lock() -> MutexGuard<'static, ()> {
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    }
-}
-
-struct CleanSlot(#[allow(dead_code)] MutexGuard<'static, ()>);
-
-impl CleanSlot {
-    fn acquire() -> Self {
-        let g = global_lock();
-        clear_global();
-        Self(g)
-    }
-}
-
-impl Drop for CleanSlot {
-    fn drop(&mut self) {
-        clear_global();
-    }
-}
 
 fn h2o() -> Molecule {
     Molecule::parse_xyz(
@@ -79,7 +54,18 @@ fn h2o() -> Molecule {
 /// `dft_gradient_mgga.rs` and the PySCF reference tests). What matters is that
 /// the call allocates the full χ + ∇χ + ∇∇χ working set, which it does for any
 /// density.
+///
+/// This drives the WHOLE-GRID path (`_batched`, width sized by the pool), the
+/// one that holds χ/∇χ/∇∇χ as `(nbf, npts)` planes and that this file was
+/// written to account for. The production entry point is now the screened,
+/// spatially batched gradient, whose charge (grid + one 128-point batch per
+/// live worker) is pinned separately by
+/// `the_screened_xc_gradient_charges_far_less_and_still_refuses_a_tight_pool`.
 fn run_gga_xc_gradient() -> Result<Array2<f64>, ferric_dft::gradient::KsGradError> {
+    run_gga(true)
+}
+
+fn run_gga(whole_grid: bool) -> Result<Array2<f64>, ferric_dft::gradient::KsGradError> {
     let mol = h2o();
     let bs = basis::bundled("6-31g").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
@@ -92,16 +78,72 @@ fn run_gga_xc_gradient() -> Result<Array2<f64>, ferric_dft::gradient::KsGradErro
         d[(i, i)] = nelec / nbf as f64;
     }
     let grid_cfg = AtomicGridConfig::default();
-    ferric_dft::gradient::xc_gradient_closed_gga_from_density(
-        &mol,
-        &bs,
-        &d,
-        "PBE",
-        &grid_cfg,
-        prep.shell_to_atom(),
-        prep.shell_offsets(),
-        prep.shell_dims(),
-    )
+    if whole_grid {
+        ferric_dft::gradient::xc_gradient_closed_gga_from_density_batched(
+            &mol,
+            &bs,
+            &d,
+            "PBE",
+            &grid_cfg,
+            prep.shell_to_atom(),
+            prep.shell_offsets(),
+            prep.shell_dims(),
+            None,
+        )
+    } else {
+        ferric_dft::gradient::xc_gradient_closed_gga_from_density(
+            &mol,
+            &bs,
+            &d,
+            "PBE",
+            &grid_cfg,
+            prep.shell_to_atom(),
+            prep.shell_offsets(),
+            prep.shell_dims(),
+        )
+    }
+}
+
+/// The production (screened) path charges the pool too — grid + `weight1`
+/// plus one batch per concurrently live worker — releases it, costs far less
+/// than the whole-grid planes, and still refuses a pool that cannot hold the
+/// grid. Reachability: the ample-pool control must admit before the tight pool
+/// is asked to refuse.
+#[test]
+fn the_screened_xc_gradient_charges_far_less_and_still_refuses_a_tight_pool() {
+    let _s = CleanSlot::acquire();
+
+    install_global(MemoryPool::with_capacity_bytes(8_000_000_000));
+    run_gga(false).expect("ample pool must admit the screened gradient");
+    let screened_peak = global().expect("pool").peak_bytes();
+    let outstanding = global().expect("pool").outstanding_bytes();
+    clear_global();
+
+    install_global(MemoryPool::with_capacity_bytes(8_000_000_000));
+    run_gga(true).expect("ample pool must admit the whole-grid gradient");
+    let whole_peak = global().expect("pool").peak_bytes();
+    clear_global();
+
+    assert!(screened_peak > 0, "the screened gradient charged nothing");
+    assert_eq!(
+        outstanding, 0,
+        "the screened gradient leaked {outstanding} B"
+    );
+    assert!(
+        screened_peak * 2 < whole_peak,
+        "screened peak {screened_peak} B is not well below the whole-grid {whole_peak} B"
+    );
+
+    install_global(MemoryPool::with_capacity_bytes(1_000_000));
+    let tight = run_gga(false);
+    clear_global();
+    let msg = tight
+        .expect_err("a 1 MB pool cannot hold the grid + weight1 and must refuse")
+        .to_string();
+    assert!(
+        msg.contains("GGA XC gradient"),
+        "refusal must name the plane: {msg}"
+    );
 }
 
 #[test]
@@ -153,21 +195,17 @@ fn the_xc_gradient_ao_planes_are_debited_and_released() {
 ///
 /// # Why the observable is now the PEAK, not a refusal
 ///
-/// It used to be a refusal: a pool sized between 13 and the module's ~36
-/// planes admitted the mutant (inner guard only) and refused the real code.
-/// Two things changed when the XC gradient began batching the grid.
+/// A refusal is not observable: the XC gradient batches the grid.
 ///
-/// 1. An over-budget pool no longer refuses — it narrows the batch. So "a pool
-///    of N planes refuses" stopped being an available observable at all, for
-///    the same reason it stopped being one in
-///    `an_incumbent_charge_narrows_what_the_xc_gradient_may_take`.
-/// 2. The gradient now calls `eval_basis_grad_hess_on_points_unchecked`, so
-///    the inner 13-plane guard this test was contrasting against is no longer
-///    on this path. It was a DOUBLE charge: the plan already declares those 13
-///    planes, and the inner guard debited them again on top, which is why the
-///    old held working set measured ~36 planes rather than the ~21 the plan
-///    actually declares. Removing it is why the benzene/cc-pVDZ ample-pool
-///    demand fell from 3.03 GB to 1.86 GB with no batching involved.
+/// 1. An over-budget pool does not refuse — it narrows the batch. So "a pool
+///    of N planes refuses" is not an available observable, for the same
+///    reason as in `an_incumbent_charge_narrows_what_the_xc_gradient_may_take`.
+/// 2. The gradient calls `eval_basis_grad_hess_on_points_unchecked`, so the
+///    inner 13-plane guard is not on this path. That guard would be a DOUBLE
+///    charge: the plan already declares those 13 planes, and a second debit
+///    would make the held working set ~36 planes rather than the ~21 the plan
+///    declares (benzene/cc-pVDZ ample-pool demand: 1.86 GB, vs 3.03 GB with
+///    the double charge).
 ///
 /// So the discrimination is made directly: run against an ample pool (where
 /// the width is the whole grid, i.e. the pre-batching working set) and require
@@ -270,18 +308,18 @@ fn a_pool_too_small_refuses_the_xc_gradient_rather_than_ooming() {
 ///
 /// # Why this stopped asserting a refusal
 ///
-/// This test used to require that a crowded pool make the XC gradient
-/// **refuse**. That was right when the gradient evaluated the whole DFT grid
-/// at once: with no way to shrink its working set, "does not fit" and "must
-/// not run" were the same statement.
+/// Requiring that a crowded pool make the XC gradient **refuse** would be
+/// right if the gradient evaluated the whole DFT grid at once: with no way to
+/// shrink its working set, "does not fit" and "must not run" would be the same
+/// statement.
 ///
-/// The gradient now batches the grid (`gradient::resolve_grad_batch_size`), so
+/// The gradient batches the grid (`gradient::resolve_grad_batch_size`), so
 /// over-budget has a real answer other than an error — take narrower batches —
 /// exactly as `ks.rs`'s SCF grid gate has always done
 /// (`check_grid_budget_reserved`: "a gate whose over-budget answer is 'batch
 /// it' must keep answering 'batch it' against a pool, NOT start erroring").
 /// Keeping the refusal would pin the worse behaviour: refusing a drug-sized
-/// optimization the code can now complete.
+/// optimization the code can complete.
 ///
 /// The PROPERTY is unchanged — an incumbent must narrow what the gradient
 /// takes — and it is now asserted directly rather than through its old proxy.

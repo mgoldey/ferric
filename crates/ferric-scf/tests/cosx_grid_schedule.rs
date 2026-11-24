@@ -49,13 +49,11 @@ fn run_rhf(cfg: &RhfConfig) -> ScfResult {
 /// `energy_conv` is the loose sanity bound and `density_conv` the tight
 /// criterion (see `cosx_scf.rs::tight` for why 1e-7 / 1e-8).
 fn cosx_rhf(cosx: CosxConfig) -> RhfConfig {
-    RhfConfig {
-        energy_conv: 1e-7,
-        density_conv: 1e-8,
-        k_builder: Some("cosx".into()),
-        cosx,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_energy_conv(1e-7)
+        .with_density_conv(1e-8)
+        .with_k_builder(ferric_scf::options::KBuilderKind::Cosx)
+        .with_cosx(cosx)
 }
 
 fn scheduled() -> CosxConfig {
@@ -89,6 +87,7 @@ fn assert_same_bits(a: &ScfResult, b: &ScfResult, what: &str) {
 /// iteration count to the same run without it. (The off path was also
 /// checked bit-for-bit against the pre-schedule commit, 255c6393, by hand:
 /// the in-tree comparison cannot see the old code.)
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn schedule_off_is_inert() {
     assert!(CosxConfig::default().schedule.is_none(), "must default OFF");
@@ -96,15 +95,10 @@ fn schedule_off_is_inert() {
     assert!(off.converged);
     assert!(off.cosx_schedule.is_none());
 
-    let base = RhfConfig {
-        k_builder: Some("link".into()),
-        ..cosx_rhf(CosxConfig::default())
-    };
+    let base =
+        cosx_rhf(CosxConfig::default()).with_k_builder(ferric_scf::options::KBuilderKind::Link);
     let link = run_rhf(&base);
-    let link_sched = run_rhf(&RhfConfig {
-        cosx: scheduled(),
-        ..base.clone()
-    });
+    let link_sched = run_rhf(&base.clone().with_cosx(scheduled()));
     assert!(link_sched.cosx_schedule.is_none());
     assert_same_bits(&link, &link_sched, "LinK with an inert schedule");
 }
@@ -128,6 +122,7 @@ fn schedule_off_is_inert() {
 /// final pass hides it: the coarse-only run's FINAL energy is only 3.6e-10 Ha
 /// off (the final-grid energy is second order in the density error), below
 /// `T`, so a final-energy-only check could not see a coarse-grid answer.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn schedule_on_converges_to_the_production_energy() {
     const T: f64 = 1e-8;
@@ -233,6 +228,7 @@ fn schedule_uses_the_coarse_grid_early_and_converges_on_production() {
 /// through survives `schedule_uses_the_coarse_grid_early_...` (at the default
 /// 1e-3 the switch always fires first, so that branch is unreachable there)
 /// and is killed here.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn schedule_switches_when_the_coarse_grid_would_converge_first() {
     let off = run_rhf(&cosx_rhf(CosxConfig::default()));

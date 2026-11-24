@@ -33,18 +33,17 @@
 //!
 //! | piece | ferric (this file's config) | PySCF (generator) |
 //! |---|---|---|
-//! | J | exact — `uhf.rs` forces `j_aux_eff = None` for ω > 0 | exact 4-index |
+//! | J | exact — `df_j_aux = Some("")` | exact 4-index |
 //! | K | `c_SR·K^DF[erfc(ω)] + c_LR·K^DF[erf(ω)]`, jkfit aux | same, attenuated metric |
 //! | grid | (75,110) Becke + Becke radii; VV10 (50,50) | same |
 //! | ω | `RhfConfig::xc_omega` → libxc `_omega` AND the SR/LR split | `mf.omega` |
 //! | cation state | default guess, NOT stability-followed | same (minao, not followed) |
 //!
 //! The J row matters and is the trap `omega_tuning::state_scf_config` names:
-//! `solve_uhf` never density-fits J when ω > 0, while `solve_rhf` auto-selects
-//! RI-J for a functional. Only the UKS cation is run here, so there is no
+//! `solve_uhf` takes no auto-default aux, while `solve_rhf` auto-selects RI-J
+//! for a functional. Only the UKS cation is run here, so there is no
 //! RKS-vs-UKS mismatch to make — but `df_j_aux = Some("")` is set explicitly
-//! anyway, so the configuration states the intent instead of relying on the
-//! solver's internal override.
+//! so the configuration states exact J instead of relying on the default.
 //!
 //! # Physics hypothesis vs artifact hypothesis
 //!
@@ -80,6 +79,7 @@ use std::path::{Path, PathBuf};
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::RhfConfig;
@@ -199,19 +199,20 @@ fn load_system(r: &Value) -> System {
 
 /// The SCF configuration of the like-for-like table in the module doc.
 fn rsh_config(omega: f64) -> RhfConfig {
-    RhfConfig {
-        xc: Some(FUNCTIONAL.into()),
-        xc_omega: Some(omega),
-        // Explicit exact J. `solve_uhf` would force this anyway for omega > 0
-        // (`j_aux_eff`), but stating it keeps the configuration self-describing
-        // and matches `omega_tuning::state_scf_config`.
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(AUX.into()),
-        energy_conv: 1e-10,
-        density_conv: 1e-7,
-        max_iter: 500,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_xc(FUNCTIONAL)
+        // Explicit exact J, as `omega_tuning::state_scf_config` resolves an
+        // unset `df_j_aux`.
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(AUX)
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-7)
+        // The references are PySCF on the flat (75,110) grid (gen_scf_stability.py rsh:
+        // prune=None), not the pruned KS default AtomicGridConfig::production().
+        .with_dft_grid(AtomicGridConfig::default())
+        .with_max_iter(500);
+    c.xc_omega = Some(omega);
+    c
 }
 
 /// The reference's ω scan, as `(omega, pyscf_lambda_min, pyscf_energy)`.

@@ -1,0 +1,33 @@
+# Born-Oppenheimer molecular dynamics: water, RHF/STO-3G, NVE.
+#
+# Velocities start from a Maxwell-Boltzmann draw at 300 K (seed 0), rescaled
+# to exactly 300 K over 3N - 3 = 6 degrees of freedom. Twenty velocity Verlet
+# steps of 0.25 fs (21 SCF + gradient evaluations, 5 fs in all), each SCF
+# warm-started from the previous step's orbitals.
+#
+# Writes water-rhf-md.md.xyz (multi-frame XYZ, Angstrom) and
+# water-rhf-md.md.csv (energies) beside this file. MEASURED (2026-11-19): the
+# potential energy swings by 3.8e-3 Hartree while the "conserved" column
+# stays within 1.8e-5 Hartree of its start. That residual is the velocity
+# Verlet error: it falls 4x when dt_fs is halved (2.9e-4, 8.4e-5, 2.1e-5 and
+# 5.3e-6 Hartree at 1, 0.5, 0.25 and 0.125 fs over 10 fs).
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "sto-3g"
+
+[method]
+kind = "rhf"
+task = "md"
+
+[scf]
+# Tight: the gradient is only as smooth as the SCF it differentiates.
+density_conv = 1e-9
+
+[md]
+n_steps = 20
+dt_fs = 0.25
+thermostat = "nve"
+init_temperature_k = 300.0
+seed = 0

@@ -37,8 +37,13 @@ authors = [{ name = "Matthew Goldey", email = "matthew.goldey@gmail.com" }]
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=2.0.0",
-    "gemmi>=0.7",
 ]
+
+[project.urls]
+Homepage = "https://matthew.thegoldeys.com/ferric/"
+Documentation = "https://matthew.thegoldeys.com/ferric/"
+Source = "https://github.com/mgoldey/ferric"
+Issues = "https://github.com/mgoldey/ferric/issues"
 
 # `pip install ferric` puts `ferric` on PATH -- calls straight into
 # ferric_cli::main() (crates/ferric-cli/src/lib.rs) compiled into the SAME
@@ -84,6 +89,20 @@ reference = [
 build = [
     "maturin[patchelf]>=1.13.3",
 ]
+# ferric.ase.FerricCalculator (ASE energies, forces, stress) and the
+# ferric.mlip writers (extended XYZ / ASE database).
+ase = [
+    "ase>=3.23",
+]
+# ferric.rdkit (RDKit Mol <-> Molecule, from_smiles).
+rdkit = [
+    "rdkit>=2024.3",
+]
+# ferric.qcschema needs nothing; QCElemental is only for building and
+# validating QCSchema models around it.
+qcschema = [
+    "qcelemental>=0.27",
+]
 
 [tool.ruff]
 # Matches the floor established in `requires-python` above (see that
@@ -108,9 +127,18 @@ extend-exclude = ["terf-tables/generate_interpolation_tables.py"]
 [tool.maturin]
 manifest-path = "crates/ferric-python/Cargo.toml"
 features = ["pyo3/extension-module"]
+python-source = "crates/ferric-python/python"
 # maturin lists LICENSE-APACHE / LICENSE-MIT in the sdist's PKG-INFO but only
 # packs them when told to; without this line the sdist ships no license text.
-include = [{ path = "LICENSE-*", format = "sdist" }]
+#
+# crates/ferric-xtb is an OPTIONAL path dependency of ferric-python (feature
+# `xtb`, off by default), so maturin leaves it out of the sdist's dependency
+# closure. cargo still reads every path dependency's manifest when it loads the
+# workspace, so without it the unpacked sdist fails `cargo metadata`.
+include = [
+    { path = "LICENSE-*", format = "sdist" },
+    { path = "crates/ferric-xtb/**/*", format = "sdist" },
+]
 
 [tool.uv]
 # Prevent uv from rebuilding the Rust extension on every `uv run`.

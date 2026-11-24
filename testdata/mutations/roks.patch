@@ -1,0 +1,13 @@
+diff --git a/crates/ferric-scf/src/rohf.rs b/crates/ferric-scf/src/rohf.rs
+index 4b10018..5d5717f 100644
+--- a/crates/ferric-scf/src/rohf.rs
++++ b/crates/ferric-scf/src/rohf.rs
+@@ -1404,7 +1404,7 @@ impl RohfState {
+         phases.stop(energy_t);
+         let xc_t = phases.begin("xc_digest");
+         let e_xc = if let Some(x) = xc.xc_contrib.as_ref() {
+-            x.add_xc_uks(d_a, d_b, f_a, f_b)
++            x.add_xc_uks(d_a, d_a, f_a, f_b)
+         } else if let Some(ix) = xc.inj_xc.as_mut() {
+             // Injected (periodic) ROKS: V_σ added after the exchange term and
+             // before the Roothaan combination; E_xc outside the trace.

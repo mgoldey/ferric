@@ -92,7 +92,9 @@ gfnff_topo
 # /docs/ is the pre-rename path — kept so a recreated docs/ is not silently
 # tracked. Both were purged from all history 2026-08-21.
 /wiki/
-/docs/
+/docs/*
+# The one tracked page: the stack overview mirrored in ferric, smeltery and attestation (site/src/stack.md includes it).
+!/docs/stack.md
 
 # Unpublished research — publish paper independently before making repo public
 /whitepaper/
@@ -111,3 +113,9 @@ site/book/
 # timestamps). Three were committed by an `add -A` on 2026-09-19; they made
 # the working tree dirty on every example run.
 *.ferric.jsonl
+# task = "md" default outputs (<input stem>.md.xyz / .md.csv beside the input).
+*.md.xyz
+*.md.csv
+
+# Book build output (book/src is the source)
+/book/out/

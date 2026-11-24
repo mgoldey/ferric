@@ -1,9 +1,8 @@
-//! DLPNO-CCSD — making truncation change the **cost of the iteration**.
+//! DLPNO-CCSD: making truncation change the cost of the iteration.
 //!
-//! [`crate::dlpno_ccsd_virtual`] built the exact per-pair PNO substrate and said
-//! plainly what it did not do: the 74 residual contractions of
-//! [`crate::ccsd_closed_shell`] are still dense, so raising `t_cut_pno` changes
-//! the *energy* and nothing else. This module is the attack on that gap.
+//! [`crate::dlpno_ccsd_virtual`] built the exact per-pair PNO substrate; the 59 residual
+//! contractions of [`crate::ccsd_closed_shell`] are still dense, so raising `t_cut_pno` changes
+//! the *energy* and nothing else. This module closes that gap.
 //!
 //! # The one structural difficulty, stated first
 //!
@@ -1951,10 +1950,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-11,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-11),
         )
         .unwrap();
 
@@ -1968,7 +1964,7 @@ mod tests {
             crate::ccsd_closed_shell::ccsd_closed_shell(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
 
         let eps = rhf.eps_r();
-        let nocc = eps.iter().filter(|&&e| e < 0.0).count();
+        let nocc = crate::helpers::closed_shell_counts(&mol, &rhf).unwrap().0;
         let nvir = obs.nbasis() - nocc;
         let c = rhf.mos_r();
         let c_occ = c.slice(ndarray::s![.., ..nocc]).to_owned();

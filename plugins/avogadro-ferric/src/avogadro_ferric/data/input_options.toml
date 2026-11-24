@@ -1,0 +1,71 @@
+# User options for the ferric input generator (Build > Input Generators > ferric).
+# The special keys (Title, Filename Base, Processor Cores, Memory, Calculation
+# Type, Theory, Basis, Charge, Multiplicity) get Avogadro's standard layout, and
+# Charge / Multiplicity / Filename Base are pre-filled from the molecule.
+# Avogadro 2.1.0 builds no widget for an option without a "type".
+
+[Title]
+type = "string"
+default = "ferric calculation"
+
+["Filename Base"]
+type = "string"
+default = "job"
+
+["Processor Cores"]
+type = "integer"
+minimum = 0
+maximum = 1024
+default = 0
+toolTip = "Threads for the run (exported as RAYON_NUM_THREADS); 0 = all cores"
+
+[Memory]
+type = "float"
+minimum = 0.0
+maximum = 4096.0
+default = 0.0
+suffix = " GB"
+toolTip = "[memory] budget_gb; 0 = ferric's auto-detected budget"
+
+["Calculation Type"]
+type = "stringList"
+default = 0
+values = ["Single Point", "Equilibrium Geometry", "Frequencies"]
+
+[Theory]
+type = "stringList"
+default = 2
+values = ["HF", "LDA", "PBE", "BLYP", "BP86", "PBE0", "B3LYP", "r2SCAN"]
+
+[Basis]
+type = "stringList"
+default = 4
+values = [
+    "sto-3g",
+    "6-31g",
+    "6-31g*",
+    "6-31g**",
+    "def2-svp",
+    "def2-tzvp",
+    "cc-pvdz",
+    "cc-pvtz",
+    "aug-cc-pvdz",
+]
+
+[Charge]
+type = "integer"
+minimum = -9
+maximum = 9
+default = 0
+
+[Multiplicity]
+type = "integer"
+minimum = 1
+maximum = 6
+default = 1
+
+[Dispersion]
+type = "stringList"
+default = 0
+values = ["none", "d3bj"]
+toolTip = "D3(BJ) for the chosen functional (ignored for HF)"

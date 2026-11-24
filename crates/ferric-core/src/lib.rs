@@ -10,11 +10,13 @@
 //!   property averaging (conformer *generation* is out of scope; RDKit does that)
 //! - [`FerricError`] -- unified error type for the workspace
 
-/// Gaussian basis sets: [`BasisSet`](basis::BasisSet), [`Shell`](basis::Shell), BSE-JSON/G94 parsers, 21 bundled sets.
+/// Gaussian basis sets: [`BasisSet`](basis::BasisSet), [`Shell`](basis::Shell), BSE-JSON/G94 parsers, and the bundled-set registry (64 sets plus the def2 ECP file, packed into one compressed blob).
 pub mod basis;
 mod basis_util;
-/// BLAS thread-count guard for safe OpenBLAS usage under rayon.
+/// OpenBLAS thread counts (parallel-region baseline, serial sections) and
+/// thread stack sizes.
 pub mod blas_threads;
+pub mod certificate;
 /// Typed configuration descriptors (`ConfigVar`).
 pub mod config;
 /// Multi-geometry conformer ensembles and Boltzmann-weighted property averaging.
@@ -33,10 +35,13 @@ pub mod gpu;
 /// Redundant internal coordinates: bond perception, the Wilson B-matrix, and
 /// the internal↔Cartesian step transformations used by the geometry optimizer.
 pub mod internal_coords;
-/// Dense linear algebra helpers (Cholesky, eigenvalue, matrix utilities).
+/// Dense linear algebra helpers: divide-and-conquer symmetric eigensolvers
+/// (`eigh_dc`, `eigvalsh_dc`), a threaded GEMM (`par_gemm`) and an LU log-determinant (`logdet_lu`).
 pub mod linalg;
 /// Memory budget discovery and enforcement.
 pub mod memory;
+/// Lindh (1995) model Hessian, the initial Hessian of the geometry optimizer.
+pub mod model_hessian;
 /// Molecular geometry: [`Atom`](mol::Atom), [`Molecule`](mol::Molecule), XYZ parser, nuclear repulsion.
 pub mod mol;
 /// Occupied/virtual orbital partitions for post-HF methods.
@@ -46,6 +51,8 @@ pub mod parallel;
 /// The SCF precision ladder shared by the mixed-precision Fock-build kernels
 /// (`xc-vxc`, `dfj-pack`, `dfk-occ`): mixed only while the density moves, f64 exit.
 pub mod precision_ladder;
+/// Special functions: [`special::erf`], [`special::erfc`].
+pub mod special;
 /// Abelian point-group detection (D2h and subgroups), AO representation, SO bases.
 pub mod symmetry;
 /// Opt-in stage/phase timing (`FERRIC_TIMING`): one-shot [`Stage`](timing::Stage)
@@ -54,7 +61,7 @@ pub mod timing;
 /// Length units: the one Ångström ↔ Bohr conversion ([`units::ANGSTROM_TO_BOHR`]).
 pub mod units;
 
-pub use error::FerricError;
+pub use error::{ErrorCategory, FerricError};
 pub use orbitals::OrbitalSpace;
 
 use std::sync::atomic::AtomicBool;

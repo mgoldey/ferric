@@ -62,7 +62,7 @@
 //! * B — `1.0 - fermi(..)` → `fermi(..)` in `rsscs_screen`.
 //! * C — long-range Fermi with `params.r_vdw` instead of `r_vdw_rsscs`.
 //! * D — `alpha_0_rsscs = a_dyn[0]` → `a_dyn[1]`.
-//! * E — `erf_exact` → the A&S approximation (predicted ~1e-7 rel miss).
+//! * E — `special::erf` → the A&S approximation (predicted ~1e-7 rel miss).
 //! * F — `.cbrt()` → `.sqrt()` in `r_vdw_rsscs`.
 //! * G — in `rsscs_backward`, drop the `+ g[(3 * b + j, 3 * a + i)]` (the
 //!   (B,A) block) or the `- fermi` R-derivative in step 4 (gradient test).

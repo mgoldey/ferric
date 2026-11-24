@@ -126,6 +126,7 @@ use ferric_scf::cdft_driver::{solve_cdft_uhf, CdftResult};
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -208,12 +209,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 /// The grid both the XC quadrature and the cDFT weight operator use (the
 /// driver's default, set explicitly so the test's own W is the driver's W).
 fn grid_cfg() -> AtomicGridConfig {
@@ -226,14 +221,12 @@ fn grid_cfg() -> AtomicGridConfig {
 
 /// Unconstrained UKS/PBE config; exact J (no `df_j_aux`), as NWChem `direct`.
 fn base_config() -> RhfConfig {
-    RhfConfig {
-        xc: Some("PBE".into()),
-        dft_grid: Some(grid_cfg()),
-        max_iter: 500,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc("PBE")
+        .with_dft_grid(grid_cfg())
+        .with_max_iter(500)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
 }
 
 struct System {
@@ -254,7 +247,7 @@ fn load_system(system: &str, basis_name: &str, r: &Value) -> System {
     let mol = Molecule::load_xyz_with_charge(xyz.to_str().unwrap(), charge, mult)
         .unwrap_or_else(|e| panic!("{}: {e:?}", xyz.display()));
     // Geometry like-for-like FIRST.
-    let enuc_ref = num(r, "/nuclear_repulsion", &tag);
+    let enuc_ref = num_ctx(r, "/nuclear_repulsion", &tag);
     let enuc = mol.nuclear_repulsion();
     eprintln!(
         "{tag}: E_nuc ferric {enuc:.12} NWChem {enuc_ref:.12} |d| {:.2e}",
@@ -299,16 +292,14 @@ fn spin_of(kind: &str) -> SpinChannel {
 }
 
 fn solve_constrained(s: &System, spin: SpinChannel, target: f64) -> CdftResult {
-    let cfg = RhfConfig {
-        constraints: vec![Constraint {
-            fragment: s.fragment.clone(),
-            spin,
-            target,
-        }],
-        cdft_lambda_tol: 1e-10,
-        cdft_max_outer: 60,
-        ..base_config()
-    };
+    let mut cfg = base_config();
+    cfg.constraints = vec![Constraint {
+        fragment: s.fragment.clone(),
+        spin,
+        target,
+    }];
+    cfg.cdft_lambda_tol = 1e-10;
+    cfg.cdft_max_outer = 60;
     let r = solve_cdft_uhf(&s.ctx, &s.mol, &s.prep, &s.bs, &s.bounds, &cfg)
         .unwrap_or_else(|e| panic!("{}: cDFT {spin:?} target {target}: {e:?}", s.tag));
     assert!(
@@ -351,12 +342,12 @@ fn run_system(system: &str) {
             &tag,
             "E_unc vs NWChem 99x302",
             e_unc,
-            num(&r, "/unconstrained/matched/energy", &tag),
+            num_ctx(&r, "/unconstrained/matched/energy", &tag),
             TOL_E_UNC,
         );
         eprintln!(
             "{tag}: E_unc - NWChem 300x974 = {:+.2e} (XC grid offset; cancels in E(N)-E_unc)",
-            e_unc - num(&r, "/unconstrained/converged/energy", &tag)
+            e_unc - num_ctx(&r, "/unconstrained/converged/energy", &tag)
         );
 
         // ── EXACTNESS ANCHOR: target = natural population ⇒ λ = 0, E = E_unc ──
@@ -398,29 +389,29 @@ fn run_system(system: &str) {
         let mut first_of_kind: Vec<(String, f64, CdftResult)> = Vec::new();
         for c in cons {
             let kind = c["kind"].as_str().expect("kind");
-            let target = num(c, "/target", &tag);
+            let target = num_ctx(c, "/target", &tag);
             let ctx = format!("{tag} {kind} {target:.2}");
             let res = solve_constrained(&s, spin_of(kind), target);
             let lam = res.lambdas[0];
             let de = res.scf.energy - e_unc;
             eprintln!(
                 "{ctx}: vs NWChem 99x302 (info): dlambda {:+.2e} d(E-E_unc) {:+.2e}; outer {}",
-                lam - num(c, "/matched/lambda", &ctx),
-                de - num(c, "/matched/e_minus_unconstrained", &ctx),
+                lam - num_ctx(c, "/matched/lambda", &ctx),
+                de - num_ctx(c, "/matched/e_minus_unconstrained", &ctx),
                 res.outer_iters
             );
             check_close(
                 &ctx,
                 "lambda",
                 lam,
-                num(c, "/converged/lambda", &ctx),
+                num_ctx(c, "/converged/lambda", &ctx),
                 TOL_LAMBDA,
             );
             check_close(
                 &ctx,
                 "E(N) - E_unc",
                 de,
-                num(c, "/converged/e_minus_unconstrained", &ctx),
+                num_ctx(c, "/converged/e_minus_unconstrained", &ctx),
                 TOL_DE,
             );
             got.push((lam, de));
@@ -435,8 +426,8 @@ fn run_system(system: &str) {
                 if i == j {
                     continue;
                 }
-                let lam_j = num(c, "/converged/lambda", &tag);
-                let de_j = num(c, "/converged/e_minus_unconstrained", &tag);
+                let lam_j = num_ctx(c, "/converged/lambda", &tag);
+                let de_j = num_ctx(c, "/converged/e_minus_unconstrained", &tag);
                 assert!(
                     (lam - lam_j).abs() > MUST_MISS_LAMBDA,
                     "{tag}: lambda of entry {i} ({lam:.8}) is within {MUST_MISS_LAMBDA:.0e} of \

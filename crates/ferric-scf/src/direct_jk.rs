@@ -1,10 +1,15 @@
 //! Combined direct Coulomb + exchange (J+K) matrix construction from a single quartet pass.
 
+use crate::quartet_scatter::ScatterTimes;
 use crate::screening::SchwarzBounds;
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::Array2;
+
+pub mod gc_rotation;
+pub use gc_rotation::{GcRotate, GC_ROTATE_ENV};
+use gc_rotation::{GcState, RotatedJk};
 
 /// `energy_conv` below this multiple of `integral_thresh` turns the
 /// closed-shell incremental Fock build off by default (#415). The measured dE
@@ -168,6 +173,12 @@ pub struct DirectJK<'a> {
     // libint2 engine construction is serialized behind a global ctor mutex,
     // so hoist the builder out of the SCF loop to pay it once, not per iteration.
     pool: Option<crate::engine_pool::EnginePool>,
+    /// The internal contraction rotation ([`gc_rotation`]): requested until
+    /// the first direct build, then resolved (the rotated basis and bounds
+    /// live in `bounds.gc`, shared with every later build on these bounds).
+    gc: gc_rotation::GcState,
+    /// Engines on the rotated shells, owned like `pool`.
+    rot_pool: Option<crate::engine_pool::EnginePool>,
 }
 
 impl<'a> std::fmt::Debug for DirectJK<'a> {
@@ -180,6 +191,12 @@ impl<'a> std::fmt::Debug for DirectJK<'a> {
 }
 
 impl<'a> DirectJK<'a> {
+    /// Whether the incremental (`ΔD`) build saves work: not when the bounds
+    /// carry the in-core ERI store, whose J/K cost does not shrink with `ΔD`.
+    pub fn incremental_pays(&self) -> bool {
+        self.bounds.incore.get().is_none()
+    }
+
     /// Create a combined screened J+K builder.
     pub fn new(
         ctx: &'a ParallelContext,
@@ -195,6 +212,69 @@ impl<'a> DirectJK<'a> {
             thresh,
             mem_budget,
             pool: None,
+            gc: GcState::Pending(None),
+            rot_pool: None,
+        }
+    }
+
+    /// Choose the internal contraction rotation ([`gc_rotation`]) instead
+    /// of following the bounds. It takes effect at the first direct build;
+    /// a builder that has built already keeps its choice.
+    #[must_use]
+    pub fn with_gc_rotation(self, mode: GcRotate) -> Self {
+        self.with_gc_request(Some(mode))
+    }
+
+    /// [`with_gc_rotation`](Self::with_gc_rotation) from a config's
+    /// `gc_rotation` field (an SCF's): `None` = unset, `FERRIC_GC_ROTATE`
+    /// and then `auto` decide. A builder given neither follows its bounds
+    /// ([`gc_rotation::GcSlot::mode`]: unrotated unless a config recorded a
+    /// request on them).
+    #[must_use]
+    pub fn with_gc_request(mut self, mode: Option<GcRotate>) -> Self {
+        if let GcState::Pending(_) = self.gc {
+            self.gc = GcState::Pending(Some(mode));
+        }
+        self
+    }
+
+    /// Columns the contraction rotation rotated: `None` before the first
+    /// direct build (or while every build was served by the in-core store),
+    /// `Some(0)` when the builder runs unrotated (switch off, or nothing in
+    /// the basis to rotate).
+    pub fn gc_rotated_columns(&self) -> Option<usize> {
+        match &self.gc {
+            GcState::Pending(_) => None,
+            GcState::Resolved(r) => Some(r.as_ref().map_or(0, |r| r.basis.n_rotated_columns)),
+        }
+    }
+
+    /// Resolve a pending rotation request: the builder's own (config)
+    /// request, else the bounds' [`gc_rotation::GcSlot::mode`].
+    /// The rotated basis and bounds come from the bounds' cache (built at
+    /// the first rotated build on these bounds, by whichever builder runs
+    /// first).
+    fn resolve_gc(&mut self) -> Result<(), FerricError> {
+        if let GcState::Pending(request) = self.gc {
+            let mode = match request {
+                Some(v) => GcRotate::resolve(v)?,
+                None => self.bounds.gc.mode()?,
+            };
+            let r = self.bounds.gc.rotation(self.prep, self.bounds, mode)?;
+            self.gc = GcState::Resolved(r);
+        }
+        Ok(())
+    }
+
+    /// The unrotated walk over `self`'s own basis and bounds.
+    fn walk(&mut self) -> Walk<'_> {
+        Walk {
+            ctx: self.ctx,
+            prep: self.prep,
+            bounds: self.bounds,
+            thresh: self.thresh,
+            mem_budget: self.mem_budget,
+            pool: &mut self.pool,
         }
     }
 
@@ -208,7 +288,7 @@ impl<'a> DirectJK<'a> {
     /// precision. In f64 it differs from a from-scratch `build(&D_new, ..)` only
     /// by the reassociation floor of summing many small increments vs one full
     /// contraction — kept small by a periodic full rebuild in the SCF loop (see
-    /// `solve_rhf`'s `incremental_full_rebuild_every` guard). The screen inside
+    /// `crate::driver::INCREMENTAL_FULL_REBUILD_EVERY`). The screen inside
     /// `build_d_max_shell` is driven by `delta_d`, so as SCF converges (ΔD → 0)
     /// almost every quartet is Häser-Ahlrichs-screened out and late iterations
     /// become nearly free (the PySCF `pyscf/scf/hf.py` / Psi4 `CompositeJK.cc`
@@ -228,52 +308,6 @@ impl<'a> DirectJK<'a> {
         // Passing `delta_d` (without the caller zeroing) is therefore exactly the
         // incremental update — no separate kernel needed.
         self.build(delta_d, j, k)
-    }
-
-    /// The screened canonical bra-pair work list for a given shell-blocked
-    /// density-max table, plus the lazily-constructed engine pool.
-    ///
-    /// Factored out of [`build`](Self::build) / [`build_uhf`](Self::build_uhf)
-    /// because both need the IDENTICAL list construction: the `bra_thresh`
-    /// pre-filter, the MPI rank striping, and the one-engine-per-rayon-thread
-    /// pool hoist. Keeping it in one place is what makes the open-shell path
-    /// screen exactly as tightly as the closed-shell one instead of drifting.
-    fn screened_bra_pairs(
-        &mut self,
-        d_max_shell: &ndarray::Array2<f64>,
-    ) -> Result<Vec<(usize, usize)>, FerricError> {
-        let nsh = self.prep.nshells();
-        let max_d = d_max_shell.iter().cloned().fold(0.0f64, f64::max);
-        let max_q: f64 = self.bounds.q.iter().cloned().fold(0.0f64, f64::max);
-        let bra_thresh = if max_q > 0.0 {
-            self.thresh / (max_q * max_d.max(1e-30))
-        } else {
-            self.thresh
-        };
-        let q_table = &self.bounds.q;
-        let mut shell_pairs: Vec<(usize, usize)> = Vec::new();
-        for s1 in 0..nsh {
-            for s2 in 0..=s1 {
-                if q_table[(s1, s2)] > bra_thresh {
-                    shell_pairs.push((s1, s2));
-                }
-            }
-        }
-        // MPI rank striping (see `ParallelContext::stripe` doc; size == 1
-        // keeps the full list unchanged).
-        let shell_pairs: Vec<(usize, usize)> = self.ctx.stripe(shell_pairs);
-
-        // One engine per rayon thread (see engine_pool): constructing it in the
-        // fold init below would fire once per work-chunk and storm the global
-        // libint2 ctor mutex (catastrophic for heavy-element bases).
-        if self.pool.is_none() {
-            self.pool = Some(crate::engine_pool::EnginePool::new(
-                self.bounds.op,
-                self.prep,
-                ferric_integrals::engine_pool::eri_precision(),
-            )?);
-        }
-        Ok(shell_pairs)
     }
 
     /// Open-shell combined build: ONE quartet pass producing `J[D_α+D_β]`,
@@ -310,105 +344,21 @@ impl<'a> DirectJK<'a> {
         k_a: &mut Array2<f64>,
         k_b: &mut Array2<f64>,
     ) -> Result<usize, FerricError> {
-        use crate::quartet_scatter::{
-            build_d_max_shell_spin_sum, scatter_bra_pair, DensityScreen, JkMode,
-        };
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
         self.ctx.check_interrupted()?;
-
-        let dims = self.prep.shell_dims();
-        let offs = self.prep.shell_offsets();
-        let thresh = self.thresh;
-        let computed_quartets = AtomicUsize::new(0);
-
-        let d_max_shell = build_d_max_shell_spin_sum(self.prep, d_a, d_b);
-        let shell_pairs = self.screened_bra_pairs(&d_max_shell)?;
-
-        let q_table = &self.bounds.q;
-        // CSB `M` table when `[scf] screening = "csb"` selected it; `None`
-        // (the default) leaves the hot loop on plain Schwarz, byte-identical.
-        //
-        // NOT applied to the BRA-PAIR prefilter above, and that is not an
-        // omission: the prefilter screens the DIAGONAL quartet (s1,s2|s1,s2),
-        // where plain Schwarz is EXACT — Cauchy-Schwarz is an equality there,
-        // so Q(s1,s2)^2 == max |(s1 s2|s1 s2)| — and no valid upper bound can
-        // be smaller than an exact one. CSB's `min` therefore selects the
-        // Schwarz term at every diagonal quartet, making it provably inert on
-        // this loop. Same structural fact `qqr.rs` records for QQR (see
-        // `tests/qqr_diagonal_noop.rs`), and the same consequence: CSB acts
-        // only on the innermost per-quartet test, never on a pair list.
-        let m_table = self.bounds.csb_m.as_ref();
-        // CSAM `X` table when `[scf] screening = "csam"` selected it. Mutually
-        // exclusive with `m_table` by construction; `None` for both is the
-        // byte-identical plain-Schwarz default. Like CSB it is NOT applied to the
-        // bra-pair prefilter — but for a different reason: CSAM's diagonal
-        // refinement factor is exactly 1 (X's diagonal is 1.0 by Cauchy-Schwarz
-        // equality), so it too is provably inert on `(s1,s2|s1,s2)`.
-        let x_table = self.bounds.csam_x.as_ref();
-        let prep = self.prep;
-        let nbf = prep.nbasis();
-        let pool = self
-            .pool
-            .as_ref()
-            .expect("pool initialized by screened_bra_pairs");
-
-        let n_pairs = shell_pairs.len();
-        let group_size = crate::reduce::deterministic_group_size(n_pairs);
-        let n_groups = n_pairs.div_ceil(group_size.max(1)).max(1);
-        let screen = DensityScreen::SixPair(&d_max_shell);
-
-        let mut total_j = Array2::<f64>::zeros((nbf, nbf));
-        let mut total_k_a = Array2::<f64>::zeros((nbf, nbf));
-        let mut total_k_b = Array2::<f64>::zeros((nbf, nbf));
-        let band_bytes = crate::reduce::resolve_band_bytes(self.mem_budget);
-        crate::reduce::grouped_deterministic_sum_triple(
-            &mut total_j,
-            &mut total_k_a,
-            &mut total_k_b,
-            n_groups,
-            nbf,
-            band_bytes,
-            |g| {
-                let lo = g * group_size;
-                let hi = (lo + group_size).min(n_pairs);
-                let mut mode = JkMode::new_uhf(nbf, d_a, d_b);
-                let mut local_count = 0usize;
-                for &(s1, s2) in &shell_pairs[lo..hi] {
-                    if ferric_core::INTERRUPT.load(Ordering::Relaxed) {
-                        continue;
-                    }
-                    pool.with(|engine| {
-                        local_count += scatter_bra_pair(
-                            engine, prep, dims, offs, q_table, m_table, x_table, &screen, thresh,
-                            d_total, s1, s2, &mut mode, true,
-                        );
-                    });
-                }
-                let (local_j, local_k_a, local_k_b) = match mode {
-                    JkMode::Uhf(j, ka, kb, _, _) => (j, ka, kb),
-                    _ => unreachable!("DirectJK::build_uhf always uses JkMode::Uhf"),
-                };
-                computed_quartets.fetch_add(local_count, Ordering::Relaxed);
-                Ok((local_j, local_k_a, local_k_b))
-            },
-        )?;
-
-        // MPI: reduce the rank-LOCAL partials, THEN accumulate. Reducing `j`/`k_a`/
-        // `k_b` instead would also sum the caller's pre-existing contents, which on
-        // the incremental path (`build_uhf_incremental`) hold the previous
-        // iteration's already-global J/K — identical on every rank, so an output-
-        // buffer Allreduce would multiply them by the world size every iteration.
-        // See `reduce::reduce_partial_across_ranks` for the measured failure.
-        crate::reduce::reduce_partial_across_ranks(self.ctx, &mut total_j);
-        crate::reduce::reduce_partial_across_ranks(self.ctx, &mut total_k_a);
-        crate::reduce::reduce_partial_across_ranks(self.ctx, &mut total_k_b);
-
-        *j += &total_j;
-        *k_a += &total_k_a;
-        *k_b += &total_k_b;
-
-        Ok(computed_quartets.load(Ordering::SeqCst))
+        if let Some(store) = crate::incore_jk::store_for(self.bounds, self.prep)? {
+            store.add_uhf(d_total, d_a, d_b, j, k_a, k_b)?;
+            return Ok(store.quartets());
+        }
+        self.resolve_gc()?;
+        if !self.rotated() {
+            return self.walk().build_uhf(d_total, d_a, d_b, j, k_a, k_b);
+        }
+        self.run_rotated(&[d_total, d_a, d_b], &mut [j, k_a, k_b], |mut w, d, x| {
+            let [jr, kar, kbr] = x else {
+                unreachable!("three outputs")
+            };
+            w.build_uhf(&d[0], &d[1], &d[2], jr, kar, kbr)
+        })
     }
 
     /// Incremental open-shell Fock build: given the per-spin density CHANGES
@@ -462,14 +412,268 @@ impl<'a> DirectJK<'a> {
         j: &mut Array2<f64>,
         k: &mut Array2<f64>,
     ) -> Result<usize, FerricError> {
-        use crate::quartet_scatter::{build_d_max_shell, scatter_bra_pair, DensityScreen, JkMode};
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
         self.ctx.check_interrupted()?;
+        if let Some(store) = crate::incore_jk::store_for(self.bounds, self.prep)? {
+            store.add_jk(d, j, k)?;
+            return Ok(store.quartets());
+        }
+        self.resolve_gc()?;
+        if !self.rotated() {
+            return self.walk().build(d, j, k);
+        }
+        self.run_rotated(&[d], &mut [j, k], |mut w, d, x| {
+            let [jr, kr] = x else {
+                unreachable!("two outputs")
+            };
+            w.build(&d[0], jr, kr)
+        })
+    }
+
+    /// Whether the resolved rotation is active.
+    fn rotated(&self) -> bool {
+        matches!(self.gc, GcState::Resolved(Some(_)))
+    }
+
+    /// A build on the rotated shells: `D' = Tᵀ D T` for each of `ds`, `run`
+    /// on fresh rotated outputs, then `out += T X' Tᵀ` in place for each of
+    /// `outs`. The `D'` and `X'` buffers (`(ds + outs) · n²` doubles) are
+    /// charged to the memory pool for the build.
+    fn run_rotated(
+        &mut self,
+        ds: &[&Array2<f64>],
+        outs: &mut [&mut Array2<f64>],
+        run: impl FnOnce(Walk<'_>, &[Array2<f64>], &mut [Array2<f64>]) -> Result<usize, FerricError>,
+    ) -> Result<usize, FerricError> {
+        let (ctx, thresh, mem_budget) = (self.ctx, self.thresh, self.mem_budget);
+        let GcState::Resolved(Some(r)) = &self.gc else {
+            unreachable!("run_rotated without a rotation");
+        };
+        let r: &RotatedJk = r;
+        let n = r.basis.nbasis();
+        let _charge = r.charge_collective(ctx, ds.len() + outs.len())?;
+        let t0 = std::time::Instant::now();
+        let dr: Vec<Array2<f64>> = ds.iter().map(|d| r.forward(d)).collect();
+        let t_fwd = t0.elapsed().as_secs_f64();
+        let mut xr: Vec<Array2<f64>> = (0..outs.len()).map(|_| zeros(n)).collect();
+        let computed = run(
+            Walk {
+                ctx,
+                prep: &r.basis.prep,
+                bounds: &r.bounds,
+                thresh,
+                mem_budget,
+                pool: &mut self.rot_pool,
+            },
+            &dr,
+            &mut xr,
+        )?;
+        let t1 = std::time::Instant::now();
+        for (x, out) in xr.iter().zip(outs.iter_mut()) {
+            r.back_add(x, out)?;
+        }
+        report_gc_transforms(
+            t_fwd,
+            t1.elapsed().as_secs_f64(),
+            t0.elapsed().as_secs_f64(),
+        );
+        Ok(computed)
+    }
+}
+
+/// An `n × n` zero matrix.
+fn zeros(n: usize) -> Array2<f64> {
+    Array2::<f64>::zeros((n, n))
+}
+
+/// `FERRIC_TIMING` line of a rotated build: the forward and back transforms
+/// and the build's total wall (walk included).
+fn report_gc_transforms(forward: f64, back: f64, total: f64) {
+    if ferric_core::timing::enabled() {
+        eprintln!(
+            "[timing] direct-jk   gc rotation: forward {forward:.4} s + back {back:.4} s; \
+             rotated build total {total:.3} s"
+        );
+    }
+}
+
+/// One direct walk: a basis, its bounds and engine pool. [`DirectJK`] runs
+/// it on its own basis, or on the rotated basis of [`gc_rotation`].
+struct Walk<'w> {
+    ctx: &'w ParallelContext,
+    prep: &'w PreparedBasis,
+    bounds: &'w SchwarzBounds,
+    thresh: f64,
+    mem_budget: usize,
+    pool: &'w mut Option<crate::engine_pool::EnginePool>,
+}
+
+impl Walk<'_> {
+    /// The screened canonical bra-pair work list for a given shell-blocked
+    /// density-max table, plus the lazily-constructed engine pool.
+    ///
+    /// Factored out of [`build`](Self::build) / [`build_uhf`](Self::build_uhf)
+    /// because both need the IDENTICAL list construction: the `bra_thresh`
+    /// pre-filter, the MPI rank striping, and the one-engine-per-rayon-thread
+    /// pool hoist. Keeping it in one place is what makes the open-shell path
+    /// screen exactly as tightly as the closed-shell one instead of drifting.
+    fn screened_bra_pairs(
+        &mut self,
+        d_max_shell: &ndarray::Array2<f64>,
+    ) -> Result<Vec<(usize, usize)>, FerricError> {
+        let nsh = self.prep.nshells();
+        let max_d = d_max_shell.iter().cloned().fold(0.0f64, f64::max);
+        let max_q: f64 = self.bounds.q.iter().cloned().fold(0.0f64, f64::max);
+        let bra_thresh = if max_q > 0.0 {
+            self.thresh / (max_q * max_d.max(1e-30))
+        } else {
+            self.thresh
+        };
+        let q_table = &self.bounds.q;
+        let mut shell_pairs: Vec<(usize, usize)> = Vec::new();
+        for s1 in 0..nsh {
+            for s2 in 0..=s1 {
+                if q_table[(s1, s2)] > bra_thresh {
+                    shell_pairs.push((s1, s2));
+                }
+            }
+        }
+        // MPI rank striping (see `ParallelContext::stripe` doc; size == 1
+        // keeps the full list unchanged).
+        let shell_pairs: Vec<(usize, usize)> = self.ctx.stripe(shell_pairs);
+
+        // One engine per rayon thread (see engine_pool): constructing it in the
+        // fold init below would fire once per work-chunk and storm the global
+        // libint2 ctor mutex (catastrophic for heavy-element bases).
+        if self.pool.is_none() {
+            *self.pool = Some(crate::engine_pool::EnginePool::new(
+                self.bounds.op,
+                self.prep,
+                ferric_integrals::engine_pool::eri_precision(),
+            )?);
+        }
+        Ok(shell_pairs)
+    }
+
+    fn build_uhf(
+        &mut self,
+        d_total: &Array2<f64>,
+        d_a: &Array2<f64>,
+        d_b: &Array2<f64>,
+        j: &mut Array2<f64>,
+        k_a: &mut Array2<f64>,
+        k_b: &mut Array2<f64>,
+    ) -> Result<usize, FerricError> {
+        use crate::quartet_scatter::{
+            build_d_max_shell_spin_sum, scatter_bra_pair, DensityScreen, JkMode,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         let dims = self.prep.shell_dims();
         let offs = self.prep.shell_offsets();
         let thresh = self.thresh;
+        let computed_quartets = AtomicUsize::new(0);
+
+        let d_max_shell = build_d_max_shell_spin_sum(self.prep, d_a, d_b);
+        let shell_pairs = self.screened_bra_pairs(&d_max_shell)?;
+
+        let q_table = &self.bounds.q;
+        // CSB `M` table when `[scf] screening = "csb"` selected it; `None`
+        // (the default) leaves the hot loop on plain Schwarz, byte-identical.
+        //
+        // NOT applied to the BRA-PAIR prefilter above, and that is not an
+        // omission: the prefilter screens the DIAGONAL quartet (s1,s2|s1,s2),
+        // where plain Schwarz is EXACT — Cauchy-Schwarz is an equality there,
+        // so Q(s1,s2)^2 == max |(s1 s2|s1 s2)| — and no valid upper bound can
+        // be smaller than an exact one. CSB's `min` therefore selects the
+        // Schwarz term at every diagonal quartet, making it provably inert on
+        // this loop. Same structural fact `qqr.rs` records for QQR (see
+        // `tests/qqr_diagonal_noop.rs`), and the same consequence: CSB acts
+        // only on the innermost per-quartet test, never on a pair list.
+        let m_table = self.bounds.csb_m.as_ref();
+        // CSAM `X` table when `[scf] screening = "csam"` selected it. Mutually
+        // exclusive with `m_table` by construction; `None` for both is the
+        // byte-identical plain-Schwarz default. Like CSB it is NOT applied to the
+        // bra-pair prefilter — but for a different reason: CSAM's diagonal
+        // refinement factor is exactly 1 (X's diagonal is 1.0 by Cauchy-Schwarz
+        // equality), so it too is provably inert on `(s1,s2|s1,s2)`.
+        let x_table = self.bounds.csam_x.as_ref();
+        let prep = self.prep;
+        let nbf = prep.nbasis();
+        let pool = self
+            .pool
+            .as_ref()
+            .expect("pool initialized by screened_bra_pairs");
+
+        let n_pairs = shell_pairs.len();
+        let group_size = crate::reduce::deterministic_group_size(n_pairs);
+        let n_groups = n_pairs.div_ceil(group_size.max(1)).max(1);
+        let screen = DensityScreen::SixPair(&d_max_shell);
+
+        let mut total_j = Array2::<f64>::zeros((nbf, nbf));
+        let mut total_k_a = Array2::<f64>::zeros((nbf, nbf));
+        let mut total_k_b = Array2::<f64>::zeros((nbf, nbf));
+        let band_bytes = crate::reduce::resolve_band_bytes(self.mem_budget);
+        crate::reduce::ordered_stream_sum_triple(
+            &mut total_j,
+            &mut total_k_a,
+            &mut total_k_b,
+            n_groups,
+            nbf,
+            band_bytes,
+            |g| {
+                let lo = g * group_size;
+                let hi = (lo + group_size).min(n_pairs);
+                let mut mode = JkMode::new_uhf(nbf, d_a, d_b);
+                let mut local_count = 0usize;
+                for &(s1, s2) in &shell_pairs[lo..hi] {
+                    if ferric_core::INTERRUPT.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    pool.with(|engine| {
+                        local_count += scatter_bra_pair(
+                            engine, prep, dims, offs, q_table, m_table, x_table, &screen, thresh,
+                            d_total, s1, s2, &mut mode, true,
+                        );
+                    });
+                }
+                let (local_j, local_k_a, local_k_b) = match mode {
+                    JkMode::Uhf(j, ka, kb, _, _) => (j, ka, kb),
+                    _ => unreachable!("DirectJK::build_uhf always uses JkMode::Uhf"),
+                };
+                computed_quartets.fetch_add(local_count, Ordering::Relaxed);
+                Ok((local_j, local_k_a, local_k_b))
+            },
+        )?;
+
+        // MPI: reduce the rank-LOCAL partials, THEN accumulate. Reducing `j`/`k_a`/
+        // `k_b` instead would also sum the caller's pre-existing contents, which on
+        // the incremental path (`build_uhf_incremental`) hold the previous
+        // iteration's already-global J/K — identical on every rank, so an output-
+        // buffer Allreduce would multiply them by the world size every iteration.
+        // See `reduce::reduce_partial_across_ranks` for the measured failure.
+        crate::reduce::reduce_partial_across_ranks(self.ctx, &mut total_j);
+        crate::reduce::reduce_partial_across_ranks(self.ctx, &mut total_k_a);
+        crate::reduce::reduce_partial_across_ranks(self.ctx, &mut total_k_b);
+
+        *j += &total_j;
+        *k_a += &total_k_a;
+        *k_b += &total_k_b;
+
+        Ok(computed_quartets.load(Ordering::SeqCst))
+    }
+
+    /// The closed-shell walk of [`DirectJK::build`].
+    fn build(
+        &mut self,
+        d: &Array2<f64>,
+        j: &mut Array2<f64>,
+        k: &mut Array2<f64>,
+    ) -> Result<usize, FerricError> {
+        use crate::quartet_scatter::{build_d_max_shell, DensityScreen};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let profile_t0 = ferric_core::timing::enabled().then(std::time::Instant::now);
+
         let computed_quartets = AtomicUsize::new(0);
 
         // Shell-blocked density-max table d_max_shell[(si, sj)] = max |D_μν| over
@@ -526,7 +730,7 @@ impl<'a> DirectJK<'a> {
         // 32 threads) and combined them in a worker-count-dependent order. Group
         // the canonical quartet list, fold each group's (J,K) serially, and sum
         // group partials in strict group order — bit-identical across thread
-        // counts, live set bounded to one byte-budgeted band.
+        // counts, live set bounded by a byte-budgeted window of partials.
         // Group partition is a pure function of the quartet list (never the
         // thread count): group boundaries set the floating-point association of
         // the per-group folds, so a thread-dependent partition would break
@@ -539,7 +743,19 @@ impl<'a> DirectJK<'a> {
         let mut total_j = Array2::<f64>::zeros((nbf, nbf));
         let mut total_k = Array2::<f64>::zeros((nbf, nbf));
         let band_bytes = crate::reduce::resolve_band_bytes(self.mem_budget);
-        crate::reduce::grouped_deterministic_sum_pair(
+        let profile = profile_t0.map(|t0| BuildProfile::new(t0, n_pairs, n_groups));
+        let job = GroupJob {
+            pool,
+            prep,
+            q_table,
+            m_table,
+            x_table,
+            screen: &screen,
+            thresh: self.thresh,
+            d,
+        };
+        let mut band_times = crate::reduce::StreamTimes::default();
+        crate::reduce::ordered_stream_sum_pair(
             &mut total_j,
             &mut total_k,
             n_groups,
@@ -547,27 +763,12 @@ impl<'a> DirectJK<'a> {
             band_bytes,
             |g| {
                 let lo = g * group_size;
-                let hi = (lo + group_size).min(n_pairs);
-                let mut mode = JkMode::new_both(nbf);
-                let mut local_count = 0usize;
-                for &(s1, s2) in &shell_pairs[lo..hi] {
-                    if ferric_core::INTERRUPT.load(Ordering::Relaxed) {
-                        continue;
-                    }
-                    pool.with(|engine| {
-                        local_count += scatter_bra_pair(
-                            engine, prep, dims, offs, q_table, m_table, x_table, &screen, thresh,
-                            d, s1, s2, &mut mode, true,
-                        );
-                    });
-                }
-                let (local_j, local_k) = match mode {
-                    JkMode::Both(j, k) => (j, k),
-                    _ => unreachable!("DirectJK::build always uses JkMode::Both"),
-                };
-                computed_quartets.fetch_add(local_count, Ordering::Relaxed);
+                let pairs = &shell_pairs[lo..(lo + group_size).min(n_pairs)];
+                let (local_j, local_k, n) = job.run(pairs, profile.as_ref());
+                computed_quartets.fetch_add(n, Ordering::Relaxed);
                 Ok((local_j, local_k))
             },
+            profile.as_ref().map(|_| &mut band_times),
         )?;
 
         // MPI: reduce the rank-LOCAL partials, THEN accumulate — NOT the other way
@@ -581,7 +782,170 @@ impl<'a> DirectJK<'a> {
         *j += &total_j;
         *k += &total_k;
 
-        Ok(computed_quartets.load(Ordering::SeqCst))
+        let computed = computed_quartets.load(Ordering::SeqCst);
+        if let Some(p) = profile {
+            p.report(nbf, self.prep.nshells(), computed, &band_times);
+        }
+        Ok(computed)
+    }
+}
+
+/// The inputs every reduction group of [`DirectJK::build`] shares.
+struct GroupJob<'g> {
+    pool: &'g crate::engine_pool::EnginePool,
+    prep: &'g PreparedBasis,
+    q_table: &'g Array2<f64>,
+    m_table: Option<&'g Array2<f64>>,
+    x_table: Option<&'g Array2<f64>>,
+    screen: &'g crate::quartet_scatter::DensityScreen<'g>,
+    thresh: f64,
+    d: &'g Array2<f64>,
+}
+
+impl GroupJob<'_> {
+    /// The bra pairs `pairs` scattered into fresh `nbf × nbf` J and K
+    /// partials, with the number of quartets computed. With `profile`, the
+    /// group's stage times are recorded into it.
+    fn run(
+        &self,
+        pairs: &[(usize, usize)],
+        profile: Option<&BuildProfile>,
+    ) -> (Array2<f64>, Array2<f64>, usize) {
+        use crate::quartet_scatter::{scatter_bra_pair, scatter_bra_pair_probed, JkMode};
+        use std::sync::atomic::Ordering;
+        let t_group = std::time::Instant::now();
+        let (prep, d) = (self.prep, self.d);
+        let (dims, offs) = (prep.shell_dims(), prep.shell_offsets());
+        let mut mode = JkMode::new_both(prep.nbasis());
+        let mut count = 0usize;
+        let mut times = ScatterTimes::default();
+        for &(s1, s2) in pairs {
+            if ferric_core::INTERRUPT.load(Ordering::Relaxed) {
+                continue;
+            }
+            let (q, m, x, scr, t) = (
+                self.q_table,
+                self.m_table,
+                self.x_table,
+                self.screen,
+                self.thresh,
+            );
+            self.pool.with(|engine| {
+                count += match profile {
+                    Some(_) => scatter_bra_pair_probed::<true>(
+                        engine, prep, dims, offs, q, m, x, scr, t, d, s1, s2, &mut mode, true,
+                        &mut times,
+                    ),
+                    None => scatter_bra_pair(
+                        engine, prep, dims, offs, q, m, x, scr, t, d, s1, s2, &mut mode, true,
+                    ),
+                };
+            });
+        }
+        if let Some(p) = profile {
+            p.record_group(t_group, &times);
+        }
+        match mode {
+            JkMode::Both(j, k) => (j, k, count),
+            _ => unreachable!("DirectJK::build always uses JkMode::Both"),
+        }
+    }
+}
+
+/// `FERRIC_TIMING` profile of one closed-shell [`DirectJK::build`]: per-group
+/// wall times and stage sums, printed as one block of `[timing]` lines.
+///
+/// The phases it separates, and how each is measured:
+///
+/// * **setup** — density-max table, bra-pair list and engine pool, from entry
+///   to the first band;
+/// * **libint** — inside `Engine::compute_quartet` (summed over threads);
+/// * **digest** — contracting each returned block into J and K;
+/// * **loop+screen** — the rest of each group's wall time: the `(s3, s4)`
+///   candidate loop, the Schwarz × density test, and the group's two `nbf²`
+///   partial allocations;
+/// * **folds** — the in-order folds of the group partials into J and K (and
+///   their release), run by whichever worker finds the next group ready while
+///   the others keep computing;
+/// * **outside groups** — `threads × (groups and folds wall) − Σ group wall`:
+///   worker time spent folding, waiting for the fold window, or idle at the
+///   end (load imbalance).
+///
+/// The per-quartet clock reads are themselves a cost (two reads per computed
+/// quartet); compare the profiled wall with an unprofiled one before reading
+/// small phases.
+struct BuildProfile {
+    t0: std::time::Instant,
+    n_pairs: usize,
+    n_groups: usize,
+    /// `(rayon thread, group wall ns, stage times)` per group.
+    groups: std::sync::Mutex<Vec<(usize, u64, ScatterTimes)>>,
+}
+
+impl BuildProfile {
+    fn new(t0: std::time::Instant, n_pairs: usize, n_groups: usize) -> Self {
+        BuildProfile {
+            t0,
+            n_pairs,
+            n_groups,
+            groups: std::sync::Mutex::new(Vec::with_capacity(n_groups)),
+        }
+    }
+
+    fn record_group(&self, t: std::time::Instant, times: &ScatterTimes) {
+        let wall = t.elapsed().as_nanos() as u64;
+        let tid = rayon::current_thread_index().unwrap_or(usize::MAX);
+        if let Ok(mut g) = self.groups.lock() {
+            g.push((tid, wall, *times));
+        }
+    }
+
+    fn report(&self, nbf: usize, nsh: usize, computed: usize, bands: &crate::reduce::StreamTimes) {
+        let wall = self.t0.elapsed().as_secs_f64();
+        let groups = self.groups.lock().map(|g| g.clone()).unwrap_or_default();
+        let threads = rayon::current_num_threads();
+        let mut sum = ScatterTimes::default();
+        let mut group_ns = 0u64;
+        let mut busy = std::collections::BTreeMap::<usize, u64>::new();
+        for (tid, w, t) in &groups {
+            sum.add(t);
+            group_ns += w;
+            *busy.entry(*tid).or_default() += w;
+        }
+        let s = |ns: u64| ns as f64 * 1e-9;
+        let produce = s(bands.wall_ns);
+        let fold = s(bands.fold_ns);
+        let setup = wall - produce;
+        let idle = threads as f64 * produce - s(group_ns);
+        let loop_screen = s(group_ns) - s(sum.libint_ns) - s(sum.digest_ns);
+        let (bmin, bmax) = busy
+            .values()
+            .fold((u64::MAX, 0u64), |(a, b), &v| (a.min(v), b.max(v)));
+        eprintln!(
+            "[timing] direct-jk build: nbf {nbf} nsh {nsh} bra pairs {} groups {} \
+             threads {threads}",
+            self.n_pairs, self.n_groups
+        );
+        eprintln!(
+            "[timing] direct-jk   wall {wall:.3} s = setup {setup:.3} + groups and folds \
+             {produce:.3} (in-order folds {fold:.3}, overlapping the groups)"
+        );
+        eprintln!(
+            "[timing] direct-jk   thread-seconds: groups {:.3} = libint {:.3} + digest {:.3} \
+             + loop/screen/alloc {loop_screen:.3}; outside groups (folds, waits) {idle:.3}",
+            s(group_ns),
+            s(sum.libint_ns),
+            s(sum.digest_ns),
+        );
+        eprintln!(
+            "[timing] direct-jk   per-thread busy min {:.3} max {:.3} s over {} threads; \
+             candidates {} survivors {} computed {computed}",
+            s(if bmin == u64::MAX { 0 } else { bmin }),
+            s(bmax),
+            busy.len(),
+            sum.candidates,
+            sum.survivors,
+        );
     }
 }
 

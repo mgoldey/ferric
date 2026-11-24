@@ -21,11 +21,16 @@ pub struct Rung {
     pub restart: bool,
 }
 
+/// What one finished rung of a ladder did.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RungOutcome {
+    /// SCF iterations the rung ran, against the rung's own `max_iter`.
     pub iters: usize,
+    /// The rung's exit reason.
     pub exit: ScfExit,
+    /// Always `f64::NAN`: the ladder driver does not fill it in.
     pub final_err_max: f64, // best-effort; set to f64::NAN if not surfaced
+    /// The rung's final total energy (Hartree).
     pub final_energy: f64,
 }
 
@@ -33,9 +38,15 @@ pub struct RungOutcome {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct LadderResult {
+    /// The first converged rung's result; if none converged, the
+    /// lowest-energy rung's result.
     pub result: ScfResult,
+    /// Whether some rung converged.
     pub converged: bool,
+    /// Index of the converged rung. When none converged, the index of the
+    /// lowest-energy rung.
     pub rung_reached: usize,
+    /// One entry per rung that ran, in order.
     pub rung_outcomes: Vec<RungOutcome>,
 }
 
@@ -211,6 +222,9 @@ pub fn rung_tricks(c: &RhfConfig) -> String {
     if c.mom_after_iter > 0 {
         v.push(format!("MOM@{}", c.mom_after_iter));
     }
+    if c.mom_reference == crate::mom::MomReference::Initial {
+        v.push("MOM@start".into());
+    }
     if c.use_sad_guess {
         v.push("MINAO guess".into());
     } else {
@@ -225,7 +239,7 @@ pub fn rung_tricks(c: &RhfConfig) -> String {
 /// whatever `[mp2] auxbasis` the caller may have configured for a downstream
 /// correlated method, per the project convention that SCF JK aux stays
 /// separate from RPA/MP2 aux (see `ferric-jk-aux-convention`).
-pub const DF_GUESS_DEFAULT_AUX: &str = "def2-universal-jkfit";
+pub const DF_GUESS_DEFAULT_AUX: &str = crate::options::DEFAULT_JK_AUX;
 
 /// Outcome of a [`solve_rhf_with_df_guess`] run: the exact-stage `ScfResult`
 /// plus enough of the DF stage's own outcome to audit that it actually ran
@@ -254,6 +268,25 @@ pub struct DfGuessResult {
     /// started from its own guess instead. It may have failed mid-iteration, so
     /// `df_iterations` = 0 means "no pre-stage density was used", not "no DF work".
     pub fallback: Option<String>,
+    /// `true` when the pre-stage did not run because the SCF itself fits J
+    /// and K on the pre-stage's auxiliary basis ([`df_guess_repeats_the_scf`]):
+    /// `result` is then the single fitted SCF, and `df_iterations` is 0.
+    pub skipped: bool,
+}
+
+impl DfGuessResult {
+    /// The result of a run whose pre-stage was skipped
+    /// ([`df_guess_repeats_the_scf`]): `result` is the SCF itself.
+    fn pre_stage_skipped(result: ScfResult) -> Self {
+        Self {
+            result,
+            df_iterations: 0,
+            df_converged: false,
+            df_energy: f64::NAN,
+            fallback: None,
+            skipped: true,
+        }
+    }
 }
 
 /// `max_iter` cap for the DF pre-stage (see `solve_rhf_with_df_guess` doc,
@@ -358,6 +391,12 @@ const DF_GUESS_ENERGY_CONV_FLOOR: f64 = 1e-2;
 /// `max_iter` without converging, its (still much-improved-over-cold-guess)
 /// density is used anyway — see `DfGuessResult::df_converged`.
 ///
+/// # A fitted SCF skips the pre-stage
+///
+/// When `base` itself fits J and K on the pre-stage's aux basis, the
+/// pre-stage would repeat the SCF; it is skipped and the result is
+/// `solve_rhf(base)`, flagged `skipped` (see [`df_guess_repeats_the_scf`]).
+///
 /// # Out of memory
 ///
 /// The pre-stage only ever chooses a starting density, so a run must not die for
@@ -375,6 +414,9 @@ pub fn solve_rhf_with_df_guess(
     base: &RhfConfig,
     df_aux: Option<&str>,
 ) -> Result<DfGuessResult, FerricError> {
+    if df_guess_repeats_the_scf(base, df_aux) {
+        return solve_rhf(ctx, mol, prep, op, bounds, base).map(DfGuessResult::pre_stage_skipped);
+    }
     match run_df_guess_pre_stage(ctx, mol, prep, op, bounds, base, df_aux) {
         Ok(df) => solve_rhf_from_df_density(ctx, mol, prep, op, bounds, base, df),
         Err(FerricError::MemoryExhausted(reason)) if ctx.size <= 1 => {
@@ -382,6 +424,34 @@ pub fn solve_rhf_with_df_guess(
         }
         Err(e) => Err(e),
     }
+}
+
+/// Whether `base` already fits both J and K on the pre-stage's auxiliary
+/// basis (`df_aux`, default [`DF_GUESS_DEFAULT_AUX`]).
+///
+/// The pre-stage is `base` with that aux and an iteration cap, so for such a
+/// `base` it would solve the same fitted SCF, and the stage after it would
+/// rebuild the same fitters to confirm the same fixed point. Skipping it
+/// returns `solve_rhf(base)` itself: the same fixed point, reached from
+/// `base`'s own guess, so the result agrees with the two-stage one within the
+/// SCF convergence thresholds rather than bitwise. The other choice, handing
+/// the pre-stage's fitters to the second stage, would keep the bits but still
+/// pay for the confirming iterations, and would carry built fitters across
+/// `solve_rhf` calls, where nothing ties them to the geometry they were built
+/// for.
+///
+/// Aux names compare case-insensitively after [`crate::rhf::normalize_df_aux`];
+/// an alias spelling of the same set is not recognized, and the pre-stage then
+/// runs as before.
+pub fn df_guess_repeats_the_scf(base: &RhfConfig, df_aux: Option<&str>) -> bool {
+    let pre_stage_aux = crate::rhf::normalize_df_aux(df_aux.unwrap_or(DF_GUESS_DEFAULT_AUX));
+    let fitted_on_pre_stage_aux = |aux: &Option<String>| {
+        aux.as_deref().is_some_and(|a| {
+            let a = crate::rhf::normalize_df_aux(a);
+            !a.is_empty() && a.eq_ignore_ascii_case(&pre_stage_aux)
+        })
+    };
+    fitted_on_pre_stage_aux(&base.df_j_aux) && fitted_on_pre_stage_aux(&base.df_k_aux)
 }
 
 /// The exact stage, started from the DF pre-stage's density.
@@ -409,6 +479,7 @@ fn solve_rhf_from_df_density(
         df_converged: df_result.converged,
         df_energy: df_result.energy,
         fallback: None,
+        skipped: false,
     })
 }
 
@@ -449,6 +520,7 @@ fn solve_rhf_without_df_guess(
         df_converged: false,
         df_energy: f64::NAN,
         fallback: Some(reason),
+        skipped: false,
     })
 }
 
@@ -473,6 +545,9 @@ pub(crate) fn run_df_guess_pre_stage(
     let mut df_cfg = base.clone();
     df_cfg.df_j_aux = Some(aux.to_string());
     df_cfg.df_k_aux = Some(aux.to_string());
+    // The fitted pre-stage has no in-core route; `[scf] eri` applies to the
+    // exact stage after it.
+    df_cfg.eri = crate::incore_jk::EriMode::Auto;
 
     // MEASURED: running the DF pre-stage to its STALL POINT (rather than to a
     // loosened threshold) is a win at both bases, benzene, 4 threads, idle box:
@@ -627,6 +702,8 @@ pub fn default_ladder_from(base: &RhfConfig) -> Vec<Rung> {
 /// DF-JK aux is auto-defaulted to `def2-universal-jkfit` only when the base
 /// leaves it unset AND a functional is present (hybrids/RSH need K; pure DFT
 /// still benefits from RI-J) — a bare-HF base with no aux keeps direct J/K.
+/// The defaults are [`crate::options::ks_jk_fit_defaults`] (so no RI-K
+/// default under COSX), the rule the Kohn-Sham entry points apply.
 pub fn ksdft_ladder(base: &RhfConfig) -> Vec<Rung> {
     let mk = |level_shift: f64, max_iter: usize| {
         let mut c = base.clone();
@@ -635,13 +712,15 @@ pub fn ksdft_ladder(base: &RhfConfig) -> Vec<Rung> {
         c.stall_window = Some(15);
         c.divergence_tol = Some(0.5);
         if c.xc.is_some() {
-            if c.df_j_aux.is_none() {
-                c.df_j_aux = Some("def2-universal-jkfit".to_string());
-            }
-            // RIJCOSX: COSX replaces RI-K, so no RI-K default under it.
-            if c.df_k_aux.is_none() && c.k_builder.as_deref() != Some("cosx") {
-                c.df_k_aux = Some("def2-universal-jkfit".to_string());
-            }
+            // The Kohn-Sham JK-fit defaults and the RIJCOSX rule, from their
+            // one home in `crate::options` (what the KS entry points apply).
+            let (j, k) = crate::options::ks_jk_fit_defaults(
+                c.k_builder,
+                c.df_j_aux.take(),
+                c.df_k_aux.take(),
+                crate::options::DEFAULT_JK_AUX.to_string(),
+            );
+            (c.df_j_aux, c.df_k_aux) = (Some(j), k);
         }
         c
     };
@@ -685,78 +764,6 @@ pub fn ksdft_ladder(base: &RhfConfig) -> Vec<Rung> {
             restart: false,
         },
     ]
-}
-
-/// Walk a convergence ladder using ROHF/ROKS, carrying each failed rung's density
-/// forward as the next rung's guess.
-///
-/// The open-shell counterpart of [`solve_rhf_ladder`]. ROHF/ROKS has no closed-shell
-/// fallback and is materially harder to converge — radicals and open-shell
-/// transition-metal complexes are exactly the systems that stall plain DIIS, and
-/// exactly what a robustness-oriented functional is for.
-///
-/// Returns the first converged rung, or the lowest-energy non-converged result with
-/// `converged: false`.
-pub fn solve_rohf_ladder(
-    ctx: &ParallelContext,
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    op: Operator,
-    bounds: &SchwarzBounds,
-    ladder: &[Rung],
-) -> Result<LadderResult, FerricError> {
-    let mut outcomes: Vec<RungOutcome> = Vec::new();
-    let mut best: Option<ScfResult> = None;
-    let mut carry: Option<ndarray::Array2<f64>> = None;
-    let mut guess_report: Option<GuessBasisReport> = None;
-
-    for (i, rung) in ladder.iter().enumerate() {
-        let mut cfg = rung.config.clone();
-        // Carry the previous rung's best-effort density in as this rung's guess.
-        if !rung.restart {
-            if let Some(d) = carry.as_ref() {
-                cfg.init_guess_density = Some(d.clone());
-            }
-        }
-        // See the identical block in `solve_rhf_ladder`.
-        let r = {
-            let _rung_scope = crate::runlog::RungScope::enter(i);
-            crate::rohf::solve_rohf_best_effort(ctx, mol, prep, op, bounds, &cfg)?
-        };
-        log_rung(ctx, i, &cfg, &r);
-        outcomes.push(RungOutcome {
-            iters: r.iterations,
-            exit: r.exit,
-            final_err_max: f64::NAN,
-            final_energy: r.energy,
-        });
-        note_guess_report(&mut guess_report, &r);
-        if r.converged {
-            return Ok(LadderResult {
-                result: with_guess_report(r, &guess_report),
-                converged: true,
-                rung_reached: i,
-                rung_outcomes: outcomes,
-            });
-        }
-        carry = Some(r.density_total.clone());
-        best = match best {
-            Some(b) if b.energy <= r.energy => Some(b),
-            _ => Some(r),
-        };
-    }
-
-    let result = with_guess_report(
-        best.ok_or_else(|| FerricError::General("solve_rohf_ladder: empty ladder".into()))?,
-        &guess_report,
-    );
-    let n = outcomes.len().saturating_sub(1);
-    Ok(LadderResult {
-        result,
-        converged: false,
-        rung_reached: n,
-        rung_outcomes: outcomes,
-    })
 }
 
 #[cfg(test)]
@@ -932,6 +939,55 @@ mod tests {
     /// `ksdft_ladder` structural guarantees (fast, no SCF): carries the base's
     /// functional/grid into every rung, escalates the level shift, and layers
     /// stall/divergence early-abort on top.
+    /// The rungs' JK-fit defaults equal the copy `ksdft_ladder` kept before
+    /// it called `options::ks_jk_fit_defaults` (the oracle below, verbatim),
+    /// for every combination of functional, aux settings and builder.
+    #[test]
+    fn ksdft_ladder_jk_defaults_match_its_old_copy() {
+        use crate::options::KBuilderKind;
+        let old = |c: &mut RhfConfig| {
+            if c.xc.is_some() {
+                if c.df_j_aux.is_none() {
+                    c.df_j_aux = Some("def2-universal-jkfit".to_string());
+                }
+                // RIJCOSX: COSX replaces RI-K, so no RI-K default under it.
+                if c.df_k_aux.is_none() && c.k_builder != Some(KBuilderKind::Cosx) {
+                    c.df_k_aux = Some("def2-universal-jkfit".to_string());
+                }
+            }
+        };
+        let auxes = [None, Some(""), Some("cc-pvtz-jkfit")];
+        let kinds = [
+            None,
+            Some(KBuilderKind::Direct),
+            Some(KBuilderKind::Link),
+            Some(KBuilderKind::Cosx),
+        ];
+        for xc in [None, Some("PBE"), Some("B3LYP")] {
+            for j in auxes {
+                for k in auxes {
+                    for kb in kinds {
+                        let base = RhfConfig {
+                            xc: xc.map(str::to_string),
+                            df_j_aux: j.map(str::to_string),
+                            df_k_aux: k.map(str::to_string),
+                            k_builder: kb,
+                            ..RhfConfig::default()
+                        };
+                        let mut want = base.clone();
+                        old(&mut want);
+                        for rung in ksdft_ladder(&base) {
+                            let c = rung.config;
+                            let case = format!("{xc:?} {j:?} {k:?} {kb:?}");
+                            assert_eq!(c.df_j_aux, want.df_j_aux, "{case}");
+                            assert_eq!(c.df_k_aux, want.df_k_aux, "{case}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn ksdft_ladder_carries_xc_and_escalates() {
         let grid = ferric_dft::grid::AtomicGridConfig {

@@ -69,12 +69,10 @@ fn test_export_npz() {
 
 /// Real round-trip check (not just "the file exists"): write non-trivial
 /// mo_coeffs/orbital_energies, read the NPZ back with NpzReader, and assert
-/// the values match exactly. Catches silent-None-passthrough bugs like the
-/// one found 2026-07-18 (item #11 in the triage doc): the CLI's export_npz
-/// call site hardcoded `None` for mo_coeffs despite the library API
-/// supporting it, so mo_coeffs was never actually written by any real
-/// caller even though the synthetic library-level test above always
-/// "passed" (it only checked file existence, not content).
+/// the values match exactly. Catches silent-None-passthrough bugs, e.g. a CLI export_npz
+/// call site hardcoding `None` for mo_coeffs despite the library API
+/// supporting it, which a file-existence check (like the synthetic
+/// library-level test above) cannot see.
 #[test]
 fn test_export_npz_round_trip_values() {
     let mo_coeffs =
@@ -234,6 +232,7 @@ fn npz_surface_esp_rejects_a_missing_half() {
 /// everything, so the arrays must outlive it; keeping them in one struct lets
 /// each test build the bundle with a single call.
 struct FullFixture {
+    certificate: String,
     mo_coeffs: Array2<f64>,
     orbital_energies: Vec<f64>,
     pdep_eigenvectors: Array2<f64>,
@@ -444,6 +443,7 @@ impl FullFixture {
             alpha_ct_dynamic,
             c6_iso,
             c6_aniso,
+            certificate: certificate_fixture().to_json().to_string(),
         }
     }
 
@@ -501,8 +501,20 @@ impl FullFixture {
                     c6_molecular_iso: C6_MOLECULAR_ISO_FIXTURE,
                 }),
             },
+            certificate: Some(&self.certificate),
         }
     }
+}
+
+/// A certificate with every field set, including non-ASCII text, so a
+/// writer that truncated, re-encoded or dropped the JSON fails the decode.
+fn certificate_fixture() -> ferric_core::certificate::Certificate {
+    use ferric_core::certificate::{energy_anchor, BuildStamp, Certificate};
+    Certificate::for_method_kind("pdep-rpa")
+        .with_build(BuildStamp::new("0.0.0", "fixturecommit", Some(true)))
+        .with_energy_anchor(energy_anchor("RI-MP2").unwrap())
+        .with_approximation("ri", "aux cc-pvdz-ri")
+        .warn("ωB97X-V outside the envelope (Å)")
 }
 
 /// C6 provenance fixture values. Deliberately the NON-default partition
@@ -530,7 +542,7 @@ const C6_MOLECULAR_ISO_FIXTURE: f64 = 137.913_57;
 ///     assertion — the omission cannot pass silently as the struct grows;
 ///   * a writer branch that stops firing (a silent-None passthrough at a call
 ///     site, the originating bug class) FAILS ("missing key").
-const EXPECTED_NPZ_KEYS: [&str; 32] = [
+const EXPECTED_NPZ_KEYS: [&str; 33] = [
     "mo_coeffs",
     "orbital_energies",
     "pdep_eigenvectors",
@@ -570,6 +582,8 @@ const EXPECTED_NPZ_KEYS: [&str; 32] = [
     "c6_source",
     "c6_molecular_iso",
     "dipole",
+    // The result certificate as UTF-8 JSON bytes (`|u1`).
+    "certificate",
 ];
 
 /// A fully-populated bundle writes EXACTLY the expected key set — no more, no
@@ -617,8 +631,7 @@ fn npz_export_writes_exactly_the_expected_key_set() {
 }
 
 /// EXACT value round-trip for EVERY field `export_npz` can write, including
-/// `pdep_eigenvectors` and `boys_coeffs` (which previously had no value check
-/// at all) and every nested charge/polarizability/dispersion field.
+/// `pdep_eigenvectors` and `boys_coeffs` (which have no other value check) and every nested charge/polarizability/dispersion field.
 ///
 /// Equality is EXACT (`assert_eq!` on f64 / `Array` values, not a tolerance):
 /// NPZ is a lossless binary container, so anything other than bit-identical
@@ -836,6 +849,17 @@ fn npz_export_round_trips_every_bundle_field() {
              to prevent"
         );
     }
+
+    // --- certificate: UTF-8 JSON bytes, equal to the JSON that was written.
+    let raw: Array1<u8> = r
+        .by_name("certificate")
+        .expect("certificate must be readable as (n,) u8");
+    let text = String::from_utf8(raw.to_vec()).expect("certificate: valid UTF-8");
+    assert_eq!(
+        text,
+        certificate_fixture().to_json().to_string(),
+        "certificate round-trip mismatch"
+    );
 
     // --- c6_molecular_iso: the length-1 f64 OBSERVABLE.
     let mol: Array1<f64> = r

@@ -79,14 +79,12 @@ fn has_deriv2() -> bool {
 }
 
 fn config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 300,
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(300)
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10)
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new())
 }
 
 fn ecp_mol(xyz: &str, charge: i32, mult: usize, bs: &BasisSet) -> Molecule {
@@ -214,6 +212,7 @@ fn unmasked_skeleton(mol: &Molecule, bs: &BasisSet, d: &Array2<f64>, h: f64) -> 
     out
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn masked_stencil_matches_unmasked_stencil_of_the_gradient_matrices() {
     let bs = basis::bundled("def2-svp").unwrap();
@@ -249,6 +248,7 @@ fn translational_invariance() {
     assert!(worst < 1e-10, "column sum {worst:.3e}");
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn stencil_step_sweep() {
     let bs = basis::bundled("def2-svp").unwrap();
@@ -304,6 +304,7 @@ fn check_against_fd(open_shell: bool, xyz: &str, charge: i32, mult: usize, cols:
     );
 }
 
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rhf_hessian_matches_fd_of_analytic_gradient() {
     if !has_deriv2() {
@@ -312,6 +313,7 @@ fn rhf_hessian_matches_fd_of_analytic_gradient() {
     check_against_fd(false, HOI, 0, 1, &[4]);
 }
 
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uhf_hessian_matches_fd_of_analytic_gradient() {
     if !has_deriv2() {

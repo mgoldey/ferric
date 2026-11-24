@@ -65,6 +65,7 @@ use ferric_scf::result::{ScfResult, Spin};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::compare::{max_abs, max_abs_diff};
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -126,14 +127,12 @@ fn mol_of(xyz: &str, mult: usize) -> Molecule {
 
 /// Exact J/K, tight convergence.
 fn scf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 500,
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(500)
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10)
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new())
 }
 
 fn prep_for(m: &Molecule, basis_name: &str) -> (PreparedBasis, SchwarzBounds) {
@@ -197,17 +196,6 @@ fn fd_richardson(
     let coarse = fd_hessian(mol, h, grad);
     let fine = fd_hessian(mol, 0.5 * h, grad);
     (4.0 * fine - coarse) / 3.0
-}
-
-fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    assert_eq!(a.dim(), b.dim());
-    a.iter()
-        .zip(b.iter())
-        .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()))
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0f64, |m, x| m.max(x.abs()))
 }
 
 fn assert_close(ctx: &str, got: &Array2<f64>, want: &Array2<f64>, tol: f64) {
@@ -444,6 +432,7 @@ fn check_fd(c: &Case) {
     assert!(resp > 1e-1, "vacuous: response max {resp:.3e}");
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn analytic_matches_fd_of_rohf_gradient_nh2() {
     if has_deriv2() {
@@ -451,6 +440,7 @@ fn analytic_matches_fd_of_rohf_gradient_nh2() {
     }
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn analytic_matches_fd_of_rohf_gradient_ch2_triplet() {
     if has_deriv2() {
@@ -458,6 +448,7 @@ fn analytic_matches_fd_of_rohf_gradient_ch2_triplet() {
     }
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn analytic_matches_fd_of_rohf_gradient_ho2() {
     if has_deriv2() {
@@ -608,6 +599,7 @@ fn check_controls(c: &Case) {
     );
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn negative_controls_miss_on_all_three_systems() {
     if !has_deriv2() {
@@ -657,6 +649,7 @@ fn check_mutants(c: &Case) {
     );
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn response_mutants_are_caught_nh2() {
     if has_deriv2() {
@@ -664,6 +657,7 @@ fn response_mutants_are_caught_nh2() {
     }
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn response_mutants_are_caught_ch2_triplet() {
     if has_deriv2() {
@@ -671,6 +665,7 @@ fn response_mutants_are_caught_ch2_triplet() {
     }
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn response_mutants_are_caught_ho2() {
     if has_deriv2() {
@@ -807,11 +802,13 @@ fn check_pyscf(system: &str) {
     );
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn analytic_matches_pyscf_fd_nh2() {
     check_pyscf("nh2");
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn analytic_matches_pyscf_fd_ch2_triplet() {
     check_pyscf("ch2_triplet");
@@ -905,11 +902,9 @@ fn stored_focks_are_checked_against_the_rebuilt_ones() {
     let op = Operator::coulomb();
     // Matching: at the tight tolerance and at the default one.
     let dev_tight = fock_deviation(c, &c.rohf);
-    let default_cfg = RhfConfig {
-        density_conv: RhfConfig::default().density_conv,
-        energy_conv: RhfConfig::default().energy_conv,
-        ..scf_config()
-    };
+    let default_cfg = scf_config()
+        .with_density_conv(RhfConfig::default().density_conv)
+        .with_energy_conv(RhfConfig::default().energy_conv);
     let loose = solve_rohf(&ctx, &c.mol, &c.prep, op, &c.bounds, &default_cfg).unwrap();
     let dev_default = fock_deviation(c, &loose);
     // Perturbed stored Fock, and a ROKS/PBE result handed an HF config.
@@ -918,10 +913,7 @@ fn stored_focks_are_checked_against_the_rebuilt_ones() {
     fa[(0, 0)] += 1e-3;
     bad.rohf_spin_focks = Some((fa, fb));
     let dev_bad = fock_deviation(c, &bad);
-    let roks_cfg = RhfConfig {
-        xc: Some("PBE".into()),
-        ..scf_config()
-    };
+    let roks_cfg = scf_config().with_xc("PBE");
     let roks = solve_rohf(&ctx, &c.mol, &c.prep, op, &c.bounds, &roks_cfg).unwrap();
     let dev_roks = fock_deviation(c, &roks);
     eprintln!(
@@ -939,7 +931,26 @@ fn stored_focks_are_checked_against_the_rebuilt_ones() {
         "perturbed Focks too close"
     );
     hessian_of(c, &loose, &default_cfg).expect("default-tolerance result must be accepted");
-    for (what, res) in [("perturbed", &bad), ("ROKS result, HF config", &roks)] {
+    // The ROKS result as solve_rohf returns it is refused earlier, by the
+    // functional it records (ScfResult::xc); with that record cleared (as on a
+    // hand-built result) the Fock comparison is what catches it.
+    let err = hessian_of(c, &roks, &cfg).expect_err("ROKS result, HF config");
+    assert!(
+        err.to_string()
+            .contains("converged with the functional \"PBE\""),
+        "ROKS result, HF config: {err}"
+    );
+    let unrecorded = ferric_scf::result::ScfResult {
+        xc: None,
+        ..roks.clone()
+    };
+    for (what, res) in [
+        ("perturbed", &bad),
+        (
+            "ROKS result without its functional record, HF config",
+            &unrecorded,
+        ),
+    ] {
         let err = hessian_of(c, res, &cfg).expect_err(what);
         eprintln!("{what}: {err}");
         assert!(
@@ -965,8 +976,8 @@ fn cosx_and_external_potential_results_are_refused() {
     let err = hessian_of(c, &cosx, &scf_config()).expect_err("COSX");
     assert!(err.to_string().contains("COSX"), "{err}");
 
-    let ext_cfg = RhfConfig {
-        external_potential: Some(ferric_core::external_potential::ExternalPotential {
+    let ext_cfg =
+        scf_config().with_external_potential(ferric_core::external_potential::ExternalPotential {
             point_charges: vec![ferric_core::external_potential::PointCharge {
                 q: 0.5,
                 x: 6.0,
@@ -974,9 +985,7 @@ fn cosx_and_external_potential_results_are_refused() {
                 z: 0.0,
             }],
             ..Default::default()
-        }),
-        ..scf_config()
-    };
+        });
     let err = hessian_of(c, &c.rohf, &ext_cfg).expect_err("external potential");
     eprintln!("{err}");
     assert!(err.to_string().contains("external potential"), "{err}");
@@ -1100,11 +1109,9 @@ fn default_scf_tolerance_error_of_the_hessian() {
     let c = nh2();
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
-    let default_cfg = RhfConfig {
-        density_conv: RhfConfig::default().density_conv,
-        energy_conv: RhfConfig::default().energy_conv,
-        ..scf_config()
-    };
+    let default_cfg = scf_config()
+        .with_density_conv(RhfConfig::default().density_conv)
+        .with_energy_conv(RhfConfig::default().energy_conv);
     let loose = solve_rohf(&ctx, &c.mol, &c.prep, op, &c.bounds, &default_cfg).unwrap();
     let go = |m: RohfMutation| {
         rohf_hessian_parts_mutated(

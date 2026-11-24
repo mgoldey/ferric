@@ -44,13 +44,11 @@ fn setup(mol: Molecule, basis: &str) -> Setup {
     let bs = bundled(basis).expect("basis");
     let prep = PreparedBasis::new(&mol, &bs).expect("prep");
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).expect("schwarz");
-    let cfg = RhfConfig {
-        df_j_aux: Some(JK.to_string()),
-        df_k_aux: Some(JK.to_string()),
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_df_j_aux(JK.to_string())
+        .with_df_k_aux(JK.to_string())
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8);
     let r = solve_rhf(
         &ParallelContext::default(),
         &mol,
@@ -107,6 +105,7 @@ fn bits(k: &Array2<f64>) -> Vec<u64> {
     k.iter().map(|v| v.to_bits()).collect()
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn multiplier_zero_routes_nothing_and_k_is_bit_identical_to_the_unrouted_build() {
     let s = butane();
@@ -184,6 +183,7 @@ fn routed_share_is_zero_at_multiplier_zero_one_at_infinity_and_monotone_between(
     eprintln!("butane/def2-SVP router shares (0, 1e2..1e6, inf): {shares:?}");
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_router_never_routes_a_unit_the_screen_dropped() {
     let s = butane();
@@ -244,9 +244,8 @@ fn the_flop_weight_is_the_pair_flops_table_times_points() {
     // pairs), so the denominator is bracketed: at most the whole table x npts.
     let npts = pool().install(|| {
         let ctx = ParallelContext::default();
-        CosxK::new(&ctx, &s.mol, &s.prep, cfg(0.0), usize::MAX)
-            .expect("CosxK")
-            .npts()
+        let kb = CosxK::new(&ctx, &s.mol, &s.prep, cfg(0.0), usize::MAX).expect("CosxK");
+        kb.npts()
     }) as u64;
     assert!(all.pairs_kept as f64 > 0.99 * all.pairs_total as f64);
     let full = table_sum * npts;
@@ -363,18 +362,16 @@ fn rijcosx_scf_energy_is_bit_identical_with_the_router_on() {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
     let run = |m: f64| {
-        let c = RhfConfig {
-            k_builder: Some("cosx".to_string()),
-            cosx: CosxConfig {
+        let c = RhfConfig::default()
+            .with_k_builder(ferric_scf::options::KBuilderKind::Cosx)
+            .with_cosx(CosxConfig {
                 fp64_multiplier: m,
                 ..CosxConfig::default()
-            },
-            df_j_aux: Some(JK.to_string()),
-            df_k_aux: Some(String::new()),
-            energy_conv: 1e-9,
-            density_conv: 1e-8,
-            ..Default::default()
-        };
+            })
+            .with_df_j_aux(JK.to_string())
+            .with_df_k_aux(String::new())
+            .with_energy_conv(1e-9)
+            .with_density_conv(1e-8);
         pool().install(|| {
             solve_rhf(
                 &ParallelContext::default(),

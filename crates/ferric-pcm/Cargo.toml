@@ -12,11 +12,13 @@ ferric-core = { path = "../ferric-core" }
 ferric-integrals = { path = "../ferric-integrals" }
 ferric-quadrature = { path = "../ferric-quadrature" }
 ndarray = { workspace = true }
+rayon = { workspace = true }
 ndarray-linalg = { workspace = true }
 openblas-src = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]
+ferric-testkit = { path = "../ferric-testkit" }
 serde_json = { workspace = true }
 toml = { workspace = true }

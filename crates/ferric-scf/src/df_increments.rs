@@ -14,7 +14,7 @@
 //! This is opt-in: `RhfConfig` gains no new field for it, and the only entry
 //! point is [`solve_rhf_with_df_increments`], called explicitly. It touches
 //! no existing code path — `solve_rhf`'s own exact incremental-Fock mechanism
-//! (`INCREMENTAL_FULL_REBUILD_EVERY`, `d_last_fock`) is completely untouched,
+//! (`driver::INCREMENTAL_FULL_REBUILD_EVERY`, `d_last_fock`) is completely untouched,
 //! and `solve_rhf_with_df_guess` is reused only via its pre-stage helper
 //! (`ladder::run_df_guess_pre_stage`), never mutated.
 //!
@@ -50,8 +50,10 @@
 //! # Literature
 //!
 //! This is not a novel scheme. It is structurally identical to the exact
-//! incremental-Fock mechanism already in `rhf.rs`
-//! (`DirectJK::build_incremental`, `F(D) = F(D_last) + ΔF(ΔD)`), with the
+//! incremental-Fock mechanism the SCF drivers already use
+//! (`DirectJK::build_incremental` in `direct_jk.rs`, rebuilt in full every
+//! `driver::INCREMENTAL_FULL_REBUILD_EVERY` iterations,
+//! `F(D) = F(D_last) + ΔF(ΔD)`), with the
 //! delta-Fock kernel swapped from the exact 4-index builder to a cheap DF/RI
 //! builder — i.e. "incremental Fock, but the increment uses an approximate
 //! kernel instead of the exact one." That "freeze an expensive reference
@@ -279,11 +281,12 @@ pub fn solve_rhf_with_df_increments(
     // XC/COSMO/PCM/polarizable/RSH machinery `prepare` also assembles — see
     // "What this does NOT support" above.
     let s = ferric_integrals::oneelectron::overlap(prep);
-    let h = ferric_integrals::oneelectron::hcore_ecp_with_external(
+    let h = crate::x2c::reference_hcore(
         prep,
         mol,
         prep.basis_set(),
         base.external_potential.as_ref(),
+        base.relativistic,
     )?;
     let vnn = mol.nuclear_repulsion()
         + base.external_potential.as_ref().map_or(0.0, |ext| {
@@ -292,7 +295,9 @@ pub fn solve_rhf_with_df_increments(
     let x = canonical_orthogonalizer(&s)?;
 
     // ---- Stage 2: ONE exact full build at D0, retained as F_ex(D0) ------
-    let mut direct_jk = DirectJK::new(ctx, prep, bounds, base.integral_thresh, ooc_budget);
+    bounds.gc.set_request(base.gc_rotation);
+    let mut direct_jk = DirectJK::new(ctx, prep, bounds, base.integral_thresh, ooc_budget)
+        .with_gc_request(base.gc_rotation);
     let mut exact_builds = 0usize;
     let mut exact_quartets = 0usize;
     let mut j_ref = Array2::<f64>::zeros((n, n));
@@ -318,6 +323,21 @@ pub fn solve_rhf_with_df_increments(
         Some(aux),
         ooc_budget,
         0.0,
+        // The increments correct an EXACT reference Fock matrix, so their DF
+        // error is what the scheme measures: f64 unless asked otherwise.
+        match base.ri_j_precision {
+            Some(precision) => crate::df_j::ResolvedRiJPrecision {
+                precision,
+                source: crate::df_j::RiJPrecisionSource::Explicit,
+                site: ferric_core::gpu::DeviceSite::plain(prep.nbasis()),
+            },
+            None => crate::df_j::ResolvedRiJPrecision {
+                precision: crate::df_j::RiJPrecision::F64,
+                source: crate::df_j::RiJPrecisionSource::PathDefault,
+                site: ferric_core::gpu::DeviceSite::plain(prep.nbasis()),
+            },
+        },
+        crate::df_k::RiKPrecision::resolve(base.ri_k_precision, prep.nbasis()),
     )?;
     let mut df_j = df_j_opt.ok_or_else(|| {
         FerricError::General(
@@ -476,10 +496,12 @@ pub fn solve_rhf_with_df_increments(
                 // The reported energy comes from the exact cleanup iterations.
                 df_jk: None,
                 rohf_spin_focks: None,
+                xc: None,
                 cosx_final: None,
                 cosx_schedule: None,
                 convergence: None,
                 precision: probe.finish(ferric_core::gpu::provenance::SCF_KERNELS),
+                relativistic: base.relativistic,
             };
             return Ok(DfIncrementsResult {
                 result,
@@ -519,10 +541,12 @@ pub fn solve_rhf_with_df_increments(
                 // The reported energy comes from the exact cleanup iterations.
                 df_jk: None,
                 rohf_spin_focks: None,
+                xc: None,
                 cosx_final: None,
                 cosx_schedule: None,
                 convergence: None,
                 precision: probe.finish(ferric_core::gpu::provenance::SCF_KERNELS),
+                relativistic: base.relativistic,
             };
             return Ok(DfIncrementsResult {
                 result,

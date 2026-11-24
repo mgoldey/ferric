@@ -31,10 +31,7 @@
 //! The pool is process-global, so these tests serialize on a private lock and
 //! clear the slot on entry and exit.
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
 use ferric_core::memory::pool::{clear_global, install_global, MemoryPool};
-use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
@@ -43,37 +40,9 @@ use ferric_scf::ks_gradient::ks_gradient_closed;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
+use ferric_testkit::molecules::water_xyz;
+use ferric_testkit::pool::CleanSlot;
 use ndarray::Array2;
-
-fn global_lock() -> MutexGuard<'static, ()> {
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    }
-}
-
-/// Clear the process-global pool on entry AND exit so one test's pool can
-/// never leak into another's "unbudgeted" assertions.
-struct CleanSlot(#[allow(dead_code)] MutexGuard<'static, ()>);
-
-impl CleanSlot {
-    fn acquire() -> Self {
-        let g = global_lock();
-        clear_global();
-        Self(g)
-    }
-}
-
-impl Drop for CleanSlot {
-    fn drop(&mut self) {
-        clear_global();
-    }
-}
-
-fn water() -> Molecule {
-    Molecule::load_xyz("../../testdata/molecules/water.xyz").expect("water.xyz")
-}
 
 /// Assert two gradients agree to the BIT, naming the first offending element.
 fn assert_bit_identical(a: &Array2<f64>, b: &Array2<f64>, what: &str) {
@@ -91,7 +60,7 @@ fn assert_bit_identical(a: &Array2<f64>, b: &Array2<f64>, what: &str) {
 
 /// Analytic RHF nuclear gradient on water/6-31G.
 fn run_rhf_gradient() -> Array2<f64> {
-    let mol = water();
+    let mol = water_xyz();
     let bs = ferric_core::basis::bundled("6-31g").expect("6-31g");
     let obs = PreparedBasis::new(&mol, &bs).expect("prepared basis");
     let op = Operator::coulomb();
@@ -104,7 +73,7 @@ fn run_rhf_gradient() -> Array2<f64> {
 
 /// Analytic UHF nuclear gradient on a water cation doublet / STO-3G.
 fn run_uhf_gradient() -> Array2<f64> {
-    let mut mol = water();
+    let mut mol = water_xyz();
     mol.charge = 1;
     mol.multiplicity = 2;
     let bs = ferric_core::basis::bundled("sto-3g").expect("sto-3g");
@@ -123,16 +92,13 @@ fn run_uhf_gradient() -> Array2<f64> {
 /// (`ddchi`) on the DFT grid, which is the largest single allocation in the
 /// whole gradient stack.
 fn run_ks_gradient() -> Array2<f64> {
-    let mol = water();
+    let mol = water_xyz();
     let bs = ferric_core::basis::bundled("6-31g").expect("6-31g");
     let obs = PreparedBasis::new(&mol, &bs).expect("prepared basis");
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).expect("schwarz");
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        xc: Some("PBE".into()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default().with_xc("PBE");
     let scf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).expect("KS-DFT must converge");
     ks_gradient_closed(&mol, &obs, &bs, op, &bounds, "PBE", &scf, None).expect("KS gradient")
 }

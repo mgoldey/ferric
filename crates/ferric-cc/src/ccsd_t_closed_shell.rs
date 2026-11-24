@@ -12,12 +12,14 @@
 //! Komornicki, Chem. Phys. Lett. 178, 462 (1991)** / **Lee & Rendell, JCP 94,
 //! 6229 (1991)**, in the concrete index convention of PySCF's
 //! `pyscf/cc/ccsd_t_slow.py` (`kernel` + `r3`), which cites JCP 94, 442
-//! (1991). PySCF's loop bands over *virtual* triples `a>=b>=c` with the `d3`
-//! multiplicity trick; this module bands over *occupied* triples `i<=j<=k`
-//! instead — the mirror-image restriction — so the per-triple working set is a
-//! `[nv,nv,nv]` block, matching the memory structure of the spin-orbital
-//! sibling and keeping the same `check_alloc` guard shape. The two bandings
-//! were proven numerically equivalent in numpy against PySCF's own
+//! (1991). Like PySCF's production kernel (`lib/cc/ccsd_t.c`), the loop bands
+//! over *virtual* triples `a<=b<=c` and evaluates every occupied `(i,j,k)` of
+//! a triple at once, so the per-triple working set is a `[no,no,no]` block
+//! that stays in cache, and the six pair permutations, `V`, `W̃` and the
+//! denominator are applied in passes over that small block. The equations
+//! below are written for a fixed occupied triple; the virtual banding is their
+//! mirror image (see "Combinatorial factor"). The occupied and virtual
+//! bandings were proven numerically equivalent in numpy against PySCF's own
 //! `ccsd_t_slow.kernel` before any Rust was written (residual 7.8e-16 on a
 //! random 4-occupied / 6-virtual system with fully 8-fold-symmetric RI
 //! integrals), and the Rust is proven against the spin-orbital `(T)` on real
@@ -34,7 +36,8 @@
 //! w0[a,b,c] = Σ_d (ia|bd) · t2[k,j,c,d]  −  Σ_l (ia|lj) · t2[l,k,b,c]
 //! ```
 //!
-//! (both BLAS3 GEMMs on `[nv*nv, nv]`-shaped reshapes — see `raw_w_block`).
+//! (both BLAS3 GEMMs; for a fixed virtual triple they run over all occupied
+//! indices at once — see `raw_w_pair`).
 //! The physical `W` is the sum of `w0` over the **6 simultaneous permutations
 //! of the three (occupied, virtual) PAIRS** `(i,a) (j,b) (k,c)`:
 //!
@@ -42,10 +45,11 @@
 //! W[a,b,c] = Σ_{π ∈ S3} w0(i_π, j_π, k_π)[a_π, b_π, c_π]
 //! ```
 //!
-//! i.e. each permuted raw block has its *virtual* axes permuted back by the
-//! inverse permutation before accumulation (see `w_block`). `W` is therefore
-//! invariant under any simultaneous pair relabeling — the property the
-//! occupied-triple banding rests on.
+//! `W` is therefore invariant under any simultaneous pair relabeling — the
+//! property the triple banding rests on. With the virtual triple fixed, each
+//! raw block is computed for the permuted VIRTUAL labels over all occupied
+//! indices, and its occupied axes are permuted back by the inverse
+//! permutation before accumulation (see `triple_energy`).
 //!
 //! The disconnected (T1) piece adds the singles×integral terms:
 //!
@@ -62,11 +66,13 @@
 //!            − 2·W[c,b,a] − 2·W[a,c,b] − 2·W[b,a,c]
 //! ```
 //!
-//! (PySCF's `r3`, acting here on the virtual axes) and finally
+//! (PySCF's `r3`; by pair invariance the same pattern acts on the occupied
+//! axes of a fixed virtual triple, which is how the kernel applies it) and
+//! finally
 //!
 //! ```text
 //! D[a,b,c] = ε_i + ε_j + ε_k − ε_a − ε_b − ε_c
-//! E_(T)    = (1/3) Σ_{i<=j<=k} m(i,j,k) · Σ_{a,b,c} W̃[a,b,c]·V[a,b,c] / D[a,b,c]
+//! E_(T)    = (1/3) Σ_{a<=b<=c} m(a,b,c) · Σ_{i,j,k} W̃·V / D
 //! ```
 //!
 //! # Combinatorial factor — DERIVED, not assumed
@@ -94,45 +100,48 @@
 //!
 //! Since `f` *is* invariant under simultaneous relabeling of `(i,j,k)` with
 //! `(a,b,c)` (verified elementwise in scratch: all 6 orderings of a sample
-//! index set agreed to ~1e-18) and `a,b,c` here range over the FULL axes, this
-//! module bands over `i<=j<=k` with an explicit multiplicity weight
+//! index set agreed to ~1e-18), the sum over the orderings of a virtual triple
+//! equals that ordering count times the sum at `a<=b<=c` with `i,j,k` over the
+//! FULL axes. This module therefore bands over `a<=b<=c` with an explicit
+//! multiplicity weight
 //!
 //! ```text
-//! m(i,j,k) = 1  if i==j==k        (1 ordering)
+//! m(a,b,c) = 1  if a==b==c        (1 ordering)
 //!          = 3  if exactly two are equal
 //!          = 6  if all three distinct
 //! ```
 //!
-//! reproducing the unrestricted sum exactly. See `occ_triple_multiplicity`.
-//! The `i<=j<=k` banded weighted sum divided by 3 reproduced PySCF to 7.8e-16
-//! in scratch (`step5.py`, `step6.py`) before this file existed.
+//! reproducing the unrestricted sum exactly. See `triple_multiplicity`. The
+//! same argument with the roles swapped gives the `i<=j<=k` banding; both
+//! banded weighted sums divided by 3 reproduced PySCF to 7.8e-16 in scratch
+//! (`step5.py`, `step6.py`) before this file existed. Repeated VIRTUAL indices
+//! are physical for the same reason repeated occupied ones are (spatial
+//! orbitals), so `a==b` and `a==b==c` are in the band with weights 3 and 1.
 //!
 //! # Cost vs the spin-orbital path
 //!
-//! Per triple both paths do a fixed number of `raw_w`-shaped GEMMs whose cost
-//! is `O(nv_axis³)`:
+//! Leading GEMM cost, in multiply-adds:
 //!
-//! - spin-orbital: `C(2no,3) ≈ (2no)³/6` triples × 3 occupied permutations ×
-//!   `O((2nv)³)` ⇒ `~ 8no³ · 8nv³ / 2 = 32 no³nv³`
-//! - closed-shell: `~ no³/6` triples (i<=j<=k) × 6 pair permutations ×
-//!   `O(nv³)` ⇒ `~ no³nv³`
+//! - spin-orbital: `C(2no,3) ≈ (2no)³/6` occupied triples × 3 occupied
+//!   permutations × `(2nv)⁴` ⇒ `~ 32 no³nv⁴`
+//! - closed-shell: `~ nv³/6` virtual triples × 6 pair permutations ×
+//!   `(no³·nv + no⁴)` ⇒ `~ no³nv⁴ + no⁴nv³`
 //!
-//! so the *ideal* FLOP ratio is ~32×. The realized speedup is smaller (the
-//! closed-shell block has more per-triple permutation/transpose bookkeeping
-//! and a smaller GEMM that gets less BLAS3 reuse) — see the measured numbers
-//! recorded in the module tests and in docs/VALIDATION.md rather than
-//! trusting this estimate.
+//! so the *ideal* FLOP ratio is ~32×. Measured times are in
+//! `site/src/methods/cc.md` and the `perf_*` tests below; do not trust this
+//! estimate in their place.
 //!
 //! # Memory and determinism
 //!
-//! Same structure as the spin-orbital sibling: peak resident is a handful of
-//! `[nv,nv,nv]` f64 buffers per in-flight triple (`peak_triple_block_bytes`,
-//! `nv` not `2nv`, i.e. 8× smaller per buffer) plus the precomputed
-//! `O(no·nv³)`-class chemist blocks. Parallel reduction is the same
-//! chunk-then-collect-then-serial-fold idiom: chunk width is a pure function
-//! of `nv` and the byte budget (never `rayon::current_num_threads()`), and
-//! chunk partials are folded serially in ascending triple order, so the result
-//! is bit-identical at any thread count (asserted by
+//! Peak resident is three `[no,no,no]` f64 buffers (plus a `(2·no, nv)`
+//! operand and three `[no,no]` slices) per in-flight `(a,b)` job
+//! (`peak_job_bytes`) plus the precomputed `O(no·nv³)`-class chemist blocks. The parallel unit is a virtual pair
+//! `a<=b`, which runs its `c = b..nv` triples serially; the reduction is the
+//! spin-orbital sibling's chunk-then-collect-then-serial-fold idiom: band
+//! width is a pure function of `(no, nv)` and the byte budget (never
+//! `rayon::current_num_threads()`), every GEMM runs on one BLAS thread, and job
+//! partials are folded serially in ascending `(a,b)` order, so the result is
+//! bit-identical at any thread count (asserted by
 //! `thread_count_bit_identical_h2o_ccpvdz` below).
 
 use super::{CcConfig, CcResult};
@@ -144,94 +153,99 @@ use ferric_integrals::operator::Operator;
 use ferric_mp2::mo_transform::{transform_3center_oo, transform_3center_ov, transform_3center_vv};
 use ferric_mp2::rimp2::{active_occ, cholesky_inverse_sqrt};
 use ferric_mp2::spinorbital::build_b;
+use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 use ferric_tensors::{einsum, Axis};
-use ndarray::{Array2, Array3, Array4};
+use ndarray::linalg::general_mat_mul;
+use ndarray::{s, Array2, Array3, Array4};
 use rayon::prelude::*;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
-/// The 6 permutations of `(0,1,2)` in a fixed, deterministic order. Used both
-/// to build the pair-symmetrized `W` and to enumerate the multiplicity classes.
-const PERMS3: [[usize; 3]; 6] = [
-    [0, 1, 2],
-    [0, 2, 1],
-    [1, 0, 2],
-    [1, 2, 0],
-    [2, 0, 1],
-    [2, 1, 0],
+/// The 6 permutations of `(0,1,2)` in a fixed, deterministic order, grouped
+/// in pairs that agree in their LAST position. Both orderings of a pair put
+/// the same virtual label third, so their raw blocks share the `t2x` operand
+/// and are computed by one stacked GEMM (see `raw_w_pair`).
+const PERM_PAIRS: [[[usize; 3]; 2]; 3] = [
+    [[0, 1, 2], [1, 0, 2]],
+    [[0, 2, 1], [2, 0, 1]],
+    [[1, 2, 0], [2, 1, 0]],
 ];
 
-/// Number of distinct orderings of the occupied triple `(i,j,k)` given
-/// `i <= j <= k`.
+/// Number of distinct orderings of the virtual triple `(a,b,c)` given
+/// `a <= b <= c`.
 ///
-/// This is the weight that turns the banded `i<=j<=k` loop back into the
-/// unrestricted `Σ_{i,j,k}` sum the `1/3` divisor is defined against. Unlike
-/// the spin-orbital path, repeated spatial occupied indices are physical and
-/// carry a large part of the energy (see the module doc) — dropping them, or
-/// weighting every triple by 6, is a silent >50% error.
-fn occ_triple_multiplicity(i: usize, j: usize, k: usize) -> f64 {
-    debug_assert!(i <= j && j <= k);
-    if i == k {
-        1.0 // i == j == k
-    } else if i == j || j == k {
+/// This is the weight that turns the banded `a<=b<=c` loop back into the
+/// unrestricted `Σ_{a,b,c}` sum the `1/3` divisor is defined against.
+/// Repeated spatial indices are physical (see the module doc) — dropping
+/// them, or weighting every triple by 6, is a silent large error.
+fn triple_multiplicity(a: usize, b: usize, c: usize) -> f64 {
+    debug_assert!(a <= b && b <= c);
+    if a == c {
+        1.0 // a == b == c
+    } else if a == b || b == c {
         3.0
     } else {
         6.0
     }
 }
 
-/// Enumerate every `i <= j <= k` occupied triple in ascending lexicographic
-/// order. Pure function of `no` — the determinism anchor for the banded
-/// parallel reduction (chunk boundaries must never depend on thread count).
-fn occ_triples_with_repeats(no: usize) -> Vec<(usize, usize, usize)> {
-    let mut out = Vec::new();
-    for i in 0..no {
-        for j in i..no {
-            for k in j..no {
-                out.push((i, j, k));
-            }
+/// Every `a <= b` virtual pair in ascending lexicographic order: one parallel
+/// job each, which then runs `c = b..nv` serially. Pure function of `nv` — the
+/// determinism anchor for the banded reduction (job boundaries and the fold
+/// order never depend on the thread count).
+fn virtual_pairs(nv: usize) -> Vec<(usize, usize)> {
+    let mut out = Vec::with_capacity(nv * (nv + 1) / 2);
+    for a in 0..nv {
+        for b in a..nv {
+            out.push((a, b));
         }
     }
     out
 }
 
-/// Peak bytes for the per-triple `[nv,nv,nv]` working set (raw block, `W`,
-/// `V`, `W̃`, and two scratch transposes — 6 buffers, same accounting shape as
-/// the spin-orbital sibling but over `nv` rather than `2nv`).
-fn peak_triple_block_bytes(nv: usize) -> usize {
-    nv.saturating_pow(3).saturating_mul(6).saturating_mul(8)
-}
-
-/// Bytes held by the precomputed chemist-notation blocks ([`TripleIntegrals`])
-/// plus the amplitudes cloned alongside them, all live for the whole loop.
-///
-/// The spatial analogue of `ccsd_t::precomputed_block_bytes`, and it closes the
-/// same defect: the guard used to check only [`peak_triple_block_bytes`] — the
-/// per-triple working set — while `ovvv` is `no·nv³`, i.e. `no/6` times larger,
-/// so the shortfall GREW with system size. A job could pass pre-flight and OOM
-/// on the next allocation. See `tests/mwe_t_guard_covers_precomputed.rs`.
-///
-/// Counted: `ovvv` `no·nv³`, `ovoo` `no³·nv`, `ovov` `no²·nv²`, plus the cloned
-/// `t1` `no·nv` and `t2` `no²·nv²`.
-fn precomputed_block_bytes(no: usize, nv: usize) -> usize {
-    let ovvv = no.saturating_mul(nv.saturating_pow(3));
-    let ovoo = no.saturating_pow(3).saturating_mul(nv);
-    let ovov = no.saturating_pow(2).saturating_mul(nv.saturating_pow(2));
-    let t1 = no.saturating_mul(nv);
-    let t2 = no.saturating_pow(2).saturating_mul(nv.saturating_pow(2));
-
-    ovvv.saturating_add(ovoo)
-        .saturating_add(ovov)
-        .saturating_add(t1)
-        .saturating_add(t2)
+/// Peak bytes one in-flight `(a,b)` job holds ([`JobScratch`]): a raw block
+/// pair and `W` (three `[no,no,no]`), the stacked `(2·no, nv)` term-1 operand,
+/// and the three `[no,no]` singles slices.
+fn peak_job_bytes(no: usize, nv: usize) -> usize {
+    let no3 = no.saturating_pow(3);
+    let no2 = no.saturating_pow(2);
+    no3.saturating_mul(3)
+        .saturating_add(no2.saturating_mul(3))
+        .saturating_add(no.saturating_mul(nv).saturating_mul(2))
         .saturating_mul(8)
 }
 
-/// Thread-count-independent chunk width from a byte budget, floored at 1.
-/// Mirrors `ccsd_t::triple_chunk_len` exactly (see that function's doc and the
-/// `ferric_scf::reduce` banding pattern it cites).
-fn triple_chunk_len(nv: usize, band_budget_bytes: usize) -> usize {
-    let per_triple = peak_triple_block_bytes(nv).max(1);
-    (band_budget_bytes / per_triple).max(1)
+/// Bytes held by the precomputed chemist-notation blocks ([`TripleIntegrals`]),
+/// all live for the whole loop, plus the one transient source block that is
+/// alive while its re-layout is built.
+///
+/// The spatial analogue of `ccsd_t::precomputed_block_bytes`, and it closes the
+/// same gap: a guard checking only the per-job working set while `ovvv` is
+/// `no·nv³` would let a job pass pre-flight and OOM on the next allocation.
+/// See `tests/mwe_t_guard_covers_precomputed.rs`.
+///
+/// Counted: `ovvv` `no·nv³`; `ovoo` `no³·nv` and its re-layout `vooo`
+/// `no³·nv` (both alive while `vooo` is filled); `ovov` `no²·nv²`; the
+/// re-laid amplitudes `t2x` `no²·nv²` and `t1t` `no·nv`.
+fn precomputed_block_bytes(no: usize, nv: usize) -> usize {
+    let ovvv = no.saturating_mul(nv.saturating_pow(3));
+    let ovoo = no.saturating_pow(3).saturating_mul(nv);
+    let oovv = no.saturating_pow(2).saturating_mul(nv.saturating_pow(2));
+    let t1 = no.saturating_mul(nv);
+
+    ovvv.saturating_add(ovoo.saturating_mul(2))
+        .saturating_add(oovv.saturating_mul(2))
+        .saturating_add(t1)
+        .saturating_mul(8)
+}
+
+/// Thread-count-independent band width (in `(a,b)` jobs) from a byte budget,
+/// floored at 1. Mirrors `ccsd_t::triple_chunk_len` (see that function's doc
+/// and the `ferric_scf::reduce` banding pattern it cites).
+fn job_chunk_len(no: usize, nv: usize, band_budget_bytes: usize) -> usize {
+    let per_job = peak_job_bytes(no, nv).max(1);
+    (band_budget_bytes / per_job).max(1)
 }
 
 /// The band width [`ccsd_t_closed_shell`] uses on the UNBUDGETED path, as one
@@ -241,7 +255,8 @@ fn triple_chunk_len(nv: usize, band_budget_bytes: usize) -> usize {
 /// composition is named rather than open-coded.
 pub fn t_band_width(no: usize, nv: usize, budget_bytes: usize) -> usize {
     let remaining = budget_bytes.saturating_sub(precomputed_block_bytes(no, nv));
-    triple_chunk_len(
+    job_chunk_len(
+        no,
         nv,
         ferric_core::memory::transient_share(remaining, ferric_core::memory::Share::Half),
     )
@@ -254,149 +269,271 @@ pub fn t_band_width(no: usize, nv: usize, budget_bytes: usize) -> usize {
 /// and why the driver calls this instead of inlining it.
 pub fn t_band_width_now(no: usize, nv: usize, budget_bytes: usize) -> usize {
     match ferric_core::memory::pool::global_available_bytes() {
-        Some(free) => triple_chunk_len(nv, free),
+        Some(free) => job_chunk_len(no, nv, free),
         None => t_band_width(no, nv, budget_bytes),
     }
 }
 
 /// The floor [`ccsd_t_closed_shell`] charges before it allocates.
 pub fn t_floor_bytes(no: usize, nv: usize) -> usize {
-    precomputed_block_bytes(no, nv).saturating_add(peak_triple_block_bytes(nv))
+    precomputed_block_bytes(no, nv).saturating_add(peak_job_bytes(no, nv))
 }
 
-/// Bytes one per-triple `[nv,nv,nv]` working set holds.
-pub fn t_per_triple_bytes(nv: usize) -> usize {
-    peak_triple_block_bytes(nv)
+/// Bytes one in-flight `(a,b)` job's working set holds.
+pub fn t_per_job_bytes(no: usize, nv: usize) -> usize {
+    peak_job_bytes(no, nv)
 }
 
-/// Precomputed chemist-notation integral blocks the per-triple kernel slices.
+/// Precomputed chemist-notation integral blocks and re-laid amplitudes the
+/// per-triple kernel slices.
 ///
 /// All are `O(no·nv³)`-class or smaller — the same size class the CCSD driver
 /// already carries, NOT the `O((no·nv)³)` dense-6D ceiling the streaming
-/// formulation exists to avoid.
+/// formulation exists to avoid. Every operand a GEMM reads is a 2-D view with
+/// unit inner stride, so it goes to BLAS without a copy.
 struct TripleIntegrals {
-    /// `(ia|bd)` at `[i, a, b, d]` — the VVVO-analogue (`ovvv`).
+    /// `(ia|bd)` at `[i, a, b, d]` (`ovvv`); for fixed `(a,b)` the `[i,d]`
+    /// slice is a `(no, nv)` view with row stride `nv³`.
     ovvv: Array4<f64>,
-    /// `(ia|lj)` at `[i, a, l, j]` — the OVOO block.
-    ovoo: Array4<f64>,
-    /// `(ia|jb)` at `[i, a, j, b]` — the OVOV block (feeds `V`'s singles terms).
+    /// `(ia|lj)` at `[a, i, j, l]`; for fixed `a` a contiguous `(no·no, no)`.
+    vooo: Array4<f64>,
+    /// `(ia|jb)` at `[i, a, j, b]` (feeds `V`'s singles terms).
     ovov: Array4<f64>,
+    /// `t2[k,j,c,d]` at `[c, d, j, k]`: for fixed `c` a contiguous
+    /// `(nv, no·no)` (term 1), and for fixed `(b,c)` the `[k,l]` block whose
+    /// transpose is `t2[l,k,b,c]` (term 2).
+    t2x: Array4<f64>,
+    /// `t1[i,a]` at `[a, i]`.
+    t1t: Array2<f64>,
 }
 
-/// `w0[a,b,c] = Σ_d (ia|bd)·t2[k,j,c,d] − Σ_l (ia|lj)·t2[l,k,b,c]` for a fixed
-/// ORDERED occupied triple `(i,j,k)`.
-///
-/// Both terms are BLAS3 GEMMs:
-/// - term 1 reshapes `ovvv[i]` to `(nv·nv, nv)` as `(ab, d)` and
-///   right-multiplies by `t2[k,j]ᵀ` shaped `(d, c)`, giving `(ab, c)`;
-/// - term 2 takes `ovoo[i,:,:,j]` shaped `(a, l)` and right-multiplies by
-///   `t2[:,k]` reshaped `(l, bc)`, giving `(a, bc)`.
-///
-/// Both land directly in `[a,b,c]` order — no transpose needed, unlike the
-/// spin-orbital sibling's `term1`.
-fn raw_w_block(
-    ints: &TripleIntegrals,
-    t2: &Array4<f64>,
-    no: usize,
-    nv: usize,
-    i: usize,
-    j: usize,
-    k: usize,
-) -> Array3<f64> {
-    // Term 1: (ab, d) · (d, c) -> (ab, c) == [a,b,c].
-    let g = ints.ovvv.index_axis(ndarray::Axis(0), i); // [a,b,d]
-    let g2 = g.to_shape((nv * nv, nv)).expect("ovvv[i] reshape");
-    let t2_k = t2.index_axis(ndarray::Axis(0), k);
-    let t2_kj = t2_k.index_axis(ndarray::Axis(0), j); // [c,d]
-    let term1 = g2.dot(&t2_kj.t()); // (ab, c)
-    let mut out = term1
-        .to_shape((nv, nv, nv))
-        .expect("term1 reshape")
-        .to_owned();
+/// Kernel steps timed inside the triples loop, summed over rayon workers.
+const KERNEL_STEPS: [&str; 3] = [
+    "triples kernel [thread-s]: W raw GEMMs",
+    "triples kernel [thread-s]: W pair-permutation sum",
+    "triples kernel [thread-s]: V singles + r3 + energy",
+];
 
-    // Term 2: (a, l) · (l, bc) -> (a, bc) == [a,b,c].
-    let ovoo_j = ints.ovoo.index_axis(ndarray::Axis(3), j);
-    let h = ovoo_j.index_axis(ndarray::Axis(0), i); // [a,l]
-    let t2_bk = t2.index_axis(ndarray::Axis(1), k); // [l,b,c]
-    let t2_k2 = t2_bk.to_shape((no, nv * nv)).expect("t2[:,k] reshape");
-    let term2 = h.dot(&t2_k2); // (a, bc)
-    let term2 = term2
-        .to_shape((nv, nv, nv))
-        .expect("term2 reshape")
-        .to_owned();
-
-    out -= &term2;
-    out
+/// Thread-seconds per kernel step for the `FERRIC_TIMING` table. Inert (no
+/// clock read) when timing is off; the clock never touches the arithmetic.
+struct KernelClock {
+    on: bool,
+    nanos: [AtomicU64; KERNEL_STEPS.len()],
 }
 
-/// Permute the three axes of a `[nv,nv,nv]` block: `out[x0,x1,x2] = x[axes]`.
-fn permute3(x: &Array3<f64>, axes: [usize; 3]) -> Array3<f64> {
-    x.view()
-        .permuted_axes(axes)
-        .as_standard_layout()
-        .into_owned()
-}
-
-/// Fully pair-symmetrized `W[a,b,c]` for the occupied triple `(i,j,k)`:
-/// the sum over the 6 simultaneous permutations of the pairs `(i,a) (j,b)
-/// (k,c)`.
-///
-/// For permutation `π` we evaluate `raw_w(i_π, j_π, k_π)`, whose axes are
-/// indexed by the *permuted* virtual labels `(a_π, b_π, c_π)`; permuting those
-/// axes by `π⁻¹` brings them back to the canonical `(a,b,c)` order before
-/// accumulation.
-fn w_block(
-    ints: &TripleIntegrals,
-    t2: &Array4<f64>,
-    no: usize,
-    nv: usize,
-    i: usize,
-    j: usize,
-    k: usize,
-) -> Array3<f64> {
-    let occ = [i, j, k];
-    let mut out = Array3::<f64>::zeros((nv, nv, nv));
-    for p in PERMS3 {
-        let r = raw_w_block(ints, t2, no, nv, occ[p[0]], occ[p[1]], occ[p[2]]);
-        // inverse permutation: inv[p[t]] = t
-        let mut inv = [0usize; 3];
-        for (t, &pt) in p.iter().enumerate() {
-            inv[pt] = t;
+impl KernelClock {
+    fn new() -> Self {
+        KernelClock {
+            on: ferric_core::timing::enabled(),
+            nanos: Default::default(),
         }
-        out += &permute3(&r, inv);
     }
-    out
+
+    #[inline]
+    fn time<T>(&self, step: usize, f: impl FnOnce() -> T) -> T {
+        if !self.on {
+            return f();
+        }
+        let t0 = Instant::now();
+        let out = f();
+        let dt = u64::try_from(t0.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        self.nanos[step].fetch_add(dt, Ordering::Relaxed);
+        out
+    }
+
+    fn report_into(&self, phases: &mut ferric_core::timing::PhaseAccumulator) {
+        for (label, n) in KERNEL_STEPS.iter().zip(&self.nanos) {
+            phases.add_overlapped(label, Duration::from_nanos(n.load(Ordering::Relaxed)));
+        }
+    }
 }
 
-/// `V[a,b,c] = W[a,b,c] + (jb|kc)·t1[i,a] + (ia|kc)·t1[j,b] + (ia|jb)·t1[k,c]`.
+/// `rr[h][i,j,k] = w0(i,j,k)[x_h, y_h, z]` for the two ordered virtual triples
+/// `(x0, y0, z)` and `(x1, y1, z)`, over every occupied `(i,j,k)`, where
+/// `w0(i,j,k)[a,b,c] = Σ_d (ia|bd)·t2[k,j,c,d] − Σ_l (ia|lj)·t2[l,k,b,c]`.
 ///
-/// The `fock[v,o]·t2` term of the general formula is dropped: for canonical HF
-/// orbitals `fock[v,o] = 0` (same simplification as [`crate::ccsd_t::ccsd_t`]
-/// and [`crate::ccsd_closed_shell`]).
-fn add_v_singles(
-    v: &mut Array3<f64>,
+/// Both terms are BLAS3 GEMMs writing straight into `rr`:
+/// - term 1, both blocks at once: `[ovvv[:,x0,y0,:]; ovvv[:,x1,y1,:]]`
+///   `(2·no, d)` times the shared `t2x[z]` `(d, jk)` gives `(h·i, jk)`;
+/// - term 2, per block: `vooo[x_h]` `(ij, l)` times `t2x[y_h,z]ᵀ` `(l, k)`
+///   gives `(ij, k)`.
+fn raw_w_pair(
     ints: &TripleIntegrals,
-    t1: &Array2<f64>,
+    no: usize,
     nv: usize,
-    i: usize,
-    j: usize,
-    k: usize,
+    xy: [(usize, usize); 2],
+    z: usize,
+    a_stack: &mut Array2<f64>,
+    rr: &mut Array4<f64>,
 ) {
-    let ovov_k = ints.ovov.index_axis(ndarray::Axis(2), k);
-    let ovov_j = ints.ovov.index_axis(ndarray::Axis(2), j);
-    let g_jk = ovov_k.index_axis(ndarray::Axis(0), j); // [b,c]
-    let g_ik = ovov_k.index_axis(ndarray::Axis(0), i); // [a,c]
-    let g_ij = ovov_j.index_axis(ndarray::Axis(0), i); // [a,b]
-    for a in 0..nv {
-        let t1ia = t1[[i, a]];
-        for b in 0..nv {
-            let t1jb = t1[[j, b]];
-            let gij_ab = g_ij[[a, b]];
-            for c in 0..nv {
-                v[[a, b, c]] += g_jk[[b, c]] * t1ia + g_ik[[a, c]] * t1jb + gij_ab * t1[[k, c]];
+    for (h, &(x, y)) in xy.iter().enumerate() {
+        a_stack
+            .slice_mut(s![h * no..(h + 1) * no, ..])
+            .assign(&ints.ovvv.slice(s![.., x, y, ..]));
+    }
+    let t = ints
+        .t2x
+        .index_axis(ndarray::Axis(0), z)
+        .into_shape_with_order((nv, no * no))
+        .expect("t2x[z] is contiguous");
+    let mut r1 = rr
+        .view_mut()
+        .into_shape_with_order((2 * no, no * no))
+        .expect("raw pair is contiguous");
+    general_mat_mul(1.0, &*a_stack, &t, 0.0, &mut r1);
+
+    for (h, &(x, y)) in xy.iter().enumerate() {
+        let hm = ints
+            .vooo
+            .index_axis(ndarray::Axis(0), x)
+            .into_shape_with_order((no * no, no))
+            .expect("vooo[x] is contiguous");
+        let u = ints.t2x.slice(s![y, z, .., ..]); // [k, l]
+        let mut r2 = rr
+            .index_axis_mut(ndarray::Axis(0), h)
+            .into_shape_with_order((no * no, no))
+            .expect("raw block is contiguous");
+        general_mat_mul(-1.0, &hm, &u.t(), 1.0, &mut r2);
+    }
+}
+
+/// Per-job scratch: a raw block pair, its stacked term-1 left operand, `W`,
+/// and the three singles slices. Allocated once per `(a,b)` job and reused for
+/// every `c`.
+struct JobScratch {
+    rr: Array4<f64>,
+    a_stack: Array2<f64>,
+    w: Array3<f64>,
+    s_bc: Array2<f64>,
+    s_ac: Array2<f64>,
+    s_ab: Array2<f64>,
+}
+
+impl JobScratch {
+    fn new(no: usize, nv: usize) -> Self {
+        JobScratch {
+            rr: Array4::zeros((2, no, no, no)),
+            a_stack: Array2::zeros((2 * no, nv)),
+            w: Array3::zeros((no, no, no)),
+            s_bc: Array2::zeros((no, no)),
+            s_ac: Array2::zeros((no, no)),
+            s_ab: Array2::zeros((no, no)),
+        }
+    }
+}
+
+/// Shared read-only inputs of the triples kernel.
+struct KernelInputs<'a> {
+    ints: &'a TripleIntegrals,
+    /// `ε_i + ε_j + ε_k` at flat `[i,j,k]`.
+    eijk: &'a [f64],
+    ev: &'a [f64],
+    no: usize,
+    nv: usize,
+    clock: &'a KernelClock,
+}
+
+/// `Σ_{i,j,k} W̃[i,j,k]·V[i,j,k] / D[i,j,k]` for one virtual triple `(a,b,c)`.
+///
+/// `W[i,j,k] = Σ_{π ∈ S3} w0(π(i,j,k))[π(a,b,c)]` (pairs permuted together):
+/// for permutation `π` the raw block of the permuted VIRTUAL triple is indexed
+/// by the permuted occupied labels, so its axes are permuted back by `π⁻¹`
+/// before accumulation. Then, in one fused pass over `(i,j,k)`,
+///
+/// ```text
+/// V  = W + (jb|kc)·t1[i,a] + (ia|kc)·t1[j,b] + (ia|jb)·t1[k,c]
+/// W̃  = 4·W[ijk] + W[kij] + W[jki] − 2·W[kji] − 2·W[ikj] − 2·W[jik]
+/// ```
+///
+/// `W̃` is the module doc's `r3` pattern moved from the virtual axes to the
+/// occupied ones: by pair invariance `W(ijk)[bca] = W(kij)[abc]`,
+/// `W(ijk)[cab] = W(jki)[abc]`, and each transposition maps to itself.
+fn triple_energy(
+    k: &KernelInputs<'_>,
+    sc: &mut JobScratch,
+    (a, b, c): (usize, usize, usize),
+) -> f64 {
+    let (no, nv, ints) = (k.no, k.nv, k.ints);
+    let virt = [a, b, c];
+    sc.w.fill(0.0);
+    for pair in PERM_PAIRS {
+        let xy = pair.map(|p| (virt[p[0]], virt[p[1]]));
+        let z = virt[pair[0][2]];
+        k.clock.time(0, || {
+            raw_w_pair(ints, no, nv, xy, z, &mut sc.a_stack, &mut sc.rr)
+        });
+        for (h, p) in pair.iter().enumerate() {
+            // inverse permutation: inv[p[t]] = t
+            let mut inv = [0usize; 3];
+            for (t, &pt) in p.iter().enumerate() {
+                inv[pt] = t;
+            }
+            k.clock.time(1, || {
+                sc.w += &sc.rr.index_axis(ndarray::Axis(0), h).permuted_axes(inv)
+            });
+        }
+    }
+
+    k.clock.time(2, || {
+        // (jb|kc), (ia|kc), (ia|jb) as [no,no] slices of ovov[i,a,j,b].
+        sc.s_bc.assign(&ints.ovov.slice(s![.., b, .., c]));
+        sc.s_ac.assign(&ints.ovov.slice(s![.., a, .., c]));
+        sc.s_ab.assign(&ints.ovov.slice(s![.., a, .., b]));
+        let w = sc.w.as_slice().expect("W is contiguous");
+        let s_bc = sc.s_bc.as_slice().expect("contiguous");
+        let s_ac = sc.s_ac.as_slice().expect("contiguous");
+        let s_ab = sc.s_ab.as_slice().expect("contiguous");
+        let t1a = ints.t1t.row(a);
+        let t1b = ints.t1t.row(b);
+        let t1c = ints.t1t.row(c);
+        let e_abc = k.ev[a] + k.ev[b] + k.ev[c];
+        let nn = no * no;
+        let mut partial = 0.0f64;
+        for i in 0..no {
+            for j in 0..no {
+                for kk in 0..no {
+                    let n = i * nn + j * no + kk;
+                    let w_ijk = w[n];
+                    let wt = 4.0 * w_ijk + w[kk * nn + i * no + j] + w[j * nn + kk * no + i]
+                        - 2.0
+                            * (w[kk * nn + j * no + i]
+                                + w[i * nn + kk * no + j]
+                                + w[j * nn + i * no + kk]);
+                    let v = w_ijk
+                        + s_bc[j * no + kk] * t1a[i]
+                        + s_ac[i * no + kk] * t1b[j]
+                        + s_ab[i * no + j] * t1c[kk];
+                    partial += wt * v / (k.eijk[n] - e_abc);
+                }
             }
         }
+        partial
+    })
+}
+
+/// `Σ_{c=b}^{nv-1} m(a,b,c) · triple_energy(a,b,c)` for one `(a,b)` job, `c`
+/// ascending — the unit of parallel work and of the deterministic fold.
+fn pair_job_energy(k: &KernelInputs<'_>, (a, b): (usize, usize)) -> f64 {
+    let mut sc = JobScratch::new(k.no, k.nv);
+    let mut sum = 0.0f64;
+    for c in b..k.nv {
+        sum += triple_multiplicity(a, b, c) * triple_energy(k, &mut sc, (a, b, c));
     }
+    sum
+}
+
+/// [`ccsd_t_closed_shell`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn ccsd_t_closed_shell_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    cc: &CcResult,
+    cfg: &CcConfig,
+) -> Result<f64, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(rhf)?;
+    ccsd_t_closed_shell(sys.mol(), sys.basis(), aux.basis(), sys.op(), rhf, cc, cfg)
 }
 
 /// Compute the spin-adapted (closed-shell) CCSD(T) perturbative-triples
@@ -412,7 +549,7 @@ fn add_v_singles(
 /// [`crate::ccsd_t::ccsd_t`], which remains the reference oracle and is
 /// untouched.
 pub fn ccsd_t_closed_shell(
-    _mol: &Molecule,
+    mol: &Molecule,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     op: Operator,
@@ -424,11 +561,10 @@ pub fn ccsd_t_closed_shell(
         FerricError::General("closed-shell CCSD(T) requires T1 amplitudes".into())
     })?;
 
-    let nbas = obs.nbasis();
-    let nocc_total = rhf.eps_r().iter().filter(|&&e| e < 0.0).count();
+    let (nocc_total, nmo) = crate::helpers::closed_shell_counts(mol, rhf)?;
     let first_occ = cfg.frozen_core;
     let no = active_occ(nocc_total, first_occ)?;
-    let nv = nbas - nocc_total;
+    let nv = nmo - nocc_total;
 
     // Reject spin-orbital amplitudes loudly rather than computing a wrong
     // number from a mis-shaped tensor. (t1 is [no,nv], t2 is [no,no,nv,nv].)
@@ -452,24 +588,24 @@ pub fn ccsd_t_closed_shell(
         return Ok(0.0);
     }
 
-    let peak_triple = peak_triple_block_bytes(nv);
+    let peak_job = peak_job_bytes(no, nv);
     let precomputed = precomputed_block_bytes(no, nv);
     let budget = ferric_core::memory::resolve_budget_bytes(cfg.memory_budget_bytes);
-    // Precomputed blocks are allocated once and shared; the per-triple set is
-    // per rayon worker. Charge one per-triple set here -- the chunk width below
+    // Precomputed blocks are allocated once and shared; the per-job set is
+    // per rayon worker. Charge one per-job set here -- the band width below
     // is sized from the REMAINING budget, so concurrency is bounded separately
     // and must not be double-counted into this floor.
-    let floor = precomputed.saturating_add(peak_triple);
+    let floor = precomputed.saturating_add(peak_job);
     ferric_core::memory::check_alloc(
         &format!(
-            "closed-shell CCSD(T) precomputed blocks + one per-triple block \
+            "closed-shell CCSD(T) precomputed blocks + one per-job block \
              (no={no}, nv={nv} spatial)"
         ),
         floor,
         budget,
     )?;
-    // HARD charge, held to the end of the function -- which is where
-    // ovvv/ovoo/ovov/t1/t2 die. See the spin-orbital sibling in ccsd_t.rs for
+    // HARD charge, held to the end of the function -- which is where the
+    // precomputed blocks die. See the spin-orbital sibling in ccsd_t.rs for
     // why this is hard rather than soft: nothing streams these blocks, so a
     // soft gate's None branch would have no fallback to take, and a soft gate
     // whose None branch does not stream is a lie.
@@ -480,15 +616,21 @@ pub fn ccsd_t_closed_shell(
 
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
-    let c_occ = c.slice(ndarray::s![.., first_occ..nocc_total]).to_owned();
-    let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
+    let c_occ = c.slice(s![.., first_occ..nocc_total]).to_owned();
+    let c_vir = c.slice(s![.., nocc_total..nmo]).to_owned();
 
     // Dressed RI 3-index MO blocks — identical construction to the CCSD
     // drivers, so the RI error cancels between CCSD and (T).
+    // FERRIC_TIMING phase table (inert otherwise); reports on every exit.
+    let mut phases =
+        ferric_core::timing::PhaseAccumulator::new().report_on_drop("closed-shell (T)");
+    let tok = phases.begin("setup: metric + AO 3-index");
     let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
     let v_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
     let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, obs, dfbs)?;
+    phases.stop(tok);
     use Axis::{O, V};
+    let tok = phases.begin("setup: RI B blocks");
     let b_ov = build_b(
         &transform_3center_ov(&eri3_ao, &c_occ, &c_vir),
         &v_inv_sqrt,
@@ -498,8 +640,11 @@ pub fn ccsd_t_closed_shell(
     let b_oo = build_b(&transform_3center_oo(&eri3_ao, &c_occ), &v_inv_sqrt, O, O);
     let b_vv = build_b(&transform_3center_vv(&eri3_ao, &c_vir), &v_inv_sqrt, V, V);
     drop(eri3_ao);
+    phases.stop(tok);
 
-    // Chemist blocks (pq|rs) = Σ_P B^P_pq B^P_rs.
+    // Chemist blocks (pq|rs) = Σ_P B^P_pq B^P_rs, and the GEMM-ready
+    // re-layouts of ovoo and t2.
+    let tok = phases.begin("setup: chemist blocks + re-layouts");
     let ovvv: Array4<f64> = einsum!("Pia,Pbd->iabd", &b_ov, &b_vv)
         .into_dimensionality()
         .expect("ovvv 4D");
@@ -509,83 +654,110 @@ pub fn ccsd_t_closed_shell(
     let ovov: Array4<f64> = einsum!("Pia,Pjb->iajb", &b_ov, &b_ov)
         .into_dimensionality()
         .expect("ovov 4D");
-    let ints = TripleIntegrals { ovvv, ovoo, ovov };
+    let vooo = Array4::from_shape_fn((nv, no, no, no), |(a, i, j, l)| ovoo[[i, a, l, j]]);
+    drop(ovoo);
+    let t2 = &cc.t2;
+    let t2x = Array4::from_shape_fn((nv, nv, no, no), |(c, d, j, k)| t2[[k, j, c, d]]);
+    let t1t = Array2::from_shape_fn((nv, no), |(a, i)| t1[[i, a]]);
+    let ints = TripleIntegrals {
+        ovvv,
+        vooo,
+        ovov,
+        t2x,
+        t1t,
+    };
+    phases.stop(tok);
 
     let eo: Vec<f64> = (0..no).map(|i| eps[first_occ + i]).collect();
     let ev: Vec<f64> = (0..nv).map(|a| eps[nocc_total + a]).collect();
+    let mut eijk = Vec::with_capacity(no * no * no);
+    for i in 0..no {
+        for j in 0..no {
+            for k in 0..no {
+                eijk.push(eo[i] + eo[j] + eo[k]);
+            }
+        }
+    }
 
-    let t1_owned: Array2<f64> = t1.clone();
-    let t2_owned: Array4<f64> = cc.t2.clone();
-
-    // Banded parallel reduction over i<=j<=k. Chunk width is a pure function
-    // of nv and the byte budget (never the thread count); chunk partials are
-    // folded serially in ascending triple order, so `et` is bit-identical at
-    // any RAYON_NUM_THREADS. See the module doc and the spin-orbital sibling's
-    // matching comment block.
-    let triples = occ_triples_with_repeats(no);
+    // Banded parallel reduction over (a,b) jobs, a<=b, each running c=b..nv.
+    // Band width is a pure function of (no, nv) and the byte budget (never the
+    // thread count); job partials are folded serially in ascending (a,b)
+    // order, so `et` is bit-identical at any RAYON_NUM_THREADS. See the
+    // module doc and the spin-orbital sibling's matching comment block.
+    let jobs = virtual_pairs(nv);
     // Band from what is LEFT after the precomputed blocks, not the full budget
     // (they are already resident here). Mirrors the spin-orbital sibling.
     //
     // The byte number is the pool LEDGER when a pool is installed (capacity
     // minus live reservations, which already includes this function's own
     // `_floor_charge`), and the resolved ceiling minus the precomputed blocks
-    // otherwise -- the latter branch being byte-for-byte what this code did
-    // before the pool existed. A ledger quantity is deterministic given the
-    // pool capacity; an RSS quantity would not be, and that distinction is the
-    // KS grid batch-width defect. See the spin-orbital sibling for the full
-    // argument, and `mwe_t_band_width_is_not_an_energy_knob.rs` for the pin
-    // that the width does not move `et` either way.
+    // otherwise. A ledger quantity is deterministic given the pool capacity;
+    // an RSS quantity would not be, and that distinction is the KS grid
+    // batch-width defect. See the spin-orbital sibling for the full argument,
+    // and `mwe_t_band_width_is_not_an_energy_knob.rs` for the pin that the
+    // width does not move `et` either way.
     // The `Share::Half` appears only on the UNPOOLED branch. On the pooled
     // branch `available_bytes()` is already net of every live reservation,
     // including this function's own `_floor_charge`, so halving it would both
     // narrow the band for no reason AND make the soft gate below unreachable
     // by construction (a width derived from `available/2` can never fail to
-    // fit in `available`). Mutation M3 -- turning the gate hard -- survived
-    // every test while the halving was there. See the spin-orbital sibling.
+    // fit in `available`). See the spin-orbital sibling.
     let remaining = budget.saturating_sub(precomputed);
     // The None branch calls [`t_band_width`], not an inline copy -- see the
-    // spin-orbital sibling for why the single implementation matters.
-    let chunk_len = t_band_width_now(no, nv, budget);
+    // spin-orbital sibling for why the single implementation matters. The
+    // width is capped at the job count: a wider band holds no more jobs, so
+    // charging for it would reserve bytes nothing can use.
+    let chunk_len = t_band_width_now(no, nv, budget).min(jobs.len()).max(1);
     // SOFT charge: narrowing the band is a real fallback (the None branch
     // below actually re-sizes and runs), so this must never refuse a job.
     let (chunk_len, _band_charge) = match ferric_core::memory::pool::try_reserve_global(
-        &format!("closed-shell CCSD(T) triple band (width {chunk_len}, nv={nv})"),
-        chunk_len.saturating_mul(peak_triple),
+        &format!("closed-shell CCSD(T) job band (width {chunk_len}, no={no})"),
+        chunk_len.saturating_mul(peak_job),
     ) {
         Some(g) => (chunk_len, g),
         None => {
             let narrowed = match ferric_core::memory::pool::global() {
-                Some(p) => p.fit_units(peak_triple.max(1)).min(chunk_len).max(1),
+                Some(p) => p.fit_units(peak_job.max(1)).min(chunk_len).max(1),
                 None => 1,
             };
             let g = ferric_core::memory::pool::try_reserve_global(
-                &format!("closed-shell CCSD(T) triple band (narrowed to {narrowed}, nv={nv})"),
-                narrowed.saturating_mul(peak_triple),
+                &format!("closed-shell CCSD(T) job band (narrowed to {narrowed}, no={no})"),
+                narrowed.saturating_mul(peak_job),
             )
             .unwrap_or_else(|| {
                 ferric_core::memory::pool::Reservation::inert(
-                    "closed-shell CCSD(T) triple band (width 1)",
+                    "closed-shell CCSD(T) job band (width 1)",
                 )
             });
             (narrowed, g)
         }
     };
     // Same floored-band warning as the spin-orbital sibling: width 1 means the
-    // budget could not fund a two-triple band, so the loop is effectively
+    // budget could not fund a two-job band, so the loop is effectively
     // serial — actionable (raise [memory] budget_gb), not a hang.
-    if chunk_len == 1 && triples.len() > 1 {
+    if chunk_len == 1 && jobs.len() > 1 {
         eprintln!(
             "ccsd_t_closed_shell: memory budget floors the triple band at 1 \
-             (nv={nv}, {} triples, {:.2} GiB remaining after precomputed \
+             (no={no}, {} (a,b) jobs, {:.2} GiB remaining after precomputed \
              blocks) — the (T) triples loop will run effectively serially. \
              Raise the memory budget to widen the band.",
-            triples.len(),
+            jobs.len(),
             remaining as f64 / (1024.0 * 1024.0 * 1024.0),
         );
     }
+    let clock = KernelClock::new();
+    let kin = KernelInputs {
+        ints: &ints,
+        eijk: &eijk,
+        ev: &ev,
+        no,
+        nv,
+        clock: &clock,
+    };
     let mut et = 0.0f64;
-    for chunk in triples.chunks(chunk_len) {
-        // BLAS pinned to 1 EXPLICITLY: `w_block`'s GEMMs run inside this rayon
+    let tok = phases.begin("triples loop");
+    for chunk in jobs.chunks(chunk_len) {
+        // BLAS pinned to 1 EXPLICITLY: the kernel's GEMMs run inside this rayon
         // region, and `opt_in_blas_threads`'s self-guard only fires when called
         // FROM a worker — this wrap runs on the caller thread, so it would pass
         // the user's `FERRIC_BLAS_THREADS` straight through. Mirrors the
@@ -593,43 +765,18 @@ pub fn ccsd_t_closed_shell(
         let partials: Vec<f64> = with_blas_threads(1, || {
             chunk
                 .par_iter()
-                .map(|&(i, j, k)| {
-                    let w = w_block(&ints, &t2_owned, no, nv, i, j, k);
-                    let mut v = w.clone();
-                    add_v_singles(&mut v, &ints, &t1_owned, nv, i, j, k);
-
-                    // W̃ = 4W + W(bca) + W(cab) - 2W(cba) - 2W(acb) - 2W(bac),
-                    // permutations acting on the virtual axes (PySCF `r3`).
-                    let mut wt = 4.0 * &w;
-                    wt += &permute3(&w, [1, 2, 0]);
-                    wt += &permute3(&w, [2, 0, 1]);
-                    wt.scaled_add(-2.0, &permute3(&w, [2, 1, 0]));
-                    wt.scaled_add(-2.0, &permute3(&w, [0, 2, 1]));
-                    wt.scaled_add(-2.0, &permute3(&w, [1, 0, 2]));
-
-                    let e_ijk = eo[i] + eo[j] + eo[k];
-                    let mult = occ_triple_multiplicity(i, j, k);
-                    let mut partial = 0.0f64;
-                    for a in 0..nv {
-                        for b in 0..nv {
-                            let dab = e_ijk - ev[a] - ev[b];
-                            for cx in 0..nv {
-                                let d = dab - ev[cx];
-                                partial += wt[[a, b, cx]] * v[[a, b, cx]] / d;
-                            }
-                        }
-                    }
-                    mult * partial
-                })
+                .map(|&ab| pair_job_energy(&kin, ab))
                 .collect()
         });
         for p in partials {
             et += p;
         }
     }
+    phases.stop(tok);
+    clock.report_into(&mut phases);
 
     // Divisor 3 (NOT 6, NOT 36) — derived and measured, see the module doc's
-    // "Combinatorial factor" section. The weighted i<=j<=k band above equals
+    // "Combinatorial factor" section. The weighted a<=b<=c band above equals
     // the unrestricted Σ_{i,j,k} Σ_{a,b,c} sum, which is exactly 3·E_(T).
     Ok(et / 3.0)
 }
@@ -668,10 +815,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-11,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-11),
         )
         .unwrap();
         Setup {
@@ -882,22 +1026,41 @@ mod tests {
         );
     }
 
-    /// Multiplicity weights must reproduce the unrestricted ordering count.
-    /// This pins the piece the module doc calls out as the closed-shell-only
-    /// trap (repeated spatial occupied indices are physical and carry >50% of
-    /// the energy on the scratch test system).
+    /// Multiplicity weights must reproduce the unrestricted ordering count, and
+    /// the `(a,b)` jobs with their serial `c = b..nv` runs must visit every
+    /// `a<=b<=c` triple exactly once. This pins the piece the module doc calls
+    /// out as the closed-shell-only trap (repeated spatial indices are physical
+    /// and carry >50% of the energy on the scratch test system).
     #[test]
     fn multiplicity_weights_sum_to_the_unrestricted_count() {
-        for no in 1..6usize {
-            let total: f64 = occ_triples_with_repeats(no)
+        for nv in 1..7usize {
+            let total: f64 = band_triples(nv)
                 .iter()
-                .map(|&(i, j, k)| occ_triple_multiplicity(i, j, k))
+                .map(|&(a, b, c)| triple_multiplicity(a, b, c))
                 .sum();
             assert_eq!(
                 total,
-                (no * no * no) as f64,
-                "weighted i<=j<=k band must cover all no^3 ordered triples (no={no})"
+                (nv * nv * nv) as f64,
+                "weighted a<=b<=c band must cover all nv^3 ordered triples (nv={nv})"
             );
+        }
+    }
+
+    /// Every a<=b<=c triple the driver's (a,b) jobs visit, in visiting order.
+    fn band_triples(nv: usize) -> Vec<(usize, usize, usize)> {
+        virtual_pairs(nv)
+            .into_iter()
+            .flat_map(|(a, b)| (b..nv).map(move |c| (a, b, c)))
+            .collect()
+    }
+
+    #[test]
+    fn band_visits_each_sorted_triple_once() {
+        for nv in 1..7usize {
+            let band = band_triples(nv);
+            let distinct: std::collections::BTreeSet<_> = band.iter().collect();
+            assert_eq!(distinct.len(), band.len());
+            assert_eq!(band.len(), nv * (nv + 1) * (nv + 2) / 6);
         }
     }
 
@@ -968,10 +1131,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-11,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-11),
         )
         .unwrap();
         let s = Setup {

@@ -136,3 +136,107 @@ fn zero_size_matrices_upload_without_panicking_and_hold_no_charge() {
     }
     assert_eq!(pool.available_bytes(), pool.capacity_bytes());
 }
+
+/// Values where f64 → f32 rounding is easy to get wrong: exact ties (to even),
+/// one f64 ulp either side of a tie, the f32 subnormal range (kept, not flushed),
+/// f64 values below the f32 subnormals (to ±0), signed zero, the largest finite
+/// f32 and the last f64 below its overflow tie, infinities and NaN.
+fn hard_values() -> Vec<f64> {
+    let tie = 1.0 + 2f64.powi(-24); // halfway between 1 and the next f32
+    let ulp = 2f64.powi(-52);
+    let max = f32::MAX as f64;
+    let overflow_tie = max + 2f64.powi(103); // rounds to +inf (to even)
+    let mut v = vec![
+        tie,
+        tie + ulp,
+        tie - ulp,
+        1.0 + 3.0 * 2f64.powi(-24), // tie between odd and even: up
+        -tie,
+        1e-40,
+        -1e-40,
+        f32::MIN_POSITIVE as f64 / 3.0,
+        1e-300,
+        -1e-300,
+        0.0,
+        -0.0,
+        max,
+        -max,
+        overflow_tie - 2f64.powi(75), // just below the tie: rounds to f32::MAX
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NAN,
+    ];
+    v.extend(operand(17, 23, 7).iter().map(|x| x * 1e3));
+    v
+}
+
+#[test]
+fn device_rounding_is_bit_identical_to_the_host_rounded_upload() {
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if skip() {
+        return;
+    }
+    let dev = device(0).unwrap();
+    let pool = DevicePool::with_capacity_bytes(1 << 26);
+    let v = hard_values();
+    let a = Array2::from_shape_vec((1, v.len()), v).unwrap();
+    let host = DeviceMatrix::<f32>::upload_rounded(&dev, &pool, "host f32", &a.view()).unwrap();
+    let src = DeviceMatrix::<f64>::upload(&dev, &pool, "src f64", &a.view()).unwrap();
+    let before = stats();
+    let m = DeviceMatrix::<f32>::round_from_device(&dev, &pool, "dev f32", &src).unwrap();
+    let after = stats();
+    assert_eq!(after.bytes_h2d, before.bytes_h2d, "no bytes over PCIe");
+    assert_eq!((m.rows(), m.cols(), m.bytes()), (1, a.len(), a.len() * 4));
+    let (mut x, mut y) = (vec![0f32; a.len()], vec![0f32; a.len()]);
+    dev.stream.memcpy_dtoh(m.buf(), &mut x).unwrap();
+    dev.stream.memcpy_dtoh(host.buf(), &mut y).unwrap();
+    dev.stream.synchronize().unwrap();
+    for (i, ((d, h), v)) in x.iter().zip(&y).zip(a.iter()).enumerate() {
+        if v.is_nan() {
+            assert!(d.is_nan(), "[{i}] NaN must stay NaN");
+        } else {
+            assert_eq!(
+                d.to_bits(),
+                h.to_bits(),
+                "[{i}] {v:e}: device {d:e}, host {h:e}"
+            );
+            assert_eq!(d.to_bits(), (*v as f32).to_bits(), "[{i}] {v:e}");
+        }
+    }
+    assert!(
+        x[5] != 0.0 && x[5].is_subnormal(),
+        "f32 subnormals are kept"
+    );
+    let held = host.bytes() + src.bytes() + m.bytes();
+    assert_eq!(pool.available_bytes(), pool.capacity_bytes() - held);
+}
+
+#[test]
+fn device_rounding_refuses_f32_overflow_and_releases_its_charge() {
+    let _g = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    if skip() {
+        return;
+    }
+    let dev = device(0).unwrap();
+    let pool = DevicePool::with_capacity_bytes(1 << 26);
+    let mut a = operand(9, 11, 3);
+    a[[4, 7]] = f32::MAX as f64 + 2f64.powi(103); // the overflow tie: +inf
+    let src = DeviceMatrix::<f64>::upload(&dev, &pool, "src", &a.view()).unwrap();
+    let e = DeviceMatrix::<f32>::round_from_device(&dev, &pool, "dev f32", &src).unwrap_err();
+    assert!(matches!(e, GpuError::F32Range(_)), "{e:?}");
+    assert_eq!(pool.available_bytes(), pool.capacity_bytes() - src.bytes());
+    // An infinity that is already infinite is not an overflow (the host rule).
+    a[[4, 7]] = f64::INFINITY;
+    let src = DeviceMatrix::<f64>::upload(&dev, &pool, "src inf", &a.view()).unwrap();
+    assert!(DeviceMatrix::<f32>::round_from_device(&dev, &pool, "dev f32", &src).is_ok());
+    // A pool without room refuses before any launch.
+    let tight = DevicePool::with_capacity_bytes(src.bytes() + 4);
+    let src2 = DeviceMatrix::<f64>::upload(&dev, &tight, "src", &a.view()).unwrap();
+    let e = DeviceMatrix::<f32>::round_from_device(&dev, &tight, "dev f32", &src2).unwrap_err();
+    assert!(matches!(e, GpuError::PoolFull { .. }), "{e:?}");
+    // Zero elements: no panic, no charge.
+    let z = Array2::<f64>::zeros((0, 5));
+    let zsrc = DeviceMatrix::<f64>::upload(&dev, &pool, "zero", &z.view()).unwrap();
+    let zm = DeviceMatrix::<f32>::round_from_device(&dev, &pool, "zero f32", &zsrc).unwrap();
+    assert_eq!(zm.bytes(), 0);
+}

@@ -16,6 +16,7 @@ use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::three_index_source::ThreeIndexSource;
+use ferric_scf::df_j::RiJPrecision;
 use ferric_scf::df_k::DfK;
 use ferric_scf::fock::KBuilder;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
@@ -97,6 +98,7 @@ fn moved(a: &[f64], b: &[f64]) -> usize {
 
 /// The dressed tensor itself, across budgets that give different accumulator
 /// pieces, read-back widths and raw streams.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn spilled_dressed_tensor_is_bitwise_the_in_core_one() {
     let _s = slot();
@@ -180,6 +182,7 @@ fn spilled_dressed_tensor_is_bitwise_in_core_at_an_odd_nao() {
 }
 
 /// K through the real DfK, at a binding width and two thread counts.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn spilled_k_is_bitwise_in_core_and_thread_independent() {
     let _s = slot();
@@ -208,6 +211,7 @@ fn spilled_k_is_bitwise_in_core_and_thread_independent() {
 
 /// End to end, in the refused band: raw has the same backend either way, so only
 /// the dressed tensor's route differs, and the SCF must be bitwise unchanged.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn scf_in_the_refused_band_is_bitwise_the_in_core_run() {
     let _s = slot();
@@ -219,12 +223,8 @@ fn scf_in_the_refused_band_is_bitwise_the_in_core_run() {
     let a = PreparedBasis::new(&s.mol, &basis::bundled(aux).unwrap()).unwrap();
     let needed = a.nbasis() * s.obs.nbasis() * s.obs.nbasis() * 8;
     let budget = needed + needed / 2;
-    let cfg = RhfConfig {
-        df_j_aux: Some(aux.into()),
-        df_k_aux: Some(aux.into()),
-        three_index_budget_bytes: budget,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default().with_df_j_aux(aux).with_df_k_aux(aux);
+    cfg.three_index_budget_bytes = budget;
     // No pool: the budget alone admits it, so this is the in-core route.
     let in_core = solve_rhf(&ctx, &s.mol, &s.obs, op, &bounds, &cfg).unwrap();
     let pool = MemoryPool::with_capacity_bytes(budget);
@@ -242,6 +242,10 @@ fn scf_in_the_refused_band_is_bitwise_the_in_core_run() {
 
 /// Raw changing backend moves J by a few ulp, independently of this path: DF-J's
 /// unpacked and packed contractions sum differently. Bounded, not bitwise.
+/// Both runs pin the f64 RI-J tensor: a spilled tensor is always f64, so under
+/// the f32 default the in-core run would measure the f32 storage error
+/// (~1.2e-6 Ha here), not the backend gap this test is about.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn a_fully_spilled_scf_stays_within_the_df_j_backend_gap() {
     let _s = slot();
@@ -253,12 +257,11 @@ fn a_fully_spilled_scf_stays_within_the_df_j_backend_gap() {
     let a = PreparedBasis::new(&s.mol, &basis::bundled(aux).unwrap()).unwrap();
     let needed = a.nbasis() * s.obs.nbasis() * s.obs.nbasis() * 8;
     let run = |budget: usize| {
-        let cfg = RhfConfig {
-            df_j_aux: Some(aux.into()),
-            df_k_aux: Some(aux.into()),
-            three_index_budget_bytes: budget,
-            ..Default::default()
-        };
+        let mut cfg = RhfConfig::default()
+            .with_df_j_aux(aux)
+            .with_df_k_aux(aux)
+            .with_ri_j_precision(RiJPrecision::F64);
+        cfg.three_index_budget_bytes = budget;
         solve_rhf(&ctx, &s.mol, &s.obs, op, &bounds, &cfg).unwrap()
     };
     let in_core = run(needed * 4);
@@ -273,6 +276,7 @@ fn a_fully_spilled_scf_stays_within_the_df_j_backend_gap() {
 /// REVIEW F1: a hybrid's XC evaluator charges the pool `threads × worker` before
 /// DF is built, so the same pool can admit the dressed tensor at 1 thread and
 /// refuse it at 4. The bits must not care.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn hybrid_ks_energy_ignores_threads_across_the_refused_band() {
     let _s = slot();
@@ -289,13 +293,14 @@ fn hybrid_ks_energy_ignores_threads_across_the_refused_band() {
             clear_global();
             let pool = MemoryPool::with_capacity_bytes(cap);
             install_global(pool.clone());
-            let cfg = RhfConfig {
-                xc: Some("B3LYP".into()),
-                df_j_aux: Some(aux.into()),
-                df_k_aux: Some(aux.into()),
-                three_index_budget_bytes: cap,
-                ..Default::default()
-            };
+            let mut cfg = RhfConfig::default()
+                .with_xc("B3LYP")
+                .with_df_j_aux(aux)
+                .with_df_k_aux(aux)
+                // The capacity scan below sits where the flat 75 x 110 grid's
+                // thread-scaled XC charge leaves room; pin that grid.
+                .with_dft_grid(ferric_dft::grid::AtomicGridConfig::default());
+            cfg.three_index_budget_bytes = cap;
             let r = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg);
             clear_global();
             (

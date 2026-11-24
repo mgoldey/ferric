@@ -12,8 +12,10 @@
 //!    perturbations (unlike MP2's Hylleraas stationarity), so the canonical
 //!    reference is built on the exactly SEMICANONICALIZED recomputed Fock
 //!    (the Python rig measured a 4e-7 Fock inconsistency producing a 1.7e-9
-//!    anchor failure), and masked-solve energy errors are expected ~linear
-//!    in ε, not quadratic.
+//!    anchor failure), and masked-solve energy errors are one-sided and
+//!    SUPERLINEAR in ε (a log-log slope above 1, not 1 and not 2; the local
+//!    MP2 C4 record is ~1.4 per decade of ε at λ-Boys λ = 10, ~1.2 with plain Boys,
+//!    `lmp2_certificate::MEASURED_SLOPE_C4`), not quadratic.
 //!
 //! Spin-adapted closed-shell drCCD: `B_iajb = 2 (ia|jb)`,
 //! `R(T) = B + F(T) + BT + TB + TBT = 0` with `F` the same non-canonical
@@ -38,6 +40,7 @@
 //! `wiki/amplitude-threshold-drpa.md`) — that is not a property of the
 //! threshold. Closed-shell, library-only.
 
+use ferric_scf::PreparedAux;
 use ndarray::{s, Array2, Array4};
 
 use ferric_core::basis::BasisSet;
@@ -49,12 +52,13 @@ use ferric_scf::diis::Diis;
 use ferric_scf::result::ScfResult;
 
 use crate::lmp2_amplitude::{
-    assemble_basis, assemble_localized, assemble_ragged_direct, build_vvhv, check_vvhv,
-    localized_spaces, AmplitudeLmp2Config, VvHv,
+    assemble_basis, assemble_localized, assemble_ragged_direct, checked_vvhv, localized_spaces,
+    AmplitudeLmp2Config, VvHv,
 };
 use crate::lmp2_direct::{assemble_ragged_direct_local, DirectConfig, DirectStats};
 use crate::ragged::{
-    apply_pattern, matvec_indexed, ring_product, ring_product_planned, Ragged, RingPlan,
+    apply_pattern, kept_fraction, matvec_indexed, ring_product, ring_product_planned, Ragged,
+    RingPlan,
 };
 use crate::rimp2::{active_occ, eri3_budget_bytes, eri3_mo_ov_blocked, metric_inverse_sqrt};
 use ferric_integrals::threeindex::coulomb_metric_2c;
@@ -65,9 +69,15 @@ pub struct AmplitudeDrpaConfig {
     /// Threshold ε on |B_iajb| = |2(ia|jb)| in the localized basis; 0 keeps
     /// everything (the exactness-anchor limit).
     pub eps: f64,
+    /// Number of lowest occupied orbitals excluded from correlation.
     pub frozen_core: usize,
+    /// Fixed-point stopping tolerance on ‖R‖/‖B‖ (pattern-projected Riccati
+    /// residual relative to the norm of B); see also `eps_rtol_factor`.
     pub fp_rtol: f64,
+    /// Maximum fixed-point iterations; exceeding it is an error.
     pub fp_max_iter: usize,
+    /// Memory budget (bytes) for the blocked 3-index MO transform, forwarded
+    /// to the LMP2 assembly and the canonical reference; `None` auto-sizes.
     pub eri3_budget_bytes: Option<usize>,
     /// Integral-free pair gate (see `lmp2_amplitude`); gated pairs are
     /// never assembled in the ragged path.
@@ -132,7 +142,9 @@ fn effective_fp_rtol(cfg: &AmplitudeDrpaConfig) -> f64 {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct AmplitudeDrpaResult {
+    /// dRPA correlation energy ½ Σ B∘T over the kept pattern (Hartree).
     pub e_corr: f64,
+    /// Reference SCF energy plus `e_corr` (Hartree).
     pub e_total: f64,
     /// Canonical plasmon-formula dRPA on the exactly semicanonicalized
     /// recomputed Fock — the independent-construction reference (eigenvalue
@@ -140,10 +152,17 @@ pub struct AmplitudeDrpaResult {
     /// integrals and the Fock operator). NaN unless `compute_reference` was
     /// set (the default is off).
     pub e_corr_plasmon_canonical: f64,
+    /// Kept fraction of the `(no·nv)²` amplitude entries after the ε mask.
     pub keep_fraction: f64,
+    /// Fraction of the `no²` occupied pairs `(i,j)` retained in the amplitude
+    /// pattern.
     pub pair_fraction: f64,
+    /// Fixed-point iterations performed.
     pub iterations: usize,
+    /// Final ‖R‖/‖B‖ of the Riccati residual (in the ragged path with DIIS,
+    /// re-measured on the returned amplitudes).
     pub relres: f64,
+    /// Always `true` on `Ok`: a run that misses `fp_rtol` returns an error.
     pub converged: bool,
 }
 
@@ -243,6 +262,29 @@ fn unflatten_blocks(flat: &Array2<f64>, shapes: &[(usize, usize)]) -> Vec<Array2
     out
 }
 
+/// [`amplitude_drpa`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+pub fn amplitude_drpa_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    cfg: &AmplitudeDrpaConfig,
+) -> Result<AmplitudeDrpaResult, FerricError> {
+    let sys = aux.system();
+    aux.check_restricted_reference(rhf)?;
+    amplitude_drpa(
+        sys.mol(),
+        sys.basis(),
+        sys.basis_set(),
+        aux.basis(),
+        sys.op(),
+        rhf,
+        cfg,
+    )
+}
+
 /// Amplitude-threshold dRPA with the VV-HV space built internally.
 pub fn amplitude_drpa(
     mol: &Molecule,
@@ -253,14 +295,7 @@ pub fn amplitude_drpa(
     rhf: &ScfResult,
     cfg: &AmplitudeDrpaConfig,
 ) -> Result<AmplitudeDrpaResult, FerricError> {
-    let vvhv = build_vvhv(mol, obs, obs_bs, rhf)?;
-    let nocc_total = (mol.nelec() as usize) / 2;
-    let (dev_orth, dev_span) = check_vvhv(obs, rhf, nocc_total, &vvhv.c_vloc);
-    if dev_orth > 1e-8 || dev_span > 1e-8 {
-        return Err(FerricError::General(format!(
-            "drpa_amplitude: VV-HV construction check failed (orth {dev_orth:.2e}, span {dev_span:.2e})"
-        )));
-    }
+    let (vvhv, _) = checked_vvhv(mol, obs, obs_bs, rhf, "drpa_amplitude")?;
     amplitude_drpa_with_virtuals(mol, obs, dfbs, op, rhf, cfg, &vvhv)
 }
 
@@ -275,12 +310,7 @@ pub fn amplitude_drpa_with_virtuals(
     cfg: &AmplitudeDrpaConfig,
     vvhv: &VvHv,
 ) -> Result<AmplitudeDrpaResult, FerricError> {
-    let lcfg = AmplitudeLmp2Config {
-        eps: cfg.eps,
-        frozen_core: cfg.frozen_core,
-        eri3_budget_bytes: cfg.eri3_budget_bytes,
-        ..Default::default()
-    };
+    let lcfg = AmplitudeLmp2Config::plain_boys(cfg.eps, cfg.frozen_core, cfg.eri3_budget_bytes);
     let lb = assemble_basis(mol, obs, dfbs, op, rhf, &lcfg, vvhv)?;
     amplitude_drpa_from_basis(mol, obs, dfbs, op, rhf, cfg, &lb)
 }
@@ -294,6 +324,7 @@ pub fn amplitude_drpa_with_virtuals(
 /// through `amplitude_drpa_from_basis` on the same `LocalizedBasis`);
 /// the only difference is the prefix (RHF/localization/VV-HV/assemble_basis)
 /// is paid once instead of once per eps.
+#[allow(clippy::too_many_arguments)]
 pub fn amplitude_drpa_scan(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -304,25 +335,14 @@ pub fn amplitude_drpa_scan(
     base_cfg: &AmplitudeDrpaConfig,
     eps_list: &[f64],
 ) -> Result<Vec<AmplitudeDrpaResult>, FerricError> {
-    let vvhv = build_vvhv(mol, obs, obs_bs, rhf)?;
-    let nocc_total = (mol.nelec() as usize) / 2;
-    let (dev_orth, dev_span) = check_vvhv(obs, rhf, nocc_total, &vvhv.c_vloc);
-    if dev_orth > 1e-8 || dev_span > 1e-8 {
-        return Err(FerricError::General(format!(
-            "drpa_amplitude: VV-HV construction check failed (orth {dev_orth:.2e}, span {dev_span:.2e})"
-        )));
-    }
+    let (vvhv, _) = checked_vvhv(mol, obs, obs_bs, rhf, "drpa_amplitude")?;
     // assemble_basis takes no `eps` — it is exactly the eps-independent
     // prefix (RHF is already solved by the caller; this pays localization +
     // Fock blocks + unwhitened RI B once). Built with eps=0 in the local
     // AmplitudeLmp2Config since that struct's `eps` field is unused by
     // assemble_basis itself (see its body: eps never appears).
-    let lcfg = AmplitudeLmp2Config {
-        eps: 0.0,
-        frozen_core: base_cfg.frozen_core,
-        eri3_budget_bytes: base_cfg.eri3_budget_bytes,
-        ..Default::default()
-    };
+    let lcfg =
+        AmplitudeLmp2Config::plain_boys(0.0, base_cfg.frozen_core, base_cfg.eri3_budget_bytes);
     let lb = assemble_basis(mol, obs, dfbs, op, rhf, &lcfg, &vvhv)?;
     let mut out = Vec::with_capacity(eps_list.len());
     for &eps in eps_list {
@@ -337,12 +357,38 @@ pub fn amplitude_drpa_scan(
     Ok(out)
 }
 
+/// [`amplitude_drpa_scan_timed`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+pub fn amplitude_drpa_scan_timed_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    base_cfg: &AmplitudeDrpaConfig,
+    eps_list: &[f64],
+) -> Result<(Vec<AmplitudeDrpaResult>, f64, Vec<f64>), FerricError> {
+    let sys = aux.system();
+    aux.check_restricted_reference(rhf)?;
+    amplitude_drpa_scan_timed(
+        sys.mol(),
+        sys.basis(),
+        sys.basis_set(),
+        aux.basis(),
+        sys.op(),
+        rhf,
+        base_cfg,
+        eps_list,
+    )
+}
+
 /// [`amplitude_drpa_scan`] with wall-clock instrumentation: also returns
 /// the shared eps-INDEPENDENT prefix wall time (VV-HV + `assemble_basis`;
 /// NOT including the caller's own RHF solve, which happens before this
 /// function is called) and one wall time per eps point (ragged assembly +
 /// solve only). Same per-point `AmplitudeDrpaResult`s as
 /// `amplitude_drpa_scan` — this wrapper adds timing, nothing else.
+#[allow(clippy::too_many_arguments)]
 pub fn amplitude_drpa_scan_timed(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -355,20 +401,9 @@ pub fn amplitude_drpa_scan_timed(
 ) -> Result<(Vec<AmplitudeDrpaResult>, f64, Vec<f64>), FerricError> {
     use std::time::Instant;
     let t_prefix = Instant::now();
-    let vvhv = build_vvhv(mol, obs, obs_bs, rhf)?;
-    let nocc_total = (mol.nelec() as usize) / 2;
-    let (dev_orth, dev_span) = check_vvhv(obs, rhf, nocc_total, &vvhv.c_vloc);
-    if dev_orth > 1e-8 || dev_span > 1e-8 {
-        return Err(FerricError::General(format!(
-            "drpa_amplitude: VV-HV construction check failed (orth {dev_orth:.2e}, span {dev_span:.2e})"
-        )));
-    }
-    let lcfg = AmplitudeLmp2Config {
-        eps: 0.0,
-        frozen_core: base_cfg.frozen_core,
-        eri3_budget_bytes: base_cfg.eri3_budget_bytes,
-        ..Default::default()
-    };
+    let (vvhv, _) = checked_vvhv(mol, obs, obs_bs, rhf, "drpa_amplitude")?;
+    let lcfg =
+        AmplitudeLmp2Config::plain_boys(0.0, base_cfg.frozen_core, base_cfg.eri3_budget_bytes);
     let lb = assemble_basis(mol, obs, dfbs, op, rhf, &lcfg, &vvhv)?;
     let prefix_wall_s = t_prefix.elapsed().as_secs_f64();
     let mut out = Vec::with_capacity(eps_list.len());
@@ -409,17 +444,12 @@ fn amplitude_drpa_from_basis(
     } else {
         f64::NAN
     };
-    let n = lb.no * lb.nv;
-    let kept: usize = rg
-        .pairs
-        .iter()
-        .map(|pb| pb.pat.iter().filter(|&&x| x).count())
-        .sum();
+    let keep_fraction = kept_fraction(&rg, lb.no, lb.nv);
     Ok(AmplitudeDrpaResult {
         e_corr,
         e_total: rhf.energy + e_corr,
         e_corr_plasmon_canonical: e_ref,
-        keep_fraction: kept as f64 / (n * n) as f64,
+        keep_fraction,
         pair_fraction: rg.pairs.len() as f64 / (lb.no * lb.no) as f64,
         iterations: it,
         relres,
@@ -497,7 +527,7 @@ pub fn exact_drpa_peak_bytes(no: usize, nv: usize, diis: Option<usize>) -> usize
 }
 
 /// Masked Riccati fixed-point solve on an already-assembled ragged
-/// B = 2(ia|jb) — the UNCHANGED solver shared by the global-B path
+/// B = 2(ia|jb): the solver shared by the global-B path
 /// ([`amplitude_drpa_from_basis`]) and the integral-direct path
 /// ([`amplitude_drpa_direct_with_virtuals`]): pattern-projected damped
 /// fixed point, optional DIIS (with the post-hoc residual honesty check on
@@ -665,14 +695,7 @@ pub fn amplitude_drpa_direct(
     cfg: &AmplitudeDrpaConfig,
     dcfg: &DirectConfig,
 ) -> Result<(AmplitudeDrpaResult, DirectStats), FerricError> {
-    let vvhv = build_vvhv(mol, obs, obs_bs, rhf)?;
-    let nocc_total = (mol.nelec() as usize) / 2;
-    let (dev_orth, dev_span) = check_vvhv(obs, rhf, nocc_total, &vvhv.c_vloc);
-    if dev_orth > 1e-8 || dev_span > 1e-8 {
-        return Err(FerricError::General(format!(
-            "drpa_amplitude(direct): VV-HV construction check failed (orth {dev_orth:.2e}, span {dev_span:.2e})"
-        )));
-    }
+    let (vvhv, _) = checked_vvhv(mol, obs, obs_bs, rhf, "drpa_amplitude(direct)")?;
     amplitude_drpa_direct_with_virtuals(mol, obs, dfbs, op, rhf, cfg, dcfg, &vvhv)
 }
 
@@ -709,18 +732,13 @@ pub fn amplitude_drpa_direct_with_virtuals(
     } else {
         f64::NAN
     };
-    let n = spaces.no * spaces.nv;
-    let kept: usize = rg
-        .pairs
-        .iter()
-        .map(|pb| pb.pat.iter().filter(|&&x| x).count())
-        .sum();
+    let keep_fraction = kept_fraction(&rg, spaces.no, spaces.nv);
     Ok((
         AmplitudeDrpaResult {
             e_corr,
             e_total: rhf.energy + e_corr,
             e_corr_plasmon_canonical: e_ref,
-            keep_fraction: kept as f64 / (n * n) as f64,
+            keep_fraction,
             pair_fraction: rg.pairs.len() as f64 / (spaces.no * spaces.no) as f64,
             iterations: it,
             relres,
@@ -746,12 +764,7 @@ pub fn amplitude_drpa_dense(
     vvhv: &VvHv,
 ) -> Result<AmplitudeDrpaResult, FerricError> {
     // reuse the LMP2 assembly (Boys occupieds, localized Fock blocks, RI J)
-    let lcfg = AmplitudeLmp2Config {
-        eps: cfg.eps,
-        frozen_core: cfg.frozen_core,
-        eri3_budget_bytes: cfg.eri3_budget_bytes,
-        ..Default::default()
-    };
+    let lcfg = AmplitudeLmp2Config::plain_boys(cfg.eps, cfg.frozen_core, cfg.eri3_budget_bytes);
     let lp = assemble_localized(mol, obs, dfbs, op, rhf, &lcfg, vvhv)?;
     let (no, nv) = (lp.no, lp.nv);
     let n = no * nv;

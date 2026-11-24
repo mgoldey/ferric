@@ -94,6 +94,7 @@ fn single_atom_moving_xc_pieces_are_exactly_zero() {
 
 /// Moving skeleton and `F^x` vs the frozen-density differences (LDA and PBE,
 /// water / STO-3G and 6-31G).
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn moving_xc_pieces_match_frozen_density_differences() {
     for xc in ["LDA", "PBE"] {
@@ -152,6 +153,7 @@ fn moving_xc_pieces_satisfy_the_translation_sum_rule() {
 }
 
 /// Each moving-grid mutant misses a frozen-density anchor by >= 10 bars.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn moving_grid_mutants_each_fail_a_frozen_density_anchor() {
     let xc = "PBE";
@@ -197,6 +199,7 @@ fn moving_grid_mutants_each_fail_a_frozen_density_anchor() {
 // Full Hessian vs the production gradient
 // ---------------------------------------------------------------------------
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn moving_grid_hessian_matches_difference_of_the_production_gradient() {
     if !has_deriv2() {
@@ -213,16 +216,45 @@ fn moving_grid_hessian_matches_difference_of_the_production_gradient() {
 /// the plain `ks_gradient_closed` differentiates) and the same reference (FD
 /// of the production gradient), which the fixed-grid Hessian misses and the
 /// moving-grid Hessian must match.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn production_gradient_difference_matches_the_moving_grid_hessian() {
     if !has_deriv2() {
         return;
     }
-    let cfg = RhfConfig {
-        dft_grid: None,
-        ..config("LDA")
-    };
+    let mut cfg = config("LDA");
+    cfg.dft_grid = None;
     full_hessian_case(&cfg, "LDA", "6-31g", TOL_HESS_FD);
+}
+
+/// The gradient-difference reference's SCF precondition (`FD_SCF_ERR_MAX`,
+/// see `fd_reference_config`) is a real gate in both directions: an SCF
+/// stopped at a loose threshold is above it, and the reference
+/// configuration reaches below it. Without the precondition, one displaced
+/// SCF taking one more iteration than its neighbours moved the 6-31G /
+/// default-grid case from 7e-11 to 2.3e-9 on the ubuntu-22.04 stack.
+#[test]
+fn the_fd_reference_scf_precondition_separates_loose_from_reference_scfs() {
+    let mut base = config("LDA");
+    base.dft_grid = None;
+    let err_max = |cfg: &RhfConfig| {
+        scf(&water(), "6-31g", cfg)
+            .res
+            .convergence
+            .expect("a converged SCF reports its convergence signals")
+            .err_max
+    };
+    let loose = err_max(&base.clone().with_density_conv(1e-8).with_energy_conv(1e-10));
+    let reference = err_max(&fd_reference_config(&base));
+    eprintln!("err_max: loose {loose:.2e}, reference {reference:.2e} (gate {FD_SCF_ERR_MAX:e})");
+    assert!(
+        loose > FD_SCF_ERR_MAX,
+        "loose SCF passes the gate: {loose:.2e}"
+    );
+    assert!(
+        reference < FD_SCF_ERR_MAX,
+        "reference SCF fails the gate: {reference:.2e}"
+    );
 }
 
 /// The grid of the moving Hessian must be the one the SCF ran on: a grid

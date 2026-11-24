@@ -1,0 +1,15 @@
+diff --git a/crates/ferric-mp2/src/laplace.rs b/crates/ferric-mp2/src/laplace.rs
+index cd355e02a..8e5f6580d 100644
+--- a/crates/ferric-mp2/src/laplace.rs
++++ b/crates/ferric-mp2/src/laplace.rs
+@@ -676,8 +676,8 @@ fn weighted_b_mo(
+     t: f64,
+ ) -> Array2<f64> {
+     // Per-point scalings: occ_e[i] = exp(t ε_i/2), vir_e[a] = exp(-t ε_a/2).
+-    let occ_e: Vec<f64> = eps_occ.iter().map(|&e| (0.5 * t * e).exp()).collect();
+-    let vir_e: Vec<f64> = eps_vir.iter().map(|&e| (-0.5 * t * e).exp()).collect();
++    let occ_e: Vec<f64> = eps_occ.iter().map(|&e| (t * e).exp()).collect();
++    let vir_e: Vec<f64> = eps_vir.iter().map(|&e| (-t * e).exp()).collect();
+     let mut b_t = b_mo_flat.clone();
+     for mut row in b_t.rows_mut() {
+         let r = row.as_slice_mut().unwrap();

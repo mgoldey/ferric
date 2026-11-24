@@ -491,7 +491,12 @@ def _interrupt_mid_step(tmp_path, sig, run_locked=None):
             _kill_if_alive(child)
 
 
-@pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM, signal.SIGHUP])
+# By name: Windows' `signal` has no SIGHUP, and this module must still import
+# there (the pytestmark skip above then applies; test_box_lease imports it).
+@pytest.mark.parametrize(
+    "sig",
+    [getattr(signal, n) for n in ("SIGINT", "SIGTERM", "SIGHUP") if hasattr(signal, n)],
+)
 def test_a_signal_never_leaves_the_build_running_without_the_lock(tmp_path, sig):
     violations, harness_rc, child, marker = _interrupt_mid_step(tmp_path, sig)
     assert not violations, violations

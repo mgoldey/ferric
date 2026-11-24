@@ -59,6 +59,8 @@ pub struct Device {
     /// The f32-matrix / f64-vector GEMV kernels (`gemv_f32_f64_n`, `_t`), same
     /// caching rule.
     kernel_gemv_f32: OnceLock<Result<GemvF32Kernels, String>>,
+    /// The on-device f64 → f32 rounding kernel, same caching rule.
+    kernel_round_f32: OnceLock<Result<CudaFunction, String>>,
 }
 
 /// The two entry points of `kernels/gemv_f32_f64.ptx`.
@@ -164,6 +166,7 @@ fn open(ordinal: usize) -> Result<Arc<Device>, GpuError> {
         blas: Mutex::new(blas),
         kernel_axpy: OnceLock::new(),
         kernel_gemv_f32: OnceLock::new(),
+        kernel_round_f32: OnceLock::new(),
     }))
 }
 
@@ -226,6 +229,30 @@ impl Device {
                     n: load("gemv_f32_f64_n")?,
                     t: load("gemv_f32_f64_t")?,
                 })
+            })
+            .as_ref()
+            .map_err(|e| GpuError::Kernel(e.clone()))
+    }
+
+    /// The `out = (float) in` rounding kernel (round-to-nearest-even, with an
+    /// overflow flag), JIT-loaded from the committed PTX. The same
+    /// `FORCE_KERNEL_FAILURE` seam makes this report a load failure.
+    pub fn round_f64_to_f32(&self) -> Result<&CudaFunction, GpuError> {
+        if kernel_failure_forced() {
+            return Err(GpuError::Kernel(
+                "forced by FORCE_KERNEL_FAILURE (test)".into(),
+            ));
+        }
+        self.kernel_round_f32
+            .get_or_init(|| {
+                let ptx = Ptx::from_src(include_str!("kernels/round_f64_to_f32.ptx"));
+                let module = self
+                    .ctx
+                    .load_module(ptx)
+                    .map_err(|e| format!("cuModuleLoadData(round_f64_to_f32.ptx): {e:?}"))?;
+                module
+                    .load_function("round_f64_to_f32")
+                    .map_err(|e| format!("cuModuleGetFunction(round_f64_to_f32): {e:?}"))
             })
             .as_ref()
             .map_err(|e| GpuError::Kernel(e.clone()))

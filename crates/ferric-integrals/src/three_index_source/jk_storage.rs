@@ -40,6 +40,13 @@ pub enum JkStorage {
     Disk,
     /// Always recompute each block per pass, even when memory would hold it.
     Direct,
+    /// RI-J by Split-RI-J (`ferric_scf::split_rij`): no stored J tensor, its
+    /// three-centre integrals recomputed in contracted form every build. Any
+    /// tensor still needed (DF-K's) is stored as under [`Auto`](Self::Auto).
+    /// Single rank only (with J and K on one auxiliary basis, the raw tensor
+    /// DF-K needs is freed once DF-K's copy is made); on several ranks J is
+    /// built from a stored tensor as under `Auto`, with a warning.
+    Split,
 }
 
 impl JkStorage {
@@ -50,8 +57,9 @@ impl JkStorage {
             "memory" => Ok(Self::Memory),
             "disk" => Ok(Self::Disk),
             "direct" => Ok(Self::Direct),
+            "split" => Ok(Self::Split),
             other => Err(format!(
-                "unknown jk_storage {other:?} (expected \"auto\", \"memory\", \"disk\" or \"direct\")"
+                "unknown jk_storage {other:?} (expected \"auto\", \"memory\", \"disk\", \"direct\" or \"split\")"
             )),
         }
     }
@@ -63,6 +71,7 @@ impl JkStorage {
             Self::Memory => "memory",
             Self::Disk => "disk",
             Self::Direct => "direct",
+            Self::Split => "split",
         }
     }
 
@@ -71,9 +80,15 @@ impl JkStorage {
     }
 
     fn from_code(c: u8) -> Option<Self> {
-        [Self::Auto, Self::Memory, Self::Disk, Self::Direct]
-            .into_iter()
-            .find(|v| v.code() == c)
+        [
+            Self::Auto,
+            Self::Memory,
+            Self::Disk,
+            Self::Direct,
+            Self::Split,
+        ]
+        .into_iter()
+        .find(|v| v.code() == c)
     }
 }
 
@@ -173,7 +188,10 @@ fn pair_screened_fits(
     screen: &super::PairScreen,
     budget_bytes: usize,
 ) -> bool {
-    if !matches!(policy, JkStorage::Auto | JkStorage::Memory) {
+    if !matches!(
+        policy,
+        JkStorage::Auto | JkStorage::Memory | JkStorage::Split
+    ) {
         return false;
     }
     let need = ThreeIndexSource::pair_screened_bytes(band, screen);
@@ -288,7 +306,7 @@ pub fn decide(
                 budget_bytes as f64 / 1e9,
             ))
         }),
-        JkStorage::Auto => match mem {
+        JkStorage::Auto | JkStorage::Split => match mem {
             Some(t) => Ok((t, None)),
             None => {
                 let cal = calibrate()?;
@@ -425,6 +443,21 @@ fn cached_calibration(
 }
 
 impl ThreeIndexSource {
+    /// Would RI-J's f64 tensor for a band of `rows` aux functions be held in
+    /// memory under `auto`? The checks [`Self::build_pair_screened_for_jk`]
+    /// and [`Self::build_for_jk`] run (pair-screened when `screen` is given,
+    /// else packed or dense), without building anything. `false` means `auto`
+    /// would spill it to disk or recompute it every pass.
+    pub fn ri_j_fits_in_memory(
+        nao: usize,
+        rows: usize,
+        screen: Option<&super::PairScreen>,
+        budget_bytes: usize,
+    ) -> bool {
+        screen.is_some_and(|s| pair_screened_fits(JkStorage::Auto, rows, s, budget_bytes))
+            || memory_tier(nao, rows, budget_bytes).is_some()
+    }
+
     /// Build the raw tensor for the SCF RI-J/K path under the effective
     /// [`jk_storage`] policy. `mol` is needed only to re-prepare the bases for
     /// the recompute backend, which owns them.
@@ -434,13 +467,35 @@ impl ThreeIndexSource {
         obs: &PreparedBasis,
         dfbs: &PreparedBasis,
         budget_bytes: usize,
+        band: (usize, usize),
+        dressed_for_k: bool,
+    ) -> Result<Self, FerricError> {
+        Self::build_for_jk_beside(op, mol, obs, dfbs, budget_bytes, band, dressed_for_k, 0)
+    }
+
+    /// [`Self::build_for_jk`] for a raw tensor that DF-K will dress into a
+    /// band of `dressed_beside` bytes held in core beside it (0: no such
+    /// band, identical to `build_for_jk`). The unpacked in-core tier is taken
+    /// only when the raw tensor AND that band fit the budget and the pool;
+    /// otherwise the raw tensor is held packed (when that fits), so the
+    /// dressed band is not pushed to disk by a raw tensor that could have been
+    /// half its size. A run whose unpacked raw tensor and dressed band both fit
+    /// is unchanged.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_for_jk_beside(
+        op: Operator,
+        mol: &ferric_core::mol::Molecule,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        budget_bytes: usize,
         (band_p0, band_p1): (usize, usize),
         dressed_for_k: bool,
+        dressed_beside: usize,
     ) -> Result<Self, FerricError> {
         let policy = jk_storage();
         let nao = obs.nbasis();
         let band = band_p1 - band_p0;
-        let (tier, cal) = decide(
+        let (mut tier, cal) = decide(
             policy,
             (nao, band, budget_bytes),
             || {
@@ -453,6 +508,21 @@ impl ThreeIndexSource {
             },
             dressed_for_k,
         )?;
+        if tier == Tier::InCore && dressed_beside > 0 {
+            let full = band
+                .saturating_mul(nao)
+                .saturating_mul(nao)
+                .saturating_mul(8);
+            let packed = band.saturating_mul(packed_pair_len(nao)).saturating_mul(8);
+            let pool_free =
+                ferric_core::memory::pool::global_available_bytes().unwrap_or(usize::MAX);
+            let both = full.saturating_add(dressed_beside);
+            if (both > budget_bytes || both > pool_free)
+                && super::packed_in_core_fits(packed, nao, budget_bytes)
+            {
+                tier = Tier::InCorePacked;
+            }
+        }
         if super::ooc_trace() {
             let c = cal.map_or(String::new(), |c| {
                 format!(
@@ -498,6 +568,81 @@ impl ThreeIndexSource {
                 (_, e) => e,
             },
         )
+    }
+
+    /// Bytes a dress-first raw source ([`Self::build_dress_stream`]) holds while
+    /// DF-K dresses from it: its block's charge (`DRESS_K_BLOCK` unpacked rows,
+    /// never touched by the packed stream) and the dressing's recompute stream
+    /// (`DRESS_K_BLOCK` rows, unpacked plus packed).
+    pub fn dress_stream_bytes_for(nao: usize, naux: usize) -> usize {
+        let rows = super::DRESS_K_BLOCK.min(naux.max(1));
+        let row = nao.saturating_mul(nao).saturating_mul(8);
+        let pair = packed_pair_len(nao).saturating_mul(8);
+        rows.saturating_mul(row.saturating_mul(2).saturating_add(pair))
+    }
+
+    /// Should the shared RI-JK raw tensor (`naux` rows) be streamed ONCE to
+    /// dress DF-K ("dress first") instead of held beside DF-K's dressed band
+    /// of `dressed_beside` bytes?
+    ///
+    /// True when the memory tiers would hold raw ([`memory_tier`]) but raw
+    /// (unpacked, or packed) and the band do not fit the budget together,
+    /// while the band and the dressing's stream
+    /// ([`Self::dress_stream_bytes_for`]) do. Otherwise the existing placement
+    /// stands: raw held beside the band, which then is dressed in core when
+    /// the pool admits it and spilled when not, or raw spilled / recomputed
+    /// when no memory tier holds it alone.
+    ///
+    /// The budget alone decides (never the live pool), so the route is a
+    /// function of the shapes and `[memory] budget_gb`. Pure: pinned in
+    /// milliseconds by `dress_first_band` below.
+    pub fn dress_first_wanted(
+        nao: usize,
+        naux: usize,
+        budget_bytes: usize,
+        dressed_beside: usize,
+    ) -> bool {
+        if dressed_beside == 0 || memory_tier(nao, naux, budget_bytes).is_none() {
+            return false;
+        }
+        let full = naux
+            .saturating_mul(nao)
+            .saturating_mul(nao)
+            .saturating_mul(8);
+        let packed = naux.saturating_mul(packed_pair_len(nao)).saturating_mul(8);
+        let held = full.min(packed).saturating_add(dressed_beside);
+        let streamed = dressed_beside.saturating_add(Self::dress_stream_bytes_for(nao, naux));
+        held > budget_bytes && streamed <= budget_bytes
+    }
+
+    /// The raw tensor of a dress-first RI-JK setup ([`Self::dress_first_wanted`]):
+    /// the recompute backend over the full aux range with a `DRESS_K_BLOCK`-row
+    /// block, so nothing is held but the block. DF-K dresses from it in one
+    /// streamed pass (bitwise the resident dressing); it is then either turned
+    /// into RI-J's f32 tensor by one more streamed pass or dropped for
+    /// Split-RI-J. Every value is the in-core tier's (`eri3_block` is pure).
+    pub fn build_dress_stream(
+        op: Operator,
+        mol: &ferric_core::mol::Molecule,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        budget_bytes: usize,
+    ) -> Result<Self, FerricError> {
+        let (nao, naux) = (obs.nbasis(), dfbs.nbasis());
+        let rows = super::DRESS_K_BLOCK.min(naux.max(1));
+        // `build_recompute_band` sizes its block to half the budget it is given.
+        let block_budget = (2 * rows * nao * nao * 8).min(budget_bytes);
+        if super::ooc_trace() {
+            eprintln!(
+                "[OOC build] jk_storage={} nao={nao} band=[0,{naux}) budget={:.2}GB -> \
+                 Recompute (dress first: streamed once for DF-K, {rows}-row block)",
+                jk_storage(),
+                budget_bytes as f64 / 1e9,
+            );
+        }
+        let obs = Arc::new(PreparedBasis::new(mol, obs.basis_set())?);
+        let dfbs = Arc::new(PreparedBasis::new(mol, dfbs.basis_set())?);
+        Self::build_recompute_band(op, obs, dfbs, block_budget, (0, naux), None)
     }
 
     /// The Schwarz pair-screened in-core tier for an RI-J-only source
@@ -576,6 +721,42 @@ impl ThreeIndexSource {
 mod tests {
     use super::*;
 
+    /// The dress-first band is exactly (band + stream, raw + band]: an ample
+    /// budget never takes it (the existing route is untouched), a budget that
+    /// cannot hold the band and its stream does not either, and no band
+    /// (`dressed_beside = 0`, a J-only source) never does. C32/def2-SVP's
+    /// shapes (nao 778, naux 3588, def2-universal-jkfit), at its 12 GiB budget.
+    #[test]
+    fn dress_first_band() {
+        let (nao, naux) = (778, 3588);
+        let packed = naux * packed_pair_len(nao) * 8;
+        let band = packed;
+        let stream = ThreeIndexSource::dress_stream_bytes_for(nao, naux);
+        let want = |budget| ThreeIndexSource::dress_first_wanted(nao, naux, budget, band);
+        assert!(want(12 << 30), "C32/def2-SVP at 12 GiB must dress first");
+        assert!(!want(usize::MAX / 4), "an ample budget keeps raw resident");
+        assert!(!want(packed + band), "raw and band fit together");
+        assert!(want(packed + band - 1));
+        assert!(want(band + stream));
+        assert!(!want(band + stream - 1), "the band and its stream must fit");
+        assert!(!ThreeIndexSource::dress_first_wanted(
+            nao,
+            naux,
+            12 << 30,
+            0
+        ));
+        // A raw no memory tier holds is placed as before (spill / recompute).
+        let tiny = (100, 4000);
+        let b = tiny.1 * packed_pair_len(tiny.0) * 8;
+        assert!(memory_tier(tiny.0, tiny.1, b / 2).is_none());
+        assert!(!ThreeIndexSource::dress_first_wanted(
+            tiny.0,
+            tiny.1,
+            b / 2,
+            b / 4
+        ));
+    }
+
     #[test]
     fn parse_round_trips_and_rejects_unknown() {
         for v in [
@@ -583,6 +764,7 @@ mod tests {
             JkStorage::Memory,
             JkStorage::Disk,
             JkStorage::Direct,
+            JkStorage::Split,
         ] {
             assert_eq!(JkStorage::parse(v.as_str()).unwrap(), v);
             assert_eq!(JkStorage::from_code(v.code()), Some(v));

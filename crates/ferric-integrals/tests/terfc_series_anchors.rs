@@ -3,11 +3,11 @@
 //! S > 20 (the curvature constraint r0·ω = 1/√2 bounds s = φ²r0² ≤ 1/2, so
 //! every table covers the reachable s-range and coverage reduces to S ≤ 20).
 //!
-//! History: the shim used to SKIP the terf subtraction for out-of-table
-//! primitives, leaving full-Coulomb contamination in far-field terfc
+//! Skipping the terf subtraction for out-of-table
+//! primitives would leave full-Coulomb contamination in far-field terfc
 //! integrals and making (P|Q)_terfc spuriously indefinite (commit 95aa709).
-//! These anchors pin the replacement series against ground truth so the
-//! far-field path can never silently regress again.
+//! These anchors pin the series that replaces the subtraction against ground
+//! truth so the far-field path cannot silently regress.
 //!
 //! All three tests call the shipped series through the test-only FFI hook
 //! `scf_terfc_debug_series_G` (a thin try/catch wrapper around

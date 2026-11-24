@@ -48,14 +48,13 @@
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::operator::Operator;
-use ferric_scf::optimize::{optimize_geometry, CoordSystem, OptimizeConfig, OptimizeResult};
+use ferric_scf::optimize::{
+    optimize_geometry, CoordSystem, InitialHessian, OptimizeConfig, OptimizeResult, TrustUpdate,
+};
 use ferric_scf::rhf::RhfConfig;
 
 fn rhf_cfg() -> RhfConfig {
-    RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    }
+    RhfConfig::default().with_energy_conv(1e-10)
 }
 
 /// H2 started from a stretched 1.0 Angstrom bond — the same system as the
@@ -101,18 +100,23 @@ fn run(mol: &Molecule, cfg: &OptimizeConfig) -> OptimizeResult {
     optimize_geometry(&ctx, mol, "sto-3g", Operator::coulomb(), &rhf_cfg(), cfg).unwrap()
 }
 
+/// The search the recorded paths in this file were taken with: identity
+/// (Cartesian) or Schlegel (internal) start and a fixed trust radius. Pinned so
+/// these anchors keep testing the coordinate machinery, not the defaults; the
+/// Lindh and ratio options are tested in `optimizer_model_hessian.rs`.
 fn cartesian_cfg() -> OptimizeConfig {
     OptimizeConfig {
         trust_radius: 0.1,
+        initial_hessian: Some(InitialHessian::Simple),
+        trust_update: TrustUpdate::Fixed,
         ..Default::default()
     }
 }
 
 fn internal_cfg() -> OptimizeConfig {
     OptimizeConfig {
-        trust_radius: 0.1,
         coord_system: CoordSystem::RedundantInternal,
-        ..Default::default()
+        ..cartesian_cfg()
     }
 }
 
@@ -359,6 +363,7 @@ fn tight_reference(mol: &Molecule) -> OptimizeResult {
             g_rms_thresh: 1e-6,
             e_conv: 1e-12,
             coord_system: CoordSystem::Cartesian,
+            ..Default::default()
         },
     )
 }
@@ -511,6 +516,7 @@ fn h2_same_stationary_point() {
     );
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn ethane_same_stationary_point() {
     let m = ethane_distorted();
@@ -541,6 +547,7 @@ fn ethane_same_stationary_point() {
 /// the torsional system (H2O2, ethane) and not on the rigid one (water). That
 /// is what is measured, and `water_same_stationary_point`'s printed numbers
 /// are the control: there the two are within a factor of 2 of each other.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn internals_land_closer_to_the_true_minimum_on_torsional_systems() {
     for (name, m) in [("h2o2", h2o2_distorted()), ("ethane", ethane_distorted())] {
@@ -591,6 +598,7 @@ fn methanol_cation_distorted() -> Molecule {
     .unwrap()
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn floppy_cation_same_stationary_point() {
     let m = methanol_cation_distorted();
@@ -612,6 +620,7 @@ fn floppy_cation_same_stationary_point() {
 /// which dominates the cost by orders of magnitude, and unlike wall time it is
 /// reproducible on a loaded box. The assertion is deliberately weak (internals
 /// must not be catastrophically worse); the numbers themselves are the output.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn iteration_count_ledger() {
     let systems: &[(&str, Molecule)] = &[

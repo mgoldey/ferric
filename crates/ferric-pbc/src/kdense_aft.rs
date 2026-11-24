@@ -17,7 +17,7 @@
 //! the supercell's reciprocal lattice. `v_M` is the SUPERCELL Madelung
 //! constant ([`KPointMesh::madelung`]), added per k with no `1/N_k` (PySCF
 //! `df_jk._ewald_exxdiv_for_G0`). Derivation and conventions:
-//! `reference/pbc/FINDINGS.md` "Iteration 9", `reference/pbc/pbc_kpts.py`.
+//! `wiki/archive/ferric-pbc-residue-2026-10-25/reference/pbc/FINDINGS.md` "Iteration 9", `wiki/archive/ferric-pbc-residue-2026-10-25/reference/pbc/pbc_kpts.py`.
 //!
 //! # Build
 //!

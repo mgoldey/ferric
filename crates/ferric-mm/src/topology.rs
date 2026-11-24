@@ -24,7 +24,9 @@ use std::collections::{HashMap, HashSet};
 /// `epsilon` in Hartree).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LjParams {
+    /// LJ σ in Bohr (`E = 4ε[(σ/r)^12 − (σ/r)^6]`; pairs mix by the arithmetic mean).
     pub sigma: f64,
+    /// LJ well depth ε in Hartree (pairs mix by the geometric mean); 0 disables LJ.
     pub epsilon: f64,
 }
 
@@ -33,9 +35,13 @@ pub struct LjParams {
 /// `k_openmm = 2 k_amber`; see `scripts/gen_openmm_mm_refs.py`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Bond {
+    /// First atom index.
     pub i: usize,
+    /// Second atom index.
     pub j: usize,
+    /// Force constant, Hartree/Bohr².
     pub k: f64,
+    /// Equilibrium bond length, Bohr.
     pub r0: f64,
 }
 
@@ -43,10 +49,15 @@ pub struct Bond {
 /// no-1/2 AMBER convention as [`Bond`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Angle {
+    /// First end atom index.
     pub i: usize,
+    /// Vertex atom index.
     pub j: usize,
+    /// Second end atom index.
     pub k: usize,
+    /// Force constant, Hartree/rad².
     pub k_theta: f64,
+    /// Equilibrium angle, radians.
     pub theta0: f64,
 }
 
@@ -55,12 +66,19 @@ pub struct Angle {
 /// radians.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Torsion {
+    /// First atom of the dihedral `i-j-k-l`.
     pub i: usize,
+    /// Second atom (first atom of the central bond).
     pub j: usize,
+    /// Third atom (second atom of the central bond).
     pub k: usize,
+    /// Fourth atom.
     pub l: usize,
+    /// Periodicity `n`.
     pub periodicity: u32,
+    /// Barrier amplitude `k`, Hartree.
     pub k_phi: f64,
+    /// Phase offset `delta`, radians.
     pub phase: f64,
 }
 
@@ -77,10 +95,16 @@ pub const DEFAULT_SCALE_COUL_14: f64 = 1.0 / 1.2;
 /// convention force fields are usually published in.
 #[derive(Debug, Clone)]
 pub struct MmTopology {
+    /// Partial charge of each atom, elementary charges; its length is the atom count.
     pub charges: Vec<f64>,
+    /// Lennard-Jones parameters of each atom, one per charge.
     pub lj: Vec<LjParams>,
+    /// Harmonic bond terms. [`MmTopology::new`] derives the exclusions and 1-4
+    /// pairs from them; editing this field afterwards does not update those sets.
     pub bonds: Vec<Bond>,
+    /// Harmonic angle terms.
     pub angles: Vec<Angle>,
+    /// Periodic torsion terms (proper and improper).
     pub torsions: Vec<Torsion>,
     /// LJ scale factor applied to 1-4 pairs (AMBER default 0.5).
     pub scale_lj_14: f64,

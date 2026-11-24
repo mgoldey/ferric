@@ -1,6 +1,7 @@
 //! Augmented-Hessian Newton step for ROHF / ROKS.
 //!
-//! Reformulates H κ = −g as a (n+1)×(n+1) generalized eigenvalue problem:
+//! Reformulates H κ = −g as a (n+1)×(n+1) standard symmetric eigenvalue
+//! problem (the augmented Hessian at α = 1):
 //!
 //!   ⎡ 0    g^T ⎤ ⎡ 1 ⎤        ⎡ 1 ⎤
 //!   ⎢          ⎥ ⎢   ⎥  =  λ  ⎢   ⎥
@@ -13,24 +14,59 @@
 //! avoiding PCG divergence on near-degenerate open-shell ROHF/ROKS
 //! problems (e.g., doublet OH at LDA where the SOMO/HOMO α-α gap vanishes).
 
-use crate::davidson_local::run_davidson_seeded;
 use crate::engine_pool::EnginePool;
 use crate::rohf_newton::{gradient_blocks, hessian_matvec, RohfNewtonInputs};
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ndarray::{Array1, Array2};
-use ndarray_linalg::Solve;
+
+thread_local! {
+    /// AH steps on this thread that took the PCG Newton step instead (test
+    /// seam; see `ah_kappa_or_fallback`).
+    static AH_FALLBACKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Lowest-root residual below which an unconverged AH Davidson is the
+/// expected tight-tolerance stall and the PCG Newton fallback is silent (see
+/// `rohf_ah_step`). Chosen, not derived: it is the AH tolerance this solver
+/// used before it followed `density_conv` (a residual below it was accepted
+/// as converged), and 14× the stall measured at density_conv 1e-10.
+const AH_ENDGAME_RESIDUAL: f64 = 1e-7;
+
+/// Number of AH steps on the calling thread that fell back to the PCG Newton
+/// step: the augmented-Hessian Davidson did not converge, or its lowest
+/// eigenvector has a vanishing leading entry (test seam).
+#[doc(hidden)]
+pub fn ah_fallbacks_on_this_thread() -> usize {
+    AH_FALLBACKS.with(std::cell::Cell::get)
+}
 
 /// Inputs to one AH Newton step. Wraps `RohfNewtonInputs` directly — the AH
 /// driver consumes exactly the same inputs as the PCG driver because the
 /// orbital Hessian matvec is shared.
 pub struct RohfAhInputs<'a, 'b> {
+    /// The inputs of the PCG Newton step, used unchanged.
     pub base: &'a RohfNewtonInputs<'b>,
+    /// Preconditioner level shift of the PCG Newton fallback step (the
+    /// solver passes its Newton branch's, `max(level_shift, 1e-6)`).
+    pub newton_level_shift: f64,
+    /// Trust radius of the PCG Newton fallback step (the solver passes its
+    /// Newton branch's).
+    pub newton_max_step: f64,
 }
 
 /// One augmented-Hessian Newton step on ROHF/ROKS MO coefficients.
 ///
-/// Returns updated C and the κ ∞-norm (step-size diagnostic).
+/// Returns updated C and the κ ∞-norm (step-size diagnostic). Below
+/// `|g|max < davidson_conv` the step is zero. If the Davidson solve does not
+/// converge, the PCG Newton step ([`crate::rohf_newton::rohf_newton_step`],
+/// with `inp.newton_level_shift` / `inp.newton_max_step`) is taken instead:
+/// silently when the lowest-root residual is below 1e-7 (the tight-tolerance
+/// stall), with a warning otherwise. When the lowest eigenvector's leading
+/// entry vanishes (a Hessian mode below the gradient-coupled root and
+/// orthogonal to g), κ is undefined, and the step depends on its eigenvalue:
+/// below −residual, a step along that mode to `max_step`, signed downhill;
+/// otherwise the PCG Newton step. Both warn.
 ///
 /// # Step-length control: clipping, and what it is not
 ///
@@ -52,15 +88,14 @@ pub struct RohfAhInputs<'a, 'b> {
 /// packed and the true orbital gradient — is FALSE: the true gradient is
 /// exactly **2 ×** `gradient_blocks` in every block (FD-measured in
 /// `reference/pbc/pbc_rohf_newton.py`, FINDINGS "Iteration 24"; pinned by
-/// `crate::rohf_trah`'s tests). What does NOT carry over by a scalar is the
-/// Hessian used here: `rohf_newton::hessian_matvec` keeps only the per-spin
-/// Fock DIAGONALS, which differs from the exact Hessian by O(off-diagonal f),
-/// so a ρ formed from it is not a true energy ratio away from a
-/// Roothaan-semicanonical basis. [`crate::rohf_trah`] is the ROHF/ROKS trust
-/// region on the exact gradient and Hessian (stepping from the current
-/// orbitals, no `F_eff` diagonalization); it currently serves the injected
-/// (periodic) path. This function remains the clipped, damped-Newton AH step
-/// of the molecular solver.
+/// `crate::rohf_trah`'s tests). The Hessian used here,
+/// `rohf_newton::hessian_matvec`, is the exact orbital Hessian (half
+/// scale; the per-spin diagonal Fock gap survives only as the Davidson
+/// preconditioner), but this is a clipped AH step with no ρ test.
+/// [`crate::rohf_trah`] is the ROHF/ROKS trust region on the exact gradient
+/// and Hessian; it currently serves the injected (periodic) path. This
+/// function remains the clipped AH step of the molecular solver, taken from
+/// the current orbitals.
 pub fn rohf_ah_step(
     ctx: &ParallelContext,
     inp: &RohfAhInputs,
@@ -118,92 +153,97 @@ pub fn rohf_ah_step(
         ferric_integrals::engine_pool::eri_precision(),
     )?;
 
-    // 2. Build the augmented matvec closure. Davidson expects the closure
-    // to return V^T A V given V (the trial subspace).
-    let nc_local = nc;
-    let no_local = no;
-    let aug_matvec = |v: &Array2<f64>, _omega: f64| -> Array2<f64> {
-        let m = v.ncols();
-        let mut av = Array2::<f64>::zeros((n_aug, m));
-        for col in 0..m {
-            let v_col = v.column(col);
-            let v_first = v_col[0];
-            let mut k_vc_local = Array2::<f64>::zeros((nvirt, nc_local));
-            let mut k_vo_local = Array2::<f64>::zeros((nvirt, no_local));
-            let mut k_oc_local = Array2::<f64>::zeros((no_local, nc_local));
-            unpack_three(
-                v_col.slice(ndarray::s![1..]),
-                &mut k_vc_local,
-                &mut k_vo_local,
-                &mut k_oc_local,
-            );
-
-            let (h_vc, h_vo, h_oc) =
-                hessian_matvec(ctx, base, &k_vc_local, &k_vo_local, &k_oc_local, &pool)
-                    .expect("hessian_matvec failed inside Davidson closure");
-
-            // av[0] = g · κ
-            let mut gk: f64 = 0.0;
-            {
-                let mut idx = 0;
-                for &vv in k_vc_local.iter() {
-                    gk += g_flat[idx] * vv;
-                    idx += 1;
-                }
-                for &vv in k_vo_local.iter() {
-                    gk += g_flat[idx] * vv;
-                    idx += 1;
-                }
-                for &vv in k_oc_local.iter() {
-                    gk += g_flat[idx] * vv;
-                    idx += 1;
-                }
-            }
-            av[(0, col)] = gk;
-
-            // av[1..] = g · v_first + H · κ (flattened)
-            let mut idx = 0;
-            for &vv in h_vc.iter() {
-                av[(1 + idx, col)] = g_flat[idx] * v_first + vv;
-                idx += 1;
-            }
-            for &vv in h_vo.iter() {
-                av[(1 + idx, col)] = g_flat[idx] * v_first + vv;
-                idx += 1;
-            }
-            for &vv in h_oc.iter() {
-                av[(1 + idx, col)] = g_flat[idx] * v_first + vv;
-                idx += 1;
-            }
+    // 2. The augmented matvec on full vectors `[v₀, κ] ↦ [g·κ, g v₀ + H κ]`.
+    //
+    // `stability::davidson_lowest` forms the true residual from Hv. A
+    // projected-matrix Davidson (closure returning only VᵀAV) would not
+    // work here: its residual V(VᵀAV)y − λVy is zero inside the subspace by
+    // construction, so it "converges" on the seed [1, 0, …] and every AH
+    // step is κ = 0.
+    let aug_matvec = |v: &[f64]| -> Result<Vec<f64>, FerricError> {
+        let v_first = v[0];
+        let mut k_vc_local = Array2::<f64>::zeros((nvirt, nc));
+        let mut k_vo_local = Array2::<f64>::zeros((nvirt, no));
+        let mut k_oc_local = Array2::<f64>::zeros((no, nc));
+        unpack_three(
+            ndarray::ArrayView1::from(&v[1..]),
+            &mut k_vc_local,
+            &mut k_vo_local,
+            &mut k_oc_local,
+        );
+        let (h_vc, h_vo, h_oc) =
+            hessian_matvec(ctx, base, &k_vc_local, &k_vo_local, &k_oc_local, &pool)?;
+        let mut out = Vec::with_capacity(n_aug);
+        out.push(g_flat.iter().zip(&v[1..]).map(|(g, k)| g * k).sum());
+        for (idx, hk) in h_vc
+            .iter()
+            .chain(h_vo.iter())
+            .chain(h_oc.iter())
+            .enumerate()
+        {
+            out.push(g_flat[idx] * v_first + hk);
         }
-        v.t().dot(&av)
+        Ok(out)
     };
 
-    // 3. Davidson seed: identity column [1, 0, …]^T is the natural seed
-    // because the lowest eigenvector of the AH matrix has a large first
-    // component (we'll rescale by it).
-    let mut seed = Array2::<f64>::zeros((n_aug, 1));
-    seed[(0, 0)] = 1.0;
-
-    let result = run_davidson_seeded(
-        seed,
-        aug_matvec,
-        davidson_conv,
-        davidson_max_vecs,
-        1,
-        /* find_lowest = */ true,
-    )?;
-
-    // 4. Extract κ from the lowest eigenvector. Rescale so the leading
-    // entry is 1 — this realizes the AH ansatz.
-    let evec = result.eigenvectors.column(0);
-    let first = evec[0];
-    if first.abs() < 1e-10 {
-        return Err(FerricError::General(
-            "AH eigenvector has near-zero leading entry — degeneracy or wrong sign".into(),
-        ));
+    // 3. Diagonal for the Davidson preconditioner and block seed: 0 for the
+    // augmented coordinate, the per-spin Fock gaps (as the PCG Newton step's
+    // preconditioner) for κ.
+    // Half scale (this module's), same packing order as κ.
+    let diag: Vec<f64> = std::iter::once(0.0)
+        .chain(
+            crate::rohf_trah::rohf_hessian_diagonal(base.f_a_mo, base.f_b_mo, nc, no)
+                .into_iter()
+                .map(|d| 0.5 * d),
+        )
+        .collect();
+    // One root is wanted. n_block = 2 is the minimum `davidson_lowest`'s
+    // correctness rests on (`StabilityConfig::n_block`); n_seed = 2. The
+    // residual tolerance follows the step's needs, as in `rohf_trah`:
+    // max(davidson_conv, 1e-2 · min(1, ‖g‖) · ‖g‖) (‖g‖ the 2-norm of the
+    // half gradient), so a far-from-converged step is not solved to 1e-7.
+    let g2 = g_flat.dot(&g_flat).sqrt();
+    let cfg = crate::stability::StabilityConfig {
+        conv_thresh: davidson_conv.max(1e-2 * g2.min(1.0) * g2),
+        max_subspace: davidson_max_vecs,
+        n_seed: 2,
+        n_block: 2,
+        ..Default::default()
+    };
+    let result = crate::stability::davidson_lowest(n_aug, aug_matvec, &diag, &cfg)?;
+    if crate::rohf::rohf_trace() {
+        eprintln!(
+            "ROHF AH: Davidson converged={} iterations={} residual={:.2e} (tol {:.2e}) lambda={:.3e}",
+            result.converged, result.iterations, result.residual, cfg.conv_thresh, result.eigenvalue
+        );
     }
-    let kappa_flat: Array1<f64> = evec.slice(ndarray::s![1..]).mapv(|x| x / first);
+    // 4. κ from the lowest eigenvector, a step along the negative mode the
+    // gradient does not see, or the PCG Newton step (same inputs, exact
+    // Hessian, Steihaug-guarded) from these orbitals when the eigenvector
+    // cannot be used (`ah_kappa_or_fallback`).
+    let kappa_flat = match ah_kappa_or_fallback(&result) {
+        AhKappa::Step(k) => k,
+        AhKappa::NegativeMode(v) => {
+            AH_NEGATIVE_MODE_STEPS.with(|c| c.set(c.get() + 1));
+            eprintln!(
+                "[ferric] WARNING: ROHF AH lowest eigenvector has leading entry {:.2e} (Hessian eigenvalue {:.3e} along a mode orthogonal to the gradient); this iteration steps along that mode to the step bound",
+                result.eigenvector[0], result.eigenvalue
+            );
+            negative_mode_step(&v, g_flat.view(), max_step)
+        }
+        AhKappa::Fallback(reason) => {
+            AH_FALLBACKS.with(|c| c.set(c.get() + 1));
+            report_ah_fallback(&reason, &result, cfg.conv_thresh);
+            return crate::rohf_newton::rohf_newton_step(
+                ctx,
+                base,
+                inp.newton_level_shift,
+                inp.newton_max_step,
+                20,
+                davidson_conv,
+            );
+        }
+    };
 
     let mut k_vc = Array2::<f64>::zeros((nvirt, nc));
     let mut k_vo = Array2::<f64>::zeros((nvirt, no));
@@ -249,23 +289,132 @@ pub fn rohf_ah_step(
     }
 
     // 7. Cayley unitary U = (I − κ/2)^{-1} (I + κ/2). Apply to C: C ← C·U.
-    let half_k = 0.5 * &kappa_mo;
-    let i_eye = Array2::<f64>::eye(n);
-    let a = &i_eye - &half_k;
-    let b = &i_eye + &half_k;
-    let mut u = Array2::<f64>::zeros((n, n));
-    for col in 0..n {
-        let bcol = b.column(col).to_owned();
-        let sol = a
-            .solve(&bcol)
-            .map_err(|e| FerricError::Lapack(format!("AH Cayley solve: {e}")))?;
-        for row in 0..n {
-            u[(row, col)] = sol[row];
-        }
-    }
-    let c_new = base.c.dot(&u);
+    let c_new = crate::cayley::cayley_rotate(base.c, &kappa_mo)?;
 
     Ok((c_new, kmax))
+}
+
+/// Why an AH step falls back to the PCG Newton step.
+#[derive(Debug, PartialEq)]
+enum AhFallback {
+    /// The Davidson did not converge. `endgame`: the residual reached is
+    /// below [`AH_ENDGAME_RESIDUAL`], the tight-tolerance stall, and the
+    /// fallback is silent.
+    Unconverged { endgame: bool },
+    /// The lowest eigenvector's leading entry is below
+    /// [`AH_MIN_LEADING_ENTRY`] in magnitude, so κ = v[1..]/v[0] is undefined,
+    /// and its eigenvalue is not below −residual, so no descent mode is
+    /// established.
+    ZeroLead,
+}
+
+/// κ from the AH eigenproblem, or the reason it cannot be formed.
+#[derive(Debug, PartialEq)]
+enum AhKappa {
+    Step(Array1<f64>),
+    /// v of a converged lowest eigenvector [0, v] with a negative eigenvalue:
+    /// a Hessian mode with negative curvature that the gradient does not see.
+    NegativeMode(Array1<f64>),
+    Fallback(AhFallback),
+}
+
+thread_local! {
+    static AH_NEGATIVE_MODE_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// AH steps taken along a negative mode orthogonal to the gradient on this
+/// thread.
+pub fn ah_negative_mode_steps_on_this_thread() -> usize {
+    AH_NEGATIVE_MODE_STEPS.with(|c| c.get())
+}
+
+/// κ along the negative mode `v`, signed so gᵀκ ≤ 0 and scaled so its largest
+/// component is `max_step`. The quadratic model changes by gᵀκ + ½λ|κ|², with
+/// λ < 0 the mode's curvature and gᵀv ≈ 0 by construction, so the step lowers
+/// the model by about ½|λ||κ|². Without this step the PCG Newton step, which
+/// starts from −M⁻¹g with a diagonal preconditioner, can leave v unstepped,
+/// and the SCF can converge onto the saddle.
+fn negative_mode_step(v: &Array1<f64>, g: ndarray::ArrayView1<f64>, max_step: f64) -> Array1<f64> {
+    let vmax = v.iter().fold(0.0f64, |m, &x| m.max(x.abs()));
+    if vmax == 0.0 {
+        return Array1::zeros(v.len());
+    }
+    let sign = if g.dot(v) > 0.0 { -1.0 } else { 1.0 };
+    v.mapv(|x| sign * max_step * x / vmax)
+}
+
+/// Smallest |v₀| of the lowest augmented-Hessian eigenvector from which κ is
+/// formed.
+const AH_MIN_LEADING_ENTRY: f64 = 1e-10;
+
+/// Decide between the AH step and the PCG Newton fallback from the Davidson
+/// result `r` of the augmented eigenproblem.
+///
+/// An unconverged eigenvector is not used. At a tight `density_conv` that is
+/// the normal endgame. MEASURED 2026-11-11, OH/6-31G ROHF at density_conv
+/// 1e-10: the last AH Davidson stalled at residual 6.9e-9 against a tolerance
+/// of 1e-10 (λ = −2.8e-13). The stall comes from `davidson_lowest`'s expansion
+/// step, not from a fixed floor: t = r/(diag − θ) is discarded when its
+/// Gram-Schmidt remainder has norm ≤ 1e-8, and on the augmented coordinate
+/// diag − θ = −λ ≈ 0 is clamped to 1e-8, so r₀ is amplified ~1e8 into the
+/// seed direction that Gram-Schmidt then removes. Near convergence AH and
+/// Newton steps agree to O(λ/h). So the fallback is silent only when the
+/// residual reached is that small (< [`AH_ENDGAME_RESIDUAL`]); a Davidson
+/// stalled anywhere above it is a failure and warns on every step.
+///
+/// A converged eigenvector with a vanishing leading entry is [0, v] with v a
+/// Hessian eigenvector orthogonal to g, whose eigenvalue lies below the lowest
+/// root coupled to g. The AH ansatz (leading entry 1) has no solution there.
+/// With an eigenvalue below −residual, v is a negative mode the gradient does
+/// not see, and the step goes along it ([`negative_mode_step`]); otherwise,
+/// including a near-zero eigenvalue whose sign the residual does not resolve,
+/// the PCG Newton step is taken. A full-bound step along a flat mode would
+/// gain only ½|λ||κ|² while its higher-order terms go unchecked.
+fn ah_kappa_or_fallback(r: &crate::stability::LowestEigenpair) -> AhKappa {
+    if !r.converged {
+        return AhKappa::Fallback(AhFallback::Unconverged {
+            endgame: r.residual < AH_ENDGAME_RESIDUAL,
+        });
+    }
+    let first = r.eigenvector[0];
+    if first.abs() < AH_MIN_LEADING_ENTRY {
+        // |λ_true − θ| ≤ ‖Hv − θv‖ for a symmetric H, so a θ above −residual
+        // does not establish negative curvature (stability.rs uses the same
+        // bound for `is_stable`).
+        if r.eigenvalue < -r.residual {
+            return AhKappa::NegativeMode(r.eigenvector[1..].iter().copied().collect());
+        }
+        return AhKappa::Fallback(AhFallback::ZeroLead);
+    }
+    // Rescale so the leading entry is 1: this realizes the AH ansatz.
+    AhKappa::Step(r.eigenvector[1..].iter().map(|x| x / first).collect())
+}
+
+/// Warn about (or, for the endgame stall, trace) an AH step that falls back
+/// to the PCG Newton step.
+fn report_ah_fallback(
+    reason: &AhFallback,
+    r: &crate::stability::LowestEigenpair,
+    conv_thresh: f64,
+) {
+    match reason {
+        AhFallback::Unconverged { endgame: false } => eprintln!(
+            "[ferric] WARNING: ROHF AH Davidson did not converge (residual {:.2e} > {:.2e} after {} iterations); this iteration takes the PCG Newton step instead of AH",
+            r.residual, conv_thresh, r.iterations
+        ),
+        AhFallback::Unconverged { endgame: true } => {
+            if crate::rohf::rohf_trace() {
+                eprintln!(
+                    "ROHF AH: endgame stall (residual {:.2e}, tol {conv_thresh:.2e}); PCG Newton step",
+                    r.residual
+                );
+            }
+        }
+        AhFallback::ZeroLead => eprintln!(
+            "[ferric] WARNING: ROHF AH lowest eigenvector has leading entry {:.2e} (eigenvalue {:.3e}, no descent mode); this iteration takes the PCG Newton step instead of AH",
+            r.eigenvector[0], r.eigenvalue
+        ),
+    }
 }
 
 fn unpack_three(
@@ -291,4 +440,109 @@ fn unpack_three(
 
 fn arr_max_abs(a: &Array2<f64>) -> f64 {
     a.iter().fold(0.0f64, |m, &v| m.max(v.abs()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::stability::LowestEigenpair;
+
+    fn pair(eigenvector: Vec<f64>, converged: bool, residual: f64) -> LowestEigenpair {
+        pair_at(-0.1, eigenvector, converged, residual)
+    }
+
+    fn pair_at(
+        eigenvalue: f64,
+        eigenvector: Vec<f64>,
+        converged: bool,
+        residual: f64,
+    ) -> LowestEigenpair {
+        LowestEigenpair {
+            eigenvalue,
+            eigenvector,
+            residual,
+            iterations: 5,
+            converged,
+        }
+    }
+
+    /// A converged eigenvector [0, v] with an eigenvalue below −residual (a
+    /// Hessian mode orthogonal to g below the gradient-coupled root) gives
+    /// the negative mode v instead of dividing by the vanishing leading
+    /// entry; with an eigenvalue at or above −residual it falls back to PCG
+    /// Newton; a usable
+    /// one gives κ = v[1..]/v[0]; an unconverged one falls back, silently
+    /// only below the endgame residual.
+    #[test]
+    fn ah_kappa_falls_back_on_a_vanishing_leading_entry() {
+        assert_eq!(
+            ah_kappa_or_fallback(&pair(vec![1e-12, 0.6, -0.8], true, 1e-9)),
+            AhKappa::NegativeMode(Array1::from(vec![0.6, -0.8]))
+        );
+        assert_eq!(
+            ah_kappa_or_fallback(&pair(vec![-0.0, 1.0, 0.0], true, 1e-9)),
+            AhKappa::NegativeMode(Array1::from(vec![1.0, 0.0]))
+        );
+        assert_eq!(
+            ah_kappa_or_fallback(&pair_at(0.0, vec![0.0, 1.0, 0.0], true, 1e-9)),
+            AhKappa::Fallback(AhFallback::ZeroLead)
+        );
+        // Negative, but inside the residual: the sign is not established.
+        assert_eq!(
+            ah_kappa_or_fallback(&pair_at(-1e-14, vec![0.0, 1.0, 0.0], true, 1e-9)),
+            AhKappa::Fallback(AhFallback::ZeroLead)
+        );
+        assert_eq!(
+            ah_kappa_or_fallback(&pair(vec![0.5, 0.1, -0.2], true, 1e-9)),
+            AhKappa::Step(Array1::from(vec![0.2, -0.4]))
+        );
+        assert_eq!(
+            ah_kappa_or_fallback(&pair(vec![0.5, 0.1, -0.2], false, 1e-9)),
+            AhKappa::Fallback(AhFallback::Unconverged { endgame: true })
+        );
+        assert_eq!(
+            ah_kappa_or_fallback(&pair(vec![0.5, 0.1, -0.2], false, 1e-5)),
+            AhKappa::Fallback(AhFallback::Unconverged { endgame: false })
+        );
+    }
+
+    /// The review's case: H = diag(−1, 1), g = (0, 1e-4). The lowest AH
+    /// eigenvector is [0, ±1, 0] (eigenvalue −1). The step goes along the
+    /// negative mode to the bound, signed against g, and lowers the
+    /// quadratic model m(κ) = gᵀκ + ½κᵀHκ by ½·max_step²; a PCG step from
+    /// −M⁻¹g = (0, −1e-4) would leave the first component at zero.
+    #[test]
+    fn negative_mode_step_goes_along_the_mode_to_the_bound_and_downhill() {
+        let h = [-1.0, 1.0];
+        let max_step = 0.1;
+        let model = |k: &Array1<f64>, g: &Array1<f64>| -> f64 {
+            g.dot(k) + 0.5 * (0..2).map(|i| h[i] * k[i] * k[i]).sum::<f64>()
+        };
+        for (g, v) in [
+            (Array1::from(vec![0.0, 1e-4]), Array1::from(vec![1.0, 0.0])),
+            (Array1::from(vec![0.0, 1e-4]), Array1::from(vec![-1.0, 0.0])),
+            (Array1::from(vec![1e-6, 1e-4]), Array1::from(vec![1.0, 0.0])),
+        ] {
+            let k = negative_mode_step(&v, g.view(), max_step);
+            let kmax = k.iter().fold(0.0f64, |m, &x| m.max(x.abs()));
+            assert!(
+                (kmax - max_step).abs() <= 1e-15,
+                "step {k:?} not at the bound"
+            );
+            assert!(g.dot(&k) <= 0.0, "step {k:?} not signed against g {g:?}");
+            let dm = model(&k, &g);
+            assert!(
+                dm <= -0.5 * max_step * max_step + max_step * g[0].abs(),
+                "model change {dm:.3e} for step {k:?}"
+            );
+        }
+        assert_eq!(
+            negative_mode_step(
+                &Array1::zeros(2),
+                Array1::from(vec![0.0, 1.0]).view(),
+                max_step
+            ),
+            Array1::<f64>::zeros(2)
+        );
+    }
 }

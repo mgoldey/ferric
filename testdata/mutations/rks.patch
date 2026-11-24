@@ -1,0 +1,22 @@
+diff --git a/crates/ferric-dft/src/xc_batch.rs b/crates/ferric-dft/src/xc_batch.rs
+index dfc8c95f5..e5e96f013 100644
+--- a/crates/ferric-dft/src/xc_batch.rs
++++ b/crates/ferric-dft/src/xc_batch.rs
+@@ -1695,7 +1695,7 @@ impl ScreenedGrid {
+                 let grad = Array2::from_shape_fn((3, nb), |(ax, j)| p.grad[ax][j]);
+                 let sigma = Array1::from_shape_fn(nb, |j| {
+                     let (gx, gy, gz) = (grad[(0, j)], grad[(1, j)], grad[(2, j)]);
+-                    gx * gx + gy * gy + gz * gz
++                    gx * gx + gy * gy + gy * gy
+                 });
+                 let rho = Array1::from(p.rho);
+                 let tau = Array1::from(p.tau);
+@@ -1930,7 +1930,7 @@ impl ScreenedGrid {
+         let mut sigma = Array1::<f64>::zeros(npts);
+         for g in 0..npts {
+             let (gx, gy, gz) = (grad[(0, g)], grad[(1, g)], grad[(2, g)]);
+-            sigma[g] = gx * gx + gy * gy + gz * gz;
++            sigma[g] = gx * gx + gy * gy + gy * gy;
+         }
+         let dens = DensityGrid { rho, grad, sigma };
+ 

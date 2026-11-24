@@ -13,7 +13,7 @@ pub const DEFAULT_CORRELATION_AUX: &str = "cc-pvdz-ri";
 pub const TDDFT_DEFAULT_AUX: &str = "cc-pvdz-rifit";
 /// JK-fit auxiliary basis the CLI defaults RI-J/RI-K to for KS-DFT and the
 /// RPA/GW/TDDFT references.
-pub const DEFAULT_SCF_JK_AUX: &str = "def2-universal-jkfit";
+pub const DEFAULT_SCF_JK_AUX: &str = ferric_scf::options::DEFAULT_JK_AUX;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -30,10 +30,19 @@ pub struct Config {
     /// closed-shell CCSD, it is refused.
     #[serde(default)]
     pub cc: Option<CcCfg>,
+    /// Optional `[eom]` section: the EOM-CCSD eigensolver (see [`EomCfg`]),
+    /// read by `method.kind = "eom-ccsd"` only.
+    #[serde(default)]
+    pub eom: Option<EomCfg>,
     #[serde(default)]
     pub optimize: OptimizeCfg,
     #[serde(default)]
     pub frequencies: FrequenciesCfg,
+    /// Optional `[md]` section: Born-Oppenheimer molecular dynamics
+    /// (`method.task = "md"`, see [`MdCfg`]). Required by that task, refused
+    /// by every other.
+    #[serde(default)]
+    pub md: Option<MdCfg>,
     #[serde(default)]
     pub rpa: RpaCfg,
     #[serde(default)]
@@ -42,6 +51,9 @@ pub struct Config {
     pub dft: DftCfg,
     #[serde(default)]
     pub memory: MemoryCfg,
+    /// Optional `[parallel]` section: thread settings (see [`ParallelCfg`]).
+    #[serde(default)]
+    pub parallel: ParallelCfg,
     #[serde(default)]
     pub gpu: GpuSection,
     /// Optional `[precision]` section: which kernels may run in mixed
@@ -77,6 +89,10 @@ pub struct Config {
     /// `method.kind` is computed exactly.
     #[serde(default)]
     pub local: Option<LocalCfg>,
+    /// Optional `[ri]` section: the RI fitting metric (see [`RiCfg`]).
+    /// Absent means the Coulomb-metric fit, byte-identical to before.
+    #[serde(default)]
+    pub ri: Option<RiCfg>,
     /// Optional `[qmmm]` section: QM/MM embedding. Absent means no QM/MM --
     /// byte-identical to the plain single-region run, the same convention
     /// `[cosmo]` and `[external_potential]` follow.
@@ -94,6 +110,30 @@ pub struct Config {
     /// key; `None` whenever `[cell]` is absent.
     #[serde(skip)]
     pub periodic: Option<PeriodicPlan>,
+    /// Optional `[cas]` section: the active space and orbital optimization of
+    /// `method.kind = "casscf"` / `"nevpt2"` (see [`crate::cas::CasCfg`]);
+    /// required by those kinds, refused by every other.
+    #[serde(default)]
+    pub cas: Option<crate::cas::CasCfg>,
+    /// The validated CAS plan, resolved by [`load_config`] from `[cas]` plus
+    /// the raw TOML (which `[scf]` keys were written). Not a TOML key; `None`
+    /// for every kind other than `casscf` / `nevpt2`.
+    #[serde(skip)]
+    pub cas_plan: Option<crate::cas::CasPlan>,
+    /// Optional `[opmp3]` section: the reference and model settings of
+    /// `method.kind = "opmp3"` (see [`crate::opmp3::Opmp3Cfg`]); refused by
+    /// every other kind.
+    #[serde(default)]
+    pub opmp3: Option<crate::opmp3::Opmp3Cfg>,
+    /// The validated OP-MP3 plan, resolved by [`load_config`]. Not a TOML
+    /// key; `None` for every kind other than `opmp3`.
+    #[serde(skip)]
+    pub opmp3_plan: Option<crate::opmp3::Opmp3Plan>,
+    /// Optional `[cdft]` section: constrained DFT (see [`crate::cdft::CdftCfg`]).
+    /// Present, `method.kind = "uhf"` runs the constrained UHF (UKS with
+    /// `[dft] functional`) of Python `run_cdft`.
+    #[serde(default)]
+    pub cdft: Option<crate::cdft::CdftCfg>,
 }
 
 impl Config {
@@ -465,6 +505,39 @@ impl MemoryCfg {
     }
 }
 
+/// `[parallel]` — thread settings.
+///
+/// The rayon thread count (parallel regions: integrals, J/K, XC, quadrature)
+/// is `RAYON_NUM_THREADS` (default: every logical CPU). Parallel regions run
+/// OpenBLAS at 1 thread unless `OPENBLAS_NUM_THREADS` says otherwise — rayon x
+/// BLAS threads above the core count oversubscribes, which is the user's call.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ParallelCfg {
+    /// OpenBLAS threads for serial sections: the per-iteration Fock
+    /// diagonalization, DIIS commutator, orthogonalizer and density GEMMs,
+    /// and the other dense linear algebra that runs outside parallel regions.
+    /// Absent: `FERRIC_BLAS_THREADS` if set, else the rayon thread count.
+    /// `1` makes results bit-identical across thread counts; any other value
+    /// lets OpenBLAS split reductions by thread count, which moves results at
+    /// the last bit (about 1e-14 relative).
+    pub blas_threads: Option<usize>,
+}
+
+impl ParallelCfg {
+    /// `blas_threads = 0` is refused: omit the key for the default.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.blas_threads == Some(0) {
+            return Err(
+                "[parallel] blas_threads = 0: use a positive thread count, or remove \
+                        the key for the default (the rayon thread count)"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct DftCfg {
@@ -479,16 +552,20 @@ pub struct DftCfg {
     /// published value carried by `DoubleHybridConfig::default()` (0.1).
     /// Only read by `method.kind = "wb97x-l-v"`.
     pub omega: Option<f64>,
-    /// Angular-grid pruning scheme for the MAIN DFT grid.
+    /// Angular-grid pruning scheme for the main DFT grid.
     ///
-    ///   `"none"` (default) — flat grid, every radial shell at the full
-    ///                        Lebedev order. Byte-identical to the historical
-    ///                        behaviour.
-    ///   `"nwchem"`         — NWChem-style 5-region radial pruning. Removes
-    ///                        ~23% of grid points at the default 75x110 for a
-    ///                        live-SCF energy shift well inside the PySCF
-    ///                        reference tolerances (see
+    ///   omitted            — `nwchem-radial` (the production grid; see
+    ///                        `AtomicGridConfig::production`).
+    ///   `"none"`           — flat grid, every radial shell at the full
+    ///                        Lebedev order (with `grid_weight_cut = 0`, the
+    ///                        pre-production default exactly).
+    ///   `"nwchem"`         — NWChem-style 5-region angular pruning. Removes
+    ///                        ~23% of grid points at 75x110 for a live-SCF
+    ///                        energy shift well inside the PySCF reference
+    ///                        tolerances (see
     ///                        `ferric-dft/tests/grid_prune_live_scf.rs`).
+    ///   `"nwchem-radial"`  — `nwchem` plus fewer radial shells on H/He/Li-Ne.
+    ///   `"defgrid1"`..`"defgrid3"` — ORCA DEFGRIDs (fix their own sizes).
     ///
     /// Unknown values are a hard error (`PruneScheme::parse_config_str`).
     ///
@@ -499,7 +576,7 @@ pub struct DftCfg {
     /// converged (the XC grid-response term is built on the pruned grid).
     pub grid_prune: Option<String>,
     /// Radial points per atom on the MAIN DFT grid. Omitted = the library
-    /// default (`AtomicGridConfig::default()`, 75). Must be > 0. Same meaning
+    /// default (`AtomicGridConfig::production()`, 75). Must be > 0. Same meaning
     /// as the Python `grid_radial=` kwarg.
     ///
     /// Optimize / frequency runs use the same grid for the analytic XC
@@ -510,6 +587,17 @@ pub struct DftCfg {
     /// (`ferric_dft::prune::SUPPORTED_LEBEDEV_ORDERS`); anything else is an
     /// error here rather than a panic inside the grid build.
     pub grid_angular: Option<usize>,
+    /// Grid weight cutoff on the MAIN DFT grid (ORCA's `WeightCut`): drop every
+    /// grid point whose final weight (radial x angular x Becke partition) has
+    /// `|w| < grid_weight_cut`. Omitted = the production cutoff,
+    /// `ferric_dft::grid::DEFAULT_WEIGHT_CUT` (1e-14); `0` turns it off. Must
+    /// be finite and `>= 0` (anything else is an error). Same meaning as the
+    /// Python `grid_weight_cut=` kwarg.
+    ///
+    /// Optimize / frequency runs differentiate the cut energy they converged
+    /// (the XC grid-response term drops the same points). Applies to the main
+    /// grid only; the VV10/NLC grid is uncut.
+    pub grid_weight_cut: Option<f64>,
     /// Empirical dispersion correction to ADD to the SCF energy.
     ///
     ///   omitted / absent  — no correction. The reported energy is the plain
@@ -538,44 +626,117 @@ impl DftCfg {
         self.grid_radial.is_some() || self.grid_angular.is_some()
     }
 
+    /// Whether any main-grid key (`grid_radial`, `grid_angular`,
+    /// `grid_prune`, `grid_weight_cut`) is set.
+    pub fn sets_any_grid_key(&self) -> bool {
+        self.sets_grid_size() || self.grid_prune.is_some() || self.grid_weight_cut.is_some()
+    }
+
+    /// `[dft] grid_weight_cut`, strictly checked: `Ok(None)` when unset (the
+    /// caller then keeps the production cutoff) or `0` (off), `Ok(Some(cut))`
+    /// for a finite `cut > 0`, and an error for a negative, NaN or infinite
+    /// value (never silently "off").
+    pub fn grid_weight_cut(&self) -> Result<Option<f64>, String> {
+        match self.grid_weight_cut {
+            None => Ok(None),
+            Some(c) if c.is_finite() && c >= 0.0 => Ok((c > 0.0).then_some(c)),
+            Some(c) => Err(format!(
+                "[dft] grid_weight_cut = {c} is invalid: it must be a finite number >= 0 \
+                 (e.g. 1e-14; omitted = the 1e-14 default, 0 = no cutoff)"
+            )),
+        }
+    }
+
     /// The main KS grid for `RhfConfig::dft_grid`, from `grid_radial` /
     /// `grid_angular` and an already-parsed `grid_prune` scheme.
     ///
-    /// All three unset returns `None`, which keeps `AtomicGridConfig::default()`
-    /// (75x110, unpruned) and so is byte-identical to a run without these keys.
-    /// Any one set materialises an explicit config, the unset sizes taken from
-    /// that same default. Mirrors the Python `resolve_dft_grid` (same checks,
-    /// same defaults), so `[dft] grid_radial = 99` and `grid_radial=99` build
-    /// the same grid.
+    /// `[dft] grid_weight_cut` (see [`Self::grid_weight_cut`]) sets the
+    /// config's `weight_cut`.
+    ///
+    /// All four unset returns `None`: the production grid
+    /// (`AtomicGridConfig::production`, 75x110, nwchem-radial, 1e-14 weight
+    /// cutoff), which every KS path resolves `None` to. Any one set
+    /// materialises an explicit config: unset sizes from that grid, and an
+    /// unset `grid_prune` / `grid_weight_cut` keeps its scheme / cutoff
+    /// (`AtomicGridConfig::production_sized`; `"none"` / `0` turn them off).
+    /// Mirrors the Python `resolve_dft_grid` (same checks, same defaults), so
+    /// `[dft] grid_radial = 99` and `grid_radial=99` build the same grid.
     pub fn grid_config(
         &self,
         prune: Option<ferric_dft::prune::PruneScheme>,
     ) -> Result<Option<ferric_dft::grid::AtomicGridConfig>, String> {
-        use ferric_dft::prune::{region_orders, SUPPORTED_LEBEDEV_ORDERS};
-        if !self.sets_grid_size() && prune.is_none() {
+        let weight_cut = self.grid_weight_cut()?;
+        self.refuse_sizes_with_defgrid(prune)?;
+        if !self.sets_any_grid_key() {
             return Ok(None);
         }
-        let default = ferric_dft::grid::AtomicGridConfig::default();
+        self.explicit_grid(prune, weight_cut).map(Some)
+    }
+
+    /// The explicit grid [`Self::grid_config`] builds once any grid key is
+    /// set: unset sizes from the production grid, and an unset `grid_prune` /
+    /// `grid_weight_cut` keeps the production scheme / cutoff at that size.
+    fn explicit_grid(
+        &self,
+        prune: Option<ferric_dft::prune::PruneScheme>,
+        weight_cut: Option<f64>,
+    ) -> Result<ferric_dft::grid::AtomicGridConfig, String> {
+        let default = ferric_dft::grid::AtomicGridConfig::production();
         let n_radial = self.grid_radial.unwrap_or(default.n_radial);
         let n_angular = self.grid_angular.unwrap_or(default.n_angular);
-        if n_radial == 0 {
-            return Err("[dft] grid_radial must be > 0".to_string());
-        }
-        if !SUPPORTED_LEBEDEV_ORDERS.contains(&n_angular) {
-            return Err(format!(
-                "[dft] grid_angular = {n_angular} is not a supported Lebedev order \
-                 (supported: {SUPPORTED_LEBEDEV_ORDERS:?})"
-            ));
-        }
-        if prune.is_some() {
-            region_orders(n_angular).map_err(|e| format!("[dft] grid_prune: {e}"))?;
-        }
-        Ok(Some(ferric_dft::grid::AtomicGridConfig {
+        let sized = ferric_dft::grid::AtomicGridConfig::production_sized(n_radial, n_angular);
+        let prune = self.grid_prune.as_ref().map_or(sized.prune, |_| prune);
+        let weight_cut = self
+            .grid_weight_cut
+            .map_or(sized.weight_cut, |_| weight_cut);
+        validate_grid_sizes(n_radial, n_angular, prune)?;
+        Ok(ferric_dft::grid::AtomicGridConfig {
             n_radial,
             n_angular,
             prune,
-        }))
+            weight_cut,
+        })
     }
+
+    /// `grid_prune = "defgrid1/2/3"` fixes both grid sizes, so an explicit
+    /// `grid_radial` / `grid_angular` beside it is an error, not ignored.
+    fn refuse_sizes_with_defgrid(
+        &self,
+        prune: Option<ferric_dft::prune::PruneScheme>,
+    ) -> Result<(), String> {
+        let defgrid = matches!(prune, Some(ferric_dft::prune::PruneScheme::DefGrid(_)));
+        if defgrid && (self.grid_radial.is_some() || self.grid_angular.is_some()) {
+            return Err(
+                "[dft] grid_prune = \"defgrid1/2/3\" fixes the radial and angular \
+                        grid; remove grid_radial / grid_angular"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
+/// The checks every explicit `[dft]` grid passes: a positive radial count, a
+/// supported Lebedev order, and a prune scheme that has a table for it.
+fn validate_grid_sizes(
+    n_radial: usize,
+    n_angular: usize,
+    prune: Option<ferric_dft::prune::PruneScheme>,
+) -> Result<(), String> {
+    use ferric_dft::prune::{validate_xc_scheme, SUPPORTED_LEBEDEV_ORDERS};
+    if n_radial == 0 {
+        return Err("[dft] grid_radial must be > 0".to_string());
+    }
+    if !SUPPORTED_LEBEDEV_ORDERS.contains(&n_angular) {
+        return Err(format!(
+            "[dft] grid_angular = {n_angular} is not a supported Lebedev order \
+             (supported: {SUPPORTED_LEBEDEV_ORDERS:?})"
+        ));
+    }
+    if let Some(scheme) = prune {
+        validate_xc_scheme(scheme, n_angular).map_err(|e| format!("[dft] grid_prune: {e}"))?;
+    }
+    Ok(())
 }
 
 /// What `[dft] dispersion` asked for, after strict parsing.
@@ -755,16 +916,17 @@ impl PointChargeCfg {
 ///
 /// Exactly one of `epsilon` (a dielectric constant, finite and > 1) or
 /// `solvent` (a name from `ferric_pcm::NAMED_SOLVENTS`, the same table the
-/// Python `solvent=` kwarg reads) is required; `lebedev_order` (6, 14, 26,
-/// 50, 110 or 302; default 110) sets the tesserae per atomic sphere. The
+/// Python `solvent=` kwarg reads) is required; `lebedev_order` (one of
+/// `ferric_pcm::SUPPORTED_LEBEDEV_ORDERS`; default 110) sets the tesserae per atomic sphere. The
 /// remaining `PcmConfig` knobs (Bondi scale 1.2, Gaussian-smeared S/D) stay
 /// at the library defaults, as they do in Python.
 ///
 /// Which kinds/tasks honour it is decided by
 /// [`Config::validate_cli_wired_keys`]: the reaction field enters the SCF, so
 /// kinds whose reported number is the SCF (or, for `pdep-rpa`, an SCF-plus-
-/// correlation total on that reference) accept it; gradient tasks refuse it,
-/// because no gradient in the workspace has a PCM term.
+/// correlation total on that reference) accept it; `task = "optimize"` is
+/// accepted for the SCF kinds, whose gradients carry the analytic IEF-PCM
+/// term; every other task refuses it.
 #[derive(Deserialize, Default, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct PcmCfg {
@@ -833,6 +995,223 @@ pub struct OptimizeCfg {
     /// `"internals"` asked for internals and must be told they did not get
     /// them.
     pub coordinates: Option<String>,
+    /// Initial Hessian: `"simple"` (identity in Cartesians, Schlegel diagonal
+    /// in internals) or `"lindh"` (Lindh 1995 model Hessian). Unset takes
+    /// `ferric_scf::optimize::DEFAULT_INITIAL_HESSIAN`. Strict parser.
+    pub initial_hessian: Option<String>,
+    /// Trust-radius rule: `"fixed"` or `"ratio"` (actual/predicted energy
+    /// ratio, uphill steps rejected). Unset takes the library default. Strict.
+    pub trust_update: Option<String>,
+    /// Start each geometry's SCF from the previous geometry's converged MOs
+    /// (`ferric_scf::warm_start`) instead of the default guess. Default
+    /// `true`; `false` re-guesses every geometry from scratch (the behaviour
+    /// before warm start existed). Covers the SCF optimizers and the RI-MP2 /
+    /// PDEP-RPA optimizers (the RHF under each step; for PDEP-RPA also the
+    /// displaced RHFs of its finite-difference gradient, each started from
+    /// that step's reference RHF).
+    pub scf_warm_start: Option<bool>,
+}
+
+/// `[md]` -- Born-Oppenheimer molecular dynamics (`method.task = "md"`) on
+/// the RHF/RKS, UHF/UKS or ROHF/ROKS surface (`ferric_scf::run_aimd`, the
+/// `ferric-md` integrators). User units: fs, K, ps^-1.
+#[derive(Deserialize, Default, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct MdCfg {
+    /// Number of time steps (required).
+    pub n_steps: Option<usize>,
+    /// Time step in fs (default 0.5).
+    pub dt_fs: Option<f64>,
+    /// `"nve"` (default, velocity Verlet), `"berendsen"` (needs `tau_fs`) or
+    /// `"langevin"` (BAOAB, needs `friction_per_ps`). Strict.
+    pub thermostat: Option<String>,
+    /// Target temperature in K; required by berendsen and langevin.
+    pub temperature_k: Option<f64>,
+    /// Maxwell-Boltzmann initial-velocity temperature in K (unset:
+    /// `temperature_k`; neither: zero initial velocities).
+    pub init_temperature_k: Option<f64>,
+    /// Berendsen coupling time in fs (berendsen only).
+    pub tau_fs: Option<f64>,
+    /// Langevin friction in 1/ps (langevin only).
+    pub friction_per_ps: Option<f64>,
+    /// Seed of the initial velocities and the Langevin noise (default 0).
+    pub seed: Option<u64>,
+    /// Remove the centre-of-mass motion (default true).
+    pub remove_com_motion: Option<bool>,
+    /// Record every `stride`-th step (default 1).
+    pub stride: Option<usize>,
+    /// Start each step's SCF from the previous step's orbitals (default true).
+    pub scf_warm_start: Option<bool>,
+    /// Multi-frame XYZ trajectory (Angstrom); default `<input stem>.md.xyz`
+    /// beside the input file.
+    pub trajectory: Option<String>,
+    /// Energy CSV; default `<input stem>.md.csv` beside the input file.
+    pub energies: Option<String>,
+}
+
+/// The `method.kind`s `task = "md"` runs: the SCF surfaces with an analytic
+/// gradient (`ferric_scf::run_aimd`).
+pub const MD_KINDS: &[&str] = &["rhf", "uhf", "rohf", "ksdft"];
+
+impl MdCfg {
+    /// The `ferric_md::MdConfig` these keys describe, validated (thermostat
+    /// parameters, temperatures, time step, stride).
+    ///
+    /// # Errors
+    ///
+    /// A message prefixed `[md]` naming the bad key.
+    pub fn md_config(&self) -> Result<ferric_md::MdConfig, String> {
+        let n_steps = self.n_steps.ok_or(
+            "[md] n_steps is required with method.task = \"md\" (the number of time steps)",
+        )?;
+        let thermostat = ferric_md::Thermostat::parse_config_str(
+            self.thermostat.as_deref().unwrap_or("nve"),
+            self.tau_fs,
+            self.friction_per_ps,
+        )
+        .map_err(|e| format!("[md] {e}"))?;
+        let d = ferric_md::MdConfig::default();
+        let config = ferric_md::MdConfig {
+            n_steps,
+            dt_fs: self.dt_fs.unwrap_or(d.dt_fs),
+            thermostat,
+            temperature_k: self.temperature_k,
+            init_temperature_k: self.init_temperature_k,
+            initial_velocities: None,
+            seed: self.seed.unwrap_or(d.seed),
+            remove_com_motion: self.remove_com_motion.unwrap_or(d.remove_com_motion),
+            stride: self.stride.unwrap_or(d.stride),
+            keep_trajectory: false,
+        };
+        config
+            .validate(1)
+            .map_err(|e| format!("[md] {}", ferric_msg(e)))?;
+        Ok(config)
+    }
+
+    /// The trajectory and energy file paths: the keys as written, else
+    /// `<input stem>.md.xyz` / `.md.csv` beside `toml_path`.
+    #[must_use]
+    pub fn output_paths(
+        &self,
+        toml_path: &std::path::Path,
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        let beside = |ext: &str| toml_path.with_extension(ext);
+        (
+            self.trajectory
+                .as_ref()
+                .map_or_else(|| beside("md.xyz"), std::path::PathBuf::from),
+            self.energies
+                .as_ref()
+                .map_or_else(|| beside("md.csv"), std::path::PathBuf::from),
+        )
+    }
+}
+
+impl Config {
+    /// The `[md]` / `task = "md"` rules, checked at load time: the section
+    /// and the task go together, `n_steps` is set, the kind has an analytic
+    /// SCF gradient ([`MD_KINDS`]), the keys are consistent
+    /// ([`MdCfg::md_config`]), and no feature the AIMD driver does not
+    /// differentiate is present.
+    pub fn validate_md(&self) -> Result<(), String> {
+        let task = self.method.task.as_str();
+        let kind = self.method.kind.as_str();
+        let Some(md) = self.md.as_ref().filter(|_| task == "md") else {
+            return match (task, &self.md) {
+                ("md", None) => Err(
+                    "method.task = \"md\" needs an [md] section with n_steps (the number of \
+                     time steps)"
+                        .to_string(),
+                ),
+                (_, Some(_)) => Err(format!(
+                    "[md] is read by method.task = \"md\" only; task = \"{task}\" would \
+                     silently ignore it"
+                )),
+                _ => Ok(()),
+            };
+        };
+        if !MD_KINDS.contains(&kind) {
+            return Err(format!(
+                "method.task = \"md\" is supported for method.kind = {} only (got \"{kind}\"): \
+                 molecular dynamics follows the analytic SCF gradient",
+                MD_KINDS
+                    .iter()
+                    .map(|k| format!("\"{k}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        let refused = [
+            ("[cell]", self.cell.is_some()),
+            ("[qmmm]", self.qmmm.is_some()),
+            ("[cosmo]", self.cosmo.is_some()),
+            ("[pcm]", self.pcm.is_some()),
+            ("[scf] relativistic", self.scf.relativistic.is_some()),
+            ("[scf] symmetry", self.scf.symmetry),
+        ];
+        if let Some((what, _)) = refused.iter().find(|(_, set)| *set) {
+            return Err(format!(
+                "{what} is not supported with method.task = \"md\": the molecular dynamics \
+                 driver follows the gas-phase molecular SCF gradient only (no periodic, QM/MM, \
+                 solvated, relativistic or symmetry-blocked dynamics). Remove {what}."
+            ));
+        }
+        md.md_config().map(|_| ())
+    }
+}
+
+/// Parse the `[optimize] initial_hessian` key (strict).
+///
+/// # Errors
+///
+/// Returns a message naming the accepted values if `s` is not one of them.
+pub fn parse_initial_hessian(s: &str) -> Result<ferric_scf::optimize::InitialHessian, String> {
+    ferric_scf::optimize::InitialHessian::parse_config_str(s)
+        .map_err(|e| e.replacen("initial_hessian", "[optimize] initial_hessian", 1))
+}
+
+/// Parse the `[optimize] trust_update` key (strict).
+///
+/// # Errors
+///
+/// Returns a message naming the accepted values if `s` is not one of them.
+pub fn parse_trust_update(s: &str) -> Result<ferric_scf::optimize::TrustUpdate, String> {
+    ferric_scf::optimize::TrustUpdate::parse_config_str(s)
+        .map_err(|e| e.replacen("trust_update", "[optimize] trust_update", 1))
+}
+
+impl OptimizeCfg {
+    /// The `initial_hessian` and `trust_update` keys, parsed.
+    ///
+    /// # Errors
+    ///
+    /// The parser's message, as `error in [optimize]: ...`, on a bad value.
+    pub fn search_options(
+        &self,
+    ) -> Result<
+        (
+            Option<ferric_scf::optimize::InitialHessian>,
+            ferric_scf::optimize::TrustUpdate,
+        ),
+        crate::error::CliError,
+    > {
+        let err = |e: String| crate::error::CliError::verbatim(format!("error in [optimize]: {e}"));
+        let ih = self
+            .initial_hessian
+            .as_deref()
+            .map(parse_initial_hessian)
+            .transpose()
+            .map_err(err)?;
+        let tu = self
+            .trust_update
+            .as_deref()
+            .map(parse_trust_update)
+            .transpose()
+            .map_err(err)?
+            .unwrap_or_default();
+        Ok((ih, tu))
+    }
 }
 
 /// Parse the `[optimize] coordinates` key into a
@@ -844,16 +1223,8 @@ pub struct OptimizeCfg {
 ///
 /// Returns a message naming the accepted values if `s` is not one of them.
 pub fn parse_coord_system(s: &str) -> Result<ferric_scf::optimize::CoordSystem, String> {
-    use ferric_scf::optimize::CoordSystem;
-    match s.trim().to_ascii_lowercase().as_str() {
-        "cartesian" | "cart" => Ok(CoordSystem::Cartesian),
-        "internal" | "internals" | "redundant-internal" | "redundant_internal" => {
-            Ok(CoordSystem::RedundantInternal)
-        }
-        other => Err(format!(
-            "unknown [optimize] coordinates = \"{other}\"; expected \"cartesian\" or \"internal\""
-        )),
-    }
+    ferric_scf::optimize::CoordSystem::parse_config_str(s)
+        .map_err(|e| e.replacen("coordinates", "[optimize] coordinates", 1))
 }
 
 /// `[frequencies]` — harmonic vibrational frequencies (`method.task =
@@ -897,6 +1268,28 @@ pub struct FrequenciesCfg {
     /// arithmetic, so a large value means `delta` or the SCF thresholds are
     /// badly chosen for the system.
     pub delta: Option<f64>,
+    /// Finite-difference Hessians: start every displaced SCF from the
+    /// undisplaced reference geometry's converged orbitals
+    /// (`FrequencyConfig::scf_warm_start`; anchored at the reference, never
+    /// chained from the previous displacement). Default `false` (opt-in): at
+    /// equal `[scf] density_conv` the warm Hessian is noisier, so pair `true`
+    /// with a ~100x tighter `density_conv`. No effect on an analytic Hessian.
+    pub scf_warm_start: Option<bool>,
+    /// RRHO thermochemistry temperature in K (default 298.15).
+    pub temperature: Option<f64>,
+    /// RRHO thermochemistry pressure in Pa (default 101325, one atmosphere).
+    pub pressure: Option<f64>,
+    /// Rotational symmetry number of the RRHO thermochemistry (default 1).
+    /// ferric does not detect it: set 2 for water (C2v), 3 for NH3, 12 for
+    /// CH4. A value of 1 for a molecule whose true number is `s` makes the
+    /// entropy too large by `R ln s`.
+    pub symmetry_number: Option<u32>,
+    /// IR intensities (km/mol) from the dipole derivative along each mode:
+    /// six extra SCF + gradient evaluations in a field of +-1e-3 a.u.
+    /// Default `true` for the SCF kinds (`rhf`, `uhf`, `rohf`, `ksdft`) and
+    /// off for the correlated kinds, where `true` is an error (their dipole
+    /// derivative is not implemented).
+    pub ir_intensities: Option<bool>,
 }
 
 /// The `frozen_core` key of a correlation section (`[mp2]`, `[rpa]`, `[gw]`):
@@ -1027,7 +1420,40 @@ impl<'de> Deserialize<'de> for FrozenCore {
 /// The `method.kind`s whose correlation can be run under a local
 /// approximation (`[local]`). The kind names the METHOD; `[local]` says
 /// whether and how its amplitudes are truncated.
-pub const LOCAL_KINDS: &[&str] = &["rimp2", "att-rimp2", "drpa", "linlccd"];
+/// The kinds that read an `[ri]` section.
+pub const RI_KINDS: &[&str] = &["rimp2", "laplace-mp2", "laplace-sos-mp2", "pdep-rpa"];
+
+/// Optional `[ri]` section: the fitting metric of the RI (density-fitting)
+/// factorization of the correlation step.
+///
+/// Absent, or `metric = "coulomb"`, is the Coulomb-metric fit every RI
+/// method uses. `metric = "erfc"` is the omega-RI fit of Glasbrenner, Graf,
+/// Ochsenfeld (JCTC 16, 6856 (2020)) and Luenser, Schurkus, Ochsenfeld (JCTC
+/// 13, 1647 (2017)): erfc(omega r)/r three-index integrals with the
+/// `V~^-1 V V~^-1` metric. It changes the energy (first order in the fit
+/// error; ~1e-6 Eh for water at omega = 0.1) and buys nothing in this code:
+/// the algebra stays dense. On `laplace-mp2` / `laplace-sos-mp2`
+/// `metric = "erfc"` selects the omega-RI-CDD route (see `[mp2] cdd_*`).
+#[derive(Deserialize, Default, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct RiCfg {
+    /// `"coulomb"` (default) or `"erfc"`. Anything else is an error.
+    pub metric: Option<String>,
+    /// The attenuation omega in **Bohr⁻¹** (the papers' unit; their
+    /// recommended value is 0.1). Required by `metric = "erfc"` (no
+    /// default) and refused with `"coulomb"`. Must be finite and > 0.
+    pub omega_bohr: Option<f64>,
+}
+
+impl RiCfg {
+    /// The library fit this section names (strict).
+    pub fn fit(&self) -> Result<ferric_mp2::omega_ri::RiFit, String> {
+        ferric_mp2::omega_ri::RiFit::parse_config(self.metric.as_deref(), self.omega_bohr)
+            .map_err(|e| format!("[ri] {e}"))
+    }
+}
+
+pub const LOCAL_KINDS: &[&str] = &["rimp2", "att-rimp2", "drpa", "linlccd", "opmp3"];
 
 /// `[local] scheme`: the local approximation applied to the method's
 /// amplitudes.
@@ -1062,6 +1488,7 @@ impl LocalScheme {
         }
     }
 
+    /// The TOML spelling of the scheme (inverse of `parse_config_str`).
     pub fn as_str(self) -> &'static str {
         match self {
             LocalScheme::None => "none",
@@ -1071,7 +1498,8 @@ impl LocalScheme {
 }
 
 /// Optional `[local]` section: the local approximation of a correlated
-/// method (`method.kind` = `rimp2`, `drpa` or `linlccd`).
+/// method (`method.kind` = `rimp2`, `att-rimp2`, `drpa`, `linlccd` or
+/// `opmp3`).
 ///
 /// Absent (or `scheme = "none"`) means the method is computed EXACTLY. With
 /// `scheme = "amplitude-threshold"` the threshold `eps` is part of the model
@@ -1099,10 +1527,10 @@ pub struct LocalCfg {
     /// Integral-direct only: aux fit-domain radius, Bohr. Default 10.0.
     pub aux_radius: Option<f64>,
     /// Integral-direct only: virtual domain radius on dipole centroids, Bohr.
-    /// Default 12.0.
+    /// Default 20.0.
     pub virt_radius: Option<f64>,
     /// Integral-direct only: AO-support shell threshold on max |C|. Default
-    /// 1e-3; 0 keeps every shell.
+    /// 1e-4; 0 keeps every shell.
     pub ao_tail: Option<f64>,
     /// Integral-direct only: Cauchy–Schwarz triple cut on the batch integral
     /// stream. Default 1e-5.
@@ -1114,22 +1542,80 @@ pub struct LocalCfg {
     /// gate off (every pair kept).
     pub gate_cal: Option<f64>,
     /// Integral-direct only: ε-linked Schwarz virtual-candidate screen κ.
-    /// Omitted = off.
+    /// Omitted = off. It bounds the plain Eq-8 mask only, so it needs
+    /// `fock_screen = false` (an error otherwise).
     pub virt_schwarz_kappa: Option<f64>,
+    /// `kind = "rimp2"` / `"att-rimp2"` (in-core and integral-direct) and
+    /// `"opmp3"` only: the Fock-propagated screen of the amplitude mask (book
+    /// §amplitude-lmp2-fock-screen), κ =
+    /// `ferric_mp2::lmp2_amplitude::FOCK_SCREEN_KAPPA_DEFAULT`. Default true;
+    /// `false` keeps the plain Eq-8 mask.
+    pub fock_screen: Option<bool>,
+    /// `kind = "rimp2"` / `"att-rimp2"` / `"opmp3"` only: which VV-HV virtual-space build
+    /// to use, `"dense"` (default, O(N³)) or `"local"` (the opt-in
+    /// threshold-sparse build, `ferric_mp2::vvhv_local`).
+    pub virtual_space: Option<String>,
+    /// `virtual_space = "local"` only: span-critical block threshold.
+    /// Default 1e-9; 0 drops nothing.
+    pub virtual_tau: Option<f64>,
+    /// `virtual_space = "local"` only: basis-choice block threshold.
+    /// Default 1e-6; 0 drops nothing.
+    pub virtual_tau_loose: Option<f64>,
+    /// `virtual_space = "local"` only: radius (Bohr) of the domain-local
+    /// projected-minimal solves. Default 30.
+    pub virtual_solve_radius: Option<f64>,
+    /// `virtual_space = "local"` only: Boys pair-screen threshold. Default
+    /// 1e-8; 0 rotates every pair.
+    pub virtual_boys_tau: Option<f64>,
+    /// `kind = "rimp2"` / `"att-rimp2"` / `"opmp3"` only: λ (Bohr²/Ha²) of the λ-Boys
+    /// occupied localization (finite, >= 0). Default
+    /// [`ferric_mp2::boys::LAMBDA_BOYS_DEFAULT`]; 0 = plain Boys.
+    pub lambda_boys: Option<f64>,
 }
 
 /// The integral-direct locality knobs of a local MP2 run, with their
 /// defaults applied (every one is a controlled approximation; the run prints
-/// them).
+/// them). The defaults are `ferric_mp2::lmp2_direct::DirectConfig::production`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocalDirectKnobs {
+    /// `[local] aux_radius`: aux fit-domain radius (Bohr), > 0. Default 10.0.
     pub aux_radius: f64,
+    /// `[local] virt_radius`: virtual domain radius on dipole centroids
+    /// (Bohr), > 0. Default 20.0.
     pub virt_radius: f64,
+    /// `[local] ao_tail`: AO-support shell threshold on max |C|, >= 0.
+    /// Default 1e-4.
     pub ao_tail: f64,
+    /// `[local] schwarz_skip`: Cauchy–Schwarz triple cut on the batch
+    /// integral stream, >= 0. Default 1e-5.
     pub schwarz_skip: f64,
+    /// `[local] batch_merge`: nearest-atom batches merged per integral pass,
+    /// >= 1. Default 4.
     pub batch_merge: usize,
+    /// `[local] gate_cal`: R⁻⁶ pair-gate calibration constant (> 0); `None`
+    /// keeps every pair.
     pub gate_cal: Option<f64>,
+    /// `[local] virt_schwarz_kappa`: ε-linked Schwarz virtual-candidate
+    /// screen κ (> 0); `None` disables the screen.
     pub virt_schwarz_kappa: Option<f64>,
+}
+
+/// `virt_schwarz_kappa` bounds the bare integrals (the plain Eq-8 mask) and
+/// can drop virtuals the Fock screen keeps, so the two are refused together
+/// (book §amplitude-lmp2-fock-screen-candidates).
+fn refuse_kappa_under_fock_screen(
+    fock_on: bool,
+    direct: Option<&LocalDirectKnobs>,
+) -> Result<(), String> {
+    if fock_on && direct.is_some_and(|d| d.virt_schwarz_kappa.is_some()) {
+        return Err(
+            "[local] virt_schwarz_kappa bounds the bare integrals (the plain Eq-8 \
+                    mask) and can drop virtuals the Fock screen keeps; set \
+                    fock_screen = false to use it"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 /// A resolved `scheme = "amplitude-threshold"` model. An exact run has none
@@ -1145,6 +1631,75 @@ pub struct LocalModel {
     pub reference: bool,
     /// `Some` exactly when `integral_direct = true`.
     pub direct: Option<LocalDirectKnobs>,
+    /// `[local] virtual_space` with its thresholds (default dense).
+    pub virtual_space: ferric_mp2::vvhv_local::VirtualSpace,
+    /// `[local] lambda_boys`, default applied (local MP2 only; the dRPA and
+    /// LinLCCD paths refuse the key and localize with plain Boys).
+    pub lambda_boys: f64,
+    /// `[local] fock_screen`: the Fock-propagated mask screen's κ, on both
+    /// the in-core and the integral-direct path. `Some(
+    /// ferric_mp2::lmp2_amplitude::FOCK_SCREEN_KAPPA_DEFAULT)` by default,
+    /// `None` with `fock_screen = false` (local MP2 only; the dRPA and
+    /// LinLCCD paths refuse the key and run the plain mask).
+    pub fock_screen: Option<f64>,
+}
+
+impl LocalModel {
+    /// The amplitude-pattern config shared by the local MP2 and local OP-MP3
+    /// runs (CLI and Python): the first ε, the frozen core, the 3-index
+    /// budget, and the maps (`fock_screen`, `lambda_boys`, `virtual_space`)
+    /// with their production defaults; every other field at the library
+    /// default.
+    pub fn amplitude_config(
+        &self,
+        frozen_core: usize,
+        eri3_budget_bytes: Option<usize>,
+    ) -> ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config {
+        ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config {
+            eps: self.eps[0],
+            frozen_core,
+            eri3_budget_bytes,
+            fock_screen: self.fock_screen,
+            virtual_space: self.virtual_space.clone(),
+            lambda_boys: self.lambda_boys,
+            ..Default::default()
+        }
+    }
+
+    /// The library configs of a local RI-MP2 run (`kind = "rimp2"` /
+    /// `"att-rimp2"` with `scheme = "amplitude-threshold"`, Python
+    /// `run_rimp2(local=...)`): the amplitude config at the first ε, and the
+    /// integral-direct maps when `integral_direct = true`. The CLI and the
+    /// Python binding both build their configs HERE, so a default cannot
+    /// drift between the two entry points
+    /// (`local_rimp2_configs_are_the_production_defaults` pins them).
+    pub fn rimp2_configs(
+        &self,
+        frozen_core: usize,
+        eri3_budget_bytes: Option<usize>,
+    ) -> (
+        ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config,
+        Option<ferric_mp2::lmp2_direct::DirectConfig>,
+    ) {
+        let lcfg = ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config {
+            compute_reference: self.reference,
+            pair_gate_cal: self.direct.as_ref().and_then(|d| d.gate_cal),
+            ..self.amplitude_config(frozen_core, eri3_budget_bytes)
+        };
+        let dcfg = self
+            .direct
+            .as_ref()
+            .map(|d| ferric_mp2::lmp2_direct::DirectConfig {
+                aux_radius_bohr: d.aux_radius,
+                virt_radius_bohr: Some(d.virt_radius),
+                ao_tail: d.ao_tail,
+                schwarz_skip: d.schwarz_skip,
+                batch_merge: d.batch_merge,
+                virt_schwarz_kappa: d.virt_schwarz_kappa,
+                ..ferric_mp2::lmp2_direct::DirectConfig::production()
+            });
+        (lcfg, dcfg)
+    }
 }
 
 impl LocalCfg {
@@ -1156,6 +1711,59 @@ impl LocalCfg {
             || self.batch_merge.is_some()
             || self.gate_cal.is_some()
             || self.virt_schwarz_kappa.is_some()
+    }
+
+    fn sets_virtual_thresholds(&self) -> bool {
+        self.virtual_tau.is_some()
+            || self.virtual_tau_loose.is_some()
+            || self.virtual_solve_radius.is_some()
+            || self.virtual_boys_tau.is_some()
+    }
+
+    /// `[local] virtual_space` and its thresholds, strict: an unknown
+    /// selector, a bad value, or a threshold without `virtual_space =
+    /// "local"` (which would silently ignore it) is an error.
+    fn virtual_space(&self) -> Result<ferric_mp2::vvhv_local::VirtualSpace, String> {
+        use ferric_mp2::vvhv_local::{LocalVvhvConfig, VirtualSpace};
+        let d = LocalVvhvConfig::default();
+        let nonneg = |k: &str, v: Option<f64>, dflt: f64| -> Result<f64, String> {
+            let x = v.unwrap_or(dflt);
+            if x.is_finite() && x >= 0.0 {
+                Ok(x)
+            } else {
+                Err(format!("[local] {k} must be finite and >= 0 (got {x})"))
+            }
+        };
+        let radius = match self.virtual_solve_radius {
+            None => d.solve_radius_bohr,
+            Some(r) if r.is_finite() && r > 0.0 => Some(r),
+            Some(r) => {
+                return Err(format!(
+                    "[local] virtual_solve_radius must be finite and > 0 (got {r})"
+                ))
+            }
+        };
+        let lc = LocalVvhvConfig {
+            tau: nonneg("virtual_tau", self.virtual_tau, d.tau)?,
+            tau_loose: nonneg("virtual_tau_loose", self.virtual_tau_loose, d.tau_loose)?,
+            solve_radius_bohr: radius,
+            boys_tau: nonneg("virtual_boys_tau", self.virtual_boys_tau, d.boys_tau)?,
+            ..d
+        };
+        let vs = match self.virtual_space.as_deref() {
+            None => VirtualSpace::Dense,
+            Some(s) => VirtualSpace::parse_config_str(s, lc).map_err(|e| format!("[local] {e}"))?,
+        };
+        if vs == VirtualSpace::Dense && self.sets_virtual_thresholds() {
+            return Err(
+                "[local] virtual_tau / virtual_tau_loose / virtual_solve_radius / \
+                 virtual_boys_tau are the thresholds of the local VV-HV build and are read \
+                 only with virtual_space = \"local\"; with the dense build they would be \
+                 silently ignored"
+                    .to_string(),
+            );
+        }
+        Ok(vs)
     }
 
     /// The kind-independent rules of `[local]`: values, and which keys go
@@ -1178,6 +1786,13 @@ impl LocalCfg {
                 ("batch_merge", self.batch_merge.is_some()),
                 ("gate_cal", self.gate_cal.is_some()),
                 ("virt_schwarz_kappa", self.virt_schwarz_kappa.is_some()),
+                ("fock_screen", self.fock_screen.is_some()),
+                ("virtual_space", self.virtual_space.is_some()),
+                ("virtual_tau", self.virtual_tau.is_some()),
+                ("virtual_tau_loose", self.virtual_tau_loose.is_some()),
+                ("virtual_solve_radius", self.virtual_solve_radius.is_some()),
+                ("virtual_boys_tau", self.virtual_boys_tau.is_some()),
+                ("lambda_boys", self.lambda_boys.is_some()),
             ]
             .into_iter()
             .filter_map(|(k, set)| set.then_some(k))
@@ -1269,12 +1884,20 @@ impl LocalCfg {
             if self.batch_merge == Some(0) {
                 return Err("[local] batch_merge must be >= 1".to_string());
             }
+            // The defaults have one home, shared with every other entry
+            // point: `ferric_mp2::lmp2_direct::DirectConfig::production`.
+            let prod = ferric_mp2::lmp2_direct::DirectConfig::production();
             Some(LocalDirectKnobs {
-                aux_radius: pos("aux_radius", self.aux_radius, 10.0)?,
-                virt_radius: pos("virt_radius", self.virt_radius, 12.0)?,
-                ao_tail: nonneg("ao_tail", self.ao_tail, 1e-3)?,
-                schwarz_skip: nonneg("schwarz_skip", self.schwarz_skip, 1e-5)?,
-                batch_merge: self.batch_merge.unwrap_or(4),
+                aux_radius: pos("aux_radius", self.aux_radius, prod.aux_radius_bohr)?,
+                virt_radius: pos(
+                    "virt_radius",
+                    self.virt_radius,
+                    prod.virt_radius_bohr
+                        .expect("production maps carry a virtual radius"),
+                )?,
+                ao_tail: nonneg("ao_tail", self.ao_tail, prod.ao_tail)?,
+                schwarz_skip: nonneg("schwarz_skip", self.schwarz_skip, prod.schwarz_skip)?,
+                batch_merge: self.batch_merge.unwrap_or(prod.batch_merge),
                 gate_cal: opt_pos("gate_cal", self.gate_cal)?,
                 virt_schwarz_kappa: opt_pos("virt_schwarz_kappa", self.virt_schwarz_kappa)?,
             })
@@ -1282,7 +1905,8 @@ impl LocalCfg {
             if self.sets_direct_knobs() {
                 return Err(
                     "[local] aux_radius / virt_radius / ao_tail / schwarz_skip / \
-                            batch_merge / gate_cal / virt_schwarz_kappa are the integral-direct \
+                            batch_merge / gate_cal / virt_schwarz_kappa are the \
+                            integral-direct \
                             locality maps and are read only with integral_direct = true; \
                             without it they would be silently ignored"
                         .to_string(),
@@ -1290,11 +1914,21 @@ impl LocalCfg {
             }
             None
         };
+        let virtual_space = self.virtual_space()?;
+        let lambda_boys = self
+            .lambda_boys
+            .unwrap_or(ferric_mp2::boys::LAMBDA_BOYS_DEFAULT);
+        ferric_mp2::boys::check_lambda_boys(lambda_boys).map_err(|e| format!("[local] {e}"))?;
+        let fock_on = self.fock_screen.unwrap_or(true);
+        refuse_kappa_under_fock_screen(fock_on, direct.as_ref())?;
         Ok(Some(LocalModel {
             eps,
             is_sweep,
             reference: self.reference.unwrap_or(false),
             direct,
+            virtual_space,
+            lambda_boys,
+            fock_screen: fock_on.then_some(ferric_mp2::lmp2_amplitude::FOCK_SCREEN_KAPPA_DEFAULT),
         }))
     }
 }
@@ -1324,6 +1958,56 @@ impl CcCfg {
     }
 }
 
+/// `[eom]` — the EE-EOM-CCSD singlet eigensolver, read by
+/// `method.kind = "eom-ccsd"` only (any other kind refuses the section). The
+/// CCSD stage before it reads `[cc]` and `[mp2]` as `ccsd` does.
+#[derive(Deserialize, Debug, Clone, Default)]
+#[serde(deny_unknown_fields)]
+pub struct EomCfg {
+    /// Number of lowest singlet roots. Default 5.
+    pub n_roots: Option<usize>,
+    /// Davidson residual-norm threshold (Hartree). Default 1e-6.
+    pub conv_tol: Option<f64>,
+    /// Davidson iteration cap; an unconverged root is an error. Default 100.
+    pub max_iter: Option<usize>,
+    /// Davidson subspace size before a collapse. Default
+    /// `max(n_guess + 10·n_roots, 50)`.
+    pub max_space: Option<usize>,
+}
+
+impl EomCfg {
+    /// The library config; a zero count or a non-positive tolerance is an
+    /// error, never a clamp.
+    pub fn to_config(
+        &self,
+        memory_budget_bytes: Option<usize>,
+    ) -> Result<ferric_cc::eom_ccsd::EomCcsdConfig, String> {
+        let d = ferric_cc::eom_ccsd::EomCcsdConfig::default();
+        let n_roots = self.n_roots.unwrap_or(d.n_roots);
+        if n_roots == 0 {
+            return Err("[eom] n_roots must be at least 1".into());
+        }
+        let conv_tol = self.conv_tol.unwrap_or(d.conv_tol);
+        if !(conv_tol.is_finite() && conv_tol > 0.0) {
+            return Err(format!("[eom] conv_tol must be positive, got {conv_tol}"));
+        }
+        let max_iter = self.max_iter.unwrap_or(d.max_iter);
+        if max_iter == 0 {
+            return Err("[eom] max_iter must be at least 1".into());
+        }
+        if self.max_space == Some(0) {
+            return Err("[eom] max_space must be at least 1".into());
+        }
+        Ok(ferric_cc::eom_ccsd::EomCcsdConfig {
+            n_roots,
+            conv_tol,
+            max_iter,
+            max_space: self.max_space,
+            memory_budget_bytes,
+        })
+    }
+}
+
 /// `Serialize` is derived for one reason: [`Mp2Cfg::set_keys`] reads the
 /// keys a file actually set from serde's own field table, so the
 /// "\[mp2\] key the selected method does not read" refusal of the local
@@ -1331,6 +2015,9 @@ impl CcCfg {
 #[derive(Deserialize, Serialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Mp2Cfg {
+    /// `[mp2] auxbasis`: bundled RI auxiliary basis for the correlated
+    /// methods. Default `DEFAULT_CORRELATION_AUX` (`"cc-pvdz-ri"`); the
+    /// `tda`/`tddft` kinds default to `TDDFT_DEFAULT_AUX` instead.
     pub auxbasis: Option<String>,
     /// Core orbitals excluded from the correlation treatment: an explicit
     /// count, or `"auto"` for the standard small-core count of this molecule.
@@ -1376,6 +2063,10 @@ pub struct Mp2Cfg {
     ///                    inside the quadrature loop.
     ///   "ao-sparse"    — "ao" with the pseudo-densities restricted to
     ///                    Boys-orbital AO domains; needs `domain_cutoff_bohr`.
+    ///                    The cutoff changes the energy only, not the cost.
+    ///   "local"        — Boys LMOs x VV-HV localized virtuals; each LMO keeps
+    ///                    the virtuals within `domain_cutoff_bohr`. The radius
+    ///                    sets the size of the dense Gram GEMM (approximate).
     ///
     /// "mo" and "ao" compute the SAME quantity and agree to round-off (asserted
     /// in `ferric-mp2`'s tests). The AO path is the correctness reference for
@@ -1386,16 +2077,17 @@ pub struct Mp2Cfg {
     ///
     /// Distinct from `formulation`, which selects the rs-mp2-rpa Δ-form.
     pub sos_formulation: Option<String>,
-    /// Domain radius in **Bohr** for `sos_formulation = "ao-sparse"`.
+    /// Domain radius in **Bohr** for `sos_formulation = "ao-sparse"` or `"local"`.
     ///
-    /// Required by that formulation and REJECTED by the other two — there is no
-    /// safe default (the right radius is system- and basis-dependent) and
-    /// silently ignoring it on an exact path would run a different method than
-    /// the one configured.
+    /// Required by those two formulations and REJECTED by the exact ones —
+    /// there is no safe default (the right radius is system- and
+    /// basis-dependent) and silently ignoring it on an exact path would run a
+    /// different method than the one configured.
     ///
-    /// This is the one SOS variant that is APPROXIMATE: it discards AO pairs
-    /// lying outside every Boys-orbital domain. It converges to `"ao"` as the
-    /// radius grows.
+    /// Both are APPROXIMATE and converge to the exact energy as the radius
+    /// grows: "ao-sparse" discards AO pairs outside every Boys-orbital domain,
+    /// "local" discards localized virtuals farther than the radius from each
+    /// Boys orbital.
     pub domain_cutoff_bohr: Option<f64>,
     /// SR-MP2 + LR-RPA formulation (for rs-mp2-rpa):
     ///
@@ -1452,14 +2144,26 @@ pub struct Mp2Cfg {
     /// output data that no committed code could regenerate. That is why this is
     /// a real config field with a regression test rather than a local patch.
     pub r0_sweep: Option<Vec<f64>>,
+    /// Evaluate several ω (**Å⁻¹**) in ONE `rs-mp2-rpa` job: the Coulomb pieces
+    /// (MP2 and, for T, the Coulomb dRPA) are built once and each ω adds only
+    /// its erf/erfc stage. Exclusive with `omega`, `r0_sweep` and `terf_omega`.
+    /// With `attenuator = "terf"` each value is the decoupled seam sharpness
+    /// (`terf_omega`) at the fixed `r0`. A result block is printed per
+    /// (ω, formulation), ω-major in the order given.
+    pub omega_scan: Option<Vec<f64>>,
+    /// Several `rs-mp2-rpa` formulations (`"delta-lr"`, `"coupled-rings"`) in
+    /// one job; exclusive with `formulation`. Pairs with `omega_scan` or runs
+    /// alone at the single `omega`.
+    pub formulations: Option<Vec<String>>,
     /// Bonded (shorter-range) terfc cutoff **r0(1)** in **Å**, used ONLY by
-    /// `method.kind = "scs-mp2-2terfc"`. Default 0.75 Å (the published
-    /// SCS-MP2(2terfc, aTZ) value, J. Phys. Chem. B 118, 6519 (2014)).
+    /// `method.kind = "scs-mp2-2terfc"`. Omitted: 0.75 Å for aug-cc-pVTZ (the
+    /// SCS-MP2(2terfc, aTZ) fit, J. Phys. Chem. B 118, 6519 (2014)); any other
+    /// basis needs both r0 set (`ferric_mp2::terfc_r0::resolve_scs_2terfc`).
     /// Requires the terfc interpolation tables (`FERRIC_TERF_TABLE_DIR`).
     pub r0_bonded: Option<f64>,
     /// Non-bonded (longer-range) terfc cutoff **r0(2)** in **Å**, used ONLY by
-    /// `method.kind = "scs-mp2-2terfc"`. Must be > `r0_bonded`. Default 1.05 Å
-    /// (published SCS-MP2(2terfc, aTZ) value). Requires the terfc interpolation tables
+    /// `method.kind = "scs-mp2-2terfc"`. Must be > `r0_bonded`. Omitted: 1.05 Å
+    /// for aug-cc-pVTZ only (the aTZ fit). Requires the terfc interpolation tables
     /// (`FERRIC_TERF_TABLE_DIR`).
     pub r0_nonbonded: Option<f64>,
 
@@ -1554,7 +2258,7 @@ pub struct Mp2Cfg {
     // Own keys rather than the rs-mp2-rpa `attenuator`/`r0`, for the same
     // reason as the `mp2v_*` block above: there `attenuator` names the range
     // SPLIT ("erf"/"terf") and `r0` defaults to 1.6828 Å; here the operator is
-    // the short-range one and the terfc r0 defaults to 1.05 Å. One key must
+    // the short-range one and the terfc r0 defaults per basis (`ferric_mp2::terfc_r0`). One key must
     // not mean two things depending on `method.kind`.
     /// Short-range operator on the att-rimp2 MP2 correlation (see
     /// `AttRimp2Op`; the SCF stays full Coulomb):
@@ -1567,8 +2271,9 @@ pub struct Mp2Cfg {
     /// Case-insensitive; anything else is an error, and so is the key on any
     /// kind other than att-rimp2.
     pub att_operator: Option<String>,
-    /// terfc cutoff r0 in **Å** for `att_operator = "terfc"` (default 1.05,
-    /// the paper aDZ-optimal value and the Python `run_terfc_rimp2` default).
+    /// terfc cutoff r0 in **Å** for `att_operator = "terfc"` (omitted: the
+    /// basis-aware table default of `ferric_mp2::terfc_r0`, e.g. 1.35 for
+    /// aug-cc-pVTZ, 1.05 for aug-cc-pVDZ; an untabulated basis is an error).
     /// Must be finite and > 0; an error with the erfc operator.
     pub att_r0: Option<f64>,
     /// Decoupled terfc seam sharpness ω in **Å⁻¹** for
@@ -1578,6 +2283,21 @@ pub struct Mp2Cfg {
     /// setting measured sparser integrals at r₀ω = 4. Must be finite and
     /// > 0; an error with the erfc operator (use `omega` there).
     pub att_omega: Option<f64>,
+    /// Pivoted-Cholesky truncation of the Laplace pseudo-densities for the
+    /// omega-RI-CDD route of `laplace-mp2` / `laplace-sos-mp2` (setting it,
+    /// or `[ri] metric = "erfc"`, selects that route). `0` (the value
+    /// when only `[ri]` is written) keeps every pseudo-MO above roundoff
+    /// and equals the MO Laplace energy. Must be finite and >= 0.
+    pub cdd_tol: Option<f64>,
+    /// Schwarz-type virtual screen of the omega-RI-CDD exchange term
+    /// (Glasbrenner, Graf, Ochsenfeld JCTC 16, 6856 (2020): theta_schwarz,
+    /// paper value 1e-9). `laplace-mp2` only (SOS-MP2 has no exchange
+    /// term). Omitted = 0 = nothing screened. Must be finite and >= 0.
+    pub cdd_schwarz_thresh: Option<f64>,
+    /// Occupied-pair prescreen of the omega-RI-CDD exchange term (the
+    /// paper's theta_ij, value 1e-6). `laplace-mp2` only. Omitted = 0 =
+    /// every pair kept. Must be finite and >= 0.
+    pub cdd_pair_thresh: Option<f64>,
 }
 
 /// The short-range operator `method.kind = "att-rimp2"` attenuates the MP2
@@ -1588,16 +2308,67 @@ pub enum AttRimp2Op {
     /// `ferric_mp2::attenuated::attenuated_ri_mp2`.
     Erfc,
     /// The exact tempered erfc `terfc(r, r0)/r` at `r0 = [mp2] att_r0` (Å,
-    /// default 1.05): `ri_mp2` with `Operator::terfc`, as in the Python
+    /// basis-aware default): `ri_mp2` with `Operator::terfc`, as in the Python
     /// `run_terfc_rimp2`.
     Terfc,
 }
 
-/// `[mp2] att_r0` default (Å) for `att_operator = "terfc"` — the Python
-/// `run_terfc_rimp2` default (paper aDZ-optimal).
-pub const ATT_RIMP2_TERFC_DEFAULT_R0_ANG: f64 = 1.05;
-
 impl Mp2Cfg {
+    /// `[mp2] omega_scan` / `formulations` (rs-mp2-rpa multi-point run): read by
+    /// `method.kind = "rs-mp2-rpa"` only, and exclusive with the single-point
+    /// keys they replace. Unknown names, duplicates, empty lists and
+    /// non-positive ω are errors, never silently dropped.
+    pub fn validate_rs_scan_keys(&self, kind: &str) -> Result<(), String> {
+        if self.omega_scan.is_none() && self.formulations.is_none() {
+            return Ok(());
+        }
+        if kind != "rs-mp2-rpa" {
+            return Err(format!(
+                "[mp2] omega_scan / formulations are read by method.kind = \"rs-mp2-rpa\" \
+                 only; kind = \"{kind}\" would silently ignore them"
+            ));
+        }
+        if let Some(ws) = &self.omega_scan {
+            if ws.is_empty() || ws.iter().any(|w| !(w.is_finite() && *w > 0.0)) {
+                return Err(format!(
+                    "[mp2] omega_scan must be a non-empty list of finite ω > 0 (Å⁻¹), got {ws:?}"
+                ));
+            }
+            for (key, set) in [
+                ("omega", self.omega.is_some()),
+                ("r0_sweep", self.r0_sweep.is_some()),
+                ("terf_omega", self.terf_omega.is_some()),
+            ] {
+                if set {
+                    return Err(format!(
+                        "[mp2] omega_scan and {key} are mutually exclusive (omega_scan \
+                         replaces the single ω; with attenuator = \"terf\" its values \
+                         are the seam sharpness at the fixed r0)"
+                    ));
+                }
+            }
+        }
+        if let Some(fs) = &self.formulations {
+            if self.formulation.is_some() {
+                return Err("[mp2] formulations and formulation are mutually exclusive".to_string());
+            }
+            if fs.is_empty() {
+                return Err("[mp2] formulations must not be empty".to_string());
+            }
+            for (i, f) in fs.iter().enumerate() {
+                if !matches!(f.as_str(), "delta-lr" | "coupled-rings") {
+                    return Err(format!(
+                        "[mp2] formulations: unknown \"{f}\"; expected \"delta-lr\" or \"coupled-rings\""
+                    ));
+                }
+                if fs[..i].contains(f) {
+                    return Err(format!("[mp2] formulations lists \"{f}\" twice"));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The `att-rimp2` short-range operator (`att_operator`), strictly parsed
     /// and checked against the keys only one operator reads: `att_r0` with
     /// erfc and `omega` with terfc are errors (each would be silently
@@ -1671,7 +2442,14 @@ impl Mp2Cfg {
     /// `att_omega` keys ([`Mp2Cfg::att_rimp2_op`] has already refused the
     /// combinations that would be silently ignored). Å and Å⁻¹ at the TOML
     /// boundary, Bohr in the operator. The SCF operator is NOT this one.
-    pub fn att_rimp2_operator(&self) -> Result<ferric_integrals::operator::Operator, String> {
+    ///
+    /// With `att_operator = "terfc"` and no `att_r0`, `r0` is the basis-aware
+    /// default of [`ferric_mp2::terfc_r0`] for `basis`; an untabulated basis
+    /// is an error.
+    pub fn att_rimp2_operator(
+        &self,
+        basis: &str,
+    ) -> Result<ferric_integrals::operator::Operator, String> {
         use ferric_integrals::operator::Operator;
         let ang_to_bohr = ferric_core::units::ANGSTROM_TO_BOHR;
         // Å⁻¹ -> Bohr⁻¹ multiplies by BOHR_TO_ANGSTROM (Å per Bohr).
@@ -1679,13 +2457,23 @@ impl Mp2Cfg {
         Ok(match self.att_rimp2_op()? {
             AttRimp2Op::Erfc => Operator::erfc(self.omega.unwrap_or(0.420) * inv_ang_to_inv_bohr),
             AttRimp2Op::Terfc => {
-                let r0 = self.att_r0.unwrap_or(ATT_RIMP2_TERFC_DEFAULT_R0_ANG) * ang_to_bohr;
+                let r0 = self.att_terfc_r0(basis)?.r0_angstrom * ang_to_bohr;
                 match self.att_omega {
                     None => Operator::terfc(r0),
                     Some(w) => Operator::terfc_with_omega(r0, w * inv_ang_to_inv_bohr),
                 }
             }
         })
+    }
+
+    /// The terfc `r0` for `basis`: `[mp2] att_r0` when set, else the table
+    /// default (`note` carries the line to print), else an error.
+    pub fn att_terfc_r0(
+        &self,
+        basis: &str,
+    ) -> Result<ferric_mp2::terfc_r0::ResolvedTerfcR0, String> {
+        ferric_mp2::terfc_r0::resolve_terfc_r0(basis, self.att_r0)
+            .map_err(|e| format!("[mp2] att_r0: {e}"))
     }
 
     /// True when any `oo_*` orbital-optimization key is set.
@@ -1868,6 +2656,7 @@ impl Mp2Cfg {
             // Deliberately unpruned: `PruneScheme::NwchemLike` hard-errors at
             // n_angular = 50, which is this grid's default.
             prune: None,
+            weight_cut: None,
         };
 
         cfg.frozen_core = self.frozen_core.resolve(mol);
@@ -1887,21 +2676,31 @@ pub struct RpaCfg {
     pub frozen_core: FrozenCore,
     /// Number of imaginary-frequency quadrature points.
     ///
-    /// NOTE: the fallback when unset is surface-dependent (historical drift,
-    /// kept to avoid silently changing published numbers): 20 for a pdep-rpa
-    /// energy run, 16 for `task = "optimize"` (finite-difference gradients
-    /// re-run the RPA energy 6·natoms times), 40 in the Python
-    /// `run_pdep_rpa` binding. Set it explicitly for reproducibility.
+    /// The fallback when unset is 20 for a pdep-rpa energy run, 16 for
+    /// `task = "optimize"` (finite-difference gradients re-run the RPA energy
+    /// 6·natoms times), and `ferric_gw::DEFAULT_N_QUAD` (40) for `gw`, whose
+    /// KS-started QP energies need more points (see that constant's
+    /// calibration). The scheme fallback is `gauss-legendre` on every surface
+    /// (see `quadrature`), matching the library `QuadratureConfig::default()`.
     pub n_quad: Option<usize>,
     /// Imaginary-frequency quadrature scheme. One of:
     ///   "gauss-legendre" | "gl"           — GL nodes mapped via ω = u₀(1+x)/(1−x) (default)
     ///   "minimax" | "mm"                  — GL nodes with literature-optimized u₀(n_quad)
-    ///   "chebyshev-tan" | "chebyshev" | "ct" — Eshuis-Yarkony-Furche tan-map (bounded ω)
+    ///   "chebyshev-tan" | "chebyshev" | "ct" — Eshuis-Yarkony-Furche Chebyshev-2 nodes, ω = u₀ tan(π(1+x)/4)
     ///
     /// Unknown values are a hard error. `u0` is honoured by "gauss-legendre" and
     /// "chebyshev-tan"; "minimax" derives u₀ from `n_quad` and ignores it.
     pub quadrature: Option<String>,
     pub trunc_thresh: Option<f64>,
+    /// Nuclear gradient of `task = "optimize"`: `"analytic"` (Z-vector relaxed
+    /// densities; full-rank, dense chi0, Coulomb only) or `"fd"` (3-point
+    /// central finite difference, h = 5e-4 Bohr, `6 N_atoms` RHF + RPA
+    /// energies). Unset: analytic when the configuration allows it (an unset
+    /// `trunc_thresh` is then 0), else finite differences with the reason
+    /// printed and recorded in the certificate. An explicit `"analytic"` with
+    /// a truncating `trunc_thresh` or a sparse `chi0_sparsity` is an error.
+    /// Unknown values are a hard error.
+    pub gradient: Option<String>,
     /// Convergence threshold for the static dielectric eigensolver. IGNORED
     /// (with a warning) by the CLI's Lanczos eigensolver, whose full-rank
     /// solve is one dense eigh. The old name `davidson_conv_thresh` is
@@ -1928,7 +2727,9 @@ pub struct RpaCfg {
     pub u0: Option<f64>,
     #[serde(default)]
     pub run_diagnostics: bool,
-    /// If set, write PDEP eigenpotentials to `<prefix>_eigpot_NNN.cube`.
+    /// If set, write PDEP eigenpotentials to `<prefix>_eigpot_NNN.cube`: each
+    /// cube holds the charge density Σ_P c_P χ_P(r) whose Coulomb potential is
+    /// the eigenpotential (unit Coulomb self-energy).
     pub export_eigpot_prefix: Option<String>,
     /// Number of leading eigenpotentials to export (default: 10).
     pub export_eigpot_count: Option<usize>,
@@ -2050,7 +2851,8 @@ pub struct RpaCfg {
     /// properties that DID work would be worse. What the default changes is
     /// only that the run stops claiming success. Set this to `true` to opt back
     /// in when gaps are acceptable — the honest form of what used to be
-    /// implicit.
+    /// implicit. It forgives gaps in a bundle that was written; a bundle that
+    /// could not be written at all still fails the run.
     pub allow_partial_npz: Option<bool>,
     /// C6 polarizability source. One of:
     ///   "ts"   — Tkatchenko-Scheffler single-pole model (default)
@@ -2097,6 +2899,33 @@ impl RpaCfg {
     ///   `"auto:<cutoff>"`                → Auto with that atom cutoff
     ///   `"auto:<cutoff>:<thresh>"`       → …and that Boys threshold
     ///   `"auto:<cutoff>:<thresh>@<rad>"` → …and that distance-cutoff radius (Bohr)
+    /// `[rpa] gradient` through the strict shared parser; `None` when unset
+    /// (the default then resolves by `RpaGradientMethod::resolve_default`).
+    pub fn requested_gradient(
+        &self,
+    ) -> Result<Option<ferric_rpa::gradient::RpaGradientMethod>, String> {
+        use ferric_rpa::gradient::RpaGradientMethod;
+        self.gradient
+            .as_deref()
+            .map(|s| RpaGradientMethod::parse_config_str(s).map_err(|e| e.to_string()))
+            .transpose()
+    }
+
+    /// `trunc_thresh` of an RPA `task = "optimize"`. An explicit value wins.
+    /// Unset, the analytic gradient (the default, or `gradient = "analytic"`)
+    /// differentiates the full-rank energy, so the fallback is 0; an explicit
+    /// `gradient = "fd"` keeps the 1e-4 truncation of the energy runs.
+    pub fn optimize_trunc_thresh(
+        &self,
+        requested: Option<ferric_rpa::gradient::RpaGradientMethod>,
+    ) -> f64 {
+        use ferric_rpa::gradient::RpaGradientMethod;
+        self.trunc_thresh.unwrap_or(match requested {
+            Some(RpaGradientMethod::FiniteDifference { .. }) => 1e-4,
+            _ => 0.0,
+        })
+    }
+
     pub fn parse_chi0_sparsity(&self) -> Result<ferric_rpa::config::Chi0Sparsity, String> {
         // Canonical parser lives on the type (shared with the Python bindings).
         ferric_rpa::config::Chi0Sparsity::parse_config_str(self.chi0_sparsity.as_deref())
@@ -2155,8 +2984,9 @@ pub struct GwCfg {
     pub max_ev_iter: Option<usize>,
     /// evGW/evGW0 convergence threshold on |Δε^QP|_max (Ha).
     pub ev_conv_thresh: Option<f64>,
-    /// Number of Padé continued-fraction coefficients. 0/unset → use
-    /// `[rpa] n_quad`.
+    /// Number of Padé continued-fraction nodes, picked from a fixed
+    /// 100-point imaginary-axis grid that does not depend on `[rpa] n_quad`.
+    /// 0/unset → 18 nodes (the PySCF `gw_ac` default).
     pub pade_npts: Option<usize>,
     /// Newton-step damping for the QP solver.
     pub qp_newton_damp: Option<f64>,
@@ -2345,15 +3175,43 @@ fn default_n_roots() -> usize {
 pub struct TddftCfg {
     #[serde(default = "default_n_roots")]
     pub n_roots: usize,
-    /// Reference functional (the SCF runs with it). Selects both the
-    /// exact-exchange fraction and the f_xc kernel; meta-GGA, VV10 and
-    /// range-separated functionals are refused. Absent = HF reference
-    /// (CIS / TDHF).
+    /// Reference functional (the SCF runs with it). Selects the exact
+    /// exchange (a global fraction, or c_sr / c_lr / ω for a range-separated
+    /// hybrid) and the f_xc kernel; VV10 functionals and meta-GGAs without a
+    /// kernel are refused. Absent = HF reference (CIS / TDHF).
     pub xc: Option<String>,
     /// Override of the exact-exchange fraction on the `−c_HF` terms. Only
     /// accepted together with `xc` (an HF reference with `c_hf != 1` is
     /// refused); the f_xc kernel still comes from `xc`.
     pub c_hf: Option<f64>,
+    /// Eigensolver: `"dense"`, `"davidson"` or `"auto"` (default). Parsed
+    /// strictly by [`TddftCfg::solver`].
+    pub solver: Option<String>,
+    /// Spin of the excited states: `"singlet"` (default) or `"triplet"`.
+    /// Parsed strictly by [`TddftCfg::spin`].
+    pub spin: Option<String>,
+}
+
+impl TddftCfg {
+    /// The `solver` key; absent is `auto`, an unknown value an error.
+    pub fn solver(&self) -> Result<ferric_tddft::TddftSolver, String> {
+        self.solver
+            .as_deref()
+            .map_or(Ok(ferric_tddft::TddftSolver::Auto), |s| {
+                ferric_tddft::TddftSolver::parse_config_str(s)
+                    .map_err(|e| format!("[tddft] solver: {e}"))
+            })
+    }
+
+    /// The `spin` key; absent is singlet, an unknown value an error.
+    pub fn spin(&self) -> Result<ferric_tddft::ResponseSpin, String> {
+        self.spin
+            .as_deref()
+            .map_or(Ok(ferric_tddft::ResponseSpin::Singlet), |s| {
+                ferric_tddft::ResponseSpin::parse_config_str(s)
+                    .map_err(|e| format!("[tddft] spin: {e}"))
+            })
+    }
 }
 
 impl Default for TddftCfg {
@@ -2362,7 +3220,45 @@ impl Default for TddftCfg {
             n_roots: default_n_roots(),
             xc: None,
             c_hf: None,
+            solver: None,
+            spin: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tddft_solver_key_tests {
+    use super::TddftCfg;
+    use ferric_tddft::TddftSolver;
+
+    #[test]
+    fn solver_key_is_strict() {
+        let with = |s: Option<&str>| TddftCfg {
+            solver: s.map(str::to_string),
+            ..TddftCfg::default()
+        };
+        assert_eq!(with(None).solver().unwrap(), TddftSolver::Auto);
+        assert_eq!(
+            with(Some("Davidson")).solver().unwrap(),
+            TddftSolver::Davidson
+        );
+        assert_eq!(with(Some("dense")).solver().unwrap(), TddftSolver::Dense);
+        let e = with(Some("lanczos")).solver().unwrap_err();
+        assert!(e.contains("[tddft] solver"), "{e}");
+    }
+
+    #[test]
+    fn spin_key_is_strict() {
+        use ferric_tddft::ResponseSpin;
+        let with = |s: Option<&str>| TddftCfg {
+            spin: s.map(str::to_string),
+            ..TddftCfg::default()
+        };
+        assert_eq!(with(None).spin().unwrap(), ResponseSpin::Singlet);
+        assert_eq!(with(Some("Triplet")).spin().unwrap(), ResponseSpin::Triplet);
+        assert_eq!(with(Some("singlet")).spin().unwrap(), ResponseSpin::Singlet);
+        let e = with(Some("quintet")).spin().unwrap_err();
+        assert!(e.contains("[tddft] spin"), "{e}");
     }
 }
 
@@ -2397,8 +3293,9 @@ pub struct ScfCfg {
     /// Hartree. Absent/None = integer occupation (default). A convergence aid
     /// for near-degenerate frontier manifolds (metals / TM dimers).
     pub smearing_sigma: Option<f64>,
-    /// SCF initial guess: "minao" (default, no per-element free-atom SCF for
-    /// heavy atoms), "sad" (legacy free-atom-SCF superposition), or "hcore".
+    /// SCF initial guess: "minao" (default; per-atom blocks, free-atom SCF only
+    /// for light main-group atoms), "sad" (an ALIAS of "minao": the free-atom-SCF
+    /// SAD guess is not selectable), or "hcore".
     pub guess: Option<String>,
     /// Secondary-basis guess (Q-Chem `BASIS2`): a bundled basis name. The SCF
     /// is converged in it first and projected into the target basis as the
@@ -2439,6 +3336,21 @@ pub struct ScfCfg {
     /// machine. `memory` errors when it does not fit; `disk` always spills;
     /// `direct` always recomputes. Omitted: `FERRIC_JK_STORAGE` if set.
     pub jk_storage: Option<String>,
+    /// Storage precision of the RI-J three-index tensor: `"f32"` (default:
+    /// half the memory, f64 accumulation; measured converged-energy shift
+    /// +5.4e-6 Ha on danuglipron PBE/def2-SVP) or `"f64"` (bit-identical to
+    /// the default before 2026-11-07). Omitted = f32, or f64 when a `[gpu]`
+    /// mode may build J on the device. Gradients, optimize, Hessians and
+    /// frequencies follow the SCF's value. Ignored without RI-J.
+    pub ri_j_precision: Option<String>,
+    /// Storage precision of the RI-K (DF-K) V^{-1/2}-dressed three-index
+    /// tensor: `"f64"` or `"f32"` (strict). Both store the packed μν
+    /// triangle and contract K in f64; `"f64"` gives K bit-for-bit the f64
+    /// square tensor of the pre-2026-11-08 default, `"f32"` rounds each stored
+    /// element once (a quarter of the square tensor). Omitted = the library
+    /// default (`ferric_scf::df_k::RiKPrecision::DEFAULT`). Ignored without
+    /// RI-K.
+    pub ri_k_precision: Option<String>,
     /// Exchange builder: "direct" (default), "link", or "cosx" (seminumerical
     /// COSX exchange). Honoured by RHF, UHF and ROHF. Ignored with a warning
     /// when DF-J/DF-K is active, when the functional uses no exact exchange, or
@@ -2504,6 +3416,30 @@ pub struct ScfCfg {
     /// `k_builder = "cosx"` consumes no Schwarz table at all, so `screening`
     /// has no effect there — a property of COSX, not a gap in this wiring.
     pub screening: Option<String>,
+    /// How the exact four-centre route builds J and K: `"auto"` (default:
+    /// hold the AO ERIs in memory when they fit a quarter of the memory
+    /// budget), `"direct"` (integral-direct every build) or `"incore"` (always
+    /// in memory; an error when the store does not fit the budget or the
+    /// route is not exact four-centre J and K). RI-J/RI-K, LinK, COSX and
+    /// range-separated routes are unaffected. Any other value is an error.
+    pub eri: Option<String>,
+    /// Internal contraction rotation of generally contracted shells (cc-pVXZ)
+    /// in the direct four-centre J/K builder: `"auto"` (both stages),
+    /// `"rot1"` (diffuse projection only) or `"off"` (the unrotated builder,
+    /// bit for bit). Unset leaves it to `FERRIC_GC_ROTATE`, then `"auto"`.
+    /// The exact four-centre builds of the run follow it (the SCF's direct
+    /// builders and in-core store, the Newton/stability/response J/K and
+    /// the gradient's four-centre derivative integrals on the same
+    /// geometry, the KS Z-vector response, `[cas] integrals = "direct"` and
+    /// the GW exact exchange); energies move at the screening-noise level.
+    /// Any other value, another case included, is an error.
+    pub gc_rotation: Option<String>,
+    /// Relativistic core Hamiltonian: `"x2c1e"` (spin-free X2C-1e, as PySCF
+    /// `sfx2c1e()`), or unset for the nonrelativistic one. Energies only
+    /// (`task = "energy"`), for the kinds in `X2C_KINDS`; all-electron bases
+    /// only (an ECP atom is an error); not with `[cell]`. Same as the Python
+    /// `relativistic=` kwarg. Any other value is an error.
+    pub relativistic: Option<String>,
     /// COSX exchange grid (the SCF grid),
     /// `cosx_grid = { radial = 35, angular = 194, prune = "sgx" }`. Omitted =
     /// `ferric_scf::cosx_k::CosxConfig::default()` (see `site/src/methods/scf.md`,
@@ -2574,19 +3510,26 @@ pub struct ScfCfg {
     pub df_j_aux: Option<String>,
     /// As `df_j_aux`, for exchange (RI-K).
     pub df_k_aux: Option<String>,
-    /// MP2-family kinds ([`SCF_JK_KINDS`]), task = "energy": how the
-    /// reference SCF builds J/K, `"exact"`, `"rijk"` (RI-J + RI-K) or
+    /// MP2-family kinds ([`SCF_JK_KINDS`]) with task = "energy", and
+    /// rimp2 / oo-rimp2 with task = "optimize": how the reference SCF builds
+    /// J/K, `"exact"`, `"rijk"` (RI-J + RI-K) or
     /// `"rijcosx"` (RI-J + COSX K). The same rule as the Python `scf_jk`
-    /// kwarg (`ferric_scf::scf_jk`). Omitted = the kind's historical mode
-    /// (four-centre, except rs-mp2-rpa, which has always used RI-JK).
+    /// kwarg (`ferric_scf::scf_jk`). Omitted = [`Config::omitted_scf_jk`]:
+    /// RI-JK on the JK-fit set matched to the orbital basis for a
+    /// closed-shell energy or MP2 optimization, four-centre for an open
+    /// shell or when a key only the four-centre route reads is set, RI-JK on
+    /// def2-universal-jkfit for rs-mp2-rpa. Python's `run_optimize` resolves
+    /// an omitted `scf_jk` the same way; the energy entry points' `scf_jk`
+    /// still defaults to "exact".
     /// Exclusive with `df_j_aux` / `df_k_aux`; see [`ScfCfg::scf_jk_choice`].
     pub jk: Option<String>,
     /// JK-fitting basis for `jk = "rijk" | "rijcosx"` (bundled name, default
     /// def2-universal-jkfit). Never the correlation method's RI aux.
     pub jk_aux: Option<String>,
-    /// Optional virtual-virtual block level shift (Ha) for open-shell SCF
-    /// (UHF / ROHF / UKS / ROKS). The shift is rational-damped by the DIIS
-    /// error so the converged Fock is the unshifted stationary point. A
+    /// Optional virtual-virtual block level shift (Ha). The shift is ramped
+    /// by the DIIS error (`ferric_scf::closed_shell_level_shift_ramp` /
+    /// `open_shell_level_shift_ramp`) so the converged
+    /// Fock is the unshifted stationary point. A
     /// value of 0.2 is a useful default for OH-like doublets at LDA/PBE
     /// where DIIS otherwise plateaus.
     pub level_shift: Option<f64>,
@@ -2595,6 +3538,15 @@ pub struct ScfCfg {
     /// (0 = aufbau throughout). Fixes occupied-set flip-flop non-convergence.
     #[serde(default)]
     pub mom_after_iter: usize,
+    /// Which occupied set MOM compares against: `"previous"` (default; the
+    /// set accepted at the previous iteration, from iteration
+    /// `mom_after_iter + 1`) or `"initial"` (the starting occupied block,
+    /// held from the first iteration; UHF/UKS only, requires
+    /// `mom_after_iter = 0` and no `stability_descent`). Same as the Python
+    /// `run_uhf(mom_reference=)`. The library refuses the unsupported
+    /// combinations when the SCF starts.
+    #[serde(default)]
+    pub mom_reference: Option<String>,
     /// SCF convergence ladder: a sequence of `[[scf.ladder]]` rungs walked in
     /// order (density carried forward unless a rung sets `restart = true`),
     /// stopping at the first converged rung. Empty (default, no `[[scf.ladder]]`
@@ -2727,6 +3679,22 @@ pub struct ScfCfg {
     /// `symmetry = true`): pins the occupation instead of aufbau across
     /// irreps. Listed counts must be even; unlisted irreps follow aufbau.
     pub irrep_nelec: Option<std::collections::BTreeMap<String, usize>>,
+    /// Write the converged reference SCF of a correlated kind to this path
+    /// (`ferric_scf::checkpoint` NPZ), before the correlated stage runs, so
+    /// a later run can read it with `read_reference`. Scope and refusals:
+    /// [`Config::validate_reference_io`].
+    pub save_reference: Option<String>,
+    /// Read the reference SCF from a `save_reference` file instead of
+    /// solving it: no SCF iteration runs. The file must be the calculation
+    /// this run would solve (molecule, basis, spin, every setting that moves
+    /// the SCF's numbers, the route that converges it, this build); anything
+    /// else is an error, never a fallback to a fresh SCF.
+    pub read_reference: Option<String>,
+    /// Accept a `read_reference` file written by another build, or by a
+    /// build not provably the same (dirty tree, unknown commit). Default
+    /// `false`; the run prints and logs that the override was used.
+    #[serde(default)]
+    pub read_reference_other_build: bool,
 }
 
 impl Default for ScfCfg {
@@ -2754,8 +3722,13 @@ impl Default for ScfCfg {
             integral_thresh: 1e-12,
             eri_precision: None,
             jk_storage: None,
+            ri_j_precision: None,
+            ri_k_precision: None,
             k_builder: None,
             screening: None,
+            eri: None,
+            gc_rotation: None,
+            relativistic: None,
             cosx_grid: None,
             cosx_final_pass: None,
             cosx_final_grid: None,
@@ -2771,6 +3744,7 @@ impl Default for ScfCfg {
             jk_aux: None,
             level_shift: None,
             mom_after_iter: 0,
+            mom_reference: None,
             ladder: Vec::new(),
             verbose: false,
             df_guess: None,
@@ -2781,6 +3755,9 @@ impl Default for ScfCfg {
             stability_descent: false,
             symmetry: false,
             irrep_nelec: None,
+            save_reference: None,
+            read_reference: None,
+            read_reference_other_build: false,
         }
     }
 }
@@ -2864,10 +3841,8 @@ impl Config {
             ),
             (s.smearing_sigma.is_some(), "[scf] smearing_sigma"),
             (s.mom_after_iter > 0, "[scf] mom_after_iter"),
-            (
-                s.k_builder.as_deref() == Some("cosx"),
-                "[scf] k_builder = \"cosx\"",
-            ),
+            (s.mom_reference.is_some(), "[scf] mom_reference"),
+            (s.k_builder_is_cosx(), "[scf] k_builder = \"cosx\""),
         ];
         if let Some((_, key)) = unsupported.iter().find(|(set, _)| *set) {
             return refuse(format!(
@@ -2880,7 +3855,119 @@ impl Config {
     }
 }
 
+/// The kinds whose `task = "optimize"` runs the analytic relaxed RI-MP2
+/// gradient (`ferric_mp2::gradient::total_rimp2_gradient_on` /
+/// `total_scs_mp2_gradient_on` /
+/// `ferric_mp2::att_rimp2_gradient::total_att_rimp2_gradient_on` /
+/// `ferric_mp2::scs_2terfc_gradient::total_scs_mp2_2terfc_gradient_on`) on an
+/// exact or an RI-JK reference.
+pub const MP2_GRADIENT_OPTIMIZE_KINDS: &[&str] =
+    &["rimp2", "scs-mp2", "att-rimp2", "scs-mp2-2terfc"];
+
+/// The tasks that differentiate the analytic correlated gradient: the
+/// optimizer follows it, a frequency run central-differences it.
+fn is_gradient_task(task: &str) -> bool {
+    matches!(task, "optimize" | "frequencies")
+}
+
+/// Whether `[scf] jk` governs the reference SCF of `kind` / `task`: the
+/// [`SCF_JK_KINDS`] energies, the [`MP2_GRADIENT_OPTIMIZE_KINDS`]
+/// optimizations and the OO-RI-MP2 optimize, whose analytic gradients
+/// differentiate an exact or an RI-JK reference
+/// (`ferric_mp2::oo_rimp2_gradient::oo_ri_mp2_gradient` for OO-RI-MP2).
+fn scf_jk_governs(kind: &str, task: &str) -> bool {
+    let mp2_optimize = (MP2_GRADIENT_OPTIMIZE_KINDS.contains(&kind) || kind == "oo-rimp2")
+        && is_gradient_task(task);
+    SCF_JK_KINDS.contains(&kind) && (task == "energy" || mp2_optimize)
+}
+
+/// The resolved `jk` routes a method refuses: OO-RI-MP2 has no COSX route
+/// (it rebuilds J/K on the reference's four-centre or RI-JK route), and the
+/// RI-MP2 gradient has no COSX exchange response.
+fn refuse_scf_jk_for_kind(
+    kind: &str,
+    task: &str,
+    jk: &ferric_scf::scf_jk::ScfJk,
+) -> Result<(), String> {
+    use ferric_scf::scf_jk::{ScfJkKeys, ScfJkMode, OO_BUILDS_EXACT_OR_RIJK};
+    if kind == "oo-rimp2" {
+        jk.require_exact_or_rijk(ScfJkKeys::CLI, OO_BUILDS_EXACT_OR_RIJK)?;
+    }
+    if MP2_GRADIENT_OPTIMIZE_KINDS.contains(&kind)
+        && is_gradient_task(task)
+        && jk.mode == ScfJkMode::RiJCosx
+    {
+        return Err(format!(
+            "[scf] jk = \"rijcosx\" is refused for method.kind = \"{kind}\", task = \
+             \"{task}\": the RI-MP2 gradient has no COSX exchange response. Use [scf] \
+             jk = \"exact\" or \"rijk\""
+        ));
+    }
+    Ok(())
+}
+
+/// What an MP2-family reference SCF takes when `[scf] jk` is omitted, and
+/// why: the run log prints `why` next to the route.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OmittedJk {
+    /// The J/K mode.
+    pub mode: ferric_scf::scf_jk::ScfJkMode,
+    /// The JK-fitting basis of a fitted mode; `None` keeps the shared
+    /// default (`ferric_scf::scf_jk::DEFAULT_SCF_JK_AUX`) or the exact route.
+    pub aux: Option<&'static str>,
+    /// One phrase naming the rule that chose `mode`.
+    pub why: String,
+}
+
+impl OmittedJk {
+    fn exact(why: String) -> Self {
+        OmittedJk {
+            mode: ferric_scf::scf_jk::ScfJkMode::Exact,
+            aux: None,
+            why,
+        }
+    }
+}
+
 impl ScfCfg {
+    /// The first `[scf]` key set that only the four-centre route reads
+    /// (`k_builder`, `eri`, `gc_rotation`, `screening`, `df_increments`, `df_guess = true`,
+    /// `df_guess_aux`): with one of them an omitted `jk` stays exact, so an
+    /// input that worked on the four-centre default keeps working unchanged.
+    fn exact_route_key(&self) -> Option<&'static str> {
+        [
+            ("k_builder", self.k_builder.is_some()),
+            ("eri", self.eri.is_some()),
+            ("gc_rotation", self.gc_rotation.is_some()),
+            ("screening", self.screening.is_some()),
+            ("df_increments", self.df_increments),
+            ("df_guess", self.df_guess == Some(true)),
+            ("df_guess_aux", self.df_guess_aux.is_some()),
+        ]
+        .into_iter()
+        .find_map(|(key, set)| set.then_some(key))
+    }
+}
+
+impl ScfCfg {
+    /// `[scf] k_builder` parsed (`KBuilderKind::parse`), by
+    /// `try_scf_config` as its last fallible step: after loading and the
+    /// run's other checks, close to where the solver refused an unknown
+    /// spelling.
+    pub fn k_builder_kind(&self) -> Result<Option<ferric_scf::options::KBuilderKind>, String> {
+        ferric_scf::options::KBuilderKind::parse_opt(self.k_builder.as_deref())
+            .map_err(|e| format!("[scf] k_builder: {e}"))
+    }
+
+    /// Whether `k_builder` spells COSX, for the load-time checks that read
+    /// it as written (to quote it) before `k_builder_kind` refuses an
+    /// unknown spelling, which is not COSX here.
+    pub fn k_builder_is_cosx(&self) -> bool {
+        self.k_builder
+            .as_deref()
+            .is_some_and(ferric_scf::options::KBuilderKind::spells_cosx)
+    }
+
     /// `aurora` / `trah_trigger` scoping: AURORA is closed-shell RHF only, TRAH
     /// is wired for RHF and UHF; anything else would silently ignore the key.
     pub fn validate_accelerators(&self, kind: &str, mult: usize) -> Result<(), String> {
@@ -2891,11 +3978,8 @@ impl ScfCfg {
             ));
         }
         if let Some(t) = self.trah_trigger {
-            if !(t.is_finite() && t > 0.0) {
-                return Err(format!(
-                    "[scf] trah_trigger must be a positive number, got {t}"
-                ));
-            }
+            // The rule (and its message) lives in `TrahTrigger::new`.
+            ferric_scf::options::TrahTrigger::new(t).map_err(|e| format!("[scf] {e}"))?;
             if kind != "rhf" && kind != "uhf" {
                 return Err(format!(
                     "[scf] trah_trigger is wired for method.kind = \"rhf\" and \"uhf\" only; \
@@ -2928,11 +4012,11 @@ impl ScfCfg {
     }
 
     /// `[scf] jk` / `jk_aux` resolved by the shared `ferric_scf::scf_jk`
-    /// rule with the kind's OWN default (the Python entry points' rule:
-    /// RI-JK for rs-mp2-rpa, four-centre for the rest), or `None` when the
-    /// rule does not govern this run: a kind outside [`SCF_JK_KINDS`], a task
-    /// other than "energy", or the explicit `df_j_aux` / `df_k_aux` spelling
-    /// (the run is then unchanged).
+    /// rule, with `omitted` ([`Config::omitted_scf_jk`]) standing in for an
+    /// omitted `jk`, or `None` when the rule does not govern this run: a kind
+    /// outside [`SCF_JK_KINDS`], a task other than "energy" (or the MP2
+    /// optimizations), or the explicit `df_j_aux` / `df_k_aux` spelling (the
+    /// run is then unchanged).
     ///
     /// Hard errors: `jk_aux` without `jk`; `jk` on a kind outside
     /// [`SCF_JK_KINDS`] or a task other than "energy"; `jk` together with
@@ -2941,8 +4025,10 @@ impl ScfCfg {
     /// "exact", a `k_builder` the mode would override, which also catches
     /// `k_builder` on rs-mp2-rpa's RI-JK default, as in Python); and the
     /// paths that would quietly NOT run the fitted reference:
-    /// * oo-rimp2 with any fitted reference (it rebuilds exact J/K at every
-    ///   orbital step, [`ferric_scf::scf_jk::OO_REBUILDS_EXACT_JK`]);
+    /// * oo-rimp2 with `jk = "rijcosx"` (it rebuilds J/K at every orbital
+    ///   step on a four-centre or RI-JK route only,
+    ///   [`ferric_scf::scf_jk::OO_BUILDS_EXACT_OR_RIJK`]) or with a fitted
+    ///   `df_j_aux` / `df_k_aux` (spell the fit `jk = "rijk"`);
     /// * a fitted mode with `df_increments` (that SCF uses exact J/K and
     ///   its own aux) or an explicit `df_guess = true` (a DF pre-stage in
     ///   front of a DF SCF only repeats it; a fitted reference skips it).
@@ -2950,15 +4036,17 @@ impl ScfCfg {
         &self,
         kind: &str,
         task: &str,
+        omitted: &OmittedJk,
     ) -> Result<Option<ferric_scf::scf_jk::ScfJk>, String> {
-        use ferric_scf::scf_jk::{ScfJk, ScfJkKeys, ScfJkMode, OO_REBUILDS_EXACT_JK};
-        let governed = SCF_JK_KINDS.contains(&kind) && task == "energy";
-        if !governed {
+        use ferric_scf::scf_jk::{ScfJk, ScfJkKeys};
+        if !scf_jk_governs(kind, task) {
             if self.jk.is_some() || self.jk_aux.is_some() {
                 return Err(format!(
                     "[scf] jk / jk_aux are wired for task = \"energy\" with method.kind = {} \
-                     only; got kind = \"{kind}\", task = \"{task}\". Use [scf] df_j_aux / \
-                     df_k_aux / k_builder there",
+                     and for method.kind = \"rimp2\" / \"scs-mp2\" / \"att-rimp2\" / \
+                     \"oo-rimp2\" with task = \"optimize\" or \"frequencies\" only; got \
+                     kind = \"{kind}\", task = \"{task}\". Use [scf] df_j_aux / df_k_aux / \
+                     k_builder there",
                     SCF_JK_KINDS.join(", ")
                 ));
             }
@@ -2985,28 +4073,29 @@ impl ScfCfg {
                 .iter()
                 .any(|a| a.as_deref().is_some_and(|s| !s.is_empty()));
             if kind == "oo-rimp2" && fitted {
-                return Err(format!(
+                return Err(
                     "[scf] df_j_aux / df_k_aux are refused for method.kind = \"oo-rimp2\": \
-                     {OO_REBUILDS_EXACT_JK}"
-                ));
+                     its orbital steps rebuild J/K on a four-centre or RI-JK route only, and \
+                     these keys can spell other fits. Use [scf] jk = \"rijk\" (with jk_aux) \
+                     for an RI-JK reference"
+                        .to_string(),
+                );
             }
             return Ok(None);
         }
-        let default = if kind == "rs-mp2-rpa" {
-            ScfJkMode::RiJk
-        } else {
-            ScfJkMode::Exact
-        };
-        let jk = ScfJk::resolve(
+        let mut jk = ScfJk::resolve(
             self.jk.as_deref(),
             self.jk_aux.as_deref(),
             self.k_builder.as_deref(),
-            default,
+            omitted.mode,
             ScfJkKeys::CLI,
         )?;
-        if kind == "oo-rimp2" {
-            jk.require_exact(ScfJkKeys::CLI, OO_REBUILDS_EXACT_JK)?;
+        if self.jk.is_none() {
+            if let Some(aux) = omitted.aux {
+                jk.aux = Some(aux.to_string());
+            }
         }
+        refuse_scf_jk_for_kind(kind, task, &jk)?;
         if jk.is_fitted() {
             let m = jk.mode.as_str();
             if self.df_increments {
@@ -3048,8 +4137,7 @@ impl ScfCfg {
         router_allowed: bool,
     ) -> Result<ferric_scf::cosx_k::CosxConfig, String> {
         use ferric_scf::cosx_k::{validate_grid, CosxBackend, CosxConfig, CosxHalfTransform};
-        let is_cosx =
-            self.k_builder.as_deref() == Some("cosx") || self.jk.as_deref() == Some("rijcosx");
+        let is_cosx = self.k_builder_is_cosx() || self.jk.as_deref() == Some("rijcosx");
         let any_cosx_knob = self.cosx_grid.is_some()
             || self.cosx_final_pass.is_some()
             || self.cosx_final_grid.is_some()
@@ -3145,6 +4233,23 @@ impl ScfCfg {
                 .map_err(|e| format!("[scf] diis: {e}")),
         }
     }
+    /// Resolve `[scf] relativistic` (strict; unset is nonrelativistic).
+    pub fn relativistic_resolved(&self) -> Result<Option<ferric_scf::x2c::Relativistic>, String> {
+        self.relativistic
+            .as_deref()
+            .map(ferric_scf::x2c::Relativistic::parse_config_str)
+            .transpose()
+            .map_err(|e| format!("[scf] {}", ferric_msg(e)))
+    }
+    /// Resolve `[scf] mom_reference` (strict; unset is `"previous"`).
+    pub fn mom_reference_resolved(&self) -> Result<ferric_scf::mom::MomReference, String> {
+        self.mom_reference
+            .as_deref()
+            .map(ferric_scf::mom::MomReference::parse_config_str)
+            .transpose()
+            .map(Option::unwrap_or_default)
+            .map_err(|e| format!("[scf] {}", ferric_msg(e)))
+    }
     /// Resolve `[scf] guess` to `RhfConfig::use_sad_guess` (strict). `true`
     /// selects the MINAO guess (the default), `false` the hcore guess; `"sad"`
     /// is an alias of `"minao"` (see `ferric_scf::guess::InitialGuess`).
@@ -3182,6 +4287,38 @@ impl ScfCfg {
             .transpose()
             .map_err(|e| format!("[scf] {e}"))
     }
+    /// The `[scf] ri_j_precision` value, strictly parsed (`None` = default).
+    pub fn ri_j_precision_resolved(
+        &self,
+    ) -> Result<Option<ferric_scf::df_j::RiJPrecision>, String> {
+        self.ri_j_precision
+            .as_deref()
+            .map(ferric_scf::df_j::RiJPrecision::parse_config_str)
+            .transpose()
+            .map_err(|e| format!("[scf] {e}"))
+    }
+    /// The `[scf] ri_k_precision` value, strictly parsed (`None` = default).
+    pub fn ri_k_precision_resolved(
+        &self,
+    ) -> Result<Option<ferric_scf::df_k::RiKPrecision>, String> {
+        self.ri_k_precision
+            .as_deref()
+            .map(ferric_scf::df_k::RiKPrecision::parse_config_str)
+            .transpose()
+            .map_err(|e| format!("[scf] {e}"))
+    }
+    /// `[scf] gc_rotation` parsed: `None` when omitted (the variable and the
+    /// default decide), an error naming the key for a value outside
+    /// auto | rot1 | off. The one resolver for load-time validation and the
+    /// lowering.
+    pub fn gc_rotation_resolved(&self) -> Result<Option<ferric_scf::direct_jk::GcRotate>, String> {
+        self.gc_rotation
+            .as_deref()
+            .map(ferric_scf::direct_jk::GcRotate::parse_str)
+            .transpose()
+            .map_err(|e| format!("[scf] gc_rotation: {e}"))
+    }
+
     /// Post-parse validation of the `[scf]` string knobs whose resolution is
     /// otherwise deferred to the point of use. Called from [`load_config`] so
     /// every entry point (CLI and `ferric-batch`) fails before any integral is
@@ -3192,11 +4329,16 @@ impl ScfCfg {
             return Err("[scf] diis_switch_thresh must not be NaN".into());
         }
         self.use_density_guess()?;
+        self.mom_reference_resolved()?;
+        self.relativistic_resolved()?;
+        self.gc_rotation_resolved()?;
         if let Some(p) = self.eri_precision {
             (ferric_integrals::engine_pool::ERI_PRECISION_VAR.validate)(&p)
                 .map_err(|e| format!("[scf] eri_precision {p:e}: {e}"))?;
         }
         self.jk_storage_policy()?;
+        self.ri_j_precision_resolved()?;
+        self.ri_k_precision_resolved()?;
         for (i, rung) in self.ladder.iter().enumerate() {
             rung.use_sad_guess()
                 .map_err(|e| format!("[[scf.ladder]] rung {i}: {e}"))?;
@@ -3274,16 +4416,16 @@ fn default_max_iter() -> usize {
 // tight energy_conv is met only by chance once dE reaches its noise floor
 // (see `ferric_scf::noise_floor`), so it costs iterations.
 fn default_energy_conv() -> f64 {
-    1e-3
+    ferric_scf::options::DEFAULT_SCF_ENERGY_CONV
 }
 fn default_density_conv() -> f64 {
-    1e-6
+    ferric_scf::options::DEFAULT_SCF_DENSITY_CONV
 }
 fn default_diis_size() -> usize {
-    8
+    ferric_scf::options::DEFAULT_DIIS_SIZE
 }
 fn default_integral_thresh() -> f64 {
-    1e-12
+    ferric_scf::options::DEFAULT_INTEGRAL_THRESH
 }
 
 /// One `[[scf.ladder]]` rung. Every field is optional and overrides the
@@ -3337,11 +4479,26 @@ impl LadderRungCfg {
 }
 
 impl ScfCfg {
-    /// `RhfConfig::check_stability` for this run: `check_stability`, or
-    /// `stability_descent`, which acts on the stability verdict and so needs it
-    /// computed (the Python `run_uhf(stability_descent=True)` sets both).
+    /// The run's stability handling from the two independent keys:
+    /// `stability_descent` is [`Stability::Descend`](ferric_scf::options::Stability)
+    /// (it acts on the stability verdict, so it implies the check, as the
+    /// Python `run_uhf(stability_descent=True)` does), else `check_stability`
+    /// is `Check`, else `Off`.
+    pub fn stability(&self) -> ferric_scf::options::Stability {
+        use ferric_scf::options::Stability;
+        if self.stability_descent {
+            Stability::Descend
+        } else if self.check_stability {
+            Stability::Check
+        } else {
+            Stability::Off
+        }
+    }
+
+    /// Whether this run computes the stability verdict (`check_stability`
+    /// or `stability_descent`; see [`ScfCfg::stability`]).
     pub fn runs_stability_check(&self) -> bool {
-        self.check_stability || self.stability_descent
+        self.stability().checks()
     }
 
     /// Build the SCF convergence ladder. If no `[[scf.ladder]]` rungs are
@@ -3425,30 +4582,93 @@ impl ScfCfg {
 /// `method.kind`s that accept an open-shell molecule, per task. For
 /// `task = "energy"`, `pdep-rpa`/`gw`/`mp2-v` switch to a UHF(+MOM) reference
 /// themselves, and `rimp2`/`oo-rimp2` run their unrestricted variants
-/// (`u_ri_mp2`/`u_oo_ri_mp2`) on a UHF reference. `ksdft` on an open-shell
-/// molecule runs UKS (see [`Config::dispatch_kind`]). Every gradient path
-/// (`optimize`, `frequencies`) other than `uhf`/`rohf`/`ksdft` builds an RHF
-/// reference internally, and there is no unrestricted MP2 nuclear gradient.
+/// (`u_ri_mp2`/`u_oo_ri_mp2`) on a UHF reference. `att-rimp2` (erfc and
+/// terfc), `scs-mp2` and `scs-mp2-2terfc` take the open-shell spin split of
+/// `ferric_mp2::u_rimp2::ri_mp2_spin_components_any` (`E_OS = E_αβ`,
+/// `E_SS = E_αα + E_ββ`) and `rs-mp2-rpa` the spin-summed U-dRPA, all on a UHF
+/// reference (energy only, except that `att-rimp2` (erfc and terfc) and
+/// `scs-mp2-2terfc` also have the unrestricted gradient; their local paths
+/// stay closed-shell).
+/// `tda`/`tddft` run the
+/// spin-conserving unrestricted response on a UHF/UKS reference (ROHF/ROKS is
+/// refused by `ferric_tddft::run_tddft`). `ksdft` on an open-shell
+/// molecule runs UKS (see [`Config::dispatch_kind`]). The gradient paths
+/// (`optimize`, `frequencies`) of `rimp2`, `att-rimp2` and `scs-mp2-2terfc`
+/// run the unrestricted RI-MP2 gradient on a UHF reference; every other correlated
+/// gradient path builds an RHF reference.
 fn open_shell_kinds(task: &str) -> &'static [&'static str] {
-    if task == "energy" {
-        &[
-            "uhf", "rohf", "ksdft", "rimp2", "oo-rimp2", "pdep-rpa", "gw", "mp2-v",
-        ]
-    } else {
-        &["uhf", "rohf", "ksdft"]
+    match task {
+        "energy" => OPEN_SHELL_ENERGY_KINDS,
+        "optimize" | "frequencies" => OPEN_SHELL_OPTIMIZE_KINDS,
+        _ => OPEN_SHELL_SCF_KINDS,
     }
 }
+
+/// Kinds with an open-shell route for `task = "energy"`.
+const OPEN_SHELL_ENERGY_KINDS: &[&str] = &[
+    "uhf",
+    "rohf",
+    "ksdft",
+    "rimp2",
+    "oo-rimp2",
+    "att-rimp2",
+    "scs-mp2",
+    "scs-mp2-2terfc",
+    "rs-mp2-rpa",
+    "pdep-rpa",
+    "gw",
+    "mp2-v",
+    "tda",
+    "tddft",
+    // The MP2-based double hybrids run on a UKS reference.
+    "b2plyp",
+    "dsd-pbep86",
+    // Spin-blocked UCCSD / UCCSD(T) on a UHF reference.
+    "ccsd",
+    "ccsd(t)",
+];
+
+/// Kinds with an open-shell analytic gradient for `task = "optimize"` and
+/// (by finite differences of it) `task = "frequencies"`; `rimp2` is the
+/// unrestricted RI-MP2 gradient on a UHF reference
+/// (`ferric_mp2::u_rimp2_gradient`), `att-rimp2` its erfc- and
+/// terfc-attenuated forms
+/// (`ferric_mp2::att_rimp2_gradient::total_u_att_rimp2_gradient_on`,
+/// `total_u_terfc_rimp2_gradient_on`), `scs-mp2-2terfc` its two-cutoff
+/// spin-scaled form
+/// (`ferric_mp2::scs_2terfc_gradient::total_u_scs_mp2_2terfc_gradient_on`).
+const OPEN_SHELL_OPTIMIZE_KINDS: &[&str] = &[
+    "uhf",
+    "rohf",
+    "ksdft",
+    "rimp2",
+    "att-rimp2",
+    "scs-mp2-2terfc",
+];
+
+/// Kinds with an open-shell route for every other task.
+const OPEN_SHELL_SCF_KINDS: &[&str] = &["uhf", "rohf", "ksdft"];
 
 /// Correlated `method.kind`s with no nuclear gradient, refused up front by
 /// [`Config::validate_task_compat`] for `optimize`/`frequencies` so the run
 /// stops before the basis is even loaded. (`run_optimize`/`run_frequencies`
 /// also refuse every kind they do not handle, but only after the geometry,
 /// basis and memory pool are set up.)
-const ENERGY_ONLY_KINDS: &[&str] = &["ccd", "ccsd(t)", "drpa"];
+const ENERGY_ONLY_KINDS: &[&str] = &["ccd", "ccsd(t)", "eom-ccsd", "drpa"];
 
 /// `method.kind`s whose Kohn-Sham reference is chosen by `[rpa] xc` (the same
 /// list `run()` uses to turn `[rpa] xc` into the SCF functional).
-const RPA_XC_KINDS: &[&str] = &["pdep-rpa", "rpa", "gw", "tdhf-static-polarizability"];
+const RPA_XC_KINDS: &[&str] = &["pdep-rpa", "gw", "tdhf-static-polarizability"];
+
+/// `method.kind`s whose HF reference defaults to RI-JK on the default SCF JK
+/// aux when no functional selects a Kohn-Sham reference.
+const RESPONSE_JK_AUX_KINDS: &[&str] = &[
+    "pdep-rpa",
+    "rs-mp2-rpa",
+    "gw",
+    "bse-tda",
+    "tdhf-static-polarizability",
+];
 
 /// The SCF-only kinds. A `[dft] functional` promotes each to Kohn-Sham:
 /// `rhf` -> RKS, `uhf` -> UKS, `rohf` -> ROKS; `ksdft` is KS by definition
@@ -3475,6 +4695,83 @@ pub const SCF_JK_KINDS: &[&str] = &[
 const DOUBLE_HYBRID_KINDS: &[&str] = &["wb97x-l-v", "b2plyp", "dsd-pbep86"];
 
 impl Config {
+    /// Whether `[dft] dispersion` asks an MP2-based double hybrid
+    /// (`b2plyp`, `dsd-pbep86`) for its D3(BJ) set.
+    ///
+    /// `Ok(false)` when the key is absent. `Ok(true)` for `"d3bj"` or
+    /// `"d3(bj)"`: the parameters are the double hybrid's own published
+    /// D3(BJ) fit, so an explicit functional name (`"d3bj(pbe)"`) and `mbd` are
+    /// errors, never a silent substitution.
+    pub fn double_hybrid_d3bj(&self) -> Result<bool, String> {
+        let Some(spec) = self.dft.dispersion.as_deref() else {
+            return Ok(false);
+        };
+        match spec.trim().to_ascii_lowercase().as_str() {
+            "d3bj" | "d3(bj)" => Ok(true),
+            _ => Err(format!(
+                "[dft] dispersion = {spec:?} is not available for method.kind = \"{}\": a \
+                 double hybrid takes \"d3bj\" (or \"d3(bj)\"), which selects its own published \
+                 D3(BJ) set (B2PLYP-D3(BJ), DSD-PBEP86-D3(BJ)). A named functional would \
+                 substitute another fit, and MBD@rsSCS has no double-hybrid beta.",
+                self.method.kind
+            )),
+        }
+    }
+
+    /// What the reference SCF takes when `[scf] jk` is omitted
+    /// ([`ScfCfg::scf_jk_choice`]): RI-JK for `rs-mp2-rpa` (on the shared
+    /// default JK-fit set); four-centre for an open shell (no fitted
+    /// default has been measured there) except the open-shell `rimp2`,
+    /// `att-rimp2` and `scs-mp2-2terfc` gradient tasks, which take the matched
+    /// RI-JK set like the closed shell, and for an input that sets a key
+    /// only the four-centre route reads; otherwise RI-JK on the JK-fit set
+    /// matched to the orbital basis (`ferric_scf::scf_jk::matched_jk_aux`),
+    /// for an energy and for the MP2 optimizations alike (the fitted
+    /// gradient checks its peak memory against `[memory] budget_gb` before
+    /// it allocates, `ferric_mp2::gradient_memory`). The evidence for the
+    /// fitted default is
+    /// `book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-fitted-ri-jk-reference`.
+    pub fn omitted_scf_jk(&self) -> OmittedJk {
+        use ferric_scf::scf_jk::{matched_jk_aux, ScfJkMode};
+        let kind = self.method.kind.as_str();
+        if kind == "rs-mp2-rpa" {
+            return OmittedJk {
+                mode: ScfJkMode::RiJk,
+                aux: None,
+                why: "the rs-mp2-rpa default".into(),
+            };
+        }
+        // The open-shell rimp2, att-rimp2 and scs-mp2-2terfc gradient tasks
+        // are the open-shell runs with a fitted default: their UHF, Z-vector
+        // and two-electron derivative all share the RI-JK route, as the
+        // closed-shell MP2 optimizations do.
+        let open_rimp2_opt = matches!(kind, "rimp2" | "att-rimp2" | "scs-mp2-2terfc")
+            && is_gradient_task(&self.method.task);
+        if self.molecule.multiplicity > 1 && !open_rimp2_opt {
+            return OmittedJk::exact("open-shell reference".into());
+        }
+        if let Some(key) = self.scf.exact_route_key() {
+            return OmittedJk::exact(format!("[scf] {key} reads the four-centre route"));
+        }
+        let basis = self.basis.name.as_deref().unwrap_or_default();
+        OmittedJk {
+            mode: ScfJkMode::RiJk,
+            aux: Some(matched_jk_aux(basis)),
+            why: if self.molecule.multiplicity > 1 {
+                format!("the open-shell {kind} optimize default")
+            } else {
+                "the closed-shell MP2-family default".into()
+            },
+        }
+    }
+
+    /// [`ScfCfg::scf_jk_choice`] for this run's kind and `task`, with
+    /// [`Config::omitted_scf_jk`] for an omitted `jk`.
+    pub fn scf_jk_choice(&self, task: &str) -> Result<Option<ferric_scf::scf_jk::ScfJk>, String> {
+        self.scf
+            .scf_jk_choice(&self.method.kind, task, &self.omitted_scf_jk())
+    }
+
     /// The Kohn-Sham functional the SCF of this run uses when it is one of
     /// the SCF-only kinds: `ksdft` always (default LDA), and `rhf`/`uhf`/
     /// `rohf` exactly when `[dft] functional` is set -- the functional
@@ -3516,17 +4813,20 @@ impl Config {
     /// * TDA/TDDFT: `[tddft] xc` (None = HF), RI-JK.
     /// * Everything else (plain HF, the MP2/CC family): no functional, no DF
     ///   default.
-    pub fn scf_xc_and_aux_defaults(&self) -> (Option<String>, Option<String>, Option<String>) {
+    pub fn scf_xc_and_aux_defaults(
+        &self,
+    ) -> (
+        Option<String>,
+        Option<ferric_scf::options::AuxBasis>,
+        Option<ferric_scf::options::AuxBasis>,
+    ) {
         let kind = self.method.kind.as_str();
-        let jk = || Some(DEFAULT_SCF_JK_AUX.to_string());
+        let jk = || Some(ferric_scf::options::AuxBasis::named(DEFAULT_SCF_JK_AUX));
         if let Some(functional) = self.ks_functional() {
             (Some(functional), jk(), jk())
         } else if RPA_XC_KINDS.contains(&kind) && self.rpa.xc.is_some() {
             (self.rpa.xc.clone(), jk(), jk())
-        } else if matches!(
-            kind,
-            "pdep-rpa" | "rpa" | "rs-mp2-rpa" | "gw" | "bse-tda" | "tdhf-static-polarizability"
-        ) {
+        } else if RESPONSE_JK_AUX_KINDS.contains(&kind) {
             (None, jk(), jk())
         } else if matches!(kind, "tda" | "tddft") {
             (self.tddft.xc.clone(), jk(), jk())
@@ -3565,6 +4865,24 @@ impl Config {
             || DOUBLE_HYBRID_KINDS.contains(&kind)
             || (RPA_XC_KINDS.contains(&kind) && self.rpa.xc.is_some())
             || (matches!(kind, "tda" | "tddft") && self.tddft.xc.is_some())
+    }
+
+    /// The run's main KS grid (`RhfConfig::dft_grid`): the `[dft]` grid keys
+    /// ([`DftCfg::grid_config`]) when any is set; otherwise, for
+    /// `kind = "tda" | "tddft"` on a meta-GGA `[tddft] xc`, the finer response
+    /// grid ([`ferric_dft::grid::response_default_grid`]), which the reference
+    /// SCF and the f_xc kernel share; otherwise `None` (the production grid).
+    pub fn main_dft_grid(
+        &self,
+        prune: Option<ferric_dft::prune::PruneScheme>,
+    ) -> Result<Option<ferric_dft::grid::AtomicGridConfig>, String> {
+        let explicit = self.dft.grid_config(prune)?;
+        if explicit.is_some() || !matches!(self.method.kind.as_str(), "tda" | "tddft") {
+            return Ok(explicit);
+        }
+        Ok(ferric_dft::grid::response_default_grid(
+            self.tddft.xc.as_deref(),
+        ))
     }
 
     /// Refuse a `[dft]` key that the selected `method.kind` never reads.
@@ -3641,6 +4959,36 @@ impl Config {
                 ));
             }
         }
+        // GW's Sigma_x - v_xc correction evaluates v_xc on the default grid,
+        // so ANY grid key, even one that turns pruning or the cutoff off
+        // ("none", 0), would move the reference SCF off that grid.
+        if kind == "gw" && (self.dft.grid_prune.is_some() || self.dft.grid_weight_cut.is_some()) {
+            return Err(
+                "[dft] grid_prune / grid_weight_cut are not supported with method.kind = \
+                 \"gw\": the Sigma_x - v_xc correction evaluates v_xc on the DEFAULT grid, \
+                 so any other reference grid (\"none\" and 0 included) would not match it"
+                    .to_string(),
+            );
+        }
+        // Value first (an error on any kind); a cutoff of 0 asks for nothing,
+        // so it is harmless anywhere.
+        if let Some(cut) = self.dft.grid_weight_cut()? {
+            if !self.runs_a_ks_grid() {
+                return Err(format!(
+                    "[dft] grid_weight_cut = {cut:e} has no Kohn-Sham grid to cut: method.kind = \
+                     \"{kind}\" runs no exchange-correlation functional here, so the key would \
+                     be silently ignored"
+                ));
+            }
+            if kind == "gw" {
+                return Err(
+                    "[dft] grid_weight_cut is not supported with method.kind = \"gw\": \
+                     the Sigma_x - v_xc correction evaluates v_xc on the DEFAULT grid, so it \
+                     would not match a reference SCF run on this one"
+                        .to_string(),
+                );
+            }
+        }
         Ok(())
     }
 
@@ -3674,26 +5022,29 @@ impl Config {
                 "kind = \"{kind}\" accepts an open-shell molecule for task = \"energy\" only; \
                  its task = \"{task}\" path builds an RHF reference"
             ),
-            "rimp2" | "oo-rimp2" => format!(
+            "rimp2" => format!(
+                "kind = \"rimp2\" accepts an open-shell molecule (on a UHF reference) for \
+                 task = \"energy\", \"optimize\" and \"frequencies\" only; task = \"{task}\" \
+                 has no unrestricted path"
+            ),
+            "oo-rimp2" => format!(
                 "kind = \"{kind}\" accepts an open-shell molecule (on a UHF reference) for \
-                 task = \"energy\" only; there is no unrestricted MP2 nuclear gradient"
+                 task = \"energy\" only; there is no unrestricted OO-MP2 nuclear gradient"
             ),
             "linlccd" => "open-shell LinLCCD(hh) is library-only (ferric_cc::linlccd_u::u_linlccd)"
                 .to_string(),
-            "ccd" | "ccsd" | "ccsd(t)" => format!(
-                "no open-shell {} exists in ferric: every coupled-cluster solver, including \
-                 the spin-orbital ones, is built from restricted (RHF) orbitals; the only \
-                 open-shell coupled-cluster-type method is LinLCCD(hh), which is library-only \
-                 (ferric_cc::linlccd_u::u_linlccd)",
-                match kind {
-                    "ccd" => "CCD",
-                    "ccsd" => "CCSD",
-                    _ => "CCSD(T)",
-                }
+            "ccsd" | "ccsd(t)" => format!(
+                "kind = \"{kind}\" accepts an open-shell molecule (on a UHF reference) for \
+                 task = \"energy\" only; there is no UCCSD nuclear gradient"
             ),
-            "drpa" => "dRPA (exact or local) runs the drCCD Riccati solve on a single \
-                       restricted occupied space; no open-shell variant exists in the CLI \
-                       (open-shell RPA is kind = \"pdep-rpa\")"
+            "ccd" | "eom-ccsd" => format!(
+                "no open-shell {} exists in ferric; for an open-shell molecule use \
+                 kind = \"ccsd\" or \"ccsd(t)\" (spin-blocked UCCSD on a UHF reference)",
+                if kind == "ccd" { "CCD" } else { "EOM-CCSD" }
+            ),
+            "drpa" => "dRPA (exact or local) runs on a single restricted occupied space; \
+                       no open-shell variant exists in the CLI (open-shell RPA is \
+                       kind = \"pdep-rpa\")"
                 .to_string(),
             "wb97x-l-v" => "open-shell HSE06-L-V is library-only \
                             (ferric_cc::double_hybrid::u_solve_wb97x_l_v)"
@@ -3705,6 +5056,47 @@ impl Config {
              reference, but the molecule has multiplicity = {multiplicity}; running it would \
              either fail in the SCF or silently compute the closed-shell singlet. {hint}."
         ))
+    }
+
+    /// Refuse the `[scf]` keys the open-shell SCF drivers (UHF/UKS, ROHF/ROKS)
+    /// never read, when the run is open-shell: `kind = "uhf"`/`"rohf"`, or any
+    /// kind on a molecule with `multiplicity > 1` (its reference is UHF).
+    ///
+    /// * `[scf] diis = "adiis" | "ediis"`: the open-shell solvers always run
+    ///   plain Pulay DIIS (the energy-based variants exist for the closed-shell
+    ///   driver only). `diis = "pulay"` is what they run, so it is admitted.
+    /// * `[scf] smearing_sigma`: Fermi-Dirac smearing is closed-shell only; the
+    ///   open-shell drivers keep integer occupations.
+    ///
+    /// A silently ignored convergence aid reads as "set, and it did not help".
+    /// Honouring either is a solver change (the energy-based DIIS history and
+    /// the fractional-occupation density are not one-line wire-ups there).
+    pub fn validate_open_shell_scf_keys(&self, multiplicity: usize) -> Result<(), String> {
+        let kind = self.method.kind.as_str();
+        if multiplicity <= 1 && !matches!(kind, "uhf" | "rohf") {
+            return Ok(());
+        }
+        let what = if multiplicity > 1 {
+            format!("multiplicity = {multiplicity}")
+        } else {
+            format!("method.kind = \"{kind}\"")
+        };
+        if self.scf.diis_flavor()? != ferric_scf::diis::DiisFlavor::Pulay {
+            return Err(format!(
+                "[scf] diis = {:?} is not supported for an open-shell reference ({what}): \
+                 UHF/UKS and ROHF/ROKS always run plain Pulay DIIS, so the key would be \
+                 silently ignored. Remove it (or use diis = \"pulay\")",
+                self.scf.diis
+            ));
+        }
+        if self.scf.smearing_sigma.is_some() {
+            return Err(format!(
+                "[scf] smearing_sigma is not supported for an open-shell reference ({what}): \
+                 Fermi smearing is implemented for the closed-shell solver only, so the key \
+                 would be silently ignored. Remove it"
+            ));
+        }
+        Ok(())
     }
 
     /// Refuse a `[scf]`/`[rpa]` setting that the selected `method.task` path
@@ -3734,11 +5126,11 @@ impl Config {
     pub fn validate_task_compat(&self) -> Result<(), String> {
         let kind = self.method.kind.as_str();
         let task = self.method.task.as_str();
-        if kind == "pdep-rpa" && task == "optimize" {
+        if kind == "pdep-rpa" && is_gradient_task(task) {
             if let Some(xc) = self.rpa.xc.as_deref() {
                 return Err(format!(
                     "[rpa] xc = \"{xc}\" is not supported with method.kind = \"pdep-rpa\", \
-                     task = \"optimize\": the RPA geometry optimizer always builds an RHF \
+                     task = \"{task}\": the RPA gradient always differentiates an RHF \
                      reference (RPA@HF), so the functional would be silently ignored. Remove \
                      [rpa] xc to optimize on the RPA@HF surface, or use task = \"energy\" for \
                      RPA@{xc}."
@@ -3753,9 +5145,7 @@ impl Config {
             ));
         }
         self.validate_cli_wired_keys()?;
-        if task != "energy"
-            && self.scf.k_builder.as_deref() == Some("cosx")
-            && !COSX_GRADIENT_KINDS.contains(&kind)
+        if task != "energy" && self.scf.k_builder_is_cosx() && !COSX_GRADIENT_KINDS.contains(&kind)
         {
             return Err(format!(
                 "[scf] k_builder = \"cosx\" is not supported with method.kind = \"{kind}\", \
@@ -3786,6 +5176,20 @@ const COSX_GRADIENT_KINDS: &[&str] = &["rhf", "ksdft", "uhf", "rohf"];
 /// response term).
 const PCM_KINDS: &[&str] = &["rhf", "uhf", "rohf", "ksdft", "pdep-rpa"];
 
+/// The kinds `[scf] relativistic` (X2C-1e) runs with: the SCF energies and
+/// the post-SCF energies that read the reference's orbitals and orbital
+/// energies and never rebuild the core Hamiltonian. Kinds that rebuild it
+/// (OO-RI-MP2, CASSCF, NEVPT2) or are not checked against it are refused.
+pub const X2C_KINDS: &[&str] = &[
+    "rhf", "uhf", "rohf", "ksdft", "rimp2", "scs-mp2", "ccsd", "ccsd(t)",
+];
+
+/// `method.kind`s whose `task = "optimize"` honours `[pcm]`: the SCF kinds,
+/// whose gradients (`restricted_scf_gradient` / `unrestricted_scf_gradient` /
+/// `restricted_open_scf_gradient`) add the analytic IEF-PCM term
+/// (`ferric_pcm::pcm_gradient`).
+const PCM_OPTIMIZE_KINDS: &[&str] = &["rhf", "uhf", "rohf", "ksdft"];
+
 impl Config {
     /// The typed `[gpu]` + `[precision]` request (call after
     /// `validate_loaded_values`; a malformed `[precision]` key reads as unset
@@ -3800,15 +5204,44 @@ impl Config {
     /// Value checks on `[external_potential]` smeared-charge widths and the
     /// `[pcm]` section, run by [`load_config`] so a bad value fails at load
     /// time on every entry point.
+    /// `dfj-f32` in `[precision] mixed_kernels` asks for the f32 RI-J tensor
+    /// (the default since `[scf] ri_j_precision` exists); naming it next to
+    /// `ri_j_precision = "f64"` asks for both precisions and is refused.
+    fn check_ri_j_precision_against_mixed_kernels(&self) -> Result<(), String> {
+        let gpu_kernels = match &self.gpu {
+            GpuSection::Table(t) => t.mixed_kernels.as_ref(),
+            GpuSection::Preset(_) => None,
+        };
+        let names_dfj_f32 = self
+            .precision
+            .mixed_kernels
+            .iter()
+            .chain(gpu_kernels)
+            .flatten()
+            .any(|k| k.trim() == ferric_core::gpu::MixedKernel::DfjF32.name());
+        if names_dfj_f32
+            && self.scf.ri_j_precision_resolved()? == Some(ferric_scf::df_j::RiJPrecision::F64)
+        {
+            return Err(
+                "[scf] ri_j_precision = \"f64\" contradicts \"dfj-f32\" in mixed_kernels \
+                 (which asks for the f32 RI-J tensor); drop one of them"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
     /// Every post-parse value check `load_config` runs, in order: memory,
     /// SCF, `[mp2] linlccd_variant` and the `[local]` values, then the
     /// CLI-wired keys.
     fn validate_loaded_values(&self) -> Result<(), String> {
+        self.validate_md()?;
         self.memory.validate()?;
+        self.parallel.validate()?;
         self.gpu.validate()?;
         self.precision.validate()?;
         self.gpu_explicit().check_precision_aliases()?;
         self.scf.validate()?;
+        self.check_ri_j_precision_against_mixed_kernels()?;
         self.validate_guess_basis_keys()?;
         self.mp2.linlccd_variant()?;
         self.cc_ladder()?;
@@ -3824,27 +5257,63 @@ impl Config {
     /// validated terfc parameter box of the Schwarz cut (the angular-momentum
     /// limit needs the molecule's basis and is reported when the run starts).
     fn validate_local_direct(&self, kind: &str, model: &LocalModel) -> Result<(), String> {
-        if self
-            .local
-            .as_ref()
-            .and_then(|l| l.integral_direct)
-            .is_some()
-            && kind != "rimp2"
-            && kind != "att-rimp2"
-        {
-            return Err(format!(
-                "[local] integral_direct is the integral-direct local MP2 and applies to \
-                 method.kind = \"rimp2\" or \"att-rimp2\" only (got \"{kind}\")"
-            ));
+        // the local OP-MP3 shares the local MP2 maps, but has no integral-direct path
+        let maps_kind = matches!(kind, "rimp2" | "att-rimp2" | "opmp3");
+        if kind != "rimp2" && kind != "att-rimp2" {
+            if let Some(l) = self.local.as_ref() {
+                // (key set?, key, what it selects, what the other kinds do instead)
+                let mp2_only: [(bool, &str, &str, &str); 4] = [
+                    (
+                        l.integral_direct.is_some(),
+                        "integral_direct",
+                        "is the integral-direct local MP2",
+                        "",
+                    ),
+                    (
+                        l.virtual_space.is_some() && !maps_kind,
+                        "virtual_space",
+                        "selects the VV-HV build of the local MP2",
+                        ", which always uses the dense build",
+                    ),
+                    (
+                        l.fock_screen.is_some() && !maps_kind,
+                        "fock_screen",
+                        "sets the Fock-propagated mask screen of the local MP2",
+                        ", which runs the plain amplitude mask",
+                    ),
+                    (
+                        l.lambda_boys.is_some() && !maps_kind,
+                        "lambda_boys",
+                        "sets the λ-Boys occupied localization of the local MP2",
+                        ", which localizes with plain Boys",
+                    ),
+                ];
+                if let Some((_, key, what, instead)) = mp2_only.iter().find(|r| r.0) {
+                    let kinds = if *key == "integral_direct" {
+                        "\"rimp2\" or \"att-rimp2\""
+                    } else {
+                        "\"rimp2\", \"att-rimp2\" or \"opmp3\""
+                    };
+                    return Err(format!(
+                        "[local] {key} {what} and applies to method.kind = {kinds} only (got \
+                         \"{kind}\"{instead})"
+                    ));
+                }
+            }
         }
         if kind == "att-rimp2"
             && model.direct.as_ref().is_some_and(|d| d.schwarz_skip > 0.0)
             && self.mp2.att_rimp2_op()? == AttRimp2Op::Terfc
         {
-            ferric_integrals::schwarz::check_terfc_parameters_validated(
-                self.mp2.att_rimp2_operator()?,
-            )
-            .map_err(|e| format!("[local] integral_direct: {e}"))?;
+            // A basis given by `path` has no registry name; the table default
+            // is not consulted there, so the check runs when r0 is explicit.
+            let basis = self.basis.name.as_deref().unwrap_or("");
+            if self.mp2.att_r0.is_some() || !basis.is_empty() {
+                ferric_integrals::schwarz::check_terfc_parameters_validated(
+                    self.mp2.att_rimp2_operator(basis)?,
+                )
+                .map_err(|e| format!("[local] integral_direct: {e}"))?;
+            }
         }
         Ok(())
     }
@@ -3857,15 +5326,40 @@ impl Config {
             .map_or(Ok(ferric_cc::CcsdLadder::Auto), CcCfg::ladder)
     }
 
+    /// `[eom]` is read by `eom-ccsd` only, and its values are checked here.
+    fn validate_eom_section(&self, kind: &str) -> Result<(), String> {
+        let Some(eom) = &self.eom else {
+            return Ok(());
+        };
+        if kind != "eom-ccsd" {
+            return Err(format!(
+                "[eom] is read by method.kind = \"eom-ccsd\" only; kind = \"{kind}\" would \
+                 silently ignore it"
+            ));
+        }
+        eom.to_config(None).map(|_| ())
+    }
+
+    /// The `[eom]` solver config (defaults when the section is absent).
+    pub fn eom_config(
+        &self,
+        memory_budget_bytes: Option<usize>,
+    ) -> Result<ferric_cc::eom_ccsd::EomCcsdConfig, String> {
+        self.eom
+            .clone()
+            .unwrap_or_default()
+            .to_config(memory_budget_bytes)
+    }
+
     /// `[cc]` is read by the closed-shell CCSD kinds only.
     fn validate_cc_section(&self, kind: &str, mult: usize) -> Result<(), String> {
         if self.cc.is_none() {
             return Ok(());
         }
-        if !matches!(kind, "ccsd" | "ccsd(t)") {
+        if !matches!(kind, "ccsd" | "ccsd(t)" | "eom-ccsd") {
             return Err(format!(
-                "[cc] is read by method.kind = \"ccsd\" and \"ccsd(t)\" only; kind = \"{kind}\" \
-                 would silently ignore it"
+                "[cc] is read by method.kind = \"ccsd\", \"ccsd(t)\" and \"eom-ccsd\" only; \
+                 kind = \"{kind}\" would silently ignore it"
             ));
         }
         if mult > 1 {
@@ -3896,12 +5390,13 @@ impl Config {
             );
         }
         let kind = self.method.kind.as_str();
-        if self.method.task == "optimize" && matches!(kind, "rimp2" | "pdep-rpa") {
+        if is_gradient_task(&self.method.task) && matches!(kind, "rimp2" | "scs-mp2" | "pdep-rpa") {
             return Err(format!(
                 "[scf] guess_basis is not supported with method.kind = \"{kind}\", task = \
-                 \"optimize\": that geometry optimizer builds its own RHF reference at each \
+                 \"{}\": that gradient run builds its own RHF reference at each \
                  geometry and never reads guess_basis, so it would be silently ignored. Remove \
-                 it, or use task = \"energy\""
+                 it, or use task = \"energy\"",
+                self.method.task
             ));
         }
         Ok(())
@@ -3917,12 +5412,41 @@ impl Config {
     /// wrongly or not at all. Pure function of the config: the multiplicity
     /// is `[molecule] multiplicity`, which is what the solved molecule
     /// carries (with `[qmmm]` too — the QM region takes it).
-    pub fn validate_cli_wired_keys(&self) -> Result<(), String> {
-        let kind = self.method.kind.as_str();
-        let task = self.method.task.as_str();
-        let mult = self.molecule.multiplicity;
-        self.scf.scf_jk_choice(kind, task)?;
+    /// `[scf] relativistic`: energies only, for [`X2C_KINDS`], molecules only.
+    fn validate_relativistic(&self) -> Result<(), String> {
+        let Some(rel) = self.scf.relativistic_resolved()? else {
+            return Ok(());
+        };
+        let (kind, task) = (self.method.kind.as_str(), self.method.task.as_str());
+        let name = rel.as_str();
+        if task != "energy" {
+            return Err(format!(
+                "[scf] relativistic = \"{name}\" is not supported with method.task = \"{task}\": \
+                 the X2C-1e core Hamiltonian has no analytic nuclear derivative, so a gradient \
+                 or Hessian would belong to the nonrelativistic surface. Use task = \"energy\"."
+            ));
+        }
+        if self.cell.is_some() {
+            return Err(format!(
+                "[scf] relativistic = \"{name}\" is not available with [cell]: X2C-1e is built \
+                 for a molecule's nuclear potential only"
+            ));
+        }
+        if !X2C_KINDS.contains(&kind) {
+            return Err(format!(
+                "[scf] relativistic = \"{name}\" is wired for method.kind = {} only; kind = \
+                 \"{kind}\" either rebuilds the nonrelativistic core Hamiltonian from the \
+                 reference or has not been checked against an X2C reference. Remove \
+                 relativistic, or use one of those kinds.",
+                X2C_KINDS.join(", ")
+            ));
+        }
+        Ok(())
+    }
 
+    /// `[pcm]`: its own keys, no `[cosmo]` beside it, and the kinds and tasks
+    /// whose solvent treatment is wired.
+    fn validate_pcm(&self, kind: &str, task: &str) -> Result<(), String> {
         if let Some(pcm) = &self.pcm {
             pcm.to_pcm_config()?;
             if self.cosmo.is_some() {
@@ -3932,11 +5456,14 @@ impl Config {
                         .to_string(),
                 );
             }
-            if task != "energy" {
+            let optimize_ok = task == "optimize" && PCM_OPTIMIZE_KINDS.contains(&kind);
+            if task != "energy" && !optimize_ok {
                 return Err(format!(
-                    "[pcm] is not supported with method.task = \"{task}\": no gradient in \
-                     ferric has an IEF-PCM term, so the geometry/Hessian would be the vacuum \
-                     one while the energies are solvated. Use task = \"energy\"."
+                    "[pcm] is not supported with method.task = \"{task}\" for kind = \
+                     \"{kind}\": the IEF-PCM gradient term is wired into task = \"optimize\" \
+                     for kind = {} only, so this run would mix a vacuum gradient/Hessian with \
+                     solvated energies. Use task = \"energy\".",
+                    PCM_OPTIMIZE_KINDS.join(", ")
                 ));
             }
             if !PCM_KINDS.contains(&kind) {
@@ -3957,10 +5484,11 @@ impl Config {
                 );
             }
         }
+        Ok(())
+    }
 
-        self.scf.validate_accelerators(kind, mult)?;
-        self.validate_symmetry_keys()?;
-
+    /// `[scf] stability_descent`: task = "energy" on a descent-capable SCF only.
+    fn validate_stability_descent(&self, kind: &str, task: &str) -> Result<(), String> {
         if self.scf.stability_descent {
             if task != "energy" {
                 return Err(format!(
@@ -3983,6 +5511,126 @@ impl Config {
                 ));
             }
         }
+        Ok(())
+    }
+
+    /// `[scf] save_reference` / `read_reference` / `read_reference_other_build`:
+    /// only the runs whose reference SCF is the shared one in `try_run` (the
+    /// correlated kinds, `task = "energy"`) save or read it. Everything else
+    /// solves its SCF elsewhere (its own driver, a convergence ladder, one SCF
+    /// per geometry), so the key would be silently ignored there.
+    pub fn validate_reference_io(&self) -> Result<(), String> {
+        let s = &self.scf;
+        let keys = s.save_reference.is_some() || s.read_reference.is_some();
+        if !keys {
+            if s.read_reference_other_build {
+                return Err("[scf] read_reference_other_build is read only with \
+                            read_reference; it would be silently ignored"
+                    .to_string());
+            }
+            return Ok(());
+        }
+        let key = if s.read_reference.is_some() {
+            "read_reference"
+        } else {
+            "save_reference"
+        };
+        if s.save_reference.is_some() && s.read_reference.is_some() {
+            return Err(
+                "[scf] save_reference and read_reference cannot both be set: \
+                        a read reference is already on disk"
+                    .to_string(),
+            );
+        }
+        if s.read_reference_other_build && s.read_reference.is_none() {
+            return Err("[scf] read_reference_other_build is read only with \
+                        read_reference; it would be silently ignored"
+                .to_string());
+        }
+        for (name, path) in [
+            ("save_reference", s.save_reference.as_deref()),
+            ("read_reference", s.read_reference.as_deref()),
+        ] {
+            if path.is_some_and(|p| p.trim().is_empty()) {
+                return Err(format!(
+                    "[scf] {name} must be a file path, got an empty string"
+                ));
+            }
+        }
+        let task = self.method.task.as_str();
+        if task != "energy" {
+            return Err(format!(
+                "[scf] {key} is supported for task = \"energy\" only (got \"{task}\"): \
+                 an optimization or a Hessian solves a new SCF at every geometry"
+            ));
+        }
+        if self.periodic.is_some() || self.cell.is_some() {
+            return Err(format!(
+                "[scf] {key} is not supported with [cell]: the periodic SCF is not checkpointed"
+            ));
+        }
+        let kind = self.dispatch_kind(self.molecule.multiplicity);
+        let why = match kind {
+            "rhf" | "ksdft" | "uhf" | "rohf" => Some(
+                "an SCF kind converges through its own route (the rhf/ksdft convergence \
+                 ladder, or the UHF/ROHF driver), which the correlated kinds do not take, \
+                 so its reference would be refused by every correlated run; save the \
+                 reference from the first correlated run instead",
+            ),
+            "wb97x-l-v" | "b2plyp" | "dsd-pbep86" => {
+                Some("a double hybrid converges its own Kohn-Sham reference")
+            }
+            "casscf" | "nevpt2" | "opmp3" => Some("this kind runs its own reference SCF"),
+            _ => None,
+        };
+        if let Some(why) = why {
+            return Err(format!(
+                "[scf] {key} is supported by the correlated kinds (rimp2, ccsd, drpa, gw, \
+                 ...) only, not kind = \"{kind}\": {why}"
+            ));
+        }
+        if s.read_reference.is_some() {
+            for (set, name) in [
+                (s.check_stability, "check_stability"),
+                (s.stability_descent, "stability_descent"),
+            ] {
+                if set {
+                    return Err(format!(
+                        "[scf] read_reference cannot be combined with {name}: the stability \
+                         analysis is not stored with the reference, so this run would report \
+                         it as not run"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn validate_cli_wired_keys(&self) -> Result<(), String> {
+        let kind = self.method.kind.as_str();
+        let task = self.method.task.as_str();
+        let mult = self.molecule.multiplicity;
+        self.scf_jk_choice(task)?;
+
+        if self.cosmo.is_some() && task != "energy" {
+            return Err(format!(
+                "[cosmo] is not supported with method.task = \"{task}\": COSMO has no \
+                 analytic gradient, so this run would follow the vacuum-form gradient of a \
+                 solvated energy. Use [pcm] (IEF-PCM, which has one; task = \"optimize\"), \
+                 or task = \"energy\" with [cosmo]."
+            ));
+        }
+
+        self.validate_pcm(kind, task)?;
+
+        self.validate_relativistic()?;
+        self.validate_polarizable_embedding()?;
+        crate::cdft::validate(self)?;
+        self.scf.validate_accelerators(kind, mult)?;
+        self.validate_symmetry_keys()?;
+
+        self.validate_stability_descent(kind, task)?;
+        self.validate_reference_io()?;
 
         if self.mp2.sets_oo_keys() {
             if kind != "oo-rimp2" {
@@ -3994,6 +5642,8 @@ impl Config {
             }
             self.mp2.validate_oo_keys()?;
         }
+
+        self.mp2.validate_rs_scan_keys(kind)?;
 
         if let Some(w) = self.mp2.terf_omega {
             if kind != "rs-mp2-rpa" || self.mp2.attenuator.as_deref() != Some("terf") {
@@ -4029,7 +5679,9 @@ impl Config {
         }
 
         self.validate_local()?;
+        self.validate_ri(kind, mult)?;
         self.validate_cc_section(kind, mult)?;
+        self.validate_eom_section(kind)?;
 
         if self.gw.reference.is_some() {
             self.gw.parse_reference()?;
@@ -4062,6 +5714,208 @@ impl Config {
             None => Ok(None),
             Some(l) => l.model(),
         }
+    }
+
+    /// The kind/task rules of `[qmmm] polarizabilities_angstrom3` / `thole_a`.
+    ///
+    /// The induced dipoles enter the SCF energy and the SCF Fock matrix only.
+    /// Nothing else differentiates or consumes them: the CLI's geometry and
+    /// frequency tasks use the plain gradient, and a correlated method treats
+    /// the polarized SCF as an ordinary reference. Each of those would report
+    /// a number that silently omits the polarization, so they are refused.
+    /// ROHF/ROKS runs the shared SCF code but has no polarizable test.
+    pub fn validate_polarizable_embedding(&self) -> Result<(), String> {
+        let Some(q) = self.qmmm.as_ref() else {
+            return Ok(());
+        };
+        if q.polarizabilities_angstrom3.is_empty() {
+            return match (q.thole_a, &q.polarization_exclusions) {
+                (Some(_), _) => Err("[qmmm] thole_a needs polarizabilities_angstrom3: with no \
+                                     polarizable site it would be silently ignored"
+                    .to_string()),
+                (_, Some(_)) => Err("[qmmm] polarization_exclusions needs \
+                                     polarizabilities_angstrom3: with no polarizable site it \
+                                     would be silently ignored"
+                    .to_string()),
+                _ => Ok(()),
+            };
+        }
+        if let Some(e) = &q.polarization_exclusions {
+            ferric_scf::qmmm::PolarizationExclusions::parse_config_str(e)
+                .map_err(|err| format!("[qmmm] {err}"))?;
+        }
+        let kind = self.method.kind.as_str();
+        let task = self.method.task.as_str();
+        if task != "energy" {
+            return Err(format!(
+                "[qmmm] polarizabilities_angstrom3 is supported for method.task = \"energy\" \
+                 only (got \"{task}\"): the CLI's optimizers and frequency runs use the \
+                 non-polarizable gradient, so they would follow a different surface than the \
+                 polarized energy. Python run_qmmm carries the polarizable gradient."
+            ));
+        }
+        if !matches!(kind, "rhf" | "uhf" | "ksdft") {
+            return Err(format!(
+                "[qmmm] polarizabilities_angstrom3 is wired for method.kind = \"rhf\", \
+                 \"uhf\" and \"ksdft\" (with [dft] functional for KS) only; kind = \"{kind}\" \
+                 would not carry the induced-dipole terms through its method."
+            ));
+        }
+        if self.cosmo.is_some() || self.pcm.is_some() {
+            return Err(
+                "[qmmm] polarizabilities_angstrom3 with [cosmo] or [pcm] is not supported: the \
+                 combination of a polarizable embedding and an implicit solvent has not been \
+                 validated"
+                    .to_string(),
+            );
+        }
+        if self.scf.relativistic.is_some() {
+            return Err(
+                "[qmmm] polarizabilities_angstrom3 with [scf] relativistic is not supported: \
+                 the polarizable embedding has been validated on the nonrelativistic core \
+                 Hamiltonian only"
+                    .to_string(),
+            );
+        }
+        if let Some(a) = q.thole_a {
+            if !(a.is_finite() && a >= 0.0) {
+                return Err(format!(
+                    "[qmmm] thole_a must be finite and >= 0 (0.0 disables damping), got {a}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The fit selected by `[ri]` (`Coulomb` when the section is absent).
+    pub fn ri_fit(&self) -> Result<ferric_mp2::omega_ri::RiFit, String> {
+        match &self.ri {
+            None => Ok(ferric_mp2::omega_ri::RiFit::Coulomb),
+            Some(r) => r.fit(),
+        }
+    }
+
+    /// Whether `laplace-mp2` / `laplace-sos-mp2` take the omega-RI-CDD route:
+    /// a non-Coulomb `[ri]` fit or any `[mp2] cdd_*` key selects it (an
+    /// `[ri]` section that names the Coulomb fit leaves the plain path).
+    pub fn uses_cdd_route(&self) -> bool {
+        self.ri_fit().map(|f| !f.is_coulomb()).unwrap_or(false)
+            || self.mp2.cdd_tol.is_some()
+            || self.mp2.cdd_schwarz_thresh.is_some()
+            || self.mp2.cdd_pair_thresh.is_some()
+    }
+
+    /// The rules of `[ri]` and `[mp2] cdd_*`. Each refusal is a key a run
+    /// would otherwise silently ignore, or a combination no code path
+    /// implements: `[ri]` outside [`RI_KINDS`]; and, for the erfc fit,
+    /// `task != "energy"` (no omega-RI gradient), a local `[local]` scheme,
+    /// open-shell `rimp2` /
+    /// `laplace-*` (closed-shell drivers only), or on `pdep-rpa` with an NPZ
+    /// / eigenpotential export (the property paths build their own Coulomb
+    /// fit); `cdd_*` on any kind but `laplace-mp2` / `laplace-sos-mp2`; the
+    /// exchange screens on `laplace-sos-mp2`; and `sos_formulation` /
+    /// `domain_cutoff_bohr` on the CDD route.
+    pub fn validate_ri(&self, kind: &str, mult: usize) -> Result<(), String> {
+        let lap = matches!(kind, "laplace-mp2" | "laplace-sos-mp2");
+        let cdd_keys: Vec<&str> = [
+            ("cdd_tol", self.mp2.cdd_tol),
+            ("cdd_schwarz_thresh", self.mp2.cdd_schwarz_thresh),
+            ("cdd_pair_thresh", self.mp2.cdd_pair_thresh),
+        ]
+        .into_iter()
+        .filter_map(|(k, v)| v.map(|_| k))
+        .collect();
+        if !cdd_keys.is_empty() && !lap {
+            return Err(format!(
+                "[mp2] {} {} read by method.kind = \"laplace-mp2\" / \"laplace-sos-mp2\" \
+                 only; kind = \"{kind}\" would silently ignore it",
+                cdd_keys.join(", "),
+                if cdd_keys.len() == 1 { "is" } else { "are" }
+            ));
+        }
+        for (k, v) in [
+            ("cdd_tol", self.mp2.cdd_tol),
+            ("cdd_schwarz_thresh", self.mp2.cdd_schwarz_thresh),
+            ("cdd_pair_thresh", self.mp2.cdd_pair_thresh),
+        ] {
+            if let Some(x) = v {
+                if !(x.is_finite() && x >= 0.0) {
+                    return Err(format!("[mp2] {k} must be finite and >= 0 (got {x})"));
+                }
+            }
+        }
+        if kind == "laplace-sos-mp2"
+            && (self.mp2.cdd_schwarz_thresh.is_some() || self.mp2.cdd_pair_thresh.is_some())
+        {
+            return Err(
+                "[mp2] cdd_schwarz_thresh / cdd_pair_thresh screen the exchange term, which \
+                 SOS-MP2 does not have; remove them for laplace-sos-mp2"
+                    .to_string(),
+            );
+        }
+        if lap && self.uses_cdd_route() {
+            if self.mp2.sos_formulation.is_some() || self.mp2.domain_cutoff_bohr.is_some() {
+                return Err(
+                    "[mp2] sos_formulation / domain_cutoff_bohr select the plain Laplace \
+                     SOS-MP2 algebra; the omega-RI-CDD route ([ri] or [mp2] cdd_*) has its \
+                     own. Remove one or the other."
+                        .to_string(),
+                );
+            }
+            if mult != 1 {
+                return Err(format!(
+                    "the omega-RI-CDD route of {kind} is closed-shell only (multiplicity = {mult})"
+                ));
+            }
+        }
+        let Some(ri) = &self.ri else {
+            return Ok(());
+        };
+        if !RI_KINDS.contains(&kind) {
+            return Err(format!(
+                "[ri] applies to method.kind = {} only; kind = \"{kind}\" would silently \
+                 ignore it. Remove [ri].",
+                RI_KINDS
+                    .iter()
+                    .map(|k| format!("\"{k}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if ri.fit()?.is_coulomb() {
+            // The Coulomb fit is what every path computes without [ri].
+            return Ok(());
+        }
+        if self.method.task != "energy" {
+            return Err(format!(
+                "[ri] is energy-only: there is no omega-RI gradient (task = \"{}\")",
+                self.method.task
+            ));
+        }
+        if matches!(self.local_model(), Ok(Some(_))) {
+            return Err(
+                "[ri] metric = \"erfc\" and a local [local] scheme cannot be combined: the local correlation paths build \
+                 their own Coulomb-metric fits"
+                    .to_string(),
+            );
+        }
+        if kind == "rimp2" && mult != 1 {
+            return Err(format!(
+                "[ri] on rimp2 is closed-shell only (multiplicity = {mult}); the open-shell \
+                 RI-MP2 has no omega-RI fit"
+            ));
+        }
+        if kind == "pdep-rpa"
+            && (self.rpa.export_npz.is_some() || self.rpa.export_eigpot_prefix.is_some())
+        {
+            return Err(
+                "[ri] on pdep-rpa is energy-only: the NPZ / eigenpotential property exports \
+                 build their own Coulomb-metric fit. Remove [rpa] export_npz / \
+                 export_eigpot_prefix or [ri]."
+                    .to_string(),
+            );
+        }
+        Ok(())
     }
 
     /// The kind/task rules of `[local]` and of the `[mp2]` keys a correlated
@@ -4233,6 +6087,29 @@ pub fn describe_jk_path(
 mod compat_guard_tests {
     use super::*;
 
+    /// The kinds with an open-shell route for `task = "energy"`, spelled out
+    /// here independently of `OPEN_SHELL_ENERGY_KINDS`.
+    const OPEN_SHELL_ENERGY_EXPECTED: [&str; 18] = [
+        "uhf",
+        "rohf",
+        "ksdft",
+        "rimp2",
+        "oo-rimp2",
+        "att-rimp2",
+        "scs-mp2",
+        "scs-mp2-2terfc",
+        "rs-mp2-rpa",
+        "pdep-rpa",
+        "gw",
+        "mp2-v",
+        "tda",
+        "tddft",
+        "b2plyp",
+        "dsd-pbep86",
+        "ccsd",
+        "ccsd(t)",
+    ];
+
     fn cfg(kind: &str, task: &str, extra: &str) -> Config {
         let src = format!(
             "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n\
@@ -4240,6 +6117,138 @@ mod compat_guard_tests {
              [method]\nkind = \"{kind}\"\ntask = \"{task}\"\n{extra}"
         );
         toml::from_str::<Config>(&src).expect("test config must parse")
+    }
+
+    /// `scf_xc_and_aux_defaults` pinned to literal expectations, independent
+    /// of the lowering oracle (which calls the same helper on both sides).
+    #[test]
+    fn scf_xc_and_aux_defaults_table() {
+        use ferric_scf::options::AuxBasis;
+        let jk = || Some(AuxBasis::Named("def2-universal-jkfit".into()));
+        let xc = |s: &str| Some(s.to_string());
+        let cases: Vec<(
+            &str,
+            &str,
+            (Option<String>, Option<AuxBasis>, Option<AuxBasis>),
+        )> = vec![
+            ("rhf", "", (None, None, None)),
+            ("rimp2", "", (None, None, None)),
+            ("ksdft", "", (xc("LDA"), jk(), jk())),
+            (
+                "ksdft",
+                "[dft]\nfunctional = \"PBE0\"\n",
+                (xc("PBE0"), jk(), jk()),
+            ),
+            (
+                "uhf",
+                "[dft]\nfunctional = \"B3LYP\"\n",
+                (xc("B3LYP"), jk(), jk()),
+            ),
+            ("gw", "", (None, jk(), jk())),
+            ("gw", "[rpa]\nxc = \"PBE\"\n", (xc("PBE"), jk(), jk())),
+            ("rs-mp2-rpa", "", (None, jk(), jk())),
+            ("tda", "", (None, jk(), jk())),
+            (
+                "tddft",
+                "[tddft]\nxc = \"PBE0\"\n",
+                (xc("PBE0"), jk(), jk()),
+            ),
+        ];
+        for (kind, extra, want) in cases {
+            let got = cfg(kind, "energy", extra).scf_xc_and_aux_defaults();
+            assert_eq!(got, want, "{kind} with {extra:?}");
+        }
+    }
+
+    /// `(n_radial, n_angular, prune, weight_cut)` of the run's main KS grid.
+    type GridKey = (
+        usize,
+        usize,
+        Option<ferric_dft::prune::PruneScheme>,
+        Option<f64>,
+    );
+    fn main_grid_key(c: &Config) -> Option<GridKey> {
+        let prune = c
+            .dft
+            .grid_prune
+            .as_deref()
+            .and_then(|s| ferric_dft::prune::PruneScheme::parse_config_str(s).unwrap());
+        c.main_dft_grid(prune)
+            .unwrap()
+            .map(|g| (g.n_radial, g.n_angular, g.prune, g.weight_cut))
+    }
+
+    /// (a) A meta-GGA `tda`/`tddft` run with no grid key runs on the finer
+    /// response grid (150 x 434, nwchem-radial, default weight cut).
+    #[test]
+    fn meta_gga_tddft_defaults_to_the_finer_grid() {
+        use ferric_dft::prune::PruneScheme;
+        let fine = Some((
+            150,
+            434,
+            Some(PruneScheme::NwchemRadial),
+            Some(ferric_dft::grid::DEFAULT_WEIGHT_CUT),
+        ));
+        for kind in ["tda", "tddft"] {
+            for xc in ["r2SCAN", "SCAN", "TPSS"] {
+                let c = cfg(kind, "energy", &format!("[tddft]\nxc = \"{xc}\"\n"));
+                assert_eq!(main_grid_key(&c), fine, "{kind}/{xc}");
+            }
+        }
+    }
+
+    /// (b) Any one explicit grid key wins, exactly as on every other kind.
+    #[test]
+    fn explicit_grid_keys_override_the_meta_gga_tddft_default() {
+        use ferric_dft::prune::PruneScheme;
+        let cut = Some(ferric_dft::grid::DEFAULT_WEIGHT_CUT);
+        let cases = [
+            (
+                "grid_radial = 99\n",
+                (99, 110, Some(PruneScheme::NwchemRadial), cut),
+            ),
+            (
+                "grid_angular = 302\n",
+                (75, 302, Some(PruneScheme::NwchemRadial), cut),
+            ),
+            ("grid_prune = \"none\"\n", (75, 110, None, cut)),
+            (
+                "grid_weight_cut = 0\n",
+                (75, 110, Some(PruneScheme::NwchemRadial), None),
+            ),
+        ];
+        for (keys, want) in cases {
+            let c = cfg(
+                "tda",
+                "energy",
+                &format!("[tddft]\nxc = \"r2SCAN\"\n[dft]\n{keys}"),
+            );
+            assert_eq!(main_grid_key(&c), Some(want), "{keys}");
+        }
+    }
+
+    /// (c) Non-meta-GGA TDDFT, HF TDDFT and every non-TDDFT kind keep `None`
+    /// (the production grid), the same value as before the meta-GGA default.
+    #[test]
+    fn non_meta_gga_and_non_tddft_runs_keep_the_production_grid() {
+        let cases = [
+            ("tda", "[tddft]\nxc = \"PBE\"\n"),
+            ("tddft", "[tddft]\nxc = \"B3LYP\"\n"),
+            ("tddft", "[tddft]\nxc = \"LDA\"\n"),
+            ("tda", ""),
+            ("ksdft", "[dft]\nfunctional = \"r2SCAN\"\n"),
+            ("rhf", "[dft]\nfunctional = \"SCAN\"\n"),
+            ("pdep-rpa", "[rpa]\nxc = \"r2SCAN\"\n"),
+            // A stray [tddft] xc on a non-TDDFT kind must not reach its grid.
+            (
+                "ksdft",
+                "[dft]\nfunctional = \"r2SCAN\"\n[tddft]\nxc = \"r2SCAN\"\n",
+            ),
+        ];
+        for (kind, extra) in cases {
+            let c = cfg(kind, "energy", extra);
+            assert_eq!(main_grid_key(&c), None, "{kind} {extra}");
+        }
     }
 
     /// Pre-fix, every one of these ran and reported a result WITHOUT the key
@@ -4353,7 +6362,7 @@ mod compat_guard_tests {
 
         // Every KS SCF kind gets the same RI-JK default, so `uhf` + PBE and
         // `ksdft` + PBE on the same doublet are the same calculation.
-        let jk = Some(DEFAULT_SCF_JK_AUX.to_string());
+        let jk = Some(ferric_scf::options::AuxBasis::named(DEFAULT_SCF_JK_AUX));
         assert_eq!(
             cfg("uhf", "energy", pbe).scf_xc_and_aux_defaults(),
             (Some("PBE".to_string()), jk.clone(), jk.clone())
@@ -4381,7 +6390,7 @@ mod compat_guard_tests {
                 .and_then(|_| cfg.validate_cli_wired_keys())
                 .map(|_| cfg.cc_ladder().unwrap())
         };
-        for kind in ["ccsd", "ccsd(t)"] {
+        for kind in ["ccsd", "ccsd(t)", "eom-ccsd"] {
             for (v, want) in [
                 ("auto", ferric_cc::CcsdLadder::Auto),
                 ("dense", ferric_cc::CcsdLadder::Dense),
@@ -4411,6 +6420,53 @@ mod compat_guard_tests {
         assert!(e.contains("[cc]") && e.contains("multiplicity = 3"), "{e}");
     }
 
+    /// `[eom]` is read by `eom-ccsd` only, its values are strict, and its
+    /// keys reach the library config.
+    #[test]
+    fn eom_section_is_kind_scoped_and_strict() {
+        let with = |kind: &str, body: &str| {
+            let text = format!(
+                "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"sto-3g\"\n\
+                 [method]\nkind = \"{kind}\"\n{body}"
+            );
+            let cfg: Config = toml::from_str(&text).unwrap();
+            cfg.validate_loaded_values()
+                .and_then(|_| cfg.validate_cli_wired_keys())
+                .and_then(|_| cfg.eom_config(None))
+        };
+        let c = with(
+            "eom-ccsd",
+            "[eom]\nn_roots = 3\nconv_tol = 1e-7\nmax_iter = 40\nmax_space = 30\n",
+        )
+        .unwrap();
+        assert_eq!(
+            (c.n_roots, c.conv_tol, c.max_iter, c.max_space),
+            (3, 1e-7, 40, Some(30))
+        );
+        assert_eq!(
+            with("eom-ccsd", "").unwrap(),
+            ferric_cc::eom_ccsd::EomCcsdConfig::default()
+        );
+        for bad in [
+            "n_roots = 0",
+            "conv_tol = 0.0",
+            "max_iter = 0",
+            "max_space = 0",
+        ] {
+            let e = with("eom-ccsd", &format!("[eom]\n{bad}\n")).unwrap_err();
+            assert!(e.contains("[eom]"), "{bad}: {e}");
+        }
+        for kind in ["ccsd", "tda", "rhf"] {
+            let e = with(kind, "[eom]\nn_roots = 2\n").unwrap_err();
+            assert!(e.contains("[eom]") && e.contains(kind), "{kind}: {e}");
+        }
+        let typo: Result<Config, _> = toml::from_str(
+            "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"sto-3g\"\n\
+             [method]\nkind = \"eom-ccsd\"\n[eom]\nnroots = 2\n",
+        );
+        assert!(typo.is_err(), "deny_unknown_fields must bite inside [eom]");
+    }
+
     /// Before the guard, `rimp2` on triplet water returned the singlet, and
     /// the closed-shell-only kinds below still have no open-shell route. If
     /// `validate_multiplicity` is reverted to `Ok(())`, every `is_err()`
@@ -4420,33 +6476,69 @@ mod compat_guard_tests {
         for kind in [
             "rhf",
             "mp3",
-            "scs-mp2",
-            "ccsd",
             "ccd",
-            "ccsd(t)",
+            "eom-ccsd",
             "drpa",
             "linlccd",
             "laplace-sos-mp2",
             "bse-tda",
-            "tddft",
             "wb97x-l-v",
-            "b2plyp",
         ] {
             let e = cfg(kind, "energy", "")
                 .validate_multiplicity(3)
                 .expect_err(kind);
             assert!(e.contains("multiplicity = 3"), "{kind}: {e}");
         }
-        // Open-shell RI-MP2 has no nuclear gradient: its energy route must not
-        // leak into optimize/frequencies, and the message must say why.
-        for kind in ["rimp2", "oo-rimp2"] {
-            for task in ["optimize", "frequencies"] {
-                let e = cfg(kind, task, "")
-                    .validate_multiplicity(3)
-                    .expect_err(kind);
-                assert!(e.contains("task = \"energy\" only"), "{kind}/{task}: {e}");
+        // Open-shell OO-RI-MP2 and UCCSD(T) have no nuclear gradient: their
+        // energy route must not leak into the other tasks, and the message
+        // must say why.
+        for (kind, task) in [
+            ("oo-rimp2", "optimize"),
+            ("oo-rimp2", "frequencies"),
+            ("ccsd", "optimize"),
+            ("ccsd(t)", "frequencies"),
+        ] {
+            let e = cfg(kind, task, "")
+                .validate_multiplicity(3)
+                .expect_err(kind);
+            assert!(e.contains("task = \"energy\""), "{kind}/{task}: {e}");
+        }
+    }
+
+    /// `[scf] diis` (energy-based flavours) and `smearing_sigma` are read by
+    /// the closed-shell driver only. On an open-shell run they were silently
+    /// ignored; they are refused, and the same keys on a closed-shell run, and
+    /// the keys the open-shell solvers do read, still pass.
+    #[test]
+    fn open_shell_runs_refuse_the_closed_shell_only_scf_keys() {
+        for kind in ["uhf", "rohf"] {
+            for (key, needle) in [
+                ("diis = \"adiis\"", "[scf] diis"),
+                ("diis = \"ediis\"", "[scf] diis"),
+                ("smearing_sigma = 0.01", "[scf] smearing_sigma"),
+            ] {
+                let c = cfg(kind, "energy", &format!("[scf]\n{key}\n"));
+                let e = c.validate_open_shell_scf_keys(1).expect_err(key);
+                assert!(e.contains(needle), "{kind} {key}: {e}");
             }
         }
+        // A multiplicity > 1 run of a post-SCF kind reaches UHF too.
+        let c = cfg("rimp2", "energy", "[scf]\nsmearing_sigma = 0.01\n");
+        assert!(c.validate_open_shell_scf_keys(2).is_err());
+        // Reachability: closed-shell runs, plain Pulay, and the keys the
+        // open-shell drivers read all pass.
+        let c = cfg(
+            "rhf",
+            "energy",
+            "[scf]\ndiis = \"adiis\"\nsmearing_sigma = 0.01\n",
+        );
+        assert!(c.validate_open_shell_scf_keys(1).is_ok());
+        let c = cfg(
+            "uhf",
+            "energy",
+            "[scf]\ndiis = \"pulay\"\nlevel_shift = 0.2\nmom_after_iter = 5\n",
+        );
+        assert!(c.validate_open_shell_scf_keys(2).is_ok());
     }
 
     /// Reachability: a guard that refused everything would pass the test
@@ -4454,6 +6546,19 @@ mod compat_guard_tests {
     /// tasks they support, and ONLY those. Removing `ksdft`/`rimp2`/
     /// `oo-rimp2` from `open_shell_kinds` (i.e. restoring the refusal) fails
     /// the second and third loops.
+    /// The attenuated, SCS and RS-MP2 + LR-RPA kinds take a UHF reference for
+    /// an energy. Removing any of them from `OPEN_SHELL_ENERGY_KINDS` fails
+    /// this test.
+    #[test]
+    fn attenuated_scs_and_rs_kinds_pass_at_multiplicity_two() {
+        for kind in ["att-rimp2", "scs-mp2", "scs-mp2-2terfc", "rs-mp2-rpa"] {
+            assert!(
+                cfg(kind, "energy", "").validate_multiplicity(2).is_ok(),
+                "{kind}"
+            );
+        }
+    }
+
     #[test]
     fn open_shell_capable_kinds_and_all_singlets_pass() {
         for kind in ["rhf", "ksdft", "rimp2", "ccsd"] {
@@ -4462,9 +6567,7 @@ mod compat_guard_tests {
                 "{kind}"
             );
         }
-        for kind in [
-            "uhf", "rohf", "ksdft", "rimp2", "oo-rimp2", "pdep-rpa", "gw", "mp2-v",
-        ] {
+        for kind in OPEN_SHELL_ENERGY_EXPECTED {
             assert!(
                 cfg(kind, "energy", "").validate_multiplicity(2).is_ok(),
                 "{kind}"
@@ -4485,6 +6588,77 @@ mod compat_guard_tests {
             .is_err());
     }
 
+    /// The MP2-based double hybrids take an open-shell molecule on a UKS
+    /// reference for the energy task only: no nuclear gradient exists for
+    /// them, and wB97X-L-V stays closed shell. Dropping them from
+    /// `OPEN_SHELL_ENERGY_KINDS` fails the first assert; leaking them into the
+    /// optimize list fails the second.
+    #[test]
+    fn open_shell_double_hybrids_are_energy_only() {
+        for kind in ["b2plyp", "dsd-pbep86"] {
+            assert!(cfg(kind, "energy", "").validate_multiplicity(2).is_ok());
+            for task in ["optimize", "frequencies"] {
+                let e = cfg(kind, task, "")
+                    .validate_multiplicity(2)
+                    .expect_err(kind);
+                assert!(e.contains("multiplicity = 2"), "{kind}/{task}: {e}");
+            }
+        }
+        assert!(cfg("wb97x-l-v", "energy", "")
+            .validate_multiplicity(2)
+            .is_err());
+    }
+
+    /// `[dft] dispersion` on a double hybrid selects the kind's own D3(BJ)
+    /// set. "d3bj" and "d3(bj)" do; a named functional (a substituted fit),
+    /// MBD, and an unknown value are errors, and no key is `false`.
+    #[test]
+    fn double_hybrid_d3bj_accepts_only_its_own_set() {
+        for kind in ["b2plyp", "dsd-pbep86"] {
+            assert_eq!(cfg(kind, "energy", "").double_hybrid_d3bj(), Ok(false));
+            for spec in ["d3bj", "D3(BJ)"] {
+                let extra = format!("[dft]\ndispersion = \"{spec}\"\n");
+                assert_eq!(cfg(kind, "energy", &extra).double_hybrid_d3bj(), Ok(true));
+            }
+            for spec in ["d3bj(pbe)", "mbd", "d2"] {
+                let extra = format!("[dft]\ndispersion = \"{spec}\"\n");
+                let e = cfg(kind, "energy", &extra)
+                    .double_hybrid_d3bj()
+                    .expect_err(spec);
+                assert!(e.contains(kind) && e.contains("d3bj"), "{spec}: {e}");
+            }
+        }
+    }
+
+    /// rimp2, att-rimp2 and scs-mp2-2terfc optimize an open shell on the
+    /// U-RI-MP2 gradient (Coulomb, erfc/terfc, two-cutoff SCS terfc) and take
+    /// frequencies by finite differences of it; oo-rimp2's optimize stays
+    /// closed-shell only. Dropping `rimp2`, `att-rimp2` or `scs-mp2-2terfc`
+    /// from `OPEN_SHELL_OPTIMIZE_KINDS` fails its assert.
+    #[test]
+    fn open_shell_rimp2_optimize_is_admitted_and_nothing_else_new() {
+        assert!(cfg("rimp2", "optimize", "")
+            .validate_multiplicity(2)
+            .is_ok());
+        assert!(cfg("rimp2", "frequencies", "")
+            .validate_multiplicity(2)
+            .is_ok());
+        for task in ["optimize", "frequencies"] {
+            assert!(cfg("att-rimp2", task, "").validate_multiplicity(2).is_ok());
+            assert!(cfg("scs-mp2-2terfc", task, "")
+                .validate_multiplicity(2)
+                .is_ok());
+        }
+        assert!(cfg("oo-rimp2", "optimize", "")
+            .validate_multiplicity(2)
+            .is_err());
+        // scs-mp2's optimizer is the closed-shell SCS gradient: its open-shell
+        // energy route must not leak into the gradient tasks.
+        for task in ["optimize", "frequencies"] {
+            assert!(cfg("scs-mp2", task, "").validate_multiplicity(2).is_err());
+        }
+    }
+
     /// Pre-fix, pdep-rpa + optimize + `[rpa] xc = "PBE"` ran RPA@HF and
     /// printed "(RHF + RPA)". Reverting `validate_task_compat` to `Ok(())`
     /// fails the `expect_err`; the two `Ok` cases are its reachability
@@ -4503,27 +6677,88 @@ mod compat_guard_tests {
         );
     }
 
-    /// `[scf] jk` / `jk_aux` go through the shared `ferric_scf::scf_jk` rule
-    /// (the Python `scf_jk` one): unset is `None` (the run is unchanged),
+    /// An omitted `[scf] jk` resolves through [`Config::omitted_scf_jk`]:
+    /// RI-JK on the basis-matched set for a closed-shell MP2-family run,
+    /// four-centre when a key only that route reads is set, `None` off the
+    /// governed kinds.
+    #[test]
+    fn omitted_jk_takes_rijk_unless_a_four_centre_key_is_set() {
+        use ferric_scf::scf_jk::ScfJkMode;
+        let choice = |kind: &str, task: &str, extra: &str| {
+            cfg(kind, task, &format!("[scf]\n{extra}")).scf_jk_choice(task)
+        };
+        // Unset: RI-JK on the basis-matched JK-fit set (sto-3g here, so the
+        // shared default), rs-mp2-rpa's RI-JK, off the governed kinds None.
+        let unset = choice("rimp2", "energy", "").unwrap().unwrap();
+        assert_eq!(unset.mode, ScfJkMode::RiJk);
+        assert_eq!(unset.aux.as_deref(), Some("def2-universal-jkfit"));
+        let rs_default = choice("rs-mp2-rpa", "energy", "").unwrap().unwrap();
+        assert_eq!(rs_default.mode, ScfJkMode::RiJk);
+        assert_eq!(rs_default.aux.as_deref(), Some("def2-universal-jkfit"));
+        assert_eq!(choice("rhf", "energy", ""), Ok(None));
+        // The MP2 optimizations take the same fitted default; an explicit
+        // "exact" still wins.
+        for (kind, task) in ["rimp2", "scs-mp2", "oo-rimp2"]
+            .into_iter()
+            .flat_map(|k| ["optimize", "frequencies"].map(move |t| (k, t)))
+        {
+            let opt_default = choice(kind, task, "").unwrap().unwrap();
+            assert_eq!(opt_default.mode, ScfJkMode::RiJk, "{kind}");
+            assert_eq!(
+                opt_default.aux.as_deref(),
+                Some("def2-universal-jkfit"),
+                "{kind}"
+            );
+            let exact = choice(kind, task, "jk = \"exact\"\n").unwrap().unwrap();
+            assert_eq!(exact.mode, ScfJkMode::Exact, "{kind}");
+        }
+        // A task the rule does not govern is untouched.
+        assert_eq!(
+            choice("rimp2", "frequencies", "").map(|c| c.is_some()),
+            Ok(true)
+        );
+        assert_eq!(choice("pdep-rpa", "frequencies", ""), Ok(None));
+        // Open shell: the rimp2 optimization and frequencies take the fitted
+        // default, the energy stays four-centre.
+        let open = |task: &str| {
+            let mut c = cfg("rimp2", task, "[scf]\n");
+            c.molecule.multiplicity = 2;
+            c.scf_jk_choice(task)
+        };
+        for task in ["optimize", "frequencies"] {
+            let opt = open(task).unwrap().unwrap();
+            assert_eq!(opt.mode, ScfJkMode::RiJk, "{task}");
+            assert_eq!(opt.aux.as_deref(), Some("def2-universal-jkfit"), "{task}");
+        }
+        let energy = open("energy").unwrap().unwrap();
+        assert_eq!((energy.mode, energy.aux), (ScfJkMode::Exact, None));
+        // A key only the four-centre route reads keeps an omitted jk exact.
+        for key in [
+            "k_builder = \"link\"",
+            "eri = \"incore\"",
+            "df_increments = true",
+            "df_guess = true",
+        ] {
+            let kept = choice("rimp2", "energy", &format!("{key}\n"))
+                .unwrap()
+                .unwrap();
+            assert_eq!((kept.mode, kept.aux), (ScfJkMode::Exact, None), "{key}");
+        }
+    }
+
+    /// The `[scf] jk` keys go through `ferric_scf::scf_jk::ScfJk::resolve`:
     /// each mode lands on the expected `RhfConfig` fields, and every
     /// conflict is refused with the CLI's own key names.
     #[test]
     fn scf_jk_keys_resolve_through_the_shared_rule() {
         use ferric_scf::scf_jk::ScfJkMode;
         let choice = |kind: &str, task: &str, extra: &str| {
-            cfg(kind, task, &format!("[scf]\n{extra}"))
-                .scf
-                .scf_jk_choice(kind, task)
+            cfg(kind, task, &format!("[scf]\n{extra}")).scf_jk_choice(task)
         };
-        // Unset: the kind's own default, as in Python (exact, except
-        // rs-mp2-rpa's historical RI-JK); off the governed kinds, None.
-        let unset = choice("rimp2", "energy", "").unwrap().unwrap();
-        assert_eq!((unset.mode, unset.aux), (ScfJkMode::Exact, None));
-        let rs_default = choice("rs-mp2-rpa", "energy", "").unwrap().unwrap();
-        assert_eq!(rs_default.mode, ScfJkMode::RiJk);
-        assert_eq!(rs_default.aux.as_deref(), Some("def2-universal-jkfit"));
-        assert_eq!(choice("rhf", "energy", ""), Ok(None));
-        assert_eq!(choice("rimp2", "optimize", ""), Ok(None));
+        let exact = choice("rimp2", "energy", "jk = \"exact\"\n")
+            .unwrap()
+            .unwrap();
+        assert_eq!((exact.mode, exact.aux), (ScfJkMode::Exact, None));
         // The explicit df_*_aux spelling leaves the run untouched.
         assert_eq!(
             choice("rimp2", "energy", "df_j_aux = \"def2-universal-jkfit\"\n"),
@@ -4544,12 +6779,13 @@ mod compat_guard_tests {
         .unwrap()
         .apply(&mut rc);
         assert_eq!(rc.df_j_aux.as_deref(), Some("cc-pvtz-jkfit"));
-        assert_eq!((rc.df_k_aux, rc.k_builder.as_deref()), (None, Some("cosx")));
-        let mut rs = ferric_scf::rhf::RhfConfig {
-            df_j_aux: Some("def2-universal-jkfit".into()),
-            df_k_aux: Some("def2-universal-jkfit".into()),
-            ..Default::default()
-        };
+        assert_eq!(
+            (rc.df_k_aux, rc.k_builder),
+            (None, Some(ferric_scf::options::KBuilderKind::Cosx))
+        );
+        let mut rs = ferric_scf::rhf::RhfConfig::default()
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         choice("rs-mp2-rpa", "energy", "jk = \"exact\"\n")
             .unwrap()
             .unwrap()
@@ -4608,14 +6844,14 @@ mod compat_guard_tests {
             (
                 "oo-rimp2",
                 "energy",
-                "jk = \"rijk\"\n",
-                "[scf] jk = \"rijk\" is refused here: orbital-optimised MP2 rebuilds",
+                "jk = \"rijcosx\"\n",
+                "[scf] jk = \"rijcosx\" is refused here: orbital-optimised MP2 rebuilds",
             ),
             (
                 "oo-rimp2",
-                "energy",
+                "optimize",
                 "jk = \"rijcosx\"\n",
-                "rebuilds exact four-centre J/K",
+                "COSX exchange has no OO route",
             ),
             (
                 "oo-rimp2",
@@ -4655,30 +6891,74 @@ mod compat_guard_tests {
                 "wired for task",
             ),
             ("ccsd", "energy", "jk = \"rijk\"\n", "wired for task"),
-            ("rimp2", "optimize", "jk = \"rijk\"\n", "wired for task"),
+            (
+                "pdep-rpa",
+                "frequencies",
+                "jk = \"rijk\"\n",
+                "wired for task",
+            ),
+            (
+                "rimp2",
+                "frequencies",
+                "jk = \"rijcosx\"\n",
+                "no COSX exchange response",
+            ),
+            ("mp2-v", "optimize", "jk = \"rijk\"\n", "wired for task"),
+            (
+                "att-rimp2",
+                "optimize",
+                "jk = \"rijcosx\"\n",
+                "no COSX exchange response",
+            ),
+            (
+                "scs-mp2",
+                "optimize",
+                "jk = \"rijcosx\"\n",
+                "no COSX exchange response",
+            ),
+            (
+                "rimp2",
+                "optimize",
+                "jk = \"rijcosx\"\n",
+                "no COSX exchange response",
+            ),
         ] {
             let e = choice(kind, task, extra).expect_err(extra);
             assert!(e.contains(needle), "{extra}: {e}");
         }
         assert!(choice("oo-rimp2", "energy", "jk = \"exact\"\n").is_ok());
+        for task in ["energy", "optimize"] {
+            let oo = choice("oo-rimp2", task, "jk = \"rijk\"\n")
+                .unwrap()
+                .unwrap();
+            assert_eq!(oo.mode, ScfJkMode::RiJk, "{task}");
+        }
+        let rijk_opt = choice("rimp2", "optimize", "jk = \"rijk\"\n")
+            .unwrap()
+            .unwrap();
+        assert_eq!(rijk_opt.mode, ScfJkMode::RiJk);
+        assert_eq!(rijk_opt.aux.as_deref(), Some("def2-universal-jkfit"));
+        let scs_opt = choice("scs-mp2", "optimize", "jk = \"rijk\"\n")
+            .unwrap()
+            .unwrap();
+        assert_eq!(scs_opt.mode, ScfJkMode::RiJk);
         assert!(choice("rimp2", "energy", "jk = \"exact\"\ndf_increments = true\n").is_ok());
         assert!(choice("rimp2", "energy", "df_increments = true\n").is_ok());
-        for refused in [
+        let e = cfg(
+            "rimp2",
+            "energy",
             "[scf]\njk = \"rijk\"\ndf_increments = true\n",
-            "[scf]\njk = \"rijk\"\n",
-        ] {
-            let kind = if refused.contains("df_increments") {
-                "rimp2"
-            } else {
-                "oo-rimp2"
-            };
-            let e = cfg(kind, "energy", refused)
-                .validate_cli_wired_keys()
-                .expect_err(refused);
-            assert!(
-                e.contains("cannot be combined") || e.contains("refused here"),
-                "{e}"
-            );
+        )
+        .validate_cli_wired_keys()
+        .unwrap_err();
+        assert!(e.contains("cannot be combined"), "{e}");
+        // Both OO-RI-MP2 solvers (closed shell, and the unrestricted one on an
+        // open shell) follow an RI-JK reference.
+        let mut open = cfg("oo-rimp2", "energy", "[scf]\njk = \"rijk\"\n");
+        for mult in [1, 2] {
+            open.molecule.multiplicity = mult;
+            let r = open.validate_cli_wired_keys();
+            assert!(r.is_ok(), "multiplicity {mult}: {r:?}");
         }
         let e = cfg(
             "rimp2",
@@ -4691,6 +6971,48 @@ mod compat_guard_tests {
             e.contains("conflicts"),
             "load-time validation must refuse it: {e}"
         );
+    }
+
+    /// `[scf] relativistic` parses strictly, and runs energies only, for
+    /// `X2C_KINDS`, without `[cell]`. Unset is accepted everywhere.
+    #[test]
+    fn scf_relativistic_is_strict_and_energy_only() {
+        let rel = "[scf]\nrelativistic = \"x2c1e\"\n";
+        for kind in X2C_KINDS {
+            cfg(kind, "energy", rel).validate_cli_wired_keys().unwrap();
+        }
+        assert_eq!(
+            cfg("rhf", "energy", rel).scf.relativistic_resolved(),
+            Ok(Some(ferric_scf::x2c::Relativistic::X2c1e))
+        );
+        assert_eq!(
+            cfg("rhf", "energy", "").scf.relativistic_resolved(),
+            Ok(None)
+        );
+        let bad = cfg("rhf", "energy", "[scf]\nrelativistic = \"X2C\"\n");
+        let e = bad.scf.validate().unwrap_err();
+        assert!(
+            e.starts_with("[scf] relativistic") && e.contains("x2c1e"),
+            "{e}"
+        );
+        for task in ["optimize", "frequencies"] {
+            let e = cfg("rhf", task, rel).validate_cli_wired_keys().unwrap_err();
+            assert!(e.contains("no analytic nuclear derivative"), "{task}: {e}");
+            cfg("rhf", task, "").validate_cli_wired_keys().unwrap();
+        }
+        for kind in ["oo-rimp2", "casscf", "nevpt2", "gw"] {
+            let e = cfg(kind, "energy", rel)
+                .validate_cli_wired_keys()
+                .unwrap_err();
+            assert!(e.contains("is wired for method.kind"), "{kind}: {e}");
+        }
+        let cell = format!(
+            "{rel}[cell]\nlattice = [[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]]\n"
+        );
+        let e = cfg("rhf", "energy", &cell)
+            .validate_cli_wired_keys()
+            .unwrap_err();
+        assert!(e.contains("[cell]"), "{e}");
     }
 
     /// `[scf] df_j_aux = "exact"` used to reach `basis::bundled("exact")`
@@ -4710,10 +7032,9 @@ mod compat_guard_tests {
         assert_eq!(c.scf.df_k_aux_resolved().as_deref(), Some(""));
         let rungs = c
             .scf
-            .build_ladder(&ferric_scf::rhf::RhfConfig {
-                df_j_aux: Some("def2-universal-jkfit".into()),
-                ..Default::default()
-            })
+            .build_ladder(
+                &ferric_scf::rhf::RhfConfig::default().with_df_j_aux("def2-universal-jkfit"),
+            )
             .unwrap();
         assert_eq!(rungs[0].config.df_j_aux.as_deref(), Some(""));
         // Anchors: a basis name and an omitted key are unchanged.
@@ -4820,6 +7141,82 @@ mod compat_guard_tests {
     /// the sweep is sorted + de-duplicated, and the integral-direct knobs need
     /// `integral_direct = true`. Each refusal is its own case, so dropping
     /// any one check fails exactly the case that names it.
+    /// The configs a local RI-MP2 run hands the library, built by the ONE
+    /// builder the CLI and the Python binding share
+    /// (`LocalModel::rimp2_configs`): with no map key they are the
+    /// production maps of `DirectConfig::production`, the Fock screen at
+    /// `DIRECT_FOCK_SCREEN_KAPPA`, λ-Boys at its default, no pair gate.
+    /// The end-to-end CLI-vs-Python check is
+    /// `crates/ferric-python/tests/test_cli_lmp2_direct_matches_python.py`.
+    #[test]
+    fn local_rimp2_configs_are_the_production_defaults() {
+        use ferric_mp2::lmp2_direct::{DirectConfig, DIRECT_FOCK_SCREEN_KAPPA};
+        let m = cfg(
+            "rimp2",
+            "energy",
+            "[local]\nscheme = \"amplitude-threshold\"\neps = 1e-4\nintegral_direct = true",
+        )
+        .local_model()
+        .unwrap()
+        .unwrap();
+        let (l, d) = m.rimp2_configs(3, Some(123));
+        let d = d.expect("integral_direct = true builds the direct maps");
+        let p = DirectConfig::production();
+        assert_eq!(
+            (
+                d.aux_radius_bohr,
+                d.virt_radius_bohr,
+                d.ao_tail,
+                d.schwarz_skip,
+                d.batch_merge,
+                d.virt_schwarz_kappa,
+                d.scratch_budget_bytes,
+                d.eri3_pass,
+            ),
+            (
+                p.aux_radius_bohr,
+                p.virt_radius_bohr,
+                p.ao_tail,
+                p.schwarz_skip,
+                p.batch_merge,
+                p.virt_schwarz_kappa,
+                p.scratch_budget_bytes,
+                p.eri3_pass,
+            )
+        );
+        // The production values themselves (a change here is a model change).
+        assert_eq!(
+            (
+                p.aux_radius_bohr,
+                p.virt_radius_bohr,
+                p.ao_tail,
+                p.schwarz_skip,
+                p.batch_merge
+            ),
+            (10.0, Some(20.0), 1e-4, 1e-5, 4)
+        );
+        assert_eq!(l.eps, 1e-4);
+        assert_eq!(l.frozen_core, 3);
+        assert_eq!(l.eri3_budget_bytes, Some(123));
+        assert_eq!(l.fock_screen, Some(DIRECT_FOCK_SCREEN_KAPPA));
+        assert_eq!(l.lambda_boys, ferric_mp2::boys::LAMBDA_BOYS_DEFAULT);
+        assert_eq!(l.pair_gate_cal, None);
+        assert!(!l.compute_reference);
+        // In-core: no maps, the same Fock screen (a model knob, not a map).
+        let m = cfg(
+            "rimp2",
+            "energy",
+            "[local]\nscheme = \"amplitude-threshold\"\neps = 1e-4",
+        )
+        .local_model()
+        .unwrap()
+        .unwrap();
+        let (l, d) = m.rimp2_configs(0, None);
+        assert!(d.is_none());
+        assert_eq!(l.fock_screen, Some(DIRECT_FOCK_SCREEN_KAPPA));
+        assert_eq!(l.lambda_boys, ferric_mp2::boys::LAMBDA_BOYS_DEFAULT);
+    }
+
     #[test]
     fn local_section_values_are_strict() {
         let model = |body: &str| cfg("drpa", "energy", &format!("[local]\n{body}")).local_model();
@@ -4915,14 +7312,50 @@ mod compat_guard_tests {
             m.direct,
             Some(LocalDirectKnobs {
                 aux_radius: 10.0,
-                virt_radius: 12.0,
-                ao_tail: 1e-3,
+                virt_radius: 20.0,
+                ao_tail: 1e-4,
                 schwarz_skip: 1e-5,
                 batch_merge: 4,
                 gate_cal: None,
                 virt_schwarz_kappa: None,
             })
         );
+        // The Fock screen is on by default on both paths; fock_screen = false
+        // turns it off on either; a non-bool is a type error.
+        let kappa = Some(ferric_mp2::lmp2_amplitude::FOCK_SCREEN_KAPPA_DEFAULT);
+        assert_eq!(m.fock_screen, kappa);
+        for direct in ["", "integral_direct = true\n"] {
+            let on = model(&format!(
+                "scheme = \"amplitude-threshold\"\neps = 1e-4\n{direct}"
+            ))
+            .unwrap()
+            .unwrap();
+            assert_eq!(on.fock_screen, kappa, "{direct:?}");
+            let off = model(&format!(
+                "scheme = \"amplitude-threshold\"\neps = 1e-4\n{direct}fock_screen = false"
+            ))
+            .unwrap()
+            .unwrap();
+            assert_eq!(off.fock_screen, None, "{direct:?}");
+        }
+        // virt_schwarz_kappa bounds the plain mask only: refused under the
+        // Fock screen, accepted with it off
+        let base = "scheme = \"amplitude-threshold\"\neps = 1e-4\nintegral_direct = true\n\
+                    virt_schwarz_kappa = 1.0\n";
+        let e = model(base).unwrap_err();
+        assert!(e.contains("fock_screen = false"), "{e}");
+        let off = model(&format!("{base}fock_screen = false"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(off.direct.unwrap().virt_schwarz_kappa, Some(1.0));
+        for bad in ["fock_screen = 1.0", "fock_screen = \"off\""] {
+            let src = format!(
+                "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n[basis]\nname = \"sto-3g\"\n\
+                 [method]\nkind = \"rimp2\"\ntask = \"energy\"\n[local]\n\
+                 scheme = \"amplitude-threshold\"\neps = 1e-4\nintegral_direct = true\n{bad}"
+            );
+            assert!(toml::from_str::<Config>(&src).is_err(), "{bad}");
+        }
         for bad in [
             "aux_radius = 0.0",
             "virt_radius = -1.0",
@@ -4940,6 +7373,76 @@ mod compat_guard_tests {
                 "{bad}"
             );
         }
+        // virtual_space: dense by default, strict selector, thresholds only
+        // with "local", refused under scheme = "none"
+        use ferric_mp2::vvhv_local::{LocalVvhvConfig, VirtualSpace};
+        let at = "scheme = \"amplitude-threshold\"\neps = 1e-4\n";
+        assert_eq!(
+            model(at).unwrap().unwrap().virtual_space,
+            VirtualSpace::Dense
+        );
+        assert_eq!(
+            model(&format!("{at}virtual_space = \"dense\""))
+                .unwrap()
+                .unwrap()
+                .virtual_space,
+            VirtualSpace::Dense
+        );
+        assert_eq!(
+            model(&format!("{at}virtual_space = \"local\""))
+                .unwrap()
+                .unwrap()
+                .virtual_space,
+            VirtualSpace::Local(LocalVvhvConfig::default())
+        );
+        assert_eq!(
+            model(&format!(
+                "{at}virtual_space = \"local\"\nvirtual_tau = 0.0\nvirtual_tau_loose = 0.0\n\
+                 virtual_solve_radius = 1e6\nvirtual_boys_tau = 0.0"
+            ))
+            .unwrap()
+            .unwrap()
+            .virtual_space,
+            VirtualSpace::Local(LocalVvhvConfig {
+                tau: 0.0,
+                tau_loose: 0.0,
+                solve_radius_bohr: Some(1e6),
+                boys_tau: 0.0,
+                ..LocalVvhvConfig::default()
+            })
+        );
+        for bad in ["\"Local\"", "\"sparse\"", "\"\""] {
+            let e = model(&format!("{at}virtual_space = {bad}")).unwrap_err();
+            assert!(e.contains("virtual_space"), "{bad}: {e}");
+        }
+        for (key, val) in [
+            ("virtual_tau", "1e-9"),
+            ("virtual_tau_loose", "1e-6"),
+            ("virtual_solve_radius", "30.0"),
+            ("virtual_boys_tau", "1e-8"),
+        ] {
+            for vs in ["", "virtual_space = \"dense\"\n"] {
+                let e = model(&format!("{at}{vs}{key} = {val}")).unwrap_err();
+                assert!(e.contains("virtual_space = \"local\""), "{key}: {e}");
+            }
+            for scheme in ["scheme = \"none\"\n", ""] {
+                let e = model(&format!("{scheme}{key} = {val}")).unwrap_err();
+                assert!(e.contains(key) && e.contains("scheme = \"none\""), "{e}");
+            }
+        }
+        for bad in [
+            "virtual_tau = -1e-9",
+            "virtual_tau_loose = nan",
+            "virtual_solve_radius = 0.0",
+            "virtual_boys_tau = inf",
+        ] {
+            assert!(
+                model(&format!("{at}virtual_space = \"local\"\n{bad}")).is_err(),
+                "{bad}"
+            );
+        }
+        let e = model("virtual_space = \"local\"").unwrap_err();
+        assert!(e.contains("virtual_space"), "{e}");
         // a typo'd [local] key is a parse error
         let src = "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"sto-3g\"\n[method]\n\
                    kind = \"drpa\"\n[local]\nscheme = \"amplitude-threshold\"\nepsilon = 1e-4\n";
@@ -4968,6 +7471,69 @@ mod compat_guard_tests {
             assert!(e.contains("omega"), "{value}: {e}");
         }
         assert!(cfg("drpa", "energy", "").mp2.set_keys().is_empty());
+    }
+
+    /// `[local] lambda_boys`: default 10 for local MP2, 0 accepted (plain
+    /// Boys), negative / non-finite refused, refused under scheme = "none"
+    /// and on the kinds that localize with plain Boys (drpa, linlccd).
+    #[test]
+    fn local_lambda_boys_is_strict_and_mp2_only() {
+        let at = "[local]\nscheme = \"amplitude-threshold\"\neps = 1e-4\n";
+        let model =
+            |kind: &str, extra: &str| cfg(kind, "energy", &format!("{at}{extra}")).local_model();
+        let lam = |m: Result<Option<LocalModel>, String>| m.unwrap().unwrap().lambda_boys;
+        assert_eq!(
+            lam(model("rimp2", "")),
+            ferric_mp2::boys::LAMBDA_BOYS_DEFAULT
+        );
+        assert_eq!(lam(model("rimp2", "lambda_boys = 0.0\n")), 0.0);
+        assert_eq!(lam(model("rimp2", "lambda_boys = 3.5\n")), 3.5);
+        for bad in ["-1.0", "nan", "inf"] {
+            let e = model("rimp2", &format!("lambda_boys = {bad}\n")).unwrap_err();
+            assert!(
+                e.contains("lambda_boys") && e.contains(">= 0"),
+                "{bad}: {e}"
+            );
+        }
+        let e = cfg(
+            "rimp2",
+            "energy",
+            "[local]\nscheme = \"none\"\nlambda_boys = 10.0\n",
+        )
+        .local_model()
+        .unwrap_err();
+        assert!(
+            e.contains("lambda_boys") && e.contains("scheme = \"none\""),
+            "{e}"
+        );
+        let ok = |kind: &str| {
+            cfg(kind, "energy", &format!("{at}lambda_boys = 10.0\n")).validate_task_compat()
+        };
+        assert_eq!(ok("rimp2"), Ok(()));
+        for kind in ["drpa", "linlccd"] {
+            let e = ok(kind).expect_err(kind);
+            assert!(e.contains("lambda_boys") && e.contains("plain Boys"), "{e}");
+        }
+    }
+
+    /// `[local] fock_screen` is a local-MP2 model knob: accepted in-core and
+    /// integral-direct for rimp2, refused for dRPA and LinLCCD (which run the
+    /// plain mask and would silently ignore it).
+    #[test]
+    fn local_fock_screen_is_mp2_only_on_both_paths() {
+        let at = "[local]\nscheme = \"amplitude-threshold\"\neps = 1e-4\n";
+        let ok = |kind: &str, extra: &str| {
+            cfg(kind, "energy", &format!("{at}{extra}fock_screen = false\n")).validate_task_compat()
+        };
+        assert_eq!(ok("rimp2", ""), Ok(()));
+        assert_eq!(ok("rimp2", "integral_direct = true\n"), Ok(()));
+        for kind in ["drpa", "linlccd"] {
+            let e = ok(kind, "").expect_err(kind);
+            assert!(
+                e.contains("fock_screen") && e.contains("plain amplitude mask"),
+                "{e}"
+            );
+        }
     }
 
     #[test]
@@ -4999,6 +7565,15 @@ mod compat_guard_tests {
             for kind in ["drpa", "linlccd"] {
                 let e = ok(kind, &direct).expect_err(kind);
                 assert!(e.contains("integral_direct") && e.contains("rimp2"), "{e}");
+            }
+        }
+        // virtual_space: rimp2 / att-rimp2 only (drpa / linlccd always dense)
+        for vs in ["dense", "local"] {
+            let body = format!("{at}virtual_space = \"{vs}\"\n");
+            assert_eq!(ok("rimp2", &body), Ok(()));
+            for kind in ["drpa", "linlccd"] {
+                let e = ok(kind, &body).expect_err(kind);
+                assert!(e.contains("virtual_space") && e.contains("rimp2"), "{e}");
             }
         }
         // local is energy-only
@@ -5112,8 +7687,8 @@ fn scf_energy_conv_written(text: &str) -> bool {
         .is_some_and(|raw| raw_keys(&raw, "scf").contains(&"energy_conv"))
 }
 
-/// The post-parse checks of [`load_config`], and the `[cell]` plan (which
-/// needs the raw TOML to see which keys were actually written).
+/// The post-parse checks of [`load_config`], and the `[cell]` and `[cas]`
+/// plans (which need the raw TOML to see which keys were actually written).
 fn validate_loaded(cfg: &mut Config, text: &str) -> Result<(), String> {
     cfg.validate_loaded_values()?;
     cfg.scf.energy_conv_set = scf_energy_conv_written(text);
@@ -5121,7 +7696,15 @@ fn validate_loaded(cfg: &mut Config, text: &str) -> Result<(), String> {
         let raw: toml::Value = toml::from_str(text).map_err(|e| e.to_string())?;
         cfg.periodic = periodic_plan(cfg, &raw)?;
     }
-    Ok(())
+    resolve_kind_plans(cfg, text)
+}
+
+/// The plans of the kind-specific sections that need the raw TOML text: the
+/// `[cas]` and `[opmp3]` runs, and the sections and `[scf]` keys a `[cdft]` run reads.
+fn resolve_kind_plans(cfg: &mut Config, text: &str) -> Result<(), String> {
+    cfg.cas_plan = crate::cas::resolve_plan(cfg, text)?;
+    cfg.opmp3_plan = crate::opmp3::resolve_plan(cfg, text)?;
+    crate::cdft::check_sections(cfg, text)
 }
 
 // ---------------------------------------------------------------------------
@@ -6342,6 +8925,14 @@ pub fn periodic_plan(cfg: &Config, raw: &toml::Value) -> Result<Option<PeriodicP
                     );
                 }
             }
+            if cfg.optimize.scf_warm_start == Some(true) {
+                return Err(
+                    "[optimize] scf_warm_start: periodic optimization solves each step's SCF \
+                     from its own guess (no warm start is implemented for [cell]); remove the \
+                     key or set it to false"
+                        .into(),
+                );
+            }
             true
         }
         other => {
@@ -6649,6 +9240,17 @@ kind = "ccsd"
         );
         assert!(err(&h2("ksdft", "neighbour_switch = -1.0", "")).contains("neighbour_switch"));
         assert!(err(&h2("rhf", "neighbour_switch = 1.0", "")).contains("neighbour_switch"));
+    }
+
+    /// `[cell] n_angular` carries any Lebedev order to the periodic grid,
+    /// including the refinement orders above 590.
+    #[test]
+    fn cell_n_angular_takes_the_refinement_orders() {
+        assert_eq!(ok(&h2("ksdft", "", "")).n_angular, 302);
+        for n_ang in [974, 1202] {
+            let p = ok(&h2("ksdft", &format!("n_angular = {n_ang}"), ""));
+            assert_eq!((p.n_radial, p.n_angular), (75, n_ang));
+        }
     }
 
     #[test]
@@ -6991,12 +9593,13 @@ kind = "ccsd"
                 assert!(gate(spin, rsgdf, "HYB_GGA_XC_WB97X").is_err());
             }
         }
-        // SCAN / r2SCAN: closed shell on either J/K, UKS on dense only, no ROKS.
+        // SCAN / r2SCAN: closed shell on either J/K, UKS and ROKS on dense only.
         for f in ["SCAN", "r2SCAN"] {
             gate(DerivSpin::Restricted, true, f).unwrap();
-            gate(DerivSpin::Unrestricted, false, f).unwrap();
-            assert!(gate(DerivSpin::Unrestricted, true, f).is_err());
-            assert!(gate(DerivSpin::RestrictedOpen, false, f).is_err());
+            for spin in [DerivSpin::Unrestricted, DerivSpin::RestrictedOpen] {
+                gate(spin, false, f).unwrap();
+                assert!(gate(spin, true, f).is_err(), "{spin:?} {f} rsgdf");
+            }
         }
         // TPSS: closed shell on the dense-AFT J/K only.
         gate(DerivSpin::Restricted, false, "TPSS").unwrap();
@@ -7021,16 +9624,11 @@ kind = "ccsd"
         let rsgdf = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"\nkmesh = [1, 1, 2]";
         assert!(ok(&opt("ksdft", "kmesh = [1, 1, 2]", HSE)).optimize);
         assert!(ok(&opt("ksdft", rsgdf, HSE)).optimize);
-        // Open-shell KS: the ROKS meta-GGA force is refused by the derivative
-        // gate (its energy runs, #498); the UKS SCAN force runs (dense J/K);
-        // the UKS and ROKS RSH forces run on either J/K (#498).
-        let e = err(&opt("rohf", "kmesh = [1, 1, 2]", SCAN));
-        assert!(
-            e.contains("method.task = \"optimize\" with [cell] kmesh: ")
-                && e.contains("SCAN: the k-point ROKS meta-GGA force and stress"),
-            "rohf: {e}"
-        );
-        assert!(ok(&opt("uhf", "kmesh = [1, 1, 2]", SCAN)).optimize);
+        // Open-shell KS: the UKS and ROKS SCAN forces run on the dense J/K
+        // (#498); the UKS and ROKS RSH forces run on either J/K (#498).
+        for kind in ["uhf", "rohf"] {
+            assert!(ok(&opt(kind, "kmesh = [1, 1, 2]", SCAN)).optimize, "{kind}");
+        }
         for kind in ["uhf", "rohf"] {
             for cell in ["kmesh = [1, 1, 2]", rsgdf] {
                 assert!(ok(&opt(kind, cell, HSE)).optimize, "{kind} {cell}");
@@ -7601,7 +10199,7 @@ kind = "ccsd"
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// Water — the stand-in molecule for the config tests that only need
@@ -7615,6 +10213,26 @@ mod tests {
             1,
         )
         .unwrap()
+    }
+
+    /// CLI default scheme with no `[rpa] quadrature` key is Gauss-Legendre
+    /// (documented in site/src/reference/input.md). Mutation: a `MiniMax`
+    /// fallback in `QuadratureScheme::parse_config_str(None)` fails this.
+    #[test]
+    fn rpa_quadrature_unset_is_gauss_legendre() {
+        let cfg = RpaCfg::default();
+        assert_eq!(
+            cfg.parse_quadrature().unwrap(),
+            ferric_rpa::config::QuadratureScheme::GaussLegendre
+        );
+        let mm = RpaCfg {
+            quadrature: Some("minimax".into()),
+            ..RpaCfg::default()
+        };
+        assert_eq!(
+            mm.parse_quadrature().unwrap(),
+            ferric_rpa::config::QuadratureScheme::MiniMax
+        );
     }
 
     // ---- [output]: the JSON run log's config surface ----
@@ -7759,7 +10377,7 @@ json = [1, 2]
     /// `all_shipped_examples_parse` from CC 6 to 13 and the complexity gate
     /// caught it -- correctly, since path-walking has nothing to do with what
     /// that test asserts.
-    pub(super) fn runtime_workspace_root() -> std::path::PathBuf {
+    pub(crate) fn runtime_workspace_root() -> std::path::PathBuf {
         let looks_like_root = |p: &std::path::Path| {
             p.join("Cargo.toml").is_file()
                 && p.join("examples").is_dir()
@@ -7989,6 +10607,141 @@ json = [1, 2]
         assert!(e.contains("qm_radius"), "{e}");
     }
 
+    // --- [qmmm] polarizable embedding -----------------------------------
+
+    /// `water_na.pqr` has 4 atoms: three QM water atoms and an MM Na+ (index 3).
+    const NA_ALPHA: &str =
+        "qm_indices = [0, 1, 2]\npolarizabilities_angstrom3 = [0.0, 0.0, 0.0, 0.5]";
+
+    #[test]
+    fn qmmm_polarizabilities_become_bohr3_sites_on_the_mm_atom() {
+        let q = qmmm_cfg(NA_ALPHA);
+        let sys = q.to_system(0, 1).unwrap();
+        let sites = sys.to_polarizable_sites();
+        assert_eq!(sites.len(), 1);
+        // 0.5 A^3 in Bohr^3, at the ion's position (0, 0, 4 A).
+        let b = ferric_core::units::ANGSTROM_TO_BOHR;
+        assert_eq!(sites[0].alpha, 0.5 * b * b * b);
+        assert_eq!(sites[0].z, 4.0 * b);
+        let pol = q.polarizable_embedding(&sys).unwrap().unwrap();
+        assert_eq!(pol.sites.len(), 1);
+        // The defaults of Python run_qmmm.
+        assert_eq!(pol.thole_a, Some(ferric_scf::polarizable::DEFAULT_THOLE_A));
+        assert_eq!(pol.dipole_zeta, 1e4);
+        assert_eq!(pol.max_sites_dense, 4000);
+        assert!(pol.exclusions.is_empty());
+    }
+
+    /// The PQR residue field is the molecule: with the ion as the QM region
+    /// and the water's oxygen polarizable, the oxygen ignores its own two
+    /// hydrogens by default, and `"none"` turns that off.
+    #[test]
+    fn qmmm_polarization_excludes_the_pqr_residue_by_default() {
+        let base = "qm_indices = [3]\npolarizabilities_angstrom3 = [1.44, 0.0, 0.0, 0.0]";
+        let pol = |extra: &str| {
+            let q = qmmm_cfg(&format!("{base}{extra}"));
+            let sys = q.to_system(1, 1).unwrap();
+            let h: Vec<[f64; 3]> = [1, 2]
+                .iter()
+                .map(|&i| [sys.atoms[i].x, sys.atoms[i].y, sys.atoms[i].z_pos])
+                .collect();
+            (q.polarizable_embedding(&sys).unwrap().unwrap(), h)
+        };
+        let (p, h) = pol("");
+        assert_eq!(p.excluded_charges, vec![h]);
+        let (p, _) = pol("\npolarization_exclusions = \"none\"");
+        assert!(p.excluded_charges.is_empty() && p.exclusions.is_empty());
+        let q = qmmm_cfg(&format!("{base}\npolarization_exclusions = \"bonds\""));
+        let e = q
+            .polarizable_embedding(&q.to_system(1, 1).unwrap())
+            .unwrap_err();
+        assert!(e.contains("unknown value"), "{e}");
+    }
+
+    #[test]
+    fn qmmm_thole_a_selects_the_damping_and_zero_disables_it() {
+        let with = |t: &str| {
+            let q = qmmm_cfg(&format!("{NA_ALPHA}\nthole_a = {t}"));
+            let sys = q.to_system(0, 1).unwrap();
+            q.polarizable_embedding(&sys).unwrap().unwrap().thole_a
+        };
+        assert_eq!(with("1.7"), Some(1.7));
+        assert_eq!(with("0.0"), None);
+    }
+
+    #[test]
+    fn qmmm_without_polarizabilities_is_the_plain_embedding() {
+        let q = qmmm_cfg("qm_indices = [0, 1, 2]");
+        let sys = q.to_system(0, 1).unwrap();
+        assert!(sys.to_polarizable_sites().is_empty());
+        assert!(q.polarizable_embedding(&sys).unwrap().is_none());
+    }
+
+    #[test]
+    fn qmmm_polarizability_lists_are_validated() {
+        let err = |extra: &str| {
+            qmmm_cfg(extra)
+                .to_system(0, 1)
+                .map(|_| ())
+                .unwrap_err()
+                .to_string()
+        };
+        let e = err("qm_indices = [0, 1, 2]\npolarizabilities_angstrom3 = [0.0, 0.5]");
+        assert!(e.contains("2 entries") && e.contains("4 atoms"), "{e}");
+        let e = err("qm_indices = [0, 1, 2]\npolarizabilities_angstrom3 = [0.0, 0.0, 0.0, -0.1]");
+        assert!(e.contains("polarizabilities_angstrom3[3]"), "{e}");
+        let e = err("qm_indices = [0, 1, 2]\nthole_a = 2.0");
+        assert!(
+            e.contains("thole_a needs polarizabilities_angstrom3"),
+            "{e}"
+        );
+        let e = err(&format!("{NA_ALPHA}\nthole_a = -1.0"));
+        assert!(e.contains("thole_a must be finite and >= 0"), "{e}");
+        // Nothing polarizable on an MM atom: an error, not a silent no-op.
+        let q =
+            qmmm_cfg("qm_indices = [0, 1, 2]\npolarizabilities_angstrom3 = [0.5, 0.0, 0.0, 0.0]");
+        let sys = q.to_system(0, 1).unwrap();
+        let e = q.polarizable_embedding(&sys).unwrap_err();
+        assert!(e.contains("nothing would polarize"), "{e}");
+    }
+
+    #[test]
+    fn qmmm_polarizable_embedding_is_scoped_to_energy_scf_kinds() {
+        let cfg = |kind: &str, task: &str, extra: &str| {
+            let src = format!(
+                "{}\n{extra}",
+                qmmm_fixture(NA_ALPHA).replace(
+                    "kind = \"rhf\"",
+                    &format!("kind = \"{kind}\"\ntask = \"{task}\"")
+                )
+            );
+            toml::from_str::<Config>(&src).unwrap_or_else(|e| panic!("{e}\n{src}"))
+        };
+        for kind in ["rhf", "uhf", "ksdft"] {
+            assert!(
+                cfg(kind, "energy", "")
+                    .validate_polarizable_embedding()
+                    .is_ok(),
+                "{kind}"
+            );
+        }
+        for (kind, task, needle) in [
+            ("rhf", "optimize", "task = \"energy\" only"),
+            ("uhf", "frequencies", "task = \"energy\" only"),
+            ("rohf", "energy", "\"rhf\", \"uhf\" and \"ksdft\""),
+            ("rimp2", "energy", "\"rhf\", \"uhf\" and \"ksdft\""),
+        ] {
+            let e = cfg(kind, task, "")
+                .validate_polarizable_embedding()
+                .expect_err(kind);
+            assert!(e.contains(needle), "{kind}/{task}: {e}");
+        }
+        let e = cfg("rhf", "energy", "[cosmo]\nepsilon = 78.4\n")
+            .validate_polarizable_embedding()
+            .unwrap_err();
+        assert!(e.contains("[cosmo] or [pcm]"), "{e}");
+    }
+
     #[test]
     fn qmmm_pqr_element_symbols_come_from_atom_names() {
         // PDB naming: leading digits stripped, element is the leading alpha
@@ -8041,6 +10794,9 @@ json = [1, 2]
                 qm_radius_angstrom: None,
                 link_bonds: vec![],
                 boundary_scheme: default_boundary_scheme(),
+                polarizabilities_angstrom3: vec![],
+                thole_a: None,
+                polarization_exclusions: None,
             };
             match cfg.to_system(0, 1) {
                 Ok(_) => panic!("{label}: an unknown element must be refused"),
@@ -8081,6 +10837,9 @@ json = [1, 2]
             qm_radius_angstrom: None,
             link_bonds: vec![],
             boundary_scheme: default_boundary_scheme(),
+            polarizabilities_angstrom3: vec![],
+            thole_a: None,
+            polarization_exclusions: None,
         };
         assert!(cfg.to_system(0, 1).is_ok(), "a valid PQR must still build");
     }
@@ -8097,6 +10856,21 @@ json = [1, 2]
         assert!(err.contains("expected 10"), "{err}");
     }
 
+    /// The files of `examples/` and of its fully specified inputs in
+    /// `examples/full/` (which must not be empty).
+    fn shipped_example_paths(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let full = dir.join("full");
+        let paths: Vec<std::path::PathBuf> = [dir, full.as_path()]
+            .into_iter()
+            .flat_map(|d| std::fs::read_dir(d).unwrap().map(|e| e.unwrap().path()))
+            .collect();
+        assert!(
+            paths.iter().any(|p| p.starts_with(&full)),
+            "examples/full/ has no files"
+        );
+        paths
+    }
+
     #[test]
     fn all_shipped_examples_parse() {
         // Resolve the workspace at RUN time. `env!("CARGO_MANIFEST_DIR")` is
@@ -8109,8 +10883,7 @@ json = [1, 2]
         let workspace_root = runtime_workspace_root();
         let dir = workspace_root.join("examples");
         let mut n = 0;
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let path = entry.unwrap().path();
+        for path in shipped_example_paths(&dir) {
             if path.extension().and_then(|e| e.to_str()) != Some("toml") {
                 continue;
             }
@@ -8158,6 +10931,22 @@ json = [1, 2]
     /// `[scf] jk_storage` is strict: the four spellings parse, anything else
     /// errors at load and lists them.
     #[test]
+    fn scf_ri_k_precision_is_strict() {
+        assert_eq!(scf_cfg("").ri_k_precision_resolved().unwrap(), None);
+        for v in ["f32", "f64"] {
+            let cfg = scf_cfg(&format!("ri_k_precision = \"{v}\""));
+            assert_eq!(cfg.ri_k_precision_resolved().unwrap().unwrap().as_str(), v);
+        }
+        let err = scf_cfg("ri_k_precision = \"single\"")
+            .validate()
+            .unwrap_err();
+        assert!(
+            err.contains("ri_k_precision") && err.contains("\"f64\""),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn scf_jk_storage_is_strict() {
         assert_eq!(scf_cfg("").jk_storage_policy().unwrap(), None);
         for v in ["auto", "memory", "disk", "direct"] {
@@ -8170,6 +10959,41 @@ json = [1, 2]
             err.contains("jk_storage") && err.contains("\"direct\""),
             "{err}"
         );
+    }
+
+    /// `[scf] ri_j_precision` is strict: `"f32"` and `"f64"` parse to the
+    /// library values, omitted is `None` (the library default, f32), anything
+    /// else errors at load; `"f64"` next to `dfj-f32` in `mixed_kernels` is
+    /// refused as a contradiction.
+    #[test]
+    fn scf_ri_j_precision_is_strict_and_reaches_the_library() {
+        use ferric_scf::df_j::RiJPrecision;
+        assert_eq!(scf_cfg("").ri_j_precision_resolved().unwrap(), None);
+        for (v, want) in [("f32", RiJPrecision::F32), ("f64", RiJPrecision::F64)] {
+            let cfg = scf_cfg(&format!("ri_j_precision = \"{v}\""));
+            assert!(cfg.validate().is_ok(), "{v}");
+            assert_eq!(cfg.ri_j_precision_resolved().unwrap(), Some(want));
+        }
+        for bad in ["F32", "single", "fp64", ""] {
+            let err = scf_cfg(&format!("ri_j_precision = {bad:?}"))
+                .validate()
+                .unwrap_err();
+            assert!(
+                err.contains("ri_j_precision") && err.contains("\"f64\""),
+                "{bad}: {err}"
+            );
+        }
+        let both = |prec: &str| {
+            parse(&format!(
+                "{MINIMAL}[precision]\nmode = \"mixed\"\nmixed_kernels = [\"dfj-f32\"]\n\
+                 [scf]\nri_j_precision = \"{prec}\"\n"
+            ))
+            .unwrap()
+            .check_ri_j_precision_against_mixed_kernels()
+        };
+        assert!(both("f32").is_ok());
+        let err = both("f64").unwrap_err();
+        assert!(err.contains("contradicts"), "{err}");
     }
 
     /// `[scf] guess` used to accept ANY string: everything but "hcore" silently
@@ -8226,6 +11050,26 @@ json = [1, 2]
         scf_cfg("diis = \"ediis\"\ndiis_switch_thresh = inf")
             .validate()
             .unwrap();
+    }
+
+    /// `[scf] mom_reference` parses strictly (case-insensitive, unset is
+    /// "previous") and a bad value is a load-time error naming both spellings.
+    #[test]
+    fn scf_mom_reference_parses_strictly() {
+        use ferric_scf::mom::MomReference;
+        assert_eq!(
+            scf_cfg("").mom_reference_resolved(),
+            Ok(MomReference::Previous)
+        );
+        assert_eq!(
+            scf_cfg("mom_reference = \"Initial\"").mom_reference_resolved(),
+            Ok(MomReference::Initial)
+        );
+        let bad = scf_cfg("mom_reference = \"start\"");
+        let err = bad.mom_reference_resolved().unwrap_err();
+        assert!(err.starts_with("[scf] mom_reference"), "{err}");
+        assert!(err.contains("previous") && err.contains("initial"), "{err}");
+        assert!(bad.validate().is_err());
     }
 
     /// A bad `[scf] diis` used to PANIC (a `panic!` in `diis_flavor`), aborting
@@ -8688,7 +11532,7 @@ json = [1, 2]
         );
         // Untabulated angular order is a typed error, not a panic.
         assert!(
-            parse("k_builder = \"cosx\"\ncosx_grid = { radial = 50, angular = 146 }\n")
+            parse("k_builder = \"cosx\"\ncosx_grid = { radial = 50, angular = 147 }\n")
                 .scf
                 .cosx_config(false)
                 .is_err()
@@ -9952,11 +12796,9 @@ kind = "rhf"
     /// `ksdft_ladder` does (docs/profiles-2026-07-14.md 2026-07-19 correction).
     #[test]
     fn empty_ladder_ksdft_base_dispatches_to_ksdft_ladder() {
-        let base = ferric_scf::rhf::RhfConfig {
-            xc: Some("B3LYP".to_string()),
-            max_iter: 100,
-            ..Default::default()
-        };
+        let base = ferric_scf::rhf::RhfConfig::default()
+            .with_xc("B3LYP")
+            .with_max_iter(100);
         let cfg = ScfCfg::default();
         assert!(cfg.ladder.is_empty());
         let built = cfg.build_ladder(&base).unwrap();
@@ -9987,10 +12829,7 @@ kind = "rhf"
         // max_iter per rung (60/60/60/80/100), so a user's flat [scf]
         // max_iter is a starting point each rung's own budget overrides, not
         // a value every rung inherits unchanged.
-        let base = ferric_scf::rhf::RhfConfig {
-            mom_after_iter: 5,
-            ..Default::default()
-        };
+        let base = ferric_scf::rhf::RhfConfig::default().with_mom_after_iter(5);
         let cfg = ScfCfg::default();
         assert!(cfg.ladder.is_empty());
         let built = cfg.build_ladder(&base).unwrap();
@@ -10028,11 +12867,9 @@ kind = "rhf"
     fn empty_ladder_default_escalation_does_not_override_user_df_aux() {
         // If the user already set df_j_aux/df_k_aux in [scf], the default
         // escalation must not clobber it with def2-universal-jkfit.
-        let base = ferric_scf::rhf::RhfConfig {
-            df_j_aux: Some("cc-pvdz-jkfit".to_string()),
-            df_k_aux: Some("cc-pvdz-jkfit".to_string()),
-            ..Default::default()
-        };
+        let base = ferric_scf::rhf::RhfConfig::default()
+            .with_df_j_aux("cc-pvdz-jkfit")
+            .with_df_k_aux("cc-pvdz-jkfit");
         let cfg = ScfCfg::default();
         let built = cfg.build_ladder(&base).unwrap();
         for rung in &built {
@@ -10465,6 +13302,46 @@ max_iter = 42
         }
     }
 
+    /// `[optimize] initial_hessian` and `trust_update` parse strictly: near
+    /// misses error with the accepted values, and an absent key takes the
+    /// library defaults (`None`, which is Lindh, and `Ratio`).
+    #[test]
+    fn optimize_search_option_parsers_are_strict() {
+        use ferric_scf::optimize::{InitialHessian, TrustUpdate};
+        assert_eq!(
+            super::parse_initial_hessian("lindh").unwrap(),
+            InitialHessian::Lindh
+        );
+        assert_eq!(
+            super::parse_initial_hessian(" Simple ").unwrap(),
+            InitialHessian::Simple
+        );
+        assert_eq!(
+            super::parse_trust_update("ratio").unwrap(),
+            TrustUpdate::Ratio
+        );
+        assert_eq!(
+            super::parse_trust_update("FIXED").unwrap(),
+            TrustUpdate::Fixed
+        );
+        for bad in ["", "lind", "schlegel", "true"] {
+            let msg = super::parse_initial_hessian(bad).unwrap_err();
+            assert!(
+                msg.contains("simple") && msg.contains("lindh"),
+                "{bad:?}: {msg:?}"
+            );
+        }
+        for bad in ["", "rat", "nocedal", "1"] {
+            let msg = super::parse_trust_update(bad).unwrap_err();
+            assert!(
+                msg.contains("fixed") && msg.contains("ratio"),
+                "{bad:?}: {msg:?}"
+            );
+        }
+        let cfg = super::OptimizeCfg::default();
+        assert_eq!(cfg.search_options().unwrap(), (None, TrustUpdate::Ratio));
+    }
+
     /// The `coordinates` key must actually reach the parsed [`Config`], and an
     /// absent key must leave it unset. Without this the strict parser above
     /// could be perfectly correct and simply never wired up.
@@ -10485,6 +13362,24 @@ max_iter = 42
             cfg_with("[optimize]\ncoordinate = \"internal\"\n").is_err(),
             "a typo'd key must be rejected by deny_unknown_fields"
         );
+    }
+
+    #[test]
+    fn optimize_scf_warm_start_key_parses_and_defaults_to_unset() {
+        let cfg = cfg_with("[optimize]\nscf_warm_start = false\n").unwrap();
+        assert_eq!(cfg.optimize.scf_warm_start, Some(false));
+        let cfg = cfg_with("[optimize]\nmax_steps = 10\n").unwrap();
+        assert_eq!(cfg.optimize.scf_warm_start, None);
+        assert!(cfg_with("[optimize]\nscf_warm_start = \"yes\"\n").is_err());
+    }
+
+    #[test]
+    fn frequencies_scf_warm_start_key_parses_and_defaults_to_unset() {
+        let cfg = cfg_with("[frequencies]\nscf_warm_start = false\n").unwrap();
+        assert_eq!(cfg.frequencies.scf_warm_start, Some(false));
+        let cfg = cfg_with("[frequencies]\ndelta = 0.005\n").unwrap();
+        assert_eq!(cfg.frequencies.scf_warm_start, None);
+        assert!(cfg_with("[frequencies]\nscf_warm_start = 1\n").is_err());
     }
 }
 
@@ -10537,6 +13432,29 @@ pub struct QmmmCfg {
     /// is the right choice when the cut is not covalent.
     #[serde(default = "default_boundary_scheme")]
     pub boundary_scheme: String,
+    /// Thole-damped polarizable embedding: the isotropic polarizability of
+    /// each PQR atom in Angstrom^3, ONE ENTRY PER PQR ATOM in file order
+    /// (0.0 = not a polarizable site), the CLI form of Python
+    /// `QmmmSystem(polarizabilities_angstrom3=...)`. Atoms in the QM region
+    /// are ignored, exactly as their `charge` is. Empty (the default) is the
+    /// plain non-polarizable embedding, bit for bit. A nonempty list with no
+    /// positive entry on an MM atom is an error (nothing would polarize).
+    /// Energy runs on `rhf`, `uhf` and `ksdft` only; see
+    /// [`Config::validate_cli_wired_keys`].
+    #[serde(default)]
+    pub polarizabilities_angstrom3: Vec<f64>,
+    /// Thole damping parameter `a` of the polarizable sites (dimensionless).
+    /// Absent = `ferric_scf::polarizable::DEFAULT_THOLE_A` (2.1304); `0.0`
+    /// disables damping (the bare dipole-dipole tensor), the convention of
+    /// Python `run_qmmm(thole_a=0.0)`. Needs `polarizabilities_angstrom3`.
+    pub thole_a: Option<f64>,
+    /// Which charges and sites a polarizable site ignores: `"molecule"`
+    /// (default) = its own PQR residue (the residue sequence number), so a
+    /// water's sites are not polarized by that water's own charges; `"none"`
+    /// = no exclusions, right only for isolated sites such as ions. Parsed by
+    /// [`ferric_scf::qmmm::PolarizationExclusions::parse_config_str`]. Needs
+    /// `polarizabilities_angstrom3`.
+    pub polarization_exclusions: Option<String>,
 }
 
 fn default_boundary_scheme() -> String {
@@ -10553,6 +13471,9 @@ fn default_boundary_scheme() -> String {
 #[derive(Debug, Clone)]
 pub struct PqrAtom {
     pub name: String,
+    /// The residue sequence field as written (`resSeq`), the molecule label
+    /// of same-molecule polarization exclusion.
+    pub res_seq: String,
     pub q: f64,
     /// Angstrom, as written in the file.
     pub x: f64,
@@ -10596,6 +13517,22 @@ fn element_from_pqr_name(name: &str) -> String {
 /// Deliberately strict: a record whose field count is not 10 is an ERROR, not
 /// a skipped line. A silently dropped atom changes the MM field without
 /// changing anything a user would look at.
+/// Molecule labels from the PQR residue field, numbered in order of first
+/// appearance (read by same-molecule polarization exclusion).
+fn pqr_residue_ids(atoms: &[PqrAtom]) -> Vec<usize> {
+    let mut seen: Vec<&str> = Vec::new();
+    atoms
+        .iter()
+        .map(|a| match seen.iter().position(|r| *r == a.res_seq) {
+            Some(k) => k,
+            None => {
+                seen.push(&a.res_seq);
+                seen.len() - 1
+            }
+        })
+        .collect()
+}
+
 pub fn parse_pqr(path: &str) -> Result<Vec<PqrAtom>, ferric_core::FerricError> {
     let text = std::fs::read_to_string(path).map_err(|e| {
         ferric_core::FerricError::General(format!("[qmmm] pqr: cannot read {path}: {e}"))
@@ -10624,6 +13561,7 @@ pub fn parse_pqr(path: &str) -> Result<Vec<PqrAtom>, ferric_core::FerricError> {
         };
         out.push(PqrAtom {
             name: f[2].to_string(),
+            res_seq: f[4].to_string(),
             x: num(f[5], "x")?,
             y: num(f[6], "y")?,
             z: num(f[7], "z")?,
@@ -10639,18 +13577,135 @@ pub fn parse_pqr(path: &str) -> Result<Vec<PqrAtom>, ferric_core::FerricError> {
 }
 
 impl QmmmCfg {
+    /// `polarizabilities_angstrom3` as one Bohr^3 entry per PQR atom (all
+    /// 0.0 when the key is absent). A wrong length, or a negative or
+    /// non-finite entry, is an error.
+    fn polarizabilities_bohr3(&self, n_atoms: usize) -> Result<Vec<f64>, ferric_core::FerricError> {
+        use ferric_core::units::ANGSTROM_TO_BOHR;
+        if self.polarizabilities_angstrom3.is_empty() {
+            if self.thole_a.is_some() {
+                return Err(ferric_core::FerricError::General(
+                    "[qmmm] thole_a needs polarizabilities_angstrom3: with no polarizable \
+                     site it would be silently ignored"
+                        .to_string(),
+                ));
+            }
+            return Ok(vec![0.0; n_atoms]);
+        }
+        if let Some(a) = self.thole_a {
+            if !(a.is_finite() && a >= 0.0) {
+                return Err(ferric_core::FerricError::General(format!(
+                    "[qmmm] thole_a must be finite and >= 0 (0.0 disables damping), got {a}"
+                )));
+            }
+        }
+        if self.polarizabilities_angstrom3.len() != n_atoms {
+            return Err(ferric_core::FerricError::General(format!(
+                "[qmmm] polarizabilities_angstrom3 has {} entries but {} has {n_atoms} atoms; \
+                 give one per PQR atom (0.0 = not polarizable)",
+                self.polarizabilities_angstrom3.len(),
+                self.pqr
+            )));
+        }
+        if let Some((i, a)) = self
+            .polarizabilities_angstrom3
+            .iter()
+            .enumerate()
+            .find(|(_, a)| !(a.is_finite() && **a >= 0.0))
+        {
+            return Err(ferric_core::FerricError::General(format!(
+                "[qmmm] polarizabilities_angstrom3[{i}] = {a} must be finite and >= 0"
+            )));
+        }
+        Ok(self
+            .polarizabilities_angstrom3
+            .iter()
+            .map(|a| a * ANGSTROM_TO_BOHR.powi(3))
+            .collect())
+    }
+
+    /// The Thole polarizable sites of `sys` (built by [`QmmmCfg::to_system`]
+    /// from this section), or `None` for the plain embedding. The same
+    /// construction as Python `run_qmmm`: `thole_a` absent is the default
+    /// damping, `0.0` is no damping, the dipole p-shell exponent and the
+    /// dense-solve ceiling are the library defaults.
+    pub fn polarizable_embedding(
+        &self,
+        sys: &ferric_scf::qmmm::QmmmSystem,
+    ) -> Result<Option<ferric_scf::polarizable::PolarizableSites>, String> {
+        use ferric_scf::polarizable::DEFAULT_THOLE_A;
+        use ferric_scf::qmmm::PolarizationExclusions;
+        if self.polarizabilities_angstrom3.is_empty() {
+            return Ok(None);
+        }
+        let thole_a = match self.thole_a {
+            None => Some(DEFAULT_THOLE_A),
+            Some(a) if a > 0.0 => Some(a),
+            Some(_) => None,
+        };
+        let scheme = PolarizationExclusions::parse_config_str(
+            self.polarization_exclusions
+                .as_deref()
+                .unwrap_or("molecule"),
+        )
+        .map_err(|e| format!("[qmmm] {e}"))?;
+        let ids = sys
+            .polarization_molecule_ids(scheme, None)
+            .map_err(|e| format!("[qmmm] {e}"))?;
+        sys.polarizable_embedding(thole_a, ids.as_deref())
+            .map_err(|e| format!("[qmmm] {e}"))?
+            .map(Some)
+            .ok_or_else(|| {
+                "[qmmm] polarizabilities_angstrom3 has no positive entry on an MM atom (entries \
+                 on QM-region atoms are ignored), so nothing would polarize. Remove the key or \
+                 give an MM atom a polarizability."
+                    .to_string()
+            })
+    }
+
     /// Build the `QmmmSystem` this section describes.
     ///
     /// `qm_charge`/`qm_multiplicity` come from `[molecule]` and apply to the QM
     /// REGION, not the whole structure -- the MM atoms carry their own partial
     /// charges and are not part of the SCF.
+    /// The QM region: explicit `qm_indices`, or every atom within
+    /// `qm_radius_angstrom` of a `qm_seeds` atom.
+    fn qm_selection(
+        &self,
+        have_indices: bool,
+    ) -> Result<ferric_scf::qmmm::QmSelection, ferric_core::FerricError> {
+        use ferric_core::units::ANGSTROM_TO_BOHR;
+        use ferric_core::FerricError;
+        use ferric_scf::qmmm::QmSelection;
+        if have_indices {
+            return Ok(QmSelection::Indices(self.qm_indices.clone()));
+        }
+        let r = self.qm_radius_angstrom.ok_or_else(|| {
+            FerricError::General("[qmmm]: qm_seeds needs qm_radius_angstrom".to_string())
+        })?;
+        if self.qm_seeds.is_empty() {
+            return Err(FerricError::General(
+                "[qmmm]: qm_radius_angstrom needs qm_seeds to measure from".to_string(),
+            ));
+        }
+        if !(r.is_finite() && r > 0.0) {
+            return Err(FerricError::General(format!(
+                "[qmmm]: qm_radius_angstrom must be finite and > 0, got {r}"
+            )));
+        }
+        Ok(QmSelection::WithinRadius {
+            seeds: self.qm_seeds.clone(),
+            radius: r * ANGSTROM_TO_BOHR,
+        })
+    }
+
     pub fn to_system(
         &self,
         qm_charge: i32,
         qm_multiplicity: usize,
     ) -> Result<ferric_scf::qmmm::QmmmSystem, ferric_core::FerricError> {
         use ferric_core::FerricError;
-        use ferric_scf::qmmm::{BoundaryChargeScheme, QmSelection, QmmmAtom, QmmmSystem};
+        use ferric_scf::qmmm::{BoundaryChargeScheme, QmmmAtom, QmmmSystem};
 
         use ferric_core::units::ANGSTROM_TO_BOHR;
 
@@ -10673,6 +13728,7 @@ impl QmmmCfg {
 
         let atoms_pqr = parse_pqr(&self.pqr)?;
         let n = atoms_pqr.len();
+        let alpha_bohr3 = self.polarizabilities_bohr3(n)?;
         // An atom name whose element cannot be resolved is a HARD ERROR, not
         // a Z = 0 atom. `unwrap_or(0)` used to be silent, and what it did
         // depended on where the atom landed: in the QM region the basis
@@ -10704,7 +13760,8 @@ impl QmmmCfg {
                     a.y * ANGSTROM_TO_BOHR,
                     a.z * ANGSTROM_TO_BOHR,
                     a.q,
-                ))
+                )
+                .with_alpha(alpha_bohr3[i]))
             })
             .collect::<Result<Vec<_>, FerricError>>()?;
 
@@ -10725,29 +13782,9 @@ impl QmmmCfg {
             check("qm_seeds", i)?;
         }
 
-        let selection = if have_indices {
-            QmSelection::Indices(self.qm_indices.clone())
-        } else {
-            let r = self.qm_radius_angstrom.ok_or_else(|| {
-                FerricError::General("[qmmm]: qm_seeds needs qm_radius_angstrom".to_string())
-            })?;
-            if self.qm_seeds.is_empty() {
-                return Err(FerricError::General(
-                    "[qmmm]: qm_radius_angstrom needs qm_seeds to measure from".to_string(),
-                ));
-            }
-            if !(r.is_finite() && r > 0.0) {
-                return Err(FerricError::General(format!(
-                    "[qmmm]: qm_radius_angstrom must be finite and > 0, got {r}"
-                )));
-            }
-            QmSelection::WithinRadius {
-                seeds: self.qm_seeds.clone(),
-                radius: r * ANGSTROM_TO_BOHR,
-            }
-        };
-
-        let mut sys = QmmmSystem::new(&atoms, selection, qm_charge, qm_multiplicity)?;
+        let selection = self.qm_selection(have_indices)?;
+        let mut sys = QmmmSystem::new(&atoms, selection, qm_charge, qm_multiplicity)?
+            .with_residue_ids(pqr_residue_ids(&atoms_pqr))?;
 
         if !self.link_bonds.is_empty() {
             for b in &self.link_bonds {
@@ -10775,6 +13812,10 @@ impl QmmmCfg {
 #[path = "config_doc_tests.rs"]
 mod doc_tests;
 
+#[cfg(test)]
+#[path = "full_examples.rs"]
+mod full_examples;
+
 /// Pure-config checks for the keys that wire Python-only capabilities into
 /// the CLI (`[pcm]`, `[scf] stability_descent`, `[dft] grid_radial` /
 /// `grid_angular`, smeared `[external_potential]` charges, `[mp2] oo_*` /
@@ -10798,6 +13839,113 @@ mod cli_wired_keys_tests {
             .validate_cli_wired_keys()
             .expect_err("config must be refused");
         assert!(e.contains(needle), "error must mention {needle:?}: {e}");
+    }
+
+    // ---- [scf] save_reference / read_reference ----
+
+    fn reference(c: &Config) -> Result<(), String> {
+        c.validate_reference_io()
+    }
+
+    #[test]
+    fn reference_keys_are_accepted_on_the_correlated_energy_kinds() {
+        for (kind, mult) in [
+            ("rimp2", 1),
+            ("ccsd", 1),
+            ("drpa", 1),
+            ("gw", 1),
+            ("tddft", 1),
+            ("rimp2", 2),
+            ("gw", 2),
+            ("pdep-rpa", 2),
+        ] {
+            let save = cfg(kind, "energy", mult, "[scf]\nsave_reference = \"r.npz\"\n");
+            reference(&save).unwrap_or_else(|e| panic!("{kind} save: {e}"));
+            let read = cfg(
+                kind,
+                "energy",
+                mult,
+                "[scf]\nread_reference = \"r.npz\"\nread_reference_other_build = true\n",
+            );
+            reference(&read).unwrap_or_else(|e| panic!("{kind} read: {e}"));
+        }
+        // Neither key: nothing to check.
+        reference(&cfg("rhf", "optimize", 1, "")).unwrap();
+    }
+
+    #[test]
+    fn reference_keys_are_refused_where_no_shared_reference_is_solved() {
+        let save = "[scf]\nsave_reference = \"r.npz\"\n";
+        let read = "[scf]\nread_reference = \"r.npz\"\n";
+        for (kind, task, mult, extra, needle) in [
+            ("rhf", "energy", 1, save, "kind = \"rhf\""),
+            ("ksdft", "energy", 1, save, "kind = \"ksdft\""),
+            // Open-shell ksdft dispatches to the UKS route.
+            ("ksdft", "energy", 2, read, "kind = \"uhf\""),
+            ("uhf", "energy", 2, save, "kind = \"uhf\""),
+            ("rohf", "energy", 2, read, "kind = \"rohf\""),
+            ("b2plyp", "energy", 1, save, "double hybrid"),
+            ("wb97x-l-v", "energy", 1, read, "double hybrid"),
+            ("casscf", "energy", 1, save, "its own reference SCF"),
+            ("opmp3", "energy", 1, read, "its own reference SCF"),
+            ("rimp2", "optimize", 1, save, "task = \"energy\" only"),
+            ("rimp2", "frequencies", 1, read, "task = \"energy\" only"),
+            (
+                "rimp2",
+                "energy",
+                1,
+                "[scf]\nsave_reference = \"a\"\nread_reference = \"b\"\n",
+                "cannot both be set",
+            ),
+            (
+                "rimp2",
+                "energy",
+                1,
+                "[scf]\nread_reference_other_build = true\n",
+                "read only with",
+            ),
+            (
+                "rimp2",
+                "energy",
+                1,
+                "[scf]\nsave_reference = \"a\"\nread_reference_other_build = true\n",
+                "read only with",
+            ),
+            (
+                "rimp2",
+                "energy",
+                1,
+                "[scf]\nsave_reference = \" \"\n",
+                "empty string",
+            ),
+            (
+                "rimp2",
+                "energy",
+                1,
+                "[scf]\nread_reference = \"a\"\ncheck_stability = true\n",
+                "check_stability",
+            ),
+            (
+                "rimp2",
+                "energy",
+                1,
+                "[scf]\nread_reference = \"a\"\nstability_descent = true\n",
+                "stability_descent",
+            ),
+        ] {
+            let e = reference(&cfg(kind, task, mult, extra))
+                .expect_err(&format!("{kind}/{task}/{mult}: {extra}"));
+            assert!(e.contains(needle), "{kind}/{task}: {e}");
+        }
+        // Saving a reference whose run also checks stability is fine: the
+        // verdict is simply not stored.
+        reference(&cfg(
+            "rimp2",
+            "energy",
+            1,
+            "[scf]\nsave_reference = \"a\"\ncheck_stability = true\n",
+        ))
+        .unwrap();
     }
 
     // ---- [pcm] ----
@@ -10831,7 +13979,7 @@ mod cli_wired_keys_tests {
             ("[pcm]\nepsilon = 1.0\n", "must be > 1.0"),
             ("[pcm]\nepsilon = nan\n", "finite"),
             (
-                "[pcm]\nsolvent = \"water\"\nlebedev_order = 194\n",
+                "[pcm]\nsolvent = \"water\"\nlebedev_order = 195\n",
                 "lebedev_order",
             ),
         ] {
@@ -10841,6 +13989,22 @@ mod cli_wired_keys_tests {
         let src = "[molecule]\nxyz = \"x.xyz\"\n[basis]\nname = \"sto-3g\"\n\
                    [method]\nkind = \"rhf\"\n[pcm]\nsolvnt = \"water\"\n";
         assert!(toml::from_str::<Config>(src).is_err());
+    }
+
+    /// COSMO has no analytic gradient: every gradient-consuming task refuses
+    /// it at load; energy stays accepted. Removing the `[cosmo]` guard in
+    /// `validate_cli_wired_keys` fails the `refused` calls.
+    #[test]
+    fn cosmo_has_no_gradient_so_only_energy_is_accepted() {
+        let body = "[cosmo]\nepsilon = 78.39\n";
+        for kind in ["rhf", "uhf", "rohf", "ksdft"] {
+            cfg(kind, "energy", 1, body)
+                .validate_cli_wired_keys()
+                .unwrap_or_else(|e| panic!("{kind} energy: {e}"));
+            for task in ["optimize", "frequencies"] {
+                refused(&cfg(kind, task, 1, body), "COSMO has no analytic gradient");
+            }
+        }
     }
 
     #[test]
@@ -10854,12 +14018,19 @@ mod cli_wired_keys_tests {
             &cfg("rimp2", "energy", 1, "[pcm]\nsolvent = \"water\"\n"),
             "wired for method.kind",
         );
-        for task in ["optimize", "frequencies"] {
-            refused(
-                &cfg("rhf", task, 1, "[pcm]\nsolvent = \"water\"\n"),
-                "no gradient",
-            );
+        for kind in ["rhf", "uhf", "rohf", "ksdft"] {
+            cfg(kind, "optimize", 1, "[pcm]\nsolvent = \"water\"\n")
+                .validate_cli_wired_keys()
+                .unwrap_or_else(|e| panic!("{kind} optimize: {e}"));
         }
+        refused(
+            &cfg("rhf", "frequencies", 1, "[pcm]\nsolvent = \"water\"\n"),
+            "gradient term is wired into task = \"optimize\"",
+        );
+        refused(
+            &cfg("pdep-rpa", "optimize", 1, "[pcm]\nsolvent = \"water\"\n"),
+            "gradient term is wired into task = \"optimize\"",
+        );
         refused(
             &cfg(
                 "rhf",
@@ -10951,6 +14122,7 @@ mod cli_wired_keys_tests {
             ("aurora = true\n", "aurora"),
             ("stability_descent = true\n", "check_stability"),
             ("mom_after_iter = 2\n", "mom_after_iter"),
+            ("mom_reference = \"previous\"\n", "mom_reference"),
             ("k_builder = \"cosx\"\n", "cosx"),
             ("[[scf.ladder]]\nmax_iter = 3\n", "[[scf.ladder]]"),
         ] {
@@ -11002,6 +14174,30 @@ mod cli_wired_keys_tests {
         );
     }
 
+    /// The CLI text is pinned byte for byte: `[scf] ` + the
+    /// `InvalidTrahTrigger` Display shared with the Python frontend.
+    #[test]
+    fn trah_trigger_refusal_message_is_exact() {
+        for (toml, shown) in [
+            ("0.0", "0"),
+            ("-0.5", "-0.5"),
+            ("nan", "NaN"),
+            ("inf", "inf"),
+        ] {
+            let c = cfg(
+                "rhf",
+                "energy",
+                1,
+                &format!("[scf]\ntrah_trigger = {toml}\n"),
+            );
+            let e = c.validate_cli_wired_keys().expect_err("must be refused");
+            assert_eq!(
+                e,
+                format!("[scf] trah_trigger must be a positive number, got {shown}")
+            );
+        }
+    }
+
     // ---- [dft] grid_radial / grid_angular ----
 
     #[test]
@@ -11015,13 +14211,15 @@ mod cli_wired_keys_tests {
         c.validate_dft_section().unwrap();
         c.validate_cli_wired_keys().unwrap();
         let g = c.dft.grid_config(None).unwrap().unwrap();
-        assert_eq!((g.n_radial, g.n_angular, g.prune), (99, 302, None));
-        // One key alone keeps the other at the library default.
+        let sized = ferric_dft::grid::AtomicGridConfig::production_sized(99, 302);
+        assert_eq!((g.n_radial, g.n_angular, g.prune), (99, 302, sized.prune));
+        assert_eq!(g.weight_cut, sized.weight_cut);
+        // One key alone keeps the other at the production default.
         let c = cfg("ksdft", "energy", 1, "[dft]\ngrid_angular = 302\n");
         let g = c.dft.grid_config(None).unwrap().unwrap();
-        let d = ferric_dft::grid::AtomicGridConfig::default();
+        let d = ferric_dft::grid::AtomicGridConfig::production();
         assert_eq!((g.n_radial, g.n_angular), (d.n_radial, 302));
-        // No key at all: None, byte-identical to the historical default path.
+        // No key at all: None, which every KS path resolves to the production grid.
         assert!(cfg("ksdft", "energy", 1, "")
             .dft
             .grid_config(None)
@@ -11031,9 +14229,19 @@ mod cli_wired_keys_tests {
 
     #[test]
     fn grid_keys_are_refused_where_they_cannot_apply() {
-        let bad_ang = cfg("ksdft", "energy", 1, "[dft]\ngrid_angular = 146\n");
+        let bad_ang = cfg("ksdft", "energy", 1, "[dft]\ngrid_angular = 147\n");
         let e = bad_ang.validate_dft_section().unwrap_err();
         assert!(e.contains("not a supported Lebedev order"), "{e}");
+        for n_ang in [974, 1202] {
+            let c = cfg(
+                "ksdft",
+                "energy",
+                1,
+                &format!("[dft]\ngrid_angular = {n_ang}\n"),
+            );
+            c.validate_dft_section().unwrap();
+            assert_eq!(c.dft.grid_config(None).unwrap().unwrap().n_angular, n_ang);
+        }
         let zero = cfg("ksdft", "energy", 1, "[dft]\ngrid_radial = 0\n");
         assert!(zero.validate_dft_section().unwrap_err().contains("> 0"));
         let hf = cfg("rhf", "energy", 1, "[dft]\ngrid_radial = 99\n");
@@ -11052,6 +14260,123 @@ mod cli_wired_keys_tests {
             "[dft]\ngrid_radial = 99\n[rpa]\nxc = \"PBE\"\n",
         );
         assert!(gw.validate_dft_section().unwrap_err().contains("gw"));
+    }
+
+    // ---- [dft] grid_weight_cut ----
+
+    /// `[dft] grid_weight_cut` parses strictly: absent (and `0`) is no cutoff
+    /// and keeps the default-grid `None`; a valid value lands on the grid
+    /// config alone or next to the other grid keys; negative / NaN / infinite
+    /// values are errors (never a silent "off"); and a cutoff on a kind with no
+    /// KS grid, or on `gw`, is refused like the size keys.
+    #[test]
+    fn grid_weight_cut_parses_strictly() {
+        // Absent: no cutoff, and no explicit grid config at all.
+        let c = cfg("ksdft", "energy", 1, "[dft]\nfunctional = \"PBE\"\n");
+        assert!(c.dft.grid_weight_cut.is_none());
+        assert!(c.dft.grid_config(None).unwrap().is_none());
+
+        // Present and valid: the production grid with this cutoff.
+        let c = cfg(
+            "ksdft",
+            "energy",
+            1,
+            "[dft]\nfunctional = \"PBE\"\ngrid_weight_cut = 1e-14\n",
+        );
+        c.validate_dft_section().unwrap();
+        c.validate_cli_wired_keys().unwrap();
+        let g = c.dft.grid_config(None).unwrap().unwrap();
+        let d = ferric_dft::grid::AtomicGridConfig::production();
+        assert_eq!(
+            (g.n_radial, g.n_angular, g.prune),
+            (d.n_radial, d.n_angular, d.prune)
+        );
+        assert_eq!(g.weight_cut, Some(1e-14));
+        // Next to the other grid keys and a prune scheme.
+        let c = cfg(
+            "ksdft",
+            "energy",
+            1,
+            "[dft]\ngrid_radial = 99\ngrid_angular = 302\ngrid_prune = \"nwchem\"\ngrid_weight_cut = 1e-12\n",
+        );
+        let g = c
+            .dft
+            .grid_config(Some(ferric_dft::prune::PruneScheme::NwchemLike))
+            .unwrap()
+            .unwrap();
+        assert_eq!((g.n_radial, g.n_angular), (99, 302));
+        assert_eq!(g.prune, Some(ferric_dft::prune::PruneScheme::NwchemLike));
+        assert_eq!(g.weight_cut, Some(1e-12));
+        // Optimize differentiates the cut energy: allowed.
+        cfg("ksdft", "optimize", 1, "[dft]\ngrid_weight_cut = 1e-14\n")
+            .validate_cli_wired_keys()
+            .unwrap();
+
+        // Zero (float or integer TOML) is "off": the production grid without a
+        // cutoff, and harmless on a kind with no KS grid.
+        for zero in ["0.0", "0"] {
+            let c = cfg(
+                "rhf",
+                "energy",
+                1,
+                &format!("[dft]\ngrid_weight_cut = {zero}\n"),
+            );
+            assert_eq!(c.dft.grid_weight_cut(), Ok(None), "{zero}");
+            let g = c.dft.grid_config(None).unwrap().unwrap();
+            assert_eq!(g.weight_cut, None, "{zero}");
+            assert_eq!(
+                g.prune,
+                ferric_dft::grid::AtomicGridConfig::production().prune,
+                "{zero}"
+            );
+            c.validate_dft_section().unwrap();
+        }
+
+        // Invalid values: hard errors from both the accessor and the grid build.
+        for bad in ["-1e-14", "nan", "inf", "-inf"] {
+            let c = cfg(
+                "ksdft",
+                "energy",
+                1,
+                &format!("[dft]\nfunctional = \"PBE\"\ngrid_weight_cut = {bad}\n"),
+            );
+            let e = c.dft.grid_weight_cut().unwrap_err();
+            assert!(e.contains("grid_weight_cut"), "{bad}: {e}");
+            assert!(c.dft.grid_config(None).is_err(), "{bad}");
+            assert!(c.validate_dft_section().is_err(), "{bad}");
+        }
+
+        // A string is not a number: the TOML itself is rejected.
+        assert!(toml::from_str::<Config>(
+            "[molecule]\nxyz = \"water.xyz\"\n[basis]\nname = \"sto-3g\"\n\
+             [method]\nkind = \"ksdft\"\n[dft]\ngrid_weight_cut = \"1e-14\"\n"
+        )
+        .is_err());
+
+        // No KS grid to cut, and gw's v_xc on the default grid: refused.
+        let hf = cfg("rhf", "energy", 1, "[dft]\ngrid_weight_cut = 1e-14\n");
+        assert!(hf
+            .validate_dft_section()
+            .unwrap_err()
+            .contains("no Kohn-Sham grid"));
+        let gw = cfg(
+            "gw",
+            "energy",
+            1,
+            "[dft]\ngrid_weight_cut = 1e-14\n[rpa]\nxc = \"PBE\"\n",
+        );
+        assert!(gw.validate_dft_section().unwrap_err().contains("gw"));
+        // "Off" values still move a gw reference off the default grid.
+        for key in ["grid_prune = \"none\"", "grid_weight_cut = 0"] {
+            let gw = cfg(
+                "gw",
+                "energy",
+                1,
+                &format!("[dft]\n{key}\n[rpa]\nxc = \"PBE\"\n"),
+            );
+            let e = gw.validate_dft_section().unwrap_err();
+            assert!(e.contains("gw"), "{key}: {e}");
+        }
     }
 
     // ---- smeared [external_potential] charges ----
@@ -11113,6 +14438,49 @@ mod cli_wired_keys_tests {
     // ---- [mp2] terf_omega / att-rimp2 attenuator ----
 
     #[test]
+    fn rs_scan_keys_are_strict() {
+        cfg(
+            "rs-mp2-rpa",
+            "energy",
+            1,
+            "[mp2]\nomega_scan = [0.2, 0.42]\nformulations = [\"delta-lr\", \"coupled-rings\"]\n",
+        )
+        .validate_cli_wired_keys()
+        .unwrap();
+        for (body, needle) in [
+            ("[mp2]\nomega_scan = []\n", "non-empty"),
+            (
+                "[mp2]\nomega_scan = [0.2, -1.0]\n",
+                "non-empty list of finite",
+            ),
+            (
+                "[mp2]\nomega_scan = [0.2]\nomega = 0.4\n",
+                "mutually exclusive",
+            ),
+            (
+                "[mp2]\nomega_scan = [0.2]\nr0_sweep = [1.0]\n",
+                "mutually exclusive",
+            ),
+            ("[mp2]\nformulations = []\n", "must not be empty"),
+            ("[mp2]\nformulations = [\"t\"]\n", "unknown"),
+            (
+                "[mp2]\nformulations = [\"delta-lr\", \"delta-lr\"]\n",
+                "twice",
+            ),
+            (
+                "[mp2]\nformulations = [\"delta-lr\"]\nformulation = \"delta-lr\"\n",
+                "mutually exclusive",
+            ),
+        ] {
+            refused(&cfg("rs-mp2-rpa", "energy", 1, body), needle);
+        }
+        refused(
+            &cfg("rimp2", "energy", 1, "[mp2]\nomega_scan = [0.2]\n"),
+            "rs-mp2-rpa",
+        );
+    }
+
+    #[test]
     fn terf_omega_needs_rs_mp2_rpa_with_terf() {
         cfg(
             "rs-mp2-rpa",
@@ -11144,6 +14512,38 @@ mod cli_wired_keys_tests {
             ),
             "finite and > 0",
         );
+    }
+
+    /// The terfc att-rimp2 gradient runs closed and open shell: both
+    /// gradient tasks pass the task check at multiplicity 1 and 3, with terfc
+    /// and with the erfc operator.
+    #[test]
+    fn att_rimp2_gradient_tasks_admit_terfc_at_any_multiplicity() {
+        for task in ["optimize", "frequencies"] {
+            for mult in [1, 3] {
+                cfg(
+                    "att-rimp2",
+                    task,
+                    mult,
+                    "[mp2]\natt_operator = \"terfc\"\natt_r0 = 1.0\n",
+                )
+                .validate_task_compat()
+                .unwrap_or_else(|e| panic!("{task}: terfc at multiplicity {mult} refused: {e}"));
+            }
+            for mult in [1, 3] {
+                cfg("att-rimp2", task, mult, "[mp2]\nomega = 0.5\n")
+                    .validate_task_compat()
+                    .unwrap_or_else(|e| panic!("{task}: erfc refused: {e}"));
+            }
+        }
+        cfg(
+            "att-rimp2",
+            "energy",
+            1,
+            "[mp2]\natt_operator = \"terfc\"\natt_r0 = 1.0\n",
+        )
+        .validate_task_compat()
+        .unwrap();
     }
 
     #[test]
@@ -11188,10 +14588,50 @@ mod cli_wired_keys_tests {
     }
 
     #[test]
+    fn terfc_r0_default_is_basis_aware_and_explicit_wins() {
+        let bohr_per_ang = ferric_core::units::ANGSTROM_TO_BOHR;
+        let c = cfg(
+            "att-rimp2",
+            "energy",
+            1,
+            "[mp2]\natt_operator = \"terfc\"\n",
+        );
+        let r0_ang = |basis: &str| {
+            c.mp2
+                .att_rimp2_operator(basis)
+                .map(|o| o.distance / bohr_per_ang)
+        };
+        // aTZ uses 1.35, aDZ keeps 1.05; an alias hits the same row.
+        assert!((r0_ang("aug-cc-pvtz").unwrap() - 1.35).abs() < 1e-12);
+        assert!((r0_ang("AUG-CC-PVDZ").unwrap() - 1.05).abs() < 1e-12);
+        assert!((r0_ang("6-31G(d)").unwrap() - 1.75).abs() < 1e-12);
+        // Untabulated: hard error, never a silent 1.05.
+        let e = r0_ang("sto-3g").unwrap_err();
+        assert!(e.contains("set r0 explicitly"), "{e}");
+        // Explicit r0 overrides the table, tabulated or not.
+        let x = cfg(
+            "att-rimp2",
+            "energy",
+            1,
+            "[mp2]\natt_operator = \"terfc\"\natt_r0 = 1.05\n",
+        );
+        let d = |b: &str| x.mp2.att_rimp2_operator(b).unwrap().distance / bohr_per_ang;
+        assert!((d("aug-cc-pvtz") - 1.05).abs() < 1e-12);
+        assert!((d("sto-3g") - 1.05).abs() < 1e-12);
+    }
+
+    /// The att-rimp2 operator of `body` in aug-cc-pVDZ (a tabulated basis).
+    fn att_operator_in_adz(body: &str) -> Result<ferric_integrals::operator::Operator, String> {
+        cfg("att-rimp2", "energy", 1, body)
+            .mp2
+            .att_rimp2_operator("aug-cc-pvdz")
+    }
+
+    #[test]
     fn att_omega_decouples_terfc_and_is_strict() {
         use ferric_integrals::operator::{Operator, OperatorKind};
         let bohr_per_ang = ferric_core::units::ANGSTROM_TO_BOHR;
-        let op = |body: &str| cfg("att-rimp2", "energy", 1, body).mp2.att_rimp2_operator();
+        let op = att_operator_in_adz;
         // Linked default: byte-identical to Operator::terfc(r0).
         let linked = op("[mp2]\natt_operator = \"terfc\"\natt_r0 = 1.0\n").unwrap();
         let want = Operator::terfc(bohr_per_ang);
@@ -11231,6 +14671,64 @@ mod cli_wired_keys_tests {
     }
 
     #[test]
+    fn ri_section_and_cdd_keys_are_strict() {
+        let erfc = "[ri]\nmetric = \"erfc\"\nomega_bohr = 0.1\n";
+        for kind in ["rimp2", "laplace-mp2", "laplace-sos-mp2", "pdep-rpa"] {
+            let c = cfg(kind, "energy", 1, erfc);
+            c.validate_cli_wired_keys().unwrap();
+            assert!(!c.ri_fit().unwrap().is_coulomb());
+        }
+        // absent section: Coulomb, and no CDD route
+        let c = cfg("laplace-mp2", "energy", 1, "");
+        assert!(c.ri_fit().unwrap().is_coulomb() && !c.uses_cdd_route());
+        assert!(cfg("laplace-mp2", "energy", 1, "[mp2]\ncdd_tol = 1e-6\n").uses_cdd_route());
+        for (kind, task, mult, body, needle) in [
+            ("ccsd", "energy", 1, erfc, "[ri] applies to"),
+            ("rimp2", "optimize", 1, erfc, "energy-only"),
+            ("rimp2", "energy", 3, erfc, "closed-shell"),
+            ("laplace-mp2", "energy", 3, erfc, "closed-shell"),
+            ("rimp2", "energy", 1, "[ri]\nmetric = \"erf\"\nomega_bohr = 0.1\n", "[ri]"),
+            ("rimp2", "energy", 1, "[ri]\nmetric = \"erfc\"\n", "[ri]"),
+            ("rimp2", "energy", 1, "[ri]\nomega_bohr = 0.1\n", "[ri]"),
+            ("rimp2", "energy", 1, "[mp2]\ncdd_tol = 1e-6\n", "laplace-mp2"),
+            ("laplace-mp2", "energy", 1, "[mp2]\ncdd_tol = -1.0\n", "finite and >= 0"),
+            (
+                "laplace-sos-mp2",
+                "energy",
+                1,
+                "[mp2]\ncdd_pair_thresh = 1e-6\n",
+                "SOS-MP2 does not have",
+            ),
+            (
+                "laplace-sos-mp2",
+                "energy",
+                1,
+                "[mp2]\ncdd_tol = 1e-6\nsos_formulation = \"ao\"\n",
+                "sos_formulation",
+            ),
+            (
+                "pdep-rpa",
+                "energy",
+                1,
+                "[ri]\nmetric = \"erfc\"\nomega_bohr = 0.1\n[rpa]\nexport_npz = \"x.npz\"\n",
+                "energy-only",
+            ),
+            (
+                "rimp2",
+                "energy",
+                1,
+                "[ri]\nmetric = \"erfc\"\nomega_bohr = 0.1\n[local]\nscheme = \"amplitude-threshold\"\neps = 1e-3\n",
+                "[local]",
+            ),
+        ] {
+            refused(&cfg(kind, task, mult, body), needle);
+        }
+        // a typo'd key in [ri] fails to parse at all (deny_unknown_fields)
+        let bad = "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"sto-3g\"\n[method]\nkind = \"rimp2\"\n[ri]\nomega = 0.1\n";
+        assert!(toml::from_str::<Config>(bad).is_err());
+    }
+
+    #[test]
     fn att_rimp2_local_is_wired_and_terfc_direct_takes_the_default_schwarz_skip() {
         let loc = "[local]\nscheme = \"amplitude-threshold\"\neps = 1e-3\nintegral_direct = true\n";
         // erfc + direct: the default Schwarz skip is fine (erfc has bounds).
@@ -11249,7 +14747,9 @@ mod cli_wired_keys_tests {
                 "att-rimp2",
                 "energy",
                 1,
-                &format!("[mp2]\natt_operator = \"terfc\"\natt_omega = 4.0\n{loc}{extra}"),
+                &format!(
+                    "[mp2]\natt_operator = \"terfc\"\natt_r0 = 1.05\natt_omega = 4.0\n{loc}{extra}"
+                ),
             )
             .validate_local()
             .unwrap();
@@ -11315,5 +14815,83 @@ mod cli_wired_keys_tests {
             &cfg("pdep-rpa", "energy", 2, "[gw]\nreference = \"rohf\"\n"),
             "\"gw\" only",
         );
+    }
+
+    /// Every kind defaulting to RI-JK for its HF reference is a kind `run()`
+    /// accepts; a name outside `SUPPORTED_METHOD_KINDS` would be a dead entry.
+    #[test]
+    fn response_jk_aux_kinds_are_all_supported_method_kinds() {
+        for kind in RESPONSE_JK_AUX_KINDS {
+            assert!(
+                crate::SUPPORTED_METHOD_KINDS.contains(kind),
+                "RESPONSE_JK_AUX_KINDS lists \"{kind}\", which is not a supported method.kind"
+            );
+        }
+    }
+
+    /// Every kind whose `[scf] jk` / `jk_aux` select the reference SCF is a
+    /// kind `run()` accepts.
+    #[test]
+    fn scf_jk_kinds_are_all_supported_method_kinds() {
+        for kind in SCF_JK_KINDS {
+            assert!(
+                crate::SUPPORTED_METHOD_KINDS.contains(kind),
+                "SCF_JK_KINDS lists \"{kind}\", which is not a supported method.kind"
+            );
+        }
+    }
+
+    /// Every kind whose reference `[rpa] xc` selects is a kind `run()`
+    /// accepts; a name outside `SUPPORTED_METHOD_KINDS` would be a dead entry.
+    #[test]
+    fn rpa_xc_kinds_are_all_supported_method_kinds() {
+        for kind in RPA_XC_KINDS {
+            assert!(
+                crate::SUPPORTED_METHOD_KINDS.contains(kind),
+                "RPA_XC_KINDS lists \"{kind}\", which is not a supported method.kind"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod rpa_gradient_default_tests {
+    use super::*;
+    use ferric_rpa::gradient::RpaGradientMethod;
+
+    fn rpa(gradient: Option<&str>, trunc: Option<f64>) -> RpaCfg {
+        RpaCfg {
+            gradient: gradient.map(str::to_string),
+            trunc_thresh: trunc,
+            ..RpaCfg::default()
+        }
+    }
+
+    /// An unset `[rpa] gradient` is not parsed to a method (it resolves in
+    /// `RpaGradientMethod::resolve_default`), and the unset `trunc_thresh` of
+    /// an optimization is 0 for it and for `"analytic"`, 1e-4 for `"fd"`.
+    #[test]
+    fn unset_gradient_resolves_late_and_trunc_thresh_follows_the_method() {
+        let c = rpa(None, None);
+        let req = c.requested_gradient().unwrap();
+        assert_eq!(req, None);
+        assert_eq!(c.optimize_trunc_thresh(req), 0.0);
+
+        let c = rpa(Some("analytic"), None);
+        let req = c.requested_gradient().unwrap();
+        assert_eq!(req, Some(RpaGradientMethod::Analytic));
+        assert_eq!(c.optimize_trunc_thresh(req), 0.0);
+
+        let c = rpa(Some("fd"), None);
+        let req = c.requested_gradient().unwrap();
+        assert!(matches!(
+            req,
+            Some(RpaGradientMethod::FiniteDifference { .. })
+        ));
+        assert_eq!(c.optimize_trunc_thresh(req), 1e-4);
+
+        let c = rpa(None, Some(1e-3));
+        assert_eq!(c.optimize_trunc_thresh(None), 1e-3);
+        assert!(rpa(Some("numeric"), None).requested_gradient().is_err());
     }
 }

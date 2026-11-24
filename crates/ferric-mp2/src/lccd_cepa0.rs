@@ -74,6 +74,7 @@ use crate::rimp2::{active_occ, cholesky_inverse_sqrt};
 /// Configuration for linearized CCD (LCCD / CEPA(0)) via GMRES.
 #[derive(Debug, Clone)]
 pub struct LccdConfig {
+    /// Number of lowest occupied orbitals excluded from correlation.
     pub frozen_core: usize,
     /// Relative residual tolerance for the GMRES solve.
     pub rtol: f64,
@@ -119,13 +120,19 @@ impl Default for LccdConfig {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct LccdResult {
+    /// LCCD / CEPA(0) correlation energy (Hartree).
     pub e_corr: f64,
+    /// Reference SCF energy plus `e_corr` (Hartree).
     pub e_total: f64,
     /// MP2 correlation energy from the same integrals/denominators — the
     /// scale the sanity bound is measured against, reported for context.
     pub e_mp2: f64,
+    /// Total GMRES iterations across restarts.
     pub iterations: usize,
+    /// Final true relative residual ‖b − Ax‖/‖b‖ (recomputed, not the Givens
+    /// estimate).
     pub relres: f64,
+    /// Always `true` on `Ok`: a run that misses `rtol` returns an error.
     pub converged: bool,
 }
 

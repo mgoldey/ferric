@@ -71,7 +71,7 @@ use ferric_scf::result::ScfResult;
 
 use crate::drpa_amplitude::AmplitudeDrpaConfig;
 use crate::lmp2_amplitude::{
-    assemble_localized, build_vvhv, check_vvhv, AmplitudeLmp2Config, LocalizedProblem, VvHv,
+    assemble_localized, checked_vvhv, AmplitudeLmp2Config, LocalizedProblem, VvHv,
 };
 
 /// Which member of the family to evaluate.
@@ -86,9 +86,15 @@ pub enum RccdChannel {
 /// Configuration for ring-CCD (singlet/triplet channel decomposition).
 #[derive(Debug, Clone)]
 pub struct RccdConfig {
+    /// Number of lowest occupied orbitals excluded from correlation.
     pub frozen_core: usize,
+    /// Fixed-point stopping tolerance on ‖R‖/‖B‖ (Riccati residual relative
+    /// to the norm of the channel's B).
     pub fp_rtol: f64,
+    /// Maximum fixed-point iterations; exceeding it is an error.
     pub fp_max_iter: usize,
+    /// Memory budget (bytes) for the blocked 3-index MO transform of the
+    /// localized assembly; `None` auto-sizes.
     pub eri3_budget_bytes: Option<usize>,
     /// Damping on the Jacobi update. The notebook's rig uses 0.7 and that
     /// is what the reference numbers were produced with; rCCD's channels
@@ -124,9 +130,13 @@ pub struct SosexResult {
     pub e_drccd: f64,
     /// `Σ [(ia|jb) − ½(ib|ja)] T_iajb`.
     pub e_sosex: f64,
+    /// Reference SCF energy plus `e_sosex` (Hartree).
     pub e_total: f64,
+    /// Riccati fixed-point iterations performed.
     pub iterations: usize,
+    /// Final ‖R‖/‖B‖ of the Riccati residual.
     pub relres: f64,
+    /// Always `true` on `Ok`: a run that misses `fp_rtol` returns an error.
     pub converged: bool,
 }
 
@@ -134,10 +144,15 @@ pub struct SosexResult {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct RccdChannelResult {
+    /// Which channel this result is for.
     pub channel: RccdChannel,
+    /// Channel energy `½ Σ B T` with this channel's B (Hartree).
     pub e_corr: f64,
+    /// Riccati fixed-point iterations performed.
     pub iterations: usize,
+    /// Final ‖R‖/‖B‖ of the Riccati residual.
     pub relres: f64,
+    /// Always `true` on `Ok`: a run that misses `fp_rtol` returns an error.
     pub converged: bool,
     /// Smallest `Ω²` eigenvalue of `(A−B)(A+B)` for this channel, when
     /// `stability_check` is on. Negative ⇒ the RHF reference is unstable in
@@ -149,10 +164,13 @@ pub struct RccdChannelResult {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct RccdResult {
+    /// Singlet-channel result.
     pub singlet: RccdChannelResult,
+    /// Triplet-channel result.
     pub triplet: RccdChannelResult,
     /// `E_S + E_T` — weight 1:1, see the module docs.
     pub e_corr: f64,
+    /// Reference SCF energy plus `e_corr` (Hartree).
     pub e_total: f64,
 }
 
@@ -372,6 +390,7 @@ fn min_omega_sq(
 }
 
 /// Assemble the localized dense problem shared by every entry point here.
+#[allow(clippy::too_many_arguments)]
 fn localized(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -382,14 +401,7 @@ fn localized(
     frozen_core: usize,
     eri3_budget_bytes: Option<usize>,
 ) -> Result<LocalizedProblem, FerricError> {
-    let vvhv = build_vvhv(mol, obs, obs_bs, rhf)?;
-    let nocc_total = (mol.nelec() as usize) / 2;
-    let (dev_orth, dev_span) = check_vvhv(obs, rhf, nocc_total, &vvhv.c_vloc);
-    if dev_orth > 1e-8 || dev_span > 1e-8 {
-        return Err(FerricError::General(format!(
-            "rccd_family: VV-HV construction check failed (orth {dev_orth:.2e}, span {dev_span:.2e})"
-        )));
-    }
+    let (vvhv, _) = checked_vvhv(mol, obs, obs_bs, rhf, "rccd_family")?;
     localized_with_virtuals(
         mol,
         obs,
@@ -402,6 +414,7 @@ fn localized(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn localized_with_virtuals(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -412,12 +425,8 @@ fn localized_with_virtuals(
     eri3_budget_bytes: Option<usize>,
     vvhv: &VvHv,
 ) -> Result<LocalizedProblem, FerricError> {
-    let lcfg = AmplitudeLmp2Config {
-        eps: 0.0, // this lane is untruncated: no amplitude threshold
-        frozen_core,
-        eri3_budget_bytes,
-        ..Default::default()
-    };
+    // eps = 0: this lane is untruncated (no amplitude threshold)
+    let lcfg = AmplitudeLmp2Config::plain_boys(0.0, frozen_core, eri3_budget_bytes);
     assemble_localized(mol, obs, dfbs, op, rhf, &lcfg, vvhv)
 }
 

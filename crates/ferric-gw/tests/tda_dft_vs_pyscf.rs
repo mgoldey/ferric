@@ -177,12 +177,10 @@ fn compare(xc: Option<&str>, key: &str, obs_name: &str, tol_ev: f64, n_check: us
     // only the exit gate was unreachable. The density threshold is what
     // actually bounds accuracy here, and 1e-8 is far tighter than the ~1e-3 eV
     // agreement asserted downstream.
-    let cfg = RhfConfig {
-        density_conv: 1e-8,
-        xc: xc.map(|s| s.to_string()),
-        max_iter: 200,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
+    cfg.xc = xc.map(|s| s.to_string());
     let ks = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
     assert!(ks.converged, "{key}: reference SCF did not converge");
 

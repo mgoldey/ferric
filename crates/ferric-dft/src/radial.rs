@@ -103,8 +103,7 @@ pub fn treutler_ahlrichs_m4(z: i32, n: usize) -> (Vec<f64>, Vec<f64>) {
 
 #[cfg(test)]
 mod tests {
-    /// PySCF `radi._treutler_ahlrichs_xi` spot values, including Z=84..89,
-    /// where the table used to be shifted by three places.
+    /// PySCF `radi._treutler_ahlrichs_xi` spot values, including Z=84..89.
     #[test]
     fn treutler_xi_matches_pyscf() {
         for (z, xi) in [

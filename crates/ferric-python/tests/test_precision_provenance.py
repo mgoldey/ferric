@@ -6,6 +6,7 @@ the [gpu] mode stays off.
 """
 
 import json
+import re
 import os
 import subprocess
 import sys
@@ -40,8 +41,16 @@ def _refusal(code, exc="ValueError", **extra_env):
     rc, _, err = _run(code, **extra_env)
     assert rc != 0
     last = err.strip().splitlines()[-1]
-    assert last.startswith(exc + ": "), last
-    return last[len(exc) + 2 :]
+    # A failure raised through the ferric hierarchy prints as
+    # `ferric.<Subclass>: ...` (the subclass of `exc`, roadmap 10).
+    subclasses = {
+        "ValueError": "InputError|BasisError",
+        "RuntimeError": "ComputationError|ConvergenceError|NumericalError|MemoryBudgetError",
+    }.get(exc, "")
+    pattern = rf"(?:{exc}|ferric\.(?:{subclasses})): " if subclasses else rf"{exc}: "
+    m = re.match(pattern, last)
+    assert m, last
+    return last[m.end() :]
 
 
 # ── the record on results (this process: nothing configured, all f64) ──
@@ -65,8 +74,14 @@ def test_f64_results_carry_the_explicit_f64_record():
 
 
 def test_a_dft_result_carries_the_record():
-    r = ferric.run_dft(_water(), ferric.BasisSet.bundled("sto-3g"), "LDA")
+    bs = ferric.BasisSet.bundled("sto-3g")
+    r = ferric.run_dft(_water(), bs, "LDA", ri_j_precision="f64")
     assert r.precision == F64_RECORD
+    # The default RI-J tensor is f32 (dfj-f32, CPU), and the record says so.
+    r = ferric.run_dft(_water(), bs, "LDA")
+    assert r.precision["precision"] == "mixed"
+    (k,) = r.precision["kernels"]
+    assert (k["kernel"], k["requested"], k["mode"]) == ("dfj-f32", "mixed", "mixed")
 
 
 def test_reading_the_record_does_not_freeze_the_gpu_settings():
@@ -104,11 +119,13 @@ def test_configure_precision_is_strict():
         "import ferric; ferric.configure_precision(mixed_kernels=['diis'])"
     ) == (
         '[precision] mixed_kernels: unknown mixed-precision kernel "diis" '
-        "(valid: rimp2-energy, ccsd-amplitudes, dfk-occ, cosx-kern, dfj-pack, xc-vxc)"
+        "(valid: rimp2-energy, ccsd-amplitudes, dfk-occ, cosx-kern, dfj-pack, xc-vxc, dfj-f32, "
+        "dfk-f32)"
     )
     assert _refusal("import ferric; ferric.configure_precision(mixed_kernels=[])") == (
         '[precision] mixed_kernels: unknown mixed-precision kernel "" '
-        "(valid: rimp2-energy, ccsd-amplitudes, dfk-occ, cosx-kern, dfj-pack, xc-vxc)"
+        "(valid: rimp2-energy, ccsd-amplitudes, dfk-occ, cosx-kern, dfj-pack, xc-vxc, dfj-f32, "
+        "dfk-f32)"
     )
     assert _refusal(
         "import ferric; ferric.configure_precision(mixed_kernels=['rimp2-energy,xc-vxc'])"
@@ -155,7 +172,8 @@ def test_configure_precision_after_install_is_a_runtime_error():
 
 
 def test_cpu_only_mixed_names_the_device_kernels():
-    # No kernel this build admits has a CPU mixed path, so CPU-only mixed is
+    # The only CPU mixed path this build admits is the opt-in dfj-f32; the
+    # shipped kernel (rimp2-energy) is device-only, so CPU-only mixed is
     # refused with the reason when the settings are installed.
     msg = _refusal(
         "import ferric; ferric.configure_precision(mode='mixed'); ferric.configure_gpu()"
@@ -163,7 +181,7 @@ def test_cpu_only_mixed_names_the_device_kernels():
     assert msg == (
         "[precision] mode = mixed requires mode = auto or on (FERRIC_GPU / [gpu] mode "
         "is off): rimp2-energy runs only on a device; CPU mixed-precision kernels in "
-        "this build: none"
+        "this build: dfj-f32"
     )
 
 

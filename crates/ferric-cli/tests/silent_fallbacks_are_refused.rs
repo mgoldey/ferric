@@ -15,21 +15,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Path to the `ferric-cli` binary, resolved at RUN TIME (a sibling of the
-/// running test binary under nextest, the compile-time path under plain
-/// `cargo test`). Same helper as `dispersion_guards.rs`; see there for why
-/// a raw `env!` breaks under `cargo nextest archive`.
-fn ferric_cli_bin() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(profile_dir) = exe.parent().and_then(Path::parent) {
-            let p = profile_dir.join("ferric-cli");
-            if p.is_file() {
-                return p;
-            }
-        }
-    }
-    PathBuf::from(env!("CARGO_BIN_EXE_ferric-cli"))
-}
+#[path = "support/cli_bin.rs"]
+mod cli_bin;
+use cli_bin::ferric_cli_bin;
 
 /// Workspace root at RUN time (same helper as `dispersion_guards.rs`).
 fn workspace_root() -> PathBuf {
@@ -618,19 +606,24 @@ fn oo_rimp2_on_a_doublet_runs_unrestricted_orbital_optimization() {
 }
 
 /// What stays refused on the open-shell MP2 route, each for a stated
-/// reason: no unrestricted MP2 nuclear gradient (optimize), kappa-MP2 is
-/// closed-shell only, and kinds with no open-shell variant (mp3). Dropping
-/// any of these guards makes the corresponding run succeed.
+/// reason: no unrestricted OO-MP2 nuclear gradient (oo-rimp2 optimize),
+/// kappa-MP2 is closed-shell only, and kinds with no open-shell variant
+/// (mp3). Dropping any of these guards makes the corresponding run go
+/// ahead. Open-shell rimp2 optimize is NOT refused: it runs on the
+/// unrestricted RI-MP2 gradient (`open_shell_rimp2_optimize_runs`).
 #[test]
 fn open_shell_mp2_refuses_what_it_cannot_honour() {
     let water = "testdata/molecules/water.xyz";
     let mp2 = "[mp2]\nauxbasis = \"cc-pvdz-ri\"\n";
     assert_refused(
         &run_toml(
-            "rimp2_triplet_opt",
-            &body_at(water, 3, "sto-3g", "rimp2", "optimize", mp2),
+            "oo_rimp2_triplet_opt",
+            &body_at(water, 3, "sto-3g", "oo-rimp2", "optimize", mp2),
         ),
-        &["multiplicity = 3", "task = \"energy\" only"],
+        &[
+            "multiplicity = 3",
+            "no unrestricted OO-MP2 nuclear gradient",
+        ],
     );
     assert_refused(
         &run_toml(
@@ -652,6 +645,99 @@ fn open_shell_mp2_refuses_what_it_cannot_honour() {
             &body_at(water, 3, "sto-3g", "mp3", "energy", mp2),
         ),
         &["multiplicity = 3", "closed-shell"],
+    );
+}
+
+/// Open-shell rimp2 optimize takes the unrestricted RI-MP2 gradient on a
+/// UHF reference instead of being refused. Triplet water at STO-3G sits on
+/// a dissociating surface; the BFGS curvature guard is what lets it reach
+/// the gradient threshold.
+#[test]
+fn open_shell_rimp2_optimize_runs() {
+    let water = "testdata/molecules/water.xyz";
+    let mp2 = "[mp2]\nauxbasis = \"cc-pvdz-ri\"\n";
+    assert_runs(
+        &run_toml(
+            "rimp2_triplet_opt",
+            &body_at(water, 3, "sto-3g", "rimp2", "optimize", mp2),
+        ),
+        "open-shell rimp2 optimize on triplet water",
+    );
+}
+
+/// Open-shell att-rimp2 optimize takes the unrestricted attenuated (erfc)
+/// RI-MP2 gradient on a UHF reference and says which surface it followed.
+/// Dropping `att-rimp2` from `OPEN_SHELL_OPTIMIZE_KINDS` makes it refuse;
+/// routing it to the closed-shell driver fails in the RHF.
+#[test]
+fn open_shell_att_rimp2_optimize_runs() {
+    let water = "testdata/molecules/water.xyz";
+    let mp2 = "[mp2]\nauxbasis = \"cc-pvdz-ri\"\n";
+    let out = run_toml(
+        "att_rimp2_triplet_opt",
+        &body_at(water, 3, "sto-3g", "att-rimp2", "optimize", mp2),
+    );
+    assert_runs(&out, "open-shell att-rimp2 optimize on triplet water");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("UHF + att-UMP2"),
+        "the final energy line names the unrestricted surface"
+    );
+}
+
+/// The attenuated, SCS and RS-MP2 + LR-RPA kinds run on a UHF reference at
+/// multiplicity > 1 and say so, and their correlation energies are the
+/// unrestricted ones: SCS with c_os = c_ss = 1 is UMP2, and RS-MP2-RPA's
+/// e_mp2_full is UMP2. Reverting the admission in
+/// `config::OPEN_SHELL_ENERGY_KINDS` makes the runs refuse; routing them to
+/// the closed-shell kernel makes the energies differ from `rimp2`'s by the
+/// triplet-singlet gap (> 1e-2 Ha).
+#[test]
+fn attenuated_scs_and_rs_kinds_run_on_a_uhf_triplet() {
+    let water = "testdata/molecules/water.xyz";
+    let mp2 = "[mp2]\nauxbasis = \"cc-pvdz-ri\"\n";
+    let ump2 = run_toml(
+        "rimp2_triplet_ref",
+        &body_at(water, 3, "sto-3g", "rimp2", "energy", mp2),
+    );
+    assert_runs(&ump2, "rimp2 on triplet water");
+    let e_ump2 = stdout_value(&ump2, "Total  ");
+    let scs = run_toml(
+        "scs_triplet",
+        &body_at(
+            water,
+            3,
+            "sto-3g",
+            "scs-mp2",
+            "energy",
+            "[mp2]\nauxbasis = \"cc-pvdz-ri\"\nc_os = 1.0\nc_ss = 1.0\n",
+        ),
+    );
+    assert_runs(&scs, "scs-mp2 on triplet water");
+    assert!(String::from_utf8_lossy(&scs.stdout).contains("UHF energy"));
+    let e_scs = stdout_value(&scs, "Total  ");
+    assert!(
+        (e_scs - e_ump2).abs() < 1e-9,
+        "scs(1,1) {e_scs} vs UMP2 {e_ump2}"
+    );
+    let att = run_toml(
+        "att_triplet",
+        &body_at(water, 3, "sto-3g", "att-rimp2", "energy", mp2),
+    );
+    assert_runs(&att, "att-rimp2 on triplet water");
+    assert!(String::from_utf8_lossy(&att.stdout).contains("UHF energy"));
+    let rs = run_toml(
+        "rs_triplet",
+        &body_at(water, 3, "sto-3g", "rs-mp2-rpa", "energy", mp2),
+    );
+    assert_runs(&rs, "rs-mp2-rpa on triplet water");
+    // The label is padded to align with its neighbours, so match the line,
+    // not a fixed number of spaces.
+    let rs_out = String::from_utf8_lossy(&rs.stdout);
+    assert!(
+        rs_out
+            .lines()
+            .any(|l| l.trim_start().starts_with("reference") && l.contains("= UHF")),
+        "rs-mp2-rpa on a triplet prints its UHF reference:\n{rs_out}"
     );
 }
 

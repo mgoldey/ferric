@@ -42,8 +42,13 @@ REQUIRED_FUNCTIONS = [
     "run_frequencies",
     "run_saddle",
     "run_irc",
+    "run_xtb_energy_gradient",
+    "run_xtb_optimize",
+    "run_xtb_frequencies",
     "run_qmmm",
     "run_optimize_qmmm",
+    "run_aimd",
+    "run_ffmd",
     "run_rhf_gamma",
     "run_uhf_gamma",
     "run_rohf_gamma",
@@ -64,6 +69,7 @@ REQUIRED_CLASSES = [
     "IrcResult",
     "IrcBranch",
     "FrequencyResult",
+    "MdResult",
     "GammaRhfResult",
     "GammaOpenShellResult",
     "GammaRksResult",
@@ -132,3 +138,45 @@ def test_the_binding_really_accepts_those_kwargs(stub, name):
             f"ferric.pyi lists `{kw}` on {name}, but the compiled binding does "
             "not accept it -- the stub is promising an API that does not exist"
         )
+
+
+def _stub_class_members(stub: str, cls: str) -> set[str]:
+    m = re.search(rf"^class {re.escape(cls)}\b.*?(?=^\S)", stub, re.M | re.S)
+    assert m, f"no class {cls} in the stub"
+    return set(re.findall(r"^    def (\w+)\(", m.group(0), re.M))
+
+
+def test_molecule_members_match_the_stub_both_ways(stub):
+    """`Molecule` is the type every caller touches first, so its stub lists
+    exactly the compiled class's public members (methods and getters such as
+    `charge`/`multiplicity`), and nothing the class lacks."""
+    compiled = {n for n in dir(ferric.Molecule) if not n.startswith("_")}
+    stubbed = {
+        n for n in _stub_class_members(stub, "Molecule") if not n.startswith("_")
+    }
+    assert {"charge", "multiplicity"} <= compiled, "Molecule lost its getters"
+    assert compiled - stubbed == set(), f"missing from ferric.pyi: {compiled - stubbed}"
+    assert stubbed - compiled == set(), (
+        f"stub-only Molecule members: {stubbed - compiled}"
+    )
+
+
+def test_molecule_getters_and_repr():
+    mol = ferric.Molecule.from_arrays(
+        ["O", "H", "H"],
+        [[0.0, 0.0, 0.117], [0.0, 0.757, -0.467], [0.0, -0.757, -0.467]],
+        charge=1,
+        multiplicity=2,
+    )
+    assert (mol.charge, mol.multiplicity) == (1, 2)
+    assert repr(mol) == "Molecule(H2O, 3 atoms, charge=1, multiplicity=2)"
+    with pytest.raises(AttributeError):
+        mol.charge = 0  # read-only
+    ch4 = ferric.Molecule.from_arrays(
+        ["H", "C", "H", "H", "H"],
+        [[0, 0, 0], [0, 0, 1.1], [1, 0, 1.5], [0, 1, 1.5], [-1, -1, 1.5]],
+    )
+    assert repr(ch4) == "Molecule(CH4, 5 atoms, charge=0, multiplicity=1)"
+    he = ferric.Molecule.from_arrays(["He"], [[0, 0, 0]])
+    assert repr(he) == "Molecule(He, 1 atom, charge=0, multiplicity=1)"
+    assert str(mol) == repr(mol)

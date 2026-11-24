@@ -1,0 +1,257 @@
+"""`ferric.run_casscf`: two-step CASSCF through the binding.
+
+H2O / 6-31G CAS(4,4) above 3 core orbitals, the geometry of
+`testdata/molecules/water.xyz`. The construction is anchored in
+`crates/ferric-ci/tests/casscf.rs` (full-space limit, finite-difference
+gradient per rotation class, converged energies); these checks cover the
+binding: the energy is the Rust test's value, the returned arrays are
+consistent with it, and non-convergence is reported.
+
+Energy bar: `crates/ferric-ci/tests/casscf.rs` derives 1.1e-12 Ha against
+the prototype's -76.0369690965018 from both gradient norms and the lowest
+orbital Hessian eigenvalue (0.0195 Ha).
+"""
+
+import sys
+import threading
+import time
+import warnings
+
+import numpy as np
+import pytest
+
+import ferric
+
+_H2O = (
+    "3\n\nO 0.000000 0.000000 0.117790\n"
+    "H 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n"
+)
+E_PROTO = -76.0369690965018
+E_BAR = 1.1e-12
+
+
+@pytest.fixture(scope="module")
+def res():
+    mol = ferric.Molecule.from_xyz_string(_H2O)
+    return ferric.run_casscf(mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 2))
+
+
+def test_converged_energy(res):
+    assert res.converged
+    assert res.grad_norm < 1e-7
+    assert abs(res.e_total - E_PROTO) < E_BAR
+    assert res.e_total < res.rhf_energy
+
+
+def test_arrays_are_consistent(res):
+    assert res.n_core == 3 and res.n_determinants == 36
+    c = res.mo_coeff
+    ints = ferric.AoIntegrals(
+        ferric.Molecule.from_xyz_string(_H2O), ferric.BasisSet.bundled("6-31g")
+    )
+    assert np.abs(c.T @ ints.overlap() @ c - np.eye(c.shape[1])).max() < 1e-10
+    ci = res.ci_vector
+    assert ci.shape == (6, 6) and abs(np.sum(ci * ci) - 1.0) < 1e-12
+    assert abs(np.trace(res.dm1) - 4.0) < 1e-11
+    assert abs(np.einsum("pprr", res.dm2) - 12.0) < 1e-11
+
+
+def test_certificate(res):
+    cert = res.certificate
+    assert cert["capability"] == "casscf"
+    assert cert["grade"] == "proven"
+    assert [a["name"] for a in cert["approximations"]] == ["active-space"]
+    assert cert["build"]["commit"] == ferric.build_info()["commit"]
+    assert cert["warnings"] == []
+
+
+def test_non_convergence_warns():
+    mol = ferric.Molecule.from_xyz_string(_H2O)
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        r = ferric.run_casscf(
+            mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 2), casscf_max_iter=3
+        )
+    assert not r.converged and r.iterations == 3
+    assert any("CASSCF did not converge" in str(x.message) for x in w)
+    assert any("CASSCF did not converge" in m for m in r.certificate["warnings"])
+    assert r.certificate["grade"] == "ungraded"
+    # The text names the Python keywords (casscf_grad_tol), not the library
+    # fields (grad_tol), in the warning and in the certificate's copy.
+    tail = "casscf_grad_tol 1e-7, casscf_energy_tol 1e-12)"
+    msgs = [str(x.message) for x in w] + r.certificate["warnings"]
+    hits = [m for m in msgs if m.startswith("CASSCF did not converge")]
+    assert len(hits) == 2
+    for m in hits:
+        assert m.startswith("CASSCF did not converge in 3 macro iterations (|g| = ")
+        assert m.endswith(tail), m
+        assert ", grad_tol" not in m and ", energy_tol" not in m
+
+
+def test_optimizer_error_names_the_python_keyword():
+    mol = ferric.Molecule.from_xyz_string(_H2O)
+    with pytest.raises(Exception, match=r"run_casscf: casscf_optimizer"):
+        ferric.run_casscf(
+            mol,
+            ferric.BasisSet.bundled("6-31g"),
+            4,
+            (2, 2),
+            casscf_optimizer="nonsense",
+        )
+
+
+def test_canonicalize_option(res):
+    """Canonical orbitals: same energy to the Ritz bound of both CI solves
+    (each residual below ci_conv_thresh, which CASSCF enforces), natural
+    active orbitals (off-diagonal dm1 below 2 N (r0 + r1) / gap, 8.2e-10 for
+    this system in the Rust test), ordered Fock diagonals. The bars are derived in
+    crates/ferric-ci/tests/casscf_canonical.rs; this checks the binding passes
+    the option and returns mo_energy."""
+    assert res.mo_energy is None
+    mol = ferric.Molecule.from_xyz_string(_H2O)
+    r = ferric.run_casscf(
+        mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 2), canonicalize=True
+    )
+    assert r.converged
+    assert abs(r.e_total - res.e_total) < 2.0 * 1e-10
+    occ = np.diag(r.dm1)
+    assert np.abs(r.dm1 - np.diag(occ)).max() < 8.2e-10
+    assert np.all(np.diff(occ) <= 1e-12)
+    eps = r.mo_energy
+    assert eps.shape == (r.mo_coeff.shape[1],)
+    assert np.all(np.diff(eps[:3]) >= 0.0) and np.all(np.diff(eps[7:]) >= 0.0)
+
+
+def test_open_shell_active_space():
+    """(n_alpha, n_beta) = (3, 1): the lowest M_s = 1 state, a triplet above
+    the singlet CASSCF minimum of the same active space."""
+    mol = ferric.Molecule.from_xyz_string(_H2O)
+    r = ferric.run_casscf(mol, ferric.BasisSet.bundled("6-31g"), 4, (3, 1))
+    assert r.converged and r.n_core == 3
+    assert r.ci_vector.shape == (4, 4)
+    assert abs(np.trace(r.dm1) - 4.0) < 1e-11
+    assert r.e_total > E_PROTO
+
+
+def test_bfgs_optimizer(res):
+    """casscf_optimizer="bfgs" reaches the default (AH) minimum (E_BAR,
+    derived as above; crates/ferric-ci/tests/casscf_newton.rs bounds AH vs
+    BFGS by 1.1e-12 Ha) in more macro iterations; an unknown name raises."""
+    mol = ferric.Molecule.from_xyz_string(_H2O)
+    r = ferric.run_casscf(
+        mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 2), casscf_optimizer="bfgs"
+    )
+    assert r.converged
+    assert abs(r.e_total - E_PROTO) < E_BAR
+    assert r.iterations > res.iterations
+    with pytest.raises(Exception, match="casscf_optimizer must be"):
+        ferric.run_casscf(
+            mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 2), casscf_optimizer="x"
+        )
+
+
+def test_stability_check(res):
+    """casscf_stability="check": the lowest CI-relaxed orbital-Hessian
+    eigenvalue at this minimum. crates/ferric-ci/tests/casscf_vs_pyscf.rs
+    puts it within 2.1e-10 of the finite-difference 0.01945655 (bar 4.4e-4);
+    the bar here is that bar. The default ("off") runs no check, and the
+    check leaves the energy bit-identical; an unknown value raises with the
+    Python keyword."""
+    assert res.stability_lowest_eigenvalue is None
+    assert res.stability_verdict is None
+    mol = ferric.Molecule.from_xyz_string(_H2O)
+    chk = ferric.run_casscf(
+        mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 2), casscf_stability="check"
+    )
+    assert chk.stability_verdict == "STABLE"
+    assert abs(chk.stability_lowest_eigenvalue - 0.01945655) < 4.4e-4
+    assert chk.stability_follow_steps == 0
+    assert any(r["name"] == "stability" for r in chk.certificate["routes"])
+    assert chk.certificate["grade"] == "proven"
+    assert chk.e_total == res.e_total
+    with pytest.raises(Exception, match=r"run_casscf: casscf_stability must be"):
+        ferric.run_casscf(
+            mol, ferric.BasisSet.bundled("6-31g"), 4, (2, 2), casscf_stability="on"
+        )
+
+
+def test_unconverged_ci_raises():
+    """CAS(8,8) has 4900 determinants, above the dense-diagonalization fallback
+    (ferric_ci::DENSE_SOLVE_MAX_DETS = 1024) that rescues smaller spaces, so one
+    Davidson iteration leaves the CI unconverged."""
+    mol = ferric.Molecule.from_xyz_string(_H2O)
+    with pytest.raises(Exception, match="ci_conv_thresh"):
+        ferric.run_casscf(
+            mol, ferric.BasisSet.bundled("6-31g"), 8, (4, 4), ci_max_iter=1
+        )
+
+
+def _longest_main_thread_stall(call):
+    """Run `call` on a worker thread while this thread samples the clock in a
+    busy loop; return (longest gap between samples, wall time of the call).
+    A binding that holds the GIL through its Rust solve stalls this loop for
+    the whole solve, so the gap is about the wall time; one that releases it
+    stalls the loop only for GIL hand-offs (the 5 ms switch interval).
+
+    The worker waits on `go`, which is set only after this thread has taken
+    its first sample, so the sampler is running before the call can start.
+    A measurement with no samples raises."""
+    go = threading.Event()
+    done = threading.Event()
+    errors = []
+
+    def work():
+        go.wait()
+        try:
+            call()
+        except BaseException as exc:  # re-raised on the main thread after join
+            errors.append(exc)
+        finally:
+            done.set()
+
+    t = threading.Thread(target=work)
+    t.start()
+    start = last = time.perf_counter()
+    samples = 1
+    gap = 0.0
+    go.set()
+    while not done.is_set():
+        now = time.perf_counter()
+        gap = max(gap, now - last)
+        last = now
+        samples += 1
+    t.join()
+    end = time.perf_counter()
+    if errors:
+        raise errors[0]
+    if samples < 2:  # the initial sample plus at least one in the loop
+        raise RuntimeError("GIL measurement recorded no samples")
+    return max(gap, end - last), end - start
+
+
+@pytest.mark.parametrize("which", ["casci", "casscf"])
+def test_solve_releases_the_gil(which):
+    """The SCF and CI solves run with the GIL released: the main thread keeps
+    running for all but a small part of the call. Bar: the longest stall is
+    below half the call's wall time, which a GIL-holding solve (stall ~ the
+    whole call minus Python argument handling) cannot meet; the call is
+    required to last at least 20 switch intervals so the bar is not met by
+    hand-off granularity alone."""
+    mol = ferric.Molecule.from_xyz_string(_H2O)
+    bs = ferric.BasisSet.bundled("cc-pvdz")
+    fn = ferric.run_casci if which == "casci" else ferric.run_casscf
+    min_wall = 30 * sys.getswitchinterval()
+
+    def solve_long_enough():
+        # A fast machine finishes one H2O solve inside the 20-interval floor
+        # below (0.0998 s on a Windows runner), which would leave the stall
+        # bar met by hand-off granularity alone. Repeat the solve until the
+        # call lasts long enough; each repeat releases the GIL the same way.
+        t0 = time.perf_counter()
+        fn(mol, bs, 4, (2, 2))
+        while time.perf_counter() - t0 < min_wall:
+            fn(mol, bs, 4, (2, 2))
+
+    gap, wall = _longest_main_thread_stall(solve_long_enough)
+    assert wall > 20 * sys.getswitchinterval(), wall
+    assert gap < 0.5 * wall, (gap, wall)

@@ -29,10 +29,17 @@ static XC_WAVES: AtomicU64 = AtomicU64::new(0);
 /// Why a GEMM ran on the CPU although the GPU mode was not `off`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CpuReason {
+    /// The call was made from a rayon worker thread; device calls are only
+    /// issued from outside rayon.
     InsideRayonWorker,
+    /// The GEMM's `2·m·n·k` flop count was below the `min_flops` setting.
     BelowThreshold,
+    /// The device memory pool refused the allocation.
     PoolFull,
+    /// An operand's layout could not be offloaded.
     Layout,
+    /// The device could not be obtained or a CUDA/cuBLAS call failed (any
+    /// other device error).
     CudaError,
     /// A mixed-precision operand held a finite value beyond `f32::MAX`.
     F32Range,
@@ -161,6 +168,7 @@ pub enum MixedFallback {
 }
 
 impl MixedFallback {
+    /// Every variant, in discriminant order.
     pub const ALL: [MixedFallback; 3] = [
         MixedFallback::DeviceF64,
         MixedFallback::F32Range,
@@ -298,29 +306,54 @@ pub fn note_cpu_detail(reason: CpuReason, detail: &str) {
 /// A copy of the counters at one instant.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GpuStatsSnapshot {
+    /// f64 GEMMs run on the device (`note_offloaded`).
     pub gemm_offloaded: u64,
+    /// CPU fallbacks for [`CpuReason::InsideRayonWorker`].
     pub gemm_cpu_inside_worker: u64,
+    /// CPU fallbacks for [`CpuReason::BelowThreshold`].
     pub gemm_cpu_below_threshold: u64,
+    /// CPU fallbacks for [`CpuReason::PoolFull`].
     pub gemm_cpu_pool_full: u64,
+    /// CPU fallbacks for [`CpuReason::Layout`].
     pub gemm_cpu_layout: u64,
+    /// CPU fallbacks for [`CpuReason::CudaError`].
     pub gemm_cpu_cuda_error: u64,
+    /// CPU fallbacks for [`CpuReason::F32Range`].
     pub gemm_cpu_f32_range: u64,
+    /// Bytes copied host to device, summed over every counted upload.
     pub bytes_h2d: u64,
+    /// Bytes copied device to host, summed over every counted download.
     pub bytes_d2h: u64,
+    /// Mixed-precision GEMMs run on the device (`note_mixed`).
     pub gemm_mixed: u64,
+    /// Panel flushes summed over the mixed-precision GEMMs.
     pub mixed_panels: u64,
+    /// Mixed-precision units that ran in f64 instead, summed over every
+    /// kernel and [`MixedFallback`] reason.
     pub mixed_fallback_f64: u64,
+    /// Matrices uploaded to stay resident on the device.
     pub resident_uploads: u64,
+    /// Resident DF-K occupied-path builds run on the device.
     pub dfk_device_builds: u64,
+    /// DF-K builders that stay on the CPU for their lifetime.
     pub dfk_declined: u64,
+    /// Resident RI-J builds run on the device.
     pub dfj_device_builds: u64,
+    /// RI-J builders that stay on the CPU for their lifetime.
     pub dfj_declined: u64,
+    /// KS-DFT XC grid passes (one density or potential pass) run on the device.
     pub xc_device_passes: u64,
+    /// Screened XC grids that stay on the CPU for their lifetime.
     pub xc_declined: u64,
+    /// XC staging buffers that fell back from page-locked to ordinary heap
+    /// memory.
     pub xc_pinned_fallback: u64,
+    /// Waves (upload, launches, download, sync) of KS XC device passes.
     pub xc_waves: u64,
 }
 
+/// Read every process-wide GPU counter (each load is independent, so the
+/// snapshot is not atomic across counters).
 pub fn stats() -> GpuStatsSnapshot {
     GpuStatsSnapshot {
         gemm_offloaded: GEMM_OFFLOADED.load(Ordering::Relaxed),

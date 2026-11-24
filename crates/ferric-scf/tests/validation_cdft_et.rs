@@ -158,6 +158,7 @@ use ferric_scf::cdft_driver::{solve_cdft_uhf, CdftResult};
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
+use ferric_testkit::reference::num_ctx;
 use ndarray::{s, Array2};
 use ndarray_linalg::{Determinant, Inverse};
 use serde_json::Value;
@@ -311,11 +312,17 @@ const TOL_SLOPE_WUVV: f64 = 0.1;
 const E2E_LEVEL_SHIFT: f64 = 0.3;
 /// Inner-SCF iteration cap for the end-to-end diabats.
 ///
-/// NOT a round number: 150 sits above the deepest inner solve any of the six
-/// points needs and below the point where a cap raise would cost anything.
-/// Measured 2026-10-03 on this row (release, 99x302, level shift 0.3, started
-/// from NWChem's λ), as the largest `inner_iters` over every main point and
-/// FD probe of the whole outer loop:
+/// 500, the same as `base_config`'s `max_iter`. A cap is an upper bound only:
+/// a solve that converges in 17 iterations cannot see it. The inner cDFT UKS
+/// solve from the default guess is slow and its iteration count is not stable
+/// run to run (2026-11-12: 24 to more than 150 on the same point and build),
+/// so the old 150 left no margin, and a truncated inner solve fails the outer
+/// loop: the outer loop reads a truncated density as "the step went too far"
+/// and backtracks around a λ that was fine (`REPORT-281.md`).
+///
+/// The 2026-10-03 measurement that set the old 150, on this row (release,
+/// 99x302, level shift 0.3, started from NWChem's λ), as the largest
+/// `inner_iters` over every main point and FD probe of the whole outer loop:
 ///
 /// | point | deepest inner solve |
 /// |---|---:|
@@ -330,15 +337,18 @@ const E2E_LEVEL_SHIFT: f64 = 0.3;
 /// 106 — six iterations. The other five are BIT-IDENTICAL at 100 and 150 (same
 /// λ, N, E, outer count and inner counts), so the raise is free for them: a cap
 /// is an upper bound, and a solve that converges in 17 iterations cannot see
-/// it. See `inner_cap_100_is_what_breaks_def2_svp_350` for why the old 100 did
-/// not merely slow that point down but made its OUTER loop fail, and
-/// `REPORT-281.md` for the full trace.
-const E2E_INNER_MAX_ITER: usize = 150;
-/// Deepest inner solve any point of this row needs, measured 2026-10-03
-/// (def2-SVP 3.50 Å, from NWChem's λ; every other point is ≤ 73). The cap
-/// above must EXCEED this, which `inner_cap_100_is_what_breaks_def2_svp_350`
-/// checks at compile time.
-const MEASURED_DEEPEST_INNER: usize = 106;
+/// it. `REPORT-281.md` has the full trace of how the old 100 made that
+/// point's OUTER loop fail.
+const E2E_INNER_MAX_ITER: usize = 500;
+/// Deepest inner solve anywhere in this file, measured on CI 2026-11-12 (run
+/// 43292092895, three runners, bit-identical iteration counts): 97, with
+/// def2-SVP 3.50 Å from NWChem's λ now at 24 (106 on 2026-10-03). The cap
+/// above must exceed it; checked at compile time below.
+const MEASURED_DEEPEST_INNER: usize = 97;
+const _: () = assert!(
+    E2E_INNER_MAX_ITER > MEASURED_DEEPEST_INNER,
+    "E2E_INNER_MAX_ITER is at or below the deepest measured inner solve"
+);
 const E2E_MAX_OUTER: usize = 8;
 /// Outer-loop cap for the λ = 0 start (issue #283), as opposed to
 /// `E2E_MAX_OUTER` for the NWChem-started rows.
@@ -412,12 +422,6 @@ fn reference(r_tag: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 /// (nao × nocc) matrix from the reference's row-major list of rows.
 fn mat(v: &Value, ptr: &str, ctx: &str) -> Array2<f64> {
     let rows = v
@@ -463,14 +467,12 @@ fn grid_cfg() -> AtomicGridConfig {
 
 /// Unconstrained UKS/PBE; exact J (no `df_j_aux`), as NWChem `direct`.
 fn base_config() -> RhfConfig {
-    RhfConfig {
-        xc: Some("PBE".into()),
-        dft_grid: Some(grid_cfg()),
-        max_iter: 500,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc("PBE")
+        .with_dft_grid(grid_cfg())
+        .with_max_iter(500)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
 }
 
 struct System {
@@ -500,7 +502,7 @@ fn load_system(r_tag: &str, basis_name: &str, r: &Value) -> System {
         &tag,
         "E_nuc (geometry/units)",
         mol.nuclear_repulsion(),
-        num(r, "/nuclear_repulsion", &tag),
+        num_ctx(r, "/nuclear_repulsion", &tag),
         TOL_ENUC,
     );
     let bs = basis::bundled(basis_name).unwrap();
@@ -847,17 +849,17 @@ fn et_kernel_on_nwchem_determinants_matches_nwchem() {
                 }
 
                 // ── kernel vs NWChem et ──
-                let e_a = num(&r, &format!("/results/{grid}/state_a/energy"), &ctx);
-                let e_b = num(&r, &format!("/results/{grid}/state_b/energy"), &ctx);
-                let lam_a = num(&r, &format!("/results/{grid}/state_a/lambda"), &ctx);
-                let lam_b = num(&r, &format!("/results/{grid}/state_b/lambda"), &ctx);
+                let e_a = num_ctx(&r, &format!("/results/{grid}/state_a/energy"), &ctx);
+                let e_b = num_ctx(&r, &format!("/results/{grid}/state_b/energy"), &ctx);
+                let lam_a = num_ctx(&r, &format!("/results/{grid}/state_a/lambda"), &ctx);
+                let lam_b = num_ctx(&r, &format!("/results/{grid}/state_b/lambda"), &ctx);
                 let et = format!("/results/{grid}/et_nwchem");
                 let dc = direct_coupling(&sys, &a, &b, e_a - enuc, e_b - enuc, true);
                 check_rel(
                     &ctx,
                     "S_RP (full precision)",
                     dc.s,
-                    num(
+                    num_ctx(
                         &r,
                         &format!("/results/{grid}/et_pyscf_recompute/s_rp"),
                         &ctx,
@@ -868,24 +870,24 @@ fn et_kernel_on_nwchem_determinants_matches_nwchem() {
                     &ctx,
                     "H1(RP)",
                     dc.h1,
-                    num(&r, &format!("{et}/h1_rp"), &ctx),
+                    num_ctx(&r, &format!("{et}/h1_rp"), &ctx),
                     TOL_KERNEL_H,
                 );
                 check(
                     &ctx,
                     "H2(RP)",
                     dc.h2,
-                    num(&r, &format!("{et}/h2_rp"), &ctx),
+                    num_ctx(&r, &format!("{et}/h2_rp"), &ctx),
                     TOL_KERNEL_H,
                 );
                 check(
                     &ctx,
                     "H(RP)",
                     dc.h,
-                    num(&r, &format!("{et}/h_rp"), &ctx),
+                    num_ctx(&r, &format!("{et}/h_rp"), &ctx),
                     TOL_KERNEL_H,
                 );
-                let v_ref = num(&r, &format!("{et}/v_rp_abs"), &ctx);
+                let v_ref = num_ctx(&r, &format!("{et}/v_rp_abs"), &ctx);
                 let dv = check(&ctx, "|V(RP)|", dc.v.abs(), v_ref, TOL_KERNEL_V);
 
                 // NEGATIVE CONTROL: dropping the transition-density exchange.
@@ -964,10 +966,10 @@ fn wu_vv_coupling_is_invariant_under_constraint_offset() {
             let g = "converged";
             let a = det_from_ref(&r, g, "state_a", &ctx);
             let b = det_from_ref(&r, g, "state_b", &ctx);
-            let e_a = num(&r, &format!("/results/{g}/state_a/energy"), &ctx);
-            let e_b = num(&r, &format!("/results/{g}/state_b/energy"), &ctx);
-            let lam_a = num(&r, &format!("/results/{g}/state_a/lambda"), &ctx);
-            let lam_b = num(&r, &format!("/results/{g}/state_b/lambda"), &ctx);
+            let e_a = num_ctx(&r, &format!("/results/{g}/state_a/energy"), &ctx);
+            let e_b = num_ctx(&r, &format!("/results/{g}/state_b/energy"), &ctx);
+            let lam_a = num_ctx(&r, &format!("/results/{g}/state_a/lambda"), &ctx);
+            let lam_b = num_ctx(&r, &format!("/results/{g}/state_b/lambda"), &ctx);
             let shift = &sys.s_ao * (TARGET_N / N_ELEC);
             let w0p = &sys.w[0] - &shift;
             let w1p = &sys.w[1] - &shift;
@@ -1049,22 +1051,21 @@ fn mirror_det(sys: &System, a: &Det) -> Det {
 /// Constrained UKS/PBE solve of the diabat with the hole on `frag`.
 /// The end-to-end cDFT config for one diabat (hole on fragment `frag`).
 fn diabat_config(frag: usize, lambda_init: f64) -> RhfConfig {
-    RhfConfig {
-        constraints: vec![Constraint {
-            fragment: vec![frag],
-            spin: SpinChannel::Total,
-            target: TARGET_N,
-        }],
-        cdft_lambda_tol: 1e-10,
-        cdft_lambda_init: Some(vec![lambda_init]),
-        cdft_max_outer: E2E_MAX_OUTER,
-        // Skipped on KS references anyway (no f_xc response kernel); off so
-        // the run cannot pay for an eigensolve it will not use.
-        cdft_stability_descent: false,
-        level_shift: E2E_LEVEL_SHIFT,
-        max_iter: E2E_INNER_MAX_ITER,
-        ..base_config()
-    }
+    let mut c = base_config()
+        .with_level_shift(E2E_LEVEL_SHIFT)
+        .with_max_iter(E2E_INNER_MAX_ITER);
+    c.constraints = vec![Constraint {
+        fragment: vec![frag],
+        spin: SpinChannel::Total,
+        target: TARGET_N,
+    }];
+    c.cdft_lambda_tol = 1e-10;
+    c.cdft_lambda_init = Some(vec![lambda_init]);
+    c.cdft_max_outer = E2E_MAX_OUTER;
+    // Skipped on KS references anyway (no f_xc response kernel); off so
+    // the run cannot pay for an eigensolve it will not use.
+    c.cdft_stability_descent = false;
+    c
 }
 
 /// The same diabat config with NO λ start (issue #283): `cdft_lambda_init` is
@@ -1077,11 +1078,10 @@ fn diabat_config(frag: usize, lambda_init: f64) -> RhfConfig {
 /// two fields the issue is about and a difference in the ROOT cannot be
 /// attributed to anything else.
 fn diabat_config_from_zero(frag: usize) -> RhfConfig {
-    RhfConfig {
-        cdft_lambda_init: None,
-        cdft_max_outer: LAM0_MAX_OUTER,
-        ..diabat_config(frag, 0.0)
-    }
+    let mut c = diabat_config(frag, 0.0);
+    c.cdft_lambda_init = None;
+    c.cdft_max_outer = LAM0_MAX_OUTER;
+    c
 }
 
 fn solve_diabat(sys: &System, frag: usize, lambda_init: f64) -> CdftResult {
@@ -1141,11 +1141,10 @@ fn solve_diabat(sys: &System, frag: usize, lambda_init: f64) -> CdftResult {
 /// Hard caps: `E2E_MAX_OUTER` outer × (1 + 1 FD) inner solves ×
 /// `E2E_INNER_MAX_ITER` inner iterations, so a non-converging point fails in
 /// minutes, not the ~30 min the first run took. The inner cap must clear the
-/// deepest solve the row needs (106 iterations, at def2-SVP 3.50 Å) — a cap
-/// below it makes the OUTER loop fail, not merely slow down, because guard 1
-/// reads a truncated inner solve as "the step went too far" and backtracks
-/// away from a λ that was never the problem. See
-/// `inner_cap_100_is_what_breaks_def2_svp_350`.
+/// deepest solve the row needs (`MEASURED_DEEPEST_INNER`) — a cap below it
+/// makes the OUTER loop fail, not merely slow down, because guard 1 reads a
+/// truncated inner solve as "the step went too far" and backtracks away from
+/// a λ that was never the problem (`REPORT-281.md`).
 ///
 /// State B (hole on He2) is the mirror image of A, built by `mirror_det`
 /// (E_B = E_A, λ_B = λ_A by symmetry) instead of a second solve; at one point
@@ -1168,11 +1167,11 @@ fn run_basis(basis_name: &str) {
             &tag,
             "E_unc vs NWChem 99x302",
             e_unc,
-            num(&r, "/results/matched/unconstrained/energy", &tag),
+            num_ctx(&r, "/results/matched/unconstrained/energy", &tag),
             TOL_E_UNC,
         );
 
-        let lam_ref = num(&r, &format!("{cv}/state_a/lambda"), &tag);
+        let lam_ref = num_ctx(&r, &format!("{cv}/state_a/lambda"), &tag);
         let ra = solve_diabat(&sys, 0, lam_ref);
         let (e_a, lam_a) = (ra.scf.energy, ra.lambdas[0]);
         let a = det_from_cdft(&ra);
@@ -1239,25 +1238,25 @@ fn run_basis(basis_name: &str) {
         }
 
         // ── state ingredients vs NWChem (grid limit, as in the cDFT row) ──
-        let e_unc_nw = num(&r, &format!("{cv}/unconstrained/energy"), &tag);
+        let e_unc_nw = num_ctx(&r, &format!("{cv}/unconstrained/energy"), &tag);
         check(
             &tag,
             "E_A - E_unc (300x974)",
             e_a - e_unc,
-            num(&r, &format!("{cv}/state_a/energy"), &tag) - e_unc_nw,
+            num_ctx(&r, &format!("{cv}/state_a/energy"), &tag) - e_unc_nw,
             TOL_DE,
         );
         check(&tag, "lambda_A (300x974)", lam_a, lam_ref, TOL_LAMBDA);
         eprintln!(
             "{tag}: vs NWChem 99x302 (info): dlambda {:+.2e} dE {:+.2e}",
-            lam_a - num(&r, "/results/matched/state_a/lambda", &tag),
-            e_a - num(&r, "/results/matched/state_a/energy", &tag)
+            lam_a - num_ctx(&r, "/results/matched/state_a/lambda", &tag),
+            e_a - num_ctx(&r, "/results/matched/state_a/energy", &tag)
         );
 
         // ── direct (NWChem-definition) coupling on ferric's determinants ──
         let dc = direct_coupling(&sys, &a, &b, e_a - enuc, e_b - enuc, true);
-        let s_nw = num(&r, &format!("{cv}/et_pyscf_recompute/s_rp"), &tag);
-        let v_nw = num(&r, &format!("{cv}/et_nwchem/v_rp_abs"), &tag);
+        let s_nw = num_ctx(&r, &format!("{cv}/et_pyscf_recompute/s_rp"), &tag);
+        let v_nw = num_ctx(&r, &format!("{cv}/et_nwchem/v_rp_abs"), &tag);
         check_rel(&tag, "|S_AB| vs NWChem", dc.s.abs(), s_nw.abs(), TOL_S_REL);
         check_rel(
             &tag,
@@ -1330,121 +1329,6 @@ fn he2_plus_def2_svp_diabats_and_coupling_match_nwchem() {
 #[ignore = "validation: cDFT-ET coupling (Wu–Van Voorhis)"]
 fn he2_plus_aug_cc_pvdz_diabats_and_coupling_match_nwchem() {
     run_basis("aug-cc-pvdz");
-}
-
-/// NEGATIVE CONTROL for the `E2E_INNER_MAX_ITER` raise (issue #281): the old
-/// cap of 100 must still fail on def2-SVP 3.50 Å, and the new one must pass,
-/// in the SAME test. A fix whose negative control is "revert the const and
-/// re-run by hand" is not pinned by anything.
-///
-/// # What the 100-cap actually did, measured
-///
-/// The inner SCF at this point is slow near the root, not bistable. At
-/// NWChem's starting λ = 2.457063813 it needs **106** iterations; at 100 it is
-/// truncated and reported `converged = false`. The outer loop's guard 1 then
-/// treats that truncated density as "the step went too far" and starts
-/// backtracking — but the step had NOT gone too far, so it backtracks into an
-/// ever-finer neighbourhood of a λ that was always fine, shrinking its trust
-/// radius from 1.0 to 7e-9 in one iteration and spending all 8 outer
-/// iterations on λ values that differ in the 9th decimal.
-///
-/// At 150 the first inner solve converges at 106, the Jacobian is the smooth
-/// −0.1188 it always was, and plain Newton reaches the root in **3** outer
-/// iterations and ~15 s — FASTER in wall time than the failing 100-cap run
-/// (37.5 s), because the failing run spends 8 outer iterations × 100 inner
-/// iterations going nowhere.
-///
-/// # Why this is slowness and not two basins
-///
-/// Fixed-λ solves of every λ the failing run visited, at caps 100/200/400/1000
-/// (`REPORT-281.md` §3): every one converges to N = 0.99999999x and
-/// E = −4.8691602822, never to a second solution. The populations the 100-cap
-/// reported as "converged" values — 1.000861, 1.999360, 1.000018, and at a λ
-/// perturbed by 5e-13 even 0.006568 — are transient DIIS excursions of an
-/// unconverged iterate, which is why they span a factor of 300 while the
-/// converged answer is the same to 1e-11. `hf_mismatch` on every FD pair of
-/// the failing run was 3.5e-10 … 9.3e-10, i.e. inside the measured SAME-basin
-/// band (≤ 7.0e-9) and 5 orders below the cross-basin band (≥ 5.5e-5), so
-/// guard 2 correctly never fired: there was no basin change to detect.
-///
-/// # Why this test is cheap
-///
-/// One geometry, one basis, two diabat solves (~15 s + ~38 s), no reference
-/// JSON beyond λ_start and no coupling evaluation.
-#[test]
-#[ignore = "validation: cDFT-ET coupling (Wu–Van Voorhis)"]
-fn inner_cap_100_is_what_breaks_def2_svp_350() {
-    let (r_tag, basis_name) = ("3.50", "def2-svp");
-    let r = reference(r_tag, basis_name);
-    let sys = load_system(r_tag, basis_name, &r);
-    let lam_ref = num(&r, "/results/converged/state_a/lambda", &sys.tag);
-
-    // The fix: at E2E_INNER_MAX_ITER the point converges to its root.
-    let ok = solve_cdft_uhf(
-        &sys.ctx,
-        &sys.mol,
-        &sys.prep,
-        &sys.bs,
-        &sys.bounds,
-        &diabat_config(0, lam_ref),
-    )
-    .unwrap_or_else(|e| panic!("{}: cap {E2E_INNER_MAX_ITER} must converge: {e:?}", sys.tag));
-    assert!(
-        ok.scf.converged,
-        "{}: cap {E2E_INNER_MAX_ITER} inner SCF not converged",
-        sys.tag
-    );
-    eprintln!(
-        "{}: cap {E2E_INNER_MAX_ITER} -> lam {:+.12} N {:.12} E {:.12} outer {} inner {}",
-        sys.tag, ok.lambdas[0], ok.populations[0], ok.scf.energy, ok.outer_iters, ok.scf.iterations
-    );
-    assert!(
-        (ok.populations[0] - TARGET_N).abs() < TOL_POP,
-        "{}: population {:.12} misses {TARGET_N}",
-        sys.tag,
-        ok.populations[0]
-    );
-    // The deepest inner solve needs 106 iterations (measured): a cap at or
-    // below that is what breaks the point, so the margin is real but thin.
-    // Checked at COMPILE time -- a runtime `assert!` on two consts is what
-    // clippy::assertions_on_constants rejects, and the compile-time form is
-    // strictly stronger: lowering the const cannot even build.
-    const _: () = assert!(
-        E2E_INNER_MAX_ITER > MEASURED_DEEPEST_INNER,
-        "E2E_INNER_MAX_ITER is at or below the measured deepest inner solve \
-         (106) for def2-SVP 3.50 A -- see its doc comment for the per-point table"
-    );
-
-    // The control: at the old cap of 100 the OUTER loop still fails. Not a
-    // skip and not a tolerance — the same solve, one const different.
-    let mut old = diabat_config(0, lam_ref);
-    old.max_iter = 100;
-    let attempt = solve_cdft_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bs, &sys.bounds, &old);
-    match &attempt {
-        Err(ferric_core::FerricError::Convergence(msg)) => {
-            eprintln!("{}: cap 100 fails as it did before the fix: {msg}", sys.tag)
-        }
-        Err(e) => panic!("{}: cap 100 failed differently: {e:?}", sys.tag),
-        Ok(got) => panic!(
-            "{}: cap 100 now CONVERGES (lam {:+.12} N {:.12} outer {}). The negative \
-             control is gone: either the inner SCF got faster or something else \
-             changed. Re-measure the per-point deepest inner solve and lower \
-             E2E_INNER_MAX_ITER to match, or drop this test with the evidence.",
-            sys.tag, got.lambdas[0], got.populations[0], got.outer_iters
-        ),
-    }
-
-    // The two caps must agree on the FIXED POINT where both reach one: the
-    // raise changes the path, not the answer. λ at cap 100's last converged
-    // main point was 2.457063443815 (measured); cap 150 lands at
-    // 2.457063436148. Both are within TOL_LAMBDA of NWChem's 2.457063813.
-    check(
-        &sys.tag,
-        "lambda vs NWChem (cap raised)",
-        ok.lambdas[0],
-        lam_ref,
-        TOL_LAMBDA,
-    );
 }
 
 /// Issue #283: the outer loop finds the He₂⁺ diabat from λ = 0, unaided.
@@ -1530,7 +1414,7 @@ fn he2_plus_diabats_converge_from_lambda_zero() {
             let r = reference(r_tag, basis_name);
             let sys = load_system(r_tag, basis_name, &r);
             let tag = &sys.tag;
-            let lam_ref = num(&r, "/results/converged/state_a/lambda", tag);
+            let lam_ref = num_ctx(&r, "/results/converged/state_a/lambda", tag);
 
             // (1) the row's own run: ferric's root from NWChem's λ.
             let from_nw = solve_diabat(&sys, 0, lam_ref);

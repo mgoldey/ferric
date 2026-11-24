@@ -40,7 +40,7 @@
 //!
 //! Non-rigor means the estimate can fall below the true integral. It does NOT
 //! mean the resulting energy error is large, and the two must not be conflated
-//! (this module's history did conflate them; see "Correction" below). The
+//! (see "Why no accuracy-loss ratio is quoted" below). The
 //! paper measures the energy error directly, in HF SCF calculations, across
 //! its whole test suite:
 //!
@@ -68,13 +68,12 @@
 //! the real reason to prefer CSB where CSB is available — not a large measured
 //! error, because none was ever measured.
 //!
-//! ## Correction (2026-09-14): the "~1e5x accuracy loss" framing was WRONG
+//! ## Why no accuracy-loss ratio is quoted
 //!
-//! An earlier revision of this header, and commit `ab525443`'s message,
-//! justified refusing attenuated operators with a table of "underestimate
-//! ratios" up to `1.0e8` and a `218493x` figure on benzene/cc-pVDZ, and
-//! described the consequence as a "silent ~1e5x accuracy loss". **That
-//! framing is retracted.** Three independent defects, each verified:
+//! A table of "underestimate ratios" up to `1.0e8` (and a `218493x` figure on
+//! benzene/cc-pVDZ, commit `ab525443`), read as a "silent ~1e5x accuracy
+//! loss", does not support refusing attenuated operators. Three independent
+//! defects, each verified:
 //!
 //! 1. **A ratio is not an energy error, and none was ever computed.**
 //!    `scripts/csam_bound_validity_proto.py` maximizes `true/estimate` over
@@ -83,10 +82,10 @@
 //!    The paper's own Table I/II captions restrict their statistics to
 //!    "shell-quartets with exact norms above `1e-12`", and report the energy
 //!    consequence separately in Tables III and V. Commit `ab525443` computed
-//!    no erfc energy error at all, so "~1e5x accuracy loss" had no measurement
+//!    no erfc energy error at all, so "~1e5x accuracy loss" has no measurement
 //!    behind it in either direction.
 //!
-//!    Scope note, so this correction is not itself overstated: adding the
+//!    Scope note, so this is not overstated: adding the
 //!    paper's `1e-12` filter to the harness (done, `--min-magnitude`) leaves
 //!    the chain-study numbers UNCHANGED; only at a `1e-8` cut does the
 //!    6-center row fall back. The missing filter is a real methodological gap
@@ -115,12 +114,12 @@
 //!            13.20       7.105427e-15     1.299934e-15     4.5e+00   <-- 447%
 //!    ```
 //!
-//!    The 6-center row of the old table (13.2 bohr extent, ratio `1.0e8`) sits
+//!    The 6-center row of that table (13.2 bohr extent, ratio `1.0e8`) sits
 //!    exactly where the harness's own `true` value is wrong by 447%. The
 //!    5-center row (10.56 bohr) is contaminated at the 1e-6 level. Those rows
 //!    measure IEEE754, not CSAM.
 //!
-//! 3. **`Operator::erf` was refused without ever being measured.** The harness
+//! 3. **`Operator::erf` has no measured failure to justify refusing it.** The harness
 //!    has no `erf` path at all — only Coulomb and erfc-by-subtraction. And erf
 //!    is the one attenuated kernel Psi4 actually screens with CSAM in
 //!    production: `Libint2ErfERI` (`psi4/src/psi4/libmints/eri.cc:179,182`)
@@ -128,13 +127,13 @@
 //!    `libint2::Operator::erf_coulomb`, and Psi4's RSH exchange is assembled
 //!    as `alpha*K_full + beta*K_erf` — erfc is never formed in any Psi4 SCF
 //!    path (`grep erf_complement_eri` over `libfock`/`libscf_solver`/`scfgrad`:
-//!    zero hits). Refusing erf was refusing the best-evidenced case.
+//!    zero hits). Refusing erf would refuse the best-evidenced case.
 //!
-//! What SURVIVES the correction: CSAM is genuinely non-rigorous (the paper says
+//! What the evidence supports: CSAM is genuinely non-rigorous (the paper says
 //! so in its own voice, and the Coulomb rows of the harness — which do NOT
 //! involve cancellation — show real violations of 1.39-2.53x); its error grows
 //! with system size at fixed threshold (Fig. 2); and CSB is the rigorous
-//! alternative for short-range kernels. What does NOT survive: any claim about
+//! alternative for short-range kernels. What it does NOT support: any claim about
 //! the MAGNITUDE of a CSAM erfc energy error, in either direction.
 //!
 //! # Operator routing: Coulomb estimates here, short-range kernels to CSB
@@ -161,13 +160,13 @@
 //!      the only attenuated exchange any Psi4 SCF path builds.
 //!   2. `erf(omega r)/r` is LONG-range — it decays as `1/r`, like Coulomb, and
 //!      its Fourier transform `e^{-k^2/(4 omega^2)}/(2 pi^2 k^2)` (paper Table
-//!      VI) has no oscillation. The mechanism the old header blamed for the
+//!      VI) has no oscillation. The mechanism blamed for the
 //!      erfc blow-up (exponential suppression of the `(pp|qq)` numerator of
 //!      `X_PQ` at large `p,q` separation, collapsing `X` while the true
 //!      integral stays large) does not operate on `erf`: `erf` suppresses
 //!      NEAR-field, not far-field. Expect `erf` to behave like Coulomb here,
 //!      not like erfc.
-//!   3. Refusing it was never measured. Accepting it restores the one case
+//!   3. No measurement supports refusing it. Accepting it covers the one case
 //!      with direct production precedent, and the user still has `"schwarz"`
 //!      and `"csb"` available as rigorous alternatives.
 //!
@@ -353,8 +352,8 @@ fn shell_function_norms(eng: &mut Engine, prep: &PreparedBasis, nsh: usize) -> V
 ///
 /// This is a ROUTING decision, not a safety verdict: CSAM is non-rigorous for
 /// `erfc` and for `Coulomb` alike, and no `erfc` energy error was ever
-/// measured (see the "Correction" section of this module's header for why the
-/// figures that previously justified a blanket refusal do not support one).
+/// measured (see the "Why no accuracy-loss ratio is quoted" section of this module's
+/// header for why those figures do not support a blanket refusal).
 pub fn csam_x_table(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, FerricError> {
     // Routing, per the module header's "Operator routing" section:
     //   - Coulomb:    CSAM's designed and measured regime (paper Tables III/V).
@@ -560,7 +559,7 @@ mod tests {
     /// (`psi4/src/psi4/libmints/eri.cc:179,182`) — and `erf(omega r)/r` is
     /// LONG-range, decaying as `1/r` like Coulomb, so the far-field `X_PQ`
     /// collapse that motivates routing `erfc` away does not operate on it.
-    /// The previous refusal of `erf` was never measured.
+    /// Refusing `erf` has no measurement behind it.
     ///
     /// This test checks the table is BUILDABLE and well-formed, which is all a
     /// no-compute change can honestly claim. It does NOT establish that CSAM's

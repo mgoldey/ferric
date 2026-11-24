@@ -14,6 +14,7 @@ use ferric_dft::grid::AtomicGridConfig;
 use ferric_dft::ks::{KsXc, KsXcUks};
 use ferric_dft::xc_batch::{SeamGuard, FORCE_HOST, POISON_XC_STAGING, XC_GEMM_LOOP};
 use ferric_dft::xc_trait::{UksXcContribution, XcContribution};
+use ferric_testkit::compare::max_abs;
 use ndarray::Array2;
 
 static GPU: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -71,10 +72,6 @@ fn c_occ(nbf: usize, nocc: usize, seed: u64) -> Array2<f64> {
             .wrapping_add(1442695040888963407);
         ((x >> 11) as f64 / (1u64 << 53) as f64 - 0.5) * 0.6
     })
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
 }
 
 fn assert_close(what: &str, (e_h, v_h): (f64, &Array2<f64>), (e_d, v_d): (f64, &Array2<f64>)) {

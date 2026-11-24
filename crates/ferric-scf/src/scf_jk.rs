@@ -20,11 +20,28 @@
 //! (an opt-out spelling), and a `k_builder` that the mode would silently
 //! override are all errors, never a quiet pick.
 
+use crate::options::KBuilderKind;
 use crate::rhf::RhfConfig;
 
 /// The JK-fitting basis `"rijk"` / `"rijcosx"` use when none is named: the
 /// same default the SCF layer auto-applies for a functional.
 pub const DEFAULT_SCF_JK_AUX: &str = crate::fock_assembly::DEFAULT_JK_AUX;
+
+/// The JK-fitting basis Weigend fitted for the orbital basis `orbital`
+/// (case-insensitive bundled name): `cc-pvtz-jkfit` for cc-pVDZ and cc-pVTZ
+/// (no cc-pVDZ-JKFIT set exists; the TZ set is the DZ partner),
+/// `cc-pvqz-jkfit` for cc-pVQZ, `aug-cc-pv{d,t,q}z-jkfit` for the augmented
+/// sets, and [`DEFAULT_SCF_JK_AUX`] for every other orbital basis.
+pub fn matched_jk_aux(orbital: &str) -> &'static str {
+    match orbital.trim().to_ascii_lowercase().as_str() {
+        "cc-pvdz" | "cc-pvtz" => "cc-pvtz-jkfit",
+        "cc-pvqz" => "cc-pvqz-jkfit",
+        "aug-cc-pvdz" => "aug-cc-pvdz-jkfit",
+        "aug-cc-pvtz" => "aug-cc-pvtz-jkfit",
+        "aug-cc-pvqz" => "aug-cc-pvqz-jkfit",
+        _ => DEFAULT_SCF_JK_AUX,
+    }
+}
 
 /// The accepted `scf_jk` spellings, in the order error messages list them.
 pub const SCF_JK_MODES: &[&str] = &["exact", "rijk", "rijcosx"];
@@ -68,8 +85,11 @@ impl ScfJkMode {
 /// user actually typed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScfJkKeys {
+    /// Key that selects the [`ScfJkMode`].
     pub mode: &'static str,
+    /// Key that names the JK-fitting basis.
     pub aux: &'static str,
+    /// Key that selects the exchange builder for an exact reference.
     pub k_builder: &'static str,
 }
 
@@ -88,27 +108,30 @@ impl ScfJkKeys {
     };
 }
 
-/// Why orbital-optimised MP2 accepts only an exact reference. Shared by the
-/// Python `run_oo_rimp2` and the CLI `oo-rimp2` kind.
-pub const OO_REBUILDS_EXACT_JK: &str = "orbital-optimised MP2 rebuilds exact four-centre J/K \
-     at every orbital step, and its HF energy comes from those builds, so a fitted reference \
-     would change only the starting orbitals while the result claimed a fitted SCF. Threading \
-     RI-JK through the OO Fock builds is not implemented";
+/// Why orbital-optimised MP2 refuses an RIJCOSX reference. Shared by the
+/// Python `run_oo_rimp2` / `run_optimize(method="oo-rimp2")` and the CLI
+/// `oo-rimp2` kind.
+pub const OO_BUILDS_EXACT_OR_RIJK: &str = "orbital-optimised MP2 rebuilds J/K at every \
+     orbital step on the reference's own route, which must be four-centre or RI-JK (RI-J and \
+     RI-K on one JK-fitting basis); COSX exchange has no OO route, so an RIJCOSX reference \
+     would change only the starting orbitals while the result claimed it";
 
 /// A resolved `scf_jk` choice: the mode plus the JK-fitting basis it uses
 /// (`None` exactly when the mode is [`ScfJkMode::Exact`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScfJk {
+    /// How J and K are built.
     pub mode: ScfJkMode,
+    /// JK-fitting basis name; `None` exactly when `mode` is
+    /// [`ScfJkMode::Exact`].
     pub aux: Option<String>,
-    /// The exchange builder an `"exact"` reference keeps (`k_builder` as
-    /// given, e.g. "link" or "cosx"); `None` for the fitted modes, whose
-    /// exchange the mode itself fixes.
-    pub k_builder: Option<String>,
 }
 
 impl ScfJk {
-    /// Resolve the user's `scf_jk` / `jk_aux` / `k_builder` into one choice.
+    /// Resolve the user's `scf_jk` / `jk_aux` into one choice, checking the
+    /// `k_builder` spelling next to them (`k_builder` as the user typed it,
+    /// so a conflict quotes it; the frontend parses it into the config's
+    /// [`KBuilderKind`], which an `"exact"` reference keeps).
     ///
     /// `mode = None` takes `default` (an entry point's historical behaviour,
     /// so the unset case stays bit-identical). Errors:
@@ -144,15 +167,7 @@ impl ScfJk {
             (_, None) => Some(DEFAULT_SCF_JK_AUX.to_string()),
             (_, Some(a)) => Some(checked_aux(mode, a, keys)?),
         };
-        let k_builder = match mode {
-            ScfJkMode::Exact => k_builder.map(str::to_string),
-            _ => None,
-        };
-        Ok(Self {
-            mode,
-            aux,
-            k_builder,
-        })
+        Ok(Self { mode, aux })
     }
 
     /// Does this choice density-fit the reference SCF at all?
@@ -160,14 +175,15 @@ impl ScfJk {
         self.mode != ScfJkMode::Exact
     }
 
-    /// Refuse a fitted mode on a path that cannot honour it; `why` says
-    /// what the path does instead. `"exact"` always passes.
-    pub fn require_exact(&self, keys: ScfJkKeys, why: &str) -> Result<(), String> {
-        if !self.is_fitted() {
+    /// Refuse RIJCOSX on a path that honours only four-centre or RI-JK
+    /// J/K; `why` says what the path does instead. `"exact"` and `"rijk"`
+    /// pass.
+    pub fn require_exact_or_rijk(&self, keys: ScfJkKeys, why: &str) -> Result<(), String> {
+        if self.mode != ScfJkMode::RiJCosx {
             return Ok(());
         }
         Err(format!(
-            "{m} = \"{}\" is refused here: {why}. Use {m} = \"exact\"",
+            "{m} = \"{}\" is refused here: {why}. Use {m} = \"exact\" or \"rijk\"",
             self.mode.as_str(),
             m = keys.mode
         ))
@@ -189,12 +205,13 @@ impl ScfJk {
     }
 
     /// The SCF J/K echo of a result printout: `"exact"`,
-    /// `"exact, k_builder=link"` (a non-default exchange builder on the
-    /// four-centre path), or `"<mode>(<jk aux>)"`.
-    pub fn label(&self) -> String {
-        match (&self.aux, self.k_builder.as_deref()) {
+    /// `"exact, k_builder=link"` (a non-default exchange builder, the
+    /// config's `k_builder`, on the four-centre path), or
+    /// `"<mode>(<jk aux>)"`.
+    pub fn label(&self, k_builder: Option<KBuilderKind>) -> String {
+        match (&self.aux, k_builder) {
             (Some(a), _) => format!("{}({a})", self.mode.as_str()),
-            (None, Some(kb)) if kb != "direct" => {
+            (None, Some(kb)) if kb != KBuilderKind::Direct => {
                 format!("{}, k_builder={kb}", self.mode.as_str())
             }
             (None, _) => self.mode.as_str().to_string(),
@@ -218,7 +235,7 @@ impl ScfJk {
             ScfJkMode::RiJCosx => {
                 cfg.df_j_aux = self.aux.clone();
                 cfg.df_k_aux = None;
-                cfg.k_builder = Some("cosx".to_string());
+                cfg.k_builder = Some(KBuilderKind::Cosx);
             }
         }
     }
@@ -238,7 +255,7 @@ pub struct EffectiveJk {
     /// The pluggable exchange builder the SCF actually uses: `None` when the
     /// four-centre direct builder or RI-K builds K (the SCF ignores, with a
     /// warning, a `k_builder` that density fitting overrides).
-    pub k_builder: Option<String>,
+    pub k_builder: Option<KBuilderKind>,
 }
 
 /// Classify `cfg`'s J/K fields the way the HF solvers act on them
@@ -248,17 +265,13 @@ pub struct EffectiveJk {
 pub fn effective_jk(cfg: &RhfConfig) -> EffectiveJk {
     let fit = |a: &Option<String>| a.clone().filter(|s| !s.is_empty());
     let (j_aux, k_aux) = (fit(&cfg.df_j_aux), fit(&cfg.df_k_aux));
-    let kb = cfg.k_builder.as_deref().filter(|k| *k != "direct");
-    let overridden = k_aux.is_some() || (j_aux.is_some() && kb != Some("cosx"));
-    let k_builder = if overridden {
-        None
-    } else {
-        kb.map(str::to_string)
-    };
-    let mode = match (&j_aux, &k_aux, k_builder.as_deref()) {
+    let kb = cfg.k_builder.filter(|k| *k != KBuilderKind::Direct);
+    let overridden = k_aux.is_some() || (j_aux.is_some() && kb != Some(KBuilderKind::Cosx));
+    let k_builder = if overridden { None } else { kb };
+    let mode = match (&j_aux, &k_aux, k_builder) {
         (None, None, _) => "exact",
         (Some(j), Some(k), _) if j == k => "rijk",
-        (Some(_), None, Some("cosx")) => "rijcosx",
+        (Some(_), None, Some(KBuilderKind::Cosx)) => "rijcosx",
         (Some(_), None, _) => "ri-j",
         _ => "mixed",
     };
@@ -281,7 +294,7 @@ fn check_k_builder(
             "{kbk} = \"{kb}\" conflicts with {m} = \"rijk\": RI-K builds the exchange, so \
              {kbk} would be ignored. Remove {kbk}, or use {m} = \"rijcosx\" for COSX"
         )),
-        (ScfJkMode::RiJCosx, Some(kb)) if kb != "cosx" => Err(format!(
+        (ScfJkMode::RiJCosx, Some(kb)) if !KBuilderKind::spells_cosx(kb) => Err(format!(
             "{kbk} = \"{kb}\" conflicts with {m} = \"rijcosx\", whose exchange is COSX. \
              Remove {kbk}"
         )),
@@ -316,9 +329,13 @@ mod tests {
         ScfJk::resolve(mode, aux, kb, ScfJkMode::Exact, ScfJkKeys::PYTHON).unwrap_err()
     }
 
+    fn kind(kb: Option<&str>) -> Option<KBuilderKind> {
+        KBuilderKind::parse_opt(kb).unwrap()
+    }
+
     fn applied(jk: &ScfJk, k_builder: Option<&str>) -> RhfConfig {
         let mut cfg = RhfConfig {
-            k_builder: k_builder.map(str::to_string),
+            k_builder: kind(k_builder),
             ..Default::default()
         };
         jk.apply(&mut cfg);
@@ -332,7 +349,7 @@ mod tests {
         assert_eq!(exact.aux, None);
         let cfg = applied(&exact, Some("link"));
         let plain = RhfConfig {
-            k_builder: Some("link".into()),
+            k_builder: Some(KBuilderKind::Link),
             ..Default::default()
         };
         assert_eq!(cfg.df_j_aux, plain.df_j_aux);
@@ -363,7 +380,7 @@ mod tests {
             let cfg = applied(&jk, kb);
             assert_eq!(cfg.df_j_aux.as_deref(), Some(DEFAULT_SCF_JK_AUX));
             assert_eq!(cfg.df_k_aux, None);
-            assert_eq!(cfg.k_builder.as_deref(), Some("cosx"));
+            assert_eq!(cfg.k_builder, Some(KBuilderKind::Cosx));
         }
     }
 
@@ -388,15 +405,20 @@ mod tests {
         }
         assert!(err(Some("exact"), Some("def2-universal-jkfit"), None).contains("only read"));
         assert!(err(None, Some("def2-universal-jkfit"), None).contains("only read"));
-        for kb in ["direct", "link", "cosx"] {
+        // The spelling is checked as typed: an unknown one conflicts like any
+        // other (the frontend's parse into `KBuilderKind` reports it only
+        // where no conflict does, as the solver did before).
+        for kb in ["direct", "link", "cosx", "bogus", "COSX"] {
             assert!(
-                err(Some("rijk"), None, Some(kb)).contains("conflicts"),
+                err(Some("rijk"), None, Some(kb))
+                    .contains(&format!("k_builder = \"{kb}\" conflicts")),
                 "{kb}"
             );
         }
-        for kb in ["direct", "link"] {
+        for kb in ["direct", "link", "bogus", "COSX"] {
             assert!(
-                err(Some("rijcosx"), None, Some(kb)).contains("conflicts"),
+                err(Some("rijcosx"), None, Some(kb))
+                    .contains(&format!("k_builder = \"{kb}\" conflicts")),
                 "{kb}"
             );
         }
@@ -410,42 +432,38 @@ mod tests {
     fn exact_keeps_every_k_builder() {
         for kb in ["direct", "link", "cosx"] {
             let jk = resolved(Some("exact"), None, Some(kb));
-            assert_eq!(applied(&jk, Some(kb)).k_builder.as_deref(), Some(kb));
+            assert_eq!(applied(&jk, Some(kb)).k_builder, kind(Some(kb)));
         }
     }
 
     #[test]
-    fn fitted_modes_are_refused_where_only_exact_is_honoured() {
+    fn rijcosx_is_refused_where_only_exact_or_rijk_is_honoured() {
         assert!(resolved(Some("exact"), None, Some("link"))
-            .require_exact(ScfJkKeys::PYTHON, OO_REBUILDS_EXACT_JK)
+            .require_exact_or_rijk(ScfJkKeys::PYTHON, OO_BUILDS_EXACT_OR_RIJK)
             .is_ok());
-        for m in ["rijk", "rijcosx"] {
-            let e = resolved(Some(m), None, None)
-                .require_exact(ScfJkKeys::CLI, OO_REBUILDS_EXACT_JK)
-                .unwrap_err();
-            assert!(e.contains(&format!("[scf] jk = \"{m}\" is refused")), "{e}");
-            assert!(e.contains("rebuilds exact four-centre J/K"), "{e}");
-        }
+        assert!(resolved(Some("rijk"), None, None)
+            .require_exact_or_rijk(ScfJkKeys::PYTHON, OO_BUILDS_EXACT_OR_RIJK)
+            .is_ok());
+        let e = resolved(Some("rijcosx"), None, None)
+            .require_exact_or_rijk(ScfJkKeys::CLI, OO_BUILDS_EXACT_OR_RIJK)
+            .unwrap_err();
+        assert!(e.contains("[scf] jk = \"rijcosx\" is refused"), "{e}");
+        assert!(e.contains("COSX exchange has no OO route"), "{e}");
     }
 
     #[test]
     fn label_names_a_non_default_exchange_builder_only_on_the_exact_path() {
-        assert_eq!(resolved(None, None, None).label(), "exact");
-        assert_eq!(resolved(None, None, Some("direct")).label(), "exact");
+        let label = |m, kb| resolved(m, None, kb).label(kind(kb));
+        assert_eq!(label(None, None), "exact");
+        assert_eq!(label(None, Some("direct")), "exact");
+        assert_eq!(label(Some("exact"), Some("link")), "exact, k_builder=link");
+        assert_eq!(label(Some("exact"), Some("cosx")), "exact, k_builder=cosx");
         assert_eq!(
-            resolved(Some("exact"), None, Some("link")).label(),
-            "exact, k_builder=link"
-        );
-        assert_eq!(
-            resolved(Some("exact"), None, Some("cosx")).label(),
-            "exact, k_builder=cosx"
-        );
-        assert_eq!(
-            resolved(Some("rijk"), None, None).label(),
+            label(Some("rijk"), None),
             format!("rijk({DEFAULT_SCF_JK_AUX})")
         );
         assert_eq!(
-            resolved(Some("rijcosx"), None, Some("cosx")).label(),
+            label(Some("rijcosx"), Some("cosx")),
             format!("rijcosx({DEFAULT_SCF_JK_AUX})")
         );
     }
@@ -475,19 +493,19 @@ mod tests {
             effective_jk(&RhfConfig {
                 df_j_aux: j.map(str::to_string),
                 df_k_aux: k.map(str::to_string),
-                k_builder: kb.map(str::to_string),
+                k_builder: kind(kb),
                 ..Default::default()
             })
         };
         let jk = Some(DEFAULT_SCF_JK_AUX);
         let e = route(None, None, Some("link"));
-        assert_eq!((e.mode, e.k_builder.as_deref()), ("exact", Some("link")));
+        assert_eq!((e.mode, e.k_builder), ("exact", Some(KBuilderKind::Link)));
         assert_eq!(route(Some(""), Some(""), None).mode, "exact");
         assert_eq!(route(None, None, Some("direct")).k_builder, None);
         let e = route(jk, jk, Some("link"));
         assert_eq!((e.mode, e.k_builder), ("rijk", None), "DF-K overrides link");
         let e = route(jk, None, Some("cosx"));
-        assert_eq!((e.mode, e.k_builder.as_deref()), ("rijcosx", Some("cosx")));
+        assert_eq!((e.mode, e.k_builder), ("rijcosx", Some(KBuilderKind::Cosx)));
         let e = route(jk, None, Some("link"));
         assert_eq!((e.mode, e.k_builder), ("ri-j", None), "DF-J overrides link");
         assert_eq!(route(jk, Some("cc-pvtz-jkfit"), None).mode, "mixed");

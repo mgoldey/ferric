@@ -68,10 +68,7 @@ fn run_ecp_rhf(name: &str) {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ctx = ParallelContext::default();
 
-    let cfg = RhfConfig {
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default().with_max_iter(200);
     let res = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
     assert!(res.converged, "{name}: ferric RHF did not converge");
 
@@ -117,13 +114,11 @@ fn ecp_rhf_energy(mol: &Molecule, bs: &ferric_core::basis::BasisSet) -> f64 {
     let prep = PreparedBasis::new(mol, bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        max_iter: 200,
+    let cfg = RhfConfig::default()
+        .with_max_iter(200)
         // Tight convergence: the FD reference differences two total energies, so
         // any SCF slop shows up divided by 2h and would swamp the comparison.
-        density_conv: 1e-10,
-        ..Default::default()
-    };
+        .with_density_conv(1e-10);
     let res = solve_rhf(&ctx, mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(res.converged, "FD displaced-geometry SCF did not converge");
     res.energy
@@ -150,6 +145,7 @@ fn ecp_rhf_energy(mol: &Molecule, bs: &ferric_core::basis::BasisSet) -> f64 {
 /// distinguishable: an atom-id misattribution in the derivative (libecpint
 /// indexes by its own inferred centers, not ferric's atom order) shows up here
 /// but would cancel in a homonuclear I2.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn ecp_rhf_gradient_matches_finite_difference_hi() {
     let ctx = ParallelContext::default();
@@ -168,11 +164,9 @@ fn ecp_rhf_gradient_matches_finite_difference_hi() {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        max_iter: 200,
-        density_conv: 1e-10,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_max_iter(200)
+        .with_density_conv(1e-10);
     let rhf = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(rhf.converged, "HI reference SCF did not converge");
 

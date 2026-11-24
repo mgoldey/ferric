@@ -55,12 +55,10 @@ fn setup() -> Setup {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).expect("schwarz");
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        integral_thresh: 1e-14,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10);
+    cfg.integral_thresh = 1e-14;
     let res = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).expect("rhf");
     assert!(res.converged, "reference RHF did not converge");
     let nocc = (mol.nelec() / 2) as usize;
@@ -129,6 +127,7 @@ fn build_k(s: &Setup, ctx: &ParallelContext, cfg: CosxConfig, d: &Array2<f64>) -
 /// the two differ by 1.9e-8; bars 1e-7 / 1e-8 / 1e-7.
 /// The fit's own trivial limit is `Q -> I` on a dense grid, so both series
 /// must land on the SAME matrix.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn cosx_matches_direct_k_in_the_dense_grid_limit() {
     let s = setup();
@@ -424,12 +423,10 @@ fn setup_butane() -> Setup {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).expect("schwarz");
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        integral_thresh: 1e-14,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8);
+    cfg.integral_thresh = 1e-14;
     let res = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).expect("rhf");
     assert!(res.converged, "reference RHF did not converge");
     let nocc = (mol.nelec() / 2) as usize;
@@ -458,6 +455,7 @@ fn setup_butane() -> Setup {
 /// Mutation proof (applied by hand to `BatchScreen::keep`, recorded in the
 /// commit message): using `fmax[s2]` alone instead of `max(fmax[s1], fmax[s2])`
 /// drops blocks whose MIRROR contribution `G_{s2} += A F_{s1}` is significant.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn cosx_density_driven_screen_butane_def2svp() {
     let s = setup_butane();

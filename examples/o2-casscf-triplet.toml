@@ -1,0 +1,19 @@
+# Two-step CASSCF on O2 / 6-31G: the triplet ground state as the lowest
+# M_s = 1 root of CAS(8,6), (n_alpha, n_beta) = (5, 3), above 4 core orbitals.
+#
+# The RHF start is the closed-shell singlet ([molecule] multiplicity stays 1);
+# the active-space sector sets the spin. PySCF mcscf.CASSCF on ferric's AO
+# integrals gives E = -149.6367298537 Ha, <S^2> = 2
+# (testdata/reference/casscf_o2_triplet_cas86_631g_pyscf.json).
+[molecule]
+xyz = "testdata/molecules/o2.xyz"
+
+[basis]
+name = "6-31g"
+
+[method]
+kind = "casscf"
+
+[cas]
+n_active = 6
+n_elec_active = [5, 3]

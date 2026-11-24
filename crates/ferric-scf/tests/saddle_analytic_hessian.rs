@@ -201,6 +201,7 @@ fn analytic_hessian_search_finds_the_same_saddle_for_fewer_gradients() {
     assert!(an.total_grad() < fd.total_grad());
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn recalc_every_with_analytic_hessian_costs_no_extra_gradients() {
     if !has_deriv2() {
@@ -232,28 +233,25 @@ fn recalc_every_with_analytic_hessian_costs_no_extra_gradients() {
 /// Gaussian-smeared external charges (QM/MM): analytic-supported since #358,
 /// like point charges since #343.
 fn smeared_scf() -> RhfConfig {
-    RhfConfig {
-        external_potential: Some(ExternalPotential {
-            smeared_charges: vec![
-                SmearedCharge {
-                    q: -0.4,
-                    x: 0.0,
-                    y: 0.0,
-                    z: 6.0,
-                    width: 1.0,
-                },
-                SmearedCharge {
-                    q: -0.4,
-                    x: 0.0,
-                    y: 0.0,
-                    z: -6.0,
-                    width: 1.0,
-                },
-            ],
-            ..Default::default()
-        }),
+    RhfConfig::default().with_external_potential(ExternalPotential {
+        smeared_charges: vec![
+            SmearedCharge {
+                q: -0.4,
+                x: 0.0,
+                y: 0.0,
+                z: 6.0,
+                width: 1.0,
+            },
+            SmearedCharge {
+                q: -0.4,
+                x: 0.0,
+                y: 0.0,
+                z: -6.0,
+                width: 1.0,
+            },
+        ],
         ..Default::default()
-    }
+    })
 }
 
 #[test]

@@ -4,8 +4,8 @@
 //!
 //! From the shared brief, user-level: "THE MIGRATION MUST NOT REFUSE A JOB
 //! THAT THE CURRENT TREE COMPLETES." Adding four hard charges to a crate is
-//! exactly the change that can violate it -- a plane that was never counted is
-//! now counted, and a capacity that used to work now fails.
+//! exactly the change that can violate it -- a plane that goes uncounted is
+//! counted, and a capacity that suffices without the charge can fail.
 //!
 //! # How this is measured rather than argued
 //!

@@ -9,15 +9,29 @@ There are two ways in. Most people want the first.
 
 ## Fastest: the prebuilt wheel
 
-Wheels are published to PyPI for **Linux x86_64** (`manylinux_2_28`),
-CPython 3.10–3.13, and for no other platform:
+Wheels are built for CPython 3.10–3.13 on Linux x86_64 (`manylinux_2_28`),
+macOS arm64 (macOS 11 or later) and Windows x86_64. PyPI releases up to
+0.1.0rc11 carry the Linux wheels only; later releases carry all three.
+Releases after 0.1.0rc12 carry one stable-ABI wheel per platform
+(`ferric-<version>-cp310-abi3-<platform>.whl`), which pip installs on CPython
+3.10 and every later version; each release is smoke-tested on 3.10–3.13.
+Earlier releases carry one wheel per CPython (`cp3NN-cp3NN`).
 
 | Platform | Wheel | Source build |
 |---|---|---|
-| Linux x86_64, CPython 3.10–3.13 | yes | yes (the only tested platform) |
-| Linux aarch64 | no | not tested |
-| macOS (x86_64, arm64) | not yet (wanted; no wheel is built) | not tested |
-| Windows | no | not supported: `build.rs` hardcodes Unix paths and links Unix static archives |
+| Linux x86_64 | yes | yes (the reference platform) |
+| macOS arm64 (Apple Silicon) | yes | tested in CI (platform-tests) |
+| Windows x86_64 | yes | tested in CI (platform-tests; clang-cl, not cl.exe) |
+| Linux aarch64, macOS x86_64 | no | not tested |
+
+**CPU requirement (x86_64 wheels).** The Linux and Windows wheels' OpenBLAS is
+built for one fixed kernel set, Haswell, so they need a CPU with AVX2 and FMA:
+Intel Haswell (2013) or later, AMD Excavator / Zen or later. On an older x86-64
+CPU they stop with an illegal-instruction error. The wheels do
+not use OpenBLAS's runtime CPU dispatch (`DYNAMIC_ARCH`), which once gave wrong
+numbers on a Zen 4 CI runner. On such a CPU, build from source against an
+OpenBLAS built for it. The macOS wheel needs Apple Silicon (OpenBLAS target
+VORTEX).
 
 libint2 and libxc are statically linked into the extension,
 and OpenBLAS ships inside the wheel as a bundled shared library, so nothing
@@ -60,19 +74,21 @@ cd ferric
 ferric examples/water-rhf.toml
 ```
 
-The CLI resolves `[molecule] xyz = "..."` relative to the **current directory**,
+The CLI resolves `[molecule] xyz = "..."` relative to the current directory,
 so run example files from the repository root.
 
 ### The large-libint wheel (GitHub releases)
 
 Starting with 0.1.0rc8, each [GitHub release](https://github.com/mgoldey/ferric/releases)
-also carries a second wheel for each CPython. It has the same version and
+also carries a second wheel (one per CPython up to 0.1.0rc12, one `cp310-abi3`
+wheel for all of them after that). It has the same version and
 commit as the PyPI wheel, but it is built against conda-forge's libint2
 2.13.1 (the build `scripts/install-libint.sh` installs), which it bundles as a
 shared library. Its file name carries the wheel build tag `1largeam`:
 
 ```text
-ferric-0.1.0rc8-1largeam-cp311-cp311-manylinux_2_28_x86_64.whl
+ferric-0.1.0rc8-1largeam-cp311-cp311-manylinux_2_28_x86_64.whl   # per CPython, up to 0.1.0rc12
+ferric-<version>-1largeam-cp310-abi3-manylinux_2_28_x86_64.whl   # after 0.1.0rc12
 ```
 
 Compared with the PyPI wheel it adds l = 7 shells, analytic 3- and 2-centre
@@ -86,7 +102,8 @@ reach 6 / 6 / 6, so one-electron second derivatives of g, h or i functions
 are available only in the PyPI wheel.
 
 Install the PyPI wheel first, so its dependencies are present, then swap in
-the file for your Python from the release (check it against the release's
+the file for your Python (or, after 0.1.0rc12, the one `cp310-abi3` file) from
+the release (check it against the release's
 `SHA256SUMS`):
 
 ```bash
@@ -128,16 +145,20 @@ texts ship with the release as `libint2-LICENSE.txt` and
 
 Build from source if you are changing ferric, need the MPI build, or are on a
 platform without a wheel (only Linux x86_64 is tested; see the table above).
-`ferric` links **libint2**, a C++ integral library;
+`ferric` links libint2, a C++ integral library;
 `scripts/install-libint.sh` installs a prebuilt copy in seconds.
 
 ### Prerequisites
 
-- **Rust 1.75+**: install via [rustup](https://rustup.rs/)
+- **Rust 1.87+**: install via [rustup](https://rustup.rs/)
 - **libint2 2.13.1**: the conda-forge Linux x86-64 build, which includes
   second-derivative integrals; `scripts/install-libint.sh` downloads it (checksum
   pinned) and needs `curl`, `python3`, `zstd` and `patchelf`
-- **libxc**, **OpenBLAS**, **LAPACK**, **Eigen3** and **Boost** headers
+- **libxc 7.0.0**: built from source by `scripts/install-libxc.sh` (tarball
+  checksum pinned; about ten minutes) and needs `curl`, `cmake` and `patchelf`.
+  The distribution `libxc-dev` packages are older (5.x on Ubuntu 22.04) and
+  lack the r2SCAN hybrids
+- **OpenBLAS**, **LAPACK**, **Eigen3** and **Boost** headers
 - **Python 3.10+ and maturin**: optional, for the Python bindings
 
 ### Steps (Ubuntu 22.04+)
@@ -148,14 +169,16 @@ The apt list matches what CI installs (`.github/workflows/ci.yml`).
 # 1. System dependencies
 sudo apt-get install -y build-essential cmake g++ gfortran wget git \
     libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-    libxc-dev libboost-dev patchelf zstd \
+    libboost-dev patchelf zstd \
     python3-dev python3-pip python3-venv
 
-# 2. Get ferric and install libint2 (seconds)
+# 2. Get ferric, install libint2 (seconds) and build libxc (minutes)
 git clone https://github.com/mgoldey/ferric
 cd ferric
 scripts/install-libint.sh ~/.local/libint2-2.13.1
 export LIBINT2_PREFIX=~/.local/libint2-2.13.1
+scripts/install-libxc.sh ~/.local/libxc-7.0.0
+export LIBXC_PREFIX=~/.local/libxc-7.0.0
 
 # 3. Build ferric
 cargo build --release
@@ -167,6 +190,11 @@ OPENBLAS_NUM_THREADS=1 ./target/release/ferric examples/water-rhf.toml
 The last line should end with `converged  = true` and
 `energy     = -74.9631468000 Hartree`, as shown in the
 [first calculation](./quickstart.md).
+
+`LIBXC_PREFIX` is read by `crates/ferric-dft/build.rs`; unset, it defaults to
+the installer's `~/.local/libxc-7.0.0` when that exists and otherwise links
+whatever `libxc` the linker finds. Like the libint2 script, `install-libxc.sh`
+records the library's absolute path in every binary that links it.
 
 `LIBINT2_PREFIX` is read by `crates/ferric-integrals/build.rs`; unset, it
 defaults to the installer's `~/.local/libint2-2.13.1` when that exists, and to
@@ -189,8 +217,9 @@ OPENBLAS_NUM_THREADS=1 cargo test --workspace
 `.cargo/config.toml` sets `OPENBLAS_NUM_THREADS=1` for cargo-invoked
 processes only when the variable is unset (its `[env]` entry has no
 `force = true`, so an exported value wins). The prefix above makes this command
-use 1 regardless of your shell. Do not raise it above 1; see
-[Threading](#threading).
+use 1 regardless of your shell; see [Threading](#threading). It also sets
+`FERRIC_BLAS_THREADS=1` (tests run concurrently in one process, and the BLAS
+thread count is process-wide) and `RUST_MIN_STACK` to 64 MiB.
 The Python binding tests are pytest, not cargo; see
 [CONTRIBUTING.md](https://github.com/mgoldey/ferric/blob/main/CONTRIBUTING.md).
 
@@ -200,7 +229,7 @@ The Python binding tests are pytest, not cargo; see
   iterating on Rust code. It catches `debug_assert!` violations and integer
   overflow that release builds silently allow.
 - **Release** (`cargo build --release`): slow to compile, fast to run. Use it
-  for anything you will actually wait on: real molecules, benchmarks, and any
+  for anything you will wait on: real molecules, benchmarks, and any
   RPA/GW/CC job.
 
 ### Python bindings from source
@@ -220,7 +249,7 @@ stale build keeps getting imported.
 Each release publishes an sdist next to the wheels, so
 `pip download ferric==<version> --no-binary :all:` succeeds. The sdist holds
 the Rust workspace crates the extension depends on, `Cargo.lock` and the
-vendored libecpint. It does **not** hold libint2, and it is not a
+vendored libecpint. It does not hold libint2, so it is not a
 self-contained build: `pip install` from it needs everything in
 [Prerequisites](#prerequisites) already present, with `LIBINT2_PREFIX` set to a
 libint2 install. The libint2 source is generated and too large to bundle (the
@@ -301,8 +330,8 @@ another checkout.
 
 ## MPI
 
-MPI is a **source build only**. There is no MPI wheel on PyPI: the wheels
-workflow deliberately does not publish one.
+MPI is a source build only. The wheels workflow publishes no MPI wheel to
+PyPI.
 
 ```bash
 sudo apt-get install -y libopenmpi-dev openmpi-bin libclang-dev
@@ -319,13 +348,13 @@ not supported: their `libmpi.so.12` ABI differs from OpenMPI 4.x's
 The CLI is SPMD by design: `mpirun -np N ferric input.toml` runs one rank per
 process.
 
-`mpirun -np N python script.py` is **not supported**. The bindings expose no
+`mpirun -np N python script.py` is not supported. The bindings expose no
 rank or world-size accessor, so `if rank == 0` cannot be written. Every rank
 runs the whole script, prints N times, and races on the same output files.
 
 ## GPU (CUDA)
 
-The CUDA backend is a **source build only** and is off by default even when built in.
+The CUDA backend is a source build only and is off by default even when built in.
 
 ```bash
 cargo build --release -p ferric-cli --features ferric-cli/gpu
@@ -342,20 +371,35 @@ What runs on the device, under `mode = "auto"` or `"on"`:
 - Mixed applies to the RI-MP2 energy under the Coulomb, erfc and terfc operators, closed-shell or unrestricted (plain RI-MP2, attenuated RI-MP2, SCS-MP2 with two terfc operators, the MP2 half of att-MP2+VV10); the erf operator, composite fitted operators, SR-MP2 in RS-MP2+RPA, OO-MP2 and kappa-regularised runs use the f64 device kernel.
 - The density-fitted Coulomb matrix (RI-J): the raw three-index tensor is stored on the card once per geometry (packed lower triangle, f64) and each J build moves only the density weights and the result.
 - The density-fitted exchange matrix (DF-K, occupied-orbital path): the dressed three-index tensor is stored on the card once per geometry and each K build moves only the occupied coefficients and the result, in f64.
-- The Kohn-Sham exchange-correlation grid (closed- and open-shell, LDA, GGA and meta-GGA), **only under `mode = "on"`** (or a preset that sets it): `auto` keeps the XC grid on the CPU, because the device path was measured slower than the CPU. Measured on a GTX 1080 (Pascal, sm_61), PBE/cc-pVDZ SCF wall time: benzene 2.0 s on the CPU, 3.6 s with the device XC grid in f64 and 5.5-6.8 s in mixed; n-octane 8.5-8.9 s, 18-23 s and 17 s; each device XC build took 2.2-3x the host time (6-core host, `RAYON_NUM_THREADS=3`). With `mode = "on"` the screened per-batch basis-function values are stored on the card once per grid, and each Fock build runs the two per-batch matrix products (density `Φ = D·χ` and potential `V = A·χᵀ`) on the device in f64; naming `xc-vxc` in `mixed_kernels` (with `precision = "mixed"`) forms the potential product from f32 operands with f64 accumulation while the SCF density is still changing (opt-in; it is not in the default mixed set). Grid construction, screening, the libxc functional evaluation, the density reductions and the fixed-order V accumulation stay on the CPU, so the result is reproducible and independent of the thread count. The VV10 nonlocal grid and XC gradients run on the CPU.
+- The Kohn-Sham exchange-correlation grid (closed- and open-shell, LDA, GGA and meta-GGA), only under `mode = "on"` (or a preset that sets it): `auto` keeps the XC grid on the CPU, because the device path was measured slower than the CPU (see [Measured timings](#measured-timings-gtx-1080) below). With `mode = "on"` the screened per-batch basis-function values are stored on the card once per grid, and each Fock build runs the two per-batch matrix products (density `Φ = D·χ` and potential `V = A·χᵀ`) on the device in f64; naming `xc-vxc` in `mixed_kernels` (with `precision = "mixed"`) forms the potential product from f32 operands with f64 accumulation while the SCF density is still changing (opt-in; it is not in the default mixed set). Grid construction, screening, the libxc functional evaluation, the density reductions and the fixed-order V accumulation stay on the CPU, so the result is reproducible and independent of the thread count. The VV10 nonlocal grid and XC gradients run on the CPU.
 
 RI-J and DF-K run on the CPU when their tensor does not fit the device pool (or, for DF-K, is spilled or recomputed on the host) and under multi-rank MPI; the notice names the reason. When one SCF has both and the pool cannot hold both, DF-K gets the device. The XC grid runs on the CPU when its basis-function blocks do not fit what is left of the device pool, or after any device error (the notice names the reason; the failed pass is recomputed on the CPU). Integrals, SCF diagonalisation, DIIS and grid construction run on the CPU. Device results are reproducible run to run on one device and agree with the CPU to the accuracy of a different summation order, not bit for bit.
+
+### Measured timings (GTX 1080)
+
+One host and one card: 6-core x86 host, NVIDIA GeForce GTX 1080 (Pascal, compute capability 6.1, 8 GB; 4.21 GB device pool, because other processes held about 3 GB of the card), driver 580.178.04 with the CUDA 12 libraries, release `ferric` binary built from commit c3187b873, `OPENBLAS_NUM_THREADS=1`, `RAYON_NUM_THREADS=6`. These figures are **one run per cell** (2026-11-06), taken while the box was otherwise idle: below 0.5 busy CPU cores and GPU 0 at 0% before each run. They are not medians, and they do not carry over to another card. `wall` is the run log's `run_end.wall_s`; `setup` is the time to the first SCF iteration (integrals, the device uploads, the guess); `loop` is the first to the last SCF iteration.
+
+| Input | `off` (CPU) | `auto` | `on` | `mixed` |
+|---|---|---|---|---|
+| RHF, RI-J + DF-K, n-octane/def2-TZVP (nbf 356) | 6.52 s (setup 3.07, loop 3.26) | — | 5.95 s (setup 3.68, loop 2.10) | — |
+| PBE, RI-J, n-octane/cc-pVDZ (nbf 202) | 2.91 s (loop 1.56) | 2.83 s (loop 1.34): RI-J on the device | 4.83 s (loop 3.00): RI-J and the XC grid on the device | — |
+| RI-MP2 on an RI-JK RHF, n-dodecane/cc-pVDZ (nbf 298) | 10.76 s | — | 11.07 s | 10.61 s |
+
+On this card the device saves time in the RI-JK SCF loop (device DF-K and RI-J: 3.26 to 2.10 s), less than that over the whole run because the uploads add about 0.6 s of setup. RI-J alone is within run-to-run noise of the CPU. The XC grid is slower on the device (SCF loop 1.9x the CPU), which is why `auto` leaves it on the CPU. The RI-MP2 runs, f64 or mixed, are within about 4% of the CPU run. Every device run gave the CPU SCF energy to within 6.8e-13 Eh in the same number of iterations; the f64 RI-MP2 total agreed to 6.8e-13 Eh and the mixed one to 5.5e-11 Eh. Starting the device costs about 0.2 s per process (PBE water/cc-pVDZ: 0.37 s on the CPU, 0.60 s with `on`). The very first device run on this box (a freshly built binary) took 16 s of process wall time for that same input, against 0.6 s for every run after it; the cause was not investigated.
 
 The shortest way to use the device is one line in the input, `gpu = "on"` (f64) or `gpu = "mixed"`, or `ferric --gpu mixed input.toml` on the command line (the flag overrides the input file and `FERRIC_GPU_PRESET`). The [`[gpu]` table](../reference/input.md#gpu) in the input reference lists the keys and what each preset turns on.
 
 ## Threading
 
-The `ferric` binary and `import ferric` pin OpenBLAS to one thread when
-`OPENBLAS_NUM_THREADS` is unset, and honour the variable when it is set
-(`cargo` sets it to 1 through `.cargo/config.toml`, but only when it is unset,
-so an exported value reaches cargo-launched processes). Leave it unset or at 1.
-ferric uses rayon for its parallelism; a threaded OpenBLAS on top of that
-oversubscribes the machine, and its LU routines can crash when called from
-rayon workers. For throughput
-across many independent jobs, prefer many single-threaded processes over one
-multi-threaded job.
+`RAYON_NUM_THREADS` sets ferric's thread count (default: every logical CPU;
+the physical core count is usually faster). Parallel regions run OpenBLAS at
+one thread unless `OPENBLAS_NUM_THREADS` is set (`cargo` sets it to 1 through
+`.cargo/config.toml`, only when it is unset); leave it unset, since rayon ×
+BLAS threads above the core count oversubscribes the machine. Serial sections
+(the per-iteration Fock diagonalization and DIIS commutator, other dense linear
+algebra between parallel regions) run OpenBLAS at
+[`[parallel] blas_threads`](../reference/input.md#parallel), default the rayon
+thread count; set it to 1 for results bit-identical across thread counts. See
+[Sharp bits](./sharp-bits.md#two-blas-thread-counts-parallel-regions-and-serial-sections).
+For throughput across many independent jobs, prefer many single-threaded
+processes over one multi-threaded job.

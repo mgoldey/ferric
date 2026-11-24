@@ -51,13 +51,11 @@ fn assert_decline_does_not_declare_convergence(what: &str, cfg_diis: RhfConfig) 
 
     let r_diis = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg_diis).unwrap();
 
-    let cfg_trah = RhfConfig {
-        trah_trigger: Some(1e-3),
-        trah: TrahConfig {
-            predicted_min: 1e-6,
-            ..TrahConfig::default()
-        },
-        ..cfg_diis.clone()
+    let mut cfg_trah = cfg_diis.clone();
+    cfg_trah.trah_trigger = Some(1e-3);
+    cfg_trah.trah = TrahConfig {
+        predicted_min: 1e-6,
+        ..TrahConfig::default()
     };
     let d0 = TRAH_NULL_STEPS_DECLINED.load(Ordering::Relaxed);
     let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg_trah).unwrap();
@@ -85,27 +83,24 @@ fn assert_decline_does_not_declare_convergence(what: &str, cfg_diis: RhfConfig) 
 
 /// ONE test, two sequential cases, so the counter delta belongs to each case
 /// alone (see the module doc).
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn declined_null_step_does_not_declare_convergence() {
     assert_decline_does_not_declare_convergence(
         "RHF/H2O/cc-pVDZ",
-        RhfConfig {
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            max_iter: 200,
-            level_shift: 0.2,
-            ..Default::default()
-        },
+        RhfConfig::default()
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8)
+            .with_max_iter(200)
+            .with_level_shift(0.2),
     );
     assert_decline_does_not_declare_convergence(
         "RKS/PBE/H2O/cc-pVDZ",
-        RhfConfig {
-            xc: Some("PBE".into()),
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            max_iter: 200,
-            level_shift: 0.0,
-            ..Default::default()
-        },
+        RhfConfig::default()
+            .with_xc("PBE")
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8)
+            .with_max_iter(200)
+            .with_level_shift(0.0),
     );
 }

@@ -47,6 +47,7 @@ use ferric_scf::hessian_df_stencil::{
     eri2_deriv2_block, eri2_deriv2_contract, eri3_deriv2_block, eri3_deriv2_contract,
     weight_c_times_d, weight_matrix, StencilConfig, Variant,
 };
+use ferric_testkit::compare::max_abs;
 use ndarray::Array2;
 use std::sync::OnceLock;
 
@@ -432,6 +433,7 @@ fn stencil_is_translationally_invariant_and_symmetric() {
 
 // ----------------------------------------------------------- accuracy
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn oracle_step_sweep() {
     let sys = water();
@@ -708,10 +710,6 @@ fn table_contract2(t: &Elems, m: &Array2<f64>, na: usize) -> Array2<f64> {
         }
         acc
     })
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0f64, |m, v| m.max(v.abs()))
 }
 
 /// Bar on the contracted drivers (weights O(1) over ~10^4..10^5 integrals, so

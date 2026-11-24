@@ -3,29 +3,20 @@
 //! was committed last, this budget exited 1 at the raw tensor's charge. Derived
 //! from the tensor's bytes so it stays in that band if basis data changes.
 //!
-//! Water on the default grid at one thread has `L` = 11.05 `T`, so 11.5 `T` is
-//! inside the old `[L, L + T)` band, and XC cannot fit beside raw's `T`.
+//! Water on the flat 75 x 110 grid at one thread has `L` = 11.05 `T`, so
+//! 11.5 `T` is inside the old `[L, L + T)` band, and XC cannot fit beside raw's
+//! `T`. The run pins that grid (`grid_prune = "none"`, no weight cutoff), since
+//! the band is derived from its XC working set.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
-/// See `ccsd_dispatch.rs`: paths baked in at compile time do not survive a nextest
-/// archive.
-fn ferric_cli_bin() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        // .../target/<profile>/deps/<test-binary>  ->  .../target/<profile>/
-        if let Some(profile_dir) = exe.parent().and_then(Path::parent) {
-            let p = profile_dir.join("ferric-cli");
-            if p.is_file() {
-                return p;
-            }
-        }
-    }
-    PathBuf::from(env!("CARGO_BIN_EXE_ferric-cli"))
-}
+#[path = "support/cli_bin.rs"]
+mod cli_bin;
+use cli_bin::ferric_cli_bin;
 
 /// Workspace root, resolved at RUN TIME.
 ///
@@ -68,6 +59,8 @@ fn a_budget_that_holds_raw_but_not_xc_runs_and_says_so() {
     let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let aux = basis::bundled("def2-universal-jkfit").unwrap();
     let aux = PreparedBasis::new(&mol, &aux).unwrap();
+    // The budget is sized against the square f64 RI-J tensor, so the run pins
+    // `ri_j_precision = "f64"` (the default f32 tensor is half this size).
     let tensor = aux.nbasis() * obs.nbasis() * obs.nbasis() * 8;
     let budget_gb = (23 * tensor / 2) as f64 / (1u64 << 30) as f64;
 
@@ -82,7 +75,8 @@ fn a_budget_that_holds_raw_but_not_xc_runs_and_says_so() {
             "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n\
              [basis]\nname = \"cc-pvdz\"\n\
              [method]\nkind = \"ksdft\"\n\
-             [dft]\nfunctional = \"PBE\"\n\
+             [scf]\nri_j_precision = \"f64\"\n\
+             [dft]\nfunctional = \"PBE\"\ngrid_prune = \"none\"\ngrid_weight_cut = 0\n\
              [memory]\nbudget_gb = {budget_gb:.9}\n"
         ),
     )

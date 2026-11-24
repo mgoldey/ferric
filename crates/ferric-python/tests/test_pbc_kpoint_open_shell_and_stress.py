@@ -546,16 +546,10 @@ def test_monkhorst_pack_full_stress_tensor_matches_fd(basis, route):
 
 
 def test_open_shell_refusals_have_exact_wording(basis):
-    # k-point ROKS SCAN / r2SCAN: the energy runs on the dense J/K (#498,
-    # test_pbc_open_shell_mgga_energy.py); the force and stress (library work
-    # in progress, not wired) and the RS-GDF J/K are refused by name.
+    # k-point ROKS SCAN / r2SCAN: the energy, force and stress run on the
+    # dense J/K (#498, test_pbc_open_shell_mgga_energy.py,
+    # test_pbc_kroks_mgga_derivs.py); the RS-GDF J/K is refused by name.
     for f in ("SCAN", "r2SCAN"):
-        with pytest.raises(
-            ValueError,
-            match=rf"^run_roks_kpts: with_stress: .*{f}: the k-point ROKS meta-GGA "
-            r"force and stress",
-        ):
-            _roks(H3_ATOMS, basis, f, with_stress=True)
         with pytest.raises(
             ValueError,
             match=rf'^run_roks_kpts: functional "{f}": the k-point ROKS SCAN / r2SCAN '

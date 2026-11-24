@@ -58,9 +58,9 @@
 //!   control sets `df_j_aux = Some("")` (explicit four-centre J) against plain
 //!   PySCF. The open-shell solvers do NOT auto-default (uhf.rs/rohf.rs read
 //!   `df_j_aux` verbatim), so UKS/ROKS set `Some(AUX)` explicitly.
-//! * State: ferric's stability analysis SKIPS meta-GGAs
-//!   (`StabilitySkip::MetaGga`: no τ-dependent f_xc). The UKS state is pinned
-//!   by the energy and ⟨S²⟩ matching PySCF's stability-followed reference.
+//! * State: the UKS state is pinned by the energy and ⟨S²⟩ matching PySCF's
+//!   stability-followed reference (this row does not run ferric's stability
+//!   analysis).
 //!
 //! # Physics hypothesis vs artifact hypothesis (per the Experimental Protocol)
 //!
@@ -123,14 +123,21 @@ use std::path::{Path, PathBuf};
 use ferric_core::basis::{self, BasisSet};
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_core::FerricError;
+use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_scf::ks_gradient::{ks_gradient_closed, ks_gradient_roks, ks_gradient_uks};
+use ferric_scf::df_j::RiJPrecision;
+use ferric_scf::ks_gradient::{
+    ks_gradient_closed_with_exchange_on_grids, ks_gradient_roks_with_exchange_on_grids,
+    ks_gradient_uks_with_exchange_on_grids, KsGradGrids,
+};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::{solve_uhf, solve_uhf_with_guess};
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use rayon::prelude::*;
 use serde_json::Value;
@@ -208,12 +215,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 /// A `(natoms, 3)` gradient stored as a list of rows at JSON pointer `ptr`.
 fn grad_at(v: &Value, ptr: &str, ctx: &str) -> Array2<f64> {
     let rows = v
@@ -274,7 +275,7 @@ fn load_system(system: &str, basis_name: &str, reference: &Value) -> System {
     let label = format!("{system}/{basis_name}");
     // Geometry like-for-like FIRST: a constant or unit slip fails here as a
     // geometry defect, not later as an unexplained gradient offset.
-    let enuc_ref = num(reference, "/nuclear_repulsion", &label);
+    let enuc_ref = num_ctx(reference, "/nuclear_repulsion", &label);
     let enuc = mol.nuclear_repulsion();
     assert!(
         (enuc - enuc_ref).abs() < TOL_ENUC,
@@ -300,6 +301,93 @@ fn load_system(system: &str, basis_name: &str, reference: &Value) -> System {
     }
 }
 
+/// The grids the SCFs here run on (`rks_config` / `open_config` pin
+/// `dft_grid` to the reference's flat (75,110) grid; default VV10 grid).
+fn ref_grids() -> KsGradGrids {
+    KsGradGrids {
+        main: AtomicGridConfig::default(),
+        nlc: AtomicGridConfig::default_nlc(),
+    }
+}
+
+/// `ks_gradient_closed` differentiated on [`ref_grids`], the SCF's grid.
+#[allow(clippy::too_many_arguments)]
+fn ks_gradient_closed(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    xc: &str,
+    res: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+) -> Result<Array2<f64>, FerricError> {
+    ks_gradient_closed_with_exchange_on_grids(
+        mol,
+        prep,
+        bs,
+        op,
+        bounds,
+        xc,
+        res,
+        ext,
+        None,
+        &ref_grids(),
+    )
+}
+
+/// `ks_gradient_uks` differentiated on [`ref_grids`], the SCF's grid.
+#[allow(clippy::too_many_arguments)]
+fn ks_gradient_uks(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    xc: &str,
+    res: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+) -> Result<Array2<f64>, FerricError> {
+    ks_gradient_uks_with_exchange_on_grids(
+        mol,
+        prep,
+        bs,
+        op,
+        bounds,
+        xc,
+        res,
+        ext,
+        None,
+        &ref_grids(),
+    )
+}
+
+/// `ks_gradient_roks` differentiated on [`ref_grids`], the SCF's grid.
+#[allow(clippy::too_many_arguments)]
+fn ks_gradient_roks(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    xc: &str,
+    res: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+) -> Result<Array2<f64>, FerricError> {
+    ks_gradient_roks_with_exchange_on_grids(
+        mol,
+        prep,
+        bs,
+        op,
+        bounds,
+        xc,
+        res,
+        ext,
+        None,
+        &ref_grids(),
+    )
+}
+
 /// Closed-shell config. `j = "rij"` leaves `df_j_aux` UNSET on purpose: that
 /// is ferric's default KS path (auto RI-J with def2-universal-jkfit), and the
 /// caller asserts the SCF recorded it. `j = "exact"` opts out explicitly.
@@ -309,27 +397,36 @@ fn rks_config(xc: &str, j: &str) -> RhfConfig {
         "exact" => Some(String::new()),
         other => panic!("unknown J mode {other}"),
     };
-    RhfConfig {
-        xc: Some(ferric_xc(xc).into()),
-        df_j_aux,
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 500,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_xc(ferric_xc(xc))
+        // The PySCF references fit J in f64; pin it (the f32 RI-J default's
+        // storage rounding is 1e-7..1e-6 Ha, far above this test's bar).
+        .with_ri_j_precision(RiJPrecision::F64)
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(500)
+        // The references are PySCF on the flat (75,110) grid (gen_mgga_gradients.py:
+        // prune=None), not the pruned KS default AtomicGridConfig::production().
+        .with_dft_grid(AtomicGridConfig::default());
+    c.df_j_aux = df_j_aux;
+    c
 }
 
 /// Open-shell config: the UHF/ROHF solvers read `df_j_aux` verbatim (no
 /// auto-default), so RI-J is requested explicitly to match PySCF `density_fit`.
 fn open_config(xc: &str) -> RhfConfig {
-    RhfConfig {
-        xc: Some(ferric_xc(xc).into()),
-        df_j_aux: Some(AUX.into()),
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 500,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc(ferric_xc(xc))
+        .with_df_j_aux(AUX)
+        // The PySCF references fit J in f64; pin it (the f32 RI-J default's
+        // storage rounding is 1e-7..1e-6 Ha, far above this test's bar).
+        .with_ri_j_precision(RiJPrecision::F64)
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(500)
+        // The references are PySCF on the flat (75,110) grid (gen_mgga_gradients.py:
+        // prune=None), not the pruned KS default AtomicGridConfig::production().
+        .with_dft_grid(AtomicGridConfig::default())
 }
 
 fn assert_j_route(res: &ScfResult, j: &str, ctx: &str) {
@@ -432,7 +529,7 @@ fn run_closed(system: &str, basis_name: &str, other_basis: &str) {
             assert_j_route(&res, j, &ctx);
 
             let key = format!("/rks_{xc}_{j}");
-            let e_ref = num(&r, &format!("{key}/energy"), &ctx);
+            let e_ref = num_ctx(&r, &format!("{key}/energy"), &ctx);
             let de = (res.energy - e_ref).abs();
             eprintln!(
                 "{ctx}: E ferric {:.10} ref {e_ref:.10} |d| {de:.2e}",
@@ -535,10 +632,10 @@ fn run_uks(system: &str, basis_name: &str) {
         assert_j_route(&res, "rij", &ctx);
 
         // State first: energy and ⟨S²⟩ (ferric skips meta-GGA stability).
-        let e_ref = num(&r, &format!("{key}/energy"), &ctx);
+        let e_ref = num_ctx(&r, &format!("{key}/energy"), &ctx);
         let de = (res.energy - e_ref).abs();
         let s2 = s_squared(&res, &s, na, nb);
-        let s2_ref = num(&r, &format!("{key}/s_squared"), &ctx);
+        let s2_ref = num_ctx(&r, &format!("{key}/s_squared"), &ctx);
         eprintln!(
             "{ctx}: E ferric {:.10} ref {e_ref:.10} |d| {de:.2e}; <S2> {s2:.8} ref {s2_ref:.8}",
             res.energy
@@ -626,7 +723,7 @@ fn mgga_gradient_roks_nh2_631g_vs_pyscf_fd() {
         .unwrap_or_else(|e| panic!("{ctx}: SCF failed: {e:?}"));
         assert!(res.converged, "{ctx}: SCF did not converge");
         assert_j_route(&res, "rij", &ctx);
-        let e_ref = num(&r, &format!("{key}/energy"), &ctx);
+        let e_ref = num_ctx(&r, &format!("{key}/energy"), &ctx);
         let de = (res.energy - e_ref).abs();
         eprintln!(
             "{ctx}: E ferric {:.10} ref {e_ref:.10} |d| {de:.2e}",
@@ -763,11 +860,9 @@ fn mgga_gradient_closed_h2o_631g_r2scan_vs_own_fd() {
     .unwrap();
     // Every displaced SCF starts from the reference density (a fresh guess can
     // land a ± twin in another basin and fabricate an FD "gradient").
-    let seeded = RhfConfig {
-        init_guess_density: Some(res.density_r().clone()),
-        use_sad_guess: false,
-        ..cfg
-    };
+    let seeded = cfg
+        .with_init_guess_density(res.density_r().clone())
+        .with_guess(ferric_scf::options::Guess::Core);
     let bs = sys.bs.clone();
     let energy = |m: &Molecule| {
         let prep = PreparedBasis::new(m, &bs).unwrap();

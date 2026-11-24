@@ -213,13 +213,17 @@ fn hene_coupling_capped(r_ang: f64, use_sad: bool, max_outer: usize) -> Option<P
     // Both diabats constrain the SAME fragment (He) to different populations,
     // so the two weight matrices are identical and only the target differs.
     // A: N(He) = 2 -> the hole sits on Ne.  B: N(He) = 1 -> hole on He.
-    let mk = |target: f64| RhfConfig {
-        constraints: vec![Constraint {
+    let mk = |target: f64| {
+        let mut c = RhfConfig::default()
+            .with_dft_grid(gcfg.clone())
+            .with_level_shift(0.5)
+            .with_max_iter(400);
+        c.constraints = vec![Constraint {
             fragment: vec![0],
             spin: SpinChannel::Total,
             target,
-        }],
-        cdft_lambda_tol: 1e-2,
+        }];
+        c.cdft_lambda_tol = 1e-2;
         // Pinned so "this path converges" is not also an assertion about
         // how many outer iterations a particular CPU needs -- CI and this
         // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
@@ -229,13 +233,10 @@ fn hene_coupling_capped(r_ang: f64, use_sad: bool, max_outer: usize) -> Option<P
         // by paths that NEVER converge (each wasted outer iteration runs a
         // full inner SCF). At 64 this file took 462 s; the non-convergent
         // R = 2.5/3.0 sigma points burn the whole cap before failing.
-        cdft_max_outer: max_outer,
-        fractional_occ: false,
-        dft_grid: Some(gcfg.clone()),
-        level_shift: 0.5,
-        max_iter: 400,
-        use_sad_guess: use_sad,
-        ..Default::default()
+        c.cdft_max_outer = max_outer;
+        c.fractional_occ = false;
+        c.use_sad_guess = use_sad;
+        c
     };
 
     let ra = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &mk(2.0)).ok()?;
@@ -342,6 +343,7 @@ fn report(tag: &str, pts: &[Point]) {
 /// Asserts only that the experiment was actually performed (both series
 /// produced points at a common R). The verdict is drawn from the printed
 /// numbers by the tests below, each of which asserts exactly one thing.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn s_ab_pre_fix_versus_post_fix() {
     let pi_ref = series(false);
@@ -380,6 +382,7 @@ fn s_ab_pre_fix_versus_post_fix() {
 /// If this ever fails because such a point no longer exists, the correct
 /// response is to RE-DERIVE the explanation from the new data, not to delete
 /// the test — the failure message says so.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn a_sigma_sigma_hole_pair_still_has_tiny_overlap() {
     let sigma_ref = series(true);
@@ -426,6 +429,7 @@ fn a_sigma_sigma_hole_pair_still_has_tiny_overlap() {
 /// Pinning this matters because it is what distinguishes "the overlap is small
 /// for a physical reason we understand" from "the pairing hit a degenerate
 /// branch". Only the former licenses reporting the lane as explained.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn s_ab_is_carried_by_a_single_beta_singular_value() {
     use ferric_scf::cdft_coupling::biorth_pairing;
@@ -614,21 +618,22 @@ fn he2_plus_s_ab_is_monotone_and_unchanged() {
         let chi = eval_basis_on_points(&mol, &bs, &pts).unwrap();
         let w0 = build_weight_matrix(&mol, &grid, &chi, &[0]);
         let w1 = build_weight_matrix(&mol, &grid, &chi, &[1]);
-        let mk = |frag: usize| RhfConfig {
-            constraints: vec![Constraint {
+        let mk = |frag: usize| {
+            let mut c = RhfConfig::default()
+                .with_dft_grid(gcfg.clone())
+                .with_level_shift(0.2);
+            c.constraints = vec![Constraint {
                 fragment: vec![frag],
                 spin: SpinChannel::Total,
                 target: 1.0,
-            }],
-            cdft_lambda_tol: 1e-2,
+            }];
+            c.cdft_lambda_tol = 1e-2;
             // Pinned so "this path converges" is not also an assertion about
             // how many outer iterations a particular CPU needs -- CI and this
             // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
-            cdft_max_outer: 40,
-            fractional_occ: false,
-            dft_grid: Some(gcfg.clone()),
-            level_shift: 0.2,
-            ..Default::default()
+            c.cdft_max_outer = 40;
+            c.fractional_occ = false;
+            c
         };
         let ra = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &mk(0)).unwrap();
         let rb = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &mk(1)).unwrap();

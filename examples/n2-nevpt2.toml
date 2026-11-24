@@ -1,0 +1,18 @@
+# SC-NEVPT2 on a CASSCF reference: N2 / 6-31G, CAS(6,6) above 4 core orbitals.
+#
+# The eight class energies match PySCF mrpt.NEVPT on PySCF's own CASSCF to the
+# bar of crates/ferric-ci/tests/nevpt2.rs (testdata/reference/nevpt2_refs.json,
+# system "n2"). Python ferric.run_nevpt2(mol, ferric.BasisSet.bundled("6-31g"),
+# 6, (3, 3)) gives the same numbers bit for bit.
+[molecule]
+xyz = "testdata/molecules/n2.xyz"
+
+[basis]
+name = "6-31g"
+
+[method]
+kind = "nevpt2"
+
+[cas]
+n_active = 6
+n_elec_active = [3, 3]

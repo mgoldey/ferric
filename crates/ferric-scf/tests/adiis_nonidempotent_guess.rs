@@ -42,12 +42,10 @@ fn water() -> Water {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        max_iter: 100,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10)
+        .with_max_iter(100);
     let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(r.converged);
     Water {
@@ -60,15 +58,13 @@ fn water() -> Water {
 }
 
 fn run(w: &Water, flavor: DiisFlavor, guess: Option<&ndarray::Array2<f64>>) -> ScfResult {
-    let cfg = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 100,
-        diis_flavor: flavor,
-        diis_switch_thresh: 1e-1,
-        init_guess_density: guess.cloned(),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(100);
+    cfg.diis_flavor = flavor;
+    cfg.diis_switch_thresh = 1e-1;
+    cfg.init_guess_density = guess.cloned();
     solve_rhf(
         &ParallelContext::default(),
         &w.mol,
@@ -87,11 +83,9 @@ fn the_scaled_guess_energy_is_below_the_ground_state() {
     let w = water();
     let d = &w.d_conv * 1.25;
     // One SCF iteration reports the energy of the guess density.
-    let cfg = RhfConfig {
-        max_iter: 1,
-        init_guess_density: Some(d),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_max_iter(1)
+        .with_init_guess_density(d);
     let r = solve_rhf(
         &ParallelContext::default(),
         &w.mol,
@@ -151,6 +145,7 @@ fn adiis_and_ediis_match_plain_diis_from_the_default_guess() {
 /// trace but occupations above 1, and its energy lies ~1.5 Ha below the ground
 /// state on this molecule, so before the veto ADIIS and EDIIS both stopped at
 /// iteration 3 with `converged = true` 0.42 Ha too high.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn adiis_and_ediis_do_not_falsely_converge_from_the_default_minao_guess() {
     let mol = Molecule::load_xyz("../../testdata/molecules/sulfamethoxazole.xyz").unwrap();
@@ -159,14 +154,12 @@ fn adiis_and_ediis_do_not_falsely_converge_from_the_default_minao_guess() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let solve = |flavor| {
-        let cfg = RhfConfig {
-            energy_conv: 1e-8,
-            density_conv: 1e-6,
-            max_iter: 100,
-            diis_flavor: flavor,
-            diis_switch_thresh: 1e-1,
-            ..Default::default()
-        };
+        let mut cfg = RhfConfig::default()
+            .with_energy_conv(1e-8)
+            .with_density_conv(1e-6)
+            .with_max_iter(100);
+        cfg.diis_flavor = flavor;
+        cfg.diis_switch_thresh = 1e-1;
         solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap()
     };
     let plain = solve(DiisFlavor::Pulay);

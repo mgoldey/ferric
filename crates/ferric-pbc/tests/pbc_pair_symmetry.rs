@@ -25,7 +25,7 @@
 //!    evaluations. Derivation (measure-free): `new ∈ {x, y}` and
 //!    `avg = fl(½ fl(x + y)) = ½(x + y)(1 + δ)`, `|δ| ≤ ε/2`, so
 //!    `|new − avg| ≤ ½|x − y| + ½ε|x + y| = ½|x − y| + ε|avg|(1 + O(ε))`.
-//!    The scale is the old walk's own round-off asymmetry (`asym_j3`,
+//!    The scale is the averaging walk's round-off asymmetry (`asym_j3`,
 //!    `sr_asymmetry`; printed below, ~1e-16 relative).
 //! 5. The RHF energy matches the frozen pre-s2 build to `E_BAR` = 1e-11 Ha
 //!    (the task bar; the expected first-order shift is ‖ΔJ3‖ ~ 1e-16
@@ -203,6 +203,7 @@ fn check_sr3_common<'a>(runs: &'a [[Sr3Parts; 2]], n: usize, tag: &str) -> &'a [
     &runs[0]
 }
 
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rsgdf_sr3_s2_is_the_ordered_walk_mirrored() {
     let (cell, prep) = tri_sp();
@@ -230,6 +231,7 @@ fn rsgdf_sr3_s2_is_the_ordered_walk_mirrored() {
     );
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rsgdf_sr3_s2_split_takes_the_cheaper_orientation() {
     let (cell, prep) = tri_sp();
@@ -301,6 +303,7 @@ fn rsgdf_sr3_s2_split_takes_the_cheaper_orientation() {
     );
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn hcore_s2_is_the_ordered_loop_mirrored_and_exactly_symmetric() {
     let (cell, prep) = tri_sp();
@@ -373,6 +376,7 @@ fn hcore_s2_is_the_ordered_loop_mirrored_and_exactly_symmetric() {
     assert!(hc.n_sr_triplets < old.n_sr_triplets);
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rhf_energy_matches_the_frozen_pre_s2_build() {
     let (tri, tri_prep) = tri_sp();

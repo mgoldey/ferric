@@ -44,16 +44,22 @@
 //! projector) evaluated by a central difference in t of
 //! [`crate::ks_gradient::ks_gradient_closed_for_density`] — the SAME gradient
 //! code, routing (RI-J, fitted or COSX exchange) and XC grid response the SCF
-//! gradient uses. g is linear in W and linear or bilinear in D for the
-//! one-electron, ECP and two-electron parts, so the central difference is exact
-//! for them up to rounding; only the XC part carries an O(t²) truncation, and
-//! t is chosen so that t·max|δD_Z| = `T_SCALE`.
+//! gradient uses. Every part carries an O(t²) central-difference truncation,
+//! because D(t) is an exact projector but not linear in t (its t³ term
+//! survives the difference) and the XC part is nonlinear in D; t is chosen so
+//! that t·max|δD_Z| = `T_SCALE`. Measured at `T_SCALE`, the relative error is
+//! about 2e-9 without XC and about 5e-8 with it.
+//!
+//! The closed-shell solve (`relaxation_gradient_closed`) has no null-mode
+//! projection: only the unrestricted and ROKS solves remove the axis-rotation
+//! mode of a linear molecule, so a closed-shell reference with a near-null
+//! orbital Hessian mode ends in the PCG curvature error.
 //!
 //! # Scope
 //!
-//! Closed-shell KS (LDA, GGA, global hybrid, range-separated hybrid GGA) on a
-//! converged `Spin::Restricted` result. Refused, with a reason, rather than
-//! answered approximately: HF (no `xc`), meta-GGA (no τ f_xc kernel), VV10
+//! Closed-shell KS (LDA, GGA, global hybrid, range-separated hybrid GGA,
+//! τ-only meta-GGA) on a converged `Spin::Restricted` result. Refused, with a
+//! reason, rather than answered approximately: HF (no `xc`), VV10
 //! (no nonlocal kernel), an `xc_omega` override, COSMO/PCM/polarizable
 //! embedding and cDFT constraints (their response is not in H), fractional
 //! occupation and smearing (not a closed-shell idempotent density).
@@ -138,10 +144,9 @@
 //! ```
 //!
 //! (the F_β,vo / F_α,oc terms of the vc row use F_α,vo = 0 and F_β,oc = 0).
-//! `rohf_newton::hessian_matvec` keeps only the diagonal Fock
-//! entries and drops these off-diagonal Fock couplings — adequate for a
-//! damped Newton step, not for an exact linear response — so the Z-vector
-//! uses this full product in its parametrization and normalization. With
+//! (`rohf_newton::hessian_matvec` applies the same exact commutator.) The
+//! Z-vector uses this
+//! full product in its own parametrization and normalization. With
 //! dQ = 2 κ·(2 V_vc, V_vo, V_oc) (κ_vc moves both spins of D_total):
 //!
 //! ```text
@@ -257,11 +262,6 @@ pub fn unsupported_reason(config: &RhfConfig) -> Option<String> {
         }
         Some(x) => x,
     };
-    if crate::rohf::xc_is_metagga(Some(xc)) {
-        return Some(format!(
-            "'{xc}' is a meta-GGA: there is no tau f_xc kernel for the orbital Hessian"
-        ));
-    }
     match ferric_dft::libxc::xc_def_from_name(xc) {
         Err(e) => return Some(format!("unknown functional '{xc}': {e:?}")),
         Ok(def) if def.vv10.is_some() => {
@@ -313,10 +313,16 @@ struct ResponseFock<'a> {
 
 impl<'a> ResponseFock<'a> {
     /// `d_a`, `d_b`: the reference spin densities of the f_xc kernel (½D
-    /// each for a closed-shell reference).
+    /// each for a closed-shell reference). `scf_bounds`: the SCF's bounds;
+    /// the response J/K follow the contraction rotation recorded on them
+    /// (`direct_jk::gc_rotation`): the Coulomb builds run on them (their
+    /// cached rotation included) when they are plain Schwarz bounds of the
+    /// Coulomb operator, and every other operator's fresh bounds copy the
+    /// record.
     fn new(
         mol: &Molecule,
         prep: &'a PreparedBasis,
+        scf_bounds: &SchwarzBounds,
         config: &RhfConfig,
         xc: &str,
         d_a: &Array2<f64>,
@@ -327,10 +333,23 @@ impl<'a> ResponseFock<'a> {
         let k_mix = ferric_dft::libxc::k_mix_from_xc_def(&def);
         let precision = ferric_integrals::engine_pool::eri_precision();
         let coul_op = Operator::coulomb();
-        let coul = (
-            SchwarzBounds::compute(coul_op, prep)?,
-            EnginePool::new(coul_op, prep, precision)?,
-        );
+        // The SCF's bounds when they are the Schwarz bounds of the Coulomb
+        // operator `SchwarzBounds::compute` would give (so an unrotated run
+        // is the fresh-bounds build bit for bit), with the in-core slot
+        // detached: the response builds stay direct, as they always were.
+        let coul_bounds = if scf_bounds.op == coul_op
+            && scf_bounds.csb_m.is_none()
+            && scf_bounds.csam_x.is_none()
+        {
+            let mut b = scf_bounds.clone();
+            b.incore = Default::default();
+            b
+        } else {
+            let b = SchwarzBounds::compute(coul_op, prep)?;
+            b.gc.copy_request_from(&scf_bounds.gc);
+            b
+        };
+        let coul = (coul_bounds, EnginePool::new(coul_op, prep, precision)?);
         let mut exch = Vec::new();
         let k_coul = if k_mix.omega > 0.0 {
             for (op, c) in [
@@ -338,18 +357,19 @@ impl<'a> ResponseFock<'a> {
                 (Operator::erf(k_mix.omega), k_mix.lr),
             ] {
                 if c != 0.0 {
-                    exch.push((
-                        SchwarzBounds::compute(op, prep)?,
-                        EnginePool::new(op, prep, precision)?,
-                        c,
-                    ));
+                    let b = SchwarzBounds::compute(op, prep)?;
+                    b.gc.copy_request_from(&scf_bounds.gc);
+                    exch.push((b, EnginePool::new(op, prep, precision)?, c));
                 }
             }
             0.0
         } else {
             k_mix.sr
         };
-        let grid = config.dft_grid.clone().unwrap_or_default();
+        let grid = config
+            .dft_grid
+            .clone()
+            .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
         // `ks_hessian_unsupported_reason` refuses an `xc_omega` run outright, so
         // this is always `None` in practice; passed through rather than hardcoded
         // so the two places cannot drift apart silently.
@@ -813,6 +833,7 @@ pub fn relaxation_gradient_closed(
     result: &ScfResult,
     v_ao: &Array2<f64>,
 ) -> Result<RelaxationGradient, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "Z-vector relaxation gradient")?;
     if let Some(r) = unsupported_reason(config) {
         return Err(FerricError::General(format!("Z-vector relaxation: {r}")));
     }
@@ -873,7 +894,7 @@ pub fn relaxation_gradient_closed(
     }
 
     let d_half = 0.5 * d;
-    let resp = ResponseFock::new(mol, prep, config, xc, &d_half, &d_half)?;
+    let resp = ResponseFock::new(mol, prep, bounds, config, xc, &d_half, &d_half)?;
     let cv = c.slice(s![.., nocc..]).to_owned();
     let co = c.slice(s![.., ..nocc]).to_owned();
     // H x = F_vv x − x F_oo + C_vᵀ δF[δD(x)] C_o.
@@ -940,16 +961,11 @@ pub fn relaxation_gradient_closed(
         let grids = crate::ks_gradient::KsGradGrids::from_config(config);
         let cosx =
             crate::cosx_gradient::scf_exchange_is_cosx(config, false)?.then_some(&config.cosx);
-        // D(t) from the occupied orbitals rotated by t·Z and re-orthonormalized:
-        // C_occ(t) = (C_occ + t C_vir Z) (I + t² ZᵀZ)^{-1/2}. It is an exact
-        // projector (positive semidefinite, which the fitted-exchange gradient
-        // requires: D ± t·δD is not) with dD/dt = δD_Z at t = 0, and its O(t²)
-        // part is even in t, so the central difference cancels it.
         // D(t) from the occupied orbitals rotated by t·Z and re-orthonormalized
         // (see `rotated_projector`): an exact projector (positive semidefinite,
         // which the fitted-exchange gradient requires: D ± t·δD is not) with
-        // dD/dt = δD_Z at t = 0, and its O(t²) part is even in t, so the
-        // central difference cancels it.
+        // dD/dt = δD_Z at t = 0. Its t² part is even in t and cancels in the
+        // central difference; the t³ part remains as the O(t²) truncation error.
         let rotated_density = |tt: f64| rotated_projector(&co, &cv, &z, tt, 2.0);
         let g_at = |sgn: f64| -> Result<Array2<f64>, FerricError> {
             let dt = rotated_density(sgn * t)?;
@@ -1169,6 +1185,7 @@ pub fn relaxation_gradient_unrestricted(
     result: &ScfResult,
     v_ao: &Array2<f64>,
 ) -> Result<UnrestrictedRelaxationGradient, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "Z-vector relaxation gradient")?;
     if let Some(r) = unsupported_reason_unrestricted(config) {
         return Err(FerricError::General(format!("Z-vector relaxation: {r}")));
     }
@@ -1237,7 +1254,7 @@ pub fn relaxation_gradient_unrestricted(
     )?;
     let sb = SpinBlock::new("beta", c_b, f_b, d_b, nocc_b)?;
 
-    let resp = ResponseFock::new(mol, prep, config, xc, &result.density_alpha, d_b)?;
+    let resp = ResponseFock::new(mol, prep, bounds, config, xc, &result.density_alpha, d_b)?;
     // H (x_α, x_β): per spin F_vv x − x F_oo + C_vᵀ δF_σ[δD_α, δD_β] C_o.
     let hx = |x: &[Array2<f64>; 2]| -> Result<[Array2<f64>; 2], FerricError> {
         let (df_a, df_b) = resp.apply_spin(ctx, &sa.density(&x[0]), &sb.density(&x[1]))?;
@@ -1393,9 +1410,7 @@ pub struct RestrictedOpenRelaxationGradient {
 /// `config`, or `None`: every [`unsupported_reason`], plus a COSX
 /// configuration the ROKS gradient cannot differentiate (the overlap fit; see
 /// [`crate::gradient::preflight_cosx_restricted_open`]). Nothing ROKS-specific beyond that: the
-/// limits of `rohf_newton::hessian_matvec` (diagonal Fock entries
-/// only, range-separated exchange dropped) do not apply, because the Z-vector
-/// builds its own exact product (see the module doc) with the same response
+/// Z-vector builds its own exact product (see the module doc) with the same response
 /// Fock as the closed-shell and UKS paths, range-separated exchange included.
 pub fn unsupported_reason_roks(config: &RhfConfig) -> Option<String> {
     if let Some(r) = unsupported_reason(config) {
@@ -1486,8 +1501,10 @@ impl RoksBlocks {
 /// densities that are not the projectors onto the first closed (+ open) MOs;
 /// a non-positive diagonal of the Hessian (not an aufbau ROKS minimum); a
 /// non-symmetric or mis-sized `v_ao`; a PCG solve that does not reach
-/// [`CG_REL_TOL`] in [`CG_MAX_ITER`] iterations or meets non-positive
-/// curvature; any integral, kernel or gradient error.
+/// [`CG_REL_TOL`] in [`CG_MAX_ITER`] iterations, or meets negative or zero
+/// curvature while its residual is still above [`CG_FLOOR_TOL`] · max|rhs|
+/// (curvature at the rounding floor with a residual below that is accepted,
+/// with `stopped_at_floor = true`); any integral, kernel or gradient error.
 #[allow(clippy::too_many_arguments)]
 pub fn relaxation_gradient_roks(
     ctx: &ParallelContext,
@@ -1500,6 +1517,7 @@ pub fn relaxation_gradient_roks(
     result: &ScfResult,
     v_ao: &Array2<f64>,
 ) -> Result<RestrictedOpenRelaxationGradient, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "Z-vector relaxation gradient")?;
     if let Some(r) = unsupported_reason_roks(config) {
         return Err(FerricError::General(format!("Z-vector relaxation: {r}")));
     }
@@ -1631,7 +1649,7 @@ pub fn relaxation_gradient_roks(
         diag,
     };
 
-    let resp = ResponseFock::new(mol, prep, config, xc, d_a, d_b)?;
+    let resp = ResponseFock::new(mol, prep, bounds, config, xc, d_a, d_b)?;
     let hx = |x: &Blocks3| -> Result<Blocks3, FerricError> {
         let (dd_a, dd_b) = rb.densities(x);
         let (df_a, df_b) = resp.apply_spin(ctx, &dd_a, &dd_b)?;
@@ -1898,6 +1916,7 @@ mod degenerate_somo_investigation {
     ) -> (Array2<f64>, Vec<f64>, Option<Vec<f64>>) {
         let ctx = ParallelContext::default();
         let xc = cfg.xc.as_deref().unwrap();
+        let bounds = SchwarzBounds::compute(Operator::coulomb(), prep).unwrap();
         let s_ao = ferric_integrals::oneelectron::overlap(prep);
         let gen = linear_axis(mol).map(|ax| axis_rotation_generator(mol, bs, ax).expect("G"));
         match r.spin {
@@ -1917,7 +1936,8 @@ mod degenerate_somo_investigation {
                     nb,
                 )
                 .unwrap();
-                let resp = ResponseFock::new(mol, prep, cfg, xc, &r.density_alpha, db).unwrap();
+                let resp =
+                    ResponseFock::new(mol, prep, &bounds, cfg, xc, &r.density_alpha, db).unwrap();
                 let shapes = [sa.gap.dim(), sb.gap.dim()];
                 let dim: usize = shapes.iter().map(|(a, b)| a * b).sum();
                 let mut h = Array2::<f64>::zeros((dim, dim));
@@ -2016,6 +2036,7 @@ mod degenerate_somo_investigation {
                 n_radial: 75,
                 n_angular: ang,
                 prune: None,
+                weight_cut: None,
             }),
             ..Default::default()
         };

@@ -24,8 +24,8 @@
 //! moving κ opposite to the gradient of E decreases E.
 //!
 //! `oo_rimp2` was migrated onto this convention by flipping the sign of its
-//! analytic orbital gradient (both the `−4·F_ai` HF/Brillouin term and the
-//! `−2·grad_ck + denom_term` MP2 response assembly) so that its
+//! analytic orbital gradient (the code now adds the `+4·F_ai` HF/Brillouin
+//! term and the `+2·resp` MP2 response, `g = 4·F_ai + 2·resp`) so that its
 //! gradient/step/rotation triple remains self-consistent — a change that is a
 //! pure identity for the physical orbital trajectory, the DIIS extrapolation,
 //! and the backtracking (a global sign flip of every stored DIIS error vector

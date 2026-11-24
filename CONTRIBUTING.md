@@ -7,17 +7,17 @@
 | Rust       | 1.75+   | stable toolchain |
 | libint2    | 2.13.1  | `scripts/install-libint.sh` (prebuilt conda-forge build with second derivatives); a from-source 2.7+ build also links |
 | OpenBLAS   | any     | with LAPACK support (`libopenblas-dev` on Debian/Ubuntu) |
-| libxc      | as packaged | `libxc-dev` on Debian/Ubuntu (CI builds against Ubuntu 22.04's) |
+| libxc      | 7.0.0   | `scripts/install-libxc.sh` (source build, pin in `scripts/wheels/native-pins.env`; the same libxc PySCF 2.13 bundles) |
 | cmake      | 3.14+   | needed to build the vendored libecpint |
 | Python     | 3.10+   | matches `requires-python` in `pyproject.toml`; needed for `uv`, pytest, and the Python bindings |
 
 **Non-standard install locations.** If libint2 is not in
 `$HOME/.local/libint2-2.13.1` (the installer's default), `$HOME/.local` or
-`/usr/local`, set `LIBINT2_PREFIX` before building. libxc is linked by name
-(`crates/ferric-dft/build.rs` emits only `rustc-link-lib=xc`), so a libxc
-outside the default linker path goes on `LIBRARY_PATH` (or
-`RUSTFLAGS="-L/path/to/libxc/lib"`) for linking and on `LD_LIBRARY_PATH` at
-run time:
+`/usr/local`, set `LIBINT2_PREFIX` before building. Likewise `LIBXC_PREFIX`
+for a libxc outside `$HOME/.local/libxc-7.0.0` (the installer's default); an
+install made by `scripts/install-libxc.sh` needs nothing at run time (its
+SONAME is its absolute path). A libxc from elsewhere goes on `LIBRARY_PATH`
+for linking and on `LD_LIBRARY_PATH` at run time:
 
 ```
 export LIBINT2_PREFIX=/path/to/libint2   # expects $LIBINT2_PREFIX/include and $LIBINT2_PREFIX/lib
@@ -56,7 +56,7 @@ OPENBLAS_NUM_THREADS=1 cargo test -p ferric-scf
 
 # Python bindings (requires a release build of ferric-python)
 cargo build --release -p ferric-python
-OPENBLAS_NUM_THREADS=1 uv run --no-sync pytest crates/ferric-python/tests/ -q
+OPENBLAS_NUM_THREADS=1 uv run --no-sync pytest crates/ferric-python/tests/ --ignore=crates/ferric-python/tests/test_derivation_scripts.py -q
 ```
 
 The `--no-sync` flag matters: a bare `uv run` rebuilds and reinstalls the wheel,
@@ -164,7 +164,69 @@ Contributor-only analysis lives next to the book but outside its table of
 contents, for example `site/src/reference/ci-timing-analysis.md` (test sharding
 and CI timing).
 
+### Writing documentation
+
+Pages under `site/src` and the READMEs are reference documents. State current facts in declarative present tense; use the
+imperative for instructions. Lead with a one-line summary. Keep sentences under
+about 25 words and paragraphs under about five sentences; put parameters,
+limits and grades in lists or tables. A measured claim gives the value, unit,
+system, basis and reference code, with no adjectives.
+
+Change tone, never content: every number, unit, limit, error condition, link
+and code block stays. Avoid these patterns (examples are real lines from this
+repository):
+
+| Pattern | Before | After |
+|---|---|---|
+| Intensifiers: genuinely, truly, honestly, actually, really, simply, just, deliberately, crucially | "leaves "the run failed" as the only remaining reading of a genuinely missing record" | "leaves "the run failed" as the only reading of a missing record" |
+| House jargon: load-bearing, lane, footgun, the trap, the catch, the real X, bites, fingerprint | "floating-point addition is not associative. The ascending order is load-bearing." | "floating-point addition is not associative, so the sum must run in ascending order." |
+| Contrast framing ("not X but Y", "X is NOT Y") | "converge to genuinely different SCF solutions — not a convergence failure but a different basin." | "converge to different SCF solutions, each in its own basin." |
+| Em-dash chains and parenthetical asides | "That measurement was unnecessary — **the CI log already contains it**, in every `finished in <N>s`" | "The CI log already records it: every step prints `finished in <N>s`." |
+| Revision history and narrative | "I originally called the compile-vs-run split "the load-bearing unknown" and proposed timing `cargo test --no-run` to get it." | Delete; state the current fact. History belongs in git log or the wiki. |
+| First person, reader-as-audience voice, signposting | "This is the finding that reframes the work. The fast tier is NOT one monolithic `cargo test`." | "The fast tier is six sequential `cargo test` invocations." |
+| Restating | "This is the middle tier of the funnel and skipping it is expensive. GFN2-xTB fixes a bad structure in seconds" | "GFN2-xTB fixes a bad structure in seconds" |
+| Emphasis inflation: scattered bold, ALL CAPS, "NOTE:" in prose | "build.rs warns that the fix is NOT applied" | "build.rs warns that the fix is not applied" |
+| Hedge stacking (a scope qualifier on every sentence) | "provisional, narrow, at this basis only, see ..." repeated per line | One scope statement per section, or a grade/system/basis column in a table. |
+| Duplicate caveats | The `OPENBLAS_NUM_THREADS=1` warning restated on several pages | State it once (see [Testing](#testing)) and link to it. |
+| Marketing adjectives: high-performance, blazing, massive, cutting-edge, state-of-the-art, seamless | "a high-performance quantum chemistry engine" | "a quantum chemistry engine"; give a measured number instead. |
+| ASCII `--` as a dash in prose | "Step 1b -- relax the pose" | "Step 1b: relax the pose" |
+
+Exceptions that stay:
+
+- "X, not Y" when Y is the likely wrong guess ("`delete-host`, not `keep`").
+  Say it once, in a plain sentence, without capitals.
+- Dates on measurements and provenance labels such as MEASURED or ESTIMATED.
+  They record when and how a number was obtained; they are not revision
+  history.
+- Bold run-in labels that start a step or paragraph ("**Run it.**"), and
+  capitals that are program output (`STABLE`/`UNSTABLE`) or acronyms (TRIM).
+- Dated contributor records under `site/src` (for example
+  `reference/ci-timing-analysis.md`). They have no current-facts form: keep
+  them as dated records, open with a line naming the date and the files that
+  take precedence, and write them in the declarative voice without first
+  person.
+
+Em-dashes in math ranges and table cells are fine; elsewhere use at most one
+dash pair per paragraph and prefer colons and periods. Keep warnings about real
+hazards (thread counts, memory), stated once and plainly. "Measured" and
+"validated against PySCF to 1e-8 Ha" are provenance, not tone, and stay.
+
+`scripts/check_doc_style.py` counts the listed words, em-dashes and ASCII
+`--` dashes per file (report only, exit 0). It skips "just" before a number or
+a comparison ("just above") and "note" used as a noun ("a note that"). Each hit is a prompt to reread the sentence; some are
+correct in context.
+
+```bash
+python3 scripts/check_doc_style.py            # site/src and the READMEs
+python3 scripts/check_doc_style.py --verbose site/src/using/python.md
+```
+
 ## Code quality
+
+Before adding an entry point, option or result type, read
+[ARCHITECTURE.md](ARCHITECTURE.md): where defaults live, how frontends lower
+user input into method configs, signature and error conventions, and the
+Python API compatibility rules.
 
 CI enforces several gates. Some block a PR, some only report; know which is
 which.
@@ -268,6 +330,37 @@ principles:
   against a deliberately broken version.
 - **Too clean is a stop condition.** An exact coincidence at every system size
   is a fingerprint of arithmetic, not chemistry.
+
+### Every method has a derivation and a sympy proof
+
+A method is a CLI `method.kind`, a Python `run_*` entry point, or a derivative of
+one, such as a gradient, Hessian or response property. Each method ships with
+two committed pieces:
+
+1. **A book section** under `book/src`, in `$...$` / `$$...$$` math, written
+   to `book/STYLE.md`. It runs from the definition of the energy, or of the
+   property, to the working equations the code contracts, with every step
+   shown. It states the conventions: index ranges, spin blocks, signs and
+   prefactors. It names the function that implements each equation in the
+   checked form `crate/src/file.rs::item`, and it carries a verified-equation
+   box for each identity the proof checks. `python3 scripts/book_build.py
+   --check` must pass. The crate's `theory.md` is a generated index of the
+   book (`--write-theory-index`); never write a derivation into it.
+2. **A sympy proof** in `scripts/<topic>_sympy.py`. It derives or checks the
+   load-bearing identities symbolically: prefactors, spin adaptation, signs,
+   derivative terms and limits. It also evaluates them on a small numerical case
+   against an independent route, such as a finite difference, brute force in a
+   tiny space, or a reference code. It exits nonzero when any identity fails, and
+   a test under `crates/ferric-python/tests/` (the pytest runner
+   `test_derivation_scripts.py`) runs it. Its header records at least one
+   mutation that turns it red.
+
+`testdata/derivations/registry.json` maps the method to both pieces
+(`book/src/<page>.md#<label>` and the script); `test_derivation_registry.py`
+checks that each exists and that the script has a runner. A new method lands
+with both pieces in the same PR. A change to a method's working equations
+updates both. The `wiki/` notes are working notes, not the record: a
+derivation counts only once it is in a committed book section.
 
 The crate layout and cross-cutting conventions (threading, determinism,
 memory, errors) are described in the book's

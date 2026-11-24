@@ -49,6 +49,13 @@
 //!   c_HF resolution of THIS driver against the validated one, independent of
 //!   PySCF.
 //!
+//! # Both solvers
+//!
+//! Every PySCF case and the library anchor run through BOTH eigensolvers,
+//! `TddftSolver::Dense` and the matrix-free `TddftSolver::Davidson`, against
+//! the same bars: the Davidson route is an independent construction of the
+//! same roots (products instead of matrices, iterative instead of `eigh`).
+//!
 //! ```text
 //! OPENBLAS_NUM_THREADS=1 cargo test --release -p ferric-tddft --test validation_tddft \
 //!     -- --ignored --nocapture --test-threads=1
@@ -57,12 +64,13 @@
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
-use ferric_tddft::{run_tddft, TddftConfig, TddftMethod, TddftResult};
+use ferric_tddft::{run_tddft, TddftConfig, TddftMethod, TddftResult, TddftSolver};
 use serde_json::Value;
 
 const HARTREE_TO_EV: f64 = 27.211_386_245_988;
@@ -84,6 +92,8 @@ const OSC_REL: f64 = 1e-2;
 /// kernel-full one for the negative control to mean anything.
 const NEG_CONTROL_FACTOR: f64 = 10.0;
 const SCF_JK_AUX: &str = "def2-universal-jkfit";
+/// The eigensolvers every PySCF case runs through.
+const SOLVERS: [TddftSolver; 2] = [TddftSolver::Dense, TddftSolver::Davidson];
 
 fn load_ref(mol: &str, basis: &str) -> Value {
     let path = format!(
@@ -117,6 +127,11 @@ struct Setup {
 /// The reference SCF exactly as the CLI/Python `run_tddft` builds it: RI-J/K
 /// with def2-universal-jkfit, default (75, 110) grid, the named functional.
 fn setup(refj: &Value, xc: Option<&str>) -> Setup {
+    setup_on(refj, xc, kernel_grid(xc))
+}
+
+/// [`setup`] on an explicit SCF grid.
+fn setup_on(refj: &Value, xc: Option<&str>, grid: AtomicGridConfig) -> Setup {
     let xyz = format!(
         "{}/../../{}",
         env!("CARGO_MANIFEST_DIR"),
@@ -133,14 +148,17 @@ fn setup(refj: &Value, xc: Option<&str>) -> Setup {
     let ctx = ParallelContext::default();
     // density_conv 1e-8: far below what moves an excitation energy by 1e-6 eV;
     // energy_conv stays at its default (a sanity bound, not a target).
-    let cfg = RhfConfig {
-        xc: xc.map(str::to_string),
-        df_j_aux: Some(SCF_JK_AUX.to_string()),
-        df_k_aux: Some(SCF_JK_AUX.to_string()),
-        density_conv: 1e-8,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_dft_grid(grid)
+        .with_df_j_aux(SCF_JK_AUX.to_string())
+        .with_df_k_aux(SCF_JK_AUX.to_string())
+        // The PySCF reference SCF fits J in f64. The f32 RI-J default moves
+        // the B3LYP/aug-cc-pVDZ roots by up to 9.4e-5 eV, above
+        // SAME_GRID_BAR_EV.
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
+    cfg.xc = xc.map(str::to_string);
     let scf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
     assert!(
         scf.converged,
@@ -154,14 +172,57 @@ fn setup(refj: &Value, xc: Option<&str>) -> Setup {
     }
 }
 
-fn run(s: &Setup, xc: Option<&str>, method: TddftMethod, n_roots: usize) -> TddftResult {
+/// The SCF and f_xc grid. The production (pruned) grid for every case but
+/// the meta-GGAs (pure and hybrid), which run on the reference's own flat
+/// (75, 110) grid. The
+/// production scheme's radial thinning (H 50, O 66 shells) moves r2SCAN roots
+/// by up to 1.8e-3 eV (PBE: 1.6e-7). That is grid error, not a ferric defect:
+/// PySCF on ferric's own pruned coordinates and weights agrees to 6e-8 eV
+/// (site/src/methods/rpa-gw.md, "Meta-GGA response needs a finer grid").
+fn kernel_grid(xc: Option<&str>) -> AtomicGridConfig {
+    match xc {
+        Some("r2SCAN" | "TPSSh" | "M06-2X") => AtomicGridConfig {
+            n_radial: 75,
+            n_angular: 110,
+            ..Default::default()
+        },
+        _ => AtomicGridConfig::production(),
+    }
+}
+
+fn run(
+    s: &Setup,
+    xc: Option<&str>,
+    method: TddftMethod,
+    n_roots: usize,
+    solver: TddftSolver,
+) -> TddftResult {
+    run_on(s, xc, method, n_roots, kernel_grid(xc), solver)
+}
+
+/// [`run`] with an explicit f_xc grid (the one the reference SCF used).
+fn run_on(
+    s: &Setup,
+    xc: Option<&str>,
+    method: TddftMethod,
+    n_roots: usize,
+    grid: AtomicGridConfig,
+    solver: TddftSolver,
+) -> TddftResult {
     let cfg = TddftConfig {
         n_roots,
         method,
+        grid,
         xc: xc.map(str::to_string),
+        solver,
         ..Default::default()
     };
-    run_tddft(&s.mol, &s.obs, &s.dfbs, &s.scf, &cfg).unwrap()
+    let r = run_tddft(&s.mol, &s.obs, &s.dfbs, &s.scf, &cfg).unwrap();
+    assert_eq!(
+        r.solver, solver,
+        "the requested solver must be the one that ran"
+    );
+    r
 }
 
 /// Compare one method's lowest `N_CHECK` roots; returns max |dΩ| (eV).
@@ -230,7 +291,7 @@ fn compare(label: &str, r: &TddftResult, refm: &Value) -> f64 {
 /// Full check of one (molecule, basis, functional) case.
 ///
 /// `ferric_xc` is ferric's name (`None` = HF); `key` is the reference's case
-/// key (`"HF"`, `"LDA"`, `"PBE"`, `"B3LYP"`).
+/// key (`"HF"`, `"LDA"`, `"PBE"`, `"B3LYP"`, `"r2SCAN"`).
 fn check_case(mol: &str, basis: &str, key: &str, ferric_xc: Option<&str>) {
     let refj = load_ref(mol, basis);
     let case = &refj["cases"][key];
@@ -239,11 +300,29 @@ fn check_case(mol: &str, basis: &str, key: &str, ferric_xc: Option<&str>) {
         "{mol}/{basis}: reference has no case {key}"
     );
     let s = setup(&refj, ferric_xc);
-    let label = format!("{mol}/{basis}/{key}");
+    for solver in SOLVERS {
+        check_solver(
+            &s,
+            case,
+            &format!("{mol}/{basis}/{key} [{}]", solver.name()),
+            ferric_xc,
+            solver,
+        );
+    }
+}
+
+/// [`check_case`]'s assertions for one eigensolver.
+fn check_solver(
+    s: &Setup,
+    case: &Value,
+    label: &str,
+    ferric_xc: Option<&str>,
+    solver: TddftSolver,
+) {
     println!("\n== {label} ==");
 
-    let tda = run(&s, ferric_xc, TddftMethod::Tda, N_CHECK);
-    let cas = run(&s, ferric_xc, TddftMethod::Casida, N_CHECK);
+    let tda = run(s, ferric_xc, TddftMethod::Tda, N_CHECK, solver);
+    let cas = run(s, ferric_xc, TddftMethod::Casida, N_CHECK, solver);
 
     // Bookkeeping that must match before any energy is meaningful.
     let c_hf_ref = case["c_hf"].as_f64().unwrap();
@@ -331,6 +410,18 @@ validation_case!(water_631g_hf, "water", "6-31g", "HF", None);
 validation_case!(water_631g_lda, "water", "6-31g", "LDA", Some("LDA"));
 validation_case!(water_631g_pbe, "water", "6-31g", "PBE", Some("PBE"));
 validation_case!(water_631g_b3lyp, "water", "6-31g", "B3LYP", Some("B3LYP"));
+// τ-only meta-GGA: the f_xc block comes from `MggaFxcKernel` (ρ×τ, σ×τ, τ×τ).
+validation_case!(
+    water_631g_r2scan,
+    "water",
+    "6-31g",
+    "r2SCAN",
+    Some("r2SCAN")
+);
+// Hybrid meta-GGAs: the τ kernel plus c_HF·K from libxc's fraction (TPSSh
+// 0.10, M06-2X 0.54), on the same flat (75, 110) grid as r2SCAN.
+validation_case!(water_631g_tpssh, "water", "6-31g", "TPSSh", Some("TPSSh"));
+validation_case!(water_631g_m062x, "water", "6-31g", "M06-2X", Some("M06-2X"));
 validation_case!(water_augdz_hf, "water", "aug-cc-pvdz", "HF", None);
 validation_case!(water_augdz_lda, "water", "aug-cc-pvdz", "LDA", Some("LDA"));
 validation_case!(water_augdz_pbe, "water", "aug-cc-pvdz", "PBE", Some("PBE"));
@@ -390,6 +481,75 @@ validation_case!(
     Some("B3LYP")
 );
 
+/// Max |dΩ| (eV) of the lowest `N_CHECK` B3LYP TDA roots against the
+/// reference, with ferric's SCF and f_xc on the reference's OWN flat
+/// (75, 110) grid, so grid error cancels and what is left is the potential
+/// ferric builds.
+fn same_grid_b3lyp_tda_dev(mol: &str) -> f64 {
+    let refj = load_ref(mol, "aug-cc-pvdz");
+    let flat = || AtomicGridConfig {
+        n_radial: 75,
+        n_angular: 110,
+        ..Default::default()
+    };
+    let xc = Some("B3LYP");
+    let s = setup_on(&refj, xc, flat());
+    let w_ref = f64s(&refj["cases"]["B3LYP"]["tda"]["omega_ev"]);
+    let mut worst = 0.0_f64;
+    for solver in SOLVERS {
+        let tda = run_on(&s, xc, TddftMethod::Tda, N_CHECK, flat(), solver);
+        let max_dev = (0..N_CHECK)
+            .map(|k| (tda.excitation_energies[k] * HARTREE_TO_EV - w_ref[k]).abs())
+            .fold(0.0_f64, f64::max);
+        println!(
+            "{mol}/aug-cc-pvdz/B3LYP flat-grid TDA [{}]: max |dOmega| = {max_dev:.3e} eV",
+            solver.name()
+        );
+        worst = worst.max(max_dev);
+    }
+    worst
+}
+
+/// Bar for [`same_grid_b3lyp_tda_dev`]. Measured on the reference grid
+/// (2026-11-05), max |dΩ| over the lowest five roots:
+///
+/// | aug-cc-pVDZ / B3LYP | semilocal floor 1e-10 | floor 1e-14 |
+/// |---|---|---|
+/// | water        | 6.810e-4 eV | 5.7e-7 eV |
+/// | formaldehyde | 8.499e-4 eV | 2.8e-6 eV |
+///
+/// 2e-5 eV is 7x above the worst fixed value and 34x below the smallest
+/// floor-defect value. (On the production pruned grid formaldehyde sits at
+/// 8.1e-4 eV: grid error, which this comparison removes.)
+const SAME_GRID_BAR_EV: f64 = 2e-5;
+
+/// XC density-floor regression, water/aug-cc-pVDZ/B3LYP on the reference's
+/// grid. The diffuse virtuals sit in the low-density tail where B88 exchange
+/// is still non-zero; a semilocal floor that drops that tail moves the roots
+/// while PySCF (libxc's own thresholds only) does not.
+#[test]
+#[ignore = "validation: TDA-DFT / TDDFT"]
+fn water_augdz_b3lyp_same_grid_tda_keeps_the_density_tail() {
+    let max_dev = same_grid_b3lyp_tda_dev("water");
+    assert!(
+        max_dev < SAME_GRID_BAR_EV,
+        "water/aug-cc-pvdz/B3LYP on the reference grid: max |dOmega| {max_dev:.3e} eV >= \
+         {SAME_GRID_BAR_EV:.0e} eV — the V_xc density floor is cutting the diffuse tail"
+    );
+}
+
+/// Formaldehyde twin of the water case.
+#[test]
+#[ignore = "validation: TDA-DFT / TDDFT"]
+fn h2co_augdz_b3lyp_same_grid_tda_keeps_the_density_tail() {
+    let max_dev = same_grid_b3lyp_tda_dev("formaldehyde");
+    assert!(
+        max_dev < SAME_GRID_BAR_EV,
+        "formaldehyde/aug-cc-pvdz/B3LYP on the reference grid: max |dOmega| {max_dev:.3e} eV \
+         >= {SAME_GRID_BAR_EV:.0e} eV — the V_xc density floor is cutting the diffuse tail"
+    );
+}
+
 /// (a) Anchor against the PySCF-validated library path, independent of any
 /// external reference: `run_tddft` TDA must reproduce
 /// `ferric_gw::tddft::run_tda_dft` (same reference, same RI aux, same default
@@ -404,9 +564,12 @@ validation_case!(
 fn tda_matches_the_validated_library_tda_path() {
     use ferric_gw::tddft::{run_tda_dft, TdaDftConfig};
     let refj = load_ref("water", "6-31g");
-    for xc in [None, Some("PBE"), Some("B3LYP")] {
+    for (xc, solver) in [None, Some("PBE"), Some("B3LYP"), Some("r2SCAN")]
+        .into_iter()
+        .flat_map(|xc| SOLVERS.map(|s| (xc, s)))
+    {
         let s = setup(&refj, xc);
-        let ours = run(&s, xc, TddftMethod::Tda, 10);
+        let ours = run(&s, xc, TddftMethod::Tda, 10, solver);
         let lib = run_tda_dft(
             &s.mol,
             &s.obs,
@@ -414,7 +577,10 @@ fn tda_matches_the_validated_library_tda_path() {
             Operator::coulomb(),
             &s.scf,
             xc,
-            &TdaDftConfig::default(),
+            &TdaDftConfig {
+                grid: kernel_grid(xc),
+                ..Default::default()
+            },
         )
         .unwrap();
         assert_eq!(lib.fxc_included, xc.is_some());
@@ -446,4 +612,78 @@ fn tda_matches_the_validated_library_tda_path() {
             }
         }
     }
+}
+
+/// (d) The meta-GGA response default grid
+/// (`ferric_dft::grid::response_default_grid`, what the CLI and Python pick
+/// for a meta-GGA TDA run with no grid key) puts the five lowest r2SCAN TDA
+/// roots of water/6-31G within `META_GGA_TOL_EV` of a flat 150 x 590 grid.
+/// The reference is ferric on that grid: on a shared grid ferric and PySCF
+/// agree to 6e-8 eV (site/src/methods/rpa-gw.md), and 150 x 590 itself sits
+/// 2.4e-5 eV from flat 200 x 590 here. Negative control: the production
+/// grid misses the same bar (2.1e-3 eV), so the comparison can tell them
+/// apart.
+#[test]
+#[ignore = "validation: meta-GGA TDA grid (flat 150x590 reference SCF)"]
+fn water_631g_r2scan_default_grid_matches_fine_flat_grid() {
+    const META_GGA_TOL_EV: f64 = 1e-4;
+    let xyz = format!(
+        "{}/../../testdata/molecules/water.xyz",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let mol = Molecule::load_xyz(&xyz).unwrap();
+    let obs = PreparedBasis::new(&mol, &basis::bundled("6-31g").unwrap()).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let ctx = ParallelContext::default();
+    let xc = "r2SCAN";
+    let roots = |grid: AtomicGridConfig| -> Vec<f64> {
+        let cfg = RhfConfig::default()
+            .with_xc(xc.to_string())
+            .with_dft_grid(grid.clone())
+            .with_df_j_aux(SCF_JK_AUX.to_string())
+            .with_df_k_aux(SCF_JK_AUX.to_string())
+            .with_density_conv(1e-8)
+            .with_max_iter(200);
+        let scf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
+        assert!(scf.converged, "{xc}: reference SCF did not converge");
+        let t = TddftConfig {
+            n_roots: N_CHECK,
+            method: TddftMethod::Tda,
+            grid,
+            xc: Some(xc.to_string()),
+            ..Default::default()
+        };
+        run_tddft(&mol, &obs, &dfbs, &scf, &t)
+            .unwrap()
+            .excitation_energies
+            .iter()
+            .map(|w| w * HARTREE_TO_EV)
+            .collect()
+    };
+    let max_dev = |a: &[f64], b: &[f64]| {
+        a.iter()
+            .zip(b)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0_f64, f64::max)
+    };
+    let reference = roots(AtomicGridConfig {
+        n_radial: 150,
+        n_angular: 590,
+        ..Default::default()
+    });
+    let default_grid = ferric_dft::grid::response_default_grid(Some(xc))
+        .expect("r2SCAN is a meta-GGA: it must get the response grid");
+    let dev = max_dev(&roots(default_grid), &reference);
+    let dev_prod = max_dev(&roots(AtomicGridConfig::production()), &reference);
+    println!("r2SCAN water/6-31G TDA: default grid {dev:.2e} eV, production {dev_prod:.2e} eV");
+    assert!(
+        dev_prod > META_GGA_TOL_EV,
+        "negative control: the production grid ({dev_prod:.2e} eV) must miss the bar"
+    );
+    assert!(
+        dev < META_GGA_TOL_EV,
+        "meta-GGA response grid: {dev:.2e} eV from flat 150x590 (bar {META_GGA_TOL_EV:.0e})"
+    );
 }

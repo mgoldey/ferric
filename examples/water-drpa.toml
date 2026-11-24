@@ -1,12 +1,11 @@
-# EXACT direct RPA (dRPA@HF), closed-shell: the drCCD Riccati solve with no
-# amplitude truncated, anchored to the canonical plasmon formula. Riccati,
-# plasmon and full-rank PDEP (kind = "pdep-rpa" with [rpa] trunc_thresh = 0)
-# are algorithms for this same energy.
+# EXACT direct RPA (dRPA@HF), closed-shell: ln det(1 + Pi) - tr Pi
+# integrated over imaginary frequency in the dressed aux basis (Gauss-Legendre,
+# 48 points), nothing truncated and no static eigensolve. The drCCD Riccati
+# solve (Python ferric.run_drpa) and the canonical plasmon formula are
+# algorithms for this same energy.
 #
-# The Riccati solve holds an no^3 * nv^2 ring-product plan, so it is the
-# small-system path: a run that cannot fit the memory budget is refused
-# before the SCF and pointed at pdep-rpa. For the local approximation see
-# water-drpa-local.toml. Same calculation as Python ferric.run_drpa(...).
+# A run that cannot fit the memory budget is refused before the SCF. For the
+# local approximation see water-drpa-local.toml.
 
 [molecule]
 xyz = "testdata/molecules/water.xyz"

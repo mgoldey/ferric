@@ -38,9 +38,15 @@ pub trait Bound: Sync + Send {
 #[derive(Debug, Clone)]
 #[must_use = "Schwarz bounds are expensive to compute; dropping them wastes work"]
 pub struct SchwarzBounds {
+    /// Shell-pair Schwarz factors from `ferric_integrals::schwarz::schwarz`
+    /// (`Q[P][Q] ≈ sqrt|(PQ|PQ)|`, so `|(PQ|RS)| ≤ Q[P][Q]·Q[R][S]`),
+    /// `nshells x nshells`, for `op`.
     pub q: Array2<f64>,
+    /// Per-shell row maximum of `q`: `q_shell[P] = max_Q q[P][Q]`.
     pub q_shell: Vec<f64>,
+    /// The two-electron operator the factors were computed for.
     pub op: Operator,
+    /// Number of shells in the basis.
     pub nshells: usize,
     /// CSB `M` table, `M[P][Q] = sqrt(max_{µ∈P,λ∈Q} |(µµ|λλ)|)`, built for the
     /// SAME `op` as `q`. `None` (the default, and what [`Self::compute`]
@@ -72,9 +78,33 @@ pub struct SchwarzBounds {
     /// side by side rather than unified — a single "refinement table" field
     /// would invite exactly the confusion that makes CSAM look like a bound.
     pub csam_x: Option<Array2<f64>>,
+    /// The in-core ERI store of this geometry ([`crate::incore_jk`]),
+    /// attached by an SCF whose `[scf] eri` route chose it and served by every
+    /// direct J/K builder handed these bounds. Empty by default (and after an
+    /// SCF that took the direct route), which is the integral-direct path.
+    pub incore: crate::incore_jk::IncoreSlot,
+    /// The contraction rotation of generally contracted shells for the
+    /// direct J/K builds on these bounds
+    /// ([`crate::direct_jk::gc_rotation::GcSlot`]): the solver's request and
+    /// the rotated basis, bounds and engines, built once per geometry and
+    /// shared by the SCF and the response builds that follow. Empty by
+    /// default; clones share it, as they share `incore`.
+    pub gc: crate::direct_jk::gc_rotation::GcSlot,
 }
 
 impl SchwarzBounds {
+    /// A copy whose builds run unrotated (`direct_jk::gc_rotation`): the
+    /// same tables and in-core slot, a detached contraction-rotation slot
+    /// (nothing recorded). For the open-shell guess Fock builds, which are a
+    /// starting point, not part of the SCF's J/K route: they stay the
+    /// unrotated builds of every SCF route (a fitted SCF has no four-centre
+    /// route to follow), so the guess is the same whatever the SCF runs.
+    pub(crate) fn unrotated(&self) -> Self {
+        let mut b = self.clone();
+        b.gc = self.gc.detached();
+        b
+    }
+
     /// Compute Schwarz screening bounds for all shell pairs.
     ///
     /// Always leaves BOTH `csb_m` and `csam_x` as `None`, i.e. plain Schwarz.
@@ -97,6 +127,10 @@ impl SchwarzBounds {
             nshells: nsh,
             csb_m: None,
             csam_x: None,
+            incore: Default::default(),
+            gc: crate::direct_jk::gc_rotation::GcSlot::owned_by(crate::incore_jk::geometry_key(
+                prep, op,
+            )),
         })
     }
 
@@ -568,9 +602,13 @@ impl CsamBounds {
 /// because the enum is the more general shape and one adapter at this seam is
 /// easier to audit than two.
 pub enum LinkBound<'a> {
+    /// Owned plain Schwarz bounds (CSB/CSAM tables, if attached, still apply).
     Schwarz(SchwarzBounds),
+    /// Borrowed bounds; applies whatever table the borrowed value carries.
     SchwarzRef(&'a SchwarzBounds),
+    /// Owned CSB bound.
     Csb(CsbBounds),
+    /// Owned CSAM estimate (non-rigorous).
     Csam(CsamBounds),
 }
 

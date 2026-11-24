@@ -77,8 +77,6 @@
 //! i.e. an unrelated reservation moves the reported correlation energy in the
 //! last digits, which is precisely the failure mode this file forbids.
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
 use ferric_core::memory::pool::{clear_global, install_global, MemoryPool};
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
@@ -87,6 +85,7 @@ use ferric_integrals::operator::Operator;
 use ferric_mp2::rimp2::{mo_stream_chunk_for_test as chunk_for, ri_mp2, RiMp2Config};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::pool::CleanSlot;
 
 /// The budget at which the MO-stream chunk is strictly between its 32 floor
 /// and its 256 cap for this fixture. MEASURED, not guessed -- see the module
@@ -101,30 +100,6 @@ const MO_STREAM_FLOOR: usize = 32;
 /// they ever coincide again).
 const POOL_CAPACITY: usize = 800_000_000;
 const BALLAST_BYTES: usize = 700_000_000;
-
-fn global_lock() -> MutexGuard<'static, ()> {
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    }
-}
-
-struct CleanSlot(#[allow(dead_code)] MutexGuard<'static, ()>);
-
-impl CleanSlot {
-    fn acquire() -> Self {
-        let g = global_lock();
-        clear_global();
-        Self(g)
-    }
-}
-
-impl Drop for CleanSlot {
-    fn drop(&mut self) {
-        clear_global();
-    }
-}
 
 struct Fixture {
     mol: Molecule,
@@ -193,6 +168,7 @@ impl Fixture {
 /// against an implementation that reads the ledger, the RSS, or the phase of
 /// the moon. Pinning the operand as UNCLAMPED is what makes the rest
 /// measurements.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_chosen_budget_puts_the_width_in_its_live_regime() {
     let f = fixture();
@@ -219,6 +195,7 @@ fn the_chosen_budget_puts_the_width_in_its_live_regime() {
 /// the 256 cap), then with a ballast that left `available_bytes()` still above
 /// the cliff. Only after both operands were placed in the live regime -- by
 /// the measured table in the module doc -- did it die.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_ballast_moves_the_width_if_it_is_read() {
     let f = fixture();
@@ -250,6 +227,7 @@ fn the_ballast_moves_the_width_if_it_is_read() {
 /// The mutation SURVIVED the ample-pool anchor for exactly the reason the
 /// module doc gives, and only became detectable once the budget was calibrated
 /// to the measured cliff.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn an_outstanding_reservation_does_not_move_the_energy() {
     let _s = CleanSlot::acquire();
@@ -312,6 +290,7 @@ fn an_outstanding_reservation_does_not_move_the_energy() {
 /// differ in the last digits" -- that is the designed, documented,
 /// reproducible-from-config behaviour. If this test ever fails, the width has
 /// stopped responding to the budget at all and the whole knob is decoration.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_budget_is_still_a_live_knob() {
     let _s = CleanSlot::acquire();

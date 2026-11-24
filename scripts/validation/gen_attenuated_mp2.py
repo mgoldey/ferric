@@ -1,6 +1,7 @@
 """PySCF/numpy references for the VALIDATION.md "Attenuated RI-MP2" row.
 
-Consumer: crates/ferric-mp2/tests/validation_attenuated_mp2.rs.
+Consumers: crates/ferric-mp2/tests/validation_attenuated_mp2.rs and, for the
+Coulomb block, crates/ferric-mp2/tests/validation_scs_mp2.rs.
 Output:   testdata/reference/validation/attenuated_mp2/<system>_aug-cc-pvdz.json
 
 What ferric computes (crates/ferric-mp2/src/attenuated.rs, unscreened path =
@@ -48,7 +49,7 @@ ROW = "attenuated_mp2"
 ROW_NAME = "Attenuated RI-MP2"
 BASIS = "aug-cc-pvdz"
 AUXBASIS = "aug-cc-pvdz-rifit"
-SYSTEMS = ("h2o", "nh3")
+SYSTEMS = ("h2o", "nh3", "ch4")
 # ferric: BOHR_INV_PER_ANG_INV = 1/ANGSTROM_TO_BOHR (ferric_core::units);
 # default omega = 0.420 A^-1.
 OMEGA_DEFAULT_BOHR = 0.420 * (1.0 / common.ANGSTROM_TO_BOHR)

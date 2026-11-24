@@ -1,0 +1,365 @@
+# Notation and conventions
+
+This chapter fixes one notation for the whole book. Each section states the
+convention, lists where the sources disagree, and names the choice the book
+makes. The sources are the code, the site pages, the dissertation, and the
+SR-MP2 + LR-RPA derivation notes.
+
+File and line references are to commit `81486b984`. Paths starting with
+`crates/` or `site/` are in the repository. `dissertation.txt` and
+`wiki/papers/…` are local files outside the repository; they are cited by line
+so a claim can be checked, and are never copied whole. Line references drift
+with every edit to a source file. The book cites functions by name and
+resolves the line at build time; see `book/BUILD.md`.
+
+When a source disagrees with the book, the code is the authority for what is
+computed and the book is the authority for how it is written down.
+
+## 1. Index letters
+
+| Range | Letters | Count symbol |
+|---|---|---|
+| Active occupied MOs | $i, j, k, l$ | $n_o$ |
+| Virtual MOs | $a, b, c, d$ | $n_v$ |
+| General MOs | $p, q, r, s$ | $n$ |
+| CAS active MOs | $t, u, v, w$ | $n_a$ |
+| AO basis functions | $\mu, \nu, \lambda, \sigma$ | $N$ |
+| Auxiliary (fitting) functions | $P, Q, R, S$ | $N_{\mathrm{aux}}$ |
+| Atoms | $A, B, C$ | $N_{\mathrm{at}}$ |
+| Cartesian components | $x, y, z$ or $\alpha_c, \beta_c$ written out | 3 |
+| Grid points | $g$ | $N_g$ |
+| Spin labels | $\sigma, \tau \in \{\alpha, \beta\}$ | |
+| PDEP eigenpotentials | $\xi, \eta$ | $N_{\mathrm{pdep}}$ |
+| Quadrature nodes | $k$ with weight $w_k$ | $n_q$ |
+
+"Active occupied" excludes frozen core orbitals. In code the active occupied
+block starts at `first_occ = frozen_core`, and virtual orbitals start at
+`nocc_total` (`crates/ferric-mp2/src/rimp2.rs:1017-1020`). The count of active
+occupied orbitals comes from `active_occ` (`crates/ferric-mp2/src/rimp2.rs:98`),
+which returns an error when the freeze covers every occupied orbital.
+
+In a CAS chapter, $i, j$ index the doubly occupied core orbitals and
+$t, u, v, w$ the active orbitals (`book/src/17-multireference/index.md`).
+
+A $\beta$-spin spatial orbital carries an overbar: $\bar\imath, \bar a$.
+
+**Disagreements.**
+
+- The PCM chapter uses $i, j, k$ for tesserae and declares them in its
+  header, because no occupied-orbital index appears in its equations.
+- The dissertation uses $O, V, N, X$ for the numbers of occupied, virtual,
+  AO and auxiliary functions (`dissertation.txt:2867-2868`, Table 4.1 at
+  `dissertation.txt:2871-2895`). The book uses $n_o, n_v, N, N_{\mathrm{aux}}$,
+  which match the code's `nocc`, `nvir`, `nbas`, `naux`.
+
+Each chapter opens with a table of the index sets it uses. A chapter may add
+local letters; it may not reuse a letter from the table above for a different
+range.
+
+## 2. Spin orbitals and spatial orbitals
+
+Formal derivations are written in spin orbitals. Working equations are written
+in spatial orbitals, with the spin sum carried out and the spin factor shown.
+Every spin-adapted working equation has a verified-equation box that proves it
+equal to the spin-orbital form.
+
+Two spin-orbital orderings exist in the code.
+
+| Ordering | Rule | Used by |
+|---|---|---|
+| Interleaved | spin orbital $2p + s$, $s = 0$ for $\alpha$ and $1$ for $\beta$ | `crates/ferric-mp2/src/spinorbital.rs:22`, `crates/ferric-mp2/src/mp3.rs:246-253`, the spin-orbital coupled-cluster codes (`book/src/16-coupled-cluster/01-ccd-ccsd-spin-orbital.md`) |
+| Blocked | mode $p$ is $p\alpha$, mode $n + p$ is $p\beta$ | CAS-CI determinants (`book/src/17-multireference/01-determinants.md`) |
+
+The ordering does not change any energy. It changes determinant phases, so
+the CAS-CI phase convention in `book/src/17-multireference/01-determinants.md` holds only
+for the blocked ordering. The book states the ordering in the header of each
+chapter that writes spin-orbital tensors or determinant phases.
+
+**Disagreements.**
+
+- The dissertation labels its Eq. 4.3 "spin-orbital notation"
+  (`dissertation.txt:2847-2857`) and writes it with Mulliken integrals and a
+  prefactor of $\tfrac12$. Its Eq. 1.23 (`dissertation.txt:780-792`) writes the
+  same energy with antisymmetrized integrals and a prefactor of $\tfrac14$.
+  Both are spin-orbital sums. The book uses the Eq. 1.23 form for spin-orbital
+  expressions and the spatial form of section 4 for working equations.
+
+## 3. Two-electron integrals
+
+**Chemist (Mulliken) notation is the default.**
+
+$$ (pq|rs) = \iint \phi_p(\mathbf r_1)\phi_q(\mathbf r_1)\,\hat w(r_{12})\,\phi_r(\mathbf r_2)\phi_s(\mathbf r_2)\,d\mathbf r_1 d\mathbf r_2 . $$
+
+Orbitals are real, so $(pq|rs) = (qp|rs) = (pq|sr) = (rs|pq)$. The operator
+$\hat w$ is the Coulomb operator unless a subscript or an explicit operator is
+shown: $(ia|\hat w|jb)$.
+
+**Physicist notation appears only antisymmetrized, in spin orbitals.**
+
+$$ \langle pq\|rs\rangle = \langle pq|rs\rangle - \langle pq|sr\rangle = (pr|qs) - (ps|qr) . $$
+
+The spin-orbital coupled-cluster code uses this convention
+(`book/src/16-coupled-cluster/01-ccd-ccsd-spin-orbital.md`), and so do the derivation notes
+(`wiki/papers/sr-mp2-lr-rpa-derivation.tex:125-131`). The spin integration in
+$(pr|qs)$ is implied: the integral vanishes unless $p, r$ share a spin and
+$q, s$ share a spin.
+
+The exchange partner of an $ov$-$ov$ integral is written out, $(ib|ja)$.
+
+**Disagreements.**
+
+- The dissertation writes the three-center integral as $(ia|P)$
+  (`dissertation.txt:2871-2876`). The code
+  stores the auxiliary index first, shape `(naux, nocc*nvir)`
+  (`crates/ferric-mp2/src/rimp2.rs:682`). The book writes $(P|\mu\nu)$ and
+  $(P|ia)$, auxiliary index first, without conjugates.
+
+## 4. Orbital-energy denominators
+
+The book uses one symbol with one sign:
+
+$$ \Delta_{ij}^{ab} = \varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j > 0 , \qquad \Delta_i^a = \varepsilon_a - \varepsilon_i > 0 . $$
+
+Every correlation energy is written with an explicit minus sign over a
+positive $\Delta$. The closed-shell MP2 energy is
+
+$$ E^{(2)} = -\sum_{ijab} \frac{(ia|jb)\,\big[\,2(ia|jb) - (ib|ja)\,\big]}{\Delta_{ij}^{ab}} . $$
+
+**Disagreements.** The sources differ in the sign of the denominator.
+
+| Source | Definition | Sign |
+|---|---|---|
+| `wiki/papers/sr-mp2-lr-rpa-derivation.tex:207` | $D_{ij}^{ab} = \varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j$ | positive |
+| `dissertation.txt:2852-2857` (Eq. 4.3) | $\varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j$, unnamed | positive |
+| Code, `crates/ferric-mp2/src/rimp2.rs:1332` | `denom = e_ij - eps[a] - eps[b]` | negative |
+| Code doc, `crates/ferric-mp2/src/rimp2.rs:52-53` | $\Delta = \varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j$ | positive |
+
+The book adopts the positive $\Delta$ and never writes $D_{ij}^{ab}$. $D$ is
+reserved for the density matrix. Where the code divides by the negative
+`denom`, the chapter says so next to the code reference, as in the sample
+section.
+
+## 5. Density matrices and the Fock matrix
+
+The closed-shell AO density is the total density,
+
+$$ D_{\mu\nu} = 2\sum_i C_{\mu i} C_{\nu i}, \qquad \operatorname{tr}(DS) = N_{\mathrm{el}}, \qquad F = h + J[D] - \tfrac12 K[D] . $$
+
+Spin densities are $D^\sigma = \sum_{i \in \sigma} C^\sigma_{\mu i} C^\sigma_{\nu i}$
+with $D = D^\alpha + D^\beta$.
+
+This is what the code builds (`crates/ferric-scf/src/rhf.rs:3738`,
+`D = 2·C_occ·C_occᵀ`), what the Python surface documents
+(`crates/ferric-python/ferric.pyi:567`), and what the DFT pages assume
+(`site/src/methods/dft-derivations.md:13-15`).
+
+Reduced density matrices of a CAS wavefunction follow
+`book/src/17-multireference/04-rdms.md` ("The 1- and 2-RDM"):
+$\gamma_{pq} = \langle E_{pq}\rangle$ and
+$\Gamma_{pqrs} = \sum_{\sigma\tau}\langle a^\dagger_{p\sigma} a^\dagger_{r\tau} a_{s\tau} a_{q\sigma}\rangle$.
+
+## 6. Orbital rotations
+
+One convention holds for every orbital-rotation method in the code.
+
+- The generator $\kappa$ is real and antisymmetric, $\kappa^{\mathsf T} = -\kappa$.
+- The stored parameters are the lower-triangle elements with the higher
+  orbital index first: $\kappa_{ai}$ for occupied-virtual rotations, and
+  $\kappa_{pq}$ with $p > q$ in general. $\kappa_{ia} = -\kappa_{ai}$.
+- Coefficients rotate on the right: $C \leftarrow C\,U(\kappa)$.
+- To first order $U = 1 + \kappa$.
+- The gradient is $g_{ai} = +\partial E/\partial\kappa_{ai}$, and a descent
+  step has $\kappa_{ai} = -g_{ai}/(\Delta_i^a + \mu)$ with level shift
+  $\mu \ge 0$.
+
+The code uses three forms of $U$, which agree through second order in $\kappa$.
+
+| Form | $U(\kappa)$ | Function |
+|---|---|---|
+| Cayley | $(1 - \tfrac12\kappa)^{-1}(1 + \tfrac12\kappa)$ | `cayley_rotation`, `crates/ferric-mp2/src/orbital_rotation.rs:53`; `cayley_unitary`, `crates/ferric-scf/src/cayley.rs:24` |
+| Exponential | $e^{\kappa}$ by scaling and squaring | `expm_antisymmetric`, `crates/ferric-ci/src/casscf.rs:855` |
+| Geodesic | $e^{\kappa}$ in closed form from the SVD of the $vo$ block | `geodesic_rotation`, `crates/ferric-scf/src/aurora.rs:270` |
+
+The Cayley form is orthogonal to rounding for any antisymmetric $\kappa$ and
+differs from $e^{\kappa}$ at third order. Claim 6 of
+`scripts/mp2_variant_identities.py` checks both statements, and checks that the
+reversed form $(1 + \tfrac12\kappa)^{-1}(1 - \tfrac12\kappa)$ tracks
+$e^{-\kappa}$.
+
+The index placement is the same in every caller: `kappa[(a, i)] = v`,
+`kappa[(i, a)] = -v` (`crates/ferric-scf/src/cayley.rs:55-61`,
+`crates/ferric-scf/src/rohf_newton.rs:219-236`,
+`crates/ferric-scf/src/cdft_driver.rs:1371-1380`). CASSCF uses
+$C' = C\,e^{K}$ with $K_{pq} = \kappa_{pq} = -K_{qp}$ for $p > q$
+(`crates/ferric-ci/src/casscf.rs:21`).
+
+**Disagreements.**
+
+- The module documentation of
+  `crates/ferric-mp2/src/orbital_rotation.rs:5-13` records that the closed-shell
+  driver once used the reversed Cayley form. Any derivation older than that
+  module is suspect for the sign of $\kappa$ and of the gradient.
+- `wiki/sympy_derivations.md:210-211` writes the generator as the operator
+  $\hat\kappa = \sum_{ai}\kappa_{ai}(a^\dagger_a a_i - a^\dagger_i a_a)$. That
+  matches the matrix convention above.
+- The letter $\kappa$ has two other meanings in the sources. It is the
+  regularization strength of $\kappa$-MP2, in Ha$^{-1}$
+  (`crates/ferric-mp2/src/rimp2.rs:50-56`),
+  and it is the particle-hole kernel in the derivation notes
+  (`wiki/papers/sr-mp2-lr-rpa-derivation.tex:417`). The book keeps $\kappa$ for
+  orbital rotations, writes the regularization strength as
+  $\kappa_{\mathrm{reg}}$, and writes the particle-hole kernel as
+  $\mathbf K$ with $K_{ia,jb} = 2(ia|jb)$.
+
+## 7. Density fitting
+
+$$ V_{PQ} = (P|\hat w|Q), \qquad B^P_{pq} = \sum_Q M_{PQ}\,(Q|\hat w|pq), \qquad M^{\mathsf T} M = V^{-1}, \qquad (pq|\hat w|rs) \approx \sum_P B^P_{pq} B^P_{rs} . $$
+
+- $V$ is the **metric**. $(Q|pq)$ is the **raw** three-index integral.
+  $B^P_{pq}$ is the **dressed** factor. The word "B tensor" always means the
+  dressed factor.
+- $M$ is any matrix with $M^{\mathsf T} M = V^{-1}$. Only $B^{\mathsf T}B$
+  enters an energy, so the choice of $M$ does not change it. The code uses
+  $M = L^{-1}$ from the Cholesky factor $V = LL^{\mathsf T}$
+  (`cholesky_inverse_sqrt`, `crates/ferric-mp2/src/rimp2.rs:2219`) and the
+  symmetric $M = U\lambda^{-1/2}U^{\mathsf T}$ with small eigenvalues dropped
+  for the erf and terf operators (`eigh_inverse_sqrt`,
+  `crates/ferric-mp2/src/rimp2.rs:2264`; dispatch in `metric_inverse_sqrt`,
+  `crates/ferric-mp2/src/rimp2.rs:2356`).
+- The auxiliary index is the upper index and the first array axis. Blocks are
+  named by their orbital spaces: $B_{ov}$, $B_{oo}$, $B_{vv}$. The flattened
+  $ov$ block has column index $i\,n_v + a$
+  (`crates/ferric-mp2/src/rimp2.rs:1431-1433`).
+- The metric and the three-index integrals use the same operator $\hat w$
+  unless a section says otherwise
+  (`crates/ferric-mp2/src/rimp2.rs:1042`, `met_op = config.metric_op.unwrap_or(op)`).
+
+**Disagreements.**
+
+- The dissertation dresses with the symmetric inverse square root and puts the
+  auxiliary index last: $B^Q_{ia} = \sum_P (ia|P)(P|Q)^{-1/2}$
+  (`dissertation.txt:2871-2876`, Eq. 4.5 at `dissertation.txt:2909-2925`). The
+  code's default is the Cholesky factor
+  (`book/src/06-density-fitting/01-factorization-and-metric.md`). The energies are identical. The book
+  writes $M$ and names the factor used where it matters (conditioning, rank
+  loss).
+- `crates/ferric-scf/src/df_j.rs:9` calls the **raw** tensor
+  $B_{P,\mu\nu} = (P|\mu\nu)$, while `crates/ferric-scf/src/df_k.rs:27` calls
+  the **dressed** tensor $B[P,\mu,\nu]$. The book writes the raw tensor as
+  $(P|\mu\nu)$ and the RI-J fit coefficients as
+  $c_P = \sum_Q V^{-1}_{PQ}\,(Q|\mu\nu)D_{\mu\nu}$.
+
+## 8. Attenuated Coulomb operators
+
+| Name | Kernel $\hat w(r)$ | Constructor (`crates/ferric-integrals/src/operator.rs`) |
+|---|---|---|
+| Coulomb | $1/r$ | `Operator::coulomb`, `:119` |
+| erf (long range) | $\operatorname{erf}(\omega r)/r$ | `Operator::erf`, `:124` |
+| erfc (short range) | $\operatorname{erfc}(\omega r)/r$ | `Operator::erfc`, `:129` |
+| terf (long range) | $\operatorname{terf}(r; r_0)/r$ | `Operator::terf`, `:239` |
+| terfc (short range) | $\operatorname{terfc}(r; r_0)/r$ | `Operator::terfc`, `:227` |
+
+$$ \operatorname{terf}(r; r_0, \omega) = \tfrac12\big[\operatorname{erf}\big(\omega(r - r_0)\big) + \operatorname{erf}\big(\omega(r + r_0)\big)\big], \qquad \operatorname{terfc} = 1 - \operatorname{terf} . $$
+
+Each pair sums to the Coulomb operator: $\operatorname{erf} + \operatorname{erfc} = 1$
+and $\operatorname{terf} + \operatorname{terfc} = 1$.
+
+**The curvature constraint.** By default the terf sharpness is tied to the
+cutoff, $r_0\,\omega = 1/\sqrt2$, so $r_0$ is the only parameter
+(`crates/ferric-integrals/src/operator.rs:224-229`,
+`dissertation.txt:1404`). `Operator::terfc_with_omega` and
+`Operator::terf_with_omega` (`crates/ferric-integrals/src/operator.rs:252`,
+`:258`) take $r_0$ and $\omega$ independently. The book writes
+$\operatorname{terfc}(r; r_0)$ for the constrained form and
+$\operatorname{terfc}(r; r_0, \omega)$ for the free form.
+
+**Short and long range.** $s$ and $l$ denote the short- and long-range parts of
+an integral, $(ia|jb) = s + l$, as in `dissertation.txt:2826-2839`. Energies of a method evaluated with one part
+carry the operator in brackets: $E_{\mathrm{OS}}[\operatorname{erfc}]$.
+
+**Units of $\omega$ and $r_0$.** Inside the Rust API both are atomic units:
+$\omega$ in Bohr$^{-1}$ and $r_0$ in Bohr
+(`crates/ferric-integrals/src/operator.rs:57-61`). The book's equations use
+atomic units. The user surfaces do not all agree:
+
+| Surface | Parameter | Unit | Reference |
+|---|---|---|---|
+| TOML `[mp2] omega`, `terf_omega`, `att_omega`, `mp2v_omega` | $\omega$ | Å$^{-1}$ | `site/src/reference/input.md:166`, `:176`, `:179`, `:188` |
+| TOML `[mp2] att_r0` and the other $r_0$ keys | $r_0$ | Å | `crates/ferric-cli/src/config.rs:1981-1983` |
+| TOML `[dft] omega` (`wb97x-l-v`) | $\omega$ | Bohr$^{-1}$ | `site/src/reference/input.md:152` |
+| TOML `[cell] omega`, `gdf_omega` (Ewald splits) | $\omega$ | inverse of `[cell] unit`, Å$^{-1}$ by default | `site/src/reference/input.md:632`, `:639-640` |
+| Python `run_attenuated_rimp2(omega=)` and the other MP2 entry points | $\omega$ | Å$^{-1}$ | `crates/ferric-python/ferric.pyi:5039` |
+| Python `AoIntegrals` `operator='erf'/'erfc'` | $\omega$ | Bohr$^{-1}$ | `crates/ferric-python/ferric.pyi:568` |
+| Python range-separated functional property `omega` | $\omega$ | Bohr$^{-1}$ | `crates/ferric-python/ferric.pyi:2685` |
+| Dissertation | $\omega$, $r_0$ | Å$^{-1}$, Å | `dissertation.txt:1538`, `:3739` (the text extraction drops the exponent of Å$^{-1}$) |
+
+The conversion is one constant. An inverse length in Å$^{-1}$ times
+`BOHR_TO_ANGSTROM` is Bohr$^{-1}$ (`crates/ferric-core/src/units.rs:22-24`;
+the alias `BOHR_INV_PER_ANG_INV` at `crates/ferric-mp2/src/attenuated.rs:160`).
+The default $\omega = 0.420$ Å$^{-1}$ is $0.222254$ Bohr$^{-1}$
+(`crates/ferric-mp2/src/attenuated.rs:165`).
+
+The book quotes every parameter value in the unit of the surface that takes
+it, followed by the atomic-unit value in parentheses: "$\omega = 0.420$
+Å$^{-1}$ ($0.2223$ Bohr$^{-1}$)". Equations never contain a unit conversion.
+
+**The letter $\omega$** has three meanings in the sources: the range-separation
+parameter, the frequency of a response function, and the Ewald splitting
+parameter (the `[cell] omega` key). The derivation notes use it for the
+first two in the same chapter
+(`wiki/papers/sr-mp2-lr-rpa-derivation.tex:359`, `:410`). The book assigns:
+
+| Quantity | Symbol |
+|---|---|
+| Range-separation parameter | $\omega$ |
+| Imaginary frequency | $u$, as in $\chi_0(iu)$ |
+| Real excitation energy | $\Omega$ |
+| Ewald splitting parameter | $\eta$ |
+
+The range-separation parameter keeps $\omega$ because the CLI key, the Python
+keyword and the dissertation all use it.
+
+## 9. Units
+
+Equations are in Hartree atomic units: energies in Hartree, lengths in Bohr,
+gradients in Hartree/Bohr. Real orbitals throughout.
+
+| Quantity | Internal | At the TOML and Python surface | Reference |
+|---|---|---|---|
+| Coordinates | Bohr | Å in XYZ files and Python constructors | `crates/ferric-core/src/mol.rs:196-198`, `crates/ferric-python/ferric.pyi:180` |
+| Bohr radius | 0.52917721092 Å (CODATA 2010) | | `crates/ferric-core/src/units.rs:17` |
+| Attenuation $\omega$, $r_0$ | Bohr$^{-1}$, Bohr | see section 8 | |
+| $\kappa_{\mathrm{reg}}$ | Ha$^{-1}$ | Ha$^{-1}$ | `crates/ferric-mp2/src/rimp2.rs:56` |
+| Lattice vectors, k-points | Bohr, Bohr$^{-1}$ | Å, Å$^{-1}$ (or `unit = "bohr"`) | `site/src/reference/input.md:632` |
+| Force-field parameters | atomic units | kcal/mol, Å, degrees | `crates/ferric-mm/src/topology.rs:302-318` |
+| Excitation and quasiparticle energies | Hartree | eV in printed output | `crates/ferric-gw/src/bse.rs:102` |
+| Memory budget | bytes | GB (`[memory] budget_gb`) | `site/src/reference/input.md:396` |
+
+Benchmark statistics taken from the dissertation are in kcal/mol, as printed
+there.
+
+**Disagreements.**
+
+- The Hartree-to-eV factor is written as the literal `27.211_386_245_988`
+  (CODATA 2018) in `crates/ferric-gw/src/bse.rs:102`, while the length and
+  energy constants in `crates/ferric-core/src/units.rs:17` and `:27` are
+  CODATA 2010. The difference is below $10^{-7}$ relative. The book states
+  which constant a printed eV value uses.
+- `[dft] omega` is in Bohr$^{-1}$ and `[mp2] omega` is in Å$^{-1}$
+  (`site/src/reference/input.md:152`, `:166`). The input reference documents
+  the difference. The book repeats the warning wherever both keys appear in
+  one example.
+
+## 10. Typography
+
+- Matrices and tensors over compound indices are bold when the indices are
+  suppressed: $\mathbf A$, $\mathbf B$, $\mathbf K$, $\boldsymbol\chi_0$.
+- Operators carry a hat: $\hat w$, $\hat T_2$.
+- Amplitudes are $t_{ij}^{ab}$ with occupied indices below. The closed-shell
+  antisymmetrized combination is $\tilde t_{ij}^{ab} = 2t_{ij}^{ab} - t_{ij}^{ba}$.
+- Spin components: $E_{\mathrm{OS}}$ and $E_{\mathrm{SS}}$, with scaling
+  coefficients $c_{\mathrm{OS}}$ and $c_{\mathrm{SS}}$.
+- Code names are in monospace and are never translated: `b_ov`, `nocc`,
+  `frozen_core`.
+- Math uses `$...$` and `$$...$$`. Inside a Markdown table the bar of an
+  integral is written `\vert`, because a bare bar ends the table cell.

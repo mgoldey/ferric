@@ -28,19 +28,9 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::{SchwarzBounds, ScreeningKind};
 use ferric_scf::ScfResult;
 
-/// Path to the `ferric-cli` binary, resolved at RUN TIME (see `r0_sweep.rs`
-/// for why a raw `env!` breaks under `cargo nextest archive`).
-fn ferric_cli_bin() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(profile_dir) = exe.parent().and_then(Path::parent) {
-            let p = profile_dir.join("ferric-cli");
-            if p.is_file() {
-                return p;
-            }
-        }
-    }
-    PathBuf::from(env!("CARGO_BIN_EXE_ferric-cli"))
-}
+#[path = "support/cli_bin.rs"]
+mod cli_bin;
+use cli_bin::ferric_cli_bin;
 
 /// Workspace root at RUN time (same helper as `r0_sweep.rs`).
 fn workspace_root() -> PathBuf {
@@ -174,12 +164,10 @@ fn lib(xyz: &str, mult: usize, basis_name: &str) -> Lib {
 
 /// `RhfConfig::default()` with the thresholds of [`TIGHT`].
 fn tight() -> RhfConfig {
-    RhfConfig {
-        max_iter: 200,
-        density_conv: 1e-9,
-        energy_conv: 1e-10,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(200)
+        .with_density_conv(1e-9)
+        .with_energy_conv(1e-10)
 }
 
 fn rhf(l: &Lib, cfg: &RhfConfig) -> ScfResult {
@@ -205,13 +193,11 @@ fn assert_close(what: &str, cli: f64, lib: f64, tol: f64) {
 #[test]
 fn pcm_rhf_matches_the_library_and_solvates() {
     let l = lib("water.xyz", 1, "sto-3g");
-    let e_lib = rhf(
-        &l,
-        &RhfConfig {
-            pcm: Some(ferric_pcm::PcmConfig::for_solvent("water").unwrap()),
-            ..tight()
-        },
-    )
+    let e_lib = rhf(&l, &{
+        let mut c = tight();
+        c.pcm = Some(ferric_pcm::PcmConfig::for_solvent("water").unwrap());
+        c
+    })
     .energy;
     let by_name = run_ok(
         "pcm_name",
@@ -253,13 +239,11 @@ fn pcm_rhf_matches_the_library_and_solvates() {
 #[test]
 fn pcm_uhf_on_a_singlet_matches_solvated_rhf() {
     let l = lib("water.xyz", 1, "sto-3g");
-    let e_lib = rhf(
-        &l,
-        &RhfConfig {
-            pcm: Some(ferric_pcm::PcmConfig::for_solvent("water").unwrap()),
-            ..tight()
-        },
-    )
+    let e_lib = rhf(&l, &{
+        let mut c = tight();
+        c.pcm = Some(ferric_pcm::PcmConfig::for_solvent("water").unwrap());
+        c
+    })
     .energy;
     let out = run_ok(
         "pcm_uhf",
@@ -283,10 +267,10 @@ fn pcm_is_refused_where_it_is_not_honoured() {
         &["[pcm]", "rimp2"],
     );
     assert_refused(
-        "pcm_opt",
+        "pcm_freq",
         &body("water.xyz", 1, "sto-3g", "rhf", pcm)
-            .replace("task = \"energy\"", "task = \"optimize\""),
-        &["[pcm]", "no gradient"],
+            .replace("task = \"energy\"", "task = \"frequencies\""),
+        &["[pcm]", "task = \"optimize\""],
     );
     assert_refused(
         "pcm_bad_name",
@@ -298,6 +282,77 @@ fn pcm_is_refused_where_it_is_not_honoured() {
             "[pcm]\nsolvent = \"watr\"\n",
         ),
         &["not recognised"],
+    );
+}
+
+/// `task = "optimize"` with `[pcm]` on `rhf` (water/STO-3G): the run
+/// converges, and at the printed geometry the library's solvated analytic
+/// gradient (`restricted_scf_gradient`, PCM term included) is below the
+/// optimizer's `g_max_thresh`, while the same gradient WITHOUT the PCM term
+/// is not (negative control: a run that ignored the PCM gradient would have
+/// stopped elsewhere). The printed final energy is the library's solvated
+/// SCF energy at that geometry.
+#[test]
+fn pcm_rhf_optimize_reaches_a_solvated_stationary_point() {
+    let toml = body(
+        "water.xyz",
+        1,
+        "sto-3g",
+        "rhf",
+        &format!("{TIGHT}[pcm]\nsolvent = \"water\"\n"),
+    )
+    .replace("task = \"energy\"", "task = \"optimize\"");
+    let out = run_ok("pcm_optimize", &toml);
+    assert!(out.contains("converged  = true"), "not converged:\n{out}");
+    let e_cli = value(&out, "final E");
+
+    let mut l = lib("water.xyz", 1, "sto-3g");
+    let start = out
+        .find("Final Optimized Geometry (Bohr):")
+        .expect("geometry block");
+    for (atom, line) in l.mol.atoms.iter_mut().zip(out[start..].lines().skip(1)) {
+        let f: Vec<f64> = line
+            .split_whitespace()
+            .skip(2)
+            .map(|t| t.parse().unwrap())
+            .collect();
+        (atom.x, atom.y, atom.zpos) = (f[0], f[1], f[2]);
+    }
+    let bs = basis::bundled("sto-3g").unwrap();
+    l.prep = PreparedBasis::new(&l.mol, &bs).unwrap();
+    l.bounds = SchwarzBounds::compute_for_screening(
+        Operator::coulomb(),
+        &l.prep,
+        ScreeningKind::default(),
+    )
+    .unwrap();
+    let pcm = ferric_pcm::PcmConfig::for_solvent("water").unwrap();
+    let mut cfg = tight();
+    cfg.pcm = Some(pcm.clone());
+    let r = rhf(&l, &cfg);
+    assert_close("optimize final E", e_cli, r.energy, 1e-8);
+    let g = ferric_scf::gradient::restricted_scf_gradient(
+        &l.mol,
+        &l.prep,
+        &bs,
+        Operator::coulomb(),
+        &l.bounds,
+        &cfg,
+        &r,
+    )
+    .unwrap();
+    let g_pcm = ferric_pcm::pcm_gradient(&l.mol, &l.prep, r.density_total(), &pcm).unwrap();
+    let gmax = |a: &ndarray::Array2<f64>| a.iter().fold(0.0_f64, |m, x| m.max(x.abs()));
+    let g_vacuum_form = &g - &g_pcm;
+    assert!(
+        gmax(&g) < 4.5e-4,
+        "solvated gradient at the optimum: {}",
+        gmax(&g)
+    );
+    assert!(
+        gmax(&g_vacuum_form) > 4.5e-4,
+        "control: without the PCM term the gradient is {} (must not look converged)",
+        gmax(&g_vacuum_form)
     );
 }
 
@@ -317,11 +372,7 @@ fn stability_descent_reaches_the_library_uhf_minimum() {
         &l.mol,
         &l.prep,
         &l.bounds,
-        &RhfConfig {
-            check_stability: true,
-            scf_stability_descent: true,
-            ..tight()
-        },
+        &tight().with_stability(ferric_scf::options::Stability::Descend),
     )
     .unwrap();
     assert!(r.converged);
@@ -359,11 +410,7 @@ fn stability_descent_reaches_the_library_rhf_minimum() {
         &l.prep,
         Operator::coulomb(),
         &l.bounds,
-        &RhfConfig {
-            check_stability: true,
-            scf_stability_descent: true,
-            ..tight()
-        },
+        &tight().with_stability(ferric_scf::options::Stability::Descend),
     )
     .unwrap();
     assert!(r.converged);
@@ -407,27 +454,22 @@ fn stability_descent_is_refused_off_the_rhf_uhf_ksdft_route() {
 // ─── [dft] grid_radial / grid_angular ───────────────────────────────────────
 
 /// `ksdft` PBE with a 99x302 grid is the library KS solve on
-/// `AtomicGridConfig { n_radial: 99, n_angular: 302, prune: None }` (the
-/// Python `grid_radial=99, grid_angular=302` grid), under the CLI's default
-/// RI-JK aux for KS. Negative control: the default 75x110 grid differs.
+/// `AtomicGridConfig::production_sized(99, 302)` (the default scheme and cutoff
+/// at that size, as the Python `grid_radial=99, grid_angular=302` grid), under
+/// the CLI's default RI-JK aux for KS. Negative control: the default 75x110
+/// grid differs.
 #[test]
 fn dft_grid_keys_match_the_library_grid() {
     let l = lib("water.xyz", 1, "sto-3g");
     let jk = Some("def2-universal-jkfit".to_string());
-    let e_lib = rhf(
-        &l,
-        &RhfConfig {
-            xc: Some("PBE".into()),
-            df_j_aux: jk.clone(),
-            df_k_aux: jk,
-            dft_grid: Some(ferric_dft::grid::AtomicGridConfig {
-                n_radial: 99,
-                n_angular: 302,
-                prune: None,
-            }),
-            ..tight()
-        },
-    )
+    let e_lib = rhf(&l, &{
+        let mut c = tight().with_xc("PBE").with_dft_grid(
+            ferric_dft::grid::AtomicGridConfig::production_sized(99, 302),
+        );
+        c.df_j_aux = jk.clone();
+        c.df_k_aux = jk;
+        c
+    })
     .energy;
     let custom = run_ok(
         "grid_custom",
@@ -466,7 +508,7 @@ fn dft_grid_keys_are_refused_where_they_cannot_apply() {
             1,
             "sto-3g",
             "ksdft",
-            "[dft]\ngrid_angular = 146\n",
+            "[dft]\ngrid_angular = 147\n",
         ),
         &["grid_angular", "Lebedev"],
     );
@@ -484,20 +526,17 @@ fn a_smeared_charge_matches_the_library() {
     let l = lib("water.xyz", 1, "sto-3g");
     let e_lib = rhf(
         &l,
-        &RhfConfig {
-            external_potential: Some(ExternalPotential {
-                point_charges: Vec::new(),
-                smeared_charges: vec![SmearedCharge {
-                    q,
-                    x,
-                    y,
-                    z,
-                    width: w,
-                }],
-                field: None,
-            }),
-            ..tight()
-        },
+        &tight().with_external_potential(ExternalPotential {
+            point_charges: Vec::new(),
+            smeared_charges: vec![SmearedCharge {
+                q,
+                x,
+                y,
+                z,
+                width: w,
+            }],
+            field: None,
+        }),
     )
     .energy;
     let charge = |width: &str| {
@@ -569,12 +608,91 @@ fn oo_keys_match_the_library_closed_shell() {
             "sto-3g",
             "oo-rimp2",
             &format!(
-                "{TIGHT}[mp2]\noo_max_iter = 80\noo_grad_conv = 1e-7\noo_level_shift = 0.2\n\
-                 oo_diis_size = 4\n"
+                // `jk = "exact"`: the library side runs the four-centre reference,
+                // and an omitted `[scf] jk` would take RI-JK.
+                "{TIGHT}jk = \"exact\"\n[mp2]\noo_max_iter = 80\noo_grad_conv = 1e-7\n\
+                 oo_level_shift = 0.2\noo_diis_size = 4\n"
             ),
         ),
     );
     assert_close("oo-rimp2 Total", value(&out, "Total"), o.total_energy, 1e-8);
+}
+
+/// Open shell on an RI-JK reference: `jk = "rijk"` runs the unrestricted
+/// OO-RI-MP2 on the reference's fit, the library `u_oo_ri_mp2` on a UHF that
+/// fitted J and K on the same basis (RI-J in f64 on both sides). Negative
+/// control: the four-centre run's total differs by the fit error (2.8e-5 Ha
+/// in the library anchor `u_oo_rijk_shift_is_the_reference_rijk_error_nh2_ccpvdz`);
+/// an OO that kept four-centre J/K on the fitted reference would land within
+/// about 2e-7 of it (second order in the fit error's orbital gradient), so the
+/// control asks for 1e-6.
+#[test]
+fn open_shell_oo_rimp2_on_rijk_matches_the_library() {
+    const AUX: &str = "def2-universal-jkfit";
+    let l = lib("nh2.xyz", 2, "cc-pvdz");
+    let uhf = ferric_scf::uhf::solve_uhf(
+        &l.ctx,
+        &l.mol,
+        &l.prep,
+        &l.bounds,
+        &tight()
+            .with_df_j_aux(AUX)
+            .with_df_k_aux(AUX)
+            .for_geometry_task(),
+    )
+    .unwrap();
+    assert!(uhf.converged);
+    let aux = basis::bundled("cc-pvdz-ri").unwrap();
+    let dfbs = PreparedBasis::new(&l.mol, &aux).unwrap();
+    let o = ferric_mp2::u_oo_rimp2::u_oo_ri_mp2(
+        &l.mol,
+        &l.prep,
+        &dfbs,
+        Operator::coulomb(),
+        &l.bounds,
+        &uhf,
+        &ferric_mp2::u_oo_rimp2::UOoRiMp2Config {
+            grad_conv: 1e-7,
+            ..Default::default()
+        },
+        None,
+    )
+    .unwrap();
+    assert!(o.converged && o.jk_route.is_some());
+    let run = |tag: &str, jk: &str| {
+        run_ok(
+            tag,
+            &body(
+                "nh2.xyz",
+                2,
+                "cc-pvdz",
+                "oo-rimp2",
+                &format!("{TIGHT}{jk}[mp2]\nauxbasis = \"cc-pvdz-ri\"\noo_grad_conv = 1e-7\n"),
+            ),
+        )
+    };
+    let fit = run(
+        "uoo_rijk",
+        &format!("jk = \"rijk\"\njk_aux = \"{AUX}\"\nri_j_precision = \"f64\"\n"),
+    );
+    assert!(
+        fit.contains(&format!("Reference SCF J/K: rijk({AUX})")) && fit.contains("U-OO-RI-MP2/"),
+        "{fit}"
+    );
+    assert_close(
+        "U-OO-RI-MP2 on RI-JK Total",
+        value(&fit, "Total"),
+        o.total_energy,
+        1e-8,
+    );
+    let exact = run("uoo_exact", "jk = \"exact\"\n");
+    let d = (value(&fit, "Total") - value(&exact, "Total")).abs();
+    eprintln!(
+        "NH2/cc-pVDZ U-OO-RI-MP2: CLI RI-JK {:.10}, library {:.10}, |RI-JK − exact| {d:.3e}",
+        value(&fit, "Total"),
+        o.total_energy
+    );
+    assert!(d > 1e-6, "rijk did not move the U-OO total: |d| = {d:.2e}");
 }
 
 /// Both the closed-shell and the open-shell (UHF-reference, `u_oo_ri_mp2`)
@@ -613,12 +731,9 @@ fn gw_rohf_reference_matches_the_library() {
     use ferric_rpa::config::{QuadratureConfig, QuadratureScheme};
     let l = lib("oh.xyz", 2, "sto-3g");
     let jk = Some("def2-universal-jkfit".to_string());
-    let scf_cfg = RhfConfig {
-        df_j_aux: jk.clone(),
-        df_k_aux: jk,
-        mom_after_iter: 5,
-        ..tight()
-    };
+    let mut scf_cfg = tight().with_mom_after_iter(5);
+    scf_cfg.df_j_aux = jk.clone();
+    scf_cfg.df_k_aux = jk;
     let scf = ferric_scf::rohf::solve_rohf(
         &l.ctx,
         &l.mol,
@@ -713,6 +828,153 @@ fn gw_reference_is_refused_on_a_closed_shell() {
     );
 }
 
+// ─── terfc gradients: scs-mp2-2terfc and open-shell att-rimp2 frequencies ───
+
+/// A CLI `task = "frequencies"` run (`[scf] jk = "exact"`, `delta = 5e-3`)
+/// against central differences of the library gradient driver it calls:
+/// the reference energy to 1e-9 Ha and every printed frequency to its two
+/// decimals.
+fn freq_matches_library(
+    tag: &str,
+    xyz: &str,
+    mult: usize,
+    basis_name: &str,
+    kind: &str,
+    mp2: &str,
+    surface: impl Fn(
+        &Molecule,
+        &mut ferric_scf::warm_start::ScfWarmStart,
+    ) -> Result<(f64, ndarray::Array2<f64>), ferric_core::FerricError>,
+) -> (f64, Vec<f64>) {
+    let out = run_ok(
+        tag,
+        &body(
+            xyz,
+            mult,
+            basis_name,
+            kind,
+            &format!("[scf]\njk = \"exact\"\n{mp2}"),
+        )
+        .replace("task = \"energy\"", "task = \"frequencies\"")
+        .replace("[scf]\njk", "[frequencies]\ndelta = 5e-3\n\n[scf]\njk"),
+    );
+    let l = lib(xyz, mult, "sto-3g");
+    let mut warm = ferric_scf::warm_start::ScfWarmStart::anchored(false);
+    let (e, _) = surface(&l.mol, &mut warm).unwrap();
+    let res = ferric_scf::frequencies::harmonic_frequencies_from_gradient(&l.mol, 5e-3, e, |m| {
+        surface(m, &mut warm).map(|(_, g)| g)
+    })
+    .unwrap();
+    assert_close(&format!("{tag} energy"), value(&out, "energy"), e, 1e-9);
+    let printed: Vec<f64> = out
+        .split("frequency (cm^-1)")
+        .nth(1)
+        .unwrap_or_else(|| panic!("{tag}: no frequency table:\n{out}"))
+        .lines()
+        .skip(1)
+        .take_while(|l| !l.trim().is_empty())
+        .map(|l| l.split_whitespace().nth(1).unwrap().parse().unwrap())
+        .collect();
+    assert_eq!(printed.len(), res.frequencies.len(), "{tag}:\n{out}");
+    for (p, w) in printed.iter().zip(&res.frequencies) {
+        assert!(
+            (p - w).abs() <= 0.0051,
+            "{tag}: CLI {p} vs library {w:.4} cm^-1"
+        );
+    }
+    (e, res.frequencies)
+}
+
+/// `scs-mp2-2terfc` frequencies (closed shell on water / STO-3G, open shell
+/// on OH / 6-31G with one frozen core) are central differences of
+/// `total_scs_mp2_2terfc_gradient_on` / `total_u_scs_mp2_2terfc_gradient_on`,
+/// and open-shell `att-rimp2` terfc frequencies of
+/// `total_u_terfc_rimp2_gradient_on`. The parameters are off the published
+/// set and both systems have a same-spin energy (c_SS 3.0 -> 1.2 moves the
+/// energy by about 2e-4 Ha), so a key the CLI drops changes the answer. H2 /
+/// STO-3G and OH / STO-3G have E_SS = 0 and cannot see `c_ss`. Negative
+/// control: on OH the two surfaces differ.
+#[test]
+fn terfc_gradient_frequencies_match_the_library() {
+    if terf_dir().is_none() {
+        eprintln!("skipping: terf interpolation tables not found");
+        return;
+    }
+    use ferric_mp2::scs::ScsMp2TerfcConfig;
+    let a2b = ferric_core::units::ANGSTROM_TO_BOHR;
+    let aux = basis::bundled("cc-pvdz-ri").unwrap();
+    let sto = basis::bundled("sto-3g").unwrap();
+    let g631 = basis::bundled("6-31g").unwrap();
+    let jk = ferric_mp2::gradient::exact_scf_jk();
+    let scs = |fc: usize| ScsMp2TerfcConfig {
+        r0_bonded: 0.8 * a2b,
+        r0_nonbonded: 1.2 * a2b,
+        c_os: 1.2,
+        c_ss: 3.0,
+        frozen_core: fc,
+        memory_budget_bytes: None,
+    };
+    let scs_mp2 = "[mp2]\nauxbasis = \"cc-pvdz-ri\"\nr0_bonded = 0.8\nr0_nonbonded = 1.2\n\
+                   c_os = 1.2\nc_ss = 3.0\n";
+    let c0 = scs(0);
+    freq_matches_library(
+        "scs2terfc_freq_water",
+        "water.xyz",
+        1,
+        "sto-3g",
+        "scs-mp2-2terfc",
+        &format!("{scs_mp2}frozen_core = 0\n"),
+        |m, w| {
+            ferric_mp2::scs_2terfc_gradient::total_scs_mp2_2terfc_gradient_on(
+                m, &sto, &aux, &c0, None, &jk, w,
+            )
+        },
+    );
+    let c1 = scs(1);
+    let (e_scs, _) = freq_matches_library(
+        "scs2terfc_freq_oh",
+        "oh.xyz",
+        2,
+        "6-31g",
+        "scs-mp2-2terfc",
+        &format!("{scs_mp2}frozen_core = 1\n"),
+        |m, w| {
+            ferric_mp2::scs_2terfc_gradient::total_u_scs_mp2_2terfc_gradient_on(
+                m, &g631, &aux, &c1, None, &jk, w,
+            )
+        },
+    );
+    let ri = ferric_mp2::rimp2::RiMp2Config {
+        frozen_core: 1,
+        ..Default::default()
+    };
+    let (e_att, _) = freq_matches_library(
+        "att_terfc_freq_oh",
+        "oh.xyz",
+        2,
+        "6-31g",
+        "att-rimp2",
+        "[mp2]\nauxbasis = \"cc-pvdz-ri\"\natt_operator = \"terfc\"\natt_r0 = 1.05\n\
+         frozen_core = 1\n",
+        |m, w| {
+            ferric_mp2::att_rimp2_gradient::total_u_terfc_rimp2_gradient_on(
+                m,
+                &g631,
+                &aux,
+                Operator::terfc(1.05 * a2b),
+                &ri,
+                None,
+                &jk,
+                w,
+            )
+        },
+    );
+    assert!(
+        (e_scs - e_att).abs() > 1e-4,
+        "the two OH surfaces must differ: {e_scs:.10} vs {e_att:.10}"
+    );
+}
+
 // ─── [mp2] att_operator = "terfc" on att-rimp2, [mp2] terf_omega ────────────
 
 /// `att-rimp2` with `att_operator = "terfc"`, `att_r0 = 1.05` Å is the Python
@@ -745,12 +1007,20 @@ fn att_rimp2_terfc_matches_the_library() {
             1,
             "sto-3g",
             "att-rimp2",
-            &format!("{TIGHT}[mp2]\natt_operator = \"terfc\"\natt_r0 = 1.05\n"),
+            // `jk = "exact"`: the library side runs the four-centre reference,
+            // and an omitted `[scf] jk` would take RI-JK.
+            &format!("{TIGHT}jk = \"exact\"\n[mp2]\natt_operator = \"terfc\"\natt_r0 = 1.05\n"),
         ),
     );
     let erfc = run_ok(
         "att_erfc",
-        &body("water.xyz", 1, "sto-3g", "att-rimp2", TIGHT),
+        &body(
+            "water.xyz",
+            1,
+            "sto-3g",
+            "att-rimp2",
+            &format!("{TIGHT}jk = \"exact\"\n"),
+        ),
     );
     let (e_t, e_e) = (value(&terfc, "Total"), value(&erfc, "Total"));
     assert!(terfc.contains("(terfc)"), "{terfc}");
@@ -758,6 +1028,56 @@ fn att_rimp2_terfc_matches_the_library() {
     assert!(
         (e_t - e_e).abs() > 1e-6,
         "terfc and erfc must differ: {e_t:.10} vs {e_e:.10}"
+    );
+}
+
+/// Omitted `att_r0` on a terfc `att-rimp2` run is the basis-aware table value
+/// (cc-pVDZ 1.55 A, Goldey & Head-Gordon CPL 608, 249; dissertation Table
+/// 6.2), identical to writing it explicitly, and the run prints the value and
+/// its source. An untabulated basis (STO-3G) is refused, never run at 1.05;
+/// `scs-mp2-2terfc` is refused off its aug-cc-pVTZ fit unless both r0 are set.
+/// Negative control: the explicit 1.05 run differs from the default.
+#[test]
+fn terfc_r0_default_follows_the_basis() {
+    if terf_dir().is_none() {
+        eprintln!("skipping: terf interpolation tables not found");
+        return;
+    }
+    let mp2 = |r0: &str| {
+        format!("{TIGHT}[mp2]\nauxbasis = \"cc-pvdz-ri\"\natt_operator = \"terfc\"\n{r0}")
+    };
+    let run =
+        |tag: &str, r0: &str| run_ok(tag, &body("water.xyz", 1, "cc-pvdz", "att-rimp2", &mp2(r0)));
+    let dflt = run("terfc_r0_default", "");
+    let tab = run("terfc_r0_explicit_table", "att_r0 = 1.55\n");
+    let old = run("terfc_r0_explicit_old", "att_r0 = 1.05\n");
+    assert!(
+        dflt.contains("Table 6.2") && dflt.contains("1.55"),
+        "{dflt}"
+    );
+    assert!(dflt.contains("r0=1.550"), "{dflt}");
+    assert_close(
+        "default == explicit table r0",
+        value(&dflt, "Total"),
+        value(&tab, "Total"),
+        1e-10,
+    );
+    assert!((value(&dflt, "Total") - value(&old, "Total")).abs() > 1e-6);
+    assert_refused(
+        "terfc_r0_untabulated",
+        &body("water.xyz", 1, "sto-3g", "att-rimp2", &mp2("")),
+        &["set r0 explicitly"],
+    );
+    assert_refused(
+        "scs2terfc_untabulated",
+        &body(
+            "water.xyz",
+            1,
+            "cc-pvdz",
+            "scs-mp2-2terfc",
+            &format!("{TIGHT}[mp2]\nauxbasis = \"cc-pvdz-ri\"\n"),
+        ),
+        &["aug-cc-pVTZ only", "r0_bonded"],
     );
 }
 
@@ -776,14 +1096,12 @@ fn rs_mp2_rpa_terf_omega_matches_the_library() {
     let (r0_ang, w_ang) = (1.2, 2.5);
     let l = lib("water.xyz", 1, "sto-3g");
     let jk = Some("def2-universal-jkfit".to_string());
-    let r = rhf(
-        &l,
-        &RhfConfig {
-            df_j_aux: jk.clone(),
-            df_k_aux: jk,
-            ..tight()
-        },
-    );
+    let r = rhf(&l, &{
+        let mut c = tight();
+        c.df_j_aux = jk.clone();
+        c.df_k_aux = jk;
+        c
+    });
     let aux = basis::bundled("cc-pvdz-ri").unwrap();
     let dfbs = PreparedBasis::new(&l.mol, &aux).unwrap();
     let rs = ferric_rpa::rs_mp2_lr_rpa(
@@ -931,11 +1249,16 @@ fn frequencies_hessian_key_selects_the_construction() {
 /// `memory`), a spill (`disk`) and recompute (`direct`); all four agree with
 /// the unconstrained run. `memory` under a budget that holds neither the
 /// unpacked nor the packed tensor is refused with the key named.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn jk_storage_places_the_tensor_without_changing_the_energy() {
+    // f64 RI-J pinned: the f32 tier exists only in memory, so `disk`/`direct`
+    // fall back to f64 by design (`DfJ::new_for_jk`) and an f32 reference
+    // would differ from them by the f32 rounding (2.2e-7 Ha on CI), not by
+    // the placement this test is about.
     let job = |storage: &str, budget: &str| {
         let extra = format!(
-            "[memory]\nbudget_gb = {budget}\n{TIGHT}jk_storage = \"{storage}\"\n[dft]\nfunctional = \"PBE\"\n"
+            "[memory]\nbudget_gb = {budget}\n{TIGHT}jk_storage = \"{storage}\"\nri_j_precision = \"f64\"\n[dft]\nfunctional = \"PBE\"\n"
         );
         body("alkane_3.xyz", 1, "def2-svp", "ksdft", &extra)
     };
@@ -961,5 +1284,142 @@ fn jk_storage_places_the_tensor_without_changing_the_energy() {
         "jk_memory_refused",
         &job("memory", "0.005"),
         &["jk_storage", "memory"],
+    );
+}
+
+// ─── [ri] (omega-RI fit) ────────────────────────────────────────────────────
+
+const OMEGA_RI: &str =
+    "[mp2]\nauxbasis = \"cc-pvdz-ri\"\n[ri]\nmetric = \"erfc\"\nomega_bohr = 0.1\n";
+
+fn omega_ri_lib() -> (Lib, ScfResult, PreparedBasis) {
+    let l = lib("water.xyz", 1, "cc-pvdz");
+    let r = rhf(&l, &tight());
+    let dfbs = PreparedBasis::new(&l.mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+    (l, r, dfbs)
+}
+
+/// `[ri] metric = "erfc"` on `rimp2` is `ri_mp2_fitted` with that fit, and
+/// on `laplace-mp2` it is `omega_ri_cdd_mp2` (the CDD route). Compared as
+/// shifts from the Coulomb run of the same kind: the CLI's default SCF (RI-J)
+/// is not the library's exact-J reference, and the shift is first-order
+/// insensitive to that. The negative control is the shift itself (~2e-6 Eh).
+#[test]
+fn omega_ri_rimp2_and_cdd_shifts_match_the_library() {
+    use ferric_mp2::omega_ri::RiFit;
+    let (l, r, dfbs) = omega_ri_lib();
+    let fit = RiFit::omega_ri(0.1).unwrap();
+    let plain = format!("{TIGHT}[mp2]\nauxbasis = \"cc-pvdz-ri\"\n");
+    let cli = |tag: &str, kind: &str, extra: &str, label: &str| {
+        value(
+            &run_ok(tag, &body("water.xyz", 1, "cc-pvdz", kind, extra)),
+            label,
+        )
+    };
+    let mp2 = |f: &RiFit| {
+        ferric_mp2::rimp2::ri_mp2_fitted(
+            &l.mol,
+            &l.prep,
+            &dfbs,
+            Operator::coulomb(),
+            &r,
+            &ferric_mp2::rimp2::RiMp2Config::default(),
+            f,
+        )
+        .unwrap()
+        .mp2_corr
+    };
+    let lib_shift = mp2(&fit) - mp2(&RiFit::Coulomb);
+    assert!(lib_shift.abs() > 1e-6);
+    let cli_shift = cli(
+        "omega_ri_rimp2",
+        "rimp2",
+        &format!("{TIGHT}{OMEGA_RI}"),
+        "MP2 corr",
+    ) - cli("omega_ri_rimp2_c", "rimp2", &plain, "MP2 corr");
+    assert_close("omega-RI rimp2 shift", cli_shift, lib_shift, 1e-9);
+
+    let cdd = ferric_mp2::omega_ri_cdd::omega_ri_cdd_mp2(
+        &l.mol,
+        &l.prep,
+        &dfbs,
+        Operator::coulomb(),
+        &r,
+        &ferric_mp2::omega_ri_cdd::OmegaRiCddConfig {
+            fit,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let lap = ferric_mp2::laplace::LaplaceMp2::new(7)
+        .compute_mo(&l.mol, &l.prep, &dfbs, Operator::coulomb(), &r, 0)
+        .unwrap();
+    let cli_cdd = cli(
+        "omega_ri_cdd",
+        "laplace-mp2",
+        &format!("{TIGHT}{OMEGA_RI}"),
+        "omega-RI-CDD total",
+    );
+    let cli_lap = cli("omega_ri_lap_c", "laplace-mp2", &plain, "Total");
+    assert_close(
+        "omega-RI-CDD shift",
+        cli_cdd - cli_lap,
+        cdd.e_corr - lap,
+        1e-9,
+    );
+}
+
+/// `[ri]` on `pdep-rpa` moves the energy by the library's omega-RI shift
+/// (compared as a shift so the CLI's own quadrature defaults cancel).
+#[test]
+fn omega_ri_pdep_rpa_shift_matches_the_library() {
+    use ferric_mp2::omega_ri::RiFit;
+    let (l, r, dfbs) = omega_ri_lib();
+    let base = format!("{TIGHT}[mp2]\nauxbasis = \"cc-pvdz-ri\"\n");
+    let e_c = value(
+        &run_ok(
+            "omega_ri_rpa_c",
+            &body("water.xyz", 1, "cc-pvdz", "pdep-rpa", &base),
+        ),
+        "RPA correlation",
+    );
+    let e_w = value(
+        &run_ok(
+            "omega_ri_rpa_w",
+            &body(
+                "water.xyz",
+                1,
+                "cc-pvdz",
+                "pdep-rpa",
+                &format!("{TIGHT}{OMEGA_RI}"),
+            ),
+        ),
+        "RPA correlation",
+    );
+    let cfg = ferric_rpa::config::PdepRpaConfig::default();
+    let e = |fit: &RiFit| {
+        ferric_rpa::run_pdep_rpa_fitted(&l.mol, &l.prep, &dfbs, Operator::coulomb(), &r, &cfg, fit)
+            .unwrap()
+            .e_rpa
+    };
+    let shift = e(&RiFit::omega_ri(0.1).unwrap()) - e(&RiFit::Coulomb);
+    assert!(
+        shift.abs() > 1e-7,
+        "negative control: the fit must move the energy"
+    );
+    assert_close("omega-RI RPA shift", e_w - e_c, shift, 1e-9);
+}
+
+#[test]
+fn omega_ri_is_refused_where_it_is_not_honoured() {
+    assert_refused(
+        "omega_ri_ccsd",
+        &body("water.xyz", 1, "sto-3g", "ccsd", OMEGA_RI),
+        &["[ri] applies to"],
+    );
+    assert_refused(
+        "omega_ri_triplet",
+        &body("water.xyz", 3, "sto-3g", "rimp2", OMEGA_RI),
+        &["closed-shell"],
     );
 }

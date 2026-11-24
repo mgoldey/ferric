@@ -22,7 +22,7 @@
 //!    (`laplace_exchange_energy`) on τ-weighted amplitudes hoisted out of the point loop.
 //!
 //! ## Reference
-//! Häser & Almlöf, Chem. Phys. Lett. 191, 299 (1992).
+//! Häser & Almlöf, J. Chem. Phys. 96, 489 (1992).
 //! Takatsuka, Ten-no, Hackbusch, J. Chem. Phys. 129, 044112 (2008).
 
 use ferric_core::mol::Molecule;
@@ -30,11 +30,13 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_quadrature::LaplaceQuadrature;
+use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 use ndarray::Array2;
 
 use crate::boys::{
-    boys_localize, build_domains, build_pseudo_density_occ_sparse, build_pseudo_density_vir_sparse,
+    boys_localize_checked, build_domains, build_pseudo_density_occ_sparse,
+    build_pseudo_density_vir_sparse,
 };
 use crate::rimp2::active_occ;
 
@@ -231,9 +233,9 @@ const DENSE_BYTES_PER_ELEM: usize = 8;
 /// value and only rewrites strides — verified against ndarray 0.16.1's
 /// source), so `eri3_ao -> eri3_flat` and `b_flat_ao -> b_ao` do NOT double
 /// the tensor count: `eri3_flat` IS `eri3_ao`'s allocation, and `b_ao` IS
-/// `b_flat_ao`'s. The dressing GEMM `v_inv_sqrt.dot(&eri3_flat)` allocates one
-/// genuinely new tensor (`b_flat_ao`); NLL drops `eri3_flat` right after that
-/// call (its only use), well before `b_sparse` is built. So the dressing peak
+/// `b_flat_ao`'s. The dressing GEMM (`dress_with_metric`) allocates one
+/// genuinely new tensor (`b_flat_ao`); `eri3_flat` is dropped explicitly right
+/// after that call (its only use), well before `b_sparse` is built. So the dressing peak
 /// really is 2 dense tensors + the metric, matching the pre-flight fired
 /// before any of them are allocated.
 ///
@@ -368,9 +370,13 @@ impl SparseBSlice {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct LaplaceMp2Result {
+    /// Reference SCF energy plus `mp2_corr` (Hartree).
     pub total_energy: f64,
+    /// Unscaled MP2 correlation energy, `e_os + e_ss` (Hartree).
     pub mp2_corr: f64,
+    /// Opposite-spin component (Hartree).
     pub e_os: f64,
+    /// Same-spin component (Hartree).
     pub e_ss: f64,
 }
 
@@ -476,7 +482,7 @@ impl std::fmt::Display for SosMp2Result {
 ///
 /// The contraction `Σ Y[Pi,Qj]·Y[Pj,Qi]` swaps the occupied indices *within*
 /// each `(P,Q)` block, so it is evaluated per `nocc×nocc` sub-block of `Y`.
-fn laplace_exchange_energy(
+pub(crate) fn laplace_exchange_energy(
     b_t: &Array2<f64>,
     naux: usize,
     nocc: usize,
@@ -592,7 +598,37 @@ fn laplace_ao_coulomb_energy(
     j_mat.iter().map(|&x| x * x).sum()
 }
 
+/// [`laplace_ri_mp2`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+/// A system with no virtual orbitals is refused
+/// ([`PreparedAux::check_virtual_orbitals`]).
+pub fn laplace_ri_mp2_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    n_quad: usize,
+    frozen_core: usize,
+    memory_budget_bytes: Option<usize>,
+) -> Result<LaplaceMp2Result, FerricError> {
+    let sys = aux.system();
+    aux.check_restricted_reference(rhf)?;
+    aux.check_virtual_orbitals("laplace_ri_mp2_on", rhf)?;
+    laplace_ri_mp2(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        rhf,
+        n_quad,
+        frozen_core,
+        memory_budget_bytes,
+    )
+}
+
 /// AO-Laplace RI-MP2 via pseudo-density factorization of the denominator.
+#[allow(clippy::too_many_arguments)]
 pub fn laplace_ri_mp2(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -655,6 +691,66 @@ pub fn laplace_lmp2(
     })
 }
 
+/// `V^{-1/2} · X` for the metric dressing of a flattened `(P|..)` tensor,
+/// column-blocked over the rayon pool through
+/// [`ferric_core::linalg::par_gemm`] (one-thread BLAS per fixed 128-column
+/// block, so the bits do not depend on the pool size). Called outside any
+/// rayon region, where a plain `.dot` would run on one core.
+fn dress_with_metric(v_inv_sqrt: &Array2<f64>, x: &ndarray::ArrayView2<'_, f64>) -> Array2<f64> {
+    let mut out = Array2::<f64>::zeros((v_inv_sqrt.nrows(), x.ncols()));
+    ferric_core::linalg::par_gemm(1.0, &v_inv_sqrt.view(), x, 0.0, &mut out);
+    out
+}
+
+/// Column-block width of the SOS-MP2 `J` lower triangle. Fixed (not derived
+/// from the thread count) so the blocking, and hence every bit of the trace,
+/// is the same on any pool.
+const SOS_J_COL_BLOCK: usize = 128;
+
+/// `Σ_PQ J_PQ²` for the symmetric `J = b bᵀ`, from its lower triangle.
+///
+/// `J` is built in fixed `SOS_J_COL_BLOCK`-wide column blocks: block `[q0, q1)`
+/// is the GEMM `b[q0.., :] · b[q0..q1, :]ᵀ`, rows `P ≥ q0` only, so the work is
+/// about half of the full `naux² · nov` product. Each block's squares are summed
+/// serially (diagonal once, strictly-lower twice, the upper part of the diagonal
+/// tile skipped) and the block sums are folded in block order, so the result
+/// does not depend on the pool size. The blocks are a nested rayon fan-out: the
+/// caller's quadrature points are fewer than the pool's threads.
+pub(crate) fn sos_j_square_trace(b: &Array2<f64>) -> f64 {
+    let naux = b.nrows();
+    let starts: Vec<usize> = (0..naux).step_by(SOS_J_COL_BLOCK).collect();
+    let block_sums: Vec<f64> = starts
+        .par_iter()
+        .map(|&q0| {
+            let q1 = (q0 + SOS_J_COL_BLOCK).min(naux);
+            let rows = b.slice(ndarray::s![q0.., ..]);
+            let cols = b.slice(ndarray::s![q0..q1, ..]);
+            let mut tile = Array2::<f64>::zeros((naux - q0, q1 - q0));
+            ndarray::linalg::general_mat_mul(1.0, &rows, &cols.t(), 0.0, &mut tile);
+            let mut s = 0.0;
+            for (r, row) in tile.rows().into_iter().enumerate() {
+                for (c, &x) in row.iter().enumerate() {
+                    if r > c {
+                        s += 2.0 * (x * x);
+                    } else if r == c {
+                        s += x * x;
+                    }
+                }
+            }
+            s
+        })
+        .collect();
+    block_sums.iter().sum()
+}
+
+/// Test oracle for [`sos_j_square_trace`]: the full `J = b bᵀ` GEMM and the
+/// sum of all `naux²` squares in row-major order.
+#[cfg(test)]
+fn sos_j_square_trace_full_gemm(b: &Array2<f64>) -> f64 {
+    let j_mat = b.dot(&b.t());
+    j_mat.iter().map(|&x| x * x).sum()
+}
+
 /// Apply the τ-weighting `B^P_ia(t) = B^P_ia · exp(-t(ε_a - ε_i)/2)` to a copy
 /// of the hoisted MO amplitudes.
 ///
@@ -691,8 +787,13 @@ fn weighted_b_mo(
 /// Laplace-transform MP2 energy builder.
 #[derive(Debug, Clone)]
 pub struct LaplaceMp2 {
+    /// Number of minimax quadrature points (the tables cover 3, 5 and 7).
     pub n_quad: usize,
+    /// Rescaled Laplace exponents `t_k`; empty until a `compute_*` call fits
+    /// the quadrature to the orbital-energy gap range.
     pub points: Vec<f64>,
+    /// Rescaled weights `w_k` matching `points`, with
+    /// `1/x ≈ Σ_k w_k exp(-t_k x)`; empty until fitted.
     pub weights: Vec<f64>,
     /// Caller's explicit memory ceiling, threaded into the 3-index budget and
     /// the AO-path pre-flight. `None` resolves through
@@ -781,7 +882,9 @@ impl LaplaceMp2 {
             &c_vir,
             crate::rimp2::eri3_budget_bytes(self.memory_budget_bytes),
         )?;
-        let b_flat = v_inv_sqrt.dot(&eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap());
+        let eri3_mo_flat = eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap();
+        let b_flat = dress_with_metric(&v_inv_sqrt, &eri3_mo_flat.view());
+        drop(eri3_mo_flat);
 
         // Hoist per-orbital energies: only the diagonal τ-scaling depends on the
         // quadrature point, `b_flat` (geometry/basis) is constant.
@@ -799,8 +902,14 @@ impl LaplaceMp2 {
         warn_if_task_workers_exceed_nominal(self.memory_budget_bytes, "MO quadrature");
         let k_budget = per_task_budget_bytes(self.memory_budget_bytes);
 
-        // 2. Parallel quadrature over points
-        let e_corr: f64 = self
+        // 2. Parallel quadrature over points. The per-point terms are
+        // collected (in point order) and summed serially: a rayon `.sum()`
+        // splits the reduction by the pool's thread count, so its
+        // association, and the last bit of the energy, depended on the
+        // number of threads (1 ulp between 1 and 2 threads on water/cc-pVDZ,
+        // `tests/laplace_dressing_threads.rs`, once the SCF's last bits
+        // moved). The SOS and AO paths below already sum this way.
+        let per_point: Vec<f64> = self
             .points
             .par_iter()
             .zip(self.weights.par_iter())
@@ -808,16 +917,17 @@ impl LaplaceMp2 {
                 // Weighted amplitudes: B_ia(t) = B_ia * exp(-t * (eps_a - eps_i) / 2)
                 let b_t = weighted_b_mo(&b_flat, &occ_scale, &vir_scale, nocc, nvir, t);
 
-                // J_PQ = sum_{ia} B_ia^P B_ia^Q
-                let j_mat = b_t.dot(&b_t.t());
-                let e_coul = j_mat.iter().map(|&x| x * x).sum::<f64>();
+                // e_coul = sum_PQ J_PQ^2, J_PQ = sum_{ia} B_ia^P B_ia^Q, from the
+                // lower triangle of the symmetric J.
+                let e_coul = sos_j_square_trace(&b_t);
 
                 // Exchange: single blocked wide GEMM instead of the dense (naux·nocc)² Gram.
                 let e_exch = laplace_exchange_energy(&b_t, naux, nocc, nvir, k_budget);
 
                 -w * (2.0 * e_coul - e_exch)
             })
-            .sum();
+            .collect();
+        let e_corr: f64 = per_point.iter().sum();
 
         Ok(e_corr)
     }
@@ -921,7 +1031,8 @@ impl LaplaceMp2 {
         let v_inv_sqrt = crate::rimp2::cholesky_inverse_sqrt(&v2c)?;
         let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, obs, dfbs)?;
         let eri3_flat = eri3_ao.into_shape_with_order((naux, nbas * nbas)).unwrap();
-        let b_flat_ao = v_inv_sqrt.dot(&eri3_flat);
+        let b_flat_ao = dress_with_metric(&v_inv_sqrt, &eri3_flat.view());
+        drop(eri3_flat);
         let b_ao = b_flat_ao.into_shape_with_order((naux, nbas, nbas)).unwrap();
 
         let c = rhf.mos_r();
@@ -946,7 +1057,7 @@ impl LaplaceMp2 {
         let _eps_occ: Vec<f64> = (frozen_core..nocc_total).map(|k| eps[k]).collect();
         let boys_domains = if let Some(cutoff) = domain_cutoff_bohr {
             let dip = ferric_integrals::oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
-            let boys = boys_localize(&c_occ, &dip, 200);
+            let boys = boys_localize_checked(&c_occ, &dip, 200)?;
             let f_loc = boys.c_loc.t().dot(rhf.fock_r()).dot(&boys.c_loc);
             let shell_centers = obs.shell_centers();
             let nshells = obs.nshells();
@@ -1034,12 +1145,12 @@ impl LaplaceMp2 {
             .points
             .par_iter()
             .zip(self.weights.par_iter())
-            .map(|(&t, &w)| {
+            .map(|(&t, &w)| -> Result<(f64, f64), FerricError> {
                 // --- J term in AO basis ---
                 // Build pseudo-densities: sparse (domain-restricted) when Boys-localized,
                 // dense (canonical) otherwise.
                 let (pt, qt) = if let Some((ref domains, ref c_loc, ref f_loc)) = boys_domains {
-                    let pt = build_pseudo_density_occ_sparse(c_loc, f_loc, t, domains);
+                    let pt = build_pseudo_density_occ_sparse(c_loc, f_loc, t, domains)?;
                     let qt = build_pseudo_density_vir_sparse(&c_vir, eps, t, nocc_total, domains);
                     (pt, qt)
                 } else {
@@ -1071,7 +1182,7 @@ impl LaplaceMp2 {
                 let e_exch_k = laplace_exchange_energy(&b_t, naux, nocc, nvir, task_budget);
 
                 let e_ss_k = e_os_k - e_exch_k;
-                (-w * e_os_k, -w * e_ss_k)
+                Ok((-w * e_os_k, -w * e_ss_k))
                 // `collect` then fold in ASCENDING QUADRATURE-POINT ORDER, not
                 // `.reduce(|| (0.0,0.0), ..)`.
                 //
@@ -1103,7 +1214,7 @@ impl LaplaceMp2 {
                 // and it costs nothing at n_quad ≤ 9, not because a test caught it.
                 // Do not cite this line as a fixed defect.
             })
-            .collect::<Vec<(f64, f64)>>();
+            .collect::<Result<Vec<(f64, f64)>, FerricError>>()?;
         let (e_os, e_ss) = e_terms
             .iter()
             .fold((0.0f64, 0.0f64), |acc, &(os, ss)| (acc.0 + os, acc.1 + ss));
@@ -1150,10 +1261,11 @@ impl LaplaceMp2 {
     /// what leaves a product of independent contractions.
     ///
     /// Cost, in tensor dimensions rather than time: the τ-weighting is
-    /// `naux·nocc·nvir` elements, `J = B(t)B(t)ᵀ` is one GEMM of shape
-    /// `(naux × nocc·nvir) × (nocc·nvir × naux)`, and the energy is a sum over
-    /// `naux²` entries. No `nocc²nvir²` object and no `naux²nocc²` Gram is ever
-    /// formed — those belong to the same-spin term this method omits.
+    /// `naux·nocc·nvir` elements, `J = B(t)B(t)ᵀ` is formed on its lower
+    /// triangle only (about half of the `naux² · nocc·nvir` product, see
+    /// `sos_j_square_trace`), and the energy is a sum over those entries. No
+    /// `nocc²nvir²` object and no `naux²nocc²` Gram is ever formed — those
+    /// belong to the same-spin term this method omits.
     pub fn compute_sos_mo(
         &mut self,
         mol: &Molecule,
@@ -1192,24 +1304,28 @@ impl LaplaceMp2 {
             &c_vir,
             crate::rimp2::eri3_budget_bytes(self.memory_budget_bytes),
         )?;
-        let b_flat = v_inv_sqrt.dot(&eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap());
+        let eri3_mo_flat = eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap();
+        let b_flat = dress_with_metric(&v_inv_sqrt, &eri3_mo_flat.view());
+        drop(eri3_mo_flat);
 
         let occ_scale: Vec<f64> = (0..nocc).map(|i| eps[frozen_core + i]).collect();
         let vir_scale: Vec<f64> = (0..nvir).map(|a| eps[nocc_total + a]).collect();
 
         // Parallel over quadrature points. Only the J (Coulomb) trace survives —
         // the `laplace_exchange_energy` call that `compute_mo` makes here is the
-        // same-spin piece and is deliberately absent.
-        let e_os: f64 = self
+        // same-spin piece and is deliberately absent. The per-point terms are
+        // collected and summed in point order: a rayon `.sum()` splits the
+        // reduction by thread count and moves the last bits.
+        let per_point: Vec<f64> = self
             .points
             .par_iter()
             .zip(self.weights.par_iter())
             .map(|(&t, &w)| {
                 let b_t = weighted_b_mo(&b_flat, &occ_scale, &vir_scale, nocc, nvir, t);
-                let j_mat = b_t.dot(&b_t.t());
-                -w * j_mat.iter().map(|&x| x * x).sum::<f64>()
+                -w * sos_j_square_trace(&b_t)
             })
-            .sum();
+            .collect();
+        let e_os: f64 = per_point.iter().sum();
 
         Ok(e_os)
     }
@@ -1300,7 +1416,8 @@ impl LaplaceMp2 {
         let v_inv_sqrt = crate::rimp2::cholesky_inverse_sqrt(&v2c)?;
         let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, obs, dfbs)?;
         let eri3_flat = eri3_ao.into_shape_with_order((naux, nbas * nbas)).unwrap();
-        let b_flat_ao = v_inv_sqrt.dot(&eri3_flat);
+        let b_flat_ao = dress_with_metric(&v_inv_sqrt, &eri3_flat.view());
+        drop(eri3_flat);
         let b_ao = b_flat_ao.into_shape_with_order((naux, nbas, nbas)).unwrap();
 
         let c = rhf.mos_r();
@@ -1314,7 +1431,7 @@ impl LaplaceMp2 {
 
         let boys_domains = if let Some(cutoff) = domain_cutoff_bohr {
             let dip = ferric_integrals::oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
-            let boys = boys_localize(&c_occ, &dip, 200);
+            let boys = boys_localize_checked(&c_occ, &dip, 200)?;
             // See compute_ao: the domain index must refer to the SAME orbital as
             // the coefficient index, so carry the localized coefficients and the
             // occupied-block Fock in that basis rather than canonical ones.
@@ -1353,10 +1470,10 @@ impl LaplaceMp2 {
             .points
             .par_iter()
             .zip(self.weights.par_iter())
-            .map(|(&t, &w)| {
+            .map(|(&t, &w)| -> Result<f64, FerricError> {
                 let (pt, qt) = if let Some((ref domains, ref c_loc, ref f_loc)) = boys_domains {
                     (
-                        build_pseudo_density_occ_sparse(c_loc, f_loc, t, domains),
+                        build_pseudo_density_occ_sparse(c_loc, f_loc, t, domains)?,
                         build_pseudo_density_vir_sparse(&c_vir, eps, t, nocc_total, domains),
                     )
                 } else {
@@ -1365,11 +1482,51 @@ impl LaplaceMp2 {
                         build_pseudo_density_vir(c, eps, t, nvir, nocc_total),
                     )
                 };
-                -w * laplace_ao_coulomb_energy(&b_sparse, &pt, &qt, naux, nbas, block_mu)
+                Ok(-w * laplace_ao_coulomb_energy(&b_sparse, &pt, &qt, naux, nbas, block_mu))
             })
+            .collect::<Result<Vec<f64>, FerricError>>()?
+            .into_iter()
             .sum();
 
         Ok(e_os)
+    }
+}
+
+impl LaplaceMp2 {
+    /// Laplace SOS-MP2, `local` formulation (see [`crate::laplace_local`]):
+    /// Boys LMOs x VV-HV localized virtuals with orbital domains of the given
+    /// radii. Returns the UNSCALED `E_OS` and the structural counters/timings.
+    #[allow(clippy::too_many_arguments)]
+    pub fn compute_sos_local(
+        &mut self,
+        mol: &Molecule,
+        obs: &PreparedBasis,
+        obs_bs: &ferric_core::basis::BasisSet,
+        dfbs: &PreparedBasis,
+        op: Operator,
+        rhf: &ScfResult,
+        frozen_core: usize,
+        radii: crate::laplace_local::LocalRadii,
+    ) -> Result<(f64, crate::laplace_local::LocalStats), FerricError> {
+        let nocc_total = mol.nelec() as usize / 2;
+        active_occ(nocc_total, frozen_core)?;
+        let eps = rhf.eps_r();
+        let ymin = 2.0 * (eps[nocc_total] - eps[nocc_total - 1]);
+        let ymax = 2.0 * (eps[eps.len() - 1] - eps[0]);
+        self.init_quadrature(ymin, ymax)?;
+        crate::laplace_local::sos_local_energy(
+            mol,
+            obs,
+            obs_bs,
+            dfbs,
+            op,
+            rhf,
+            frozen_core,
+            radii,
+            &self.points,
+            &self.weights,
+            self.memory_budget_bytes,
+        )
     }
 }
 
@@ -1394,6 +1551,13 @@ pub enum SosFormulation {
     /// See [`SosMp2Config::domain_cutoff_bohr`] for why this is exposed as a
     /// separate variant rather than an option on `Ao`.
     AoSparse(f64),
+    /// Boys LMOs x VV-HV localized virtuals, with per-LMO virtual domains of
+    /// the given radius (Bohr); see [`crate::laplace_local`]. APPROXIMATE,
+    /// exact as the radius grows. Unlike [`Self::AoSparse`], the radius sets
+    /// the inner dimension of the dense Gram GEMM, so it changes the cost and
+    /// the memory, not only the energy. Needs the orbital `BasisSet` (for the
+    /// VV-HV minimal-basis projection): use [`laplace_sos_mp2_with_basis`].
+    Local(f64),
 }
 
 impl SosFormulation {
@@ -1411,37 +1575,42 @@ impl SosFormulation {
         let form = match s {
             None | Some("mo") => Self::Mo,
             Some("ao") => Self::Ao,
-            Some("ao-sparse") => {
+            Some(name @ ("ao-sparse" | "local")) => {
                 let r = cutoff.ok_or_else(|| {
-                    FerricError::General(
-                        "SOS-MP2 formulation \"ao-sparse\" requires a domain cutoff \
+                    FerricError::General(format!(
+                        "SOS-MP2 formulation \"{name}\" requires a domain cutoff \
                          (CLI: [mp2] domain_cutoff_bohr; Python: domain_cutoff_bohr=). \
                          There is no safe default: the right radius depends on the \
                          system and basis, and a wrong one silently changes the energy."
-                            .to_string(),
-                    )
+                    ))
                 })?;
                 if !(r.is_finite() && r > 0.0) {
                     return Err(FerricError::General(format!(
                         "SOS-MP2 domain_cutoff_bohr must be finite and > 0 (got {r})"
                     )));
                 }
-                Self::AoSparse(r)
+                if name == "ao-sparse" {
+                    Self::AoSparse(r)
+                } else {
+                    Self::Local(r)
+                }
             }
             Some(other) => {
                 return Err(FerricError::General(format!(
                     "unknown SOS-MP2 formulation \"{other}\"; expected \"mo\" (default, \
                      tau-weighted (P|ia) amplitudes), \"ao\" (occupied/virtual \
-                     pseudo-densities) or \"ao-sparse\" (domain-restricted AO, \
+                     pseudo-densities), \"ao-sparse\" (domain-restricted AO, \
+                     APPROXIMATE — needs domain_cutoff_bohr) or \"local\" \
+                     (Boys LMOs x VV-HV localized virtuals with orbital domains, \
                      APPROXIMATE — needs domain_cutoff_bohr)"
                 )));
             }
         };
-        if cutoff.is_some() && !matches!(form, Self::AoSparse(_)) {
+        if cutoff.is_some() && !matches!(form, Self::AoSparse(_) | Self::Local(_)) {
             return Err(FerricError::General(format!(
                 "domain_cutoff_bohr is only meaningful with formulation \
-                 \"ao-sparse\" (got formulation {:?}). Set formulation = \
-                 \"ao-sparse\" or drop the cutoff — silently ignoring it would \
+                 \"ao-sparse\" or \"local\" (got formulation {:?}). Set formulation = \
+                 \"ao-sparse\"/\"local\" or drop the cutoff — silently ignoring it would \
                  hand back a different (exact) method than the one configured.",
                 s.unwrap_or("mo")
             )));
@@ -1458,9 +1627,70 @@ impl SosFormulation {
 /// With `c_os = 1.0` the returned `e_os` reproduces
 /// [`crate::rimp2::ri_mp2_spin_components`]'s `e_os` to the Laplace quadrature
 /// error, which is the hard internal reference for this method.
+///
+/// [`SosFormulation::Local`] needs the orbital `BasisSet` and is rejected
+/// here with a pointer to [`laplace_sos_mp2_with_basis`].
 pub fn laplace_sos_mp2(
     mol: &Molecule,
     obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &SosMp2Config,
+    formulation: SosFormulation,
+) -> Result<SosMp2Result, FerricError> {
+    sos_mp2_dispatch(mol, obs, None, dfbs, op, rhf, config, formulation)
+}
+
+/// [`laplace_sos_mp2_with_basis`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+/// A system with no virtual orbitals is refused
+/// ([`PreparedAux::check_virtual_orbitals`]).
+pub fn laplace_sos_mp2_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    config: &SosMp2Config,
+    formulation: SosFormulation,
+) -> Result<SosMp2Result, FerricError> {
+    let sys = aux.system();
+    aux.check_restricted_reference(rhf)?;
+    aux.check_virtual_orbitals("laplace_sos_mp2_on", rhf)?;
+    laplace_sos_mp2_with_basis(
+        sys.mol(),
+        sys.basis(),
+        sys.basis_set(),
+        aux.basis(),
+        sys.op(),
+        rhf,
+        config,
+        formulation,
+    )
+}
+
+/// [`laplace_sos_mp2`] with the orbital `BasisSet`, which every formulation
+/// accepts and [`SosFormulation::Local`] requires.
+#[allow(clippy::too_many_arguments)]
+pub fn laplace_sos_mp2_with_basis(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &ferric_core::basis::BasisSet,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &SosMp2Config,
+    formulation: SosFormulation,
+) -> Result<SosMp2Result, FerricError> {
+    sos_mp2_dispatch(mol, obs, Some(obs_bs), dfbs, op, rhf, config, formulation)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sos_mp2_dispatch(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: Option<&ferric_core::basis::BasisSet>,
     dfbs: &PreparedBasis,
     op: Operator,
     rhf: &ScfResult,
@@ -1484,6 +1714,27 @@ pub fn laplace_sos_mp2(
         }
         SosFormulation::AoSparse(cutoff) => {
             laplace.compute_sos_ao(mol, obs, dfbs, op, rhf, config.frozen_core, Some(cutoff))?
+        }
+        SosFormulation::Local(cutoff) => {
+            let obs_bs = obs_bs.ok_or_else(|| {
+                FerricError::General(
+                    "SOS-MP2 formulation \"local\" needs the orbital BasisSet (VV-HV \
+                     localized virtuals); call laplace_sos_mp2_with_basis"
+                        .to_string(),
+                )
+            })?;
+            let (e, stats) = laplace.compute_sos_local(
+                mol,
+                obs,
+                obs_bs,
+                dfbs,
+                op,
+                rhf,
+                config.frozen_core,
+                crate::laplace_local::LocalRadii::from_cutoff(cutoff),
+            )?;
+            eprintln!("{stats}");
+            e
         }
     };
     let sos_corr = config.c_os * e_os;
@@ -1564,10 +1815,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
 
@@ -1602,10 +1850,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
 
@@ -1669,10 +1914,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
 
@@ -1707,10 +1949,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
 
@@ -1769,10 +2008,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
 
@@ -1831,10 +2067,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
 
@@ -1904,10 +2137,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         (mol, obs, dfbs, rhf)
@@ -2142,10 +2372,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
 
@@ -2184,6 +2411,15 @@ mod tests {
         assert_eq!(
             p(Some("ao-sparse"), Some(8.0)).unwrap(),
             SosFormulation::AoSparse(8.0)
+        );
+        assert_eq!(
+            p(Some("local"), Some(6.0)).unwrap(),
+            SosFormulation::Local(6.0)
+        );
+        let msg = p(Some("local"), None).unwrap_err().to_string();
+        assert!(
+            msg.contains("\"local\" requires a domain cutoff"),
+            "got: {msg}"
         );
 
         for bad in [
@@ -2260,10 +2496,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
 
@@ -2389,10 +2622,7 @@ mod tests {
                 &obs,
                 op,
                 &bounds,
-                &RhfConfig {
-                    energy_conv: 1e-10,
-                    ..Default::default()
-                },
+                &RhfConfig::default().with_energy_conv(1e-10),
             )
             .unwrap();
             let cfg = SosMp2Config {
@@ -2448,6 +2678,499 @@ mod tests {
             "a 3 Bohr domain must be a stricter restriction than 12 Bohr on \
              octane ({rel_octane_tight:.3e} vs {rel_octane:.3e}); if equal, the \
              mask is inert and this test is vacuous"
+        );
+    }
+
+    /// EXACTNESS ANCHOR for the domain-truncated AO path, against the MO path.
+    ///
+    /// A cutoff larger than any interatomic distance makes every domain the
+    /// whole basis (a vacuous mask), so `AoSparse` must reproduce
+    /// `compute_sos_mo`, a different algebra for the same quantity, to
+    /// round-off. The older tests compare `AoSparse` with `Ao` only, so a defect
+    /// shared by both AO routes would pass them. This one compares across the
+    /// AO/MO construction boundary.
+    ///
+    /// Butane (10.5 Bohr across) as well as water: on butane the Boys rotation
+    /// is far from the identity, so `exp(t F_loc)` in the localized basis has
+    /// to equal the canonical `exp(t eps)`. An index-mismatch bug of the
+    /// 2026-07-27 kind breaks exactly that.
+    #[test]
+    fn sos_ao_sparse_infinite_cutoff_reproduces_mo() {
+        let cases: [(&str, &str); 2] = [("water", "6-31g"), ("alkane_4", "sto-3g")];
+        for (name, basis_name) in cases {
+            let (mol, obs, dfbs, rhf) = if name == "water" {
+                setup_sos(basis_name)
+            } else {
+                let mol = Molecule::load_xyz(&format!(
+                    "{}/../../testdata/molecules/{name}.xyz",
+                    env!("CARGO_MANIFEST_DIR")
+                ))
+                .unwrap();
+                let obs = PreparedBasis::new(&mol, &basis::bundled(basis_name).unwrap()).unwrap();
+                let dfbs =
+                    PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+                let op = Operator::coulomb();
+                let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+                let rhf = solve_rhf(
+                    &ferric_core::parallel::ParallelContext::default(),
+                    &mol,
+                    &obs,
+                    op,
+                    &bounds,
+                    &RhfConfig::default().with_energy_conv(1e-10),
+                )
+                .unwrap();
+                (mol, obs, dfbs, rhf)
+            };
+            let op = Operator::coulomb();
+            let cfg = SosMp2Config {
+                c_os: 1.0,
+                ..Default::default()
+            };
+            let mo = laplace_sos_mp2(&mol, &obs, &dfbs, op, &rhf, &cfg, SosFormulation::Mo)
+                .unwrap()
+                .e_os;
+            let sparse = laplace_sos_mp2(
+                &mol,
+                &obs,
+                &dfbs,
+                op,
+                &rhf,
+                &cfg,
+                SosFormulation::AoSparse(1.0e6),
+            )
+            .unwrap()
+            .e_os;
+            let d = (sparse - mo).abs();
+            eprintln!("{name}/{basis_name}: MO {mo:.12}  AoSparse(inf) {sparse:.12}  |d| {d:.3e}");
+            assert!(
+                mo.abs() > 1e-3,
+                "{name}: E_OS ~0, the anchor would be vacuous"
+            );
+            assert!(
+                d <= 1e-9,
+                "{name}/{basis_name}: AoSparse with a vacuous cutoff must reproduce \
+                 compute_sos_mo to 1e-9, got |d| = {d:.3e}"
+            );
+        }
+    }
+
+    /// RHF on a bundled test molecule (Coulomb, cc-pVDZ-RI aux).
+    fn setup_named(
+        name: &str,
+        basis_name: &str,
+    ) -> (Molecule, PreparedBasis, PreparedBasis, ScfResult) {
+        if name == "water" {
+            return setup_sos(basis_name);
+        }
+        let mol = Molecule::load_xyz(&format!(
+            "{}/../../testdata/molecules/{name}.xyz",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled(basis_name).unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig::default().with_energy_conv(1e-10),
+        )
+        .unwrap();
+        (mol, obs, dfbs, rhf)
+    }
+
+    fn sos_local(
+        sys: &(Molecule, PreparedBasis, PreparedBasis, ScfResult),
+        basis_name: &str,
+        radii: crate::laplace_local::LocalRadii,
+        frozen_core: usize,
+    ) -> (f64, crate::laplace_local::LocalStats) {
+        let (mol, obs, dfbs, rhf) = sys;
+        let bs = basis::bundled(basis_name).unwrap();
+        let mut lp = LaplaceMp2::new(7);
+        lp.compute_sos_local(
+            mol,
+            obs,
+            &bs,
+            dfbs,
+            Operator::coulomb(),
+            rhf,
+            frozen_core,
+            radii,
+        )
+        .unwrap()
+    }
+
+    fn radii(vir: f64, pair_tau: f64, occ: f64) -> crate::laplace_local::LocalRadii {
+        crate::laplace_local::LocalRadii {
+            vir,
+            pair_tau,
+            occ,
+            energy_tau: 0.0,
+        }
+    }
+
+    fn sos_mo(
+        sys: &(Molecule, PreparedBasis, PreparedBasis, ScfResult),
+        frozen_core: usize,
+    ) -> f64 {
+        let (mol, obs, dfbs, rhf) = sys;
+        let mut lp = LaplaceMp2::new(7);
+        lp.compute_sos_mo(mol, obs, dfbs, Operator::coulomb(), rhf, frozen_core)
+            .unwrap()
+    }
+
+    /// EXACTNESS ANCHOR for `local`: with every radius larger than the
+    /// molecule, the four truncations (see `laplace_local`) are vacuous and the
+    /// LMO x LVO construction must reproduce `compute_sos_mo` to round-off.
+    /// Butane/6-31G is the case where both rotations (Boys, VV-HV) are far
+    /// from the identity and the basis has split valence; the frozen-core case
+    /// checks the active-space slicing.
+    #[test]
+    fn sos_local_infinite_cutoff_reproduces_mo() {
+        for (name, basis_name, fc) in [
+            ("water", "6-31g", 0usize),
+            ("alkane_4", "sto-3g", 0),
+            ("alkane_4", "6-31g", 0),
+            ("alkane_4", "6-31g", 4),
+        ] {
+            let sys = setup_named(name, basis_name);
+            let mo = sos_mo(&sys, fc);
+            let (loc, st) = sos_local(&sys, basis_name, radii(1e6, 0.0, 1e6), fc);
+            let d = (loc - mo).abs();
+            eprintln!(
+                "{name}/{basis_name} fc={fc}: MO {mo:.12} local(inf) {loc:.12} |d| {d:.3e}  {st}"
+            );
+            assert!(mo.abs() > 1e-3, "E_OS ~0: vacuous anchor");
+            assert_eq!(
+                st.t_size,
+                st.n_lmo * st.n_lvo,
+                "r=inf must keep every (i,a)"
+            );
+            assert!(
+                d <= 1e-9,
+                "{name}/{basis_name} fc={fc}: local with vacuous radii must reproduce \
+                 compute_sos_mo to 1e-9, got {d:.3e}"
+            );
+        }
+    }
+
+    /// EXACTNESS ANCHOR for the energy cut (TE): a positive but negligible
+    /// threshold runs the selection/re-indexing code (0.0 skips it) and must
+    /// keep every column and reproduce the MO energy; a real threshold must
+    /// drop columns and change the energy. (Not asserted: a sign. With the
+    /// non-diagonal E(t), Q(t) of localized bases, dropping columns is not
+    /// term-wise monotone, even though every measured cut so far lowered |E_OS|.)
+    #[test]
+    fn sos_local_energy_cut_trivial_limit_and_teeth() {
+        let sys = setup_named("alkane_4", "6-31g");
+        let mo = sos_mo(&sys, 0);
+        let mut rd = radii(1e6, 0.0, 1e6);
+        rd.energy_tau = 1e-300;
+        let (e, st) = sos_local(&sys, "6-31g", rd, 0);
+        eprintln!("butane/6-31G tau=1e-300: |d| {:.3e}  {st}", (e - mo).abs());
+        assert_eq!(
+            st.t_size, st.t_size_geom,
+            "a negligible tau must keep every column"
+        );
+        assert!(
+            (e - mo).abs() <= 1e-9,
+            "TE trivial limit: |d| = {:.3e}",
+            (e - mo).abs()
+        );
+        rd.energy_tau = 1e-4;
+        let (e, st) = sos_local(&sys, "6-31g", rd, 0);
+        eprintln!(
+            "butane/6-31G tau=1e-4: rel {:.3e}  {st}",
+            (e - mo).abs() / mo.abs()
+        );
+        assert!(st.t_size < st.t_size_geom, "tau=1e-4 must drop columns");
+        assert!((e - mo).abs() > 0.0, "a real cut cannot be bit-exact");
+    }
+
+    /// TEETH for `local`: on octane/6-31G (19.9 Bohr long; 6-31G, because
+    /// STO-3G hid the AO-virtual failure recorded in `laplace_local`'s doc)
+    /// each radius must be a GENUINE restriction (fewer inner columns, a
+    /// nonzero error) and the error must shrink as the virtual radius grows.
+    /// Without the restriction assertions a mask that does nothing would pass
+    /// the anchor and this test alike.
+    #[test]
+    fn sos_local_radius_restricts_cost_and_converges() {
+        let sys = setup_named("alkane_8", "6-31g");
+        let mo = sos_mo(&sys, 0);
+        let mut rels = Vec::new();
+        let mut prev_t = 0usize;
+        for r in [4.0, 6.0, 9.0] {
+            let (e, st) = sos_local(
+                &sys,
+                "6-31g",
+                crate::laplace_local::LocalRadii::from_cutoff(r),
+                0,
+            );
+            let rel = (e - mo).abs() / mo.abs();
+            eprintln!("octane/6-31G r={r}: rel err {rel:.3e}  {st}");
+            assert!(
+                st.t_size < st.n_lmo * st.n_lvo,
+                "r={r} must truncate the inner index"
+            );
+            assert!(rel > 0.0, "r={r}: a real truncation cannot be bit-exact");
+            assert!(st.t_size > prev_t, "|T| must grow with r");
+            prev_t = st.t_size;
+            rels.push(rel);
+        }
+        assert!(
+            rels[2] < rels[0],
+            "the error must shrink from r=4 to r=9: {rels:?}"
+        );
+        // T1 alone (vir vacuous, occ = 6 Bohr on a 20 Bohr chain) must be a real
+        // restriction with a small error. (Schwarz TA at 1e-10 keeps every shell
+        // pair on a molecule this short, so it is not what is restricted here.)
+        let (e_ao, st) = sos_local(&sys, "6-31g", radii(1e6, 1e-10, 6.0), 0);
+        let rel_ao = (e_ao - mo).abs() / mo.abs();
+        eprintln!("octane/6-31G vir=inf occ=6 tau=1e-10: rel err {rel_ao:.3e}  {st}");
+        assert!(rel_ao > 0.0 && rel_ao < 1e-3, "occ=6 alone: {rel_ao:.3e}");
+    }
+
+    // -----------------------------------------------------------------------
+    // SOS-MP2 J trace from the lower triangle (`sos_j_square_trace`) against
+    // the full-GEMM oracle (`sos_j_square_trace_full_gemm`).
+    //
+    // Not bitwise: the two arms form each J_PQ = Σ_k b_Pk b_Qk (k over the
+    // n = nocc·nvir columns) with different GEMM shapes (the oracle's Ĵ_PQ and
+    // Ĵ_QP need not even agree), and sum the m = naux² squares in a different
+    // order. The bar is the summation-order bound (Higham, Accuracy and
+    // Stability of Numerical Algorithms, 2nd ed., Lemma 3.1, eqs. (3.4)-(3.5)),
+    // with u = f64::EPSILON / 2 and γ_k = k·u / (1 − k·u):
+    //
+    //   1. Any-order dot product: |Ĵ_PQ − J_PQ| ≤ γ_n A_PQ, A = |b| |b|ᵀ, for
+    //      every element either arm computes.
+    //   2. Squares, per arm x, with |J| ≤ |Ĵ_old| + γ_n A:
+    //      |Ĵ_x² − J²| ≤ γ_n A (2|J| + γ_n A) ≤ γ_n A (2|Ĵ_old| + 3γ_n A).
+    //      Summed over the m entries: E1 = γ_n Σ_PQ A_PQ (2|Ĵ_old,PQ| + 3γ_n A_PQ).
+    //   3. Sum of m nonnegative terms, each one rounded product (the ×2 for
+    //      the strict lower triangle is exact), in any order or tree: relative
+    //      error ≤ γ_{m+1} of the exact sum of those terms, which is at most
+    //      S_old + 2·E1 (taken as γ_{m+2} to absorb the second-order slack).
+    //
+    //   Per quadrature point, charging both arms against the exact S:
+    //     |S_old − S_new| ≤ 2 [ E1 + γ_{m+2} (S_old + 2·E1) ].
+    //   Energy: E = −Σ_k w_k S_k over n_quad points; the outer fold adds
+    //   γ_{n_quad} Σ_k |w_k S_k| per arm, so
+    //     |E_old − E_new| ≤ Σ_k |w_k| bound_k + 2 γ_{n_quad} Σ_k |w_k S_k|.
+    //
+    // A and Ĵ_old are evaluated from the same b the arms see. The tests print
+    // the observed difference next to the bar.
+    // -----------------------------------------------------------------------
+
+    fn gamma(k: usize) -> f64 {
+        let ku = k as f64 * (f64::EPSILON / 2.0);
+        ku / (1.0 - ku)
+    }
+
+    /// The per-point summation-order bound on |S_old − S_new| (items 1-3).
+    fn sos_j_trace_bound(b: &Array2<f64>) -> f64 {
+        let (naux, n) = b.dim();
+        let abs_b = b.mapv(f64::abs);
+        let a = abs_b.dot(&abs_b.t());
+        let j = b.dot(&b.t());
+        let g_n = gamma(n);
+        let mut e1 = 0.0;
+        let mut s = 0.0;
+        for (&aij, &jij) in a.iter().zip(j.iter()) {
+            e1 += g_n * aij * (2.0 * jij.abs() + 3.0 * g_n * aij);
+            s += jij * jij;
+        }
+        2.0 * (e1 + gamma(naux * naux + 2) * (s + 2.0 * e1))
+    }
+
+    /// Deterministic (naux × n) amplitudes with no symmetry and both signs.
+    fn lcg_matrix(naux: usize, n: usize, seed: u64) -> Array2<f64> {
+        let mut x = seed;
+        Array2::from_shape_fn((naux, n), |_| {
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((x >> 11) as f64 / (1u64 << 53) as f64) - 0.5
+        })
+    }
+
+    /// Ragged multi-tile shape (300 = 128 + 128 + 44 rows): the lower-triangle
+    /// trace matches the full-GEMM oracle within the summation-order bound,
+    /// and is bit-identical on pools of 1, 2 and 6 threads.
+    ///
+    /// FAILS if a tile's strictly-lower part is not doubled, the diagonal is
+    /// counted twice, the upper part of a diagonal tile is counted, the ragged
+    /// last tile is dropped, or the block sums are folded in a pool-dependent
+    /// order.
+    #[test]
+    fn sos_j_lower_triangle_trace_matches_full_gemm_within_the_summation_bound() {
+        for (naux, n, seed) in [(300usize, 517usize, 7u64), (128, 64, 11), (5, 40, 3)] {
+            let b = lcg_matrix(naux, n, seed);
+            let oracle = sos_j_square_trace_full_gemm(&b);
+            let bound = sos_j_trace_bound(&b);
+            let run = |threads: usize| {
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .unwrap()
+                    .install(|| sos_j_square_trace(&b))
+            };
+            let got = run(1);
+            eprintln!(
+                "naux={naux} n={n}: S={oracle:.17e} |diff|={:.3e} bound={bound:.3e}",
+                (got - oracle).abs()
+            );
+            assert!(
+                (got - oracle).abs() <= bound,
+                "naux={naux}: lower-triangle trace {got:.17e} vs full GEMM {oracle:.17e} \
+                 differs by {:.3e}, above the summation-order bound {bound:.3e}",
+                (got - oracle).abs()
+            );
+            for threads in [2, 6] {
+                assert_eq!(
+                    run(threads).to_bits(),
+                    got.to_bits(),
+                    "naux={naux}: {threads} threads changed the trace bits"
+                );
+            }
+        }
+    }
+
+    /// End to end on water/cc-pVDZ: `compute_sos_mo` (lower-triangle J) against
+    /// the full-GEMM oracle at every quadrature point and summed, within the
+    /// bound in the section header.
+    #[test]
+    fn sos_mo_energy_matches_the_full_gemm_oracle_within_the_summation_bound() {
+        let (mol, obs, dfbs, rhf) = setup_sos("cc-pvdz");
+        let op = Operator::coulomb();
+        let mut laplace = LaplaceMp2::new(7);
+        let e_new = laplace
+            .compute_sos_mo(&mol, &obs, &dfbs, op, &rhf, 0)
+            .unwrap();
+
+        // The same dressed amplitudes compute_sos_mo builds.
+        let nbas = obs.nbasis();
+        let nocc = mol.nelec() as usize / 2;
+        let nvir = nbas - nocc;
+        let naux = dfbs.nbasis();
+        let eps = rhf.eps_r();
+        let c = rhf.mos_r();
+        let c_occ = c.slice(ndarray::s![.., ..nocc]).to_owned();
+        let c_vir = c.slice(ndarray::s![.., nocc..]).to_owned();
+        let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, &dfbs).unwrap();
+        let v_inv_sqrt = crate::rimp2::cholesky_inverse_sqrt(&v2c).unwrap();
+        let eri3_mo = crate::rimp2::eri3_mo_ov_blocked(
+            op,
+            &obs,
+            &dfbs,
+            &c_occ,
+            &c_vir,
+            crate::rimp2::eri3_budget_bytes(None),
+        )
+        .unwrap();
+        let eri3_mo_flat = eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap();
+        let b_flat = dress_with_metric(&v_inv_sqrt, &eri3_mo_flat.view());
+        let occ_scale: Vec<f64> = (0..nocc).map(|i| eps[i]).collect();
+        let vir_scale: Vec<f64> = (0..nvir).map(|a| eps[nocc + a]).collect();
+
+        let mut e_oracle = 0.0;
+        let mut bar = 0.0;
+        let mut abs_terms = 0.0;
+        for (&t, &w) in laplace.points.iter().zip(laplace.weights.iter()) {
+            let b_t = weighted_b_mo(&b_flat, &occ_scale, &vir_scale, nocc, nvir, t);
+            let s_old = sos_j_square_trace_full_gemm(&b_t);
+            let s_new = sos_j_square_trace(&b_t);
+            let bound = sos_j_trace_bound(&b_t);
+            assert!(
+                (s_old - s_new).abs() <= bound,
+                "t={t}: per-point trace differs by {:.3e}, bound {bound:.3e}",
+                (s_old - s_new).abs()
+            );
+            e_oracle += -w * s_old;
+            bar += w.abs() * bound;
+            abs_terms += (w * s_old).abs();
+        }
+        bar += 2.0 * gamma(laplace.points.len()) * abs_terms;
+        eprintln!(
+            "water/cc-pVDZ SOS E_OS: new {e_new:.17e} oracle {e_oracle:.17e} \
+             |diff|={:.3e} bar={bar:.3e}",
+            (e_new - e_oracle).abs()
+        );
+        assert!(
+            (e_new - e_oracle).abs() <= bar,
+            "compute_sos_mo {e_new:.17e} vs full-GEMM oracle {e_oracle:.17e}: \
+             |diff| {:.3e} above the summation-order bar {bar:.3e}",
+            (e_new - e_oracle).abs()
+        );
+    }
+
+    /// End to end on water/cc-pVDZ: `compute_mo` (lower-triangle Coulomb term)
+    /// against the same energy with the full-GEMM Coulomb term, at every
+    /// quadrature point and summed, within the summation-order bound in the
+    /// section header (the exchange term is the identical call in both arms).
+    /// The Coulomb term enters as `-2 w S`, so the bar is doubled.
+    ///
+    /// FAILS if the Coulomb trace is not doubled below the diagonal, the
+    /// ragged tile is dropped, or the factor 2 on the Coulomb term is lost.
+    #[test]
+    fn mo_energy_matches_the_full_gemm_coulomb_oracle_within_the_summation_bound() {
+        let (mol, obs, dfbs, rhf) = setup_sos("cc-pvdz");
+        let op = Operator::coulomb();
+        let mut laplace = LaplaceMp2::new(7);
+        let e_new = laplace.compute_mo(&mol, &obs, &dfbs, op, &rhf, 0).unwrap();
+
+        let nbas = obs.nbasis();
+        let nocc = mol.nelec() as usize / 2;
+        let nvir = nbas - nocc;
+        let naux = dfbs.nbasis();
+        let eps = rhf.eps_r();
+        let c = rhf.mos_r();
+        let c_occ = c.slice(ndarray::s![.., ..nocc]).to_owned();
+        let c_vir = c.slice(ndarray::s![.., nocc..]).to_owned();
+        let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, &dfbs).unwrap();
+        let v_inv_sqrt = crate::rimp2::cholesky_inverse_sqrt(&v2c).unwrap();
+        let eri3_mo = crate::rimp2::eri3_mo_ov_blocked(
+            op,
+            &obs,
+            &dfbs,
+            &c_occ,
+            &c_vir,
+            crate::rimp2::eri3_budget_bytes(None),
+        )
+        .unwrap();
+        let eri3_mo_flat = eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap();
+        let b_flat = dress_with_metric(&v_inv_sqrt, &eri3_mo_flat.view());
+        let occ_scale: Vec<f64> = (0..nocc).map(|i| eps[i]).collect();
+        let vir_scale: Vec<f64> = (0..nvir).map(|a| eps[nocc + a]).collect();
+        let k_budget = per_task_budget_bytes(None);
+
+        let mut e_oracle = 0.0;
+        let mut bar = 0.0;
+        let mut abs_terms = 0.0;
+        for (&t, &w) in laplace.points.iter().zip(laplace.weights.iter()) {
+            let b_t = weighted_b_mo(&b_flat, &occ_scale, &vir_scale, nocc, nvir, t);
+            let s_old = sos_j_square_trace_full_gemm(&b_t);
+            let e_exch = laplace_exchange_energy(&b_t, naux, nocc, nvir, k_budget);
+            e_oracle += -w * (2.0 * s_old - e_exch);
+            bar += 2.0 * w.abs() * sos_j_trace_bound(&b_t);
+            abs_terms += (w * (2.0 * s_old - e_exch)).abs();
+        }
+        bar += 2.0 * gamma(laplace.points.len()) * abs_terms;
+        eprintln!(
+            "water/cc-pVDZ Laplace-MP2 E: new {e_new:.17e} oracle {e_oracle:.17e} \
+             |diff|={:.3e} bar={bar:.3e}",
+            (e_new - e_oracle).abs()
+        );
+        assert!(
+            (e_new - e_oracle).abs() <= bar,
+            "compute_mo {e_new:.17e} vs full-GEMM Coulomb oracle {e_oracle:.17e}: \
+             |diff| {:.3e} above the summation-order bar {bar:.3e}",
+            (e_new - e_oracle).abs()
         );
     }
 }

@@ -119,9 +119,10 @@
 
 use crate::mo_transform::transform_3center_ov;
 use crate::rimp2::{
-    active_occ, cholesky_inverse_sqrt, ri_mp2_spin_components, spin_components_from_b_ov,
-    spin_components_from_b_ov_kappa, RiMp2Config, SpinComponents,
+    active_occ, cholesky_inverse_sqrt, spin_components_from_b_ov, spin_components_from_b_ov_kappa,
+    RiMp2Config, SpinComponents,
 };
+use crate::u_rimp2::ri_mp2_spin_components_any;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -129,6 +130,7 @@ use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::Operator;
 use ferric_integrals::qqr3::QqrBounds3;
 use ferric_integrals::threeindex;
+use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 
 /// Configuration for attenuated MP2.
@@ -175,8 +177,11 @@ impl Default for AttenuatedMp2Config {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct AttenuatedMp2Result {
+    /// Correlation energy (Hartree): `config.scaling × spin_components.e_total`.
     pub mp2_corr: f64,
+    /// Reference SCF energy plus `mp2_corr` (Hartree).
     pub total_energy: f64,
+    /// Unscaled opposite-/same-spin components under the attenuated operator.
     pub spin_components: SpinComponents,
 }
 
@@ -210,9 +215,12 @@ pub fn erfc_attenuated_ri_mp2(
 ///
 /// Useful for range-separated hybrid decompositions where the short-range
 /// part is treated by DFT and the long-range part by MP2 correlation.
-/// erf(ω·r)/r + erfc(ω·r)/r = 1/r exactly, so
-///   `attenuated_ri_mp2(erfc) + attenuated_ri_mp2_long_range(erf) ≈ ri_mp2(Coulomb)`
-/// up to integral roundoff.
+/// erf(ω·r)/r + erfc(ω·r)/r = 1/r splits the operator, not the energy: MP2 is
+/// quadratic in `(ia|jb)`, so
+///   `attenuated_ri_mp2(erfc) + attenuated_ri_mp2_long_range(erf) = ri_mp2(Coulomb) − X`
+/// with `X = Σ (4 s l − s lˣ − l sˣ)/D` the short×long cross term
+/// (`s`, `l` the erfc and erf `(ia|jb)`, `ˣ` the `(ib|ja)` exchange), plus the
+/// per-operator RI fit error. See `test_rs_mp2_decomposition_sums_approximately_to_full`.
 pub fn attenuated_ri_mp2_long_range(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -226,7 +234,7 @@ pub fn attenuated_ri_mp2_long_range(
         memory_budget_bytes: config.memory_budget_bytes,
         ..Default::default()
     };
-    let (sc, _) = ri_mp2_spin_components(mol, obs, dfbs, op, rhf, &ri_config)?;
+    let sc = ri_mp2_spin_components_any(mol, obs, dfbs, op, rhf, &ri_config)?;
     let scaled_corr = config.scaling * sc.e_total;
     Ok(AttenuatedMp2Result {
         mp2_corr: scaled_corr,
@@ -235,7 +243,24 @@ pub fn attenuated_ri_mp2_long_range(
     })
 }
 
+/// [`attenuated_ri_mp2`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn attenuated_ri_mp2_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    config: &AttenuatedMp2Config,
+) -> Result<AttenuatedMp2Result, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(rhf)?;
+    attenuated_ri_mp2(sys.mol(), sys.basis(), aux.basis(), rhf, config)
+}
+
 /// Compute attenuated RI-MP2 using erfc(omega*r)/r operator.
+///
+/// `rhf` may be restricted, UHF or ROHF: the spin components come from
+/// [`ri_mp2_spin_components_any`] (`e_os = E_αβ`, `e_ss = E_αα + E_ββ` on an
+/// open-shell reference). `screen_thresh` is closed-shell only.
 ///
 /// The range-separation parameter omega is supplied directly (Bohr⁻¹). As
 /// omega → 0, erfc → 1 and the result converges to standard MP2; as omega
@@ -257,7 +282,7 @@ pub fn attenuated_ri_mp2(
             memory_budget_bytes: config.memory_budget_bytes,
             ..Default::default()
         };
-        ri_mp2_spin_components(mol, obs, dfbs, op, rhf, &ri_config)?.0
+        ri_mp2_spin_components_any(mol, obs, dfbs, op, rhf, &ri_config)?
     };
     let scaled_corr = config.scaling * sc.e_total;
     Ok(AttenuatedMp2Result {
@@ -269,7 +294,7 @@ pub fn attenuated_ri_mp2(
 
 /// QQR-3 screened spin-component RI-MP2 energy under operator `op`.
 ///
-/// Mirrors [`ri_mp2_spin_components`] but builds the 3-index AO tensor via
+/// Mirrors [`crate::rimp2::ri_mp2_spin_components`] but builds the 3-index AO tensor via
 /// the distance-aware QQR-3 screen (zero-filled dense Array3). Reports the
 /// kept/total shell-triple counts on stderr so callers can see whether the
 /// screening is firing.
@@ -282,6 +307,13 @@ fn attenuated_spin_components_screened(
     frozen_core: usize,
     thresh: f64,
 ) -> Result<SpinComponents, FerricError> {
+    if !matches!(rhf.spin, ferric_scf::Spin::Restricted) {
+        return Err(FerricError::General(
+            "attenuated_ri_mp2: screen_thresh (the QQR-3 screened 3-index build) is \
+             closed-shell only; unset it for a UHF or ROHF reference"
+                .into(),
+        ));
+    }
     let nbas = obs.nbasis();
     let nelec = mol.nelec() as usize;
     let nocc_total = nelec / 2;
@@ -339,7 +371,8 @@ fn attenuated_spin_components_screened(
 }
 
 /// Helper for range-separated MP2: returns (E_erfc_sr, E_erf_lr, E_full).
-/// Should satisfy E_erfc_sr + E_erf_lr ≈ E_full (range-separation identity).
+/// `E_full − (E_erfc_sr + E_erf_lr)` is the short×long cross-range correlation
+/// (see [`attenuated_ri_mp2_long_range`]); the two parts do not sum to `E_full`.
 pub fn rs_mp2_decomposition(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -356,7 +389,7 @@ pub fn rs_mp2_decomposition(
         memory_budget_bytes: config.memory_budget_bytes,
         ..Default::default()
     };
-    let (sc, _) = ri_mp2_spin_components(mol, obs, dfbs, op, rhf, &ri_config)?;
+    let sc = ri_mp2_spin_components_any(mol, obs, dfbs, op, rhf, &ri_config)?;
     Ok((sr, lr, sc.e_total))
 }
 
@@ -382,10 +415,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
@@ -525,10 +555,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
@@ -593,10 +620,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();

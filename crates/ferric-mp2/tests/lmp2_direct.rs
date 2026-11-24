@@ -414,6 +414,7 @@ fn bench_map_error_flatness() {
 /// zeros enter the sums in different groupings — AND must evaluate
 /// strictly fewer shell triples (prototype-predicted ~0.4×; the
 /// amortization must be real, not a no-op).
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn batch_merge_matches_per_atom_and_saves_triples() {
     let su = setup("alkane_8.xyz");
@@ -889,10 +890,12 @@ fn bench_direct_alkane_series() {
         .unwrap_or(4);
     let (eri3_pass, batch_merge) =
         bench_eri3_pass(bench_env("FERRIC_LMP2_BENCH_ERI3_PASS").as_deref());
+    // the CLI/Python defaults (virt_radius 20, ao_tail 1e-4 since 2026-11-17;
+    // rows recorded before then used virt_radius 12, ao_tail 1e-3)
     let prod = DirectConfig {
         aux_radius_bohr: 10.0,
-        virt_radius_bohr: Some(12.0),
-        ao_tail: 1e-3,
+        virt_radius_bohr: Some(20.0),
+        ao_tail: 1e-4,
         schwarz_skip: 1e-5, // calibrated: 66-69% triples cut for ~1e-8 Ha at C16
         // merged batches (2026-09-05b): rows recorded before this date used
         // batch_merge=1 — expect ~0.4× the eri3 evaluations vs those rows
@@ -905,11 +908,17 @@ fn bench_direct_alkane_series() {
         virt_schwarz_kappa: None,
         split_eri3_timers: bench_split_eri3(bench_env("FERRIC_LMP2_BENCH_SPLIT_ERI3").as_deref()),
         eri3_pass,
+        mpi: None,
     };
     println!(
         "sys        op     eps    E_corr        dE_vs_can  keep    npair/gated dom(mn/mx) \
-         strips(r mn/mx | c mn/mx) eri3_Mtriples t_maps t_eri3 t_metric t_pairs | t_asm t_solve t_ref(ri_mp2)"
+         strips(r mn/mx | c mn/mx) eri3_Mtriples t_maps t_eri3 t_metric t_pairs | t_asm t_solve t_ref(ri_mp2) \
+         | t_spaces t_loc t_corr"
     );
+    // t_asm INCLUDES t_loc (same start instant); t_spaces (VV-HV build +
+    // check) is OUTSIDE t_asm, so the correlation wall is
+    // t_corr = t_spaces + t_asm + t_solve. Exponents fitted to t_asm+t_solve
+    // alone omit the O(N^3) VV-HV stage (wiki/notes/t018-cubic-ops-audit-2026-11-06.md M0).
     for nc in [4usize, 8, 12, 16, 20, 32, 48] {
         if nc < min_c {
             continue;
@@ -944,7 +953,7 @@ fn bench_direct_alkane_series() {
                 }
                 println!(
                     "alkane_{:<3} {:6} {:6.0e} {:.8} {:+.3e} {:.4} {:5}/{:<5} {:4.0}/{:<4} {:5.0}/{:<5} {:4.0}/{:<4} \
-                     {:8.2} {:6.2} {:6.2} {:8.2} {:7.2} | {:6.2} {:7.2} {:7.2}",
+                     {:8.2} {:6.2} {:6.2} {:8.2} {:7.2} | {:6.2} {:7.2} {:7.2} | {:8.3} {:5.3} {:6.2}",
                     nc,
                     opname,
                     eps,
@@ -968,6 +977,9 @@ fn bench_direct_alkane_series() {
                     r.timings.t_assembly_s,
                     r.timings.t_solve_s,
                     r.timings.t_reference_s,
+                    r.timings.t_spaces_s,
+                    st.t_loc_s,
+                    r.timings.t_spaces_s + r.timings.t_assembly_s + r.timings.t_solve_s,
                 );
                 println!(
                     "ERI3 c={nc} op={opname} eps={eps:.0e} wall={:.4} setup={:.4} fill={:.4} eval={:.4} \
@@ -1003,6 +1015,7 @@ fn bench_direct_alkane_series() {
 /// they introduce must stay sub-dominant to the ε truncation itself — the
 /// family's port-fidelity bar (same as the aux_tail_frac test on the global
 /// path). C8/erfc(1): the operator the maps are supposed to pay off for.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn production_maps_error_is_subdominant_to_eps_truncation() {
     let su = setup("alkane_8.xyz");
@@ -1376,6 +1389,12 @@ fn bench_scaling_decisive() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(6.0);
     let budget = (budget_gb * (1u64 << 30) as f64) as usize;
+    // FERRIC_LMP2_VIRTUAL_SPACE = dense (default) | local (default thresholds)
+    let virtual_space = ferric_mp2::vvhv_local::VirtualSpace::parse_config_str(
+        &std::env::var("FERRIC_LMP2_VIRTUAL_SPACE").unwrap_or_else(|_| "dense".into()),
+        ferric_mp2::vvhv_local::LocalVvhvConfig::default(),
+    )
+    .unwrap();
 
     let prod = DirectConfig {
         aux_radius_bohr: 10.0,
@@ -1391,8 +1410,11 @@ fn bench_scaling_decisive() {
 
     println!(
         "# DECISIVE rows: sys op eps rep E_corr t_method wall_s cpu_s \
-         t_maps t_eri3 t_metric t_pairs t_asm t_solve Mtriples dom_mx strip_r_mx strip_c_mx pairs_per_occ"
+         t_maps t_eri3 t_metric t_pairs t_asm t_solve Mtriples dom_mx strip_r_mx strip_c_mx pairs_per_occ \
+         t_spaces t_loc t_corr vs rss_peak_gb"
     );
+    // t_method = t_asm + t_solve (t_asm includes t_loc) EXCLUDES t_spaces, the
+    // VV-HV build + check, which is O(N^3); t_corr = t_spaces + t_method.
     for nc in &sizes {
         let nc = *nc;
         let su = setup(&format!("alkane_{nc}.xyz"));
@@ -1410,8 +1432,10 @@ fn bench_scaling_decisive() {
                         pair_gate_cal: Some(cal),
                         eri3_budget_bytes: Some(budget),
                         compute_reference: false,
+                        virtual_space: virtual_space.clone(),
                         ..Default::default()
                     };
+                    reset_peak_rss();
                     let w0 = std::time::Instant::now();
                     let c0 = cpu_time_s();
                     let (r, st) = amplitude_lmp2_direct(
@@ -1420,11 +1444,13 @@ fn bench_scaling_decisive() {
                     .unwrap();
                     let wall = w0.elapsed().as_secs_f64();
                     let cpu = cpu_time_s() - c0;
+                    let rss_gb = peak_rss_gb();
                     let t_method = r.timings.t_assembly_s + r.timings.t_solve_s;
                     let no = 3 * nc + 1;
                     println!(
                         "DEC alkane_{:<3} {:6} {:6.0e} {} {:.10} {:8.3} {:8.3} {:9.3} \
-                         {:6.2} {:7.2} {:7.2} {:7.2} {:7.2} {:7.2} {:8.2} {:4.0} {:5.0} {:4.0} {:6.2}",
+                         {:6.2} {:7.2} {:7.2} {:7.2} {:7.2} {:7.2} {:8.2} {:4.0} {:5.0} {:4.0} {:6.2} \
+                         {:8.3} {:7.3} {:8.3} {} {:.3}",
                         nc, opname, eps, rep,
                         r.e_corr, t_method, wall, cpu,
                         st.t_maps_s, st.t_eri3_s, st.t_metric_s, st.t_pairs_s,
@@ -1432,11 +1458,34 @@ fn bench_scaling_decisive() {
                         st.n_eri3_shell_triples as f64 / 1e6,
                         r.dom_max, st.strip_rows_max, st.strip_cols_max,
                         r.pair_fraction * (no * no) as f64 / no as f64,
+                        r.timings.t_spaces_s, st.t_loc_s, r.timings.t_spaces_s + t_method,
+                        r.virtual_space.build(), rss_gb,
                     );
+                    if let ferric_mp2::vvhv_local::VirtualSpaceReport::Local { stats, .. } =
+                        &r.virtual_space
+                    {
+                        println!("LVV alkane_{nc} {opname} rep {rep} {stats:?}");
+                    }
                 }
             }
         }
     }
+}
+
+/// Reset the process's peak-RSS mark (`VmHWM`) so the next reading covers
+/// only what follows (Linux >= 4.0: write 5 to /proc/self/clear_refs).
+fn reset_peak_rss() {
+    let _ = std::fs::write("/proc/self/clear_refs", "5");
+}
+
+/// Peak RSS (`VmHWM`) since the last [`reset_peak_rss`], GiB.
+fn peak_rss_gb() -> f64 {
+    let s = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    s.lines()
+        .find(|l| l.starts_with("VmHWM:"))
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|k| k.parse::<f64>().ok())
+        .map_or(f64::NAN, |kb| kb / (1u64 << 20) as f64)
 }
 
 /// Process CPU seconds (user+sys, all threads) via /proc/self/stat.
@@ -1615,6 +1664,7 @@ fn bits_equal(a: &[ndarray::Array2<f64>], b: &[ndarray::Array2<f64>]) -> bool {
 /// planned PCG (preallocated CG vectors, not allocation-free) reproduces
 /// the frozen pre-change loop bit for bit: same iteration count, same
 /// amplitudes, same Hylleraas energy.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn matvec_planned_is_bitwise_matvec_indexed() {
     use ferric_mp2::lmp2_amplitude::{checked_vvhv, linear_energy, localized_spaces};
@@ -1771,6 +1821,7 @@ fn loglog_slope(pts: &[(f64, f64)]) -> f64 {
 /// `cg_energy_error_bound`) is asserted. Mutations (seen to fail):
 /// `hylleraas_energy` returning the linear form; the bound's factor 3
 /// replaced by 0.01.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn hylleraas_is_stationary() {
     let cases = [
@@ -1887,6 +1938,7 @@ fn stationarity_case(xyz: &str, fc: usize, opn: &str, op: Operator, cal: f64) {
 /// energies ≤ 1e-13); an intermediate ρ* (the median block density) splits
 /// the blocks and still agrees. Mutation (seen to fail): the sparse branch
 /// drops its t·Fvv_bb half.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn fvv_sparse_branch_matches_dense() {
     use ferric_mp2::lmp2_amplitude::hylleraas_energy;
@@ -2167,6 +2219,7 @@ fn rtol_row(xyz: &str, fc: usize, opn: &str, op: Operator, cal: f64, in_core: bo
     }
 }
 
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn default_rtol_energy_is_within_its_bound() {
     let coul = Operator::coulomb();

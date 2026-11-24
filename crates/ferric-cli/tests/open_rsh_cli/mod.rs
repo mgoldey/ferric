@@ -168,17 +168,9 @@ impl<'a> Run<'a> {
     }
 }
 
-pub fn ferric_cli_bin() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(profile_dir) = exe.parent().and_then(Path::parent) {
-            let p = profile_dir.join("ferric-cli");
-            if p.is_file() {
-                return p;
-            }
-        }
-    }
-    PathBuf::from(env!("CARGO_BIN_EXE_ferric-cli"))
-}
+#[path = "../support/cli_bin.rs"]
+mod cli_bin;
+pub use cli_bin::ferric_cli_bin;
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -631,12 +623,10 @@ fn sizing(rsgdf: bool) -> GammaRshSizing {
 
 /// `crate::periodic::gamma_scf_config` (density_conv 1e-10, 200 iterations).
 fn gamma_scf() -> RhfConfig {
-    RhfConfig {
-        use_sad_guess: false,
-        density_conv: 1e-10,
-        max_iter: 200,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_density_conv(1e-10)
+        .with_max_iter(200)
 }
 
 /// The Gamma SCF of a range-separated hybrid on the CLI's `gamma_system(..,
@@ -706,11 +696,9 @@ fn with_gamma<T>(
             let mut c = GammaRoksConfig::new(func);
             (c.grid, c.exxdiv) = (grid(), ExxDiv::Ewald);
             c.ewald_start = ferric_pbc::EwaldStart::Staged;
-            c.scf = RhfConfig {
-                level_shift: c.scf.level_shift,
-                max_iter: c.scf.max_iter,
-                ..gamma_scf()
-            };
+            c.scf = gamma_scf()
+                .with_level_shift(c.scf.level_shift)
+                .with_max_iter(c.scf.max_iter);
             let (s, ex) = gamma_roks_any_keep(cl, pr, hcr, ints, aux, sz, &c).expect("scf");
             f(cl, pr, &hcfg, &s.scf, &GammaCfg::Roks(c), &ex.expect(keep))
         }
@@ -854,11 +842,9 @@ fn lib_gamma_open_energy(r: &Run) -> f64 {
             let mut c = GammaRoksConfig::new(func);
             (c.grid, c.exxdiv) = (grid(), ExxDiv::Ewald);
             c.ewald_start = ferric_pbc::EwaldStart::Staged;
-            c.scf = RhfConfig {
-                level_shift: c.scf.level_shift,
-                max_iter: c.scf.max_iter,
-                ..gamma_scf()
-            };
+            c.scf = gamma_scf()
+                .with_level_shift(c.scf.level_shift)
+                .with_max_iter(c.scf.max_iter);
             gamma_roks_any(&cell, &prep, &hc, ints, None, sz, &c)
                 .expect("scf")
                 .scf

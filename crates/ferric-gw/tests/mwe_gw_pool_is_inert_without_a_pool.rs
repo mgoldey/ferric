@@ -120,13 +120,11 @@ pub fn run(method: GwMethod) -> Vec<f64> {
 
 /// Frozen G0W0 QP energies (Ha), re-recorded 2026-09-18 on main-after-#83.
 ///
-/// # Why these moved, and why they are now only a SANITY BAND
+/// # Why these are only a SANITY BAND
 ///
-/// These were captured at `72883be0`, a pre-migration commit on the old base.
-/// Integrating the five pool branches REBASED the stack onto main after PR #83
-/// (`a268fc3c`, spherical MINAO atomic blocks), which changes the converged SCF
-/// reference density -- and GW is built on that density, so every QP energy
-/// moved by ~1e-10.
+/// These were captured at `72883be0`. PR #83 (`a268fc3c`, spherical MINAO
+/// atomic blocks) changes the converged SCF reference density -- and GW is
+/// built on that density, so every QP energy moves by ~1e-10 against them.
 ///
 /// Worse for a hardcoded bit pattern: the result is **not bit-reproducible
 /// across machines**. Measured for QP[0] on the SAME tree:
@@ -153,14 +151,24 @@ pub fn run(method: GwMethod) -> Vec<f64> {
 ///
 /// Values below are this box's; the band tolerates 1e-8, four orders above the
 /// observed cross-machine spread.
-///   -6.15571215606518174e-1  -4.18041879665428884e-1  -3.30966250586579025e-1
-///    6.09356792132542346e-1   7.42858606124310539e-1
+///   -6.15545936873335808e-1  -4.18049923338866758e-1  -3.30976623176529205e-1
+///    6.09372547779488460e-1   7.42862812548641060e-1
+///
+/// Re-recorded 2026-11-09 when the closed-shell drivers switched to the
+/// product-integrated Σc kernel (`sigma::sigma_c_at_z_product`): the five QP
+/// energies moved by +0.688, −0.219, −0.282, +0.429, +0.114 meV at this
+/// test's 8-point W grid. A numpy prototype on the same geometry, basis and
+/// aux (wiki/notes/gw-deep-states-2026-11-09, `mwe_water_sto3g_hf.log`)
+/// reproduces that move to 1 µeV and puts the new values CLOSER to the
+/// grid-free dRPA pole-sum reference on every state: |QP − exact| 0.069 /
+/// 0.016 / 0.089 / 0.085 / 0.012 meV, against 0.619 / 0.203 / 0.194 / 0.344 /
+/// 0.103 meV for the plain sum.
 const G0W0_QP_BITS: [u64; 5] = [
-    0xBFE3B2C267F39884,
-    0xBFDAC132BA75CAC3,
-    0xBFD52E8D11B7456A,
-    0x3FE37FD9D0B61903,
-    0x3FE7C57F69532283,
+    0xBFE3B28D6481D024,
+    0xBFDAC15477357CC3,
+    0xBFD52EB893122848,
+    0x3FE37FFADB796114,
+    0x3FE7C5883BA9F3A5,
 ];
 
 /// Frozen COHSEX QP energies (Ha), same shape, same tree:

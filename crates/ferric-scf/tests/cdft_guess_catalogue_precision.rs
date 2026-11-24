@@ -142,25 +142,24 @@ fn build_sys() -> Sys {
 
 /// `cdft_state_selection.rs::hene_cfg`, verbatim, at a target.
 fn cfg(target: f64) -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        level_shift: 0.5,
-        cdft_lambda_tol: LAMBDA_TOL,
-        cdft_max_outer: 40,
-        cdft_stability_descent: false,
-        use_sad_guess: false,
-        dft_grid: Some(AtomicGridConfig {
+    let mut c = RhfConfig::default()
+        .with_max_iter(400)
+        .with_level_shift(0.5)
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_dft_grid(AtomicGridConfig {
             n_radial: 99,
             n_angular: 302,
             ..Default::default()
-        }),
-        constraints: vec![Constraint {
-            fragment: vec![0],
-            target,
-            spin: SpinChannel::Total,
-        }],
-        ..Default::default()
-    }
+        });
+    c.cdft_lambda_tol = LAMBDA_TOL;
+    c.cdft_max_outer = 40;
+    c.cdft_stability_descent = false;
+    c.constraints = vec![Constraint {
+        fragment: vec![0],
+        target,
+        spin: SpinChannel::Total,
+    }];
+    c
 }
 
 fn solve(
@@ -250,11 +249,9 @@ fn sad_mos(sys: &Sys) -> (Array2<f64>, Array2<f64>) {
 /// The σ entry needs `use_sad_guess: true` explicitly: the lane config pins
 /// it to false, and inheriting that would make the σ entry the ²Π one again.
 fn unconstrained_mos(sys: &Sys, minao: bool) -> (Array2<f64>, Array2<f64>) {
-    let c = RhfConfig {
-        constraints: vec![],
-        use_sad_guess: minao,
-        ..cfg(2.0)
-    };
+    let mut c = cfg(2.0);
+    c.constraints = vec![];
+    c.use_sad_guess = minao;
     let scf =
         solve_uhf_fockmod(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &c, None, None).unwrap();
     let cb = scf.mos_beta.clone().unwrap();
@@ -305,6 +302,8 @@ fn post_descent_mos(sys: &Sys, upper: &CdftResult) -> (Array2<f64>, Array2<f64>)
         fxc: None,
         thresh: 1e-12,
         ooc_budget: 0,
+        j_response: None,
+        k_response: None,
     };
     let st = uhf_internal_stability(
         &sys.ctx,

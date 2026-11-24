@@ -132,6 +132,7 @@ use ferric_scf::stability::{
 };
 use ferric_scf::uhf_newton::UhfNewtonInputs;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use ndarray_linalg::{Eigh, UPLO};
 use serde_json::Value;
@@ -200,12 +201,6 @@ fn reference(system: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn nums(v: &Value, ptr: &str, ctx: &str) -> Vec<f64> {
     v.pointer(ptr)
         .and_then(Value::as_array)
@@ -252,7 +247,7 @@ fn load_system(system: &str, r: &Value) -> System {
     let xyz = workspace_root().join(MOL_DIR).join(format!("{system}.xyz"));
     let mol = Molecule::load_xyz_with_charge(xyz.to_str().unwrap(), charge, mult)
         .unwrap_or_else(|e| panic!("{}: {e:?}", xyz.display()));
-    let enuc_ref = num(r, "/nuclear_repulsion", &ctx);
+    let enuc_ref = num_ctx(r, "/nuclear_repulsion", &ctx);
     let enuc = mol.nuclear_repulsion();
     assert!(
         (enuc - enuc_ref).abs() < TOL_ENUC,
@@ -310,12 +305,10 @@ fn stability<'a>(res: &'a ScfResult, ctx: &str) -> &'a StabilityResult {
 /// identical to `default_ladder()`'s, so this row tests the shipped ladder
 /// shape and not a private variant.
 fn ladder_under_test(descent: bool) -> Vec<Rung> {
-    let base = RhfConfig {
-        density_conv: DENSITY_CONV,
-        check_stability: true,
-        scf_stability_descent: descent,
-        ..Default::default()
-    };
+    let mut base = RhfConfig::default()
+        .with_density_conv(DENSITY_CONV)
+        .with_check_stability(true);
+    base.scf_stability_descent = descent;
     let ours = default_ladder_from(&base);
     let prod = default_ladder();
     assert_eq!(ours.len(), prod.len());
@@ -491,6 +484,8 @@ fn external_check(sys: &System, res: &ScfResult, r: &Value, uhf_cross: bool) {
             fxc: None,
             thresh: RhfConfig::default().integral_thresh,
             ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
+            j_response: None,
+            k_response: None,
         };
         let st = uhf_internal_stability(&sys.ctx, &inp, &StabilityConfig::default())
             .unwrap_or_else(|e| panic!("{ctx}: external analysis failed: {e:?}"));
@@ -550,7 +545,7 @@ fn ladder_row(system: &str, small: bool) {
 
     // (b) the energy of PySCF's lowest stable RHF minimum. The reference also
     // lists every distinct stable minimum PySCF found, for diagnosis.
-    let e_ref = num(&r, "/rhf/energy", ctx);
+    let e_ref = num_ctx(&r, "/rhf/energy", ctx);
     let minima = nums(&r, "/stable_minima_found", ctx);
     if (res.energy - e_ref).abs() >= TOL_E {
         let near = minima.iter().map(|e| (e, (res.energy - e).abs())).fold(
@@ -564,7 +559,7 @@ fn ladder_row(system: &str, small: bool) {
             res.energy - e_ref,
             near.0,
             near.1,
-            num(&r, "/plain_diis_pyscf/energy", ctx)
+            num_ctx(&r, "/plain_diis_pyscf/energy", ctx)
         );
     }
     check_close(ctx, "energy", res.energy, e_ref, TOL_E);
@@ -657,8 +652,8 @@ fn n2_plain_diis_rung_alone_lands_on_the_saddle() {
         !boolean(&r, "/plain_diis_pyscf/same_state_as_reference", ctx),
         "{ctx}: the reference says plain DIIS reaches the stable minimum — this control is vacuous"
     );
-    let e_saddle = num(&r, "/plain_diis_pyscf/energy", ctx);
-    let e_min = num(&r, "/rhf/energy", ctx);
+    let e_saddle = num_ctx(&r, "/plain_diis_pyscf/energy", ctx);
+    let e_min = num_ctx(&r, "/rhf/energy", ctx);
     assert!(
         e_saddle - e_min > MIN_STATE_SEPARATION,
         "{ctx}: reference states only {:.3e} Ha apart",

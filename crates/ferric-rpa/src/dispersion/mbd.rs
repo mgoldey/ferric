@@ -6,34 +6,21 @@
 
 use crate::dispersion::free_atom_ref::ts_free_atom;
 use crate::dispersion::DynamicPolarizability;
+use ferric_core::special::erf;
 use ferric_core::FerricError;
 use ndarray::Array2;
 use ndarray_linalg::Inverse;
-
-/// erf via a rational approximation (Abramowitz & Stegun 7.1.26, |err| < 1.5e-7).
-fn erf(x: f64) -> f64 {
-    let t = 1.0 / (1.0 + 0.327_591_1 * x.abs());
-    let y = 1.0
-        - (((((1.061_405_429 * t - 1.453_152_027) * t) + 1.421_413_741) * t - 0.284_496_736) * t
-            + 0.254_829_592)
-            * t
-            * (-x * x).exp();
-    if x >= 0.0 {
-        y
-    } else {
-        -y
-    }
-}
 
 /// 3N×3N Gaussian-damped dipole–dipole coupling tensor T_GG (full-range SCS).
 ///
 /// Block (A,B), A≠B: T_AB^{ij} = damping · (δ_ij − 3 n_i n_j)/r³, n = r̂_AB, with
 /// the sign convention that pairs with the screening equation A_scs⁻¹ = α⁻¹ + T
 /// (parallel dipoles along the bond couple attractively → enhanced bond-axis α).
-/// the standard Gaussian-overlap (error-function) damping of two QHO dipoles of
+/// The damping is the standard Gaussian-overlap (error-function) damping of two QHO dipoles of
 /// combined width σ_AB = √(σ_A²+σ_B²) (Tkatchenko et al., PRL 108, 236402, 2012):
 ///   ζ = erf(u) − (2u/√π) e^{−u²},   η = (4u³/(3√π)) e^{−u²},   u = r/σ_AB
-///   T_ij = ζ·(3 n_i n_j − δ_ij)/r³ − η·(3 n_i n_j)/r³.
+///   T_ij = ζ·(δ_ij − 3 n_i n_j)/r³ + η·(3 n_i n_j)/r³.
+/// (Undamped limit ζ=1, η=0: T = (δ − 3nn)/r³, which is −2/r³ along the bond.)
 /// On-site blocks (A=A) are zero. Symmetric.
 pub fn dipole_coupling_tensor(positions: &[[f64; 3]], sigma: &[f64]) -> Array2<f64> {
     let n = positions.len();
@@ -227,7 +214,7 @@ pub fn mbd_dynamic_polarizability(
 /// E = ½ Σ_p √λ_p − (3/2) Σ_A ω_A, where λ_p are eigenvalues of the 3N×3N
 /// matrix H_{Ai,Bj} = ω_A² δ_{AB} δ_{ij} + ω_A ω_B √(α_A α_B) · T^{GG}_{Ai,Bj},
 /// with the UNSCREENED inputs α/ω, Gaussian widths from the static α, no
-/// Fermi damping, no β, no R_vdW, and this module's Abramowitz–Stegun erf.
+/// Fermi damping, no β, no R_vdW, and `ferric_core::special::erf`.
 /// Without the range separation the full-range dipole coupling is far too
 /// strong: on molecules it is 39–226× larger than MBD@rsSCS (water: about
 /// −34 vs −0.15 kcal/mol). The dispersion energy is
@@ -297,15 +284,14 @@ mod tests {
         );
     }
 
-    /// Z outside the table regression: the old code silently substituted the
+    /// Z outside the table regression: silently substituting the
     /// molecular α with HYDROGEN's characteristic frequency, fabricating a TS
     /// C6 for every element the table didn't cover. It must be a hard error
     /// through every public entry point, including the MBD-screened path
     /// (which has its own `ts_atom_params` call independent of
     /// `ts_dynamic_polarizability`). Z=55 (Cs) is genuinely outside the
-    /// Z=1..=54 table (Br/Z=35 used to be the out-of-table probe before the
-    /// Gould-Bučko Z=19-54 extension landed and legitimately parameterized
-    /// it — see `ts_atom_params_heavy_atom_errors` above for the same
+    /// Z=1..=54 table (Br/Z=35 is in the table via the Gould-Bučko Z=19-54
+    /// extension — see `ts_atom_params_heavy_atom_errors` above for the same
     /// contract at the `ts_atom_params` level).
     #[test]
     fn ts_unparameterized_element_errors_instead_of_hydrogen_omega() {

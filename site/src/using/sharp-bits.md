@@ -1,50 +1,42 @@
 # Sharp bits
 
-Things that behave differently from what you might expect, each of which has
-cost someone a run. This page follows the pattern of JAX's "Sharp Bits": each
+Behaviour that differs from what you might expect. This page follows the pattern of JAX's "Sharp Bits": each
 entry says what surprises people, why ferric does it that way, and what to do.
 
-## Leave `OPENBLAS_NUM_THREADS` unset
+## Two BLAS thread counts: parallel regions and serial sections
 
-**What happens:** the `ferric` CLI and `import ferric` pin OpenBLAS to one
-thread when `OPENBLAS_NUM_THREADS` is unset, and honour the variable when it is
-set. (`.cargo/config.toml` sets it to 1 for cargo-launched processes, also
-only when it is unset.) A value above 1 is therefore a deliberate choice, and
-its effect depends on the workload: it can speed up one calculation and slow
-another down several-fold.
+**What happens:** ferric runs OpenBLAS at two different thread counts.
+Inside parallel regions (integrals, J/K builds, the XC grid, frequency
+quadrature) rayon owns the cores and OpenBLAS runs at 1 thread, unless
+`OPENBLAS_NUM_THREADS` is set. Serial sections (the Fock diagonalization and
+DIIS commutator every SCF iteration, the orthogonalizer, density GEMMs, other
+dense linear algebra between parallel regions) run OpenBLAS at the
+`[parallel] blas_threads` count, which defaults to the rayon thread count
+(`RAYON_NUM_THREADS`, default every logical CPU). Python sets it with
+`ferric.set_blas_threads(n)`; `FERRIC_BLAS_THREADS` sets it from the
+environment.
 
-**Why:** ferric's parallelism comes from rayon. OpenBLAS threads run inside
-rayon's worker threads, so the thread count is roughly BLAS threads × rayon
-threads. Measured on benzene with the `ferric` CLI, single runs on a heavily
-loaded machine with 6 physical cores (12 hardware threads), so read these as
-order-of-magnitude:
+**Why:** a serial section would otherwise leave every core but one idle. At
+def2-SVP the per-iteration diagonalization and commutator were half of a PBE
+SCF on a 64-carbon alkane before they were threaded.
 
-| `OPENBLAS_NUM_THREADS` | unset | 1 | 6 | 12 |
-|---|---|---|---|---|
-| RI-JK RHF (`benzene-rhf-def2-rijk.toml`) | 54 s | 31 s | 9.7 s | timed out at 1800 s |
-| PDEP-RPA (`benzene-pdep-rpa.toml`) | 5.9 s | 7.2 s | 22.9 s | 30.7 s |
+Two effects beyond speed:
 
-"unset" and 1 run the same configuration, so the gap between those two
-columns is the machine's load, not a setting. B3LYP timings were noisy, with
-no clear trend. None of these runs crashed.
+- Results depend on the serial thread count at the last bit. OpenBLAS splits
+  a reduction by thread count, so two runs with different
+  `RAYON_NUM_THREADS` (or `blas_threads`) differ by about 1e-13 Ha. Set
+  `[parallel] blas_threads = 1` when you need results bit-identical across
+  thread counts.
+- `OPENBLAS_NUM_THREADS` above 1 makes every parallel region run rayon
+  threads × BLAS threads. Once that exceeds the physical cores a job can slow
+  by orders of magnitude (measured on benzene RI-JK RHF: 31 s at 1, timed out
+  at 1800 s at 12). It does not crash: the thread stacks ferric sets are large
+  enough for threaded LAPACK, LU included, on any thread.
 
-Three effects matter beyond speed:
-
-- **Oversubscription can stall a run.** Once BLAS threads × rayon threads
-  exceed the physical cores, a job can slow by orders of magnitude, as the
-  12-thread RI-JK run shows.
-- **Results change slightly.** The BLAS thread count changes the order of
-  floating-point summation. The RI-JK energy at 6 threads differs from the
-  1-thread energy by 6e-6 Ha; expect differences at the 1e-6 to 1e-5 Ha level.
-- **LU routines can crash.** Threaded OpenBLAS LU factorization (`dgetrf`)
-  can overflow the 2 MB stacks of rayon's worker threads. ferric calls LU
-  solves in BSE, PCM, COSMO, MBD and orbital-rotation steps, among others.
-
-**Do:** leave `OPENBLAS_NUM_THREADS` unset, and ferric runs with one BLAS
-thread. If you set it higher for a particular job, never above the number of
-physical cores, and check the timing and the energy against a one-thread run
-of the same input. For throughput across many molecules, run many
-single-threaded processes.
+**Do:** leave `OPENBLAS_NUM_THREADS` unset and set the machine's thread count
+with `RAYON_NUM_THREADS` (the physical core count is usually best). For
+throughput across many molecules, run many single-threaded processes
+(`RAYON_NUM_THREADS=1`, which also gives one serial BLAS thread).
 
 ## `converged` is a flag, and it does not mean "ground state"
 
@@ -89,8 +81,8 @@ was fitted on systems up to about 340 basis functions, and beyond that it is an
 extrapolation. With density-fitted J (and in the open-shell solvers, which
 rebuild J and K every iteration) only rounding remains, about
 `0.5 * eps * |E| * sqrt(nbf)`: measured 3e-13 for benzene/cc-pVDZ with RI-JK and
-1.3e-12 for alkane C20/6-31G with RI-JK. The CLI default is deliberately loose
-(`1e-3`).
+1.3e-12 for alkane C20/6-31G with RI-JK. The CLI default is loose
+(`1e-3`) by design.
 
 **What ferric tells you:** when you set `energy_conv` below 0.3 times the
 estimated floor, the CLI prints `warning: [scf] energy_conv ... is below the
@@ -107,7 +99,7 @@ from the nuclear charges (ECP cores removed, about 5 % for all-electron
 molecules, 3.7x high for an iodine ECP case); the point-charge or field energy
 of an embedding is not included.
 
-**A symptom of the same floor:** with a large point-charge field (`point_charges=` on `run_rhf`'s closed-shell direct-J/K path) the number of SCF iterations can differ between two orderings of the same charges, because a change of a few ulps in the one-electron potential decides which iteration the `dE` test happens to pass. On rc7 a 6458-charge field took 64 iterations nearest-first and 111 in file order at `energy_conv=1e-10`. The potential itself changes only by roundoff (3e-15 to 1e-14 relative) and the converged energy by about 1e-12 Ha. Main turns the incremental update off when `energy_conv < 1e4 * integral_thresh` or `density_conv < 1e3 * integral_thresh` (1e-8 and 1e-9 at the default `integral_thresh`), where all measured orders took 20 iterations; at the default `energy_conv` and `density_conv` every measured order took the same number (15 iterations on the field and orders tried; the tests do not assert iteration counts, so this is a measurement, not a guarantee for other fields). `run_uhf` and `run_rohf` use a separate open-shell incremental path and `run_dft`'s default RI-J does not use the direct incremental path: for those the order changes the potential by roundoff too, but iteration counts were not measured. ferric does not reorder the charges.
+A symptom of the same floor: with a large point-charge field (`point_charges=` on `run_rhf`'s closed-shell direct-J/K path) the number of SCF iterations can differ between two orderings of the same charges, because a change of a few ulps in the one-electron potential decides which iteration the `dE` test happens to pass. On rc7 a 6458-charge field took 64 iterations nearest-first and 111 in file order at `energy_conv=1e-10`. The potential itself changes only by roundoff (3e-15 to 1e-14 relative) and the converged energy by about 1e-12 Ha. ferric turns the incremental update off when `energy_conv < 1e4 * integral_thresh` or `density_conv < 1e3 * integral_thresh` (1e-8 and 1e-9 at the default `integral_thresh`), where all measured orders took 20 iterations; at the default `energy_conv` and `density_conv` every measured order took the same number (15 iterations on the field and orders tried; the tests do not assert iteration counts, so this is a measurement, not a guarantee for other fields). `run_uhf` and `run_rohf` use a separate open-shell incremental path and `run_dft`'s default RI-J does not use the direct incremental path: for those the order changes the potential by roundoff too, but iteration counts were not measured. ferric does not reorder the charges.
 
 **Do:** tighten `density_conv`, not `energy_conv`.
 
@@ -120,8 +112,7 @@ Coulomb gives a discrepancy that grows with molecule size.
 (RI-J) with `def2-universal-jkfit` by default, and, for functionals with exact
 exchange (hybrids and range-separated hybrids), exchange (RI-K) with the same
 basis. `run_rhf` builds exact four-centre J and K unless you pass `df_j_aux`/`df_k_aux`. The
-difference is the fitting error that density fitting always carries, not a
-bug. Against exact J at PBE/STO-3G it is 0.28 kcal/mol for water, 1.16 for
+difference is the fitting error that density fitting always carries. Against exact J at PBE/STO-3G it is 0.28 kcal/mol for water, 1.16 for
 benzene and 9.5 for a 71-atom drug molecule.
 
 **Do:**
@@ -148,12 +139,12 @@ benzene and 9.5 for a 71-atom drug molecule.
 | Molecule geometry input (`from_xyz`, `from_xyz_string`, `.xyz` files) | Python, CLI | Ångström |
 | Coordinates inside the Rust library | Rust | Bohr |
 | Attenuation ω: `[mp2] omega` (`att-rimp2`, `rs-mp2-rpa`), `[mp2] mp2v_omega` (`mp2-v`); `omega=` of `run_attenuated_rimp2`, `run_rs_mp2_rpa`, `run_mp2_v`, and `terf_omega=` of `run_rs_mp2_rpa` | CLI TOML, Python | Å⁻¹ |
-| Double-hybrid ω: `[dft] omega` (`wb97x-l-v`) | CLI TOML | **Bohr⁻¹** |
-| `tune_omega` (bracket and result); `omega=` of `compute_eri3_mo` and `compute_metric_2c` | Python | **Bohr⁻¹** |
+| Double-hybrid ω: `[dft] omega` (`wb97x-l-v`) | CLI TOML | Bohr⁻¹ |
+| `tune_omega` (bracket and result); `omega=` of `compute_eri3_mo` and `compute_metric_2c` | Python | Bohr⁻¹ |
 | Range-separation ω | Rust configs | Bohr⁻¹ |
 | `QmmmSystem(...)` coordinates | Python | Ångström |
-| `QmmmSystem.point_charges()` | Python | **Bohr** |
-| `QmmmSystem.link_atom_positions()` | Python | **Ångström** |
+| `QmmmSystem.point_charges()` | Python | Bohr |
+| `QmmmSystem.link_atom_positions()` | Python | Ångström |
 | Energies | everywhere | Hartree |
 
 **Do:** check the docstring of any coordinate accessor before converting it.
@@ -181,8 +172,8 @@ The CLI runs the `method.kind`s in the
 | Capability | Python | What the CLI has instead |
 |---|---|---|
 | Transition-state search, IRC | `run_saddle`, `run_irc` | no `task` for either |
-| QM/MM MM forces, full-system gradient and optimization, smeared charges, Thole polarization, an MM force field | `run_qmmm`, `run_optimize_qmmm`, `QmmmSystem`, `MmTopology` | `[qmmm]` embeds the QM region in fixed point charges from a PQR file, with link atoms and boundary schemes |
-| Constrained DFT and electron-transfer couplings | `run_cdft`, `CdftConstraint`, `cdft_coupling` | nothing |
+| QM/MM MM forces, full-system gradient and optimization, smeared charges, Thole polarization gradients, an MM force field | `run_qmmm`, `run_optimize_qmmm`, `QmmmSystem`, `MmTopology` | `[qmmm]` embeds the QM region in fixed point charges from a PQR file, with link atoms and boundary schemes; `polarizabilities_angstrom3` adds Thole polarizable sites to `task = "energy"` on `rhf`, `uhf` and `ksdft` |
+| Electron-transfer couplings | `cdft_coupling` | nothing (`run_cdft` itself is `[cdft]`, `task = "energy"`) |
 
 ## Examples need the repository
 
@@ -254,20 +245,11 @@ When a charged allocation does not fit, the result depends on the allocation:
   which, the run log records it,
   and the SCF may take more iterations. Very near that limit, repeat runs of one
   input have differed in whether this happens. `jk_storage = "memory"` with a VV10 functional is held to the
-  budget less the cache, so it refuses some budgets that an earlier build ran over.
+  budget less the cache, so it refuses budgets that cannot hold the cache and the tensors together.
 - An allocation with no fallback stops the job with an error naming it. For
   some methods this check comes after the SCF. Benzene RI-MP2/def2-SVP with
   `budget_gb = 0.001` completes the SCF, then exits with
   `RI-MP2 MO-side blocks ... requires 0.01 GB; budget is 0.00 GB`.
-
-**Changed once for spilled, recomputed and `jk_storage = "disk"` RI-JK runs:**
-adopting the widths above moved energies by at most 2.84e-13 Ha against the
-previous build (water/cc-pVDZ and butane/6-31G, `OPENBLAS_NUM_THREADS=1`, on one
-OpenBLAS kernel). `auto` runs that stayed in core, and exact runs, did not move.
-Iteration counts matched in every case but one, water/cc-pVDZ under
-`jk_storage = "direct"`, and that case is not a clean before and after: the
-previous build was not reproducible there with BLAS pinned, giving 13 iterations
-in 9 of 10 runs and 11 in the other, while this build gave 11 in 15 of 15.
 
 Some stages print a warning when resident memory passes 110% of the budget.
 The warning never stops the run.
@@ -290,11 +272,11 @@ its own cgroup, for example with `scripts/ferric-limited -- ferric input.toml`
 
 The CUDA backend is not in the PyPI wheel; it needs a source build with the `gpu` feature (see [GPU (CUDA)](installation.md#gpu-cuda)), and even then it is off by default (`FERRIC_GPU=auto` or `[gpu] mode` turns it on). Consumer GeForce cards run FP64 at 1/32 of their FP32 rate or less, so offloading f64 contractions may be slower than the CPU once transfer time is counted; whether it helps depends on the card and the problem, and has to be measured on your own hardware.
 
-The Kohn-Sham XC grid runs on the device only under `mode = "on"` (or `gpu = "on"` / `"mixed"`), never under `auto`: on a GTX 1080 every device XC build took 2.2-3x the CPU time and whole PBE SCFs ran about 2x slower, so `auto` keeps it on the CPU rather than slowing every DFT run on a GPU box.
+The Kohn-Sham XC grid runs on the device only under `mode = "on"` (or `gpu = "on"` / `"mixed"`), never under `auto`: on a GTX 1080 with a 6-core host, a PBE/cc-pVDZ n-octane SCF loop took 1.9x as long with the device XC grid (whole run 4.83 s against 2.91 s, one run each; [measured timings](installation.md#measured-timings-gtx-1080)), so `auto` keeps it on the CPU rather than slowing every DFT run on a GPU box.
 
 Device memory is a separate pool (`[gpu] memory_gb`); the host `[memory] budget_gb` is not reduced by it. A contraction that does not fit the device pool runs on the CPU and is counted, not refused. `FERRIC_GPU_TRACE=1` prints each fallback.
 
-`[precision] mode = "mixed"` (or its deprecated alias `[gpu] precision = "mixed"`) changes the numbers, not just the speed: the audit line, `ferric.gpu_status()["precision"]` and each result's precision provenance record (`run_end.extra.precision` in the run log, `result.precision` in Python) say which precision a run used, and the per-kernel error map is on the [validation page](../reference/validation.md#mixed-precision-gpu-kernels). The one shipped mixed kernel is `rimp2-energy` (f32-resident `B_ov`; closed-shell and unrestricted RI-MP2 under the Coulomb, erfc and terfc operators); its measured energy errors are 3e-11 to 7e-9 Eh closed-shell Coulomb (total, with the OS and SS parts up to 5e-9 Eh each), 5e-10 to 1.4e-8 Eh unrestricted Coulomb (total, with the αα, ββ and αβ blocks up to 1.1e-8 Eh each) and 7e-11 to 6e-9 Eh for erfc and terfc on the systems listed there, graded as a measured error map, not Proven; a mixed run prints `precision mixed` in its `[ferric] gpu:` line, and its energies are not interchangeable with f64 results in a convergence or reference comparison. A tiny problem still pays the device upload when the mode is on, whatever the precision. `gpu = "mixed"` (or `[gpu] preset = "mixed"`) is `mode = "on"` plus `precision = "mixed"`, so it carries the same change in the numbers; a `mode` or `precision` setting that contradicts the preset is an error, not an override. A `mixed_kernels` list given next to a preset is kept as given instead of the preset's set (it may narrow it); a name this build does not ship is refused, and the opt-in `xc-vxc` is admitted only when the list names it and `mode` resolves to `"on"` (so `gpu = "mixed"` with the list works, `auto-mixed` with it is an error).
+`[precision] mode = "mixed"` (or its deprecated alias `[gpu] precision = "mixed"`) changes the numbers as well as the speed: the audit line, `ferric.gpu_status()["precision"]` and each result's precision provenance record (`run_end.extra.precision` in the run log, `result.precision` in Python) say which precision a run used, and the per-kernel error map is on the [validation page](../reference/validation.md#mixed-precision-gpu-kernels). The one shipped mixed kernel is `rimp2-energy` (f32-resident `B_ov`; closed-shell and unrestricted RI-MP2 under the Coulomb, erfc and terfc operators); its measured energy errors are 3e-11 to 7e-9 Eh closed-shell Coulomb (total, with the OS and SS parts up to 5e-9 Eh each), 5e-10 to 1.4e-8 Eh unrestricted Coulomb (total, with the αα, ββ and αβ blocks up to 1.1e-8 Eh each) and 7e-11 to 6e-9 Eh for erfc and terfc on the systems listed there, graded as a measured error map, not Proven; a mixed run prints `precision mixed` in its `[ferric] gpu:` line, and its energies are not interchangeable with f64 results in a convergence or reference comparison. A tiny problem still pays the device upload when the mode is on, whatever the precision. `gpu = "mixed"` (or `[gpu] preset = "mixed"`) is `mode = "on"` plus `precision = "mixed"`, so it carries the same change in the numbers; a `mode` or `precision` setting that contradicts the preset is an error, not an override. A `mixed_kernels` list given next to a preset is kept as given instead of the preset's set (it may narrow it); a name this build does not ship is refused, and the opt-in `xc-vxc` and `dfk-occ` are admitted only when the list names them and `mode` resolves to `"on"` (so `gpu = "mixed"` with the list works, `auto-mixed` with it is an error).
 
 ## Implemented is not validated
 

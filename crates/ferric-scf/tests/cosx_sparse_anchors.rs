@@ -94,18 +94,16 @@ fn setup_with(mol: Molecule, basis: &str, df: bool, density_conv: f64) -> Setup 
     let aux = "def2-universal-jkfit";
     // The DF-JK reference keeps the default energy_conv (a sanity bound, not a
     // target — 1e-10 with a loose density_conv does not converge).
-    let cfg = RhfConfig {
-        energy_conv: if df {
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(if df {
             RhfConfig::default().energy_conv
         } else {
             1e-10
-        },
-        density_conv,
-        integral_thresh: 1e-14,
-        df_j_aux: df.then(|| aux.to_string()),
-        df_k_aux: df.then(|| aux.to_string()),
-        ..Default::default()
-    };
+        })
+        .with_density_conv(density_conv);
+    cfg.integral_thresh = 1e-14;
+    cfg.df_j_aux = df.then(|| aux.to_string());
+    cfg.df_k_aux = df.then(|| aux.to_string());
     let res = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).expect("rhf");
     assert!(res.converged, "reference RHF did not converge");
     let nocc = (mol.nelec() / 2) as usize;
@@ -236,6 +234,7 @@ fn sparse_zero_eps_matches_dense_bitwise_water() {
 /// Anchor (a): butane/def2-SVP (the screen is ON at its default here as well,
 /// so the Λ-zero rows and the `fmax = 0` interplay are exercised on a system
 /// where the screen actually drops pairs).
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn sparse_zero_eps_matches_dense_bitwise_butane() {
     let s = setup_butane();
@@ -295,6 +294,7 @@ fn sparse_production_eps_k_error_below_1e6_water() {
     production_eps_on(&s, "water/cc-pVDZ");
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn sparse_production_eps_k_error_below_1e6_butane() {
     let s = setup_butane();
@@ -302,6 +302,7 @@ fn sparse_production_eps_k_error_below_1e6_butane() {
 }
 
 /// Anchor (b), SCF level: converged COSX-RHF energy of water, sparse vs dense.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn sparse_cosx_rhf_water_energy_matches_dense() {
     let mol = Molecule::parse_xyz(WATER, 0, 1).expect("water");
@@ -311,16 +312,14 @@ fn sparse_cosx_rhf_water_energy_matches_dense() {
     let bounds = SchwarzBounds::compute(op, &prep).expect("schwarz");
     let ctx = ParallelContext::default();
     let run = |half: CosxHalfTransform| {
-        let c = RhfConfig {
-            k_builder: Some("cosx".into()),
-            cosx: CosxConfig {
+        let c = RhfConfig::default()
+            .with_k_builder(ferric_scf::options::KBuilderKind::Cosx)
+            .with_cosx(CosxConfig {
                 half_transform: half,
                 ..CosxConfig::flat_reference()
-            },
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            ..Default::default()
-        };
+            })
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8);
         let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &c).expect("rhf");
         assert!(r.converged);
         (r.energy, r.iterations)
@@ -396,6 +395,7 @@ fn sparse_build_from_occ_is_the_density_path() {
 /// shells), and the sparse K stays inside the (b) bar. The bars that ARE
 /// reachable by construction — and that the Λ mutant must turn RED — live in
 /// `sparse_reachability_water_dimer_far`.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn sparse_reachability_counts_alkane_8() {
     let mol =

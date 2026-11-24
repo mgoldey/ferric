@@ -1,0 +1,44 @@
+{
+ "generator": "scripts/gen_pyscf_x2c_scf_refs.py",
+ "pyscf_version": "2.13.1",
+ "light_speed": 137.03599967994,
+ "conv_tol": 1e-11,
+ "conv_tol_grad": 1e-07,
+ "settings": "scf.RHF(mol).sfx2c1e(), approx='1e', xuncontract=True, cart=False; mp2: pyscf.mp.dfmp2.DFMP2, all electrons, auxbasis cc-pvdz-ri",
+ "systems": {
+  "HBr": {
+   "xyz_angstrom": "H 0 0 0\nBr 0 0 1.414",
+   "bases": {
+    "cc-pvdz": {
+     "nao": 32,
+     "e_nr": -2572.9702413818623,
+     "e_x2c": -2597.626992829152,
+     "mp2": {
+      "e_corr_nr": -0.14706132419362614,
+      "e_corr_x2c": -0.14575724150684774
+     }
+    },
+    "unc-cc-pvdz": {
+     "nao": 84,
+     "e_nr": -2572.9734699758756,
+     "e_x2c": -2604.9997473097615
+    }
+   }
+  },
+  "H2Se": {
+   "xyz_angstrom": "Se 0 0 0\nH 0 1.2 0.9\nH 0 -1.2 0.9",
+   "bases": {
+    "cc-pvdz": {
+     "nao": 37,
+     "e_nr": -2400.9646377909876,
+     "e_x2c": -2422.877047680681
+    },
+    "unc-cc-pvdz": {
+     "nao": 91,
+     "e_nr": -2400.968359067664,
+     "e_x2c": -2429.2144172926223
+    }
+   }
+  }
+ }
+}

@@ -14,18 +14,32 @@ implementations:
   amplitudes over spatial orbitals, the algorithm PySCF's `cc.CCSD` uses. This
   is what both the CLI and Python run for an RHF reference. Its VVVV block is
   16× smaller than the spin-orbital one; measured about 8–10× faster than the
-  spin-orbital CCSD at cc-pVDZ, and the (T) step 9.6–42× faster.
+  spin-orbital CCSD at cc-pVDZ, and the (T) step 8.7–41× faster (H2O/aug-cc-pVDZ
+  and ethane/cc-pVDZ, 12 threads). The (T) loop runs over virtual triples
+  a ≤ b ≤ c with [n<sub>o</sub>,n<sub>o</sub>,n<sub>o</sub>] blocks, as PySCF's
+  `ccsd_t.c` does. Measured 2026-11-14, 12 threads, 3 interleaved runs each:
+  the (T) loop takes 6.2–6.8 s on butane/cc-pVDZ and 86–93 s on hexane/cc-pVDZ.
+  PySCF 2.13 takes 9.4 s and 110 s for the same (T) step on the same machine.
 - **Spin-orbital** (`ccsd`, `ccsd_t`): built from the same RHF spatial
-  orbitals and kept as the cross-check of the spin-adapted solvers, so it is
-  closed shell only as well. Its (T) streams one occupied triple at a time, so
-  memory is O(n<sub>o</sub>·n<sub>v</sub>³)-class rather than the dense
+  orbitals and kept as the cross-check of the spin-adapted solvers. The
+  library also feeds it UHF spin orbitals (`ccsd_uhf_spin_orbital`,
+  `ccsd_t_uhf_spin_orbital`) as the cross-check of the spin-blocked solvers
+  below; no CLI kind runs it. Its (T) streams one occupied triple at a time,
+  so memory is O(n<sub>o</sub>·n<sub>v</sub>³)-class rather than the dense
   six-index tensor.
+- **Spin-blocked, UHF reference** (`u_ccsd`, `u_ccsd_t`): the CLI `ccsd`
+  and `ccsd(t)` kinds and Python `run_ccsd` / `run_ccsd_t` run it when the
+  molecule has multiplicity > 1, for `task = "energy"` only. It solves a UHF
+  reference with exact J/K, then CCSD on the five amplitude blocks t1a, t1b,
+  t2aa, t2ab, t2bb, and prints E_CCSD split into αα, αβ and ββ. Its (T)
+  streams over canonical occupied triples in four spin classes (aaa, aab,
+  abb, bbb) and prints each class. `[mp2] frozen_core` (Python
+  `frozen_core`) drops the lowest orbitals of each spin. The three VVVV
+  blocks are held dense; `[cc] ladder` does not apply. Equations:
+  `book/src/16-coupled-cluster/08-uccsd.md#uccsd-equations`.
 
-No open-shell CCD, CCSD or CCSD(T) exists in ferric: every CC solver reads
-restricted orbitals and refuses an unrestricted reference. The only open-shell
-coupled-cluster-type method is LinLCCD(hh): the CLI `linlccd` kind is
-closed shell, and its open-shell (UHF) version is library-only
-(`ferric_cc::linlccd_u::u_linlccd`).
+There is no open-shell CCD or EOM-CCSD, and no ROHF-reference CCSD. The
+open-shell LinLCCD(hh) is library-only (`ferric_cc::linlccd_u::u_linlccd`).
 
 **Run it.**
 
@@ -34,11 +48,13 @@ closed shell, and its open-shell (UHF) version is library-only
 - CCSD(T): `method.kind = "ccsd(t)"` (`examples/water-ccsd-t.toml`); Python
   `ferric.run_ccsd_t(mol, bs, aux)`.
 - CCD: `method.kind = "ccd"` (`examples/water-ccd.toml`); Python `ferric.run_ccd(mol, bs, aux)`.
-- All three kinds are closed shell only and refuse `multiplicity > 1`.
+- `ccsd` and `ccsd(t)` with `multiplicity > 1` run UCCSD / UCCSD(T) on a
+  UHF reference (energy only; Python: an open-shell `Molecule`). `ccd`
+  refuses `multiplicity > 1`.
 
 **Aux basis.** The RI error is not negligible at CC accuracy: on water /
 cc-pVDZ with `cc-pvdz-ri`, RI-CCSD differs from exact-integral CCSD by about
-1.3e-4 Ha. Pick the aux for the accuracy you need, not by habit.
+1.3e-4 Ha. Choose the aux basis for the accuracy you need.
 
 **Accuracy.** `ccsd` is Proven.
 
@@ -58,14 +74,15 @@ The particle–particle ladder Σ<sub>cd</sub> W<sub>abcd</sub> τ<sub>ij</sub><
 of closed-shell CCSD can be evaluated two ways, chosen by `[cc] ladder`
 (Python `run_ccsd(ladder=)` / `run_ccsd_t(ladder=)`):
 
-- **`dense`** holds the chemist (ab|cd) block in core and builds W<sub>abcd</sub>
-  every iteration: n<sub>v</sub>⁴ memory, a few times over.
+- **`dense`** holds the (ac|bd) block in core (one n<sub>v</sub>⁴ buffer, two
+  during setup) and contracts the t1 terms of W<sub>abcd</sub> with τ
+  separately, so W<sub>abcd</sub> is never formed.
 - **`ri`** holds neither the (ab|cd) block nor W<sub>abcd</sub>. It rebuilds
   the (ac|bd) entries from the RI 3-index tensors every iteration in
   a<sub>blk</sub>·n<sub>v</sub>³ panels: at most one n<sub>v</sub>⁴-sized
-  panel at full width (dense holds four n<sub>v</sub>⁴ buffers at its peak),
+  panel at full width (dense holds two n<sub>v</sub>⁴ buffers at its peak),
   and narrower panels when the budget requires. It is the same algebra over
-  the same tensors, not an approximation: on water/cc-pVDZ |ΔE| and
+  the same tensors, so it is exact: on water/cc-pVDZ |ΔE| and
   max|Δt| are ≲ 3e-17 (round-off), and the alkane energies below agree to
   all 10 printed digits.
 - **`auto`** (the default) runs `dense` whenever its memory plan fits the
@@ -74,14 +91,13 @@ of closed-shell CCSD can be evaluated two ways, chosen by `[cc] ladder`
   printed (`ladder = dense (auto)`), logged, and returned
   (`CcResult::ladder_route`; Python `CcResult.ladder_route`).
 
-**Behaviour change.** Before `[cc] ladder` existed, a closed-shell CCSD job
-whose dense plan exceeded the memory budget was refused; under `auto` it now
-runs on the RI ladder instead. And because `auto` decides against the
-budget, a run without an explicit `[memory] budget_gb` (which is then
-auto-detected as 0.8 × the RAM available at start-up) can take different
-routes on the same input from one run to the next. The energies agree to
-round-off either way, but the time does not. Set `ladder` explicitly, or
-fix the budget, for reproducible timings.
+**Reproducibility.** Under `auto`, a closed-shell CCSD job whose dense plan
+exceeds the memory budget runs on the RI ladder instead of being refused.
+Because `auto` decides against the budget, a run without an explicit
+`[memory] budget_gb` (auto-detected as 0.8 × the RAM available at start-up)
+can take different routes on the same input from one run to the next. The
+energies agree to round-off either way; the time does not. Set `ladder`
+explicitly, or fix the budget, for reproducible timings.
 
 Measured 2026-10-26, alkane/cc-pVDZ (cc-pvdz-ri), `OPENBLAS_NUM_THREADS=1`,
 `RAYON_NUM_THREADS=4`, routes interleaved one per process, load average 3–6
@@ -100,9 +116,62 @@ ratios are of the medians. Peak RSS is one converged run per route.
 
 RI is 1.3–1.5× slower per iteration from n<sub>v</sub> ≈ 70 up and uses
 2.1–2.3× less memory, which is why `auto` takes it only when `dense` does
-not fit. The RI route still holds the n<sub>o</sub>·n<sub>v</sub>³
+not fit. The RI ladder now runs one rayon job per virtual index a, and its
+result is bit-identical at any thread count. It ran single-threaded when the
+table above was measured. On hexane/cc-pVDZ (n<sub>v</sub> = 129, 12 threads,
+3 interleaved runs per build, 2026-11-14), the RI pp-ladder step fell from
+258–277 s to 57–58 s over 11 iterations, and CCSD from 381–401 s to 175–179 s.
+The dense route takes about 140–146 s on the same input. The parallel width
+equals the block width a<sub>blk</sub>, so a budget that forces narrow blocks
+also narrows the parallelism. The RI route still holds the n<sub>o</sub>·n<sub>v</sub>³
 `(ia|bc)` block in core, so it lowers the n<sub>v</sub>⁴ ceiling but does
 not remove every large tensor.
+
+## EOM-CCSD excitation energies
+
+**What it is.** Equation-of-motion CCSD for excited states (EE-EOM-CCSD):
+the lowest eigenvalues of the similarity-transformed Hamiltonian
+H̄ = e<sup>−T</sup> H e<sup>T</sup> − E<sub>CC</sub> in the space of singly
+and doubly excited singlets, on top of the closed-shell RI-CCSD ground state.
+H̄ is not symmetric, so the roots come from a non-symmetric Davidson solver
+(`ferric_cc::eom_davidson`) that keeps every Ritz pair real, applies an Olsen
+correction, and starts from unit vectors with a small dense part, so roots in
+any point-group irrep are reachable. Only right eigenvectors are computed.
+
+**Run it.** `method.kind = "eom-ccsd"` with an optional [`[eom]`](../reference/input.md#eom)
+section (`examples/water-eom-ccsd.toml`); Python
+`ferric.run_eom_ccsd(mol, bs, aux, n_roots=5)`, which returns the excitation
+energies, each root's residual and singles weight, and `r1(k)` / `r2(k)`.
+Closed shell only; refuses `multiplicity > 1`.
+
+**Accuracy.** `eom-ccsd` is Proven (narrow): singlets, closed shell, all
+electrons.
+
+| Quantity | System / basis | Reference | Agreement | Pinned by |
+|---|---|---|---|---|
+| Lowest five singlet ω | H2O, C2H4 / cc-pVDZ (cc-pVDZ-RI) | PySCF `EOMEESinglet` on the same DF integrals | ≤ 2.9e-10 Ha | `ferric-cc/tests/validation_eom_ccsd.rs` |
+| Singles block at t = 0 | H2O / 6-31G | CIS (`ferric_gw::bse::run_cis_tda`) | 3.6e-14 Ha | `ferric-cc/tests/eom_ccsd_anchors.rs` |
+| Davidson roots | H2 / 6-31G; H2O / 6-31G through subspace collapses | dense H̄ diagonalized by LAPACK | ≤ 1.0e-12 Ha | `ferric-cc/tests/eom_ccsd_anchors.rs` |
+| EOM product | H2, H2O / 6-31G, exact integrals | exact CC Jacobian ∂Ω/∂t of PySCF's RCCSD residual (5-point stencil, exact for the quartic residual) | 8.5e-14 relative to ‖σ‖ ≈ 150 | `scripts/prototypes/eom_ccsd_proto.py` |
+
+At water / cc-pVDZ (`examples/water-eom-ccsd.toml`) the lowest singlet is
+0.29995 Ha (8.162 eV). The density-fitting error of the ground state carries
+into ω: choose the aux basis for the accuracy you need.
+
+**Limits.** Singlets only (no triplets, no spin-flip, no open-shell
+reference); no left eigenvectors, so no oscillator strengths or transition
+properties; no point-group symmetry, so roots of every irrep are mixed in
+the requested count. A target root still complex (a near-degenerate pair)
+when `max_iter` runs out is an error, as is an unconverged one.
+
+**Memory and cost.** The EOM product needs the same integral blocks as one
+CCSD iteration, plus the Davidson subspace (2 × `max_space` vectors of
+length n<sub>o</sub>n<sub>v</sub> + n<sub>o</sub>n<sub>v</sub>(n<sub>o</sub>n<sub>v</sub>+1)/2).
+The n<sub>v</sub>⁴ `(ae|bf)` block is held when the memory plan fits the
+budget; otherwise it is rebuilt from the RI tensors in panels on every product,
+the same choice as the CCSD [ladder](#particle-particle-ladder-dense-or-ri).
+A job whose plan cannot fit is refused before the EOM step. Each product
+costs about one CCSD iteration.
 
 ## LinLCCD and ωB97X-L-V
 
@@ -137,7 +206,7 @@ anchored. `[local] reference = true` also runs the exact
 LinLCCD and prints the local error. Closed shell and energy only.
 
 **ωB97X-L-V** is a double-hybrid functional that uses short-range LinLCCD(hh)
-instead of MP2 for its correlation term. It converges its **own** ωB97X-L
+instead of MP2 for its correlation term. It converges its own ωB97X-L
 Kohn–Sham reference (a non-converged reference is an error), then adds the
 LinLCCD(hh) correction on those orbitals. `method.kind = "wb97x-l-v"`
 (`examples/water-wb97xlv.toml`). `[dft] lambda` and `omega` override the
@@ -152,18 +221,58 @@ against the paper's Be₂ bond energy (2.3 kcal/mol; ferric 2.299).
 **B2PLYP** and **DSD-PBEP86**: a KS reference with weighted exchange and
 correlation components, plus scaled (SCS-)RI-MP2 correlation.
 `method.kind = "b2plyp"` / `"dsd-pbep86"` (`examples/water-b2plyp.toml`);
-Python `ferric.run_double_hybrid(mol, bs, aux, kind="b2plyp")`. **Spike**: no
-comparison to a reference code yet.
+Python `ferric.run_double_hybrid(mol, bs, aux, kind="b2plyp")`.
+
+**B2PLYP is Proven** (Grimme 2006 parameters: 0.53 HF, 0.47 B88, 0.73 LYP,
+0.27 PT2): the total energy matches PySCF built from the definition to
+1.3e-11 Ha on H2O, NH3 and CH4 (cc-pVDZ, def2-SVP), at the flat (75, 110) grid
+and f64 RI-J storage. The CLI's defaults (pruned grid, f32 RI-J) shift the total
+by up to 1.0e-6 Ha.
+
+**DSD-PBEP86 is Proven** as the no-dispersion set of Kozuch and Martin 2013
+(0.72 HF, 0.28 PBE exchange, 0.44 P86 correlation, c_os = 0.51, c_ss = 0.36; the
+"DSD-PBEP86" of Psi4): the total energy matches PySCF built from that
+definition at the same settings as B2PLYP (`examples/water-dsd-pbep86.toml`).
+The 2011 DSD-PBEP86-D2 set is not available. Earlier ferric releases used 0.69 HF, 0.31 PBE, c_os = 0.56,
+c_ss = 0.29, a set that is none of the published ones; energies shift by
+mHa against those.
+
+**D3(BJ) sets.** `[dft] dispersion = "d3bj"` (Python `dispersion="d3bj"`) on
+`b2plyp` or `dsd-pbep86` selects the kind's own published D3(BJ) set and adds its
+D3(BJ) energy. B2PLYP-D3(BJ) keeps B2PLYP's coefficients and takes the B2PLYP row
+of Goerigk and Grimme 2011. DSD-PBEP86-D3(BJ) is the refit set of Kozuch and
+Martin 2013 as a whole (0.69 HF, 0.31 PBE, 0.44 P86, c_os = 0.52, c_ss = 0.22;
+D3(BJ) s6 = 0.48, a1 = 0, s8 = 0, a2 = 5.6; checked against Psi4's
+`dh_functionals.py`), not the no-dispersion set plus a D3 term. A named
+functional (`d3bj(pbe)`) and `mbd` are errors for a double hybrid.
+(`examples/nh2-dsd-pbep86-d3bj.toml`.)
+
+**Open shell.** With `multiplicity > 1` (CLI) or `mol.multiplicity > 1` /
+`unrestricted=True` (Python) both kinds converge a UKS reference with the
+double hybrid's functional and add `c_os E_αβ + c_ss (E_αα + E_ββ)` of the
+unrestricted RI-MP2 on its orbitals (`examples/nh2-b2plyp.toml`). Energy only:
+there is no nuclear gradient, so `optimize` and `frequencies` are errors, and
+`wb97x-l-v` stays closed shell. The singlet UKS route equals the RKS route to
+1e-13 Ha (water, cc-pVDZ, both PT2 frozen-core settings). Against PySCF
+(`dft.UKS` + `mp.dfump2.DFUMP2` with the spin components scaled, same grid, fits
+and stable state) the NH2 and CH3 doublets at cc-pVDZ and def2-SVP, three SCF
+sets, frozen core 0 and 1, agree to at most 3.1e-13 (E_KS), 7.6e-11 (E_OS),
+1.8e-11 (E_SS) and 3.2e-11 Ha (total); the D3(BJ) energy equals simple-dftd3's to
+3.6e-16 Ha. The open-shell runs have no CLI default-grid measurement, so a default
+run carries no anchor.
 
 ## Implementation
 
-All contractions go through **`einsum!`**, a macro that maps tensor
+The equations each solver implements, with the function behind each, are in
+the coupled-cluster chapter of the ferric book,
+[`book/src/16-coupled-cluster/`](https://github.com/mgoldey/ferric/tree/main/book/src/16-coupled-cluster).
+
+All contractions go through `einsum!`, a macro that maps tensor
 contractions onto BLAS3 GEMMs. The permutation copies that feed those GEMMs are
 parallelized, because for a strided permutation the copy can dominate the
 contraction it feeds: measured at 47% at n<sub>v</sub> = 40 and 70% at
 n<sub>v</sub> = 80. The copies are bit-identical regardless of thread count,
-since a permutation writes each output element exactly once; a test pins this
-and has been checked to fail when deliberately broken.
+since a permutation writes each output element once; a test pins this.
 
 ## Memory
 
@@ -176,7 +285,7 @@ breakdown naming the dominant term instead of being OOM-killed partway through.
 
 CCSD: Scuseria, Janssen & Schaefer 1988; spin-adapted closed-shell CCSD
 equations: Hirata et al. 2004. (T): Raghavachari et al. 1989; closed-shell
-(T) algorithm: Rendell, Lee & Komornicki 1991. LinLCCD(hh): Carter-Fenk 2025.
+(T) algorithm: Rendell, Lee & Komornicki 1991. EOM-CCSD: Stanton & Bartlett 1993; Davidson correction: Olsen, Jørgensen & Simons 1990. LinLCCD(hh): Carter-Fenk 2025.
 ωB97X-L-V: Ransford & Carter-Fenk 2026. B2PLYP: Grimme 2006. DSD-PBEP86:
-Kozuch & Martin 2011. Review: Bartlett & Musiał 2007. Full entries in
+Kozuch & Martin 2013. Review: Bartlett & Musiał 2007. Full entries in
 [References](../reference/references.md).

@@ -86,10 +86,7 @@ fn case(xyz: &str, fc: usize, eps: f64, gate: Option<f64>) -> Case {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_energy_conv(1e-10),
     )
     .unwrap();
     let (vvhv, _) = checked_vvhv(&mol, &obs, &obs_bs, &rhf, "test").unwrap();
@@ -117,6 +114,7 @@ fn case(xyz: &str, fc: usize, eps: f64, gate: Option<f64>) -> Case {
 /// The estimate equals the heap the plan holds. `SolvePlan::new` sizes
 /// every vector exactly, so the stated factor is 1 (asserted to 1%); the
 /// counting allocator is the independent measurement. Gate off and on.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn solve_plan_bytes_for_matches_the_measured_allocation() {
     for gate in [None, Some(0.7)] {

@@ -14,23 +14,36 @@
 - [Choosing a method](./using/choosing-a-method.md)
 - [For PySCF users](./using/pyscf-users.md)
 - [QM/MM](./using/qmmm.md)
+- [Molecular dynamics](./using/md.md)
+- [Export: cube, Molden and NPZ](./using/export.md)
+- [Avogadro plugin](./using/avogadro.md)
+- [ASE calculator](./using/ase.md)
+- [Training data for ML potentials](./using/mlip.md)
+- [QCSchema input and output](./using/qcschema.md)
 - [End-to-end applications](./using/applications.md)
+- [The stack: ferric, smeltery, attestation](./stack.md)
 - [For automated agents](./using/agents.md)
 
 # Methods
 
 - [Overview](./methods/index.md)
 - [SCF and DFT](./methods/scf.md)
+- [DFT derivations](./methods/dft-derivations.md)
 - [The MP2 family](./methods/mp2.md)
 - [Coupled cluster](./methods/cc.md)
+- [CAS-CI](./methods/ci.md)
 - [RPA and GW](./methods/rpa-gw.md)
 - [Constrained DFT](./methods/cdft.md)
+- [Periodic systems](./methods/pbc.md)
 
 # Background
 
-- [Electronic response](./idea/response.md)
 - [Where the methods come from](./idea/methods.md)
 - [Architecture](./reference/architecture.md)
+
+# Maintainer's research focus
+
+- [Research focus: electronic response](./idea/response.md)
 
 # Reference
 
@@ -39,5 +52,6 @@
 - [Python bindings](./using/python.md)
 - [Examples](./reference/examples.md)
 - [Run logs](./using/run-logs.md)
+- [Einsum spec grammar](./reference/einsum.md)
 - [Rust API](./reference/api.md)
 - [References and citing](./reference/references.md)

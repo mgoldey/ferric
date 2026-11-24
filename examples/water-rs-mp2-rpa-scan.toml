@@ -1,0 +1,15 @@
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "aug-cc-pvdz"
+
+[method]
+kind = "rs-mp2-rpa"
+
+[mp2]
+auxbasis = "aug-cc-pvdz-rifit"
+# One SCF and one omega-independent Coulomb stage, then the erf/erfc stage per
+# omega. One result block per (omega, formulation), omega-major.
+omega_scan = [0.2, 0.42, 0.673]  # Å⁻¹
+formulations = ["delta-lr", "coupled-rings"]

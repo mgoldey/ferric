@@ -110,8 +110,7 @@ fn without_the_flag_n_quad_is_still_a_no_op() {
 
 /// CONTRACT 2: with the flag ON, the estimate GROWS with `n_quad`.
 ///
-/// The defect itself. Fails before the fix, where both branches returned the
-/// same number.
+/// The property itself: the two branches must return different numbers.
 #[test]
 fn with_the_flag_the_estimate_grows_with_n_quad() {
     let small = estimate_peak_bytes(dimer_atz(4, true));

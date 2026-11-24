@@ -15,15 +15,13 @@ pub enum Spin {
     RestrictedOpen,
 }
 
-/// Why the SCF loop stopped. Distinguishes acceptable exits (Converged,
-/// Plateau) from failures the ladder should escalate past (Stalled, Diverged,
-/// MaxIter, NotCertified).
+/// Why the SCF loop stopped. Distinguishes the one acceptable exit
+/// (Converged) from failures the ladder should escalate past (Stalled,
+/// Diverged, MaxIter, NotCertified).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScfExit {
     /// Standard convergence: energy + orbital gradient below thresholds.
     Converged,
-    /// Near-degeneracy plateau accepted (gradient stalled below the 1e-4 floor).
-    Plateau,
     /// Gradient running-minimum stopped falling above the 1e-4 floor.
     Stalled,
     /// Energy climbed beyond divergence_tol for consecutive iterations.
@@ -39,11 +37,27 @@ pub enum ScfExit {
     NotCertified,
 }
 
+/// [`ScfResult::xc`] of an SCF whose functional came through
+/// `PeriodicInjection::xc` (an `XcBuilder` carries no name).
+pub const INJECTED_XC: &str = "<injected XcBuilder>";
+
+/// [`ScfResult::xc`] for an SCF run with `config_xc` (`RhfConfig::xc`) and,
+/// on the injected path, `injected` = whether an `XcBuilder` was supplied.
+pub(crate) fn xc_record(config_xc: Option<&str>, injected: bool) -> Option<String> {
+    config_xc
+        .map(str::to_string)
+        .or_else(|| injected.then(|| INJECTED_XC.to_string()))
+}
+
 /// Converged self-consistent field solution: total energy, MO coefficients, orbital energies, and density matrices.
 #[derive(Debug, Clone)]
 #[must_use = "SCF result contains computed energies and orbitals"]
 pub struct ScfResult {
+    /// Reference type (RHF/RKS, UHF/UKS or ROHF/ROKS), which decides which
+    /// of the optional β fields are populated.
     pub spin: Spin,
+    /// Total energy in Hartree, nuclear repulsion included. With a COSX
+    /// final-grid pass this is [`CosxFinalPass::e_final`](crate::cosx_k::CosxFinalPass::e_final).
     pub energy: f64,
     /// AO total density (D_α + D_β). For Restricted this equals 2·D_α.
     pub density_total: Array2<f64>,
@@ -93,6 +107,16 @@ pub struct ScfResult {
     /// even then it means "stable against the rotations
     /// `r.kind` covers" — see [`crate::stability`].
     ///
+    /// The analysed Hessian is that of the SCF's own Fock: on a density-fitted
+    /// route the response J/K come from the same RI-J / DF-K (and the direct
+    /// half of a mixed route from the same `DirectJ` / `DirectK`), so λ is the
+    /// curvature of the fitted energy. It differs from the exact-integral
+    /// curvature by the fitting error, measured 2e-6 to 5e-6 Ha (rel ~1e-5)
+    /// on water and NH2 / cc-pVDZ, above the default 1e-6 noise floor, and
+    /// that can move a verdict near zero: OH ²Π (an exact zero mode) is
+    /// MARGINAL, as with exact integrals. See
+    /// [`StabilityConfig::noise_floor`](crate::stability::StabilityConfig::noise_floor).
+    ///
     /// Purely diagnostic: an instability never makes the SCF return `Err`.
     pub stability: Option<crate::stability::StabilityResult>,
     /// Post-convergence **EXTERNAL** stability verdict (RHF→UHF, the triplet
@@ -126,6 +150,20 @@ pub struct ScfResult {
     /// the consumption gates), and a re-derivation that drifts from the
     /// solver pairs an RI energy with an exact-integral gradient.
     pub df_jk: Option<DfJkRoute>,
+    /// The exchange-correlation functional this SCF converged with:
+    /// `RhfConfig::xc` as given (`None` = Hartree-Fock), or [`INJECTED_XC`]
+    /// when the functional came through `PeriodicInjection::xc`. Stamped by
+    /// `solve_rhf`/`solve_uhf`/`solve_rohf` (every entry point, KS and
+    /// injected forms included) from the configuration they ran; a result
+    /// built by hand says `None`.
+    ///
+    /// Read by the analytic Hartree-Fock Hessians (`rhf_hessian`,
+    /// `uhf_hessian`, `rohf_hessian`), which refuse a `Some` result: their
+    /// own KS refusal reads only the configuration passed alongside, so a
+    /// Kohn-Sham result paired with an `xc = None` configuration would
+    /// otherwise be differentiated as the Hartree-Fock energy at KS orbitals
+    /// and return a wrong Hessian silently.
+    pub xc: Option<String>,
     /// ROHF/ROKS only: the converged SPIN Fock matrices `(F_α, F_β)` (AO
     /// basis, including XC and solvent terms). `fock_alpha` holds the Roothaan
     /// EFFECTIVE Fock for ROHF, whose diagonal blocks mix `F_α` and `F_β` by a
@@ -163,6 +201,12 @@ pub struct ScfResult {
     /// default run) and for hand-built results. Purely a report: nothing reads
     /// it back, so energies are bit-identical with or without it.
     pub precision: ferric_core::gpu::provenance::PrecisionRecord,
+    /// The relativistic core Hamiltonian this SCF converged with
+    /// (`RhfConfig::relativistic`); `None` for the nonrelativistic one and for
+    /// hand-built results. Read by the analytic gradients, Hessians, Z-vector
+    /// response and the post-SCF paths that rebuild `h`, which refuse a
+    /// relativistic reference ([`crate::x2c::refuse_relativistic`]).
+    pub relativistic: Option<crate::x2c::Relativistic>,
 }
 
 /// The convergence signals the gate judged at the final iteration, plus the thresholds in force
@@ -204,6 +248,99 @@ pub struct ConvergenceReport {
     /// (RHF and UHF orbital-gradient veto, `rhf::GradientVeto`); `None` when
     /// it never fired (always `None` for ROHF, whose F6 guard is separate).
     pub gradient_vetoes: Option<GradientVetoes>,
+    /// First-order energy change of one plain Roothaan step from the
+    /// converged density: `Tr[F[D] (D' - D)]` summed over spins, where `D'` is
+    /// the aufbau density of the final `F[D]` (RHF: `D' = 2 C_occ C_occᵀ`).
+    /// Aufbau minimizes `Tr[F D']` over idempotent `D'`, so it is `<= 0`, and
+    /// it is zero (to rounding) only when `D` is the aufbau state of its own
+    /// Fock matrix. A clearly negative value marks a non-stationary or
+    /// non-aufbau exit (a stalled ADIIS/EDIIS extrapolation was -0.14 Ha on
+    /// SO2/STO-3G). For HF the exact one-step change is this plus
+    /// `½ Tr[ΔD G(ΔD)]`. Costs one diagonalization per spin, no Fock build.
+    ///
+    /// Set at a converged RHF/UHF exit; `None` otherwise, and under MOM,
+    /// Fermi smearing, `fractional_occ` or `irrep_nelec` (non-aufbau by design).
+    /// Report only: nothing reads it back.
+    pub one_step_energy_drop: Option<f64>,
+}
+
+/// `Tr[F (D' - D)]` for one spin channel: `occ * sum_{i<nocc} eps_i - Tr[F D]`,
+/// with `eps` the eigenvalues of `F` (any order) and `occ` the orbital
+/// occupation (2 for RHF, 1 per UHF spin). See
+/// [`ConvergenceReport::one_step_energy_drop`].
+pub(crate) fn roothaan_model_drop(
+    eps: &[f64],
+    nocc: usize,
+    occ: f64,
+    f: &ndarray::Array2<f64>,
+    d: &ndarray::Array2<f64>,
+) -> f64 {
+    let mut e = eps.to_vec();
+    e.sort_by(f64::total_cmp);
+    occ * e[..nocc].iter().sum::<f64>() - (f * d).sum()
+}
+
+/// Slack for [`ConvergenceReport::one_step_energy_drop`]: the most negative
+/// drop a stationary converged exit can show.
+///
+/// To second order in the occupied-virtual rotation `kappa` of a Roothaan
+/// step, `|dE| <= span(e) * |kappa|_F^2` with `span(e)` the eigenvalue range
+/// of `F`; at a converged exit `|kappa|_F <= n * density_conv`; the energy gate
+/// adds `energy_conv`. Hence `tol = energy_conv + span * (n * density_conv)^2`.
+/// Shared by the solvers' warning and `tests/scf_variational_invariant.rs`.
+pub fn stationarity_tol(energy_conv: f64, density_conv: f64, nbasis: usize, span: f64) -> f64 {
+    energy_conv + span * (nbasis as f64 * density_conv).powi(2)
+}
+
+/// Eigenvalue range `max - min` of a Fock spectrum (any order).
+pub(crate) fn eps_span(eps: &[f64]) -> f64 {
+    let (lo, hi) = eps
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &e| {
+            (l.min(e), h.max(e))
+        });
+    if eps.is_empty() {
+        0.0
+    } else {
+        hi - lo
+    }
+}
+
+std::thread_local! {
+    static NON_STATIONARY_WARNINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Number of non-stationary-exit warnings emitted by SCF solves on the
+/// calling thread (test hook; the warning itself goes to stderr).
+pub fn non_stationary_warnings_on_this_thread() -> usize {
+    NON_STATIONARY_WARNINGS.with(|c| c.get())
+}
+
+/// Warn (stderr + run log) when a converged exit's one-step energy drop is
+/// below `-tol`: the exit is not a stationary point. Never changes
+/// `converged`. Returns whether it fired.
+#[doc(hidden)]
+pub fn warn_if_non_stationary(label: &str, drop: f64, tol: f64, is_root: bool) -> bool {
+    if !(drop < -tol) {
+        return false;
+    }
+    NON_STATIONARY_WARNINGS.with(|c| c.set(c.get() + 1));
+    if is_root {
+        eprintln!(
+            "warning: [scf] {label} reported converged but is not a stationary point: one \
+             Roothaan step from the final density lowers the energy by {:.3e} Ha (first \
+             order; tolerance {tol:.1e}). Re-run with a plain Pulay DIIS / tighter \
+             thresholds before trusting this energy.",
+            -drop
+        );
+        if let Some(rl) = crate::runlog::log() {
+            rl.note(
+                "non_stationary_exit",
+                serde_json::json!({"one_step_energy_drop": drop, "tol": tol}),
+            );
+        }
+    }
+    true
 }
 
 /// Running record of the RHF/UHF orbital-gradient veto: how many ΔP/ΔE-settled
@@ -345,8 +482,24 @@ pub struct DfJkRoute {
     /// Operator of the RI-J and ω = 0 RI-K fits (the SCF's Coulomb operator).
     pub op: Operator,
     /// Resolved three-index memory budget of the SCF, reused to bound the
-    /// gradient's own three-index source.
+    /// gradient's transient three-index block (a quarter of it, at most
+    /// `df_gradient::GRADIENT_3C_BLOCK_CAP_BYTES`).
     pub budget_bytes: usize,
+    /// Precision the RI-J tensor was ACTUALLY stored at (after any f32
+    /// fallback; f64 for Split-RI-J and when there is no RI-J). The analytic
+    /// gradient and Hessian contract the same rounded integrals into the
+    /// fitted density `d_P`, so they differentiate the energy this SCF
+    /// computed.
+    pub ri_j_precision: crate::df_j::RiJPrecision,
+    /// Storage precision of the RI-K dressed tensor(s) (`[scf]
+    /// ri_k_precision`) the SCF's exchange was ACTUALLY built from, after any
+    /// fallback: the ω = 0 `DfK`, or the SR/LR pair of a range-separated
+    /// functional; `F64` when K was not density-fitted. The DF Hessians'
+    /// response `DfK` follows it. The analytic gradient does NOT read stored
+    /// values: it recomputes the f64 integrals, so under `F32` it is the
+    /// gradient of the f64 functional at the f32 SCF's density (the bound is in
+    /// `crate::df_k`'s module docs).
+    pub ri_k_precision: crate::df_k::RiKPrecision,
 }
 
 impl DfJkRoute {
@@ -360,6 +513,7 @@ impl DfJkRoute {
         rsh_k: Option<(&str, f64)>,
         op: Operator,
         budget_bytes: usize,
+        ri_j_precision: crate::df_j::RiJPrecision,
     ) -> Option<Self> {
         let clean = |s: Option<&str>| s.filter(|s| !s.is_empty()).map(str::to_string);
         let route = DfJkRoute {
@@ -370,8 +524,20 @@ impl DfJkRoute {
                 .map(|(s, w)| (s.to_string(), w)),
             op,
             budget_bytes,
+            ri_j_precision: if j_aux.is_some_and(|s| !s.is_empty()) {
+                ri_j_precision
+            } else {
+                crate::df_j::RiJPrecision::F64
+            },
+            ri_k_precision: crate::df_k::RiKPrecision::F64,
         };
         route.is_active().then_some(route)
+    }
+
+    /// This route with the RI-K storage precision the SCF actually used.
+    pub fn with_ri_k_precision(mut self, precision: crate::df_k::RiKPrecision) -> Self {
+        self.ri_k_precision = precision;
+        self
     }
 
     /// Whether any two-electron term was density-fitted.
@@ -381,6 +547,36 @@ impl DfJkRoute {
 }
 
 impl ScfResult {
+    /// `self`, or [`ferric_core::FerricError::ScfConvergence`] when it did not converge:
+    /// the one rule every driver applies to a reference SCF.
+    pub fn into_converged(self) -> Result<Self, ferric_core::FerricError> {
+        if !self.converged {
+            return Err(ferric_core::FerricError::ScfConvergence {
+                iterations: self.iterations,
+                last_energy: self.energy,
+            });
+        }
+        Ok(self)
+    }
+
+    /// Storage precision of the RI-K dressed tensor(s) this SCF's exchange was
+    /// built from, or `None` when K was not density-fitted.
+    pub fn ri_k_precision(&self) -> Option<crate::df_k::RiKPrecision> {
+        self.df_jk
+            .as_ref()
+            .filter(|r| r.k_aux.is_some() || r.rsh_k.is_some())
+            .map(|r| r.ri_k_precision)
+    }
+
+    /// Storage precision of the RI-J tensor this SCF's energy was built from,
+    /// or `None` when J was not density-fitted (exact four-centre J).
+    pub fn ri_j_precision(&self) -> Option<crate::df_j::RiJPrecision> {
+        self.df_jk
+            .as_ref()
+            .filter(|r| r.j_aux.is_some())
+            .map(|r| r.ri_j_precision)
+    }
+
     /// Restricted accessor: panics if spin != Restricted.
     pub fn mos_r(&self) -> &Array2<f64> {
         assert!(
@@ -460,7 +656,7 @@ mod tests {
     #[test]
     fn scf_exit_variants_distinct() {
         assert_ne!(ScfExit::Converged, ScfExit::Stalled);
-        assert_ne!(ScfExit::Plateau, ScfExit::MaxIter);
+        assert_ne!(ScfExit::NotCertified, ScfExit::MaxIter);
         assert_ne!(ScfExit::Diverged, ScfExit::Converged);
     }
 }
@@ -481,6 +677,7 @@ mod convergence_report_tests {
             de_noise_floor: None,
             diis_fallback: None,
             gradient_vetoes: None,
+            one_step_energy_drop: None,
         }
     }
 

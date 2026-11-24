@@ -62,8 +62,10 @@ use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
 use serde_json::Value;
 
-const GRID_FILE: &str =
-    "testdata/reference/validation/ks_fixed_grid_hessian/h2o_distorted_grid.f64";
+/// The shared grid of `system` (rows of `x y z w`, little-endian f64, Bohr).
+fn grid_file(system: &str) -> String {
+    format!("testdata/reference/validation/ks_fixed_grid_hessian/{system}_grid.f64")
+}
 
 fn repo_root() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -77,17 +79,40 @@ fn molecule() -> Molecule {
     Molecule::load_xyz(path.to_str().unwrap()).unwrap()
 }
 
+/// HI (`validation/ecp/hi.xyz`) with the def2 ECP of iodine applied.
+fn hi_molecule() -> Molecule {
+    let path = repo_root().join("testdata/molecules/validation/ecp/hi.xyz");
+    let mut mol = Molecule::load_xyz(path.to_str().unwrap()).unwrap();
+    mol.apply_ecp(&basis::bundled("def2-svp").unwrap());
+    mol
+}
+
+fn system_molecule(system: &str) -> Molecule {
+    match system {
+        "h2o_distorted" => molecule(),
+        "hi" => hi_molecule(),
+        other => panic!("no molecule for {other}"),
+    }
+}
+
 /// The grid file PySCF was fed must still be the grid ferric builds for the
 /// reference geometry (a drift guard). With `FERRIC_WRITE_REFERENCE_GRID=1` it
 /// is rewritten instead (then re-run `gen_ks_fixed_grid_hessian.py`).
 #[test]
 #[ignore = "validation: shared reference grid matches ferric's grid"]
 fn reference_grid_matches_the_grid_ferric_builds() {
-    let mol = molecule();
+    for system in ["h2o_distorted", "hi"] {
+        check_or_write_grid(system);
+    }
+}
+
+fn check_or_write_grid(system: &str) {
+    let mol = system_molecule(system);
     let cfg = AtomicGridConfig {
         n_radial: 30,
         n_angular: 50,
         prune: None,
+        weight_cut: None,
     };
     let grid = ferric_scf::ks_fixed_grid::FixedGridKs::new(&mol, "LDA", &cfg).unwrap();
     let (pts, w) = grid.points_and_weights();
@@ -97,7 +122,7 @@ fn reference_grid_matches_the_grid_ferric_builds() {
             bytes.extend_from_slice(&v.to_le_bytes());
         }
     }
-    let path = repo_root().join(GRID_FILE);
+    let path = repo_root().join(grid_file(system));
     if std::env::var("FERRIC_WRITE_REFERENCE_GRID").is_ok_and(|v| v == "1") {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, &bytes).unwrap();
@@ -113,8 +138,8 @@ fn reference_grid_matches_the_grid_ferric_builds() {
     );
 }
 
-fn load_grid() -> (Vec<[f64; 3]>, Vec<f64>) {
-    let bytes = std::fs::read(repo_root().join(GRID_FILE)).unwrap();
+fn load_grid(system: &str) -> (Vec<[f64; 3]>, Vec<f64>) {
+    let bytes = std::fs::read(repo_root().join(grid_file(system))).unwrap();
     assert_eq!(bytes.len() % 32, 0, "grid file is rows of x y z w (f64)");
     let val = |i: usize| f64::from_le_bytes(bytes[8 * i..8 * i + 8].try_into().unwrap());
     let n = bytes.len() / 32;
@@ -282,23 +307,27 @@ const CASES: [Case; 10] = [
 const TOL_RIJK_HESSIAN: f64 = 1e-6;
 
 fn run_case(case: &Case) {
+    run_system_case("h2o_distorted", case);
+}
+
+fn run_system_case(system: &str, case: &Case) {
     if ferric_integrals::engine::libint_max_deriv_order() < 2 {
         eprintln!("SKIP: libint2 has no second derivatives");
         return;
     }
     let path = repo_root().join(format!(
-        "testdata/reference/validation/ks_fixed_grid_hessian/h2o_distorted_{}{}.json",
+        "testdata/reference/validation/ks_fixed_grid_hessian/{system}_{}{}.json",
         case.basis, case.suffix
     ));
     let text = std::fs::read_to_string(&path).unwrap();
     let r: Value = serde_json::from_str(&text).unwrap();
-    let mol = molecule();
+    let mol = system_molecule(system);
     let bs = basis::bundled(case.basis).unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let (pts, w) = load_grid();
+    let (pts, w) = load_grid(system);
     assert_eq!(pts.len() as u64, r["npts"].as_u64().unwrap());
     let grid = FixedGridKs::from_points(case.xc, pts, w).unwrap();
 
@@ -308,13 +337,11 @@ fn run_case(case: &Case) {
         "geometry/constants mismatch: dVnn = {enuc:.3e}"
     );
 
-    let scf_cfg = RhfConfig {
-        use_sad_guess: false,
-        max_iter: 200,
-        energy_conv: 1e-13,
-        density_conv: 1e-11,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default()
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_max_iter(200)
+        .with_energy_conv(1e-13)
+        .with_density_conv(1e-11);
     let dfbs = case
         .aux
         .map(|a| PreparedBasis::new(&mol, &basis::bundled(a).unwrap()).unwrap());
@@ -341,12 +368,10 @@ fn run_case(case: &Case) {
         "energy {de:.3e}: grid or functional mismatch"
     );
 
-    let hess_cfg = RhfConfig {
-        xc: Some(case.xc.into()),
-        df_j_aux: Some(case.aux.unwrap_or_default().into()),
-        df_k_aux: Some(case.k_aux.unwrap_or_default().into()),
-        ..Default::default()
-    };
+    let hess_cfg = RhfConfig::default()
+        .with_xc(case.xc)
+        .with_df_j_aux(case.aux.unwrap_or_default())
+        .with_df_k_aux(case.k_aux.unwrap_or_default());
     let h = rks_fixed_grid_hessian_parts_with(
         &ctx,
         &mol,
@@ -447,3 +472,26 @@ fn fixed_grid_pbe0_rijk_hessian_6_31g_matches_pyscf_on_the_same_grid() {
 fn fixed_grid_b3lyp_rijk_hessian_6_31g_matches_pyscf_on_the_same_grid() {
     run_case(&CASES[9]);
 }
+
+/// HI / def2-SVP, PBE, exact J/K, with iodine's def2 ECP: the ECP skeleton
+/// and `∂V_ECP/∂x` in the KS Hessian against PySCF's analytic RKS Hessian
+/// (which inherits the ECP terms of its RHF Hessian) on the same grid.
+/// Measured: energy 1.5e-12 Ha, Hessian 1.1e-7 Ha/Bohr² (PySCF's analytic vs
+/// its own FD 3.9e-7), frequency 8.6e-4 cm⁻¹. Bars ~10x those (energy at the
+/// 1e-9 floor of the other cases).
+#[test]
+#[ignore = "validation: analytic fixed-grid KS Hessian with an ECP vs PySCF"]
+fn fixed_grid_pbe_hessian_with_an_ecp_matches_pyscf_on_the_same_grid() {
+    run_system_case("hi", &HI_ECP_CASE);
+}
+
+const HI_ECP_CASE: Case = Case {
+    basis: "def2-svp",
+    xc: "PBE",
+    suffix: "_pbe_ecp",
+    tol_energy: 1e-9,
+    tol_hessian: 1e-6,
+    tol_freq: 1e-2,
+    aux: None,
+    k_aux: None,
+};

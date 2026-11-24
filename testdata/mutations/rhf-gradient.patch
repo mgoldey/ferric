@@ -1,0 +1,13 @@
+diff --git a/crates/ferric-scf/src/gradient.rs b/crates/ferric-scf/src/gradient.rs
+index e887cdf6e..971333d50 100644
+--- a/crates/ferric-scf/src/gradient.rs
++++ b/crates/ferric-scf/src/gradient.rs
+@@ -2050,7 +2050,7 @@ fn accum_2e_grad(grad: &mut Array2<f64>, d: &Array2<f64>, dq: &[f64], blk: &Quar
+ /// Two-particle density matrix element: Γ_μνλσ = 0.5*D_μν*D_λσ - 0.25*D_μλ*D_νσ
+ #[inline]
+ pub(crate) fn gamma(d: &Array2<f64>, mu: usize, nu: usize, la: usize, sg: usize) -> f64 {
+-    0.5 * d[(mu, nu)] * d[(la, sg)] - 0.25 * d[(mu, la)] * d[(nu, sg)]
++    0.5 * d[(mu, nu)] * d[(la, sg)] - 0.5 * d[(mu, la)] * d[(nu, sg)]
+ }
+ 
+ /// UHF two-particle density: Γ_μνλσ = 0.5*D_μν D_λσ − 0.5*(D_α,μλ D_α,νσ + D_β,μλ D_β,νσ)

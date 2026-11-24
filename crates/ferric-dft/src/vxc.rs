@@ -21,9 +21,77 @@ use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ndarray::{Array1, Array2, Array3, Axis, Zip};
 use rayon::prelude::*;
 
-/// Below this density, libxc-returned v_ρ / v_σ may diverge; skip grid points
-/// to keep V_xc well-conditioned. Matches libxc's internal `dens_threshold` default.
-pub const DENSITY_FLOOR: f64 = 1e-10;
+/// The production V_xc density screen: a grid point contributes to a
+/// potential only where its gating density (total ρ closed shell, ρ_σ for the
+/// spin-σ block) is above the floor of the functional's family. E_xc is summed
+/// unfloored. Every V_xc builder, f_xc kernel (`fxc.rs`), nuclear gradient,
+/// Hessian, TDDFT kernel and periodic (`ferric-pbc`) potential gates through
+/// [`above_density_floor`] with the floor of the SAME [`XcDef`]
+/// ([`DensityFloor::for_xc`]), so each derivative is taken of the potential
+/// the SCF builds.
+///
+/// * LDA / GGA / hybrid / range-separated GGA: [`DensityFloor::SEMILOCAL`] =
+///   1e-14. libxc's own per-functional `dens_threshold` (5.2.3 and 7.0.0 alike) (below which it
+///   returns zero) is 1e-15 for LDA_X, VWN, PW, B88, PBE_X, P86, PW91 and the
+///   B3LYP/PBE0/LRC-ωPBE handles, 1e-14 for LYP, CAM-B3LYP and ωB97X(-V),
+///   1e-12 for PBE_C. The floor sits at LYP's threshold, so it drops at most
+///   the band (1e-15, 1e-14] where only some components are still non-zero.
+///   A floor of 1e-10 cuts the slowly decaying B88 potential: water and
+///   formaldehyde aug-cc-pVDZ B3LYP TDA roots then sit 6.8e-4 / 8.5e-4 eV
+///   from PySCF on the same grid (which applies no floor beyond libxc's),
+///   against 5.7e-7 / 2.8e-6 eV at 1e-14.
+/// * meta-GGA (SCAN, r2SCAN, TPSS): [`DensityFloor::META_GGA`] = 1e-10.
+///   libxc's spin-polarized SCAN kernel is not α/β-symmetric at equal spins
+///   once points with ρ_σ below 1e-10 are kept: the closed-shell SCAN test
+///   `fxc::tests::mgga_fxc_matches_finite_difference_of_production_vxc_closed`
+///   fails with the floor at 1e-11, 1e-12 and 1e-14 and passes at 1e-10.
+///   r2SCAN exchange's own libxc threshold is 1e-11.
+///
+/// The VV10 nonlocal kernel keeps its own screen (`vv10.rs` `RHO_THRESH`);
+/// the semilocal part of a VV10 functional uses its family's floor.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DensityFloor(f64);
+
+impl DensityFloor {
+    /// LDA, GGA, hybrid GGA and range-separated GGA.
+    pub const SEMILOCAL: DensityFloor = DensityFloor(1e-14);
+    /// Meta-GGA (τ-dependent).
+    pub const META_GGA: DensityFloor = DensityFloor(1e-10);
+
+    /// Floor of one functional family.
+    pub fn for_family(family: FunctionalFamily) -> Self {
+        match family {
+            FunctionalFamily::MetaGga => Self::META_GGA,
+            FunctionalFamily::Lda
+            | FunctionalFamily::Gga
+            | FunctionalFamily::HybridGga
+            | FunctionalFamily::RangeSepGga => Self::SEMILOCAL,
+        }
+    }
+
+    /// Floor of a composite definition: the largest floor of its components
+    /// (a definition with any meta-GGA component gates at
+    /// [`Self::META_GGA`]). An empty definition (Hartree-Fock) gets
+    /// [`Self::SEMILOCAL`]; it builds no potential.
+    pub fn for_xc(xc: &XcDef) -> Self {
+        xc.funcs
+            .iter()
+            .map(|f| Self::for_family(f.family()))
+            .fold(Self::SEMILOCAL, |a, b| if b.0 > a.0 { b } else { a })
+    }
+
+    /// The floor density (a.u.).
+    pub fn value(self) -> f64 {
+        self.0
+    }
+}
+
+/// Whether a grid point with gating density `rho` is above `floor` (see
+/// [`DensityFloor`]).
+#[inline]
+pub fn above_density_floor(rho: f64, floor: DensityFloor) -> bool {
+    rho > floor.0
+}
 
 use crate::density_on_grid::{DensityGrid, UksDensityGrid};
 use crate::grid::GridPoint;
@@ -135,6 +203,9 @@ pub struct ClosedKernel {
     pub vsigma: Array1<f64>,
     /// ∂(ρ ε_xc)/∂τ (zero unless a meta-GGA component is present).
     pub vtau: Array1<f64>,
+    /// The density floor of the evaluated definition
+    /// ([`DensityFloor::for_xc`]); consumers gate the potential with it.
+    pub floor: DensityFloor,
 }
 
 /// Evaluate every component functional of `xc` on the closed-shell density
@@ -229,6 +300,7 @@ pub fn closed_kernel(dens: &DensityGrid, tau: Option<&Array1<f64>>, xc: &XcDef) 
         vrho: vrho_total,
         vsigma: vsigma_total,
         vtau: vtau_total,
+        floor: DensityFloor::for_xc(xc),
     }
 }
 
@@ -285,6 +357,7 @@ pub fn semilocal_vxc_closed_scratch(
         vrho: vrho_total,
         vsigma: vsigma_total,
         vtau: vtau_total,
+        floor,
     } = closed_kernel(dens, tau, xc);
 
     // E_xc = Σ_g w_g · ρ(r_g) · ε_xc(r_g). Deterministic grouped reduction —
@@ -301,12 +374,18 @@ pub fn semilocal_vxc_closed_scratch(
     let s: Array1<f64> = Zip::from(&w)
         .and(&dens.rho)
         .and(&vrho_total)
-        .map_collect(|&w, &r, &v| if r > DENSITY_FLOOR { w * v } else { 0.0 });
+        .map_collect(|&w, &r, &v| {
+            if above_density_floor(r, floor) {
+                w * v
+            } else {
+                0.0
+            }
+        });
     scale_columns_into(chi.view(), &s, buf);
     // Digestion GEMM (nbf, npts)·(npts, nbf), outside any rayon region — this
     // whole function runs serially at the top level of one SCF/grid-response
-    // iteration. Opt-in BLAS raise via FERRIC_BLAS_THREADS (default 1,
-    // unchanged behavior); opt_in_blas_threads()'s rayon-worker self-guard
+    // iteration. Opt-in BLAS raise via FERRIC_BLAS_THREADS (default: the rayon pool size;
+    // 1 on a rayon worker); opt_in_blas_threads()'s rayon-worker self-guard
     // also protects any caller reached from inside a rayon pool (e.g.
     // free-atom SAD grid builds under run_serial_pool).
     let mut vxc: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || buf.dot(&chi.t()));
@@ -334,7 +413,7 @@ pub fn semilocal_vxc_closed_scratch(
                 .and(&vsigma_total)
                 .and(&grad_axis)
                 .map_collect(|&w, &r, &v, &gr| {
-                    if r > DENSITY_FLOOR {
+                    if above_density_floor(r, floor) {
                         2.0 * w * v * gr
                     } else {
                         0.0
@@ -364,15 +443,13 @@ pub fn semilocal_vxc_closed_scratch(
                 Zip::from(&w)
                     .and(&dens.rho)
                     .and(&vtau_total)
-                    .map_collect(
-                        |&w, &r, &vt| {
-                            if r > DENSITY_FLOOR {
-                                0.5 * w * vt
-                            } else {
-                                0.0
-                            }
-                        },
-                    );
+                    .map_collect(|&w, &r, &vt| {
+                        if above_density_floor(r, floor) {
+                            0.5 * w * vt
+                        } else {
+                            0.0
+                        }
+                    });
             scale_columns_into(dchi_axis, &f_ax, buf);
             let m_axis: Array2<f64> =
                 with_blas_threads(opt_in_blas_threads(), || buf.dot(&dchi_axis.t()));
@@ -389,14 +466,25 @@ pub fn semilocal_vxc_closed_scratch(
 /// Per-point libxc outputs for a spin-polarized evaluation, each summed over
 /// the component functionals with their mixing weights.
 pub struct PolarizedKernel {
+    /// ε_xc, the XC energy per particle (`E_xc = Σ_g w_g ρ_g ε_xc(g)`).
     pub exc: Array1<f64>,
+    /// ∂f/∂ρ_α (`f = ρ ε_xc`).
     pub vrho_a: Array1<f64>,
+    /// ∂f/∂ρ_β.
     pub vrho_b: Array1<f64>,
+    /// ∂f/∂σ_αα; zero for LDA components.
     pub vsigma_aa: Array1<f64>,
+    /// ∂f/∂σ_αβ; zero for LDA components.
     pub vsigma_ab: Array1<f64>,
+    /// ∂f/∂σ_ββ; zero for LDA components.
     pub vsigma_bb: Array1<f64>,
+    /// ∂f/∂τ_α; zero unless a component is a meta-GGA.
     pub vtau_a: Array1<f64>,
+    /// ∂f/∂τ_β; zero unless a component is a meta-GGA.
     pub vtau_b: Array1<f64>,
+    /// The density floor of the evaluated definition
+    /// ([`DensityFloor::for_xc`]); consumers gate each spin with it.
+    pub floor: DensityFloor,
 }
 
 /// Polarized twin of [`closed_kernel`]: the libxc half of
@@ -505,6 +593,7 @@ pub fn polarized_kernel(
         vsigma_bb: vsigma_bb_total,
         vtau_a: vtau_a_total,
         vtau_b: vtau_b_total,
+        floor: DensityFloor::for_xc(xc),
     }
 }
 
@@ -569,6 +658,7 @@ pub fn semilocal_vxc_polarized_scratch(
         vsigma_bb: vsigma_bb_total,
         vtau_a: vtau_a_total,
         vtau_b: vtau_b_total,
+        floor,
     } = polarized_kernel(dens, tau, xc);
 
     // E_xc = Σ_g w_g · (ρ_α + ρ_β) · ε_xc. Deterministic grouped reduction —
@@ -597,13 +687,19 @@ pub fn semilocal_vxc_polarized_scratch(
         let s: Array1<f64> = Zip::from(&w)
             .and(rho_floor_ref)
             .and(vrho_sigma)
-            .map_collect(|&w, &r, &v| if r > DENSITY_FLOOR { w * v } else { 0.0 });
+            .map_collect(|&w, &r, &v| {
+                if above_density_floor(r, floor) {
+                    w * v
+                } else {
+                    0.0
+                }
+            });
         scale_columns_into(chi.view(), &s, buf);
         // Digestion GEMM, outside any rayon region — this whole function
         // runs serially at the top level of one UKS SCF/grid-response
         // iteration (the `build` closure below is called twice, sequentially,
-        // for α and β). Opt-in BLAS raise via FERRIC_BLAS_THREADS (default 1,
-        // unchanged behavior); opt_in_blas_threads()'s rayon-worker self-guard
+        // for α and β). Opt-in BLAS raise via FERRIC_BLAS_THREADS (default: the rayon pool size;
+        // 1 on a rayon worker); opt_in_blas_threads()'s rayon-worker self-guard
         // also protects any caller reached from inside a rayon pool (e.g.
         // free-atom SAD grid builds under run_serial_pool).
         let mut v: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || buf.dot(&chi.t()));
@@ -625,7 +721,7 @@ pub fn semilocal_vxc_polarized_scratch(
                     .and(vsigma_self)
                     .and(&gs)
                     .for_each(|f, &w, &r, &vs, &g_self| {
-                        if r > DENSITY_FLOOR {
+                        if above_density_floor(r, floor) {
                             *f = 2.0 * w * vs * g_self;
                         }
                     });
@@ -635,7 +731,7 @@ pub fn semilocal_vxc_polarized_scratch(
                     .and(vsigma_cross)
                     .and(&gc)
                     .for_each(|f, &w, &r, &vc, &g_cross| {
-                        if r > DENSITY_FLOOR {
+                        if above_density_floor(r, floor) {
                             *f += w * vc * g_cross;
                         }
                     });
@@ -657,15 +753,13 @@ pub fn semilocal_vxc_polarized_scratch(
                 let f_ax: Array1<f64> = Zip::from(&w)
                     .and(rho_floor_ref)
                     .and(vtau_sigma)
-                    .map_collect(
-                        |&w, &r, &vt| {
-                            if r > DENSITY_FLOOR {
-                                0.5 * w * vt
-                            } else {
-                                0.0
-                            }
-                        },
-                    );
+                    .map_collect(|&w, &r, &vt| {
+                        if above_density_floor(r, floor) {
+                            0.5 * w * vt
+                        } else {
+                            0.0
+                        }
+                    });
                 scale_columns_into(dchi_axis, &f_ax, buf);
                 // Same opt-in-raise digestion GEMM as the LDA piece above.
                 let m_axis: Array2<f64> =
@@ -704,6 +798,30 @@ pub fn semilocal_vxc_polarized_scratch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The floor follows the family of every component: semilocal (and
+    /// mixed LDA+GGA hybrid) definitions gate at SEMILOCAL, any τ-dependent
+    /// component lifts the definition to META_GGA, on both spin handles.
+    #[test]
+    fn density_floor_follows_the_functional_family() {
+        use crate::libxc::xc_def_from_name_nspin;
+        assert!(DensityFloor::SEMILOCAL.value() < DensityFloor::META_GGA.value());
+        for nspin in [1, 2] {
+            for (name, want) in [
+                ("LDA", DensityFloor::SEMILOCAL),
+                ("PBE", DensityFloor::SEMILOCAL),
+                ("B3LYP", DensityFloor::SEMILOCAL),
+                ("SCAN", DensityFloor::META_GGA),
+                ("r2SCAN", DensityFloor::META_GGA),
+            ] {
+                let xc = xc_def_from_name_nspin(name, nspin).unwrap();
+                assert_eq!(DensityFloor::for_xc(&xc), want, "{name} nspin {nspin}");
+            }
+        }
+        let f = DensityFloor::SEMILOCAL;
+        assert!(!above_density_floor(f.value(), f));
+        assert!(above_density_floor(f.value() * (1.0 + 1e-12), f));
+    }
 
     fn term(g: usize) -> f64 {
         // Irregular magnitudes so the sum is genuinely order-sensitive in

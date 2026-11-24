@@ -10,9 +10,13 @@
 /// reformulation as a follow-up.
 #[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub enum Chi0Backend {
+    /// Dense MO-basis χ₀ with the exact energy-gap denominator. Default.
     #[default]
     Dense,
+    /// Minimax-Laplace factorization of the energy-gap denominator.
     Laplace {
+        /// Number of Laplace nodes; only the tabulated sizes 3, 5 and 7 are
+        /// accepted (anything else is an error from `LaplaceQuadrature::new`).
         n_quad: usize,
     },
 }
@@ -64,15 +68,26 @@ pub enum Chi0Backend {
 /// string), not something a caller falls into by omission.
 #[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub enum Chi0Sparsity {
+    /// Canonical dense `(naux × nocc·nvir)` `b_ov` tensor. Default.
     #[default]
     Dense,
+    /// Boys-localized occupied orbitals with per-orbital aux-row screening.
     BoysScreened {
+        /// Aux rows whose per-orbital L∞ norm falls below this are dropped
+        /// (`parse_config_str` default 1e-4).
         thresh: f64,
+        /// Centroid distance pre-filter length scale `r_ref`, Bohr;
+        /// `f64::INFINITY` disables the pre-filter.
         dist_cutoff: f64,
     },
+    /// Resolves to `Dense` or `BoysScreened` by atom count; see [`Chi0Sparsity::resolve`].
     Auto {
+        /// `thresh` of the `BoysScreened` this resolves to (`parse_config_str` default 1e-4).
         boys_thresh: f64,
+        /// Molecules with at least this many atoms resolve to `BoysScreened`
+        /// (`parse_config_str` default 30).
         atom_cutoff: usize,
+        /// `dist_cutoff` (Bohr) of the `BoysScreened` this resolves to.
         dist_cutoff: f64,
     },
 }
@@ -203,8 +218,11 @@ impl Chi0Sparsity {
 /// growing projected dielectric). Davidson is retained for comparison/fallback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Eigensolver {
+    /// Block Lanczos; a full-rank request is one dense `eigh`. Default.
     #[default]
     Lanczos,
+    /// Davidson; the only backend that reads `eigensolver_max_vecs` and
+    /// `eigensolver_conv_thresh`.
     Davidson,
 }
 
@@ -239,7 +257,10 @@ pub struct PdepRpaConfig {
     /// (Davidson). INERT under [`Eigensolver::Lanczos`] (the default), for the
     /// same reason as `eigensolver_max_vecs`.
     pub eigensolver_conv_thresh: f64,
+    /// Imaginary-frequency quadrature for the ω-integral. Default
+    /// [`QuadratureConfig::default()`] (Gauss-Legendre, 20 points, u₀ = 0.5).
     pub quadrature: QuadratureConfig,
+    /// Sternheimer solver settings. No code path in this crate reads it.
     pub sternheimer: SternheimerConfig,
     /// If true, also compute the full-basis RI-dRPA diagnostic energy (expensive).
     pub run_diagnostics: bool,
@@ -376,10 +397,25 @@ impl PdepRpaConfig {
 }
 
 /// Imaginary-frequency quadrature configuration.
+///
+/// The default is Gauss-Legendre, 20 points, u₀ = 0.5 on every entry point
+/// except where the table lists an override (pinned by
+/// `quadrature_defaults_by_entry_point`):
+///
+/// | Entry point | Scheme | `n_points` | `u0` |
+/// |---|---|---|---|
+/// | `QuadratureConfig::default()` (library; `PdepRpaConfig::default()`) | `GaussLegendre` | 20 | 0.5 |
+/// | CLI `[rpa]` unset (`pdep-rpa`, `gw`, `bse-tda`, `tdhf-static-polarizability`) | `GaussLegendre` | 20 | 0.5 |
+/// | CLI `task = "optimize"` with `pdep-rpa` | `GaussLegendre` | 16 | 0.5 |
+/// | Python `run_pdep_rpa`, `run_gw`, `run_u_gw`, `run_bse_tda`, `run_tdhf_static_polarizability` | `GaussLegendre` | 20 | 0.5 |
+///
+/// The CLI and Python scheme comes from [`QuadratureScheme::parse_config_str`]
+/// with `None`, which agrees with this `Default`.
 #[derive(Debug, Clone)]
 pub struct QuadratureConfig {
+    /// Node/weight construction (default [`QuadratureScheme::GaussLegendre`]).
     pub scheme: QuadratureScheme,
-    /// Number of quadrature points (default 20).
+    /// Number of quadrature points (default 20; CLI `task = "optimize"` is 16).
     pub n_points: usize,
     /// Domain scale parameter u₀ in Eₕ (default 0.5).
     ///
@@ -395,19 +431,22 @@ pub struct QuadratureConfig {
 impl Default for QuadratureConfig {
     fn default() -> Self {
         Self {
-            scheme: QuadratureScheme::MiniMax,
+            scheme: QuadratureScheme::GaussLegendre,
             n_points: 20,
             u0: 0.5,
         }
     }
 }
 
+/// Imaginary-frequency quadrature rule on [0, ∞) used by
+/// [`crate::quadrature::build_quadrature`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum QuadratureScheme {
-    /// Eshuis-Yarkony-Furche modified Gauss-Chebyshev (JCP 2010): bounded
-    /// ω-range via the tan-map. Recommended whenever `Chi0Backend::Laplace`
-    /// is used so the cosine-modulated Laplace quadrature stays in its safe
-    /// regime (ω·t_max < π/2).
+    /// Eshuis-Yarkony-Furche modified Gauss-Chebyshev (JCP 2010): Chebyshev-2
+    /// nodes tan-mapped to [0,∞), largest node about 0.4 of Gauss-Legendre's
+    /// at equal (n, u₀). Recommended with `Chi0Backend::Laplace`, which uses
+    /// the dense kernel at nodes with ω·t_max > π/2; this grid has fewer of
+    /// them. See [`crate::quadrature::chebyshev_tan_nodes`].
     ChebyshevTan,
     /// GL nodes with literature-optimized u₀ scale (Furche, JCP 2005).
     MiniMax,
@@ -419,13 +458,13 @@ impl QuadratureScheme {
     /// Parse a `[rpa] quadrature` TOML string / Python kwarg into a scheme.
     ///
     /// Accepted forms (case-insensitive, whitespace-trimmed):
-    ///   None                              → `GaussLegendre` (back-compat default)
+    ///   None                              → `GaussLegendre` (the CLI, Python and library default)
     ///   "gauss-legendre" | "gl"           → `GaussLegendre`
     ///   "minimax" | "mm"                  → `MiniMax`
     ///   "chebyshev-tan" | "chebyshev" | "ct" → `ChebyshevTan`
     ///
     /// Errors on any other string rather than silently falling back to
-    /// Gauss-Legendre — a typo'd scheme used to run a *different* quadrature
+    /// Gauss-Legendre — a typo'd scheme would run a *different* quadrature
     /// than requested with no diagnostic.
     pub fn parse_config_str(s: Option<&str>) -> Result<Self, String> {
         match s.map(|x| x.trim().to_ascii_lowercase()).as_deref() {
@@ -456,7 +495,9 @@ impl QuadratureScheme {
 /// Sternheimer linear solver configuration.
 #[derive(Debug, Clone)]
 pub struct SternheimerConfig {
+    /// Maximum iterations (default 50).
     pub max_iter: usize,
+    /// Convergence threshold (default 1e-8).
     pub conv_thresh: f64,
 }
 
@@ -472,6 +513,38 @@ impl Default for SternheimerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pins the scheme each entry point resolves when the user names none, so
+    /// the docs (QuadratureConfig, site/src/reference/input.md) cannot drift.
+    /// The CLI (`RpaCfg::parse_quadrature`) and all Python bindings call
+    /// `parse_config_str(None)`; the library `Default` is a different scheme.
+    /// Mutation: changing the `None` arm of `parse_config_str` or the `Default`
+    /// scheme to `MiniMax`, or either `n_points` to another value, fails this test.
+    #[test]
+    fn quadrature_defaults_by_entry_point() {
+        assert_eq!(
+            QuadratureScheme::parse_config_str(None).unwrap(),
+            QuadratureScheme::GaussLegendre,
+            "CLI/Python unset scheme"
+        );
+        let lib = QuadratureConfig::default();
+        assert_eq!(
+            lib.scheme,
+            QuadratureScheme::GaussLegendre,
+            "library Default"
+        );
+        assert_eq!(lib.n_points, 20);
+        assert_eq!(lib.u0, 0.5);
+        assert_eq!(PdepRpaConfig::default().quadrature.scheme, lib.scheme);
+        // Every documented spelling still maps to its scheme.
+        for (s, want) in [
+            ("gl", QuadratureScheme::GaussLegendre),
+            ("mm", QuadratureScheme::MiniMax),
+            ("ct", QuadratureScheme::ChebyshevTan),
+        ] {
+            assert_eq!(QuadratureScheme::parse_config_str(Some(s)).unwrap(), want);
+        }
+    }
 
     /// Full rank keeps an exact λ = 1 mode; a positive threshold still drops
     /// it. Mutation: the old `|λ − 1| > 0` filter returns 2 here, not 3.

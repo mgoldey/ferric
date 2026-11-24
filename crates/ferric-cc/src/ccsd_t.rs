@@ -79,15 +79,15 @@
 //! fully-ordered sum equals `36 × Σ_{i0<j0<k0,a0<b0<c0} f`. My loop computes
 //! `Σ_{i0<j0<k0} (6 × Σ_{a0<b0<c0} f) = 6 × Σ_{i0<j0<k0,a0<b0<c0} f` (occ ×1,
 //! vir ×6 from ranging the full axis) — so the correct final divisor is 6,
-//! NOT 36. This was caught by (and is now proven by) the direct
-//! dense-vs-streaming regression test — an earlier draft used /36 and was
-//! off by exactly 6× until this was fixed.
+//! NOT 36. The direct
+//! dense-vs-streaming regression test proves it: a divisor of 36 is off by
+//! exactly 6×.
 //!
 //! Peak per-triple footprint is a handful of `[2nv,2nv,2nv]` f64 buffers
 //! (`raw_w`, `raw_v`, `w_block`, `v_block`, `d_block`, one scratch) — see
-//! `peak_triple_block_bytes` and the updated size guard below, which now
+//! `peak_triple_block_bytes` and the size guard below, which
 //! bounds that per-triple footprint (plus the O(no·nv³)-class precomputed
-//! intermediates) instead of the old O((no2·nv2)³) dense ceiling.
+//! intermediates), not an O((no2·nv2)³) dense ceiling.
 
 use super::{CcConfig, CcResult};
 use ferric_core::mol::Molecule;
@@ -144,8 +144,8 @@ fn peak_triple_block_bytes(nv2: usize) -> usize {
 /// Bytes held by the PRECOMPUTED spin-orbital integral blocks that live for the
 /// whole triples loop, plus the largest transient live while they are built.
 ///
-/// These are what the old guard missed. It checked only
-/// [`peak_triple_block_bytes`] — the per-triple working set — while `bcei` is
+/// A guard checking only
+/// [`peak_triple_block_bytes`] — the per-triple working set — misses these, while `bcei` is
 /// allocated ~25 lines later at `(2nv)³·(2no)`, i.e.
 ///
 /// ```text
@@ -295,6 +295,7 @@ pub fn t_per_triple_bytes(nv2: usize) -> usize {
 /// `raw_w[a,b,c] = Σ_e t2[j,k,a,e]·bcei[b,c,e,i]  −  Σ_m t2[i,m,b,c]·majk[m,a,j,k]`
 /// for a FIXED (possibly unordered) occupied triple `(i,j,k)`. Both
 /// contractions are BLAS3 GEMMs on `nv2`-scale reshapes.
+#[allow(clippy::too_many_arguments)]
 fn raw_w_block(
     t2: &ArrayD<f64>,
     bcei: &ArrayD<f64>,
@@ -383,14 +384,14 @@ fn raw_v_block(
     out
 }
 
-/// Swap axes 0,1 of a `[nv2,nv2,nv2]` block: out[a,b,c] = x[b,a,c].
+/// Swap axes 0,1 of a `[nv2,nv2,nv2]` block: `out[a,b,c] = x[b,a,c]`.
 fn swap01(x: &Array3<f64>) -> Array3<f64> {
     x.view()
         .permuted_axes([1, 0, 2])
         .as_standard_layout()
         .into_owned()
 }
-/// Swap axes 0,2 of a `[nv2,nv2,nv2]` block: out[a,b,c] = x[c,b,a].
+/// Swap axes 0,2 of a `[nv2,nv2,nv2]` block: `out[a,b,c] = x[c,b,a]`.
 fn swap02(x: &Array3<f64>) -> Array3<f64> {
     x.view()
         .permuted_axes([2, 1, 0])
@@ -434,7 +435,7 @@ fn triple_block(
 /// `[2nv,2nv,2nv]` block per triple — see the module doc comment for the
 /// full derivation and the peak-memory accounting.
 pub fn ccsd_t(
-    _mol: &Molecule,
+    mol: &Molecule,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     op: Operator,
@@ -447,11 +448,10 @@ pub fn ccsd_t(
         .as_ref()
         .ok_or_else(|| FerricError::General("CCSD(T) requires T1 amplitudes".into()))?;
 
-    let nbas = obs.nbasis();
-    let nocc_total = rhf.eps_r().iter().filter(|&&e| e < 0.0).count();
+    let (nocc_total, nmo) = crate::helpers::closed_shell_counts(mol, rhf)?;
     let first_occ = cfg.frozen_core;
     let no = active_occ(nocc_total, first_occ)?;
-    let nv = nbas - nocc_total; // spatial virtual
+    let nv = nmo - nocc_total; // spatial virtual
     let (no2, nv2) = (2 * no, 2 * nv);
 
     // No valid i<j<k triple unless there are ≥3 occupied spin-orbitals AND
@@ -511,7 +511,7 @@ pub fn ccsd_t(
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
     let c_occ = c.slice(ndarray::s![.., first_occ..nocc_total]).to_owned();
-    let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
+    let c_vir = c.slice(ndarray::s![.., nocc_total..nmo]).to_owned();
 
     // Dressed RI 3-index MO blocks (same construction as the CCSD driver).
     let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
@@ -538,7 +538,7 @@ pub fn ccsd_t(
     let b_vo = transpose_b(&b_ov);
 
     // --- Spin-orbital integral blocks needed by (T) — same construction as
-    // the old dense path, still O(no·nv³)-class, not O((no·nv)³). ---
+    // a dense path, still O(no·nv³)-class, not O((no·nv)³). ---
     // <bc||ei> (VVVO) indexed [b,c,e,i]: dir (be|ci)=b_vv,b_vo ; exc (bi|ce)=b_vo,b_vv
     let bcei: ArrayD<f64> = {
         let d: ArrayD<f64> = einsum!("Pbe,Pci->beci", &b_vv, &b_vo);
@@ -574,6 +574,61 @@ pub fn ccsd_t(
     let t1: ArrayD<f64> = t1_spatial.clone().into_dyn();
     let t2: ArrayD<f64> = cc.t2.clone().into_dyn();
 
+    let partials = so_triple_partials(
+        &t1,
+        &t2,
+        &bcei,
+        &majk,
+        &bcjk,
+        &eo,
+        &ev,
+        budget,
+        precomputed,
+        peak_triple,
+    );
+    // Serial fold in ascending triple order (the determinism anchor).
+    let mut et = 0.0f64;
+    for p in partials {
+        et += p;
+    }
+    // NOTE the divisor here is 6, not the textbook 36: `i0<j0<k0` already
+    // ranges over each UNIQUE unordered occupied triple exactly once (not
+    // all 6 orderings), while the inner a,b,c loop ranges over the FULL
+    // `0..nv2` range for each axis, i.e. all 6 orderings of every unique
+    // unordered virtual triple. Since `f(i,j,k,a,b,c) := (t3c+t3d)·D·t3c` is
+    // invariant (not just sign-changing) under ANY simultaneous relabeling
+    // of (i,j,k) or (a,b,c) — `t3c`/`t3d` flip sign under a single swap but
+    // `D` does not depend on ordering, and `f` pairs an even number of
+    // sign-flips (t3c appears twice) — every one of the 6×6=36 orderings of
+    // a given unordered (occ-triple, vir-triple) pair contributes the SAME
+    // value. The textbook fully-ordered sum therefore has value
+    // `36 × Σ_{i0<j0<k0,a0<b0<c0} f`; my loop computes
+    // `Σ_{i0<j0<k0} (6 × Σ_{a0<b0<c0} f) = 6 × Σ_{i0<j0<k0,a0<b0<c0} f`
+    // (occ ranges over unique triples ×1, vir ranges over unique triples
+    // ×6), so dividing by 6 (not 36) recovers `Σ_{i0<j0<k0,a0<b0<c0} f`,
+    // which equals `(textbook sum)/36`. Verified directly against the dense
+    // path to ~1e-10 in `streaming_matches_dense_h2o_ccpvdz`.
+    Ok(et / 6.0)
+}
+
+/// The streaming triples loop shared by [`ccsd_t`] and
+/// [`ccsd_t_uhf_spin_orbital`]: the partial `sum_abc (t3c + t3d) D t3c` of
+/// every unique occupied spin-orbital triple `i<j<k` (in
+/// [`unique_occ_triples`] order), before the divisor 6.
+#[allow(clippy::too_many_arguments)]
+fn so_triple_partials(
+    t1: &ArrayD<f64>,
+    t2: &ArrayD<f64>,
+    bcei: &ArrayD<f64>,
+    majk: &ArrayD<f64>,
+    bcjk: &ArrayD<f64>,
+    eo: &[f64],
+    ev: &[f64],
+    budget: usize,
+    precomputed: usize,
+    peak_triple: usize,
+) -> Vec<f64> {
+    let (no2, nv2) = (eo.len(), ev.len());
     // --- Stream over unique occupied triples i<j<k, one [nv2,nv2,nv2] block
     // at a time, now PARALLEL over triples via rayon. See module doc comment
     // for why summing (t3c+t3d)*D*t3c over unique occ triples (but ALL
@@ -734,20 +789,20 @@ pub fn ccsd_t(
             remaining as f64 / (1024.0 * 1024.0 * 1024.0),
         );
     }
-    let mut et = 0.0f64;
+    let mut out = Vec::with_capacity(triples.len());
     for chunk in triples.chunks(chunk_len) {
         let partials: Vec<f64> = with_blas_threads(1, || {
             chunk
                 .par_iter()
                 .map(|&(i0, j0, k0)| {
                     let w_block = triple_block(
-                        |i, j, k| raw_w_block(&t2, &bcei, &majk, no2, nv2, i, j, k),
+                        |i, j, k| raw_w_block(t2, bcei, majk, no2, nv2, i, j, k),
                         i0,
                         j0,
                         k0,
                     );
                     let v_block =
-                        triple_block(|i, j, k| raw_v_block(&t1, &bcjk, nv2, i, j, k), i0, j0, k0);
+                        triple_block(|i, j, k| raw_v_block(t1, bcjk, nv2, i, j, k), i0, j0, k0);
                     let e_i = eo[i0] + eo[j0] + eo[k0];
                     let mut partial = 0.0f64;
                     for a in 0..nv2 {
@@ -768,28 +823,86 @@ pub fn ccsd_t(
         });
         // Serial fold in ascending triple order — the determinism anchor
         // (see the comment block above).
-        for p in partials {
-            et += p;
-        }
+        out.extend(partials);
     }
-    // NOTE the divisor here is 6, not the textbook 36: `i0<j0<k0` already
-    // ranges over each UNIQUE unordered occupied triple exactly once (not
-    // all 6 orderings), while the inner a,b,c loop ranges over the FULL
-    // `0..nv2` range for each axis, i.e. all 6 orderings of every unique
-    // unordered virtual triple. Since `f(i,j,k,a,b,c) := (t3c+t3d)·D·t3c` is
-    // invariant (not just sign-changing) under ANY simultaneous relabeling
-    // of (i,j,k) or (a,b,c) — `t3c`/`t3d` flip sign under a single swap but
-    // `D` does not depend on ordering, and `f` pairs an even number of
-    // sign-flips (t3c appears twice) — every one of the 6×6=36 orderings of
-    // a given unordered (occ-triple, vir-triple) pair contributes the SAME
-    // value. The textbook fully-ordered sum therefore has value
-    // `36 × Σ_{i0<j0<k0,a0<b0<c0} f`; my loop computes
-    // `Σ_{i0<j0<k0} (6 × Σ_{a0<b0<c0} f) = 6 × Σ_{i0<j0<k0,a0<b0<c0} f`
-    // (occ ranges over unique triples ×1, vir ranges over unique triples
-    // ×6), so dividing by 6 (not 36) recovers `Σ_{i0<j0<k0,a0<b0<c0} f`,
-    // which equals `(textbook sum)/36`. Verified directly against the dense
-    // path to ~1e-10 in `streaming_matches_dense_h2o_ccpvdz`.
-    Ok(et / 6.0)
+    out
+}
+
+/// Spin-orbital (T) on a UHF reference: the reference-agnostic streaming
+/// kernel of [`ccsd_t`] on the UHF spin orbitals (alpha block, then beta),
+/// fed the amplitudes of [`crate::ccsd::ccsd_uhf_spin_orbital`].
+///
+/// The independent oracle for [`crate::u_ccsd_t::u_ccsd_t`]. Returns the
+/// four spin classes `[aaa, aab, abb, bbb]` of the occupied triple (the
+/// number of beta occupied spin orbitals is 0, 1, 2, 3); their sum is
+/// `E_(T)`. Every virtual triple is summed in each class, and only the
+/// spin-matched ones survive.
+///
+/// # Errors
+///
+/// A non-UHF reference, missing T1 amplitudes, amplitudes of the wrong
+/// shape, or a memory floor over budget.
+pub fn ccsd_t_uhf_spin_orbital(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    scf: &ScfResult,
+    cc: &CcResult,
+    cfg: &CcConfig,
+) -> Result<[f64; 4], FerricError> {
+    let t1 = cc
+        .t1
+        .as_ref()
+        .ok_or_else(|| FerricError::General("CCSD(T) requires T1 amplitudes".into()))?;
+    let ri = crate::u_ccsd::URiBlocks::build(mol, obs, dfbs, op, scf, cfg.frozen_core)?;
+    let no_a = ri.no[0];
+    let (b_oo, _b_ov, b_vo, b_vv, eo, ev) = crate::ccsd::so_uhf_tensors(&ri);
+    drop(ri);
+    let (no2, nv2) = (eo.len(), ev.len());
+    if t1.dim() != (no2, nv2) || cc.t2.dim() != (no2, no2, nv2, nv2) {
+        return Err(FerricError::General(format!(
+            "ccsd_t_uhf_spin_orbital: amplitudes of shape {:?}/{:?} do not match \
+             no2={no2}, nv2={nv2}",
+            t1.dim(),
+            cc.t2.dim()
+        )));
+    }
+    if no2 < 3 || nv2 < 3 {
+        return Ok([0.0; 4]);
+    }
+    let peak_triple = peak_triple_block_bytes(nv2);
+    let precomputed = precomputed_block_bytes(no2, nv2);
+    let budget = ferric_core::memory::resolve_budget_bytes(cfg.memory_budget_bytes);
+    ferric_core::memory::check_alloc(
+        &format!("spin-orbital UHF CCSD(T) (no2={no2}, nv2={nv2})"),
+        precomputed.saturating_add(peak_triple),
+        budget,
+    )?;
+    let so_asym = crate::ccsd::so_asym;
+    let bcei = so_asym(&b_vv, &b_vo, &b_vo, &b_vv);
+    let majk = so_asym(&b_oo, &b_vo, &b_oo, &b_vo);
+    let bcjk = so_asym(&b_vo, &b_vo, &b_vo, &b_vo);
+    let t1 = t1.clone().into_dyn();
+    let t2 = cc.t2.clone().into_dyn();
+    let partials = so_triple_partials(
+        &t1,
+        &t2,
+        &bcei,
+        &majk,
+        &bcjk,
+        &eo,
+        &ev,
+        budget,
+        precomputed,
+        peak_triple,
+    );
+    let mut classes = [0.0f64; 4];
+    for ((i, j, k), p) in unique_occ_triples(no2).into_iter().zip(partials) {
+        let n_beta = [i, j, k].iter().filter(|&&x| x >= no_a).count();
+        classes[n_beta] += p;
+    }
+    Ok(classes.map(|c| c / 6.0))
 }
 
 #[cfg(test)]
@@ -943,7 +1056,7 @@ mod tests {
 
         // Dummy CCSD result — the guard runs before t1/t2 are consumed.
         let nbas = obs.nbasis();
-        let nocc = rhf.eps_r().iter().filter(|&&e| e < 0.0).count();
+        let nocc = crate::helpers::closed_shell_counts(&mol, &rhf).unwrap().0;
         let nv = nbas - nocc;
         let dummy = CcResult {
             correlation_energy: 0.0,
@@ -997,7 +1110,7 @@ mod tests {
 
         // --- Inline OLD dense path, reconstructed from the same intermediates. ---
         let nbas = obs.nbasis();
-        let nocc_total = rhf.eps_r().iter().filter(|&&e| e < 0.0).count();
+        let nocc_total = crate::helpers::closed_shell_counts(&mol, &rhf).unwrap().0;
         let first_occ = 0usize;
         let no = nocc_total - first_occ;
         let nv = nbas - nocc_total;

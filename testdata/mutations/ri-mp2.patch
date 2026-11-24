@@ -1,0 +1,13 @@
+diff --git a/crates/ferric-mp2/src/rimp2.rs b/crates/ferric-mp2/src/rimp2.rs
+index 6da1aeb8b..1d507c9dd 100644
+--- a/crates/ferric-mp2/src/rimp2.rs
++++ b/crates/ferric-mp2/src/rimp2.rs
+@@ -1315,7 +1315,7 @@ pub(crate) fn pair_energy(
+                     let g_ba = g_i[(b, jcol + a)]; // (ib|ja)
+                     let denom = e_ij - eps[nocc_total + a] - eps[nocc_total + b];
+                     e_os_ij += g_ab * g_ab / denom;
+-                    e_ss_ij += g_ab * (g_ab - g_ba) / denom;
++                    e_ss_ij += g_ab * (g_ab + g_ba) / denom;
+                 }
+             }
+         }

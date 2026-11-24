@@ -9,6 +9,7 @@ workspace = true
 
 [dependencies]
 ferric-core = { path = "../ferric-core" }
+ferric-md = { path = "../ferric-md" }
 ferric-dft = { path = "../ferric-dft" }
 ferric-integrals = { path = "../ferric-integrals" }
 ferric-mm = { path = "../ferric-mm" }
@@ -25,6 +26,11 @@ thiserror = { workspace = true }
 # Same version ndarray-npy uses: checks each member's header before it is read.
 zip = { version = "2", default-features = false }
 mpi = { workspace = true, optional = true }
+
+[target.'cfg(windows)'.dependencies]
+# checkpoint/format.rs `still_named`: file identity (volume serial + file index),
+# the Windows counterpart of unix (dev, ino). Already in Cargo.lock via tempfile.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [features]
 default = []
@@ -50,6 +56,7 @@ test-seams = ["gpu", "ferric-core/test-seams", "ferric-dft/test-seams"]
 cfmm-incomplete = []
 
 [dev-dependencies]
+ferric-testkit = { path = "../ferric-testkit" }
 ferric-dft = { path = "../ferric-dft" }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -123,7 +123,35 @@
         -0.020192464348470586
       ],
       "qp_residual_max": 4.5102810375396984e-17,
-      "static_shift_max_abs": 7.229286613785746e-14
+      "static_shift_max_abs": 7.229286613785746e-14,
+      "exact": {
+        "construction": "U-dRPA Casida pole sum at the Pade nodes, textbook Thiele, ferric_qp_rule, no static shift (gen_gw.gen_uhf_exact_only)",
+        "eps_qp": [
+          -0.6056005670477184,
+          -0.42535315694685655,
+          -0.38193327556927753,
+          0.034497423552774846,
+          0.05417948827289502,
+          0.10789773671947113
+        ],
+        "sigma_c_at_qp": [
+          0.014465217093940668,
+          0.025510171461835675,
+          0.02661232736794186,
+          -0.0034511950414069007,
+          -0.0019592284640057253,
+          -0.003538841181518455
+        ],
+        "root_rule": [
+          "newton",
+          "newton",
+          "newton",
+          "newton",
+          "newton",
+          "newton"
+        ],
+        "pyscf_nw100_eps_qp_minus_exact_max": 9.787647692327539e-09
+      }
     },
     "beta": {
       "ef": -0.2736681315268412,
@@ -168,7 +196,35 @@
         -0.008823512019818507
       ],
       "qp_residual_max": 8.153200337090993e-17,
-      "static_shift_max_abs": 7.271266921904385e-14
+      "static_shift_max_abs": 7.271266921904385e-14,
+      "exact": {
+        "construction": "U-dRPA Casida pole sum at the Pade nodes, textbook Thiele, ferric_qp_rule, no static shift (gen_gw.gen_uhf_exact_only)",
+        "eps_qp": [
+          -0.57898020863158,
+          0.03747492184391583,
+          0.055017756041945254,
+          0.04201036715828455,
+          0.055413104928928474,
+          0.158068560489591
+        ],
+        "sigma_c_at_qp": [
+          0.009196187794327987,
+          -0.0033652101689277095,
+          -0.0019295620432729968,
+          -0.022335214468248033,
+          -0.0173793267046859,
+          -0.004350363682259766
+        ],
+        "root_rule": [
+          "newton",
+          "newton",
+          "newton",
+          "newton",
+          "newton",
+          "newton"
+        ],
+        "pyscf_nw100_eps_qp_minus_exact_max": 1.4258217384544025e-09
+      }
     }
   },
   "diagnostics": {
@@ -263,6 +319,10 @@
       "uhf",
       "u_g0w0_uhf",
       "diagnostics"
-    ]
+    ],
+    "u_g0w0_uhf_exact_generated": {
+      "git_head": "75a7295e681a68be1913865a7724d6121e657642",
+      "mode": "gen_gw.py --uhf-exact-only (other blocks untouched)"
+    }
   }
 }

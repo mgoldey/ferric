@@ -1,0 +1,442 @@
+//! Post-SCF certificates through the CLI binary: printed after the result
+//! and written to the JSON run log (`result.components.certificate` for the
+//! methods that log a `result` record, a `certificate` record for GW, BSE,
+//! RPAx and PDEP-RPA), carrying the method's table grade and settings.
+use std::path::PathBuf;
+use std::process::Command;
+
+#[path = "support/cli_bin.rs"]
+mod cli_bin;
+use cli_bin::ferric_cli_bin;
+
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("workspace root")
+        .to_path_buf()
+}
+
+fn run(tag: &str, body: &str) -> (String, Vec<serde_json::Value>) {
+    let root = workspace_root();
+    let dir = root.join("target").join("post_scf_certificate_cli_test");
+    std::fs::create_dir_all(&dir).expect("create the temp dir");
+    let toml = dir.join(format!("{tag}.toml"));
+    let log = dir.join(format!("{tag}.jsonl"));
+    let _ = std::fs::remove_file(&log);
+    std::fs::write(&toml, body).expect("write temp toml");
+    let out = Command::new(ferric_cli_bin())
+        .arg(&toml)
+        .arg("--json")
+        .arg(&log)
+        .current_dir(&root)
+        .env("OPENBLAS_NUM_THREADS", "1")
+        .env("RAYON_NUM_THREADS", "2")
+        .output()
+        .expect("run ferric-cli");
+    assert!(
+        out.status.success(),
+        "{tag}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let records = std::fs::read_to_string(&log)
+        .expect("read the run log")
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+    (String::from_utf8_lossy(&out.stdout).into_owned(), records)
+}
+
+const WATER: &str =
+    "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n[basis]\nname = \"sto-3g\"\n";
+
+fn result_certificate<'a>(records: &'a [serde_json::Value], kind: &str) -> &'a serde_json::Value {
+    let r = records
+        .iter()
+        .find(|r| r["record"] == "result" && r["kind"] == kind)
+        .unwrap_or_else(|| panic!("no {kind} result record in {records:?}"));
+    &r["components"]["certificate"]
+}
+
+fn names(c: &serde_json::Value) -> Vec<String> {
+    c["approximations"]
+        .as_array()
+        .expect("approximations")
+        .iter()
+        .map(|a| a["name"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn rimp2_result_carries_its_certificate() {
+    let (stdout, records) = run(
+        "rimp2",
+        &format!(
+            "{WATER}[method]\nkind = \"rimp2\"\n[mp2]\nauxbasis = \"cc-pvdz-ri\"\nfrozen_core = 1\n"
+        ),
+    );
+    assert!(
+        stdout.contains("certificate\n  capability  = rimp2\n"),
+        "{stdout}"
+    );
+    let c = result_certificate(&records, "rimp2");
+    assert_eq!(c["capability"], "rimp2");
+    assert_eq!(c["grade"], "proven");
+    assert_eq!(c["build"]["commit"], ferric_build_info::COMMIT);
+    // The omitted `[scf] jk` is the RI-JK reference (def2-universal-jkfit
+    // next to STO-3G), carried over from the SCF certificate.
+    assert_eq!(names(c), ["scf ri-j", "scf ri-k", "ri", "frozen-core"]);
+    assert_eq!(c["approximations"][2]["detail"], "aux cc-pvdz-ri");
+    let back: ferric_core::certificate::Certificate =
+        serde_json::from_value(c.clone()).expect("certificate JSON parses");
+    assert_eq!(back.grade, ferric_core::certificate::Grade::Proven);
+}
+
+/// OH / cc-pVDZ: U-RI-MP2 covers cc-pVDZ, the UHF anchor (6-31G, def2-SVP)
+/// does not, so the post-SCF certificate carries the reference's envelope
+/// warning.
+#[test]
+fn open_shell_rimp2_carries_the_uhf_reference_envelope_warning() {
+    let (_, records) = run(
+        "u_rimp2_envelope",
+        "[molecule]\nxyz = \"testdata/molecules/oh.xyz\"\nmultiplicity = 2\n[basis]\n\
+         name = \"cc-pvdz\"\n[method]\nkind = \"rimp2\"\n[mp2]\nauxbasis = \"cc-pvdz-ri\"\n",
+    );
+    let c = result_certificate(&records, "rimp2");
+    assert_eq!(c["measured_error"]["value"], 9.2e-10, "{c}");
+    let w: Vec<&str> = c["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w.as_str().unwrap())
+        .collect();
+    let envelope: Vec<&str> = w
+        .into_iter()
+        .filter(|w| w.contains("energy anchor"))
+        .collect();
+    assert_eq!(
+        envelope,
+        [
+            "scf reference: basis cc-pvdz is outside the UHF energy anchor \
+          (crates/ferric-scf/tests/validation_open_shell_scf.rs)"
+        ],
+        "{c}"
+    );
+}
+
+#[test]
+fn local_drpa_at_finite_eps_is_ungraded() {
+    let (_, records) = run(
+        "drpa_local",
+        &format!(
+            "{WATER}[method]\nkind = \"drpa\"\n[mp2]\nauxbasis = \"cc-pvdz-ri\"\n\
+             [local]\nscheme = \"amplitude-threshold\"\neps = 1e-4\n"
+        ),
+    );
+    let c = result_certificate(&records, "drpa");
+    assert_eq!(c["capability"], "drpa");
+    assert_eq!(c["grade"], "ungraded");
+    assert!(names(c).contains(&"local".to_string()), "{c}");
+    assert!(c["approximations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|a| a["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("amplitude-threshold eps = 1e-4")));
+}
+
+#[test]
+fn ccsd_t_result_carries_its_table_grade() {
+    let (_, records) = run(
+        "ccsd_t",
+        &format!("{WATER}[method]\nkind = \"ccsd(t)\"\n[mp2]\nauxbasis = \"cc-pvdz-ri\"\n"),
+    );
+    let c = result_certificate(&records, "ccsd(t)");
+    assert_eq!(c["capability"], "ccsd(t)");
+    assert_eq!(c["grade"], "proven_narrow");
+}
+
+#[test]
+fn gw_logs_a_certificate_record_with_the_calibrated_envelope_caveat() {
+    let (stdout, records) = run(
+        "gw",
+        &format!(
+            "{WATER}[method]\nkind = \"gw\"\n[rpa]\nauxbasis = \"cc-pvdz-ri\"\n\
+             n_quad = 16\n[gw]\nmethod = \"g0w0\"\nqp_mos = [3, 6]\n"
+        ),
+    );
+    assert!(
+        stdout.contains("certificate\n  capability  = gw\n"),
+        "{stdout}"
+    );
+    let c = records
+        .iter()
+        .find(|r| r["record"] == "certificate")
+        .unwrap_or_else(|| panic!("no certificate record in {records:?}"));
+    assert_eq!(c["capability"], "gw");
+    assert_eq!(c["grade"], "proven_narrow");
+    let warned = c["warnings"].as_array().unwrap().iter().any(|w| {
+        w.as_str()
+            .unwrap()
+            .contains("u0 = 0.5, n_quad = 16, trunc_thresh = 1e-4")
+    });
+    assert!(warned, "{c}");
+}
+
+fn example(name: &str) -> String {
+    std::fs::read_to_string(workspace_root().join("examples").join(name))
+        .unwrap_or_else(|e| panic!("read examples/{name}: {e}"))
+}
+
+fn periodic_certificate(records: &[serde_json::Value]) -> &serde_json::Value {
+    records
+        .iter()
+        .find(|r| r["record"] == "certificate")
+        .unwrap_or_else(|| panic!("no certificate record in {records:?}"))
+}
+
+#[test]
+fn gamma_cell_logs_an_ungraded_periodic_certificate() {
+    let (stdout, records) = run("cell_gamma", &example("h2-cell-rhf.toml"));
+    assert!(
+        stdout.contains("certificate\n  capability  = rhf-gamma\n"),
+        "{stdout}"
+    );
+    let c = periodic_certificate(&records);
+    assert_eq!(c["capability"], "rhf-gamma");
+    assert_eq!(c["grade"], "ungraded");
+    assert!(c["grade_source"].is_null(), "{c}");
+    assert_eq!(names(c), ["jk", "exxdiv", "kpoints"]);
+    assert_eq!(c["approximations"][0]["detail"], "dense");
+    assert_eq!(c["approximations"][1]["detail"], "ewald");
+    assert_eq!(c["approximations"][2]["detail"], "Gamma point only");
+    assert!(c["warnings"].as_array().unwrap().is_empty(), "{c}");
+    assert!(c["build"]["commit"].is_string(), "{c}");
+}
+
+#[test]
+fn kpoint_cell_logs_its_mesh_in_the_certificate() {
+    let (stdout, records) = run("cell_kpts", &example("h2-cell-kpts-rhf.toml"));
+    assert!(
+        stdout.contains("certificate\n  capability  = rhf-kpts\n"),
+        "{stdout}"
+    );
+    let c = periodic_certificate(&records);
+    assert_eq!(c["capability"], "rhf-kpts");
+    assert_eq!(c["grade"], "ungraded");
+    assert_eq!(c["approximations"][2]["detail"], "2x2x2 mesh, gamma");
+}
+
+#[test]
+fn unconverged_cell_certificate_warns() {
+    let body = example("h2-cell-rhf.toml") + "\n[scf]\nmax_iter = 1\n";
+    let (_stdout, records) = run("cell_unconverged", &body);
+    let c = periodic_certificate(&records);
+    let w: Vec<&str> = c["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w.as_str().unwrap())
+        .collect();
+    assert_eq!(w, ["did not converge (1 iterations)"], "{c}");
+}
+
+fn certificate_note(records: &[serde_json::Value], capability: &str) -> serde_json::Value {
+    records
+        .iter()
+        .find(|r| r["record"] == "certificate" && r["capability"] == capability)
+        .unwrap_or_else(|| panic!("no {capability} certificate record in {records:?}"))
+        .clone()
+}
+
+#[test]
+fn double_hybrids_log_a_certificate_with_their_grade_and_scaling() {
+    for (kind, grade, c_os, c_ss) in [
+        ("b2plyp", "proven", "0.27", "0.27"),
+        ("dsd-pbep86", "proven", "0.51", "0.36"),
+    ] {
+        let (stdout, records) = run(
+            kind,
+            &format!("{WATER}[method]\nkind = \"{kind}\"\n[mp2]\nauxbasis = \"cc-pvdz-ri\"\n"),
+        );
+        assert!(
+            stdout.contains(&format!("certificate\n  capability  = {kind}\n")),
+            "{stdout}"
+        );
+        let c = certificate_note(&records, kind);
+        assert_eq!(c["grade"], grade, "{c}");
+        // The default run (pruned grid, f32 RI-J) is outside the B2PLYP
+        // evidence, so it carries no anchor (either double hybrid).
+        assert!(c.get("measured_error").is_none_or(|m| m.is_null()), "{c}");
+        assert_eq!(c["build"]["commit"], ferric_build_info::COMMIT);
+        let n = names(&c);
+        assert!(n.contains(&"scf xc-grid".to_string()), "{n:?}");
+        assert!(n.contains(&"ri".to_string()), "{n:?}");
+        let scaling = c["approximations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == "spin-component-scaling")
+            .unwrap_or_else(|| panic!("no scaling entry: {c}"));
+        assert_eq!(scaling["detail"], format!("c_os = {c_os}, c_ss = {c_ss}"));
+    }
+}
+
+#[test]
+fn wb97x_l_v_logs_its_lambda_omega_and_ks_reference() {
+    let (stdout, records) = run(
+        "wb97x_l_v",
+        &format!(
+            "{WATER}[method]\nkind = \"wb97x-l-v\"\n[dft]\nlambda = 0.5\nomega = 0.2\n\
+             [mp2]\nauxbasis = \"cc-pvdz-ri\"\n"
+        ),
+    );
+    assert!(
+        stdout.contains("certificate\n  capability  = wb97x-l-v\n"),
+        "{stdout}"
+    );
+    let c = certificate_note(&records, "wb97x-l-v");
+    assert_eq!(c["grade"], "proven_narrow", "{c}");
+    let dh = c["approximations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "double-hybrid")
+        .unwrap_or_else(|| panic!("no double-hybrid entry: {c}"));
+    assert!(
+        dh["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("lambda = 0.5, omega = 0.2 Bohr^-1"),
+        "{dh}"
+    );
+    assert!(names(&c).contains(&"scf xc-grid".to_string()), "{c}");
+}
+
+#[test]
+fn tda_and_tddft_log_the_grid_they_ran_on() {
+    // HF reference (CIS): no grid, no kernel.
+    let (_, records) = run(
+        "tda_hf",
+        &format!("{WATER}[method]\nkind = \"tda\"\n[tddft]\nn_roots = 2\n"),
+    );
+    let c = certificate_note(&records, "tda");
+    assert_eq!(c["grade"], "proven_narrow", "{c}");
+    assert!(!names(&c).contains(&"response-grid".to_string()), "{c}");
+
+    // KS TDDFT on the default grid.
+    let (stdout, records) = run(
+        "tddft_pbe",
+        &format!("{WATER}[method]\nkind = \"tddft\"\n[tddft]\nn_roots = 2\nxc = \"PBE\"\n"),
+    );
+    assert!(
+        stdout.contains("certificate\n  capability  = tddft\n"),
+        "{stdout}"
+    );
+    let c = certificate_note(&records, "tddft");
+    assert_eq!(c["grade"], "proven_narrow", "{c}");
+    let g = c["approximations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "response-grid")
+        .unwrap_or_else(|| panic!("no response-grid: {c}"));
+    assert!(g["detail"].as_str().unwrap().ends_with("[default]"), "{g}");
+    // The only warnings are the reference's (water / STO-3G is outside the
+    // RKS anchor).
+    assert!(own_warnings(&c).is_empty(), "{c}");
+
+    // A meta-GGA defaults to the finer response grid and says so.
+    let (_, records) = run(
+        "tda_r2scan",
+        &format!("{WATER}[method]\nkind = \"tda\"\n[tddft]\nn_roots = 2\nxc = \"r2SCAN\"\n"),
+    );
+    let c = certificate_note(&records, "tda");
+    let g = c["approximations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "response-grid")
+        .unwrap_or_else(|| panic!("no response-grid: {c}"));
+    let d = g["detail"].as_str().unwrap();
+    assert!(
+        d.starts_with("(150, 434)") && d.ends_with("[meta-GGA response default]"),
+        "{d}"
+    );
+    assert_eq!(own_warnings(&c).len(), 1, "{c}");
+}
+
+/// The warnings of `c` that are not carried from its SCF reference.
+fn own_warnings(c: &serde_json::Value) -> Vec<&str> {
+    c["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w.as_str().unwrap())
+        .filter(|w| !w.starts_with("scf reference: "))
+        .collect()
+}
+
+/// `[scf] eri = "incore"` on a correlated kind: the fitted DF-guess
+/// pre-stage runs on its own route, the exact reference takes the in-core
+/// store, the run log notes it and the correlated certificate carries it as
+/// the reference's route (`scf eri`), not as an approximation.
+#[test]
+fn incore_eri_reference_is_a_route_of_the_correlated_certificate() {
+    let (_, records) = run(
+        "oo_rimp2_incore",
+        &format!(
+            "{WATER}[method]\nkind = \"oo-rimp2\"\n[mp2]\nauxbasis = \"cc-pvdz-ri\"\n\
+             [scf]\neri = \"incore\"\n"
+        ),
+    );
+    assert!(
+        records.iter().any(|r| r["record"] == "eri_store"),
+        "no eri_store note in the run log"
+    );
+    let c = result_certificate(&records, "oo-rimp2");
+    let routes: Vec<&str> = c["routes"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|r| r["name"].as_str()).collect())
+        .unwrap_or_default();
+    assert_eq!(routes, ["scf eri"], "{c}");
+    assert!(!names(c).iter().any(|n| n.contains("eri")), "{c}");
+}
+
+/// PDEP-RPA writes its own `result` record: the total (reference + RPA
+/// correlation), the correlation energy and the reference energy, so a log
+/// consumer does not scrape stdout.
+#[test]
+fn pdep_rpa_logs_its_total_in_the_run_log() {
+    let (stdout, records) = run(
+        "pdep_rpa_result",
+        &format!("{WATER}[method]\nkind = \"pdep-rpa\"\n[rpa]\nauxbasis = \"cc-pvdz-ri\"\n"),
+    );
+    assert!(
+        !records
+            .iter()
+            .any(|r| r["record"] == "result_unlogged" && r["kind"] == "pdep-rpa"),
+        "pdep-rpa must not claim to be unlogged: {records:?}"
+    );
+    let r = records
+        .iter()
+        .find(|r| r["record"] == "result" && r["kind"] == "pdep-rpa")
+        .unwrap_or_else(|| panic!("no pdep-rpa result record in {records:?}"));
+    let total = r["total"].as_f64().expect("numeric total");
+    let e_corr = r["components"]["e_corr"].as_f64().expect("e_corr");
+    let e_ref = r["components"]["e_scf_reference"]
+        .as_f64()
+        .expect("e_scf_reference");
+    assert!(e_corr < 0.0, "RPA correlation is negative: {e_corr}");
+    assert_eq!(total, e_ref + e_corr);
+    // The record carries the same number stdout prints for the total.
+    let printed = stdout
+        .lines()
+        .find(|l| l.starts_with("Total (RHF+RPA):"))
+        .and_then(|l| l.split_whitespace().nth(2))
+        .and_then(|t| t.parse::<f64>().ok())
+        .unwrap_or_else(|| panic!("no total line in {stdout}"));
+    assert!((printed - total).abs() < 1e-9, "{printed} vs {total}");
+}

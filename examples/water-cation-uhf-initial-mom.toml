@@ -1,0 +1,22 @@
+# UHF/STO-3G water cation doublet with [scf] mom_reference = "initial": the
+# occupied orbitals of the starting guess are held fixed as the MOM reference
+# from the first iteration (initial MOM, Barca, Gilbert and Gill 2018). Same as
+# the Python `run_uhf(mom_reference="initial")`. UHF/UKS only; it cannot be
+# combined with mom_after_iter > 0 or stability_descent. The CLI has no
+# starting-density input, so a core hole needs the Python dm0= route.
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+charge = 1
+multiplicity = 2
+
+[basis]
+name = "sto-3g"
+
+[method]
+kind = "uhf"
+
+[scf]
+density_conv = 1e-9
+energy_conv = 1e-10
+max_iter = 100
+mom_reference = "initial"

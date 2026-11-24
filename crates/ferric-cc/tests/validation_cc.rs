@@ -36,8 +36,8 @@
 //! (spin-adapted CCSD and (T) only — the spin-orbital driver holds two
 //! (2·nv)⁴ = 98⁴ tensors there, ~1.5 GB, and is too slow for this tier).
 //!
-//! Closed shell only: ferric's CC and MP3 drivers take a restricted reference
-//! (`ScfResult::eps_r`/`mos_r`), so there is no open-shell CC to validate.
+//! Closed shell only. The open-shell UCCSD / UCCSD(T) row is
+//! `validation_uccsd.rs`.
 //!
 //! # Physics hypothesis vs artifact hypothesis (per the Experimental Protocol)
 //!
@@ -48,7 +48,7 @@
 //! * If a residual term is wrong or missing (a dropped ring or ladder, a wrong
 //!   permutation factor, a (T) multiplicity weight): the energy misses by
 //!   1e-5 to 1e-2 Ha, which is 3+ orders above the bar. A term that is exactly
-//!   zero for H2 (the old test system) is not zero here.
+//!   zero for H2 (a smaller test system) is not zero here.
 //! * If the HARNESS is broken instead: a geometry/unit slip fails the nuclear
 //!   repulsion check; a basis slip fails the AO count or the RHF energy check;
 //!   a wrong aux basis or an exact-vs-DF mix-up shows up as the DF error,
@@ -60,8 +60,8 @@
 //! # TOLERANCES
 //!
 //! Each bar is set from the measured maximum recorded on its const. The
-//! spin-orbital CCSD bar was unreachable before the ccsd.rs fix on this branch
-//! (it missed by 6.6e-6..8.9e-5; see the commit message).
+//! spin-orbital CCSD bar is reachable only with the ccsd.rs taus/F_ae/F_mi
+//! terms correct (a defect there misses it by 6.6e-6..8.9e-5).
 //!
 //! # NEGATIVE CONTROLS / MUTATIONS (asserted inside the tests)
 //!
@@ -97,6 +97,7 @@ use ferric_mp2::mp3::mp3_energy;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use serde_json::Value;
 
 const ROW_DIR: &str = "testdata/reference/validation/cc";
@@ -163,12 +164,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn uint(v: &Value, ptr: &str, ctx: &str) -> usize {
     v.pointer(ptr)
         .and_then(Value::as_u64)
@@ -196,7 +191,7 @@ fn load_case(system: &str, basis_name: &str, checks: &mut Checks) -> Case {
     // Geometry like-for-like FIRST: a unit/constant slip fails as a geometry
     // defect, not as an unexplained correlation-energy offset. Hard assert:
     // nothing downstream means anything if this is wrong.
-    let enuc_ref = num(&reference, "/nuclear_repulsion", &ctx);
+    let enuc_ref = num_ctx(&reference, "/nuclear_repulsion", &ctx);
     let enuc = mol.nuclear_repulsion();
     assert!(
         (enuc - enuc_ref).abs() < TOL_ENUC,
@@ -222,12 +217,10 @@ fn load_case(system: &str, basis_name: &str, checks: &mut Checks) -> Case {
 
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let cfg = RhfConfig {
-        max_iter: 200,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_max_iter(200)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9);
     let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg)
         .unwrap_or_else(|e| panic!("{ctx}: RHF failed: {e:?}"));
     assert!(rhf.converged, "{ctx}: RHF did not converge");
@@ -240,7 +233,7 @@ fn load_case(system: &str, basis_name: &str, checks: &mut Checks) -> Case {
         &ctx,
         "E_RHF",
         rhf.energy,
-        num(&reference, "/rhf/energy", &ctx),
+        num_ctx(&reference, "/rhf/energy", &ctx),
         TOL_RHF,
     );
     let n_frozen = uint(&reference, "/n_frozen_core_control", &ctx);
@@ -353,12 +346,16 @@ fn mp3_matches_df_reference() {
         ("h2o", "def2-svp", false),
         ("nh3", "cc-pvdz", true),
         ("nh3", "def2-svp", false),
+        ("ch4", "cc-pvdz", false),
+        ("ch4", "def2-svp", false),
+        ("hf", "cc-pvdz", false),
+        ("hf", "def2-svp", false),
     ] {
         let c = load_case(system, basis_name, &mut ck);
         let ctx = c.ctx.as_str();
         let r = &c.reference;
-        let e2_ref = num(r, "/all_electron/mp3/e_mp2", ctx);
-        let e3_ref = num(r, "/all_electron/mp3/e_mp3", ctx);
+        let e2_ref = num_ctx(r, "/all_electron/mp3/e_mp2", ctx);
+        let e3_ref = num_ctx(r, "/all_electron/mp3/e_mp3", ctx);
         assert_nonvacuous(ctx, "E_MP2", e2_ref);
         assert!(
             e3_ref.abs() > 1e-4,
@@ -380,10 +377,10 @@ fn mp3_matches_df_reference() {
             ctx,
             "E_MP2+E(3)",
             m.e_corr,
-            num(r, "/all_electron/mp3/e_corr", ctx),
+            num_ctx(r, "/all_electron/mp3/e_corr", ctx),
             TOL_MP,
         );
-        let fc_ref = num(r, "/frozen_core/mp3/e_corr", ctx);
+        let fc_ref = num_ctx(r, "/frozen_core/mp3/e_corr", ctx);
         ck.miss(ctx, "all-electron MP3 vs frozen-core ref", m.e_corr, fc_ref);
         if check_frozen {
             let mf = mp3_energy(
@@ -400,7 +397,7 @@ fn mp3_matches_df_reference() {
                 ctx,
                 "E(3) frozen core",
                 mf.e_mp3,
-                num(r, "/frozen_core/mp3/e_mp3", ctx),
+                num_ctx(r, "/frozen_core/mp3/e_mp3", ctx),
                 TOL_MP,
             );
             ck.close(ctx, "E_MP3 corr frozen core", mf.e_corr, fc_ref, TOL_MP);
@@ -426,7 +423,7 @@ fn ccd_matches_df_reference() {
         let c = load_case(system, basis_name, &mut ck);
         let ctx = c.ctx.as_str();
         let r = &c.reference;
-        let e_ref = num(r, "/all_electron/ccd/e_corr", ctx);
+        let e_ref = num_ctx(r, "/all_electron/ccd/e_corr", ctx);
         assert_nonvacuous(ctx, "E_CCD", e_ref);
         let res = ccd(
             &c.mol,
@@ -443,13 +440,13 @@ fn ccd_matches_df_reference() {
             ctx,
             "CCD vs CCSD ref",
             res.correlation_energy,
-            num(r, "/all_electron/ccsd/e_corr", ctx),
+            num_ctx(r, "/all_electron/ccsd/e_corr", ctx),
         );
         ck.miss(
             ctx,
             "all-electron CCD vs frozen-core ref",
             res.correlation_energy,
-            num(r, "/frozen_core/ccd/e_corr", ctx),
+            num_ctx(r, "/frozen_core/ccd/e_corr", ctx),
         );
         if check_frozen {
             let rf = ccd(
@@ -465,7 +462,7 @@ fn ccd_matches_df_reference() {
                 ctx,
                 "E_CCD frozen core",
                 rf.correlation_energy,
-                num(r, "/frozen_core/ccd/e_corr", ctx),
+                num_ctx(r, "/frozen_core/ccd/e_corr", ctx),
                 TOL_CC,
             );
         }
@@ -481,20 +478,20 @@ fn ccd_matches_df_reference() {
 fn check_ccsd(ck: &mut Checks, c: &Case, label: &str, e: f64) {
     let ctx = c.ctx.as_str();
     let r = &c.reference;
-    let e_ref = num(r, "/all_electron/ccsd/e_corr", ctx);
+    let e_ref = num_ctx(r, "/all_electron/ccsd/e_corr", ctx);
     assert_nonvacuous(ctx, "E_CCSD", e_ref);
     ck.close(ctx, &format!("E_CCSD {label}"), e, e_ref, TOL_CC);
     ck.miss(
         ctx,
         &format!("{label} CCSD vs frozen-core ref"),
         e,
-        num(r, "/frozen_core/ccsd/e_corr", ctx),
+        num_ctx(r, "/frozen_core/ccsd/e_corr", ctx),
     );
     ck.miss(
         ctx,
         &format!("{label} CCSD vs exact-integral CCSD"),
         e,
-        num(r, "/conventional_exact_integrals/ccsd_e_corr", ctx),
+        num_ctx(r, "/conventional_exact_integrals/ccsd_e_corr", ctx),
     );
     if let Some(e_ccd) = r
         .pointer("/all_electron/ccd/e_corr")
@@ -504,13 +501,17 @@ fn check_ccsd(ck: &mut Checks, c: &Case, label: &str, e: f64) {
     }
 }
 
-const CCSD_SYSTEMS: [(&str, &str); 6] = [
+const CCSD_SYSTEMS: [(&str, &str); 10] = [
     ("h2o", "cc-pvdz"),
     ("h2o", "def2-svp"),
     ("nh3", "cc-pvdz"),
     ("nh3", "def2-svp"),
     ("hcn", "cc-pvdz"),
     ("h2o", "aug-cc-pvdz"),
+    ("ch4", "cc-pvdz"),
+    ("ch4", "def2-svp"),
+    ("hf", "cc-pvdz"),
+    ("hf", "def2-svp"),
 ];
 
 #[test]
@@ -527,7 +528,7 @@ fn ccsd_spin_orbital_matches_df_reference() {
                 &c.ctx,
                 "E_CCSD so frozen core",
                 rf.correlation_energy,
-                num(&c.reference, "/frozen_core/ccsd/e_corr", &c.ctx),
+                num_ctx(&c.reference, "/frozen_core/ccsd/e_corr", &c.ctx),
                 TOL_CC,
             );
         }
@@ -572,7 +573,7 @@ fn ccsd_spin_adapted_matches_df_reference() {
                 &c.ctx,
                 "E_CCSD sa frozen core",
                 rf.correlation_energy,
-                num(&c.reference, "/frozen_core/ccsd/e_corr", &c.ctx),
+                num_ctx(&c.reference, "/frozen_core/ccsd/e_corr", &c.ctx),
                 TOL_CC,
             );
         }
@@ -602,7 +603,7 @@ fn ccsd_spin_adapted_matches_df_reference() {
 fn check_t(ck: &mut Checks, c: &Case, label: &str, e_t: f64) {
     let ctx = c.ctx.as_str();
     let r = &c.reference;
-    let t_ref = num(r, "/all_electron/ccsd_t/e_t", ctx);
+    let t_ref = num_ctx(r, "/all_electron/ccsd_t/e_t", ctx);
     assert!(
         t_ref < -1e-4,
         "{ctx}: reference (T) = {t_ref:.12} is not a plausible triples energy"
@@ -614,7 +615,7 @@ fn check_t(ck: &mut Checks, c: &Case, label: &str, e_t: f64) {
         ctx,
         &format!("{label} (T) vs frozen-core (T) ref"),
         e_t,
-        num(r, "/frozen_core/ccsd_t/e_t", ctx),
+        num_ctx(r, "/frozen_core/ccsd_t/e_t", ctx),
     );
 }
 
@@ -657,7 +658,7 @@ fn ccsd_t_spin_orbital_matches_df_reference() {
                 &c.ctx,
                 "E_(T) so frozen core",
                 e_tf,
-                num(&c.reference, "/frozen_core/ccsd_t/e_t", &c.ctx),
+                num_ctx(&c.reference, "/frozen_core/ccsd_t/e_t", &c.ctx),
                 TOL_T,
             );
         }
@@ -705,7 +706,7 @@ fn ccsd_t_spin_adapted_matches_df_reference() {
                 &c.ctx,
                 "E_(T) sa frozen core",
                 e_tf,
-                num(&c.reference, "/frozen_core/ccsd_t/e_t", &c.ctx),
+                num_ctx(&c.reference, "/frozen_core/ccsd_t/e_t", &c.ctx),
                 TOL_T,
             );
         }

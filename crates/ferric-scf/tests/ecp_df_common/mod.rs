@@ -2,6 +2,12 @@
 //! `validation_ecp_df_hessian.rs` (validation tier): ECP + density-fitted
 //! analytic Hessians against central FD of ferric's analytic gradient.
 #![allow(dead_code)]
+// RI-J pinned to the f64 tensor (`ri_j_precision: Some(F64)` in every config
+// here): these tests validate f64 implementation code against finite
+// differences, another tier or f64 reference values at bars below the f32
+// default's effect (its energy shift is ~1e-6 Ha, and its energy surface jitters
+// by ~1e-7..1e-6 Ha between nearby geometries; site/src/methods/scf.md, "RI-J
+// tensor precision").
 
 use ferric_core::basis::{self, BasisSet};
 use ferric_core::mol::Molecule;
@@ -19,11 +25,11 @@ use ferric_scf::ScfResult;
 use ndarray::Array2;
 
 /// Well-conditioned fitting basis on iodine systems (RI-K metric cond < 1e8;
-/// measured through the probe: HI, HOI, CH3I all pass).
+/// HI, HOI, CH3I all pass the probe).
 pub const AUX_OK: &str = "def2-svp-rifit";
 /// Ordinary J/K fit. On iodine systems its exchange metric has cond 4.9e8
-/// (HI) to 1.4e9 (CH3I), above `RIK_COND_WARN` = 1e8, where the code states
-/// accuracy is no longer established; the probe refuses it for `Auto`.
+/// (HI) to 1.4e9 (CH3I); the gate reads the smallest eigenvalue, not cond
+/// (`hessian_df_k`, "Conditioning"), and admits it for `Auto`.
 pub const AUX_HIGH_COND: &str = "def2-universal-jkfit";
 
 /// Analytic vs FD of the analytic gradient, Ha/Bohr².
@@ -79,14 +85,13 @@ pub fn config(fit: Fit) -> RhfConfig {
         Fit::K(a) => (None, aux(a)),
         Fit::Jk(a) => (aux(a), aux(a)),
     };
-    RhfConfig {
-        max_iter: 300,
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        df_j_aux: Some(j.unwrap_or_default()),
-        df_k_aux: Some(k.unwrap_or_default()),
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_max_iter(300)
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10)
+        .with_df_j_aux(j.unwrap_or_default())
+        .with_df_k_aux(k.unwrap_or_default())
 }
 
 pub fn ecp_mol(xyz: &str, mult: usize, bs: &BasisSet) -> Molecule {

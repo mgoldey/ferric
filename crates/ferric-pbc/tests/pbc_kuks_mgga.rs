@@ -122,6 +122,7 @@ fn kuks_on(
 /// AOs) and 2x2x2 meshes.
 /// Blind to a tau/spin-channel error by construction (module doc), so it is
 /// necessary, not sufficient.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn singlet_k_uks_is_k_rks() {
     let bs = pyscf_sto3g_h();
@@ -167,6 +168,7 @@ fn singlet_k_uks_is_k_rks() {
 
 /// The 1x1x1 singlet against the Gamma-point `gamma_rks` (real
 /// lattice-summed AOs; the Gamma entry has no open-shell meta-GGA).
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn one_point_mesh_singlet_is_gamma_rks() {
     let cell = triclinic_cell();
@@ -281,6 +283,7 @@ fn fd_vs_v_worst_rel(
 /// needed): energy pins are inherently weak for Fock-only errors (dropping
 /// beta `V^tau` is second order in the energy, 2.0e-5 at 1x1x1 and 2.1e-6 at
 /// 1x1x2), the FD check is first order.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn polarized_vxc_is_the_derivative_of_exc() {
     let cell = h3_doublet();
@@ -362,6 +365,7 @@ fn supercell(cell: &Cell, n: [usize; 3], mult: usize) -> (Cell, Vec<[f64; 3]>) {
 /// the k-point code (the supercell at 1x1x1 on the replicated grid; there is
 /// no open-shell Gamma meta-GGA to compare with). Open shell, multiplicity
 /// `(N_a - N_b) N_k + 1`.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn polarized_k_mesh_is_the_supercell() {
     let cell = h3_doublet();
@@ -423,6 +427,7 @@ fn kuks_uniform(
 /// `scripts/gen_pyscf_kuks_mgga_refs.py`). The other seven pins and the
 /// mutant-versus-pin checks live in `validation_pbc_kuks_mgga.rs` (weekly).
 /// Measured miss 4.0e-13; bar 1e-9.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h3_scan_matches_pinned_pyscf() {
     let cell = pin_cell("h3");
@@ -463,7 +468,8 @@ fn empty_beta_channel_is_finite_or_refused() {
 /// share) the open-shell meta-GGA forces and stress outside the wired UKS
 /// SCAN / r2SCAN on the dense-AFT J/K: the UKS force and stress on RS-GDF
 /// (validated in the library, `pbc_kuks_mgga_rsgdf.rs`; only the RS-GDF
-/// ENERGY is wired, #498) and every ROKS meta-GGA derivative.
+/// ENERGY is wired, #498) and the ROKS one on RS-GDF (its SCF refuses it).
+/// The ROKS SCAN / r2SCAN force and stress on the dense-AFT J/K pass (#498).
 #[test]
 fn unvalidated_meta_gga_requests_are_refused() {
     let cell = h3_doublet();
@@ -477,22 +483,32 @@ fn unvalidated_meta_gga_requests_are_refused() {
             solve_kuks_on_grid(&cell, &prep, None, &mesh, &grid, &kuks_cfg(&cell, f)).expect_err(f);
         assert!(e.to_string().contains("meta-GGA"), "{f}: {e}");
     }
-    // Forces / stress: the Python / CLI derivative gate takes the UKS
-    // meta-GGA on the dense-AFT J/K only, and ROKS not at all (its library
-    // force and stress exist since #492; the bindings are #498).
+    // Forces / stress: the Python / CLI derivative gate takes the UKS and
+    // ROKS meta-GGA on the dense-AFT J/K only (the ROKS library force and
+    // stress exist since #492; wired to the bindings by #498).
     use ferric_pbc::kxcgrad::{check_kpoint_deriv_functional, DerivSpin};
     for f in ["SCAN", "R2SCAN"] {
-        check_kpoint_deriv_functional(DerivSpin::Unrestricted, false, f, "with_gradient")
-            .unwrap_or_else(|e| panic!("{f}: {e}"));
-        let e = check_kpoint_deriv_functional(DerivSpin::Unrestricted, true, f, "with_gradient")
-            .expect_err(f);
-        assert!(e.contains("run on the dense-AFT J/K only"), "{f}: {e}");
-        let e = check_kpoint_deriv_functional(DerivSpin::RestrictedOpen, false, f, "with_stress")
-            .expect_err(f);
-        assert!(
-            e.contains("ROKS meta-GGA force and stress are library-only")
-                && e.contains("not wired in the bindings (#498)"),
-            "{f}: {e}"
-        );
+        for (spin, label) in [
+            (DerivSpin::Unrestricted, "UKS"),
+            (DerivSpin::RestrictedOpen, "ROKS"),
+        ] {
+            for what in ["with_gradient", "with_stress"] {
+                check_kpoint_deriv_functional(spin, false, f, what)
+                    .unwrap_or_else(|e| panic!("{f} {label} {what}: {e}"));
+                let e = check_kpoint_deriv_functional(spin, true, f, what).expect_err(f);
+                assert!(
+                    e.starts_with(&format!("{what}: "))
+                        && e.contains(&format!("{f}: the open-shell ({label}) meta-GGA"))
+                        && e.contains("run on the dense-AFT J/K only"),
+                    "{f} {label}: {e}"
+                );
+            }
+        }
+    }
+    // TPSS stays closed-shell only, on every open-shell route.
+    for spin in [DerivSpin::Unrestricted, DerivSpin::RestrictedOpen] {
+        let e =
+            check_kpoint_deriv_functional(spin, false, "TPSS", "with_gradient").expect_err("TPSS");
+        assert!(e.contains("TPSS is closed-shell only"), "{e}");
     }
 }

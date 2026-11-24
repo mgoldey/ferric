@@ -1,0 +1,345 @@
+"""The `certificate` dict on post-SCF results: RiMp2Result, CcResult,
+PdepRpaResult, GwResult, BseResult, and the MP2-family, dRPA, LinLCCD,
+open-shell GW and RPAx results."""
+
+import ferric
+
+_WATER = "3\n\nO 0 0 0.1173\nH 0 0.7572 -0.4692\nH 0 -0.7572 -0.4692\n"
+
+
+def _setup():
+    mol = ferric.Molecule.from_xyz_string(_WATER)
+    return mol, ferric.BasisSet.bundled("sto-3g"), ferric.BasisSet.bundled("cc-pvdz-ri")
+
+
+def _names(c):
+    return [a["name"] for a in c["approximations"]]
+
+
+def test_rimp2_certificate():
+    mol, bs, aux = _setup()
+    c = ferric.run_rimp2(mol, bs, aux, frozen_core=1).certificate
+    assert c["capability"] == "rimp2"
+    assert c["grade"] == "proven"
+    assert _names(c) == ["ri", "frozen-core"]
+    # The RHF RI-MP2 anchor's evidence correlates all electrons.
+    assert c.get("measured_error") is None
+    assert c["approximations"][0]["detail"] == "aux cc-pvdz-ri"
+    assert c["build"]["commit"] == ferric.build_info()["commit"]
+
+
+def test_rimp2_outside_its_anchor_warns_without_changing_the_grade():
+    # The RI-MP2 anchor (crates/ferric-core/src/certificate/anchors.rs) runs
+    # no STO-3G orbital basis; H, O and cc-pVDZ-RI are covered.
+    mol, bs, aux = _setup()
+    c = ferric.run_rimp2(mol, bs, aux).certificate
+    ev = c["measured_error"]["evidence"]
+    assert c["grade"] == "proven"
+    assert c["warnings"] == [f"basis sto-3g is outside the RI-MP2 energy anchor ({ev})"]
+
+
+def test_rimp2_inside_its_anchor_carries_no_warning():
+    mol, _, aux = _setup()
+    c = ferric.run_rimp2(mol, ferric.BasisSet.bundled("cc-pvdz"), aux).certificate
+    assert c["measured_error"]["value"] == 2.4e-10
+    assert c["measured_error"]["quantity"] == "correlation energy"
+    assert c["warnings"] == []
+
+
+def test_local_rimp2_certificate_is_capped():
+    mol, bs, aux = _setup()
+    c = ferric.run_rimp2(
+        mol, bs, aux, local="amplitude-threshold", eps=1e-4
+    ).certificate
+    assert c["capability"] == "rimp2"
+    assert c["grade"] == "ungraded"
+    assert "local" in _names(c)
+
+
+def test_cc_certificates_carry_table_grades():
+    mol, bs, aux = _setup()
+    assert ferric.run_ccsd(mol, bs, aux).certificate["grade"] == "proven"
+    t = ferric.run_ccsd_t(mol, bs, aux).certificate
+    assert t["capability"] == "ccsd(t)"
+    assert t["grade"] == "proven_narrow"
+    assert ferric.run_ccd(mol, bs, aux).certificate["capability"] == "ccd"
+
+
+def test_pdep_gw_bse_certificates():
+    mol, bs, aux = _setup()
+    p = ferric.run_pdep_rpa(mol, bs, aux).certificate
+    assert p["capability"] == "pdep-rpa"
+    assert p["grade"] == "proven"
+    assert "frequency-quadrature" in _names(p)
+    g = ferric.run_gw(mol, bs, aux).certificate
+    assert g["capability"] == "gw"
+    assert g["grade"] == "proven_narrow"
+    # The GW defaults (n_quad = 40, trunc_thresh = 1e-4) are inside the
+    # calibrated envelope: no settings caveat, and the run used 40 points.
+    assert not any("n_quad" in w for w in g["warnings"]), g
+    quad = [
+        a["detail"] for a in g["approximations"] if a["name"] == "frequency-quadrature"
+    ]
+    assert quad == ["gausslegendre, 40 points"], quad
+    b = ferric.run_bse_tda(mol, bs, aux).certificate
+    assert b["capability"] == "bse-tda"
+    assert b["grade"] == "smoke"
+
+
+def test_periodic_certificate_is_ungraded():
+    a = 4.0 * 0.529177210903  # 4 Bohr cubic cell, in Angstrom
+    h2 = ferric.Molecule.from_xyz_string("2\n\nH 0 0 0\nH 0 0 0.74\n")
+    lattice = [[a, 0.0, 0.0], [0.0, a, 0.0], [0.0, 0.0, a]]
+    r = ferric.run_rhf_gamma(h2, lattice, ferric.BasisSet.bundled("sto-3g"))
+    c = r.certificate
+    assert c["capability"] == "rhf-gamma"
+    assert c["grade"] == "ungraded"
+    assert c["grade_source"] is None
+    assert [a["name"] for a in c["approximations"]] == ["jk", "exxdiv", "kpoints"]
+    assert c["approximations"][0]["detail"] == "dense"
+
+
+def _row(c, cap, grade, approx):
+    assert c["capability"] == cap, c
+    assert c["grade"] == grade, c
+    assert c["grade_source"] == "site/src/reference/validation.md"
+    for a in approx:
+        assert a in _names(c), (a, c)
+    # Stamped with this build.
+    assert c["build"]["commit"] == ferric.build_info()["commit"]
+
+
+def test_mp2_family_certificates_carry_table_grades():
+    mol, bs, aux = _setup()
+    _row(ferric.run_mp3(mol, bs, aux).certificate, "mp3", "proven", ["ri"])
+    _row(
+        ferric.run_oo_rimp2(mol, bs, aux).certificate,
+        "oo-rimp2",
+        "proven_narrow",
+        ["ri"],
+    )
+    lap = ferric.run_laplace_mp2(mol, bs, aux, n_quad=3).certificate
+    _row(lap, "laplace-mp2", "proven", ["ri", "laplace"])
+    assert [a["detail"] for a in lap["approximations"] if a["name"] == "laplace"] == [
+        "3-point minimax quadrature"
+    ]
+    sos = ferric.run_laplace_sos_mp2(mol, bs, aux, c_os=1.1, n_quad=3).certificate
+    _row(sos, "laplace-sos-mp2", "proven", ["sos", "laplace"])
+    assert [a["detail"] for a in sos["approximations"] if a["name"] == "sos"] == [
+        "c_os = 1.1, c_ss = 0"
+    ]
+    att = ferric.run_attenuated_rimp2(mol, bs, aux).certificate
+    _row(att, "att-rimp2", "proven", ["ri", "operator"])
+    scs = ferric.run_scs_mp2(mol, bs, aux, c_os=1.1, c_ss=0.4).certificate
+    _row(scs, "scs-mp2", "proven", ["ri", "scs"])
+    assert [a["detail"] for a in scs["approximations"] if a["name"] == "scs"] == [
+        "c_os = 1.1, c_ss = 0.4"
+    ]
+
+
+def test_oo_rimp2_unconverged_is_not_graded():
+    mol, bs, aux = _setup()
+    r = ferric.run_oo_rimp2(mol, bs, aux, oo_max_iter=1)
+    assert not r.converged
+    c = r.certificate
+    assert c["grade"] == "ungraded"
+    assert any("orbital optimization did not converge" in w for w in c["warnings"]), c
+
+
+def test_drpa_and_linlccd_dicts_carry_certificates():
+    mol, bs, aux = _setup()
+    d = ferric.run_drpa(mol, bs, aux)
+    _row(d["certificate"], "drpa", "proven_narrow", ["ri"])
+    assert "local" not in _names(d["certificate"])
+    dl = ferric.run_drpa(mol, bs, aux, local="amplitude-threshold", eps=1e-4)
+    assert dl["certificate"]["grade"] == "ungraded"
+    assert "local" in _names(dl["certificate"])
+    lin = ferric.run_linlccd(mol, bs, aux)
+    _row(lin["certificate"], "linlccd", "proven_narrow", ["ri", "variant"])
+    ll = ferric.run_linlccd(mol, bs, aux, local="amplitude-threshold", eps=1e-4)
+    assert ll["certificate"]["grade"] == "ungraded"
+    assert "local" in _names(ll["certificate"])
+
+
+def test_rs_mp2_rpa_certificate_names_its_split():
+    mol, bs, aux = _setup()
+    c = ferric.run_rs_mp2_rpa(mol, bs, aux, omega=0.42).certificate
+    _row(c, "rs-mp2-rpa", "proven", ["ri", "range-separation", "frequency-quadrature"])
+    detail = [
+        a["detail"] for a in c["approximations"] if a["name"] == "range-separation"
+    ]
+    assert detail and detail[0].startswith("erf/erfc split"), detail
+
+
+def test_u_gw_certificate_is_graded_on_the_open_shell_reference():
+    oh = ferric.Molecule.from_xyz_string("2\n\nO 0 0 0\nH 0 0 0.97\n", multiplicity=2)
+    bs, aux = ferric.BasisSet.bundled("sto-3g"), ferric.BasisSet.bundled("cc-pvdz-ri")
+    c = ferric.run_u_gw(oh, bs, aux, qp_mos=(3, 6), n_quad=8).certificate
+    assert c["capability"] == "gw"
+    assert c["grade"] == "proven_narrow"
+    assert any("n_quad = 8" in w for w in c["warnings"]), c
+    assert not any("open-shell KS reference" in w for w in c["warnings"]), c
+    # U-G0W0 on a UKS reference is compared (against the grid-free U-dRPA
+    # pole sum) and converged at the default quadrature: no warning.
+    k = ferric.run_u_gw(oh, bs, aux, xc="pbe", qp_mos=(3, 6)).certificate
+    assert k["grade"] == "proven_narrow"
+    assert not any("open-shell KS reference" in w for w in k["warnings"]), k
+    assert not any("n_quad = " in w for w in k["warnings"]), k
+    # Eigenvalue self-consistency on UKS is not compared and says so. (A ROKS
+    # reference warns too, but run_u_gw(xc=..., reference="rohf") on OH fails
+    # in the full-rank PDEP eigh on main as of 2026-11-08, LAPACK code 69, at
+    # STO-3G, 6-31G and cc-pVDZ alike, so it cannot be exercised here.)
+    ev = ferric.run_u_gw(
+        oh, bs, aux, xc="pbe", method="evgw0", qp_mos=(3, 6)
+    ).certificate
+    assert any("open-shell KS reference" in w for w in ev["warnings"]), ev
+    assert c["build"]["commit"] == ferric.build_info()["commit"]
+    # A ROHF reference is accepted and carries the same method row.
+    r = ferric.run_u_gw(
+        oh, bs, aux, reference="rohf", qp_mos=(3, 6), n_quad=8
+    ).certificate
+    assert r["capability"] == "gw"
+
+
+def test_tdhf_static_polarizability_certificate():
+    mol, bs, aux = _setup()
+    r = ferric.run_tdhf_static_polarizability(
+        mol, bs, aux, "pbe", scissor=0.36, n_quad=8
+    )
+    c = r.certificate
+    assert c["capability"] == "tdhf-static-polarizability"
+    assert c["grade"] == "smoke"
+    names = _names(c)
+    assert "kernel" in names and "scissor" in names, names
+    assert c["build"]["commit"] == ferric.build_info()["commit"]
+
+
+def test_mp2_v_certificate_records_operator_and_vv10():
+    h2 = ferric.Molecule.from_xyz_string("2\n\nH 0 0 0\nH 0 0 0.74\n")
+    bs, aux = ferric.BasisSet.bundled("sto-3g"), ferric.BasisSet.bundled("cc-pvdz-ri")
+    c = ferric.run_mp2_v(h2, bs, aux, attenuator="erfc").certificate
+    _row(c, "mp2-v", "proven_narrow", ["ri", "operator", "vv10"])
+
+
+def test_double_hybrid_certificates_carry_their_grade_and_scaling():
+    mol, bs, aux = _setup()
+    for kind, grade, scaling in [
+        ("b2plyp", "proven", "c_os = 0.27, c_ss = 0.27"),
+        ("dsd-pbep86", "proven", "c_os = 0.51, c_ss = 0.36"),
+    ]:
+        r = ferric.run_double_hybrid(mol, bs, aux, kind=kind, frozen_core=1)
+        c = r.certificate
+        assert c["capability"] == kind
+        assert c["grade"] == grade
+        assert c["build"]["commit"] == ferric.build_info()["commit"]
+        names = _names(c)
+        assert names[-3:] == ["ri", "frozen-core", "spin-component-scaling"], names
+        assert any(n.startswith("scf ") for n in names[:-3]), names
+        assert c["approximations"][-1]["detail"] == scaling
+
+
+def _own_warnings(c):
+    """The warnings of `c` not carried from its SCF reference."""
+    return [w for w in c["warnings"] if not w.startswith("scf reference: ")]
+
+
+def test_tddft_certificate_reports_the_grid_it_ran_on():
+    mol, bs, aux = _setup()
+    # HF reference (CIS): no grid, no kernel.
+    hf = ferric.run_tddft(mol, bs, aux, n_roots=2).certificate
+    assert hf["capability"] == "tda"
+    assert hf["grade"] == "proven_narrow"
+    assert "response-grid" not in _names(hf)
+
+    r = ferric.run_tddft(mol, bs, aux, functional="PBE", n_roots=2, method="casida")
+    c = r.certificate
+    assert c["capability"] == "tddft"
+    assert c["grade"] == "proven_narrow"
+    assert r.grid == (75, 110, "nwchem-radial", 1e-14)
+    grid = next(a for a in c["approximations"] if a["name"] == "response-grid")
+    assert grid["detail"] == "(75, 110), nwchemradial, weight cut 1e-14 [default]"
+    # The only warnings are the reference's (water / STO-3G is outside the
+    # RKS anchor).
+    assert _own_warnings(c) == []
+    assert all("energy anchor" in w for w in c["warnings"]), c["warnings"]
+
+    # Meta-GGA: the finer response default is named, and the roots are flagged
+    # as grid-sensitive.
+    m = ferric.run_tddft(mol, bs, aux, functional="r2SCAN", n_roots=2)
+    assert m.grid == (150, 434, "nwchem-radial", 1e-14)
+    mc = m.certificate
+    grid = next(a for a in mc["approximations"] if a["name"] == "response-grid")
+    assert grid["detail"].startswith("(150, 434)")
+    assert grid["detail"].endswith("[meta-GGA response default]")
+    own = _own_warnings(mc)
+    assert len(own) == 1 and "grid" in own[0]
+
+    # An explicit grid choice is recorded as such.
+    e = ferric.run_tddft(mol, bs, aux, functional="r2SCAN", n_roots=2, grid_angular=194)
+    grid = next(
+        a for a in e.certificate["approximations"] if a["name"] == "response-grid"
+    )
+    assert grid["detail"].startswith("(75, 194)")
+    assert grid["detail"].endswith("[explicit grid keys]")
+
+
+# The nine kinds with an energy anchor carry it inside the settings of the
+# anchor's evidence test and nothing outside them. Water is covered by every
+# anchor's elements; the orbital bases below are ones each anchor ran.
+def _anchored(c):
+    return c.get("measured_error") is not None
+
+
+def test_correlated_anchors_follow_their_evidence_settings():
+    mol = ferric.Molecule.from_xyz_string(_WATER)
+    dz = ferric.BasisSet.bundled("cc-pvdz")
+    dz_ri = ferric.BasisSet.bundled("cc-pvdz-ri")
+    adz = ferric.BasisSet.bundled("aug-cc-pvdz")
+    adz_ri = ferric.BasisSet.bundled("aug-cc-pvdz-rifit")
+
+    for run, kw in [
+        (ferric.run_mp3, {}),
+        (ferric.run_ccsd, {}),
+        (ferric.run_laplace_mp2, {"n_quad": 3}),
+        (ferric.run_laplace_sos_mp2, {"n_quad": 3}),
+    ]:
+        c = run(mol, dz, dz_ri, **kw).certificate
+        assert _anchored(c), run.__name__
+        assert c["warnings"] == [], run.__name__
+        c = run(mol, dz, dz_ri, frozen_core=1, **kw).certificate
+        assert not _anchored(c), run.__name__
+    for run in (ferric.run_attenuated_rimp2, ferric.run_scs_mp2):
+        c = run(mol, adz, adz_ri).certificate
+        assert _anchored(c), run.__name__
+        assert c["warnings"] == [], run.__name__
+        assert not _anchored(run(mol, adz, adz_ri, frozen_core=1).certificate)
+    # An orbital basis outside the anchor's keeps the anchor and warns.
+    c = ferric.run_mp3(mol, ferric.BasisSet.bundled("sto-3g"), dz_ri).certificate
+    assert _anchored(c)
+    assert any("basis sto-3g is outside" in w for w in c["warnings"])
+
+
+def test_pdep_rpa_anchor_follows_its_evidence_settings():
+    mol = ferric.Molecule.from_xyz_string(_WATER)
+    dz = ferric.BasisSet.bundled("cc-pvdz")
+    dz_ri = ferric.BasisSet.bundled("cc-pvdz-ri")
+    c = ferric.run_pdep_rpa(mol, dz, dz_ri, n_quad=6, trunc_thresh=0.0).certificate
+    assert _anchored(c)
+    assert not _anchored(ferric.run_pdep_rpa(mol, dz, dz_ri, n_quad=6).certificate)
+    c = ferric.run_pdep_rpa(mol, dz, dz_ri, n_quad=6, trunc_thresh=0.0, frozen_core=1)
+    assert not _anchored(c.certificate)
+
+
+def test_casscf_and_nevpt2_anchors_follow_their_evidence_settings():
+    mol = ferric.Molecule.from_xyz_string(_WATER)
+    bs = ferric.BasisSet.bundled("6-31g")
+    c = ferric.run_casscf(mol, bs, 4, (2, 2), canonicalize=True).certificate
+    assert _anchored(c)
+    # canonicalization leaves the energy unchanged, so a default run is in scope
+    assert _anchored(ferric.run_casscf(mol, bs, 4, (2, 2)).certificate)
+    loose = ferric.run_casscf(mol, bs, 4, (2, 2), casscf_grad_tol=1e-5)
+    assert not _anchored(loose.certificate)
+    assert _anchored(ferric.run_nevpt2(mol, bs, 4, (2, 2)).certificate)
+    assert not _anchored(
+        ferric.run_nevpt2(mol, bs, 4, (2, 2), reference="casci").certificate
+    )

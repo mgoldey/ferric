@@ -10,9 +10,11 @@
 //! # What is compared
 //!
 //! ferric's analytic RI-MP2 nuclear gradient (`rimp2_gradient_analytical`,
-//! closed-shell RHF reference, all electrons correlated) against two
-//! independent references, on three systems whose geometries are distorted so
-//! that every Cartesian gradient component is nonzero:
+//! closed-shell RHF reference, all electrons correlated, and with ORCA's
+//! frozen core) against two independent references, on three systems whose
+//! geometries are distorted so that every Cartesian gradient component is
+//! nonzero. The frozen-core gradient is compared with ORCA only (PySCF FD
+//! covers the all-electron case):
 //!
 //! | system | basis | aux (/C) |
 //! |---|---|---|
@@ -106,6 +108,7 @@ use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_scf::gradient::rhf_gradient_exact_jk;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -170,12 +173,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
 }
 
 fn grad(v: &Value, ptr: &str, natm: usize, ctx: &str) -> Array2<f64> {
@@ -246,7 +243,7 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str) {
         &ctx,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &ctx),
+        num_ctx(&r, "/nuclear_repulsion", &ctx),
         TOL_ENUC,
     );
 
@@ -269,11 +266,9 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str) {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     // Exact J/K (no df_j_aux/df_k_aux), as in `total_rimp2_gradient`. Tight ΔP:
     // the MP2 part is not variational in the orbitals.
-    let cfg = RhfConfig {
-        density_conv: 1e-9,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_density_conv(1e-9)
+        .with_max_iter(200);
     assert!(cfg.df_j_aux.is_none() && cfg.df_k_aux.is_none());
     let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg)
         .unwrap_or_else(|e| panic!("{ctx}: solve_rhf failed: {e:?}"));
@@ -282,14 +277,14 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str) {
         &ctx,
         "E_RHF vs PySCF",
         rhf.energy,
-        num(&r, "/pyscf/e_rhf", &ctx),
+        num_ctx(&r, "/pyscf/e_rhf", &ctx),
         TOL_E_RHF,
     );
     check_close(
         &ctx,
         "E_RHF vs ORCA",
         rhf.energy,
-        num(&r, "/orca/e_rhf", &ctx),
+        num_ctx(&r, "/orca/e_rhf", &ctx),
         TOL_E_RHF,
     );
     let g_rhf = rhf_gradient_exact_jk(&mol, &obs, op, &bounds, &rhf, None).unwrap();
@@ -304,21 +299,21 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str) {
         &ctx,
         "E_corr vs PySCF",
         mp2.mp2_corr,
-        num(&r, "/pyscf/e_corr", &ctx),
+        num_ctx(&r, "/pyscf/e_corr", &ctx),
         TOL_E_CORR,
     );
     check_close(
         &ctx,
         "E_corr vs ORCA",
         mp2.mp2_corr,
-        num(&r, "/orca/e_corr", &ctx),
+        num_ctx(&r, "/orca/e_corr", &ctx),
         TOL_E_CORR,
     );
     check_close(
         &ctx,
         "E_total vs ORCA",
         mp2.total_energy,
-        num(&r, "/orca/e_total", &ctx),
+        num_ctx(&r, "/orca/e_total", &ctx),
         TOL_E_RHF + TOL_E_CORR,
     );
 
@@ -330,9 +325,39 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str) {
     check_grad(&ctx, "MP2 grad vs PySCF FD", &g, &g_fd, TOL_G_FD);
     check_grad(&ctx, "MP2 grad vs ORCA", &g, &g_orca, TOL_G_ORCA);
 
-    // ---- negative controls ----
+    // ---- frozen-core RI-MP2 gradient vs ORCA (same aux basis) ----
+    let n_frozen = r
+        .pointer("/orca_frozen_core/n_frozen")
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| panic!("{ctx}: /orca_frozen_core/n_frozen missing"))
+        as usize;
+    let fc_cfg = RiMp2Config {
+        frozen_core: n_frozen,
+        ..Default::default()
+    };
+    let mp2_fc = ri_mp2(&mol, &obs, &dfbs, op, &rhf, &fc_cfg).unwrap();
+    check_close(
+        &ctx,
+        "E_corr(fc) vs ORCA",
+        mp2_fc.mp2_corr,
+        num_ctx(&r, "/orca_frozen_core/e_corr", &ctx),
+        TOL_E_CORR,
+    );
+    let g_fc_ferric =
+        rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &fc_cfg, None)
+            .unwrap_or_else(|e| panic!("{ctx}: frozen-core gradient failed: {e:?}"));
     let g_fc = grad(&r, "/orca_frozen_core/gradient", natm, &ctx);
+    check_grad(
+        &ctx,
+        "MP2(fc) grad vs ORCA",
+        &g_fc_ferric,
+        &g_fc,
+        TOL_G_ORCA,
+    );
+
+    // ---- negative controls ----
     check_miss(&ctx, "MP2 vs ORCA frozen-core", &g, &g_fc);
+    check_miss(&ctx, "MP2(fc) vs ORCA all-e", &g_fc_ferric, &g_orca);
     check_miss(&ctx, "MP2 vs PySCF RHF grad", &g, &g_rhf_ref);
     check_miss(&ctx, "ferric RHF vs MP2 ref", &g_rhf, &g_fd);
 }

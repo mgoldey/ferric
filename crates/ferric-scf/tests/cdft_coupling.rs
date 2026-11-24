@@ -931,50 +931,46 @@ fn he2_plus_hab(r_ang: f64) -> (f64, f64, f64, f64) {
     // plateau, so the achievable localized hole is N≈1.01; tol=1e-2 matches the
     // physically flat response (∂N/∂λ≈1e-3) and lands the driver on the
     // localized plateau rather than walking λ over the cliff.
-    let cfg0 = RhfConfig {
-        constraints: vec![Constraint {
-            fragment: vec![0],
-            spin: SpinChannel::Total,
-            target: 1.0,
-        }],
-        cdft_lambda_tol: 1e-2,
-        // Pinned so "this path converges" is not also an assertion about
-        // how many outer iterations a particular CPU needs -- CI and this
-        // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
-        //
-        // 40, not higher: every path in this repo that converges at all does
-        // so in <= 23 outer iters locally, and the cap is also the price paid
-        // by paths that NEVER converge (each wasted outer iteration runs a
-        // full inner SCF). At 64 this file took 462 s; the non-convergent
-        // R = 2.5/3.0 sigma points burn the whole cap before failing.
-        cdft_max_outer: 40,
-        fractional_occ: false,
-        dft_grid: Some(gcfg.clone()),
-        level_shift: 0.2,
-        ..Default::default()
-    };
-    let cfg1 = RhfConfig {
-        constraints: vec![Constraint {
-            fragment: vec![1],
-            spin: SpinChannel::Total,
-            target: 1.0,
-        }],
-        cdft_lambda_tol: 1e-2,
-        // Pinned so "this path converges" is not also an assertion about
-        // how many outer iterations a particular CPU needs -- CI and this
-        // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
-        //
-        // 40, not higher: every path in this repo that converges at all does
-        // so in <= 23 outer iters locally, and the cap is also the price paid
-        // by paths that NEVER converge (each wasted outer iteration runs a
-        // full inner SCF). At 64 this file took 462 s; the non-convergent
-        // R = 2.5/3.0 sigma points burn the whole cap before failing.
-        cdft_max_outer: 40,
-        fractional_occ: false,
-        dft_grid: Some(gcfg.clone()),
-        level_shift: 0.2,
-        ..Default::default()
-    };
+    let mut cfg0 = RhfConfig::default()
+        .with_dft_grid(gcfg.clone())
+        .with_level_shift(0.2);
+    cfg0.constraints = vec![Constraint {
+        fragment: vec![0],
+        spin: SpinChannel::Total,
+        target: 1.0,
+    }];
+    cfg0.cdft_lambda_tol = 1e-2;
+    // Pinned so "this path converges" is not also an assertion about
+    // how many outer iterations a particular CPU needs -- CI and this
+    // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
+    //
+    // 40, not higher: every path in this repo that converges at all does
+    // so in <= 23 outer iters locally, and the cap is also the price paid
+    // by paths that NEVER converge (each wasted outer iteration runs a
+    // full inner SCF). At 64 this file took 462 s; the non-convergent
+    // R = 2.5/3.0 sigma points burn the whole cap before failing.
+    cfg0.cdft_max_outer = 40;
+    cfg0.fractional_occ = false;
+    let mut cfg1 = RhfConfig::default()
+        .with_dft_grid(gcfg.clone())
+        .with_level_shift(0.2);
+    cfg1.constraints = vec![Constraint {
+        fragment: vec![1],
+        spin: SpinChannel::Total,
+        target: 1.0,
+    }];
+    cfg1.cdft_lambda_tol = 1e-2;
+    // Pinned so "this path converges" is not also an assertion about
+    // how many outer iterations a particular CPU needs -- CI and this
+    // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
+    //
+    // 40, not higher: every path in this repo that converges at all does
+    // so in <= 23 outer iters locally, and the cap is also the price paid
+    // by paths that NEVER converge (each wasted outer iteration runs a
+    // full inner SCF). At 64 this file took 462 s; the non-convergent
+    // R = 2.5/3.0 sigma points burn the whole cap before failing.
+    cfg1.cdft_max_outer = 40;
+    cfg1.fractional_occ = false;
     let ra = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg0).unwrap();
     let rb = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg1).unwrap();
 
@@ -1114,13 +1110,12 @@ fn hene() -> Hene {
 /// and B to 1e-8 Ha. `level_shift` 0.5
 /// is the value every other HeNe⁺ test uses for its near-degenerate SOMO.
 fn hene_base_cfg() -> RhfConfig {
-    RhfConfig {
-        level_shift: 0.5,
-        max_iter: 400,
-        use_sad_guess: false,
-        fractional_occ: false,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_level_shift(0.5)
+        .with_max_iter(400)
+        .with_guess(ferric_scf::options::Guess::Core);
+    c.fractional_occ = false;
+    c
 }
 
 /// Solve one HeNe⁺ diabat with the default driver (stability descent ON).
@@ -1151,21 +1146,18 @@ fn hene_diabat_with(
     target: f64,
     descent: bool,
 ) -> ferric_scf::cdft_driver::CdftResult {
-    let cfg = RhfConfig {
-        cdft_stability_descent: descent,
-        constraints: vec![Constraint {
-            fragment: vec![fragment],
-            spin: SpinChannel::Total,
-            target,
-        }],
-        cdft_lambda_tol: 1e-5,
-        dft_grid: Some(AtomicGridConfig {
-            n_radial: 99,
-            n_angular: 302,
-            ..Default::default()
-        }),
-        ..hene_base_cfg()
-    };
+    let mut cfg = hene_base_cfg().with_dft_grid(AtomicGridConfig {
+        n_radial: 99,
+        n_angular: 302,
+        ..Default::default()
+    });
+    cfg.cdft_stability_descent = descent;
+    cfg.constraints = vec![Constraint {
+        fragment: vec![fragment],
+        spin: SpinChannel::Total,
+        target,
+    }];
+    cfg.cdft_lambda_tol = 1e-5;
     let r = solve_cdft_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bs, &sys.bounds, &cfg)
         .unwrap_or_else(|e| panic!("HeNe+ N(atom {fragment}) = {target}: {e}"));
     assert!(r.scf.converged, "inner SCF did not converge");
@@ -1177,10 +1169,8 @@ fn hene_diabat_with(
 /// diabat equal to either is the unconstrained solution, not a diabat.
 fn hene_unconstrained_energies(sys: &Hene) -> [f64; 2] {
     [false, true].map(|sad| {
-        let cfg = RhfConfig {
-            use_sad_guess: sad,
-            ..hene_base_cfg()
-        };
+        let mut cfg = hene_base_cfg();
+        cfg.use_sad_guess = sad;
         let scf =
             ferric_scf::uhf::solve_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &cfg).unwrap();
         assert!(
@@ -1229,6 +1219,7 @@ fn assert_genuinely_constrained(
 /// λ = +1.631409, E = −130.36185950; B (hole on Ne) N(He) = 1.99999993,
 /// λ = −2.439010, E = −130.42670717. Unconstrained: −130.50034664 (²Π, hcore)
 /// and −130.50534054 (σ, MINAO).
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn hene_plus_constrained_states_carry_the_requested_charge() {
     let sys = hene();
@@ -1263,6 +1254,7 @@ fn hene_plus_constrained_states_carry_the_requested_charge() {
 /// energies 3.861e-6 Ha apart (both residuals are inside the 1e-5 population
 /// tolerance, so the routes agree to ~λ·1e-5, not to machine precision). The
 /// 1e-4 bar is 650× tighter than the 0.0648 Ha gap to the other diabat.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn hene_plus_hole_on_he_is_reachable_through_either_fragment() {
     let sys = hene();
@@ -1331,6 +1323,7 @@ fn hene_plus_hole_on_he_is_reachable_through_either_fragment() {
 /// The gap is ferric-partition specific: a different radius ratio constrains a
 /// different population. Its asymptote at this level is the UHF ΔIP 3.6305 eV
 /// (`hene_atomic_ip_anchor.rs`), not the experimental 3.022 eV.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn hene_plus_hole_prefers_the_lower_ip_atom() {
     /// NWChem 7.2.2, Becke partition relabelled to ferric's radius ratio.
@@ -1401,6 +1394,7 @@ fn hene_plus_hole_prefers_the_lower_ip_atom() {
 /// state's stability does not matter. No |H_ab| magnitude is asserted.
 ///
 /// MEASURED (main, 2026-10-27): H_ab = −3.036e-2 Ha, S_ab = 2.946e-2.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn hene_plus_coupling_is_invariant_under_constraint_offset() {
     let sys = hene();

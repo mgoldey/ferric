@@ -37,19 +37,18 @@
 //! ## Particle-particle ladder: dense vs RI (`CcConfig::ladder`)
 //!
 //! The `Σ_cd (ac|bd) tau[ij,cd]` ladder is both the most expensive term and the
-//! reason this module used to be memory-bound. The dense route holds four
-//! `nv⁴` buffers at its peak — the chemist `(ab|cd)` block plus the `W_abcd`
-//! build (its two t1 terms and `W` itself, formed from the `(ac|bd)` copy). Measured peak RSS on
-//! alkane/cc-pVDZ scaled cleanly as `nv⁴` and reached 7.90 GB at `nv=109`
-//! (alkane_5, 130 basis functions) — a *basis-size* ceiling.
+//! reason this route is memory-bound. The dense route holds the loop-invariant
+//! `(ac|bd)` block (one `nv⁴` buffer) through the iterations, plus the chemist
+//! `(ab|cd)` block it is permuted from during setup: two `nv⁴` buffers at its
+//! peak, a *basis-size* ceiling. It never forms the t1-dressed `W_abcd`; the
+//! t1 terms are contracted with `τ` separately (see `dense_ladder`).
 //!
 //! The RI route ([`crate::ri_ladder`]) rebuilds the needed `(ac|bd)` entries
 //! from the RI 3-index blocks in `blk·nv³` panels: at most one `nv⁴`-sized
-//! panel at full width (the dense route holds four `nv⁴` buffers at its peak),
-//! and narrower panels when the budget requires. It is an exact algebraic
-//! refactor over the same `B`, not an approximation — measured agreement with
-//! the dense path on H2O/cc-pVDZ is `|ΔE|`, `max|Δt|` ≲ 3e-17 (round-off). It
-//! pays for the memory in time: the rebuild is redone every iteration.
+//! panel at full width, and narrower panels when the budget requires. It is an
+//! exact algebraic refactor over the same `B`, not an approximation; the two
+//! routes differ only by the reassociation of the sums. It pays for the memory
+//! in time: the rebuild is redone every iteration.
 //!
 //! [`CcsdLadder::Auto`] (the default) takes the dense route when its memory
 //! plan fits the budget and the RI route otherwise (see [`plan_ladder`](crate::ccsd_closed_shell::plan_ladder));
@@ -78,7 +77,7 @@ use ferric_integrals::operator::Operator;
 use ferric_mp2::mo_transform::{transform_3center_oo, transform_3center_ov, transform_3center_vv};
 use ferric_mp2::rimp2::{active_occ, cholesky_inverse_sqrt};
 use ferric_mp2::spinorbital::{build_b, transpose_b};
-use ferric_scf::ScfResult;
+use ferric_scf::{PreparedAux, ScfResult};
 use ferric_tensors::{einsum, permute_to_owned, Axis, Tensor};
 use ndarray::{Array2, ArrayD, IxDyn};
 
@@ -156,12 +155,13 @@ pub struct LadderChoice {
 ///   clone, `no·nv³`, is what the pre-plan guard missed outright.)
 /// * The `no²·nv²` working set is one aggregate reservation: same shape,
 ///   co-resident within an iteration.
-/// * Dense: `vvvv` is resident and the `wvvvv` build holds three more `nv⁴`
-///   buffers as the largest transient.
-/// * RI: no `vvvv`/`wvvvv`. The ladder call's scratch is ONE transient,
+/// * Dense: the `(ac|bd)` ladder block is resident; the chemist `vvvv` it is
+///   permuted from is a second `nv⁴` buffer during setup only (transient).
+///   The ladder's t1 terms are `no·nv³`-class transients.
+/// * RI: no `nv⁴` chemist block. The ladder call's scratch is ONE transient,
 ///   because its parts coexist: `Bx` and `L = B_vv + Bx` (`2·naux·nv²`), the
-///   `blk·nv³` panel (one `nv⁴`-sized buffer at full width), the `nv³`
-///   transpose slab and the `no²·nv²` output `Z`.
+///   `blk·nv³` panel (one `nv⁴`-sized buffer at full width) and the
+///   `no²·nv²` output `Z`.
 ///   The ladder reads the dressed `b_vv`/`b_ov` in place, so they are not
 ///   charged twice.
 pub fn cs_ccsd_memory_plan(
@@ -250,20 +250,26 @@ fn labelled_plan(
     );
     match route {
         LadderRoute::Dense => {
-            plan.reserve("vvvv (ab|cd)", nv4, Lifetime::Resident);
+            plan.reserve("(ac|bd) ladder block", nv4, Lifetime::Resident);
             plan.reserve(
-                "wvvvv build (a1,a2,a3 nv^4 temporaries)",
-                nv4.saturating_mul(3),
+                "vvvv (ab|cd) before its one-time (ac|bd) permute",
+                nv4,
+                Lifetime::Transient,
+            );
+            plan.reserve(
+                "dense ladder t1 terms (ovvv reorder, Y, Y', X, X')",
+                no.saturating_mul(nv3)
+                    .saturating_add(no2.saturating_mul(no).saturating_mul(nv).saturating_mul(2))
+                    .saturating_add(no2.saturating_mul(nv2).saturating_mul(2)),
                 Lifetime::Transient,
             );
         }
         LadderRoute::Ri { block } => {
             plan.reserve(
-                "RI ladder scratch (Bx + L, blk*nv^3 panel, nv^3 slab, Z)",
+                "RI ladder scratch (Bx + L, blk*nv^3 panel, Z)",
                 naux.saturating_mul(nv2)
                     .saturating_mul(2)
                     .saturating_add(block.saturating_mul(nv3))
-                    .saturating_add(nv3)
                     .saturating_add(no2.saturating_mul(nv2)),
                 Lifetime::Transient,
             );
@@ -406,16 +412,17 @@ fn ladder_budget_bytes(
 /// The plan shape for these inputs: active occupied, virtual, AO and aux
 /// counts exactly as `ccsd_closed_shell` derives them.
 fn cs_shape(
+    mol: &Molecule,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     rhf: &ScfResult,
     cfg: &CcConfig,
 ) -> Result<CsCcsdShape, FerricError> {
     let nbas = obs.nbasis();
-    let nocc_total = rhf.eps_r().iter().filter(|&&e| e < 0.0).count();
+    let (nocc_total, nmo) = crate::helpers::closed_shell_counts(mol, rhf)?;
     Ok(CsCcsdShape {
         no: active_occ(nocc_total, cfg.frozen_core)?,
-        nv: nbas - nocc_total,
+        nv: nmo - nocc_total,
         nbas,
         naux: dfbs.nbasis(),
         diis_subspace: cfg.diis_subspace,
@@ -425,12 +432,13 @@ fn cs_shape(
 /// The ladder route `ccsd_closed_shell` would take for these inputs right
 /// now, without running it. For callers (the CLI) that report the route.
 pub fn closed_shell_ladder_route(
+    mol: &Molecule,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     rhf: &ScfResult,
     cfg: &CcConfig,
 ) -> Result<LadderRoute, FerricError> {
-    let shape = cs_shape(obs, dfbs, rhf, cfg)?;
+    let shape = cs_shape(mol, obs, dfbs, rhf, cfg)?;
     let pool = ferric_core::memory::pool::global();
     let budget = ladder_budget_bytes(cfg.memory_budget_bytes, pool.as_ref());
     Ok(plan_ladder(shape, cfg, budget)?.route)
@@ -464,48 +472,83 @@ fn commit_ladder_plan(
     Ok((route, plan, charge))
 }
 
-/// The dense `cc_Wvvvv` intermediate,
-/// `W_abcd = (ac|bd) − Σ_k (kd|ac) t1_kb − Σ_k (kc|bd) t1_ka`.
+/// The dense-route particle-particle ladder `Σ_cd W_abcd τ_ij^cd` in
+/// `[i,j,a,b]` order, with `W_abcd = (ac|bd) − Σ_k (kd|ac) t1_kb − Σ_k (kc|bd) t1_ka`
+/// distributed over the sum instead of formed:
 ///
-/// Dense route only. With `vvvv` resident its peak is four `nv⁴` buffers
-/// (`vvvv`, the two t1 terms, and `W` itself, formed in place from the
-/// permuted `(ac|bd)` copy), which is what the dense plan charges. The RI route computes the same contraction blocked
-/// ([`crate::ri_ladder`]).
-fn build_wvvvv(vvvv: &ArrayD<f64>, ovvv: &ArrayD<f64>, t1_t: &Tensor<2>) -> Tensor<4> {
-    use Axis::{O, V};
-    // -(kd|ac) t1_kb: left-free (d,a,c)->'dacb'; permute to (a,b,c,d).
-    let ovvv_kdac_t = lbl4(ovvv.clone(), [O, V, V, V]);
-    let a1: ArrayD<f64> = perm(&einsum!("kdac,kb->dacb", &ovvv_kdac_t, t1_t), &[1, 3, 2, 0]);
-    // -(kc|bd) t1_ka: left-free (c,b,d)->'cbda'; permute to (a,b,c,d).
-    let ovvv_kcbd_t = lbl4(ovvv.clone(), [O, V, V, V]);
-    let a2: ArrayD<f64> = perm(&einsum!("kcbd,ka->cbda", &ovvv_kcbd_t, t1_t), &[3, 1, 0, 2]);
-    // (ac|bd) = vvvv.transpose(0,2,1,3).
-    let mut w = perm(vvvv, &[0, 2, 1, 3]);
-    w -= &a1;
-    w -= &a2;
-    lbl4(w, [V, V, V, V])
+/// ```text
+///   Z_ijab = Σ_cd (ac|bd) τ_ijcd
+///          − Σ_k t1_kb Y_kaij,   Y_kaij = Σ_cd (kd|ac) τ_ijcd
+///          − Σ_k t1_ka Y'_kbij,  Y'_kbij = Σ_cd (kc|bd) τ_ijcd
+/// ```
+///
+/// `vacbd` is the loop-invariant `(ac|bd)` block at `[a,b,c,d]`, permuted
+/// once before the iterations, so no `nv⁴` buffer is written per iteration
+/// (PySCF's `_add_vvvv` takes the same split). The t1 terms cost
+/// `2·no³·nv³` against the `no·nv⁴` of forming `W`, and `no²·nv²` memory.
+/// The value equals the `W`-then-contract form up to the reassociation of
+/// the `Σ_k` and `Σ_cd` sums; the RI route ([`crate::ri_ladder`]) still forms
+/// `W` (in panels) and is the independent construction the tests hold this
+/// against.
+fn dense_ladder(
+    vacbd: &Tensor<4>,
+    ovvv_t: &Tensor<4>,
+    t1_t: &Tensor<2>,
+    tau_t: &Tensor<4>,
+) -> ArrayD<f64> {
+    // Σ_cd (ac|bd) τ_ijcd: left-free (a,b), right-free (i,j); permute to (i,j,a,b).
+    let mut z = perm(&einsum!("abcd,ijcd->abij", vacbd, tau_t), &[2, 3, 0, 1]);
+    // ovvv_t holds (kd|ac) at [k,d,a,c]; Y_kaij = Σ_cd (kd|ac) τ_ijcd.
+    let y = lbl4(
+        einsum!("kdac,ijcd->kaij", ovvv_t, tau_t),
+        [Axis::O, Axis::V, Axis::O, Axis::O],
+    );
+    // −Σ_k t1_kb Y_kaij: left-free (a,i,j) -> 'aijb'; permute to (i,j,a,b).
+    let x1 = perm(&einsum!("kaij,kb->aijb", &y, t1_t), &[1, 2, 0, 3]);
+    // ovvv_t read as (kc|bd) at [k,c,b,d]; Y'_kbij = Σ_cd (kc|bd) τ_ijcd.
+    let y2 = lbl4(
+        einsum!("kcbd,ijcd->kbij", ovvv_t, tau_t),
+        [Axis::O, Axis::V, Axis::O, Axis::O],
+    );
+    // −Σ_k t1_ka Y'_kbij: left-free (b,i,j) -> 'bija'; permute to (i,j,a,b).
+    let x2 = perm(&einsum!("kbij,ka->bija", &y2, t1_t), &[1, 2, 3, 0]);
+    z -= &x1;
+    z -= &x2;
+    z
+}
+
+/// The dense route's loop-invariant ladder operand: `(ac|bd)` at `[a,b,c,d]`,
+/// from the chemist `(ab|cd) = Σ_P B^P_ab B^P_cd` by one permute. The chemist
+/// block dies on return, so it is a setup-only `nv⁴` buffer.
+fn vacbd_block(b_vv: &ArrayD<f64>) -> Tensor<4> {
+    let vvvv: ArrayD<f64> = einsum!("Pab,Pcd->abcd", b_vv, b_vv);
+    lbl4(perm(&vvvv, &[0, 2, 1, 3]), [Axis::V; 4])
 }
 
 /// The particle-particle ladder `Σ_cd W_abcd τ_ij^cd`, in `[i,j,a,b]` order,
-/// by whichever route `plan_ladder` fixed: contract the dense `wvvvv`, or the
-/// blocked integral-direct RI contraction. Same value either way.
+/// by whichever route `plan_ladder` fixed: [`dense_ladder`] over the resident
+/// `(ac|bd)` block, or the blocked integral-direct RI contraction. Same value
+/// either way, up to reassociation.
+#[allow(clippy::too_many_arguments)]
 fn ladder_term(
-    wvvvv_t: Option<&Tensor<4>>,
+    vacbd: Option<&Tensor<4>>,
     route: LadderRoute,
+    ovvv_t: &Tensor<4>,
     b_vv: &ArrayD<f64>,
     b_ov: &ArrayD<f64>,
     t1: &ArrayD<f64>,
+    t1_t: &Tensor<2>,
     tau: &ArrayD<f64>,
     tau_t: &Tensor<4>,
 ) -> Result<ArrayD<f64>, FerricError> {
-    match (wvvvv_t, route) {
-        (Some(w), _) => Ok(perm(&einsum!("abcd,ijcd->abij", w, tau_t), &[2, 3, 0, 1])),
+    match (vacbd, route) {
+        (Some(v), _) => Ok(dense_ladder(v, ovvv_t, t1_t, tau_t)),
         (None, LadderRoute::Ri { block }) => {
             crate::ri_ladder::ri_ladder_contract(b_vv, b_ov, t1, tau, block)
         }
         (None, LadderRoute::Dense) => Err(FerricError::General(
-            "closed-shell CCSD: the dense route has no Wvvvv -- internal inconsistency \
-             in the ladder configuration"
+            "closed-shell CCSD: the dense route has no (ac|bd) block -- internal \
+             inconsistency in the ladder configuration"
                 .into(),
         )),
     }
@@ -516,33 +559,42 @@ fn ladder_term(
 /// `rhf` must be a closed-shell RHF result (uses `eps_r`/`mos_r`). Returns the
 /// correlation energy plus the converged spatial `t1`/`t2`.
 pub fn ccsd_closed_shell(
-    _mol: &Molecule,
+    mol: &Molecule,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     op: Operator,
     rhf: &ScfResult,
     cfg: &CcConfig,
 ) -> Result<CcResult, FerricError> {
-    let shape = cs_shape(obs, dfbs, rhf, cfg)?;
+    let shape = cs_shape(mol, obs, dfbs, rhf, cfg)?;
     let (no, nv) = (shape.no, shape.nv); // spatial active occ / virtual
     let first_occ = cfg.frozen_core;
-    let nocc_total = shape.nbas - nv;
+    let nocc_total = first_occ + no;
 
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
     let c_occ = c.slice(ndarray::s![.., first_occ..nocc_total]).to_owned();
-    let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
+    let c_vir = c
+        .slice(ndarray::s![.., nocc_total..nocc_total + nv])
+        .to_owned();
 
     // Fail-fast size guard: the plan and the route are one decision (see
     // `cs_ccsd_memory_plan`, `plan_ladder`). `_charge` lives to the end.
     let (route, plan, _charge) = commit_ladder_plan(shape, cfg)?;
 
+    // FERRIC_TIMING phase table (inert otherwise); reports on every exit.
+    let mut phases =
+        ferric_core::timing::PhaseAccumulator::new().report_on_drop("closed-shell CCSD");
+
     // V^{-1/2} metric and AO 3-center integrals, then dressed RI MO blocks.
+    let tok = phases.begin("setup: metric + AO 3-index");
     let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
     let v_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
     let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, obs, dfbs)?;
+    phases.stop(tok);
 
     use Axis::{O, V};
+    let tok = phases.begin("setup: RI B blocks");
     let b_ov = build_b(
         &transform_3center_ov(&eri3_ao, &c_occ, &c_vir),
         &v_inv_sqrt,
@@ -553,19 +605,25 @@ pub fn ccsd_closed_shell(
     let b_vv = build_b(&transform_3center_vv(&eri3_ao, &c_vir), &v_inv_sqrt, V, V);
     drop(eri3_ao); // charged as Transient by the plan
     let b_vo = transpose_b(&b_ov);
+    phases.stop(tok);
 
     // --- chemist-notation MO integral blocks (pq|rs) = Σ_P B^P_pq B^P_rs ---
     // Layouts match PySCF `eris.*` (chemist / Mulliken order):
     //   oooo=(ij|kl) ovov=(ia|jb) oovv=(ij|ab) ovvo=(ia|bj)
     //   ovoo=(ia|jk) ovvv=(ia|bc) vvvv=(ab|cd)
+    let tok = phases.begin("setup: chemist blocks (no vvvv)");
     let oooo: ArrayD<f64> = einsum!("Pij,Pkl->ijkl", &b_oo, &b_oo);
     let ovov: ArrayD<f64> = einsum!("Pia,Pjb->iajb", &b_ov, &b_ov);
     let oovv: ArrayD<f64> = einsum!("Pij,Pab->ijab", &b_oo, &b_vv);
     let ovvo: ArrayD<f64> = einsum!("Pia,Pbj->iabj", &b_ov, &b_vo);
     let ovoo: ArrayD<f64> = einsum!("Pia,Pjk->iajk", &b_ov, &b_oo);
     let ovvv: ArrayD<f64> = einsum!("Pia,Pbc->iabc", &b_ov, &b_vv);
-    // The nv⁴ chemist block exists on the dense route only.
-    let vvvv = (route == LadderRoute::Dense).then(|| einsum!("Pab,Pcd->abcd", &b_vv, &b_vv));
+    phases.stop(tok);
+    // The nv⁴ block exists on the dense route only, held as (ac|bd) at
+    // [a,b,c,d]: the ladder's loop-invariant operand, permuted once here.
+    let tok = phases.begin("setup: (ac|bd) (dense route)");
+    let vacbd = (route == LadderRoute::Dense).then(|| vacbd_block(&b_vv));
+    phases.stop(tok);
 
     // wrap loop-invariant integral tensors reused directly by name (others are
     // relabeled per-contraction inside the loop from the raw ArrayD blocks).
@@ -587,6 +645,7 @@ pub fn ccsd_closed_shell(
     );
 
     // orbital energies (spatial) and denominators
+    let tok = phases.begin("setup: denominators + MP2 guess");
     let eo: Vec<f64> = (0..no).map(|i| eps[first_occ + i]).collect();
     let ev: Vec<f64> = (0..nv).map(|a| eps[nocc_total + a]).collect();
     let mut dia = ArrayD::zeros(IxDyn(&[no, nv]));
@@ -618,8 +677,10 @@ pub fn ccsd_closed_shell(
     let mut t1_prev = t1.clone();
     let mut t2_prev = t2.clone();
     let mut e_old = 0.0;
+    phases.stop(tok);
 
     for iter in 0..cfg.max_iter {
+        let tok = phases.begin("iter: F + L intermediates");
         let t1_t = lbl2(t1.clone(), [O, V]);
         let t2_t = lbl4(t2.clone(), [O, O, V, V]);
 
@@ -703,6 +764,8 @@ pub fn ccsd_closed_shell(
         let lvv_t = lbl2(lvv.clone(), [V, V]);
         let foo_st = lbl2(f_oo.clone(), [O, O]);
         let fvv_st = lbl2(fvv.clone(), [V, V]);
+        phases.stop(tok);
+        let tok = phases.begin("iter: T1 residual");
 
         // ================= T1 equation (Eq. 35; fov=0) ==================
         // t1new = Fvv_ac t1_ic - Foo_ki t1_ka
@@ -773,7 +836,10 @@ pub fn ccsd_closed_shell(
             r1 = r1 - &(2.0 * &z1) + &z2;
         }
 
+        phases.stop(tok);
+
         // ================= W intermediates for T2 (Eqs. 42-45) ==================
+        let tok = phases.begin("iter: Woooo");
         // cc_Woooo (Wklij) = (lc|ki) t1_jc + (kc|lj) t1_ic + (kc|ld) t2[ij,cd]
         //                    + (kc|ld) t1_ic t1_jd + (ki|lj)   [oooo transposed]
         let woooo: ArrayD<f64> = {
@@ -797,9 +863,10 @@ pub fn ccsd_closed_shell(
             &a1 + &a2 + &a3 + &a4 + &a5
         };
         let woooo_t = lbl4(woooo, [O, O, O, O]);
+        phases.stop(tok);
 
-        // cc_Wvvvv: dense route only (see `build_wvvvv`).
-        let wvvvv_t = vvvv.as_ref().map(|v| build_wvvvv(v, &ovvv, &t1_t));
+        // cc_Wvvvv is not formed: the ladder distributes it (`dense_ladder`).
+        let tok = phases.begin("iter: Wvoov");
 
         // cc_Wvoov (Wakic):
         //   (kc|ad) t1_id - (kc|li) t1_la + (ac|ki)[ovvo transp]
@@ -833,6 +900,8 @@ pub fn ccsd_closed_shell(
             &a1 - &a2 + &a3 - &(0.5 * &a4) - &(0.5 * &a5) - &a6 + &a7
         };
         let wvoov_t = lbl4(wvoov, [V, O, O, V]);
+        phases.stop(tok);
+        let tok = phases.begin("iter: Wvovo");
 
         // cc_Wvovo (Wakci):
         //   (kd|ac) t1_id - (lc|ki) t1_la + (ki|ac)[oovv transp]
@@ -866,10 +935,12 @@ pub fn ccsd_closed_shell(
             &a1 - &a2 + &a3 - &(0.5 * &a4) - &a5
         };
         let wvovo_t = lbl4(wvovo, [V, O, V, O]);
+        phases.stop(tok);
 
         // ======================= T2 equation (Eq. 36) ==========================
         // Start with tmp/tmp.T pieces then add ovov + W-ladder contractions.
         let mut r2: ArrayD<f64>;
+        let tok = phases.begin("iter: T2 t1-driven + (ia|jb)");
         {
             // tmp2[a,b,i,c] = -(ki|bc) t1_ka + (ovvv).transpose(1,3,0,2)
             //   PySCF: tmp2 = einsum('kibc,ka->abic', oovv, -t1)
@@ -925,13 +996,29 @@ pub fn ccsd_closed_shell(
             let tau1 = tau_t1t1(&t1);
             let tau = &t2 + &tau1;
             let tau_t = lbl4(tau.clone(), [O, O, V, V]);
+            phases.stop(tok);
             // + einsum('klij,klab->ijab', Woooo, tau): legal.
+            let tok = phases.begin("iter: T2 hh ladder (Woooo)");
             let a1: ArrayD<f64> = einsum!("klij,klab->ijab", &woooo_t, &tau_t);
             r2 = &r2 + &a1;
+            phases.stop(tok);
             // + einsum('abcd,ijcd->ijab', Wvvvv, tau): the pp ladder.
-            let a2 = ladder_term(wvvvv_t.as_ref(), route, &b_vv, &b_ov, &t1, &tau, &tau_t)?;
+            let tok = phases.begin("iter: T2 pp ladder");
+            let a2 = ladder_term(
+                vacbd.as_ref(),
+                route,
+                &ovvv_t,
+                &b_vv,
+                &b_ov,
+                &t1,
+                &t1_t,
+                &tau,
+                &tau_t,
+            )?;
             r2 = &r2 + &a2;
+            phases.stop(tok);
         }
+        let tok = phases.begin("iter: T2 Lvv/Loo terms");
         {
             // tmp = einsum('ac,ijcb->ijab', Lvv, t2): legal='aijb'; perm [1,2,0,3].
             let tmp: ArrayD<f64> = perm(&einsum!("ac,ijcb->aijb", &lvv_t, &t2_t), &[1, 2, 0, 3]);
@@ -940,6 +1027,8 @@ pub fn ccsd_closed_shell(
             let tmp: ArrayD<f64> = einsum!("ki,kjab->ijab", &loo_t, &t2_t);
             r2 = &r2 - &tmp - &t_ijab(&tmp);
         }
+        phases.stop(tok);
+        let tok = phases.begin("iter: T2 ring terms (Wvoov/Wvovo)");
         {
             // tmp = 2 einsum('akic,kjcb->ijab') - einsum('akci,kjcb->ijab'); both legal='aijb'.
             let a1: ArrayD<f64> = perm(&einsum!("akic,kjcb->aijb", &wvoov_t, &t2_t), &[1, 2, 0, 3]);
@@ -956,7 +1045,10 @@ pub fn ccsd_closed_shell(
             r2 = &r2 - &tmp - &t_ijab(&tmp);
         }
 
+        phases.stop(tok);
+
         // --- amplitude update: t = r / D ---
+        let tok = phases.begin("iter: update + DIIS");
         let t1_new = &r1 / &dia;
         let t2_new = &r2 / &dijab;
 
@@ -970,8 +1062,10 @@ pub fn ccsd_closed_shell(
         t2 = t_ext2;
         t1_prev = t1.clone();
         t2_prev = t2.clone();
+        phases.stop(tok);
 
         // --- energy: 2 (ia|jb) tau[i,j,a,b] - (ib|ja) tau[i,j,a,b] (fov=0) ---
+        let tok = phases.begin("iter: energy");
         let tau1 = tau_t1t1(&t1);
         let tau = &t2 + &tau1;
         let tau_t = lbl4(tau.clone(), [O, O, V, V]);
@@ -982,6 +1076,7 @@ pub fn ccsd_closed_shell(
         let ovov_ibja_t = lbl4(ovov.clone(), [O, V, O, V]); // 'ibja' == ovov[i,b,j,a]=(ib|ja)
         let e_b: f64 = einsum!("ijab,ibja->", &tau_t, &ovov_ibja_t);
         let e_corr = 2.0 * e_a - e_b;
+        phases.stop(tok);
 
         let d_e = (e_corr - e_old).abs();
         if iter > 0 && d_e < cfg.energy_conv.min(1e-9) {
@@ -1004,6 +1099,18 @@ pub fn ccsd_closed_shell(
     Err(FerricError::Convergence(
         "closed-shell CCSD did not converge".into(),
     ))
+}
+
+/// [`ccsd_closed_shell`] on the system `aux` was prepared on; see [`PreparedAux`] for
+/// what such an entry point reads from the system.
+pub fn ccsd_closed_shell_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    cfg: &CcConfig,
+) -> Result<CcResult, FerricError> {
+    aux.check_reference(rhf)?;
+    let sys = aux.system();
+    ccsd_closed_shell(sys.mol(), sys.basis(), aux.basis(), sys.op(), rhf, cfg)
 }
 
 /// Build the outer-product `tau1[p,q,r,s] = t1[p,r] * t1[q,s]` in the axis order
@@ -1161,10 +1268,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-11,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-11),
         )
         .unwrap();
         (mol, obs, dfbs, op, rhf)
@@ -1172,10 +1276,10 @@ mod tests {
 
     /// The `ovvv` block AND its clone must be charged by the pre-flight plan.
     ///
-    /// The regression: the old guard charged `3·nv⁴ + naux·nbas²` and nothing
-    /// else, so `ovvv` (`no·nv³`) — built below the guard and immediately
-    /// cloned into `ovvv_t`, both live for the whole iteration loop — was
-    /// entirely absent from the estimate. At `no/nv = 1/8` each copy is
+    /// The regression: a guard charging `3·nv⁴ + naux·nbas²` and nothing
+    /// else would omit `ovvv` (`no·nv³`) — built below the guard and immediately
+    /// cloned into `ovvv_t`, both live for the whole iteration loop — entirely
+    /// from the estimate. At `no/nv = 1/8` each copy is
     /// `nv⁴/8`, the same order as the `nv⁴` term the guard was built around.
     ///
     /// The test does NOT re-derive the plan's arithmetic — that would
@@ -1183,8 +1287,8 @@ mod tests {
     /// Instead it probes the guard with a budget of exactly `2·no·nv³·8`, a
     /// size computed from the INPUT dimensions: since the driver allocates
     /// those two copies PLUS `vvvv`, the `b_*` blocks and the amplitudes, a
-    /// correct guard must refuse that budget. The old guard, which charged
-    /// neither copy, accepted it.
+    /// correct guard must refuse that budget. A guard charging
+    /// neither copy would accept it.
     #[test]
     fn cs_ccsd_guard_charges_ovvv_and_its_clone() {
         let (mol, obs, dfbs, op, rhf) = setup(
@@ -1211,7 +1315,7 @@ mod tests {
 
         // Dimensions read off the inputs, exactly as the driver derives them.
         let nbas = obs.nbasis();
-        let nocc_total = rhf.eps_r().iter().filter(|&&e| e < 0.0).count();
+        let nocc_total = crate::helpers::closed_shell_counts(&mol, &rhf).unwrap().0;
         let (no, nv) = (nocc_total, nbas - nocc_total);
         let ovvv_pair_bytes = 2 * no * nv.pow(3) * 8;
 
@@ -1319,7 +1423,7 @@ mod tests {
             energy_conv: 1e-10,
             ..Default::default()
         };
-        let nocc = rhf.eps_r().iter().filter(|&&e| e < 0.0).count();
+        let nocc = crate::helpers::closed_shell_counts(&mol, &rhf).unwrap().0;
         let shape = CsCcsdShape {
             no: nocc,
             nv: obs.nbasis() - nocc,
@@ -1347,7 +1451,8 @@ mod tests {
             ..base.clone()
         };
 
-        let route = |cfg: &CcConfig| closed_shell_ladder_route(&obs, &dfbs, &rhf, cfg).unwrap();
+        let route =
+            |cfg: &CcConfig| closed_shell_ladder_route(&mol, &obs, &dfbs, &rhf, cfg).unwrap();
         assert_eq!(
             route(&with_budget(hi)),
             LadderRoute::Dense,
@@ -1434,21 +1539,21 @@ mod tests {
 
         let nbas = obs.nbasis();
         let naux = dfbs.nbasis();
-        let nocc_total = rhf.eps_r().iter().filter(|&&e| e < 0.0).count();
+        let nocc_total = crate::helpers::closed_shell_counts(&mol, &rhf).unwrap().0;
         let (no, nv) = (nocc_total, nbas - nocc_total);
         let (no2, nv2, nv3, nv4) = (no.pow(2), nv.pow(2), nv.pow(3), nv.pow(4));
 
         let eri3_ao = naux * nbas * nbas;
         let b_blocks = naux * (no * nv * 2 + no2 + nv2);
-        let vvvv = nv4;
+        let vacbd = nv4;
         let ovvv_pair = 2 * no * nv3;
         let chemist_blocks = no2 * no2 + no2 * nv2 * 3 + no2 * no * nv;
         let ovov_ovoo_clones = no2 * nv2 + no2 * no * nv;
         let t2_working_set = no2 * nv2 * 8;
-        let wvvvv_transient = nv4 * 3;
-        let largest_transient = eri3_ao.max(wvvvv_transient);
+        let ladder_t1_terms = no * nv3 + 2 * no2 * no * nv + 2 * no2 * nv2;
+        let largest_transient = eri3_ao.max(nv4).max(ladder_t1_terms);
         let non_diis_elems = b_blocks
-            + vvvv
+            + vacbd
             + ovvv_pair
             + chemist_blocks
             + ovov_ovoo_clones
@@ -2193,6 +2298,104 @@ mod tests {
             "cs={:.12} so={:.12}",
             r_cs.correlation_energy,
             r_so.correlation_energy
+        );
+    }
+
+    /// **Exactness anchor for [`dense_ladder`].** It distributes
+    /// `W_abcd = (ac|bd) − Σ_k (kd|ac) t1_kb − Σ_k (kc|bd) t1_ka` over the
+    /// `Σ_cd` contraction instead of forming `W`, so it must equal the
+    /// W-then-contract definition, evaluated here by explicit scalar loops
+    /// that share nothing with the implementation but its input arrays.
+    ///
+    /// DERIVED BAR. Both sides compute, per element, a sum of `N ≤ nv² + no + 2`
+    /// rounded products of the same input values (the forming of `W` adds `no`
+    /// terms and one subtraction per `(c,d)`; the distributed form adds two
+    /// `Σ_k` and two subtractions). Any summation order obeys
+    /// `|fl(Σ) − Σ| ≤ γ_N · S`, with `γ_N = N·u / (1 − N·u)`, `u = 2⁻⁵³`, and
+    /// `S_ijab = Σ_cd |(ac|bd)| |τ_ijcd| + Σ_k |t1_kb| Σ_cd |(kd|ac)| |τ_ijcd|
+    ///          + Σ_k |t1_ka| Σ_cd |(kc|bd)| |τ_ijcd|`.
+    /// So `|Z_new − Z_ref| ≤ 2·γ_N·S_ijab` elementwise. The test also asserts
+    /// each t1 term exceeds that bar by many orders, so dropping either term or
+    /// mis-laying `(ac|bd)` cannot pass.
+    ///
+    /// Inputs are random, `τ` deliberately NOT symmetric under `(ij)(cd)`, so a
+    /// term that relied on that symmetry (or swapped `c`/`d`) would show.
+    #[test]
+    fn dense_ladder_matches_w_then_contract_within_the_rounding_bar() {
+        let (naux, no, nv) = (11usize, 3usize, 5usize);
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut r = move || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        };
+        let b_vv = ArrayD::from_shape_fn(IxDyn(&[naux, nv, nv]), |_| r());
+        let b_ov = ArrayD::from_shape_fn(IxDyn(&[naux, no, nv]), |_| r());
+        let t1 = ArrayD::from_shape_fn(IxDyn(&[no, nv]), |_| r());
+        let tau = ArrayD::from_shape_fn(IxDyn(&[no, no, nv, nv]), |_| r());
+
+        // Shared inputs, built exactly as the driver builds them.
+        let vvvv: ArrayD<f64> = einsum!("Pab,Pcd->abcd", &b_vv, &b_vv);
+        let vacbd = vacbd_block(&b_vv);
+        let ovvv: ArrayD<f64> = einsum!("Pia,Pbc->iabc", &b_ov, &b_vv);
+        let ovvv_t = lbl4(ovvv.clone(), [Axis::O, Axis::V, Axis::V, Axis::V]);
+        let t1_t = lbl2(t1.clone(), [Axis::O, Axis::V]);
+        let tau_t = lbl4(tau.clone(), [Axis::O, Axis::O, Axis::V, Axis::V]);
+
+        let got = dense_ladder(&vacbd, &ovvv_t, &t1_t, &tau_t);
+
+        // (ac|bd) = vvvv[a,c,b,d]; (kd|ac) = ovvv[k,d,a,c]; (kc|bd) = ovvv[k,c,b,d].
+        let u = f64::EPSILON / 2.0;
+        let n = (nv * nv + no + 2) as f64;
+        let gamma = n * u / (1.0 - n * u);
+        let (mut worst_ratio, mut t1a_min, mut t1b_min) = (0.0f64, f64::MAX, f64::MAX);
+        for i in 0..no {
+            for j in 0..no {
+                for a in 0..nv {
+                    for b in 0..nv {
+                        let (mut zref, mut s, mut ta, mut tb) = (0.0, 0.0, 0.0, 0.0);
+                        let (mut sa, mut sb) = (0.0, 0.0);
+                        for c in 0..nv {
+                            for d in 0..nv {
+                                let x = tau[[i, j, c, d]];
+                                let mut w = vvvv[[a, c, b, d]];
+                                s += vvvv[[a, c, b, d]].abs() * x.abs();
+                                for k in 0..no {
+                                    let p = ovvv[[k, d, a, c]] * t1[[k, b]];
+                                    let q = ovvv[[k, c, b, d]] * t1[[k, a]];
+                                    w -= p + q;
+                                    tb -= p * x;
+                                    ta -= q * x;
+                                    sb += (ovvv[[k, d, a, c]] * t1[[k, b]]).abs() * x.abs();
+                                    sa += (ovvv[[k, c, b, d]] * t1[[k, a]]).abs() * x.abs();
+                                }
+                                zref += w * x;
+                            }
+                        }
+                        let bar = 2.0 * gamma * (s + sa + sb);
+                        let diff = (got[[i, j, a, b]] - zref).abs();
+                        worst_ratio = worst_ratio.max(diff / bar);
+                        t1a_min = t1a_min.min(ta.abs() / bar);
+                        t1b_min = t1b_min.min(tb.abs() / bar);
+                    }
+                }
+            }
+        }
+        println!(
+            "dense_ladder vs W-then-contract: worst |Δ|/bar = {worst_ratio:.3e}; \
+             smallest t1 term / bar: {t1a_min:.3e} (t1_ka), {t1b_min:.3e} (t1_kb)"
+        );
+        assert!(
+            worst_ratio <= 1.0,
+            "dense_ladder departs from W-then-contract by {worst_ratio:.3e} x the rounding bar"
+        );
+        // Reachability: a dropped term moves an element by that term, which is
+        // far above the bar for every element here.
+        assert!(
+            t1a_min > 1e3 && t1b_min > 1e3,
+            "a t1 term is within 1e3 x the bar ({t1a_min:.3e}, {t1b_min:.3e}): \
+             dropping it might go unseen"
         );
     }
 }

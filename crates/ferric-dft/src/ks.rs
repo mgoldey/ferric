@@ -31,8 +31,8 @@ use crate::libxc::{xc_def_from_name, xc_def_from_name_nspin, FunctionalFamily, L
 use crate::vv10::add_vv10_scratch;
 use crate::vxc::VxcScratch;
 use crate::xc_batch::{
-    mixed_vxc_requested, owned_shells, AoStorage, DensityInput, Exec, ScreenedGrid, XcBatchConfig,
-    XcScreeningStats,
+    mixed_vxc_requested, owned_shells, AoStorage, DensityInput, Exec, ScreenedFxc, ScreenedGrid,
+    XcBatchConfig, XcScreeningStats,
 };
 use crate::xc_trait::{KMix, UksXcContribution, XcCommit, XcContribution, XcMemoryPlan, XcStorage};
 
@@ -40,8 +40,11 @@ use crate::xc_trait::{KMix, UksXcContribution, XcCommit, XcContribution, XcMemor
 #[derive(Error, Debug)]
 #[non_exhaustive]
 pub enum KsXcError {
+    /// Evaluating basis functions on grid points failed (e.g. an unsupported
+    /// angular momentum).
     #[error("AO evaluation failed: {0:?}")]
     Eval(GtoEvalError),
+    /// Resolving or initialising the functional through libxc failed.
     #[error("libxc resolver failed: {0}")]
     Libxc(LibxcError),
     /// The pool refused a plane with no fallback.
@@ -52,11 +55,18 @@ pub enum KsXcError {
          but the budget is {budget_gb:.2} GB — raise [memory] budget_gb / \
          FERRIC_MEM_BUDGET_GB, use a smaller grid, or a smaller basis"
     )]
+    /// The VV10 NLC AO cache, which has no recompute fallback, does not fit
+    /// the memory budget.
     OverBudget {
+        /// Bytes required, in GB (10⁹ bytes).
         needed_gb: f64,
+        /// Bytes available from the pool or budget, in GB (10⁹ bytes).
         budget_gb: f64,
+        /// Number of basis functions.
         nbf: usize,
+        /// Point count of the grid being sized.
         npts: usize,
+        /// Message suffix naming the VV10 NLC grid's share.
         vv10: &'static str,
     },
     /// Grid construction failed. In practice this is angular-order pruning
@@ -93,9 +103,8 @@ impl From<KsXcError> for ferric_core::error::FerricError {
 /// Bytes the dense VV10 NLC-grid cache and its per-iteration chain occupy:
 /// χ + ∇χ (4 planes) + the NLC `VxcScratch` buffer (1) + `Φ = D·χ` inside
 /// `eval_density_closed` (1), plus ~20 O(npts) companion doubles — the same
-/// closed-shell accounting the old full-cache gate used, now applied to the
-/// NLC grid it actually describes (the old gate doubled the MAIN-grid figure
-/// as a proxy for it).
+/// closed-shell accounting of a full-cache gate, applied to the
+/// NLC grid it describes (not the MAIN-grid figure doubled as a proxy for it).
 fn nlc_cache_bytes(nbf: usize, npts_nlc: usize) -> usize {
     nbf.saturating_mul(6)
         .saturating_add(20)
@@ -165,12 +174,12 @@ struct StorageDecision {
 /// # Why recompute never errors
 ///
 /// Recomputation needs no resident AO blocks, and its working set cannot be
-/// made smaller (the old per-point batching fallback could shrink to 1 point;
-/// this one is bounded below by the O(npts) density/kernel vectors). So an
+/// made smaller (per-point batching could shrink to 1 point;
+/// recompute is bounded below by the O(npts) density/kernel vectors). So an
 /// over-budget main grid takes the recompute branch; if even its working set
 /// cannot be covered, the job runs uncharged for that amount and reports it
-/// via `uncharged` (the caller warns) rather than refusing a job the old
-/// fallback would have run. Only the non-batchable VV10 NLC cache is a hard
+/// via `uncharged` (the caller warns) rather than refusing a job the per-point
+/// batching fallback would have run. Only the non-batchable VV10 NLC cache is a hard
 /// error.
 ///
 /// # Determinism
@@ -579,7 +588,7 @@ fn build_grids(
     let budget = grid_working_budget(memory_budget_bytes);
 
     // Partition + screen. This evaluates every shell on every point once (the
-    // same work the old dense cache construction did), keeping only per-batch
+    // same work as a dense cache construction), keeping only per-batch
     // shell lists — no AO values are retained yet. It also surfaces a genuine
     // per-shell error (UnsupportedL) here, at construction, so the per-Fock
     // `.expect` below can never see one.
@@ -760,7 +769,9 @@ fn mixed_vxc_allowed(xc: &XcDef, ladder: &MixedLadder, ds: &[&Array2<f64>]) -> b
 /// (see [`crate::xc_batch`]) + optional VV10 NLC grid and its dense AO cache.
 #[derive(Debug)]
 pub struct KsXc {
+    /// The functional, resolved with `nspin = 1`.
     pub xc: XcDef,
+    /// Main integration grid (Becke-weighted points), in Bohr.
     pub grid: Vec<GridPoint>,
     /// Batched, screened main grid (and its resident AO blocks, if any).
     screened: ScreenedGrid,
@@ -770,8 +781,12 @@ pub struct KsXc {
     /// drop first. Inert when no pool is installed (which keeps the
     /// unbudgeted path identical).
     _charge: Reservation,
+    /// VV10 NLC grid, present exactly when `xc.vv10` is `Some`.
     pub nlc_grid: Option<Vec<GridPoint>>,
+    /// AO values on the NLC grid, shape `(nbf, n_nlc_points)`.
     pub nlc_chi: Option<Array2<f64>>,
+    /// AO gradients on the NLC grid, shape `(3, nbf, n_nlc_points)`, axis 0
+    /// in `x, y, z` order.
     pub nlc_dchi: Option<Array3<f64>>,
     /// VV10's scratch, sized for the NLC grid. (`add_xc` takes `&self`, hence
     /// the Mutex; uncontended — one lock per Fock build.)
@@ -789,16 +804,15 @@ pub struct KsXc {
 ///
 /// # Scope under the screened-batch design
 ///
-/// Batch boundaries are now a pure function of the grid and `max_batch_pts`,
+/// Batch boundaries are a pure function of the grid and `max_batch_pts`,
 /// and this budget only chooses resident vs recompute AO storage, which are
-/// bit-identical. So the energy can no longer depend on this figure at all;
-/// the history below is kept because the resolve-once / pool-ledger choice
-/// still makes the MEMORY behaviour reproducible, which is worth keeping.
+/// bit-identical. So the energy does not depend on this figure; the
+/// resolve-once / pool-ledger choice makes the MEMORY behaviour reproducible.
 ///
 /// # Why this is not `available_budget_now`
 ///
-/// It used to be, and that made the SCF ENERGY depend on transient resident
-/// memory. `available_budget_now` subtracts this process's LIVE RSS, and the
+/// Using it would make an SCF ENERGY depend on transient resident
+/// memory under a batch-boundary design. `available_budget_now` subtracts this process's LIVE RSS, and the
 /// figure feeds `resolve_batch_size`, which sets the grid batch boundaries.
 /// Batch boundaries fix the floating-point accumulation order of the
 /// V_xc/E_xc sums, so a drifting budget silently moves the energy.
@@ -847,8 +861,8 @@ impl KsXc {
     /// `Some(max points per batch)` when the screened AO blocks are
     /// recomputed per Fock build, `None` when they are resident.
     ///
-    /// Test hook. Batch boundaries no longer depend on the budget at all (they
-    /// are a pure function of the grid and `max_batch_pts`), so this now
+    /// Test hook. Batch boundaries do not depend on the budget (they
+    /// are a pure function of the grid and `max_batch_pts`), so this
     /// reports the storage MODE the budget selected; the two modes are
     /// bit-identical.
     #[doc(hidden)]
@@ -1143,6 +1157,32 @@ impl XcContribution for KsXc {
         self.ladder.reset();
     }
 
+    fn adds_single_potential(&self) -> bool {
+        // `add_xc_input` adds V_xc once; the VV10 term is a SECOND add into
+        // `f` (`add_vv10_scratch`), so a functional that carries it is not
+        // a single potential. Same condition as the `e_nl` branch there.
+        !(self.nlc_grid.is_some()
+            && self.nlc_chi.is_some()
+            && self.nlc_dchi.is_some()
+            && self.xc.vv10.is_some())
+    }
+
+    fn restricted_fxc(
+        &self,
+        xc_pol: &XcDef,
+        d: &Array2<f64>,
+        no_pool_budget: &dyn Fn() -> usize,
+    ) -> Option<Result<ScreenedFxc<'_>, String>> {
+        assert_committed(self.pending.as_ref());
+        Some(ScreenedFxc::restricted(
+            &self.screened,
+            &self.grid,
+            xc_pol,
+            d,
+            no_pool_budget,
+        ))
+    }
+
     fn refine_last_to_f64(&self, f: &mut Array2<f64>) -> bool {
         let Some(b) = self.ladder.take_mixed() else {
             return false;
@@ -1195,14 +1235,20 @@ impl XcContribution for KsXc {
 /// added equally to V_α and V_β.
 #[derive(Debug)]
 pub struct KsXcUks {
+    /// The functional, resolved with `nspin = 2`.
     pub xc: XcDef,
+    /// Main integration grid (Becke-weighted points), in Bohr.
     pub grid: Vec<GridPoint>,
     /// See `KsXc::screened`.
     screened: ScreenedGrid,
     /// See `KsXc::_charge`.
     _charge: Reservation,
+    /// VV10 NLC grid, present exactly when `xc.vv10` is `Some`.
     pub nlc_grid: Option<Vec<GridPoint>>,
+    /// AO values on the NLC grid, shape `(nbf, n_nlc_points)`.
     pub nlc_chi: Option<Array2<f64>>,
+    /// AO gradients on the NLC grid, shape `(3, nbf, n_nlc_points)`, axis 0
+    /// in `x, y, z` order.
     pub nlc_dchi: Option<Array3<f64>>,
     /// See `KsXc::nlc_scratch`.
     nlc_scratch: Mutex<VxcScratch>,
@@ -1476,6 +1522,23 @@ impl UksXcContribution for KsXcUks {
 
     fn start_scf(&self) {
         self.ladder.reset();
+    }
+
+    fn polarized_fxc(
+        &self,
+        xc_pol: &XcDef,
+        d_a: &Array2<f64>,
+        d_b: &Array2<f64>,
+        no_pool_budget: &dyn Fn() -> usize,
+    ) -> Option<Result<ScreenedFxc<'_>, String>> {
+        assert_committed(self.pending.as_ref());
+        Some(ScreenedFxc::polarized(
+            &self.screened,
+            &self.grid,
+            xc_pol,
+            (d_a, d_b),
+            no_pool_budget,
+        ))
     }
 
     fn refine_last_to_f64_uks(&self, f_a: &mut Array2<f64>, f_b: &mut Array2<f64>) -> bool {
@@ -1871,7 +1934,7 @@ mod storage_tests {
         }
     }
 
-    /// Regression for the old mid-run panic: construct under a tiny budget
+    /// Regression for a mid-run panic: construct under a tiny budget
     /// (recompute), then shrink the budget env var BEFORE `add_xc`. The Fock
     /// build must not consult the budget again, so it must not panic.
     #[test]
@@ -2096,7 +2159,7 @@ mod anchor_tests {
     /// partition that drops/duplicates points or detaches weights; a wrong
     /// factor in the merged A·Bᵀ (½s, f_a, ½t — the symmetrization doubling);
     /// a missing or transposed GGA axis; τ not halved or τ blocks misaligned;
-    /// the DENSITY_FLOOR gate applied to the wrong ρ; a scatter into the wrong
+    /// the density-floor gate applied to the wrong ρ; a scatter into the wrong
     /// (μ,ν) or a lost Vᵀ half; a wrong column block in the stored AO layout.
     #[test]
     fn batched_matches_dense_in_the_trivial_limit_closed_shell() {

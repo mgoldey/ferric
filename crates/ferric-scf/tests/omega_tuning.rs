@@ -36,23 +36,15 @@ fn omega_override_at_published_value_matches_default() {
         .position(|n| n == "_omega")
         .expect("wB97X-V has _omega");
     let w_pub = f.ext_param_defaults()[pos];
-    let base = RhfConfig {
-        xc: Some("wB97X-V".into()),
-        energy_conv: 1e-9,
-        ..Default::default()
-    };
+    let base = RhfConfig::default()
+        .with_xc("wB97X-V")
+        .with_energy_conv(1e-9);
     let r0 = solve_rhf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &base).unwrap();
-    let r1 = solve_rhf(
-        &ctx,
-        &mol,
-        &prep,
-        Operator::coulomb(),
-        &bounds,
-        &RhfConfig {
-            xc_omega: Some(w_pub),
-            ..base
-        },
-    )
+    let r1 = solve_rhf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &{
+        let mut c = base;
+        c.xc_omega = Some(w_pub);
+        c
+    })
     .unwrap();
     let de = (r1.energy - r0.energy).abs();
     eprintln!("published omega = {w_pub}; |E(override) - E(default)| = {de:.3e}");
@@ -66,23 +58,15 @@ fn omega_override_at_published_value_matches_default() {
 fn omega_override_moves_the_energy_and_homo() {
     let (mol, prep, bounds) = h2_631g();
     let ctx = ParallelContext::default();
-    let base = RhfConfig {
-        xc: Some("wB97X-V".into()),
-        energy_conv: 1e-9,
-        ..Default::default()
-    };
+    let base = RhfConfig::default()
+        .with_xc("wB97X-V")
+        .with_energy_conv(1e-9);
     let run = |w: f64| {
-        solve_rhf(
-            &ctx,
-            &mol,
-            &prep,
-            Operator::coulomb(),
-            &bounds,
-            &RhfConfig {
-                xc_omega: Some(w),
-                ..base.clone()
-            },
-        )
+        solve_rhf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &{
+            let mut c = base.clone();
+            c.xc_omega = Some(w);
+            c
+        })
         .unwrap()
     };
     let lo = run(0.15);
@@ -105,24 +89,18 @@ fn omega_override_moves_the_energy_and_homo() {
 fn omega_override_on_pbe_is_rejected() {
     let (mol, prep, bounds) = h2_631g();
     let ctx = ParallelContext::default();
-    let r = solve_rhf(
-        &ctx,
-        &mol,
-        &prep,
-        Operator::coulomb(),
-        &bounds,
-        &RhfConfig {
-            xc: Some("PBE".into()),
-            xc_omega: Some(0.3),
-            ..Default::default()
-        },
-    );
+    let r = solve_rhf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &{
+        let mut c = RhfConfig::default().with_xc("PBE");
+        c.xc_omega = Some(0.3);
+        c
+    });
     assert!(r.is_err(), "PBE + xc_omega must be rejected");
 }
 
 /// The tuner end-to-end on H2/6-31G: converges within the bracket, the
 /// tuned |J| beats both bracket endpoints, and every evaluation carries a
 /// negative IP-consistent HOMO.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn tune_omega_h2_converges_and_improves_j() {
     let (mol, prep, bounds) = h2_631g();
@@ -133,10 +111,7 @@ fn tune_omega_h2_converges_and_improves_j() {
         omega_hi: 1.2,
         omega_tol: 0.02,
         max_evals: 16,
-        scf: RhfConfig {
-            energy_conv: 1e-9,
-            ..Default::default()
-        },
+        scf: RhfConfig::default().with_energy_conv(1e-9),
         // Continuation and the branch check at their defaults (continuation
         // OFF, branch check ON): this test is the end-to-end driver, so it
         // exercises the driver's shipped configuration, not a stripped one.

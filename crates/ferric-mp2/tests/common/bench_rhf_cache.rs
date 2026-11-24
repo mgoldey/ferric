@@ -46,10 +46,7 @@ pub fn fnv1a64(bytes: &[u8]) -> u64 {
 
 /// The SCF the bench runs.
 pub fn bench_scf_config() -> RhfConfig {
-    RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    }
+    RhfConfig::default().with_energy_conv(1e-10)
 }
 
 /// Solve the bench's RHF, with no cache involved.
@@ -171,7 +168,6 @@ pub fn load_or_solve(
 fn exit_code(exit: ScfExit) -> Result<u8, String> {
     match exit {
         ScfExit::Converged => Ok(0),
-        ScfExit::Plateau => Ok(1),
         other => Err(format!("refusing an SCF that exited {other:?}")),
     }
 }
@@ -307,7 +303,6 @@ pub fn decode(bytes: &[u8], key: &str, nbasis: usize) -> Result<ScfResult, Strin
     let computed_quartets = r.usize()?;
     let exit = match r.u8()? {
         0 => ScfExit::Converged,
-        1 => ScfExit::Plateau,
         other => return Err(format!("unknown exit code {other}")),
     };
     let nmo = r.usize()?;
@@ -343,11 +338,13 @@ pub fn decode(bytes: &[u8], key: &str, nbasis: usize) -> Result<ScfResult, Strin
         stability_external: None,
         df_jk: None,
         rohf_spin_focks: None,
+        xc: None,
         cosx_final: None,
         cosx_schedule: None,
         convergence: None,
         guess_basis: None,
         precision: Default::default(),
+        relativistic: None,
     })
 }
 

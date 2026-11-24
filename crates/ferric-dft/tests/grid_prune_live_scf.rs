@@ -114,32 +114,31 @@ fn run_scf(xyz: &str, basis_name: &str, xc: &str, prune: Option<PruneScheme>) ->
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ctx = ParallelContext::default();
 
-    let cfg = RhfConfig {
-        xc: Some(xc.into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        // B3LYP is a hybrid and `dft_b3lyp.rs` fits K as well as J. Matching
-        // that matters: an unfitted K would change the energy by far more than
-        // pruning does and would swamp the effect under test.
-        df_k_aux: if xc == "B3LYP" {
-            Some("def2-universal-jkfit".into())
-        } else {
-            None
-        },
-        energy_conv: 1e-10,
+    let mut cfg = RhfConfig::default()
+        .with_xc(xc)
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_energy_conv(1e-10)
         // dft_lda.rs uses 1e-7 here; PBE/B3LYP use 1e-8. Take the tighter of
         // the two everywhere so the SCF floor cannot be mistaken for a
         // pruning effect.
-        density_conv: 1e-8,
-        max_iter: 800,
+        .with_density_conv(1e-8)
+        .with_max_iter(800)
         // The single variable under test. 75x110 is `AtomicGridConfig::
         // default()`'s shape and the shape the PySCF references were
         // generated at.
-        dft_grid: Some(AtomicGridConfig {
+        .with_dft_grid(AtomicGridConfig {
             n_radial: 75,
             n_angular: 110,
             prune,
-        }),
-        ..Default::default()
+            weight_cut: None,
+        });
+    // B3LYP is a hybrid and `dft_b3lyp.rs` fits K as well as J. Matching
+    // that matters: an unfitted K would change the energy by far more than
+    // pruning does and would swamp the effect under test.
+    cfg.df_k_aux = if xc == "B3LYP" {
+        Some("def2-universal-jkfit".into())
+    } else {
+        None
     };
     // The ladder, as dft_pbe.rs / dft_b3lyp.rs use. dft_lda.rs uses plain
     // solve_rhf, but the ladder's rung 0 IS that plain solve, so running the
@@ -354,6 +353,7 @@ fn prune_none_reproduces_the_flat_grid_bit_for_bit() {
         n_radial: 75,
         n_angular: 110,
         prune: None,
+        weight_cut: None,
     };
     let flat = build_atomic_grid(&mol, &cfg);
     let none = build_atomic_grid_pruned(&mol, &cfg, None).unwrap();
@@ -391,6 +391,7 @@ fn the_pruned_scf_really_uses_fewer_points() {
             n_radial: 75,
             n_angular: 110,
             prune: None,
+            weight_cut: None,
         };
         let flat = build_atomic_grid(&mol, &cfg);
         let pruned = build_atomic_grid_pruned(&mol, &cfg, Some(PruneScheme::NwchemLike)).unwrap();
@@ -435,6 +436,7 @@ fn vv10_nlc_grid_survives_a_pruned_main_grid() {
         n_radial: 50,
         n_angular: 50,
         prune: None,
+        weight_cut: None,
     };
     assert!(
         build_atomic_grid_pruned(&mol, &nlc_pruned, Some(PruneScheme::NwchemLike)).is_err(),
@@ -464,23 +466,23 @@ fn vv10_nlc_grid_survives_a_pruned_main_grid() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        xc: Some("wB97X-V".into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        energy_conv: 1e-8,
-        density_conv: 1e-6,
-        dft_grid: Some(AtomicGridConfig {
+    let mut cfg = RhfConfig::default()
+        .with_xc("wB97X-V")
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_energy_conv(1e-8)
+        .with_density_conv(1e-6)
+        .with_dft_grid(AtomicGridConfig {
             n_radial: 75,
             n_angular: 110,
             prune: Some(PruneScheme::NwchemLike),
-        }),
-        nlc_grid: Some(AtomicGridConfig {
-            n_radial: 50,
-            n_angular: 50,
-            prune: None,
-        }),
-        ..Default::default()
-    };
+            weight_cut: None,
+        });
+    cfg.nlc_grid = Some(AtomicGridConfig {
+        n_radial: 50,
+        n_angular: 50,
+        prune: None,
+        weight_cut: None,
+    });
     let ladder = default_ladder_from(&cfg);
     let lr = solve_rhf_ladder(&ctx, &mol, &obs, op, &bounds, &ladder)
         .expect("pruned-main-grid wB97X-V SCF must build its NLC grid unpruned and run");
@@ -494,8 +496,8 @@ fn vv10_nlc_grid_survives_a_pruned_main_grid() {
 /// The GRADIENT grid honours `prune` (#428): `build_atomic_grid_with_response`
 /// returns exactly the points and weights of the pruned energy grid
 /// (`build_atomic_grid_pruned`), in the same order, plus one weight-derivative
-/// row per point. It used to hard-error on a pruned config, which left no
-/// analytic gradient for a pruned SCF. The FD anchor on the gradient itself is
+/// row per point. Pruned configs are not refused, so a pruned SCF has an
+/// analytic gradient. The FD anchor on the gradient itself is
 /// `ferric-scf/tests/ks_gradient_scf_grid.rs`.
 #[test]
 fn gradient_grid_is_the_pruned_energy_grid() {
@@ -506,6 +508,7 @@ fn gradient_grid_is_the_pruned_energy_grid() {
         n_radial: 75,
         n_angular: 110,
         prune: Some(PruneScheme::NwchemLike),
+        weight_cut: None,
     };
     let (grid, weight1) = build_atomic_grid_with_response(&mol, &pruned).unwrap();
     let energy_grid = build_atomic_grid_pruned(&mol, &pruned, pruned.prune).unwrap();

@@ -34,6 +34,7 @@ use ferric_rpa::properties::{
 use ferric_scf::properties::{scf_proatom_radii, slater_xi_for_z};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::compare::max_abs;
 use ndarray::Array2;
 
 const H2O_XYZ: &str = "3\nwater\nO 0.000000 0.000000 0.117300\nH 0.000000 0.757200 -0.469200\nH 0.000000 -0.757200 -0.469200\n";
@@ -61,12 +62,10 @@ fn rhf_density(mol: &Molecule, bs: &BasisSet, cfg: &RhfConfig) -> Array2<f64> {
 }
 
 fn tight_hf() -> RhfConfig {
-    RhfConfig {
-        max_iter: 200,
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(200)
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
 }
 
 fn h2o_sto3g() -> (Molecule, BasisSet, Array2<f64>) {
@@ -156,10 +155,6 @@ fn fd_contracted_volumes(
     out
 }
 
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
-}
-
 fn compare(label: &str, analytic: &Array2<f64>, fd: &Array2<f64>, tol_rel: f64) {
     let scale = max_abs(fd).max(1.0);
     let diff = max_abs(&(analytic - fd));
@@ -186,10 +181,10 @@ fn compare(label: &str, analytic: &Array2<f64>, fd: &Array2<f64>, tol_rel: f64) 
 /// formula, floor, lattice construction) — `assert_eq` on f64, so one ulp
 /// fails it. Run with both the Slater fallback and a provider proatom.
 ///
-/// `atomic_effective_volumes_hirshfeld` no longer integrates on the lattice:
-/// it uses the atom-centred Becke grid, because lattice nodes land on nuclei
+/// `atomic_effective_volumes_hirshfeld` integrates on the atom-centred Becke
+/// grid, not the lattice, because lattice nodes land on nuclei
 /// where rho has its cusp. So the default and the explicit-lattice path are
-/// no longer the same number, and pinning them equal would pin the bug. This
+/// not the same number, and pinning them equal would pin the bug. This
 /// pins the lattice path against ITSELF (two calls must agree bitwise) and
 /// asserts the two paths DIFFER, in the direction and magnitude the grid
 /// change predicts — H2O/STO-3G, atom 0: 27.103098147412556 (Becke) vs
@@ -351,13 +346,11 @@ fn measure_translation_sum_with_fixed_lattice() {
 }
 
 fn rks_pbe() -> RhfConfig {
-    RhfConfig {
-        xc: Some("PBE".to_string()),
-        max_iter: 300,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc("PBE")
+        .with_max_iter(300)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
 }
 
 /// Occupied MOs of a closed-shell SCF and its density.
@@ -497,12 +490,42 @@ const FD_FULL_TOL: f64 = 5e-9;
 /// relaxation term fails.
 #[test]
 fn mbd_exact_gradient_matches_fd_of_full_scf_pipeline() {
+    full_pipeline_fd_check(
+        "PBE",
+        &rks_pbe(),
+        &MbdRsscsConfig::for_functional("PBE").expect("beta"),
+    );
+}
+
+/// The same check on a τ-only meta-GGA: the Z-vector solve applies the τ
+/// f_xc kernel (`FxcKernelStore::Mgga`) and the contraction differentiates
+/// the meta-GGA gradient expression. β is PBE's (r2SCAN has no published
+/// MBD@rsSCS β; the check is of the derivative, not of the dispersion model).
+/// Without the τ kernel blocks in the Z-vector Hessian it fails (mutation).
+#[test]
+fn mbd_exact_gradient_matches_fd_of_full_scf_pipeline_r2scan() {
+    let cfg = rks_pbe().with_xc("r2SCAN");
+    full_pipeline_fd_check("r2SCAN", &cfg, &MbdRsscsConfig::with_beta(0.83));
+}
+
+/// The same check on a hybrid meta-GGA (TPSSh, 10% exact exchange from
+/// libxc): the Z-vector Hessian carries the τ f_xc kernel plus 0.1·K
+/// response, and the contraction differentiates the hybrid meta-GGA gradient.
+/// β is PBE's (the check is of the derivative). Measured 3.5e-9 against the
+/// file's `FD_FULL_TOL`; without the K response in the Z-vector Hessian it is
+/// 6.2e-7 (mutation).
+#[test]
+fn mbd_exact_gradient_matches_fd_of_full_scf_pipeline_tpssh() {
+    let cfg = rks_pbe().with_xc("TPSSh");
+    full_pipeline_fd_check("TPSSh", &cfg, &MbdRsscsConfig::with_beta(0.83));
+}
+
+fn full_pipeline_fd_check(label: &str, cfg: &RhfConfig, mbd_cfg: &MbdRsscsConfig) {
     let mol = Molecule::parse_xyz(H2O_XYZ, 0, 1).expect("h2o");
     let bs = basis::bundled("sto-3g").expect("sto-3g");
     let op = Operator::coulomb();
     let ctx = ParallelContext::default();
-    let cfg = rks_pbe();
-    let mbd_cfg = MbdRsscsConfig::for_functional("PBE").expect("beta");
+    let (cfg, mbd_cfg) = (cfg.clone(), *mbd_cfg);
     let cache = MbdFreeAtomCache::build(&ctx, &mol, &bs, op, &cfg).expect("cache");
     let r = scf(&mol, &bs, &cfg);
     let out = mbd_rsscs_for_scf(&ctx, &cache, &mol, &bs, op, &cfg, &r, &mbd_cfg).expect("mbd");
@@ -513,7 +536,7 @@ fn mbd_exact_gradient_matches_fd_of_full_scf_pipeline() {
     });
     let diff = max_abs(&(&g - &fd));
     println!(
-        "PBE/STO-3G water: max|FD| = {:.3e}, max|relax| = {:.3e}, max|exact - FD| = {diff:.3e}",
+        "{label}/STO-3G water: max|FD| = {:.3e}, max|relax| = {:.3e}, max|exact - FD| = {diff:.3e}",
         max_abs(&fd),
         max_abs(&relax)
     );
@@ -557,14 +580,8 @@ fn measure_full_pipeline_fd() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(1e-3);
     let only: Option<String> = std::env::var("MBD_FD_ONLY").ok();
-    let ri_j = RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".to_string()),
-        ..rks_pbe()
-    };
-    let with_xc = |xc: &str| RhfConfig {
-        xc: Some(xc.to_string()),
-        ..rks_pbe()
-    };
+    let ri_j = rks_pbe().with_df_j_aux("def2-universal-jkfit");
+    let with_xc = |xc: &str| rks_pbe().with_xc(xc.to_string());
     let cases: Vec<(&str, &str, RhfConfig, &str)> = vec![
         ("H2O", H2O_XYZ, rks_pbe(), "PBE"),
         ("NH3", NH3_XYZ, rks_pbe(), "PBE"),

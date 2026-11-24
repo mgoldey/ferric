@@ -54,23 +54,17 @@ fn lanczos_panel_width(naux: usize, nov: usize, memory_budget_bytes: Option<usiz
     //
     // Resolve via the unified budget, now including the CALLER's own
     // `memory_budget_bytes` (a TOML/kwarg `[memory] budget_gb`) as an explicit
-    // source — previously this always called `resolve_budget(None)`, so a
-    // TOML-set budget was invisible here even though it fully controls the
-    // 3-index AO tensor blocking elsewhere in the same run (found 2026-07-21).
+    // source — `resolve_budget(None)` would leave a
+    // TOML-set budget invisible here even though it fully controls the
+    // 3-index AO tensor blocking elsewhere in the same run.
     // When no explicit-OR-env budget is set at all (the resolver falls back to
     // auto-detect or the 2 GiB fallback), keep the legacy behavior of a
     // conservative fixed 256-column panel so concurrency on memory-tight boxes
     // is preserved — the auto/fallback figure is an OOM guard for the big
     // resident tensors, not a hint that this panel should widen.
-    use ferric_core::memory::{self, BudgetSource};
+    use ferric_core::memory;
     let resolution = memory::resolve_budget(memory_budget_bytes);
-    let explicitly_budgeted = matches!(
-        resolution.source,
-        BudgetSource::Explicit
-            | BudgetSource::UnifiedEnv
-            | BudgetSource::LegacyOocEnv
-            | BudgetSource::LegacyEri3Env
-    );
+    let explicitly_budgeted = resolution.explicit_bytes().is_some();
     let budget = resolution.bytes;
     let per_col_bytes = (nov.saturating_add(naux)).saturating_mul(8).max(1);
     if !explicitly_budgeted {
@@ -83,8 +77,7 @@ fn lanczos_panel_width(naux: usize, nov: usize, memory_budget_bytes: Option<usiz
     // Use ~1/2 of the budget for the panel scratch (the assembled A and its
     // eigenvectors, each naux², live for the whole solve and are counted
     // separately by the caller's footprint).
-    let k = (budget / 2 / per_col_bytes).max(1);
-    k.min(naux.max(1))
+    (budget / 2 / per_col_bytes).max(1).min(naux.max(1))
 }
 
 /// Full-rank PDEP eigensolve via **paneled dense dielectric assembly**.
@@ -168,6 +161,16 @@ where
     }
 
     let panel = lanczos_panel_width(naux, nov, memory_budget_bytes);
+    if panel == 1 && naux > 1 {
+        ferric_core::memory::warn_width_collapsed(
+            "PDEP eigensolve panel",
+            panel,
+            naux,
+            ferric_core::memory::resolve_budget_bytes(memory_budget_bytes),
+            "the static dielectric matrix is assembled one column at a time (same \
+             eigenpairs, much slower)",
+        );
+    }
     paneled_dense_eigs(naux, panel, &matvec, n_desired)
 }
 
@@ -516,10 +519,9 @@ fn qr_orthonormalize(mat: Array2<f64>) -> Result<Array2<f64>, FerricError> {
 ///
 /// Defaults to **1**, opt-in via `FERRIC_LANCZOS_BLAS_THREADS`.
 ///
-///  1. ~~**Stack overflow.**~~ **NO LONGER REPRODUCIBLE — re-verified
-///     2026-07-26.** `78bc70b` (2026-07-07) introduced this default because
-///     `available_parallelism()` made the aug-cc-pV{D,T}Z PDEP-RPA tests abort
-///     with `stack overflow`. That crash no longer occurs: the full ferric-rpa
+///  1. **Stack overflow (does not reproduce).** `78bc70b` introduced this
+///     default because `available_parallelism()` made the aug-cc-pV{D,T}Z
+///     PDEP-RPA tests abort with `stack overflow`. The crash does not occur: the full ferric-rpa
 ///     suite passes at `FERRIC_LANCZOS_BLAS_THREADS=12`, 8 concurrent CLI
 ///     solves at 12 BLAS threads each (96 threads on a 12-core box) all
 ///     complete with identical energies, and a direct probe
@@ -527,7 +529,7 @@ fn qr_orthonormalize(mat: Array2<f64>) -> Result<Array2<f64>, FerricError> {
 ///     n=1200 — larger than benzene/aug-cc-pVTZ's naux=763 — on a 2 MB stack
 ///     and inside a rayon worker without aborting.
 ///
-///     Most likely cause of the fix: the eigensolve moved onto
+///     Likely reason: the eigensolve runs on
 ///     `ferric_core::linalg::eigh_dc`/`eigvalsh_dc` (`c284e48`), which follow
 ///     the standard LAPACK workspace-query convention and **heap**-allocate
 ///     the workspace, where the previous path put it on the caller's stack.
@@ -556,13 +558,12 @@ fn qr_orthonormalize(mat: Array2<f64>) -> Result<Array2<f64>, FerricError> {
 /// inside a rayon worker, where nested OpenBLAS threads are the documented
 /// segfault/oversubscription mode.
 ///
-/// Precedence: `FERRIC_LANCZOS_BLAS_THREADS` (this var, back-compat) >
-/// `FERRIC_BLAS_THREADS` (umbrella, see `ferric_integrals::blas_threads::
-/// opt_in_blas_threads`) > `1`. Falls back to the umbrella resolver when this
-/// var is unset, so the umbrella's rayon-worker guard (return 1 if
-/// `rayon::current_thread_index().is_some()`) still applies on that path;
-/// replicated here too so a caller who sets ONLY the Lanczos-specific var
-/// gets the same belt-and-suspenders protection.
+/// Precedence: `FERRIC_LANCZOS_BLAS_THREADS` (this var, back-compat) > the
+/// umbrella serial setting when one was given (`[parallel] blas_threads`,
+/// `ferric.set_blas_threads`, `FERRIC_BLAS_THREADS`; see
+/// `ferric_integrals::blas_threads::opt_in_blas_threads`) > `1`. Not the
+/// umbrella's rayon-pool-size default: this raise encloses the caller's
+/// `matvec`, which may open rayon regions. On a rayon worker it returns 1.
 ///
 /// Shared with Davidson (`davidson.rs::davidson_blas_threads`): the two are
 /// alternative eigensolvers for the same call site (`config.eigensolver` in
@@ -595,9 +596,17 @@ pub(crate) fn solver_blas_threads_with(get: impl Fn(&str) -> Option<String> + Co
             return n.max(1);
         }
     }
-    // Unset (or unparseable): fall back to the umbrella convention (itself
-    // defaulting to 1, and itself re-checking the rayon-worker guard).
-    ferric_integrals::blas_threads::opt_in_blas_threads_with(get)
+    // Unset (or unparseable): the umbrella setting when one was GIVEN
+    // (`[parallel] blas_threads`, `ferric.set_blas_threads`,
+    // `FERRIC_BLAS_THREADS`), else 1. Unlike the SCF's serial sections, these
+    // solvers do not take the umbrella's rayon-pool-size default: their raise
+    // encloses the caller's `matvec` closure, which may open rayon regions of
+    // its own (see `run_lanczos_seeded`).
+    ferric_integrals::blas_threads::resolve_serial_blas_threads(
+        ferric_integrals::blas_threads::explicit_serial_blas_threads(),
+        get,
+        1,
+    )
 }
 
 /// Block Lanczos with full reorthogonalization.
@@ -746,7 +755,7 @@ where
 /// The block Lanczos recurrence proper, from an orthonormal `v0`
 /// (`naux × block_size`), for a request [`solves_densely`] declined. Tests
 /// call it directly to keep an independent Lanczos reference for full
-/// requests, which [`run_lanczos_seeded`] no longer iterates.
+/// requests, which [`run_lanczos_seeded`] does not iterate.
 fn block_krylov_loop<F>(
     v0: Array2<f64>,
     matvec: &F,
@@ -1218,7 +1227,7 @@ mod tests {
             }
         }
 
-        // Reference: the old expression form.
+        // Reference: the expression form.
         let reference: Array2<f64> = 0.5 * (&a + &a.t());
 
         // Current: the in-place loop, copied verbatim from full_rank_paneled.
@@ -1478,8 +1487,8 @@ mod tests {
         let nov = 140;
         let (matvec, a) = make_dielectric_op(naux, nov, 7);
 
-        // Reference: identity-seed block Lanczos (the old production path),
-        // run through the Krylov loop itself: `run_lanczos_seeded` now routes
+        // Reference: identity-seed block Lanczos (an identity-seed reference),
+        // run through the Krylov loop itself: `run_lanczos_seeded` routes
         // this full request to the same dense eigh under test.
         let ref_res = krylov_only(
             Array2::<f64>::eye(naux),
@@ -1610,13 +1619,12 @@ mod tests {
         );
     }
 
-    /// Regression for the 2026-07-21 fix: `lanczos_panel_width` used to call
-    /// `resolve_budget(None)` unconditionally, so a caller-supplied explicit
+    /// Regression: a caller-supplied explicit
     /// budget (e.g. a TOML `[memory] budget_gb`, threaded through
-    /// `run_lanczos_full_rank_budgeted`) was invisible — only an
-    /// environment-variable-sourced budget counted as "explicit," so the panel
-    /// always fell back to the fixed 256-column default regardless of what a
-    /// TOML/kwarg budget requested. This does not read/set any process env var
+    /// `run_lanczos_full_rank_budgeted`) must reach `lanczos_panel_width`;
+    /// counting only an environment-variable-sourced budget as "explicit"
+    /// would pin the panel to the fixed 256-column default regardless of what a
+    /// TOML/kwarg budget requests. This does not read/set any process env var
     /// (would race with the other env-sensitive tests in this file) —  it
     /// tests purely that passing `Some(explicit_bytes)` changes the resolved
     /// panel width relative to `None`, at a big enough naux/nov that the
@@ -1697,8 +1705,8 @@ mod tests {
         krylov_only(seed, |v| matvec(v), n_desired, 1, conv_thresh)
     }
 
-    /// The bug this guards: a COUNT-starved solve (residual already below
-    /// `conv_thresh`, too few pairs) used to be reported as a residual failure.
+    /// This guards against reporting a COUNT-starved solve (residual already below
+    /// `conv_thresh`, too few pairs) as a residual failure.
     #[test]
     fn count_starved_solve_is_not_blamed_on_the_residual() {
         let res = narrow_seed_run(40, 1.0e3);

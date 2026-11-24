@@ -11,6 +11,10 @@
 //! concurrently silently corrupts results (see ferric-gw's
 //! blas_raise_identity.rs for the same argument). Here the process runs only
 //! the tests in this file, and every test takes ENV_LOCK for its whole body.
+//! (2026-11-08: concurrent callers at a raised count did NOT corrupt results
+//! on OpenBLAS 0.3.26 — 2-4 threads plus a thread flipping the count stayed
+//! within 1.2e-14 of the 1-thread reference; wiki/notes/blas-threads-2026-11-08.
+//! The serialization below is kept so each test compares one count at a time.)
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -58,11 +62,9 @@ fn rhf_converged_energy_consistent_across_blas_thread_counts() {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9);
 
     let run = || solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
 
@@ -130,13 +132,11 @@ fn rks_lda_dfj_converged_energy_consistent_across_blas_thread_counts() {
             let prep = PreparedBasis::new(&mol, &bs).unwrap();
             let op = Operator::coulomb();
             let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-            let cfg = RhfConfig {
-                xc: Some("LDA".into()),
-                df_j_aux: Some("def2-universal-jkfit".into()),
-                energy_conv: 1e-10,
-                density_conv: 1e-8,
-                ..Default::default()
-            };
+            let cfg = RhfConfig::default()
+                .with_xc("LDA")
+                .with_df_j_aux("def2-universal-jkfit")
+                .with_energy_conv(1e-10)
+                .with_density_conv(1e-8);
 
             let run =
                 || solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();

@@ -35,6 +35,7 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::{solve_uhf, solve_uhf_with_guess};
 use ferric_scf::{ScfResult, Spin};
+use ferric_testkit::compare::max_abs;
 use ndarray::{s, Array2};
 
 const H2O_XYZ: &str = "3\nwater\nO 0.000000 0.000000 0.117300\nH 0.000000 0.757200 -0.469200\nH 0.000000 -0.757200 -0.469200\n";
@@ -44,13 +45,11 @@ const NH2_XYZ: &str =
 const O2_XYZ: &str = "2\nO2\nO 0.000000 0.000000 0.604000\nO 0.000000 0.000000 -0.604000\n";
 
 fn ks(xc: &str) -> RhfConfig {
-    RhfConfig {
-        xc: Some(xc.to_string()),
-        max_iter: 300,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc(xc.to_string())
+        .with_max_iter(300)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
 }
 
 /// FD step (Bohr) of the fast tests; `MBD_FD_H` overrides it. With the C2
@@ -62,10 +61,6 @@ fn fd_step() -> f64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(1e-3)
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
 }
 
 fn displaced(mol: &Molecule, atom: usize, k: usize, h: f64) -> Molecule {
@@ -337,12 +332,30 @@ const FD_FULL_TOL: f64 = 5e-10;
 /// FD_full − FD_orth.
 #[test]
 fn uks_mbd_exact_gradient_matches_fd_of_full_scf_pipeline() {
-    let mol = Molecule::parse_xyz(OH_XYZ, 0, 2).expect("OH");
+    uks_full_pipeline_fd_check(
+        "OH",
+        OH_XYZ,
+        "PBE",
+        &MbdRsscsConfig::for_functional("PBE").expect("beta"),
+    );
+}
+
+/// The same check on a τ-only meta-GGA (NH2 doublet, r2SCAN; OH is avoided:
+/// its β-HOMO is near-degenerate under SCAN-family functionals): the coupled
+/// α/β Z-vector applies the τ f_xc kernel. β is PBE's (no published r2SCAN
+/// value; this checks the derivative, not the dispersion model).
+#[test]
+fn uks_mbd_exact_gradient_matches_fd_of_full_scf_pipeline_r2scan() {
+    uks_full_pipeline_fd_check("NH2", NH2_XYZ, "r2SCAN", &MbdRsscsConfig::with_beta(0.83));
+}
+
+fn uks_full_pipeline_fd_check(name: &str, xyz: &str, xc: &str, mbd_cfg: &MbdRsscsConfig) {
+    let mol = Molecule::parse_xyz(xyz, 0, 2).expect("doublet");
     let bs = basis::bundled("sto-3g").expect("sto-3g");
     let op = Operator::coulomb();
     let ctx = ParallelContext::default();
-    let cfg = ks("PBE");
-    let mbd_cfg = MbdRsscsConfig::for_functional("PBE").expect("beta");
+    let cfg = ks(xc);
+    let mbd_cfg = *mbd_cfg;
     let cache = MbdFreeAtomCache::build(&ctx, &mol, &bs, op, &cfg).expect("cache");
     let r = uks(&mol, &bs, &cfg, None);
     let out = mbd_rsscs_for_scf(&ctx, &cache, &mol, &bs, op, &cfg, &r, &mbd_cfg).expect("mbd");
@@ -355,7 +368,7 @@ fn uks_mbd_exact_gradient_matches_fd_of_full_scf_pipeline() {
     let diff = max_abs(&(&g - &fd));
     let diff_relax = max_abs(&(&relax - &relax_fd));
     println!(
-        "OH/STO-3G PBE: max|FD| = {:.3e}, max|relax| = {:.3e}, max|exact - FD| = {diff:.3e}, \
+        "{name}/STO-3G {xc}: max|FD| = {:.3e}, max|relax| = {:.3e}, max|exact - FD| = {diff:.3e}, \
          max|relax(Z) - relax(FD)| = {diff_relax:.3e}",
         max_abs(&fd),
         max_abs(&relax)
@@ -419,11 +432,9 @@ fn measure_uks_full_pipeline_fd() {
                 continue;
             }
             let label = format!("{name}/6-31G {tag}");
-            let cfg = RhfConfig {
-                df_j_aux: j_aux.map(str::to_string),
-                df_k_aux: k_aux.map(str::to_string),
-                ..ks(xc)
-            };
+            let mut cfg = ks(xc);
+            cfg.df_j_aux = j_aux.map(str::to_string);
+            cfg.df_k_aux = k_aux.map(str::to_string);
             let mbd_cfg = MbdRsscsConfig::for_functional(xc).expect("beta");
             let mol = Molecule::parse_xyz(xyz, 0, mult).expect("mol");
             let cache = MbdFreeAtomCache::build(&ctx, &mol, &bs, op, &cfg).expect("cache");
@@ -465,6 +476,7 @@ fn cosx_flat() -> ferric_scf::cosx_k::CosxConfig {
             n_radial: 50,
             n_angular: 110,
             prune: None,
+            weight_cut: None,
         },
         final_grid: None,
         ..ferric_scf::cosx_k::CosxConfig::flat_reference()
@@ -484,8 +496,9 @@ const COSX_MBD_TOL: f64 = 1e-10;
 /// contraction differentiating the COSX energy) vs central FD of the full
 /// UKS(COSX) + MBD pipeline, NH2/STO-3G. NEGATIVE CONTROL: the same driver
 /// with the COSX switch removed from the config (exact-K contraction against
-/// the COSX SCF — the pairing the open-shell COSX refusal used to prevent)
+/// the COSX SCF — the pairing the open-shell COSX refusal prevents)
 /// must miss FD by more than the bar.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uks_mbd_cosx_exact_gradient_matches_fd_of_full_scf_pipeline() {
     let mol = Molecule::parse_xyz(NH2_XYZ, 0, 2).expect("NH2");
@@ -493,11 +506,10 @@ fn uks_mbd_cosx_exact_gradient_matches_fd_of_full_scf_pipeline() {
     let op = Operator::coulomb();
     let ctx = ParallelContext::default();
     let plain = ks("PBE0");
-    let cfg = RhfConfig {
-        k_builder: Some("cosx".into()),
-        cosx: cosx_flat(),
-        ..plain.clone()
-    };
+    let cfg = plain
+        .clone()
+        .with_k_builder(ferric_scf::options::KBuilderKind::Cosx)
+        .with_cosx(cosx_flat());
     assert!(ferric_scf::cosx_gradient::scf_exchange_is_cosx(&cfg, true).unwrap());
     let mbd_cfg = MbdRsscsConfig::for_functional("PBE0").expect("beta");
     let cache = MbdFreeAtomCache::build(&ctx, &mol, &bs, op, &plain).expect("cache");

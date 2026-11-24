@@ -24,14 +24,17 @@
 //!
 //! # Level of theory: mechanical/electrostatic embedding
 //!
-//! The MM charges polarize the QM density (one-way coupling: QM sees MM, MM does
-//! not see QM back). This is standard **electrostatic embedding**. There is no
-//! MM force field here — no MM-MM bonded/nonbonded energy, no Lennard-Jones
-//! QM-MM term, no MM polarizability. The energy this layer contributes to is
+//! The MM charges polarize the QM density. With plain fixed charges the
+//! coupling is one-way (QM sees MM, MM does not see QM back): standard
+//! **electrostatic embedding**. MM atoms may instead carry a Gaussian-smeared
+//! charge ([`QmmmAtom::new_smeared`]) and/or an isotropic Thole polarizability
+//! ([`QmmmAtom::with_alpha`], see `crate::polarizable`), in which case the MM
+//! sites respond to the QM field. The MM force field itself (MM-MM bonded and
+//! nonbonded terms, QM-MM Lennard-Jones) is not part of the SCF energy: it is
+//! evaluated separately by [`qmmm_mm_terms`] / [`full_gradient_with_mm`] from a
+//! `ferric_mm` topology. The energy the SCF layer contributes to is
 //! `E_QM(in the field of the MM charges)`, and the MM charges are fixed
-//! external parameters, not dynamical variables. A complete QM/MM total energy
-//! would add `E_MM` and a QM-MM van der Waals term from a force field; that is
-//! the caller's job and out of scope here.
+//! external parameters, not dynamical variables.
 //!
 //! # Known approximations (read before trusting a boundary number)
 //!
@@ -51,7 +54,7 @@
 //!   move the host charge onto the midpoints of its bonds to the next MM shell
 //!   (RC conserves charge; RCD conserves charge and dipole). The default,
 //!   [`BoundaryChargeScheme::Keep`], is the untreated boundary. Gaussian
-//!   smearing and double link atoms are not implemented. [`QmmmSystem`] always
+//!   Double link atoms are not implemented. [`QmmmSystem`] always
 //!   **excludes MM charges on atoms that are themselves in the QM region**
 //!   (they would be double-counted). If your link atom lands within a Bohr or
 //!   so of a nonzero MM charge under `Keep`, the result is unphysical and this
@@ -98,10 +101,15 @@ use crate::screening::SchwarzBounds;
 /// would double-count them. Coordinates are in **Bohr**.
 #[derive(Debug, Clone)]
 pub struct QmmmAtom {
+    /// Element symbol (label for `z`).
     pub symbol: String,
+    /// Atomic number.
     pub z: i32,
+    /// x coordinate, Bohr.
     pub x: f64,
+    /// y coordinate, Bohr.
     pub y: f64,
+    /// z coordinate, Bohr (named `z_pos` because `z` is the atomic number).
     pub z_pos: f64,
     /// MM partial charge in units of e. Typically fractional (a force-field
     /// charge). Only used if this atom lands in the MM region.
@@ -207,8 +215,9 @@ pub struct LinkAtomSpec {
     /// the frontier QM atom the cap is bonded to.
     pub qm_atom: usize,
     /// Index into the **full** atom list of the MM atom whose bond was cut.
-    /// Recorded so a caller can implement its own charge-redistribution scheme
-    /// (this module does not — see the module docs).
+    /// Used by [`QmmmSystem::with_boundary_charges`] to redistribute (RC/RCD)
+    /// or delete (Z1) the host's charge; under the default `Keep` scheme the
+    /// charge stays where it is.
     pub mm_atom_full_index: usize,
     /// Scale factor `g` along the bond vector.
     pub scale: f64,
@@ -282,6 +291,7 @@ impl BoundaryChargeScheme {
 /// the two real atoms (half each, since the midpoint is their mean).
 #[derive(Debug, Clone, PartialEq)]
 pub struct BoundaryCharge {
+    /// Charge in units of e.
     pub q: f64,
     /// Position in Bohr.
     pub position: [f64; 3],
@@ -304,7 +314,12 @@ pub enum QmSelection {
     /// would normally expand the selection to whole residues first; that is
     /// the caller's job (build the index list and use [`QmSelection::Indices`]),
     /// or use [`QmSelection::WithinRadiusWholeResidues`].
-    WithinRadius { seeds: Vec<usize>, radius: f64 },
+    WithinRadius {
+        /// Seed atom indices into the full atom list; always QM.
+        seeds: Vec<usize>,
+        /// Selection radius in Bohr, measured atom-to-atom.
+        radius: f64,
+    },
     /// Like [`QmSelection::WithinRadius`], but a residue joins the QM region
     /// **in full** if any of its atoms lands within `radius` of any seed —
     /// no sidechain is cut mid-residue.
@@ -316,8 +331,11 @@ pub enum QmSelection {
     /// no-op on top of [`QmSelection::WithinRadius`] — the same seeds/radius
     /// select the same QM/MM split, byte for byte.
     WithinRadiusWholeResidues {
+        /// Seed atom indices into the full atom list; always QM.
         seeds: Vec<usize>,
+        /// Selection radius in Bohr, measured atom-to-atom.
         radius: f64,
+        /// Residue id of each atom, indexed like the full atom list.
         residue_ids: Vec<usize>,
     },
 }
@@ -331,10 +349,8 @@ pub enum QmSelection {
 /// let sys = QmmmSystem::new(&atoms, QmSelection::WithinRadius { seeds, radius }, 0, 1)?;
 /// let mol = sys.to_qm_molecule();
 /// let prep = PreparedBasis::new(&mol, &basis)?;
-/// let config = RhfConfig {
-///     external_potential: sys.to_external_potential(),
-///     ..Default::default()
-/// };
+/// let mut config = RhfConfig::default();
+/// config.external_potential = sys.to_external_potential();
 /// let scf = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config)?;
 /// ```
 ///
@@ -900,6 +916,114 @@ impl QmmmSystem {
             .collect()
     }
 
+    /// Label every atom with a molecule (residue) id, one entry per atom of
+    /// the full structure, without changing the QM/MM partition. This is
+    /// how a system built with [`QmSelection::Indices`] or
+    /// [`QmSelection::WithinRadius`] gets the molecule labels that
+    /// [`QmmmSystem::polarizable_embedding`]'s same-molecule exclusion and
+    /// [`MoveMm::Residues`] read. A wrong length is an error.
+    pub fn with_residue_ids(mut self, residue_ids: Vec<usize>) -> Result<Self, FerricError> {
+        if residue_ids.len() != self.atoms.len() {
+            return Err(FerricError::General(format!(
+                "QmmmSystem::with_residue_ids: {} entries, expected {} (one per atom)",
+                residue_ids.len(),
+                self.atoms.len()
+            )));
+        }
+        self.residue_ids = Some(residue_ids);
+        Ok(self)
+    }
+
+    /// The molecule ids a [`PolarizationExclusions`] scheme asks for: `None`
+    /// for [`PolarizationExclusions::None`]; for
+    /// [`PolarizationExclusions::Molecule`], [`QmmmSystem::residue_ids`] when
+    /// set, else the connected components of `bonds` (full-structure
+    /// indices, e.g. an MM topology's bond list), else an error. Molecules
+    /// are never guessed from distances.
+    pub fn polarization_molecule_ids(
+        &self,
+        scheme: PolarizationExclusions,
+        bonds: Option<&[(usize, usize)]>,
+    ) -> Result<Option<Vec<usize>>, FerricError> {
+        match scheme {
+            PolarizationExclusions::None => Ok(None),
+            PolarizationExclusions::Molecule => match (&self.residue_ids, bonds) {
+                (Some(ids), _) => Ok(Some(ids.clone())),
+                (None, Some(b)) => molecule_ids_from_bonds(self.atoms.len(), b).map(Some),
+                (None, None) => Err(FerricError::General(
+                    "polarizable embedding excludes each site's own molecule by default, and \
+                     this system has no molecule information: give residue ids (Python \
+                     QmmmSystem(residue_ids=...), one per atom) or an MM topology with bonds, \
+                     or opt out with polarization_exclusions = \"none\" (only right for \
+                     isolated sites such as ions)"
+                        .to_string(),
+                )),
+            },
+        }
+    }
+
+    /// The Thole polarizable embedding of this system, or `None` when no MM
+    /// atom is polarizable. `thole_a` is stored as given (`None` = undamped).
+    ///
+    /// `molecule_ids` (one per full-structure atom, e.g.
+    /// [`QmmmSystem::residue_ids`] or [`molecule_ids_from_bonds`]) turns on
+    /// same-molecule exclusion: a site feels neither the permanent charges
+    /// nor the induced dipoles of atoms with its own id (module doc of
+    /// [`crate::polarizable`], Exclusions). An RC/RCD midpoint charge
+    /// belongs to the molecules of both its hosts. `None` excludes nothing,
+    /// which is right only for sites that share no molecule with any charge
+    /// (isolated ions).
+    pub fn polarizable_embedding(
+        &self,
+        thole_a: Option<f64>,
+        molecule_ids: Option<&[usize]>,
+    ) -> Result<Option<crate::polarizable::PolarizableSites>, FerricError> {
+        let site_atoms = self.polarizable_site_full_indices();
+        if site_atoms.is_empty() {
+            return Ok(None);
+        }
+        let mut pol = crate::polarizable::PolarizableSites {
+            sites: self.to_polarizable_sites(),
+            thole_a,
+            ..Default::default()
+        };
+        if let Some(ids) = molecule_ids {
+            if ids.len() != self.atoms.len() {
+                return Err(FerricError::General(format!(
+                    "polarizable_embedding: {} molecule ids, expected {} (one per atom)",
+                    ids.len(),
+                    self.atoms.len()
+                )));
+            }
+            for (a, &ia) in site_atoms.iter().enumerate() {
+                for (b, &ib) in site_atoms.iter().enumerate().skip(a + 1) {
+                    if ids[ia] == ids[ib] {
+                        pol.exclusions.push((a, b));
+                    }
+                }
+            }
+            let pos = |i: usize| [self.atoms[i].x, self.atoms[i].y, self.atoms[i].z_pos];
+            pol.excluded_charges = site_atoms
+                .iter()
+                .map(|&s| {
+                    let own = ids[s];
+                    let atom_charges = self
+                        .mm_indices
+                        .iter()
+                        .filter(|&&i| i != s && self.effective_charges[i] != 0.0 && ids[i] == own)
+                        .map(|&i| pos(i));
+                    let midpoints = self
+                        .boundary_charges
+                        .iter()
+                        .filter(|b| b.q != 0.0 && (ids[b.hosts.0] == own || ids[b.hosts.1] == own))
+                        .map(|b| b.position);
+                    atom_charges.chain(midpoints).collect()
+                })
+                .collect();
+        }
+        Ok(Some(pol))
+    }
+
     /// Number of real QM atoms, excluding link hydrogens. Link atoms occupy
     /// `qm_atom_count() .. qm_atom_count() + link_atoms.len()` in the molecule
     /// returned by [`QmmmSystem::to_qm_molecule`].
@@ -1014,6 +1138,78 @@ impl QmmmSystem {
         }
         Some(best)
     }
+}
+
+/// Which permanent charges and induced dipoles a polarizable site ignores
+/// (see [`crate::polarizable`]'s module doc, Exclusions).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PolarizationExclusions {
+    /// A site ignores the charges and sites of its own molecule (residue
+    /// ids, else bonded components). The default.
+    #[default]
+    Molecule,
+    /// No exclusions: every site sees every other charge and site.
+    None,
+}
+
+impl PolarizationExclusions {
+    /// Strict parse of `"molecule"` / `"none"`; anything else is an error.
+    pub fn parse_config_str(s: &str) -> Result<Self, FerricError> {
+        match s {
+            "molecule" => Ok(Self::Molecule),
+            "none" => Ok(Self::None),
+            other => Err(FerricError::General(format!(
+                "polarization_exclusions: unknown value {other:?}; expected \"molecule\" or \"none\""
+            ))),
+        }
+    }
+
+    /// The config-string spelling (inverse of `parse_config_str`).
+    pub fn config_str(self) -> &'static str {
+        match self {
+            Self::Molecule => "molecule",
+            Self::None => "none",
+        }
+    }
+}
+
+/// Molecule ids from a bond list: atoms joined by any path of bonds share
+/// an id (connected components, numbered in order of their lowest atom).
+/// Every atom of `0..n_atoms` gets an id; an unbonded atom is its own
+/// molecule. An out-of-range bond index is an error.
+pub fn molecule_ids_from_bonds(
+    n_atoms: usize,
+    bonds: &[(usize, usize)],
+) -> Result<Vec<usize>, FerricError> {
+    let mut parent: Vec<usize> = (0..n_atoms).collect();
+    fn root(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    for &(i, j) in bonds {
+        if i >= n_atoms || j >= n_atoms {
+            return Err(FerricError::General(format!(
+                "molecule_ids_from_bonds: bond ({i}, {j}) out of range for {n_atoms} atoms"
+            )));
+        }
+        let (ri, rj) = (root(&mut parent, i), root(&mut parent, j));
+        parent[ri.max(rj)] = ri.min(rj);
+    }
+    let mut label = vec![usize::MAX; n_atoms];
+    let mut next = 0;
+    (0..n_atoms)
+        .map(|i| {
+            let r = root(&mut parent, i);
+            if label[r] == usize::MAX {
+                label[r] = next;
+                next += 1;
+            }
+            Ok(label[r])
+        })
+        .collect()
 }
 
 /// Electric field **E**(r) at arbitrary points from a QM density plus its
@@ -1577,6 +1773,7 @@ enum BoundaryTarget {
 /// With no polarizable sites (`sites.sites.is_empty()`), both terms are
 /// empty and this is bit-identical to plain [`full_gradient`] — see
 /// `full_gradient_with_polarizable_matches_plain_full_gradient_when_not_polarizable`.
+#[allow(clippy::too_many_arguments)]
 pub fn full_gradient_with_polarizable(
     system: &QmmmSystem,
     qm_gradient: &Array2<f64>,
@@ -1925,17 +2122,27 @@ pub enum MoveMm {
 /// `run_qmmm`'s KS setup).
 #[derive(Debug, Clone, PartialEq)]
 pub enum QmmmMethod {
+    /// Restricted Hartree-Fock (`solve_rhf`, `xc = None`).
     Rhf,
+    /// Unrestricted Hartree-Fock (`solve_uhf`, `xc = None`).
     Uhf,
+    /// Restricted Kohn-Sham with the named functional.
     Rks(String),
+    /// Unrestricted Kohn-Sham with the named functional.
     Uks(String),
 }
 
 /// Configuration for [`optimize_qmmm`].
 #[derive(Debug, Clone)]
 pub struct QmmmOptimizeConfig {
+    /// SCF reference for the QM region.
     pub method: QmmmMethod,
+    /// Which MM atoms are free coordinates.
     pub move_mm: MoveMm,
+    /// BFGS settings (step cap, trust radius, convergence thresholds, initial
+    /// Hessian, trust rule, SCF warm start). The search is Cartesian over the
+    /// free atoms; an unset `initial_hessian` is the Lindh model of the whole
+    /// structure restricted to the free atoms (see [`optimize_qmmm`]).
     pub opt: crate::optimize::OptimizeConfig,
     /// The MM force field. `None` means no MM energy/gradient terms at all —
     /// the same "all-zero" contract [`qmmm_mm_terms`] documents. Required
@@ -1957,9 +2164,13 @@ pub struct QmmmOptimizeResult {
     pub system: QmmmSystem,
     /// Total energy (SCF + MM force-field terms) at the final geometry.
     pub energy: f64,
+    /// Whether the energy change and the max and RMS components of the
+    /// free-atom gradient all fell below the `opt` thresholds.
     pub converged: bool,
+    /// BFGS steps taken (coordinate updates), at most `opt.max_steps`.
     pub steps: usize,
-    /// Total energy at every step, in order (length `steps + 1`).
+    /// Total energy at every evaluation, in order (length `steps + 1`),
+    /// including steps the ratio trust rule rejected.
     pub energies: Vec<f64>,
 }
 
@@ -2011,13 +2222,162 @@ fn free_atom_indices(system: &QmmmSystem, move_mm: &MoveMm) -> Result<Vec<usize>
     Ok(free)
 }
 
+/// QM-region SCF energy, its nuclear gradient over the QM molecule (real atoms
+/// then link hydrogens) and the converged total density, for one QM/MM
+/// geometry. The embedding (`system.to_external_potential()`) overrides
+/// `scf.external_potential`; the gradient goes through the SCF dispatchers
+/// ([`crate::gradient::restricted_scf_gradient`] /
+/// [`crate::gradient::unrestricted_scf_gradient`]), so the IEF-PCM term
+/// (`scf.pcm`) is included and a COSMO SCF is refused. The MM-charge and
+/// boundary terms are NOT included (see [`mm_forces`], [`full_gradient`]).
+pub fn qmmm_qm_energy_and_gradient(
+    ctx: &ParallelContext,
+    system: &QmmmSystem,
+    bs: &ferric_core::basis::BasisSet,
+    method: &QmmmMethod,
+    scf: &crate::rhf::RhfConfig,
+) -> Result<(f64, Array2<f64>, Array2<f64>), FerricError> {
+    let mut cold = crate::warm_start::ScfWarmStart::new(false);
+    qmmm_qm_energy_and_gradient_warm(ctx, system, bs, method, scf, &mut cold)
+}
+
+/// [`qmmm_qm_energy_and_gradient`] whose SCF goes through a geometry
+/// driver's warm-start carrier ([`crate::warm_start`]); a disabled carrier is
+/// exactly the cold solve.
+pub(crate) fn qmmm_qm_energy_and_gradient_warm(
+    ctx: &ParallelContext,
+    system: &QmmmSystem,
+    bs: &ferric_core::basis::BasisSet,
+    method: &QmmmMethod,
+    scf: &crate::rhf::RhfConfig,
+    warm: &mut crate::warm_start::ScfWarmStart,
+) -> Result<(f64, Array2<f64>, Array2<f64>), FerricError> {
+    let op = Operator::coulomb();
+    let mol = system.to_qm_molecule();
+    let prep = PreparedBasis::new(&mol, bs)?;
+    let bounds = SchwarzBounds::compute(op, &prep)?;
+    // Geometry steps use the SCF-grid energy (a COSX final pass is energy-only).
+    let mut scf_cfg = crate::gradient::gradient_task_config(scf).into_owned();
+    scf_cfg.external_potential = system.to_external_potential();
+    match method {
+        QmmmMethod::Rhf | QmmmMethod::Rks(_) => {
+            if let QmmmMethod::Rks(xc) = method {
+                scf_cfg.xc = Some(xc.clone());
+                scf_cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
+                scf_cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
+            }
+            let r =
+                crate::warm_start::solve_rhf_warm(ctx, &mol, &prep, op, &bounds, &scf_cfg, warm)?;
+            crate::optimize::require_converged(&r)?;
+            let g = crate::gradient::restricted_scf_gradient(
+                &mol, &prep, bs, op, &bounds, &scf_cfg, &r,
+            )?;
+            Ok((r.energy, g, r.density_total().clone()))
+        }
+        QmmmMethod::Uhf | QmmmMethod::Uks(_) => {
+            if let QmmmMethod::Uks(xc) = method {
+                scf_cfg.xc = Some(xc.clone());
+                scf_cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
+                scf_cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
+            }
+            let r = crate::warm_start::solve_uhf_warm(ctx, &mol, &prep, &bounds, &scf_cfg, warm)?;
+            let g = crate::gradient::unrestricted_scf_gradient(
+                &mol, &prep, bs, op, &bounds, &scf_cfg, &r,
+            )?;
+            Ok((r.energy, g, r.density_total().clone()))
+        }
+    }
+}
+
+/// The search [`optimize_qmmm`] runs for `opt`: Cartesian over the free
+/// atoms, an unset initial Hessian as the molecular default.
+#[must_use]
+pub fn qmmm_search_settings(
+    opt: &crate::optimize::OptimizeConfig,
+) -> crate::optimize::SearchSettings {
+    crate::optimize::SearchSettings {
+        coord_system: crate::optimize::CoordSystem::Cartesian,
+        ..opt.requested_search()
+    }
+}
+
+/// Every atom of `system` (QM real atoms and MM atoms, in full-structure
+/// order, no link atoms) at `coords` (Bohr), as a [`Molecule`] for the model
+/// Hessian.
+fn structure_molecule(system: &QmmmSystem, coords: &Array2<f64>) -> Molecule {
+    Molecule {
+        atoms: system
+            .atoms
+            .iter()
+            .enumerate()
+            .map(|(i, a)| Atom {
+                symbol: a.symbol.clone(),
+                z: a.z,
+                x: coords[(i, 0)],
+                y: coords[(i, 1)],
+                zpos: coords[(i, 2)],
+                ghost: false,
+                n_core_ecp: 0,
+            })
+            .collect(),
+        charge: system.qm_charge,
+        multiplicity: system.qm_multiplicity,
+    }
+}
+
+/// The refusals of [`optimize_qmmm`]: configurations it cannot run.
+fn refuse_unsupported_qmmm_optimize(cfg: &QmmmOptimizeConfig) -> Result<(), FerricError> {
+    if cfg.move_mm != MoveMm::None && cfg.mm_topology.is_none() {
+        return Err(FerricError::General(
+            "optimize_qmmm: move_mm != MoveMm::None requires mm_topology (moving MM atoms \
+             with no MM force field to hold their own geometry together is meaningless)"
+                .to_string(),
+        ));
+    }
+    crate::gradient::refuse_cosmo_gradient(&cfg.scf)?;
+    crate::gradient::refuse_relativistic_gradient(&cfg.scf)?;
+    if cfg.scf.polarizable.is_some() {
+        return Err(FerricError::General(
+            "optimize_qmmm: cfg.scf.polarizable is not supported yet (Lane B5 scope). Every \
+             step here rebuilds external_potential from the current geometry via \
+             step_sys.to_external_potential(), but polarizable is copied UNCHANGED from \
+             cfg.scf on every iteration — it would go stale as soon as any polarizable site \
+             or embedding charge moved (site positions/permanent-charge positions both need \
+             to track step_sys, and the analytic gradient this optimizer's line search relies \
+             on would ALSO need the polarizable_site_gradient/polarizable_charge_gradient_rows \
+             terms folded in, which this function does not do). Set cfg.scf.polarizable = \
+             None and use a non-polarizable QM/MM optimization, or run single-point \
+             `full_gradient_with_polarizable` steps by hand."
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// The starting inverse Hessian of [`optimize_qmmm`] over the free atoms at
+/// `coords` (full structure): the identity for `simple`, the free block of
+/// the whole-structure Lindh model for `lindh`.
+fn qmmm_initial_inverse_hessian(
+    initial: crate::optimize::InitialHessian,
+    system: &QmmmSystem,
+    coords: &Array2<f64>,
+    free: &[usize],
+) -> Result<Array2<f64>, FerricError> {
+    match initial {
+        crate::optimize::InitialHessian::Simple => Ok(Array2::eye(3 * free.len())),
+        crate::optimize::InitialHessian::Lindh => {
+            crate::optimize::lindh_inverse_hessian_free(&structure_molecule(system, coords), free)
+        }
+    }
+}
+
 /// Optimize a QM/MM system's geometry: real QM atoms always move, MM atoms
 /// move per `cfg.move_mm`. Every energy/gradient evaluation rebuilds the
 /// partition at the current geometry via [`QmmmSystem::with_coordinates`] (so
 /// link atoms and boundary charges are the exact derivative of what gets
 /// evaluated), runs the configured SCF in the resulting embedding potential,
 /// adds any [`qmmm_mm_terms`] contribution, and projects the gradient down to
-/// only the FREE atoms' rows before the BFGS line search sees them (so it
+/// only the FREE atoms' rows before the BFGS driver sees them (so it
 /// never tries to move an atom `move_mm` excluded).
 ///
 /// Requires `cfg.mm_topology` whenever `cfg.move_mm != MoveMm::None`
@@ -2036,28 +2396,7 @@ pub fn optimize_qmmm(
     basis_name: &str,
     cfg: &QmmmOptimizeConfig,
 ) -> Result<QmmmOptimizeResult, FerricError> {
-    if cfg.move_mm != MoveMm::None && cfg.mm_topology.is_none() {
-        return Err(FerricError::General(
-            "optimize_qmmm: move_mm != MoveMm::None requires mm_topology (moving MM atoms \
-             with no MM force field to hold their own geometry together is meaningless)"
-                .to_string(),
-        ));
-    }
-    if cfg.scf.polarizable.is_some() {
-        return Err(FerricError::General(
-            "optimize_qmmm: cfg.scf.polarizable is not supported yet (Lane B5 scope). Every \
-             step here rebuilds external_potential from the current geometry via \
-             step_sys.to_external_potential(), but polarizable is copied UNCHANGED from \
-             cfg.scf on every iteration — it would go stale as soon as any polarizable site \
-             or embedding charge moved (site positions/permanent-charge positions both need \
-             to track step_sys, and the analytic gradient this optimizer's line search relies \
-             on would ALSO need the polarizable_site_gradient/polarizable_charge_gradient_rows \
-             terms folded in, which this function does not do). Set cfg.scf.polarizable = \
-             None and use a non-polarizable QM/MM optimization, or run single-point \
-             `full_gradient_with_polarizable` steps by hand."
-                .to_string(),
-        ));
-    }
+    refuse_unsupported_qmmm_optimize(cfg)?;
 
     let free = free_atom_indices(system, &cfg.move_mm)?;
     let natoms = system.atoms.len();
@@ -2092,75 +2431,40 @@ pub fn optimize_qmmm(
 
     let x0 = flatten_free(&coords0);
     let bs = ferric_core::basis::bundled(basis_name)?;
-    let op = Operator::coulomb();
 
     let mut energies: Vec<f64> = Vec::new();
+    let mut warm = crate::warm_start::ScfWarmStart::new(cfg.opt.scf_warm_start);
+    // Geometry task: an unset `ri_j_precision` resolves to f64
+    // (`RhfConfig::ri_j_task`), an explicit one is kept.
+    let scf = cfg.scf.for_geometry_task();
 
-    let (x_final, _energy_final, steps, converged) =
-        crate::optimize::optimize_coordinates(&x0, &cfg.opt, |x| {
+    // Initial Hessian: an unset one is the molecular default (Lindh). The
+    // model is built over the whole structure (QM real atoms and MM atoms; a
+    // link atom is not an independent coordinate), and the search uses its
+    // free-atom block (`lindh_inverse_hessian_free`).
+    let initial = qmmm_search_settings(&cfg.opt).initial_hessian;
+    let seed = |x: &[f64]| -> Result<Array2<f64>, FerricError> {
+        let mut coords = coords0.clone();
+        unflatten_free(x, &mut coords);
+        qmmm_initial_inverse_hessian(initial, system, &coords, &free)
+    };
+
+    let (x_final, energy_final, steps, converged) =
+        crate::optimize::optimize_coordinates_seeded(&x0, &cfg.opt, &seed, |x| {
             let mut coords = coords0.clone();
             unflatten_free(x, &mut coords);
             let step_sys = system.with_coordinates(&coords)?;
 
             let mol = step_sys.to_qm_molecule();
             let prep = PreparedBasis::new(&mol, &bs)?;
-            let bounds = SchwarzBounds::compute(op, &prep)?;
-            let mut scf_cfg = cfg.scf.clone();
-            scf_cfg.external_potential = step_sys.to_external_potential();
-            let ext = scf_cfg.external_potential.clone();
-
-            let (scf_energy, qm_grad, density_total) = match &cfg.method {
-                QmmmMethod::Rhf => {
-                    let r = crate::rhf::solve_rhf(ctx, &mol, &prep, op, &bounds, &scf_cfg)?;
-                    let g =
-                        crate::gradient::rhf_gradient(&mol, &prep, op, &bounds, &r, ext.as_ref())?;
-                    (r.energy, g, r.density_total().clone())
-                }
-                QmmmMethod::Uhf => {
-                    let r = crate::uhf::solve_uhf(ctx, &mol, &prep, &bounds, &scf_cfg)?;
-                    let g =
-                        crate::gradient::uhf_gradient(&mol, &prep, op, &bounds, &r, ext.as_ref())?;
-                    (r.energy, g, r.density_total().clone())
-                }
-                QmmmMethod::Rks(xc) => {
-                    scf_cfg.xc = Some(xc.clone());
-                    scf_cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
-                    scf_cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
-                    let r = crate::rhf::solve_rhf(ctx, &mol, &prep, op, &bounds, &scf_cfg)?;
-                    let g = crate::ks_gradient::ks_gradient_closed_with_exchange_on_grids(
-                        &mol,
-                        &prep,
-                        &bs,
-                        op,
-                        &bounds,
-                        xc,
-                        &r,
-                        ext.as_ref(),
-                        None,
-                        &crate::ks_gradient::KsGradGrids::from_config(&scf_cfg),
-                    )?;
-                    (r.energy, g, r.density_total().clone())
-                }
-                QmmmMethod::Uks(xc) => {
-                    scf_cfg.xc = Some(xc.clone());
-                    scf_cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
-                    scf_cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
-                    let r = crate::uhf::solve_uhf(ctx, &mol, &prep, &bounds, &scf_cfg)?;
-                    let g = crate::ks_gradient::ks_gradient_uks_with_exchange_on_grids(
-                        &mol,
-                        &prep,
-                        &bs,
-                        op,
-                        &bounds,
-                        xc,
-                        &r,
-                        ext.as_ref(),
-                        None,
-                        &crate::ks_gradient::KsGradGrids::from_config(&scf_cfg),
-                    )?;
-                    (r.energy, g, r.density_total().clone())
-                }
-            };
+            let (scf_energy, qm_grad, density_total) = qmmm_qm_energy_and_gradient_warm(
+                ctx,
+                &step_sys,
+                &bs,
+                &cfg.method,
+                &scf,
+                &mut warm,
+            )?;
 
             let forces = mm_forces(&step_sys, &mol, &prep, &density_total)?;
 
@@ -2191,13 +2495,16 @@ pub fn optimize_qmmm(
             }
             Ok((total_energy, grad_free))
         })?;
+    if let Some(line) = warm.summary() {
+        println!("{line}");
+    }
 
     let mut coords_final = coords0;
     unflatten_free(&x_final, &mut coords_final);
     let final_system = system.with_coordinates(&coords_final)?;
-    let final_energy = *energies
-        .last()
-        .expect("at least one energy evaluation always occurs");
+    // The energy at the returned geometry: the last evaluation can be a step
+    // the ratio trust rule rejected.
+    let final_energy = energy_final;
 
     Ok(QmmmOptimizeResult {
         system: final_system,

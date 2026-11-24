@@ -46,13 +46,11 @@ fn energy_at_start(ctx: &ParallelContext, mol: &Molecule, cfg: &RhfConfig, rohf:
 /// Tighter SCF for the FD-Hessian path: differentiating a loosely-converged
 /// gradient produces a large `FrequencyResult::asymmetry` and garbage modes.
 fn freq_config(xc: &str) -> RhfConfig {
-    RhfConfig {
-        xc: Some(xc.to_string()),
-        energy_conv: 1e-7,
-        density_conv: 1e-6,
-        max_iter: 600,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc(xc.to_string())
+        .with_energy_conv(1e-7)
+        .with_density_conv(1e-6)
+        .with_max_iter(600)
 }
 
 fn ks_config(xc: &str) -> RhfConfig {
@@ -62,13 +60,11 @@ fn ks_config(xc: &str) -> RhfConfig {
     // that swap once the orbital gradient is below density_conv
     // (tests/uhf_degenerate_swap.rs); ROHF holds the occupation by continuity
     // (rohf_occupation, F6).
-    RhfConfig {
-        xc: Some(xc.to_string()),
-        energy_conv: 1e-7,
-        density_conv: 1e-4,
-        max_iter: 400,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc(xc.to_string())
+        .with_energy_conv(1e-7)
+        .with_density_conv(1e-4)
+        .with_max_iter(400)
 }
 
 /// Measured descent of a 2-step optimization from the input geometry (see the
@@ -173,6 +169,7 @@ fn roks_geometry_optimization_runs_and_lowers_the_energy() {
 /// translations/rotations and must be projected out. That structure is the
 /// check: a broken projection shows up as spurious large-magnitude modes, not
 /// as a wrong number in the last digit.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uks_frequencies_run_and_give_one_vibrational_mode_for_a_diatomic() {
     let ctx = ParallelContext::default();
@@ -231,4 +228,64 @@ fn uks_frequencies_run_and_give_one_vibrational_mode_for_a_diatomic() {
              projection failed"
         );
     }
+}
+
+/// `hessian = "auto"` answers a failed UKS response solve with the
+/// finite-difference Hessian. OH / STO-3G PBE is the measured case: its β π
+/// hole can rotate about the bond at no energy cost, an exact zero mode of the
+/// UKS orbital Hessian, and the CPHF meets a `pᵀAp` of about −2e-10 there on
+/// some machines (not on the CI runners: the sign is rounding-level). So the
+/// failure is forced through `hessian::fail_ucphf_for_test`. The explicit
+/// analytic route must still report it (a refusal of the analytic method, not
+/// noise to hide), and `Auto` must return the finite-difference result bit for
+/// bit.
+///
+/// MUTATION-CHECKED: with the fallback arm of `auto_uks_moving_grid` removed,
+/// `Auto` returns the CPHF error and this test (and the diatomic test above)
+/// fails.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
+#[test]
+fn auto_falls_back_to_finite_differences_when_the_uks_response_solve_fails() {
+    use ferric_scf::frequencies::{HessianMethod, HessianSource};
+    let ctx = ParallelContext::default();
+    let mol = Molecule::parse_xyz(OH, 0, 2).unwrap();
+    let cfg = freq_config("pbe");
+    let run = |hessian| {
+        harmonic_frequencies(
+            &ctx,
+            &mol,
+            "sto-3g",
+            Operator::coulomb(),
+            &cfg,
+            &FrequencyConfig {
+                reference: FrequencyReference::Uhf,
+                hessian,
+                ..Default::default()
+            },
+        )
+    };
+    struct Forced;
+    impl Drop for Forced {
+        fn drop(&mut self) {
+            ferric_scf::hessian::fail_ucphf_for_test(false);
+        }
+    }
+    let forced = Forced;
+    ferric_scf::hessian::fail_ucphf_for_test(true);
+    let err = run(HessianMethod::AnalyticMovingGrid)
+        .expect_err("the analytic UKS route must report the forced response failure");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("CPHF for nuclear coordinate"),
+        "the explicit route must name the response failure: {msg}"
+    );
+    let auto = run(HessianMethod::Auto).expect("Auto must fall back to finite differences");
+    drop(forced);
+    let fd = run(HessianMethod::FiniteDifference).unwrap();
+    assert_eq!(auto.hessian_source, HessianSource::FiniteDifference);
+    assert_eq!(
+        auto.cartesian_hessian, fd.cartesian_hessian,
+        "Auto's fallback must be the finite-difference route itself"
+    );
+    assert_eq!(auto.frequencies.len(), 1);
 }

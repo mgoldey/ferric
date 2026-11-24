@@ -121,6 +121,7 @@ use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use serde_json::Value;
 
 const ROW_DIR: &str = "testdata/reference/validation/casci";
@@ -176,12 +177,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn uint(v: &Value, ptr: &str, ctx: &str) -> usize {
     v.pointer(ptr)
         .and_then(Value::as_u64)
@@ -232,7 +227,7 @@ fn load(system: &str, basis_name: &str) -> Sys {
         &label,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &label),
+        num_ctx(&r, "/nuclear_repulsion", &label),
         TOL_ENUC,
     );
     assert_eq!(
@@ -244,12 +239,10 @@ fn load(system: &str, basis_name: &str) -> Sys {
     assert_eq!(prep.nbasis(), uint(&r, "/nao", &label), "{label}: AO count");
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        max_iter: 300,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_max_iter(300)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9);
     assert!(
         cfg.df_j_aux.is_none() && cfg.df_k_aux.is_none(),
         "{label}: the reference RHF uses exact J/K"
@@ -266,7 +259,7 @@ fn load(system: &str, basis_name: &str) -> Sys {
         &label,
         "E_RHF",
         rhf.energy,
-        num(&r, "/rhf/energy", &label),
+        num_ctx(&r, "/rhf/energy", &label),
         TOL_E_RHF,
     );
     Sys {
@@ -315,7 +308,7 @@ fn run_block(sys: &Sys, block: &str) -> CasCiResult {
          a different RHF state or orbital order; no CI number is meaningful"
     );
 
-    let anchor = num(r, &format!("/{block}/dense_anchor_diff"), &ctx);
+    let anchor = num_ctx(r, &format!("/{block}/dense_anchor_diff"), &ctx);
     assert!(
         anchor.abs() < TOL_DENSE_ANCHOR,
         "{ctx}: generator dense-H anchor {anchor:.2e} exceeds {TOL_DENSE_ANCHOR:.0e}"
@@ -347,28 +340,28 @@ fn check_block(sys: &Sys, block: &str, res: &CasCiResult) {
         &ctx,
         "E_CASCI",
         res.e_total,
-        num(r, &format!("/{block}/e_total"), &ctx),
+        num_ctx(r, &format!("/{block}/e_total"), &ctx),
         TOL_E_CAS,
     );
     check_close(
         &ctx,
         "e_core",
         res.e_core,
-        num(r, &format!("/{block}/e_core"), &ctx),
+        num_ctx(r, &format!("/{block}/e_core"), &ctx),
         TOL_E_CAS,
     );
     check_close(
         &ctx,
         "e_active (E_CASCI - e_core)",
         res.e_active,
-        num(r, &format!("/{block}/e_active"), &ctx),
+        num_ctx(r, &format!("/{block}/e_active"), &ctx),
         TOL_E_CAS,
     );
     check_close(
         &ctx,
         "E_CASCI - E_RHF",
         res.e_total - sys.rhf.energy,
-        num(r, &format!("/{block}/e_corr_vs_rhf"), &ctx),
+        num_ctx(r, &format!("/{block}/e_corr_vs_rhf"), &ctx),
         TOL_E_CAS,
     );
 }
@@ -384,14 +377,14 @@ fn casci_case(system: &str, basis_name: &str) {
         &sys.label,
         "E_CASCI vs shifted-window ref",
         main.e_total,
-        num(&sys.r, "/casci_shifted/e_total", &sys.label),
+        num_ctx(&sys.r, "/casci_shifted/e_total", &sys.label),
         TOL_E_CAS,
     );
     check_miss(
         &sys.label,
         "shifted E_CASCI vs plan-window ref",
         shifted.e_total,
-        num(&sys.r, "/casci/e_total", &sys.label),
+        num_ctx(&sys.r, "/casci/e_total", &sys.label),
         TOL_E_CAS,
     );
 }

@@ -17,10 +17,10 @@
 //! leading multipole term decays as 1/R, so the distance factor must scale as
 //! 1/R_eff — NOT `ext·ext/R` (which under-states the cloud charges and
 //! collapses far too fast, ratio 14.8) nor `ext·ext/R²` (wrong power, 1/R² is
-//! the FIELD not the potential). The numerator is `ext_sum` so the factor is
-//! continuous and equals 1 at contact (R = ext_sum), reducing smoothly to the
-//! Schwarz bound for overlapping/penetrating clouds where the multipole
-//! expansion is invalid. Validated against the true dense integral on water +
+//! the FIELD not the potential). The factor is clamped to 1 (the Schwarz
+//! bound) for overlapping/penetrating clouds, where the multipole expansion is
+//! invalid; with the 1.10 safety multiplier it stays at 1 out to
+//! R = 2.10·ext_sum and decays continuously as 1/R_eff beyond. Validated against the true dense integral on water +
 //! alkane_6: worst |true|/bound = 0.9999 ≤ 1 (see `tests` + `examples/`).
 //!
 //! ## erfc attenuation is carried by the Schwarz factors, not a distance factor
@@ -242,10 +242,10 @@ impl QqrBounds3 {
         // QQR multipole distance envelope. `(P|μν)` is the Coulomb interaction
         // of two Gaussian charge clouds; its leading (monopole) term decays as
         // 1/R, so the distance factor scales as 1/R_eff. The numerator is the
-        // sum of cloud extents so the factor is continuous and equals 1 at
-        // contact (R = ext_sum), reducing to the Schwarz bound for
-        // overlapping/penetrating clouds where the multipole expansion breaks
-        // down. The earlier `ext·ext/R_eff` (and `/R_eff²`) forms under-stated
+        // sum of cloud extents; with the min(1) clamp below the factor is 1
+        // (the Schwarz bound) for overlapping/penetrating clouds, where the
+        // multipole expansion breaks down, and stays 1 out to
+        // R = 2.10·ext_sum (r_eff = SAFETY_FACTOR·ext_sum). The earlier `ext·ext/R_eff` (and `/R_eff²`) forms under-stated
         // the cloud charges and collapsed far too fast — invalid bounds that
         // silently dropped real integrals (worst |true|/bound 3.8–14.8).
         let ext_obs_e = self.obs_pair_extents[idx_obs];
@@ -288,97 +288,8 @@ impl QqrBounds3 {
     }
 }
 
-/// Complementary error function `erfc(x) = 1 − erf(x)` for `x ≥ 0`.
-///
-/// Rust's std has no erfc; this is W. J. Cody's rational Chebyshev
-/// approximation (the same scheme used by most libm implementations),
-/// accurate to ~1e-15 — far more than a screening bound needs. Only the
-/// `x ≥ 0` branch is exercised here (R·ω̃ is always non-negative), but the
-/// full odd reflection is included for safety.
-pub fn erfc(x: f64) -> f64 {
-    if x < 0.0 {
-        return 2.0 - erfc(-x);
-    }
-    // erfc(x) = exp(-x²) · (erfc-scaled rational). Use the standard
-    // continued-fraction-free rational forms split at x = 0.5 and x = 4.0.
-    let z = x * x;
-    if x < 0.5 {
-        // erf via series-equivalent rational (Cody region 1), then 1 − erf.
-        const A: [f64; 5] = [
-            3.16112374387056560e0,
-            1.13864154151050156e2,
-            3.77485237685302021e2,
-            3.20937758913846947e3,
-            1.85777706184603153e-1,
-        ];
-        const B: [f64; 4] = [
-            2.36012909523441209e1,
-            2.44024637934444173e2,
-            1.28261652607737228e3,
-            2.84423683343917062e3,
-        ];
-        let num = ((((A[4] * z + A[0]) * z + A[1]) * z + A[2]) * z + A[3]) * x;
-        let den = (((z + B[0]) * z + B[1]) * z + B[2]) * z + B[3];
-        return 1.0 - num / den;
-    }
-    if x < 4.0 {
-        // Cody region 2.
-        const C: [f64; 9] = [
-            5.64188496988670089e-1,
-            8.88314979438837594e0,
-            6.61191906371416295e1,
-            2.98635138197400131e2,
-            8.81952221241769090e2,
-            1.71204761263407058e3,
-            2.05107837782607147e3,
-            1.23033935479799725e3,
-            2.15311535474403846e-8,
-        ];
-        const D: [f64; 8] = [
-            1.57449261107098347e1,
-            1.17693950891312499e2,
-            5.37181101862009858e2,
-            1.62138957456669019e3,
-            3.29079923573345963e3,
-            4.36261909014324716e3,
-            3.43936767414372164e3,
-            1.23033935480374942e3,
-        ];
-        let mut num = C[8] * x + C[0];
-        let mut den = x + D[0];
-        for k in 1..8 {
-            num = num * x + C[k];
-            den = den * x + D[k];
-        }
-        return (-z).exp() * num / den;
-    }
-    // Cody region 3 (large x asymptotic).
-    const P: [f64; 6] = [
-        3.05326634961232344e-1,
-        3.60344899949804439e-1,
-        1.25781726111229246e-1,
-        1.60837851487422766e-2,
-        6.58749161529837803e-4,
-        1.63153871373020978e-2,
-    ];
-    const Q: [f64; 5] = [
-        2.56852019228982242e0,
-        1.87295284992346047e0,
-        5.27905102951428412e-1,
-        6.05183413124413191e-2,
-        2.33520497626869185e-3,
-    ];
-    let zinv = 1.0 / z;
-    let mut num = P[5] * zinv + P[0];
-    let mut den = zinv + Q[0];
-    for k in 1..5 {
-        num = num * zinv + P[k];
-        den = den * zinv + Q[k];
-    }
-    let r = zinv * num / den;
-    const SQRT_PI_INV: f64 = 0.564189583547756287; // 1/sqrt(π)
-    (-z).exp() / x * (SQRT_PI_INV - r)
-}
+/// Complementary error function; canonical implementation in [`ferric_core::special::erfc`].
+pub use ferric_core::special::erfc;
 
 /// Below this many shells, run the tight-Schwarz seed loops serially — avoids
 /// rayon/engine-construction overhead for free-atom/tiny-basis jobs.

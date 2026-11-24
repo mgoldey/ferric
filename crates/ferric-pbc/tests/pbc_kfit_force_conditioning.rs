@@ -117,6 +117,7 @@ fn translation_drift(aux: &BasisSet, atts: &[Option<f64>]) -> Vec<f64> {
         .collect()
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn fit_force_is_translation_invariant_with_near_singular_metric() {
     let aux = et_sp_dup_aux(3e-4);

@@ -48,18 +48,17 @@ fn run(solver: &str, ratio: Option<f64>) {
             n_radial,
             n_angular,
             prune: None,
+            weight_cut: None,
         })
     };
-    let c = RhfConfig {
-        xc: Some("wB97X-V".into()),
-        df_j_aux: Some(AUX.into()),
-        df_k_aux: Some(AUX.into()),
-        three_index_budget_bytes: p,
-        max_iter: 1,
-        dft_grid: grid(30, 50),
-        nlc_grid: grid(10, 14),
-        ..Default::default()
-    };
+    let mut c = RhfConfig::default()
+        .with_xc("wB97X-V")
+        .with_df_j_aux(AUX)
+        .with_df_k_aux(AUX)
+        .with_max_iter(1);
+    c.three_index_budget_bytes = p;
+    c.dft_grid = grid(30, 50);
+    c.nlc_grid = grid(10, 14);
     let ctx = ParallelContext::default();
     // One iteration is enough: the guess comes first. RHF returns Ok unconverged,
     // UHF and ROHF return this error. Anything else is a real failure, and must not
@@ -105,6 +104,7 @@ fn in_child(solver: &str, ratio: &str) -> (String, String) {
     (stderr, records)
 }
 
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn a_block_lost_to_memory_is_reported_by_every_solver() {
     for solver in ["RHF", "UHF", "ROHF"] {
@@ -128,6 +128,7 @@ fn a_block_lost_to_memory_is_reported_by_every_solver() {
 }
 
 /// With one element there is nothing left of the guess, so "partial" would be false.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn a_lost_block_of_the_only_element_says_the_guess_is_empty() {
     let (stderr, records) = in_child("ATOM", "1.15");

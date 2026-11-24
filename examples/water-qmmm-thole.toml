@@ -1,0 +1,32 @@
+# QM/MM with Thole-damped polarizable embedding: a QM water in the field of
+# three MM sites that carry both a fixed charge and an induced dipole.
+#
+# The PQR holds the geometry and the MM charges; it has no polarizability
+# column, so the polarizabilities are listed here, ONE ENTRY PER PQR ATOM in
+# file order (Angstrom^3; 0.0 = not polarizable). The first three atoms are the
+# QM region and their entries are ignored. The three alphas are 0.5, 0.5 and
+# 1.1 Bohr^3, the sites of testdata/reference/water_sto-3g_pe_three_sites.json
+# (a PySCF-based prototype: E = -75.02570291 Ha, E_pol = -0.06596986 Ha).
+#
+# `thole_a` is the Thole damping parameter (default 2.1304; 0.0 turns the
+# damping off). The printed energy includes E_pol, which is also printed on
+# its own. Energy runs on rhf, uhf and ksdft only.
+
+[molecule]
+# Not read when [qmmm] is present -- the PQR supplies the geometry.
+xyz = "testdata/molecules/water.xyz"
+charge = 0
+multiplicity = 1
+
+[basis]
+name = "sto-3g"
+
+[method]
+kind = "rhf"
+task = "energy"
+
+[qmmm]
+pqr = "testdata/molecules/water_thole_sites.pqr"
+qm_indices = [0, 1, 2]
+polarizabilities_angstrom3 = [0.0, 0.0, 0.0, 0.0740923557432, 0.0740923557432, 0.163003182635]
+thole_a = 2.1304

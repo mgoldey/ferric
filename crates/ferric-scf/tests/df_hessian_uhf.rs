@@ -38,6 +38,12 @@
 //!   crossing the DF-K cut): the full test fails column-wise while the
 //!   analytic-piece tests stay green; the systems here have a clean metric gap
 //!   (`clean_gap`) and the SCF states are basin-checked.
+// RI-J pinned to the f64 tensor (`ri_j_precision: Some(F64)` in every config
+// here): these tests validate f64 implementation code against finite
+// differences, another tier or f64 reference values at bars below the f32
+// default's effect (its energy shift is ~1e-6 Ha, and its energy surface jitters
+// by ~1e-7..1e-6 Ha between nearby geometries; site/src/methods/scf.md, "RI-J
+// tensor precision").
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -58,6 +64,7 @@ use ferric_scf::result::{ScfResult, Spin};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::{solve_uhf, solve_uhf_with_guess};
+use ferric_testkit::compare::{max_abs, max_abs_diff};
 use ndarray::{s, Array2};
 use ndarray_linalg::{Eigh, UPLO};
 
@@ -119,14 +126,13 @@ fn water() -> Molecule {
 
 /// SCF with RI-J in `j_aux` and RI-K in `k_aux` ("" = exact).
 fn scf_config(j_aux: &str, k_aux: &str) -> RhfConfig {
-    RhfConfig {
-        max_iter: 300,
-        energy_conv: 1e-14,
-        density_conv: 1e-12,
-        df_j_aux: Some(j_aux.to_string()),
-        df_k_aux: Some(k_aux.to_string()),
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_max_iter(300)
+        .with_energy_conv(1e-14)
+        .with_density_conv(1e-12)
+        .with_df_j_aux(j_aux.to_string())
+        .with_df_k_aux(k_aux.to_string())
 }
 
 struct Setup {
@@ -260,17 +266,6 @@ fn fd_hessian_richardson(
     let a = fd_hessian(mol, h, &mut grad);
     let b = fd_hessian(mol, h / 2.0, &mut grad);
     (4.0 * b - a) / 3.0
-}
-
-fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    assert_eq!(a.dim(), b.dim());
-    a.iter()
-        .zip(b.iter())
-        .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()))
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0f64, |m, x| m.max(x.abs()))
 }
 
 fn assert_close(ctx: &str, got: &Array2<f64>, want: &Array2<f64>, tol: f64) -> f64 {
@@ -881,6 +876,7 @@ fn full_hessian_matches_fd_ch2_631g_ri_jk() {
     check_full(&ch2(), "6-31g", "cc-pvdz-ri", "cc-pvdz-ri", BAR_OWN);
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn full_hessian_matches_fd_nh2_631g_ri_k() {
     check_full(&nh2(), "6-31g", "", "cc-pvdz-ri", BAR_OWN);
@@ -934,6 +930,7 @@ fn broken_symmetry_singlet_with_unequal_spin_densities() {
     check_full_with(&mol, "6-31g", k, k, BAR_OWN, true);
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn high_spin_quartet_with_many_more_alpha_than_beta_electrons() {
     // CH 4-Sigma-: n_alpha = 5, n_beta = 2 (three unpaired).
@@ -1271,6 +1268,7 @@ fn all_mutants() -> Vec<Mutant> {
     ]
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn every_wired_mutant_misses_by_more_than_ten_bars() {
     if !has_deriv2() {
@@ -1345,6 +1343,7 @@ fn production_agrees_with_fd_at_the_mutation_bar() {
     assert!(prod < BAR_MUT);
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn negative_controls_miss_the_ri_jk_reference() {
     // Exact-integral, RI-J-only and RI-K-only Hessians of the same molecule
@@ -1424,40 +1423,45 @@ fn rohf_ri_is_accepted_and_other_unsupported_configurations_are_refused() {
         .to_string();
     eprintln!("UHF RI + external potential: {e}");
     assert!(e.contains("external potential"), "{e}");
-    let ks = RhfConfig {
-        xc: Some("pbe".into()),
-        ..ri("def2-universal-jkfit", "def2-universal-jkfit")
-    };
+    let ks = ri("def2-universal-jkfit", "def2-universal-jkfit")
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_xc("pbe");
     assert!(uhf_hessian_preflight(op, &ks).is_err());
-    let cosmo = RhfConfig {
-        cosmo: Some(ferric_scf::cosmo::CosmoConfig::default()),
-        ..ri("def2-universal-jkfit", "def2-universal-jkfit")
+    let cosmo = {
+        let mut c = ri("def2-universal-jkfit", "def2-universal-jkfit")
+            .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64);
+        c.cosmo = Some(ferric_scf::cosmo::CosmoConfig::default());
+        c
     };
     assert!(uhf_hessian_preflight(op, &cosmo).is_err());
 }
 
 #[test]
-fn the_pre_scf_probe_refuses_an_ill_conditioned_exchange_metric_for_uhf() {
+fn the_pre_scf_probe_reads_the_smallest_metric_eigenvalue_for_uhf() {
     // The metric depends on the geometry and the fitting basis only, so the UHF
     // probe (what `Auto` consults before any SCF) applies the same RI-K metric
-    // checks as the RHF one: aug-cc-pVQZ-RIFIT on a water-size molecule has
-    // cond(V) ~ 2e8 (above RIK_COND_WARN = 1e8): refused by the probe, hence
-    // `Auto` runs finite differences; RI-J alone accepts it (the full inverse
-    // measured no degradation there). Needs only the first-derivative engines
-    // for the engine checks before the metric one, and the second-derivative
-    // ones for the final probe.
+    // checks as the RHF one. aug-cc-pVQZ-RIFIT on NH2 has cond(V) above 1e8
+    // but no mode below the noise floor and a roundoff bound below the
+    // finite-difference route's (hessian_df_k, "Conditioning"), so it is
+    // admitted for RI-K as for RI-J; the refusals are
+    // `dropped_metric_modes_are_refused_for_every_spin_channel_set`. Needs the
+    // second-derivative engines for the final probe.
     if !has_deriv2() {
         return;
     }
     let mol = nh2();
     let prep = prep_at(&mol, "sto-3g");
     let op = Operator::coulomb();
+    let c = ferric_scf::hessian::rij_support::exchange_metric_conditioning(
+        &aux_at(&mol, "aug-cc-pvqz-rifit"),
+        op,
+    )
+    .expect("no mode below the noise floor");
+    eprintln!("UHF RI-K aug-cc-pVQZ-RIFIT: {}", c.describe());
+    assert!(c.cond > 1e8 && c.admits_analytic(), "{}", c.describe());
     let k_cfg = scf_config("", "aug-cc-pvqz-rifit");
-    let e = ferric_scf::hessian::analytic_uhf_hessian_available(&mol, &prep, op, &k_cfg)
-        .expect_err("cond above 1e8 must be refused for Auto")
-        .to_string();
-    eprintln!("UHF RI-K ill-conditioned probe: {e}");
-    assert!(e.contains("cond") || e.contains("lie in"), "{e}");
+    ferric_scf::hessian::analytic_uhf_hessian_available(&mol, &prep, op, &k_cfg)
+        .expect("RI-K admitted on its smallest eigenvalue");
     let j_cfg = scf_config("aug-cc-pvqz-rifit", "");
     ferric_scf::hessian::analytic_uhf_hessian_available(&mol, &prep, op, &j_cfg)
         .expect("RI-J on the same fit is accepted");
@@ -1591,14 +1595,13 @@ fn an_unset_and_an_empty_fitting_name_give_the_same_exact_uhf_hessian() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let hess = |aux: Option<String>| {
-        let cfg = RhfConfig {
-            max_iter: 300,
-            energy_conv: 1e-12,
-            density_conv: 1e-10,
-            df_j_aux: aux.clone(),
-            df_k_aux: aux,
-            ..Default::default()
-        };
+        let mut cfg = RhfConfig::default()
+            .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+            .with_max_iter(300)
+            .with_energy_conv(1e-12)
+            .with_density_conv(1e-10);
+        cfg.df_j_aux = aux.clone();
+        cfg.df_k_aux = aux;
         let uhf = solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg).unwrap();
         assert!(uhf.df_jk.is_none());
         uhf_hessian_parts(
@@ -1614,4 +1617,85 @@ fn an_unset_and_an_empty_fitting_name_give_the_same_exact_uhf_hessian() {
     };
     let (a, b) = (hess(None), hess(Some(String::new())));
     assert_eq!(max_abs_diff(&a.total(), &b.total()), 0.0);
+}
+
+/// EXACTNESS ANCHOR of the per-spin factored CPHF exchange: the production
+/// UHF RI-K Hessian (each spin's fitted K of every coordinate of a lockstep
+/// block from one factored pass with that spin's `B_P C_σ,o`) equals the one
+/// whose CPHF builds every fitted K through the density path (the oracle,
+/// `UhfDfMutants::cphf_density_path_k`), on the doublet, the triplet and a
+/// spin with no electrons (H2+). The kernels are equal to rounding (the
+/// elementwise K anchor is `hessian::open_shell_k_tests`), so the two coupled
+/// solves run the same PCG recurrence on operators equal to rounding and
+/// differ by the solve error at the production tolerance, which each
+/// Hessian's unsymmetrized response asymmetry `max |R − Rᵀ|` measures: bar =
+/// the sum of the two. Reachability: the wrong-spin CPHF exchange mutant
+/// must miss that bar on every system.
+#[test]
+fn factored_cphf_exchange_equals_the_density_path_hessian() {
+    if !has_deriv2() {
+        return;
+    }
+    let h2p = Molecule::parse_xyz("2\nH2+\nH 0.0 0.0 0.0\nH 0.1 0.05 0.95\n", 1, 2).unwrap();
+    for (label, mol, basis_name, j) in [
+        ("NH2 6-31G RI-JK", nh2(), "6-31g", "def2-universal-jkfit"),
+        ("CH2 triplet 6-31G RI-K", ch2(), "6-31g", ""),
+        ("H2+ STO-3G RI-JK", h2p, "sto-3g", "def2-universal-jkfit"),
+    ] {
+        let s = setup(&mol, basis_name, j, "def2-universal-jkfit");
+        let run = |m: UhfDfMutants| {
+            uhf_hessian_parts_mutated(
+                &ParallelContext::default(),
+                &s.mol,
+                &s.prep,
+                Operator::coulomb(),
+                &s.bounds,
+                &s.uhf,
+                &s.cfg,
+                &RijMutants::default(),
+                &RikMutants::default(),
+                &m,
+            )
+            .unwrap()
+        };
+        let fac = run(UhfDfMutants::default());
+        let den = run(UhfDfMutants {
+            cphf_density_path_k: true,
+            ..Default::default()
+        });
+        let diff = max_abs_diff(&fac.total(), &den.total());
+        // Plus the rounding floor of the response assembly (a contraction
+        // of at most n² terms per element), which the asymmetry probe does
+        // not see when the solve is exact (H2+: zero CPHF iterations).
+        let n = s.prep.nbasis();
+        let floor =
+            (n * n) as f64 * f64::EPSILON * fac.total().iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        let bar = fac.response_asymmetry + den.response_asymmetry + floor;
+        eprintln!(
+            "{label}: factored vs density-path K Hessian {diff:.3e} (bar {bar:.3e}); \
+             CPHF iterations {:?} vs {:?}",
+            fac.cphf_iterations, den.cphf_iterations
+        );
+        assert!(diff <= bar, "{label}: {diff:.3e} > {bar:.3e}");
+        let wrong = uhf_hessian_parts_mutated(
+            &ParallelContext::default(),
+            &s.mol,
+            &s.prep,
+            Operator::coulomb(),
+            &s.bounds,
+            &s.uhf,
+            &s.cfg,
+            &RijMutants::default(),
+            &RikMutants::default(),
+            &UhfDfMutants {
+                cphf_wrong_spin_k: true,
+                ..Default::default()
+            },
+        );
+        if let Ok(w) = wrong {
+            let miss = max_abs_diff(&w.total(), &den.total());
+            eprintln!("{label}: wrong-spin CPHF K misses by {miss:.3e}");
+            assert!(miss > bar, "{label}: the bar cannot fail ({miss:.3e})");
+        }
+    }
 }

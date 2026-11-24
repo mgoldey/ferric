@@ -1,12 +1,12 @@
 # Where the methods come from
 
-The method families in `ferric` are not an arbitrary selection. Each one works
-on the response function from a different direction. The definitions and
-parameters live on the method pages; this page is the map.
+The maintainer's research families (attenuated MP2, PDEP-RPA and GW,
+constrained DFT) work on the response function from different directions.
+The definitions and parameters live on the method pages; this page is the map.
 
 ## Attenuated MP2: removing the long-range part
 
-MP2's dispersion comes from an **uncoupled** response, which over-polarizes for
+MP2's dispersion comes from an uncoupled response, which over-polarizes for
 systems with low-lying, highly polarizable excitations (π-stacked aromatics
 are the classic case); it is not a general property of polarizable molecules. In small basis sets the
 resulting overbinding is partly cancelled by basis-set superposition error,
@@ -54,4 +54,4 @@ in dispersion, in screening, and in charge-transfer coupling, so a fix
 validated in one place has predictable consequences in the others.
 
 That is the design bet. Whether it pays off in *cost* is still open; see
-[Electronic response](./response.md) for what has and has not been measured.
+[Research focus: electronic response](./response.md) for what has and has not been measured.

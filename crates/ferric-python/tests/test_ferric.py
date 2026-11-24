@@ -175,6 +175,23 @@ def test_laplace_sos_mp2_ao_sparse_is_exact_when_domain_spans_molecule():
     )
 
 
+def test_laplace_sos_mp2_local_is_exact_when_domain_spans_molecule():
+    """The "local" formulation reaches the binding WITH the orbital basis set
+    (it needs it for the VV-HV virtuals), and with a domain spanning water it
+    is the exact MO energy. It requires a radius like "ao-sparse"."""
+    mol, bs, aux = _water_ccpvdz_sos()
+    with pytest.raises(Exception, match="requires a domain cutoff"):
+        ferric.run_laplace_sos_mp2(mol, bs, aux, formulation="local")
+    exact = ferric.run_laplace_sos_mp2(mol, bs, aux, formulation="mo")
+    spanning = ferric.run_laplace_sos_mp2(
+        mol, bs, aux, formulation="local", domain_cutoff_bohr=20.0
+    )
+    assert spanning.formulation == "local"
+    assert abs(spanning.e_os - exact.e_os) < 1e-10, (
+        f"spanning local {spanning.e_os:.12f} vs mo {exact.e_os:.12f}"
+    )
+
+
 def test_laplace_sos_mp2_memory_budget_is_enforced_and_not_over_eager():
     """The budget must bind on the AO path -- and an AMPLE budget must still run.
 

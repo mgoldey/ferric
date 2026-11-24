@@ -52,14 +52,10 @@
 //!   the miss is O(r−1) ≈ 1e-2..5e-1 — except at r = 1, where the ratio-1 anchor
 //!   is BLIND to the power (anchor blind spot); the molecular rows (r = 0.57-0.98)
 //!   are what see it.
-//! * MBD. ferric's `erf` is Abramowitz–Stegun 7.1.26 (|err| < 1.5e-7). If the
-//!   only difference from the reference is that erf, ferric misses the
-//!   exact-erf numbers by the generator's PREDICTED floor (α_scs 1.2e-7..3.2e-7,
-//!   C6 pair ≤4.6e-7, energy 1.7e-7..5.1e-7 rel.) AND matches the A&S-erf
-//!   variants to ~1e-13. If there is any other construction difference (σ from
-//!   static α, a T sign, a missing η term), the A&S-erf comparison fails too.
-//!   So the row's "1e-8" bar is NOT reachable against exact erf without
-//!   replacing ferric's erf — that is a finding, not a tolerance to tune.
+//! * MBD. ferric uses `ferric_core::special::erf` (Cody, a few ulp). If the
+//!   construction is the stated model, ferric agrees with the exact-erf
+//!   reference (pymbd `T_erf_coulomb`, libmbd) to ~1e-14. A construction
+//!   difference (σ from static α, a T sign, a missing η term) misses by far more.
 //!
 //! # TOLERANCES (measured 2026-10-01, worst case over all 8 systems and both grids)
 //!
@@ -69,13 +65,8 @@
 //! | TS C6 pair and molecular, same grid (rel) | 7.5e-16 | `TOL_TS_C6_SAME_GRID` 1e-12 |
 //! | TS C6 pair, ferric default grid vs combination rule | 3.0e-14 | `TOL_TS_C6_CLOSED` 1e-12 |
 //! | ferric default nodes vs reference nodes (abs) | — | `TOL_GRID` 1e-12 |
-//! | MBD α_scs / C6 / energy vs EXACT erf (rel) | 5.1e-7 | `TOL_MBD_EXACT_ERF` 1e-6 |
-//! | MBD α_scs iso / C6 mol / energy vs A&S erf (rel) | 8.1e-15 | `TOL_MBD_AS_ERF` 1e-11 |
+//! | MBD α_scs / C6 / energy vs exact erf (rel) | 2.3e-14 | `TOL_MBD_EXACT_ERF` 1e-11 |
 //! | dimer closed form, large-R energy (cancellation) | — | `TOL_LONDON_E` 1e-6 |
-//!
-//! The exact-erf bar is only 2x the worst miss, but that miss is the deterministic
-//! A&S erf error (no run-to-run noise); the A&S-erf comparison at 8e-15 shows the
-//! rest of the construction is exact.
 //!
 //! # NEGATIVE CONTROLS / MUTATIONS
 //!
@@ -90,12 +81,11 @@
 //! * MUTATION B — `(4.0 / 3.0)` → `(3.0 / 4.0)` in `ts_atom_params`: everything
 //!   fails, including the ratio-1 anchor.
 //! * MUTATION C — `eta * extra` → `-eta * extra` in `dipole_coupling_tensor`:
-//!   the dimer anchors and the MBD rows fail at both erf variants.
+//!   the dimer anchors and the MBD rows fail.
 //! * MUTATION D — in `mbd_screen`, compute σ from `per_atom_alpha[a][0]`
 //!   (frozen at the first node): fails at every other node.
-//! * EXPECTED FLIP — replacing ferric's A&S `erf` with an exact one makes the
-//!   `*_as_erf` assertions fail and the exact-erf misses drop to ~1e-13; at that
-//!   point delete the A&S assertions and tighten `TOL_MBD_EXACT_ERF`.
+//! * MUTATION E — `ferric_core::special::erf` → the A&S 7.1.26 approximation
+//!   (|err| < 1.5e-7): the exact-erf rows miss by 1e-7..5e-7 and fail.
 
 use std::path::{Path, PathBuf};
 
@@ -126,8 +116,7 @@ const TOL_TS_PARAMS: f64 = 1e-14;
 const TOL_TS_C6_SAME_GRID: f64 = 1e-12;
 const TOL_TS_C6_CLOSED: f64 = 1e-12;
 const TOL_GRID: f64 = 1e-12;
-const TOL_MBD_EXACT_ERF: f64 = 1e-6;
-const TOL_MBD_AS_ERF: f64 = 1e-11;
+const TOL_MBD_EXACT_ERF: f64 = 1e-11;
 const TOL_LONDON_E: f64 = 1e-6;
 const TOL_SINGLE_ATOM: f64 = 1e-14;
 const MUST_MISS: f64 = 1000.0;
@@ -551,7 +540,7 @@ fn mbd_dimer_matches_closed_form() {
             })
             .collect();
         let scr = mbd_screen(&input, &pos, &al, &f).unwrap();
-        for (tag, tol) in [("exact", TOL_MBD_EXACT_ERF), ("as_erf", TOL_MBD_AS_ERF)] {
+        for (tag, tol) in [("exact", TOL_MBD_EXACT_ERF)] {
             let mut got = Vec::new();
             let mut want = Vec::new();
             for k in 0..f.len() {
@@ -580,16 +569,11 @@ fn mbd_dimer_matches_closed_form() {
                 rel_max(&got, &want),
                 tol,
             );
-            let key = if tag == "exact" {
-                "energy"
-            } else {
-                "energy_as_erf"
-            };
             let e = coupled_qho_energy_plain_gg(&pos, &al, &om);
             check(
                 &ctx,
                 &format!("E_MBD [{tag}]"),
-                rel(e, num(&a, &format!("{p}/{key}"), &ctx)),
+                rel(e, num(&a, &format!("{p}/energy"), &ctx)),
                 tol,
             );
         }
@@ -677,13 +661,11 @@ fn mbd_matches_pymbd_same_inputs() {
                 mbd_dynamic_polarizability(&inp.pos, &inp.z, &inp.ratios, &st, &f, &w).unwrap();
             let mut got = Vec::new();
             let mut want = Vec::new();
-            let mut got_iso = Vec::new();
             for a in 0..n {
                 for k in 0..f.len() {
                     let t = t33(&r, &format!("{gp}/alpha_scs/{a}/{k}"), &ctx);
                     got.extend(dp.per_atom[a][k].iter().flatten());
                     want.extend(t.iter().flatten());
-                    got_iso.push(iso(&dp.per_atom[a][k]));
                 }
             }
             check(
@@ -691,14 +673,6 @@ fn mbd_matches_pymbd_same_inputs() {
                 &format!("alpha_scs tensors [{g}] exact erf"),
                 rel_max(&got, &want),
                 TOL_MBD_EXACT_ERF,
-            );
-            let want_iso_as: Vec<f64> =
-                vec2(&r, &format!("{gp}/alpha_scs_iso_as_erf"), &ctx).concat();
-            check(
-                &ctx,
-                &format!("alpha_scs iso [{g}] A&S erf"),
-                rel_max(&got_iso, &want_iso_as),
-                TOL_MBD_AS_ERF,
             );
 
             let c6 = casimir_polder_c6(&dp);
@@ -735,15 +709,6 @@ fn mbd_matches_pymbd_same_inputs() {
                     num(&r, &format!("{gp}/c6_molecular_iso"), &ctx),
                 ),
                 TOL_MBD_EXACT_ERF,
-            );
-            check(
-                &ctx,
-                &format!("C6 molecular [{g}] A&S erf"),
-                rel(
-                    c6.c6_molecular_iso,
-                    num(&r, &format!("{gp}/c6_molecular_iso_as_erf"), &ctx),
-                ),
-                TOL_MBD_AS_ERF,
             );
 
             // Control: screening is active (MBD C6 is not the TS C6).
@@ -785,12 +750,6 @@ fn mbd_matches_pymbd_same_inputs() {
             "E_MBD exact erf",
             rel(e, num(&r, "/mbd/energy", &ctx)),
             TOL_MBD_EXACT_ERF,
-        );
-        check(
-            &ctx,
-            "E_MBD A&S erf",
-            rel(e, num(&r, "/mbd/energy_as_erf", &ctx)),
-            TOL_MBD_AS_ERF,
         );
         check(
             &ctx,

@@ -1,0 +1,13 @@
+diff --git a/crates/ferric-scf/src/hessian.rs b/crates/ferric-scf/src/hessian.rs
+index d8b622bba..1f70e2ffd 100644
+--- a/crates/ferric-scf/src/hessian.rs
++++ b/crates/ferric-scf/src/hessian.rs
+@@ -461,7 +461,7 @@ fn rhf_hessian_parts_with(
+     let spec = FockSpec {
+         coulomb: if rij.is_some() { &no_density } else { d },
+         exchange: if rik.is_some() { &no_density } else { d },
+-        k_scale: 0.5,
++        k_scale: 0.25,
+     };
+     let t = phases.begin("first-order Fock (1e + ERI 1st derivs)");
+     let mut first = first_order_ao(prep, op, bounds, natoms, extra, &[spec])?;

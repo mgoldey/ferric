@@ -14,20 +14,12 @@
 //!   refused for every kernel this build admits, since none has a CPU mixed
 //!   path; the message says so. The accept side is covered with an injected
 //!   shipped set in `ferric-core/tests/precision_section_config.rs`.
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
-fn ferric_cli_bin() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(profile_dir) = exe.parent().and_then(Path::parent) {
-            let p = profile_dir.join("ferric-cli");
-            if p.is_file() {
-                return p;
-            }
-        }
-    }
-    PathBuf::from(env!("CARGO_BIN_EXE_ferric-cli"))
-}
+#[path = "support/cli_bin.rs"]
+mod cli_bin;
+use cli_bin::ferric_cli_bin;
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -97,6 +89,11 @@ fn water(kind: &str, extra: &str) -> String {
     )
 }
 
+/// Pins the f64 RI-J tensor. RI-J storage defaults to f32 (c316c5dad), which the
+/// precision record lists as the mixed `dfj-f32` kernel; tests about other
+/// kernels or the `[precision]` section pin f64 so the record shows only those.
+const F64_RIJ: &str = "[scf]\nri_j_precision = \"f64\"\n";
+
 fn f64_record() -> serde_json::Value {
     serde_json::json!({"precision": "f64", "counter_scope": "process", "kernels": []})
 }
@@ -122,7 +119,11 @@ fn an_f64_section_and_its_alias_are_bit_identical_to_no_section() {
         let mut energies = Vec::new();
         for (arm, extra) in &arms {
             let tag = format!("bitid_{}_{arm}", kind.replace('-', "_"));
-            let (out, recs) = run(&tag, &water(kind, &format!("{dft}{extra}")), true);
+            // RI-J storage defaults to f32 (recorded as the `dfj-f32` kernel);
+            // this test is about the `[precision]` section, so every arm pins
+            // the f64 RI-J tensor.
+            let body = format!("{dft}{extra}{F64_RIJ}");
+            let (out, recs) = run(&tag, &water(kind, &body), true);
             assert!(out.status.success(), "{kind}/{arm}: {}", stderr(&out));
             let end = record(&recs, "run_end");
             assert_eq!(end["extra"]["precision"], f64_record(), "{kind}/{arm}");
@@ -166,7 +167,7 @@ fn the_precision_section_is_parsed_strictly() {
         (
             "bad_kernel",
             "[precision]\nmode = \"mixed\"\nmixed_kernels = [\"diis\"]\n",
-            "[precision] mixed_kernels: unknown mixed-precision kernel \"diis\" (valid: rimp2-energy, ccsd-amplitudes, dfk-occ, cosx-kern, dfj-pack, xc-vxc)",
+            "[precision] mixed_kernels: unknown mixed-precision kernel \"diis\" (valid: rimp2-energy, ccsd-amplitudes, dfk-occ, cosx-kern, dfj-pack, xc-vxc, dfj-f32, dfk-f32)",
         ),
         (
             "empty_list",
@@ -253,7 +254,7 @@ fn cpu_only_mixed_is_refused_for_device_kernels_with_the_reason() {
         stderr(&out).contains(
             "[precision] mode = mixed requires mode = auto or on (FERRIC_GPU / [gpu] mode is \
              off): rimp2-energy runs only on a device; CPU mixed-precision kernels in this \
-             build: none"
+             build: dfj-f32"
         ),
         "{}",
         stderr(&out)
@@ -315,7 +316,7 @@ fn the_run_log_record_covers_mp2_kernels_with_no_record_of_their_own() {
     let mp2 = "[mp2]\nauxbasis = \"cc-pvdz-ri\"\n";
     let (out, recs) = run(
         "whole_run_scs_mp2",
-        &water("scs-mp2", &format!("{mp2}{MIXED_RIMP2}")),
+        &water("scs-mp2", &format!("{mp2}{MIXED_RIMP2}{F64_RIJ}")),
         true,
     );
     assert!(out.status.success(), "{}", stderr(&out));
@@ -331,7 +332,7 @@ fn the_run_log_record_covers_mp2_kernels_with_no_record_of_their_own() {
 
     let (out, recs) = run(
         "whole_run_b2plyp",
-        &water("b2plyp", &format!("{mp2}{MIXED_RIMP2}")),
+        &water("b2plyp", &format!("{mp2}{MIXED_RIMP2}{F64_RIJ}")),
         true,
     );
     assert!(out.status.success(), "{}", stderr(&out));

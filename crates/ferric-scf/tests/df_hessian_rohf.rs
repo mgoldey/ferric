@@ -38,6 +38,12 @@
 //!   exact-integral ROHF Hessian (validated against PySCF) in the trivial
 //!   limit of the shared per-spin DF code (the UHF tests) and the negative
 //!   controls.
+// RI-J pinned to the f64 tensor (`ri_j_precision: Some(F64)` in every config
+// here): these tests validate f64 implementation code against finite
+// differences, another tier or f64 reference values at bars below the f32
+// default's effect (its energy shift is ~1e-6 Ha, and its energy surface jitters
+// by ~1e-7..1e-6 Ha between nearby geometries; site/src/methods/scf.md, "RI-J
+// tensor precision").
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -57,6 +63,7 @@ use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::compare::{max_abs, max_abs_diff};
 use ndarray::Array2;
 
 const CH2_DISTORTED: &str = "3\nCH2 triplet distorted off C2v\n\
@@ -88,14 +95,13 @@ fn has_deriv2() -> bool {
 }
 
 fn scf_config(j_aux: &str, k_aux: &str) -> RhfConfig {
-    RhfConfig {
-        max_iter: 500,
-        energy_conv: 1e-14,
-        density_conv: 1e-12,
-        df_j_aux: Some(j_aux.to_string()),
-        df_k_aux: Some(k_aux.to_string()),
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_max_iter(500)
+        .with_energy_conv(1e-14)
+        .with_density_conv(1e-12)
+        .with_df_j_aux(j_aux.to_string())
+        .with_df_k_aux(k_aux.to_string())
 }
 
 struct Setup {
@@ -182,17 +188,6 @@ fn fd_hessian(
         }
     }
     out
-}
-
-fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    assert_eq!(a.dim(), b.dim());
-    a.iter()
-        .zip(b.iter())
-        .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()))
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0f64, |m, x| m.max(x.abs()))
 }
 
 fn assert_close(ctx: &str, got: &Array2<f64>, want: &Array2<f64>, tol: f64) -> f64 {
@@ -340,6 +335,7 @@ fn full_hessian_matches_fd_ch2_triplet_631g_ri_jk() {
     check_full(CH2_DISTORTED, 3, "6-31g", "cc-pvdz-ri", "cc-pvdz-ri");
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn full_hessian_matches_fd_ho2_sto3g_ri_jk() {
     check_full(
@@ -623,6 +619,7 @@ fn all_mutants() -> Vec<Mutant> {
     v
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn every_wired_mutant_misses_by_more_than_ten_bars() {
     if !has_deriv2() {
@@ -887,5 +884,72 @@ fn semicanonicalized_input_gives_the_plain_rohf_hessian_with_ri() {
             &plain,
             1e-9,
         );
+    }
+}
+
+/// EXACTNESS ANCHOR of the ROHF factored CPHF exchange: the production ROHF
+/// RI-K Hessian (every response density `C (U n_σ + n_σ Uᵀ) Cᵀ` through its
+/// factors `X_σ = (C U)[:, ..n_σ]`, `C_σ,o = C[:, ..n_σ]`) equals the one
+/// whose CPHF builds every fitted K through the density path (the oracle,
+/// `UhfDfMutants::cphf_density_path_k`). Bar: the sum of the two responses'
+/// asymmetries (the solve error; as `df_hessian_uhf`'s
+/// `factored_cphf_exchange_equals_the_density_path_hessian`); the wrong-spin
+/// CPHF exchange mutant must miss it.
+#[test]
+fn factored_cphf_exchange_equals_the_density_path_hessian() {
+    if !has_deriv2() {
+        return;
+    }
+    for (label, xyz, mult, j) in [
+        (
+            "NH2 doublet RI-JK",
+            NH2_DISTORTED,
+            2,
+            "def2-universal-jkfit",
+        ),
+        ("CH2 triplet RI-K", CH2_DISTORTED, 3, ""),
+    ] {
+        let s = setup(xyz, mult, "6-31g", j, "def2-universal-jkfit");
+        let run = |m: UhfDfMutants| {
+            rohf_hessian_parts_df_mutated(
+                &ParallelContext::default(),
+                &s.mol,
+                &s.prep,
+                Operator::coulomb(),
+                &s.bounds,
+                &s.rohf,
+                &s.cfg,
+                RohfMutation::None,
+                (&RijMutants::default(), &RikMutants::default(), &m),
+            )
+        };
+        let fac = run(UhfDfMutants::default()).unwrap();
+        let den = run(UhfDfMutants {
+            cphf_density_path_k: true,
+            ..Default::default()
+        })
+        .unwrap();
+        let diff = (&fac.total() - &den.total())
+            .iter()
+            .fold(0.0f64, |m, v| m.max(v.abs()));
+        // Plus the rounding floor of the response assembly (a contraction
+        // of at most n² terms per element), which the asymmetry probe does
+        // not see when the solve is exact (H2+: zero CPHF iterations).
+        let n = s.prep.nbasis();
+        let floor =
+            (n * n) as f64 * f64::EPSILON * fac.total().iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        let bar = fac.response_asymmetry + den.response_asymmetry + floor;
+        eprintln!("{label}: factored vs density-path K Hessian {diff:.3e} (bar {bar:.3e})");
+        assert!(diff <= bar, "{label}: {diff:.3e} > {bar:.3e}");
+        if let Ok(w) = run(UhfDfMutants {
+            cphf_wrong_spin_k: true,
+            ..Default::default()
+        }) {
+            let miss = (&w.total() - &den.total())
+                .iter()
+                .fold(0.0f64, |m, v| m.max(v.abs()));
+            eprintln!("{label}: wrong-spin CPHF K misses by {miss:.3e}");
+            assert!(miss > bar, "{label}: the bar cannot fail ({miss:.3e})");
+        }
     }
 }

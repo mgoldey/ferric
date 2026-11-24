@@ -144,7 +144,9 @@ pub struct SaddleResult {
     /// The geometry the search arrived at. Valid to inspect even when
     /// `converged` is false -- it is where the search stopped.
     pub mol: Molecule,
+    /// Energy at `mol`, Hartree.
     pub energy: f64,
+    /// P-RFO steps taken before the gradient converged or `max_steps` ran out.
     pub steps: usize,
     /// Whether the GRADIENT converged. This alone does NOT mean a transition
     /// state was found: see `n_imaginary`.
@@ -186,6 +188,10 @@ impl SaddleResult {
 /// are numerically dirty, and any of them can come out slightly NEGATIVE --
 /// at which point "follow the lowest negative mode" follows a rigid-body
 /// rotation and the search translates the molecule across space forever.
+///
+/// `mass_au` is named for the unit it is not in: it holds the atomic masses in
+/// u (as returned by [`crate::frequencies::atom_masses`]), one per atom. The
+/// mass weighting only needs consistent relative masses.
 fn projected_eigen(
     mol: &Molecule,
     mass_au: &[f64],
@@ -446,6 +452,7 @@ where
         )));
     }
     let n = 3 * natoms;
+    // Atomic masses in u (the name predates the unit; only ratios matter here).
     let mass_au = atom_masses(mol)?;
     let is_linear = detect_linear(mol, &mass_au);
     let n_tr = if is_linear { 5 } else { 6 };

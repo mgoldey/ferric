@@ -19,6 +19,7 @@
 //! order — and therefore the floating-point result — is identical to the
 //! serial code.
 
+use ferric_core::special::erf;
 use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ndarray::{Array1, Array2, Array3, Axis};
 use rayon::prelude::*;
@@ -69,16 +70,16 @@ const PAR_MIN_PTS: usize = 128;
 //
 // The bracket S = Σ_g w_g ρ_g^(1/4) is an O(molecular-volume) quantity: for
 // water S ≈ 10, and it grows only linearly with system size (per-atom
-// contributions are bounded). Even a very large molecule with S ≈ 200 needs
-// only R_cut ≈ 84 Bohr to hold |ΔE_nl| < 1e-8 Ha; the R⁻⁶ decay means the
-// cutoff barely moves with S (S×2 ⇒ R_cut×2^(1/3) ≈ 1.26).
+// contributions are bounded). The R⁻⁶ decay means the cutoff the bound needs
+// grows slowly with S (S×2 ⇒ R_cut×2^(1/3) ≈ 1.26); a molecule with S ≈ 200
+// would need R_cut ≈ 84 Bohr to hold |ΔE_nl| < 1e-8 Ha.
 //
-// We therefore fix a single conservative constant well beyond that horizon.
-// NLC_CUTOFF_BOHR = 40 Bohr (≈ 21 Å) bounds |ΔE_nl| < 1e-8 Ha for any molecule
-// with S ≲ 60 (a ~200-atom-scale system) and, being R⁻⁶, buys a >4000× margin
-// versus the water bound. The bound is *proven empirically* in the tests
-// (`cutoff_energy_bounded_*`), which assert |E_nl(cutoff) − E_nl(exact)| < 1e-8
-// on both water (fallback path) and a 20-atom alkane (cutoff active). This is a
+// NLC_CUTOFF_BOHR = 40 Bohr (≈ 21 Å). There the prefactor
+// (3/4)·a^(-3/2)·R_cut⁻⁶ is 2.1e-11 Ha, so the bound is 2.1e-9 Ha for water
+// (a ~5× margin) and stays below 1e-8 Ha only for S ≲ 21. Larger systems are
+// not covered by this bound. The tests (`cutoff_energy_bounded_*`) measure
+// |E_nl(cutoff) − E_nl(exact)| directly and assert it is < 1e-8 on both water
+// (fallback path) and a 20-atom alkane (cutoff active). This is a
 // screening approximation with a documented error bound, NOT a re-derivation.
 //
 // Hard-coded on purpose: this is a numerical accuracy floor, not a user knob —
@@ -404,6 +405,8 @@ impl Vv10Screen {
 /// Energy, potentials and work counters from a screened VV10 evaluation.
 #[derive(Debug, Clone)]
 pub struct Vv10ScreenedResult {
+    /// VV10 nonlocal correlation energy (Hartree), `Σ_g w_g ρ_g (β + ½ Φ_g)`
+    /// over active points, including the constant `β` term.
     pub e_nl: f64,
     /// d(E_nl)/d(rho) per grid point (per unit weight). EMPTY when the screen
     /// has `far_field = true` (energy-only mode, see [`Vv10Screen`]).
@@ -494,19 +497,41 @@ impl FarCells {
     }
 }
 
-/// Compute the per-grid-point VV10 energy density ε_nl(g) = β + ½ · f(g)
-/// alongside the potentials. Needed by the gradient path that wants weight
-/// response Σ_g w1[g, B, α] · ε_nl(g) · ρ(g).
-pub fn compute_vv10_full(
+/// Per-point pieces of the VV10 nuclear gradient on one grid (the
+/// point-motion and weight terms of
+/// `book/src/14-derivatives/03-xc-gradient.md#xc-gradient-vv10`).
+#[derive(Debug, Clone)]
+pub struct Vv10GradPieces {
+    /// `v_ρ(g)`, as [`compute_vv10_potentials`].
+    pub vrho: Vec<f64>,
+    /// `v_σ(g)`, as [`compute_vv10_potentials`].
+    pub vsig: Vec<f64>,
+    /// `∂E_nl/∂W_g = ρ_g (β + f_g)`, the factor of the weight derivative.
+    pub de_dw: Vec<f64>,
+    /// `∂f_g/∂r_g` (`npts × 3`): the derivative of the pair sum
+    /// `f_g = Σ_p W_p ρ_p Φ_gp` with respect to the point's own position
+    /// ([`vv10_egrad`] with the grid as its own partner set).
+    pub df_dr: Array2<f64>,
+}
+
+/// Everything the VV10 nuclear gradient needs from the pair sums: the
+/// potentials and `∂E/∂W` from the energy pair sum, and `∂f/∂r` from a
+/// second pair sum of the same shape (same cutoff and cell list, so the
+/// pair set is the one the energy summed). Both pair sums run in parallel
+/// over rows; memory is O(npts).
+pub fn compute_vv10_gradient_pieces(
     grid: &[GridPoint],
     dens: &DensityGrid,
     params: &Vv10Params,
-) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
-    // ε(g) is a byproduct of the same pair sum that yields the potentials, so
-    // a single traversal covers everything (this used to re-run the full
-    // O(npts²) pair sum a second time just to recover ε).
+) -> Vv10GradPieces {
     let out = vv10_internal(grid, dens, params);
-    (out.vrho, out.vsig, out.exc)
+    let df_dr = vv10_egrad(grid, dens, grid, dens, params);
+    Vv10GradPieces {
+        vrho: out.vrho,
+        vsig: out.vsig,
+        de_dw: out.de_dw,
+        df_dr,
+    }
 }
 
 /// Per-grid-point VV10 egrad `F[g, axis] = -3 · Σ_p RpW_p · Q[g,p] · DR[g,p]`
@@ -782,7 +807,7 @@ fn terfc_dispatch(r: f64, r0: f64, omega: Option<f64>) -> f64 {
 #[inline]
 fn terfc_scalar(r: f64, r0: f64) -> f64 {
     let s = r0 * std::f64::consts::SQRT_2;
-    let terf = 0.5 * (erf_scalar((r - r0) / s) + erf_scalar((r + r0) / s));
+    let terf = 0.5 * (erf((r - r0) / s) + erf((r + r0) / s));
     1.0 - terf
 }
 
@@ -793,77 +818,8 @@ fn terfc_scalar(r: f64, r0: f64) -> f64 {
 /// own arithmetic. Matches `Operator::terfc_with_omega`'s convention.
 #[inline]
 fn terfc_scalar_decoupled(r: f64, r0: f64, omega: f64) -> f64 {
-    let terf = 0.5 * (erf_scalar(omega * (r - r0)) + erf_scalar(omega * (r + r0)));
+    let terf = 0.5 * (erf(omega * (r - r0)) + erf(omega * (r + r0)));
     1.0 - terf
-}
-
-/// `erf(x) = 1 − erfc(x)`; see [`erfc_scalar`] for the underlying fit.
-#[inline]
-fn erf_scalar(x: f64) -> f64 {
-    1.0 - erfc_scalar(x)
-}
-
-/// Complementary error function via the Numerical Recipes 28-term Chebyshev
-/// fit `erfc(x) ≈ t·exp(−x² + P(t))`, `t = 2/(2+|x|)`, sign-extended to
-/// negative arguments through `erfc(−x) = 2 − erfc(x)`.
-///
-/// MEASURED against `scipy.special.erfc` on a 1201-point sweep of
-/// `x ∈ [−6, 6]`: maximum **relative** error 6.8e-15, i.e. essentially
-/// double-precision exact — the 28-coefficient set is the high-accuracy
-/// variant, not the 7-digit one. Well below any tolerance E_nl is asserted at.
-/// (Reproduce: the damping factor `1 − terfc²` built on this matched a scipy
-/// reference to all printed digits at r = 0…12 Bohr, r₀ = 1.00 Å.)
-///
-/// Hand-rolled because `f64::erfc` is not in stable Rust's core numerics and
-/// `ferric-dft` carries no special-function dependency.
-#[inline]
-fn erfc_scalar(x: f64) -> f64 {
-    let z = x.abs();
-    let t = 2.0 / (2.0 + z);
-    let ty = 4.0 * t - 2.0;
-    const COF: [f64; 28] = [
-        -1.3026537197817094,
-        6.419_697_923_564_902e-1,
-        1.9476473204185836e-2,
-        -9.561_514_786_808_631e-3,
-        -9.46595344482036e-4,
-        3.66839497852761e-4,
-        4.2523324806907e-5,
-        -2.0278578112534e-5,
-        -1.624290004647e-6,
-        1.303655835580e-6,
-        1.5626441722e-8,
-        -8.5238095915e-8,
-        6.529054439e-9,
-        5.059343495e-9,
-        -9.91364156e-10,
-        -2.27365122e-10,
-        9.6467911e-11,
-        2.394038e-12,
-        -6.886027e-12,
-        8.94487e-13,
-        3.13092e-13,
-        -1.12708e-13,
-        3.81e-16,
-        7.106e-15,
-        -1.523e-15,
-        -9.4e-17,
-        1.21e-16,
-        -2.8e-17,
-    ];
-    let mut d = 0.0_f64;
-    let mut dd = 0.0_f64;
-    for j in (1..COF.len()).rev() {
-        let tmp = d;
-        d = ty * d - dd + COF[j];
-        dd = tmp;
-    }
-    let ans = t * (-z * z + 0.5 * (COF[0] + ty * d) - dd).exp();
-    if x >= 0.0 {
-        ans
-    } else {
-        2.0 - ans
-    }
 }
 
 /// Everything the single VV10 pair-sum traversal yields.
@@ -871,8 +827,10 @@ struct Vv10Internal {
     e_nl: f64,
     vrho: Vec<f64>,
     vsig: Vec<f64>,
-    /// Per-grid-point energy density ε_nl(g) = β + ½ · f(g); 0.0 on inactive points.
-    exc: Vec<f64>,
+    /// Per-grid-point weight derivative ∂E_nl/∂W_g = ρ_g (β + f_g); 0.0 on
+    /// inactive points. Not the energy density β + ½ f_g: W_g is also the
+    /// partner weight in every f_p, which doubles the pair part.
+    de_dw: Vec<f64>,
     active: Vec<bool>,
     /// Exact point-point kernel evaluations in the pair sum.
     pairs_near: u64,
@@ -880,7 +838,7 @@ struct Vv10Internal {
     pairs_far: u64,
 }
 
-/// Internal: compute (E_nl, vrho, vsig, ε_nl, active) on a single grid, using
+/// Internal: compute (E_nl, vrho, vsig, ∂E/∂W, active) on a single grid, using
 /// the production distance cutoff (`NLC_CUTOFF_BOHR`) for large grids.
 fn vv10_internal(grid: &[GridPoint], dens: &DensityGrid, params: &Vv10Params) -> Vv10Internal {
     vv10_internal_cutoff(grid, dens, params, Some(NLC_CUTOFF_BOHR), Vv10Damping::None)
@@ -964,9 +922,10 @@ fn vv10_internal_screened(
         p.kp = k_vv * r.powf(1.0 / 6.0);
         p.dk_dr = p.kp / 6.0;
         p.dw0_dr = (0.5 * pi43 * r - 2.0 * w0tmp) / p.w0;
-        if s > RHO_THRESH {
-            p.dw0_dg = w0tmp * r / (s * p.w0);
-        }
+        // ρ·∂ω₀/∂σ = C·σ/(ρ³ω₀) (PySCF's `W0tmp·R/(G·W0)` without the 1/σ),
+        // for EVERY active point: ω₀ depends on σ wherever ρ is active, so
+        // gating this on σ would leave E_nl's σ-dependence out of V_nl.
+        p.dw0_dg = c_vv * s / (r * r * r * p.w0);
         p
     };
     let setup = map_rows(npts, setup_point);
@@ -1134,7 +1093,7 @@ fn vv10_internal_screened(
     // parallel — no win to buy with that risk.
     let mut vrho = vec![0.0_f64; npts];
     let mut vsig = vec![0.0_f64; npts];
-    let mut exc = vec![0.0_f64; npts];
+    let mut de_dw = vec![0.0_f64; npts];
     let mut e_nl = 0.0_f64;
     let mut pairs_near = 0u64;
     let mut pairs_far = 0u64;
@@ -1146,7 +1105,7 @@ fn vv10_internal_screened(
         pairs_near += nn;
         pairs_far += nf;
         let exc_g = beta + 0.5 * f_g;
-        exc[g] = exc_g;
+        de_dw[g] = rho[g] * (beta + f_g);
         vrho[g] = beta + f_g + 1.5 * (u_g * dk_dr[g] + w_g * dw0_dr[g]);
         vsig[g] = 1.5 * w_g * dw0_dg[g];
         e_nl += grid[g].weight * rho[g] * exc_g;
@@ -1155,7 +1114,7 @@ fn vv10_internal_screened(
         e_nl,
         vrho,
         vsig,
-        exc,
+        de_dw,
         active,
         pairs_near,
         pairs_far,
@@ -1194,10 +1153,17 @@ pub fn compute_vv10_damped_energy_scan(
 /// V_B). Not used by any production path.
 #[derive(Debug, Clone, Copy)]
 pub enum Vv10Weight {
+    /// The production damping: factor `1` for [`Vv10Damping::None`],
+    /// `1 − terfc²` for the terfc damping.
     Damping(Vv10Damping),
+    /// Factor `(1 − terfc(R; r0, ω))^power`.
     TerfPower {
+        /// terfc seam centre `r0` (Bohr).
         r0_bohr: f64,
+        /// Decoupled seam parameter ω (Bohr⁻¹); `None` uses the width linked
+        /// to `r0`.
         omega_bohr_inv: Option<f64>,
+        /// Exponent applied to `terf = 1 − terfc`.
         power: i32,
     },
 }
@@ -1413,7 +1379,7 @@ pub fn add_vv10_scratch(
     // Digestion GEMM (nbf, npts)·(npts, nbf), outside any rayon region — this
     // whole function runs once per KS iteration at the top level (called from
     // ks.rs, never from inside map_rows' rayon fan-out above). Opt-in BLAS
-    // raise via FERRIC_BLAS_THREADS (default 1, unchanged behavior); mirrors
+    // raise via FERRIC_BLAS_THREADS (default: the rayon pool size; 1 on a rayon worker); mirrors
     // vxc.rs's semilocal_vxc_closed_scratch idiom exactly.
     let mut v_nl: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || buf.dot(&chi.t()));
 
@@ -1550,8 +1516,7 @@ struct DualSetup {
 /// derivatives along `(drho, dsigma)`: the same active set, pair set (dense
 /// below `CELL_LIST_MIN_PTS`, the `NLC_CUTOFF_BOHR` cell list above) and
 /// guards as [`vv10_internal`], so the tangent is the exact derivative of the
-/// V_nl the SCF uses (which is not exactly δE_nl/δρ; see the module tests).
-/// The active mask and the `σ > RHO_THRESH` branch are held at the reference.
+/// V_nl the SCF uses. The active mask is held at the reference.
 fn vv10_potential_tangent(
     grid: &[GridPoint],
     dens: &DensityGrid,
@@ -1591,11 +1556,7 @@ fn vv10_potential_tangent(
         let w0tmp = c_vv * (s / (r * r)).sq();
         let w0 = (w0tmp + pi43 * r).sqrt();
         let kp = k_vv * r.powf(1.0 / 6.0);
-        let dw0_dg = if s.v > RHO_THRESH {
-            w0tmp * r / (s * w0)
-        } else {
-            Dual::c(0.0)
-        };
+        let dw0_dg = Dual::c(c_vv) * s / (r * r * r * w0);
         DualSetup {
             w0,
             kp,
@@ -1750,7 +1711,7 @@ mod damping_tests {
         ];
         let mut max_rel = 0.0_f64;
         for (x, expect) in REF {
-            let got = erfc_scalar(x);
+            let got = ferric_core::special::erfc(x);
             let rel = (got - expect).abs() / expect.abs();
             max_rel = max_rel.max(rel);
             assert!(
@@ -1758,7 +1719,7 @@ mod damping_tests {
                 "erfc({x}) = {got}, scipy = {expect}, rel = {rel:.2e}"
             );
         }
-        eprintln!("erfc_scalar vs scipy: max relative error {max_rel:.2e}");
+        eprintln!("special::erfc vs scipy: max relative error {max_rel:.2e}");
     }
 
     /// terfc against a 40-digit mpmath evaluation of
@@ -1901,14 +1862,12 @@ mod cutoff_tests {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let ctx = ParallelContext::default();
-        let cfg = RhfConfig {
-            xc: Some("wB97X-V".into()),
-            df_j_aux: Some("def2-universal-jkfit".into()),
-            df_k_aux: Some("def2-universal-jkfit".into()),
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            ..Default::default()
-        };
+        let cfg = RhfConfig::default()
+            .with_xc("wB97X-V")
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit")
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8);
         let res = solve_rhf(&ctx, mol, &obs, op, &bounds, &cfg).unwrap();
         let d = res.density_total().clone();
 
@@ -1948,10 +1907,12 @@ mod cutoff_tests {
         };
         let grid = crate::grid::build_atomic_grid(mol, &nlc_cfg);
         let npts = grid.len();
-        const ALPHA: f64 = 2.0; // Bohr^-2, a valence-like decay (density falls
-                                // off fast enough that S = Σ w ρ^(1/4) stays
-                                // within NLC_CUTOFF_BOHR's documented S ≲ 60
-                                // validity range even for a 48-atom chain).
+        const ALPHA: f64 = 2.0; // Bohr^-2, a valence-like decay. The tests
+                                // that use this density measure the cutoff
+                                // error directly; they do not rely on
+                                // S = Σ w ρ^(1/4) staying inside the S ≲ 21
+                                // range the analytic bound at
+                                // NLC_CUTOFF_BOHR covers.
 
         let mut rho = Array1::<f64>::zeros(npts);
         let mut grad = Array2::<f64>::zeros((3, npts));
@@ -2308,6 +2269,48 @@ mod cutoff_tests {
                 );
             }
         }
+    }
+
+    /// `vsig` is ∂E_nl/∂σ (÷ w) at active points with σ < RHO_THRESH too:
+    /// ω₀ depends on σ at every active point, so a σ-gated ∂ω₀/∂σ leaves
+    /// that dependence out of V_nl (3.6e-6 relative in Tr[V_nl X] on
+    /// NH2/6-31G). Exact dense pair sum; direction δσ_g = σ_g on exactly
+    /// those points (relative, so none crosses a branch). The bar is ~20x
+    /// the measured Richardson-FD error (5.3e-7 at t = 1e-2); a gated vsig
+    /// gives relative error 1.
+    #[test]
+    fn vsig_is_the_sigma_derivative_at_low_gradient_points() {
+        let mol = Molecule::parse_xyz("2\n\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let (params, grid, dens) = synthetic_density_on_grid(&mol, 20, 26);
+        let base = vv10_internal_cutoff(&grid, &dens, &params, None, Vv10Damping::None);
+        let low: Vec<usize> = (0..grid.len())
+            .filter(|&g| base.active[g] && dens.sigma[g] < RHO_THRESH && dens.sigma[g] > 0.0)
+            .collect();
+        assert!(low.len() >= 10, "{} active low-sigma points", low.len());
+        let e_at = |t: f64| {
+            let mut d = dens.clone();
+            for &g in &low {
+                d.sigma[g] *= 1.0 + t;
+            }
+            vv10_internal_cutoff(&grid, &d, &params, None, Vv10Damping::None).e_nl
+        };
+        let c = |h: f64| (e_at(h) - e_at(-h)) / (2.0 * h);
+        let h = 1e-2;
+        let fd = (4.0 * c(0.5 * h) - c(h)) / 3.0;
+        let an: f64 = low
+            .iter()
+            .map(|&g| grid[g].weight * base.vsig[g] * dens.sigma[g])
+            .sum();
+        eprintln!(
+            "{} points: fd {fd:.10e} an {an:.10e} rel {:.2e}",
+            low.len(),
+            (fd - an) / fd
+        );
+        assert!(fd.abs() > 1e-12, "E_nl must depend on sigma there: {fd:e}");
+        assert!(
+            (fd - an).abs() <= 1e-5 * fd.abs(),
+            "fd {fd:e} vs analytic {an:e}"
+        );
     }
 
     /// The anchor's complement: a cut INSIDE the molecule must actually drop

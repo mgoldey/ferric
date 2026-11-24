@@ -13,8 +13,7 @@
 //! non-positive-definite" from "kernel is fine but the alpha contraction has
 //! a sign/indexing bug".
 //!
-//! HISTORICAL NOTE (guard landed after this file was written):
-//! `run_rpax_static_polarizability` now REFUSES a non-positive alpha diagonal
+//! NOTE: `run_rpax_static_polarizability` REFUSES a non-positive alpha diagonal
 //! (`ferric_gw::bse::check_alpha_diagonal_positive`), so the systems this sweep
 //! was written to expose now come back as `Err` and land in the
 //! "run_rpax_static_polarizability ERRORED: ..." arm below rather than printing
@@ -198,10 +197,7 @@ fn sweep_negative_diagonal() {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
 
-        let scf_cfg = RhfConfig {
-            xc: Some(c.xc.to_string()),
-            ..Default::default()
-        };
+        let scf_cfg = RhfConfig::default().with_xc(c.xc.to_string());
         let ks = match solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg) {
             Ok(r) if r.converged => r,
             Ok(r) => {
@@ -303,10 +299,7 @@ fn sweep_with_scissor_correction() {
         let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let scf_cfg = RhfConfig {
-            xc: Some(c.xc.to_string()),
-            ..Default::default()
-        };
+        let scf_cfg = RhfConfig::default().with_xc(c.xc.to_string());
         let ks = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
         assert!(ks.converged);
 

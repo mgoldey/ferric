@@ -91,6 +91,7 @@ use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::stability::StabilityVerdict;
 use ferric_scf::uhf::solve_uhf;
 use ferric_scf::{ScfResult, Spin};
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -145,12 +146,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 struct System {
     mol: Molecule,
     prep: PreparedBasis,
@@ -167,7 +162,7 @@ fn load_system(system: &str, basis_name: &str, reference: &Value) -> System {
     let ctx = format!("{system}/{basis_name}");
     // Geometry like-for-like FIRST: a constant or unit slip fails here as a
     // geometry defect, not later as an unexplained energy offset.
-    let enuc_ref = num(reference, "/nuclear_repulsion", &ctx);
+    let enuc_ref = num_ctx(reference, "/nuclear_repulsion", &ctx);
     let enuc = mol.nuclear_repulsion();
     eprintln!(
         "{ctx}: E_nuc ferric {enuc:.12} ref {enuc_ref:.12} |d| {:.2e}",
@@ -212,27 +207,22 @@ fn s_squared(res: &ScfResult, s: &Array2<f64>, na: usize, nb: usize) -> f64 {
 }
 
 fn uhf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        check_stability: true,
-        scf_stability_descent: true,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_stability(ferric_scf::options::Stability::Descend)
 }
 
 fn rohf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
         // ferric's ROHF deliberately skips the stability check (the Roothaan
         // Hessian is a third operator). The REFERENCE is ROHF-stable, so a
         // ferric ROHF saddle shows up as an energy miss instead.
-        check_stability: false,
-        ..Default::default()
-    }
+        .with_check_stability(false)
 }
 
 fn check_close(ctx: &str, what: &str, got: f64, want: f64, tol: f64) {
@@ -274,14 +264,14 @@ fn check_uhf(system: &str, basis_name: &str) -> f64 {
         &ctx,
         "energy",
         res.energy,
-        num(&r, "/uhf/energy", &ctx),
+        num_ctx(&r, "/uhf/energy", &ctx),
         TOL_E,
     );
     check_close(
         &ctx,
         "lambda_min",
         st.lowest_eigenvalue,
-        num(&r, "/uhf/stability/lambda_min", &ctx),
+        num_ctx(&r, "/uhf/stability/lambda_min", &ctx),
         TOL_LAMBDA,
     );
 
@@ -301,7 +291,7 @@ fn check_uhf(system: &str, basis_name: &str) -> f64 {
         &ctx,
         "<S^2>",
         s_squared(&res, &s, na, nb),
-        num(&r, "/uhf/s_squared", &ctx),
+        num_ctx(&r, "/uhf/s_squared", &ctx),
         TOL_S2,
     );
     let eb = res.eps_beta.as_ref().unwrap();
@@ -309,35 +299,35 @@ fn check_uhf(system: &str, basis_name: &str) -> f64 {
         &ctx,
         "HOMO alpha",
         res.eps_alpha[na - 1],
-        num(&r, "/uhf/homo_alpha", &ctx),
+        num_ctx(&r, "/uhf/homo_alpha", &ctx),
         TOL_EPS,
     );
     check_close(
         &ctx,
         "LUMO alpha",
         res.eps_alpha[na],
-        num(&r, "/uhf/lumo_alpha", &ctx),
+        num_ctx(&r, "/uhf/lumo_alpha", &ctx),
         TOL_EPS,
     );
     check_close(
         &ctx,
         "HOMO beta",
         eb[nb - 1],
-        num(&r, "/uhf/homo_beta", &ctx),
+        num_ctx(&r, "/uhf/homo_beta", &ctx),
         TOL_EPS,
     );
     check_close(
         &ctx,
         "LUMO beta",
         eb[nb],
-        num(&r, "/uhf/lumo_beta", &ctx),
+        num_ctx(&r, "/uhf/lumo_beta", &ctx),
         TOL_EPS,
     );
 
     // Resolving power: the UHF energy must MISS the ROHF reference by far more
     // than the bar. If this ever fails, the energy assertion above cannot tell
     // UHF from ROHF on this system and proves nothing about state selection.
-    let e_rohf_ref = num(&r, "/rohf/energy", &ctx);
+    let e_rohf_ref = num_ctx(&r, "/rohf/energy", &ctx);
     assert!(
         e_rohf_ref - res.energy > MUST_MISS,
         "{ctx}: UHF {:.10} is not resolvably below the ROHF reference {e_rohf_ref:.10}",
@@ -369,12 +359,12 @@ fn check_rohf(system: &str, basis_name: &str) -> f64 {
         &ctx,
         "energy",
         res.energy,
-        num(&r, "/rohf/energy", &ctx),
+        num_ctx(&r, "/rohf/energy", &ctx),
         TOL_E,
     );
 
     // Resolving power, mirrored: ROHF must miss the (lower) UHF reference.
-    let e_uhf_ref = num(&r, "/uhf/energy", &ctx);
+    let e_uhf_ref = num_ctx(&r, "/uhf/energy", &ctx);
     assert!(
         res.energy - e_uhf_ref > MUST_MISS,
         "{ctx}: ROHF {:.10} is not resolvably above the UHF reference {e_uhf_ref:.10}",
@@ -390,7 +380,7 @@ fn check_rohf(system: &str, basis_name: &str) -> f64 {
 fn assert_basis_discriminates(system: &str, method: &str, energies: &[f64; 2]) {
     for (i, b_self) in BASES.iter().enumerate() {
         let b_other = BASES[1 - i];
-        let other = num(
+        let other = num_ctx(
             &reference(system, b_other),
             &format!("/{method}/energy"),
             system,

@@ -43,25 +43,33 @@
 //!   and consumers that build a **symmetric matrix function** `U f(Λ) Uᵀ`
 //!   (S^{±1/2}, V^{-1/2}) whose result is invariant to degenerate-subspace
 //!   rotation.
-//! - **NOT safe:** consumers that feed the raw eigenvectors forward in a way
-//!   that must reproduce a specific basis — most importantly the
-//!   every-iteration SCF **Fock diagonalization** (`ferric-scf`
-//!   `driver::diagonalize_rect`). There, the dsyevd eigenvector choice on a
-//!   symmetric molecule (methane/Td degenerate MOs) shifts the SCF fixed point
-//!   just enough that the density-change ΔP limit-cycles above the 1e-8
-//!   convergence gate (the *energy* stays correct to ~1e-8 Ha, but the run is
-//!   reported non-converged). That call site is deliberately left on `.eigh()`.
+//! - **Safe:** consumers of eigenvectors that only use whole degenerate
+//!   blocks, such as the SCF **Fock diagonalization** (`ferric-scf`
+//!   `driver::diagonalize_rect`), whose density and occupied factors are
+//!   invariant to a rotation inside a block that is wholly occupied or wholly
+//!   virtual. It moved to `eigh_dc` on 2026-11-06. The 2026-07-24 rejection
+//!   (methane/Td ΔP limit-cycling above the 1e-8 gate) was the RI-J explicit
+//!   metric inverse amplifying a rounding-level density change, not the
+//!   eigenvector choice; see `driver::FockEigensolver`.
+//! - **NOT safe:** consumers that feed individual eigenvectors forward in a
+//!   way that must reproduce a specific basis inside a degenerate subspace
+//!   (e.g. anything that splits a degenerate block, or tracks single vectors
+//!   across calls by index).
 
 use std::os::raw::{c_char, c_int};
 
 use crate::error::FerricError;
-use ndarray::Array2;
+use ndarray::{Array2, ArrayView2, Axis};
 
 /// Which triangle of the (symmetric) input holds the data. Mirrors
 /// `ndarray_linalg::UPLO` so call sites read the same.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Uplo {
+    /// Passed to LAPACK as `'L'` on a column-major copy of `a`, so the
+    /// entries `a[[i, j]]` with `i >= j` are read.
     Upper,
+    /// Passed to LAPACK as `'U'`, so LAPACK reads the entries `a[[i, j]]`
+    /// with `i <= j`.
     Lower,
 }
 
@@ -72,8 +80,8 @@ pub enum Uplo {
 /// the normalized eigenvector for `evals[i]` — identical convention to
 /// `ndarray_linalg::Eigh::eigh(UPLO::…)`.
 ///
-/// `a` MUST be square and symmetric (only the `uplo` triangle is read, exactly
-/// like `dsyev`/`eigh`). A non-zero LAPACK `info` return surfaces as
+/// `a` MUST be square and symmetric (only one triangle is read; see [`Uplo`]
+/// for which). A non-zero LAPACK `info` return surfaces as
 /// [`FerricError::Lapack`] rather than a panic.
 pub fn eigh_dc(a: &Array2<f64>, uplo: Uplo) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
     let (nrows, ncols) = a.dim();
@@ -101,11 +109,10 @@ pub fn eigh_dc(a: &Array2<f64>, uplo: Uplo) -> Result<(Vec<f64>, Array2<f64>), F
         }
     }
 
-    // `uplo` names a triangle of `a` in ndarray's row-major sense. Our `buf` is
-    // column-major, so the same bytes present the *opposite* triangle to
-    // LAPACK. Flip the flag so LAPACK reads the triangle the caller intended.
-    // (For a symmetric matrix the result is identical either way, but flip for
-    // honesty / correctness under a non-symmetric input passed by mistake.)
+    // The flag is flipped relative to `uplo`. `buf` holds `a` itself in
+    // column-major order (not its transpose), so the flip makes `Uplo::Upper`
+    // read the lower triangle of `a` as indexed (see `Uplo`). For a symmetric
+    // matrix the result is identical either way.
     let uplo_lapack: c_char = match uplo {
         Uplo::Upper => b'L' as c_char,
         Uplo::Lower => b'U' as c_char,
@@ -280,6 +287,78 @@ pub fn eigvalsh_dc(a: &Array2<f64>, uplo: Uplo) -> Result<Vec<f64>, FerricError>
     Ok(evals)
 }
 
+/// Output-column width of one [`par_gemm`] task. Fixed (not derived from the
+/// thread count) so the blocking, and hence every bit of the result, is the
+/// same on any number of threads.
+pub const PAR_GEMM_COL_BLOCK: usize = 128;
+
+/// `c = alpha · a · b + beta · c`, with `c` (and `b`) split into fixed-width
+/// column blocks computed in place, in parallel on the rayon pool, one
+/// single-threaded BLAS GEMM per block (no temporary beyond BLAS's own).
+///
+/// For large products that run outside any rayon region (metric functions,
+/// gradient weights, the RI-MP2 V^-1/2 dressing) and would otherwise use one
+/// core under ferric's one-thread-BLAS convention. Every element comes from
+/// one block's GEMM over a full row of `a` and a column of `b`, so the result
+/// does not depend on the thread count.
+///
+/// The blocks run at one BLAS thread whatever the caller's count: the fan-out
+/// is wrapped in `with_blas_threads(1, ..)`, so a caller inside a raised
+/// serial-section scope (ferric-gw's `mo_b` raises around the RI-MP2 MO
+/// stream) does not multiply rayon workers by BLAS threads.
+pub fn par_gemm(
+    alpha: f64,
+    a: &ArrayView2<'_, f64>,
+    b: &ArrayView2<'_, f64>,
+    beta: f64,
+    c: &mut Array2<f64>,
+) {
+    use rayon::prelude::*;
+    assert_eq!(a.ncols(), b.nrows(), "par_gemm: inner dimensions differ");
+    assert_eq!(c.dim(), (a.nrows(), b.ncols()), "par_gemm: output shape");
+    let c_blocks: Vec<_> = c
+        .axis_chunks_iter_mut(Axis(1), PAR_GEMM_COL_BLOCK)
+        .collect();
+    let b_blocks: Vec<_> = b.axis_chunks_iter(Axis(1), PAR_GEMM_COL_BLOCK).collect();
+    crate::blas_threads::with_blas_threads(1, || {
+        c_blocks
+            .into_par_iter()
+            .zip(b_blocks.into_par_iter())
+            .for_each(|(mut cb, bb)| {
+                par_gemm_probe::record();
+                ndarray::linalg::general_mat_mul(alpha, a, &bb, beta, &mut cb)
+            });
+    });
+}
+
+/// Test probe for [`par_gemm`]: how many column blocks ran, and the largest
+/// OpenBLAS thread count any block saw. Read by tests that check a call site
+/// goes through `par_gemm` and that its blocks ran at one BLAS thread.
+#[doc(hidden)]
+pub mod par_gemm_probe {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Column blocks computed since the last [`reset`].
+    pub static BLOCKS: AtomicUsize = AtomicUsize::new(0);
+    /// Largest `openblas_get_num_threads()` seen inside a block since the
+    /// last [`reset`].
+    pub static MAX_BLAS_THREADS: AtomicUsize = AtomicUsize::new(0);
+
+    pub(super) fn record() {
+        BLOCKS.fetch_add(1, Ordering::Relaxed);
+        MAX_BLAS_THREADS.fetch_max(
+            crate::blas_threads::current_blas_threads(),
+            Ordering::Relaxed,
+        );
+    }
+
+    /// Zero both counters.
+    pub fn reset() {
+        BLOCKS.store(0, Ordering::Relaxed);
+        MAX_BLAS_THREADS.store(0, Ordering::Relaxed);
+    }
+}
+
 /// `ln det(A)` for a real matrix with a **positive** determinant, via LU
 /// factorization (`dgetrf_`).
 ///
@@ -396,4 +475,160 @@ pub fn logdet_lu(a: &Array2<f64>) -> Result<f64, FerricError> {
     }
 
     Ok(log_abs_det)
+}
+
+/// `L⁻¹` for the Cholesky factor of a symmetric positive definite matrix,
+/// `V = L Lᵀ` (`L` lower triangular), by LAPACK `dpotrf_` + `dtrtri_`.
+///
+/// Returns the lower-triangular `L⁻¹` with the strict upper triangle zero, so
+/// `L⁻¹ V L⁻ᵀ = I` and `(L⁻¹)ᵀ L⁻¹ = V⁻¹`. This is the RI metric factor every
+/// `B = L⁻¹ (P|ia)` builder uses (`ferric_mp2::rimp2::cholesky_inverse_sqrt`).
+///
+/// Layout: the row-major buffer of a symmetric `V` is its column-major buffer,
+/// so `dpotrf_('U')` factors `V = Uᵀ U` in place with `U` upper triangular in
+/// column-major order. Read back row-major, that triangle is `Uᵀ = L`.
+/// `dtrtri_('U')` then overwrites it with `U⁻¹`, whose row-major reading is
+/// `U⁻ᵀ = L⁻¹`. The other triangle still holds input entries and is zeroed.
+///
+/// A matrix that is not positive definite (`dpotrf_` info > 0) is an error,
+/// not a panic. Threading is whatever the caller's OpenBLAS count is.
+pub fn cholesky_inverse_lower(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
+    let (n, ncols) = v.dim();
+    if n != ncols {
+        return Err(FerricError::Lapack(format!(
+            "cholesky_inverse_lower: matrix must be square, got {n}x{ncols}"
+        )));
+    }
+    if n == 0 {
+        return Ok(Array2::zeros((0, 0)));
+    }
+    let mut buf: Vec<f64> = v.as_standard_layout().iter().copied().collect();
+    let n_i = n as c_int;
+    let uplo: c_char = b'U' as c_char;
+    let diag: c_char = b'N' as c_char;
+    let mut info: c_int = 0;
+    unsafe {
+        lapack_sys::dpotrf_(&uplo, &n_i, buf.as_mut_ptr(), &n_i, &mut info);
+    }
+    if info != 0 {
+        return Err(FerricError::Lapack(format!(
+            "Cholesky on (P|Q): dpotrf_ info={info} (the leading minor of order {info} \
+             is not positive definite)"
+        )));
+    }
+    unsafe {
+        lapack_sys::dtrtri_(&uplo, &diag, &n_i, buf.as_mut_ptr(), &n_i, &mut info);
+    }
+    if info != 0 {
+        return Err(FerricError::Lapack(format!(
+            "cholesky_inverse_lower: dtrtri_ info={info} (singular Cholesky factor)"
+        )));
+    }
+    let mut out = Array2::from_shape_vec((n, n), buf)
+        .map_err(|e| FerricError::Lapack(format!("cholesky_inverse_lower: reshape: {e}")))?;
+    for i in 0..n {
+        for j in (i + 1)..n {
+            out[[i, j]] = 0.0;
+        }
+    }
+    Ok(out)
+}
+
+/// `A^{1/2} = U diag(√λ) Uᵀ` for a symmetric positive definite `A` (the
+/// overlap `S^{1/2}` of Löwdin orthogonalization), through [`eigh_dc`]. A
+/// symmetric matrix function, so the degenerate-subspace freedom of the
+/// eigensolver does not reach the result. An eigenvalue `<= 0` is an error
+/// (linear dependence), not a NaN.
+pub fn symmetric_sqrt(a: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
+    let (evals, evecs) = eigh_dc(a, Uplo::Upper)?;
+    if let Some(&lmin) = evals.first() {
+        if lmin <= 0.0 {
+            return Err(FerricError::Lapack(format!(
+                "symmetric_sqrt: eigenvalue {lmin:e} <= 0 (linear dependence)"
+            )));
+        }
+    }
+    let mut us = evecs.clone();
+    for (mut col, &l) in us.axis_iter_mut(Axis(1)).zip(&evals) {
+        col *= l.sqrt();
+    }
+    Ok(us.dot(&evecs.t()))
+}
+
+#[cfg(test)]
+mod cholesky_inverse_tests {
+    use super::*;
+
+    fn spd(n: usize, seed: u64) -> Array2<f64> {
+        let mut s = seed;
+        let m = Array2::from_shape_fn((n, n), |_| {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((s >> 11) as f64 / (1u64 << 53) as f64) - 0.5
+        });
+        m.dot(&m.t()) + Array2::<f64>::eye(n) * (n as f64)
+    }
+
+    /// `L⁻¹` is lower triangular and whitens `V`, checked against the textbook
+    /// scalar forward substitution on an explicit factor (an independent route).
+    #[test]
+    fn cholesky_inverse_lower_whitens_and_matches_forward_substitution() {
+        let n = 37;
+        let v = spd(n, 5);
+        let li = cholesky_inverse_lower(&v).unwrap();
+        for i in 0..n {
+            for j in (i + 1)..n {
+                assert_eq!(li[[i, j]], 0.0);
+            }
+        }
+        let w = li.dot(&v).dot(&li.t()) - Array2::<f64>::eye(n);
+        let err = w.iter().fold(0.0f64, |a, x| a.max(x.abs()));
+        assert!(err < 1e-12, "L^-1 V L^-T - I = {err:e}");
+        // scalar Cholesky + forward substitution
+        let mut l = Array2::<f64>::zeros((n, n));
+        for j in 0..n {
+            let mut d = v[[j, j]];
+            for k in 0..j {
+                d -= l[[j, k]] * l[[j, k]];
+            }
+            l[[j, j]] = d.sqrt();
+            for i in (j + 1)..n {
+                let mut s = v[[i, j]];
+                for k in 0..j {
+                    s -= l[[i, k]] * l[[j, k]];
+                }
+                l[[i, j]] = s / l[[j, j]];
+            }
+        }
+        let mut want = Array2::<f64>::zeros((n, n));
+        for i in 0..n {
+            want[[i, i]] = 1.0 / l[[i, i]];
+            for j in (0..i).rev() {
+                let s: f64 = (j..i).map(|k| l[[i, k]] * want[[k, j]]).sum();
+                want[[i, j]] = -s / l[[i, i]];
+            }
+        }
+        let d = (&li - &want).iter().fold(0.0f64, |a, x| a.max(x.abs()));
+        assert!(d < 1e-13, "LAPACK vs scalar L^-1: {d:e}");
+    }
+
+    #[test]
+    fn symmetric_sqrt_squares_back() {
+        let v = spd(23, 9);
+        let h = symmetric_sqrt(&v).unwrap();
+        let e = (&h.dot(&h) - &v).iter().fold(0.0f64, |a, x| a.max(x.abs()));
+        let asym = (&h - &h.t()).iter().fold(0.0f64, |a, x| a.max(x.abs()));
+        assert!(e < 1e-11 && asym < 1e-12, "{e:e} {asym:e}");
+        let mut bad = v.clone();
+        bad[[0, 0]] = -1e3;
+        assert!(symmetric_sqrt(&bad).is_err());
+    }
+
+    #[test]
+    fn cholesky_inverse_lower_refuses_an_indefinite_matrix() {
+        let mut v = spd(6, 1);
+        v[[3, 3]] = -1.0;
+        assert!(cholesky_inverse_lower(&v).is_err());
+    }
 }

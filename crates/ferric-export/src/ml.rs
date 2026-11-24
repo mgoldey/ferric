@@ -10,21 +10,27 @@ use std::fs::File;
 /// ...) without growing `export_npz`'s own parameter count again.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ChargeSchemes<'a> {
+    /// Hirshfeld atomic charges, one per atom; written as `hirshfeld_charges`.
     pub hirshfeld: Option<&'a [f64]>,
+    /// Löwdin atomic charges, one per atom; written as `lowdin_charges`.
     pub lowdin: Option<&'a [f64]>,
+    /// Mulliken atomic charges, one per atom; written as `mulliken_charges`.
     pub mulliken: Option<&'a [f64]>,
     /// CHELPG (ESP-fitted) atomic charges — structurally different from the
     /// three population-partition schemes above (see
-    /// `ferric_rpa::properties::chelpg_charges`).
+    /// `ferric_scf::properties::chelpg_charges`).
     pub chelpg: Option<&'a [f64]>,
     /// RESP (restrained ESP-fitted) atomic charges (see
-    /// `ferric_rpa::properties::resp_charges`).
+    /// `ferric_scf::properties::resp_charges`).
     pub resp: Option<&'a [f64]>,
 }
 
 /// Static and per-atom polarizability/field-response outputs.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct PolarizabilityBundle<'a> {
+    /// Electrostatic potential at each nucleus, Hartree atomic units, with
+    /// that nucleus's own divergent `Z_A/|r − R_A|` term excluded (see
+    /// `ferric_scf::properties::esp_at_atoms`). Written as `esp_atoms`, (N,).
     pub esp_atoms: Option<&'a [f64]>,
     /// ESP evaluated at ARBITRARY points (a vdW/solvent-accessible surface,
     /// say), in Hartree atomic units. Must be exported together with
@@ -41,6 +47,8 @@ pub struct PolarizabilityBundle<'a> {
     pub esp_points: Option<&'a Array2<f64>>,
     /// Molecular static polarizability α_mol (3, 3), a.u.
     pub alpha_tensor: Option<&'a [[f64; 3]; 3]>,
+    /// Electric field at each nucleus, a.u., one `[x, y, z]` row per atom.
+    /// Written as `electric_field`, (N, 3).
     pub electric_field: Option<&'a [[f64; 3]]>,
     /// Per-atom static polarizability (N, 3, 3), a.u.: the
     /// Krishtal–Senet–Van Alsenoy intrinsic α^A = ⟨w_A (r − R_A)|R|μ⟩
@@ -142,6 +150,7 @@ pub struct C6Export<'a> {
 /// Dispersion (C6) outputs. All-or-nothing: see [`C6Export`].
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DispersionBundle<'a> {
+    /// The C6 export, or `None` to write no C6 keys.
     pub c6: Option<C6Export<'a>>,
 }
 
@@ -150,12 +159,19 @@ pub struct DispersionBundle<'a> {
 /// per-category fields and their CONSUMER WARNINGs.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NpzBundle<'a> {
+    /// MO coefficient matrix, written unchanged as `mo_coeffs`.
     pub mo_coeffs: Option<&'a Array2<f64>>,
+    /// Orbital energies, Hartree; written as `orbital_energies`.
     pub orbital_energies: Option<&'a [f64]>,
+    /// PDEP eigenvectors, written unchanged as `pdep_eigenvectors`.
     pub pdep_eigenvectors: Option<&'a Array2<f64>>,
+    /// Boys-localized orbital coefficients, written unchanged as `boys_coeffs`.
     pub boys_coeffs: Option<&'a Array2<f64>>,
+    /// Atomic coordinates (N, 3), written unchanged as `coords`.
     pub coords: Option<&'a Array2<f64>>,
+    /// Atomic numbers, one per atom; written as `atomic_numbers` (int64).
     pub atomic_numbers: Option<&'a [usize]>,
+    /// AO density matrix, written unchanged as `density_matrix`.
     pub density_matrix: Option<&'a Array2<f64>>,
     /// Per-MO centroids (n, 3) Bohr — pairs with `orbital_spreads`.
     pub orbital_centers: Option<&'a Array2<f64>>,
@@ -163,10 +179,19 @@ pub struct NpzBundle<'a> {
     pub orbital_spreads: Option<&'a [f64]>,
     /// Electronic-density second-moment tensor (3, 3) about the origin.
     pub density_second_moment: Option<&'a Array2<f64>>,
+    /// Molecular dipole moment `[x, y, z]`, a.u.; written as `dipole`, (3,).
     pub dipole: Option<&'a [f64; 3]>,
+    /// Atomic charges under each population or fitting scheme.
     pub charges: ChargeSchemes<'a>,
+    /// ESP, electric-field and polarizability outputs.
     pub polarizability: PolarizabilityBundle<'a>,
+    /// C6 dispersion outputs.
     pub dispersion: DispersionBundle<'a>,
+    /// The result certificate as JSON text
+    /// (`ferric_core::certificate::Certificate::to_json`), written as
+    /// `certificate`: its UTF-8 bytes, a `u8` array decoded by
+    /// `np.load(f)["certificate"].tobytes().decode()`.
+    pub certificate: Option<&'a str>,
 }
 
 /// Exports key tensors and metadata for Machine Learning (e.g. Diffusion models)
@@ -462,6 +487,13 @@ pub fn export_npz(path: &str, bundle: &NpzBundle) -> Result<(), ExportError> {
         let mol_c6 = Array1::from_vec(vec![c6.c6_molecular_iso]);
         writer
             .add_array("c6_molecular_iso", &mol_c6)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
+    }
+
+    if let Some(cert) = bundle.certificate {
+        let bytes = Array1::from_vec(cert.as_bytes().to_vec());
+        writer
+            .add_array("certificate", &bytes)
             .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 

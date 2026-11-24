@@ -1,0 +1,13 @@
+diff --git a/crates/ferric-cc/src/ccsd_closed_shell.rs b/crates/ferric-cc/src/ccsd_closed_shell.rs
+index eccd962..e141470 100644
+--- a/crates/ferric-cc/src/ccsd_closed_shell.rs
++++ b/crates/ferric-cc/src/ccsd_closed_shell.rs
+@@ -999,7 +999,7 @@ pub fn ccsd_closed_shell(
+             phases.stop(tok);
+             // + einsum('klij,klab->ijab', Woooo, tau): legal.
+             let tok = phases.begin("iter: T2 hh ladder (Woooo)");
+-            let a1: ArrayD<f64> = einsum!("klij,klab->ijab", &woooo_t, &tau_t);
++            let a1: ArrayD<f64> = einsum!("klij,klab->ijab", &woooo_t, &t2_t);
+             r2 = &r2 + &a1;
+             phases.stop(tok);
+             // + einsum('abcd,ijcd->ijab', Wvvvv, tau): the pp ladder.

@@ -7,15 +7,15 @@
 //! (`ferric_dft::xc_batch`) whose boundaries are a pure function of the grid
 //! coordinates and a fixed 128-point cap; the budget only chooses whether the
 //! per-batch AO blocks stay resident or are recomputed, and those two modes
-//! are bit-identical (pinned in `ks.rs`'s `storage_tests`). So the ENERGY can
-//! no longer depend on RSS through this path at all. `batch_pts_for_test`
-//! now reports the storage mode (`None` resident, `Some(cap)` recompute); this
+//! are bit-identical (pinned in `ks.rs`'s `storage_tests`). So the ENERGY
+//! does not depend on RSS through this path at all. `batch_pts_for_test`
+//! reports the storage mode (`None` resident, `Some(cap)` recompute); this
 //! test still checks that the MODE is RSS-independent under a pool (the pool
-//! ledger decides), which keeps memory behaviour reproducible, but it can no
-//! longer catch an energy defect. The history below describes the retired
-//! `resolve_batch_size` design and is kept as the record.
+//! ledger decides), which keeps memory behaviour reproducible, but it cannot
+//! catch an energy defect. The argument below is why batch boundaries must not
+//! depend on RSS (it was made for the `resolve_batch_size` design).
 //!
-//! # The defect
+//! # The hazard
 //!
 //! `KsXc::new_with_omega_budgeted` sizes its working budget with
 //! `available_budget_now(resolve_budget_bytes(..))`, which subtracts the
@@ -58,9 +58,9 @@
 
 use ferric_core::basis;
 use ferric_core::memory::pool::{clear_global, install_global, MemoryPool};
-use ferric_core::mol::Molecule;
 use ferric_dft::grid::AtomicGridConfig;
 use ferric_dft::ks::KsXc;
+use ferric_testkit::molecules::water_xyz;
 
 /// CALIBRATED to the RSS-sensitive regime, not guessed.
 ///
@@ -81,12 +81,8 @@ use ferric_dft::ks::KsXc;
 /// bearing: M8 survived at 50 MB and is killed here.
 const TIGHT_BUDGET: usize = 30_000_000;
 
-fn water() -> Molecule {
-    Molecule::load_xyz("../../testdata/molecules/water.xyz").expect("water.xyz")
-}
-
 fn build(budget: usize) -> KsXc {
-    let mol = water();
+    let mol = water_xyz();
     let bs = basis::bundled("cc-pvdz").expect("cc-pvdz");
     let main = AtomicGridConfig::default();
     let nlc = AtomicGridConfig {

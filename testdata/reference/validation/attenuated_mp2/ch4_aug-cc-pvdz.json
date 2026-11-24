@@ -1,0 +1,131 @@
+{
+  "row": "Attenuated RI-MP2",
+  "system": "ch4",
+  "basis": "aug-cc-pvdz",
+  "auxbasis": "aug-cc-pvdz-rifit",
+  "charge": 0,
+  "multiplicity": 1,
+  "nao": 59,
+  "naux": 164,
+  "nuclear_repulsion": 13.439527889904605,
+  "rhf_energy": -40.19963296850381,
+  "coulomb": {
+    "e_os": -0.13813547585542493,
+    "e_ss": -0.032864304177717574,
+    "e_corr": -0.1709997800331425
+  },
+  "attenuated": [
+    {
+      "omega_bohr_inv": 0.2,
+      "omega_angstrom_inv": 0.3779452249130124,
+      "e_corr": -0.1633306485081036,
+      "e_os": -0.13269558280617497,
+      "e_ss": -0.030635065701928636,
+      "exact_4index_e_corr_info": -0.16337211754149364,
+      "ri_error_info": 4.1469033390029164e-05
+    },
+    {
+      "omega_bohr_inv": 0.22225442858640002,
+      "omega_angstrom_inv": 0.42,
+      "e_corr": -0.16076675073971208,
+      "e_os": -0.13088803403709062,
+      "e_ss": -0.02987871670262146,
+      "exact_4index_e_corr_info": -0.16080817851660317,
+      "ri_error_info": 4.1427776891089785e-05
+    },
+    {
+      "omega_bohr_inv": 0.42,
+      "omega_angstrom_inv": 0.7936849723173259,
+      "e_corr": -0.12437872191030158,
+      "e_os": -0.10481269585092126,
+      "e_ss": -0.019566026059380327,
+      "exact_4index_e_corr_info": -0.12441983462664283,
+      "ri_error_info": 4.1112716341246136e-05
+    },
+    {
+      "omega_bohr_inv": 1.0,
+      "omega_angstrom_inv": 1.8897261245650618,
+      "e_corr": -0.034986914992149724,
+      "e_os": -0.03284323400788778,
+      "e_ss": -0.0021436809842619435,
+      "exact_4index_e_corr_info": -0.03501773530726813,
+      "ri_error_info": 3.082031511840444e-05
+    }
+  ],
+  "checks": {
+    "numpy_vs_pyscf_dfmp2_omega0_abs": 3.0531133177191805e-16,
+    "erfc_plus_erf_minus_coulomb_max_abs": 8.972467213652635e-11
+  },
+  "provenance": {
+    "code": "PySCF (integrals, RHF, DFMP2 anchor) + numpy (attenuated RI-MP2 assembly)",
+    "version": "2.13.1",
+    "keywords": {
+      "rhf": "scf.RHF, exact Coulomb J/K",
+      "operator": "erfc(omega r)/r via Mole.with_range_coulomb(-omega) on mol AND auxmol",
+      "attenuated_integrals": "int3c2e (P|mu nu) and int2c2e (P|Q) both erfc",
+      "fit": "standard (non-robust), metric = same erfc kernel, Cholesky",
+      "energy": "E_os + E_ss, canonical denominators",
+      "numpy": "1.26.4"
+    },
+    "grid": "none",
+    "aux_basis": "aug-cc-pvdz-rifit",
+    "frozen_core": 0,
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-09
+    },
+    "stability": null,
+    "basis": "aug-cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/aug-cc-pvdz.json",
+    "basis_sha256": "911303b754cd16032f762811f2193796eaf67070bdb40bcdc0c59d422f8c8dd1",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/ch4.xyz",
+    "geometry_xyz_sha256": "bdc436de2d7b7694752df7c4a783b709bf83566726b186b08745985d13519537",
+    "geometry_bohr": [
+      [
+        "C",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "H",
+        1.1888607200341226,
+        1.1888607200341226,
+        1.1888607200341226
+      ],
+      [
+        "H",
+        -1.1888607200341226,
+        -1.1888607200341226,
+        1.1888607200341226
+      ],
+      [
+        "H",
+        -1.1888607200341226,
+        1.1888607200341226,
+        -1.1888607200341226
+      ],
+      [
+        "H",
+        1.1888607200341226,
+        -1.1888607200341226,
+        -1.1888607200341226
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_attenuated_mp2.py",
+    "git_head": "00a7417e7dd1913a24170436a269fb4d5f075d09",
+    "generated_utc": "2026-11-13T17:27:41+00:00",
+    "basis_self_check": {
+      "nao": 59,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 59,
+      "diag_skipped_cartesian": 0
+    },
+    "aux_basis_json": "crates/ferric-core/src/basis/bundled/aug-cc-pvdz-rifit.json",
+    "aux_basis_sha256": "0b64c175a31c523d6ab7e66719b29671eca91a0390e6ecad9ba863ac5cad6ea8"
+  }
+}

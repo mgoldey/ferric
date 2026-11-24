@@ -16,17 +16,9 @@ use ferric_scf::symmetric::solve_rhf_symmetric;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-fn ferric_cli_bin() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(profile_dir) = exe.parent().and_then(Path::parent) {
-            let p = profile_dir.join("ferric-cli");
-            if p.is_file() {
-                return p;
-            }
-        }
-    }
-    PathBuf::from(env!("CARGO_BIN_EXE_ferric-cli"))
-}
+#[path = "support/cli_bin.rs"]
+mod cli_bin;
+use cli_bin::ferric_cli_bin;
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -91,14 +83,12 @@ fn library(irrep_nelec: Option<Vec<(String, usize)>>) -> (f64, String) {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let config = RhfConfig {
-        max_iter: 200,
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        symmetry: true,
-        irrep_nelec,
-        ..Default::default()
-    };
+    let mut config = RhfConfig::default()
+        .with_max_iter(200)
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10);
+    config.symmetry = true;
+    config.irrep_nelec = irrep_nelec;
     let r =
         solve_rhf_symmetric(&ParallelContext::new(), &mol, &prep, op, &bounds, &config).unwrap();
     (r.energy(), r.group().to_string())
@@ -262,4 +252,45 @@ fn unsupported_combinations_are_refused_by_name() {
             text(&out)
         );
     }
+}
+
+/// The point-group-blocked branch carries the envelope warnings as the
+/// unblocked SCF kinds do: water / 6-31G lies outside the RKS anchor's basis
+/// sets (def2-SVP, def2-TZVP), inside the RHF anchor's (a covered run).
+#[test]
+fn symmetric_branch_certificate_carries_the_envelope() {
+    let rks = input(
+        "env-rks",
+        "ksdft",
+        "energy",
+        &format!("[scf]\n{SCF}symmetry = true\n[dft]\nfunctional = \"PBE\"\n"),
+    );
+    let out = run(&rks);
+    assert!(out.status.success(), "{}", text(&out));
+    let warnings = run_end(&rks)["extra"]["certificate"]["warnings"].clone();
+    let w: Vec<&str> = warnings
+        .as_array()
+        .expect("certificate warnings")
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(
+        w.iter()
+            .any(|s| s.starts_with("basis 6-31g is outside the RKS")),
+        "{w:?}"
+    );
+    let rhf = input(
+        "env-rhf",
+        "rhf",
+        "energy",
+        &format!("[scf]\n{SCF}symmetry = true\n"),
+    );
+    assert!(run(&rhf).status.success());
+    let warnings = run_end(&rhf)["extra"]["certificate"]["warnings"].clone();
+    assert!(
+        warnings.as_array().map_or(true, |a| a
+            .iter()
+            .all(|v| !v.as_str().unwrap().contains("outside"))),
+        "{warnings:?}"
+    );
 }

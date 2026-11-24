@@ -1,12 +1,18 @@
 //! Coupled-Cluster methods for ferric.
 //!
-//! Spin-orbital RI-CCD, RI-CCSD, and the CCSD(T) perturbative-triples
-//! correction, all validated against exact-integral / PySCF references.
-//! The infrastructure reuses RI integrals from ferric-mp2.
+//! RI-CCD, RI-CCSD and the CCSD(T) perturbative-triples correction in a
+//! spin-orbital form ([`ccd`], [`ccsd`], [`ccsd_t`]) and a spin-adapted
+//! closed-shell form ([`ccsd_closed_shell`], [`ccsd_t_closed_shell`], which the
+//! CLI `ccsd` / `ccsd(t)` kinds run); LinLCCD(hh) closed shell ([`linlccd`]) and
+//! open shell ([`linlccd_u`]); DLPNO-CCSD(T); and the ωB97X-L-V double hybrid.
+//! Both of those CCSD forms require a restricted reference. On a UHF reference
+//! the CLI and Python run spin-blocked UCCSD ([`u_ccsd`]) and its (T)
+//! ([`u_ccsd_t`]); the spin-orbital solvers also accept UHF spin orbitals
+//! ([`ccsd::ccsd_uhf_spin_orbital`], [`ccsd_t::ccsd_t_uhf_spin_orbital`]) as
+//! the independent check. RI integrals come from ferric-mp2.
 
 use ndarray::{Array2, Array4};
 
-/// Spin-orbital coupled-cluster doubles (CCD).
 /// Elements held by an amplitude DIIS ring at steady state.
 ///
 /// `Diis::step` clones BOTH of its arguments into SEPARATE ring histories on
@@ -37,6 +43,7 @@ pub fn diis_history_elems(per_tensor_elems: usize, subspace: usize) -> usize {
         .saturating_mul(subspace.max(1))
 }
 
+/// Spin-orbital coupled-cluster doubles (CCD).
 pub mod ccd;
 /// Spin-orbital CCSD (coupled-cluster singles and doubles).
 pub mod ccsd;
@@ -46,6 +53,8 @@ pub mod ccsd_closed_shell;
 pub mod ccsd_t;
 /// Spin-adapted closed-shell CCSD(T) (spatial orbitals, ~10-40x faster).
 pub mod ccsd_t_closed_shell;
+/// Result certificates of the coupled-cluster methods.
+pub mod certificate;
 /// DLPNO-CCSD (domain-based local pair natural orbital CCSD).
 pub mod dlpno_ccsd;
 /// DLPNO-CCSD amplitude update kernel.
@@ -62,6 +71,10 @@ pub mod dlpno_ccsd_virtual;
 pub mod dlpno_linlccd;
 /// Double-hybrid DFT: wB97X-L-V and similar post-KS correlation.
 pub mod double_hybrid;
+/// EE-EOM-CCSD singlet excitation energies (closed shell, right vectors).
+pub mod eom_ccsd;
+/// Non-symmetric block Davidson for the EOM-CCSD eigenproblem.
+pub mod eom_davidson;
 /// Shared CC helpers: MO integrals, amplitude utilities.
 pub mod helpers;
 /// Linearized LCCD (LinLCCD) from RI intermediates.
@@ -74,6 +87,10 @@ pub mod linlccd_exact;
 pub mod linlccd_u;
 /// Integral-direct (RI) particle-particle ladder for closed-shell CCSD.
 pub mod ri_ladder;
+/// Spin-blocked unrestricted CCSD on a UHF reference.
+pub mod u_ccsd;
+/// Spin-blocked (T) correction for unrestricted CCSD.
+pub mod u_ccsd_t;
 
 pub use ferric_mp2::local_pno as pno;
 /// Local-correlation machinery, re-exported from `ferric-mp2`.
@@ -87,19 +104,30 @@ pub use ferric_mp2::pair_energy_screen;
 /// Configuration for coupled-cluster iterations (CCD, CCSD).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CcConfig {
+    /// Number of lowest-energy occupied MOs excluded from the correlation
+    /// treatment; more than the occupied count is an error
+    /// (`ferric_mp2::rimp2::active_occ`).
     pub frozen_core: usize,
+    /// Maximum amplitude iterations; exhausting them returns
+    /// `FerricError::Convergence`.
     pub max_iter: usize,
+    /// Convergence threshold on the change in correlation energy between
+    /// iterations (Hartree). The CCSD drivers (`ccsd`, `ccsd_closed_shell`)
+    /// use `min(energy_conv, 1e-9)`; `ccd` ignores it and uses a fixed 1e-10;
+    /// the LinLCCD drivers use it as given.
     pub energy_conv: f64,
+    /// Not read by any driver in this crate: the drivers call DIIS on every
+    /// iteration, and it extrapolates once two vectors are stored.
     pub diis_start: usize,
+    /// Number of amplitude/error vectors kept in the DIIS ring (`0` is
+    /// treated as `1`); see [`diis_history_elems`] for the memory it holds.
     pub diis_subspace: usize,
     /// Optional resident-bytes ceiling for the dense tensors a CC method
     /// materializes. `None` → resolved via
     /// [`ferric_core::memory::resolve_budget_bytes`].
     ///
-    /// This field used to be documented as "wiring-only", and for the
-    /// local-correlation family that was literally true: it was threaded through
-    /// the whole crate and read by nobody on the `dlpno_*` path. The consequence
-    /// was a production incident — the LNO-coupled path predicted a 0.055 GB
+    /// A field read by nobody on the `dlpno_*` path invites a production
+    /// incident: the LNO-coupled path predicted a 0.055 GB
     /// working set and peaked at 7.3 GB. The predicted number was not wrong
     /// about what it described; it described the *compressed, pair-shaped*
     /// iteration (`HhFlopCount`, `virtual_retention`), which is genuinely tiny,
@@ -107,7 +135,7 @@ pub struct CcConfig {
     /// run before the first PNO exists. Nothing reconciled the two, so the only
     /// feedback was the OOM killer.
     ///
-    /// It is now read on every path that materializes a size-dependent dense
+    /// It is read on every path that materializes a size-dependent dense
     /// tensor, via [`ferric_core::memory::plan::MemoryPlan`], which fails fast
     /// with a per-reservation breakdown naming the term that blew up:
     ///
@@ -235,8 +263,15 @@ impl CcConfig {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct CcResult {
+    /// Correlation energy (Hartree), excluding the reference energy.
     pub correlation_energy: f64,
+    /// Singles amplitudes indexed `(i, a)`; `None` for doubles-only methods
+    /// (CCD, LinLCCD).
     pub t1: Option<Array2<f64>>,
+    /// Doubles amplitudes indexed `(i, j, a, b)` over the active occupied and
+    /// virtual orbitals: spin orbitals for `ccd`, `ccsd` and `linlccd`,
+    /// spatial orbitals for `ccsd_closed_shell`; other drivers document their
+    /// own layout.
     pub t2: Array4<f64>,
     /// The particle-particle ladder route closed-shell CCSD took (with
     /// [`CcsdLadder::Auto`] resolved). `None` for every other solver.

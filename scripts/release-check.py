@@ -11,7 +11,10 @@ Usage:
 
     release-check.py check --version 0.1.0rc8 --pypi-dir dist/pypi \\
         [--largeam-dir dist/largeam --licenses-dir dist/licenses \\
-         --build-tag 1largeam] [--sha256sums SHA256SUMS] [--summary FILE]
+         --build-tag 1largeam] \\
+        [--platform-dir macosx_11_0_arm64=dist/macos-arm64 \\
+         --platform-dir win_amd64=dist/windows-x86_64] \\
+        [--sha256sums SHA256SUMS] [--summary FILE]
     release-check.py notes --version 0.1.0rc8 --build-tag 1largeam
     release-check.py pyproject-version pyproject.toml
 
@@ -21,19 +24,26 @@ appends a size table in Markdown (pass ``$GITHUB_STEP_SUMMARY``).
 
 What ``check`` asserts, for every file:
 
-- PyPI set: exactly one wheel per CPython 3.10-3.13, named
-  ``ferric-<version>-cp3NN-cp3NN-<platform>.whl`` with NO build tag and a
+- PyPI set: exactly one stable-ABI wheel (``WHEEL_TAGS``: built once with
+  ``--features abi3``, installable on every CPython >= 3.10), named
+  ``ferric-<version>-cp310-abi3-<platform>.whl`` with NO build tag and a
   ``manylinux_2_28_x86_64`` platform; its METADATA says ``Name: ferric`` and
   ``Version: <version>``; its WHEEL file has no ``Build:`` line; it bundles no
-  libint2 shared library (the small libint2 is static); it is under PyPI's
-  100 MiB per-file limit. Exactly one sdist, ``ferric-<version>.tar.gz``,
+  libint2 shared library (the small libint2 is static); its extension module
+  has no ``.symtab`` section (built with ``maturin build --strip``); it is
+  under PyPI's 100 MiB per-file limit. Exactly one sdist, ``ferric-<version>.tar.gz``,
   whose PKG-INFO says the same version, also under 100 MiB. No file name
   contains ``mpi``.
-- Large-libint set (when ``--largeam-dir`` is given): the same four CPython
-  tags, each named ``ferric-<version>-<build-tag>-cp3NN-...``, whose WHEEL
+- Large-libint set (when ``--largeam-dir`` is given): the same
+  ``WHEEL_TAGS``, named ``ferric-<version>-<build-tag>-cp310-abi3-...``, whose WHEEL
   says ``Build: <build-tag>``, whose METADATA has the same name and version,
   which bundles exactly one ``ferric.libs/libint2*`` shared library, and which
   is under GitHub's 2 GiB per-asset limit.
+- Other-platform PyPI sets (``--platform-dir PLATFORM=DIR``, repeatable; the
+  macOS arm64 and Windows x86_64 wheels): in DIR, exactly the
+  ``WHEEL_TAGS`` wheel(s) whose platform tag is PLATFORM, with the PyPI set's name,
+  METADATA and WHEEL rules, no bundled libint2 shared library (``.dylib`` /
+  ``.dll`` / ``.so`` named ``libint2*`` or ``int2*``), under 100 MiB.
 - Licence texts (``--licenses-dir``, required with ``--largeam-dir``):
   exactly ``libint2-LICENSE.txt`` and ``libint2-COPYING.LESSER.txt`` (libint2
   is LGPL-3.0-only), each containing its expected phrases.
@@ -48,6 +58,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import re
+import struct
 import sys
 import tarfile
 import zipfile
@@ -55,7 +66,12 @@ from pathlib import Path
 
 PYPI_LIMIT = 100 * 1024 * 1024  # warehouse MAX_FILESIZE without an increase
 GITHUB_ASSET_LIMIT = 2 * 1024 * 1024 * 1024  # GitHub release asset limit
-PYTHON_TAGS = ("cp310", "cp311", "cp312", "cp313")
+# (python tag, abi tag) of the wheels expected per platform and variant: ONE
+# stable-ABI wheel (pyo3 `abi3-py310`, ferric-python's `abi3` feature), which
+# the workflows' smoke tests install on every CPython 3.10-3.13. To go back to
+# one wheel per interpreter, this was
+#   tuple((t, t) for t in ("cp310", "cp311", "cp312", "cp313")).
+WHEEL_TAGS = (("cp310", "abi3"),)
 PLATFORM = "manylinux_2_28_x86_64"
 NAME = "ferric"
 LIBINT_SOURCE_TARBALL = "https://github.com/loriab/libint/releases/tag/v0.1"
@@ -132,10 +148,79 @@ def header_values(text: str, key: str) -> list[str]:
     return out
 
 
+def elf_section_names(fh) -> list[str] | None:
+    """Section names of a little-endian ELF64 file object, or None if it is not one.
+
+    Reads only the ELF header, the section header table and ``.shstrtab``, so
+    it works on a seekable zip member without extracting the extension.
+    """
+    head = fh.read(64)
+    if len(head) < 64 or head[:4] != b"\x7fELF" or head[4] != 2 or head[5] != 1:
+        return None
+    (shoff,) = struct.unpack_from("<Q", head, 0x28)
+    shentsize, shnum, shstrndx = struct.unpack_from("<HHH", head, 0x3A)
+    if shoff == 0 or shnum == 0:
+        return []
+    fh.seek(shoff)
+    table = fh.read(shentsize * shnum)
+    if len(table) != shentsize * shnum:
+        return None
+    # Elf64_Shdr: name u32 @0, type u32 @4, flags u64 @8, addr u64 @16,
+    # offset u64 @24, size u64 @32.
+    entries = [
+        struct.unpack_from("<IIQQQQ", table, i * shentsize) for i in range(shnum)
+    ]
+    _, _, _, _, stroff, strsize = entries[shstrndx]
+    fh.seek(stroff)
+    strtab = fh.read(strsize)
+    return [
+        strtab[e[0] : strtab.index(b"\0", e[0])].decode("ascii", "replace")
+        for e in entries
+    ]
+
+
+def check_extension_stripped(rep: Report, path: Path) -> None:
+    """A Linux wheel's extension module must not carry ``.symtab``.
+
+    The symbol table is 13 MB of the unpacked extension (about 3 MB of the zipped
+    wheel) and nothing at run time reads it; the PyPI wheel sits close to the
+    100 MiB limit.
+    """
+    try:
+        with zipfile.ZipFile(path) as zf:
+            members = [
+                n
+                for n in zf.namelist()
+                if re.fullmatch(rf"{NAME}/{NAME}\.[^/]*\.so", n)
+            ]
+            if len(members) != 1:
+                rep.error(
+                    f"{path.name}: expected one {NAME}/{NAME}.*.so extension, "
+                    f"found {members}"
+                )
+                return
+            with zf.open(members[0]) as fh:
+                names = elf_section_names(fh)
+    except zipfile.BadZipFile:
+        return  # already reported by check_wheel
+    if names is None:
+        rep.error(f"{path.name}: {members[0]} is not an ELF64 little-endian file")
+    elif ".symtab" in names:
+        rep.error(
+            f"{path.name}: {members[0]} still has a .symtab section; "
+            "build the wheel with `maturin build --strip`"
+        )
+
+
 def check_wheel(
-    rep: Report, path: Path, version: str, variant: str, build_tag: str
+    rep: Report,
+    path: Path,
+    version: str,
+    variant: str,
+    build_tag: str,
+    platform: str = PLATFORM,
 ) -> str | None:
-    """Check one wheel; return its CPython tag when the name parses."""
+    """Check one wheel; return its ``py-abi`` tag pair when the name parses."""
     fields = parse_wheel_name(path.name)
     if fields is None:
         rep.error(f"{path.name}: not a wheel file name")
@@ -144,13 +229,13 @@ def check_wheel(
         rep.error(f"{path.name}: distribution {fields['dist']!r} is not {NAME!r}")
     if fields["version"] != version:
         rep.error(f"{path.name}: version {fields['version']!r} is not {version!r}")
-    if fields["py"] not in PYTHON_TAGS or fields["abi"] != fields["py"]:
+    if (fields["py"], fields["abi"]) not in WHEEL_TAGS:
         rep.error(
             f"{path.name}: unexpected python/abi tags {fields['py']}-{fields['abi']}"
         )
-    if PLATFORM not in fields["plat"].split("."):
+    if platform not in fields["plat"].split("."):
         rep.error(
-            f"{path.name}: platform {fields['plat']!r} does not include {PLATFORM}"
+            f"{path.name}: platform {fields['plat']!r} does not include {platform}"
         )
     want_build = build_tag if variant == "largeam" else ""
     if fields["build"] != want_build:
@@ -166,7 +251,7 @@ def check_wheel(
             wheel = dist_info_file(zf, version, "WHEEL")
     except zipfile.BadZipFile as exc:
         rep.error(f"{path.name}: not a zip archive ({exc})")
-        return fields["py"]
+        return f"{fields['py']}-{fields['abi']}"
 
     if metadata is None:
         rep.error(f"{path.name}: no {NAME}-{version}.dist-info/METADATA")
@@ -200,20 +285,42 @@ def check_wheel(
             f"{path.name}: bundles {libint}; the PyPI wheel links the small "
             "libint2 statically"
         )
+    if variant == "pypi" and platform != PLATFORM:
+        # delocate puts libraries in ferric/.dylibs/, delvewheel in
+        # ferric.libs/ with a hash suffix.
+        shared = [
+            n
+            for n in names
+            if re.fullmatch(
+                r"(lib)?int2[^/]*\.(so|dylib|dll)[^/]*", n.rsplit("/", 1)[-1]
+            )
+        ]
+        if shared:
+            rep.error(
+                f"{path.name}: bundles {shared}; the PyPI wheel links the small "
+                "libint2 statically"
+            )
+
+    if variant == "pypi" and platform == PLATFORM:
+        check_extension_stripped(rep, path)
 
     rep.size(path, variant, GITHUB_ASSET_LIMIT if variant == "largeam" else PYPI_LIMIT)
-    return fields["py"]
+    return f"{fields['py']}-{fields['abi']}"
 
 
 def check_wheel_set(
-    rep: Report, wheels: list[Path], version: str, variant: str, build_tag: str
+    rep: Report,
+    wheels: list[Path],
+    version: str,
+    variant: str,
+    build_tag: str,
+    platform: str = PLATFORM,
 ) -> None:
-    tags = [check_wheel(rep, w, version, variant, build_tag) for w in wheels]
-    if sorted(t for t in tags if t) != sorted(PYTHON_TAGS) or len(wheels) != len(
-        PYTHON_TAGS
-    ):
+    tags = [check_wheel(rep, w, version, variant, build_tag, platform) for w in wheels]
+    want = sorted(f"{py}-{abi}" for py, abi in WHEEL_TAGS)
+    if sorted(t for t in tags if t) != want or len(wheels) != len(WHEEL_TAGS):
         rep.error(
-            f"{variant} set: expected one wheel each for {', '.join(PYTHON_TAGS)}; "
+            f"{variant} {platform} set: expected one wheel each for {', '.join(want)}; "
             f"found {sorted(w.name for w in wheels)}"
         )
 
@@ -343,7 +450,20 @@ def cmd_check(args: argparse.Namespace) -> int:
         license_files = check_licenses(rep, Path(args.licenses_dir))
     elif args.largeam_dir:
         rep.error("--largeam-dir needs --licenses-dir: the wheel bundles LGPL libint2")
-    for p in pypi_files + large_files:
+    platform_files: list[Path] = []
+    platform_sets: list[tuple[str, list[Path]]] = []
+    for spec in args.platform_dir or []:
+        plat, sep, d = spec.partition("=")
+        if not sep or not plat or not d:
+            rep.error(f"--platform-dir {spec!r} is not PLATFORM=DIR")
+            continue
+        if plat == PLATFORM:
+            rep.error(f"--platform-dir {plat}: the Linux set is --pypi-dir")
+            continue
+        files = list_dir(rep, Path(d), (".whl",))
+        platform_sets.append((plat, files))
+        platform_files += files
+    for p in pypi_files + large_files + platform_files:
         if "mpi" in p.name.lower():
             rep.error(
                 f"{p.name}: an MPI-variant file is never released from this workflow"
@@ -357,6 +477,8 @@ def cmd_check(args: argparse.Namespace) -> int:
         args.build_tag,
     )
     check_sdist(rep, [p for p in pypi_files if p.name.endswith(".tar.gz")], version)
+    for plat, files in platform_sets:
+        check_wheel_set(rep, files, version, "pypi", args.build_tag, plat)
     if args.largeam_dir:
         if not args.build_tag:
             rep.error("--largeam-dir needs --build-tag")
@@ -364,7 +486,9 @@ def cmd_check(args: argparse.Namespace) -> int:
             check_wheel_set(rep, large_files, version, "largeam", args.build_tag)
     if args.sha256sums:
         check_sha256sums(
-            rep, Path(args.sha256sums), pypi_files + large_files + license_files
+            rep,
+            Path(args.sha256sums),
+            pypi_files + large_files + platform_files + license_files,
         )
 
     if args.summary:
@@ -387,10 +511,11 @@ def cmd_notes(args: argparse.Namespace) -> int:
 
 ## Files
 
-- **PyPI wheels and sdist** (`ferric-{v}-cp3NN-...whl`, `ferric-{v}.tar.gz`):
+- **PyPI wheels and sdist** (`ferric-{v}-cp310-abi3-...whl`, one per
+  platform for every CPython >= 3.10, and `ferric-{v}.tar.gz`):
   the same files `pip install ferric=={v}` downloads. Their libint2 is
   ferric's small 2.7.2 export, linked statically.
-- **Large-libint wheels** (`ferric-{v}-{tag}-cp3NN-...whl`): the same version
+- **Large-libint wheel** (`ferric-{v}-{tag}-cp310-abi3-...whl`): the same version
   and commit, built against conda-forge's libint2 2.13.1, which is bundled in
   the wheel as a shared library. It adds l = 7 shells, analytic 3- and
   2-centre second derivatives, multipoles above order 2 and G12 (F12)
@@ -445,6 +570,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--largeam-dir")
     p.add_argument("--build-tag", default="")
     p.add_argument("--licenses-dir", help="the libint2 licence texts")
+    p.add_argument(
+        "--platform-dir",
+        action="append",
+        metavar="PLATFORM=DIR",
+        help="a non-Linux PyPI wheel set (repeatable), e.g. win_amd64=dist/win",
+    )
     p.add_argument("--sha256sums", help="a SHA256SUMS file that must cover every file")
     p.add_argument("--summary")
     p.set_defaults(func=cmd_check)

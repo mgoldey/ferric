@@ -1,0 +1,1924 @@
+{
+  "_doc": "Derivations registry (CONTRIBUTING.md, 'Every method has a derivation and a sympy proof'). routes: every derived CLI kind, analytic optimize/frequencies arm, CLI task = \"md\" kind (md:<kind>, from MD_KINDS) and Python entry point -> method ids. methods: book sections (book/src/<page>.md#<label>) plus sympy scripts, each run by a test under crates/ferric-python/tests. gaps: methods missing a piece, with the reason. Checked by crates/ferric-python/tests/test_derivation_registry.py.",
+  "routes": {
+    "cli:att-rimp2": [
+      "attenuated-mp2",
+      "att-rimp2-gradient",
+      "u-att-rimp2-gradient",
+      "u-attenuated-mp2",
+      "terfc-rimp2-gradient",
+      "scs-2terfc-gradient",
+      "local-mp2"
+    ],
+    "cli:b2plyp": [
+      "double-hybrid",
+      "d3"
+    ],
+    "cli:bse-tda": [
+      "bse-tda"
+    ],
+    "cli:casscf": [
+      "casscf"
+    ],
+    "cli:ccd": [
+      "ccd"
+    ],
+    "cli:ccsd": [
+      "ccsd",
+      "u-ccsd"
+    ],
+    "cli:ccsd(t)": [
+      "ccsd-t",
+      "u-ccsd-t"
+    ],
+    "cli:drpa": [
+      "drpa",
+      "drpa-local"
+    ],
+    "cli:dsd-pbep86": [
+      "double-hybrid",
+      "d3"
+    ],
+    "cli:eom-ccsd": [
+      "eom-ccsd"
+    ],
+    "cli:gw": [
+      "gw",
+      "u-gw"
+    ],
+    "cli:ksdft": [
+      "ks-semilocal",
+      "ks-mgga",
+      "ks-hybrid-rsh",
+      "ks-vv10",
+      "ks-grid",
+      "d3",
+      "mbd",
+      "pcm",
+      "cosmo"
+    ],
+    "cli:laplace-mp2": [
+      "laplace-mp2",
+      "omega-ri",
+      "omega-ri-cdd-mp2"
+    ],
+    "cli:laplace-sos-mp2": [
+      "laplace-sos-mp2",
+      "laplace-sos-mp2-local",
+      "omega-ri",
+      "omega-ri-cdd-mp2"
+    ],
+    "cli:linlccd": [
+      "linlccd"
+    ],
+    "cli:mp2-v": [
+      "mp2-v"
+    ],
+    "cli:mp3": [
+      "mp3"
+    ],
+    "cli:nevpt2": [
+      "nevpt2"
+    ],
+    "cli:oo-rimp2": [
+      "oo-rimp2",
+      "u-oo-rimp2"
+    ],
+    "cli:pdep-rpa": [
+      "pdep-rpa",
+      "u-pdep-rpa",
+      "pcm",
+      "rpa-polarizability-c6",
+      "atomic-charges",
+      "omega-ri"
+    ],
+    "cli:rhf": [
+      "rhf",
+      "pcm",
+      "cosmo"
+    ],
+    "cli:rimp2": [
+      "ri-mp2",
+      "kappa-mp2",
+      "u-ri-mp2",
+      "local-mp2",
+      "omega-ri"
+    ],
+    "cli:rohf": [
+      "rohf",
+      "pcm",
+      "cosmo"
+    ],
+    "cli:rs-mp2-rpa": [
+      "rs-mp2-rpa",
+      "u-rs-mp2-rpa"
+    ],
+    "cli:scs-mp2": [
+      "scs-mp2",
+      "u-attenuated-mp2"
+    ],
+    "cli:scs-mp2-2terfc": [
+      "scs-mp2-2terfc",
+      "u-attenuated-mp2",
+      "scs-2terfc-gradient"
+    ],
+    "cli:tda": [
+      "tddft"
+    ],
+    "cli:tddft": [
+      "tddft"
+    ],
+    "cli:tdhf-static-polarizability": [
+      "tdhf-static-polarizability"
+    ],
+    "cli:uhf": [
+      "uhf",
+      "pcm",
+      "cosmo"
+    ],
+    "cli:wb97x-l-v": [
+      "double-hybrid"
+    ],
+    "frequencies:ksdft": [
+      "ks-hessian",
+      "d3-hessian",
+      "harmonic-frequencies",
+      "rrho-thermo",
+      "ir-intensities",
+      "cosx-gradient",
+      "vv10-gradient"
+    ],
+    "frequencies:rhf": [
+      "hf-hessian",
+      "harmonic-frequencies",
+      "rrho-thermo",
+      "ir-intensities",
+      "cosx-gradient"
+    ],
+    "frequencies:rohf": [
+      "hf-hessian",
+      "harmonic-frequencies",
+      "rrho-thermo",
+      "ir-intensities",
+      "cosx-gradient"
+    ],
+    "frequencies:uhf": [
+      "hf-hessian",
+      "harmonic-frequencies",
+      "rrho-thermo",
+      "ir-intensities",
+      "cosx-gradient"
+    ],
+    "md:rhf": [
+      "hf-gradient",
+      "molecular-dynamics"
+    ],
+    "md:uhf": [
+      "hf-gradient",
+      "molecular-dynamics"
+    ],
+    "md:rohf": [
+      "hf-gradient",
+      "molecular-dynamics"
+    ],
+    "md:ksdft": [
+      "ks-gradient",
+      "d3",
+      "ks-zvector",
+      "mbd",
+      "molecular-dynamics"
+    ],
+    "optimize:att-rimp2": [
+      "att-rimp2-gradient",
+      "u-att-rimp2-gradient",
+      "geometry-search",
+      "terfc-rimp2-gradient"
+    ],
+    "optimize:ksdft": [
+      "ks-gradient",
+      "d3",
+      "geometry-search",
+      "ks-zvector",
+      "mbd",
+      "cosx-gradient",
+      "vv10-gradient",
+      "pcm-gradient"
+    ],
+    "optimize:oo-rimp2": [
+      "oo-rimp2-gradient",
+      "geometry-search"
+    ],
+    "optimize:pdep-rpa": [
+      "rpa-gradient",
+      "geometry-search"
+    ],
+    "optimize:rhf": [
+      "hf-gradient",
+      "geometry-search",
+      "cosx-gradient",
+      "pcm-gradient"
+    ],
+    "optimize:rimp2": [
+      "ri-mp2-gradient",
+      "u-ri-mp2-gradient",
+      "geometry-search"
+    ],
+    "optimize:rohf": [
+      "hf-gradient",
+      "geometry-search",
+      "cosx-gradient",
+      "pcm-gradient"
+    ],
+    "optimize:scs-mp2": [
+      "scs-mp2-gradient",
+      "geometry-search"
+    ],
+    "optimize:scs-mp2-2terfc": [
+      "scs-2terfc-gradient",
+      "geometry-search"
+    ],
+    "optimize:uhf": [
+      "hf-gradient",
+      "geometry-search",
+      "cosx-gradient",
+      "pcm-gradient"
+    ],
+    "py:hirshfeld_polarizability": [
+      "rpa-polarizability-c6",
+      "atomic-charges"
+    ],
+    "py:run_attenuated_rimp2": [
+      "attenuated-mp2",
+      "u-attenuated-mp2"
+    ],
+    "py:run_bse_tda": [
+      "bse-tda"
+    ],
+    "py:run_casci": [
+      "casci"
+    ],
+    "py:run_casscf": [
+      "casscf"
+    ],
+    "py:run_ccd": [
+      "ccd"
+    ],
+    "py:run_ccsd": [
+      "ccsd",
+      "u-ccsd"
+    ],
+    "py:run_ccsd_t": [
+      "ccsd-t",
+      "u-ccsd-t"
+    ],
+    "py:run_cdft": [
+      "cdft"
+    ],
+    "py:cdft_coupling": [
+      "cdft"
+    ],
+    "py:run_dft": [
+      "ks-semilocal",
+      "ks-mgga",
+      "ks-hybrid-rsh",
+      "ks-vv10",
+      "ks-grid",
+      "d3",
+      "ks-zvector",
+      "mbd",
+      "fock-hook-gradient",
+      "cosx-gradient",
+      "vv10-gradient"
+    ],
+    "py:tune_omega": [
+      "ks-hybrid-rsh",
+      "ks-omega-tuning"
+    ],
+    "py:run_double_hybrid": [
+      "double-hybrid",
+      "d3"
+    ],
+    "py:run_drpa": [
+      "drpa",
+      "drpa-local"
+    ],
+    "py:run_drpa_gamma": [
+      "pbc-drpa"
+    ],
+    "py:run_drpa_kpts": [
+      "pbc-drpa"
+    ],
+    "py:run_drpa_scan": [
+      "drpa",
+      "drpa-local"
+    ],
+    "py:run_eom_ccsd": [
+      "eom-ccsd"
+    ],
+    "py:run_frequencies": [
+      "hf-hessian",
+      "ks-hessian",
+      "d3-hessian",
+      "harmonic-frequencies",
+      "rrho-thermo",
+      "ir-intensities",
+      "mbd",
+      "terfc-rimp2-gradient",
+      "scs-2terfc-gradient",
+      "vv10-gradient"
+    ],
+    "py:run_gw": [
+      "gw"
+    ],
+    "py:run_irc": [
+      "hf-gradient",
+      "ks-gradient",
+      "geometry-search",
+      "vv10-gradient"
+    ],
+    "py:run_ksdft": [
+      "ks-semilocal",
+      "ks-mgga",
+      "ks-hybrid-rsh",
+      "ks-vv10",
+      "ks-grid",
+      "vv10-gradient"
+    ],
+    "py:run_laplace_mp2": [
+      "laplace-mp2"
+    ],
+    "py:run_laplace_sos_mp2": [
+      "laplace-sos-mp2",
+      "laplace-sos-mp2-local"
+    ],
+    "py:run_linlccd": [
+      "linlccd"
+    ],
+    "py:run_mp2_gamma": [
+      "pbc-mp2"
+    ],
+    "py:run_mp2_kpts": [
+      "pbc-mp2"
+    ],
+    "py:run_mp2_v": [
+      "mp2-v"
+    ],
+    "py:run_mp2_v_scan": [
+      "mp2-v"
+    ],
+    "py:run_mp3": [
+      "mp3"
+    ],
+    "py:run_nevpt2": [
+      "nevpt2"
+    ],
+    "py:run_oo_rimp2": [
+      "oo-rimp2",
+      "oo-rimp2-gradient"
+    ],
+    "py:run_optimize": [
+      "att-rimp2-gradient",
+      "u-att-rimp2-gradient",
+      "hf-gradient",
+      "ks-gradient",
+      "ri-mp2-gradient",
+      "oo-rimp2-gradient",
+      "scs-mp2-gradient",
+      "u-ri-mp2-gradient",
+      "geometry-search",
+      "mbd",
+      "terfc-rimp2-gradient",
+      "scs-2terfc-gradient",
+      "fock-hook-gradient",
+      "vv10-gradient",
+      "pcm-gradient"
+    ],
+    "py:run_optimize_qmmm": [
+      "qmmm",
+      "geometry-search",
+      "mm"
+    ],
+    "py:run_optimize_uhf": [
+      "hf-gradient",
+      "geometry-search",
+      "pcm-gradient"
+    ],
+    "py:run_pdep_rpa": [
+      "pdep-rpa",
+      "rpa-gradient",
+      "pcm",
+      "rpa-polarizability-c6",
+      "atomic-charges"
+    ],
+    "py:run_qmmm": [
+      "qmmm",
+      "mm"
+    ],
+    "py:run_rhf": [
+      "rhf",
+      "fock-hook-gradient",
+      "cosx-gradient",
+      "pcm"
+    ],
+    "py:run_rhf_gamma": [
+      "pbc-hf",
+      "pbc-ecp",
+      "pbc-rsgdf-options"
+    ],
+    "py:run_rhf_kpts": [
+      "pbc-hf",
+      "pbc-ecp",
+      "pbc-rsgdf-options"
+    ],
+    "py:run_rimp2": [
+      "ri-mp2",
+      "kappa-mp2",
+      "u-ri-mp2",
+      "ri-mp2-gradient",
+      "local-mp2"
+    ],
+    "py:run_rks_gamma": [
+      "pbc-ks",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-rsh",
+      "pbc-mgga"
+    ],
+    "py:run_rks_kpts": [
+      "pbc-ks",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-rsh",
+      "pbc-mgga"
+    ],
+    "py:run_rohf": [
+      "rohf",
+      "fock-hook-gradient",
+      "cosx-gradient"
+    ],
+    "py:run_rohf_gamma": [
+      "pbc-hf",
+      "pbc-ecp",
+      "pbc-rsgdf-options"
+    ],
+    "py:run_rohf_kpts": [
+      "pbc-hf",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-kro-fock"
+    ],
+    "py:run_roks": [
+      "ks-semilocal",
+      "ks-mgga",
+      "ks-hybrid-rsh",
+      "ks-grid",
+      "vv10-gradient"
+    ],
+    "py:run_roks_gamma": [
+      "pbc-ks",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-rsh",
+      "pbc-mgga"
+    ],
+    "py:run_roks_kpts": [
+      "pbc-ks",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-rsh",
+      "pbc-mgga",
+      "pbc-kro-fock"
+    ],
+    "py:run_rs_mp2_rpa": [
+      "rs-mp2-rpa",
+      "u-rs-mp2-rpa"
+    ],
+    "py:run_saddle": [
+      "hf-gradient",
+      "ks-gradient",
+      "geometry-search",
+      "vv10-gradient"
+    ],
+    "py:run_scs_mp2": [
+      "scs-mp2",
+      "u-attenuated-mp2"
+    ],
+    "py:run_scs_mp2_2terfc": [
+      "scs-mp2-2terfc",
+      "u-attenuated-mp2"
+    ],
+    "py:run_tddft": [
+      "tddft"
+    ],
+    "py:run_tdhf_static_polarizability": [
+      "tdhf-static-polarizability"
+    ],
+    "py:run_terfc_rimp2": [
+      "attenuated-mp2",
+      "u-attenuated-mp2"
+    ],
+    "py:run_u_gw": [
+      "u-gw"
+    ],
+    "py:run_uhf": [
+      "uhf",
+      "fock-hook-gradient",
+      "cosx-gradient"
+    ],
+    "py:run_uhf_gamma": [
+      "pbc-hf",
+      "pbc-ecp",
+      "pbc-rsgdf-options"
+    ],
+    "py:run_uhf_kpts": [
+      "pbc-hf",
+      "pbc-ecp",
+      "pbc-rsgdf-options"
+    ],
+    "py:run_uks": [
+      "ks-semilocal",
+      "ks-mgga",
+      "ks-hybrid-rsh",
+      "ks-grid",
+      "vv10-gradient"
+    ],
+    "py:run_uks_gamma": [
+      "pbc-ks",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-rsh",
+      "pbc-mgga"
+    ],
+    "py:run_uks_kpts": [
+      "pbc-ks",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-rsh",
+      "pbc-mgga"
+    ],
+    "py:run_vv10_variants": [
+      "ks-vv10"
+    ],
+    "py:run_xtb_energy_gradient": [
+      "xtb"
+    ],
+    "py:run_xtb_frequencies": [
+      "xtb"
+    ],
+    "py:run_xtb_optimize": [
+      "xtb",
+      "geometry-search"
+    ],
+    "cli:opmp3": [
+      "opmp3",
+      "local-opmp3"
+    ],
+    "py:run_opmp3": [
+      "opmp3",
+      "local-opmp3"
+    ],
+    "py:run_aimd": [
+      "hf-gradient",
+      "ks-gradient",
+      "molecular-dynamics",
+      "vv10-gradient"
+    ],
+    "py:run_ffmd": [
+      "mm",
+      "molecular-dynamics"
+    ],
+    "cell-optimize:rhf": [
+      "pbc-gradient",
+      "pbc-ecp",
+      "pbc-rsgdf-options"
+    ],
+    "cell-optimize:rks": [
+      "pbc-gradient",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-ks",
+      "pbc-rsh",
+      "pbc-mgga"
+    ],
+    "cell-optimize:rohf": [
+      "pbc-gradient",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-kro-fock"
+    ],
+    "cell-optimize:roks": [
+      "pbc-gradient",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-ks",
+      "pbc-rsh",
+      "pbc-mgga",
+      "pbc-kro-fock"
+    ],
+    "cell-optimize:uhf": [
+      "pbc-gradient",
+      "pbc-ecp",
+      "pbc-rsgdf-options"
+    ],
+    "cell-optimize:uks": [
+      "pbc-gradient",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-ks",
+      "pbc-rsh",
+      "pbc-mgga"
+    ],
+    "cell-stress:rhf": [
+      "pbc-ewald-pairft-stress",
+      "pbc-stress",
+      "pbc-stress-xc-ecp-rsgdf",
+      "pbc-ecp",
+      "pbc-rsgdf-options"
+    ],
+    "cell-stress:rks": [
+      "pbc-ewald-pairft-stress",
+      "pbc-stress",
+      "pbc-stress-xc-ecp-rsgdf",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-ks",
+      "pbc-rsh",
+      "pbc-mgga"
+    ],
+    "cell-stress:rohf": [
+      "pbc-ewald-pairft-stress",
+      "pbc-stress",
+      "pbc-stress-xc-ecp-rsgdf",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-kro-fock"
+    ],
+    "cell-stress:roks": [
+      "pbc-ewald-pairft-stress",
+      "pbc-stress",
+      "pbc-stress-xc-ecp-rsgdf",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-ks",
+      "pbc-rsh",
+      "pbc-mgga",
+      "pbc-kro-fock"
+    ],
+    "cell-stress:uhf": [
+      "pbc-ewald-pairft-stress",
+      "pbc-stress",
+      "pbc-stress-xc-ecp-rsgdf",
+      "pbc-ecp",
+      "pbc-rsgdf-options"
+    ],
+    "cell-stress:uks": [
+      "pbc-ewald-pairft-stress",
+      "pbc-stress",
+      "pbc-stress-xc-ecp-rsgdf",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-ks",
+      "pbc-rsh",
+      "pbc-mgga"
+    ],
+    "cell:drpa": [
+      "pbc-drpa"
+    ],
+    "cell:mp2": [
+      "pbc-mp2"
+    ],
+    "cell:rhf": [
+      "pbc-hf",
+      "pbc-ecp",
+      "pbc-rsgdf-options"
+    ],
+    "cell:rks": [
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-ks",
+      "pbc-rsh",
+      "pbc-mgga"
+    ],
+    "cell:rohf": [
+      "pbc-hf",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-kro-fock"
+    ],
+    "cell:roks": [
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-ks",
+      "pbc-rsh",
+      "pbc-mgga",
+      "pbc-kro-fock"
+    ],
+    "cell:uhf": [
+      "pbc-hf",
+      "pbc-ecp",
+      "pbc-rsgdf-options"
+    ],
+    "cell:uks": [
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-ks",
+      "pbc-rsh",
+      "pbc-mgga"
+    ],
+    "py-gradient:run_rhf_gamma": [
+      "pbc-gradient",
+      "pbc-ecp",
+      "pbc-rsgdf-options"
+    ],
+    "py-gradient:run_rhf_kpts": [
+      "pbc-gradient",
+      "pbc-ecp",
+      "pbc-rsgdf-options"
+    ],
+    "py-gradient:run_rks_gamma": [
+      "pbc-gradient",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-ks",
+      "pbc-rsh",
+      "pbc-mgga"
+    ],
+    "py-gradient:run_rks_kpts": [
+      "pbc-gradient",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-ks",
+      "pbc-rsh",
+      "pbc-mgga"
+    ],
+    "py-gradient:run_rohf_gamma": [
+      "pbc-gradient",
+      "pbc-ecp",
+      "pbc-rsgdf-options"
+    ],
+    "py-gradient:run_rohf_kpts": [
+      "pbc-gradient",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-kro-fock"
+    ],
+    "py-gradient:run_roks_gamma": [
+      "pbc-gradient",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-ks",
+      "pbc-rsh",
+      "pbc-mgga"
+    ],
+    "py-gradient:run_roks_kpts": [
+      "pbc-gradient",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-ks",
+      "pbc-rsh",
+      "pbc-mgga",
+      "pbc-kro-fock"
+    ],
+    "py-gradient:run_uhf_gamma": [
+      "pbc-gradient",
+      "pbc-ecp",
+      "pbc-rsgdf-options"
+    ],
+    "py-gradient:run_uhf_kpts": [
+      "pbc-gradient",
+      "pbc-ecp",
+      "pbc-rsgdf-options"
+    ],
+    "py-gradient:run_uks_gamma": [
+      "pbc-gradient",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-ks",
+      "pbc-rsh",
+      "pbc-mgga"
+    ],
+    "py-gradient:run_uks_kpts": [
+      "pbc-gradient",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-ks",
+      "pbc-rsh",
+      "pbc-mgga"
+    ],
+    "py-stress:run_rhf_gamma": [
+      "pbc-ewald-pairft-stress",
+      "pbc-stress",
+      "pbc-stress-xc-ecp-rsgdf",
+      "pbc-ecp",
+      "pbc-rsgdf-options"
+    ],
+    "py-stress:run_rhf_kpts": [
+      "pbc-ewald-pairft-stress",
+      "pbc-stress",
+      "pbc-stress-xc-ecp-rsgdf",
+      "pbc-ecp",
+      "pbc-rsgdf-options"
+    ],
+    "py-stress:run_rks_gamma": [
+      "pbc-ewald-pairft-stress",
+      "pbc-stress",
+      "pbc-stress-xc-ecp-rsgdf",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-ks",
+      "pbc-rsh",
+      "pbc-mgga"
+    ],
+    "py-stress:run_rks_kpts": [
+      "pbc-ewald-pairft-stress",
+      "pbc-stress",
+      "pbc-stress-xc-ecp-rsgdf",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-ks",
+      "pbc-rsh",
+      "pbc-mgga"
+    ],
+    "py-stress:run_rohf_gamma": [
+      "pbc-ewald-pairft-stress",
+      "pbc-stress",
+      "pbc-stress-xc-ecp-rsgdf",
+      "pbc-ecp",
+      "pbc-rsgdf-options"
+    ],
+    "py-stress:run_rohf_kpts": [
+      "pbc-ewald-pairft-stress",
+      "pbc-stress",
+      "pbc-stress-xc-ecp-rsgdf",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-kro-fock"
+    ],
+    "py-stress:run_roks_gamma": [
+      "pbc-ewald-pairft-stress",
+      "pbc-stress",
+      "pbc-stress-xc-ecp-rsgdf",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-ks",
+      "pbc-rsh",
+      "pbc-mgga"
+    ],
+    "py-stress:run_roks_kpts": [
+      "pbc-ewald-pairft-stress",
+      "pbc-stress",
+      "pbc-stress-xc-ecp-rsgdf",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-ks",
+      "pbc-rsh",
+      "pbc-mgga",
+      "pbc-kro-fock"
+    ],
+    "py-stress:run_uhf_gamma": [
+      "pbc-ewald-pairft-stress",
+      "pbc-stress",
+      "pbc-stress-xc-ecp-rsgdf",
+      "pbc-ecp",
+      "pbc-rsgdf-options"
+    ],
+    "py-stress:run_uhf_kpts": [
+      "pbc-ewald-pairft-stress",
+      "pbc-stress",
+      "pbc-stress-xc-ecp-rsgdf",
+      "pbc-ecp",
+      "pbc-rsgdf-options"
+    ],
+    "py-stress:run_uks_gamma": [
+      "pbc-ewald-pairft-stress",
+      "pbc-stress",
+      "pbc-stress-xc-ecp-rsgdf",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-ks",
+      "pbc-rsh",
+      "pbc-mgga"
+    ],
+    "py-stress:run_uks_kpts": [
+      "pbc-ewald-pairft-stress",
+      "pbc-stress",
+      "pbc-stress-xc-ecp-rsgdf",
+      "pbc-ecp",
+      "pbc-rsgdf-options",
+      "pbc-ks",
+      "pbc-rsh",
+      "pbc-mgga"
+    ],
+    "py:d3bj_energy": [
+      "d3"
+    ],
+    "py:mbd_rsscs_energy": [
+      "mbd"
+    ],
+    "py:run_omega_ri": [
+      "omega-ri",
+      "omega-ri-cdd-mp2"
+    ]
+  },
+  "methods": {
+    "att-rimp2-gradient": {
+      "book": [
+        "book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-attenuated-erfc-ri-mp2"
+      ],
+      "scripts": [
+        "scripts/att_rimp2_gradient_sympy.py"
+      ]
+    },
+    "terfc-rimp2-gradient": {
+      "book": [
+        "book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-terfc",
+        "book/src/04-operators/02-terf-table-engine.md#terf-table-engine-derivative-integrals",
+        "book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-terfc-scs-mp2-2terfc"
+      ],
+      "scripts": [
+        "scripts/terfc_rimp2_gradient_sympy.py"
+      ]
+    },
+    "attenuated-mp2": {
+      "book": [
+        "book/src/10-mp2/04-attenuated-mp2.md#attenuated-mp2-energy",
+        "book/src/10-mp2/07-range-split-cross-term.md#range-split-cross-term-identity"
+      ],
+      "scripts": [
+        "scripts/mp2_variant_identities.py",
+        "scripts/mp2_family_sympy.py"
+      ]
+    },
+    "casci": {
+      "book": [
+        "book/src/17-multireference/02-slater-condon.md#slater-condon-rules",
+        "book/src/17-multireference/03-direct-sigma-davidson.md#direct-sigma-davidson-split",
+        "book/src/17-multireference/04-rdms.md#rdms-1-2-rdm"
+      ],
+      "scripts": [
+        "scripts/casci_slater_condon_phases_sympy.py",
+        "scripts/ci_rdm_casscf_gradient_sympy.py"
+      ]
+    },
+    "ccsd-t": {
+      "book": [
+        "book/src/16-coupled-cluster/03-triples.md#triples-closed-shell-t"
+      ],
+      "scripts": [
+        "scripts/cc_triples_weights_and_linlccd_spin_adaptation_sympy.py"
+      ]
+    },
+    "u-ccsd": {
+      "book": [
+        "book/src/16-coupled-cluster/08-uccsd.md#uccsd-equations"
+      ],
+      "scripts": [
+        "scripts/cc_uccsd_spin_blocks_sympy.py"
+      ]
+    },
+    "u-ccsd-t": {
+      "book": [
+        "book/src/16-coupled-cluster/08-uccsd.md#uccsd-equations"
+      ],
+      "scripts": [
+        "scripts/cc_uccsd_spin_blocks_sympy.py"
+      ]
+    },
+    "cdft": {
+      "book": [
+        "book/src/09-kohn-sham/06-cdft.md#cdft-equations"
+      ],
+      "scripts": [
+        "scripts/cdft_constraint_coupling_sympy.py"
+      ]
+    },
+    "d3": {
+      "book": [
+        "book/src/25-dispersion/01-d3bj.md#d3bj-bj-energy",
+        "book/src/25-dispersion/01-d3bj.md#d3bj-gradient",
+        "book/src/25-dispersion/01-d3bj.md#d3bj-three-body-term"
+      ],
+      "scripts": [
+        "scripts/d3_cn_chain_rule_gradient_sympy.py",
+        "scripts/d3_atm_gradient_sympy.py"
+      ]
+    },
+    "d3-hessian": {
+      "book": [
+        "book/src/25-dispersion/01-d3bj.md#d3bj-hessian"
+      ],
+      "scripts": [
+        "scripts/d3_hessian_sympy.py"
+      ]
+    },
+    "drpa": {
+      "book": [
+        "book/src/18-rpa/01-drpa-three-ways.md#drpa-three-ways-plasmon-formula",
+        "book/src/18-rpa/02-quadratures.md#quadratures-rule"
+      ],
+      "scripts": [
+        "scripts/rpa_drpa_pdep_sympy.py",
+        "scripts/rpa_quadrature_sympy.py"
+      ]
+    },
+    "gw": {
+      "book": [
+        "book/src/20-gw-bse/03-correlation-self-energy.md#correlation-self-energy-frequency-integral",
+        "book/src/18-rpa/02-quadratures.md#quadratures-rule",
+        "book/src/20-gw-bse/01-ri-factors-and-exchange.md#continuation-and-qp-equation-hybrid-references",
+        "book/src/20-gw-bse/02-screened-interaction.md#screened-interaction-dielectric-matrix-single-pole",
+        "book/src/20-gw-bse/04-cohsex.md#cohsex-static-limit",
+        "book/src/20-gw-bse/05-continuation-and-qp-equation.md#continuation-and-qp-equation-quasiparticle-equation",
+        "book/src/20-gw-bse/06-eigenvalue-self-consistency.md#eigenvalue-self-consistency-update"
+      ],
+      "scripts": [
+        "scripts/gw_self_energy_sympy.py",
+        "scripts/rpa_quadrature_sympy.py",
+        "scripts/gw_hybrid_vmf_sympy.py",
+        "scripts/gw_evgw_sympy.py"
+      ]
+    },
+    "harmonic-frequencies": {
+      "book": [
+        "book/src/14-derivatives/06-frequencies.md#frequencies-hessian-wavenumbers"
+      ],
+      "scripts": [
+        "scripts/hf_frequencies_sympy.py"
+      ]
+    },
+    "hf-gradient": {
+      "book": [
+        "book/src/14-derivatives/01-hf-gradient.md#hf-gradient-gradient",
+        "book/src/14-derivatives/02-df-jk-gradient.md#df-jk-gradient-energies-differentiated"
+      ],
+      "scripts": [
+        "scripts/hf_gradient_sympy.py",
+        "scripts/df_jk_gradient_sympy.py"
+      ]
+    },
+    "hf-hessian": {
+      "book": [
+        "book/src/14-derivatives/04-hf-hessian.md#hf-hessian-equations",
+        "book/src/14-derivatives/04-hf-hessian.md#hf-hessian-factored-ri-k",
+        "book/src/14-derivatives/04-hf-hessian.md#hf-hessian-one-electron-operators",
+        "book/src/14-derivatives/04-hf-hessian.md#hf-hessian-fitted-jk"
+      ],
+      "scripts": [
+        "scripts/hf_hessian_sympy.py",
+        "scripts/hessian_factored_k_sympy.py",
+        "scripts/hessian_one_electron_ops_sympy.py",
+        "scripts/df_jk_hessian_sympy.py"
+      ]
+    },
+    "ks-gradient": {
+      "book": [
+        "book/src/14-derivatives/03-xc-gradient.md#xc-gradient-terms",
+        "book/src/09-kohn-sham/02-grids.md#grids-becke-partition",
+        "book/src/14-derivatives/01-hf-gradient.md#hf-gradient-gradient"
+      ],
+      "scripts": [
+        "scripts/dft_mgga_tau_gradient_sympy.py",
+        "scripts/dft_becke_weight_grad_sympy.py",
+        "scripts/hf_gradient_sympy.py"
+      ]
+    },
+    "ks-grid": {
+      "book": [
+        "book/src/09-kohn-sham/02-grids.md#grids-becke-partition",
+        "book/src/09-kohn-sham/02-grids.md#grids-atomic-grid"
+      ],
+      "scripts": [
+        "scripts/dft_becke_weight_grad_sympy.py"
+      ]
+    },
+    "ks-hessian": {
+      "book": [
+        "book/src/14-derivatives/05-ks-hessian.md#ks-hessian-xc-terms",
+        "book/src/14-derivatives/04-hf-hessian.md#hf-hessian-equations",
+        "book/src/09-kohn-sham/07-fxc.md#fxc-linearized-potential",
+        "book/src/14-derivatives/04-hf-hessian.md#hf-hessian-factored-ri-k",
+        "book/src/14-derivatives/04-hf-hessian.md#hf-hessian-one-electron-operators",
+        "book/src/14-derivatives/04-hf-hessian.md#hf-hessian-fitted-jk"
+      ],
+      "scripts": [
+        "scripts/ks_fixed_grid_hessian_sympy.py",
+        "scripts/uks_xc_hessian_sympy.py",
+        "scripts/hf_hessian_sympy.py",
+        "scripts/dft_fxc_kernel_sympy.py",
+        "scripts/hessian_factored_k_sympy.py",
+        "scripts/hessian_one_electron_ops_sympy.py",
+        "scripts/df_jk_hessian_sympy.py"
+      ]
+    },
+    "ks-hybrid-rsh": {
+      "book": [
+        "book/src/09-kohn-sham/04-hybrids.md#hybrids-exact-exchange"
+      ],
+      "scripts": [
+        "scripts/dft_hybrid_rsh_sympy.py"
+      ]
+    },
+    "ks-mgga": {
+      "book": [
+        "book/src/09-kohn-sham/03-vxc.md#vxc-matrix-elements"
+      ],
+      "scripts": [
+        "scripts/dft_vxc_matrix_elements_sympy.py",
+        "scripts/dft_mgga_tau_gradient_sympy.py"
+      ]
+    },
+    "ks-semilocal": {
+      "book": [
+        "book/src/09-kohn-sham/03-vxc.md#vxc-matrix-elements",
+        "book/src/09-kohn-sham/01-ks-equations.md#ks-equations-energy-fock-matrix"
+      ],
+      "scripts": [
+        "scripts/dft_vxc_matrix_elements_sympy.py"
+      ]
+    },
+    "ks-vv10": {
+      "book": [
+        "book/src/09-kohn-sham/05-vv10.md#vv10-energy-potentials"
+      ],
+      "scripts": [
+        "scripts/dft_vv10_potential_sympy.py"
+      ]
+    },
+    "laplace-mp2": {
+      "book": [
+        "book/src/12-oo-laplace/03-laplace-mp2.md#laplace-mp2"
+      ],
+      "scripts": [
+        "scripts/mp2_variant_identities.py",
+        "scripts/mp2_family_sympy.py"
+      ]
+    },
+    "laplace-sos-mp2": {
+      "book": [
+        "book/src/12-oo-laplace/03-laplace-mp2.md#laplace-mp2"
+      ],
+      "scripts": [
+        "scripts/mp2_family_sympy.py",
+        "scripts/mp2_variant_identities.py"
+      ]
+    },
+    "laplace-sos-mp2-local": {
+      "book": [
+        "book/src/12-oo-laplace/04-local-laplace-sos.md#local-laplace-sos-rotated-energy",
+        "book/src/12-oo-laplace/04-local-laplace-sos.md#local-laplace-sos-truncations",
+        "book/src/12-oo-laplace/04-local-laplace-sos.md#local-laplace-sos-formulation"
+      ],
+      "scripts": [
+        "scripts/laplace_local_sympy.py"
+      ]
+    },
+    "linlccd": {
+      "book": [
+        "book/src/16-coupled-cluster/05-linlccd.md#linlccd-equations"
+      ],
+      "scripts": [
+        "scripts/cc_triples_weights_and_linlccd_spin_adaptation_sympy.py"
+      ]
+    },
+    "mbd": {
+      "book": [
+        "book/src/25-dispersion/03-mbd.md#mbd"
+      ],
+      "scripts": [
+        "scripts/mbd_coupled_dipole_sympy.py"
+      ]
+    },
+    "mm": {
+      "book": [
+        "book/src/23-embedding/04-molecular-mechanics.md#molecular-mechanics-dihedral-angle-gradient",
+        "book/src/23-embedding/04-molecular-mechanics.md#molecular-mechanics-opt-nonbonded-cutoff"
+      ],
+      "scripts": [
+        "scripts/mm_dihedral_gradient_sympy.py",
+        "scripts/mm_cutoff_sympy.py"
+      ]
+    },
+    "mp2-v": {
+      "book": [
+        "book/src/10-mp2/08-mp2-v.md#mp2-v",
+        "book/src/09-kohn-sham/05-vv10.md#vv10-energy-potentials"
+      ],
+      "scripts": [
+        "scripts/mp2_family_sympy.py",
+        "scripts/dft_vv10_potential_sympy.py"
+      ]
+    },
+    "mp3": {
+      "book": [
+        "book/src/10-mp2/09-mp3.md#mp3-energy"
+      ],
+      "scripts": [
+        "scripts/oomp2_mp3_identities_sympy.py",
+        "scripts/ump3_spin_blocks_sympy.py"
+      ]
+    },
+    "oo-rimp2": {
+      "book": [
+        "book/src/12-oo-laplace/01-oo-rimp2.md#oo-rimp2-functional"
+      ],
+      "scripts": [
+        "scripts/oomp2_mp3_identities_sympy.py"
+      ]
+    },
+    "oo-rimp2-gradient": {
+      "book": [
+        "book/src/15-correlated-gradients/03-oo-rimp2-gradient.md#oo-rimp2-gradient-zero-response-gradient"
+      ],
+      "scripts": [
+        "scripts/mp2_gradient_sympy.py"
+      ]
+    },
+    "pbc-ewald-pairft-stress": {
+      "book": [
+        "book/src/24-periodic/01-ewald.md#ewald-ewald-sum-independence",
+        "book/src/24-periodic/02-pair-ft.md#pair-ft-transform-closed-form",
+        "book/src/24-periodic/08-stress.md#stress-strain-moves"
+      ],
+      "scripts": [
+        "scripts/pbc_ewald_pairft_stress_sympy.py"
+      ]
+    },
+    "pbc-drpa": {
+      "book": [
+        "book/src/24-periodic/09-mp2-drpa.md#mp2-drpa",
+        "book/src/24-periodic/05-rsgdf.md#rsgdf-fitted-integrals"
+      ],
+      "scripts": [
+        "scripts/pbc_kpoint_corr_sympy.py",
+        "scripts/pbc_rsgdf_sympy.py",
+        "scripts/rpa_drpa_pdep_sympy.py"
+      ]
+    },
+    "pbc-hf": {
+      "book": [
+        "book/src/24-periodic/04-exchange-divergence.md#exchange-divergence-exchange-diverges",
+        "book/src/24-periodic/05-rsgdf.md#rsgdf-fitted-integrals",
+        "book/src/24-periodic/06-kpoint-scf.md#kpoint-scf",
+        "book/src/07-hartree-fock/01-energy-functionals.md#energy-functionals-functionals"
+      ],
+      "scripts": [
+        "scripts/pbc_kpoint_corr_sympy.py",
+        "scripts/pbc_rsgdf_sympy.py",
+        "scripts/pbc_ewald_pairft_stress_sympy.py",
+        "scripts/hf_energy_sympy.py"
+      ]
+    },
+    "pbc-mp2": {
+      "book": [
+        "book/src/24-periodic/09-mp2-drpa.md#mp2-drpa",
+        "book/src/24-periodic/05-rsgdf.md#rsgdf-fitted-integrals"
+      ],
+      "scripts": [
+        "scripts/pbc_kpoint_corr_sympy.py",
+        "scripts/pbc_rsgdf_sympy.py"
+      ]
+    },
+    "pcm": {
+      "book": [
+        "book/src/22-implicit-solvation/02-ief-operators.md#ief-operators-symmetrized-solve"
+      ],
+      "scripts": [
+        "scripts/pcm_ief_sympy.py"
+      ]
+    },
+    "pcm-gradient": {
+      "book": [
+        "book/src/22-implicit-solvation/04-gradient.md#gradient-derivative"
+      ],
+      "scripts": [
+        "scripts/pcm_ief_sympy.py"
+      ]
+    },
+    "pdep-rpa": {
+      "book": [
+        "book/src/18-rpa/03-pdep.md#pdep-dielectric-matrix-static-modes",
+        "book/src/18-rpa/01-drpa-three-ways.md#drpa-three-ways-plasmon-formula",
+        "book/src/18-rpa/02-quadratures.md#quadratures-rule",
+        "book/src/18-rpa/05-laplace-ao-chi0.md#laplace-ao-chi0-laplace-form-kernel"
+      ],
+      "scripts": [
+        "scripts/rpa_drpa_pdep_sympy.py",
+        "scripts/rpa_quadrature_sympy.py",
+        "scripts/rpa_laplace_chi0_sympy.py"
+      ]
+    },
+    "pvp-integrals": {
+      "book": [
+        "book/src/03-integrals/06-pvp-x2c.md#pvp-x2c-pvp-integral"
+      ],
+      "scripts": [
+        "scripts/pvp_ss_sympy.py"
+      ]
+    },
+    "x2c1e": {
+      "entry_points": [
+        "[scf] relativistic = \"x2c1e\" (every molecular RHF/UHF/ROHF/RKS/UKS/ROKS solve)",
+        "Python relativistic= on the SCF drivers",
+        "AoIntegrals.hcore_x2c"
+      ],
+      "book": [
+        "book/src/03-integrals/06-pvp-x2c.md#pvp-x2c-spin-free-x2c-1e"
+      ],
+      "scripts": [
+        "scripts/x2c_sympy.py"
+      ]
+    },
+    "rhf": {
+      "book": [
+        "book/src/07-hartree-fock/01-energy-functionals.md#energy-functionals-functionals",
+        "book/src/07-hartree-fock/02-orthogonalization-and-guesses.md#orthogonalization-and-guesses-equations",
+        "book/src/07-hartree-fock/03-direct-and-incremental.md#direct-and-incremental-equations",
+        "book/src/07-hartree-fock/04-ri-j-ri-k-split-ri-j.md#ri-j-ri-k-split-ri-j-equations",
+        "book/src/07-hartree-fock/05-link-cosx-cfmm.md#link-cosx-cfmm-link-cosx",
+        "book/src/08-convergence/01-diis.md#diis-error-vector-extrapolation",
+        "book/src/08-convergence/01-diis.md#diis-variants",
+        "book/src/08-convergence/02-level-shift-mom-smearing.md#level-shift-mom-smearing-level-shift-damps-step",
+        "book/src/08-convergence/03-second-order.md#second-order-orbital-gradient-hessian",
+        "book/src/08-convergence/04-stability.md#stability-stability-operators",
+        "book/src/08-convergence/05-exits-ladder.md#scf-exits-stopping-test"
+      ],
+      "scripts": [
+        "scripts/hf_energy_sympy.py",
+        "scripts/scf_jk_builders_sympy.py",
+        "scripts/scf_diis_sympy.py",
+        "scripts/scf_orbital_hessian_sympy.py"
+      ]
+    },
+    "ri-mp2": {
+      "book": [
+        "book/src/10-mp2/01-closed-shell-ri-mp2.md#closed-shell-ri-mp2-energy-splits"
+      ],
+      "scripts": [
+        "scripts/mp2_variant_identities.py",
+        "scripts/mp2_family_sympy.py"
+      ]
+    },
+    "ri-mp2-gradient": {
+      "book": [
+        "book/src/15-correlated-gradients/01-lagrangian-zvector.md#lagrangian-zvector-z-vector-equation-ferric",
+        "book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-fitted-ri-jk-reference"
+      ],
+      "scripts": [
+        "scripts/mp2_gradient_sympy.py",
+        "scripts/mp2_variant_identities.py"
+      ]
+    },
+    "rohf": {
+      "book": [
+        "book/src/07-hartree-fock/01-energy-functionals.md#energy-functionals-functionals",
+        "book/src/07-hartree-fock/02-orthogonalization-and-guesses.md#orthogonalization-and-guesses-equations",
+        "book/src/07-hartree-fock/03-direct-and-incremental.md#direct-and-incremental-equations",
+        "book/src/07-hartree-fock/04-ri-j-ri-k-split-ri-j.md#ri-j-ri-k-split-ri-j-equations",
+        "book/src/07-hartree-fock/05-link-cosx-cfmm.md#link-cosx-cfmm-link-cosx",
+        "book/src/08-convergence/01-diis.md#diis-error-vector-extrapolation",
+        "book/src/08-convergence/02-level-shift-mom-smearing.md#level-shift-mom-smearing-level-shift-damps-step",
+        "book/src/08-convergence/03-second-order.md#second-order-orbital-gradient-hessian",
+        "book/src/08-convergence/04-stability.md#stability-stability-operators",
+        "book/src/08-convergence/05-exits-ladder.md#scf-exits-stopping-test"
+      ],
+      "scripts": [
+        "scripts/hf_energy_sympy.py",
+        "scripts/scf_jk_builders_sympy.py",
+        "scripts/scf_diis_sympy.py",
+        "scripts/scf_orbital_hessian_sympy.py"
+      ]
+    },
+    "rpa-gradient": {
+      "book": [
+        "book/src/15-correlated-gradients/05-rpa-gradient.md#rpa-gradient",
+        "book/src/15-correlated-gradients/05-rpa-gradient.md#rpa-gradient-orbital-response",
+        "book/src/15-correlated-gradients/05-rpa-gradient.md#rpa-gradient-assembly",
+        "book/src/18-rpa/02-quadratures.md#quadratures-rule"
+      ],
+      "scripts": [
+        "scripts/rpa_gradient_sympy.py",
+        "scripts/rpa_quadrature_sympy.py"
+      ]
+    },
+    "rpa-polarizability-c6": {
+      "book": [
+        "book/src/21-polarizabilities/01-polarizabilities-from-dielectric-modes.md#polarizabilities-from-dielectric-modes-dielectric-form",
+        "book/src/18-rpa/02-quadratures.md#quadratures-rule",
+        "book/src/25-dispersion/02-casimir-polder-c6.md#casimir-polder-c6"
+      ],
+      "scripts": [
+        "scripts/rpa_c6_polarizability_sympy.py",
+        "scripts/rpa_response_modes_sympy.py",
+        "scripts/rpa_quadrature_sympy.py"
+      ]
+    },
+    "rs-mp2-rpa": {
+      "book": [
+        "book/src/26-rs-mp2-rpa/01-cross-term.md#cross-term-split-energy",
+        "book/src/06-density-fitting/01-factorization-and-metric.md#factorization-and-metric-signed",
+        "book/src/26-rs-mp2-rpa/04-two-formulations.md#two-formulations-terf"
+      ],
+      "scripts": [
+        "scripts/rpa_rs_mp2_rpa_sympy.py",
+        "scripts/rpa_terf_signed_fit_sympy.py",
+        "scripts/terf_kernel_sign_sympy.py"
+      ]
+    },
+    "scs-mp2": {
+      "book": [
+        "book/src/10-mp2/03-scs-and-kappa.md#scs-and-kappa-scs-mp2"
+      ],
+      "scripts": [
+        "scripts/mp2_family_sympy.py"
+      ]
+    },
+    "kappa-mp2": {
+      "book": [
+        "book/src/10-mp2/03-scs-and-kappa.md#scs-and-kappa-kappa-regularized-mp2"
+      ],
+      "scripts": [
+        "scripts/mp2_family_sympy.py"
+      ]
+    },
+    "scs-mp2-2terfc": {
+      "book": [
+        "book/src/10-mp2/05-scs-mp2-2terfc.md#scs-mp2-2terfc-energy"
+      ],
+      "scripts": [
+        "scripts/mp2_family_sympy.py"
+      ]
+    },
+    "scs-mp2-gradient": {
+      "book": [
+        "book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-scs-mp2"
+      ],
+      "scripts": [
+        "scripts/mp2_gradient_sympy.py"
+      ]
+    },
+    "tddft": {
+      "book": [
+        "book/src/19-tddft/01-response.md#response-matrices",
+        "book/src/19-tddft/01-response.md#response-tda-casida-reduction",
+        "book/src/19-tddft/01-response.md#response-tda-casida-reduction",
+        "book/src/19-tddft/02-oscillator-strengths.md#oscillator-strengths-length-gauge-formula",
+        "book/src/19-tddft/03-kernel.md#kernel-gate",
+        "book/src/19-tddft/04-rsh.md#rsh-split",
+        "book/src/19-tddft/05-triplets.md#triplets-spin-blocks",
+        "book/src/19-tddft/06-unrestricted.md#unrestricted-spin-problem",
+        "book/src/19-tddft/06-unrestricted.md#unrestricted-each-root",
+        "book/src/19-tddft/01-response.md#response-matrix-free-solvers"
+      ],
+      "scripts": [
+        "scripts/tddft_response_sympy.py",
+        "scripts/dft_fxc_kernel_sympy.py"
+      ]
+    },
+    "u-oo-rimp2": {
+      "book": [
+        "book/src/12-oo-laplace/02-unrestricted-oo-rimp2.md#unrestricted-oo-rimp2-orbital-gradient",
+        "book/src/12-oo-laplace/02-unrestricted-oo-rimp2.md#unrestricted-oo-rimp2-integral-response-loop"
+      ],
+      "scripts": [
+        "scripts/u_oo_rimp2_response_sympy.py",
+        "scripts/mp2_gradient_sympy.py"
+      ]
+    },
+    "u-pdep-rpa": {
+      "book": [
+        "book/src/18-rpa/04-open-shell-dielectric.md#open-shell-dielectric-spin-summed-dielectric",
+        "book/src/18-rpa/02-quadratures.md#quadratures-rule",
+        "book/src/18-rpa/05-laplace-ao-chi0.md#laplace-ao-chi0-laplace-form-kernel"
+      ],
+      "scripts": [
+        "scripts/rpa_drpa_pdep_sympy.py",
+        "scripts/rpa_quadrature_sympy.py",
+        "scripts/rpa_laplace_chi0_sympy.py"
+      ]
+    },
+    "u-ri-mp2": {
+      "book": [
+        "book/src/10-mp2/02-unrestricted-ri-mp2.md#unrestricted-ri-mp2-energy"
+      ],
+      "scripts": [
+        "scripts/mp2_variant_identities.py",
+        "scripts/mp2_family_sympy.py"
+      ]
+    },
+    "uhf": {
+      "book": [
+        "book/src/07-hartree-fock/01-energy-functionals.md#energy-functionals-functionals",
+        "book/src/07-hartree-fock/02-orthogonalization-and-guesses.md#orthogonalization-and-guesses-equations",
+        "book/src/07-hartree-fock/03-direct-and-incremental.md#direct-and-incremental-equations",
+        "book/src/07-hartree-fock/04-ri-j-ri-k-split-ri-j.md#ri-j-ri-k-split-ri-j-equations",
+        "book/src/07-hartree-fock/05-link-cosx-cfmm.md#link-cosx-cfmm-link-cosx",
+        "book/src/08-convergence/01-diis.md#diis-error-vector-extrapolation",
+        "book/src/08-convergence/02-level-shift-mom-smearing.md#level-shift-mom-smearing-level-shift-damps-step",
+        "book/src/08-convergence/03-second-order.md#second-order-orbital-gradient-hessian",
+        "book/src/08-convergence/04-stability.md#stability-stability-operators",
+        "book/src/08-convergence/05-exits-ladder.md#scf-exits-stopping-test"
+      ],
+      "scripts": [
+        "scripts/hf_energy_sympy.py",
+        "scripts/scf_jk_builders_sympy.py",
+        "scripts/scf_diis_sympy.py",
+        "scripts/scf_orbital_hessian_sympy.py"
+      ]
+    },
+    "bse-tda": {
+      "book": [
+        "book/src/20-gw-bse/08-bse-tda.md#bse-tda-matrix",
+        "book/src/19-tddft/02-oscillator-strengths.md#oscillator-strengths-length-gauge-formula"
+      ],
+      "scripts": [
+        "scripts/gw_bse_rpax_sympy.py",
+        "scripts/tddft_response_sympy.py"
+      ]
+    },
+    "tdhf-static-polarizability": {
+      "book": [
+        "book/src/20-gw-bse/09-rpax-static-polarizability.md#rpax-static-polarizability-response-matrices"
+      ],
+      "scripts": [
+        "scripts/gw_bse_rpax_sympy.py"
+      ]
+    },
+    "u-gw": {
+      "book": [
+        "book/src/20-gw-bse/07-open-shell-gw.md#open-shell-gw-spin-summed-screening-per",
+        "book/src/20-gw-bse/01-ri-factors-and-exchange.md#continuation-and-qp-equation-hybrid-references"
+      ],
+      "scripts": [
+        "scripts/gw_ucohsex_sympy.py",
+        "scripts/gw_hybrid_vmf_sympy.py"
+      ]
+    },
+    "ccd": {
+      "book": [
+        "book/src/16-coupled-cluster/01-ccd-ccsd-spin-orbital.md#ccd-ccsd-spin-orbital-equations"
+      ],
+      "scripts": [
+        "scripts/cc_ccsd_eom_brute_force_sympy.py"
+      ]
+    },
+    "casscf": {
+      "book": [
+        "book/src/17-multireference/05-casscf.md#casscf",
+        "book/src/17-multireference/05-casscf.md#casscf-second-order-check"
+      ],
+      "scripts": [
+        "scripts/ci_rdm_casscf_gradient_sympy.py"
+      ]
+    },
+    "ccsd": {
+      "book": [
+        "book/src/16-coupled-cluster/01-ccd-ccsd-spin-orbital.md#ccd-ccsd-spin-orbital-equations",
+        "book/src/16-coupled-cluster/02-closed-shell-ccsd.md#closed-shell-ccsd-equations"
+      ],
+      "scripts": [
+        "scripts/cc_ccsd_eom_brute_force_sympy.py"
+      ]
+    },
+    "eom-ccsd": {
+      "book": [
+        "book/src/16-coupled-cluster/04-eom-ccsd.md#eom-ccsd-equations",
+        "book/src/16-coupled-cluster/04-eom-ccsd.md#eom-ccsd-product"
+      ],
+      "scripts": [
+        "scripts/cc_ccsd_eom_brute_force_sympy.py"
+      ]
+    },
+    "u-ri-mp2-gradient": {
+      "book": [
+        "book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-energy-weights"
+      ],
+      "scripts": [
+        "scripts/u_rimp2_gradient_sympy.py"
+      ]
+    },
+    "u-att-rimp2-gradient": {
+      "book": [
+        "book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-attenuated-erfc-variant"
+      ],
+      "scripts": [
+        "scripts/u_att_rimp2_gradient_sympy.py"
+      ]
+    },
+    "local-opmp3": {
+      "book": [
+        "book/src/13-local-mp2/04-local-opmp3.md#local-opmp3"
+      ],
+      "scripts": [
+        "scripts/local_opmp3_sympy.py"
+      ]
+    },
+    "opmp3": {
+      "book": [
+        "book/src/10-mp2/11-opmp3.md#opmp3"
+      ],
+      "scripts": [
+        "scripts/opmp3_identities_sympy.py",
+        "scripts/ump3_spin_blocks_sympy.py"
+      ]
+    },
+    "cosmo": {
+      "book": [
+        "book/src/22-implicit-solvation/05-conductor-limit-and-cosmo.md#conductor-limit-and-cosmo-cosmo-driver"
+      ],
+      "scripts": [
+        "scripts/cosmo_sympy.py"
+      ]
+    },
+    "qmmm": {
+      "book": [
+        "book/src/23-embedding/01-external-potentials.md#external-potentials-operator-classical-energy",
+        "book/src/23-embedding/02-qmmm-boundaries.md#qmmm-boundaries-cutting-covalent-bond",
+        "book/src/23-embedding/03-polarizable-embedding.md#polarizable-embedding-induction-model"
+      ],
+      "scripts": [
+        "scripts/external_potential_sympy.py",
+        "scripts/qmmm_boundary_sympy.py",
+        "scripts/thole_polarizable_sympy.py"
+      ]
+    },
+    "atomic-charges": {
+      "book": [
+        "book/src/21-polarizabilities/02-atomic-partitions.md#atomic-partitions-partition-must-do"
+      ],
+      "scripts": [
+        "scripts/atomic_charges_sympy.py"
+      ]
+    },
+    "geometry-search": {
+      "book": [
+        "book/src/14-derivatives/08-geometry-search.md#geometry-search",
+        "book/src/14-derivatives/08-geometry-search.md#geometry-search-lindh-model-hessian"
+      ],
+      "scripts": [
+        "scripts/geometry_search_steps_sympy.py",
+        "scripts/lindh_hessian_sympy.py"
+      ]
+    },
+    "local-mp2": {
+      "book": [
+        "book/src/13-local-mp2/index.md#local-mp2",
+        "book/src/13-local-mp2/01-amplitude-lmp2.md#amplitude-lmp2",
+        "book/src/13-local-mp2/01-amplitude-lmp2.md#amplitude-lmp2-fock-screen",
+        "book/src/13-local-mp2/05-combined-truncation.md#amplitude-lmp2-combined-truncation",
+        "book/src/13-local-mp2/01-amplitude-lmp2.md#amplitude-lmp2-lambda-boys",
+        "book/src/13-local-mp2/02-integral-direct.md#integral-direct-map-errors-eps0",
+        "book/src/13-local-mp2/02-integral-direct.md#integral-direct-domain-local-fit"
+      ],
+      "scripts": [
+        "scripts/lmp2_combined_sympy.py",
+        "scripts/lmp2_direct_maps_sympy.py",
+        "scripts/lmp2_lambda_boys_sympy.py",
+        "scripts/lmp2_fock_screen_sympy.py",
+        "scripts/lmp2_hylleraas_vs_wshg23_sympy.py",
+        "scripts/local_mp2_fit_pno_sympy.py",
+        "scripts/mp2_variant_identities.py"
+      ]
+    },
+    "ks-zvector": {
+      "book": [
+        "book/src/15-correlated-gradients/04-ks-zvector.md#ks-zvector-equations"
+      ],
+      "scripts": [
+        "scripts/ks_zvector_sympy.py"
+      ]
+    },
+    "mp2-polarizability": {
+      "book": [
+        "book/src/15-correlated-gradients/06-mp2-polarizability.md#mp2-polarizability-relaxed-dipole"
+      ],
+      "scripts": [
+        "scripts/mp2_polarizability_sympy.py",
+        "scripts/mp2_gradient_sympy.py"
+      ]
+    },
+    "double-hybrid": {
+      "book": [
+        "book/src/10-mp2/10-double-hybrids.md#double-hybrids-energy",
+        "book/src/16-coupled-cluster/06-wb97x-l-v.md#wb97x-l-v-goes"
+      ],
+      "scripts": [
+        "scripts/double_hybrid_sympy.py"
+      ]
+    },
+    "nevpt2": {
+      "book": [
+        "book/src/17-multireference/06-nevpt2.md#nevpt2-method",
+        "book/src/17-multireference/04-rdms.md#rdms-nevpt-rdms"
+      ],
+      "scripts": [
+        "scripts/nevpt2_sympy.py"
+      ]
+    },
+    "rrho-thermo": {
+      "book": [
+        "book/src/14-derivatives/06-frequencies.md#frequencies-thermochemistry-ir-intensities"
+      ],
+      "scripts": [
+        "scripts/rrho_thermo_sympy.py"
+      ]
+    },
+    "ir-intensities": {
+      "book": [
+        "book/src/14-derivatives/06-frequencies.md#frequencies-thermochemistry-ir-intensities"
+      ],
+      "scripts": [
+        "scripts/ir_intensity_sympy.py"
+      ]
+    },
+    "u-attenuated-mp2": {
+      "book": [
+        "book/src/10-mp2/04-attenuated-mp2.md#attenuated-mp2-open-shell"
+      ],
+      "scripts": [
+        "scripts/u_attenuated_sympy.py"
+      ]
+    },
+    "u-rs-mp2-rpa": {
+      "book": [
+        "book/src/26-rs-mp2-rpa/04-two-formulations.md#two-formulations-open-shell",
+        "book/src/06-density-fitting/01-factorization-and-metric.md#factorization-and-metric-signed",
+        "book/src/26-rs-mp2-rpa/04-two-formulations.md#two-formulations-terf"
+      ],
+      "scripts": [
+        "scripts/u_attenuated_sympy.py",
+        "scripts/rpa_terf_signed_fit_sympy.py",
+        "scripts/terf_kernel_sign_sympy.py"
+      ]
+    },
+    "scs-2terfc-gradient": {
+      "book": [
+        "book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-scs-2terfc",
+        "book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-terfc-scs-mp2-2terfc"
+      ],
+      "scripts": [
+        "scripts/scs_2terfc_gradient_sympy.py"
+      ]
+    },
+    "molecular-dynamics": {
+      "book": [
+        "book/src/28-molecular-dynamics/01-integrators-and-thermostats.md#molecular-dynamics-velocity-verlet",
+        "book/src/28-molecular-dynamics/01-integrators-and-thermostats.md#molecular-dynamics-berendsen",
+        "book/src/28-molecular-dynamics/01-integrators-and-thermostats.md#molecular-dynamics-baoab"
+      ],
+      "scripts": [
+        "scripts/md_integrators_sympy.py"
+      ]
+    },
+    "fock-hook-gradient": {
+      "book": [
+        "book/src/14-derivatives/07-fock-hook-gradient.md#fock-hook-gradient-gradient"
+      ],
+      "scripts": [
+        "scripts/fock_hook_gradient_sympy.py"
+      ]
+    },
+    "cosx-gradient": {
+      "book": [
+        "book/src/14-derivatives/01-hf-gradient.md#hf-gradient-cosx"
+      ],
+      "scripts": [
+        "scripts/cosx_gradient_sympy.py"
+      ]
+    },
+    "vv10-gradient": {
+      "book": [
+        "book/src/14-derivatives/03-xc-gradient.md#xc-gradient-vv10",
+        "book/src/09-kohn-sham/05-vv10.md#vv10-energy-potentials"
+      ],
+      "scripts": [
+        "scripts/dft_vv10_gradient_sympy.py",
+        "scripts/dft_vv10_potential_sympy.py"
+      ]
+    },
+    "pbc-gradient": {
+      "book": [
+        "book/src/24-periodic/07-forces.md#forces-force-term-term",
+        "book/src/24-periodic/07-forces.md#forces-madelung-term-cancels",
+        "book/src/24-periodic/01-ewald.md#ewald-ewald-sum-independence"
+      ],
+      "scripts": [
+        "scripts/pbc_force_sympy.py",
+        "scripts/pbc_ewald_pairft_stress_sympy.py"
+      ]
+    },
+    "pbc-stress": {
+      "book": [
+        "book/src/24-periodic/08-stress.md#stress-assembling-electronic-stress",
+        "book/src/24-periodic/08-stress.md#stress-pair-transform-under-strain"
+      ],
+      "scripts": [
+        "scripts/pbc_force_sympy.py",
+        "scripts/pbc_ewald_pairft_stress_sympy.py"
+      ]
+    },
+    "omega-ri": {
+      "book": [
+        "book/src/06-density-fitting/05-omega-ri.md#omega-ri-fit"
+      ],
+      "scripts": [
+        "scripts/omega_ri_sympy.py"
+      ]
+    },
+    "omega-ri-cdd-mp2": {
+      "book": [
+        "book/src/12-oo-laplace/05-omega-ri-cdd-mp2.md#omega-ri-cdd-mp2",
+        "book/src/06-density-fitting/05-omega-ri.md#omega-ri-fit"
+      ],
+      "scripts": [
+        "scripts/omega_ri_sympy.py"
+      ]
+    }
+  },
+  "gaps": {
+    "pbc-ks": {
+      "reason": "the energy functional, Fock convention, exxdiv and RS-GDF J/K are proven with pbc-hf (book sections #exchange-divergence and #rsgdf); the periodic XC grid quadrature and the XC force and stress terms have no book derivation and no sympy proof",
+      "book": [
+        "book/src/24-periodic/08-stress.md#stress-strain-moves",
+        "book/src/24-periodic/06-kpoint-scf.md#kpoint-scf"
+      ]
+    },
+    "xtb": {
+      "reason": "ferric adds no equations over libxtb (built with -Dtblite=disabled); appendix D describes the binding and derives nothing, and there is no sympy proof",
+      "book": [
+        "book/src/appendix-d-xtb.md#appendix-d"
+      ]
+    },
+    "u-ccsd-update-amps": {
+      "reason": "the per-spin factorization of ferric-cc/src/u_ccsd.rs::update_amps (PySCF uccsd.update_amps: per-spin F, the six W_ovvo ring blocks, the ladders) is not displayed in the book or transcribed in a script; u-ccsd proves the amplitude blocks, the energy split and the (T) classes, and the residual itself is held to the spin-orbital ccsd_uhf_spin_orbital solver amplitude by amplitude in Rust",
+      "book": [
+        "book/src/16-coupled-cluster/08-uccsd.md#uccsd-equations"
+      ]
+    },
+    "rpa-gradient-metric-term": {
+      "reason": "rpa_gradient_sympy.py uses a unit RI metric, so the two-centre gamma term of the RI-dRPA gradient has no proof; the mp2_gradient_sympy.py part G non-unit-metric model is the one to reuse. Evidence is the Rust FD tests",
+      "book": [
+        "book/src/15-correlated-gradients/05-rpa-gradient.md#rpa-gradient-assembly"
+      ]
+    },
+    "ks-zvector-null-mode": {
+      "reason": "the null-mode projection of the KS Z-vector solve (zvector_ks.rs) has no sympy claim; ks_zvector_sympy.py proves the RKS/UKS/ROKS response equations on models without a null mode",
+      "book": [
+        "book/src/15-correlated-gradients/04-ks-zvector.md#ks-zvector"
+      ]
+    },
+    "linlccd-local": {
+      "reason": "linlccd with [local] (amplitude threshold): cc_triples_weights_and_linlccd_spin_adaptation_sympy.py proves the eps = 0 equations only; the pair gate and the truncation have no derivation or claim, and the Rust anchors are at eps = 0",
+      "book": [
+        "book/src/16-coupled-cluster/07-local-cc.md#local-cc-amplitude-threshold-linlccd"
+      ]
+    },
+    "pbc-ecp": {
+      "reason": "the periodic ECP lattice sum V_ECP(k) = sum_L e^{ikL} V^L, its transpose symmetry and the supercell unfolding are written down in 24.3, but the ECP energy, force and strain terms have no sympy proof (ferric-pbc/src/ecp.rs)",
+      "book": [
+        "book/src/24-periodic/03-nuclear-attraction.md#nuclear-attraction-ecp"
+      ]
+    },
+    "pbc-rsh": {
+      "reason": "only the range-separated Madelung constant is proven (claim rsh-madelung of scripts/pbc_ewald_pairft_stress_sympy.py); the attenuated periodic exchange of rsh.rs and gamma_rsh.rs, its force and its stress have no book derivation and no proof",
+      "book": [
+        "book/src/24-periodic/04-exchange-divergence.md#exchange-divergence-term-does"
+      ]
+    },
+    "pbc-mgga": {
+      "reason": "the periodic meta-GGA (gamma_mgga.rs and the k-point tau terms) energy, force and stress have no book derivation and no sympy proof"
+    },
+    "pbc-stress-xc-ecp-rsgdf": {
+      "reason": "step 5 of the stress assembly in 24.8: the XC, ECP and RS-GDF strain terms (stress.rs xc_stress, ecp_strain_term, the strained fit tensors) have no derivation and no proof; they are tested only against finite differences of ferric's own energy",
+      "book": [
+        "book/src/24-periodic/08-stress.md#stress-assembling-electronic-stress"
+      ]
+    },
+    "pbc-rsgdf-options": {
+      "reason": "range_split and sr_column_rotation change which RS-GDF integrals are computed; 24.5 states them but there is no derivation of their equivalence to the unsplit fit and no sympy proof (gdf_omega = \"auto\" is proven: claim auto-omega-gcount of scripts/pbc_rsgdf_sympy.py)",
+      "book": [
+        "book/src/24-periodic/05-rsgdf.md#rsgdf-fitted-integrals"
+      ]
+    },
+    "pbc-kro-fock": {
+      "reason": "the k-point ROHF/ROKS effective Fock matrix on a mesh (kroks.rs) is not written in 24.6 and no claim covers it (kuhf-supercell is unrestricted)"
+    },
+    "ts-volume-ratio": {
+      "reason": "the Tkatchenko-Scheffler free-atom volume ratio that scales alpha and C6 in 25.2 and 25.3 has no sympy proof"
+    },
+    "mbd-gradient": {
+      "reason": "the MBD@rsSCS nuclear gradient through the Hirshfeld volumes and its Z-vector orbital relaxation have no book derivation and no sympy proof (only the coupled-dipole energy of 25.3 is proven)"
+    },
+    "drpa-local": {
+      "reason": "the masked Riccati solve is proven only in its exact limit (eps = 0, where it is the drpa method); no script or external reference checks the finite-threshold error model",
+      "book": [
+        "book/src/18-rpa/06-local-drpa.md#local-drpa"
+      ]
+    },
+    "ks-omega-tuning": {
+      "reason": "tune_omega runs the range-separated hybrid of ks-hybrid-rsh at several omega; the tuning criterion J(omega) (the ionization-potential condition) is a definition stated in book section #hybrids-tuning, and the golden-section bookkeeping (11 steps from 0.9 to 5e-3, the best evaluated point returned) is checked against PySCF there but transcribed in no sympy script",
+      "book": [
+        "book/src/09-kohn-sham/04-hybrids.md#hybrids-tuning"
+      ]
+    }
+  }
+}

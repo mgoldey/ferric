@@ -4,9 +4,8 @@
 //!
 //! `linlccd_amplitude.rs` has four public entry points
 //! (`amplitude_linlccd`, `amplitude_linlccd_with_virtuals`,
-//! `amplitude_linlccd_direct`, `amplitude_linlccd_direct_with_virtuals`) and,
-//! before this fix, NONE of them called `check_alloc`/`MemoryPlan` — even
-//! though `amplitude_linlccd_with_virtuals` directly builds:
+//! `amplitude_linlccd_direct`, `amplitude_linlccd_direct_with_virtuals`) and
+//! each must call `check_alloc`/`MemoryPlan`, since `amplitude_linlccd_with_virtuals` directly builds:
 //!
 //! * `eri3_ao` (`naux·nbas²`) — TWICE (once for `oo_g`, again for `bvv_t`
 //!   under `LadderVariant::Full`), each transient and non-overlapping;
@@ -166,10 +165,7 @@ fn amplitude_linlccd_ample_budget_still_runs() {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_energy_conv(1e-10),
     )
     .unwrap();
     let vvhv = build_vvhv(&mol, &obs, &obs_bs, &rhf).unwrap();

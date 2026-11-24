@@ -235,7 +235,7 @@ pub fn scf_exchange_is_cosx(
     open_shell: bool,
 ) -> Result<bool, FerricError> {
     let _ = open_shell;
-    if config.k_builder.as_deref() != Some("cosx") {
+    if config.k_builder != Some(crate::options::KBuilderKind::Cosx) {
         return Ok(false);
     }
     let has_xc = config.xc.is_some();
@@ -249,7 +249,7 @@ pub fn scf_exchange_is_cosx(
     // Exact exchange consumed from a plain (omega = 0) K matrix at all.
     let need_k = !has_xc || k_mix.sr != 0.0;
     crate::fock_assembly::cosx_replaces_df_k(
-        config.k_builder.as_deref(),
+        config.k_builder,
         config.df_k_aux.as_deref(),
         need_k && k_mix.omega == 0.0,
     )
@@ -870,8 +870,9 @@ pub struct FittedResponse {
     /// The Lagrangian energy-weighted density `W` (replaces the usual
     /// `sum w_o C_o e_o C_o^T`; spin-summed for UHF).
     pub w: Array2<f64>,
-    /// GMRES iterations and final relative residual.
+    /// GMRES iterations taken.
     pub iterations: usize,
+    /// Final GMRES relative residual.
     pub rel_residual: f64,
 }
 
@@ -1045,13 +1046,24 @@ pub fn fitted_exchange_response_routed(
     let mut jb: Box<dyn JBuilder + '_> = match j_aux {
         Some((aux, route)) => {
             let dfbs = PreparedBasis::new(mol, &ferric_core::basis::bundled(aux)?)?;
-            Box::new(crate::df_j::DfJ::new_banded(
-                route.op,
-                prep,
-                &dfbs,
-                route.budget_bytes,
-                Some(&ctx),
-            )?)
+            // The response J reads the integrals at the SCF's RI-J precision.
+            if route.ri_j_precision == crate::df_j::RiJPrecision::F32 {
+                Box::new(crate::df_j::DfJ::new_with_precision(
+                    route.op,
+                    prep,
+                    &dfbs,
+                    route.budget_bytes,
+                    route.ri_j_precision,
+                )?)
+            } else {
+                Box::new(crate::df_j::DfJ::new_banded(
+                    route.op,
+                    prep,
+                    &dfbs,
+                    route.budget_bytes,
+                    Some(&ctx),
+                )?)
+            }
         }
         None => Box::new(crate::direct_j::DirectJ::new(
             &ctx,

@@ -17,6 +17,8 @@ hessian = "fd"
 # arithmetic, so a large value means delta or the SCF thresholds are wrong for
 # the system.
 delta = 5.0e-4
+# Rotational symmetry number for the thermochemistry (water is C2v).
+symmetry_number = 2
 
 [scf]
 density_conv = 1.0e-9

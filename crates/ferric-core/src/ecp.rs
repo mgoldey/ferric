@@ -30,8 +30,11 @@ use std::fs;
 /// BSE, i.e. the literal `r_exponents` value), `gexp` = `ζ` (Gaussian exponent).
 #[derive(Debug, Clone, PartialEq)]
 pub struct EcpTerm {
+    /// Contraction coefficient `d`.
     pub coef: f64,
+    /// Power `n` on `r`, the literal BSE `r_exponents` value.
     pub r_exp: i32,
+    /// Gaussian exponent `ζ` (Bohr⁻²).
     pub gexp: f64,
 }
 
@@ -42,6 +45,7 @@ pub struct EcpShell {
     /// Angular momentum `l` of this channel (0=s, 1=p, ...). The channel with the
     /// maximum `angular_momentum` across an [`EcpDef`] is the local term.
     pub angular_momentum: i32,
+    /// Radial terms summed to form this channel's potential `U_l(r)`.
     pub terms: Vec<EcpTerm>,
 }
 
@@ -68,7 +72,11 @@ impl EcpDef {
 /// A named collection of ECP definitions keyed by atomic number `Z`.
 #[derive(Debug, Clone, Default)]
 pub struct EcpSet {
+    /// For [`bundled`] sets, the requested name trimmed and lowercased;
+    /// otherwise the JSON's `name` field, falling back to the name passed to
+    /// the parser.
     pub name: String,
+    /// ECP definitions keyed by atomic number `Z`.
     pub defs: HashMap<i32, EcpDef>,
 }
 

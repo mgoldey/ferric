@@ -41,6 +41,27 @@ else:
     _IMPORT_ERROR = None
 
 
+# Test modules that never touch the extension: the derivation-proof runners
+# and the registry test run plain sympy/numpy scripts, so they are collected
+# even without a build. A missing extension must not turn them into a pass
+# that ran nothing.
+EXTENSION_FREE = frozenset(
+    {
+        "test_derivation_registry.py",
+        "test_book_build.py",
+        "test_select_proofs.py",
+        "test_shared_workflows.py",
+        "test_stack_doc.py",
+        "test_derivation_scripts.py",
+        "test_oomp2_mp3_identities_sympy.py",
+        "test_ump3_spin_blocks_sympy.py",
+        "test_opmp3_identities_sympy.py",
+        "test_local_opmp3_proto.py",
+        "test_local_opmp3_sympy.py",
+    }
+)
+
+
 def pytest_ignore_collect(collection_path, config):
     """Skip the whole suite with one informative message if the build is missing.
 
@@ -54,6 +75,8 @@ def pytest_ignore_collect(collection_path, config):
     if _IMPORT_ERROR is None:
         return None
     if collection_path.suffix == ".py" and collection_path.name.startswith("test_"):
+        if collection_path.name in EXTENSION_FREE:
+            return None
         print(f"\nSKIPPING {collection_path.name}:\n{_IMPORT_ERROR}\n")
         return True
     return None

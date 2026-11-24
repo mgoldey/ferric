@@ -8,6 +8,7 @@ use crate::direct_j::DirectJ;
 use crate::direct_k::DirectK;
 use crate::fock::{JBuilder, KBuilder};
 use crate::guess::hcore_guess;
+use crate::options::KBuilderKind;
 use crate::result::{ScfExit, ScfResult, Spin};
 use crate::rhf::{validate_injected, InjectedConfigError, PeriodicInjection, RhfConfig};
 use crate::screening::SchwarzBounds;
@@ -174,6 +175,30 @@ pub fn solve_uhf_injected<'a>(
     )?)
 }
 
+/// The virtual-block level-shift terms `shift · S P_v S` per spin, with
+/// `P_v = C_v C_vᵀ` from the previous orbitals. Serial section (outside any
+/// rayon region): runs at the serial BLAS thread count.
+fn virtual_level_shift_terms(
+    c_a: &Array2<f64>,
+    c_b: &Array2<f64>,
+    nocc_a: usize,
+    nocc_b: usize,
+    s: &Array2<f64>,
+    shift: f64,
+) -> (Array2<f64>, Array2<f64>) {
+    ferric_integrals::blas_threads::with_blas_threads(
+        ferric_integrals::blas_threads::opt_in_blas_threads(),
+        || {
+            crate::blas_probe::record(&crate::blas_probe::UHF_LEVEL_SHIFT);
+            let c_av = c_a.slice(ndarray::s![.., nocc_a..]);
+            let c_bv = c_b.slice(ndarray::s![.., nocc_b..]);
+            let p_av: Array2<f64> = c_av.dot(&c_av.t());
+            let p_bv: Array2<f64> = c_bv.dot(&c_bv.t());
+            (shift * s.dot(&p_av).dot(s), shift * s.dot(&p_bv).dot(s))
+        },
+    )
+}
+
 /// The error variant carries no text: say why a run whose density settled
 /// still failed (the orbital-gradient veto refused it), when it did.
 fn note_vetoed_nonconvergence(r: &ScfResult) {
@@ -327,26 +352,38 @@ fn stability_descent(
             return best;
         };
 
+        // Candidates run without the hand-off (their tensors would sit beside
+        // the slot's); once descent starts the first solve's tensor is
+        // dropped, and the gradient recomputes.
+        crate::raw_handoff::clear_slot(config);
+        let cand_config = crate::raw_handoff::without_handoff(config);
         let mut improved: Option<ScfResult> = None;
         for &step in &DESCENT_STEPS {
             let g_a = rotate_mos(&best.mos_alpha, &va, nocc_a, step);
             let g_b = rotate_mos(&cb0, &vb, nocc_b, step);
-            let cand =
-                match solve_uhf_fockmod(ctx, mol, prep, bounds, config, Some((&g_a, &g_b)), None) {
-                    Ok(c) if c.converged => c,
-                    Ok(c) => {
-                        eprintln!(
-                            "SCF stability descent: step {step} did not converge (E = {:.8}); \
+            let cand = match solve_uhf_fockmod(
+                ctx,
+                mol,
+                prep,
+                bounds,
+                &cand_config,
+                Some((&g_a, &g_b)),
+                None,
+            ) {
+                Ok(c) if c.converged => c,
+                Ok(c) => {
+                    eprintln!(
+                        "SCF stability descent: step {step} did not converge (E = {:.8}); \
                          discarded.",
-                            c.energy
-                        );
-                        continue;
-                    }
-                    Err(e) => {
-                        eprintln!("SCF stability descent: step {step} failed ({e:?}); discarded.");
-                        continue;
-                    }
-                };
+                        c.energy
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    eprintln!("SCF stability descent: step {step} failed ({e:?}); discarded.");
+                    continue;
+                }
+            };
             if accepts_candidate(
                 cand.energy,
                 best.energy,
@@ -411,7 +448,7 @@ pub fn accepts_candidate_for_test(cand_e: f64, best_e: f64, improved_e: Option<f
 }
 
 /// (nocc_α, nocc_β) from the molecule's charge and multiplicity.
-fn nocc_ab(mol: &Molecule) -> Result<(usize, usize), FerricError> {
+pub(crate) fn nocc_ab(mol: &Molecule) -> Result<(usize, usize), FerricError> {
     let nelec = mol.nelec() as i64;
     let two_s = mol.multiplicity as i64 - 1;
     if two_s < 0 || nelec < two_s || (nelec - two_s) % 2 != 0 {
@@ -435,7 +472,6 @@ pub(crate) fn rotate_mos(
     nocc: usize,
     eps: f64,
 ) -> Array2<f64> {
-    use ndarray_linalg::Solve;
     let n = c.nrows();
     let mut kappa = Array2::<f64>::zeros((n, n));
     for (ir, a) in (nocc..n).enumerate() {
@@ -448,26 +484,10 @@ pub(crate) fn rotate_mos(
             kappa[(i, a)] = -v;
         }
     }
-    let half = 0.5 * &kappa;
-    let eye = Array2::<f64>::eye(n);
-    let am = &eye - &half;
-    let bm = &eye + &half;
-    let mut u = Array2::<f64>::zeros((n, n));
-    for col in 0..n {
-        match am.solve(&bm.column(col).to_owned()) {
-            Ok(sol) => {
-                for row in 0..n {
-                    u[(row, col)] = sol[row];
-                }
-            }
-            // A singular (I − κ/2) cannot happen for antisymmetric κ (its
-            // eigenvalues are 1 ± i·imag), but the solve is fallible, so fall
-            // back to the identity column rather than panicking inside a
-            // best-effort descent.
-            Err(_) => u[(col, col)] = 1.0,
-        }
-    }
-    c.dot(&u)
+    // A singular (I − κ/2) cannot happen for antisymmetric κ (its eigenvalues
+    // are 1 ± i·imag), but the factorization is fallible, so fall back to the
+    // identity rotation rather than panicking inside a best-effort descent.
+    crate::cayley::cayley_rotate(c, &kappa).unwrap_or_else(|_| c.to_owned())
 }
 
 /// UHF with an optional per-iteration Fock modifier.
@@ -500,6 +520,7 @@ pub fn solve_uhf_fockmod(
 /// which only [`solve_uhf_blocked`] honours. A Fock `hook` acts on the target
 /// solve only, never on the secondary-basis SCF or the Fock projection behind
 /// `guess_basis` (see `rhf::solve_rhf_routed`).
+#[allow(clippy::too_many_arguments)]
 fn solve_uhf_molecular(
     ctx: &ParallelContext,
     mol: &Molecule,
@@ -576,6 +597,98 @@ pub fn solve_uhf_with_hook(
     )?)
 }
 
+/// [`solve_uhf`] (`hook = None`) or [`solve_uhf_with_hook`] started from
+/// per-spin AO densities `(D_α, D_β)` instead of the configured guess. Each
+/// spin starts from the natural orbitals of its density
+/// (`spin_natural_orbitals`), so the first iteration runs at `D_σ` itself
+/// when `D_σ` is idempotent with `nocc_σ` electrons (a converged SCF
+/// density), and at its `nocc_σ`-orbital aufbau projection otherwise.
+/// `guess_basis` does not apply. As for any start, a closed shell
+/// (`nocc_α = nocc_β`) has its β HOMO and LUMO turned by 0.1 rad when the
+/// overlap retains a virtual orbital.
+pub fn solve_uhf_from_spin_densities(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    config: &UhfConfig,
+    densities: (&Array2<f64>, &Array2<f64>),
+    hook: Option<crate::fock::SpinFockHook<'_>>,
+) -> Result<ScfResult, FerricError> {
+    let s = ferric_integrals::oneelectron::overlap(prep);
+    let (nocc_a, nocc_b) = nocc_ab(mol)?;
+    let c_a = spin_natural_orbitals(&s, densities.0, nocc_a, "alpha")?;
+    let c_b = spin_natural_orbitals(&s, densities.1, nocc_b, "beta")?;
+    let Some(hook) = hook else {
+        return solve_uhf_with_guess(ctx, mol, prep, bounds, config, Some((&c_a, &c_b)));
+    };
+    crate::rhf::validate_fock_hook(config)?;
+    err_if_unconverged(solve_uhf_molecular(
+        ctx,
+        mol,
+        prep,
+        bounds,
+        config,
+        Some((&c_a, &c_b)),
+        None,
+        Some(hook),
+    )?)
+}
+
+/// The natural orbitals of a one-spin AO density `d` in the overlap metric
+/// `s`, largest occupation first: `C = X U`, with `X` the canonical
+/// orthogonalizer and `U` the eigenvectors of `Xᵀ S D S X`. `Cᵀ S C = 1` on
+/// the kept span; dropped near-linear-dependent directions are zero columns,
+/// as the solver's own diagonalization pads them. For `D = C_o C_oᵀ` with
+/// S-orthonormal `C_o` (`k` columns) the first `k` columns span `C_o`, so
+/// they rebuild `D` to round-off. The kept span must hold the spin's `nocc`
+/// occupied orbitals (`spin` names it in the error).
+pub(crate) fn spin_natural_orbitals(
+    s: &Array2<f64>,
+    d: &Array2<f64>,
+    nocc: usize,
+    spin: &str,
+) -> Result<Array2<f64>, FerricError> {
+    let n = s.nrows();
+    if d.dim() != (n, n) {
+        return Err(FerricError::General(format!(
+            "UHF/ROHF: spin density shape {:?} != ({n},{n})",
+            d.dim()
+        )));
+    }
+    let x = crate::rhf::canonical_orthogonalizer(s)?;
+    if nocc > x.ncols() {
+        return Err(FerricError::General(format!(
+            "UHF: {nocc} {spin}-occupied orbitals exceed the {} orthogonalized functions \
+             the overlap retains",
+            x.ncols()
+        )));
+    }
+    let xs = x.t().dot(s);
+    let (_, u) = descending_eigh(&xs.dot(d).dot(&xs.t()))?;
+    Ok(padded(&x.dot(&u), n))
+}
+
+/// Eigenpairs of a symmetric matrix, largest eigenvalue first.
+pub(crate) fn descending_eigh(m: &Array2<f64>) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
+    use ndarray_linalg::{Eigh, UPLO};
+    let (w, u) = m
+        .eigh(UPLO::Upper)
+        .map_err(|e| FerricError::Lapack(format!("natural orbitals: {e}")))?;
+    let order: Vec<usize> = (0..w.len()).rev().collect();
+    Ok((
+        order.iter().map(|&i| w[i]).collect(),
+        u.select(ndarray::Axis(1), &order),
+    ))
+}
+
+/// `c` with zero columns appended up to `n`.
+pub(crate) fn padded(c: &Array2<f64>, n: usize) -> Array2<f64> {
+    let mut out = Array2::<f64>::zeros((c.nrows(), n));
+    out.slice_mut(ndarray::s![.., ..c.ncols()]).assign(c);
+    out
+}
+
 /// The blocked solve of [`crate::symmetric_open::solve_uhf_symmetric`]: `mol`,
 /// `prep` and `bounds` are already in the symmetry frame, one spec per spin.
 pub(crate) fn solve_uhf_blocked(
@@ -623,6 +736,10 @@ fn solve_uhf_impl_recorded(
     hook: Option<crate::fock::SpinFockHook<'_>>,
 ) -> Result<ScfResult, FerricError> {
     let probe = ferric_core::gpu::provenance::PrecisionProbe::start();
+    let xc = crate::result::xc_record(
+        config.xc.as_deref(),
+        inj.as_ref().is_some_and(|i| i.xc.is_some()),
+    );
     let mut r = solve_uhf_impl(
         ctx,
         mol,
@@ -636,6 +753,8 @@ fn solve_uhf_impl_recorded(
         hook,
     )?;
     r.precision = probe.finish(ferric_core::gpu::provenance::SCF_KERNELS);
+    r.xc = xc;
+    r.relativistic = config.relativistic;
     Ok(r)
 }
 
@@ -643,6 +762,28 @@ fn solve_uhf_impl_recorded(
 /// byte-identical to the pre-injection code — every injected-path branch is
 /// gated on `inj_jk.is_some()`) and [`solve_uhf_injected`] (`inj = Some`,
 /// config already validated).
+///
+/// The solve runs as named stages that own their state, the open-shell
+/// counterparts of `rhf::solve_rhf_impl`'s:
+///
+/// - setup: the XC contribution and exchange mix, the shared environment
+///   ([`crate::driver::prepare`]), the occupation ([`uhf_nocc`]), the
+///   orthogonalizer, the guess ([`uhf_initial_mos`]), the J/K route and
+///   fitters, the pluggable K and the builders
+///   ([`crate::driver::OpenShellJk`]);
+/// - one iteration: the Fock build ([`crate::driver::OpenShellJk::build_fock`]),
+///   the energy ([`UhfState::energy`]), the per-spin commutators and their
+///   report ([`UhfState::measure`]), then the orbital update: TRAH or Newton
+///   ([`UhfState::second_order_step`]), else coupled DIIS, the level shift,
+///   the diagonalization and the occupation ([`UhfState::diis_step`]);
+/// - the convergence and ladder decision ([`UhfState::gate`]);
+/// - finalization: [`UhfState::converged`] or [`UhfState::max_iter`].
+///
+/// Opt-in per-phase timing (`FERRIC_TIMING=1`; inert otherwise), with the
+/// RHF table's phase names (see `rhf::solve_rhf_impl` for the placement
+/// rules). On the open-shell path `jk_build` also holds the per-spin exchange
+/// fold `F_σ −= c·K_σ` (the K builds sit inside that assembly). Untimed: the
+/// Newton/TRAH steps and the converged-exit extras.
 #[allow(clippy::too_many_arguments)]
 fn solve_uhf_impl(
     ctx: &ParallelContext,
@@ -659,61 +800,30 @@ fn solve_uhf_impl(
     )>,
     mut hook: Option<crate::fock::SpinFockHook<'_>>,
 ) -> Result<ScfResult, FerricError> {
-    use ferric_dft::xc_trait::KMix;
+    crate::mom::check_reference(config, "UHF", true)?;
+    crate::incore_jk::begin_scf(bounds);
+    // The response, Newton and stability builds on these bounds follow the
+    // SCF's contraction rotation (`direct_jk::gc_rotation::GcSlot`).
+    bounds.gc.set_request(config.gc_rotation);
 
     // Split the injection: (S, h, V_nn) go to the shared env builder, the J/K
-    // builders are driven in the iteration loop (as in rhf::solve_rhf_impl).
-    // Both `None` on the molecular path.
-    // `inj_xc` is the injected (periodic) spin-polarized XC; its
+    // builders are driven in the iteration loop. All `None` on the molecular
+    // path. `inj_xc` is the injected (periodic) spin-polarized XC; its
     // `supports_polarized()` was checked by solve_uhf_injected.
-    let (pre_env, mut inj_jk, mut inj_xc) = match inj {
-        Some(PeriodicInjection {
-            s,
-            h,
-            vnn,
-            j,
-            k,
-            xc,
-        }) => (Some((s, h, vnn)), Some((j, k)), xc),
-        None => (None, None, None),
-    };
-    let injected = inj_jk.is_some();
+    let (pre_env, mut inj_jk, inj_xc) = crate::driver::split_injection(inj);
 
     // Build UKS XC contribution once. None for pure UHF.
     let mut xc_contrib = crate::driver::uks_xc_contribution(mol, prep, config)?;
-
-    // Injected (periodic) UKS: a global hybrid scales the injected K by its
-    // exact-exchange fraction (validate_injected_uhf guarantees `xc_contrib`
-    // is None there, so the two sources never coexist). Molecular path:
-    // `inj_xc` is None and this is the historical expression.
-    let k_mix: KMix = match inj_xc.as_ref() {
-        Some(x) => {
-            let a = x.exact_exchange_fraction();
-            if !(a.is_finite() && (0.0..=1.0).contains(&a)) {
-                return Err(FerricError::General(format!(
-                    "solve_uhf_injected: XcBuilder exact-exchange fraction must be in [0, 1], \
-                     got {a}"
-                )));
-            }
-            KMix {
-                sr: a,
-                lr: a,
-                omega: 0.0,
-            }
-        }
-        None => xc_contrib.as_ref().map(|x| x.k_mix()).unwrap_or_default(),
-    };
-
-    // Meta-GGA (SCAN / r2SCAN) UKS is stiffer than LDA/GGA and limit-cycles under
-    // plain DIIS; apply the same modest default virtual-block level shift the
-    // closed-shell RKS path uses (see solve_rhf) when the user hasn't set one.
-    // Ramped to zero as the gradient converges, so the final energy is
-    // unperturbed. LDA/GGA/hybrid keep the user's shift (default 0).
-    let effective_level_shift = crate::driver::effective_level_shift(config);
-
-    // K coefficient on the full Coulomb K, per-spin. For pure HF (no xc),
+    // Injected (periodic) UKS: validate_injected_uhf guarantees `xc_contrib`
+    // is None there, so the two sources never coexist.
+    let k_mix = crate::driver::resolve_k_mix(
+        inj_xc.as_deref(),
+        || xc_contrib.as_ref().map(|x| x.k_mix()).unwrap_or_default(),
+        "solve_uhf_injected",
+    )?;
+    // K coefficient on the full Coulomb K, per spin. For pure HF (no xc),
     // KMix::default() gives sr = 1.0, lr = 1.0 → c_k = 1.0 (original UHF behavior).
-    // Injected UKS: c_k = a (need_k below is then false for a = 0, so the
+    // Injected UKS: c_k = a (`need_k` is then false for a = 0, so the
     // injected K is never built for a pure functional).
     let c_k: f64 = if xc_contrib.is_some() || inj_xc.is_some() {
         k_mix.sr
@@ -721,24 +831,15 @@ fn solve_uhf_impl(
         1.0
     };
 
-    // RSH path (ω > 0): build per-spin K from c_SR · K[erfc(ω)] + c_LR · K[erf(ω)]
-    // via two DfK fitters. Each fitter's geometry-only B[P,μ,ν] tensor is built
-    // once; only the D-dependent contraction runs per iteration per spin.
+    let mut phases = ferric_core::timing::PhaseAccumulator::new().report_on_drop(
+        crate::rhf::phase_table_title_for(Spin::Unrestricted, config, inj_xc.is_some()),
+    );
     // Shared geometry-only environment: S, hcore(+external+ECP — V_ECP folds
     // into hcore once, byte-identical to plain hcore for all-electron bases),
     // V_nn(+external), COSMO/PCM contexts, resolved memory budget, RSH
     // fitters. One construction serving all six SCF variants (crate::driver).
-    let crate::driver::ScfEnv {
-        s,
-        h,
-        vnn,
-        ooc_budget,
-        cosmo_cavity,
-        pcm_ctx,
-        polarizable_site_basis,
-        dfk_sr,
-        dfk_lr,
-    } = crate::driver::prepare(
+    let env = crate::driver::prepare_timed(
+        &mut phases,
         ctx,
         mol,
         prep,
@@ -747,24 +848,205 @@ fn solve_uhf_impl(
         pre_env,
         crate::driver::xc_plan(xc_contrib.as_deref()),
     )?;
-
-    // The ONE SR/LR exchange response every Hessian matvec in this solve uses —
-    // Newton steps, TRAH steps and the post-SCF stability eigensolve alike. It
-    // borrows the SAME two fitters `subtract_rsh_exchange` assembles the
-    // converged Fock from and reads the SAME `k_mix`, so the Fock and the
-    // Hessian cannot disagree about the kernel (the #314 defect). `None` at
-    // omega == 0, where the matvecs keep their untouched plain-Coulomb path.
-    let rsh_response = match (dfk_sr.as_ref(), dfk_lr.as_ref()) {
-        (Some(sr), Some(lr)) => Some(crate::rsh_response::RshResponse::new(
-            sr,
-            lr,
-            k_mix.sr,
-            k_mix.lr,
-            k_mix.omega,
-        )),
-        _ => None,
-    };
+    let rsh_response = crate::driver::rsh_response(&env, k_mix);
     let n = prep.nbasis();
+    let (nocc_a, nocc_b) = uhf_nocc(mol)?;
+    // Canonical orthogonalizer X (n × m): drops eigenvectors of S below
+    // LINDEP_THRESH to handle near-linear-dependent basis sets (Na clusters in
+    // aug-cc-pVDZ). m == n for well-conditioned S. See crate::rhf for details.
+    let orth_t = phases.begin("setup:orthogonalizer");
+    let x = crate::rhf::canonical_orthogonalizer(&env.s)?;
+    // Per-spin Fock diagonalizers: global by default, per-irrep under
+    // point-group blocking (each spin has its own occupation request).
+    let plain = crate::symmetric::PlainDiag::Rect(&x);
+    let diag_a = crate::symmetric::FockDiag::new(sym.map(|p| p.0), &env.s, plain)?;
+    let diag_b = crate::symmetric::FockDiag::new(sym.map(|p| p.1), &env.s, plain)?;
+    phases.stop(orth_t);
+    let guess = uhf_initial_mos(
+        &mut phases,
+        (ctx, mol, prep, bounds, config),
+        (&env, &x, (&diag_a, &diag_b)),
+        (nocc_a, nocc_b),
+        (initial_mos, &mut inj_jk, sym.is_some()),
+    )?;
+
+    // UHF extrapolates with `step_pair`, which fills the β histories as well —
+    // FOUR n×n matrices per subspace entry, twice RHF's.
+    crate::driver::warn_if_diis_history_large(
+        "UHF",
+        n,
+        config.diis_size,
+        crate::diis::DiisHistoryShape::PairSpin,
+        false,
+        env.ooc_budget,
+    );
+
+    let need_k = c_k != 0.0 || k_mix.omega > 0.0;
+    let coulomb_op = bounds.op;
+    // The J/K route: one decision for all three solvers
+    // (`fock_assembly::resolve_jk_route`, whose module doc tabulates every
+    // case). The open-shell solvers fit only over a NAMED aux basis (no auto
+    // default), J fits for a range-separated hybrid exactly as for any
+    // other functional, and with `k_builder = "cosx"` COSX replaces the
+    // ω = 0 DF-K (a named `df_k_aux` alongside it is refused).
+    let jk_route = crate::fock_assembly::resolve_jk_route(
+        config,
+        crate::fock_assembly::JkExchange {
+            functional: xc_contrib.is_some(),
+            k_mix,
+        },
+        Spin::Unrestricted,
+    )?;
+    let (df_j, df_k, df_jk_route) = crate::driver::build_df_fitters(
+        &mut phases,
+        ctx,
+        mol,
+        coulomb_op,
+        prep,
+        config,
+        &jk_route,
+        &env,
+        xc_contrib.as_ref().map(|_| k_mix),
+    )?;
+    // ── Pluggable exchange builder ("link" / "cosx") ────────────────────────
+    // Same semantics, warnings and hard errors as `solve_rhf` (shared helper —
+    // see `fock_assembly::resolve_k_builder`). ONE builder instance serves
+    // BOTH spins: LinK's density-pair list is density-dependent, so
+    // `build_open_shell_pluggable_k` calls `update_density(D_σ)` immediately
+    // before each `build(D_σ)` — per-spin lists, not one list from D_α + D_β
+    // (exactness over a cheap shortcut; see that helper's doc). COSX carries
+    // no density state at all. Only consumed on the non-DF, ω = 0,
+    // exact-exchange path — exactly where the combined `DirectJK` would
+    // otherwise run; J then comes from `DirectJ`.
+    let pluggable_k_kind = crate::fock_assembly::resolve_k_builder(
+        config.k_builder,
+        df_j.is_some(),
+        jk_route.k_df_routed,
+        df_k.is_some(),
+        need_k,
+        k_mix.omega,
+    );
+    let pluggable_k_kind =
+        crate::fock_assembly::narrow_k_builder_to_supported(pluggable_k_kind, need_k, k_mix.omega);
+    // `LinkBound::SchwarzRef` applies whichever refinement the caller's
+    // `bounds` carries — CSB (Eq. (8) of Thompson & Ochsenfeld, JCP 147,
+    // 144101 (2017)) for a `csb_m` table, the non-rigorous CSAM estimate for a
+    // `csam_x` one — i.e. whichever
+    // `SchwarzBounds::compute_for_screening(.., kind)` attached. With no table
+    // it is byte-identical to passing `bounds` directly. Without this wrapper
+    // `[scf] screening = "csb"`/`"csam"` would reach every direct builder and
+    // closed-shell LinK but silently NOT open-shell LinK, since `solve_uhf`
+    // has no bound-construction site of its own to consult a config field at.
+    let link_bound = crate::screening::LinkBound::SchwarzRef(bounds);
+    // Optional COSX grid schedule (default off; see `crate::cosx_schedule`).
+    let k_args = crate::cosx_schedule::KBuilderArgs {
+        kind: pluggable_k_kind,
+        ctx,
+        mol,
+        prep,
+        link_bound: &link_bound,
+        op: coulomb_op,
+        cosx: &config.cosx,
+        integral_thresh: config.integral_thresh,
+        ooc_budget: env.ooc_budget,
+    };
+    let started_k = crate::cosx_schedule::start_with_builder(&k_args)?;
+    let mut jk = crate::driver::OpenShellJk::new(
+        (ctx, prep, bounds, config),
+        env.ooc_budget,
+        crate::driver::OpenShellJkSetup {
+            inj_jk,
+            df_j,
+            df_k,
+            started_k,
+            need_k,
+            omega: k_mix.omega,
+        },
+    )?;
+    // Newton and TRAH rebuild an integer density after each step; under
+    // fractional occupation they stay off (see second_order_blocked_by_fractional_occ).
+    let fractional_blocks_second_order = second_order_blocked_by_fractional_occ(config);
+    crate::driver::commit_xc(xc_contrib.as_deref_mut())?;
+    if let Some(x) = xc_contrib.as_ref() {
+        x.start_scf();
+    }
+    // Mixed `dfj-pack`/`dfk-occ` builds only while the density moves, and an
+    // f64 exit (see `crate::jk_ladder`); inert unless one of them is requested.
+    let jk_ladder = crate::driver::jk_ladder(jk.df_j.is_some(), jk.df_k.is_some(), &env);
+
+    let inp = UhfInputs {
+        ctx,
+        mol,
+        prep,
+        bounds,
+        config,
+        env: &env,
+        rsh_response: rsh_response.as_ref(),
+        x: &x,
+        diag: (&diag_a, &diag_b),
+        nocc: (nocc_a, nocc_b),
+        k_mix,
+        c_k,
+        effective_level_shift: crate::driver::effective_level_shift(config),
+        fractional_blocks_second_order,
+        fock_mod,
+        pluggable_k_kind,
+        df_jk_route,
+    };
+    let mut xc = crate::driver::OpenShellXc { xc_contrib, inj_xc };
+    let mut st = UhfState::new(&inp, guess);
+
+    for iter in 1..=config.max_iter {
+        ctx.check_interrupted()?;
+        // COSX grid schedule: a pending coarse -> production switch rebuilds
+        // the builder and restarts DIIS here, before this iteration's K.
+        crate::cosx_schedule::before_k_build(
+            &mut jk.cosx_sched,
+            iter,
+            &mut jk.pluggable_k,
+            &mut st.diis,
+            &k_args,
+        )?;
+        let d_total = &st.d_a + &st.d_b;
+        let direct_incremental = jk.begin_iteration(iter);
+        let (f_a, f_b) = jk.build_fock(
+            direct_incremental,
+            (&st.d_a, &st.d_b, &d_total),
+            (st.d_occ_a.as_ref(), st.d_occ_b.as_ref()),
+            &env,
+            (k_mix, need_k, c_k),
+            &jk_ladder,
+            &mut phases,
+        )?;
+        (st.f_a, st.f_b) = (f_a, f_b);
+        let energy = st.energy(&inp, &mut xc, &d_total, hook.as_mut(), &mut phases)?;
+        let (sig, err_max) = st.measure(&inp, &xc, iter, energy, &mut phases);
+        let swapped = match st.gate(
+            &inp,
+            &xc,
+            &mut jk,
+            (iter, &jk_ladder),
+            (energy, sig, err_max),
+        )? {
+            UhfGate::Iterate => None,
+            UhfGate::Redo => continue,
+            UhfGate::Converged(swapped) => Some(swapped),
+        };
+        if let Some(swapped) = swapped {
+            return st.converged(&inp, &xc, &mut jk, (energy, iter, swapped));
+        }
+        st.mon.note_energy(energy);
+        match st.second_order_step(&inp, &xc, &mut jk, (iter, energy, err_max))? {
+            UhfStep::Continue => continue,
+            UhfStep::Diis => {}
+        }
+        st.diis_step(&inp, iter, &mut phases)?;
+    }
+    Ok(st.max_iter(&inp, &jk))
+}
+
+/// (nocc_α, nocc_β) from the molecule's charge and multiplicity.
+fn uhf_nocc(mol: &Molecule) -> Result<(usize, usize), FerricError> {
     let nelec = mol.nelec() as i64;
     let mult = mol.multiplicity as i64;
     if mult < 1 {
@@ -786,50 +1068,68 @@ fn solve_uhf_impl(
     if nocc_b > nocc_a {
         return Err(FerricError::General("UHF: nocc_b > nocc_a".into()));
     }
-    // Canonical orthogonalizer X (n × m): drops eigenvectors of S below
-    // LINDEP_THRESH to handle near-linear-dependent basis sets (Na clusters in
-    // aug-cc-pVDZ). m == n for well-conditioned S. See crate::rhf for details.
-    let x = crate::rhf::canonical_orthogonalizer(&s)?;
-    // Per-spin Fock diagonalizers: global by default, per-irrep under
-    // point-group blocking (each spin has its own occupation request).
-    let plain = crate::symmetric::PlainDiag::Rect(&x);
-    let diag_a = crate::symmetric::FockDiag::new(sym.map(|p| p.0), &s, plain)?;
-    let diag_b = crate::symmetric::FockDiag::new(sym.map(|p| p.1), &s, plain)?;
+    Ok((nocc_a, nocc_b))
+}
 
-    // Initial guess: caller-supplied MOs if provided, else the configured
-    // density guess (MINAO/SAD by default), else hcore.
-    //
-    // # Why this is not just hcore any more
-    //
-    // Until 2026-09-16 this branch ALWAYS used hcore: it called `hcore_guess`
-    // purely as a "sanity check it succeeds" and threw the density away, then
-    // diagonalized bare `h`. `RhfConfig::init_guess_density` and
-    // `use_sad_guess` — which `rhf.rs` honours, and which default to the MINAO
-    // projection — were referenced NOWHERE in `uhf.rs` or `rohf.rs`, so a
-    // caller who explicitly asked for a better open-shell guess silently got
-    // hcore.
-    //
-    // That is not cosmetic. MEASURED on the systems in
-    // `tests/scf_state_selection.rs`, against PySCF 2.13.0 / ORCA 6.1.1 /
-    // NWChem 7.2.2 at the same geometry and basis: from hcore, UHF converged to
-    // a state ABOVE the reference on 4 of 7 open-shell diatomics, every one of
-    // them flagged UNSTABLE by ferric's own stability check —
-    //
-    //   HeNe⁺/def2-SVP  0.136 eV     HeNe⁺/6-31G  0.126 eV
-    //   OH/6-31G        4.222 eV     N₂⁺/6-31G   10.373 eV
-    //
-    // From the MINAO density both HeNe⁺ rows and OH reach the external
-    // reference (~1e-10 Ha for HeNe⁺, 3.5e-9 Ha for OH) and HeNe⁺ reports
-    // STABLE; N₂⁺ improves by 9.58 eV. OH was not in the original sweep — it
-    // surfaced because `ferric-dft`'s own f_xc finite-difference test builds
-    // its reference density with `solve_uhf` on OH/6-31G and began failing, so
-    // the sweep in `scf_state_selection.rs` was an UNDER-count.
-    //
-    // The guess is NOT sufficient on its own: N₂⁺/6-31G from MINAO still lands
-    // 0.79 eV high and UNSTABLE — on exactly the state PySCF's OWN default
-    // guess finds before it follows its own instability. That residue is what
-    // `config.scf_stability_descent` exists for; see `stability_descent` below.
-    let (mut c_a, mut c_b) = if let Some((ca0, cb0)) = initial_mos {
+/// The guess stage, timed as `setup:guess`: the starting α/β MOs.
+/// Caller-supplied MOs if provided, else the configured density guess
+/// (MINAO/SAD by default), else hcore.
+///
+/// # Why this is not just hcore
+///
+/// MEASURED on the systems in `tests/scf_state_selection.rs`, against PySCF
+/// 2.13.0 / ORCA 6.1.1 / NWChem 7.2.2 at the same geometry and basis: from
+/// hcore, UHF converged to a state ABOVE the reference on 4 of 7 open-shell
+/// diatomics, every one of them flagged UNSTABLE by ferric's own stability
+/// check —
+///
+///   HeNe⁺/def2-SVP  0.136 eV     HeNe⁺/6-31G  0.126 eV
+///   OH/6-31G        4.222 eV     N₂⁺/6-31G   10.373 eV
+///
+/// From the MINAO density both HeNe⁺ rows and OH reach the external
+/// reference (~1e-10 Ha for HeNe⁺, 3.5e-9 Ha for OH) and HeNe⁺ reports
+/// STABLE; N₂⁺ improves by 9.58 eV. OH was not in the original sweep — it
+/// surfaced because `ferric-dft`'s own f_xc finite-difference test builds its
+/// reference density with `solve_uhf` on OH/6-31G, so the sweep in
+/// `scf_state_selection.rs` was an UNDER-count.
+///
+/// The guess is NOT sufficient on its own: N₂⁺/6-31G from MINAO still lands
+/// 0.79 eV high and UNSTABLE — on exactly the state PySCF's OWN default guess
+/// finds before it follows its own instability. That residue is what
+/// `config.scf_stability_descent` exists for; see `stability_descent`.
+///
+/// For genuine open shell (nocc_a > nocc_b), occupying the lowest nocc_σ
+/// orbitals per spin is already symmetry-broken. For "forced" UHF on a
+/// closed shell, the β HOMO/LUMO are mixed by a small angle to break symmetry.
+#[allow(clippy::type_complexity)]
+fn uhf_initial_mos(
+    phases: &mut ferric_core::timing::PhaseAccumulator,
+    (ctx, mol, prep, bounds, config): (
+        &ParallelContext,
+        &Molecule,
+        &PreparedBasis,
+        &SchwarzBounds,
+        &UhfConfig,
+    ),
+    (env, x, (diag_a, diag_b)): (
+        &crate::driver::ScfEnv<'_>,
+        &Array2<f64>,
+        (
+            &crate::symmetric::FockDiag<'_>,
+            &crate::symmetric::FockDiag<'_>,
+        ),
+    ),
+    (nocc_a, nocc_b): (usize, usize),
+    (initial_mos, inj_jk, blocked): (
+        Option<(&Array2<f64>, &Array2<f64>)>,
+        &mut Option<(Box<dyn JBuilder + '_>, Box<dyn KBuilder + '_>)>,
+        bool,
+    ),
+) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
+    let (s, h) = (&env.s, &env.h);
+    let n = prep.nbasis();
+    let guess_t = phases.begin("setup:guess");
+    let (c_a, mut c_b) = if let Some((ca0, cb0)) = initial_mos {
         if ca0.dim() != (n, n) || cb0.dim() != (n, n) {
             return Err(FerricError::General(format!(
                 "solve_uhf_with_guess: initial MO shape mismatch (got {:?}/{:?}, want ({n},{n}))",
@@ -843,497 +1143,202 @@ fn solve_uhf_impl(
         // An explicit density builds the guess Fock from the INJECTED J/K;
         // otherwise the core guess, identical to the molecular hcore branch.
         match config.init_guess_density.as_ref() {
-            Some(d0) => injected_guess_mos(ij.as_mut(), ik.as_mut(), d0, &h, &x)?,
+            Some(d0) => injected_guess_mos(ij.as_mut(), ik.as_mut(), d0, h, x)?,
             None => {
-                let _ = hcore_guess(&s, &h, nocc_a.max(1))?;
-                let (_, c) = diagonalize(&h, &x)?;
+                let _ = hcore_guess(s, h, nocc_a.max(1))?;
+                let (_, c) = diagonalize(h, x)?;
                 (c.clone(), c)
             }
         }
     } else if let Some((ga, gb)) =
-        uhf_guess_mos(ctx, mol, prep, bounds, config, &h, (&diag_a, &diag_b))?
+        uhf_guess_mos(ctx, mol, prep, bounds, config, h, (diag_a, diag_b))?
     {
         (ga, gb)
     } else {
         // hcore guess: get MO coefficients from H' = Xᵀ H X (canonical-orthog).
         // diagonalize() pads to (n × n), keeping the guess shape historical.
-        let _ = hcore_guess(&s, &h, nocc_a.max(1))?; // sanity check it succeeds
-        (diag_a.run(&h)?.1, diag_b.run(&h)?.1)
+        let _ = hcore_guess(s, h, nocc_a.max(1))?; // sanity check it succeeds
+        (diag_a.run(h)?.1, diag_b.run(h)?.1)
     };
+    mix_beta_homo_lumo(&mut c_b, nocc_a, nocc_b, x.ncols(), blocked);
+    phases.stop(guess_t);
+    Ok((c_a, c_b))
+}
 
-    // For genuine open shell (nocc_a > nocc_b), occupying the lowest nocc_σ
-    // orbitals per spin is already symmetry-broken. For "forced" UHF on a
-    // closed-shell, mix HOMO/LUMO in β with a small angle to break symmetry.
-    mix_beta_homo_lumo(&mut c_b, nocc_a, nocc_b, sym.is_some());
+/// Occupied MO coefficients driving the O(naux·n²·nocc) DF-K half-transform
+/// (`KBuilder::build_from_occ`) in place of the O(naux·n³) density
+/// contraction. Each UHF spin density is a bare D_σ = C_σ·C_σᵀ (see
+/// [`density`]), so, unlike RHF's D = 2·C_occ·C_occᵀ, no factor-2 rescale is
+/// needed.
+fn occ_or_none(c: &Array2<f64>, nocc: usize) -> Option<Array2<f64>> {
+    (nocc > 0).then(|| c.slice(ndarray::s![.., ..nocc]).to_owned())
+}
 
-    let mut d_a = density(&c_a, nocc_a);
-    let mut d_b = density(&c_b, nocc_b);
+/// What one UHF solve reads and never changes.
+struct UhfInputs<'r, 'e> {
+    ctx: &'r ParallelContext,
+    mol: &'r Molecule,
+    prep: &'r PreparedBasis,
+    bounds: &'r SchwarzBounds,
+    config: &'r UhfConfig,
+    env: &'r crate::driver::ScfEnv<'e>,
+    /// See [`crate::driver::rsh_response`].
+    rsh_response: Option<&'r crate::rsh_response::RshResponse<'r>>,
+    /// The canonical orthogonalizer.
+    x: &'r Array2<f64>,
+    diag: (
+        &'r crate::symmetric::FockDiag<'r>,
+        &'r crate::symmetric::FockDiag<'r>,
+    ),
+    nocc: (usize, usize),
+    k_mix: ferric_dft::xc_trait::KMix,
+    /// See `c_k` in [`solve_uhf_impl`].
+    c_k: f64,
+    /// Meta-GGA (SCAN / r2SCAN) UKS is stiffer than LDA/GGA and limit-cycles
+    /// under plain DIIS; this is the same modest default virtual-block level
+    /// shift the closed-shell RKS path uses when the user hasn't set one
+    /// (`driver::effective_level_shift`), damped to zero as the gradient
+    /// converges. LDA/GGA/hybrid keep the user's shift (default 0).
+    effective_level_shift: f64,
+    /// See `second_order_blocked_by_fractional_occ`.
+    fractional_blocks_second_order: bool,
+    /// The cDFT (or other external) Fock modifier.
+    fock_mod: Option<UhfFockMod<'r>>,
+    pluggable_k_kind: Option<KBuilderKind>,
+    /// The builders that produced the energy, for the analytic gradient.
+    df_jk_route: Option<crate::result::DfJkRoute>,
+}
 
-    // ── Trust-region augmented-Hessian state (opt-in; None = TRAH disabled) ──
-    // See the RHF counterpart in `rhf.rs` and `crate::trah::TrahState` for why
-    // the ρ assessment spans two SCF iterations. `trah_undo` holds the α/β MOs
-    // the pending step departed from, so a rejected step is undone exactly.
-    // Both stay `None` when `config.trah_trigger` is `None`, which is what
-    // makes the disabled path bit-identical.
-    let mut trah_state: Option<crate::trah::TrahState> = config
-        .trah_trigger
-        .map(|_| crate::trah::TrahState::new(config.trah));
-    let mut trah_undo: Option<(Array2<f64>, Array2<f64>)> = None;
-    // Set on the iteration a TRAH step is rejected; consumed at the next
-    // iteration's arming gate (`crate::trah::settle_engaged_latch`).
-    let mut trah_last_rejected = false;
-    // TRAH keeps control from its first step until it declines a step as
-    // worthless or its radius collapses -- see the arming gate.
-    let mut trah_engaged = false;
+/// The convergence and ladder decision of one UHF iteration.
+enum UhfGate {
+    Iterate,
+    /// A mixed J/K build would have exited: redo this iteration in f64.
+    Redo,
+    /// Converged; `true` when a UKS degenerate swap was accepted.
+    Converged(bool),
+}
 
-    // Occupied MO coefficients driving the O(naux·n²·nocc) DF-K half-transform
-    // (KBuilder::build_from_occ) in place of the O(naux·n³) density
-    // contraction. Unlike RHF, each UHF spin density is a bare
-    // D_σ = C_σ·C_σᵀ (see `density`), so no factor-2 rescale is needed here —
-    // dropping that RHF-only factor was what made this path look like a
-    // convergence bug and get disabled (see the note in rhf.rs).
-    let occ_or_none = |c: &Array2<f64>, nocc: usize| -> Option<Array2<f64>> {
-        (nocc > 0).then(|| c.slice(ndarray::s![.., ..nocc]).to_owned())
-    };
-    let mut d_occ_a: Option<Array2<f64>> = occ_or_none(&c_a, nocc_a);
-    let mut d_occ_b: Option<Array2<f64>> = occ_or_none(&c_b, nocc_b);
+/// Whether a second-order step took this iteration.
+enum UhfStep {
+    /// The orbitals moved (or a TRAH rejection restored them, or a held pin
+    /// is done): skip DIIS.
+    Continue,
+    /// DIIS takes this iteration.
+    Diis,
+}
 
-    let mut j_buf = Array2::<f64>::zeros((n, n));
-    let mut k_a_buf = Array2::<f64>::zeros((n, n));
-    let mut k_b_buf = Array2::<f64>::zeros((n, n));
+/// The iteration state of one UHF solve.
+struct UhfState {
+    c_a: Array2<f64>,
+    c_b: Array2<f64>,
+    d_a: Array2<f64>,
+    d_b: Array2<f64>,
+    /// See [`occ_or_none`].
+    d_occ_a: Option<Array2<f64>>,
+    d_occ_b: Option<Array2<f64>>,
+    /// This iteration's assembled spin Focks.
+    f_a: Array2<f64>,
+    f_b: Array2<f64>,
+    /// This iteration's per-spin AO commutators `F_σ D_σ S − S D_σ F_σ`.
+    err_a: Array2<f64>,
+    err_b: Array2<f64>,
+    /// Coupled α/β DIIS — single subspace, joint error norm. PySCF-style.
+    /// Independent per-spin DIIS desyncs α and β on cations (e.g. H2O+ took
+    /// 421 iterations to converge with independent DIIS; coupled converges
+    /// in ~15-25 cycles).
+    diis: Diis,
+    /// Orbital-gradient exit gate (`UhfExitGate`): veto state + swap history.
+    exit_gate: UhfExitGate,
+    /// Convergence bookkeeping (prev energy, ΔP over the TOTAL α+β density,
+    /// divergence streak, stall history) — shared driver::ScfMonitor; ΔP is
+    /// INFINITY until the first rebuild (see rhf::scf_converged).
+    mon: crate::driver::ScfMonitor,
+    last_report: Option<crate::result::ConvergenceReport>,
+    /// Most recent Thole-damped polarizable-embedding dipoles (None when
+    /// `config.polarizable` is off/empty) — threaded into both results.
+    last_induced_dipoles: Option<Array2<f64>>,
+    /// Maximum-Overlap Method (MOM) references: the previously-accepted
+    /// occupied α/β MO blocks. From iter `mom_after_iter + 1` onward each
+    /// spin's occupied set is picked by AO-overlap with these
+    /// (Gilbert-Besley-Gill) instead of pure aufbau. This pins the open-shell
+    /// occupation through SCF and converges open-shell atoms (e.g. S/O ³P)
+    /// whose near-degenerate p-shell otherwise makes plain DIIS oscillate
+    /// forever. Empty open block for UHF (each spin is a pure closed set, see
+    /// `mom_pin`). Under `MomReference::Initial` the references are the
+    /// starting occupied blocks, pinned against from iteration 1 and never
+    /// replaced.
+    mom_from_start: bool,
+    mom_ref_a: Option<Array2<f64>>,
+    mom_ref_b: Option<Array2<f64>>,
+    /// Trust-region augmented-Hessian state; the undo pair is the α/β MOs
+    /// the pending step departed from.
+    trah: crate::driver::TrahLoop<(Array2<f64>, Array2<f64>)>,
+}
 
-    // Coupled α/β DIIS — single subspace, joint error norm. PySCF-style.
-    // Independent per-spin DIIS desyncs α and β on cations (e.g. H2O+ took
-    // 421 iterations to converge with independent DIIS; coupled converges
-    // in ~15-25 cycles).
-    let mut diis = Diis::new(config.diis_size);
-    // Orbital-gradient exit gate (`UhfExitGate`): veto state + swap history.
-    let mut exit_gate = UhfExitGate::default();
-    // UHF extrapolates with `step_pair`, which fills the β histories as well —
-    // FOUR n×n matrices per subspace entry, twice RHF's. This projection was
-    // missing entirely until 2026-08-30: the warning was called from RHF only,
-    // so the variant that holds the most DIIS memory reported none of it.
-    crate::driver::warn_if_diis_history_large(
-        "UHF",
-        n,
-        config.diis_size,
-        crate::diis::DiisHistoryShape::PairSpin,
-        false,
-        ooc_budget,
-    );
-    // Convergence bookkeeping (prev energy, ΔP over the TOTAL α+β density,
-    // divergence streak, stall history) — shared driver::ScfMonitor; ΔP is
-    // INFINITY until the first rebuild (see rhf::scf_converged).
-    // Most recent Thole-damped polarizable-embedding dipoles (None when
-    // `config.polarizable` is off/empty) — threaded into both ScfResult
-    // constructors below (converged early-exit and MaxIter).
-    let mut last_induced_dipoles: Option<Array2<f64>> = None;
-    let mut mon = crate::driver::ScfMonitor::new();
-    let mut last_report: Option<crate::result::ConvergenceReport> = None;
-    let mut total_quartets = 0usize;
-
-    // Maximum-Overlap Method (MOM) references: the previously-accepted occupied
-    // α/β MO blocks. From iter `mom_after_iter + 1` onward we pick each spin's
-    // occupied set by AO-overlap with these (Gilbert-Besley-Gill), instead of
-    // pure aufbau. This pins the open-shell occupation through SCF and converges
-    // open-shell atoms (e.g. S/O ³P) whose near-degenerate p-shell otherwise
-    // makes plain DIIS oscillate forever. Empty open block for UHF (each spin is
-    // a pure closed set, see `mom_pin`). Mirrors the rohf.rs MOM wiring.
-    let mut mom_ref_a: Option<Array2<f64>> = None;
-    let mut mom_ref_b: Option<Array2<f64>> = None;
-
-    // K built per spin:
-    //   * RSH (ω > 0): K_σ = c_SR · K_SR[D_σ] + c_LR · K_LR[D_σ] via DfK
-    //   * Plain hybrid / pure HF (ω = 0): K_σ = c_K · K[D_σ] via DirectK, or DfK
-    //     when config.df_k_aux is set (density-fitted exchange).
-    //   * Pure DFT (c_K = 0): K skipped
-    // J (ω = 0 path only — RSH doesn't touch J here) is DirectJ, or DfJ when
-    // config.df_j_aux is set (density-fitted Coulomb).
-    // Builders hoisted out of the loop: each lazily builds a per-thread libint2
-    // EnginePool on first use (ctors serialized behind a global mutex), so a
-    // loop-local builder would pay that construction every iteration.
-    let need_k = c_k != 0.0 || k_mix.omega > 0.0;
-    let coulomb_op = bounds.op;
-    // Effective aux names under the existing gates (ω=0 for both; DF-K
-    // additionally needs `need_k`) — `None` reproduces the prior "skip this
-    // builder entirely" branch exactly. `build_df_jk` shares one
-    // `PreparedBasis` when both names are set and identical (see its doc);
-    // it independently gates each output on its own `Option`, so this is
-    // byte-identical to the previous two-independent-`if` structure.
-    let j_aux_eff = if k_mix.omega == 0.0 {
-        config.df_j_aux.as_deref()
-    } else {
-        None
-    };
-    // RIJCOSX: `k_builder = "cosx"` replaces the ω = 0 DF-K (an explicitly
-    // named `df_k_aux` alongside it is refused); DF-J is unaffected.
-    let cosx_k = crate::fock_assembly::cosx_replaces_df_k(
-        config.k_builder.as_deref(),
-        config.df_k_aux.as_deref(),
-        need_k && k_mix.omega == 0.0,
-    )?;
-    let k_aux_eff = if need_k && k_mix.omega == 0.0 && !cosx_k {
-        config.df_k_aux.as_deref()
-    } else {
-        None
-    };
-    let (mut df_j, mut df_k) = crate::fock_assembly::build_df_jk(
-        ctx,
-        mol,
-        coulomb_op,
-        prep,
-        j_aux_eff,
-        k_aux_eff,
-        ooc_budget,
-        config.integral_thresh,
-    )?;
-    // Record the builders that produced the energy (same effective names as
-    // `build_df_jk` above and `driver::prepare`'s RSH pair) so the analytic
-    // gradient differentiates THIS energy. `None` when nothing is fitted.
-    let df_jk_route = crate::result::DfJkRoute::from_scf(
-        j_aux_eff,
-        k_aux_eff,
-        (k_mix.omega > 0.0).then(|| {
-            (
-                config
-                    .df_k_aux
-                    .as_deref()
-                    .unwrap_or(crate::fock_assembly::DEFAULT_JK_AUX),
-                k_mix.omega,
-            )
-        }),
-        coulomb_op,
-        ooc_budget,
-    );
-    // ── Combined open-shell direct J+K (single quartet pass) ────────────────
-    // When BOTH J and K come from the direct (non-DF) path with an ordinary
-    // ω = 0 kernel, one `DirectJK::build_uhf` pass produces J[D_α+D_β], K[D_α]
-    // and K[D_β] together. This replaces three separate quartet traversals
-    // (`DirectJ(D_total)` + `DirectK(D_α)` + `DirectK(D_β)`), each of which
-    // re-evaluated the same integrals and screened on the loose global max|D|
-    // scalar instead of the tight six-pairwise shell table.
-    //
-    // Gated to exactly the case where all three matrices are direct and share
-    // the Coulomb operator: `df_j.is_none() && df_k.is_none() && need_k &&
-    // k_mix.omega == 0.0`. Every other combination (DF-J, DF-K, RSH, pure DFT
-    // with no K at all) keeps the previous per-matrix builders untouched.
-    //
-    // Escape hatch (test + debugging, mirroring `FERRIC_SCF_INCREMENTAL`):
-    // `FERRIC_SCF_COMBINED_JK=0` (or `off`/`false`) restores the historical
-    // three-pass open-shell build, so the combined path can be A/B'd for
-    // correctness and timing without a rebuild.
-    // ── Pluggable exchange builder ("link" / "cosx") ────────────────────────
-    // Same semantics, warnings and hard errors as `solve_rhf` (shared helper —
-    // see `fock_assembly::resolve_k_builder`). Until 2026-09-08 `solve_uhf`
-    // never read `config.k_builder`, so both values were silently ignored for
-    // every open-shell run.
-    //
-    // ONE builder instance serves BOTH spins. LinK's density-pair list is
-    // density-dependent, so `build_open_shell_pluggable_k` calls
-    // `update_density(D_σ)` immediately before each `build(D_σ)` — per-spin
-    // lists, not one list from D_α + D_β (exactness over a cheap shortcut; see
-    // that helper's doc). COSX carries no density state at all.
-    //
-    // Only consumed on the non-DF, ω = 0, exact-exchange path — exactly where
-    // the combined `DirectJK` would otherwise run. J then comes from `DirectJ`
-    // (as it does in `solve_rhf`'s pluggable branch), since the combined pass
-    // is what supplied J for free.
-    let pluggable_k_kind = crate::fock_assembly::resolve_k_builder(
-        config.k_builder.as_deref(),
-        df_j.is_some(),
-        df_k.is_some(),
-        df_k.is_some(),
-        need_k,
-        k_mix.omega,
-    )?;
-    let pluggable_k_kind =
-        crate::fock_assembly::narrow_k_builder_to_supported(pluggable_k_kind, need_k, k_mix.omega);
-    // `LinkBound::SchwarzRef` applies whichever refinement the caller's
-    // `bounds` carries — CSB (Eq. (8) of Thompson & Ochsenfeld, JCP 147,
-    // 144101 (2017)) for a `csb_m` table, the non-rigorous CSAM estimate for a
-    // `csam_x` one — i.e. whichever
-    // `SchwarzBounds::compute_for_screening(.., kind)` attached. With no table
-    // it is byte-identical to passing `bounds` directly, so the default path is
-    // unchanged. Without this wrapper `[scf] screening = "csb"`/`"csam"` would
-    // reach every direct builder and closed-shell LinK but silently NOT
-    // open-shell LinK, since `solve_uhf` has no bound-construction site of its
-    // own to consult a config field at.
-    let link_bound = crate::screening::LinkBound::SchwarzRef(bounds);
-    // Optional COSX grid schedule (default off; see `crate::cosx_schedule`).
-    let k_args = crate::cosx_schedule::KBuilderArgs {
-        kind: pluggable_k_kind,
-        ctx,
-        mol,
-        prep,
-        link_bound: &link_bound,
-        op: coulomb_op,
-        cosx: &config.cosx,
-        integral_thresh: config.integral_thresh,
-        ooc_budget,
-    };
-    let (mut cosx_sched, mut pluggable_k): (_, Option<Box<dyn KBuilder>>) =
-        crate::cosx_schedule::start_with_builder(&k_args)?;
-
-    let combined_direct_jk = df_j.is_none()
-        && df_k.is_none()
-        && need_k
-        && k_mix.omega == 0.0
-        && pluggable_k.is_none()
-        && !injected
-        && crate::direct_jk::combined_open_shell_jk_enabled();
-    let mut direct_jk: Option<crate::direct_jk::DirectJK> = if combined_direct_jk {
-        Some(crate::direct_jk::DirectJK::new(
-            ctx,
-            prep,
-            bounds,
-            config.integral_thresh,
-            ooc_budget,
-        ))
-    } else {
-        None
-    };
-    // No molecular direct builders on the injected path (J/K come from
-    // `inj_jk`); `!injected` is `true` on the molecular path, so the gates are
-    // unchanged there.
-    let mut direct_j: Option<DirectJ> = if df_j.is_none() && !combined_direct_jk && !injected {
-        Some(DirectJ::new(
-            ctx,
-            prep,
-            bounds,
-            config.integral_thresh,
-            ooc_budget,
-        ))
-    } else {
-        None
-    };
-    let mut direct_k: Option<DirectK> = if need_k
-        && k_mix.omega == 0.0
-        && df_k.is_none()
-        && !combined_direct_jk
-        && pluggable_k.is_none()
-        && !injected
-    {
-        Some(DirectK::new(
-            ctx,
-            prep,
-            bounds,
-            config.integral_thresh,
-            ooc_budget,
-        ))
-    } else {
-        None
-    };
-
-    // ── Incremental (differential) Fock build, combined DirectJK path only ──
-    // Same scheme (and the same `FERRIC_SCF_INCREMENTAL` kill switch and
-    // 8-iteration periodic full rebuild) as `solve_rhf`; see that function for
-    // the full rationale. Restricted to the combined direct path for the same
-    // reason: the DF/RI paths carry a naux-dependent fitted-Fock noise floor
-    // that ΔD accumulation would compound.
-    //
-    // The open-shell specifics — screening on |ΔD_α| + |ΔD_β| rather than
-    // |ΔD_total|, and why — are documented on
-    // `DirectJK::build_uhf_incremental`.
-    // NOTE: opt-IN (default off), unlike the closed-shell path. See
-    // `direct_jk::open_shell_incremental_enabled` for the measurements behind
-    // that choice — the scheme is correct but measured ~1.00-1.05x here.
-    //
-    // INTERACTION WITH A PLUGGABLE K (`k_builder = "link"` / `"cosx"`):
-    // structurally impossible, not merely discouraged. `incremental_direct`
-    // requires `direct_jk.is_some()`, and `combined_direct_jk` is now gated on
-    // `pluggable_k.is_none()` — so when a pluggable builder is active there is
-    // no `DirectJK` and the ΔD path is off regardless of
-    // `FERRIC_SCF_UHF_INCREMENTAL`. A pluggable K is therefore never handed a
-    // ΔD it cannot interpret: LinK would build its density-pair list from a
-    // DIFFERENCE density (whose sparsity pattern and magnitudes are unrelated
-    // to the density being screened for), and COSX's overlap fit is defined
-    // against a true density. The user gets the full-rebuild pluggable path
-    // with no error and no silent wrong answer; the env knob keeps applying to
-    // the default (non-pluggable) open-shell path exactly as before.
-    let incremental_direct =
-        direct_jk.is_some() && crate::direct_jk::open_shell_incremental_enabled();
-    // The (α, β) densities that produced the CURRENT contents of
-    // j_buf/k_a_buf/k_b_buf. `None` until the first full build.
-    let mut d_last_fock: Option<(Array2<f64>, Array2<f64>)> = None;
-    const INCREMENTAL_FULL_REBUILD_EVERY: usize = 8;
-    // Newton and TRAH rebuild an integer density after each step; under
-    // fractional occupation they stay off (see second_order_blocked_by_fractional_occ).
-    let fractional_blocks_second_order = second_order_blocked_by_fractional_occ(config);
-    crate::driver::commit_xc(xc_contrib.as_deref_mut())?;
-    if let Some(x) = xc_contrib.as_ref() {
-        x.start_scf();
+impl UhfState {
+    fn new(inp: &UhfInputs<'_, '_>, (c_a, c_b): (Array2<f64>, Array2<f64>)) -> Self {
+        let (nocc_a, nocc_b) = inp.nocc;
+        let config = inp.config;
+        let d_a = density(&c_a, nocc_a);
+        let d_b = density(&c_b, nocc_b);
+        let mom_from_start = config.mom_reference == crate::mom::MomReference::Initial;
+        UhfState {
+            d_occ_a: occ_or_none(&c_a, nocc_a),
+            d_occ_b: occ_or_none(&c_b, nocc_b),
+            mom_ref_a: start_reference(&c_a, nocc_a, mom_from_start),
+            mom_ref_b: start_reference(&c_b, nocc_b, mom_from_start),
+            mom_from_start,
+            c_a,
+            c_b,
+            d_a,
+            d_b,
+            f_a: Array2::zeros((0, 0)),
+            f_b: Array2::zeros((0, 0)),
+            err_a: Array2::zeros((0, 0)),
+            err_b: Array2::zeros((0, 0)),
+            diis: Diis::new(config.diis_size),
+            exit_gate: UhfExitGate::default(),
+            mon: crate::driver::ScfMonitor::new(),
+            last_report: None,
+            last_induced_dipoles: None,
+            trah: crate::driver::TrahLoop::new(config),
+        }
     }
-    // Mixed `dfj-pack`/`dfk-occ` builds only while the density moves, and an
-    // f64 exit (see `crate::jk_ladder`); inert unless one of them is requested.
-    let jk_ladder = crate::jk_ladder::JkLadder::new([
-        df_j.is_some(),
-        df_k.is_some(),
-        dfk_sr.is_some(),
-        dfk_lr.is_some(),
-    ]);
 
-    for iter in 1..=config.max_iter {
-        ctx.check_interrupted()?;
-        // COSX grid schedule: a pending coarse -> production switch rebuilds
-        // the builder and restarts DIIS here, before this iteration's K.
-        crate::cosx_schedule::before_k_build(
-            &mut cosx_sched,
-            iter,
-            &mut pluggable_k,
-            &mut diis,
-            &k_args,
-        )?;
-        let d_total = &d_a + &d_b;
-
-        // On incremental iterations the buffers must KEEP the previous
-        // iteration's J/K_σ (the delta is accumulated onto them); every other
-        // path starts from zero exactly as before.
-        let direct_full_rebuild = incremental_direct
-            && (d_last_fock.is_none() || iter % INCREMENTAL_FULL_REBUILD_EVERY == 1);
-        let direct_incremental = incremental_direct && !direct_full_rebuild;
-        if !direct_incremental {
-            j_buf.fill(0.0);
-            k_a_buf.fill(0.0);
-            k_b_buf.fill(0.0);
-        }
-
-        let jk_scope = jk_ladder.begin_build(&[&d_a, &d_b]);
-        // Combined single-pass J + K_α + K_β when enabled; otherwise J alone
-        // here (DF-J or DirectJ) and K below, as before. An injected
-        // (periodic) J pre-empts all of them (validate_injected_uhf guarantees
-        // no DF/pluggable builder was requested alongside it).
-        if let Some((ij, _)) = inj_jk.as_mut() {
-            total_quartets += ij.build(&d_total, &mut j_buf)?;
-        } else if let Some(djk) = direct_jk.as_mut() {
-            if direct_incremental {
-                let (da_prev, db_prev) = d_last_fock
-                    .as_ref()
-                    .expect("d_last_fock set on full rebuild");
-                let delta_a = &d_a - da_prev;
-                let delta_b = &d_b - db_prev;
-                let delta_total = &delta_a + &delta_b;
-                total_quartets += djk.build_uhf_incremental(
-                    &delta_total,
-                    &delta_a,
-                    &delta_b,
-                    &mut j_buf,
-                    &mut k_a_buf,
-                    &mut k_b_buf,
-                )?;
-            } else {
-                total_quartets +=
-                    djk.build_uhf(&d_total, &d_a, &d_b, &mut j_buf, &mut k_a_buf, &mut k_b_buf)?;
-            }
-            d_last_fock = Some((d_a.clone(), d_b.clone()));
-        } else if let Some(dfj) = df_j.as_mut() {
-            // J built from total density (one call). DF-J if configured, else direct.
-            dfj.build(&d_total, &mut j_buf)?;
-        } else {
-            let dj = direct_j.as_mut().expect("DirectJ built before loop");
-            total_quartets += dj.build(&d_total, &mut j_buf)?;
-        }
-        // F_σ = H + J − K_σ_total  (then + V_xc^σ below for UKS path),
-        // assembled in place — no k_σ_total clones for HF/plain hybrids and no
-        // zeros allocations for pure DFT. `f_σ += (−c)·K` is bit-identical to
-        // the former `f_σ −= c·&K` clone path (sign flip is exact); the RSH
-        // branch keeps the explicit SR/LR combination for the same reason.
-        let mut f_a: Array2<f64> = &h + &j_buf;
-        let mut f_b: Array2<f64> = &h + &j_buf;
-        if k_mix.omega > 0.0 {
-            let mut dfk_sr = dfk_sr
-                .as_ref()
-                .expect("dfk_sr built when omega>0")
-                .borrow_mut();
-            let mut dfk_lr = dfk_lr
-                .as_ref()
-                .expect("dfk_lr built when omega>0")
-                .borrow_mut();
-            let (dfk_sr, dfk_lr) = (&mut *dfk_sr, &mut *dfk_lr);
-            crate::fock_assembly::subtract_rsh_exchange(
-                dfk_sr,
-                dfk_lr,
-                &d_a,
-                d_occ_a.as_ref(),
-                1.0,
-                &mut f_a,
-                k_mix.sr,
-                k_mix.lr,
-                1.0,
-            )?;
-            crate::fock_assembly::subtract_rsh_exchange(
-                dfk_sr,
-                dfk_lr,
-                &d_b,
-                d_occ_b.as_ref(),
-                1.0,
-                &mut f_b,
-                k_mix.sr,
-                k_mix.lr,
-                1.0,
-            )?;
-        } else if need_k {
-            if let Some((_, ik)) = inj_jk.as_mut() {
-                // Injected K per spin: update_density(D_σ) + build(D_σ) from the
-                // one builder — the same sequence as the pluggable arm below.
-                // The builder's Madelung term (if any) is linear in D_σ, so no
-                // per-spin factor here (FINDINGS Iteration 6).
-                total_quartets += crate::fock_assembly::build_open_shell_pluggable_k(
-                    ik.as_mut(),
-                    &d_a,
-                    &d_b,
-                    &mut k_a_buf,
-                    &mut k_b_buf,
-                )?;
-            } else if direct_jk.is_some() {
-                // K_α/K_β already filled by the combined single-pass build above.
-            } else if let Some(kb) = pluggable_k.as_mut() {
-                // Per-spin `update_density(D_σ)` + `build(D_σ)` from one shared
-                // instance (see fock_assembly::build_open_shell_pluggable_k).
-                total_quartets += crate::fock_assembly::build_open_shell_pluggable_k(
-                    kb.as_mut(),
-                    &d_a,
-                    &d_b,
-                    &mut k_a_buf,
-                    &mut k_b_buf,
-                )?;
-            } else if let Some(dfk) = df_k.as_mut() {
-                // C_occ half-transform per spin when available (D_σ = C_occ,σ·C_occ,σᵀ);
-                // the fractional-occupation ensemble path falls back to build(D_σ).
-                match d_occ_a.as_ref() {
-                    Some(c) => dfk.build_from_occ(c, &mut k_a_buf)?,
-                    None => dfk.build(&d_a, &mut k_a_buf)?,
-                };
-                match d_occ_b.as_ref() {
-                    Some(c) => dfk.build_from_occ(c, &mut k_b_buf)?,
-                    None => dfk.build(&d_b, &mut k_b_buf)?,
-                };
-            } else {
-                let dk = direct_k.as_mut().expect("DirectK built before loop");
-                total_quartets += <DirectK as KBuilder>::build(dk, &d_a, &mut k_a_buf)?;
-                total_quartets += <DirectK as KBuilder>::build(dk, &d_b, &mut k_b_buf)?;
-            }
-            f_a.scaled_add(-c_k, &k_a_buf);
-            f_b.scaled_add(-c_k, &k_b_buf);
-        }
-        drop(jk_scope);
-
-        // Electronic energy BEFORE adding V_xc (V_xc is one-body in F_σ but
-        // E_xc is its own integral).
-        let e_elec_no_xc: f64 = 0.5 * ((&(&h + &f_a) * &d_a).sum() + (&(&h + &f_b) * &d_b).sum());
-        let e_xc = if let Some(x) = xc_contrib.as_ref() {
+    /// The energy stage: the electronic energy of the assembled F_σ (before
+    /// V_xc: V_xc is one-body in F_σ but E_xc is its own integral), then V_xc,
+    /// the hook, the Fock modifier and the solvent terms folded into F_σ with
+    /// their energies.
+    fn energy(
+        &mut self,
+        inp: &UhfInputs<'_, '_>,
+        xc: &mut crate::driver::OpenShellXc<'_>,
+        d_total: &Array2<f64>,
+        hook: Option<&mut crate::fock::SpinFockHook<'_>>,
+        phases: &mut ferric_core::timing::PhaseAccumulator,
+    ) -> Result<f64, FerricError> {
+        let env = inp.env;
+        let h = &env.h;
+        let (d_a, d_b) = (&self.d_a, &self.d_b);
+        let (f_a, f_b) = (&mut self.f_a, &mut self.f_b);
+        let energy_t = phases.begin("energy_trace");
+        let e_elec_no_xc: f64 = 0.5 * ((&(h + &*f_a) * d_a).sum() + (&(h + &*f_b) * d_b).sum());
+        phases.stop(energy_t);
+        let xc_t = phases.begin("xc_digest");
+        let e_xc = if let Some(x) = xc.xc_contrib.as_ref() {
             // Occupied-factored density pass per spin (D_σ = C_σ·C_σᵀ); the XC
             // side re-checks each pair and falls back to the dense D_σ, which
             // also covers fractional occupations.
             x.add_xc_uks_occ(
-                (&d_a, &d_b),
-                (d_occ_a.as_ref(), d_occ_b.as_ref()),
-                &mut f_a,
-                &mut f_b,
+                (d_a, d_b),
+                (self.d_occ_a.as_ref(), self.d_occ_b.as_ref()),
+                f_a,
+                f_b,
             )
-        } else if let Some(ix) = inj_xc.as_mut() {
+        } else if let Some(ix) = xc.inj_xc.as_mut() {
             // Injected (periodic) UKS: V_σ added after the exchange term,
             // E_xc outside the trace (the add_xc_uks convention above).
-            let (e, v_a, v_b) = ix.build_polarized(&d_a, &d_b)?;
+            let (e, v_a, v_b) = ix.build_polarized(d_a, d_b)?;
             if v_a.dim() != f_a.dim() || v_b.dim() != f_b.dim() {
                 return Err(FerricError::General(format!(
                     "solve_uhf_injected: XcBuilder::build_polarized returned V_xc of shapes \
@@ -1343,60 +1348,83 @@ fn solve_uhf_impl(
                     f_a.dim()
                 )));
             }
-            f_a += &v_a;
-            f_b += &v_b;
+            *f_a += &v_a;
+            *f_b += &v_b;
             e
         } else {
             0.0
         };
+        phases.stop(xc_t);
         // Caller-supplied term (`solve_uhf_with_hook`): V_σ into F_σ, its
         // energy outside the trace (the E_xc convention). `None` adds nothing.
-        let e_hook = crate::fock::apply_spin_fock_hook(
-            hook.as_mut(),
-            "solve_uhf_with_hook",
-            (&d_a, &d_b),
-            &mut f_a,
-            &mut f_b,
-        )?;
+        let e_hook =
+            crate::fock::apply_spin_fock_hook(hook, "solve_uhf_with_hook", (d_a, d_b), f_a, f_b)?;
         // cDFT (or any external) Fock modifier: add a fixed AO potential to
         // both spin Focks before DIIS sees them. The constraint energy term is
-        // accounted for by the outer driver, not here, so `energy` below is the
+        // accounted for by the outer driver, not here, so the energy is the
         // ordinary KS energy at the current (constrained) density.
-        if let Some(fm) = fock_mod {
-            fm(&mut f_a, &mut f_b);
+        if let Some(fm) = inp.fock_mod {
+            fm(f_a, f_b);
         }
 
         // COSMO reaction field: built from the TOTAL density (D_a + D_b),
-        // recomputed every iteration (see rhf::solve_rhf / crate::cosmo for
-        // the full derivation). The reaction-field potential is spin-
-        // independent (a classical electrostatic term), so it is added
-        // identically to both spin Focks. Its energy is added directly to
-        // `energy`, not via the e_elec_no_xc trace (matches PySCF's
-        // e_solvent-added-on-top convention).
+        // recomputed every iteration (see rhf::RhfState::energy /
+        // crate::cosmo for the full derivation). The reaction-field potential
+        // is spin-independent (a classical electrostatic term), so it is added
+        // identically to both spin Focks. Its energy is added directly, not
+        // via the e_elec_no_xc trace (matches PySCF's e_solvent-added-on-top
+        // convention).
+        let solvent_t = phases.begin("solvent_terms");
         let (e_cosmo, e_pcm, e_pol, iter_induced_dipoles) = crate::driver::solvent_terms(
-            mol,
-            prep,
-            config,
-            cosmo_cavity.as_ref(),
-            pcm_ctx.as_ref(),
-            polarizable_site_basis.as_ref(),
-            &d_total,
-            &mut [&mut f_a, &mut f_b],
+            inp.mol,
+            inp.prep,
+            inp.config,
+            env.cosmo_cavity.as_ref(),
+            env.pcm_ctx.as_ref(),
+            env.polarizable_site_basis.as_ref(),
+            d_total,
+            &mut [f_a, f_b],
         )?;
-        last_induced_dipoles = iter_induced_dipoles;
+        self.last_induced_dipoles = iter_induced_dipoles;
+        phases.stop(solvent_t);
 
-        let energy = e_elec_no_xc + e_xc + e_hook + e_cosmo + e_pcm + e_pol + vnn;
+        Ok(e_elec_no_xc + e_xc + e_hook + e_cosmo + e_pcm + e_pol + env.vnn)
+    }
 
-        // DIIS errors per spin: F_σ D_σ S − S D_σ F_σ
-        let err_a = f_a.dot(&d_a).dot(&s) - s.dot(&d_a).dot(&f_a);
-        let err_b = f_b.dot(&d_b).dot(&s) - s.dot(&d_b).dot(&f_b);
-
+    /// The commutator stage: the per-spin DIIS errors, this iteration's
+    /// convergence report, trace line, run-log record and verbose line.
+    /// Returns the convergence signals and `err_max`.
+    fn measure(
+        &mut self,
+        inp: &UhfInputs<'_, '_>,
+        xc: &crate::driver::OpenShellXc<'_>,
+        iter: usize,
+        energy: f64,
+        phases: &mut ferric_core::timing::PhaseAccumulator,
+    ) -> (crate::rhf::ConvergenceSignals, f64) {
+        let config = inp.config;
+        let s = &inp.env.s;
+        let (f_a, f_b, d_a, d_b) = (&self.f_a, &self.f_b, &self.d_a, &self.d_b);
+        // DIIS errors per spin: F_σ D_σ S − S D_σ F_σ. Serial section (outside
+        // any rayon region): runs at the serial BLAS thread count.
+        let commutator_t = phases.begin("diis_commutator");
+        (self.err_a, self.err_b) = ferric_integrals::blas_threads::with_blas_threads(
+            ferric_integrals::blas_threads::opt_in_blas_threads(),
+            || {
+                (
+                    f_a.dot(d_a).dot(s) - s.dot(d_a).dot(f_a),
+                    f_b.dot(d_b).dot(s) - s.dot(d_b).dot(f_b),
+                )
+            },
+        );
+        phases.stop(commutator_t);
+        let mon = &self.mon;
         let sig = mon.signals(energy);
         let de = sig.de;
-        let err_max_a = err_a.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
-        let err_max_b = err_b.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+        let err_max_a = self.err_a.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+        let err_max_b = self.err_b.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
         let err_max = err_max_a.max(err_max_b);
-        last_report = Some(crate::result::ConvergenceReport {
+        self.last_report = Some(crate::result::ConvergenceReport {
             iteration: iter,
             de,
             dp_rms: mon.dp_rms,
@@ -1409,12 +1437,18 @@ fn solve_uhf_impl(
             // incremental path (`FERRIC_SCF_UHF_INCREMENTAL`) is not characterised.
             de_noise_floor: (!crate::direct_jk::open_shell_incremental_enabled())
                 .then(|| {
-                    crate::noise_floor::floor_for_config(config, energy.abs(), prep.nbasis(), false)
+                    crate::noise_floor::floor_for_config(
+                        config,
+                        energy.abs(),
+                        inp.prep.nbasis(),
+                        false,
+                    )
                 })
                 .flatten(),
             // UHF reads no `diis_flavor`: it always runs Pulay.
             diis_fallback: None,
-            gradient_vetoes: exit_gate.record(),
+            gradient_vetoes: self.exit_gate.record(),
+            one_step_energy_drop: None,
         });
 
         if crate::rhf::scf_trace() {
@@ -1424,64 +1458,59 @@ fn solve_uhf_impl(
                 mon.dp_rms, mon.dp_max
             );
         }
+        // `grad_rms` is `None`: this loop forms only the per-spin commutator
+        // MAXIMA (err_max_a/err_max_b), never an RMS.
+        let label = if xc.active().contains(&true) {
+            "uks"
+        } else {
+            "uhf"
+        };
+        crate::driver::log_scf_iter(
+            inp.ctx,
+            config,
+            (label, "UHF"),
+            iter,
+            (energy, de),
+            mon,
+            err_max,
+            None,
+        );
+        (sig, err_max)
+    }
 
-        // Machine-readable per-iteration record, streamed and flushed NOW. See
-        // the identical block in `solve_rhf` for the full rationale; every
-        // value is one the loop already computed. `grad_rms` is `None`: unlike
-        // `solve_rhf`, this loop forms only the per-spin commutator MAXIMA
-        // (err_max_a/err_max_b), never an RMS — reporting a fabricated 0 would
-        // be worse than reporting "not measured here".
-        if ctx.is_root() {
-            if let Some(rl) = crate::runlog::log() {
-                rl.scf_iter(
-                    if xc_contrib.is_some() || inj_xc.is_some() {
-                        "uks"
-                    } else {
-                        "uhf"
-                    },
-                    crate::runlog::current_rung(),
-                    iter,
-                    energy,
-                    de,
-                    mon.dp_rms,
-                    mon.dp_max,
-                    err_max,
-                    None,
-                );
-            }
-        }
-
-        // Live per-iteration progress (see solve_rhf's identical block for the
-        // full rationale). STDOUT, opt-in via `config.verbose`, rank-0-only.
-        if config.verbose && ctx.is_root() {
-            println!(
-                "UHF iter={iter:4}  E={energy:.10}  dE={de:.3e}  dp_rms={:.3e}  err_max={err_max:.3e}",
-                mon.dp_rms
-            );
-        }
-
-        // Convergence: energy + total-density change (ΔP), the same
-        // ORCA/PySCF gate as solve_rhf — NOT the DIIS commutator, which parks on
-        // the naux-dependent RI noise floor and never drains. See
-        // rhf::scf_converged. This replaces the old df_noise_floor_ok hack; the
-        // `df_active` distinction is gone (ΔP handles DF and direct uniformly).
-        // Two orbital-gradient amendments (see `UhfExitGate`): a UKS
-        // degenerate-swap stationary point is accepted, a stagnated
-        // non-stationary state is refused.
-        let (conv_exit, swapped) = exit_gate.decide(
-            &mut cosx_sched,
+    /// The convergence and ladder decision.
+    ///
+    /// Energy + total-density change (ΔP), the same ORCA/PySCF gate as
+    /// solve_rhf — NOT the DIIS commutator, which parks on the
+    /// naux-dependent RI noise floor and never drains (see
+    /// rhf::scf_converged). Two orbital-gradient amendments (see
+    /// `UhfExitGate`): a UKS degenerate-swap stationary point is accepted, a
+    /// stagnated non-stationary state is refused. A divergence or stall is an
+    /// error.
+    fn gate(
+        &mut self,
+        inp: &UhfInputs<'_, '_>,
+        xc: &crate::driver::OpenShellXc<'_>,
+        jk: &mut crate::driver::OpenShellJk<'_>,
+        (iter, jk_ladder): (usize, &crate::jk_ladder::JkLadder),
+        (energy, sig, err_max): (f64, crate::rhf::ConvergenceSignals, f64),
+    ) -> Result<UhfGate, FerricError> {
+        let config = inp.config;
+        let (conv_exit, swapped) = self.exit_gate.decide(
+            &mut jk.cosx_sched,
             UhfIterGradients {
                 iter,
                 sig,
                 err_max,
-                err: [&err_a, &err_b],
-                x: &x,
-                xc_active: [xc_contrib.is_some(), inj_xc.is_some()],
+                err: [&self.err_a, &self.err_b],
+                x: inp.x,
+                xc_active: xc.active(),
+                de_signed: energy - self.mon.prev_e,
             },
             config,
-            &mut diis,
-            ctx.is_root(),
-            &mut last_report,
+            &mut self.diis,
+            inp.ctx.is_root(),
+            &mut self.last_report,
         );
         // A converged exit after a mixed J/K build is refused: this iteration
         // is redone in f64 at the same density, from a clean DIIS history and
@@ -1489,645 +1518,749 @@ fn solve_uhf_impl(
         let conv_exit = match jk_ladder.veto_mixed_exit(conv_exit) {
             crate::jk_ladder::JkExit::Proceed(c) => c,
             crate::jk_ladder::JkExit::RedoInF64 => {
-                diis.reset();
-                mon.invalidate_deltas();
-                continue;
+                self.diis.reset();
+                self.mon.invalidate_deltas();
+                return Ok(UhfGate::Redo);
             }
         };
+        crate::driver::bail_if_diverged_or_stalled(&mut self.mon, (energy, err_max, iter), config)?;
+        Ok(if iter > 1 && conv_exit.is_some() {
+            UhfGate::Converged(swapped)
+        } else {
+            UhfGate::Iterate
+        })
+    }
 
-        // Divergence / stall early exits (shared driver::ScfMonitor; both are
-        // no-ops at the None defaults — UHF previously ignored these knobs).
-        if mon.diverging(energy, config.divergence_tol) || mon.stalled(err_max, config.stall_window)
-        {
-            return Err(FerricError::ScfConvergence {
-                iterations: iter,
-                last_energy: mon.prev_e,
-            });
+    /// Finalization at a converged exit: the f64 V_xc, the one-step
+    /// stationarity check, the returned eigenpairs, the ⟨S²⟩ diagnostic, the
+    /// opt-in stability analysis and COSX final-grid pass, the gradient
+    /// hand-off, and the result.
+    fn converged(
+        self,
+        inp: &UhfInputs<'_, '_>,
+        xc: &crate::driver::OpenShellXc<'_>,
+        jk: &mut crate::driver::OpenShellJk<'_>,
+        (energy, iter, swapped): (f64, usize, bool),
+    ) -> Result<ScfResult, FerricError> {
+        let (ctx, config) = (inp.ctx, inp.config);
+        let (nocc_a, nocc_b) = inp.nocc;
+        let (diag_a, diag_b) = inp.diag;
+        let s = &inp.env.s;
+        let UhfState {
+            d_a,
+            d_b,
+            d_occ_a,
+            d_occ_b,
+            mut f_a,
+            mut f_b,
+            exit_gate,
+            mut last_report,
+            last_induced_dipoles,
+            ..
+        } = self;
+        // A converged SCF returns f64 V_xc (see `UksXcContribution::refine_last_to_f64_uks`).
+        if let Some(x) = xc.xc_contrib.as_ref() {
+            x.refine_last_to_f64_uks(&mut f_a, &mut f_b);
         }
-
-        if iter > 1 && conv_exit.is_some() {
-            // A converged SCF returns f64 V_xc (see `UksXcContribution::refine_last_to_f64_uks`).
-            if let Some(x) = xc_contrib.as_ref() {
-                x.refine_last_to_f64_uks(&mut f_a, &mut f_b);
-            }
-            // Returned MOs must reproduce the returned density: after a
-            // degenerate swap the aufbau eigenvectors of F hold the OTHER
-            // member of the pair. Only then (see `occupied_by_density`): a MOM
-            // state is non-aufbau by design and keeps main's C and eps. Per
-            // spin, and only for an integer density (`reorder_exit_mos`).
-            // A plain ΔP exit can also settle on an integer D that is not the
-            // aufbau state of F[D]; then the spin gets D's semicanonical
-            // orbitals instead (`exit_mos_building_density`; not under MOM or
-            // symmetry blocking, see `exit_eigenpairs`).
-            let mom = config.mom_after_iter > 0;
-            let (eps_a, c_a_f) = exit_eigenpairs(
-                &diag_a,
-                ExitSpin {
-                    f: &f_a,
-                    s: &s,
-                    x: &x,
-                    d: &d_a,
-                    d_occ: d_occ_a.as_ref(),
-                },
-                nocc_a,
-                swapped,
-                mom,
-            )?;
-            let (eps_b, c_b_f) = exit_eigenpairs(
-                &diag_b,
-                ExitSpin {
-                    f: &f_b,
-                    s: &s,
-                    x: &x,
-                    d: &d_b,
-                    d_occ: d_occ_b.as_ref(),
-                },
-                nocc_b,
-                swapped,
-                mom,
-            )?;
-            // ⟨S²⟩ diagnostic
-            let s2 = expectation_s_squared(&c_a_f, &c_b_f, &s, nocc_a, nocc_b);
-            let s_true = 0.5 * (nocc_a as f64 - nocc_b as f64);
-            let s_ideal = s_true * (s_true + 1.0);
-            if s2 > s_ideal + 0.1 {
-                eprintln!(
-                    "UHF warning: spin contamination ⟨S²⟩ = {:.4} (ideal {:.4})",
-                    s2, s_ideal
+        // Returned MOs must reproduce the returned density: after a
+        // degenerate swap the aufbau eigenvectors of F hold the OTHER
+        // member of the pair. Only then (see `occupied_by_density`): a MOM
+        // state is non-aufbau by design and keeps main's C and eps. Per
+        // spin, and only for an integer density (`reorder_exit_mos`).
+        // A plain ΔP exit can also settle on an integer D that is not the
+        // aufbau state of F[D]; then the spin gets D's semicanonical
+        // orbitals instead (`exit_mos_building_density`; not under MOM or
+        // symmetry blocking, see `exit_eigenpairs`).
+        // A pinned state is non-aufbau by construction (its flip was
+        // MEASURED not to lower E, see `FlipPin`): the one-step model drop
+        // is its inverted gap, not a stationarity defect. Its
+        // stationarity is the gate's: ΔP/ΔE plus the gradient veto.
+        if crate::rhf::aufbau_by_design(config) && !exit_gate.pinned() {
+            let (ea, _) = diag_a.run(&f_a)?;
+            let (eb, _) = diag_b.run(&f_b)?;
+            if let Some(rep) = last_report.as_mut() {
+                rep.one_step_energy_drop = Some(
+                    crate::result::roothaan_model_drop(&ea, nocc_a, 1.0, &f_a, &d_a)
+                        + crate::result::roothaan_model_drop(&eb, nocc_b, 1.0, &f_b, &d_b),
                 );
+                if let Some(drop) = rep.one_step_energy_drop {
+                    let span = crate::result::eps_span(&ea).max(crate::result::eps_span(&eb));
+                    let tol = crate::result::stationarity_tol(
+                        config.energy_conv,
+                        config.density_conv,
+                        f_a.nrows(),
+                        span,
+                    );
+                    crate::result::warn_if_non_stationary("UHF", drop, tol, ctx.is_root());
+                }
             }
-            let density_total = &d_a + &d_b;
+        }
+        let mom = config.mom_enabled();
+        let (eps_a, c_a_f) = exit_eigenpairs(
+            diag_a,
+            ExitSpin {
+                f: &f_a,
+                s,
+                x: inp.x,
+                d: &d_a,
+                d_occ: d_occ_a.as_ref(),
+            },
+            nocc_a,
+            swapped,
+            mom,
+        )?;
+        let (eps_b, c_b_f) = exit_eigenpairs(
+            diag_b,
+            ExitSpin {
+                f: &f_b,
+                s,
+                x: inp.x,
+                d: &d_b,
+                d_occ: d_occ_b.as_ref(),
+            },
+            nocc_b,
+            swapped,
+            mom,
+        )?;
+        // ⟨S²⟩ diagnostic
+        let s2 = expectation_s_squared(&c_a_f, &c_b_f, s, nocc_a, nocc_b);
+        let s_true = 0.5 * (nocc_a as f64 - nocc_b as f64);
+        let s_ideal = s_true * (s_true + 1.0);
+        if s2 > s_ideal + 0.1 {
+            eprintln!(
+                "UHF warning: spin contamination ⟨S²⟩ = {:.4} (ideal {:.4})",
+                s2, s_ideal
+            );
+        }
+        let density_total = &d_a + &d_b;
 
-            // ── Opt-in internal stability analysis (UHF/UKS) ─────────────────
-            // Runs ONLY at a converged exit and ONLY when the flag is set; with
-            // `check_stability = false` (the default) nothing below is
-            // constructed, so this branch is bit-identical to a build with no
-            // stability support. Diagnostic: it warns, it never Errs.
-            let stability = if config.check_stability {
-                stability_uhf(
+        // ── Opt-in internal stability analysis (UHF/UKS) ─────────────────
+        // Runs ONLY at a converged exit and ONLY when the flag is set; with
+        // `check_stability = false` (the default) nothing below is
+        // constructed, so this branch is bit-identical to a build with no
+        // stability support. Diagnostic: it warns, it never Errs.
+        let stability = if config.check_stability {
+            stability_uhf(
+                ctx,
+                inp.mol,
+                inp.prep,
+                inp.bounds,
+                config,
+                &c_a_f,
+                &c_b_f,
+                &f_a,
+                &f_b,
+                &d_a,
+                &d_b,
+                nocc_a,
+                nocc_b,
+                xc.xc_contrib.is_some(),
+                inp.k_mix,
+                inp.env.ooc_budget,
+                inp.fock_mod.is_some(),
+                (inp.rsh_response, &jk.responses()),
+            )
+        } else {
+            None
+        };
+        // COSX final-grid pass (opt-in, `CosxConfig::final_grid`):
+        // `k_a_buf`/`k_b_buf` hold K_scf(D_σ) from this iteration's build.
+        let (energy, cosx_final) = match (inp.pluggable_k_kind, config.cosx.final_grid.as_ref()) {
+            (Some(KBuilderKind::Cosx), Some(fg)) => {
+                let rec = crate::cosx_k::run_final_pass(
                     ctx,
-                    mol,
-                    prep,
-                    bounds,
-                    config,
-                    &c_a_f,
-                    &c_b_f,
-                    &f_a,
-                    &f_b,
-                    &d_a,
-                    &d_b,
-                    nocc_a,
-                    nocc_b,
-                    xc_contrib.is_some(),
-                    k_mix,
-                    ooc_budget,
-                    fock_mod.is_some(),
-                    rsh_response.as_ref(),
-                )
-            } else {
-                None
-            };
-            // COSX final-grid pass (opt-in, `CosxConfig::final_grid`):
-            // `k_a_buf`/`k_b_buf` hold K_scf(D_σ) from this iteration's build.
-            let (energy, cosx_final) = match (pluggable_k_kind, config.cosx.final_grid.as_ref()) {
-                (Some("cosx"), Some(fg)) => {
-                    let rec = crate::cosx_k::run_final_pass(
-                        ctx,
-                        mol,
-                        prep,
-                        &config.cosx,
-                        fg,
-                        ooc_budget,
-                        energy,
-                        &[(&d_a, &k_a_buf, -0.5 * c_k), (&d_b, &k_b_buf, -0.5 * c_k)],
-                    )?;
-                    (rec.e_final, Some(rec))
-                }
-                _ => (energy, None),
-            };
-            return Ok(ScfResult {
-                guess_basis: None,
-                spin: Spin::Unrestricted,
-                energy,
-                density_total,
-                density_alpha: d_a,
-                density_beta: Some(d_b),
-                mos_alpha: c_a_f,
-                mos_beta: Some(c_b_f),
-                eps_alpha: eps_a,
-                eps_beta: Some(eps_b),
-                fock_alpha: f_a,
-                fock_beta: Some(f_b),
-                converged: true,
-                exit: ScfExit::Converged,
-                iterations: iter,
-                computed_quartets: total_quartets,
-                induced_dipoles: last_induced_dipoles,
-                stability,
-                // No external check on a UHF reference: the UHF-internal
-                // Hessian already spans the independent alpha/beta rotations
-                // that an RHF->UHF check would open up, so there is no
-                // additional spin-symmetry-breaking channel to test. (UHF->GHF
-                // is a further external channel and is not implemented.)
-                stability_external: None,
-                df_jk: df_jk_route.clone(),
-                rohf_spin_focks: None,
-                cosx_final,
-                cosx_schedule: crate::cosx_schedule::record(&cosx_sched),
-                convergence: last_report,
-                precision: Default::default(),
-            });
-        }
-        mon.note_energy(energy);
-
-        // ── Trust-region augmented-Hessian (TRAH) update, UHF/UKS ────────────
-        //
-        // Opt-in via `config.trah_trigger`; `None` (the default) skips the whole
-        // block, so the iteration is bit-identical to a build with no TRAH
-        // support (`tests/trah_off_is_bit_identical.rs`). Structure, gates and
-        // the two-phase ρ scheme are identical to the RHF branch in `rhf.rs` —
-        // see its comment for the reasoning. The α and β rotations are solved as
-        // ONE coupled trust-region problem (see `crate::trah::uhf_trah_step`).
-        // Armed below the trigger -- OR once TRAH has ENGAGED, until it declines
-        // a step as worthless or its radius collapses. A step may legitimately
-        // RAISE err_max (a hard-case escape moves along negative curvature,
-        // away from a stationary point). Re-deciding on err_max alone handed
-        // the next iteration to DIIS, which, with a history built at the
-        // saddle, walked straight back into it: tail-mode TRAH cycled to
-        // max_iter on N2/cc-pVDZ (pinned in `tests/trah_hard_case.rs`).
-        // Keying on "a step is pending" closed that only for accepted steps:
-        // a REJECTION consumes the pending prediction, so the restored point
-        // (err_max still above the trigger) went to DIIS. Measured on
-        // CoH/def2-SVP UHF (`tests/saddle_repair_compare.rs`), that threw a
-        // 100 mHa escape back onto the saddle. Pinned by the N2/STO-3G RHF and
-        // O2/STO-3G UHF hand-off-after-rejection cases in `trah_hard_case.rs`.
-        let trah_armed = config
-            .trah_trigger
-            .is_some_and(|t| err_max < t || trah_engaged)
-            && iter > 3
-            && k_mix.omega == 0.0
-            && !crate::rohf::xc_is_metagga(config.xc.as_deref())
-            && !fractional_blocks_second_order;
-        // One condition for "a TRAH step runs", used BOTH to gate the step and
-        // to discard a stale prediction — see the RHF counterpart for why these
-        // must not diverge (a radius that collapses mid-run would otherwise
-        // leave a prediction pending across intervening DIIS steps).
-        let trah_collapsed = trah_state.as_ref().is_some_and(|s| s.collapsed());
-        let trah_runs = trah_armed && !trah_collapsed;
-        let trah_after_rejection = crate::trah::settle_engaged_latch(
-            &mut trah_engaged,
-            &mut trah_last_rejected,
-            trah_runs,
+                    inp.mol,
+                    inp.prep,
+                    &config.cosx,
+                    fg,
+                    inp.env.ooc_budget,
+                    energy,
+                    &[
+                        (&d_a, &jk.k_a_buf, -0.5 * inp.c_k),
+                        (&d_b, &jk.k_b_buf, -0.5 * inp.c_k),
+                    ],
+                )?;
+                (rec.e_final, Some(rec))
+            }
+            _ => (energy, None),
+        };
+        crate::raw_handoff::keep_for_gradient(
+            config,
+            ctx,
+            inp.mol,
+            inp.prep,
+            &mut jk.df_j,
+            inp.df_jk_route.as_ref(),
+            &[nocc_a, nocc_b],
         );
-        if let Some(st) = trah_state.as_mut() {
-            if !trah_runs {
-                if st.has_pending() {
-                    crate::trah::note_trah_prediction_discarded();
-                }
-                st.clear_pending();
-                trah_undo = None;
-            }
+        Ok(ScfResult {
+            guess_basis: None,
+            spin: Spin::Unrestricted,
+            energy,
+            density_total,
+            density_alpha: d_a,
+            density_beta: Some(d_b),
+            mos_alpha: c_a_f,
+            mos_beta: Some(c_b_f),
+            eps_alpha: eps_a,
+            eps_beta: Some(eps_b),
+            fock_alpha: f_a,
+            fock_beta: Some(f_b),
+            converged: true,
+            exit: ScfExit::Converged,
+            iterations: iter,
+            computed_quartets: jk.total_quartets,
+            induced_dipoles: last_induced_dipoles,
+            stability,
+            // No external check on a UHF reference: the UHF-internal
+            // Hessian already spans the independent alpha/beta rotations
+            // that an RHF->UHF check would open up, so there is no
+            // additional spin-symmetry-breaking channel to test. (UHF->GHF
+            // is a further external channel and is not implemented.)
+            stability_external: None,
+            df_jk: inp.df_jk_route.clone(),
+            rohf_spin_focks: None,
+            xc: None,
+            cosx_final,
+            cosx_schedule: crate::cosx_schedule::record(&jk.cosx_sched),
+            convergence: last_report,
+            precision: Default::default(),
+            relativistic: None,
+        })
+    }
+
+    /// Finalization at max_iter: the best-effort state, which the caller
+    /// decides what to do with. `solve_uhf` / `solve_uhf_with_guess` keep
+    /// their Err contract (every existing caller unwraps or `?`s them, and
+    /// silently handing those an unconverged result would be a regression);
+    /// `solve_uhf_best_effort` returns it, so an open-shell convergence
+    /// ladder can carry a failed rung's best-effort density forward as the
+    /// next rung's guess, as `solve_rhf_ladder` does with RHF's
+    /// `RhfState::nonconverged`.
+    ///
+    /// Orbital energies and Fock matrices are not retained across the loop
+    /// (they are rebuilt each iteration), so the core-Hamiltonian eigenvalues
+    /// stand in. The density and MOs -- the parts a ladder restart actually
+    /// consumes -- are the genuine converged-so-far values.
+    fn max_iter(self, inp: &UhfInputs<'_, '_>, jk: &crate::driver::OpenShellJk<'_>) -> ScfResult {
+        let h = &inp.env.h;
+        let (eps_a_last, eps_b_last) = match diagonalize(h, inp.x) {
+            Ok((e, _)) => (e.clone(), e),
+            Err(_) => (vec![0.0; self.c_a.ncols()], vec![0.0; self.c_a.ncols()]),
+        };
+        let density_total = &self.d_a + &self.d_b;
+        ScfResult {
+            guess_basis: None,
+            spin: Spin::Unrestricted,
+            energy: self.mon.prev_e,
+            density_total,
+            density_alpha: self.d_a,
+            density_beta: Some(self.d_b),
+            mos_alpha: self.c_a,
+            mos_beta: Some(self.c_b),
+            eps_alpha: eps_a_last,
+            eps_beta: Some(eps_b_last),
+            fock_alpha: h.clone(),
+            fock_beta: Some(h.clone()),
+            converged: false,
+            exit: ScfExit::MaxIter,
+            iterations: inp.config.max_iter,
+            computed_quartets: jk.total_quartets,
+            induced_dipoles: self.last_induced_dipoles,
+            stability: None,
+            stability_external: None,
+            df_jk: inp.df_jk_route.clone(),
+            rohf_spin_focks: None,
+            xc: None,
+            cosx_final: None,
+            cosx_schedule: crate::cosx_schedule::record(&jk.cosx_sched),
+            convergence: self.last_report,
+            precision: Default::default(),
+            relativistic: None,
         }
-        let mut trah_took_step = false;
-        if trah_runs {
-            // Phase 1: score the pending step against the energy just computed.
-            // `assess` returns None when NOTHING was pending — the first armed
-            // iteration, and the iteration right after a rejection (which
-            // consumed its pending step and skipped Phase 2). That is not an
-            // acceptance: treating it as one and then printing the PERSISTENT
-            // `last_rho` made the trace show a frozen ρ repeated across a
-            // reject/"accept" alternation that was not happening. Keep the
-            // Option so "no verdict" stays distinguishable from "accepted".
-            let verdict: Option<crate::trah::TrahVerdict> =
-                trah_state.as_mut().and_then(|st| st.assess(energy));
-            if let (Some(_), Some(rho)) = (verdict, trah_state.as_ref().and_then(|s| s.last_rho)) {
-                crate::trah::note_rho_uhf(rho);
-            }
-            if crate::rhf::scf_trace() {
-                if let (Some(v), Some(rho)) =
-                    (verdict, trah_state.as_ref().and_then(|s| s.last_rho))
-                {
-                    eprintln!(
-                        "TRAH iter={iter}: rho={rho:.6} verdict={v:?} \
-                         Delta={:.3e} acc={} rej={}",
-                        trah_state.as_ref().map(|s| s.radius()).unwrap_or(0.0),
-                        trah_state.as_ref().map(|s| s.accepted).unwrap_or(0),
-                        trah_state.as_ref().map(|s| s.rejected).unwrap_or(0),
-                    );
-                }
-            }
-            if verdict == Some(crate::trah::TrahVerdict::Rejected) {
-                crate::trah::note_trah_rejection();
-                // `trah_engaged` is already set: the rejected step set it when
-                // it was taken, and only a hand-off or a decline (both of which
-                // clear the pending prediction) releases it. So the restored
-                // point stays armed whatever its err_max.
-                trah_last_rejected = true;
-                if let Some((ca_undo, cb_undo)) = trah_undo.take() {
-                    if crate::rhf::scf_trace() {
-                        eprintln!(
-                            "TRAH iter={iter}: REJECTED (ρ={:.3e}), restoring orbitals, Δ→{:.3e}",
-                            trah_state.as_ref().and_then(|s| s.last_rho).unwrap_or(0.0),
-                            trah_state.as_ref().map(|s| s.radius()).unwrap_or(0.0)
-                        );
-                    }
-                    // Undo, recording the density motion so the convergence
-                    // monitor sees it (an undo hidden from dp_rms could let the
-                    // loop "converge" on a density it had just discarded).
-                    let d_tot_old = &d_a + &d_b;
-                    c_a = ca_undo;
-                    c_b = cb_undo;
-                    d_a = density(&c_a, nocc_a);
-                    d_b = density(&c_b, nocc_b);
-                    // Keep the DF-K C_occ cache on the restored orbitals (see
-                    // the TRAH step below for why every C update needs this).
-                    d_occ_a = occ_or_none(&c_a, nocc_a);
-                    d_occ_b = occ_or_none(&c_b, nocc_b);
-                    let d_tot_new = &d_a + &d_b;
-                    mon.record_density_change(&d_tot_new, &d_tot_old);
-                }
-            }
+    }
 
-            // Phase 2: step from the (possibly restored) point.
-            //
-            // After a REJECTION we do not step this iteration: `f` was built
-            // from the density we just discarded, so an MO-basis Fock formed
-            // from it would be a gradient at the wrong point. The loop
-            // `continue`s, rebuilds F from the restored density, and steps on
-            // the NEXT iteration at the already-contracted radius. That costs
-            // one Fock build per rejection and is why rejection is not free.
-            //
-            // The pending assessment was consumed by `assess` above, so the
-            // skipped iteration records nothing and the next ρ is formed from a
-            // matched (energy_before, predicted) pair — not from a stale one.
-            // Set when the step is declined as worthless (see the
-            // `predicted_min` check below); the loop then falls through to DIIS.
-            let mut declined = false;
-            if verdict != Some(crate::trah::TrahVerdict::Rejected) {
-                let f_a_mo = c_a.t().dot(&f_a).dot(&c_a);
-                let f_b_mo = c_b.t().dot(&f_b).dot(&c_b);
+    /// Install new MOs (the TRAH restore and step, and the Newton step):
+    /// densities and the DF-K C_occ cache from them, recording ΔP over the
+    /// total density. DF-K builds K_σ from the C_occ cache and J from D_σ, so
+    /// every C update must refresh both; a stale cache would give K at the
+    /// last DIIS orbitals and J at the current ones -- a wrong energy and a
+    /// wrong ρ.
+    fn take_orbitals(&mut self, inp: &UhfInputs<'_, '_>, (c_a, c_b): (Array2<f64>, Array2<f64>)) {
+        let (nocc_a, nocc_b) = inp.nocc;
+        let d_tot_old = &self.d_a + &self.d_b;
+        self.c_a = c_a;
+        self.c_b = c_b;
+        self.d_a = density(&self.c_a, nocc_a);
+        self.d_b = density(&self.c_b, nocc_b);
+        self.d_occ_a = occ_or_none(&self.c_a, nocc_a);
+        self.d_occ_b = occ_or_none(&self.c_b, nocc_b);
+        let d_tot_new = &self.d_a + &self.d_b;
+        self.mon.record_density_change(&d_tot_new, &d_tot_old);
+    }
 
-                // Same duplicate-grid-cache accounting the Newton branch does —
-                // `FxcKernelStore::build` allocates a SECOND chi+dchi cache on
-                // the live KS grid, and `check_ao_grid_budget` cannot see it.
-                let fxc_store = if xc_contrib.is_some() {
-                    let main = config.dft_grid.clone().unwrap_or_default();
-                    let name = config.xc.as_deref().expect("xc_contrib implies Some(xc)");
-                    let needed = fxc_kernel_duplicate_bytes(n, mol.atoms.len(), &main);
-                    let avail = ferric_core::memory::available_budget_now(
-                        ferric_core::memory::resolve_budget_bytes(
-                            (config.three_index_budget_bytes != 0)
-                                .then_some(config.three_index_budget_bytes),
-                        ),
-                    );
-                    ferric_core::memory::check_alloc(
-                        "UHF/UKS TRAH f_xc kernel (duplicate chi+dchi cache on the live KS grid)",
-                        needed,
-                        avail,
-                    )?;
-                    Some(crate::rohf::FxcKernelStore::build(
-                        mol,
-                        prep,
-                        &main,
-                        name,
-                        config.xc_omega,
-                        &d_a,
-                        &d_b,
-                    )?)
-                } else {
-                    None
-                };
-                let fxc_storage = fxc_store.as_ref().map(|s| s.response());
-                let fxc_ref: Option<&crate::rohf_newton::FxcResponse<'_>> = fxc_storage.as_deref();
-
-                let inputs = crate::uhf_newton::UhfNewtonInputs {
-                    prep,
-                    bounds,
-                    c_a: &c_a,
-                    c_b: &c_b,
-                    f_a_mo: &f_a_mo,
-                    f_b_mo: &f_b_mo,
-                    nocc_a,
-                    nocc_b,
-                    k_mix_sr: if xc_contrib.is_some() { c_k } else { 1.0 },
-                    rsh: rsh_response.as_ref(),
-                    fxc: fxc_ref,
-                    thresh: config.integral_thresh,
-                    ooc_budget,
-                };
-                let radius = trah_state
-                    .as_ref()
-                    .map(|s| s.radius())
-                    .expect("trah_state is Some inside the armed branch");
-                let (ca_new, cb_new, step) =
-                    crate::trah::uhf_trah_step(ctx, &inputs, radius, &config.trah)?;
-
-                // Decline a step the model says is worthless, as the RHF loop
-                // does (`TrahConfig::predicted_min`). Measured on UKS/PBE
-                // OH/cc-pVDZ: from iteration 17 the model predicted -6.0e-15,
-                // the energy moved by exactly 0, rho = 0 rejected it, and the
-                // identical step was recomputed 28 times (74 iterations against
-                // DIIS's 33). Declining falls through to DIIS, and recording a
-                // zero density change lets the normal convergence test end the run.
-                if step.predicted.abs() < config.trah.predicted_min {
-                    if crate::rhf::scf_trace() {
-                        eprintln!(
-                            "TRAH iter={iter}: predicted |{:.3e}| < {:.0e}, \
-                             nothing left to gain -- deferring to DIIS",
-                            step.predicted, config.trah.predicted_min
-                        );
-                    }
-                    if let Some(st) = trah_state.as_mut() {
-                        st.clear_pending();
-                    }
-                    trah_undo = None;
-                    crate::trah::note_trah_null_step_declined();
-                    trah_engaged = false;
-                    let d_tot = &d_a + &d_b;
-                    mon.record_density_change(&d_tot, &d_tot);
-                    declined = true;
-                } else {
-                    if crate::rhf::scf_trace() {
-                        eprintln!(
-                            "TRAH iter={iter}: ‖κ‖={:.3e} Δ={:.3e} μ={:.3e} α={:.1} \
-                         ΔE_pred={:.3e} solves={} boundary={}",
-                            step.norm,
-                            radius,
-                            step.level_shift,
-                            step.alpha,
-                            step.predicted,
-                            step.shift_iterations,
-                            step.on_boundary
-                        );
-                    }
-
-                    trah_undo = Some((c_a.clone(), c_b.clone()));
-                    if let Some(st) = trah_state.as_mut() {
-                        st.record_step(energy, &step);
-                    }
-                    crate::trah::note_trah_step();
-                    trah_engaged = true;
-
-                    c_a = ca_new;
-                    c_b = cb_new;
-                    let d_tot_old = &d_a + &d_b;
-                    d_a = density(&c_a, nocc_a);
-                    d_b = density(&c_b, nocc_b);
-                    // DF-K builds K_σ from this C_occ cache, J from d_σ. Before
-                    // 2026-10-24 only the DIIS path refreshed it, so after a
-                    // TRAH step (or restore, or Newton step) the next Fock had
-                    // K at the last DIIS orbitals and J at the current ones --
-                    // a wrong energy and a wrong ρ. RHF refreshes `d_occ` at
-                    // every C update; this mirrors it.
-                    d_occ_a = occ_or_none(&c_a, nocc_a);
-                    d_occ_b = occ_or_none(&c_b, nocc_b);
-                    let d_tot_new = &d_a + &d_b;
-                    mon.record_density_change(&d_tot_new, &d_tot_old);
-                }
-            }
-            trah_took_step = !declined;
-        }
-        if trah_took_step {
-            continue;
+    /// The second-order orbital updates, in precedence order: TRAH, Newton.
+    fn second_order_step(
+        &mut self,
+        inp: &UhfInputs<'_, '_>,
+        xc: &crate::driver::OpenShellXc<'_>,
+        jk: &mut crate::driver::OpenShellJk<'_>,
+        (iter, energy, err_max): (usize, f64, f64),
+    ) -> Result<UhfStep, FerricError> {
+        let (step, after_rejection, collapsed) =
+            self.trah_step(inp, xc, jk, (iter, energy, err_max))?;
+        if let Some(step) = step {
+            return Ok(step);
         }
         // TRAH did not step this iteration (not run, or ran and declined): the
         // iteration goes to Newton/DIIS. Counted here, not at the gate, so a
         // decline right after a rejection is seen too.
-        crate::trah::note_handoff_if_after_rejection(trah_after_rejection, trah_collapsed);
+        crate::trah::note_handoff_if_after_rejection(after_rejection, collapsed);
+        self.newton_step(inp, xc, jk, (iter, err_max))
+    }
 
-        // ── Second-order (Newton) update, UHF/UKS ────────────────────────────
-        // When enabled (newton_trigger > 0) and err_max has dropped below the
-        // trigger, take a damped-Newton step on the α/β orbital rotations
-        // instead of DIIS. For UKS this uses the SAME LDA/GGA f_xc kernel the
-        // ROKS Newton path uses (via FxcKernelStore), so PBE/B3LYP/etc. UKS now
-        // gets real second-order acceleration, not just LDA. Gated to the
-        // non-RSH case (ω = 0). The REASON is no longer the matvec's kernel:
-        // since #292 the matvec builds `c_SR·δK[erfc(ω)] + c_LR·δK[erf(ω)]`
-        // from the converged Fock's own DF-K fitters (`crate::rsh_response`,
-        // threaded via `UhfNewtonInputs::rsh`), and that response is
-        // finite-difference-validated at ω ≠ 0 to 5.3e-12 and matches PySCF's
-        // dense UKS Hessian on O2/def2-SVP/ωB97X-V to 1.0e-7 relative. The gate
-        // stays only because LIFTING it changes the SCF trajectory of every RSH
-        // run, which needs its own convergence measurement (iteration counts,
-        // no regressions across the RSH test set) that has not been made.
-        // #292 lists the lift as optional and as a separate commit; it is not
-        // a correctness blocker any more, and stability analysis — which drives
-        // the same matvec through Davidson — is already unblocked.
-        // Meta-GGA (SCAN / r2SCAN) has no τ-dependent f_xc kernel in Phase A —
-        // exclude it from the Newton path so it falls back to DIIS (energy-only).
+    /// ── Trust-region augmented-Hessian (TRAH) update, UHF/UKS ──
+    ///
+    /// Opt-in via `config.trah_trigger`; `None` (the default) skips the whole
+    /// step, so the iteration is bit-identical to a build with no TRAH
+    /// support (`tests/trah_off_is_bit_identical.rs`). Structure, gates and
+    /// the two-phase ρ scheme are those of the RHF step
+    /// (`rhf::RhfState::trah_step`) — see its comment for the reasoning. The
+    /// α and β rotations are solved as ONE coupled trust-region problem (see
+    /// `crate::trah::uhf_trah_step`).
+    ///
+    /// A held degenerate-flip pin (`FlipPin`) arms TRAH whatever
+    /// `trah_trigger` says: the held state's hole-orientation mode is nearly
+    /// flat (curvature at the grid-anisotropy level) and its Roothaan coupling
+    /// has the inverted pair's NEGATIVE denominator, so DIIS either parks on a
+    /// stationary orientation of either curvature or wanders (MEASURED on OH,
+    /// pin under DIIS: 5° and 13° tilts never converged, err_max parked at
+    /// 2e-8..5e-8 for 190 iterations; a virtual-block shift instead walked the
+    /// energy UP by 2e-6 Ha). TRAH rotates the held orbitals with the true
+    /// Hessian, keeps the occupation by construction, and descends.
+    ///
+    /// Returns `(Some(step), ..)` when TRAH decided the iteration, `None`
+    /// when it goes to Newton/DIIS, and the hand-off bookkeeping
+    /// `(after_rejection, collapsed)`.
+    fn trah_step(
+        &mut self,
+        inp: &UhfInputs<'_, '_>,
+        xc: &crate::driver::OpenShellXc<'_>,
+        jk: &mut crate::driver::OpenShellJk<'_>,
+        (iter, energy, err_max): (usize, f64, f64),
+    ) -> Result<(Option<UhfStep>, bool, bool), FerricError> {
+        let config = inp.config;
+        let pin_held = self.exit_gate.held();
+        if pin_held && self.trah.state.is_none() {
+            self.trah.state = Some(crate::trah::TrahState::new(config.trah));
+        }
+        // Armed below the trigger -- OR once TRAH has ENGAGED (see the RHF
+        // step for why: a step may legitimately RAISE err_max, and handing the
+        // next iteration to DIIS walked straight back into the saddle; pinned
+        // in `tests/trah_hard_case.rs` and `tests/saddle_repair_compare.rs`)
+        // -- or under a held pin.
+        let trah_armed = (config
+            .trah_trigger
+            .is_some_and(|t| err_max < t || self.trah.engaged)
+            || pin_held)
+            && iter > 3
+            && inp.k_mix.omega == 0.0
+            && !crate::rohf::xc_is_metagga(config.xc.as_deref())
+            && !inp.fractional_blocks_second_order;
+        let arm = self.trah.arm(trah_armed);
+        if !arm.runs {
+            return Ok((None, arm.after_rejection, arm.collapsed));
+        }
+        // Phase 1: score the pending step against the energy just computed.
+        let verdict = self.trah.assess(energy, iter, crate::trah::note_rho_uhf);
+        if verdict == Some(crate::trah::TrahVerdict::Rejected) {
+            if let Some(undo) = self.trah.reject(iter) {
+                // Undo, recording the density motion so the convergence
+                // monitor sees it (an undo hidden from dp_rms could let the
+                // loop "converge" on a density it had just discarded).
+                self.take_orbitals(inp, undo);
+            }
+            // After a REJECTION we do not step this iteration: `f` was built
+            // from the density just discarded, so an MO-basis Fock formed
+            // from it would be a gradient at the wrong point. The loop
+            // continues, rebuilds F from the restored density, and steps on
+            // the NEXT iteration at the already-contracted radius.
+            return Ok((Some(UhfStep::Continue), arm.after_rejection, arm.collapsed));
+        }
+        // Phase 2: step from the current point.
+        if self.trah_phase2(inp, xc, jk, (iter, energy))? {
+            return Ok((Some(UhfStep::Continue), arm.after_rejection, arm.collapsed));
+        }
+        // A held pin whose TRAH model has nothing left to gain is done:
+        // re-evaluate at this same density (ΔP = 0 is already recorded) and
+        // let the gate end the run. Falling through to DIIS instead
+        // extrapolated from the pre-TRAH history and threw the converged
+        // state away (MEASURED on OH at 71° tilt: err_max 3.7e-9 → an
+        // orbital-sized jump, E up 3.1e-6 Ha).
+        if pin_held {
+            return Ok((Some(UhfStep::Continue), arm.after_rejection, arm.collapsed));
+        }
+        Ok((None, arm.after_rejection, arm.collapsed))
+    }
+
+    /// TRAH phase 2: the coupled α/β trust-region step, or a decline when
+    /// the model predicts nothing worth taking. Returns whether the orbitals
+    /// moved.
+    fn trah_phase2(
+        &mut self,
+        inp: &UhfInputs<'_, '_>,
+        xc: &crate::driver::OpenShellXc<'_>,
+        jk: &mut crate::driver::OpenShellJk<'_>,
+        (iter, energy): (usize, f64),
+    ) -> Result<bool, FerricError> {
+        let config = inp.config;
+        let (nocc_a, nocc_b) = inp.nocc;
+        let (c_a, c_b) = (&self.c_a, &self.c_b);
+        let f_a_mo = c_a.t().dot(&self.f_a).dot(c_a);
+        let f_b_mo = c_b.t().dot(&self.f_b).dot(c_b);
+
+        // The f_xc response, as the Newton step builds it: on the KS
+        // evaluator's screened grid, else a dense kernel whose duplicate
+        // chi+dchi cache is gated first.
+        let fxc_storage = uks_fxc_response(
+            xc.xc_contrib.as_deref(),
+            (inp.mol, inp.prep, config),
+            (&self.d_a, &self.d_b),
+            TRAH_FXC_LABEL,
+        )?;
+        let fxc_ref: Option<&crate::rohf_newton::FxcResponse<'_>> = fxc_storage.as_deref();
+
+        let responses = jk.responses();
+        let inputs = crate::uhf_newton::UhfNewtonInputs {
+            prep: inp.prep,
+            bounds: inp.bounds,
+            c_a,
+            c_b,
+            f_a_mo: &f_a_mo,
+            f_b_mo: &f_b_mo,
+            nocc_a,
+            nocc_b,
+            k_mix_sr: if xc.xc_contrib.is_some() {
+                inp.c_k
+            } else {
+                1.0
+            },
+            rsh: inp.rsh_response,
+            fxc: fxc_ref,
+            thresh: config.integral_thresh,
+            ooc_budget: inp.env.ooc_budget,
+            j_response: responses.j(),
+            k_response: responses.k(),
+        };
+        let radius = self
+            .trah
+            .state
+            .as_ref()
+            .map(|s| s.radius())
+            .expect("trah_state is Some inside the armed branch");
+        let (ca_new, cb_new, step) =
+            crate::trah::uhf_trah_step(inp.ctx, &inputs, radius, &config.trah)?;
+
+        // Decline a step the model says is worthless, as the RHF loop does
+        // (`TrahConfig::predicted_min`). Measured on UKS/PBE OH/cc-pVDZ: from
+        // iteration 17 the model predicted -6.0e-15, the energy moved by
+        // exactly 0, rho = 0 rejected it, and the identical step was
+        // recomputed 28 times (74 iterations against DIIS's 33). Declining
+        // falls through to DIIS, and recording a zero density change lets the
+        // normal convergence test end the run.
+        if step.predicted.abs() < config.trah.predicted_min {
+            if crate::rhf::scf_trace() {
+                eprintln!(
+                    "TRAH iter={iter}: predicted |{:.3e}| < {:.0e}, \
+                     nothing left to gain -- deferring to DIIS",
+                    step.predicted, config.trah.predicted_min
+                );
+            }
+            if let Some(st) = self.trah.state.as_mut() {
+                st.clear_pending();
+            }
+            self.trah.undo = None;
+            crate::trah::note_trah_null_step_declined();
+            self.trah.engaged = false;
+            let d_tot = &self.d_a + &self.d_b;
+            self.mon.record_density_change(&d_tot, &d_tot);
+            return Ok(false);
+        }
+        if crate::rhf::scf_trace() {
+            eprintln!(
+                "TRAH iter={iter}: ‖κ‖={:.3e} Δ={:.3e} μ={:.3e} α={:.1} \
+                 ΔE_pred={:.3e} solves={} boundary={}",
+                step.norm,
+                radius,
+                step.level_shift,
+                step.alpha,
+                step.predicted,
+                step.shift_iterations,
+                step.on_boundary
+            );
+        }
+        self.trah.undo = Some((self.c_a.clone(), self.c_b.clone()));
+        if let Some(st) = self.trah.state.as_mut() {
+            st.record_step(energy, &step);
+        }
+        crate::trah::note_trah_step();
+        self.trah.engaged = true;
+        self.take_orbitals(inp, (ca_new, cb_new));
+        Ok(true)
+    }
+
+    /// ── Second-order (Newton) update, UHF/UKS ──
+    ///
+    /// When enabled (newton_trigger > 0) and err_max has dropped below the
+    /// trigger, take a damped-Newton step on the α/β orbital rotations
+    /// instead of DIIS. For UKS this uses the SAME f_xc kernel the ROKS
+    /// Newton path uses (via FxcKernelStore; LDA, GGA or the τ kernel for
+    /// meta-GGA). Gated to the non-RSH case (ω = 0). The REASON is not the
+    /// matvec's kernel: since #292 the matvec builds
+    /// `c_SR·δK[erfc(ω)] + c_LR·δK[erf(ω)]` from the converged Fock's own DF-K
+    /// fitters (`crate::rsh_response`, threaded via `UhfNewtonInputs::rsh`),
+    /// and that response is finite-difference-validated at ω ≠ 0 to 5.3e-12
+    /// and matches PySCF's dense UKS Hessian on O2/def2-SVP/ωB97X-V to 1.0e-7
+    /// relative. The gate stays only because LIFTING it changes the SCF
+    /// trajectory of every RSH run, which needs its own convergence
+    /// measurement (iteration counts, no regressions across the RSH test set)
+    /// that has not been made. Stability analysis — which drives the same
+    /// matvec through Davidson — is already unblocked.
+    fn newton_step(
+        &mut self,
+        inp: &UhfInputs<'_, '_>,
+        xc: &crate::driver::OpenShellXc<'_>,
+        jk: &mut crate::driver::OpenShellJk<'_>,
+        (iter, err_max): (usize, f64),
+    ) -> Result<UhfStep, FerricError> {
+        let config = inp.config;
+        let (nocc_a, nocc_b) = inp.nocc;
         let use_newton = config.newton_trigger > 0.0
             && iter > 3
             && err_max < config.newton_trigger
-            && k_mix.omega == 0.0
-            && !crate::rohf::xc_is_metagga(config.xc.as_deref())
-            && !fractional_blocks_second_order;
-        if use_newton {
-            let f_a_mo = c_a.t().dot(&f_a).dot(&c_a);
-            let f_b_mo = c_b.t().dot(&f_b).dot(&c_b);
-
-            // Build the f_xc kernel (LDA or GGA) + reference density once per
-            // Newton step (None for pure UHF). The response closure borrows it.
-            //
-            // `FxcKernelStore::build` -> `GgaFxcKernel::new`/`LdaFxcKernel::new`
-            // (ferric-dft/src/fxc.rs) calls `eval_basis_and_grad_on_points` on
-            // THIS SAME `main` grid config, i.e. it allocates a SECOND
-            // (nbf, npts) chi + (3, nbf, npts) dchi cache — 4 planes — that
-            // duplicates the one already resident in `xc_contrib` (the KS grid
-            // cache built once above, at construction, and held live for the
-            // whole SCF loop; it is not dropped before this branch runs).
-            // Measured at the shapes this crate's other memory findings use:
-            // benzene/aug-cc-pVTZ (nbf=414, ~12 atoms, npts=12*8250=99000) one
-            // plane is 414*99000*8 = 328 MB, so the duplicate 4-plane kernel
-            // costs 1.31 GB on top of the 1.31 GB KS cache already resident
-            // (2.62 GB peak where either gate alone only ever saw 1.31 GB);
-            // danuglipron/def2-SVP (nbf=700, 73 atoms, npts=73*8250=602250)
-            // one plane is 700*602250*8 = 3.37 GB, so the duplicate kernel
-            // costs 13.49 GB on top of the 13.49 GB KS cache (26.98 GB peak).
-            // `eval_basis_and_grad_on_points`'s own `check_ao_grid_budget`
-            // gate cannot see any of this: it re-resolves
-            // `resolve_budget_bytes(None)` — the WHOLE ceiling, ignoring
-            // `config.three_index_budget_bytes` AND the live KS cache — so it
-            // independently re-approves the duplicate against 100% of the
-            // budget the KS cache was already charged against.
-            //
-            // Gate it here instead, the way `ks.rs::new_with_omega_budgeted`
-            // gates its OWN grid cache: `available_budget_now` reads this
-            // process's live RSS (which by now already includes the resident
-            // KS cache) and reserves the same 0.9 headroom fraction PySCF
-            // uses, so a duplicate that would not actually fit is a clean
-            // `Err` here rather than a silent OOM three calls deeper. This
-            // does not fix the duplication itself (that requires teaching
-            // `GgaFxcKernel`/`LdaFxcKernel` to borrow `xc_contrib`'s cache
-            // instead of rebuilding it, which lives in ferric-dft, out of
-            // scope for this file) — it only makes the ALREADY-EXISTING
-            // second allocation honestly accounted for before it happens.
-            let fxc_store = if xc_contrib.is_some() {
-                let main = config.dft_grid.clone().unwrap_or_default();
-                let name = config.xc.as_deref().expect("xc_contrib implies Some(xc)");
-                let needed = fxc_kernel_duplicate_bytes(n, mol.atoms.len(), &main);
-                let avail = ferric_core::memory::available_budget_now(
-                    ferric_core::memory::resolve_budget_bytes(
-                        (config.three_index_budget_bytes != 0)
-                            .then_some(config.three_index_budget_bytes),
-                    ),
-                );
-                ferric_core::memory::check_alloc(
-                    "UHF/UKS Newton f_xc kernel (duplicate chi+dchi cache on the live KS grid)",
-                    needed,
-                    avail,
-                )?;
-                Some(crate::rohf::FxcKernelStore::build(
-                    mol,
-                    prep,
-                    &main,
-                    name,
-                    config.xc_omega,
-                    &d_a,
-                    &d_b,
-                )?)
-            } else {
-                None
-            };
-            let fxc_storage = fxc_store.as_ref().map(|s| s.response());
-            let fxc_ref: Option<&crate::rohf_newton::FxcResponse<'_>> = fxc_storage.as_deref();
-
-            let inputs = crate::uhf_newton::UhfNewtonInputs {
-                prep,
-                bounds,
-                c_a: &c_a,
-                c_b: &c_b,
-                f_a_mo: &f_a_mo,
-                f_b_mo: &f_b_mo,
-                nocc_a,
-                nocc_b,
-                k_mix_sr: if xc_contrib.is_some() { c_k } else { 1.0 },
-                rsh: rsh_response.as_ref(),
-                fxc: fxc_ref,
-                thresh: config.integral_thresh,
-                ooc_budget,
-            };
-            let (c_a_n, c_b_n, _kmax) = crate::uhf_newton::uhf_newton_step(
-                ctx,
-                &inputs,
-                config.level_shift.max(1e-6),
-                0.2, // trust radius
-                20,
-                1e-7,
-            )?;
-            c_a = c_a_n;
-            c_b = c_b_n;
-            let d_tot_old = &d_a + &d_b;
-            d_a = density(&c_a, nocc_a);
-            d_b = density(&c_b, nocc_b);
-            d_occ_a = occ_or_none(&c_a, nocc_a);
-            d_occ_b = occ_or_none(&c_b, nocc_b);
-            let d_tot_new = &d_a + &d_b;
-            mon.record_density_change(&d_tot_new, &d_tot_old);
-            continue;
+            && inp.k_mix.omega == 0.0
+            && !inp.fractional_blocks_second_order;
+        if !use_newton {
+            return Ok(UhfStep::Diis);
         }
+        let (c_a, c_b) = (&self.c_a, &self.c_b);
+        let f_a_mo = c_a.t().dot(&self.f_a).dot(c_a);
+        let f_b_mo = c_b.t().dot(&self.f_b).dot(c_b);
 
-        // Coupled DIIS extrapolation: one set of coefficients applied to
-        // both spin Fock histories.
-        let (mut f_a_new, mut f_b_new) = diis.step_pair(&f_a, &f_b, &err_a, &err_b);
+        // The f_xc kernel (LDA, GGA or meta-GGA) at the reference density,
+        // once per Newton step (None for pure UHF); the response closure owns
+        // it. It runs on the SCF's own screened XC grid and AO cache
+        // (`UksXcContribution::polarized_fxc`, `rohf::polarized_fxc_response`).
+        //
+        // Only an evaluator without a screened grid falls back to the dense
+        // `FxcKernelStore`, which builds a SECOND (nbf, npts) chi + (3, nbf,
+        // npts) dchi cache on the same grid: 1.31 GB at benzene/aug-cc-pVTZ,
+        // 13.49 GB at danuglipron/def2-SVP, on top of the KS cache. That
+        // fallback is gated here first: `available_budget_now` reads this
+        // process's live RSS (the resident KS cache included) against the 0.9
+        // headroom fraction, so a duplicate that would not fit is a clean
+        // `Err` rather than a silent OOM. `check_ao_grid_budget` inside
+        // `eval_basis_and_grad_on_points` cannot see the live KS cache, so it
+        // would re-approve the duplicate against the whole budget.
+        let fxc_storage = uks_fxc_response(
+            xc.xc_contrib.as_deref(),
+            (inp.mol, inp.prep, config),
+            (&self.d_a, &self.d_b),
+            NEWTON_FXC_LABEL,
+        )?;
+        let fxc_ref: Option<&crate::rohf_newton::FxcResponse<'_>> = fxc_storage.as_deref();
+
+        let responses = jk.responses();
+        let inputs = crate::uhf_newton::UhfNewtonInputs {
+            prep: inp.prep,
+            bounds: inp.bounds,
+            c_a,
+            c_b,
+            f_a_mo: &f_a_mo,
+            f_b_mo: &f_b_mo,
+            nocc_a,
+            nocc_b,
+            k_mix_sr: if xc.xc_contrib.is_some() {
+                inp.c_k
+            } else {
+                1.0
+            },
+            rsh: inp.rsh_response,
+            fxc: fxc_ref,
+            thresh: config.integral_thresh,
+            ooc_budget: inp.env.ooc_budget,
+            j_response: responses.j(),
+            k_response: responses.k(),
+        };
+        let (c_a_n, c_b_n, _kmax) = crate::uhf_newton::uhf_newton_step(
+            inp.ctx,
+            &inputs,
+            config.level_shift.max(1e-6),
+            0.2, // trust radius
+            20,
+            1e-7,
+        )?;
+        self.take_orbitals(inp, (c_a_n, c_b_n));
+        Ok(UhfStep::Continue)
+    }
+
+    /// The DIIS orbital update: coupled extrapolation (one set of
+    /// coefficients applied to both spin Fock histories), the damped
+    /// virtual-block level shift, the per-spin diagonalization, the
+    /// degenerate-flip pin and MOM, and the densities (integer or
+    /// fractional), recording ΔP over the total density.
+    fn diis_step(
+        &mut self,
+        inp: &UhfInputs<'_, '_>,
+        iter: usize,
+        phases: &mut ferric_core::timing::PhaseAccumulator,
+    ) -> Result<(), FerricError> {
+        let config = inp.config;
+        let (nocc_a, nocc_b) = inp.nocc;
+        let (diag_a, diag_b) = inp.diag;
+        let s = &inp.env.s;
+        let extrapolate_t = phases.begin("diis_extrapolate");
+        let (mut f_a_new, mut f_b_new) =
+            self.diis
+                .step_pair(&self.f_a, &self.f_b, &self.err_a, &self.err_b);
+        phases.stop(extrapolate_t);
+        // Degenerate-flip pin (`FlipPin`). `None` unless a flip engaged it.
+        let flip_pin = self.exit_gate.take_pin();
+        let pin_now = flip_pin.is_some_and(|p| {
+            p != FlipPin::Engage {
+                keep_current: false,
+            }
+        });
         // Optional level shift on each spin's virtual–virtual block, applied
         // after DIIS so the DIIS error / convergence criterion remains
-        // anchored to the unshifted Fock. Rational-damped by err_max so the
-        // converged Fock is the unshifted stationary point (see solve_rohf
-        // for the same formula and rationale).
-        if effective_level_shift > 0.0 && iter > 1 {
-            const SHIFT_DAMP_ERR: f64 = 1e-3;
-            let err_max = err_a
+        // anchored to the unshifted Fock. Ramped by err_max
+        // (`driver::open_shell_level_shift_ramp`) so the converged Fock is the
+        // unshifted stationary point.
+        if inp.effective_level_shift > 0.0 && iter > 1 {
+            let err_max = self
+                .err_a
                 .iter()
-                .chain(err_b.iter())
+                .chain(self.err_b.iter())
                 .map(|v| v.abs())
                 .fold(0.0_f64, f64::max);
-            let damp = err_max / (err_max + SHIFT_DAMP_ERR);
-            let shift_eff = effective_level_shift * damp;
-            if shift_eff > 1e-10 {
-                let c_av = c_a.slice(ndarray::s![.., nocc_a..]);
-                let c_bv = c_b.slice(ndarray::s![.., nocc_b..]);
-                let p_av: Array2<f64> = c_av.dot(&c_av.t());
-                let p_bv: Array2<f64> = c_bv.dot(&c_bv.t());
-                f_a_new += &(shift_eff * s.dot(&p_av).dot(&s));
-                f_b_new += &(shift_eff * s.dot(&p_bv).dot(&s));
+            let shift_eff =
+                crate::driver::open_shell_level_shift_ramp(inp.effective_level_shift, err_max);
+            if shift_eff > 0.0 {
+                let (shift_a, shift_b) =
+                    virtual_level_shift_terms(&self.c_a, &self.c_b, nocc_a, nocc_b, s, shift_eff);
+                f_a_new += &shift_a;
+                f_b_new += &shift_b;
             }
         }
+        let diagonalize_t = phases.begin("diagonalize");
         let (mut eps_a_new, mut c_a_new) = diag_a.run(&f_a_new)?;
         let (mut eps_b_new, mut c_b_new) = diag_b.run(&f_b_new)?;
+        phases.stop(diagonalize_t);
 
-        // MOM occupied-orbital selection (per spin) from iter mom_after_iter+1.
-        if config.mom_after_iter > 0 && iter > config.mom_after_iter {
-            (c_a_new, eps_a_new) = mom_pin(c_a_new, eps_a_new, &s, mom_ref_a.as_ref(), nocc_a);
-            (c_b_new, eps_b_new) = mom_pin(c_b_new, eps_b_new, &s, mom_ref_b.as_ref(), nocc_b);
+        // Degenerate-flip pin: hold the occupied set by maximum overlap, from
+        // the current occupation (`keep_current`) or from the one this aufbau
+        // step returns to.
+        if flip_pin == Some(FlipPin::Engage { keep_current: true }) {
+            self.mom_ref_a = Some(self.c_a.slice(ndarray::s![.., ..nocc_a]).to_owned());
+            self.mom_ref_b = Some(self.c_b.slice(ndarray::s![.., ..nocc_b]).to_owned());
         }
-        c_a = c_a_new;
-        c_b = c_b_new;
+        // MOM occupied-orbital selection (per spin) from iter mom_after_iter+1,
+        // or from iter 1 against the start (`MomReference::Initial`).
+        if (config.mom_after_iter > 0 && iter > config.mom_after_iter)
+            || self.mom_from_start
+            || pin_now
+        {
+            (c_a_new, eps_a_new) = mom_pin(c_a_new, eps_a_new, s, self.mom_ref_a.as_ref(), nocc_a);
+            (c_b_new, eps_b_new) = mom_pin(c_b_new, eps_b_new, s, self.mom_ref_b.as_ref(), nocc_b);
+        }
+        self.c_a = c_a_new;
+        self.c_b = c_b_new;
         // Update MOM references to the (possibly reordered) occupied blocks, so
         // the next iter pins against the most recent accepted occupation.
-        if config.mom_after_iter > 0 && iter >= config.mom_after_iter {
-            mom_ref_a = Some(c_a.slice(ndarray::s![.., ..nocc_a]).to_owned());
-            mom_ref_b = Some(c_b.slice(ndarray::s![.., ..nocc_b]).to_owned());
+        if (config.mom_after_iter > 0 && iter >= config.mom_after_iter) || flip_pin.is_some() {
+            self.mom_ref_a = Some(self.c_a.slice(ndarray::s![.., ..nocc_a]).to_owned());
+            self.mom_ref_b = Some(self.c_b.slice(ndarray::s![.., ..nocc_b]).to_owned());
         }
-        let d_tot_old = &d_a + &d_b;
+        let d_tot_old = &self.d_a + &self.d_b;
         // Density plus the cached occupied MO block for the next iteration's
         // DF-K half-transform; the cache is None whenever the ensemble density
         // is genuinely fractional (see spin_density_and_occ).
-        (d_a, d_occ_a) = spin_density_and_occ(&c_a, &eps_a_new, nocc_a, config.fractional_occ);
-        (d_b, d_occ_b) = spin_density_and_occ(&c_b, &eps_b_new, nocc_b, config.fractional_occ);
+        (self.d_a, self.d_occ_a) =
+            spin_density_and_occ(&self.c_a, &eps_a_new, nocc_a, config.fractional_occ);
+        (self.d_b, self.d_occ_b) =
+            spin_density_and_occ(&self.c_b, &eps_b_new, nocc_b, config.fractional_occ);
         // ΔP over the total density (α+β) — consumed at the top of the next
         // iteration by rhf::scf_converged. Drains to zero at the RI fixed point
         // even when the DIIS commutator parks on the naux noise floor.
-        let d_tot_new = &d_a + &d_b;
-        mon.record_density_change(&d_tot_new, &d_tot_old);
+        let d_tot_new = &self.d_a + &self.d_b;
+        self.mon.record_density_change(&d_tot_new, &d_tot_old);
+        Ok(())
     }
-    // Max iterations reached.
-    //
-    // Historically this discarded everything and returned a bare Err, which made an
-    // open-shell convergence LADDER impossible: a ladder works by carrying the
-    // best-effort density of a failed rung forward as the next rung's guess (exactly
-    // what `solve_rhf_ladder` does via RHF's `build_nonconverged`).
-    //
-    // So the best-effort state is now BUILT here, and the caller decides what to do
-    // with it. `solve_uhf` / `solve_uhf_with_guess` keep their historical Err contract
-    // -- every existing caller unwraps or `?`s them, and silently handing those an
-    // unconverged result would be a regression. `solve_uhf_best_effort` returns it.
-    //
-    // Orbital energies and Fock matrices are not retained across the loop (they are
-    // rebuilt each iteration), so the core-Hamiltonian eigenvalues stand in. The
-    // density and MOs -- the parts a ladder restart actually consumes -- are the
-    // genuine converged-so-far values.
-    let (eps_a_last, eps_b_last) = match diagonalize(&h, &x) {
-        Ok((e, _)) => (e.clone(), e),
-        Err(_) => (vec![0.0; c_a.ncols()], vec![0.0; c_a.ncols()]),
+}
+
+/// The Newton/TRAH/stability matvec responses of the Fock's own J/K builders
+/// ([`crate::uhf_newton::ScfResponses`]), so the orbital Hessian
+/// differentiates the energy the SCF evaluates (`UhfNewtonInputs::j_response`).
+///
+/// Lends nothing (both hooks `None`: the matvec's exact four-centre response,
+/// which is then the Fock's own kernel) unless a fitted builder exists. An
+/// RI-J or DF-K SCF lends it, plus the unfitted half of a mixed route:
+/// `DirectJ` (DF-K + conventional J) or `DirectK` (DF-J + direct K). COSX is
+/// not lent: one COSX K costs more than the direct build it would replace
+/// (see `rhf::lend_scf_jk`). The DF-K hook is the occupied-factor build
+/// ([`crate::uhf_newton::OccKResponse`]), so a per-spin response costs two
+/// `nocc`-column DF-K builds rather than one `O(naux·n³)` density build.
+/// Shared by the UHF/UKS and ROHF/ROKS second-order steps.
+pub(crate) fn scf_responses<'b, 'e: 'b>(
+    df_j: Option<&'b mut crate::split_rij::RiJ<'e>>,
+    df_k: Option<&'b mut crate::df_k::DfK<'e>>,
+    direct_j: Option<&'b mut DirectJ<'e>>,
+    direct_k: Option<&'b mut DirectK<'e>>,
+) -> crate::uhf_newton::ScfResponses<'b> {
+    use crate::uhf_newton::ScfResponses;
+    if df_j.is_none() && df_k.is_none() {
+        return ScfResponses::lend(None, None, None, None);
+    }
+    ScfResponses::lend(
+        df_j.map(|j| j as &'b mut (dyn JBuilder + 'e)),
+        df_k,
+        direct_j.map(|j| j as &'b mut (dyn JBuilder + 'e)),
+        direct_k.map(|k| k as &'b mut (dyn KBuilder + 'e)),
+    )
+}
+
+/// `check_alloc` label of the TRAH step's dense f_xc fallback.
+const TRAH_FXC_LABEL: &str =
+    "UHF/UKS TRAH f_xc kernel (duplicate chi+dchi cache on the live KS grid)";
+/// `check_alloc` label of the Newton step's dense f_xc fallback.
+const NEWTON_FXC_LABEL: &str =
+    "UHF/UKS Newton f_xc kernel (duplicate chi+dchi cache on the live KS grid)";
+
+/// The UKS f_xc response for a Newton or TRAH step at `(d_a, d_b)` (`None`
+/// for pure UHF, `x = None`)
+/// ([`crate::rohf::polarized_fxc_response`]), with the dense fallback's
+/// duplicate χ/∇χ cache gated under `label` against the live budget.
+fn uks_fxc_response<'s>(
+    x: Option<&'s dyn ferric_dft::xc_trait::UksXcContribution>,
+    (mol, prep, config): (&Molecule, &PreparedBasis, &UhfConfig),
+    d: (&Array2<f64>, &Array2<f64>),
+    label: &str,
+) -> Result<Option<Box<crate::rohf_newton::FxcResponse<'s>>>, FerricError> {
+    let Some(x) = x else {
+        return Ok(None);
     };
-    let density_total = &d_a + &d_b;
-    Ok(ScfResult {
-        guess_basis: None,
-        spin: Spin::Unrestricted,
-        energy: mon.prev_e,
-        density_total,
-        density_alpha: d_a,
-        density_beta: Some(d_b),
-        mos_alpha: c_a,
-        mos_beta: Some(c_b),
-        eps_alpha: eps_a_last,
-        eps_beta: Some(eps_b_last),
-        fock_alpha: h.clone(),
-        fock_beta: Some(h.clone()),
-        converged: false,
-        exit: ScfExit::MaxIter,
-        iterations: config.max_iter,
-        computed_quartets: total_quartets,
-        induced_dipoles: last_induced_dipoles,
-        stability: None,
-        stability_external: None,
-        df_jk: df_jk_route,
-        rohf_spin_focks: None,
-        cosx_final: None,
-        cosx_schedule: crate::cosx_schedule::record(&cosx_sched),
-        convergence: last_report,
-        precision: Default::default(),
-    })
+    let name = config.xc.as_deref().expect("xc_contrib implies Some(xc)");
+    // Evaluated only on the dense fallback (it reads this process's RSS).
+    let budget = || {
+        let main = config
+            .dft_grid
+            .clone()
+            .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
+        let needed = fxc_kernel_duplicate_bytes(prep.nbasis(), mol.atoms.len(), &main);
+        (needed, crate::rohf::fxc_no_pool_budget(config))
+    };
+    crate::rohf::polarized_fxc_response(x, (mol, prep, config, name), d, Some((label, &budget)))
+        .map(Some)
 }
 
 /// Post-convergence internal stability analysis for a UHF/UKS solution.
@@ -2145,9 +2278,9 @@ fn solve_uhf_impl(
 /// λ_min for an operator nobody asked about, presented with the same
 /// confidence as a correct one. So for `xc.is_some()` this builds the SAME
 /// [`crate::rohf::FxcKernelStore`] the UKS Newton branch a few hundred lines
-/// above builds at the same (d_α, d_β) reference, and where that kernel cannot
-/// be built — range-separated or meta-GGA — it SKIPS with a printed reason.
-/// Those are exactly the gates the UKS Newton branch itself uses.
+/// above builds at the same (d_α, d_β) reference (LDA, GGA, hybrid, RSH and
+/// τ-only meta-GGA); where the reference is not analysable (VV10, a Fock
+/// modifier) it SKIPS with a printed reason.
 #[allow(clippy::too_many_arguments)]
 fn stability_uhf<'r>(
     ctx: &ParallelContext,
@@ -2167,12 +2300,19 @@ fn stability_uhf<'r>(
     k_mix: ferric_dft::xc_trait::KMix,
     ooc_budget: usize,
     fock_modified: bool,
-    rsh: Option<&'r crate::rsh_response::RshResponse<'r>>,
+    (rsh, responses): (
+        Option<&'r crate::rsh_response::RshResponse<'r>>,
+        &crate::uhf_newton::ScfResponses<'_>,
+    ),
 ) -> Option<crate::stability::StabilityResult> {
     let skip = if fock_modified {
         Some(crate::stability::StabilitySkip::FockModified)
     } else {
-        crate::stability::ks_reference_is_analysable(config.xc.as_deref(), k_mix.omega).err()
+        crate::stability::environment_is_analysable(config)
+            .and_then(|()| {
+                crate::stability::ks_reference_is_analysable(config.xc.as_deref(), k_mix.omega)
+            })
+            .err()
     };
     if let Some(skip) = skip {
         eprintln!(
@@ -2184,7 +2324,10 @@ fn stability_uhf<'r>(
     }
 
     let fxc_store = if has_xc {
-        let grid = config.dft_grid.clone().unwrap_or_default();
+        let grid = config
+            .dft_grid
+            .clone()
+            .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
         let name = config.xc.as_deref().expect("has_xc implies Some(xc)");
         match crate::rohf::FxcKernelStore::build(mol, prep, &grid, name, config.xc_omega, d_a, d_b)
         {
@@ -2220,6 +2363,10 @@ fn stability_uhf<'r>(
         fxc: fxc_ref,
         thresh: config.integral_thresh,
         ooc_budget,
+        // The SCF's own J/K builders (`scf_responses`): the Hessian of the
+        // energy this SCF converged, fitted or mixed-route.
+        j_response: responses.j(),
+        k_response: responses.k(),
     };
     match crate::stability::uhf_internal_stability(
         ctx,
@@ -2272,10 +2419,18 @@ pub fn fxc_kernel_duplicate_bytes(
 /// saddle. Skipped under point-group blocking: a blocked closed-shell UHF has
 /// identical alpha and beta blocks and cannot leave `alpha = beta`, so the mix
 /// would only be projected away (symmetry-broken solutions are outside the
-/// blocked space by construction).
-fn mix_beta_homo_lumo(c_b: &mut Array2<f64>, nocc_a: usize, nocc_b: usize, blocked: bool) {
+/// blocked space by construction). Also skipped when the occupied orbitals
+/// fill the `n_retained` functions the overlap keeps: the LUMO column is then
+/// a zero pad, and the rotation would only shrink the HOMO.
+fn mix_beta_homo_lumo(
+    c_b: &mut Array2<f64>,
+    nocc_a: usize,
+    nocc_b: usize,
+    n_retained: usize,
+    blocked: bool,
+) {
     let n = c_b.nrows();
-    if blocked || nocc_a != nocc_b || nocc_a == 0 || nocc_a >= n {
+    if blocked || nocc_a != nocc_b || nocc_a == 0 || nocc_a >= n.min(n_retained) {
         return;
     }
     let theta = 0.1f64;
@@ -2325,6 +2480,9 @@ struct UhfIterGradients<'a> {
     /// Whether an XC functional is active: (the SCF's own, an injected one).
     /// Either makes this Kohn-Sham.
     xc_active: [bool; 2],
+    /// `E_k − E_{k−1}` (signed; meaningful only when `sig.de` is finite):
+    /// which end of a degenerate flip is lower.
+    de_signed: f64,
 }
 
 /// The UHF convergence decision: the shared ΔP/ΔE gate
@@ -2344,6 +2502,80 @@ struct UhfExitGate {
     veto: crate::rhf::GradientVeto,
     /// The previous iteration's AO `err_max` (∞ before the first).
     prev_err_max: Option<f64>,
+    /// The degenerate-flip occupation pin ([`FlipPin`]); `None` until a flip
+    /// engages it, which on a system without a degenerate flip is never.
+    pin: Option<FlipPin>,
+}
+
+/// The occupation pin engaged at a Kohn-Sham degenerate flip.
+///
+/// MEASURED on OH ²Π UKS-LDA/STO-3G (`tests/uhf_oh_orientation.rs`): the
+/// integer-occupation stationary state is NOT aufbau. Its occupied β π lies
+/// 5.0e-3 Ha above the empty β π (the one-step model drop, the same on every
+/// grid from 75x110 to 150x590, so it is the functional's self-interaction,
+/// not quadrature), and aufbau moves the hole π_x ↔ π_y every iteration.
+/// Physically the two ends are degenerate; on the DFT grid they are not: with
+/// the bond off the z axis the flip changes E by 2.6e-6..3.3e-6 Ha on the
+/// production grid, 2e-9..6e-9 at 75x302 and 6e-11..4e-10 at 99x590 (with the
+/// bond ON z the grid's C4 symmetry makes the two ends exactly equal). The
+/// swap acceptance ([`degenerate_swap_converged`]) needs that ΔE below
+/// `min(energy_conv, 1e-5)`, so tilted orientations cycled to `max_iter`; and
+/// where it did accept, the hole's orientation was whatever the eigensolver's
+/// rounding picked inside the degenerate pair.
+///
+/// The pin replaces acceptance with convergence: at the first flip that looks
+/// degenerate ([`degenerate_flip`]) the occupation is held from then on by
+/// maximum overlap (the MOM rule, `mom_pin`) on the LOWER end of the flip, and
+/// DIIS restarts from a clean history (its history mixes both ends). The run
+/// then converges through the ordinary ΔP/ΔE gate and gradient veto to a
+/// stationary non-aufbau state. Kohn-Sham only (a Hartree-Fock minimiser is
+/// aufbau; OH UHF converges aufbau at every orientation), and only where the
+/// occupation is aufbau by design (`rhf::aufbau_by_design`: not under a
+/// configured MOM, smearing, `fractional_occ` or `irrep_nelec`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlipPin {
+    /// Engaged this iteration; the next occupation update applies it. `true`:
+    /// the current density is the lower end, so hold its occupied set now.
+    /// `false`: the previous one was lower, so take this aufbau step (back to
+    /// that end) and hold its result.
+    Engage { keep_current: bool },
+    /// Held: each later occupation update is maximum-overlap with the last.
+    Held,
+}
+
+std::thread_local! {
+    static FLIP_PINS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Number of degenerate-flip occupation pins engaged by UHF/UKS solves on the
+/// calling thread (test hook: reachability of the pin).
+#[doc(hidden)]
+pub fn degenerate_flip_pins_on_this_thread() -> usize {
+    FLIP_PINS.with(|c| c.get())
+}
+
+/// Largest AO orbital gradient (`err_max`, at both ends) at which a flip may
+/// engage the pin: the veto floor ([`crate::rhf::VETO_MIN_ORBITAL_GRADIENT`]).
+/// MEASURED on OH: the first degenerate flips come at `err_max` 3e-4 → 6e-5
+/// (iterations 4-5).
+const FLIP_PIN_MAX_GRADIENT: f64 = crate::rhf::VETO_MIN_ORBITAL_GRADIENT;
+/// Whether this iteration is a degenerate flip: an orbital-sized density move
+/// (`dp_max > 0.5`) between two near-stationary densities (`err_max` below
+/// [`FLIP_PIN_MAX_GRADIENT`] at both ends) that changed the energy by less
+/// than [`SWAP_MAX_DE`]. A non-degenerate occupation change near a stationary
+/// point moves E by about the frontier gap (the one-step model puts OH's
+/// inverted π pair at 5e-3 Ha), not by 1e-5.
+fn degenerate_flip(
+    sig: crate::rhf::ConvergenceSignals,
+    err_max: f64,
+    prev_err_max: f64,
+    iter: usize,
+) -> bool {
+    iter > 2
+        && sig.dp_max > 0.5
+        && err_max < FLIP_PIN_MAX_GRADIENT
+        && prev_err_max < FLIP_PIN_MAX_GRADIENT
+        && sig.de < SWAP_MAX_DE
 }
 
 impl UhfExitGate {
@@ -2367,8 +2599,21 @@ impl UhfExitGate {
             .replace(it.err_max)
             .unwrap_or(f64::INFINITY);
         let plain = crate::rhf::scf_converged(it.sig, econv, dconv);
+        // A degenerate flip engages the occupation pin instead of being
+        // accepted (see `FlipPin`); once held, no flip is left to accept.
+        let ks = it.xc_active.contains(&true);
+        if ks && self.try_engage_pin(&it, config, prev_err_max) {
+            diis.reset();
+            return (None, false);
+        }
+        // Never under a pin: the ΔP of the iteration after an `Engage {
+        // keep_current: false }` is that engage's own deliberate flip back,
+        // and accepting it exited at whatever hole orientation the run
+        // started from (MEASURED: a guess rotated 0.5 rad inside the π pair
+        // exited at iteration 4, 8.9e-8 Ha above the minimum).
         let swap = plain.is_none()
-            && it.xc_active.contains(&true)
+            && ks
+            && self.pin.is_none()
             && degenerate_swap_converged(it.sig, it.err_max, prev_err_max, it.iter, econv, dconv);
         let settled = if swap {
             Some(ScfExit::Converged)
@@ -2397,8 +2642,61 @@ impl UhfExitGate {
         (exit, swap && exit.is_some())
     }
 
+    /// Engage the occupation pin if this KS iteration is a degenerate flip
+    /// (and no pin is set and the config is aufbau by design). The pin keeps
+    /// whichever end of the flip has the lower energy.
+    fn try_engage_pin(
+        &mut self,
+        it: &UhfIterGradients<'_>,
+        config: &UhfConfig,
+        prev_err_max: f64,
+    ) -> bool {
+        if self.pin.is_some()
+            || !crate::rhf::aufbau_by_design(config)
+            || !degenerate_flip(it.sig, it.err_max, prev_err_max, it.iter)
+        {
+            return false;
+        }
+        let keep_current = it.de_signed <= 0.0;
+        self.pin = Some(FlipPin::Engage { keep_current });
+        FLIP_PINS.with(|c| c.set(c.get() + 1));
+        if crate::rhf::scf_trace() {
+            eprintln!(
+                "UHF iter={}: degenerate flip (dE {:.3e}, dp_max {:.3}, err_max {:.3e}): \
+                 occupation pinned on the {} end",
+                it.iter,
+                it.de_signed,
+                it.sig.dp_max,
+                it.err_max,
+                if keep_current { "current" } else { "previous" }
+            );
+        }
+        true
+    }
+
     fn record(&self) -> Option<crate::result::GradientVetoes> {
         self.veto.record()
+    }
+
+    /// Whether the degenerate-flip pin has engaged (pending or held).
+    fn pinned(&self) -> bool {
+        self.pin.is_some()
+    }
+
+    /// Whether the pin holds an occupation already applied (the iteration
+    /// after it engaged, onward).
+    fn held(&self) -> bool {
+        self.pin == Some(FlipPin::Held)
+    }
+
+    /// The pin to apply at this iteration's occupation update, advancing an
+    /// `Engage` to `Held`.
+    fn take_pin(&mut self) -> Option<FlipPin> {
+        let p = self.pin;
+        if p.is_some() {
+            self.pin = Some(FlipPin::Held);
+        }
+        p
     }
 }
 
@@ -2437,10 +2735,14 @@ fn degenerate_swap_converged(
 /// only when that spin's density is integer. `d_occ` is the occupied-block
 /// cache that built the exit density, `Some` exactly when `D = C_occ·C_occᵀ`
 /// (see `spin_density_and_occ`); a fractional ensemble density has no integer
-/// occupied set to identify, so it keeps the aufbau eigenpairs. A MOM exit is
-/// never a swap acceptance, so it is never reordered.
-fn reorder_exit_mos(swapped: bool, d_occ: Option<&Array2<f64>>) -> bool {
-    swapped && d_occ.is_some()
+/// occupied set to identify, so it keeps the aufbau eigenpairs. Never under
+/// MOM (`mom`): a MOM state is non-aufbau by design and keeps main's C and
+/// eps (`occupied_by_density`), even when its exit IS a swap acceptance —
+/// MEASURED: OH UKS-LDA/STO-3G with MOM from iteration 3 and the guess hole
+/// off the grid's mirror planes drifts along the flat hole mode and exits on
+/// a ΔP = 0.66 swap at iteration 11 (`uhf_degenerate_swap.rs`).
+fn reorder_exit_mos(swapped: bool, mom: bool, d_occ: Option<&Array2<f64>>) -> bool {
+    swapped && !mom && d_occ.is_some()
 }
 
 /// Order one spin's eigenpairs so the first `nocc` columns are the
@@ -2511,7 +2813,7 @@ fn exit_eigenpairs(
         spin.s,
         spin.d,
         nocc,
-        reorder_exit_mos(swapped, spin.d_occ),
+        reorder_exit_mos(swapped, mom, spin.d_occ),
     );
     if diag.is_blocked() {
         return Ok(eig);
@@ -2660,6 +2962,12 @@ fn density(c: &Array2<f64>, nocc: usize) -> Array2<f64> {
     }
     let c_occ = c.slice(ndarray::s![.., ..nocc]);
     c_occ.dot(&c_occ.t())
+}
+
+/// The initial-MOM reference for one spin: the occupied block of the start
+/// orbitals when `from_start` (`MomReference::Initial`), otherwise none.
+fn start_reference(c: &Array2<f64>, nocc: usize, from_start: bool) -> Option<Array2<f64>> {
+    from_start.then(|| c.slice(ndarray::s![.., ..nocc]).to_owned())
 }
 
 /// One spin's MOM step: reorder the new eigenpairs so the first `nocc` columns
@@ -2931,8 +3239,11 @@ fn uhf_guess_mos(
         return Ok(None);
     };
 
-    // Split the spin-summed guess density evenly and build F_α = F_β at it.
+    // Split the spin-summed guess density evenly and build F_α = F_β at it,
+    // with unrotated builds (`SchwarzBounds::unrotated`): the guess does not
+    // follow the SCF's contraction rotation.
     let d_spin = &d_total * 0.5;
+    let bounds = &bounds.unrotated();
     let mut j = Array2::<f64>::zeros((n, n));
     let mut k = Array2::<f64>::zeros((n, n));
     if let Err(e) = crate::rhf::build_jk(
@@ -2969,7 +3280,13 @@ fn uhf_guess_mos(
     //   F_σ = h + J[D_α + D_β] − K[D_σ].
     let f_guess = h + &j - &k_spin;
     match (diags.0.run(&f_guess), diags.1.run(&f_guess)) {
-        (Ok((_, ca)), Ok((_, cb))) => Ok(Some((ca, cb))),
+        (Ok((ea, ca)), Ok((eb, cb))) => {
+            let (nocc_a, nocc_b) = nocc_ab(mol)?;
+            Ok(Some((
+                guess_frontier_basis(&ea, ca, nocc_a, diags.0.is_blocked()),
+                guess_frontier_basis(&eb, cb, nocc_b, diags.1.is_blocked()),
+            )))
+        }
         (Err(e), _) | (_, Err(e)) => {
             if crate::rhf::scf_trace() {
                 eprintln!("UHF guess: diagonalizing the guess Fock failed ({e:?}); using hcore");
@@ -2977,6 +3294,146 @@ fn uhf_guess_mos(
             Ok(None)
         }
     }
+}
+
+/// One spin's guess MOs with a straddling degenerate frontier cluster put in
+/// the canonical basis ([`canonical_frontier_basis`]) and then turned by
+/// [`GUESS_HOLE_ANGLE`] inside the cluster. Unchanged when the spin is
+/// symmetry blocked or has no straddling cluster.
+fn guess_frontier_basis(eps: &[f64], c: Array2<f64>, nocc: usize, blocked: bool) -> Array2<f64> {
+    if blocked || straddling_frontier_cluster(eps, nocc).is_none() {
+        return c;
+    }
+    let mut c = canonical_frontier_basis(eps, c, nocc);
+    rotate_frontier_pair(&mut c, nocc, GUESS_HOLE_ANGLE);
+    c
+}
+
+/// Fixed rotation (rad) of the guess hole away from the canonical pivot
+/// inside a straddling degenerate frontier cluster ([`guess_frontier_basis`]).
+///
+/// The hole orientations of a degenerate open shell are physically
+/// equivalent; on a DFT grid they are not, and the energy as a function of
+/// the orientation ripples with the angular grid. Lebedev grids have
+/// octahedral symmetry: about a molecular axis that lies on a grid axis the
+/// mirror planes are at multiples of π/4 from the coordinate axes, and the
+/// canonical pivot (an AO, e.g. O p_x) lies on one of them. A hole started
+/// ON a mirror plane is held there by symmetry, on whatever stationary point
+/// of the ripple sits on that plane, minimum or saddle. π/8 is the angle
+/// farthest from both neighbouring planes (0 and π/4), so no grid symmetry
+/// holds the start. One fixed angle, one start: which ripple state a run ends
+/// in is a property of the grid, not of the method, and is not searched for;
+/// tests that compare against another code use a grid on which the ripple is
+/// below their bar.
+///
+/// MEASURED (OH ²Π, bond tilted 0..90° off z; scripts/queue/out/
+/// oh-grid-2026-11-09/ in the commit that set this): UKS/PBE/cc-pVDZ, flat
+/// 75x110, bond on z: rotations 0 and π/2 end on the axis minimum, π/4 on a
+/// saddle, π/8 on the lowest stable state in 25 iterations. Off the grid
+/// axis there is no plane to avoid: over 8 tilts (flat 75x110 and the
+/// production grid alike) π/8 ends on a ripple saddle (λ_min ≈ −1e-4,
+/// ≤ 2.5e-6 Ha above the lowest state found) at 4 tilts, exactly where the
+/// unrotated start does, and no fixed angle tried avoided them all (flat
+/// 75x110: 3π/16 at 1 tilt, π/16 at 4, 3π/8 at 3, π/4 at 6). UKS/LDA/STO-3G on
+/// the production grid (`uhf_oh_orientation.rs`'s sweep): no saddle at any
+/// tilt for any of these angles.
+const GUESS_HOLE_ANGLE: f64 = std::f64::consts::FRAC_PI_8;
+
+/// Eigenvalues closer than this (Ha) to the frontier form one degenerate
+/// cluster for [`canonical_frontier_basis`]. A symmetric guess density
+/// (MINAO, atom-centred) leaves a linear radical's π pair degenerate to
+/// rounding (1e-14), far inside it.
+const GUESS_DEGENERATE_TOL: f64 = 1e-8;
+
+/// Replace the eigensolver's arbitrary basis of a degenerate cluster that
+/// STRADDLES the occupation boundary (`lo < nocc < hi`) by a canonical one.
+///
+/// Inside an exactly degenerate eigenspace LAPACK returns some orthonormal
+/// basis decided by rounding, so which member the guess occupies — e.g. the
+/// orientation of OH's β π hole — differed between machines and moved the
+/// converged energy by the grid anisotropy of the hole orientation (CI vs
+/// local: 2.4e-8 Ha on OH UKS-LDA/STO-3G with the bond on z). The canonical
+/// basis is a pivoted Gram-Schmidt on AO rows: the first vector is the
+/// cluster combination with the most weight on the AO carrying the largest
+/// cluster norm (lowest AO index on a tie within 1e-10), positive there; the
+/// next is the same within the orthogonal remainder, and so on. Rotating
+/// within the cluster keeps C S-orthonormal and every eigenvalue unchanged.
+///
+/// A cluster wholly occupied or wholly virtual leaves every density
+/// unchanged, so it is left alone: the result is bit-identical unless the
+/// guess genuinely has to pick inside a degenerate frontier.
+fn canonical_frontier_basis(eps: &[f64], mut c: Array2<f64>, nocc: usize) -> Array2<f64> {
+    let Some((lo, hi)) = straddling_frontier_cluster(eps, nocc) else {
+        return c;
+    };
+    let k = hi - lo;
+    let block = c.slice(ndarray::s![.., lo..hi]).to_owned();
+    // Remaining cluster subspace, as an orthonormal basis of R^k (columns).
+    let mut rest = Array2::<f64>::eye(k);
+    let mut out = Array2::<f64>::zeros((c.nrows(), k));
+    for col in 0..k {
+        let proj = block.dot(&rest); // n × (k − col)
+        let norms: Vec<f64> = proj.rows().into_iter().map(|r| r.dot(&r)).collect();
+        let max = norms.iter().cloned().fold(0.0f64, f64::max);
+        let p = norms
+            .iter()
+            .position(|&v| v >= max - 1e-10)
+            .expect("a non-empty cluster has a largest AO row");
+        // u ∝ restᵀ-coordinates of the pivot row, then back to R^k.
+        let w = proj.row(p).to_owned();
+        let u = rest.dot(&w) / w.dot(&w).sqrt();
+        out.column_mut(col).assign(&block.dot(&u));
+        // Deflate: orthonormal basis of rest's span ⟂ u.
+        let mut next = Vec::new();
+        for j in 0..rest.ncols() {
+            let mut v = rest.column(j).to_owned();
+            v -= &(v.dot(&u) * &u);
+            for q in &next {
+                let q: &ndarray::Array1<f64> = q;
+                v -= &(v.dot(q) * q);
+            }
+            let nv = v.dot(&v).sqrt();
+            if nv > 1e-8 && next.len() < rest.ncols() - 1 {
+                next.push(v / nv);
+            }
+        }
+        let mut r2 = Array2::<f64>::zeros((k, next.len()));
+        for (j, v) in next.iter().enumerate() {
+            r2.column_mut(j).assign(v);
+        }
+        rest = r2;
+    }
+    c.slice_mut(ndarray::s![.., lo..hi]).assign(&out);
+    c
+}
+
+/// The degenerate cluster `[lo, hi)` (eigenvalues within
+/// [`GUESS_DEGENERATE_TOL`] of the highest occupied) when it straddles the
+/// occupation boundary (`lo < nocc < hi`), else `None`.
+fn straddling_frontier_cluster(eps: &[f64], nocc: usize) -> Option<(usize, usize)> {
+    let m = eps.len();
+    if nocc == 0 || nocc >= m {
+        return None;
+    }
+    let mut lo = nocc - 1;
+    while lo > 0 && (eps[nocc - 1] - eps[lo - 1]).abs() < GUESS_DEGENERATE_TOL {
+        lo -= 1;
+    }
+    let mut hi = nocc;
+    while hi < m && (eps[hi] - eps[nocc - 1]).abs() < GUESS_DEGENERATE_TOL {
+        hi += 1;
+    }
+    (hi > nocc).then_some((lo, hi))
+}
+
+/// Rotate the last occupied and first virtual column of `c` by `theta`
+/// (both inside the straddling degenerate cluster, so C stays orthonormal
+/// and the guess Fock's eigenvalues are unchanged).
+fn rotate_frontier_pair(c: &mut Array2<f64>, nocc: usize, theta: f64) {
+    let (ci, ca) = (c.column(nocc - 1).to_owned(), c.column(nocc).to_owned());
+    let (cs, sn) = (theta.cos(), theta.sin());
+    c.column_mut(nocc - 1).assign(&(cs * &ci + sn * &ca));
+    c.column_mut(nocc).assign(&(-sn * &ci + cs * &ca));
 }
 
 /// Injected-path counterpart of [`uhf_guess_mos`] for an explicit
@@ -3040,6 +3497,24 @@ mod tests {
     use ferric_core::parallel::ParallelContext;
     use ferric_integrals::oneelectron;
 
+    /// Overlap of rank 2 on 3 functions (functions 0 and 1 identical): the
+    /// canonical orthogonalizer keeps 2 directions, so a spin with 3
+    /// occupied orbitals cannot start from a density, and one with 2 can.
+    #[test]
+    fn spin_density_start_refuses_more_occupied_than_the_kept_rank() {
+        let s = ndarray::arr2(&[[1.0, 1.0, 0.0], [1.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+        let d = Array2::<f64>::zeros((3, 3));
+        assert_eq!(crate::rhf::canonical_orthogonalizer(&s).unwrap().ncols(), 2);
+        let msg = spin_natural_orbitals(&s, &d, 3, "beta")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.contains("3 beta-occupied") && msg.contains("2 orthogonalized"),
+            "{msg}"
+        );
+        assert!(spin_natural_orbitals(&s, &d, 2, "beta").is_ok());
+    }
+
     fn signals(de: f64, dp: f64) -> crate::rhf::ConvergenceSignals {
         crate::rhf::ConvergenceSignals {
             de,
@@ -3078,6 +3553,7 @@ mod tests {
                 err: [&err, &err],
                 x: &x,
                 xc_active: [true, false],
+                de_signed: 0.0,
             },
             &config,
             &mut diis,
@@ -3123,6 +3599,7 @@ mod tests {
                     err: [&err, &err],
                     x: &x,
                     xc_active: [true, false],
+                    de_signed: 0.0,
                 },
                 &config,
                 &mut diis,
@@ -3147,7 +3624,7 @@ mod tests {
             &x,
             &d,
             1,
-            reorder_exit_mos(swapped, d_occ.as_ref()),
+            reorder_exit_mos(swapped, false, d_occ.as_ref()),
         );
         let occ = c_int.slice(ndarray::s![.., ..1]);
         assert_eq!(
@@ -3156,11 +3633,12 @@ mod tests {
             "integer-density exit MOs do not build D"
         );
         // A fractional spin (no cache) keeps the aufbau eigenpairs.
-        assert!(!reorder_exit_mos(swapped, None));
+        assert!(!reorder_exit_mos(swapped, false, None));
         let (eps_f, c_f) = occupied_by_density((eps.clone(), c.clone()), &x, &d, 1, false);
         assert_eq!((eps_f, c_f), (eps, c));
-        // No swap (a plain or MOM exit): never reordered.
-        assert!(!reorder_exit_mos(false, d_occ.as_ref()));
+        // No swap (a plain exit), or a swap under MOM: never reordered.
+        assert!(!reorder_exit_mos(false, false, d_occ.as_ref()));
+        assert!(!reorder_exit_mos(swapped, true, d_occ.as_ref()));
     }
 
     /// `exit_mos_building_density`: the gate and the construction, on a
@@ -3304,6 +3782,233 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The canonical basis of a straddling degenerate cluster does not depend
+    /// on the basis the eigensolver returned inside it (any rotation of the
+    /// pair gives the same columns), keeps C S-orthonormal (here S = I), and
+    /// leaves a non-straddling cluster bit-identical. Mutation-checked: without
+    /// the canonicalisation the rotated inputs differ by O(0.3).
+    #[test]
+    fn canonical_frontier_basis_is_rotation_invariant_and_local() {
+        let n = 4;
+        let base = Array2::<f64>::eye(n);
+        let eps = vec![-1.0, -0.5, -0.5, 0.3];
+        let rotate = |theta: f64| {
+            let mut c = base.clone();
+            let (u, v) = (base.column(1).to_owned(), base.column(2).to_owned());
+            c.column_mut(1)
+                .assign(&(theta.cos() * &u + theta.sin() * &v));
+            c.column_mut(2)
+                .assign(&(-theta.sin() * &u + theta.cos() * &v));
+            c
+        };
+        let reference = canonical_frontier_basis(&eps, rotate(0.0), 2);
+        for theta in [0.3, 1.1, 2.0, -0.7] {
+            let got = canonical_frontier_basis(&eps, rotate(theta), 2);
+            let diff = (&got - &reference)
+                .iter()
+                .fold(0.0f64, |m, v| m.max(v.abs()));
+            assert!(
+                diff < 1e-12,
+                "θ = {theta}: canonical basis moved by {diff:.2e}"
+            );
+            let ortho = (got.t().dot(&got) - Array2::<f64>::eye(n))
+                .iter()
+                .fold(0.0f64, |m, v| m.max(v.abs()));
+            assert!(
+                ortho < 1e-12,
+                "θ = {theta}: lost orthonormality {ortho:.2e}"
+            );
+        }
+        // Wholly occupied (nocc = 3) or wholly virtual (nocc = 1): untouched.
+        for nocc in [1usize, 3] {
+            let c = rotate(0.7);
+            assert_eq!(canonical_frontier_basis(&eps, c.clone(), nocc), c);
+        }
+    }
+
+    /// Wiring: the UHF guess applies `canonical_frontier_basis` and then the
+    /// fixed `GUESS_HOLE_ANGLE` turn to a spin whose degenerate frontier
+    /// straddles the occupation (OH β, the π pair). Recognisable on the pivot
+    /// AO (the AO row of largest cluster norm, invariant under rotations in the
+    /// pair): the canonical basis has (c, 0) there with c > 0, so the turned
+    /// pair has (c cos θ, −c sin θ). Removing the canonicalisation (LAPACK's
+    /// rounding-chosen basis) or the turn fails this.
+    #[test]
+    fn uhf_guess_canonicalises_the_straddling_beta_pi_pair() {
+        let mol = Molecule::parse_xyz("2\nOH\nO 0 0 0\nH 0 0 0.98\n", 0, 2).unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let bounds =
+            SchwarzBounds::compute(ferric_integrals::operator::Operator::coulomb(), &prep).unwrap();
+        let s = oneelectron::overlap(&prep);
+        let h = oneelectron::hcore(&prep);
+        let x = crate::rhf::canonical_orthogonalizer(&s).unwrap();
+        let plain = crate::symmetric::PlainDiag::Rect(&x);
+        let da = crate::symmetric::FockDiag::new(None, &s, plain).unwrap();
+        let db = crate::symmetric::FockDiag::new(None, &s, plain).unwrap();
+        let config = UhfConfig {
+            xc: Some("LDA".into()),
+            ..Default::default()
+        };
+        let (_, cb) = uhf_guess_mos(
+            &ParallelContext::default(),
+            &mol,
+            &prep,
+            &bounds,
+            &config,
+            &h,
+            (&da, &db),
+        )
+        .unwrap()
+        .expect("MINAO guess");
+        let (i, a) = (3usize, 4usize); // β: 4 occupied, the π pair is columns 3, 4
+        let pair = cb.slice(ndarray::s![.., i..=a]);
+        let norm = |u: usize| pair.row(u).dot(&pair.row(u));
+        // The same pivot rule as canonical_frontier_basis: the FIRST row within
+        // 1e-10 of the largest norm. The π pair's p_x and p_y rows tie exactly
+        // in exact arithmetic, so a bare max picks whichever rounding favours
+        // (p_y on Windows' OpenBLAS: run 42930383672).
+        let max = (0..pair.nrows()).map(norm).fold(0.0f64, f64::max);
+        let p = (0..pair.nrows()).find(|&u| norm(u) >= max - 1e-10).unwrap();
+        let c = norm(p).sqrt();
+        let (want_i, want_a) = (c * GUESS_HOLE_ANGLE.cos(), -c * GUESS_HOLE_ANGLE.sin());
+        assert!(
+            c > 0.1 && (cb[(p, i)] - want_i).abs() < 1e-12 && (cb[(p, a)] - want_a).abs() < 1e-12,
+            "pivot-AO coefficients ({:.6e}, {:.6e}) of the β pair, want ({want_i:.6e}, \
+             {want_a:.6e}): guess not canonicalised and turned by GUESS_HOLE_ANGLE",
+            cb[(p, i)],
+            cb[(p, a)]
+        );
+    }
+
+    /// The degenerate-flip pin engages on the flip signature only (KS, aufbau
+    /// by design, orbital-sized ΔP at a small gradient and a ΔE below
+    /// SWAP_MAX_DE), returns no exit, clears DIIS, and once engaged suppresses
+    /// the swap acceptance. Arithmetic-free wiring of `UhfExitGate::decide`.
+    #[test]
+    fn degenerate_flip_engages_the_pin_instead_of_accepting_the_swap() {
+        let n = 2;
+        let x = Array2::<f64>::eye(n);
+        let err = Array2::<f64>::zeros((n, n));
+        let f = |v: f64| Array2::from_elem((n, n), v);
+        let it = |iter: usize, de: f64, dp: f64, err_max: f64, ks: bool, de_signed: f64| {
+            (iter, signals(de, dp), err_max, ks, de_signed)
+        };
+        let decide = |gate: &mut UhfExitGate,
+                      diis: &mut Diis,
+                      config: &UhfConfig,
+                      (iter, sig, err_max, ks, de_signed): (
+            usize,
+            crate::rhf::ConvergenceSignals,
+            f64,
+            bool,
+            f64,
+        )| {
+            gate.decide(
+                &mut None,
+                UhfIterGradients {
+                    iter,
+                    sig,
+                    err_max,
+                    err: [&err, &err],
+                    x: &x,
+                    xc_active: [ks, false],
+                    de_signed,
+                },
+                config,
+                diis,
+                false,
+                &mut None,
+            )
+        };
+        let config = UhfConfig {
+            density_conv: 1e-6,
+            energy_conv: 1e-7,
+            ..Default::default()
+        };
+        // Signature at iteration 6 (iteration 5 sets prev_err_max).
+        let mut gate = UhfExitGate::default();
+        let mut diis = Diis::new(6);
+        diis.step_pair(&f(1.0), &f(1.0), &f(0.3), &f(0.1));
+        diis.step_pair(&f(2.0), &f(2.0), &f(0.2), &f(0.05));
+        let _ = decide(
+            &mut gate,
+            &mut diis,
+            &config,
+            it(5, 1e-5, 0.9, 1e-4, true, 0.0),
+        );
+        let (exit, swapped) = decide(
+            &mut gate,
+            &mut diis,
+            &config,
+            it(6, 1e-9, 0.98, 5e-7, true, 1e-9),
+        );
+        assert!(exit.is_none() && !swapped, "a flip must not exit");
+        assert_eq!(
+            gate.pin,
+            Some(FlipPin::Engage {
+                keep_current: false
+            })
+        );
+        let (fa, _) = diis.step_pair(&f(5.0), &f(5.0), &f(0.4), &f(0.4));
+        assert_eq!(fa, f(5.0), "DIIS history was not cleared at the pin");
+        assert_eq!(
+            gate.take_pin(),
+            Some(FlipPin::Engage {
+                keep_current: false
+            })
+        );
+        assert!(gate.held());
+        // Held: the same swap signature (which alone would satisfy
+        // `degenerate_swap_converged`) is no longer accepted.
+        let (exit, swapped) = decide(
+            &mut gate,
+            &mut diis,
+            &config,
+            it(7, 1e-9, 0.98, 5e-7, true, -1e-9),
+        );
+        assert!(exit.is_none() && !swapped, "a held pin accepted a swap");
+
+        // Not KS, a large ΔE, or a large gradient: no pin.
+        for (case, args) in [
+            ("HF", it(6, 1e-9, 0.98, 5e-7, false, 0.0)),
+            ("dE", it(6, 2e-5, 0.98, 5e-7, true, 0.0)),
+            ("gradient", it(6, 1e-9, 0.98, 2e-3, true, 0.0)),
+            ("dP", it(6, 1e-9, 0.4, 5e-7, true, 0.0)),
+        ] {
+            let mut gate = UhfExitGate::default();
+            let mut diis = Diis::new(6);
+            let _ = decide(
+                &mut gate,
+                &mut diis,
+                &config,
+                it(5, 1e-5, 0.9, 1e-4, true, 0.0),
+            );
+            let _ = decide(&mut gate, &mut diis, &config, args);
+            assert!(gate.pin.is_none(), "{case}: the pin engaged");
+        }
+        // Configured MOM: occupation not aufbau by design, no pin.
+        let mom = UhfConfig {
+            mom_after_iter: 3,
+            ..config.clone()
+        };
+        let mut gate = UhfExitGate::default();
+        let mut diis = Diis::new(6);
+        let _ = decide(
+            &mut gate,
+            &mut diis,
+            &mom,
+            it(5, 1e-5, 0.9, 1e-4, true, 0.0),
+        );
+        let _ = decide(
+            &mut gate,
+            &mut diis,
+            &mom,
+            it(6, 1e-9, 0.98, 5e-7, true, 0.0),
+        );
+        assert!(gate.pin.is_none(), "MOM config engaged the pin");
     }
 
     /// The swap gradient bound is `max(density_conv, 1e-6)`: at a tight
@@ -3497,6 +4202,7 @@ mod tests {
         );
     }
 
+    #[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
     #[test]
     fn external_point_charge_changes_uks_pbe_energy() {
         // Reuses the test_uks_pbe_bromine_atom_converges fixture verbatim (free

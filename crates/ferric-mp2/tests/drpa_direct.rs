@@ -48,10 +48,7 @@ fn setup(xyz: &str, obs_name: &str, aux_name: &str) -> Setup {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_energy_conv(1e-10),
     )
     .unwrap();
     Setup {
@@ -229,6 +226,7 @@ fn finite_eps_trivial_maps_matches_global_path() {
 /// measured against the canonical plasmon reference (the ε=0-class truth
 /// the tight-rtol test on the global path uses), map error against the
 /// trivial-map run at the same ε.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn production_maps_error_is_subdominant_to_eps_truncation() {
     let su = setup("alkane_8.xyz", "6-31g", "cc-pvdz-ri");

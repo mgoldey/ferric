@@ -311,7 +311,10 @@ pub fn rsh_uks_lowest_hessian_eigenvalue(
         let o = c_b.slice(ndarray::s![.., ..nocc_b]);
         o.dot(&o.t())
     };
-    let grid = config.dft_grid.clone().unwrap_or_default();
+    let grid = config
+        .dft_grid
+        .clone()
+        .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
     let store =
         crate::rohf::FxcKernelStore::build(mol, prep, &grid, xc, config.xc_omega, &d_a, &d_b)?;
     let fxc = store.response();
@@ -337,6 +340,8 @@ pub fn rsh_uks_lowest_hessian_eigenvalue(
         fxc: Some(&*fxc),
         thresh: config.integral_thresh,
         ooc_budget: budget,
+        j_response: None,
+        k_response: None,
     };
     let st = uhf_internal_stability(ctx, &inputs, &StabilityConfig::default())?;
     Ok((st.lowest_eigenvalue, st.residual, st.converged, res.energy))
@@ -567,6 +572,8 @@ mod tests {
             fxc: None,
             thresh: 1e-14,
             ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
+            j_response: None,
+            k_response: None,
         };
         let pool = crate::engine_pool::EnginePool::new(
             hn.bounds.op,

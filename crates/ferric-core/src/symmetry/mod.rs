@@ -141,13 +141,22 @@ pub fn compose(a: usize, b: usize) -> usize {
 /// The Abelian point groups: D2h and its subgroups.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AbelianGroup {
+    /// Identity only.
     C1,
+    /// Identity and inversion.
     Ci,
+    /// Identity and one mirror plane.
     Cs,
+    /// Identity and one C2 axis.
     C2,
+    /// Identity, one C2 axis and the two mirror planes containing it.
     C2v,
+    /// Identity, one C2 axis, inversion and the mirror plane perpendicular to
+    /// the axis.
     C2h,
+    /// Identity and the three C2 axes.
     D2,
+    /// All eight D2h operations.
     D2h,
 }
 

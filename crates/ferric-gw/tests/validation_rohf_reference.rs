@@ -57,7 +57,7 @@
 //! * ROMP2: ferric's U-MP2 must MISS `semicanonical/romp2_total`.
 //! * Legacy reproduction (`legacy_view_reproduces_*`): ferric fed the legacy view
 //!   explicitly (ROHF MOs + effective-Fock energies for both spins, labelled
-//!   Unrestricted) must MATCH the legacy control — the control is the old code
+//!   Unrestricted) must MATCH the legacy control — the control is the legacy code
 //!   path, and the harness sees it.
 //!
 //! # MUTATION (run 2026-09-25)
@@ -88,6 +88,7 @@ use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::semicanonical::unrestricted_reference;
 use ferric_scf::{ScfResult, Spin};
+use ferric_testkit::reference::num_ctx;
 use serde_json::Value;
 
 const ROW_DIR: &str = "testdata/reference/validation/rohf_semicanonical";
@@ -151,12 +152,6 @@ fn reference(system: &str) -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
 }
 
 fn vec_f64(v: &Value, ptr: &str, ctx: &str) -> Vec<f64> {
@@ -245,7 +240,7 @@ fn load(system: &str) -> Sys {
         &label,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &label),
+        num_ctx(&r, "/nuclear_repulsion", &label),
         TOL_ENUC,
     );
     let obs = PreparedBasis::new(&mol, &basis::bundled(BASIS).unwrap()).unwrap();
@@ -268,12 +263,10 @@ fn load(system: &str) -> Sys {
         &obs,
         Operator::coulomb(),
         &bounds,
-        &RhfConfig {
-            max_iter: 400,
-            energy_conv: 1e-11,
-            density_conv: 1e-9,
-            ..Default::default()
-        },
+        &RhfConfig::default()
+            .with_max_iter(400)
+            .with_energy_conv(1e-11)
+            .with_density_conv(1e-9),
     )
     .unwrap_or_else(|e| panic!("{label}: solve_rohf failed: {e:?}"));
     assert!(rohf.converged, "{label}: ROHF did not converge");
@@ -282,7 +275,7 @@ fn load(system: &str) -> Sys {
         &label,
         "E_ROHF",
         rohf.energy,
-        num(&r, "/rohf/energy", &label),
+        num_ctx(&r, "/rohf/energy", &label),
         TOL_E_SCF,
     );
     Sys {
@@ -441,14 +434,14 @@ fn semicanonical_case(system: &str) {
         &ctx,
         "U-RPA E_c (40-pt GL)",
         e_rpa,
-        num(r, "/semicanonical/urpa/e_corr", &ctx),
+        num_ctx(r, "/semicanonical/urpa/e_corr", &ctx),
         TOL_E_RPA,
     );
     assert_misses(
         &ctx,
         "U-RPA vs legacy effective-Fock",
         &[e_rpa],
-        &[num(r, "/legacy_effective_fock/urpa/e_corr", &ctx)],
+        &[num_ctx(r, "/legacy_effective_fock/urpa/e_corr", &ctx)],
         TOL_E_RPA,
     );
 
@@ -458,21 +451,25 @@ fn semicanonical_case(system: &str) {
         &ctx,
         "U-MP2 E_c (doubles)",
         e_mp2,
-        num(r, "/semicanonical/ump2_doubles/e_corr", &ctx),
+        num_ctx(r, "/semicanonical/ump2_doubles/e_corr", &ctx),
         TOL_E_MP2,
     );
     assert_misses(
         &ctx,
         "U-MP2 vs legacy effective-Fock",
         &[e_mp2],
-        &[num(r, "/legacy_effective_fock/ump2_doubles/e_corr", &ctx)],
+        &[num_ctx(
+            r,
+            "/legacy_effective_fock/ump2_doubles/e_corr",
+            &ctx,
+        )],
         TOL_E_MP2,
     );
     assert_misses(
         &ctx,
         "U-MP2 vs ROMP2 (doubles + singles)",
         &[e_mp2],
-        &[num(r, "/semicanonical/romp2_total", &ctx)],
+        &[num_ctx(r, "/semicanonical/romp2_total", &ctx)],
         TOL_E_MP2,
     );
 
@@ -522,14 +519,14 @@ fn legacy_case(system: &str) {
         &ctx,
         "U-RPA E_c",
         rpa(&sys, &legacy),
-        num(r, "/legacy_effective_fock/urpa/e_corr", &ctx),
+        num_ctx(r, "/legacy_effective_fock/urpa/e_corr", &ctx),
         TOL_E_RPA,
     );
     check_close(
         &ctx,
         "U-MP2 E_c",
         mp2(&sys, &legacy),
-        num(r, "/legacy_effective_fock/ump2_doubles/e_corr", &ctx),
+        num_ctx(r, "/legacy_effective_fock/ump2_doubles/e_corr", &ctx),
         TOL_E_MP2,
     );
     // U-G0W0 is not compared on the legacy view: with ROHF Roothaan energies

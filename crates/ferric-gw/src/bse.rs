@@ -9,10 +9,13 @@
 //!
 //! Conventions (verified against the COHSEX self-energy, `cohsex.rs:88`):
 //!   * the **Hartree/coupling** term `2(ia|jb)` uses the BARE Coulomb v;
-//!   * the **screened-exchange** term uses the FULL static screened interaction
-//!     `(ab|W|ij) = Σ_α (1/λ_α(0)) M[α,a,b] M[α,i,j]`, i.e. weight `1/λ_α(0)`
-//!     (the SEX weight `w_α + 1`), NOT the reduced `w_α = 1/λ_α − 1` used by the
-//!     COH/Σ_c terms. This is the static-screening (Tamm–Dancoff) BSE kernel.
+//!   * the **screened-exchange** term uses the static screened interaction
+//!     `(ab|W|ij) = (ab|v|ij) + Σ_α w_α M[α,a,b] M[α,i,j]` with the reduced
+//!     weight `w_α = 1/λ_α(0) − 1`: the bare Coulomb `v` from the complete RI
+//!     basis plus the PDEP-mode correction. This equals the full weight
+//!     `1/λ_α(0)` when the PDEP mode set is complete, and stays correct when it
+//!     is truncated (modes dropped by `trunc_thresh` have `w_α ≈ 0` and `v`
+//!     is not projected onto them), which a bare `Σ 1/λ_α M M` would not.
 //!   * `M[α,p,q] = Σ_P (Ṽ_α)_P b̃^P_{pq}` is `project_b_into_pdep`, identical to
 //!     the GW self-energy projection — reuses the validated dressed-basis path.
 //!
@@ -36,6 +39,7 @@ use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
 use ferric_rpa::PdepRpaConfig;
+use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 use ndarray::{Array1, Array2};
 use ndarray_linalg::{Eigh, Solve, UPLO};
@@ -73,8 +77,9 @@ fn check_bse_dense_alloc(
 pub struct BseResult {
     /// Singlet excitation energies Ω_n (Hartree), ascending.
     pub omega: Vec<f64>,
-    /// Number of occupied / virtual orbitals in the BSE window (frozen-core aware).
+    /// Number of active occupied orbitals in the BSE window (frozen core excluded).
     pub nocc: usize,
+    /// Number of virtual orbitals in the BSE window (all virtuals).
     pub nvir: usize,
     /// GW quasiparticle energies used for the diagonal (active block, Ha).
     pub eps_qp: Vec<f64>,
@@ -155,6 +160,7 @@ impl std::fmt::Display for BseResult {
 /// orthogonality, also verified numerically). `mo_coeff` is the FULL
 /// nbasis×nmo MO coefficient matrix; `first_act`/`nocc_total` locate the
 /// active occ/vir columns within it.
+#[allow(clippy::too_many_arguments)]
 fn tda_oscillator_strengths(
     evals: &Array1<f64>,
     evecs: &Array2<f64>,
@@ -262,6 +268,34 @@ fn warn_suspect_qp_in_diagonal(label: &str, suspect: &[usize], n_total: usize) {
          up to 3.8e-3 Ha), but the absolute QP energies of these MOs should not be quoted.",
         suspect.len(),
     );
+}
+
+/// [`run_bse_tda`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// A closed-shell system with no virtual orbitals is refused
+/// ([`PreparedAux::check_virtual_orbitals`]).
+pub fn run_bse_tda_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    pdep_cfg: &PdepRpaConfig,
+    frozen_core: usize,
+) -> Result<BseResult, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(rhf)?;
+    // The kernel refuses an open-shell reference with its own message.
+    if rhf.spin == ferric_scf::Spin::Restricted {
+        aux.check_virtual_orbitals("run_bse_tda_on", rhf)?;
+    }
+    run_bse_tda(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        rhf,
+        pdep_cfg,
+        frozen_core,
+    )
 }
 
 /// Run a BSE-TDA singlet calculation on a closed-shell RHF reference.
@@ -691,7 +725,9 @@ pub struct BseC6Result {
     pub alpha_iso: Vec<f64>,
     /// Static isotropic α (= α(iω=0)).
     pub alpha_static: f64,
+    /// Number of active occupied orbitals in the (ia) space (frozen core excluded).
     pub nocc: usize,
+    /// Number of virtual orbitals in the (ia) space (all virtuals).
     pub nvir: usize,
 }
 
@@ -703,7 +739,7 @@ pub struct BseC6Result {
 /// ```text
 ///   (A+B)_W = Δε^GW δ + 4(ia|jb)_v − (ab|W|ij) − (ib|W|aj)
 ///   (A−B)_W = Δε^GW δ            + (ib|W|aj) − (ab|W|ij)
-///   α(iω)   = 4 μᵀ (A−B)_W [ (A−B)_W (A+B)_W + ω² ]⁻¹ μ
+///   α(iω)   = 4 μᵀ [ (A−B)_W (A+B)_W + ω² ]⁻¹ (A−B)_W μ
 ///   C6      = (3/π) Σ_k w_k α_iso(iω_k)²        (Casimir–Polder)
 /// ```
 ///
@@ -888,7 +924,7 @@ pub fn run_bse_c6(
         }
     }
 
-    // α(iω) = 4 μᵀ (A−B)[(A−B)(A+B)+ω²]⁻¹ μ, isotropic average over axes.
+    // α(iω) = 4 μᵀ [(A−B)(A+B)+ω²]⁻¹ (A−B) μ, isotropic average over axes.
     // Frequencies are independent (each does a full n×n GEMM + solve) — par
     // over freqs, order-preserving collect (energy.rs pattern), BLAS pinned
     // to 1 inside the rayon region to avoid nested-thread oversubscription /
@@ -1244,7 +1280,7 @@ pub const ALPHA_DIAGONAL_ZERO_TOL: f64 = 1e-8;
 /// The error message names the known remedies because they are established, not
 /// speculative: a nonzero `scissor` (~0.3–0.4 Ha for small molecules) or a
 /// diagonal sourced from real `run_gw` G0W0 QP energies both restore
-/// positive-definiteness on every previously-failing system.
+/// positive-definiteness on every system that fails without one.
 ///
 /// `context` is prefixed to the message so callers of different entry points
 /// are distinguishable in a log.
@@ -1305,8 +1341,40 @@ pub struct RpaxStaticPolarizabilityResult {
     pub tensor: [[f64; 3]; 3],
     /// Isotropic average (1/3) Tr α.
     pub iso: f64,
+    /// Number of active occupied orbitals in the (ia) space (frozen core excluded).
     pub nocc: usize,
+    /// Number of virtual orbitals in the (ia) space (all virtuals).
     pub nvir: usize,
+}
+
+/// [`run_rpax_static_polarizability`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `ks` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// A closed-shell system with no virtual orbitals is refused
+/// ([`PreparedAux::check_virtual_orbitals`]).
+pub fn run_rpax_static_polarizability_on(
+    aux: &PreparedAux<'_>,
+    ks: &ScfResult,
+    pdep_cfg: &PdepRpaConfig,
+    frozen_core: usize,
+    scissor: f64,
+) -> Result<RpaxStaticPolarizabilityResult, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(ks)?;
+    // The kernel refuses an open-shell reference with its own message.
+    if ks.spin == ferric_scf::Spin::Restricted {
+        aux.check_virtual_orbitals("run_rpax_static_polarizability_on", ks)?;
+    }
+    run_rpax_static_polarizability(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        ks,
+        pdep_cfg,
+        frozen_core,
+        scissor,
+    )
 }
 
 /// RPAx@KS **static** polarizability (ω=0 only) on a Kohn–Sham reference.
@@ -1322,7 +1390,7 @@ pub struct RpaxStaticPolarizabilityResult {
 /// ```text
 ///   (A+B) = Δε^KS δ + 4(ia|jb)_v − (ab|W|ij) − (ib|W|aj)
 ///   (A−B) = Δε^KS δ            + (ib|W|aj) − (ab|W|ij)
-///   α_ij(0) = 4 μ_iᵀ (A−B) [(A−B)(A+B)]⁻¹ μ_j
+///   α_ij(0) = 4 μ_iᵀ [(A−B)(A+B)]⁻¹ (A−B) μ_j = 4 μ_iᵀ (A+B)⁻¹ μ_j
 /// ```
 ///
 /// # Scope — READ BEFORE USING FOR ANYTHING BEYOND α(0)
@@ -1586,7 +1654,7 @@ pub fn rpax_static_polarizability_with_screening(
     // ω=0 ONLY: a single dense solve, no frequency loop. sysm = (A−B)(A+B)
     // (the ω²·I shift vanishes at ω=0).
     let sysm = amb.dot(&apb);
-    // α_ij(0) = 4 μ_iᵀ (A−B) sysm⁻¹ μ_j, full 3×3 tensor (not just the
+    // α_ij(0) = 4 μ_iᵀ sysm⁻¹ (A−B) μ_j, full 3×3 tensor (not just the
     // isotropic average run_bse_c6_ks reports).
     let mut t: [Array1<f64>; 3] = std::array::from_fn(|_| Array1::zeros(n));
     for d in 0..3 {
@@ -1922,5 +1990,51 @@ mod tests {
         let z = [1.5];
         let conv = [false];
         assert_eq!(flag_suspect_qp(&mos, &z, &conv), vec![3]);
+    }
+
+    /// Water in `basis_name` (STO-3G: 7 functions, 6-31G: 13), with its
+    /// converged RHF, for the reference-check tests of the `*_on` entries.
+    fn reference_check_water(
+        basis_name: &str,
+    ) -> (ferric_scf::PreparedSystem, ferric_scf::ScfResult) {
+        let mol = ferric_core::mol::Molecule::parse_xyz(
+            "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let bs = ferric_core::basis::bundled(basis_name).unwrap();
+        let sys = ferric_scf::PreparedSystem::new(mol, &bs).unwrap();
+        let rhf = sys
+            .solve_rhf(&ferric_scf::rhf::RhfConfig::default())
+            .unwrap();
+        (sys, rhf)
+    }
+
+    fn assert_reference_refused<T>(who: &str, r: Result<T, ferric_core::FerricError>) {
+        let msg = r.map(|_| ()).unwrap_err().to_string();
+        assert!(
+            msg.contains("does not belong to this system"),
+            "{who}: {msg}"
+        );
+    }
+
+    #[test]
+    fn on_entries_refuse_a_reference_of_another_system() {
+        let (small, _) = reference_check_water("sto-3g");
+        let (_large, rhf_large) = reference_check_water("6-31g");
+        let aux = small
+            .prepare_aux(&basis::bundled("cc-pvdz-ri").unwrap())
+            .unwrap();
+        let pdep = ferric_rpa::PdepRpaConfig::default();
+        assert_reference_refused("run_bse_tda_on", run_bse_tda_on(&aux, &rhf_large, &pdep, 0));
+        assert_reference_refused(
+            "run_gw_on",
+            crate::run_gw_on(&aux, &rhf_large, None, &pdep, &crate::GwConfig::default()),
+        );
+        assert_reference_refused(
+            "run_rpax_static_polarizability_on",
+            run_rpax_static_polarizability_on(&aux, &rhf_large, &pdep, 0, 0.0),
+        );
     }
 }

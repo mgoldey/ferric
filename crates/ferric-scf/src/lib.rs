@@ -1,14 +1,24 @@
-//! Self-consistent field (SCF) solvers for Hartree-Fock theory.
+//! Self-consistent field solvers: Hartree-Fock and Kohn-Sham, closed and open shell.
 //!
-//! This crate implements:
-//!
-//! - **Closed-shell RHF** ([`rhf::solve_rhf`]) with DIIS convergence acceleration
-//!   and Schwarz integral screening
-//! - **Analytical RHF nuclear gradients** ([`gradient::rhf_gradient`]) including
-//!   one-electron, two-electron, and nuclear repulsion contributions
-//! - **DIIS extrapolation** ([`diis::Diis`]) for accelerating SCF convergence
-//! - **Schwarz screening** ([`screening::SchwarzBounds`]) for integral prescreening
-//! - **Core Hamiltonian initial guess** ([`guess::hcore_guess`])
+//! - **SCF drivers**: [`rhf::solve_rhf`], [`uhf::solve_uhf`] and
+//!   [`rohf::solve_rohf`]. Kohn-Sham runs through the same drivers with
+//!   [`rhf::RhfConfig::xc`] set; `UhfConfig` and `RohfConfig` are aliases of
+//!   `RhfConfig`. Every driver returns a [`result::ScfResult`].
+//! - **J/K builders**: integral-direct ([`direct_j`], [`direct_k`],
+//!   [`direct_jk`]), LinK ([`link_k`]), density fitting ([`df_j`], [`df_k`]),
+//!   split-RI-J ([`split_rij`]) and COSX ([`cosx_k`]), behind the
+//!   [`fock::JBuilder`] / [`fock::KBuilder`] traits.
+//! - **Convergence**: DIIS ([`diis::Diis`]), MOM ([`mom`]), level shifts,
+//!   second-order Newton and TRAH solvers, and SCF stability analysis ([`stability`]).
+//! - **Derivatives**: nuclear gradients ([`gradient::rhf_gradient`] and the
+//!   open-shell/KS variants), analytic Hessians and harmonic frequencies
+//!   ([`frequencies`]), geometry optimization ([`optimize`]), transition-state
+//!   search ([`saddle`]) and IRC ([`irc`]).
+//! - **Environment**: point charges and fields through
+//!   `RhfConfig.external_potential`, COSMO ([`cosmo`]), IEF-PCM via
+//!   `ferric-pcm`, QM/MM ([`qmmm`]) and Thole polarizable embedding ([`polarizable`]).
+//! - **Screening and guesses**: Schwarz/CSAM/CSB bounds ([`screening`]) and the
+//!   core-Hamiltonian guess ([`guess::hcore_guess`]).
 
 // needless_range_loop: DIIS coefficient and MO-index loops read clearer with
 // explicit indices than with iterator/enumerate chains.
@@ -21,7 +31,6 @@
 /// A test seam: a `pub static AtomicBool` plus its private getter. With the
 /// `test-seams` feature off neither the static nor any load of it exists and the
 /// getter is a constant `false`, so a shipped build carries no mutable global.
-#[cfg(feature = "gpu")]
 macro_rules! seam_flag {
     ($(#[$doc:meta])* $name:ident, $getter:ident) => {
         $(#[$doc])*
@@ -66,10 +75,52 @@ const _: () = assert!(
      it) instead of ferric-core/mpi alone."
 );
 
+/// The OpenBLAS thread count the SCF serial sections last ran at, for tests
+/// that pin the serial-BLAS setting (`tests/serial_blas_threads.rs`).
+#[doc(hidden)]
+pub mod blas_probe {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Thread count seen inside the last Fock diagonalization
+    /// (`driver::diagonalize_rect_with`, RHF/RKS/UHF/UKS).
+    pub static FOCK_DIAG: AtomicUsize = AtomicUsize::new(0);
+    /// Thread count seen inside the last RHF/RKS DIIS commutator.
+    pub static DIIS_COMMUTATOR: AtomicUsize = AtomicUsize::new(0);
+    /// Thread count seen inside the last ROHF/ROKS Roothaan effective Fock.
+    pub static ROOTHAAN_FOCK: AtomicUsize = AtomicUsize::new(0);
+    /// Thread count seen inside the last ROHF/ROKS MO Focks and DIIS error.
+    pub static ROHF_DIIS_ERROR: AtomicUsize = AtomicUsize::new(0);
+    /// Thread count seen inside the last ROHF/ROKS overlap orthogonalizer.
+    pub static ROHF_ORTHOGONALIZER: AtomicUsize = AtomicUsize::new(0);
+    /// Thread count seen inside the last RHF/RKS virtual-block level shift.
+    pub static RHF_LEVEL_SHIFT: AtomicUsize = AtomicUsize::new(0);
+    /// Thread count seen inside the last UHF/UKS virtual-block level shift.
+    pub static UHF_LEVEL_SHIFT: AtomicUsize = AtomicUsize::new(0);
+    /// Thread count seen inside the last ROHF/ROKS virtual-block level shift.
+    pub static ROHF_LEVEL_SHIFT: AtomicUsize = AtomicUsize::new(0);
+
+    pub(crate) fn record(slot: &AtomicUsize) {
+        slot.store(
+            ferric_integrals::blas_threads::current_blas_threads(),
+            Ordering::Relaxed,
+        );
+    }
+}
+
+/// Validation certificate of an SCF / KS-DFT result.
+pub mod certificate;
 pub mod checkpoint;
 /// SCF convergence result types and spin-channel descriptor.
 pub mod result;
 pub use result::{DfJkRoute, ScfResult, Spin};
+
+/// Frontend-neutral SCF options (`ScfOptions`) and their pure lowering to
+/// `RhfConfig`, plus the named SCF defaults.
+pub mod options;
+
+// Documented by the module's own `//!` docs.
+pub mod prepared;
+pub use prepared::{EcpMolecule, PrepareOptions, PreparedAux, PreparedSystem};
 
 /// Estimated noise floor of the SCF energy change and the advisory `energy_conv` warning (#410).
 pub mod noise_floor;
@@ -80,18 +131,23 @@ pub mod properties;
 /// COSMO conductor-like implicit solvation model.
 pub mod cosmo;
 pub(crate) mod driver;
-/// J/K builder traits and composite Fock matrix assembly.
+pub use driver::{closed_shell_level_shift_ramp, open_shell_level_shift_ramp};
+/// J/K builder traits.
 pub mod fock;
 pub(crate) mod fock_assembly;
+#[doc(hidden)]
+pub use fock_assembly::dress_first_count_for_test;
+pub use fock_assembly::{resolve_jk_route, JkExchange, JkRoute};
 #[cfg(test)]
 mod ks_vxc_tests;
-/// Range-separated hybrid ω-tuning via IP/EA condition.
+/// Range-separated hybrid ω-tuning via the IP (ΔSCF Koopmans) condition.
 pub mod omega_tuning;
 /// Significant and density-screened shell-pair lists.
 pub mod pairs;
 /// QQR distance-dependent screening adapter for the SCF layer.
 pub mod qqr;
-/// Schwarz-based integral screening re-exports.
+/// Integral screening bounds: the [`screening::Bound`] trait and the Schwarz,
+/// CSAM and CSB estimators.
 pub mod screening;
 /// Semi-canonical orbital transformation for frozen-core post-HF.
 pub mod semicanonical;
@@ -110,7 +166,6 @@ pub mod reduce;
 /// down to `ferric-integrals` so integral-level code (schwarz, 3-index) can use
 /// it too. Kept here so existing `ferric_scf::engine_pool::…` paths still work.
 pub use ferric_integrals::engine_pool;
-/// Closed-shell restricted Hartree-Fock solver.
 pub mod aurora;
 pub mod basis2;
 /// Analytic nuclear gradient of the COSX exchange energy (plain, and overlap-fitted via a Z-vector).
@@ -136,7 +191,10 @@ pub mod guess;
 pub mod jk_ladder;
 /// LinK exchange builder: linear-scaling K via Schwarz-screened column lists.
 pub mod link_k;
+pub mod split_rij;
 
+/// In-core four-centre J/K: the AO ERIs of one geometry held in memory.
+pub mod incore_jk;
 pub mod rhf;
 /// Newton-step RHF solver with exact orbital Hessian.
 pub mod rhf_newton;
@@ -159,8 +217,8 @@ pub use cdft_coupling::{coupling_hab, DiabaticState, HabResult};
 /// Restricted open-shell Hartree-Fock solver (ROHF).
 pub mod rohf;
 pub use rohf::{solve_rohf, RohfConfig};
-/// Davidson eigensolver adapted for local SCF orbital optimization.
-pub mod davidson_local;
+/// Shared Cayley orbital rotation `(I − κ/2)⁻¹ (I + κ/2)` (factorized once).
+pub(crate) mod cayley;
 /// Nuclear gradients of density-fitted (RI-J / RI-K / RSH) two-electron
 /// energies, routed by the builders the SCF recorded in `ScfResult::df_jk`.
 pub mod df_gradient;
@@ -219,13 +277,19 @@ pub mod hessian_df_stencil;
 pub mod hessian_ecp;
 mod hessian_field;
 mod hessian_smeared;
-/// Transition-state search by partitioned rational function optimization.
-/// `optimize` MINIMIZES; a saddle needs one direction climbed, so it is a
-/// separate driver rather than a flag.
+/// Harmonic infrared intensities from dipole derivatives along the normal modes.
+pub mod infrared;
 pub mod irc;
+pub mod md;
+pub use md::{run_aimd, AimdConfig, AimdResult, ScfCorrection, ScfForceProvider};
 /// Geometry optimization via L-BFGS with energy/gradient convergence.
 pub mod optimize;
+pub mod raw_handoff;
+pub mod response_jk;
 pub mod saddle;
+/// Rigid-rotor / harmonic-oscillator thermochemistry from harmonic frequencies.
+pub mod thermo;
+pub mod warm_start;
 pub use frequencies::{harmonic_frequencies, FrequencyConfig, FrequencyReference, FrequencyResult};
 /// Continuous Fast Multipole Method (CFMM) for long-range Coulomb.
 ///
@@ -252,8 +316,9 @@ pub use frequencies::{harmonic_frequencies, FrequencyConfig, FrequencyReference,
 /// See the `cfmm` module docs for the full status list.
 #[cfg(feature = "cfmm-incomplete")]
 pub mod cfmm;
-/// QM/MM system setup: atom selection, link atoms, embedding charges.
 pub mod polarizable;
+// Documented by the module's own `//!` docs: an outer `///` here would make
+// rustdoc resolve that file's intra-doc links in this (parent) scope.
 pub mod qmmm;
 pub use qmmm::{BoundaryChargeScheme, QmSelection, QmmmAtom, QmmmSystem};
 /// Jacob's ladder solver: run a sequence of methods (HF→DFT→MP2→…) reusing orbitals.
@@ -264,3 +329,6 @@ pub use ladder::{default_ladder, ksdft_ladder, solve_rhf_ladder, LadderResult, R
 
 pub mod df_increments;
 pub use df_increments::{solve_rhf_with_df_increments, DfIncrementsResult};
+
+// Documented by the module's own `//!` docs.
+pub mod x2c;

@@ -1,0 +1,13 @@
+diff --git a/crates/ferric-scf/src/uhf.rs b/crates/ferric-scf/src/uhf.rs
+index 60a1aa6..a0f5988 100644
+--- a/crates/ferric-scf/src/uhf.rs
++++ b/crates/ferric-scf/src/uhf.rs
+@@ -1317,7 +1317,7 @@ impl UhfState {
+         let (d_a, d_b) = (&self.d_a, &self.d_b);
+         let (f_a, f_b) = (&mut self.f_a, &mut self.f_b);
+         let energy_t = phases.begin("energy_trace");
+-        let e_elec_no_xc: f64 = 0.5 * ((&(h + &*f_a) * d_a).sum() + (&(h + &*f_b) * d_b).sum());
++        let e_elec_no_xc: f64 = 0.5 * ((&(h + &*f_a) * d_a).sum() + (&(h + &*f_a) * d_b).sum());
+         phases.stop(energy_t);
+         let xc_t = phases.begin("xc_digest");
+         let e_xc = if let Some(x) = xc.xc_contrib.as_ref() {

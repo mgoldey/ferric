@@ -118,6 +118,8 @@ env:
   # active BLAS/LAPACK alternatives so the next such drift is diagnosable.
   OPENBLAS_CORETYPE: Haswell
   LIBINT2_PREFIX: /home/runner/libint2
+  # libxc 7.0.0 (scripts/install-libxc.sh), read by crates/ferric-dft/build.rs.
+  LIBXC_PREFIX: /home/runner/libxc
   # Every job installs the sha256-pinned stock libint2 2.13.1
   # (scripts/install-libint.sh), whose boys.h ferric overrides (GmEval copy,
   # Boys/Tenno table-edge and overflow fixes; shim/libint2_overrides/). Make
@@ -192,7 +194,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd
+            libboost-dev patchelf zstd
 
       - name: Runner hardware / BLAS
         run: |
@@ -209,6 +211,10 @@ jobs:
       # for the package, its AM limits and why the SONAME is rewritten.
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
+      - name: Install libxc
+        uses: ./.github/actions/install-libxc
 
       - name: Verify libint2 capabilities
         run: |
@@ -274,6 +280,19 @@ jobs:
             ~/.cargo/git
           key: cargo-v3-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: cargo-v3-${{ runner.os }}-
+
+      # The count of item-level `#[allow(clippy::too_many_arguments)]` per
+      # crate may only go down (scripts/too_many_arguments_baseline.json);
+      # clippy below rejects a new offender that has no allow. Cheap, so it
+      # runs before the build steps. A crate below its baseline is only a
+      # notice here (two PRs that each lower it must not turn main red).
+      - name: too_many_arguments ratchet
+        run: python3 scripts/too_many_arguments_ratchet.py
+
+      # ferric-testkit may only be a dev-dependency (never shipped, and a
+      # normal dependency could close a cycle through ferric-core).
+      - name: ferric-testkit is dev-only
+        run: python3 scripts/check_testkit_dev_only.py
 
       - name: Check (all targets)
         timeout-minutes: 60
@@ -526,7 +545,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd
+            libboost-dev patchelf zstd
 
       - name: Runner hardware / BLAS
         run: |
@@ -543,6 +562,10 @@ jobs:
       # for the package, its AM limits and why the SONAME is rewritten.
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
+      - name: Install libxc
+        uses: ./.github/actions/install-libxc
 
       - name: Verify libint2 capabilities
         run: |
@@ -625,7 +648,10 @@ jobs:
           # and never produces the executable), so it is built here, BEFORE
           # the archive: .config/nextest.toml's `archive.include` packs it
           # into the archive and errors if it is absent.
-          cargo build -p ferric-scf --example runlog_probe --locked
+          # (Its JSON stream joins the debug-info guard's binary list below:
+          # the probe is archived, so it must be checked too.)
+          cargo build -p ferric-scf --example runlog_probe --locked \
+            --message-format=json-render-diagnostics > /tmp/probe-artifacts.json
           # Build the test binaries FIRST, with the same target selection and
           # profile `nextest archive` uses (it runs `cargo test --no-run` with
           # these flags), so the debug-info guard below runs before minutes of
@@ -637,7 +663,11 @@ jobs:
           # scripts re-ran and everything above them recompiled. Fixed in
           # crates/ferric-integrals/build.rs (MtimeGuard) and
           # crates/ferric-build-info/src/probe.rs (--no-optional-locks).
-          cargo test --no-run --workspace --all-targets --locked
+          # The JSON stream is also where the debug-info guard below gets its
+          # binary list; `json-render-diagnostics` keeps warnings and errors
+          # printed on stderr as usual.
+          cargo test --no-run --workspace --all-targets --locked \
+            --message-format=json-render-diagnostics > /tmp/test-artifacts.json
           # DEBUG-INFO GUARD (#525). The job `env:` above must have taken
           # effect: an archived binary with a .debug_info section means the
           # archive is back to ~2x its size, e.g. because a Cargo.toml profile
@@ -647,8 +677,21 @@ jobs:
           # under the 728 test binaries the archive held (run 40058633825).
           command -v readelf >/dev/null \
             || { echo "::error::readelf missing -- cannot check the test binaries for debug info (#525)"; exit 1; }
-          mapfile -d '' BINS < <(find target/debug/deps target/debug/examples -maxdepth 1 \
-            -type f -executable ! -name '*.so' -print0)
+          # The binary list comes from cargo, not from `find`: since Rust 1.100
+          # the test binaries are no longer in target/debug/deps (they are
+          # under target/debug/build/<pkg>/<hash>/out/), and the
+          # `compiler-artifact` records' `executable` field is the one
+          # layout-independent answer (the MPI step below does the same).
+          # Build scripts are not archived and are left out. jq runs on its own
+          # line so a failure trips `set -e`.
+          command -v jq >/dev/null \
+            || { echo "::error::jq missing -- cannot read the test binaries from cargo's JSON (#525)"; exit 1; }
+          jq -r 'select(.reason == "compiler-artifact")
+                 | select(.executable != null)
+                 | select(.target.kind | index("custom-build") | not)
+                 | .executable' /tmp/probe-artifacts.json /tmp/test-artifacts.json \
+            | sort -u > /tmp/test-bins.txt
+          mapfile -t BINS < /tmp/test-bins.txt
           if [ "${#BINS[@]}" -lt 100 ]; then
             echo "::error::debug-info guard found only ${#BINS[@]} test binaries (expected >= 100) -- it would be checking nothing (#525)"
             exit 1
@@ -773,6 +816,21 @@ jobs:
           # 33210162947).
           ls -l /tmp/nextest-shard-*.tar.zst /tmp/canary-archive.tar.zst
           df -h / | tail -1
+
+      # The tiered-test filter (scripts/ci_test_tiers.py) must select EVERY
+      # tiered test and nothing else: a tier string the scanner misread, a
+      # macro-generated test it did not expand, or a name collision with a
+      # precondition-ignored test would otherwise drop or add tests silently.
+      # Checked here, over the whole workspace (SLOW binaries included), on
+      # every run.
+      - name: Check the tier filter
+        run: |
+          set -euo pipefail
+          TIER="$(python3 scripts/ci_test_tiers.py filter)"
+          cargo nextest list --workspace --all-targets --locked \
+            --run-ignored only -E "($TIER)" \
+            --message-format json > /tmp/tier-list.json
+          python3 scripts/ci_test_tiers.py check /tmp/tier-list.json
 
       # retention-days: 2 (was 1): a "Re-run failed jobs" the next day found
       # the archives EXPIRED and could never pass (#525, run 40579399666).
@@ -943,6 +1001,11 @@ jobs:
         partition: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # A pull_request run checks out the PR's MERGE commit; depth 2
+          # brings its first parent, the base branch tip, which is what
+          # "Tiered tests" below diffs against.
+          fetch-depth: 2
 
       # The ubuntu-22.04 image ships toolchains this job never uses (.NET,
       # Android SDK, GHC, CodeQL, Swift). Deleting them freed 21 GB (87 ->
@@ -1001,7 +1064,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd
+            libboost-dev patchelf zstd
 
       - name: Runner hardware / BLAS
         run: |
@@ -1018,6 +1081,10 @@ jobs:
       # for the package, its AM limits and why the SONAME is rewritten.
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
+      - name: Install libxc
+        uses: ./.github/actions/install-libxc
 
       - name: Verify libint2 capabilities
         run: |
@@ -1225,6 +1292,61 @@ jobs:
             --no-tests=fail \
             -E "not ($SLOW)"
 
+      # TIERED TESTS. A test that took >=10 s (release build, 2026-11) carries
+      # `#[ignore = "tier <name>: CI runs it when an affected crate changes
+      # (scripts/ci_test_tiers.py)"]`, so the run above
+      # skips it. This step runs the tiered tests of this shard's archive that
+      # the change could break, at crate level: the packages owning the
+      # changed files (vs the base branch for a PR, vs the previous main tip
+      # for a push), every package that depends on them, and the packages
+      # whose tests READ a changed file outside the crates
+      # (scripts/ci_test_scope.py). The nightly schedule and a manual
+      # dispatch run every tier. Anything uncertain widens to all().
+      #
+      # ONLY tiered tests: the filter is built from the exact tier strings
+      # (scripts/ci_test_tiers.py), so a precondition #[ignore] ("quiet box",
+      # "validation: ...") is never swept in; ci_validation_tier_guard pins
+      # this step's shape. Tiered tests in SLOW binaries are not in any shard
+      # archive; slow-tests runs those nightly.
+      # Cost: on main these tests ran untiered inside the same ~25 min shards
+      # (run 41831617425: 16.5-29.1 min per shard), so even all() adds about
+      # one shard's worth of tiered tests plus a second archive extraction.
+      - name: Tiered tests affected by the change, shard ${{ matrix.partition }}
+        timeout-minutes: 60
+        env:
+          EVENT: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          case "$EVENT" in
+            pull_request) BASE="$(git rev-parse HEAD^1 2>/dev/null || true)" ;;
+            push)
+              BASE="$PUSH_BEFORE"
+              git fetch --quiet --depth=1 origin "$BASE" 2>/dev/null || BASE="" ;;
+            *) BASE="" ;;
+          esac
+          if [ "$EVENT" = schedule ] || [ "$EVENT" = workflow_dispatch ]; then
+            SCOPE="all()"
+          else
+            SCOPE="$(python3 scripts/ci_test_scope.py --base "$BASE")"
+          fi
+          echo "tiered-test scope ($EVENT, base ${BASE:-unknown}): $SCOPE"
+          TIER="$(python3 scripts/ci_test_tiers.py filter)"
+          SLOW="$(scripts/ci-shard-plan.sh slow-filter)"
+          ARCHIVE=/tmp/nextest-shard-${{ matrix.partition }}.tar.zst
+          EXTRACT=$(mktemp -d)
+          export FERRIC_RUNLOG_PROBE="$EXTRACT/target/debug/examples/runlog_probe"
+          # --no-tests=pass: a change outside this shard's crates selects
+          # nothing here, which is correct, not a failure.
+          cargo nextest run \
+            --profile ci \
+            --archive-file "$ARCHIVE" \
+            --extract-to "$EXTRACT" \
+            --workspace-remap . \
+            --no-tests=pass \
+            --run-ignored only \
+            -E "($TIER) & ($SCOPE) & not ($SLOW)"
+
       # nextest does NOT run doctests -- `cargo nextest run` skips them
       # silently. Without this step doctest coverage would vanish the moment
       # this workflow landed, which is the same failure mode as a SLOW entry
@@ -1283,8 +1405,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # Same runtime environment as test-shard: the archived binaries link
-      # libopenblas/liblapack/libxc from apt and libint2.so by ABSOLUTE SONAME
-      # under $LIBINT2_PREFIX, so all of these are required to even start them.
+      # libopenblas/liblapack from apt and libint2.so / libxc.so by ABSOLUTE
+      # SONAME under $LIBINT2_PREFIX / $LIBXC_PREFIX, so all of these are
+      # required to even start them.
       - name: Free runner disk space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
@@ -1303,10 +1426,14 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd
+            libboost-dev patchelf zstd
 
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
+      - name: Install libxc
+        uses: ./.github/actions/install-libxc
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
@@ -1406,8 +1533,28 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     timeout-minutes: 170
+    # Same job-scoped debuginfo drop as build-tests (see the comment on its
+    # env block). This job compiles the whole workspace's test binaries in
+    # one target/ and ran out of disk with the workflow-level debug setting
+    # (runs 42621103668, 43221159741).
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_DEV_STRIP: debuginfo
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_PROFILE_TEST_STRIP: debuginfo
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Same step as build-tests; see its comment for the libboost-dev
+      # dependency on what this deletes.
+      - name: Free runner disk space
+        run: |
+          echo "--- before"; df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/share/boost \
+            "$AGENT_TOOLSDIRECTORY/CodeQL" 2>/dev/null || true
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+          echo "--- after"; df -h / | tail -1
 
       - name: Install system dependencies
         run: |
@@ -1419,13 +1566,17 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd
+            libboost-dev patchelf zstd
 
       # libint2: conda-forge 2.13.1 (prebuilt, second-derivative integrals),
       # installed by the same script developers use; see scripts/install-libint.sh
       # for the package, its AM limits and why the SONAME is rewritten.
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
+      - name: Install libxc
+        uses: ./.github/actions/install-libxc
 
       - name: Restore cargo cache
         # No target/ (see the push job's restore step); v3 key to match.
@@ -1457,10 +1608,15 @@ jobs:
               || { echo "::error::SLOW binary $b (scripts/ci-shard-plan.sh) has no --test line in slow-tests, so it runs nowhere"; exit 1; }
           done
           rc=0
+          df_mark() { echo "--- df after: $1"; df -h / | tail -1; }
+          echo "--- df before cargo groups"; df -h / | tail -1
           # The original six.
           cargo test --no-fail-fast -p ferric-scf --test dft_wb97xv --test mpi_dfjk_banding --test dft_pbe --locked || rc=1
+          df_mark group1
           cargo test --no-fail-fast -p ferric-cc --test pair_screen_criteria --test attenuation_plus_dlpno --locked || rc=1
+          df_mark group2
           cargo test --no-fail-fast -p ferric-mp2 --test lmp2_amplitude --locked || rc=1
+          df_mark group3
           # Deferred 2026-09-16 (run 35050103626 timed out at 89.3 min of test
           # time). These are the large-alkane screening exactness anchors --
           # they keep their molecule sizes BECAUSE screening is inert on small
@@ -1468,8 +1624,11 @@ jobs:
           cargo test --no-fail-fast -p ferric-scf \
             --test screening_exactness --test csam_screening \
             --test link_scf_anchor --test link_screen_reachability --locked || rc=1
+          df_mark group4
           cargo test --no-fail-fast -p ferric-dft --test grid_prune_live_scf --locked || rc=1
+          df_mark group5
           cargo test --no-fail-fast -p ferric-rpa --test hirshfeld_symmetry --locked || rc=1
+          df_mark group6
           # Added 2026-09-18 alongside the five new SLOW entries. This list is
           # EXPLICIT, so a binary deferred above without a line here would stop
           # running entirely -- deferral would become deletion, silently. The
@@ -1479,11 +1638,42 @@ jobs:
             --test cdft_coupling_hene --test cdft_state_selection \
             --test cosx_group_screen_anchors --test cosx_sparse_anchors \
             --test cosx_mixed_error_law --locked || rc=1
+          df_mark group7
           cargo test --no-fail-fast -p ferric-mp2 --test rimp2_qqr3_screening --locked || rc=1
+          df_mark group8
+          cargo test --no-fail-fast -p ferric-ci --test casscf_stability_saddle --locked || rc=1
+          df_mark group9
           if [ "$rc" -ne 0 ]; then
             echo "::error::one or more deferred test commands failed -- see the FAILED lines above"
             exit 1
           fi
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
+        with:
+          tool: cargo-nextest
+
+      # The tiered tests (see test-shard's "Tiered tests" step) that live in
+      # the SLOW binaries above: those binaries are in no shard archive, so
+      # their tiered tests run here, nightly, all of them.
+      - name: Tiered tests in the deferred binaries
+        run: |
+          set -euo pipefail
+          TIER="$(python3 scripts/ci_test_tiers.py filter)"
+          SLOW="$(scripts/ci-shard-plan.sh slow-filter)"
+          # ci-tiered profile: 30 min per-test cap, no retries, 2 at a time
+          # (see .config/nextest.toml for why the ci profile's 480 s cap
+          # killed these).
+          echo "--- df before"; df -h / | tail -1
+          rc=0
+          cargo nextest run --workspace --all-targets --locked \
+            --profile ci-tiered \
+            --test-threads 2 \
+            --no-tests=pass \
+            --run-ignored only \
+            -E "($TIER) & ($SLOW)" || rc=$?
+          echo "--- df after"; df -h / | tail -1
+          exit "$rc"
 
   # ── VALIDATION TIER: ferric vs committed external references, weekly ─────
   #
@@ -1592,13 +1782,17 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd
+            libboost-dev patchelf zstd
 
       # libint2: conda-forge 2.13.1 (prebuilt, second-derivative integrals),
       # installed by the same script developers use; see scripts/install-libint.sh
       # for the package, its AM limits and why the SONAME is rewritten.
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
+      - name: Install libxc
+        uses: ./.github/actions/install-libxc
 
       - name: Restore cargo cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -1693,7 +1887,7 @@ jobs:
           # pass). Import first so a broken build fails this step loudly.
           uv run --no-sync python -c "import ferric"
           FERRIC_CLI="$PWD/target/release/ferric-cli" OPENBLAS_NUM_THREADS=1 \
-            uv run --no-sync pytest -m validation crates/ferric-python/tests/ -q
+            uv run --no-sync pytest -m validation crates/ferric-python/tests/ --ignore=crates/ferric-python/tests/test_derivation_scripts.py -q
 
   # One validation test too long for any shard: Cr(CO)6 (199 AOs, exact 4-index
   # J/K) through the default SCF ladder with stability analysis. Every CI run
@@ -1740,10 +1934,14 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd
+            libboost-dev patchelf zstd
 
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
+      - name: Install libxc
+        uses: ./.github/actions/install-libxc
 
       - name: Restore cargo cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -1839,7 +2037,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd \
+            libboost-dev patchelf zstd \
             libopenmpi-dev openmpi-bin clang libclang-dev
 
       - name: MPI toolchain identification
@@ -1856,6 +2054,10 @@ jobs:
       # for the package, its AM limits and why the SONAME is rewritten.
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
+      - name: Install libxc
+        uses: ./.github/actions/install-libxc
 
       - name: Restore cargo cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -2296,6 +2498,54 @@ jobs:
 
           echo "MPI cross-rank correctness check passed at np 1, 2, 3 (+4 for the ordering guard)"
 
+  # The ONLY job that builds the `research` feature of ferric-rpa: the parked
+  # AO imaginary-time chi0 (`ao_rpa`), OSV/DNV (`pno`) and pair-PNO
+  # (`dlpno_rpa`) routes and their tests. They have no CLI or Python caller and
+  # are compiled out of every default-feature job, so without this job they
+  # would bit-rot unseen. Standalone (no `needs:`), same setup as the `mpi` job.
+  rpa-research:
+    name: ferric-rpa research feature
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/share/boost \
+            "$AGENT_TOOLSDIRECTORY/CodeQL" 2>/dev/null || true
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+
+      - name: Install system dependencies
+        run: |
+          sudo grep -rlE 'dl\.google\.com' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null \
+            | xargs -r sudo rm -fv
+          sudo sed -i -E 's|^([^#].*dl\.google\.com.*)$|# \1|' /etc/apt/sources.list 2>/dev/null || true
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake g++ gfortran \
+            libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
+            libxc-dev libboost-dev patchelf zstd
+
+      - name: Install libint2
+        run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
+
+      - name: Restore cargo cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-v3-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-v3-${{ runner.os }}-
+
+      - name: Test ferric-rpa with the research feature
+        run: cargo test -p ferric-rpa --features research --locked
+
   # ---------------------------------------------------------------------
   # FAST jobs below. None of these `needs: build-and-test` and none touch
   # libint2 -- the point is a red run in well under a minute instead of
@@ -2329,9 +2579,27 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --all --check
 
+  # pre-commit and python-quality call the reusable workflows shared with
+  # smeltery and attestation (roadmap 39; attestation
+  # docs/superpowers/specs/2026-11-20-shared-ci-templates-design.md), pinned
+  # by ONE full commit SHA of mgoldey/attestation
+  # (crates/ferric-python/tests/test_shared_workflows.py). Bump that SHA
+  # deliberately, both refs together. A called job's check reads
+  # `<caller name> / <called name>`: `pre-commit / pre-commit`,
+  # `python-quality / python-quality`. Workflow-level `env:` above does NOT
+  # reach a called workflow; neither job needs any of it (no libint2, no
+  # BLAS, no cargo).
+  #
+  # SUPPLY CHAIN. python-quality used to avoid astral-sh/setup-uv ("one fewer
+  # supply-chain surface") by `pip install uv` off setup-python. The
+  # templates use setup-uv and actions/checkout pinned by full SHA in
+  # attestation, reviewed there by tests/test_shared_workflows.py (one SHA
+  # per action, every action SHA-pinned), and this file pins attestation
+  # itself by full SHA, so nothing reaches ferric's CI without a commit here
+  # that moves the pin. The surface moved to one reviewed pin; it did not
+  # grow by a floating ref.
   pre-commit:
     name: pre-commit
-    runs-on: ubuntu-22.04
     # No libint2, no cargo build -- this is the enforcement path
     # .pre-commit-config.yaml's own header describes as MISSING today:
     # bandit (medium+), ruff's critical subset (E9/F63/F7/F82), shellcheck
@@ -2340,108 +2608,97 @@ jobs:
     # locally. `git commit --no-verify`, or an edit made straight in the
     # GitHub web UI, bypasses every one of them with nothing else in CI to
     # catch it. This job runs the identical hook set the local commit hook
-    # runs, so there is no path into `main` that skips them.
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+    # runs, so there is no path into `main` that skips them. The hooks are
+    # remote repos, so pre-commit itself is the pinned `uvx pre-commit@4.6.2`
+    # (was `pip install pre-commit==4.6.2`) and nothing of ferric is
+    # installed; the template's default args are
+    # `run --all-files --show-diff-on-failure`, as before.
+    uses: mgoldey/attestation/.github/workflows/reusable-pre-commit.yml@b1c5cb2f93b43d0b2441f40c323a4c7741ebc5a9 # attestation main 2026-11-20 (PR #70)
+    with:
+      runs-on: ubuntu-22.04
+      python-version: "3.11"
+      timeout-minutes: 10
+      pre-commit-version: "4.6.2"
 
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.11"
-
-      - name: Install pre-commit
-        run: pip install pre-commit==4.6.2
-
-      - name: pre-commit run --all-files
-        run: pre-commit run --all-files --show-diff-on-failure
-
+  # No libint2, no cargo build. What each input keeps from the steps this job
+  # used to spell out:
+  #
+  # ruff-version -- VERSION PINNING TRAP, resolved: .pre-commit-config.yaml
+  # used to pin ruff at v0.16.6, but the tree was reformatted with ruff
+  # 0.15.8, and `ruff format` output is not stable across ruff versions.
+  # Verified directly in the container that will run this workflow
+  # (2026-09-16): `uvx ruff@0.15.8 format --check .` reports 244/244 files
+  # already formatted (0 diffs) against this tree, while `uvx ruff@0.16.6
+  # format --check .` reports 7 files would change (all *.md, from a
+  # Markdown fenced-code-block formatting behaviour that changed between
+  # those two releases -- README.md, crates/ferric-python/README.md,
+  # scripts/gw100/basis_gaps/CONVERSION_NOTES.md, site/src/methods/cc.md,
+  # site/src/using/python.md, site/src/using/quickstart.md). 0.15.8 is
+  # therefore the version pinned HERE, and .pre-commit-config.yaml's ruff rev
+  # was moved down to v0.15.8 to match -- keep the two in sync (the
+  # shared-workflows test checks it); if either drifts, `ruff format --check`
+  # fails on arrival for a reason that has nothing to do with the PR that
+  # trips it. `ruff format --check .` is BLOCKING.
+  #
+  # ruff-check-blocking: false -- NON-BLOCKING `ruff check .` (default rule
+  # set), its output teed to the step summary. Default `ruff check .` found
+  # 682 findings before the Python-wide reformat (top codes: E702 315, E741
+  # 89, E701 84, F401 55, F841 32). Measured again in-container 2026-09-16,
+  # with that reformat partially landed: 282. Re-measured 2026-11-19 with
+  # ruff 0.15.8 on main: 586 (E741 256, F811 74, F401 58, F841 44, E401 36,
+  # E402 34, E731 31, F541 28, F405 23, E722 1, F403 1), so the tree grew
+  # past the earlier figure and is NOT clean. Exit criterion to flip this to
+  # BLOCKING (drop the input): the count above reaches 0 (or every survivor
+  # carries an explicit inline `# noqa: <code>` with a reason, the same bar
+  # scripts/ci-gate.sh's clippy ALLOWED_LINTS list holds Rust lints to) -- a
+  # report-only step with no exit criterion is how a gate stays permanently
+  # decorative.
+  #
+  # pre-sync -- bandit (medium+ severity), BLOCKING, matching
+  # .pre-commit-config.yaml's bandit hook exactly (same rev, same `-ll -q`,
+  # same exclude). Run BEFORE `uv sync` on purpose: `uv sync` populates .venv
+  # with third-party packages (numpy, scipy, rdkit, ...), and bandit -r . has
+  # no project-awareness -- pointed at a tree that already has a .venv, it
+  # scans vendored dependency code too and buries the two real findings
+  # under ~500 third-party ones. Running before .venv exists keeps its output
+  # identical to a bare-checkout run.
+  #
+  # sync-args -- populates .venv from the `dev` extra (numpy/scipy/pytest/
+  # pytest-cov/ipython...). `--no-install-project`: this project's build
+  # backend is maturin (see pyproject.toml `[build-system]`), and building it
+  # needs a Rust toolchain, libint2 and the same shim headers build-and-test
+  # installs -- none of which this fast, libint2-free job has. Every tool here
+  # either needs only the dependency set or nothing from the venv at all
+  # (ruff/ty/bandit run standalone via uvx).
+  #
+  # ty-command + ty-blocking: false -- NON-BLOCKING, output teed to the step
+  # summary. 392 diagnostics measured 2026-09-16 in this same container:
+  # `--exclude` applied for terf-tables' frozen Python-2 file (ty has no
+  # `[tool.ty]` config in this repo yet, hence the CLI flag rather than
+  # picking up ruff's `extend-exclude`), and run AFTER `uv sync` so imports
+  # resolve against a populated .venv -- an EMPTY venv inflates this to 561
+  # (339 of them bare `unresolved-import`), per the measurement that
+  # motivated this policy. Exit criterion to flip to BLOCKING: add a
+  # checked-in `[tool.ty]` config (with its own exclude) and drive the
+  # diagnostic count to 0 or an explicitly-justified allow-list.
+  #
+  # lock-check: false -- this job never ran `uv lock --check`; turning it on
+  # is a separate change, made once it is known to pass.
   python-quality:
     name: python-quality
-    runs-on: ubuntu-22.04
-    # No libint2, no cargo build. Deliberately not `uses: astral-sh/setup-uv`
-    # or any other third-party action -- `pip install uv` off the already
-    # SHA-pinned actions/setup-python is one fewer supply-chain surface to
-    # track for a tool this job only needs as a `uvx` launcher.
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.11"
-
-      - name: Install uv
-        run: pip install uv
-
-      # VERSION PINNING TRAP, resolved: .pre-commit-config.yaml used to pin
-      # ruff at v0.16.6, but the tree was reformatted with ruff 0.15.8, and
-      # `ruff format` output is not stable across ruff versions. Verified
-      # directly in the container that will run this workflow (2026-09-16):
-      # `uvx ruff@0.15.8 format --check .` reports 244/244 files already
-      # formatted (0 diffs) against this tree, while `uvx ruff@0.16.6 format
-      # --check .` reports 7 files would change (all *.md, from a Markdown
-      # fenced-code-block formatting behaviour that changed between those
-      # two releases -- README.md, crates/ferric-python/README.md,
-      # scripts/gw100/basis_gaps/CONVERSION_NOTES.md, site/src/methods/cc.md,
-      # site/src/using/python.md, site/src/using/quickstart.md). 0.15.8 is
-      # therefore the version pinned HERE, and .pre-commit-config.yaml's
-      # ruff rev was moved down to v0.15.8 to match -- keep the two in sync;
-      # if either drifts, `ruff format --check` fails on arrival for a
-      # reason that has nothing to do with the PR that trips it.
-      - name: ruff format --check
-        run: uvx ruff@0.15.8 format --check .
-
-      - name: ruff check (default rule set, report-only)
-        # NON-BLOCKING. Default `ruff check .` found 682 findings before the
-        # Python-wide reformat (top codes: E702 315, E741 89, E701 84, F401
-        # 55, F841 32). Measured again in-container 2026-09-16, with that
-        # reformat partially landed: 282. Exit criterion to flip this to
-        # BLOCKING: the count above reaches 0 (or every survivor carries an
-        # explicit inline `# noqa: <code>` with a reason, the same bar
-        # scripts/ci-gate.sh's clippy ALLOWED_LINTS list holds Rust lints to)
-        # -- a `continue-on-error` with no exit criterion is how a gate stays
-        # permanently decorative.
-        continue-on-error: true
-        run: |
-          echo "## ruff check (default rule set) -- report only, see step comment for exit criterion" >> "$GITHUB_STEP_SUMMARY"
-          uvx ruff@0.15.8 check . 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
-
-      - name: bandit (medium+ severity)
-        # BLOCKING -- matches .pre-commit-config.yaml's bandit hook exactly
-        # (same rev, same `-ll -q`, same exclude). Run BEFORE `uv sync`
-        # below on purpose: `uv sync` populates .venv with third-party
-        # packages (numpy, scipy, rdkit, ...), and bandit -r . has no
-        # project-awareness -- pointed at a tree that already has a .venv,
-        # it scans vendored dependency code too and buries the two real
-        # findings under ~500 third-party ones. Running here, before .venv
-        # exists, keeps this step's output identical to a bare-checkout run.
-        run: uvx bandit@1.9.4 -ll -q -r . -x terf-tables/generate_interpolation_tables.py
-
-      # Populates .venv from the `dev` extra (numpy/scipy/pytest/pytest-cov/
-      # ipython...). `--no-install-project`: this project's build backend is
-      # maturin (see pyproject.toml `[build-system]`), and building it needs
-      # a Rust toolchain, libint2 and the same shim headers build-and-test
-      # installs -- none of which this fast, libint2-free job has. Every
-      # tool below either needs only the dependency set (pytest) or nothing
-      # from the venv at all (ruff/ty run standalone via uvx).
-      - name: uv sync (dev extra, dependencies only)
-        run: uv sync --extra dev --no-install-project
-
-      - name: ty check (report-only)
-        # NON-BLOCKING. 392 diagnostics measured 2026-09-16 in this same
-        # container: `--exclude` applied for terf-tables' frozen Python-2
-        # file (ty has no `[tool.ty]` config in this repo yet, hence the CLI
-        # flag rather than picking up ruff's `extend-exclude`), and run AFTER
-        # `uv sync` above so imports resolve against a populated .venv -- an
-        # EMPTY venv inflates this to 561 (339 of them bare
-        # `unresolved-import`), per the measurement that motivated this
-        # policy. Exit criterion to flip to BLOCKING: add a checked-in
-        # `[tool.ty]` config (with its own exclude) and drive the diagnostic
-        # count to 0 or an explicitly-justified allow-list.
-        continue-on-error: true
-        run: |
-          echo "## ty check -- report only, see step comment for exit criterion" >> "$GITHUB_STEP_SUMMARY"
-          uvx ty@0.0.81 check --exclude 'terf-tables/generate_interpolation_tables.py' 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+    uses: mgoldey/attestation/.github/workflows/reusable-python-gates.yml@b1c5cb2f93b43d0b2441f40c323a4c7741ebc5a9 # attestation main 2026-11-20 (PR #70)
+    with:
+      name: python-quality
+      runs-on: ubuntu-22.04
+      python-version: "3.11"
+      timeout-minutes: 15
+      pre-sync: uvx bandit@1.9.4 -ll -q -r . -x terf-tables/generate_interpolation_tables.py
+      sync-args: --extra dev --no-install-project
+      ruff-version: "0.15.8"
+      ruff-check-blocking: false
+      ty-command: uvx ty@0.0.81 check --exclude 'terf-tables/generate_interpolation_tables.py'
+      ty-blocking: false
+      lock-check: false
 
   # ---------------------------------------------------------------------
   # Nightly-only coverage. NON-BLOCKING (both steps below are
@@ -2491,13 +2748,17 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd
+            libboost-dev patchelf zstd
 
       # libint2: conda-forge 2.13.1 (prebuilt, second-derivative integrals),
       # installed by the same script developers use; see scripts/install-libint.sh
       # for the package, its AM limits and why the SONAME is rewritten.
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
+      - name: Install libxc
+        uses: ./.github/actions/install-libxc
 
       - name: Restore cargo cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -2576,9 +2837,10 @@ jobs:
         # pytest step's own comment saying "nobody has observed a green run
         # yet" was describing this, not a flaky test.
         #
-        # `pip install uv` rather than astral-sh/setup-uv for the same reason
-        # python-quality gives: no third-party action off the already-present
-        # Python.
+        # `pip install uv` rather than astral-sh/setup-uv: no third-party
+        # action of this job's own off the already-present Python. (pre-commit
+        # and python-quality get setup-uv only through the attestation
+        # templates' reviewed SHA pin; see the comment above pre-commit.)
         run: pip install uv
 
       - name: uv sync (dev + build extras)
@@ -2595,7 +2857,10 @@ jobs:
           # and truncates it ("Object is too small", nightly 2026-10-27). The rm is
           # belt-and-braces for any other double build.
           rm -rf target/maturin
-          uv run --no-sync maturin develop --release --locked
+          # --features abi3: the SHIPPED configuration (wheels.yml builds one
+          # cp310-abi3 wheel), so the suite below tests what users install and
+          # the "Python compat" steps further down can reuse this one compile.
+          uv run --no-sync maturin develop --release --locked --features abi3
 
       - name: pytest -- Python bindings, with coverage
         # PROVISIONAL, continue-on-error: this suite has never been run in
@@ -2604,8 +2869,107 @@ jobs:
         # Flip to BLOCKING once a run has actually gone green here.
         continue-on-error: true
         run: |
-          uv run --no-sync pytest crates/ferric-python/tests/ \
+          uv run --no-sync pytest crates/ferric-python/tests/ --ignore=crates/ferric-python/tests/test_derivation_scripts.py \
             --cov=ferric --cov-report=lcov:python-ext-coverage.lcov -q
+
+      - name: pytest -- avogadro-ferric plugin (plugins/avogadro-ferric)
+        # The Avogadro 2 plugin's tests drive its entry point as Avogadro does
+        # (subprocess, JSON on stdin) against the extension built above; they
+        # need no Avogadro. Provisional for the same reason as the step above:
+        # it has not yet run green in CI.
+        continue-on-error: true
+        env:
+          OPENBLAS_NUM_THREADS: "1"
+        run: uv run --no-sync pytest plugins/avogadro-ferric/tests -q
+
+      # ── Python version range: build once, test on both ends ────────────────
+      # `requires-python >= 3.10` and the wheels claim 3.10-3.13, but the full
+      # bindings suite above runs only on 3.11 (.python-version), and
+      # platform-tests.yml runs it on 3.12 (macOS/Windows). Nothing ran the
+      # Linux suite on 3.10 or 3.13 -- wheels.yml's smoke-test only imports the
+      # wheel there. Running the full suite per interpreter would multiply the
+      # slowest part of this job; it is also unnecessary, because the
+      # extension is abi3: ONE compiled .so is the same binary on every
+      # interpreter, so the only version-specific surface is (a) loading the
+      # abi3 module and (b) the pure-Python package ferric/*.py plus the
+      # tests' own syntax/stdlib use. A 3.10-only break (3.11+ stdlib such as
+      # tomllib or datetime.UTC, `except*`, typing.Self, PEP 695/696 syntax)
+      # or a 3.13-only break (removed modules, changed semantics) lands in
+      # exactly that surface. So: build the abi3 wheel here (cargo is already
+      # warm from the develop build above; only packaging is new), install it
+      # into 3.10 and 3.13 venvs (the endpoints; 3.11 is the full run above,
+      # 3.12 is platform-tests, and the middle versions add no new syntax
+      # surface), import every ferric submodule, and run the pure-Python
+      # test files (API snapshot, build info, qcschema, mlip, ASE, energy
+      # aliases, import-boundary). Cost: ~2 venvs + a couple of minutes, no
+      # extra compile.
+      # Blocking within this (already non-required, nightly) job, unlike the
+      # provisional 3.11 pytest steps above: these are new and fast, and a
+      # red here is exactly the signal they exist to give.
+      - name: Build abi3 wheel (reuses the develop build's compile)
+        run: |
+          set -euo pipefail
+          rm -rf target/maturin dist-abi3
+          # --auditwheel skip: this wheel never leaves the job (the
+          # libint2/BLAS libraries resolve from the runner exactly as they do
+          # for the editable install above); release wheels are built and
+          # repaired by wheels.yml, untouched by this.
+          uv run --no-sync maturin build --release --locked --features abi3 \
+            --auditwheel skip --out dist-abi3
+          ls -la dist-abi3
+
+      - name: Python compat -- 3.10 and 3.13 (imports + pure-Python tests)
+        env:
+          OPENBLAS_NUM_THREADS: "1"
+        run: |
+          set -uo pipefail
+          WHEEL="$PWD/$(ls dist-abi3/ferric-*-cp310-abi3-*.whl)"
+          FILES=(
+            test_api_snapshot.py test_build_info.py test_qcschema.py
+            test_mlip_export.py test_energy_aliases.py
+            test_python_does_not_import_above.py
+            test_ase_calculator.py test_ase_dipole_charges.py
+          )
+          TESTS=()
+          for f in "${FILES[@]}"; do TESTS+=("crates/ferric-python/tests/$f"); done
+          failed=()
+          for V in 3.10 3.13; do
+            echo "::group::python $V"
+            VENV="$RUNNER_TEMP/compat-$V"
+            if ! { uv venv --python "$V" "$VENV" \
+                && uv pip install --python "$VENV/bin/python" "$WHEEL" \
+                     "pytest>=9.1.1" "scipy>=1.11" "h5py>=3.9" "sympy>=1.14.0" \
+                     "matplotlib>=3.8" "ase>=3.23"; }; then
+              failed+=("$V (setup)"); echo "::endgroup::"; continue
+            fi
+            # conftest.py turns a failed `import ferric` into a whole-suite
+            # SKIP; import every module first, outside pytest, so a broken
+            # load or a version-specific syntax/import error fails loudly.
+            # Run from $RUNNER_TEMP so the checkout's source tree (which has
+            # no .so) cannot shadow the installed wheel.
+            if ! ( cd "$RUNNER_TEMP" && "$VENV/bin/python" - <<'PY'
+          import importlib, pkgutil, sys
+          import ferric, ferric.ferric as ext
+          print(sys.version.split()[0], ext.__file__)
+          assert ext.__file__.endswith(".abi3.so"), ext.__file__
+          bad = []
+          for m in pkgutil.walk_packages(ferric.__path__, "ferric."):
+              try:
+                  importlib.import_module(m.name)
+              except ImportError as e:  # optional extras (rdkit, ...) may be absent
+                  print("skip", m.name, e)
+              except Exception as e:
+                  bad.append((m.name, repr(e)))
+          assert not bad, bad
+          PY
+            ); then failed+=("$V (import)"); echo "::endgroup::"; continue; fi
+            "$VENV/bin/python" -m pytest "${TESTS[@]}" -q -rs -p no:cacheprovider \
+              || failed+=("$V (pytest)")
+            echo "::endgroup::"
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::Python compat failures: ${failed[*]}"; exit 1
+          fi
 
       - name: Upload Python extension coverage artifact
         if: ${{ !cancelled() }}
@@ -2614,3 +2978,86 @@ jobs:
           name: python-ext-coverage-lcov
           path: python-ext-coverage.lcov
           retention-days: 14
+
+  # ---------------------------------------------------------------------
+  # Mutation ledger (nightly + manual). scripts/check_anchor_mutations.py
+  # applies each testdata/mutations/*.patch to a scratch worktree of HEAD and
+  # requires the row's evidence test to fail on an ASSERTION; exit 1 when any
+  # row is stale (a patch that no longer applies, or a mutation its test no
+  # longer catches). BLOCKING: a red run means a Proven grade lost its
+  # seen-to-fail evidence.
+  #
+  # Why nightly and not a per-push tier: measured 2026-11-13 on the dev box
+  # (warm target), 15 rows took 18.4 min in one run (unpatched baselines
+  # 0.3-184 s per row, patched runs 15-79 s per row), and a changed
+  # production file such as rhf.rs reaches most rows. The runner builds in
+  # its own scratch target directory, so a push tier would pay a cold
+  # compile of the evidence binaries per push. The sync test
+  # mutation_ledger_matches_the_registry stays in the regular tier and
+  # catches a changed patch byte or a missing row on every push; this job
+  # catches the cases that test cannot see (a patch that stopped applying,
+  # an anchor test that stopped failing).
+  # ---------------------------------------------------------------------
+  anchor-mutations:
+    name: anchor mutation ledger (nightly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 170
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_DEV_STRIP: debuginfo
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_PROFILE_TEST_STRIP: debuginfo
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/share/boost \
+            "$AGENT_TOOLSDIRECTORY/CodeQL" 2>/dev/null || true
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+
+      - name: Install system dependencies
+        run: |
+          sudo grep -rlE 'dl\.google\.com' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null \
+            | xargs -r sudo rm -fv
+          sudo sed -i -E 's|^([^#].*dl\.google\.com.*)$|# \1|' /etc/apt/sources.list 2>/dev/null || true
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake g++ gfortran \
+            libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
+            libboost-dev patchelf zstd
+
+      - name: Install libint2
+        run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
+      - name: Install libxc
+        uses: ./.github/actions/install-libxc
+
+      # Same install step as slow-tests -- the action SHA is
+      # pinned, the Rust version floats on `stable` by design (see the
+      # "Install Rust toolchain" comment in build-and-test).
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
+
+      - name: Restore cargo cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-v3-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-v3-${{ runner.os }}-
+
+      - name: Check every ledger row
+        # `shell: bash` runs with pipefail, so the script's exit 1 survives tee.
+        shell: bash
+        env:
+          OPENBLAS_NUM_THREADS: "1"
+        run: |
+          python3 scripts/check_anchor_mutations.py \
+            --scratch "$RUNNER_TEMP/anchor-mutations" | tee -a "$GITHUB_STEP_SUMMARY"

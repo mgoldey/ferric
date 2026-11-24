@@ -112,7 +112,7 @@ pub fn select_minimax_points(k: usize, r: f64) -> Result<(Vec<f64>, Vec<f64>), F
 
 /// Round an arbitrary requested `n_quad` up to the nearest tabulated size
 /// ({3, 5, 7}), saturating at 7 for anything larger. Explicit opt-in
-/// replacement for the old implicit fallback in [`select_minimax_points`].
+/// alternative to the error [`select_minimax_points`] returns for untabulated sizes.
 pub fn nearest_supported_n_quad(n_quad: usize) -> usize {
     if n_quad <= 3 {
         3
@@ -548,8 +548,8 @@ mod tests {
         assert!(err.to_string().contains("100"));
     }
 
-    /// Valid, tabulated (n_quad, R) combinations must be unaffected — same
-    /// numerical output as before the audit fix.
+    /// Valid, tabulated (n_quad, R) combinations must be unaffected by the
+    /// range and size checks.
     #[test]
     fn valid_inputs_unchanged() {
         for &k in &[3usize, 5, 7] {

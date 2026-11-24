@@ -192,13 +192,21 @@ pub struct RohfSecondOrderInfo {
 /// (AO, incl. XC) and their MO transforms, total energy.
 #[derive(Debug, Clone)]
 pub struct RohfPoint {
+    /// MO coefficients, AO rows by MO columns (closed | open | virtual).
     pub c: Array2<f64>,
+    /// AO α density from the closed and open MOs of `c`.
     pub d_a: Array2<f64>,
+    /// AO β density from the closed MOs of `c`.
     pub d_b: Array2<f64>,
+    /// AO α spin Fock at `(d_a, d_b)`, including `V_xc^α`.
     pub f_a: Array2<f64>,
+    /// AO β spin Fock at `(d_a, d_b)`, including `V_xc^β`.
     pub f_b: Array2<f64>,
+    /// `Cᵀ F_α C`.
     pub f_a_mo: Array2<f64>,
+    /// `Cᵀ F_β C`.
     pub f_b_mo: Array2<f64>,
+    /// Total energy at `(d_a, d_b)` (Hartree), from the orbital model.
     pub energy: f64,
 }
 
@@ -339,39 +347,93 @@ pub fn rohf_exact_hessian_matvec(
             x.len()
         )));
     }
-    let occ_a: Vec<f64> = (0..n).map(|i| if i < na { 1.0 } else { 0.0 }).collect();
-    let occ_b: Vec<f64> = (0..n).map(|i| if i < nd { 1.0 } else { 0.0 }).collect();
     let xk = unpack(x, n, nd, nocc_open);
-    // X_σ = X N_σ − N_σ X: element (i, j) = X[i,j] (n_j − n_i).
-    let xs = |occ: &[f64]| {
-        let mut m = xk.clone();
-        for ((i, j), v) in m.indexed_iter_mut() {
-            *v *= occ[j] - occ[i];
-        }
-        m
-    };
-    let xs_a = xs(occ_a.as_slice());
-    let xs_b = xs(occ_b.as_slice());
+    let (occ_a, occ_b) = occupations(n, nd, na);
+    let xs_a = rotation_per_spin(&xk, &occ_a);
+    let xs_b = rotation_per_spin(&xk, &occ_b);
     let dd_a = c.dot(&xs_a).dot(&c.t());
     let dd_b = c.dot(&xs_b).dot(&c.t());
     let (df_a, df_b) = response(&dd_a, &dd_b)?;
+    let df_a_mo = c.t().dot(&df_a).dot(c);
+    let df_b_mo = c.t().dot(&df_b).dot(c);
+    let spins = [
+        (&occ_a, f_a_mo, &xs_a, Some(&df_a_mo)),
+        (&occ_b, f_b_mo, &xs_b, Some(&df_b_mo)),
+    ];
+    Ok(packed_hessian_product(&xk, spins, nd, nocc_open))
+}
+
+/// The Fock-commutator part of [`rohf_exact_hessian_matvec`] alone (true
+/// scale): the same product with the response `δF_σ` set to zero. O(n³) MO
+/// algebra, no J/K. `x` is packed vc | vo | oc as everywhere in this module.
+/// The molecular Newton / AH matvec (`rohf_newton::hessian_matvec`) adds half
+/// of this to its own (half-scale) J/K + f_xc response.
+pub(crate) fn rohf_fock_hessian_matvec(
+    f_a_mo: &Array2<f64>,
+    f_b_mo: &Array2<f64>,
+    nocc_double: usize,
+    nocc_open: usize,
+    x: &[f64],
+) -> Vec<f64> {
+    let n = f_a_mo.nrows();
+    let (nd, na) = (nocc_double, nocc_double + nocc_open);
+    debug_assert_eq!(x.len(), rohf_rotation_count(n, nd, nocc_open));
+    let xk = unpack(x, n, nd, nocc_open);
+    let (occ_a, occ_b) = occupations(n, nd, na);
+    let xs_a = rotation_per_spin(&xk, &occ_a);
+    let xs_b = rotation_per_spin(&xk, &occ_b);
+    let spins = [(&occ_a, f_a_mo, &xs_a, None), (&occ_b, f_b_mo, &xs_b, None)];
+    packed_hessian_product(&xk, spins, nd, nocc_open)
+}
+
+/// Spin occupations `(n_α, n_β)`: α on closed + open, β on closed.
+fn occupations(n: usize, nd: usize, na: usize) -> (Vec<f64>, Vec<f64>) {
+    let occ_a = (0..n).map(|i| if i < na { 1.0 } else { 0.0 }).collect();
+    let occ_b = (0..n).map(|i| if i < nd { 1.0 } else { 0.0 }).collect();
+    (occ_a, occ_b)
+}
+
+/// `X_σ = X N_σ − N_σ X`: element (i, j) = X[i,j] (n_j − n_i).
+fn rotation_per_spin(xk: &Array2<f64>, occ: &[f64]) -> Array2<f64> {
+    let mut m = xk.clone();
+    for ((i, j), v) in m.indexed_iter_mut() {
+        *v *= occ[j] - occ[i];
+    }
+    m
+}
+
+/// One spin's inputs to [`packed_hessian_product`]: occupations, MO Fock,
+/// `X_σ`, and the MO response Fock (`None` = Fock part only).
+type SpinTerms<'a> = (
+    &'a Vec<f64>,
+    &'a Array2<f64>,
+    &'a Array2<f64>,
+    Option<&'a Array2<f64>>,
+);
+
+/// `Σ_σ ½ Δn A_σ + ½ (X_σ f_σ − f_σ X_σ) + Δn δF_σ`, read off packed (module
+/// doc). With `δF_σ` present the arithmetic is the original single expression.
+fn packed_hessian_product(
+    xk: &Array2<f64>,
+    spins: [SpinTerms<'_>; 2],
+    nd: usize,
+    no: usize,
+) -> Vec<f64> {
+    let n = xk.nrows();
     let mut g = Array2::<f64>::zeros((n, n));
-    for (occ, f, xsig, df_ao) in [
-        (&occ_a, f_a_mo, &xs_a, &df_a),
-        (&occ_b, f_b_mo, &xs_b, &df_b),
-    ] {
-        let df = c.t().dot(df_ao).dot(c);
-        let a = f.dot(&xk) - xk.dot(f);
+    for (occ, f, xsig, df) in spins {
+        let a = f.dot(xk) - xk.dot(f);
         let b = xsig.dot(f) - f.dot(xsig);
         for ((i, j), v) in g.indexed_iter_mut() {
             let dn = occ[i] - occ[j];
-            *v += 0.5 * dn * a[(i, j)] + 0.5 * b[(i, j)] + dn * df[(i, j)];
+            let d = df.map_or(0.0, |m| m[(i, j)]);
+            *v += 0.5 * dn * a[(i, j)] + 0.5 * b[(i, j)] + dn * d;
         }
     }
-    Ok(pairs(n, nd, nocc_open)
+    pairs(n, nd, no)
         .into_iter()
         .map(|(p, q)| g[(q, p)] - g[(p, q)])
-        .collect())
+        .collect()
 }
 
 /// `C · U`, `U` the Cayley unitary `(I − κ/2)⁻¹ (I + κ/2)` of the packed κ.
@@ -804,6 +866,69 @@ impl RohfOrbitalModel for InjectedRohfModel<'_> {
     }
 }
 
+/// The exact-exchange coefficient of the injected ROHF/ROKS energy: 1 for
+/// ROHF (no `xc`), the builder's global fraction for ROKS. Errors when the
+/// builder cannot evaluate spin-polarized densities or its fraction is not
+/// in `[0, 1]`.
+fn injected_exchange_fraction(
+    who: &str,
+    xc: Option<&(dyn XcBuilder + '_)>,
+) -> Result<f64, FerricError> {
+    let Some(x) = xc else {
+        return Ok(1.0);
+    };
+    if !x.supports_polarized() {
+        return Err(FerricError::General(format!(
+            "{who}: PeriodicInjection.xc does not support spin-polarized evaluation \
+             (XcBuilder::supports_polarized() is false)"
+        )));
+    }
+    let a = x.exact_exchange_fraction();
+    if !(a.is_finite() && (0.0..=1.0).contains(&a)) {
+        return Err(FerricError::General(format!(
+            "{who}: XcBuilder exact-exchange fraction must be in [0, 1], got {a}"
+        )));
+    }
+    Ok(a)
+}
+
+/// TEST HOOK: the [`RohfOrbitalModel`] that
+/// [`solve_rohf_injected_second_order`] builds from `inj` (the same energy,
+/// spin Focks and response; `δV_xc` by central FD with step
+/// `fxc_fd_step / max|δD|`), so a caller can apply the production Hessian
+/// product — [`rohf_exact_hessian_matvec`] with this model's `response` at a
+/// [`RohfPoint`], exactly the uncached product [`rohf_second_order`] forms —
+/// without running the solver. Checks the injection shapes and the XC
+/// builder like the solver.
+#[doc(hidden)]
+pub fn injected_rohf_model<'a>(
+    inj: PeriodicInjection<'a>,
+    fxc_fd_step: f64,
+) -> Result<Box<dyn RohfOrbitalModel + 'a>, FerricError> {
+    let who = "injected_rohf_model";
+    crate::rhf::check_injection_shapes(who, &inj, inj.s.nrows())?;
+    let c_k = injected_exchange_fraction(who, inj.xc.as_deref())?;
+    let PeriodicInjection {
+        s,
+        h,
+        vnn,
+        j,
+        k,
+        xc,
+    } = inj;
+    Ok(Box::new(InjectedRohfModel {
+        s,
+        h,
+        vnn,
+        j: RefCell::new(j),
+        k: RefCell::new(k),
+        xc: xc.map(RefCell::new),
+        c_k,
+        fxc_step: fxc_fd_step,
+        quartets: Cell::new(0),
+    }))
+}
+
 /// Second-order ROHF/ROKS on caller-supplied `(S, h, V_nn)` and J/K (+ XC)
 /// builders: the injected-path counterpart of
 /// [`crate::rohf::solve_rohf_injected`] with the SAME energy functional,
@@ -852,24 +977,8 @@ pub fn solve_rohf_injected_second_order<'a>(
         mut k,
         xc,
     } = inj;
-    let c_k = match xc.as_ref() {
-        Some(x) => {
-            if !x.supports_polarized() {
-                return Err(FerricError::General(format!(
-                    "{who}: PeriodicInjection.xc does not support spin-polarized evaluation \
-                     (XcBuilder::supports_polarized() is false)"
-                )));
-            }
-            let a = x.exact_exchange_fraction();
-            if !(a.is_finite() && (0.0..=1.0).contains(&a)) {
-                return Err(FerricError::General(format!(
-                    "{who}: XcBuilder exact-exchange fraction must be in [0, 1], got {a}"
-                )));
-            }
-            a
-        }
-        None => 1.0,
-    };
+    let c_k = injected_exchange_fraction(who, xc.as_deref())?;
+    let xc_tag = crate::result::xc_record(config.xc.as_deref(), xc.is_some());
 
     let nelec = mol.nelec() as i64;
     let mult = mol.multiplicity as i64;
@@ -894,18 +1003,8 @@ pub fn solve_rohf_injected_second_order<'a>(
     }
 
     // Guess, as solve_rohf_injected: initial_mos > init_guess_density (via the
-    // INJECTED builders) > the core guess (symmetric S^{-1/2}).
-    let (s_evals, s_evecs) = s
-        .eigh(UPLO::Upper)
-        .map_err(|e| FerricError::Lapack(format!("S diag: {e}")))?;
-    let mut u_scaled = s_evecs.clone();
-    for i in 0..n {
-        let scale = 1.0 / s_evals[i].sqrt();
-        for mu in 0..n {
-            u_scaled[(mu, i)] *= scale;
-        }
-    }
-    let s_inv_sqrt = u_scaled.dot(&s_evecs.t());
+    // INJECTED builders) > the core guess (`rohf::rohf_orthogonalizer`).
+    let s_inv_sqrt = crate::rohf::rohf_orthogonalizer(&s)?;
     let c0 = if let Some(c0) = initial_mos {
         if c0.dim() != (n, n) {
             return Err(FerricError::General(format!(
@@ -927,11 +1026,7 @@ pub fn solve_rohf_injected_second_order<'a>(
         )?
     } else {
         let _ = crate::guess::hcore_guess(&s, &h, nocc_a.max(1))?;
-        let h_prime = s_inv_sqrt.dot(&h).dot(&s_inv_sqrt);
-        let (_, c_prime) = h_prime
-            .eigh(UPLO::Upper)
-            .map_err(|e| FerricError::Lapack(format!("H' diag: {e}")))?;
-        s_inv_sqrt.dot(&c_prime)
+        crate::rohf::core_guess_mos(&h, &s_inv_sqrt)?
     };
 
     let mut run_cfg = *cfg;
@@ -982,7 +1077,9 @@ pub fn solve_rohf_injected_second_order<'a>(
         cosx_schedule: None,
         convergence: None,
         rohf_spin_focks: Some((pt.f_a.clone(), pt.f_b.clone())),
+        xc: xc_tag,
         precision: Default::default(),
+        relativistic: None,
     };
     Ok((result, info))
 }

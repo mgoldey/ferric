@@ -37,8 +37,9 @@
 //!
 //! Relative to [`crate::ccd`], this module builds strictly fewer integral blocks: the
 //! `(2n_v)⁴` VVVV tensor that dominates CCD's memory is never formed for
-//! [`crate::linlccd::LadderVariant::Hh`], nor is OVVO. See
-//! `docs/superpowers/specs/2026-07-26-linlccd-hh-design.md`.
+//! [`crate::linlccd::LadderVariant::Hh`], nor is OVVO.
+//! `book/src/16-coupled-cluster/05-linlccd.md#linlccd-equations` derives the
+//! working equations and the integral blocks each variant builds.
 
 use super::{CcConfig, CcResult};
 use ferric_core::memory::plan::{Lifetime, MemoryPlan};
@@ -49,6 +50,7 @@ use ferric_integrals::operator::Operator;
 use ferric_mp2::mo_transform::{transform_3center_oo, transform_3center_ov, transform_3center_vv};
 use ferric_mp2::rimp2::cholesky_inverse_sqrt;
 use ferric_mp2::spinorbital::{asym_oovv, asym_same, build_b};
+use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 use ferric_tensors::{einsum, Axis, Tensor};
 use ndarray::{ArrayD, IxDyn};
@@ -117,14 +119,38 @@ impl LadderVariant {
     }
 }
 
+/// [`linlccd`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+pub fn linlccd_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    cfg: &CcConfig,
+    variant: LadderVariant,
+) -> Result<CcResult, FerricError> {
+    let sys = aux.system();
+    aux.check_restricted_reference(rhf)?;
+    linlccd(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        rhf,
+        cfg,
+        variant,
+    )
+}
+
 /// Solve the linearized ladder CCD amplitude equations.
 ///
 /// `op` selects the two-electron operator, so the Coulomb-attenuated variant required by
 /// the ωB97X-L-V double hybrid is a parameter rather than a separate code path: pass
 /// [`Operator::erfc`] for short-range-only correlation.
 ///
-/// Closed-shell RHF reference only. Open-shell requires ROHF semi-canonicalization,
-/// which ferric does not yet have — see the design doc.
+/// Closed-shell RHF reference only. The open-shell (UHF, or semicanonicalized ROHF)
+/// solver is [`crate::linlccd_u::u_linlccd`].
 pub fn linlccd(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -155,12 +181,11 @@ pub fn linlccd(
     // expresses that by only reserving a block when `variant.needs_*()` says it
     // is formed.
     //
-    // Second, the old estimate omitted `eri3_ao` (`naux·nbas²`) entirely. That
+    // Second, a bare estimate omits `eri3_ao` (`naux·nbas²`). That
     // tensor is unambiguously live across every MO-block build here — the
     // explicit `drop(eri3_ao)` further below exists precisely because it stays
     // resident until then, and each conditional `build_b` reads it. The sibling
-    // `ccsd.rs` guard charges the same term, so this was a straight
-    // inconsistency. Also newly charged: the full `v_oovv.clone()` into
+    // `ccsd.rs` guard charges the same term. Also charged: the full `v_oovv.clone()` into
     // `oovv_t`, and the `d`/`t`/`r` amplitude working set.
     //
     // `eri3_ao` is TRANSIENT (dead after `drop(eri3_ao)`, before the amplitude

@@ -35,8 +35,8 @@ const PAR_SCHWARZ_SHELL_THRESHOLD: usize = 64;
 /// The remedy is what every production code does: build the table TIGHTER than
 /// the threshold it enforces. PySCF builds `q_cond` at `direct_scf_tol**2` with
 /// a `1e-100` floor; Molpro, NWChem, Q-Chem, ORCA and Psi4 (via its own
-/// `eps * thresh`) do the equivalent. ferric previously used one hardcoded
-/// `1e-14` for BOTH roles, which is the outlier.
+/// `eps * thresh`) do the equivalent. using one hardcoded
+/// `1e-14` for BOTH roles would make ferric the outlier.
 ///
 /// `0.0` disables libint2's internal prescreening outright, which is the
 /// tightest available table. MEASURED one-time cost, both arms run back to back
@@ -119,7 +119,11 @@ pub const TERFC_SCHWARZ_MAX_L: i32 = 4;
 /// Validated terfc parameter box: r0 in [0.3, 2.5] Angstrom and
 /// r0*omega in (0, 8.9] (the shipped tables end at s = 80). Outside it the
 /// bound has not been checked against true integrals and is refused.
+///
+/// This constant is the (lower, upper) r0 range in Angstrom.
 pub const TERFC_SCHWARZ_R0_ANG: (f64, f64) = (0.3, 2.5);
+/// Upper end of the validated `r0 * omega` range (dimensionless, both in
+/// Bohr units); see [`TERFC_SCHWARZ_R0_ANG`].
 pub const TERFC_SCHWARZ_MAX_R0_OMEGA: f64 = 8.9;
 
 /// The operator-parameter half of the terfc validated box (no basis needed),
@@ -221,7 +225,7 @@ fn check_operator_supported(op: Operator, prep: &PreparedBasis) -> Result<(), Fe
         // to be an inner product — i.e. the kernel positive-definite. terf is
         // not: its Fourier transform
         //     F_terf(k) = cos(k*r0) * exp(-k^2/4w^2) / (2 pi^2 k^2)
-        // changes sign at k*r0 = pi (Bochner), so the form is indefinite,
+        // first changes sign at k*r0 = pi/2 (Bochner), so the form is indefinite,
         // `(ij|ij)` can be NEGATIVE, and `Q = sqrt((ij|ij))` is not even real.
         //
         // MEASURED, not merely derived — water/cc-pVDZ 2-center diagonals:
@@ -240,7 +244,7 @@ fn check_operator_supported(op: Operator, prep: &PreparedBasis) -> Result<(), Fe
             return Err(FerricError::Libint(
                 "Schwarz screening is INVALID for the Terf operator, not merely unimplemented: \
                  terf's kernel is not positive-definite (its Fourier transform cos(k*r0) \
-                 exp(-k^2/4w^2)/(2 pi^2 k^2) changes sign at k*r0 = pi), so the two-electron \
+                 exp(-k^2/4w^2)/(2 pi^2 k^2) first changes sign at k*r0 = pi/2), so the two-electron \
                  form is indefinite, (ij|ij) can be negative, and Q = sqrt((ij|ij)) is not real. \
                  Measured: min (P|P)_terf = -7.543e-3 on water/cc-pVDZ at r0=2. Use RI/DF for \
                  the long-range piece; terf integrals do not decay with separation, so there is \
@@ -290,7 +294,7 @@ fn check_operator_supported(op: Operator, prep: &PreparedBasis) -> Result<(), Fe
 ///
 /// Q(i,j) * Q(k,l) provides an upper bound on |(ij|kl)|, enabling integral screening.
 ///
-/// Parallelized over upper-triangle shell pairs once `nsh` clears
+/// Parallelized over the shell pairs `j ≤ i` (lower triangle) once `nsh` clears
 /// `PAR_SCHWARZ_SHELL_THRESHOLD` — the historical `scf_compute_schwarz` FFI
 /// call ran the whole O(nsh²) diagonal-quartet loop serially on one engine,
 /// which dominated setup on large direct jobs. Each rayon worker builds its own
@@ -420,11 +424,11 @@ const PAR_AUX_SHELL_THRESHOLD: usize = 64;
 /// disabling prescreening removes that path too, though the floor is what
 /// guarantees the invariant for a genuinely vanishing diagonal.)
 ///
-/// In practice this arm was never the one biting — MEASURED on
-/// alkane_8 and alkane_16 with cc-pVDZ-RI, the pre-fix aux table stored ZERO
+/// In practice this arm is never the one biting — MEASURED on
+/// alkane_8 and alkane_16 with cc-pVDZ-RI, the aux table stores ZERO
 /// zeros and its smallest nonzero entry was 4.475e-1, because a 2-centre
 /// `(P|P)` diagonal over a normalized aux shell is O(1) and nowhere near the
-/// engine's precision cliff. It is changed for invariant consistency rather
+/// engine's precision cliff. It exists for invariant consistency rather
 /// than to repair an observed failure, and the measured cost is 0.004 s.
 ///
 /// Parallelized over `p` once `nsh` clears `PAR_AUX_SHELL_THRESHOLD`: each

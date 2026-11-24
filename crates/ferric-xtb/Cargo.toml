@@ -14,8 +14,11 @@ workspace = true
 # Enable with `--features xtb` (requires libxtb on the linker search path,
 # e.g. built into $HOME/.local -- see build.rs).
 default = []
-xtb = []
+xtb = ["dep:ferric-scf"]
 
 [dependencies]
 ferric-core = { path = "../ferric-core" }
 ndarray = { workspace = true }
+# Only with the `xtb` feature: the geometry/frequency drivers reuse the SCF
+# optimizer and finite-difference Hessian machinery.
+ferric-scf = { path = "../ferric-scf", optional = true }

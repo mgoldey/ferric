@@ -49,7 +49,7 @@ scripts/ci-gate.sh
 these are numerical/formatting idioms this codebase already tolerates
 elsewhere per its "prod lib is 0-warning except numerical lints" policy, not
 guessed): `excessive_precision`, `neg_multiply`, `needless_range_loop`,
-`doc_lazy_continuation`, `too_many_arguments`, `derivable_impls`,
+`doc_lazy_continuation`, `derivable_impls`,
 `field_reassign_with_default`, `redundant_pattern_matching`,
 `unnecessary_map_or`, `unnecessary_min_or_max`, `type_complexity`,
 `needless_borrows_for_generic_args`, `if_same_then_else`, and the
@@ -83,7 +83,7 @@ and compare them against a checked-in snapshot (`complexity_baseline.json`).
 This is deliberately a **regression tracker, not an absolute threshold** --
 this repo already tolerates high-CC numerical kernels that mirror the
 underlying physics (`solve_rhf` CC=134, etc. -- see the `too_many_arguments`
-allow-list rationale above), so an absolute ceiling would either catch
+ratchet below), so an absolute ceiling would either catch
 nothing or immediately fail on already-accepted code. The gate instead fails
 only when a function gets *worse* than its baseline by more than a small
 noise tolerance, or when a brand-new function appears with complexity far
@@ -155,6 +155,27 @@ The lease does not own the machine:
 
 To wait in a script, use `box-lease wait` and plain `sleep`. Never read from
 `/dev/zero` to pass time.
+
+## Mutation ledger runner (`check_anchor_mutations.py`)
+
+`testdata/mutations/ledger.json` has one production-code patch per
+`ENERGY_ANCHORS` entry (15 rows). The always-on test
+`mutation_ledger_matches_the_registry` checks the ledger against the registry
+and the patch bytes; it cannot see a patch that stopped applying or an anchor
+test that stopped failing. `scripts/check_anchor_mutations.py` runs every row
+(exit 1 on a stale row) and prints `baseline_s` / `mutate_s` per row.
+
+It runs nightly and on demand as the `anchor-mutations` job in
+`.github/workflows/ci.yml`; it is not in the push gate. Measured 2026-11-13 on
+the dev box, warm target, one run: 18.4 min for 15 rows (unpatched baselines
+0.3-184 s, patched runs 15-79 s per row; the first baseline carries the compile).
+A changed production file such as `rhf.rs` reaches most rows and the runner
+builds in its own scratch target, so a per-push tier would pay that cost on
+every push. Locally:
+
+```
+box-lease run --label ledger -- scripts/check_anchor_mutations.py --scratch DIR [--anchor RHF ...]
+```
 
 ## What belongs in git
 

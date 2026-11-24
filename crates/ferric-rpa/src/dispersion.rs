@@ -80,6 +80,8 @@ pub struct DynamicPolarizability {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct C6Result {
+    /// The per-atom and molecular α(iω) on the Casimir–Polder grid from which
+    /// the C6 coefficients below were integrated.
     pub per_atom_dynamic: DynamicPolarizability,
     /// Isotropic C6^{AB}, shape (N, N), a.u. Per-atom PAIR tensor — see the
     /// CONSUMER WARNING on [`C6Result`] before summing this to approximate
@@ -100,18 +102,23 @@ pub struct C6Result {
 /// Partition scheme for the per-atom decomposition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DispersionPartition {
+    /// Becke fuzzy-cell weights. The `Default` of this enum and the default
+    /// for the TS/MBD C6 sources ([`C6Source::default_partition`]).
     #[default]
     Becke,
+    /// Hirshfeld (proatom-density) weights. The default for the PDEP C6
+    /// source; the dynamic per-atom path is closed-shell only and falls back
+    /// to Becke for open-shell references.
     Hirshfeld,
 }
 
 impl DispersionPartition {
     /// Parse a `[rpa] c6_partition` string. `None` yields `Ok(None)` so the
     /// caller can apply its source-dependent default (Hirshfeld for PDEP,
-    /// Becke for TS). Unknown strings are an error — they used to fall through
-    /// to that same default, silently producing a *different* per-atom
+    /// Becke for TS). Unknown strings are an error — falling through
+    /// to that same default would silently produce a *different* per-atom
     /// decomposition than requested (per-atom α/C6 are partition-dependent by
-    /// ~10×, so this changed numbers, not just performance).
+    /// ~10×, so that changes numbers, not just performance).
     pub fn parse_config_str(s: Option<&str>) -> Result<Option<Self>, String> {
         match s.map(|x| x.trim().to_ascii_lowercase()).as_deref() {
             None => Ok(None),
@@ -156,8 +163,8 @@ pub enum C6Source {
 }
 
 impl C6Source {
-    /// Parse a `[rpa] c6_source` string. Unknown values are an error; they
-    /// previously fell through to the TS branch silently.
+    /// Parse a `[rpa] c6_source` string. Unknown values are an error, never a silent
+    /// fall-through to the TS branch.
     pub fn parse_config_str(s: Option<&str>) -> Result<Self, String> {
         match s.map(|x| x.trim().to_ascii_lowercase()).as_deref() {
             None | Some("ts") => Ok(C6Source::Ts),
@@ -388,6 +395,27 @@ pub fn ts_dynamic_polarizability(
     })
 }
 
+/// The partition [`pdep_dynamic_polarizability`] actually applies for a
+/// `requested` one on a reference of the given `spin`.
+///
+/// The Hirshfeld dynamic per-atom path exists for a restricted (closed-shell)
+/// reference only; an unrestricted or restricted-open-shell reference runs the
+/// Becke partition, which has the per-spin branch. Callers that LABEL their
+/// per-atom output (the NPZ `c6_partition` tag) must use this, not the
+/// requested value.
+pub fn effective_dynamic_partition(
+    requested: DispersionPartition,
+    spin: ferric_scf::result::Spin,
+) -> DispersionPartition {
+    if requested == DispersionPartition::Hirshfeld
+        && !matches!(spin, ferric_scf::result::Spin::Restricted)
+    {
+        DispersionPartition::Becke
+    } else {
+        requested
+    }
+}
+
 /// PDEP-RPA per-atom dynamic polarizability α^A(iω) (Phase 2 source).
 ///
 /// Evaluates the per-atom polarizability tensors at the imaginary-frequency
@@ -399,10 +427,11 @@ pub fn ts_dynamic_polarizability(
 /// response: at ω=0 it reproduces the static per-atom α exactly, and it carries
 /// the true RPA frequency dependence rather than a single-pole London model.
 ///
-/// `partition` selects the atomic decomposition. Becke is the default and the
-/// only fully frequency-dependent path today; `Hirshfeld` currently falls back
-/// to Becke (a dedicated Hirshfeld-dynamic grid path is future work) and emits
-/// no error so callers get a usable result.
+/// `partition` selects the atomic decomposition. `Hirshfeld` uses the
+/// Hirshfeld dynamic per-atom path for a restricted (closed-shell) reference
+/// and silently falls back to Becke for an unrestricted/open-shell one, which
+/// has a per-spin branch only on the Becke path. The molecular α(iω) is
+/// partition-independent.
 #[allow(clippy::too_many_arguments)]
 pub fn pdep_dynamic_polarizability(
     mol: &Molecule,
@@ -423,16 +452,16 @@ pub fn pdep_dynamic_polarizability(
     // per-atom decomposition differs — and per-atom magnitudes are already
     // partition-sensitive (see per-atom-c6-status). CLAUDE.md documents this
     // "Hirshfeld (dynamic falls back to Becke)" behavior; this wires it.
-    let is_closed = matches!(rhf.spin, ferric_scf::result::Spin::Restricted);
-    let per_atom = if partition == DispersionPartition::Hirshfeld && is_closed {
-        crate::properties::pdep_polarizability_hirshfeld_dynamic(
-            mol, obs, obs_bs, dfbs, rhf, op, cfg, &freqs, proatom,
-        )?
-    } else {
-        crate::properties::pdep_polarizability_becke_dynamic(
-            mol, obs, obs_bs, dfbs, rhf, op, cfg, &freqs,
-        )?
-    };
+    let per_atom =
+        if effective_dynamic_partition(partition, rhf.spin) == DispersionPartition::Hirshfeld {
+            crate::properties::pdep_polarizability_hirshfeld_dynamic(
+                mol, obs, obs_bs, dfbs, rhf, op, cfg, &freqs, proatom,
+            )?
+        } else {
+            crate::properties::pdep_polarizability_becke_dynamic(
+                mol, obs, obs_bs, dfbs, rhf, op, cfg, &freqs,
+            )?
+        };
 
     // Molecular (whole-system) α(iω) for the DOSD-comparable molecular C6 total.
     // Partition-independent; computed from the lab-frame molecular dipole. Now

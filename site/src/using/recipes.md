@@ -1,16 +1,14 @@
 # ferric recipes
 
-Copy-paste workflows that end in a number. Each gives its **expected output**
-and **rough runtime**, so you can tell "still running" from "silently wrong".
-That confusion is the most common failure when you drive a QC code you haven't
-used before.
+Copy-paste workflows that end in a number. Each gives its expected output
+and rough runtime, so you can tell "still running" from "silently wrong".
 
-Recipes 1 and 3 were executed as written for this page, on 2026-09-23.
-Recipe 2's output is quoted from an earlier run. Numbers labelled MEASURED came
-out of the program.
+Outputs for recipes 1 and 3 come from running them as written (2026-09-23);
+recipe 2's output is from an earlier run. MEASURED marks numbers that came out
+of the program.
 
-**Prerequisite:** a working `ferric`. The fast path is the prebuilt wheel
-(about a minute). A source build takes ~30 minutes, most of it libint2:
+Prerequisite: a working `ferric`. The fast path is the prebuilt wheel
+(about a minute). A source build takes about 10 minutes, mostly compiling ferric:
 
 ```bash
 pip install ferric
@@ -19,7 +17,7 @@ pip install ferric
 See [Installation](installation.md). Build from source only if you are changing
 ferric itself or need MPI.
 
-**Which recipes need a git clone.** The wheel contains the compiled library and
+Which recipes need a git clone: the wheel contains the compiled library and
 the `ferric` command, nothing else. `examples/`, `testdata/` and `scripts/`
 live in the repository
 ([what the wheel does not contain](installation.md#what-the-wheel-does-not-contain)).
@@ -31,12 +29,11 @@ Run those recipes from the repository root:
 | 2. Ions and radicals | no | — |
 | 3. Optimize | only for `examples/h2-lda-opt.toml` | — |
 
-**On a shared machine, run anything real under a memory cap.** ferric's
-memory budget charges only the large, size-dependent tensors; basis-sized
-matrices, integral engines, BLAS scratch and allocator overhead are not
-charged, so a job's resident memory can exceed the budget. Only a cgroup puts
-a hard ceiling on the process, and without one an overshoot can trigger the
-system-wide OOM killer, which may kill unrelated processes. The details are in
+On a shared machine, run anything real under a memory cap. ferric's
+memory budget charges only the large, size-dependent tensors, so a job's
+resident memory can exceed it. Only a cgroup puts a hard ceiling on the
+process; without one, an overshoot can trigger the system-wide OOM killer,
+which may kill unrelated processes. Details are in
 [Sharp bits](sharp-bits.md#memory-budget_gb-does-not-cap-the-whole-process)
 and [For agents](agents.md#memory-the-budget-predicts-the-cgroup-enforces).
 `scripts/ferric-limited` (repository, Linux with systemd) wraps a command in a
@@ -89,7 +86,7 @@ every TOML key, see the [input reference](../reference/input.md).
 
 ## 2. Charged and open-shell species
 
-**Read this before you run any ion, radical or metal center.** `charge` and
+Read this before running any ion, radical or metal center. `charge` and
 `multiplicity` are `[molecule]` keys. Most files in `examples/` leave them at
 their defaults (0 and 1). The open-shell exceptions are `examples/h_uhf.toml`
 and `examples/oh-ugw.toml`.
@@ -110,7 +107,7 @@ kind = "ksdft"
 functional = "B3LYP"
 ```
 
-**Relax the geometry with xtb first.** A correct formula doesn't guarantee a
+Relax the geometry with xtb first. A correct formula doesn't guarantee a
 physical structure, and the parity check below can't tell the difference.
 MEASURED: a hand-built C10H17+ with a 0.902 Å C–H contact stalled the SCF.
 After `xtb mol.xyz --opt --chrg 1 --uhf 0 --gfn 2` it converged, 545 kcal/mol
@@ -127,8 +124,7 @@ Expect seconds to about a minute at this size.
 
 ### The error you will hit first
 
-If the electron count and the multiplicity disagree, you get this error. It's
-worth learning to recognise:
+If the electron count and the multiplicity disagree, you get this error:
 
 ```
 error: inconsistent charge/multiplicity: 35 electrons with multiplicity 1
@@ -137,7 +133,7 @@ integer... An odd electron count needs an even multiplicity (2, 4, ...)
 and vice versa
 ```
 
-It means **your geometry, your charge or your multiplicity is wrong**. ferric
+It means your geometry, your charge or your multiplicity is wrong. ferric
 can handle ions and open shells. The message prints the arithmetic and the
 rule, so check the atom count in your `.xyz` against the first line of the
 file, then the `charge` and `multiplicity` you set.
@@ -183,8 +179,24 @@ max_steps = 30
 [Capabilities and validation](../reference/validation.md) lists which methods have analytic
 gradients. Harmonic frequencies use `task = "frequencies"` (the analytic Hessian
 where it applies, otherwise finite differences of the analytic gradient; see `examples/water-frequencies.toml`).
+A Kohn-Sham frequency run at the optimized geometry is the same input with the
+task changed:
 
-**Runtime depends on the system, so measure before you plan.** A whole
+```toml
+[method]
+kind = "ksdft"
+task = "frequencies"
+
+[dft]
+functional = "B3LYP"
+```
+
+Frequencies are meaningful only at a stationary point, so run them on the
+optimized geometry. Python callers can also run optimizations through the
+[ASE calculator](./ase.md), and QCSchema tools through
+[QCSchema](./qcschema.md).
+
+Runtime depends on the system, so measure before you plan. A whole
 optimization at drug-like size has not been timed on this page. For scale,
 two single-point measurements:
 
@@ -210,7 +222,7 @@ df_j_aux="exact")` turns fitting off, or you can turn it on in the other code.
 
 **Grid.** ferric's KS-DFT default grid is `(75, 110)` (radial, angular), flat,
 with no pruning. PySCF's default `grid.level=3` is roughly `(75, 302)`. The
-difference is worth ~1e-5 Ha on water and grows with **atom count**, because
+difference is worth ~1e-5 Ha on water and grows with atom count, because
 grid error scales with the number of atoms, not the basis size. A small basis
 on a big molecule can be worse than a big basis on a small one. Match grids
 before you conclude anything.
@@ -218,7 +230,7 @@ before you conclude anything.
 **Convergence criteria.** Setting `energy_conv` alone can leave the density
 loosely converged. Variational quantities (E_HF) don't mind. Anything that
 depends linearly on the MO coefficients (correlation energies, properties) does.
-`density_conv` is the criterion that actually converges the density, so
+`density_conv` is the criterion that converges the density, so
 tighten it when you care about those quantities. Keep `energy_conv` loose: with
 density fitting, a very tight `energy_conv` may be unreachable
 ([Golden paths](applications.md), Step 2).

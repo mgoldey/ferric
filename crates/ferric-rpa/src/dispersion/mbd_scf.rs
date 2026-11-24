@@ -24,9 +24,8 @@
 //! lattices agree with each other to 8.7e-8 to 1.8e-4 on the free atoms
 //! (`tests/measure_free_atom_quadratures.rs`), so the centroid lattice is of
 //! the same accuracy class. Whatever that error is, it is now the SAME error
-//! in numerator and denominator and so largely cancels in the ratio — which
-//! it did not before this change, when `v_free` came from the bounding-box
-//! lattice while the numerators came from the centroid one.
+//! in numerator and denominator and so largely cancels in the ratio (a `v_free` from the bounding-box
+//! lattice with numerators from the centroid one would not cancel).
 //!
 //! The exact nuclear gradient, returned by [`mbd_rsscs_for_scf`], is
 //! ```text
@@ -147,6 +146,10 @@ pub enum FreeAtomVolumeQuadrature {
 ///   — the single-atom Hirshfeld integral with the Slater proatom weight
 ///   (1 wherever the Slater ρ⁰ is above the 1e-12 floor).
 ///
+/// The free atom carries `bs`'s effective core potential for `z`, if any
+/// (`Molecule::apply_ecp`), as the molecule's SCF does, so an ECP atom's free
+/// volume is the valence-density volume its molecular volume is compared to.
+///
 /// The free atom is ISOLATED: the molecule's environment (point charges and
 /// field, COSMO/PCM solvent, polarizable sites, cDFT constraints) is not
 /// applied to it, as for the proatoms of [`scf_proatom_provider`]. Otherwise
@@ -187,7 +190,11 @@ pub fn live_free_atom_volume_with(
     })?;
     let free_xyz = format!("1\n{sym}\n{sym} 0 0 0\n");
     let mult = proatom_ground_state_mult(zi);
-    let free_mol = Molecule::parse_xyz(&free_xyz, 0, mult)?;
+    let mut free_mol = Molecule::parse_xyz(&free_xyz, 0, mult)?;
+    // The basis set's ECP, as the molecule's SCF and `scf_proatom_provider`
+    // apply it: an ECP molecule's volumes come from its valence density, so
+    // the free-atom reference must too. A no-op for an all-electron basis.
+    free_mol.apply_ecp(bs);
     let free_obs = PreparedBasis::new(&free_mol, bs)?;
     let free_bounds = SchwarzBounds::compute(op, &free_obs)?;
     let mut free_cfg = rhf_config.clone();
@@ -199,6 +206,10 @@ pub fn live_free_atom_volume_with(
     // A free atom is solved in the input frame, never point-group blocked.
     free_cfg.symmetry = false;
     free_cfg.irrep_nelec = None;
+    // A starting density (`dm0`) has the molecule's basis dimension; the free
+    // atom starts from its own default guess.
+    free_cfg.init_guess_density = None;
+    free_cfg.cdft_lambda_init = None;
     free_cfg.mom_after_iter = if mult > 1 { 5 } else { 0 };
     free_cfg.max_iter = free_cfg.max_iter.max(200);
     if mult > 1 && free_cfg.xc.is_some() {

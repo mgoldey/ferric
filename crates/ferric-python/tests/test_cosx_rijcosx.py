@@ -57,6 +57,8 @@ def test_rijcosx_b3lyp_gradient_matches_fd(setup):
         cosx_final_pass=False,
         energy_conv=1e-8,
         density_conv=1e-9,
+        # f64 RI-J: the f32 default's energy surface jitters below this FD bar.
+        ri_j_precision="f64",
     )
     mol0 = ferric.Molecule.from_xyz_string(_water_xyz(0.0))
     g = np.asarray(

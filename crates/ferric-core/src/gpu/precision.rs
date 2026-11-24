@@ -68,7 +68,13 @@ pub enum MixedKernel {
     RiMp2Energy = 1,
     /// Closed-shell CCSD amplitude-update contractions (Task 4.3).
     CcsdAmplitudes = 2,
-    /// DF-K occupied path with f32-resident dressed B (Task 4.4).
+    /// DF-K occupied path with f32-resident dressed B (Task 4.4), behind the
+    /// SCF precision ladder (`ferric_scf::jk_ladder`). Opt-in: in
+    /// [`MixedKernelSet::OPT_IN`], not in `SHIPPED`. Its converged energies sit
+    /// at the f64 SCF's own termination noise, but on the one device measured
+    /// (GTX 1080) a mixed SCF saved only about 4% of the wall time against the
+    /// f64 device DF-K (n-dodecane def2-TZVP) and was 3-6% slower with diffuse
+    /// basis sets; see the validation page.
     DfkOcc = 4,
     /// COSX 3-centre kernel (`md3c1e`), routed per (pair, sub-batch) by the
     /// Hölder bound (Workstream D). Named only: not in `SHIPPED`.
@@ -87,24 +93,61 @@ pub enum MixedKernel {
     /// `mixed_kernels` list that names it runs it (it was slower than the CPU
     /// on the one device measured; see `ferric_dft::xc_batch`).
     XcVxc = 32,
+    /// CPU RI-J with the raw 3-index tensor STORED as f32 (packed triangle or
+    /// Schwarz pair-screened columns, `ferric_integrals::three_index_source::
+    /// f32_store`) and both passes accumulated in f64 against f64 vectors
+    /// (`ferric_scf::df_j`): half the resident RI-J tensor. A CPU kernel
+    /// ([`Self::runs_on_cpu`]), so `[gpu] mode = "off"` admits it. Since
+    /// 2026-11-07 it is the DEFAULT SCF RI-J storage, chosen per SCF by
+    /// `RhfConfig::ri_j_precision` (`[scf] ri_j_precision`), not by these
+    /// settings: it stays in [`MixedKernelSet::OPT_IN`] (a `mixed_kernels`
+    /// list may still name it) and out of `SHIPPED`, and the provenance
+    /// record lists it whenever it ran.
+    ///
+    /// Not `dfj-pack`: that is the device kernel, behind the SCF precision
+    /// ladder with an f64 exit (the host keeps the f64 tensor for it). This one
+    /// keeps NO f64 copy, so every build of the SCF is f32-stored and the
+    /// converged energy is that of the rounded-B Coulomb operator (first-order
+    /// error `≤ (u32 + γ_pair + γ_naux)·|c|ᵀ|B||w|`, see `ferric_scf::df_j`)
+    /// unless the caller applies the f64 energy exit pass. A separate name keeps
+    /// the precision provenance record from claiming the ladder's f64 exit.
+    DfjF32 = 64,
+    /// CPU DF-K with the V^{-1/2}-dressed 3-index tensor STORED as f32 (the
+    /// packed lower triangle, `ferric_integrals::three_index_source::
+    /// dressed_packed`), each row widened to f64 for the f64 DSYMM/DSYRK or
+    /// GEMMs (`ferric_scf::df_k`): a quarter of the square f64 tensor. Chosen
+    /// per SCF by `[scf] ri_k_precision` (`RhfConfig::ri_k_precision`), NOT by
+    /// `mixed_kernels`: in neither [`MixedKernelSet::SHIPPED`] nor
+    /// [`MixedKernelSet::OPT_IN`]; the name exists so the precision provenance
+    /// record counts the builds that read the f32 tensor. A CPU kernel
+    /// ([`Self::runs_on_cpu`]). Not behind the SCF ladder, no f64 copy, no f64
+    /// exit.
+    DfkF32 = 128,
 }
 
 impl MixedKernel {
-    pub const ALL: [MixedKernel; 6] = [
+    /// Every kernel, in bit order (the order of [`MixedKernel::index`]).
+    pub const ALL: [MixedKernel; 8] = [
         MixedKernel::RiMp2Energy,
         MixedKernel::CcsdAmplitudes,
         MixedKernel::DfkOcc,
         MixedKernel::CosxKern,
         MixedKernel::DfjPack,
         MixedKernel::XcVxc,
+        MixedKernel::DfjF32,
+        MixedKernel::DfkF32,
     ];
 
     /// Whether this kernel's mixed path runs on the CPU. Only such a kernel
     /// may run mixed with `[gpu] mode = "off"` (CPU-only mixed precision);
     /// every other kernel's mixed path is a device kernel. `cosx-kern` is the
-    /// CPU `md3c1e` f32 block (`Md3c1e::pair_block_f32`).
+    /// CPU `md3c1e` f32 block (`Md3c1e::pair_block_f32`); `dfj-f32` the CPU
+    /// RI-J with f32 tensor storage.
     pub const fn runs_on_cpu(self) -> bool {
-        matches!(self, MixedKernel::CosxKern)
+        matches!(
+            self,
+            MixedKernel::CosxKern | MixedKernel::DfjF32 | MixedKernel::DfkF32
+        )
     }
 
     /// Bit position of this kernel in [`MixedKernelSet`] (0-based), the index
@@ -113,6 +156,7 @@ impl MixedKernel {
         (self as u8).trailing_zeros() as usize
     }
 
+    /// The spelling used in `mixed_kernels` lists and provenance records.
     pub const fn name(self) -> &'static str {
         match self {
             MixedKernel::RiMp2Energy => "rimp2-energy",
@@ -121,6 +165,8 @@ impl MixedKernel {
             MixedKernel::CosxKern => "cosx-kern",
             MixedKernel::DfjPack => "dfj-pack",
             MixedKernel::XcVxc => "xc-vxc",
+            MixedKernel::DfjF32 => "dfj-f32",
+            MixedKernel::DfkF32 => "dfk-f32",
         }
     }
 }
@@ -147,11 +193,13 @@ impl FromStr for MixedKernel {
 pub struct MixedKernelSet(u8);
 
 impl MixedKernelSet {
+    /// The set with no kernels.
     pub const EMPTY: Self = Self(0);
     /// The kernels whose error-budget row has shipped. Each Phase 4 task that
     /// ships a row extends this constant in the same commit as its gates:
     /// `RiMp2Energy` is shipped (its budget row is in the `gpu_rimp2_mixed`
-    /// test docstring); Task 4.3 adds `CcsdAmplitudes`, Task 4.4 `DfkOcc`.
+    /// test docstring); Task 4.3 adds `CcsdAmplitudes`. `DfkOcc` (Task 4.4) has
+    /// its budget row but is [`Self::OPT_IN`], not shipped.
     /// It is the default of `FERRIC_GPU_MIXED_KERNELS`; a build whose set is
     /// empty refuses `precision = mixed`. Shipping a kernel does not change the
     /// precision default: `PRECISION_DEFAULT` stays f64.
@@ -162,9 +210,20 @@ impl MixedKernelSet {
     /// (they are admitted like shipped ones), but they are not in `SHIPPED`,
     /// so `precision = "mixed"` alone and the `mixed` presets leave them out.
     /// `XcVxc`: its device tests pass on a GTX 1080 (sm_61), where the device
-    /// XC path was slower than the CPU.
-    pub const OPT_IN: Self = Self::EMPTY.with(MixedKernel::XcVxc);
+    /// XC path was slower than the CPU. `DfkOcc`: its device tests pass on the
+    /// same card, where a mixed SCF saved about 4% against the f64 device
+    /// DF-K and was 3-6% slower with diffuse basis sets. `DfjF32`: a CPU kernel
+    /// that trades a first-order (µEh-scale) energy error for half the RI-J
+    /// tensor memory; its request comes from `[scf] ri_j_precision` (f32 by
+    /// default), so naming it here only restates the default
+    /// (`ferric_scf::df_j`, tests `dfj_f32_storage.rs`). An opt-in kernel that
+    /// runs on the CPU needs no device mode.
+    pub const OPT_IN: Self = Self::EMPTY
+        .with(MixedKernel::XcVxc)
+        .with(MixedKernel::DfkOcc)
+        .with(MixedKernel::DfjF32);
 
+    /// This set plus `k`.
     pub const fn with(self, k: MixedKernel) -> Self {
         Self(self.0 | k as u8)
     }
@@ -172,12 +231,15 @@ impl MixedKernelSet {
     pub const fn with_set(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
+    /// Whether `k` is in the set.
     pub const fn contains(self, k: MixedKernel) -> bool {
         self.0 & (k as u8) != 0
     }
+    /// Whether the set has no kernels.
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
+    /// The kernels in the set, in [`MixedKernel::ALL`] order.
     pub fn iter(self) -> impl Iterator<Item = MixedKernel> {
         MixedKernel::ALL
             .into_iter()
@@ -215,6 +277,8 @@ impl fmt::Display for MixedKernelSet {
     }
 }
 
+/// `FERRIC_GPU_PRECISION` (TOML `[precision] mode`, deprecated alias
+/// `[gpu] precision`): `f64` or `mixed`; default [`PRECISION_DEFAULT`].
 pub static GPU_PRECISION: ConfigVar<Precision> = ConfigVar {
     env_name: "FERRIC_GPU_PRECISION",
     default: PRECISION_DEFAULT,
@@ -222,6 +286,9 @@ pub static GPU_PRECISION: ConfigVar<Precision> = ConfigVar {
     validate: accept_any,
 };
 
+/// `FERRIC_GPU_MIXED_KERNELS` (TOML `[precision] mixed_kernels`, deprecated
+/// alias `[gpu] mixed_kernels`): comma-separated kernel names; default
+/// [`MixedKernelSet::SHIPPED`].
 pub static GPU_MIXED_KERNELS: ConfigVar<MixedKernelSet> = ConfigVar {
     env_name: "FERRIC_GPU_MIXED_KERNELS",
     default: MixedKernelSet::SHIPPED,
@@ -270,10 +337,13 @@ pub struct MixedScope {
 }
 
 impl MixedScope {
+    /// Mark `k` as this thread's current mixed kernel until the guard drops.
     pub fn enter(k: MixedKernel) -> Self {
         let prev = SCOPE.replace(Some(k));
         Self { prev }
     }
+    /// The innermost kernel entered on this thread, or `None` outside any
+    /// scope.
     pub fn current() -> Option<MixedKernel> {
         SCOPE.get()
     }
@@ -308,7 +378,24 @@ mod tests {
         );
         assert!(MixedKernel::ALL.contains(&MixedKernel::CosxKern));
         assert!(!MixedKernelSet::SHIPPED.contains(MixedKernel::CosxKern));
-        assert_eq!(MixedKernel::ALL.len(), 6);
+        assert_eq!(MixedKernel::ALL.len(), 8);
+    }
+
+    /// Catches: `dfk-f32` in a `mixed_kernels` set (it is chosen by `[scf]
+    /// ri_k_precision`, not by the allowlist), not a CPU kernel, or sharing a
+    /// name with the device `dfk-occ`.
+    #[test]
+    fn dfk_f32_is_a_cpu_kernel_outside_both_allowlists() {
+        assert_eq!(MixedKernel::DfkF32 as u8, 128);
+        assert_eq!(MixedKernel::DfkF32.name(), "dfk-f32");
+        assert_eq!(
+            "dfk-f32".parse::<MixedKernel>().unwrap(),
+            MixedKernel::DfkF32
+        );
+        assert_ne!(MixedKernel::DfkF32.name(), MixedKernel::DfkOcc.name());
+        assert!(MixedKernel::DfkF32.runs_on_cpu());
+        assert!(!MixedKernelSet::SHIPPED.contains(MixedKernel::DfkF32));
+        assert!(!MixedKernelSet::OPT_IN.contains(MixedKernel::DfkF32));
     }
 
     #[test]
@@ -327,6 +414,13 @@ mod tests {
     }
 
     #[test]
+    fn dfk_occ_is_opt_in_and_not_shipped() {
+        assert!(!MixedKernelSet::SHIPPED.contains(MixedKernel::DfkOcc));
+        assert!(MixedKernelSet::OPT_IN.contains(MixedKernel::DfkOcc));
+        assert_eq!(MixedKernelSet::OPT_IN.to_string(), "dfk-occ,xc-vxc,dfj-f32");
+    }
+
+    #[test]
     fn xc_vxc_is_named_in_all_and_not_shipped() {
         assert_eq!(MixedKernel::XcVxc as u8, 32);
         assert_eq!("xc-vxc".parse::<MixedKernel>().unwrap(), MixedKernel::XcVxc);
@@ -338,12 +432,36 @@ mod tests {
     }
 
     #[test]
-    fn kernel_index_is_its_bit_and_only_cosx_runs_on_the_cpu() {
+    fn kernel_index_is_its_bit_and_only_cosx_and_dfj_f32_run_on_the_cpu() {
         for (i, k) in MixedKernel::ALL.into_iter().enumerate() {
             assert_eq!(k.index(), i, "{}", k.name());
             assert_eq!(1u8 << k.index(), k as u8);
-            assert_eq!(k.runs_on_cpu(), k == MixedKernel::CosxKern, "{}", k.name());
+            let cpu = matches!(
+                k,
+                MixedKernel::CosxKern | MixedKernel::DfjF32 | MixedKernel::DfkF32
+            );
+            assert_eq!(k.runs_on_cpu(), cpu, "{}", k.name());
         }
+    }
+
+    /// Catches: `dfj-f32` shipped (on by default under `precision = mixed`),
+    /// not opt-in, sharing a bit or a name with `dfj-pack`, or not a CPU kernel.
+    #[test]
+    fn dfj_f32_is_an_opt_in_cpu_kernel_distinct_from_dfj_pack() {
+        assert_eq!(MixedKernel::DfjF32 as u8, 64);
+        assert_eq!(MixedKernel::DfjF32.name(), "dfj-f32");
+        assert_eq!(
+            "dfj-f32".parse::<MixedKernel>().unwrap(),
+            MixedKernel::DfjF32
+        );
+        assert_ne!(MixedKernel::DfjF32.name(), MixedKernel::DfjPack.name());
+        assert!(MixedKernel::DfjF32.runs_on_cpu());
+        assert!(!MixedKernel::DfjPack.runs_on_cpu());
+        assert!(!MixedKernelSet::SHIPPED.contains(MixedKernel::DfjF32));
+        assert!(MixedKernelSet::OPT_IN.contains(MixedKernel::DfjF32));
+        let set = MixedKernelSet::EMPTY.with(MixedKernel::DfjF32);
+        assert_eq!(set.to_string(), "dfj-f32");
+        assert_eq!("dfj-f32".parse::<MixedKernelSet>().unwrap(), set);
     }
 
     #[test]

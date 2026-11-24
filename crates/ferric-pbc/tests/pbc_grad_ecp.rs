@@ -73,7 +73,7 @@ use ferric_pbc::hcore::{periodic_hcore, PeriodicHcore, PeriodicHcoreConfig};
 use ferric_pbc::lattice::Cell;
 use ferric_pbc::stress::{gamma_rhf_stress, GammaStressConfig, StressMutation};
 use ferric_scf::result::{ScfResult, Spin};
-use ferric_scf::rhf::{solve_rhf_injected, PeriodicInjection, RhfConfig};
+use ferric_scf::rhf::{solve_rhf_injected, PeriodicInjection};
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
 use std::collections::HashMap;
@@ -83,10 +83,10 @@ const OMEGA: f64 = 0.8;
 const HCORE_PRECISION: f64 = 1e-14;
 /// Dense-AFT precision. The FD anchor alone needs only a CONSISTENT energy
 /// (the G sphere does not move with the atoms), but at 1e-6 the TOTAL RHF
-/// force was not translation invariant (first run, 2026-09-27: ΣF 2.62e-7,
-/// while the ECP part alone sums to ~1e-14) — the suspected source is the
-/// AFT pair screen; the per-part ΣF is printed to confirm. 1e-10 as the
-/// k-point gradient anchors needed; the ΣF bar is NOT loosened.
+/// force is not translation invariant (ΣF 2.62e-7, while the ECP part alone
+/// sums to ~1e-14; the suspected source is the AFT pair screen, and the
+/// per-part ΣF is printed). 1e-10 as the
+/// k-point gradient anchors need; the ΣF bar is NOT loosened.
 const AFT_PRECISION: f64 = 1e-10;
 const HI_A: [[f64; 3]; 3] = [[6.0, 0.0, 0.0], [0.0, 6.0, 0.0], [0.0, 0.0, 7.0]];
 /// `run_grad_ecp_anchor.py` MOVED (Bohr).
@@ -339,11 +339,8 @@ fn rhf(
     let op = Operator::coulomb();
     // Never read on the injected path; required by the signature.
     let bounds = SchwarzBounds::compute(op, p).expect("schwarz");
-    let cfg = RhfConfig {
-        init_guess_density: seed.cloned(),
-        max_iter: 300,
-        ..gamma_config()
-    };
+    let mut cfg = gamma_config().with_max_iter(300);
+    cfg.init_guess_density = seed.cloned();
     let inj = PeriodicInjection {
         s: hc.s.clone(),
         h: hc.h.clone(),
@@ -791,6 +788,21 @@ fn gamma_forces_carry_the_ecp_term_and_stress_carries_its_strain() {
     .expect_err("mismatched ECP screen must error")
     .to_string();
     assert!(err.contains("ECP force screen"), "{err}");
+
+    // Same refusal on the stress path (stress.rs `ecp_strain_term`).
+    let err = gamma_rhf_stress(
+        &cell,
+        &p,
+        &other,
+        &hc,
+        &eri,
+        &scf,
+        ExxDiv::None,
+        &GammaStressConfig::default(),
+    )
+    .expect_err("mismatched ECP screen must error on the stress")
+    .to_string();
+    assert!(err.contains("ECP strain screen"), "{err}");
 }
 
 // ============================================================ SCF FD anchor

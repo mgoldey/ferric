@@ -35,16 +35,15 @@ fn setup(charge: i32, mult: usize) -> (Molecule, PreparedBasis, SchwarzBounds) {
     (mol, prep, bounds)
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn dropped_lindep_modes_do_not_trip_the_gradient_veto() {
     std::env::set_var("FERRIC_LINDEP_THRESH", "1e-3");
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        density_conv: 1e-8,
-        energy_conv: 1e-10,
-        max_iter: 100,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_density_conv(1e-8)
+        .with_energy_conv(1e-10)
+        .with_max_iter(100);
 
     let (mol, prep, bounds) = setup(0, 1);
     let r = solve_rhf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &cfg).unwrap();

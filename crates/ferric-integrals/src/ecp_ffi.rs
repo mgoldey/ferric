@@ -12,12 +12,21 @@ use std::os::raw::{c_double, c_int};
 /// One Gaussian basis shell (Cartesian), flattened for the ECP shim.
 #[repr(C)]
 pub struct CEcpGShell {
+    /// Angular momentum of the shell (always treated as Cartesian).
     pub l: c_int,
+    /// Number of primitives: the length of `exponents` and `coefficients`.
     pub nprim: c_int,
+    /// Shell centre x coordinate, Bohr.
     pub x: c_double,
+    /// Shell centre y coordinate, Bohr.
     pub y: c_double,
+    /// Shell centre z coordinate, Bohr.
     pub z: c_double,
+    /// Primitive exponents, `nprim` doubles.
     pub exponents: *const c_double,
+    /// Contraction coefficients, `nprim` doubles, with the primitive
+    /// normalization already folded in (libecpint applies none; see the
+    /// module docs).
     pub coefficients: *const c_double,
 }
 
@@ -36,13 +45,22 @@ impl std::fmt::Debug for CEcpGShell {
 /// One ECP center: a flat list of `nterm` semilocal primitives.
 #[repr(C)]
 pub struct CEcpCenter {
+    /// ECP centre x coordinate, Bohr.
     pub x: c_double,
+    /// ECP centre y coordinate, Bohr.
     pub y: c_double,
+    /// ECP centre z coordinate, Bohr.
     pub z: c_double,
+    /// Number of semilocal primitives across all angular-momentum channels.
     pub nterm: c_int,
+    /// Angular momentum of each primitive, `nterm` ints. The channel with the
+    /// largest value is the local term (libecpint decides this internally).
     pub ams: *const c_int,
+    /// Power of r of each primitive (the literal BSE `r_exponents` value), `nterm` ints.
     pub ns: *const c_int,
+    /// Gaussian exponent of each primitive, `nterm` doubles.
     pub exponents: *const c_double,
+    /// Coefficient of each primitive, `nterm` doubles.
     pub coefficients: *const c_double,
 }
 

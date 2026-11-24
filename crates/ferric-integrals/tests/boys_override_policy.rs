@@ -233,9 +233,9 @@ fn terf_boys_h() -> Vec<u8> {
 
 #[test]
 fn terf_prefix_selects_the_2_7_2_override_with_the_terf_define() {
-    // #234: the terf-patched prefix used to get no override at all (no
-    // GmEval copy fix, no #433/#436/#443 fixes) and terf_gm_eval kept its
-    // per-call copy. It now gets the 2.7.2 override with the terf evaluator.
+    // #234: the terf-patched prefix gets the 2.7.2 override with the terf
+    // evaluator (the GmEval copy fix and the #433/#436/#443 fixes), so
+    // terf_gm_eval does not keep a per-call copy.
     let terf = terf_boys_h();
     assert_ne!(
         terf,

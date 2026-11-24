@@ -28,7 +28,8 @@ use ndarray::Array3;
 ///
 /// `coeffs` are the basis-set coefficients (one per basis function, in the order
 /// matching `eval_basis_on_grid`). `bs` is the basis the coefficients are in
-/// (typically the auxiliary basis for PDEP eigenpotentials).
+/// (typically the auxiliary basis, where f is the charge density of a PDEP
+/// mode; its Coulomb potential, not f itself, is the eigenpotential).
 pub fn export_basis_function_cube(
     path: &str,
     mol: &Molecule,

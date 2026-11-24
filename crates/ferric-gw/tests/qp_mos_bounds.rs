@@ -1,9 +1,8 @@
-//! Regression test for the qp_mos out-of-bounds panic (found 2026-07-18):
-//! `GwConfig.qp_mos`'s upper bound was never validated against the actual MO
-//! count, so a caller-supplied range like `qp_mos = [0, 999]` on a small
-//! molecule would panic deep inside a rayon closure in sigma.rs/cohsex.rs
-//! (run_gw) or u_sigma.rs/u_cohsex.rs (run_u_gw) instead of surfacing a
-//! clean error. Both entry points now fail fast with a `FerricError::General`
+//! Regression test for the qp_mos out-of-bounds panic: a caller-supplied range
+//! like `qp_mos = [0, 999]` on a small molecule would panic deep inside a
+//! rayon closure in sigma.rs/cohsex.rs (run_gw) or u_sigma.rs/u_cohsex.rs
+//! (run_u_gw) if `GwConfig.qp_mos`'s upper bound were not validated against
+//! the actual MO count. Both entry points fail fast with a `FerricError::General`
 //! before any RPA work runs, so these tests are cheap (H2/STO-3G, no actual
 //! GW solve reached).
 

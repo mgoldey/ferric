@@ -41,6 +41,7 @@ mod heavy_anchors_cli;
 
 use heavy_anchors_cli::*;
 
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn kpoint_rks_hse06_force_p_shell_equals_the_library_bit_for_bit() {
     force_anchor(
@@ -53,6 +54,7 @@ fn kpoint_rks_hse06_force_p_shell_equals_the_library_bit_for_bit() {
     );
 }
 
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn gamma_rks_cam_b3lyp_force_p_shell_equals_the_library_bit_for_bit() {
     force_anchor("grks-cam-p", H2_SP, "rhf", CAM, "", lib_gamma_rks_rsh_force);

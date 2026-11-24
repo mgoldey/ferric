@@ -11,17 +11,17 @@
 //! It does **not** build per-triple PNO virtual bases. Real DLPNO-(T) evaluates
 //! each retained triple in a `[TNO]³` block whose dimension is far below `nv`,
 //! and that is where most of the published speedup lives. Doing that means
-//! re-deriving `raw_w_block`'s two GEMMs, the six-permutation `W`, the `r3`
+//! re-deriving the two raw-block GEMMs, the six-permutation `W`, the `r3`
 //! pattern and the `V` singles terms in a virtual basis that differs per triple
 //! — a much larger change than this. Shipping that behind an untested
 //! "DLPNO-CCSD(T)" label would be worse than shipping the honest half.
 //!
 //! # Why the triple list is the right first half
 //!
-//! The triple list composes with everything downstream: `ccsd_t_closed_shell`'s
-//! kernel is already a *per-triple* streaming loop over
-//! [`occ_triples_with_repeats`](crate::ccsd_t_closed_shell)-shaped bands, and
-//! each triple's work is independent. Dropping a triple from the list removes
+//! The triple list composes with everything downstream: the closed-shell (T)
+//! energy is a weighted sum of independent per-occupied-triple contributions
+//! over the `i<=j<=k` band (the occupied form of the banding argument in
+//! [`crate::ccsd_t_closed_shell`]'s module doc). Dropping a triple from the list removes
 //! its entire `O(nv³)` working set — six `raw_w` GEMMs, the `r3` permutations
 //! and the `W̃·V/D` reduction — without touching the triples algebra at all. And
 //! as with pairs, per-triple TNOs are only defined *for retained triples*, so
@@ -134,8 +134,8 @@ fn total_banded_triples(nocc: usize) -> usize {
 /// Number of distinct orderings of the occupied triple `(i,j,k)` given
 /// `i <= j <= k`.
 ///
-/// Deliberately a local copy of `ccsd_t_closed_shell::occ_triple_multiplicity`
-/// (which is private) rather than an approximation of it. The two are pinned
+/// The occupied-index twin of `ccsd_t_closed_shell::triple_multiplicity`
+/// (which is private and bands virtual triples): the same 1/3/6 classes. The two are pinned
 /// against each other's defining property — the weighted band must sum to
 /// `nocc³`, the unrestricted ordered-triple count — by
 /// `complete_domains_reproduce_the_unrestricted_count`.
@@ -285,9 +285,9 @@ pub fn build_triple_domains(
     }
     let nocc = centers.nrows();
 
-    // Ascending lexicographic i <= j <= k — the SAME enumeration order as
-    // ccsd_t_closed_shell::occ_triples_with_repeats, so a screened reduction
-    // folds partials in the dense path's sequence and stays bit-comparable.
+    // Ascending lexicographic i <= j <= k — the order the dense i<=j<=k band
+    // folds in, so a screened reduction folds partials in the dense band's
+    // sequence and stays bit-comparable to it.
     let mut triples: Vec<(usize, usize, usize)> = Vec::new();
     let mut weights: Vec<f64> = Vec::new();
     for i in 0..nocc {
@@ -450,7 +450,7 @@ mod tests {
         let got = screened_triple_energy(&d, |i, j, k| Ok(contrib(i, j, k))).unwrap();
 
         // Dense reference, written out independently of the screened path and
-        // mirroring ccsd_t_closed_shell's own band + weight + /3.
+        // mirroring the i<=j<=k band + weight + /3 of ccsd_t_closed_shell's doc.
         let mut want = 0.0f64;
         for i in 0..nocc {
             for j in i..nocc {

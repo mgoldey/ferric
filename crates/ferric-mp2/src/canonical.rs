@@ -283,8 +283,8 @@ pub fn canonical_mp2(
     // Shared with the exact-integral reference paths via `dense_ao_eri` so there is
     // exactly one implementation of the quartet loop + symmetry scatter.
     //
-    // libint2 quartet evaluation is ~99% of this function's wall time (the four
-    // quarter transforms are ~1%).
+    // Where the time goes is measured in the module doc ("Where the remaining
+    // time goes").
     let ao = dense_ao_eri(prep, op)?;
 
     // ---- Steps 2-5: four quarter transforms, one GEMM each. ----------------
@@ -475,10 +475,7 @@ mod tests {
             &prep,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let e_corr = canonical_mp2(&mol, &prep, op, &rhf, 0).unwrap();
@@ -507,10 +504,7 @@ mod tests {
             &prep,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let e_canonical = canonical_mp2(&mol, &prep, op, &rhf, 0).unwrap();

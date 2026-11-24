@@ -47,6 +47,7 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf_with_guess;
+use ferric_testkit::compare::max_abs;
 use ndarray::Array2;
 use rayon::prelude::*;
 
@@ -73,6 +74,7 @@ fn cosx_flat() -> CosxConfig {
             n_radial: 50,
             n_angular: 110,
             prune: None,
+            weight_cut: None,
         },
         final_grid: None,
         ..CosxConfig::flat_reference()
@@ -91,27 +93,24 @@ fn cosx_pruned() -> CosxConfig {
 /// Tight SCF, four-centre J (and K when not COSX): COSX is the only exchange
 /// approximation under test.
 fn scf_cfg(xc: Option<&str>, cosx: Option<CosxConfig>) -> RhfConfig {
-    RhfConfig {
-        k_builder: cosx.as_ref().map(|_| "cosx".to_string()),
-        cosx: cosx.unwrap_or_default(),
-        xc: xc.map(str::to_string),
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        energy_conv: 1e-9,
-        density_conv: 1e-10,
-        max_iter: 300,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_cosx(cosx.clone().unwrap_or_default())
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new())
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-10)
+        .with_max_iter(300);
+    c.k_builder = cosx
+        .as_ref()
+        .map(|_| ferric_scf::options::KBuilderKind::Cosx);
+    c.xc = xc.map(str::to_string);
+    c
 }
 
 #[derive(Clone, Copy, Debug)]
 enum Reference {
     Uks,
     Roks,
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
 }
 
 fn displaced(mol: &Molecule, atom: usize, c: usize, d: f64) -> Molecule {
@@ -290,6 +289,7 @@ fn open_case(
     (rel_new, abs_new, rel_old)
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uks_b3lyp_cosx_gradient_matches_fd_nh2_flat() {
     open_case(
@@ -367,6 +367,7 @@ fn roks_b3lyp_cosx_gradient_matches_fd_ho2_pruned() {
     );
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rohf_cosx_gradient_matches_fd_nh2_flat() {
     open_case(
@@ -416,6 +417,7 @@ fn as_restricted_open(r: &ScfResult) -> ScfResult {
 /// instead of `-c_x/2`, a dropped spin, or J from the wrong density — each moves
 /// the increment by the size of a COSX exchange term, O(0.1); the
 /// reachability check asserts that term is that large here.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn open_shell_cosx_gradients_reduce_to_the_closed_shell_one() {
     let basis = "sto-3g";

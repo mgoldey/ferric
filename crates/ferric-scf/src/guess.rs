@@ -363,9 +363,19 @@ fn free_atom_density(
                 // serial time; with RI-JK the whole MINAO guess is 59 ms.
                 df_j_aux: Some(crate::fock_assembly::DEFAULT_JK_AUX.to_string()),
                 df_k_aux: Some(crate::fock_assembly::DEFAULT_JK_AUX.to_string()),
+                // f64 tensor: an atom's RI-J tensor is tiny, and a guess that
+                // follows the f32 default would make an explicit
+                // `ri_j_precision = "f64"` SCF start elsewhere than the f64
+                // default it replaces.
+                ri_j_precision: Some(crate::df_j::RiJPrecision::F64),
+                // Any four-centre build of the guess solve (its own guess
+                // Fock, say) stays unrotated (`direct_jk::gc_rotation`), as
+                // the molecular guess Fock does (`SchwarzBounds::unrotated`):
+                // the guess is the same whatever the SCF's rotation.
+                gc_rotation: Some(crate::direct_jk::GcRotate::Off),
                 ..Default::default()
             };
-            solve_rhf(&ctx, &amol, &aprep, op, &abounds, &acfg)
+            free_atom_dfk(|| solve_rhf(&ctx, &amol, &aprep, op, &abounds, &acfg))
                 .map(|r| r.density_total().to_owned())
         } else {
             // Open-shell atom: use UHF + MOM to pin the occupation. density_conv
@@ -379,6 +389,16 @@ fn free_atom_density(
                 // RI-JK for the same reason as the closed-shell branch above.
                 df_j_aux: Some(crate::fock_assembly::DEFAULT_JK_AUX.to_string()),
                 df_k_aux: Some(crate::fock_assembly::DEFAULT_JK_AUX.to_string()),
+                // f64 tensor: an atom's RI-J tensor is tiny, and a guess that
+                // follows the f32 default would make an explicit
+                // `ri_j_precision = "f64"` SCF start elsewhere than the f64
+                // default it replaces.
+                ri_j_precision: Some(crate::df_j::RiJPrecision::F64),
+                // Any four-centre build of the guess solve (its own guess
+                // Fock, say) stays unrotated (`direct_jk::gc_rotation`), as
+                // the molecular guess Fock does (`SchwarzBounds::unrotated`):
+                // the guess is the same whatever the SCF's rotation.
+                gc_rotation: Some(crate::direct_jk::GcRotate::Off),
                 ..Default::default()
             };
             // SPHERICALLY SYMMETRIZE the converged block before returning it.
@@ -407,7 +427,7 @@ fn free_atom_density(
             // Measured: drift went from 8.460e-2 to 2.851e-1, i.e. WORSE.
             // Symmetrizing the AO block directly avoids the eigenvalues
             // entirely.
-            solve_uhf(&ctx, &amol, &aprep, &abounds, &acfg)
+            free_atom_dfk(|| solve_uhf(&ctx, &amol, &aprep, &abounds, &acfg))
                 .map(|r| spherically_symmetrize_atomic_block(r.density_total(), &aprep))
         }
     })
@@ -856,8 +876,14 @@ fn atomic_hcore_density(
 ///    cc-pVDZ PBE at energy_conv 1e-10) still converge cleanly, matching the prior
 ///    SAD default.
 ///
-/// Off-diagonal atom-atom blocks stay zero (standard SAD/MINAO structure); the
-/// block diagonal is trace-exact (`tr(D·S) == nelec`). If a per-element build
+/// Despite the name, nothing is projected: the guess superposes block-diagonal
+/// atomic densities written directly in the molecule's own basis (no minimal
+/// reference basis is overlapped with it).
+///
+/// Off-diagonal atom-atom blocks stay zero (standard SAD/MINAO structure). The
+/// blocks are NEUTRAL atoms, so the block diagonal is trace-exact
+/// (`tr(D·S) == nelec`) for a neutral molecule only; for an ion the count is off
+/// by the charge until the first Fock build and aufbau step. If a per-element build
 /// fails, that atom's block is left zero and the molecular SCF fills it in from
 /// the other (seeded) atoms — still far better than a bare molecular-hcore guess.
 pub fn minao_projection_guess(
@@ -1035,6 +1061,22 @@ pub fn minao_projection_guess(
 /// Free-atom SCFs are tiny (~10-30 basis functions) but the global rayon pool's
 /// work-stealing overhead makes them 18× slower than single-threaded execution.
 /// This matches the `run_serial` pattern in ferric-cli/src/lib.rs.
+/// Run a free-atom solve with its RI-K on the eigendecomposition route.
+///
+/// The free-atom densities steer which state a molecular SCF reaches when that
+/// state lies on a nearly flat manifold: a degenerate open shell (OH's π hole)
+/// can sit at any angle about the bond axis, and only the integration grid's
+/// anisotropy (about 2e-6 Ha for OH/cc-pVDZ B3LYP) tells the angles apart, far
+/// below what the SCF's convergence tests resolve. MEASURED, OH/cc-pVDZ B3LYP
+/// ROKS: with the free-atom DF-K on the Cholesky route the DIIS run stopped
+/// with the hole at 45° (-75.7305243278 Ha) and the Newton run at 35°
+/// (-75.7305254206), where the eigh route gave 20° for both
+/// (-75.7305261021). The atom's metric is tiny (cost nil), so its guess
+/// ingredient keeps the bits it had before the Cholesky route existed.
+fn free_atom_dfk<R>(f: impl FnOnce() -> R) -> R {
+    crate::df_k::with_dfk_metric(crate::df_k::DfkMetricSetting::Eigh, f)
+}
+
 fn run_serial_pool<F, R>(f: F) -> R
 where
     F: FnOnce() -> R + Send,

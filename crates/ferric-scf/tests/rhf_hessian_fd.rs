@@ -86,6 +86,7 @@ use ferric_scf::hessian::{
 use ferric_scf::result::{DfJkRoute, ScfResult};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::compare::{max_abs, max_abs_diff};
 use ndarray::Array2;
 
 /// Nuclear-repulsion term vs 4-point second difference of V_nn, Ha/Bohr².
@@ -133,15 +134,13 @@ fn water() -> Molecule {
 }
 
 fn scf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 200,
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
+    RhfConfig::default()
+        .with_max_iter(200)
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10)
         // Explicit exact J/K (RI-J with exact K has its own tests: df_hessian_rij.rs).
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        ..Default::default()
-    }
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new())
 }
 
 struct Setup {
@@ -217,17 +216,6 @@ fn fd_hessian(
         }
     }
     out
-}
-
-fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    assert_eq!(a.dim(), b.dim());
-    a.iter()
-        .zip(b.iter())
-        .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()))
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0f64, |m, x| m.max(x.abs()))
 }
 
 fn assert_close(ctx: &str, got: &Array2<f64>, want: &Array2<f64>, tol: f64) {
@@ -436,6 +424,7 @@ fn full_hessian_matches_fd_631g() {
     check_full("6-31g");
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn full_hessian_matches_fd_ccpvdz() {
     check_full("cc-pvdz");
@@ -487,7 +476,14 @@ fn unsupported_configurations_are_refused() {
     };
 
     let mut ri = s.rhf.clone();
-    ri.df_jk = DfJkRoute::from_scf(Some("cc-pvdz-ri"), None, None, op, 0);
+    ri.df_jk = DfJkRoute::from_scf(
+        Some("cc-pvdz-ri"),
+        None,
+        None,
+        op,
+        0,
+        ferric_scf::df_j::RiJPrecision::F64,
+    );
     assert!(ri.df_jk.is_some());
     refused(
         &ri,
@@ -496,19 +492,14 @@ fn unsupported_configurations_are_refused() {
         "RI route that disagrees with the (exact) configuration",
     );
 
-    let ks = RhfConfig {
-        xc: Some("PBE".into()),
-        ..scf_config()
-    };
+    let ks = scf_config().with_xc("PBE");
     refused(&s.rhf, &ks, op, "KS config");
 
     // A uniform field (#286) and Gaussian-smeared external charges (#358) are
     // analytic (see field_hessian.rs, smeared_hessian.rs); a Thole polarizable
     // embedding is still refused.
-    let polarizable = RhfConfig {
-        polarizable: Some(Default::default()),
-        ..scf_config()
-    };
+    let mut polarizable = scf_config();
+    polarizable.polarizable = Some(Default::default());
     refused(&s.rhf, &polarizable, op, "polarizable embedding");
 
     refused(&s.rhf, &scf_config(), Operator::erf(0.4), "erf operator");

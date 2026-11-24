@@ -2,11 +2,21 @@
 //!
 //! Three schemes:
 //! - `GaussLegendre`: standard GL nodes mapped to [0,∞) via ω = u₀(1+x)/(1−x).
-//!   Default; unbounded — max ω ~ 100 a.u. at n=20.
-//! - `MiniMax`: same GL nodes with literature-optimized u₀ scale (Furche, JCP 2005).
+//!   Unbounded — max ω ~ 100 a.u. at n=20. Scheme used when no scheme is named
+//!   (CLI `[rpa] quadrature` unset, Python `quadrature=None`).
+//! - `MiniMax`: the same mapped Gauss-Legendre nodes, with u₀ taken from a
+//!   three-entry step table in `n_points` (0.3 for n ≤ 8, 0.4 for n ≤ 16, 0.5
+//!   above). It is not a minimax-optimized grid.
 //! - `ChebyshevTan`: Eshuis-Yarkony-Furche (JCP 132, 234114, 2010) — Chebyshev-2
-//!   nodes mapped to [0, u₀·tan(π/2)] via ω = u₀ tan(π(1+x)/4). Bounded max ω;
-//!   recommended whenever the Laplace χ₀ backend is used (keeps ω·t_max safe).
+//!   nodes mapped to [0,∞) via ω = u₀ tan(π(1+x)/4). Its largest node is about
+//!   0.4 of the Gauss-Legendre one at equal (n, u₀); both grow as n². Used with
+//!   the Laplace χ₀ backend, which falls back to the dense kernel at any node
+//!   with ω·t_max > π/2; at equal (n, u₀) the fallback count is within one of
+//!   Gauss-Legendre's, and u₀ moves it more than the scheme does.
+//!
+//! Defaults differ by entry point only in `n_points`: see
+//! [`QuadratureConfig`](crate::config::QuadratureConfig). The library `Default`,
+//! the CLI and every Python binding resolve an unset scheme to `GaussLegendre`.
 
 use crate::config::{QuadratureConfig, QuadratureScheme};
 
@@ -14,8 +24,11 @@ use crate::config::{QuadratureConfig, QuadratureScheme};
 /// that pre-bake the Fourier transform into the weights.
 #[derive(Debug, Clone)]
 pub struct MinimaxJointQuadrature {
+    /// Imaginary-time nodes τ_l at which χ₀(τ) is built.
     pub tau_points: Vec<f64>,
+    /// Imaginary-frequency nodes ω_k at which Π(iω) is evaluated.
     pub omega_points: Vec<f64>,
+    /// Weights of the ω-integral of the RPA trace-log, one per `omega_points` entry.
     pub omega_weights: Vec<f64>,
     /// W_lk matrix flattened: shape (n_omega, n_tau)
     /// Maps tau-domain values to the omega-domain directly.
@@ -37,24 +50,29 @@ pub fn build_quadrature(cfg: &QuadratureConfig) -> (Vec<f64>, Vec<f64>) {
 /// Recommended u₀ for ChebyshevTan when paired with Laplace χ₀: smaller
 /// u₀ pushes more quadrature points into the Laplace-safe regime (ω·t_max
 /// < π/2). On H2O/cc-pVDZ with t_max ≈ 1.5, u₀ = 0.2 keeps 16/20 points on
-/// the cheap Laplace path; u₀ = 0.5 keeps only 13/20. Smaller still means
+/// the cheap Laplace path; u₀ = 0.5 keeps only 13/20 (Gauss-Legendre: 15 and
+/// 12). Calibrated for the Laplace backend only. Smaller still means
 /// the high-ω tail is undersampled, so 0.2 balances safe-fraction vs
 /// integrand coverage.
 pub const CHEBYSHEV_TAN_RECOMMENDED_U0: f64 = 0.2;
 
-/// Modified Gauss-Chebyshev nodes on a bounded `[0, u₀·tan(π/2−ε)]` interval
-/// via the tan-map of Eshuis-Yarkony-Furche (JCP 132, 234114, 2010 §III).
+/// Modified Gauss-Chebyshev nodes on `[0,∞)` via the tan-map of
+/// Eshuis-Yarkony-Furche (JCP 132, 234114, 2010 §III).
 ///
 /// Transform: ω = u₀ · tan(π(1+x)/4) with x ∈ (−1, 1).
 /// Chebyshev-2 weight: w_k^cheb = π/(n+1) · sin²(π·k/(n+1)) on x_k = cos(π·k/(n+1)).
 /// Final weight absorbs Jacobian and 1/√(1−x²): w_k = π/(n+1) · sin(θ_k) · (u₀ π/4) · sec²(arg).
 ///
-/// Why we have this scheme: the standard Gauss-Legendre map puts extreme mass
-/// at ω → ∞ (the last node hits ω ~ 100 a.u. at n=20). For the Laplace χ₀
-/// path that's catastrophic — ω·t_max ≫ π/2 breaks the cosine-modulated
-/// quadrature (see commit 108ee8f for the bounded-ω fix). With the tan-map,
-/// the max ω is finite by construction, so Laplace runs without falling
-/// back to dense for high-ω points.
+/// In θ this is the trapezoid rule, so on smooth integrands the error falls
+/// as O(n⁻²). The largest node is ω_max = u₀·cot((π/2)·sin²(π/(2(n+1)))):
+/// finite at every n, growing as n², and about 0.4 of the Gauss-Legendre
+/// map's largest node at equal (n, u₀) (57 vs 145 at n = 20, u₀ = 0.5).
+/// The Laplace χ₀ backend falls back to the dense kernel at any node with
+/// ω·t_max > π/2. At equal (n, u₀) this grid sends about as many nodes to that
+/// fallback as Gauss-Legendre, one fewer or one more depending on t_max (n = 20,
+/// u₀ = 0.5: 13 safe nodes to Gauss-Legendre's 12 at t_max ≈ 1.5, but 13 dense
+/// nodes to its 12 at t_max = 2π).
+/// Lowering u₀ moves more nodes onto the Laplace path than the scheme choice does.
 pub fn chebyshev_tan_nodes(n: usize, u0: f64) -> (Vec<f64>, Vec<f64>) {
     let mut freqs = Vec::with_capacity(n);
     let mut weights = Vec::with_capacity(n);
@@ -92,7 +110,8 @@ pub fn gauss_legendre_nodes(n: usize, u0: f64) -> (Vec<f64>, Vec<f64>) {
     (freqs, weights)
 }
 
-/// Literature-optimized u₀ scale parameters (Furche, JCP 122, 164106, 2005).
+/// u₀ for the `MiniMax` scheme: a three-entry step table in `n` (0.3 for n ≤ 8,
+/// 0.4 for n ≤ 16, 0.5 above) feeding the mapped Gauss-Legendre nodes.
 fn optimized_u0(n: usize) -> f64 {
     match n {
         1..=8 => 0.3,
@@ -181,9 +200,8 @@ mod tests {
             .zip(weights.iter())
             .map(|(w, wt)| wt / (1.0 + w * w))
             .sum();
-        // Cheb-2 + tan-map convergence is slower than GL for this integrand
-        // at n=20 (~4e-3); main use case is the RPA trace-log integrand
-        // where Eshuis et al show <0.1 mHa at n=14-20.
+        // Cheb-2 + tan-map converges as O(n⁻²) (error 3.7e-3 here); see
+        // chebyshev_tan_lorentzian_error_falls_as_n_to_the_minus_two.
         assert!(
             (sum - std::f64::consts::FRAC_PI_2).abs() < 1e-2,
             "Cheb-tan: |sum - π/2| = {}",
@@ -193,19 +211,100 @@ mod tests {
 
     #[test]
     fn chebyshev_tan_omega_max_finite() {
-        // Eshuis tan-map yields bounded ω-range. With u₀=0.5, max ω should
-        // be O(few) rather than O(100) of GL.
+        // GL n=20, u₀=0.5 gives max ω ≈ 145; Cheb-tan with the same
+        // parameters gives ≈ 57. The exact value is pinned by
+        // chebyshev_tan_largest_node_matches_closed_form.
         let (freqs, _) = chebyshev_tan_nodes(20, 0.5);
         let omega_max = freqs.iter().cloned().fold(0.0_f64, f64::max);
-        // GL n=20, u₀=0.5 gives max ω ~ 145; Cheb-tan with same parameters
-        // bounds it ~3× tighter (still ~57 at n=20). Loose check — main
-        // point is that the *integrand mass* concentrates at low ω, not
-        // a strict cap.
         assert!(
             omega_max < 100.0,
             "Cheb-tan max ω = {}, should be tighter than GL (~145)",
             omega_max
         );
+    }
+
+    /// Exactness anchor for the Chebyshev-Tan weight. For the Lorentzian
+    /// f(ω) = u₀/(u₀² + ω²), the tan-map Jacobian cancels f exactly:
+    /// f(ω(x))·dω/dx = π/4 for every x. The rule therefore reduces to
+    /// (π/4)·(π/(n+1))·Σ_k sin θ_k = (π/4)·(π/(n+1))·cot(π/(2(n+1))), a closed
+    /// form that holds to round-off at every n. Any change to the sin θ
+    /// factor, the 1/(n+1) step, the u₀π/4 factor or the sec² Jacobian
+    /// breaks it.
+    #[test]
+    fn chebyshev_tan_lorentzian_at_a_equals_u0_matches_closed_form() {
+        let pi = std::f64::consts::PI;
+        for &u0 in &[0.2, 0.5, 1.3] {
+            for &n in &[1usize, 4, 14, 20, 64] {
+                let (freqs, weights) = chebyshev_tan_nodes(n, u0);
+                let sum: f64 = freqs
+                    .iter()
+                    .zip(&weights)
+                    .map(|(w, wt)| wt * u0 / (u0 * u0 + w * w))
+                    .sum();
+                let np1 = (n + 1) as f64;
+                let exact = (pi / 4.0) * (pi / np1) / (pi / (2.0 * np1)).tan();
+                assert!(
+                    (sum - exact).abs() < 1e-13,
+                    "u0={u0} n={n}: rule {sum} vs closed form {exact}"
+                );
+            }
+        }
+    }
+
+    /// Convergence of the Chebyshev-Tan rule on ∫₀^∞ a/(a²+ω²) dω = π/2 with
+    /// a ≠ u₀. The rule is the trapezoid rule in θ on an integrand that
+    /// vanishes like sin θ at both ends, so the error is O(n⁻²): doubling n
+    /// divides it by about 4.
+    #[test]
+    fn chebyshev_tan_lorentzian_error_falls_as_n_to_the_minus_two() {
+        let half_pi = std::f64::consts::FRAC_PI_2;
+        let u0 = 0.5;
+        for &a in &[0.3, 3.0] {
+            let err = |n: usize| {
+                let (freqs, weights) = chebyshev_tan_nodes(n, u0);
+                let sum: f64 = freqs
+                    .iter()
+                    .zip(&weights)
+                    .map(|(w, wt)| wt * a / (a * a + w * w))
+                    .sum();
+                (sum - half_pi).abs()
+            };
+            let (e20, e40, e80) = (err(20), err(40), err(80));
+            assert!(e80 < 1e-3, "a={a}: error at n=80 is {e80}");
+            for (lo, hi) in [(e20, e40), (e40, e80)] {
+                let ratio = lo / hi;
+                assert!(
+                    (3.5..4.5).contains(&ratio),
+                    "a={a}: error ratio on doubling n is {ratio} (expected ~4)"
+                );
+            }
+        }
+    }
+
+    /// The largest Chebyshev-Tan node is at k = 1:
+    /// ω_max = u₀·cot((π/2)·sin²(π/(2(n+1)))). It is finite at every n and
+    /// grows as n², like the Gauss-Legendre map's largest node; at equal
+    /// (n, u₀) it is about 0.4 of the Gauss-Legendre one.
+    #[test]
+    fn chebyshev_tan_largest_node_matches_closed_form() {
+        let pi = std::f64::consts::PI;
+        for &(n, u0) in &[(10usize, 0.5), (20, 0.5), (20, 0.2), (40, 1.0)] {
+            let (freqs, _) = chebyshev_tan_nodes(n, u0);
+            let omega_max = freqs.iter().cloned().fold(0.0_f64, f64::max);
+            let s = (pi / (2.0 * (n + 1) as f64)).sin();
+            let exact = u0 / (0.5 * pi * s * s).tan();
+            assert!(
+                ((omega_max - exact) / exact).abs() < 1e-12,
+                "n={n} u0={u0}: largest node {omega_max} vs closed form {exact}"
+            );
+            let (gl_freqs, _) = gauss_legendre_nodes(n, u0);
+            let gl_max = gl_freqs.iter().cloned().fold(0.0_f64, f64::max);
+            let ratio = omega_max / gl_max;
+            assert!(
+                (0.3..0.5).contains(&ratio),
+                "n={n} u0={u0}: CT/GL largest-node ratio {ratio}"
+            );
+        }
     }
 
     #[test]

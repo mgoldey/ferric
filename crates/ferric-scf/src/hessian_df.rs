@@ -30,7 +30,7 @@
 //! = (P|μν) c_P` (`c = M d`) is exactly what `DfJ` builds, and `G(D1) =
 //! J_DF(D1) − ½ K(D1)` is linear in `D1`. So the nuclear term, the
 //! one-electron skeleton, the overlap/`W` term, `K`'s skeleton and `K^x`, the
-//! CPHF solver (`pcg`, `solve_cphf_one`, `assemble_response`) and the whole
+//! CPHF solver (`pcg_block`, `solve_cphf_block`, `assemble_response`) and the whole
 //! frequency layer are REUSED UNCHANGED. Three pieces are replaced:
 //!
 //! 1. the J part of the two-electron skeleton (`Σ Γ_J ∂²(μν|λσ)` →
@@ -108,7 +108,7 @@
 //! metric). Between cond 2e8 and the refusal threshold (about 3e12 for
 //! `λ_max` ~ 3e2) a generic density is unmeasured, hence a warning below
 //! `RIJ_METRIC_WARN`. A metric whose smallest eigenvalue is below the DF-K cut
-//! (`crate::df_k::DFK_LINDEP_THRESH`) is numerically singular for this
+//! (`crate::df_k::metric_lindep_cut`, nominally 1e-10) is numerically singular for this
 //! purpose and is refused with a typed error naming the count of such modes.
 //!
 //! ## Cost
@@ -129,7 +129,8 @@
 //! (about three more `3N · nbf²` matrices), which are not charged here.
 
 use crate::df_gradient::aux_basis;
-use crate::df_k::DFK_LINDEP_THRESH;
+use crate::df_j::RiJPrecision;
+use crate::df_k::metric_lindep_cut;
 use crate::hessian_df_stencil::{
     eri2_deriv2_contract, eri3_deriv2_contract, weight_c_times_d, weight_matrix, StencilConfig,
 };
@@ -144,7 +145,7 @@ use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_integrals::threeindex::coulomb_metric_2c;
 use ndarray::{s, Array1, Array2};
 use ndarray_linalg::cholesky::{CholeskyFactorized, FactorizeC, SolveC};
-use ndarray_linalg::{Eigh, Inverse, UPLO};
+use ndarray_linalg::{Inverse, UPLO};
 use rayon::prelude::*;
 
 /// Largest number of auxiliary shells whose per-shell partials are alive at
@@ -300,10 +301,23 @@ pub(crate) fn check_metric_conditioning_for(
     what: MetricUse,
 ) -> Result<(), FerricError> {
     let label = metric_label(what);
-    // The same (BLAS-thread-wrapped) eigh DfK classifies its modes with.
-    let (lam, _) = with_blas_threads(opt_in_blas_threads(), || v.eigh(UPLO::Upper))
+    // Classified by DfK's rule (`metric_lindep_cut`) in check_metric_spectrum,
+    // on the spectrum of the same divide-and-conquer solver DfK uses.
+    let lam = metric_spectrum(v)
         .map_err(|e| FerricError::Lapack(format!("analytic {label} Hessian: V eigh: {e}")))?;
     check_metric_spectrum(&lam, what)
+}
+
+/// Ascending spectrum of the metric by divide and conquer (`dsyevd`), the solver
+/// `DfK::v_inv_sqrt_lindep` and the DF gradient use, so every consumer of the
+/// metric classifies its modes from the same eigenvalues (and
+/// `metric_lindep_cut` places its cut where no solver's rounding moves one).
+/// The QR `dsyev` it replaced took 3.5 s on one core at naux = 1538.
+pub(crate) fn metric_spectrum(v: &Array2<f64>) -> Result<Array1<f64>, FerricError> {
+    with_blas_threads(opt_in_blas_threads(), || {
+        ferric_core::linalg::eigvalsh_dc(v, ferric_core::linalg::Uplo::Upper)
+    })
+    .map(Array1::from)
 }
 
 fn metric_label(what: MetricUse) -> &'static str {
@@ -318,32 +332,30 @@ fn metric_label(what: MetricUse) -> &'static str {
 /// eigenvectors too classifies the modes with the SAME eigendecomposition).
 pub(crate) fn check_metric_spectrum(lam: &Array1<f64>, what: MetricUse) -> Result<(), FerricError> {
     let label = metric_label(what);
-    let modes = lam.iter().filter(|&&l| l < DFK_LINDEP_THRESH).count();
+    let cut = metric_lindep_cut(&lam.to_vec());
+    let (modes, c) = (cut.n_dropped, cut.describe());
     if modes > 0 {
         return Err(FerricError::General(match what {
             MetricUse::CoulombFit => format!(
                 "analytic RI-J Hessian: the Coulomb metric of the fitting basis has {modes} \
-                 eigenvalue(s) below {DFK_LINDEP_THRESH:.0e}; the full inverse the energy uses is \
+                 eigenvalue(s) below {c}; the full inverse the energy uses is \
                  numerically singular, so its second derivative is refused (use finite differences)"
             ),
             MetricUse::ExchangeFit => format!(
                 "analytic RI-K Hessian: the exchange metric of the fitting basis has {modes} \
-                 dropped mode(s) (eigenvalue below {DFK_LINDEP_THRESH:.0e}); DfK's truncated \
+                 dropped mode(s) (eigenvalue below {c}); DfK's truncated \
                  pseudo-inverse is differentiated only when no mode is dropped, so the second \
                  derivative of the truncated energy is refused (use finite differences)"
             ),
         }));
     }
-    let cond = lam[lam.len() - 1] / lam[0];
-    if what == MetricUse::ExchangeFit && cond > crate::hessian_df_k::RIK_COND_WARN {
+    let cond = crate::hessian_df_k::RikConditioning::from_spectrum(lam[0], lam[lam.len() - 1]);
+    if what == MetricUse::ExchangeFit && !cond.admits_analytic() {
         eprintln!(
-            "[ferric] warning: analytic RI-K Hessian: the exchange metric has cond {cond:.1e} \
-             (smallest eigenvalue {:.2e}), above the {:.0e} up to which accuracy was measured \
-             (one measured point above: agreement with the differenced DF-K gradient 6.7e-9 at \
-             2e8 against 1e-10 at 2e5 .. 2e7, while the agreement with PySCF's analytic \
-             Hessian does not change)",
+            "[ferric] warning: analytic RI-K Hessian: {} (smallest eigenvalue {:.2e}); \
+             `auto` would have run finite differences",
+            cond.describe(),
             lam[0],
-            crate::hessian_df_k::RIK_COND_WARN
         );
     }
     if what == MetricUse::CoulombFit && lam[0] < RIJ_METRIC_WARN {
@@ -365,46 +377,79 @@ pub fn probe_metric(dfbs: &PreparedBasis, op: Operator) -> Result<(), FerricErro
     check_metric_conditioning(&coulomb_metric_2c(op, dfbs)?)
 }
 
-/// [`probe_metric`] for the exchange fit (refusal wording names the dropped
-/// modes of `DfK`'s truncated inverse).
-///
-/// Stricter than the Hessian's own check (which is also what `Analytic`
-/// runs, with a warning): this probe is what `Auto` consults, so it also
-/// refuses a metric the RI-K Hessian can differentiate but not reliably,
-/// namely cond(V) above [`crate::hessian_df_k::RIK_COND_WARN`] (measured error
-/// grows there) and any kept mode in `[DFK_LINDEP_THRESH,
-/// DFK_GRADIENT_NOISE_FLOOR)` (the analytic DF-K gradient treats such a mode as
-/// dropped, so the Hessian would differentiate a different function than the
-/// gradient). `Auto` then runs finite differences of the gradient.
+/// The exchange-metric checks every analytic RI-K route applies before the
+/// SCF (the explicit routes too): a mode `DfK` drops is refused (the
+/// truncated energy's second derivative is not implemented), and so is a kept
+/// mode in `[cut, DFK_GRADIENT_NOISE_FLOOR)`, cut by
+/// `crate::df_k::metric_lindep_cut` (the analytic DF-K gradient treats such a
+/// mode as dropped, so the Hessian would differentiate a different function
+/// than the gradient). Returns the conditioning and its error bound.
 #[doc(hidden)]
-pub fn probe_exchange_metric(dfbs: &PreparedBasis, op: Operator) -> Result<(), FerricError> {
+pub fn exchange_metric_conditioning(
+    dfbs: &PreparedBasis,
+    op: Operator,
+) -> Result<crate::hessian_df_k::RikConditioning, FerricError> {
     let v = coulomb_metric_2c(op, dfbs)?;
-    let (lam, _) = with_blas_threads(opt_in_blas_threads(), || v.eigh(UPLO::Upper))
+    let lam = metric_spectrum(&v)
         .map_err(|e| FerricError::Lapack(format!("analytic RI-K Hessian: V eigh: {e}")))?;
-    let dropped = lam.iter().filter(|&&l| l < DFK_LINDEP_THRESH).count();
-    if dropped > 0 {
-        return check_metric_spectrum(&lam, MetricUse::ExchangeFit);
+    exchange_spectrum_conditioning(&lam)
+}
+
+/// [`exchange_metric_conditioning`] on an already computed ascending
+/// spectrum of the exchange metric.
+#[doc(hidden)]
+pub fn exchange_spectrum_conditioning(
+    lam: &Array1<f64>,
+) -> Result<crate::hessian_df_k::RikConditioning, FerricError> {
+    let cut = metric_lindep_cut(&lam.to_vec());
+    if cut.n_dropped > 0 {
+        check_metric_spectrum(lam, MetricUse::ExchangeFit)?;
     }
     let floor = crate::df_gradient::DFK_GRADIENT_NOISE_FLOOR;
     let band = lam.iter().filter(|&&l| l < floor).count();
     if band > 0 {
         return Err(FerricError::General(format!(
-            "analytic RI-K Hessian: {band} metric mode(s) lie in [{DFK_LINDEP_THRESH:.0e}, \
+            "analytic RI-K Hessian: {band} metric mode(s) lie in [{}, \
              {floor:.0e}): DfK keeps them but the analytic DF-K gradient treats them as dropped, \
              so the Hessian would differentiate a different function than the gradient \
-             (use finite differences)"
+             (use finite differences)",
+            cut.describe()
         )));
     }
-    let cond = lam[lam.len() - 1] / lam[0];
-    if cond > crate::hessian_df_k::RIK_COND_WARN {
+    Ok(crate::hessian_df_k::RikConditioning::from_spectrum(
+        lam[0],
+        lam[lam.len() - 1],
+    ))
+}
+
+/// The gate `Auto` applies on top of the hard checks: a refusal when the
+/// roundoff bound exceeds the finite-difference route's own error.
+#[doc(hidden)]
+pub fn auto_conditioning_gate(
+    cond: crate::hessian_df_k::RikConditioning,
+) -> Result<crate::hessian_df_k::RikConditioning, FerricError> {
+    if !cond.admits_analytic() {
         return Err(FerricError::General(format!(
-            "analytic RI-K Hessian: the exchange metric has cond {cond:.1e}, above {:.0e} where \
-             accuracy is no longer established (use finite differences, or request the analytic \
+            "analytic RI-K Hessian: {} (use finite differences, or request the analytic \
              Hessian explicitly to accept the warning)",
-            crate::hessian_df_k::RIK_COND_WARN
+            cond.describe()
         )));
     }
-    Ok(())
+    Ok(cond)
+}
+
+/// [`probe_metric`] for the exchange fit, as `Auto` consults it:
+/// [`exchange_metric_conditioning`] and, in addition, a refusal when the
+/// roundoff bound ([`crate::hessian_df_k::RikConditioning`]) exceeds the
+/// finite-difference route's own error, so that `Auto`
+/// runs finite differences of the gradient there. The explicit analytic routes
+/// run the Hessian above the gate with a warning instead.
+#[doc(hidden)]
+pub fn probe_exchange_metric(
+    dfbs: &PreparedBasis,
+    op: Operator,
+) -> Result<crate::hessian_df_k::RikConditioning, FerricError> {
+    auto_conditioning_gate(exchange_metric_conditioning(dfbs, op)?)
 }
 
 /// Chunk width for the per-aux-shell partial reductions.
@@ -426,7 +471,7 @@ pub fn rij_terms(
         FerricError::General("analytic RI-J Hessian: the SCF route has no RI-J basis".into())
     })?;
     let dfbs = aux_basis(mol, name)?;
-    rij_terms_with_aux(
+    rij_terms_with_aux_at_precision(
         mol.atoms.len(),
         obs,
         dfbs,
@@ -434,6 +479,7 @@ pub fn rij_terms(
         route.budget_bytes,
         d,
         mutants,
+        route.ri_j_precision,
     )
 }
 
@@ -449,7 +495,32 @@ pub fn rij_terms_with_aux(
     d: &Array2<f64>,
     mutants: &RijMutants,
 ) -> Result<RijTerms, FerricError> {
+    rij_terms_with_aux_at_precision(natoms, obs, dfbs, op, budget, d, mutants, RiJPrecision::F64)
+}
+
+/// [`rij_terms_with_aux`] for an SCF whose RI-J tensor was stored at
+/// `j_precision`. With f32 the two contractions of the UNDIFFERENTIATED
+/// integrals (`d_P = Σ B D` and the fit-response `Σ_P y_P B_P`) read every
+/// integral rounded to nearest f32 then contracted in f64, as the SCF's `DfJ`
+/// did; derivative integrals and the metric stay f64 (`fl32(B(R))` treated
+/// as `B(R)(1+δ)` with `δ` fixed, see `df_gradient::df_jk_gradient_at_precision`).
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn rij_terms_with_aux_at_precision(
+    natoms: usize,
+    obs: &PreparedBasis,
+    dfbs: PreparedBasis,
+    op: Operator,
+    budget: usize,
+    d: &Array2<f64>,
+    mutants: &RijMutants,
+    j_precision: RiJPrecision,
+) -> Result<RijTerms, FerricError> {
+    let j_f32 = j_precision == RiJPrecision::F32;
+    let mut ph = ferric_core::timing::PhaseAccumulator::new().report_on_drop("RI-J Hessian terms");
+    let t = ph.begin("metric factorization");
     let fit = Fit::new(dfbs, op, budget, mutants)?;
+    ph.stop(t);
     let n3 = 3 * natoms;
     let nbf = obs.nbasis();
     // Peak inside this function: j1, j2 and the output `first_order_j` are
@@ -465,14 +536,22 @@ pub fn rij_terms_with_aux(
             .saturating_mul(3 + chunk_len(n3, nbf))
             .saturating_add(8 * (3 * n3 * naux + 2 * naux * naux)),
     )?;
+    let t = ph.begin("3c integrals + fit c");
     let mut source = ThreeIndexSource::build(fit.op, obs, &fit.dfbs, fit.budget)?;
-    let d_p = d_vector(&mut source, d, fit.dfbs.nbasis())?;
+    let d_p = d_vector(&mut source, d, fit.dfbs.nbasis(), j_f32)?;
     let c = fit.solve(&d_p)?;
+    ph.stop(t);
+    let t = ph.begin("3c first-derivative pass (d_x, J1_x)");
     let (dx, j1) = first_derivative_3c(obs, &fit, natoms, d, &c)?;
+    ph.stop(t);
+    let t = ph.begin("2c first derivatives + row solves");
     let vc = first_derivative_2c(&fit, natoms, &c)?;
     let z = &dx - &vc;
     let y = solve_rows(&fit, &z)?;
-    let j2 = aux_weighted_ao(&mut source, &y, nbf)?;
+    ph.stop(t);
+    let t = ph.begin("aux-weighted AO pass (J2_x)");
+    let j2 = aux_weighted_ao(&mut source, &y, nbf, j_f32)?;
+    ph.stop(t);
 
     let (z_skel, y_skel) = if mutants.drop_cross {
         (dx.clone(), solve_rows(&fit, &dx)?)
@@ -482,9 +561,12 @@ pub fn rij_terms_with_aux(
     let cross = z_skel.dot(&y_skel.t());
     let cfg = &mutants.stencil;
     let cs = c.as_slice().expect("contiguous c");
+    let t = ph.begin("3c second-derivative stencil");
     let three_centre = eri3_deriv2_contract(obs, &fit.dfbs, fit.op, cfg, |sp, s1, s2, w| {
         weight_c_times_d(obs, &fit.dfbs, cs, d, (sp, s1, s2), w)
     })?;
+    ph.stop(t);
+    let t = ph.begin("2c second-derivative stencil");
     let metric_second = if mutants.drop_metric_second {
         Array2::zeros((n3, n3))
     } else {
@@ -493,6 +575,7 @@ pub fn rij_terms_with_aux(
             weight_matrix(&fit.dfbs, &m2, (sp, sq), w)
         })?
     };
+    ph.stop(t);
     let raw = &three_centre + &metric_second + &cross;
     let skeleton_asymmetry = raw
         .iter()
@@ -547,7 +630,8 @@ pub fn rij_first(
     )?;
     let natoms = mol.atoms.len();
     let mut source = ThreeIndexSource::build(fit.op, obs, &fit.dfbs, fit.budget)?;
-    let d_p = d_vector(&mut source, d, fit.dfbs.nbasis())?;
+    let j_f32 = route.ri_j_precision == RiJPrecision::F32;
+    let d_p = d_vector(&mut source, d, fit.dfbs.nbasis(), j_f32)?;
     let c = fit.solve(&d_p)?;
     let (dx, _) = first_derivative_3c(obs, &fit, natoms, d, &c)?;
     let vc = first_derivative_2c(&fit, natoms, c_fixed.unwrap_or(&c))?;
@@ -555,22 +639,26 @@ pub fn rij_first(
     Ok(RijFirst { c, dx, vc, y })
 }
 
-/// `d_P = Σ (P|μν) D_μν`.
+/// `d_P = Σ (P|μν) D_μν`; with `f32` each integral is first rounded to
+/// nearest f32 (the SCF's f32 RI-J tensor).
 fn d_vector(
     source: &mut ThreeIndexSource,
     d: &Array2<f64>,
     naux: usize,
+    f32: bool,
 ) -> Result<Array1<f64>, FerricError> {
     let mut d_p = Array1::<f64>::zeros(naux);
     source.for_each_block(|blk| {
         for q in 0..blk.data.shape()[0] {
-            d_p[blk.p0 + q] = blk
-                .data
-                .index_axis(ndarray::Axis(0), q)
-                .iter()
-                .zip(d.iter())
-                .map(|(a, b)| a * b)
-                .sum::<f64>();
+            let row = blk.data.index_axis(ndarray::Axis(0), q);
+            d_p[blk.p0 + q] = if f32 {
+                row.iter()
+                    .zip(d.iter())
+                    .map(|(&a, b)| f64::from(a as f32) * b)
+                    .sum::<f64>()
+            } else {
+                row.iter().zip(d.iter()).map(|(a, b)| a * b).sum::<f64>()
+            };
         }
         Ok(())
     })?;
@@ -587,11 +675,13 @@ fn solve_rows(fit: &Fit, z: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
 }
 
 /// `Σ_P y[x, P] (P|μν)` as a `3N × nbf²` matrix: the `DfJ` contraction with
-/// every row of `y` in place of `c`.
+/// every row of `y` in place of `c`. With `f32` the integrals are rounded to
+/// nearest f32 first (the SCF's f32 RI-J tensor), the product stays f64.
 fn aux_weighted_ao(
     source: &mut ThreeIndexSource,
     y: &Array2<f64>,
     nbf: usize,
+    f32: bool,
 ) -> Result<Array2<f64>, FerricError> {
     let mut out = Array2::<f64>::zeros((y.nrows(), nbf * nbf));
     source.for_each_block(|blk| {
@@ -600,7 +690,12 @@ fn aux_weighted_ao(
             .data
             .to_shape((b, nbf * nbf))
             .map_err(|e| FerricError::General(format!("3c block reshape: {e}")))?;
-        out += &y.slice(s![.., blk.p0..blk.p0 + b]).dot(&flat);
+        if f32 {
+            let rounded = flat.mapv(|v| f64::from(v as f32));
+            out += &y.slice(s![.., blk.p0..blk.p0 + b]).dot(&rounded);
+        } else {
+            out += &y.slice(s![.., blk.p0..blk.p0 + b]).dot(&flat);
+        }
         Ok(())
     })?;
     Ok(out)
@@ -764,4 +859,34 @@ fn shell_partial_2c(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ferric_core::basis;
+    use ferric_core::mol::Molecule;
+
+    /// The RI-K Hessian's probe classifies the exchange metric's modes exactly
+    /// as `DfK` does (`v_inv_sqrt_lindep`: `eigh_dc` + `metric_lindep_cut`), on
+    /// the long-range erf metric of water / def2-universal-jkfit, which drops
+    /// modes. Catches: a probe with another cut rule or on another matrix, and
+    /// a miscounted refusal.
+    #[test]
+    fn the_rik_probe_drops_the_modes_dfk_drops() {
+        let xyz = "3\nwater\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let op = Operator::erf(0.33);
+        let v = coulomb_metric_2c(op, &dfbs).unwrap();
+        let (lam, _) = ferric_core::linalg::eigh_dc(&v, ferric_core::linalg::Uplo::Upper).unwrap();
+        let want = metric_lindep_cut(&lam).n_dropped;
+        assert!(want > 0, "fixture must drop modes");
+        let err = probe_exchange_metric(&dfbs, op).unwrap_err().to_string();
+        assert!(
+            err.contains(&format!("has {want} dropped mode(s)")),
+            "DfK drops {want}; the probe says: {err}"
+        );
+    }
 }

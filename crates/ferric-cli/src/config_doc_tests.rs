@@ -14,6 +14,8 @@
 //! this test demands of the page, with no list to update.
 
 use super::*;
+use crate::cas::{CasCfg, CasCiCfg};
+use crate::cdft::{CdftCfg, CdftConstraintCfg};
 use serde::de::{DeserializeOwned, Visitor};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -72,7 +74,7 @@ impl<'de> serde::Deserializer<'de> for &mut FieldRecorder {
 
 /// The key names `T` accepts, as serde's derived impl declares them
 /// (aliases included).
-fn fields_of<T: DeserializeOwned>() -> BTreeSet<&'static str> {
+pub(super) fn fields_of<T: DeserializeOwned>() -> BTreeSet<&'static str> {
     let mut rec = FieldRecorder(None);
     let _ = T::deserialize(&mut rec);
     rec.0
@@ -82,35 +84,51 @@ fn fields_of<T: DeserializeOwned>() -> BTreeSet<&'static str> {
         .collect()
 }
 
-/// The accepted keys of every TOML table the input reference documents,
-/// keyed by the table name as written in a heading (`scf.ladder` for the
-/// `[[scf.ladder]]` array of tables).
+/// Every TOML table the input reference documents, with the config struct
+/// whose serde fields are its accepted keys. Keyed by the table name as
+/// written in a heading (`scf.ladder` for the `[[scf.ladder]]` array of
+/// tables). A new `[section]` is one row here.
+const SECTION_FIELDS: &[(&str, fn() -> BTreeSet<&'static str>)] = &[
+    ("molecule", fields_of::<MoleculeCfg>),
+    ("basis", fields_of::<BasisCfg>),
+    ("method", fields_of::<MethodCfg>),
+    ("scf", fields_of::<ScfCfg>),
+    ("scf.ladder", fields_of::<LadderRungCfg>),
+    ("dft", fields_of::<DftCfg>),
+    ("mp2", fields_of::<Mp2Cfg>),
+    ("cc", fields_of::<CcCfg>),
+    ("eom", fields_of::<EomCfg>),
+    ("cas", fields_of::<CasCfg>),
+    ("cas.ci", fields_of::<CasCiCfg>),
+    ("opmp3", fields_of::<crate::opmp3::Opmp3Cfg>),
+    ("cdft", fields_of::<CdftCfg>),
+    ("cdft.constraint", fields_of::<CdftConstraintCfg>),
+    ("local", fields_of::<LocalCfg>),
+    ("ri", fields_of::<RiCfg>),
+    ("rpa", fields_of::<RpaCfg>),
+    ("gw", fields_of::<GwCfg>),
+    ("tddft", fields_of::<TddftCfg>),
+    ("optimize", fields_of::<OptimizeCfg>),
+    ("frequencies", fields_of::<FrequenciesCfg>),
+    ("md", fields_of::<MdCfg>),
+    ("memory", fields_of::<MemoryCfg>),
+    ("parallel", fields_of::<ParallelCfg>),
+    ("gpu", fields_of::<GpuCfg>),
+    ("precision", fields_of::<PrecisionCfg>),
+    ("output", fields_of::<OutputCfg>),
+    ("qmmm", fields_of::<QmmmCfg>),
+    ("cosmo", fields_of::<ferric_scf::cosmo::CosmoConfig>),
+    ("pcm", fields_of::<PcmCfg>),
+    ("external_potential", fields_of::<ExternalPotentialCfg>),
+    ("cell", fields_of::<CellCfg>),
+];
+
+/// The accepted keys of every table in [`SECTION_FIELDS`].
 fn accepted_keys_by_section() -> BTreeMap<&'static str, BTreeSet<&'static str>> {
-    BTreeMap::from([
-        ("molecule", fields_of::<MoleculeCfg>()),
-        ("basis", fields_of::<BasisCfg>()),
-        ("method", fields_of::<MethodCfg>()),
-        ("scf", fields_of::<ScfCfg>()),
-        ("scf.ladder", fields_of::<LadderRungCfg>()),
-        ("dft", fields_of::<DftCfg>()),
-        ("mp2", fields_of::<Mp2Cfg>()),
-        ("cc", fields_of::<CcCfg>()),
-        ("local", fields_of::<LocalCfg>()),
-        ("rpa", fields_of::<RpaCfg>()),
-        ("gw", fields_of::<GwCfg>()),
-        ("tddft", fields_of::<TddftCfg>()),
-        ("optimize", fields_of::<OptimizeCfg>()),
-        ("frequencies", fields_of::<FrequenciesCfg>()),
-        ("memory", fields_of::<MemoryCfg>()),
-        ("gpu", fields_of::<GpuCfg>()),
-        ("precision", fields_of::<PrecisionCfg>()),
-        ("output", fields_of::<OutputCfg>()),
-        ("qmmm", fields_of::<QmmmCfg>()),
-        ("cosmo", fields_of::<ferric_scf::cosmo::CosmoConfig>()),
-        ("pcm", fields_of::<PcmCfg>()),
-        ("external_potential", fields_of::<ExternalPotentialCfg>()),
-        ("cell", fields_of::<CellCfg>()),
-    ])
+    SECTION_FIELDS
+        .iter()
+        .map(|&(table, fields)| (table, fields()))
+        .collect()
 }
 
 /// `#[serde(alias = ...)]` names, per table. serde lists aliases among a
@@ -118,11 +136,11 @@ fn accepted_keys_by_section() -> BTreeMap<&'static str, BTreeSet<&'static str>> 
 /// these alone may be documented in another key's Notes instead of in a row
 /// of their own. A missing entry fails loudly (the alias has no row); a stale
 /// one is caught by the check at the end of the sync test.
-const SERDE_ALIASES: &[(&str, &str)] = &[("rpa", "davidson_conv_thresh")];
+pub(super) const SERDE_ALIASES: &[(&str, &str)] = &[("rpa", "davidson_conv_thresh")];
 
 /// The repository root, found at RUN time (see `all_shipped_examples_parse`
 /// for why `CARGO_MANIFEST_DIR` alone breaks under `cargo nextest archive`).
-fn repo_root() -> PathBuf {
+pub(super) fn repo_root() -> PathBuf {
     let looks_like_root = |p: &Path| p.join("Cargo.toml").is_file() && p.join("site/src").is_dir();
     if let Ok(cwd) = std::env::current_dir() {
         let mut here: Option<&Path> = Some(cwd.as_path());
@@ -221,7 +239,7 @@ fn input_reference_documents_exactly_the_accepted_keys() {
         let Some(keys) = accepted.get(sec.table.as_str()) else {
             problems.push(format!(
                 "input.md documents [{}], which this test does not map to a config struct; \
-                 add it to accepted_keys_by_section()",
+                 add it to SECTION_FIELDS",
                 sec.table
             ));
             continue;
@@ -268,7 +286,7 @@ fn input_reference_documents_exactly_the_accepted_keys() {
 }
 
 /// Every Markdown file the docs build publishes, plus the README (which is
-/// also the PyPI description).
+/// also the PyPI description) and the CLI crate's README.
 fn published_markdown() -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(dir).unwrap() {
@@ -281,7 +299,10 @@ fn published_markdown() -> Vec<PathBuf> {
         }
     }
     let root = repo_root();
-    let mut out = vec![root.join("README.md")];
+    let mut out = vec![
+        root.join("README.md"),
+        root.join("crates/ferric-cli/README.md"),
+    ];
     walk(&root.join("site/src"), &mut out);
     out.sort();
     out
@@ -356,6 +377,40 @@ fn every_toml_block_in_the_docs_parses() {
          invalid block with `<!-- doctest: skip -->` on the line before it):\n  {}",
         failures.join("\n  ")
     );
+}
+
+/// The CLI README's `[method]` table must name exactly the kinds and tasks the
+/// CLI dispatches, and none that it does not (for example `dft` for `ksdft`,
+/// or a `gradient` task).
+#[test]
+fn cli_readme_lists_the_dispatched_kinds_and_tasks() {
+    let readme = std::fs::read_to_string(repo_root().join("crates/ferric-cli/README.md")).unwrap();
+    let row = |key: &str| -> BTreeSet<String> {
+        let line = readme
+            .lines()
+            .find(|l| l.starts_with(&format!("| `{key}` |")))
+            .unwrap_or_else(|| panic!("README has no `| `{key}` |` row in its [method] table"));
+        let cell = line.split('|').nth(2).unwrap();
+        cell.split('`')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_string)
+            .collect()
+    };
+    let kinds: BTreeSet<String> = crate::SUPPORTED_METHOD_KINDS
+        .iter()
+        .map(|k| k.to_string())
+        .collect();
+    assert_eq!(
+        row("kind"),
+        kinds,
+        "README `kind` row vs SUPPORTED_METHOD_KINDS"
+    );
+    let tasks: BTreeSet<String> = crate::SUPPORTED_TASKS
+        .iter()
+        .map(|k| k.to_string())
+        .collect();
+    assert_eq!(row("task"), tasks, "README `task` row vs SUPPORTED_TASKS");
 }
 
 #[test]

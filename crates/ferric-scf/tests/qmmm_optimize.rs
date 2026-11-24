@@ -11,7 +11,7 @@ use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::operator::Operator;
 use ferric_mm::{Angle, Bond, LjParams, MmTopology, Torsion};
-use ferric_scf::optimize::{optimize_geometry, OptimizeConfig};
+use ferric_scf::optimize::{optimize_geometry, InitialHessian, OptimizeConfig};
 use ferric_scf::qmmm::{
     optimize_qmmm, BoundaryChargeScheme, MoveMm, QmSelection, QmmmAtom, QmmmMethod,
     QmmmOptimizeConfig, QmmmSystem, DEFAULT_LINK_SCALE,
@@ -208,12 +208,11 @@ fn full_ethane_topology() -> MmTopology {
 fn optimize_qmmm_with_no_mm_matches_optimize_geometry() {
     let ctx = ParallelContext::default();
     let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 1.0\n", 0, 1).unwrap();
-    let rhf_config = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
+    let rhf_config = RhfConfig::default().with_energy_conv(1e-10);
+    // The search before the model Hessian existed (identity start).
     let opt_config = OptimizeConfig {
         trust_radius: 0.1,
+        initial_hessian: Some(InitialHessian::Simple),
         ..Default::default()
     };
 
@@ -260,6 +259,104 @@ fn optimize_qmmm_with_no_mm_matches_optimize_geometry() {
     );
 }
 
+/// The default search (Lindh start, ratio trust rule) on an all-QM water
+/// reproduces `optimize_geometry`'s default search bit for bit: with every
+/// atom free, the QM/MM seed is the molecular Lindh seed.
+#[test]
+fn optimize_qmmm_default_start_with_no_mm_matches_optimize_geometry() {
+    let ctx = ParallelContext::default();
+    let xyz = [
+        ("O", 8, [0.0, 0.0, 0.0]),
+        ("H", 1, [0.0, 0.9, 0.0]),
+        ("H", 1, [0.0, -0.3, 0.85]),
+    ];
+    let mol = Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0.9 0\nH 0 -0.3 0.85\n", 0, 1).unwrap();
+    let rhf_config = RhfConfig::default().with_energy_conv(1e-10);
+    let opt_config = OptimizeConfig::default();
+    assert_eq!(opt_config.initial_hessian, None);
+    let plain = optimize_geometry(
+        &ctx,
+        &mol,
+        "sto-3g",
+        Operator::coulomb(),
+        &rhf_config,
+        &opt_config,
+    )
+    .unwrap();
+    assert!(plain.converged);
+
+    let atoms: Vec<QmmmAtom> = xyz
+        .iter()
+        .zip(&mol.atoms)
+        .map(|((sym, z, _), a)| QmmmAtom::new(*sym, *z, a.x, a.y, a.zpos, 0.0))
+        .collect();
+    let system = QmmmSystem::new(&atoms, QmSelection::Indices(vec![0, 1, 2]), 0, 1).unwrap();
+    let cfg = QmmmOptimizeConfig {
+        method: QmmmMethod::Rhf,
+        move_mm: MoveMm::None,
+        opt: opt_config,
+        mm_topology: None,
+        scf: rhf_config,
+    };
+    let result = optimize_qmmm(&ctx, &system, "sto-3g", &cfg).unwrap();
+    assert!(result.converged);
+    assert_eq!(result.steps, plain.steps);
+    assert_eq!(result.energies.len(), plain.energy_trace.len());
+    for (k, (a, b)) in result.energies.iter().zip(&plain.energy_trace).enumerate() {
+        assert_eq!(
+            a.to_bits(),
+            b.to_bits(),
+            "evaluation {k}: {a:.15} != {b:.15}"
+        );
+    }
+    eprintln!(
+        "[WC-4 anchor] default search, optimize_qmmm vs optimize_geometry: {} steps, E = {:.10} Ha",
+        result.steps, result.energy
+    );
+}
+
+/// The Lindh start on the free atoms of a capped ethane (QM methyl, MM methyl
+/// fixed): it takes a different path (so the seed is used; an identity seed
+/// would repeat the `simple` trajectory bit for bit) to the identity start's
+/// minimum. Both take 7 steps here. The bar is the stopping tolerance
+/// `e_conv` = 1e-6 Ha; measured |dE| is 2.7e-8 Ha. Another basin (eclipsed
+/// against staggered) would be millihartrees away.
+#[test]
+fn optimize_qmmm_lindh_start_reaches_the_identity_start_minimum() {
+    let ctx = ParallelContext::default();
+    let system = capped_ethane();
+    let rhf_config = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-9);
+    let run = |ih: Option<InitialHessian>| {
+        let cfg = QmmmOptimizeConfig {
+            method: QmmmMethod::Rhf,
+            move_mm: MoveMm::None,
+            opt: OptimizeConfig {
+                initial_hessian: ih,
+                max_steps: 100,
+                ..Default::default()
+            },
+            mm_topology: None,
+            scf: rhf_config.clone(),
+        };
+        optimize_qmmm(&ctx, &system, "sto-3g", &cfg).unwrap()
+    };
+    let simple = run(Some(InitialHessian::Simple));
+    let lindh = run(None);
+    let de = lindh.energy - simple.energy;
+    eprintln!(
+        "[WC-4] capped ethane: identity {} steps E {:.10}, Lindh {} steps E {:.10}, dE {de:e}",
+        simple.steps, simple.energy, lindh.steps, lindh.energy
+    );
+    assert!(simple.converged && lindh.converged);
+    assert_ne!(
+        lindh.energies, simple.energies,
+        "the Lindh seed was not used"
+    );
+    assert!(de.abs() < OptimizeConfig::default().e_conv, "dE = {de:e}");
+}
+
 // ---------------------------------------------------------------------------
 // 2. Capped RCD ethane, no MM topology, MoveMm::None
 // ---------------------------------------------------------------------------
@@ -273,11 +370,9 @@ fn optimize_qmmm_capped_ethane_converges_with_small_final_gradient() {
         max_steps: 60,
         ..Default::default()
     };
-    let rhf_config = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let rhf_config = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-9);
 
     let cfg = QmmmOptimizeConfig {
         method: QmmmMethod::Rhf,
@@ -335,7 +430,7 @@ fn optimize_qmmm_capped_ethane_converges_with_small_final_gradient() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn optimize_qmmm_full_topology_move_all_decreases_monotonically_and_converges() {
+fn optimize_qmmm_full_topology_move_all_returns_its_lowest_energy_and_converges() {
     let ctx = ParallelContext::default();
     let system = capped_ethane();
     let top = full_ethane_topology();
@@ -344,11 +439,9 @@ fn optimize_qmmm_full_topology_move_all_decreases_monotonically_and_converges() 
         max_steps: 80,
         ..Default::default()
     };
-    let rhf_config = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let rhf_config = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-9);
 
     let cfg = QmmmOptimizeConfig {
         method: QmmmMethod::Rhf,
@@ -364,14 +457,16 @@ fn optimize_qmmm_full_topology_move_all_decreases_monotonically_and_converges() 
         "full-topology MoveMm::All did not converge in {} steps",
         result.steps
     );
-    for w in result.energies.windows(2) {
-        assert!(
-            w[1] <= w[0] + 1e-8,
-            "energy increased: {:?} -> {:?}",
-            w[0],
-            w[1]
-        );
-    }
+    // `energies` also holds the steps the ratio trust rule rejected (a rise
+    // of more than 1e-8 Ha). An accepted step rises by at most 1e-8 Ha, so
+    // the returned geometry is within that of the lowest evaluation.
+    let lowest = result
+        .energies
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, f64::min);
+    assert!(result.energy <= lowest + 1e-8, "{:?}", result.energies);
+    assert!(result.energy < result.energies[0], "{:?}", result.energies);
     eprintln!(
         "[F2-2] full-topology MoveMm::All ethane: {} steps, converged={}, E_final = {:.10} Ha",
         result.steps, result.converged, result.energy
@@ -418,6 +513,29 @@ fn move_mm_without_topology_is_a_typed_error() {
     assert!(optimize_qmmm(&ctx, &system, "sto-3g", &cfg).is_err());
 }
 
+/// COSMO has no nuclear-gradient term, so `optimize_qmmm` would follow the
+/// vacuum-form gradient of a solvated energy; it refuses before any SCF.
+#[test]
+fn cosmo_scf_is_refused_before_the_first_step() {
+    let ctx = ParallelContext::default();
+    let cfg = QmmmOptimizeConfig {
+        method: QmmmMethod::Rhf,
+        move_mm: MoveMm::None,
+        opt: OptimizeConfig::default(),
+        mm_topology: None,
+        scf: {
+            let mut c = RhfConfig::default();
+            c.cosmo = Some(ferric_scf::cosmo::CosmoConfig::default());
+            c
+        },
+    };
+    let err = optimize_qmmm(&ctx, &capped_ethane(), "sto-3g", &cfg).unwrap_err();
+    assert!(
+        err.to_string().contains("COSMO has no analytic gradient"),
+        "{err}"
+    );
+}
+
 #[test]
 fn move_mm_residues_without_residue_ids_is_a_typed_error() {
     let ctx = ParallelContext::default();
@@ -453,8 +571,9 @@ fn move_with_polarizable_scf_config_is_a_typed_error() {
         move_mm: MoveMm::None,
         opt: OptimizeConfig::default(),
         mm_topology: None,
-        scf: RhfConfig {
-            polarizable: Some(PolarizableSites {
+        scf: {
+            let mut c = RhfConfig::default();
+            c.polarizable = Some(PolarizableSites {
                 sites: vec![PolarizableSite {
                     x: 5.0,
                     y: 0.0,
@@ -462,8 +581,8 @@ fn move_with_polarizable_scf_config_is_a_typed_error() {
                     alpha: 1.0,
                 }],
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            c
         },
     };
     let err = optimize_qmmm(&ctx, &system, "sto-3g", &cfg).unwrap_err();

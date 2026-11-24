@@ -23,11 +23,9 @@ fn main() {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ctx = ParallelContext::default();
     // Converge first so we compare at a physically meaningful C_occ.
-    let cfg = RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit");
     let r = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
     let nocc = (mol.nelec() / 2) as usize;
     let c_occ = r.mos_r().slice(ndarray::s![.., ..nocc]).to_owned();

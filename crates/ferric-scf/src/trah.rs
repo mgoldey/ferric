@@ -86,8 +86,8 @@
 //!
 //! | ρ            | step     | radius     |
 //! |--------------|----------|------------|
-//! | ρ < 0        | rejected | Δ ← 0.7 Δ  |
-//! | 0 ≤ ρ ≤ 0.25 | accepted | Δ ← 0.7 Δ  |
+//! | ρ ≤ 0        | rejected | Δ ← 0.7 Δ  |
+//! | 0 < ρ ≤ 0.25 | accepted | Δ ← 0.7 Δ  |
 //! | 0.25 < ρ ≤ 0.75 | accepted | unchanged |
 //! | ρ > 0.75     | accepted | Δ ← 1.2 Δ  |
 //!
@@ -595,7 +595,8 @@ pub struct TrahConfig {
     /// (~1e-14 relative) and far below any convergence threshold anyone would
     /// set, so it only ever fires when the step is genuinely pointless.
     pub predicted_min: f64,
-    /// ρ below this ⇒ the step is **rejected**. Default 0.0 (paper: ρ < 0).
+    /// ρ at or below this ⇒ the step is **rejected**. Default 0.0 (the paper
+    /// rejects ρ < 0; ferric also rejects ρ = 0, a step that bought nothing).
     pub rho_reject: f64,
     /// ρ at or below this (but above `rho_reject`) ⇒ accept but contract.
     /// Default 0.25 (paper).
@@ -1370,11 +1371,12 @@ pub fn offdiag_gap_correction(f_mo: &Array2<f64>, k: &Array2<f64>, nocc: usize) 
 fn exact_hk(
     ctx: &ParallelContext,
     inp: &crate::rhf_newton::RhfNewtonInputs,
+    jk: Option<&crate::rhf_newton::ScfJkResponse<'_, '_>>,
     cfg: &TrahConfig,
     k: &Array2<f64>,
     pool: &EnginePool,
 ) -> Result<Array2<f64>, FerricError> {
-    let hk = crate::rhf_newton::hessian_matvec(ctx, inp, k, pool)?;
+    let hk = crate::rhf_newton::hessian_matvec_jk(ctx, inp, k, pool, jk)?;
     Ok(if cfg.exact_full_gap {
         hk + offdiag_gap_correction(inp.f_mo, k, inp.nocc)
     } else {
@@ -1396,42 +1398,6 @@ fn gap_diag(f_diag: &[f64], nocc: usize, n: usize) -> Vec<f64> {
         }
     }
     out
-}
-
-/// Apply the Cayley unitary built from an occ→virt block to C: C ← C·U.
-///
-/// Identical construction to `rhf_newton`/`uhf_newton`'s — the exact
-/// orthonormality-preserving rotation, not a truncated exponential.
-fn apply_cayley(
-    c: &Array2<f64>,
-    k_ov: &Array2<f64>,
-    nocc: usize,
-    n: usize,
-) -> Result<Array2<f64>, FerricError> {
-    use ndarray_linalg::Solve;
-    let mut kappa = Array2::<f64>::zeros((n, n));
-    for (ir, a) in (nocc..n).enumerate() {
-        for i in 0..nocc {
-            let v = k_ov[(ir, i)];
-            kappa[(a, i)] = v;
-            kappa[(i, a)] = -v;
-        }
-    }
-    let half = 0.5 * &kappa;
-    let eye = Array2::<f64>::eye(n);
-    let a_mat = &eye - &half;
-    let b_mat = &eye + &half;
-    let mut u = Array2::<f64>::zeros((n, n));
-    for col in 0..n {
-        let bcol = b_mat.column(col).to_owned();
-        let sol = a_mat
-            .solve(&bcol)
-            .map_err(|e| FerricError::Lapack(format!("TRAH Cayley solve: {e}")))?;
-        for row in 0..n {
-            u[(row, col)] = sol[row];
-        }
-    }
-    Ok(c.dot(&u))
 }
 
 /// Energy scale of the packed orbital-rotation coordinates.
@@ -1470,12 +1436,15 @@ const UHF_ENERGY_SCALE: f64 = 2.0;
 
 /// One TRAH step on RHF/RKS orbitals.
 ///
-/// Reuses [`crate::rhf_newton::hessian_matvec`] verbatim for H·κ. Returns the
-/// rotated MO coefficients and the step record (whose `predicted` the caller
-/// must hand to [`TrahState::record_step`]).
+/// Reuses [`crate::rhf_newton::hessian_matvec_jk`] verbatim for H·κ, with the
+/// response J/K from the SCF's own builders when `jk` lends them (the same
+/// [`crate::rhf_newton::ScfJkResponse`] the Newton step takes; `None` builds
+/// them directly). Returns the rotated MO coefficients and the step record
+/// (whose `predicted` the caller must hand to [`TrahState::record_step`]).
 pub fn rhf_trah_step(
     ctx: &ParallelContext,
     inp: &crate::rhf_newton::RhfNewtonInputs,
+    jk: Option<&crate::rhf_newton::ScfJkResponse<'_, '_>>,
     radius: f64,
     cfg: &TrahConfig,
 ) -> Result<(Array2<f64>, TrahStep), FerricError> {
@@ -1503,7 +1472,7 @@ pub fn rhf_trah_step(
         EXACT_MATVECS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let k = Array2::from_shape_vec((nv, no), v.to_vec())
             .map_err(|e| FerricError::General(format!("TRAH RHF matvec reshape: {e}")))?;
-        let hk = exact_hk(ctx, inp, cfg, &k, &pool)?;
+        let hk = exact_hk(ctx, inp, jk, cfg, &k, &pool)?;
         Ok(hk.iter().copied().collect())
     };
 
@@ -1514,7 +1483,7 @@ pub fn rhf_trah_step(
     step.predicted_cheap *= RHF_ENERGY_SCALE;
     let k = Array2::from_shape_vec((nv, no), step.kappa.clone())
         .map_err(|e| FerricError::General(format!("TRAH RHF step reshape: {e}")))?;
-    let c_new = apply_cayley(inp.c, &k, no, n)?;
+    let c_new = crate::cayley::apply_cayley_ov(inp.c, &k, no, n)?;
     Ok((c_new, step))
 }
 
@@ -1526,7 +1495,7 @@ pub fn rhf_trah_step(
 /// | term     | `rhf_newton::hessian_matvec`      | `AuxCurvature::base_apply_ref`       |
 /// |----------|-----------------------------------|--------------------------------------|
 /// | Fock gap | `(F_aa - F_ii) k`                 | `2 (F_vv X - X F_oo)`                |
-/// | Coulomb  | `4 (ai|bj)`                       | `8 (ai|bj)`                          |
+/// | Coulomb  | `4 (ai\|bj)`                     | `8 (ai\|bj)`                        |
 /// | exchange | `-2 a_x (...)`                    | `-4 a_x (...)`                       |
 ///
 /// (The Coulomb 4 is `dD = 2*dD_single` times the two kappa corners of the
@@ -1622,7 +1591,7 @@ pub fn rhf_trah_step_aux(
     step.predicted_cheap *= RHF_ENERGY_SCALE;
     let k = Array2::from_shape_vec((nv, no), step.kappa.clone())
         .map_err(|e| FerricError::General(format!("TRAH aux step reshape: {e}")))?;
-    let c_new = apply_cayley(inp.c, &k, no, n)?;
+    let c_new = crate::cayley::apply_cayley_ov(inp.c, &k, no, n)?;
     Ok((c_new, step))
 }
 
@@ -1642,11 +1611,12 @@ pub fn rhf_trah_step_dispatch(
     ),
     cfg: (&crate::rhf::RhfConfig, Option<f64>),
     inp: &crate::rhf_newton::RhfNewtonInputs,
+    jk: Option<&crate::rhf_newton::ScfJkResponse<'_, '_>>,
     radius: f64,
 ) -> Result<(Array2<f64>, TrahStep), FerricError> {
     let (config, xc_k_mix) = cfg;
     if !config.trah.aux_curvature {
-        return rhf_trah_step(ctx, inp, radius, &config.trah);
+        return rhf_trah_step(ctx, inp, jk, radius, &config.trah);
     }
     let (mol, prep, c, nocc) = geom;
     let ax = xc_k_mix.unwrap_or(1.0);
@@ -1767,8 +1737,8 @@ pub fn uhf_trah_step(
         .map_err(|e| FerricError::General(format!("TRAH UHF α step reshape: {e}")))?;
     let kb = Array2::from_shape_vec((nvb, nb), step.kappa[len_a..].to_vec())
         .map_err(|e| FerricError::General(format!("TRAH UHF β step reshape: {e}")))?;
-    let ca = apply_cayley(inp.c_a, &ka, na, n)?;
-    let cb = apply_cayley(inp.c_b, &kb, nb, n)?;
+    let ca = crate::cayley::apply_cayley_ov(inp.c_a, &ka, na, n)?;
+    let cb = crate::cayley::apply_cayley_ov(inp.c_b, &kb, nb, n)?;
     Ok((ca, cb, step))
 }
 

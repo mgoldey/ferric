@@ -386,6 +386,7 @@ dependencies = [
  "ferric-export",
  "ferric-gw",
  "ferric-integrals",
+ "ferric-md",
  "ferric-mp2",
  "ferric-pcm",
  "ferric-quadrature",
@@ -429,11 +430,14 @@ name = "ferric-cc"
 version = "0.1.0"
 dependencies = [
  "ferric-core",
+ "ferric-gw",
  "ferric-integrals",
  "ferric-mp2",
  "ferric-scf",
  "ferric-tensors",
+ "ferric-testkit",
  "ndarray",
+ "ndarray-linalg",
  "rayon",
  "serde_json",
 ]
@@ -444,9 +448,12 @@ version = "0.1.0"
 dependencies = [
  "ferric-core",
  "ferric-integrals",
+ "ferric-mp2",
  "ferric-scf",
+ "ferric-testkit",
  "ndarray",
  "ndarray-linalg",
+ "rayon",
  "serde_json",
 ]
 
@@ -456,18 +463,21 @@ version = "0.1.0"
 dependencies = [
  "ferric-build-info",
  "ferric-cc",
+ "ferric-ci",
  "ferric-core",
  "ferric-d3",
  "ferric-dft",
  "ferric-export",
  "ferric-gw",
  "ferric-integrals",
+ "ferric-md",
  "ferric-mp2",
  "ferric-pbc",
  "ferric-pcm",
  "ferric-rpa",
  "ferric-scf",
  "ferric-tddft",
+ "ferric-testkit",
  "ndarray",
  "rayon",
  "serde",
@@ -481,6 +491,7 @@ version = "0.1.0"
 dependencies = [
  "cudarc",
  "lapack-sys",
+ "libc",
  "libloading 0.8.9",
  "miniz_oxide",
  "mpi",
@@ -491,6 +502,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -499,6 +511,7 @@ version = "0.1.0"
 dependencies = [
  "ferric-core",
  "ndarray",
+ "serde_json",
 ]
 
 [[package]]
@@ -509,6 +522,7 @@ dependencies = [
  "ferric-integrals",
  "ferric-quadrature",
  "ferric-scf",
+ "ferric-testkit",
  "ndarray",
  "rayon",
  "serde",
@@ -545,6 +559,7 @@ dependencies = [
  "ferric-quadrature",
  "ferric-rpa",
  "ferric-scf",
+ "ferric-testkit",
  "mpi",
  "ndarray",
  "ndarray-linalg",
@@ -562,6 +577,7 @@ dependencies = [
  "cc",
  "ferric-core",
  "ferric-quadrature",
+ "ferric-testkit",
  "libc",
  "ndarray",
  "rayon",
@@ -572,10 +588,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferric-md"
+version = "0.1.0"
+dependencies = [
+ "ferric-core",
+ "ndarray",
+]
+
+[[package]]
 name = "ferric-mm"
 version = "0.1.0"
 dependencies = [
  "ferric-core",
+ "ferric-md",
+ "ferric-testkit",
  "ndarray",
  "serde",
  "serde_json",
@@ -586,11 +612,13 @@ name = "ferric-mp2"
 version = "0.1.0"
 dependencies = [
  "ferric-core",
+ "ferric-d3",
  "ferric-dft",
  "ferric-integrals",
  "ferric-quadrature",
  "ferric-scf",
  "ferric-tensors",
+ "ferric-testkit",
  "mpi",
  "ndarray",
  "ndarray-linalg",
@@ -609,6 +637,7 @@ dependencies = [
  "ferric-mp2",
  "ferric-rpa",
  "ferric-scf",
+ "ferric-testkit",
  "libc",
  "ndarray",
  "ndarray-linalg",
@@ -624,9 +653,11 @@ dependencies = [
  "ferric-core",
  "ferric-integrals",
  "ferric-quadrature",
+ "ferric-testkit",
  "ndarray",
  "ndarray-linalg",
  "openblas-src",
+ "rayon",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -640,12 +671,15 @@ dependencies = [
  "ctrlc",
  "ferric-build-info",
  "ferric-cc",
+ "ferric-ci",
  "ferric-cli",
  "ferric-core",
  "ferric-d3",
  "ferric-dft",
+ "ferric-export",
  "ferric-gw",
  "ferric-integrals",
+ "ferric-md",
  "ferric-mm",
  "ferric-mp2",
  "ferric-pbc",
@@ -654,6 +688,7 @@ dependencies = [
  "ferric-scf",
  "ferric-tddft",
  "ferric-tensors",
+ "ferric-xtb",
  "ndarray",
  "numpy",
  "pyo3",
@@ -677,11 +712,13 @@ version = "0.1.0"
 dependencies = [
  "ferric-core",
  "ferric-dft",
+ "ferric-export",
  "ferric-integrals",
  "ferric-mp2",
  "ferric-pcm",
  "ferric-quadrature",
  "ferric-scf",
+ "ferric-testkit",
  "mpi",
  "ndarray",
  "ndarray-linalg",
@@ -698,9 +735,11 @@ dependencies = [
  "ferric-core",
  "ferric-dft",
  "ferric-integrals",
+ "ferric-md",
  "ferric-mm",
  "ferric-pcm",
  "ferric-quadrature",
+ "ferric-testkit",
  "mpi",
  "ndarray",
  "ndarray-linalg",
@@ -710,6 +749,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "windows-sys 0.61.2",
  "zip",
 ]
 
@@ -725,6 +765,7 @@ dependencies = [
  "ferric-scf",
  "ndarray",
  "ndarray-linalg",
+ "rayon",
  "serde",
  "serde_json",
 ]
@@ -756,10 +797,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferric-testkit"
+version = "0.1.0"
+dependencies = [
+ "ferric-core",
+ "ndarray",
+ "serde_json",
+]
+
+[[package]]
 name = "ferric-xtb"
 version = "0.1.0"
 dependencies = [
  "ferric-core",
+ "ferric-scf",
  "ndarray",
 ]
 

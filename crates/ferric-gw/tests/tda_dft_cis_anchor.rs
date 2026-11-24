@@ -53,15 +53,13 @@ fn build_rhf(xyz: &str, obs_name: &str, aux_name: &str) -> Ref {
     let op = Operator::coulomb();
     let ctx = ParallelContext::default();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let cfg = RhfConfig {
+    let cfg = RhfConfig::default()
         // Default energy_conv on purpose: it is a not-descending sanity bound, and
         // 1e-10 sits below the ~1e-8 XC-grid energy noise floor, so convergence
         // became a coin flip (it passed on the dense path only by drawing one
         // lucky dE). Convergence is decided by density_conv.
-        energy_conv: 1e-3,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+        .with_energy_conv(1e-3)
+        .with_density_conv(1e-9);
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
     assert!(rhf.converged, "reference RHF did not converge");
     Ref {
@@ -211,16 +209,14 @@ fn fxc_term_is_not_a_no_op() {
     let ctx = ParallelContext::default();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     // An LDA reference, so the f_xc kernel is the LDA one.
-    let cfg = RhfConfig {
+    let cfg = RhfConfig::default()
         // Default energy_conv on purpose: it is a not-descending sanity bound, and
         // 1e-10 sits below the ~1e-8 XC-grid energy noise floor, so convergence
         // became a coin flip (it passed on the dense path only by drawing one
         // lucky dE). Convergence is decided by density_conv.
-        energy_conv: 1e-3,
-        density_conv: 1e-9,
-        xc: Some("LDA".to_string()),
-        ..Default::default()
-    };
+        .with_energy_conv(1e-3)
+        .with_density_conv(1e-9)
+        .with_xc("LDA");
     let ks = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
     assert!(ks.converged, "reference RKS/LDA did not converge");
 
@@ -283,15 +279,13 @@ fn exact_exchange_fraction_is_read_from_the_functional() {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
+        &RhfConfig::default()
             // Default energy_conv on purpose: it is a not-descending sanity bound, and
             // 1e-10 sits below the ~1e-8 XC-grid energy noise floor, so convergence
             // became a coin flip (it passed on the dense path only by drawing one
             // lucky dE). Convergence is decided by density_conv.
-            energy_conv: 1e-3,
-            density_conv: 1e-9,
-            ..Default::default()
-        },
+            .with_energy_conv(1e-3)
+            .with_density_conv(1e-9),
     )
     .unwrap();
 
@@ -327,15 +321,13 @@ fn unsupported_functionals_are_rejected_not_silently_approximated() {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
+        &RhfConfig::default()
             // Default energy_conv on purpose: it is a not-descending sanity bound, and
             // 1e-10 sits below the ~1e-8 XC-grid energy noise floor, so convergence
             // became a coin flip (it passed on the dense path only by drawing one
             // lucky dE). Convergence is decided by density_conv.
-            energy_conv: 1e-3,
-            density_conv: 1e-9,
-            ..Default::default()
-        },
+            .with_energy_conv(1e-3)
+            .with_density_conv(1e-9),
     )
     .unwrap();
     let cfg = TdaDftConfig::default();
@@ -372,15 +364,15 @@ fn unsupported_functionals_are_rejected_not_silently_approximated() {
     );
     eprintln!("RSH rejected: {msg}");
 
-    // Meta-GGA: no tau f_xc kernel.
-    let err = run_tda_dft(&mol, &obs, &dfbs, op, &rhf, Some("SCAN"), &cfg)
-        .expect_err("meta-GGA must be rejected");
-    let msg = err.to_string();
+    // tau-only meta-GGA (SCAN) is supported: the tau f_xc kernel is in the
+    // response (anchored vs PySCF get_ab in ferric-tddft validation_tddft).
+    // Guard that it is accepted WITH the kernel, not silently without it.
+    let res = run_tda_dft(&mol, &obs, &dfbs, op, &rhf, Some("SCAN"), &cfg)
+        .expect("tau-only meta-GGA must be accepted");
     assert!(
-        msg.to_lowercase().contains("meta-gga") || msg.contains("mgga"),
-        "unexpected meta-GGA rejection message: {msg}"
+        res.fxc_included,
+        "SCAN TDA must include the f_xc response kernel"
     );
-    eprintln!("meta-GGA rejected: {msg}");
 }
 
 /// An open-shell reference must be rejected outright (singlet closed-shell
@@ -398,11 +390,9 @@ fn open_shell_reference_is_rejected() {
         &mol,
         &obs,
         &bounds,
-        &ferric_scf::uhf::UhfConfig {
-            energy_conv: 1e-9,
-            density_conv: 1e-7,
-            ..Default::default()
-        },
+        &ferric_scf::uhf::UhfConfig::default()
+            .with_energy_conv(1e-9)
+            .with_density_conv(1e-7),
     )
     .unwrap();
     let err = run_tda_dft(&mol, &obs, &dfbs, op, &uhf, None, &TdaDftConfig::default())

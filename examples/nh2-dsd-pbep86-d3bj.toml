@@ -1,0 +1,17 @@
+[molecule]
+xyz = "testdata/molecules/nh2.xyz"
+multiplicity = 2
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "dsd-pbep86"
+
+[dft]
+# Selects the DSD-PBEP86-D3(BJ) set of Kozuch and Martin 2013 as a whole
+# (0.69 HF, 0.31 PBE, 0.44 P86, c_os 0.52, c_ss 0.22, D3(BJ) s6 0.48, a2 5.6).
+dispersion = "d3bj"
+
+[mp2]
+auxbasis = "cc-pvdz-rifit"

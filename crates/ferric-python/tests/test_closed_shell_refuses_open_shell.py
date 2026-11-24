@@ -25,6 +25,11 @@ message about SCF convergence instead of one naming the multiplicity.
 
 `run_rimp2` is NOT refused: an open-shell molecule gets a UHF reference and
 unrestricted RI-MP2 (UMP2), checked against PySCF at the bottom of this file.
+Nor are run_attenuated_rimp2, run_terfc_rimp2, run_scs_mp2,
+run_scs_mp2_2terfc and run_rs_mp2_rpa, which take the same UHF route
+(checked against run_rimp2's UMP2 below). run_ccsd and run_ccsd_t take a UHF
+reference and spin-blocked UCCSD / UCCSD(T) (checked against PySCF in
+test_uccsd.py).
 """
 
 from __future__ import annotations
@@ -58,10 +63,7 @@ def triplet_water():
         pytest.param(lambda m, bs, aux: ferric.run_rhf(m, bs), id="run_rhf"),
         pytest.param(lambda m, bs, aux: ferric.run_dft(m, bs, "PBE"), id="run_dft"),
         pytest.param(lambda m, bs, aux: ferric.run_mp3(m, bs, aux), id="run_mp3"),
-        pytest.param(
-            lambda m, bs, aux: ferric.run_scs_mp2(m, bs, aux), id="run_scs_mp2"
-        ),
-        pytest.param(lambda m, bs, aux: ferric.run_ccsd(m, bs, aux), id="run_ccsd"),
+        pytest.param(lambda m, bs, aux: ferric.run_ccd(m, bs, aux), id="run_ccd"),
     ],
 )
 def test_triplet_water_is_refused_not_answered_as_the_singlet(
@@ -70,6 +72,14 @@ def test_triplet_water_is_refused_not_answered_as_the_singlet(
     bs, aux = bases
     with pytest.raises(RuntimeError, match="multiplicity 3"):
         call(triplet_water, bs, aux)
+
+
+def test_triplet_water_ccsd_takes_the_uhf_route(triplet_water, bases):
+    """run_ccsd runs spin-blocked UCCSD on a UHF reference, not the singlet."""
+    bs, aux = bases
+    r = ferric.run_ccsd(triplet_water, bs, aux)
+    assert r.reference == "uhf"
+    assert r.spin_components is not None
 
 
 def test_odd_electron_KS_names_the_multiplicity_not_convergence(bases):
@@ -156,3 +166,40 @@ def test_run_rimp2_open_shell_refuses_kappa(triplet_water, bases):
     bs, aux = bases
     with pytest.raises(ValueError, match="kappa"):
         ferric.run_rimp2(triplet_water, bs, aux, kappa=1.0)
+
+
+def test_attenuated_and_scs_family_take_the_uhf_route(triplet_water, bases):
+    """Triplet water: the attenuated / SCS / RS-MP2-RPA bindings run UHF.
+
+    Independent route: run_rimp2's UMP2 (PySCF-checked above). SCS reads
+    E_OS = E_ab, E_SS = E_aa + E_bb, so e_os + e_ss is the UMP2 correlation
+    (rounding only, 1e-10). As omega -> 0 erfc(omega r)/r -> 1/r, so the
+    attenuated energy at omega = 1e-4 A^-1 approaches UMP2 (the gap is O(omega),
+    measured < 1e-7 Ha on OH/cc-pVDZ in ferric-mp2 open_shell_attenuated.rs;
+    bar 1e-6). RS-MP2-RPA (delta-lr) at omega = 0.02 A^-1 adds a long-range
+    ring term of third order in erf(omega r)/r ~ 2 omega / sqrt(pi), far below
+    1e-6 Ha. Fails if any binding refuses the triplet, reports "RHF", or
+    returns the singlet.
+    """
+    bs, aux = bases
+    ump2 = ferric.run_rimp2(triplet_water, bs, aux)
+    assert ump2.reference == "UHF"
+    scs = ferric.run_scs_mp2(triplet_water, bs, aux, c_os=1.2, c_ss=1.0 / 3.0)
+    assert scs.reference == "UHF"
+    assert abs(scs.e_os + scs.e_ss - ump2.mp2_corr) < 1e-10, (scs.e_os, scs.e_ss)
+    assert abs(scs.scs_corr - (1.2 * scs.e_os + scs.e_ss / 3.0)) < 1e-12
+    assert abs(scs.rhf_energy - ump2.rhf_energy) < 1e-8
+    att = ferric.run_attenuated_rimp2(triplet_water, bs, aux, omega=1e-4)
+    assert att.reference == "UHF"
+    assert abs(att.mp2_corr - ump2.mp2_corr) < 1e-6, (att.mp2_corr, ump2.mp2_corr)
+    att0 = ferric.run_attenuated_rimp2(triplet_water, bs, aux)
+    assert abs(att0.mp2_corr - ump2.mp2_corr) > 1e-3  # the attenuation is real
+    # run_rs_mp2_rpa defaults to an RI-JK reference; "exact" gives the same
+    # UHF run_rimp2 builds.
+    rs = ferric.run_rs_mp2_rpa(triplet_water, bs, aux, omega=0.02, scf_jk="exact")
+    assert rs.reference == "UHF"
+    assert abs(rs.e_mp2_full - ump2.mp2_corr) < 1e-10
+    assert abs(rs.e_corr - ump2.mp2_corr) < 1e-6, (rs.e_corr, ump2.mp2_corr)
+    singlet = ferric.Molecule.from_xyz(WATER)
+    assert ferric.run_scs_mp2(singlet, bs, aux).reference == "RHF"
+    assert ferric.run_rs_mp2_rpa(singlet, bs, aux).reference == "RHF"

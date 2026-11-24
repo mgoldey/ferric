@@ -1,0 +1,13 @@
+diff --git a/crates/ferric-mp2/src/double_hybrid.rs b/crates/ferric-mp2/src/double_hybrid.rs
+index a7a5f7e..86f7f95 100644
+--- a/crates/ferric-mp2/src/double_hybrid.rs
++++ b/crates/ferric-mp2/src/double_hybrid.rs
+@@ -63,7 +63,7 @@ impl DoubleHybridKind {
+     /// auto-sized memory budget.
+     pub fn mp2_config(&self) -> Mp2DoubleHybridConfig {
+         let (c_os, c_ss) = match self {
+-            Self::B2plyp | Self::B2plypD3bj => (0.27, 0.27),
++            Self::B2plyp | Self::B2plypD3bj => (0.26, 0.26),
+             Self::DsdPbep86 => (0.51, 0.36),
+             Self::DsdPbep86D3bj => (0.52, 0.22),
+         };

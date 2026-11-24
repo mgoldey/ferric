@@ -15,15 +15,21 @@ pub const PANELS: [usize; 5] = [64, 128, 256, 512, 1024];
 /// One arm's row for one shape: median seconds and rms normalized error.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArmRow {
+    /// Arm name as printed by the sweep (see the module doc).
     pub name: String,
+    /// Median wall time over the sweep's repeats (seconds).
     pub median_s: f64,
+    /// RMS of `|got - ref| / (|A||B|)_ij` over output elements with a nonzero
+    /// denominator, against the CPU f64 product.
     pub rms: f64,
 }
 
 /// All arm rows measured at one `(m, k, n)`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShapeRows {
+    /// GEMM dimensions `(m, k, n)`.
     pub shape: (usize, usize, usize),
+    /// One row per arm measured at this shape.
     pub rows: Vec<ArmRow>,
 }
 

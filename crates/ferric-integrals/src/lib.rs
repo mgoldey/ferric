@@ -22,6 +22,11 @@ pub mod basis_bridge;
 pub mod blas_threads;
 /// Complementary auxiliary basis sets (CABS) for F12 methods.
 pub mod cabs;
+/// Per-integral-class libint2 capability checks (refuse instead of a libint2 assert).
+pub mod capability;
+/// Exact column rotations of generally contracted shells (cc-pVXZ), used
+/// internally by the periodic SR walks and the direct SCF J/K builder.
+pub mod contraction_rotation;
 /// Per-grid-point three-center-one-electron AO blocks `A^g_{mu,nu}` for
 /// seminumerical exchange (COSX / sn-LinK).
 pub mod cosx_a;
@@ -59,6 +64,8 @@ pub mod md3c1e;
 pub mod oneelectron;
 /// Integral operator kinds: Coulomb, erf/erfc-attenuated, Yukawa, Slater geminal.
 pub mod operator;
+/// The pVp integral `sum_a <d_a m|V|d_a n>` (spin-free X2C/DKH small-component potential).
+pub mod pvp;
 /// QQR distance-dependent integral screening (Ochsenfeld-style).
 pub mod qqr3;
 /// Schwarz upper bounds for integral screening.
@@ -66,7 +73,7 @@ pub mod schwarz;
 /// [`SiteBasis`](site_basis::SiteBasis): one Gaussian per MM site as a fake auxiliary
 /// `PreparedBasis`, used for Gaussian-smeared QM/MM charge potentials and their gradients.
 pub mod site_basis;
-/// [`ThreeIndexSource`](three_index_source::ThreeIndexSource) trait: abstract 3-index tensor provider.
+/// [`ThreeIndexSource`](three_index_source::ThreeIndexSource) struct: the 3-index `(P|μν)` tensor provider (in-core, f32 or spilled storage).
 pub mod three_index_source;
 /// Three-center density-fitting integrals (P|mu nu) with optional batching.
 pub mod threeindex;

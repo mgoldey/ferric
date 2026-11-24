@@ -45,6 +45,7 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::{ScfResult, Spin};
+use ferric_testkit::compare::max_abs;
 use ndarray::{s, Array2};
 
 const H2O_XYZ: &str = "3\nwater\nO 0.000000 0.000000 0.117300\nH 0.000000 0.757200 -0.469200\nH 0.000000 -0.757200 -0.469200\n";
@@ -66,13 +67,11 @@ const CH2_XYZ: &str =
 const O2_XYZ: &str = "2\nO2\nO 0.000000 0.000000 0.604000\nO 0.000000 0.020000 -0.604000\n";
 
 fn ks(xc: &str) -> RhfConfig {
-    RhfConfig {
-        xc: Some(xc.to_string()),
-        max_iter: 300,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc(xc.to_string())
+        .with_max_iter(300)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
 }
 
 /// FD step (Bohr); `MBD_FD_H` overrides it.
@@ -81,10 +80,6 @@ fn fd_step() -> f64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(1e-3)
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
 }
 
 fn displaced(mol: &Molecule, atom: usize, k: usize, h: f64) -> Molecule {
@@ -372,11 +367,23 @@ const FD_FULL_TOL: f64 = 5e-10;
 /// FD_full − FD_orth, and that every FD point stayed on the reference state.
 #[test]
 fn roks_mbd_exact_gradient_matches_fd_of_full_scf_pipeline() {
+    roks_full_pipeline_fd_check("PBE", &MbdRsscsConfig::for_functional("PBE").expect("beta"));
+}
+
+/// The same check on a τ-only meta-GGA (r2SCAN): the ROKS Z-vector applies
+/// the τ f_xc kernel in all three rotation blocks. β is PBE's (no published
+/// r2SCAN value; this checks the derivative, not the dispersion model).
+#[test]
+fn roks_mbd_exact_gradient_matches_fd_of_full_scf_pipeline_r2scan() {
+    roks_full_pipeline_fd_check("r2SCAN", &MbdRsscsConfig::with_beta(0.83));
+}
+
+fn roks_full_pipeline_fd_check(xc: &str, mbd_cfg: &MbdRsscsConfig) {
     let bs = basis::bundled("sto-3g").expect("sto-3g");
     let op = Operator::coulomb();
     let ctx = ParallelContext::default();
-    let cfg = ks("PBE");
-    let mbd_cfg = MbdRsscsConfig::for_functional("PBE").expect("beta");
+    let cfg = ks(xc);
+    let mbd_cfg = *mbd_cfg;
     for (name, xyz, mult) in FAST_CASES {
         let mol = Molecule::parse_xyz(xyz, 0, mult).expect("mol");
         let cache = MbdFreeAtomCache::build(&ctx, &mol, &bs, op, &cfg).expect("cache");
@@ -394,7 +401,7 @@ fn roks_mbd_exact_gradient_matches_fd_of_full_scf_pipeline() {
             .map(|k| g.column(k).sum().abs())
             .fold(0.0_f64, f64::max);
         println!(
-            "{name}/STO-3G PBE ROKS: max|FD| = {:.3e}, max|relax| = {:.3e}, max|exact - FD| = \
+            "{name}/STO-3G {xc} ROKS: max|FD| = {:.3e}, max|relax| = {:.3e}, max|exact - FD| = \
              {diff:.3e}, max|relax(Z) - relax(FD)| = {diff_relax:.3e}, max|sum_B g| = \
              {tsum:.1e}, max|dD|/h = {jump:.3}",
             max_abs(&fd),
@@ -425,49 +432,46 @@ fn roks_mbd_exact_gradient_matches_fd_of_full_scf_pipeline() {
 }
 
 /// The ROKS Z-vector refuses what it cannot answer exactly, with a reason:
-/// meta-GGA (no τ kernel), VV10, overlap-fitted COSX exchange (its response
+/// VV10, overlap-fitted COSX exchange (its response
 /// needs the XC Fock nuclear derivative), an xc_omega override, solvation and
-/// cDFT; and a plain GGA/hybrid/RSH, and fit-off COSX, are accepted.
+/// cDFT; and a plain GGA/hybrid/RSH/τ-only meta-GGA, and fit-off COSX, are
+/// accepted.
 /// `mbd_rsscs_for_scf` surfaces the same reason.
 #[test]
 fn roks_zvector_refuses_unsupported_references() {
     use ferric_scf::zvector_ks::unsupported_reason_roks;
-    for xc in ["PBE", "PBE0", "HSE06", "B3LYP"] {
+    for xc in ["PBE", "PBE0", "HSE06", "B3LYP", "SCAN", "r2SCAN"] {
         assert_eq!(unsupported_reason_roks(&ks(xc)), None, "{xc}");
     }
-    let fit_off = RhfConfig {
-        k_builder: Some("cosx".into()),
-        cosx: ferric_scf::cosx_k::CosxConfig {
+    let fit_off = ks("PBE0")
+        .with_k_builder(ferric_scf::options::KBuilderKind::Cosx)
+        .with_cosx(ferric_scf::cosx_k::CosxConfig {
             overlap_fit: false,
             ..Default::default()
-        },
-        ..ks("PBE0")
-    };
+        });
     assert_eq!(unsupported_reason_roks(&fit_off), None, "fit-off COSX");
     let cases: Vec<(&str, RhfConfig, &str)> = vec![
-        ("SCAN", ks("SCAN"), "meta-GGA"),
         ("wB97X-V", ks("wB97X-V"), "VV10"),
         (
             "PBE0 fitted cosx",
-            RhfConfig {
-                k_builder: Some("cosx".into()),
-                ..ks("PBE0")
-            },
+            ks("PBE0").with_k_builder(ferric_scf::options::KBuilderKind::Cosx),
             "overlap_fit",
         ),
         (
             "PBE xc_omega",
-            RhfConfig {
-                xc_omega: Some(0.3),
-                ..ks("PBE")
+            {
+                let mut c = ks("PBE");
+                c.xc_omega = Some(0.3);
+                c
             },
             "xc_omega",
         ),
         (
             "PBE cosmo",
-            RhfConfig {
-                cosmo: Some(Default::default()),
-                ..ks("PBE")
+            {
+                let mut c = ks("PBE");
+                c.cosmo = Some(Default::default());
+                c
             },
             "solvation",
         ),
@@ -487,10 +491,7 @@ fn roks_zvector_refuses_unsupported_references() {
     let mbd_cfg = MbdRsscsConfig::for_functional("PBE0").expect("beta");
     let cache = MbdFreeAtomCache::build(&ctx, &mol, &bs, op, &cfg).expect("cache");
     let r = roks(&mol, &bs, &cfg, None);
-    let cosx = RhfConfig {
-        k_builder: Some("cosx".into()),
-        ..cfg
-    };
+    let cosx = cfg.with_k_builder(ferric_scf::options::KBuilderKind::Cosx);
     let err = mbd_rsscs_for_scf(&ctx, &cache, &mol, &bs, op, &cosx, &r, &mbd_cfg)
         .expect_err("fitted-COSX ROKS must be refused");
     assert!(format!("{err:?}").contains("COSX"), "{err:?}");
@@ -535,10 +536,8 @@ fn measure_roks_full_pipeline_fd() {
                 continue;
             }
             let label = format!("{name}/6-31G {tag}");
-            let cfg = RhfConfig {
-                df_j_aux: j_aux.map(str::to_string),
-                ..ks(xc)
-            };
+            let mut cfg = ks(xc);
+            cfg.df_j_aux = j_aux.map(str::to_string);
             let mbd_cfg = MbdRsscsConfig::for_functional(xc).expect("beta");
             let mol = Molecule::parse_xyz(xyz, 0, mult).expect("mol");
             let cache = MbdFreeAtomCache::build(&ctx, &mol, &bs, op, &cfg).expect("cache");

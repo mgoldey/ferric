@@ -7,21 +7,44 @@
 //! by the κ-rotation, rebuilding J/K (+ XC kernel for ROKS) on those
 //! perturbations, and reading back the three relevant MO blocks.
 //!
-//! The linear solver is the same DIIS-preconditioned fixed-point iteration
-//! that the RI-MP2 Z-vector solver (`ferric-mp2::zvector`) uses; we don't
-//! need a Davidson eigensolve because we want a single RHS, not eigenpairs.
+//! The linear solver is preconditioned conjugate gradients (`pcg_refine`,
+//! Steihaug truncation on non-positive curvature, diagonal-gap
+//! preconditioner); a Davidson eigensolve is not needed because there is a
+//! single RHS, not eigenpairs.
 //!
 //! Rotation is applied via the Cayley unitary U = (I − κ/2)^{−1}(I + κ/2),
 //! which exactly preserves orthonormality.
 
 use crate::engine_pool::EnginePool;
-use crate::rhf::build_jk_with_pool;
 use crate::screening::SchwarzBounds;
+use crate::uhf_newton::{direct_jk, AoResponse, KResponse};
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::Array2;
-use ndarray_linalg::Solve;
+use std::cell::Cell;
+
+thread_local! {
+    /// ROHF/ROKS Hessian-vector products computed on this thread (test seam).
+    static HVP_CALLS: Cell<usize> = const { Cell::new(0) };
+    /// PCG solves truncated on non-positive curvature on this thread.
+    static STEIHAUG_TRUNCATIONS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Number of Newton PCG solves on the calling thread that stopped on a
+/// non-positive-curvature direction (Steihaug truncation; test seam).
+#[doc(hidden)]
+pub fn steihaug_truncations_on_this_thread() -> usize {
+    STEIHAUG_TRUNCATIONS.with(Cell::get)
+}
+
+/// Number of [`hessian_matvec`] calls made on the calling thread so far (test
+/// seam). Direct four-centre builds are counted with the UHF ones, by
+/// [`crate::uhf_newton::direct_response_builds_on_this_thread`].
+#[doc(hidden)]
+pub fn hvp_calls_on_this_thread() -> usize {
+    HVP_CALLS.with(Cell::get)
+}
 
 /// Optional XC kernel callable for ROKS Newton: given (δD_α, δD_β) it returns
 /// the response of the per-spin XC potential (δV_xc^α, δV_xc^β) in AO basis.
@@ -35,12 +58,20 @@ pub type FxcResponse<'a> =
 
 /// Inputs to one Newton step.
 pub struct RohfNewtonInputs<'a> {
+    /// The AO basis on the molecule.
     pub prep: &'a PreparedBasis,
+    /// Schwarz bounds for the response J/K builds.
     pub bounds: &'a SchwarzBounds,
+    /// Current MO coefficients, AO rows by MO columns, columns ordered
+    /// closed | open | virtual.
     pub c: &'a Array2<f64>, // MO coeffs (n × n), columns ordered closed | open | virt
+    /// α spin Fock in the MO basis of `c`, current iteration.
     pub f_a_mo: &'a Array2<f64>, // α Fock in MO basis (current iter)
+    /// β spin Fock in the MO basis of `c`, current iteration.
     pub f_b_mo: &'a Array2<f64>, // β Fock in MO basis
+    /// Number of doubly occupied (closed-shell) MOs.
     pub nocc_double: usize,
+    /// Number of singly occupied (open-shell) MOs.
     pub nocc_open: usize,
     /// K mixing coefficient for the plain-Coulomb exchange response
     /// (1.0 for HF, c_HF for a global hybrid). Read ONLY when `rsh` is `None`.
@@ -57,13 +88,26 @@ pub struct RohfNewtonInputs<'a> {
     /// Roothaan Hessian being a third operator, not about the exchange kernel,
     /// and it stands.
     pub rsh: Option<&'a crate::rsh_response::RshResponse<'a>>,
+    /// XC response `(δD_α, δD_β) -> (δV_xc^α, δV_xc^β)` for ROKS; `None` for
+    /// pure ROHF.
     pub fxc: Option<&'a FxcResponse<'a>>,
+    /// Integral screening threshold for the response J/K builds (the solver
+    /// passes `RhfConfig::integral_thresh`).
     pub thresh: f64,
     /// Solver-resolved memory budget (see `rhf::resolve_three_index_budget`),
     /// used to size the `build_jk_with_pool` reduction band via
     /// `reduce::resolve_band_bytes` — never affects results, only the
     /// live-set/parallel width of the deterministic reduction.
     pub ooc_budget: usize,
+    /// Coulomb response of the Fock's own DF-J (`δJ[δD_α + δD_β]`), as in
+    /// [`crate::uhf_newton::UhfNewtonInputs::j_response`]. `None`: the exact
+    /// four-centre δJ, which is what a direct-J Fock differentiates.
+    pub j_response: Option<&'a AoResponse<'a>>,
+    /// Exchange response of the Fock's own ω = 0 exchange builder (DF-K
+    /// occupied-factor, or the unfitted COSX / `DirectK` density build), as in
+    /// [`crate::uhf_newton::UhfNewtonInputs::k_response`]. `None`: exact δK.
+    /// Ignored on the RSH path and when `k_mix_sr == 0`.
+    pub k_response: Option<KResponse<'a>>,
 }
 
 /// One damped-Newton step on ROHF/ROKS MO coefficients.
@@ -107,11 +151,9 @@ pub fn rohf_newton_step(
     //   closed↔virt: both α and β change → (F_α[v,v] + F_β[v,v]) − (F_α[c,c] + F_β[c,c])
     //   open↔virt:   only α changes      → F_α[v,v] − F_α[o,o]
     //   closed↔open: only β changes      → F_β[o,o] − F_β[c,c]
-    // The Hessian matvec applies these same per-spin Fock diagonals
-    // multiplicatively to κ — using F_eff eigenvalues (the previous
-    // implementation) was wrong because F_eff eigenvalues mix α and β
-    // contributions in the wrong proportions for the off-diagonal blocks,
-    // leading to a Newton step that points away from the minimum.
+    // These gaps are the PCG preconditioner only; the Hessian matvec applies
+    // the exact Fock commutator. (F_eff eigenvalues would mix α and β in the
+    // wrong proportions for the off-diagonal blocks.)
     let f_a_diag: Vec<f64> = (0..n).map(|i| inp.f_a_mo[(i, i)]).collect();
     let f_b_diag: Vec<f64> = (0..n).map(|i| inp.f_b_mo[(i, i)]).collect();
     let f_sum_diag: Vec<f64> = (0..n).map(|i| f_a_diag[i] + f_b_diag[i]).collect();
@@ -125,73 +167,38 @@ pub fn rohf_newton_step(
     let mut k_vo = elemwise_div_neg(&g_vo, &diag_vo);
     let mut k_oc = elemwise_div_neg(&g_oc, &diag_oc);
 
-    // Early-exit if the gradient itself is below tolerance (we're already
-    // at a stationary point — the off-diagonal matvec correction would
-    // only amplify numerical noise).
     let gmax = arr_max_abs(&g_vc)
         .max(arr_max_abs(&g_vo))
         .max(arr_max_abs(&g_oc));
-    let cg_max_iter_effective = if gmax < cg_conv { 0 } else { cg_max_iter };
-
-    // Preconditioned conjugate-gradient solve for H·κ = −g.
-    //
-    // The orbital Hessian is symmetric (and positive-definite near a
-    // minimum), so PCG converges in O(√κ) iterations, vs Jacobi which
-    // diverges whenever the off-diagonal coupling exceeds the |Δε|
-    // diagonal. Preconditioner M = diag(|Δε| + shift); M^{-1} amplifies
-    // long-wavelength modes the way Jacobi does, but inside the
-    // conjugate-direction machinery the divergence is suppressed.
-    //
-    // Standard PCG (Saad, "Iterative Methods", Alg. 9.1) on the packed
-    // (vc, vo, oc) triple.
-    let (h0_vc, h0_vo, h0_oc) = hessian_matvec(ctx, inp, &k_vc, &k_vo, &k_oc, &pool)?;
-    let mut r_vc = sub(&neg(&g_vc), &h0_vc);
-    let mut r_vo = sub(&neg(&g_vo), &h0_vo);
-    let mut r_oc = sub(&neg(&g_oc), &h0_oc);
-
-    let mut z_vc = elemwise_div(&r_vc, &diag_vc);
-    let mut z_vo = elemwise_div(&r_vo, &diag_vo);
-    let mut z_oc = elemwise_div(&r_oc, &diag_oc);
-
-    let mut p_vc = z_vc.clone();
-    let mut p_vo = z_vo.clone();
-    let mut p_oc = z_oc.clone();
-
-    let mut rz_old: f64 = inner(&r_vc, &z_vc) + inner(&r_vo, &z_vo) + inner(&r_oc, &z_oc);
-
-    for _it in 0..cg_max_iter_effective {
-        let max_resid = arr_max_abs(&r_vc)
-            .max(arr_max_abs(&r_vo))
-            .max(arr_max_abs(&r_oc));
-        if max_resid < cg_conv {
-            break;
+    // Below tolerance κ = 0 already meets the PCG stopping test (its residual
+    // is −g, |g| < cg_conv), so no HVP is computed and the step is zero. A
+    // diagonal guess κ⁰ = −g/Δ has an unknown residual: on a degenerate open
+    // shell the open→virtual gap within the degenerate set is floored at
+    // 1e-6, so |g| ~ 2e-8 gives rotations ~0.02 along the flat
+    // hole-orientation mode, and ΔP never reaches density_conv (MEASURED
+    // 2026-11-11, CH ²Π/6-31G PBE, 1e-5 Å off-axis, soscf: E settled to 1e-13
+    // by iteration 9, not converged in 200).
+    if gmax >= cg_conv {
+        let k = (&mut k_vc, &mut k_vo, &mut k_oc);
+        let g = (&g_vc, &g_vo, &g_oc);
+        let diag = (&diag_vc, &diag_vo, &diag_oc);
+        let matvec = |a: &Array2<f64>, b: &Array2<f64>, c: &Array2<f64>| {
+            hessian_matvec(ctx, inp, a, b, c, &pool)
+        };
+        let (its, resid) = pcg_refine(matvec, g, diag, k, (cg_max_iter, cg_conv, max_step))?;
+        if crate::rohf::rohf_trace() {
+            let kmax = arr_max_abs(&k_vc)
+                .max(arr_max_abs(&k_vo))
+                .max(arr_max_abs(&k_oc));
+            eprintln!(
+                "ROHF Newton: |g|max {gmax:.2e} PCG its {its}/{cg_max_iter} resid {resid:.2e} (tol {cg_conv:.0e}) |κ|max {kmax:.2e} clip {}",
+                kmax > max_step
+            );
         }
-        // Ap = H · p
-        let (ap_vc, ap_vo, ap_oc) = hessian_matvec(ctx, inp, &p_vc, &p_vo, &p_oc, &pool)?;
-        let p_ap: f64 = inner(&p_vc, &ap_vc) + inner(&p_vo, &ap_vo) + inner(&p_oc, &ap_oc);
-        if p_ap.abs() < 1e-30 {
-            break;
-        }
-        let alpha = rz_old / p_ap;
-        // κ ← κ + α p
-        k_vc.zip_mut_with(&p_vc, |k, &v| *k += alpha * v);
-        k_vo.zip_mut_with(&p_vo, |k, &v| *k += alpha * v);
-        k_oc.zip_mut_with(&p_oc, |k, &v| *k += alpha * v);
-        // r ← r − α (A p)
-        r_vc.zip_mut_with(&ap_vc, |r, &v| *r -= alpha * v);
-        r_vo.zip_mut_with(&ap_vo, |r, &v| *r -= alpha * v);
-        r_oc.zip_mut_with(&ap_oc, |r, &v| *r -= alpha * v);
-        // z = M^{-1} r
-        z_vc = elemwise_div(&r_vc, &diag_vc);
-        z_vo = elemwise_div(&r_vo, &diag_vo);
-        z_oc = elemwise_div(&r_oc, &diag_oc);
-        let rz_new: f64 = inner(&r_vc, &z_vc) + inner(&r_vo, &z_vo) + inner(&r_oc, &z_oc);
-        let beta = rz_new / rz_old;
-        rz_old = rz_new;
-        // p ← z + β p
-        p_vc.zip_mut_with(&z_vc, |p, &v| *p = v + beta * *p);
-        p_vo.zip_mut_with(&z_vo, |p, &v| *p = v + beta * *p);
-        p_oc.zip_mut_with(&z_oc, |p, &v| *p = v + beta * *p);
+    } else {
+        k_vc.fill(0.0);
+        k_vo.fill(0.0);
+        k_oc.fill(0.0);
     }
 
     // Trust-radius clip.
@@ -231,24 +238,180 @@ pub fn rohf_newton_step(
     }
 
     // Cayley unitary U = (I − κ/2)^{−1} (I + κ/2). Apply to C: C ← C·U.
-    let half_k = 0.5 * &kappa;
-    let i_eye = Array2::<f64>::eye(n);
-    let a = &i_eye - &half_k;
-    let b = &i_eye + &half_k;
-    // Solve A·U = B columnwise.
-    let mut u = Array2::<f64>::zeros((n, n));
-    for col in 0..n {
-        let bcol = b.column(col).to_owned();
-        let sol = a
-            .solve(&bcol)
-            .map_err(|e| FerricError::Lapack(format!("Cayley solve: {e}")))?;
-        for row in 0..n {
-            u[(row, col)] = sol[row];
-        }
-    }
-    let c_new = inp.c.dot(&u);
+    let c_new = crate::cayley::cayley_rotate(inp.c, &kappa)?;
 
     Ok((c_new, kmax))
+}
+
+/// Preconditioned conjugate-gradient refinement of `(κ_vc, κ_vo, κ_oc)` (on
+/// entry the diagonal guess κ⁰) towards H·κ = −g, `matvec` the product H·p on
+/// the three blocks. No CG step is taken along a direction of non-positive
+/// curvature: there the step goes along p to the `max_step` box and PCG
+/// stops (Steihaug truncation).
+#[allow(clippy::type_complexity)]
+fn pcg_refine<M>(
+    mut matvec: M,
+    (g_vc, g_vo, g_oc): (&Array2<f64>, &Array2<f64>, &Array2<f64>),
+    (diag_vc, diag_vo, diag_oc): (&Array2<f64>, &Array2<f64>, &Array2<f64>),
+    (k_vc, k_vo, k_oc): (&mut Array2<f64>, &mut Array2<f64>, &mut Array2<f64>),
+    (cg_max_iter, cg_conv, max_step): (usize, f64, f64),
+) -> Result<(usize, f64), FerricError>
+where
+    M: FnMut(
+        &Array2<f64>,
+        &Array2<f64>,
+        &Array2<f64>,
+    ) -> Result<(Array2<f64>, Array2<f64>, Array2<f64>), FerricError>,
+{
+    // Preconditioned conjugate-gradient solve for H·κ = −g.
+    //
+    // The orbital Hessian is symmetric (and positive-definite near a
+    // minimum), so PCG converges in O(√κ) iterations, vs Jacobi which
+    // diverges whenever the off-diagonal coupling exceeds the |Δε|
+    // diagonal. Preconditioner M = diag(|Δε| + shift); M^{-1} amplifies
+    // long-wavelength modes the way Jacobi does, but inside the
+    // conjugate-direction machinery the divergence is suppressed.
+    //
+    // Standard PCG (Saad, "Iterative Methods", Alg. 9.1) on the packed
+    // (vc, vo, oc) triple.
+    let (h0_vc, h0_vo, h0_oc) = matvec(k_vc, k_vo, k_oc)?;
+    let mut r_vc = sub(&neg(g_vc), &h0_vc);
+    let mut r_vo = sub(&neg(g_vo), &h0_vo);
+    let mut r_oc = sub(&neg(g_oc), &h0_oc);
+
+    let mut z_vc = elemwise_div(&r_vc, diag_vc);
+    let mut z_vo = elemwise_div(&r_vo, diag_vo);
+    let mut z_oc = elemwise_div(&r_oc, diag_oc);
+
+    let mut p_vc = z_vc.clone();
+    let mut p_vo = z_vo.clone();
+    let mut p_oc = z_oc.clone();
+
+    let mut rz_old: f64 = inner(&r_vc, &z_vc) + inner(&r_vo, &z_vo) + inner(&r_oc, &z_oc);
+
+    let resid = |r: (&Array2<f64>, &Array2<f64>, &Array2<f64>)| {
+        arr_max_abs(r.0).max(arr_max_abs(r.1)).max(arr_max_abs(r.2))
+    };
+    let mut its = 0;
+    for _it in 0..cg_max_iter {
+        if resid((&r_vc, &r_vo, &r_oc)) < cg_conv {
+            break;
+        }
+        its += 1;
+        // Ap = H · p
+        let (ap_vc, ap_vo, ap_oc) = matvec(&p_vc, &p_vo, &p_oc)?;
+        let p_ap: f64 = inner(&p_vc, &ap_vc) + inner(&p_vo, &ap_vo) + inner(&p_oc, &ap_oc);
+        // Steihaug truncation. The exact Hessian is indefinite near a saddle
+        // (e.g. a hole in the wrong shell); on negative curvature the CG step
+        // α = rᵀz/pᵀAp is negative and would move to the model's stationary
+        // point along p, which is a maximum there, so Newton could converge
+        // to the saddle. Instead step along +p to the `max_step` box: the
+        // quadratic model m(κ) = gᵀκ + ½κᵀHκ has slope −rᵀp along p at the
+        // current iterate (its gradient there is g + Hκ = −r) and curvature
+        // pᵀAp < 0, so it decreases monotonically all the way to the box
+        // whenever rᵀp ≥ 0. In PCG that always holds: rᵀp = rᵀz + β·rᵀp_prev
+        // and rᵀp_prev = 0 by CG's orthogonality, so rᵀp = rᵀM⁻¹r > 0 (M is
+        // positive, `build_diag_perspin`). No ± choice is needed, and none
+        // is made.
+        //
+        // If κ is already at (or, κ⁰ being unclipped, outside) the box in a
+        // component that +p pushes further out, `box_step` gives t = 0 and
+        // the step is the current iterate, which the caller then clips: the
+        // "keep the iterate" behaviour, a descent step on the first
+        // pass (κ⁰ = −M⁻¹g). MEASURED 2026-11-11 (FERRIC_ROHF_TRACE prints t
+        // per truncation; with the guard then at pᵀAp < −1e-3·|p|²): in the two
+        // saddle tests' full SCFs, 10 of 16 truncations hit t = 0, all in
+        // later SCF iterations. Restarting from κ = 0 along ±p (sign by
+        // gᵀp ≤ 0) to the box instead was measured and not kept: the same
+        // 20 / 22 iterations, 124 / 125 HVPs against 120 / 124.
+        //
+        // Every pᵀAp ≤ 0 truncates, including the shallow curvature of the π-hole
+        // orientation modes of off-axis ²Π OH/NO under PBE. MEASURED
+        // 2026-11-11 (Rayleigh quotients pᵀAp/|p|², half-Hessian, Hartree):
+        // those modes sit at −2e-7 .. −1.04e-4 (the XC grid's rotational
+        // variance, up to 3.4e-6 Ha between orientations), the OH/6-31G
+        // σ-hole saddle at −0.08 .. −0.15. Continuing CG through the former
+        // (the guard at −1e-3·|p|²) took steps with α < 0, to the model's
+        // maximum along p, in 9 PCG solves of the convergence suites.
+        // Alternatives on −1e-3·|p|² ≤ pᵀAp ≤ 0, iterations (HVPs) for
+        // NO off-axis Newton / soscf, against 12 (20) / 13 (19) for the
+        // negative-α CG step: stop at the current iterate 92 (460) / 60
+        // (335), a crawl between grid-degenerate orientations; a step
+        // α = rᵀz/(1e-3·|p|²) along +p and stop 26 (138) / 49 (273), and
+        // continue CG 23 (151) / 24 (152); this box step 23 (121) / 24
+        // (124). Any negative curvature PCG meets, however shallow, is
+        // stepped along to the box. A positive pᵀAp, however small, takes the
+        // CG step: α = rᵀz/pᵀAp scales as |p|⁰, so it stays O(1/h) as p
+        // shrinks near convergence. A vanishing p ends PCG without a step.
+        let pp = inner(&p_vc, &p_vc) + inner(&p_vo, &p_vo) + inner(&p_oc, &p_oc);
+        if pp == 0.0 {
+            break;
+        }
+        if p_ap <= 0.0 {
+            STEIHAUG_TRUNCATIONS.with(|c| c.set(c.get() + 1));
+            let t = [(&*k_vc, &p_vc), (&*k_vo, &p_vo), (&*k_oc, &p_oc)]
+                .into_iter()
+                .map(|(k, p)| box_step(k, p, max_step))
+                .fold(f64::INFINITY, f64::min);
+            let t = if t.is_finite() { t } else { 0.0 };
+            if crate::rohf::rohf_trace() {
+                eprintln!(
+                    "ROHF Newton: Steihaug truncation, curvature {:.3e}, step t {t:.3e} along p (|p|max {:.2e})",
+                    p_ap / pp,
+                    arr_max_abs(&p_vc).max(arr_max_abs(&p_vo)).max(arr_max_abs(&p_oc))
+                );
+            }
+            k_vc.zip_mut_with(&p_vc, |k, &v| *k += t * v);
+            k_vo.zip_mut_with(&p_vo, |k, &v| *k += t * v);
+            k_oc.zip_mut_with(&p_oc, |k, &v| *k += t * v);
+            break;
+        }
+        let alpha = rz_old / p_ap;
+        if !alpha.is_finite() {
+            return Err(FerricError::General(format!(
+                "ROHF Newton PCG: non-finite step length (rᵀz {rz_old:.3e} / pᵀAp {p_ap:.3e})"
+            )));
+        }
+        // κ ← κ + α p
+        k_vc.zip_mut_with(&p_vc, |k, &v| *k += alpha * v);
+        k_vo.zip_mut_with(&p_vo, |k, &v| *k += alpha * v);
+        k_oc.zip_mut_with(&p_oc, |k, &v| *k += alpha * v);
+        // r ← r − α (A p)
+        r_vc.zip_mut_with(&ap_vc, |r, &v| *r -= alpha * v);
+        r_vo.zip_mut_with(&ap_vo, |r, &v| *r -= alpha * v);
+        r_oc.zip_mut_with(&ap_oc, |r, &v| *r -= alpha * v);
+        // z = M^{-1} r
+        z_vc = elemwise_div(&r_vc, diag_vc);
+        z_vo = elemwise_div(&r_vo, diag_vo);
+        z_oc = elemwise_div(&r_oc, diag_oc);
+        let rz_new: f64 = inner(&r_vc, &z_vc) + inner(&r_vo, &z_vo) + inner(&r_oc, &z_oc);
+        let beta = rz_new / rz_old;
+        rz_old = rz_new;
+        // p ← z + β p
+        p_vc.zip_mut_with(&z_vc, |p, &v| *p = v + beta * *p);
+        p_vo.zip_mut_with(&z_vo, |p, &v| *p = v + beta * *p);
+        p_oc.zip_mut_with(&z_oc, |p, &v| *p = v + beta * *p);
+    }
+
+    Ok((its, resid((&r_vc, &r_vo, &r_oc))))
+}
+
+/// Largest `t ≥ 0` with `|κ_i + t·p_i| ≤ max_step` for every component
+/// (∞ when `p` is zero). A component already at or outside the box in the
+/// direction `p` pushes gives `t = 0`.
+fn box_step(k: &Array2<f64>, p: &Array2<f64>, max_step: f64) -> f64 {
+    k.iter()
+        .zip(p.iter())
+        .filter(|(_, &pi)| pi != 0.0)
+        .map(|(&ki, &pi)| {
+            let room = if pi > 0.0 {
+                max_step - ki
+            } else {
+                max_step + ki
+            };
+            (room / pi.abs()).max(0.0)
+        })
+        .fold(f64::INFINITY, f64::min)
 }
 
 /// Compute H · κ for the three κ-blocks.
@@ -287,14 +450,13 @@ pub(crate) fn gradient_blocks_from(
 }
 
 /// Normalisation and exactness (measured by `tests/rohf_hessian_matvec_fd.rs`):
-/// the result is d/dκ of the HALF gradient `gradient_blocks_from`, i.e. half
-/// the true orbital Hessian. The J/K(+XC) response part is exact in every
-/// block. The Fock part is only the DIAGONAL gap `F[p,p] - F[q,q]`, not the
-/// full commutator `F κ - κ F`, so the matvec equals the true derivative only
-/// when the per-spin Focks have no off-diagonal terms in the rotated
-/// sub-blocks (the vc block at a converged point is exact; the vo/oc blocks
-/// and every block away from convergence are not). Adequate as a Newton/PCG
-/// operator; NOT an exact Hessian.
+/// the result is half the exact orbital Hessian of `E(C exp κ)` (the
+/// [`crate::rohf_trah::rohf_exact_hessian_matvec`] product / 2) in every
+/// block, f_xc included. It is symmetric at any point; at a stationary point
+/// it equals d/dκ of the half gradient `gradient_blocks_from`, and away from
+/// one it differs from that (non-symmetric) Jacobian by `½ Σ_σ [κ, [N_σ, f_σ]]`,
+/// a term linear in the gradient. The Fock part is the exact commutator; the
+/// diagonal gap `F[p,p] − F[q,q]` is only the PCG preconditioner.
 //
 // Returns the three coupling blocks (vc, vo, oc) of the Hessian-vector product;
 // the tuple mirrors the three input blocks and reads clearer than an alias.
@@ -308,6 +470,7 @@ pub fn hessian_matvec(
     k_oc: &Array2<f64>,
     pool: &EnginePool,
 ) -> Result<(Array2<f64>, Array2<f64>, Array2<f64>), FerricError> {
+    HVP_CALLS.with(|c| c.set(c.get() + 1));
     let n = inp.c.nrows();
     let nc = inp.nocc_double;
     let no = inp.nocc_open;
@@ -372,48 +535,8 @@ pub fn hessian_matvec(
     let dd_a_ao = inp.c.dot(&dd_a_mo).dot(&inp.c.t());
     let dd_b_ao = inp.c.dot(&dd_b_mo).dot(&inp.c.t());
 
-    // δJ from δD_total = δD_α + δD_β.
-    let band_bytes = crate::reduce::resolve_band_bytes(inp.ooc_budget);
-    let dd_tot = &dd_a_ao + &dd_b_ao;
-    let mut dj = Array2::<f64>::zeros((n, n));
-    let mut dk_dum = Array2::<f64>::zeros((n, n)); // discarded — we want J only here
-                                                   // Build J on δD_total. We re-use build_jk but only keep J; K is rebuilt per-spin below.
-    build_jk_with_pool(
-        ctx,
-        inp.prep,
-        inp.bounds,
-        inp.thresh,
-        &dd_tot,
-        &mut dj,
-        &mut dk_dum,
-        pool,
-        band_bytes,
-    )?;
-
-    // δK per spin. The RSH branch builds c_SR·δK[erfc(ω)] + c_LR·δK[erf(ω)]
-    // from the Fock's own DF-K fitters (per-spin Fock ⇒ no extra factor, as in
-    // `solve_rohf`'s `subtract_rsh_exchange` calls); the ω = 0 branch is the
-    // untouched pre-#314 code, so a non-RSH run is bit-identical.
-    let (mut df_a, mut df_b) = if let Some(rsh) = inp.rsh {
-        let dk_a = rsh.exchange_response(&dd_a_ao)?;
-        let dk_b = rsh.exchange_response(&dd_b_ao)?;
-        (&dj - &dk_a, &dj - &dk_b)
-    } else {
-        let mut dk_a = Array2::<f64>::zeros((n, n));
-        let mut dk_b = Array2::<f64>::zeros((n, n));
-        let mut j_dum = Array2::<f64>::zeros((n, n));
-        build_jk_with_pool(
-            ctx, inp.prep, inp.bounds, inp.thresh, &dd_a_ao, &mut j_dum, &mut dk_a, pool,
-            band_bytes,
-        )?;
-        j_dum.fill(0.0);
-        build_jk_with_pool(
-            ctx, inp.prep, inp.bounds, inp.thresh, &dd_b_ao, &mut j_dum, &mut dk_b, pool,
-            band_bytes,
-        )?;
-        let c_k = inp.k_mix_sr;
-        (&dj - &(c_k * &dk_a), &dj - &(c_k * &dk_b))
-    };
+    let (mut df_a, mut df_b) =
+        response_fock(ctx, inp, pool, (k_vc, k_vo, k_oc), (&dd_a_ao, &dd_b_ao))?;
 
     if let Some(fxc) = inp.fxc {
         let (dvxc_a, dvxc_b) = fxc(&dd_a_ao, &dd_b_ao);
@@ -430,31 +553,100 @@ pub fn hessian_matvec(
     let mut h_vo = pack_block(&df_a_mo, &df_b_mo, nocc_a..n, nc..nocc_a, false); // α
     let mut h_oc = pack_block(&df_b_mo, &df_b_mo, nc..nocc_a, 0..nc, false); // β
 
-    // Per-spin diagonal Fock-commutator: each block uses the diagonal Fock
-    // entries from the spin(s) that actually change occupation in that block.
-    // See preconditioner notes above.
-    let f_a_diag: Vec<f64> = (0..n).map(|i| inp.f_a_mo[(i, i)]).collect();
-    let f_b_diag: Vec<f64> = (0..n).map(|i| inp.f_b_mo[(i, i)]).collect();
-    for (ir, p) in (nocc_a..n).enumerate() {
-        for (ic, q) in (0..nc).enumerate() {
-            let gap = (f_a_diag[p] + f_b_diag[p]) - (f_a_diag[q] + f_b_diag[q]);
-            h_vc[(ir, ic)] += gap * k_vc[(ir, ic)];
-        }
-    }
-    for (ir, p) in (nocc_a..n).enumerate() {
-        for (ic, q) in (nc..nocc_a).enumerate() {
-            let gap = f_a_diag[p] - f_a_diag[q];
-            h_vo[(ir, ic)] += gap * k_vo[(ir, ic)];
-        }
-    }
-    for (ir, p) in (nc..nocc_a).enumerate() {
-        for (ic, q) in (0..nc).enumerate() {
-            let gap = f_b_diag[p] - f_b_diag[q];
-            h_oc[(ir, ic)] += gap * k_oc[(ir, ic)];
-        }
+    // The Fock-commutator part: the exact one of `rohf_trah` (true scale,
+    // halved to this function's half-gradient normalisation), not the
+    // diagonal gap `F[p,p] − F[q,q]`, which misses the oc-coupled terms
+    // (13-106 % per-cell error on NH2/OH B3LYP, and on OH's soft π mode
+    // ρ(I − H_gap⁻¹ H) = 2.27, i.e. a divergent Newton iteration). The
+    // diagonal gap stays only as the PCG preconditioner (`build_diag_perspin`).
+    let x: Vec<f64> = k_vc
+        .iter()
+        .chain(k_vo.iter())
+        .chain(k_oc.iter())
+        .copied()
+        .collect();
+    let fock = crate::rohf_trah::rohf_fock_hessian_matvec(inp.f_a_mo, inp.f_b_mo, nc, no, &x);
+    for (h, f) in h_vc
+        .iter_mut()
+        .chain(h_vo.iter_mut())
+        .chain(h_oc.iter_mut())
+        .zip(fock.iter())
+    {
+        *h += 0.5 * f;
     }
 
     Ok((h_vc, h_vo, h_oc))
+}
+
+/// `(δF_α, δF_β)` without the XC kernel: `δJ[δD_α + δD_β] − δK_σ` per spin,
+/// with the same builder choice as the UHF matvec (`uhf_newton::response_fock`):
+/// fitted δJ when `inp.j_response` is lent; RSH pair when `inp.rsh` is set;
+/// otherwise δK only when `k_mix_sr != 0`, from the occupied-factor DF-K or
+/// the unfitted density builder when lent, else direct. For the fitted K each spin's δD_σ is written as
+/// `Y·Xᵀ + X·Yᵀ` over that spin's occupied/unoccupied split:
+/// α: occ = closed+open, κ_α = [κ_vc | κ_vo] (virt rows); β: occ = closed,
+/// κ_β = [κ_oc ; κ_vc] (open rows then virt rows).
+#[allow(clippy::type_complexity)]
+fn response_fock(
+    ctx: &ParallelContext,
+    inp: &RohfNewtonInputs,
+    pool: &EnginePool,
+    (k_vc, k_vo, k_oc): (&Array2<f64>, &Array2<f64>, &Array2<f64>),
+    (dd_a_ao, dd_b_ao): (&Array2<f64>, &Array2<f64>),
+) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
+    let direct = |dd: &Array2<f64>| {
+        direct_jk(
+            ctx,
+            inp.prep,
+            inp.bounds,
+            inp.thresh,
+            inp.ooc_budget,
+            pool,
+            dd,
+        )
+    };
+    // Every fitted build below (RI-J, the ± occupied-factor DF-K, the RSH
+    // pair) runs OUTSIDE the SCF's J/K ladder scope; without this guard a
+    // mixed-precision device kernel would treat them as mixed, and the ±
+    // occupied-factor δK would carry an f32 error independent of |κ| (as in
+    // `rhf_newton::response_jk`). Direct builds do not consult the scope.
+    let _f64 = crate::jk_ladder::F64BuildScope::enter();
+    let dd_tot = dd_a_ao + dd_b_ao;
+    let dj = match inp.j_response {
+        Some(jr) => jr(&dd_tot)?,
+        None => direct(&dd_tot)?.0,
+    };
+    // The RSH branch builds c_SR·δK[erfc(ω)] + c_LR·δK[erf(ω)] from the Fock's
+    // own DF-K fitters (per-spin Fock ⇒ no extra factor, as in `solve_rohf`'s
+    // `subtract_rsh_exchange` calls).
+    if let Some(rsh) = inp.rsh {
+        let dk_a = rsh.exchange_response(dd_a_ao)?;
+        let dk_b = rsh.exchange_response(dd_b_ao)?;
+        return Ok((&dj - &dk_a, &dj - &dk_b));
+    }
+    let c_k = inp.k_mix_sr;
+    if c_k == 0.0 {
+        return Ok((dj.clone(), dj));
+    }
+    let (dk_a, dk_b) = match inp.k_response {
+        Some(KResponse::Density(kr)) => (kr(dd_a_ao)?, kr(dd_b_ao)?),
+        Some(KResponse::Occ(kr)) => {
+            let (nc, no) = (inp.nocc_double, inp.nocc_open);
+            let k_a = ndarray::concatenate![ndarray::Axis(1), *k_vc, *k_vo];
+            let k_b = ndarray::concatenate![ndarray::Axis(0), *k_oc, *k_vc];
+            let mut k_occ = |c: &Array2<f64>, out: &mut Array2<f64>| -> Result<(), FerricError> {
+                *out = kr(c)?;
+                Ok(())
+            };
+            let mut spin = |k_ov: &Array2<f64>, nocc: usize| {
+                crate::rhf_newton::occ_pair_response_k(&mut k_occ, inp.c, k_ov, nocc)
+                    .map(|k| 0.5 * k)
+            };
+            (spin(&k_a, nc + no)?, spin(&k_b, nc)?)
+        }
+        None => (direct(dd_a_ao)?.1, direct(dd_b_ao)?.1),
+    };
+    Ok((&dj - &(c_k * &dk_a), &dj - &(c_k * &dk_b)))
 }
 
 // ---- block helpers ----
@@ -498,11 +690,13 @@ fn build_diag_perspin(
     let mut out = Array2::<f64>::zeros((nr, nc));
     for (i, r) in rows.enumerate() {
         for (j, c) in cols.clone().enumerate() {
-            // (F[p,p] − F[q,q]) + shift, with a 1e-6 floor for near-degeneracies.
-            // Signed (NOT abs) — for an occ→virt block this is positive and
-            // gives the right Newton step direction when divided into the gradient.
-            let d = (f_diag[r] - f_diag[c]) + shift;
-            out[(i, j)] = if d.abs() < 1e-6 { 1e-6 } else { d };
+            // positive (|gap| + shift, floored at 1e-6): the Steihaug guard in
+            // `pcg_refine` needs a positive preconditioner so that κ⁰ = −M⁻¹g
+            // is a descent direction. A signed gap is negative exactly where
+            // the per-spin Fock order is inverted (a hole in the wrong shell),
+            // and there it pointed κ⁰ uphill.
+            let d = (f_diag[r] - f_diag[c]).abs() + shift;
+            out[(i, j)] = d.max(1e-6);
         }
     }
     out
@@ -525,4 +719,121 @@ fn arr_max_abs(a: &Array2<f64>) -> f64 {
 }
 fn inner(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type Blocks = (Array2<f64>, Array2<f64>, Array2<f64>);
+
+    fn one(x: f64) -> Array2<f64> {
+        Array2::from_elem((1, 1), x)
+    }
+
+    fn blocks(v: [f64; 3]) -> Blocks {
+        (one(v[0]), one(v[1]), one(v[2]))
+    }
+
+    /// `pcg_refine` on a diagonal operator H = diag(h) over three 1×1 blocks,
+    /// preconditioner diag(m), from κ⁰ = −g/m, box 1. Returns κ, m(κ⁰) and
+    /// m(κ) for the quadratic model m(κ) = gᵀκ + ½κᵀHκ, and the Steihaug
+    /// truncations it made.
+    fn run(h: [f64; 3], g: [f64; 3], m: [f64; 3], cg_conv: f64) -> ([f64; 3], f64, f64, usize) {
+        let model = |k: [f64; 3]| (0..3).map(|i| g[i] * k[i] + 0.5 * h[i] * k[i] * k[i]).sum();
+        let k0 = [-g[0] / m[0], -g[1] / m[1], -g[2] / m[2]];
+        let (gb, mb) = (blocks(g), blocks(m));
+        let (mut kvc, mut kvo, mut koc) = blocks(k0);
+        let matvec =
+            |a: &Array2<f64>, b: &Array2<f64>, c: &Array2<f64>| Ok((h[0] * a, h[1] * b, h[2] * c));
+        let t0 = steihaug_truncations_on_this_thread();
+        pcg_refine(
+            matvec,
+            (&gb.0, &gb.1, &gb.2),
+            (&mb.0, &mb.1, &mb.2),
+            (&mut kvc, &mut kvo, &mut koc),
+            (20, cg_conv, 1.0),
+        )
+        .unwrap();
+        let k = [kvc[(0, 0)], kvo[(0, 0)], koc[(0, 0)]];
+        (
+            k,
+            model(k0),
+            model(k),
+            steihaug_truncations_on_this_thread() - t0,
+        )
+    }
+
+    /// A positive pᵀAp small enough that rᵀz/pᵀAp overflows is an error, not
+    /// a NaN step: curvature 1e-310, g = 1e-4, M = 1 gives pᵀAp ≈ 1e-318 and
+    /// α = ∞.
+    ///
+    /// MUTATION: drop the `alpha.is_finite()` check and this goes RED (the
+    /// call returns Ok with non-finite κ).
+    #[test]
+    fn pcg_rejects_a_non_finite_step_length() {
+        let (gb, mb) = (blocks([1e-4, 0.0, 0.0]), blocks([1.0, 1.0, 1.0]));
+        let (mut kvc, mut kvo, mut koc) = blocks([-1e-4, 0.0, 0.0]);
+        let matvec =
+            |a: &Array2<f64>, b: &Array2<f64>, c: &Array2<f64>| Ok((1e-310 * a, 1.0 * b, 1.0 * c));
+        let r = pcg_refine(
+            matvec,
+            (&gb.0, &gb.1, &gb.2),
+            (&mb.0, &mb.1, &mb.2),
+            (&mut kvc, &mut kvo, &mut koc),
+            (20, 0.0, 1.0),
+        );
+        assert!(r.is_err(), "Ok with κ {:?}", kvc[(0, 0)]);
+    }
+
+    /// No CG step is taken along non-positive curvature, however shallow. A
+    /// CG step there has α = rᵀz/pᵀAp < 0 and moves to the model's maximum
+    /// along p, raising m by ½(rᵀz)²/|pᵀAp|; the Steihaug step goes along +p
+    /// to the box, downhill.
+    ///
+    /// (a) The first direction has curvature −1e-4.
+    /// (b) One positive-curvature CG step, then a direction H-conjugate to it
+    ///     in the span of a +0.5 and a −1e-4 mode, whose curvature lies in
+    ///     [−1e-4, 0).
+    /// (c) Curvature −0.1.
+    /// Each truncates once, ends on the box (κ₂ = −1), and lowers m.
+    #[test]
+    fn pcg_takes_no_step_along_non_positive_curvature() {
+        let h = [1.0, -1e-4, 0.5];
+        for (label, h, g) in [
+            ("(a)", h, [0.1, 0.01, 0.0]),
+            ("(b)", h, [0.1, 0.01, 0.05]),
+            ("(c)", [1.0, -0.1, 0.5], [0.1, 0.001, 0.0]),
+        ] {
+            let (k, m0, m, trunc) = run(h, g, [1.0; 3], 1e-12);
+            assert_eq!(trunc, 1, "{label}: Steihaug truncations");
+            assert!(
+                (k[1] + 1.0).abs() < 1e-12,
+                "{label}: κ not on the box: {k:?}"
+            );
+            assert!(m < m0, "{label}: model did not fall: {m:.6e} >= {m0:.6e}");
+        }
+    }
+
+    /// A positive pᵀAp, however small, takes the CG step and never the box
+    /// step. With H positive definite, |g| = 1e-9 and `cg_conv` = 0, CG
+    /// converges in three steps and then meets round-off-sized directions
+    /// (pᵀAp near 1e-55). The solve must end at the Newton step −H⁻¹g, whose
+    /// largest component is 1e-9/0.3, with no truncation; a guard on an
+    /// absolute pᵀAp threshold moves κ to the box (|κ| of order 0.1).
+    #[test]
+    fn pcg_takes_no_box_step_on_tiny_positive_curvature() {
+        let h = [1.0, 0.3, 0.5];
+        let g = [1e-9, 1e-9, 1e-9];
+        let (k, _, _, trunc) = run(h, g, [1.0; 3], 0.0);
+        assert_eq!(trunc, 0, "Steihaug truncations on a positive-definite H");
+        for i in 0..3 {
+            let exact = -g[i] / h[i];
+            assert!(
+                (k[i] - exact).abs() <= 1e-6 * exact.abs(),
+                "κ[{i}] = {:.6e}, Newton step {exact:.6e}",
+                k[i]
+            );
+        }
+    }
 }

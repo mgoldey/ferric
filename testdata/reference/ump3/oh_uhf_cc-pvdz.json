@@ -1,0 +1,83 @@
+{
+  "system": "oh",
+  "reference": "uhf",
+  "basis": "cc-pvdz",
+  "aux_basis": "cc-pvdz-ri",
+  "charge": 0,
+  "multiplicity": 2,
+  "nao": 19,
+  "naux": 70,
+  "nuclear_repulsion": 4.365698347282665,
+  "frozen_core": 0,
+  "scf": {
+    "energy": -75.3938460334749,
+    "s_squared": 0.7545996661039132,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UHF internal (real)",
+      "rounds": 0,
+      "selected_guess": "minao",
+      "lambda_min": 6.282522062177689e-12
+    },
+    "multiple_stable_minima": false
+  },
+  "exact": {
+    "e2": -0.1509990491519589,
+    "e2_aa": -0.025004037531027392,
+    "e2_bb": -0.011805629254308404,
+    "e2_ab": -0.11418938236662332,
+    "e3": -0.012269030753316784,
+    "anchor_numpy_ss_diff": 5.551115123125783e-17,
+    "anchor_numpy_os_diff": -2.7755575615628914e-16,
+    "anchor_adc_mp2_diff": 8.326672684688674e-17
+  },
+  "ri": {
+    "e2": -0.15099327274832192,
+    "e2_aa": -0.025023427056174385,
+    "e2_bb": -0.011814219831345944,
+    "e2_ab": -0.11415562586080175,
+    "e3": -0.012349502488556374,
+    "anchor_numpy_ss_diff": -1.3877787807814457e-17,
+    "anchor_numpy_os_diff": -1.5265566588595902e-16,
+    "anchor_adc_mp2_diff": 1.1102230246251565e-16
+  },
+  "provenance": {
+    "generator": "scripts/gen_pyscf_ump3_refs.py",
+    "git_head": "441472242d3a857fe99b4499281f28ca1bca47a1",
+    "pyscf": "2.13.1",
+    "numpy": "1.26.4",
+    "xyz": "testdata/molecules/validation/oh.xyz",
+    "coords_bohr": [
+      [
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        1.8324674229907405
+      ]
+    ],
+    "symbols": [
+      "O",
+      "H"
+    ],
+    "basis_json_sha256": "4c2f450a81a8545e4df9e24a313111642cf70d5f7213fc8e879ef9dacab5da2f",
+    "aux_json_sha256": "8221d2a31b5bbebd39218fc3f9244917e173a338ff9c56904038443a06e2a250",
+    "scf_conv": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-09
+    },
+    "e2": "mp.MP2/UMP2 (exact), DFMP2/DFUMP2 (ri); split from numpy",
+    "e3": "adc.RADC/UADC kernel_gs: adc(3) minus adc(2)",
+    "rohf": "numpy semicanonicalization on the UHF Fock of the ROHF density",
+    "basis_self_check": {
+      "nao": 19,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 19,
+      "diag_skipped_cartesian": 0
+    }
+  }
+}

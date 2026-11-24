@@ -1,7 +1,7 @@
 //! Gamma-point range-separated Gaussian density fitting (RS-GDF) and the
-//! J/K builders on it (Stage 1 step 9, `reference/pbc/stage1-design.md` §4;
-//! Rust port of the validated prototype `reference/pbc/pbc_gdf.py`,
-//! `reference/pbc/FINDINGS.md` "Iteration 2 (Python, RS-GDF)").
+//! J/K builders on it (Stage 1 step 9, `wiki/archive/ferric-pbc-residue-2026-10-25/reference/pbc/stage1-design.md` §4;
+//! Rust port of the validated prototype `wiki/archive/ferric-pbc-residue-2026-10-25/reference/pbc/pbc_gdf.py`,
+//! `wiki/archive/ferric-pbc-residue-2026-10-25/reference/pbc/FINDINGS.md` "Iteration 2 (Python, RS-GDF)").
 //!
 //! # Target
 //!
@@ -93,9 +93,10 @@
 //! diffuse metric terms) from the SR real-space walks to G space; the
 //! G = 0 subtract gets the kept inputs (PySCF grouping). FINDINGS
 //! "Iteration 23"; details in the `split` module. `None` is today's
-//! construction bit for bit. The Gamma forces and stress differentiate the
-//! split energy (FINDINGS "Iteration 26"); the k-point build refuses a
-//! split config ([`RsGdf::range_split`]).
+//! construction bit for bit. The Gamma and k-point builds both honour it, and
+//! the forces and stress differentiate the split energy (FINDINGS "Iteration
+//! 26"; the k-point partition is documented in the `kpoint` module). The config
+//! a B was built with is [`RsGdf::range_split`].
 //!
 //! # Orbital-pair symmetry of the Gamma SR 3-centre sum (s2)
 //!
@@ -113,10 +114,10 @@
 //! list, including the strained frozen-index frame. Consequences:
 //!
 //! * `J3_SR` is EXACTLY symmetric, and every element is bitwise one of the
-//!   two ordered evaluations the old walk averaged (unsplit: the one with
+//!   two ordered evaluations an averaging walk would combine (unsplit: the one with
 //!   `μ ≤ ν`). `|new − old| ≤ ½|x − y| + ½ ulp` per element, where `x, y` are
-//!   the two ordered sums (round-off only; `RsGdfStats::asym_j3` of the old
-//!   build). The remaining `symmetrize_pairs` averages only the LR and G = 0
+//!   the two ordered sums (round-off only; the asymmetry an averaging build would show,
+//!   `RsGdfStats::asym_j3`). The remaining `symmetrize_pairs` averages only the LR and G = 0
 //!   parts' asymmetry.
 //! * Every output element is still owned by exactly one task (a copy, not an
 //!   addition), so the build stays bitwise identical across thread counts.
@@ -284,8 +285,8 @@ pub struct RsGdfConfig {
     /// G = 0 handling — [`G0Handling::Consistent`] except in mutation tests.
     pub g0: G0Handling,
     /// Opt-in primitive-level range split of the SR sums (`split` module
-    /// doc; Gamma energy, forces and stress). `None` = today's construction,
-    /// bit for bit. The k-point build refuses it.
+    /// doc; Gamma and k-point energy, forces and stress). `None` = today's
+    /// construction, bit for bit.
     pub range_split: Option<RangeSplit>,
     /// Column rotation of generally contracted orbital shells inside the
     /// SR 3-centre walk (module doc "Column rotation"). Default
@@ -351,11 +352,13 @@ pub struct RsGdfStats {
     pub naux_kept: usize,
     /// Metric eigenvalues `<= lindep` dropped.
     pub n_dropped: usize,
-    /// Smallest / largest metric eigenvalue.
+    /// Smallest metric eigenvalue.
     pub metric_eig_min: f64,
+    /// Largest metric eigenvalue.
     pub metric_eig_max: f64,
-    /// The ω and precision used.
+    /// The Ewald split ω used (Bohr⁻¹).
     pub omega: f64,
+    /// The per-term truncation target used ([`RsGdfConfig::precision`]).
     pub precision: f64,
     /// Pair images `L` visited.
     pub n_pair_images: usize,
@@ -369,17 +372,20 @@ pub struct RsGdfStats {
     pub n_sr3_triplets_ordered: usize,
     /// Shifted 2-centre shell pairs computed (SR metric).
     pub n_sr2_pairs: usize,
-    /// Half-sphere G vectors (LR) and the `pair_ft` chunks they used.
+    /// Half-sphere G vectors (LR).
     pub n_g_half: usize,
+    /// `pair_ft` chunks the LR G vectors were processed in.
     pub n_g_chunks: usize,
-    /// max |J2 − J2ᵀ| and max |J3\[μν\] − J3\[νμ\]| before symmetrisation
-    /// (truncation / image-set defects show up here). The Gamma SR 3-centre
-    /// part is exactly symmetric by construction (s2), so `asym_j3` measures
-    /// the LR and G = 0 parts only.
+    /// max |J2 − J2ᵀ| before symmetrisation (truncation / image-set defects
+    /// show up here).
     pub asym_j2: f64,
+    /// max |J3\[μν\] − J3\[νμ\]| before symmetrisation. The Gamma SR
+    /// 3-centre part is exactly symmetric by construction (s2), so this
+    /// measures the LR and G = 0 parts only.
     pub asym_j3: f64,
-    /// Resolved budget and the bytes reserved before the LR chunks.
+    /// Resolved memory budget (bytes).
     pub budget_bytes: usize,
+    /// Bytes reserved on the build's ledger before the LR chunks.
     pub resident_bytes: usize,
 }
 
@@ -2364,11 +2370,11 @@ pub(super) fn sr3_rotation(
     let Some(rot) = cfg.sr_column_rotation.resolve_supported() else {
         return Ok(None);
     };
-    let Some(obs_rot) = RotatedBasis::detect(cell, obs, rot, "RsGdf")? else {
+    let Some(obs_rot) = crate::sr_rotation::detect(cell, obs, rot, "RsGdf")? else {
         return Ok(None);
     };
     let aux_rot = if rot.mutant == ColumnRotationMutant::RotateAux {
-        RotatedBasis::detect(cell, aux, rot, "RsGdf aux (mutant)")?
+        crate::sr_rotation::detect(cell, aux, rot, "RsGdf aux (mutant)")?
     } else {
         None
     };
@@ -2632,8 +2638,8 @@ impl RsGdf {
     }
 
     /// The range split B was built with (`None`: today's construction).
-    /// The Gamma forces and stress follow it (`split`'s `deriv`); the
-    /// k-point build refuses a split config.
+    /// The Gamma forces and stress follow it (`split`'s `deriv`), and so does
+    /// the k-point build (`split`'s `ksplit`).
     pub fn range_split(&self) -> Option<RangeSplit> {
         self.range_split
     }

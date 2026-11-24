@@ -119,6 +119,26 @@ pub(crate) fn screened_quartets_with(
     quads
 }
 
+/// The contraction rotation the four-centre derivative walk runs on
+/// (`direct_jk::gc_rotation`): the rotation of `bounds`
+/// ([`GcSlot::mode`](crate::direct_jk::gc_rotation::GcSlot::mode): the
+/// request an SCF recorded on them; unrotated for bounds no config recorded
+/// on) when `op` is the operator of the bounds; `None` runs the unrotated
+/// walk. `T` is geometry-independent and
+/// keeps every shell on its atom, so `Σ Γ[D] (μν|λσ)^x = Σ Γ[D'] (μ'ν'|λ'σ')^x`
+/// with `D' = Tᵀ D T`, for every two-particle density below (each is a sum of
+/// products of two matrices over the pairings `(μν)(λσ)` and `(μλ)(νσ)`).
+pub(crate) fn gradient_rotation(
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+) -> Result<Option<std::sync::Arc<crate::direct_jk::gc_rotation::RotatedJk>>, FerricError> {
+    if op != bounds.op || bounds.gc.is_inert() {
+        return Ok(None);
+    }
+    bounds.gc.rotation(prep, bounds, bounds.gc.mode()?)
+}
+
 /// Shared driver for every 4-center 2e-derivative gradient contribution:
 /// `grad[atom,coord] += Σ_quartets Σ_perms Γ(μ,ν,λ,σ) · d(μν|λσ)/dR`.
 ///
@@ -284,6 +304,38 @@ where
     Ok(grad)
 }
 
+/// The nuclear gradient of a Fock-hooked SCF
+/// ([`crate::rhf::solve_rhf_with_hook`], [`crate::uhf::solve_uhf_with_hook`],
+/// [`crate::rohf::solve_rohf_with_hook`]): `grad`, the built-in gradient of
+/// the HOOKED result (from [`restricted_scf_gradient`] or its open-shell
+/// siblings), plus `explicit = ∂E_hook/∂R` at fixed AO density, `(natoms, 3)`
+/// in Hartree/Bohr.
+///
+/// The built-in gradient already holds the hook's Pulay term: its
+/// energy-weighted density comes from the converged orbitals and eigenvalues
+/// of the hooked Fock matrix (or, for ROHF, from the hooked spin Fock
+/// matrices). Only the explicit term is the caller's; what it must and must
+/// not contain is derived in `book/src/07-hartree-fock/06-fock-hooks.md#fock-hooks-equations`. A
+/// mis-shaped or non-finite `explicit` is an error.
+pub fn with_fock_hook_gradient(
+    grad: Array2<f64>,
+    explicit: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
+    if explicit.dim() != grad.dim() {
+        return Err(FerricError::General(format!(
+            "Fock-hook gradient: the explicit term has shape {:?}, expected {:?} (natoms, 3)",
+            explicit.dim(),
+            grad.dim()
+        )));
+    }
+    if explicit.iter().any(|v| !v.is_finite()) {
+        return Err(FerricError::General(
+            "Fock-hook gradient: the explicit term is not finite".into(),
+        ));
+    }
+    Ok(grad + explicit)
+}
+
 /// Build the HF energy-weighted density: W_μν = 2 Σ_i^occ ε_i C_μi C_νi.
 /// Contract an arbitrary weight matrix with the overlap first derivative:
 /// returns `(natoms, 3)` with `grad[A,c] = Σ_μν W_μν · ∂S_μν/∂R_{A,c}`.
@@ -389,6 +441,7 @@ pub fn rhf_gradient(
     result: &ScfResult,
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     if mol.atoms.iter().any(|a| a.ghost) {
         return Err(FerricError::Libint(
             "rhf_gradient is not implemented for molecules containing ghost atoms \
@@ -436,6 +489,7 @@ pub fn rhf_gradient_cosx(
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
     cosx: &crate::cosx_k::CosxConfig,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     rhf_gradient_cosx_with_q(
         mol,
         prep,
@@ -463,6 +517,7 @@ pub fn rhf_gradient_cosx_with_q(
     cosx: &crate::cosx_k::CosxConfig,
     q: crate::cosx_gradient::FitQ,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     crate::cosx_gradient::check_gradient_supported(cosx)?;
     if mol.atoms.iter().any(|a| a.ghost) {
         return Err(FerricError::Libint(
@@ -526,6 +581,7 @@ pub fn uhf_gradient_cosx(
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
     cosx: &crate::cosx_k::CosxConfig,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     crate::cosx_gradient::check_gradient_supported(cosx)?;
     if mol.atoms.iter().any(|a| a.ghost) {
         return Err(FerricError::Libint(
@@ -677,6 +733,9 @@ pub fn twoelectron_j_gradient(
     bounds: &SchwarzBounds,
     d: &Array2<f64>,
 ) -> Result<Array2<f64>, FerricError> {
+    if let Some(r) = crate::gradient::gradient_rotation(prep, op, bounds)? {
+        return twoelectron_j_gradient(&r.basis.prep, op, &r.bounds, &r.forward(d));
+    }
     let max_d = d.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
     par_twoelectron_gradient(prep, op, bounds, max_d, |mu, nu, la, sg| {
         0.5 * d[(mu, nu)] * d[(la, sg)]
@@ -694,6 +753,15 @@ pub fn twoelectron_j_gradient_with_response(
     d: &Array2<f64>,
     z: &Array2<f64>,
 ) -> Result<Array2<f64>, FerricError> {
+    if let Some(r) = crate::gradient::gradient_rotation(prep, op, bounds)? {
+        return twoelectron_j_gradient_with_response(
+            &r.basis.prep,
+            op,
+            &r.bounds,
+            &r.forward(d),
+            &r.forward(z),
+        );
+    }
     let md = d.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
     let mz = z.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
     // Γ is bounded by |D|(|D| + 2|Z|) <= (max|D| + max|Z|)²: screen on that.
@@ -701,6 +769,37 @@ pub fn twoelectron_j_gradient_with_response(
         0.5 * d[(mu, nu)] * d[(la, sg)]
             + 0.5 * (z[(mu, nu)] * d[(la, sg)] + d[(mu, nu)] * z[(la, sg)])
     })
+}
+
+/// Refuse a COSMO SCF: `ferric_scf::cosmo` has no nuclear-gradient term (the
+/// derivative of the screening-charge energy with respect to the cavity and
+/// nuclear positions), so every dispatcher here would return the vacuum-form
+/// gradient of a solvated energy. IEF-PCM (`config.pcm`) has one
+/// ([`ferric_pcm::pcm_gradient`]). Called by the gradient dispatchers and,
+/// before the SCF, by the `preflight_cosx_*` functions the geometry drivers use.
+pub fn refuse_cosmo_gradient(config: &crate::rhf::RhfConfig) -> Result<(), FerricError> {
+    if config.cosmo.is_some() {
+        return Err(FerricError::General(
+            "COSMO has no analytic gradient; use [pcm] (IEF-PCM, which has one) or finite \
+             differences of the energy. Geometry optimization, saddle/IRC and \
+             finite-difference-of-gradient frequencies on a COSMO SCF would otherwise follow \
+             the gradient of the vacuum surface."
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Refuse a relativistic SCF (`config.relativistic`, X2C-1e) for gradient
+/// work: the X2C core Hamiltonian has no nuclear derivative here, so every
+/// dispatcher would return the nonrelativistic `T + V` derivative of an X2C
+/// energy. Called next to [`refuse_cosmo_gradient`] by the dispatchers and
+/// the `preflight_cosx_*` functions, so the geometry drivers (optimize,
+/// saddle, IRC, finite-difference-of-gradient frequencies) fail before the
+/// SCF; the gradients that take only a result refuse
+/// [`ScfResult::relativistic`] themselves.
+pub fn refuse_relativistic_gradient(config: &crate::rhf::RhfConfig) -> Result<(), FerricError> {
+    crate::x2c::refuse_relativistic(config.relativistic, "analytic nuclear gradient")
 }
 
 /// Closed-shell (RHF / RKS) SCF gradient that differentiates the exchange the
@@ -721,16 +820,37 @@ pub fn restricted_scf_gradient(
     config: &crate::rhf::RhfConfig,
     result: &ScfResult,
 ) -> Result<Array2<f64>, FerricError> {
+    refuse_cosmo_gradient(config)?;
+    refuse_relativistic_gradient(config)?;
     refuse_final_pass_result(result)?;
     let ext = config.external_potential.as_ref();
     let cosx = crate::cosx_gradient::scf_exchange_is_cosx(config, false)?.then_some(&config.cosx);
-    match (config.xc.as_deref(), cosx) {
+    // The SCF's raw RI-JK tensor, when the driver kept one for this gradient.
+    let grad = crate::raw_handoff::with_kept_raw(config, || match (config.xc.as_deref(), cosx) {
         (Some(xc), cosx) => {
             closed_ks_gradient_on_scf_grid(mol, prep, bs, op, bounds, xc, result, config, cosx)
         }
         (None, Some(c)) => rhf_gradient_cosx(mol, prep, op, bounds, result, ext, c),
         (None, None) => rhf_gradient(mol, prep, op, bounds, result, ext),
+    })?;
+    with_pcm_gradient(grad, mol, prep, config, result)
+}
+
+/// `grad + ∂E_pcm/∂R` ([`ferric_pcm::pcm_gradient`] at the converged total
+/// density) when `config.pcm` is set; `grad` unchanged otherwise. The rest
+/// of the gradient already sees the reaction field through the solvated
+/// orbitals and energy-weighted density.
+fn with_pcm_gradient(
+    mut grad: Array2<f64>,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    config: &crate::rhf::RhfConfig,
+    result: &ScfResult,
+) -> Result<Array2<f64>, FerricError> {
+    if let Some(pcm) = config.pcm.as_ref() {
+        grad += &ferric_pcm::pcm_gradient(mol, prep, result.density_total(), pcm)?;
     }
+    Ok(grad)
 }
 
 /// The closed-shell KS gradient on the XC grids `config`'s SCF ran on.
@@ -775,10 +895,12 @@ pub fn unrestricted_scf_gradient(
     config: &crate::rhf::RhfConfig,
     result: &ScfResult,
 ) -> Result<Array2<f64>, FerricError> {
+    refuse_cosmo_gradient(config)?;
+    refuse_relativistic_gradient(config)?;
     refuse_final_pass_result(result)?;
     let ext = config.external_potential.as_ref();
     let cosx = crate::cosx_gradient::scf_exchange_is_cosx(config, true)?;
-    match config.xc.as_deref() {
+    let grad = crate::raw_handoff::with_kept_raw(config, || match config.xc.as_deref() {
         // `None` exchange config is exactly `ks_gradient_uks`.
         Some(xc) => crate::ks_gradient::ks_gradient_uks_with_exchange_on_grids(
             mol,
@@ -794,7 +916,8 @@ pub fn unrestricted_scf_gradient(
         ),
         None if cosx => uhf_gradient_cosx(mol, prep, op, bounds, result, ext, &config.cosx),
         None => uhf_gradient(mol, prep, op, bounds, result, ext),
-    }
+    })?;
+    with_pcm_gradient(grad, mol, prep, config, result)
 }
 
 /// Refuse to differentiate a result whose reported energy came from a COSX
@@ -829,7 +952,9 @@ fn refuse_final_pass_result(result: &ScfResult) -> Result<(), FerricError> {
 pub fn gradient_task_config(
     config: &crate::rhf::RhfConfig,
 ) -> std::borrow::Cow<'_, crate::rhf::RhfConfig> {
-    if config.k_builder.as_deref() == Some("cosx") && config.cosx.final_grid.is_some() {
+    if config.k_builder == Some(crate::options::KBuilderKind::Cosx)
+        && config.cosx.final_grid.is_some()
+    {
         if config.verbose {
             eprintln!(
                 "[ferric] COSX final-grid pass skipped for the geometry driver: energies and \
@@ -845,9 +970,11 @@ pub fn gradient_task_config(
 }
 
 /// Closed-shell RHF/RKS: refuse BEFORE the SCF a COSX setup whose gradient is
-/// not implemented (pruned grid; overlap fit with a KS functional), so a geometry driver fails
-/// fast instead of after a full SCF. `Ok(())` when exchange is not COSX.
+/// not implemented (an invalid grid; overlap fit with a KS functional), so a geometry driver
+/// fails fast instead of after a full SCF. `Ok(())` when exchange is not COSX.
 pub fn preflight_cosx_restricted(config: &crate::rhf::RhfConfig) -> Result<(), FerricError> {
+    refuse_cosmo_gradient(config)?;
+    refuse_relativistic_gradient(config)?;
     if crate::cosx_gradient::scf_exchange_is_cosx(config, false)? {
         crate::cosx_gradient::check_gradient_supported(&config.cosx)?;
         crate::cosx_gradient::check_fitted_ks_supported(&config.cosx, config.xc.as_deref())?;
@@ -859,6 +986,8 @@ pub fn preflight_cosx_restricted(config: &crate::rhf::RhfConfig) -> Result<(), F
 /// SCF, a COSX setup whose open-shell gradient is not implemented (a grid
 /// the gradient cannot differentiate; the overlap fit with a functional).
 pub fn preflight_cosx_unrestricted(config: &crate::rhf::RhfConfig) -> Result<(), FerricError> {
+    refuse_cosmo_gradient(config)?;
+    refuse_relativistic_gradient(config)?;
     if crate::cosx_gradient::scf_exchange_is_cosx(config, true)? {
         crate::cosx_gradient::check_gradient_supported(&config.cosx)?;
         crate::cosx_gradient::check_fitted_ks_supported(&config.cosx, config.xc.as_deref())?;
@@ -874,6 +1003,8 @@ pub fn preflight_cosx_unrestricted(config: &crate::rhf::RhfConfig) -> Result<(),
 /// need a ROHF Z-vector (Hartree-Fock) or the XC Fock nuclear derivative
 /// (Kohn-Sham), neither of which exists. `Ok(())` when exchange is not COSX.
 pub fn preflight_cosx_restricted_open(config: &crate::rhf::RhfConfig) -> Result<(), FerricError> {
+    refuse_cosmo_gradient(config)?;
+    refuse_relativistic_gradient(config)?;
     if crate::cosx_gradient::scf_exchange_is_cosx(config, true)? {
         crate::cosx_gradient::check_gradient_supported(&config.cosx)?;
         check_cosx_restricted_open_fit(&config.cosx)?;
@@ -912,6 +1043,7 @@ pub fn rohf_gradient_cosx(
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
     cosx: &crate::cosx_k::CosxConfig,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     crate::cosx_gradient::check_gradient_supported(cosx)?;
     check_cosx_restricted_open_fit(cosx)?;
     if mol.atoms.iter().any(|a| a.ghost) {
@@ -959,13 +1091,15 @@ pub fn restricted_open_scf_gradient(
     config: &crate::rhf::RhfConfig,
     result: &ScfResult,
 ) -> Result<Array2<f64>, FerricError> {
+    refuse_cosmo_gradient(config)?;
+    refuse_relativistic_gradient(config)?;
     refuse_final_pass_result(result)?;
     let ext = config.external_potential.as_ref();
     let cosx = crate::cosx_gradient::scf_exchange_is_cosx(config, true)?;
     if cosx {
         check_cosx_restricted_open_fit(&config.cosx)?;
     }
-    match config.xc.as_deref() {
+    let grad = crate::raw_handoff::with_kept_raw(config, || match config.xc.as_deref() {
         // `None` exchange config is exactly `ks_gradient_roks`.
         Some(xc) => crate::ks_gradient::ks_gradient_roks_with_exchange_on_grids(
             mol,
@@ -981,7 +1115,8 @@ pub fn restricted_open_scf_gradient(
         ),
         None if cosx => rohf_gradient_cosx(mol, prep, op, bounds, result, ext, &config.cosx),
         None => rohf_gradient(mol, prep, op, bounds, result, ext),
-    }
+    })?;
+    with_pcm_gradient(grad, mol, prep, config, result)
 }
 
 /// Closed-shell one- plus two-electron HF gradient of `result`'s energy: the
@@ -1061,6 +1196,7 @@ pub fn rhf_gradient_exact_jk(
     result: &ScfResult,
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     let mut exact = result.clone();
     exact.df_jk = None;
     rhf_gradient(mol, prep, op, bounds, &exact, ext)
@@ -1076,6 +1212,7 @@ pub fn rhf_gradient_exact_jk(
 /// EXACTLY `rhf_gradient` (see [`crate::polarizable::qm_gradient_contribution`]
 /// for why the fixed-mu QM-centre term is a plain Hellmann-Feynman
 /// contraction, no `W`-vs-naive subtlety unlike [`crate::polarizable::site_gradient`]).
+#[allow(clippy::too_many_arguments)]
 pub fn rhf_gradient_with_polarizable(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -1086,6 +1223,7 @@ pub fn rhf_gradient_with_polarizable(
     sites: Option<&crate::polarizable::PolarizableSites>,
     dipoles: Option<&Array2<f64>>,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     let mut grad = rhf_gradient(mol, prep, op, bounds, result, ext)?;
     if let (Some(sites), Some(dipoles)) = (sites, dipoles) {
         grad += &crate::polarizable::polarizable_gradient_term(
@@ -1113,6 +1251,7 @@ pub fn rhf_gradient_with_polarizable(
 /// [`crate::polarizable::qm_gradient_contribution`]'s documented
 /// total-density-only dependence — see that function's doc for why this
 /// term needs no UHF-specific derivation.
+#[allow(clippy::too_many_arguments)]
 pub fn uhf_gradient_with_polarizable(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -1123,6 +1262,7 @@ pub fn uhf_gradient_with_polarizable(
     sites: Option<&crate::polarizable::PolarizableSites>,
     dipoles: Option<&Array2<f64>>,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     let mut grad = uhf_gradient(mol, prep, op, bounds, result, ext)?;
     if let (Some(sites), Some(dipoles)) = (sites, dipoles) {
         grad += &crate::polarizable::polarizable_gradient_term(
@@ -1675,14 +1815,8 @@ fn field_density_gradient_fd(
                     mol_m.atoms[a].zpos -= h;
                 }
             }
-            let prep_p = match PreparedBasis::new(&mol_p, bs) {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
-            let prep_m = match PreparedBasis::new(&mol_m, bs) {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
+            let prep_p = PreparedBasis::new(&mol_p, bs)?;
+            let prep_m = PreparedBasis::new(&mol_m, bs)?;
             let e_p: f64 =
                 (d * &ferric_integrals::oneelectron::field_hcore_term(&prep_p, field)?).sum();
             let e_m: f64 =
@@ -1705,6 +1839,9 @@ pub fn twoelectron_gradient(
     bounds: &SchwarzBounds,
     d: &Array2<f64>,
 ) -> Result<Array2<f64>, FerricError> {
+    if let Some(r) = crate::gradient::gradient_rotation(prep, op, bounds)? {
+        return twoelectron_gradient(&r.basis.prep, op, &r.bounds, &r.forward(d));
+    }
     // The 2e gradient contribution from each integral (μν|λσ) is:
     //   Γ_μνλσ * d(μν|λσ)/dR
     // where Γ_μνλσ = 0.5*D_μν*D_λσ - 0.25*D_μλ*D_νσ.
@@ -1735,6 +1872,15 @@ pub fn twoelectron_gradient_bilinear(
     d1: &Array2<f64>,
     d2: &Array2<f64>,
 ) -> Result<Array2<f64>, FerricError> {
+    if let Some(r) = crate::gradient::gradient_rotation(prep, op, bounds)? {
+        return twoelectron_gradient_bilinear(
+            &r.basis.prep,
+            op,
+            &r.bounds,
+            &r.forward(d1),
+            &r.forward(d2),
+        );
+    }
     let m1 = d1.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
     let m2 = d2.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
     // Screening bound: the bilinear Γ magnitude scales with max|D1|·max|D2|; use
@@ -1744,6 +1890,63 @@ pub fn twoelectron_gradient_bilinear(
     par_twoelectron_gradient(prep, op, bounds, max_d, |mu, nu, la, sg| {
         0.25 * (d1[(mu, nu)] * d2[(la, sg)] + d2[(mu, nu)] * d1[(la, sg)])
             - 0.125 * (d1[(mu, la)] * d2[(nu, sg)] + d2[(mu, la)] * d1[(nu, sg)])
+    })
+}
+
+/// Open-shell bilinear two-electron gradient: `Σ Γ(X, Y)_μνλσ · d(μν|λσ)/dR`
+/// for spin-density pairs `x = (X_α, X_β)`, `y = (Y_α, Y_β)`.
+///
+/// `Γ(X, Y)` is the polarization of the UHF two-particle density
+/// `gamma_uhf` (`Γ(D) = ½ D_T D_T − ½ Σ_σ D_σ D_σ` with the exchange
+/// pairing `(μλ)(νσ)`), with `T = α + β`:
+///
+/// ```text
+///   Γ(X, Y) = ¼ (X_T,μν Y_T,λσ + Y_T,μν X_T,λσ)
+///           − ¼ Σ_σ (X_σ,μλ Y_σ,νσ + Y_σ,μλ X_σ,νσ),
+/// ```
+///
+/// so `Γ(D, D)` is `gamma_uhf` and this reduces to
+/// [`twoelectron_gradient_uhf`] when `x == y`. For a closed-shell pair
+/// (`X_α = X_β = X/2`, the same for `Y`) it is
+/// [`twoelectron_gradient_bilinear`] of the totals. The unrestricted MP2
+/// gradient contracts `Γ(D_HF, D_HF + 2 P_corr)` per spin with it.
+pub fn twoelectron_gradient_bilinear_uhf(
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    x: (&Array2<f64>, &Array2<f64>),
+    y: (&Array2<f64>, &Array2<f64>),
+) -> Result<Array2<f64>, FerricError> {
+    if let Some(r) = crate::gradient::gradient_rotation(prep, op, bounds)? {
+        return twoelectron_gradient_bilinear_uhf(
+            &r.basis.prep,
+            op,
+            &r.bounds,
+            (&r.forward(x.0), &r.forward(x.1)),
+            (&r.forward(y.0), &r.forward(y.1)),
+        );
+    }
+    let (xa, xb) = x;
+    let (ya, yb) = y;
+    let xt = xa + xb;
+    let yt = ya + yb;
+    let mx = xt.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+    let my = yt.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+    // As in `twoelectron_gradient_bilinear`: screen on the largest element of
+    // any operand, totals and spin densities alike.
+    let ms = [xa, xb, ya, yb]
+        .iter()
+        .flat_map(|m| m.iter())
+        .map(|v| v.abs())
+        .fold(0.0f64, f64::max);
+    let max_d = mx.max(my).max(ms);
+    par_twoelectron_gradient(prep, op, bounds, max_d, |mu, nu, la, sg| {
+        0.25 * (xt[(mu, nu)] * yt[(la, sg)] + yt[(mu, nu)] * xt[(la, sg)])
+            - 0.25
+                * (xa[(mu, la)] * ya[(nu, sg)]
+                    + ya[(mu, la)] * xa[(nu, sg)]
+                    + xb[(mu, la)] * yb[(nu, sg)]
+                    + yb[(mu, la)] * xb[(nu, sg)])
     })
 }
 
@@ -2108,6 +2311,7 @@ pub fn uhf_gradient(
     result: &ScfResult,
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     let (d_total, d_beta, w) = uhf_gradient_densities(mol, prep, result)?;
     let dens = crate::df_gradient::TwoElectronDensity::Open {
         alpha: &result.density_alpha,
@@ -2192,6 +2396,7 @@ pub fn rohf_gradient(
     result: &ScfResult,
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
+    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     if mol.atoms.iter().any(|a| a.ghost) {
         return Err(FerricError::Libint(
             "rohf_gradient is not implemented for molecules containing ghost atoms".into(),
@@ -2270,6 +2475,16 @@ pub fn twoelectron_gradient_uhf(
     d_alpha: &Array2<f64>,
     d_beta: &Array2<f64>,
 ) -> Result<Array2<f64>, FerricError> {
+    if let Some(r) = crate::gradient::gradient_rotation(prep, op, bounds)? {
+        return twoelectron_gradient_uhf(
+            &r.basis.prep,
+            op,
+            &r.bounds,
+            &r.forward(d_total),
+            &r.forward(d_alpha),
+            &r.forward(d_beta),
+        );
+    }
     let max_d = d_total.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
     par_twoelectron_gradient(prep, op, bounds, max_d, |mu, nu, la, sg| {
         gamma_uhf(d_total, d_alpha, d_beta, mu, nu, la, sg)
@@ -2371,6 +2586,29 @@ mod tests {
             analytic[(0, 2)],
             fd
         );
+    }
+
+    #[test]
+    fn field_density_gradient_fd_propagates_basis_errors() {
+        // A basis that does not cover every element makes PreparedBasis::new
+        // fail on the displaced geometries; that must surface as an error, not
+        // as a silently zero gradient row.
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let full = ferric_core::basis::bundled("sto-3g").unwrap();
+        let h_only = ferric_core::basis::BasisSet {
+            name: "h-only".to_string(),
+            shells: full
+                .shells
+                .iter()
+                .filter(|(z, _)| **z == 1)
+                .map(|(z, v)| (*z, v.clone()))
+                .collect(),
+            ..full.clone()
+        };
+        let nbf = PreparedBasis::new(&mol, &full).unwrap().nbasis();
+        let d = Array2::<f64>::eye(nbf);
+        let r = field_density_gradient_fd(&mol, &h_only, &d, [0.0, 0.0, 0.01]);
+        assert!(r.is_err(), "uncovered element must be an error");
     }
 
     #[test]

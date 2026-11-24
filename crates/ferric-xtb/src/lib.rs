@@ -72,25 +72,29 @@
 //! xtb's own energy on every component to <1e-6 Ha/Bohr
 //! (`gfn2_gradient_matches_finite_difference`), and this binding reproduces the
 //! CLI's own `gradient` file to <1e-10, so both the value and the FFI transfer
-//! are correct. Forces and xTB geometry optimisation are supported.
+//! are correct. Forces are supported, and the `driver` module runs geometry
+//! optimisation (`optimize_geometry_xtb`) and finite-difference harmonic
+//! frequencies (`harmonic_frequencies_xtb`) through ferric-scf's BFGS driver
+//! and Hessian pipeline. The SCC iteration cap is `XtbConfig::scc_max_iter`;
+//! geometry steps are `OptimizeConfig::max_steps`; an unconverged SCC is an error.
 //!
-//! ## Previously-documented gradient defect: RESOLVED (was a `-O3` miscompile)
+//! ## Gradients need a libxtb built at `-O2` or lower
 //!
-//! Earlier revisions of this crate warned that gradients must not be trusted:
-//! xtb returned an analytic gradient ~20x too large that disagreed with FD,
-//! `xtb --opt` on H2 drove 0.75 -> 2.92 Ang while *raising* the energy, and
-//! xtb's own `meson test` failed `unit - xtb:gfn1`, `gfn2` and `hessian`.
+//! A libxtb built at `-O3` returns an analytic gradient ~20x too large that
+//! disagrees with FD, `xtb --opt` on H2 drives 0.75 -> 2.92 Ang while *raising*
+//! the energy, and xtb's own `meson test` fails `unit - xtb:gfn1`, `gfn2` and
+//! `hessian`.
 //!
-//! That was **a gfortran 13.3 miscompilation of xtb at `-O3`**, not an xtb
-//! source bug and not a binding bug. Rebuilding the same source at `-O2` fixes
+//! The cause is **a gfortran 13.3 miscompilation of xtb at `-O3`**, not an xtb
+//! source bug and not a binding bug. Building the same source at `-O2` fixes
 //! all of it: xtb's own gfn1/gfn2/hessian unit tests pass, FD agrees with the
 //! analytic gradient to ~7 significant figures, and H2 optimises to 0.776 Ang.
-//! Only GFN1/GFN2 were affected -- GFN0 uses a separate gradient path and was
+//! Only GFN1/GFN2 were affected -- GFN0 uses a separate gradient path and is
 //! always correct. Explicitly ruled out by experiment: the bundled dftd4 and
 //! multicharge subprojects (correctly pinned to v3.5.0/v0.2.0, not `HEAD`),
 //! OpenBLAS threading, and the BLAS backend itself.
 //!
-//! Energies were never affected -- they were byte-identical between the `-O3`
+//! Energies are unaffected -- they are byte-identical between the `-O3`
 //! and `-O2` builds.
 //!
 //! # Threading
@@ -132,11 +136,17 @@
 #[cfg(feature = "xtb")]
 pub mod calculator;
 #[cfg(feature = "xtb")]
+pub mod driver;
+#[cfg(feature = "xtb")]
 pub mod ffi;
 
 #[cfg(feature = "xtb")]
 pub use calculator::{
     gfn2_energy, xtb_singlepoint, XtbCalculator, XtbConfig, XtbMethod, XtbResult,
+};
+#[cfg(feature = "xtb")]
+pub use driver::{
+    harmonic_frequencies_xtb, optimize_geometry_xtb, xtb_energy_gradient, DEFAULT_HESSIAN_DELTA,
 };
 
 /// Whether this build was compiled with the `xtb` feature (and therefore linked

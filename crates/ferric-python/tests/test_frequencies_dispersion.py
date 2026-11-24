@@ -27,7 +27,9 @@ def test_d3_frequencies_report_the_corrected_energy():
     assert plain.e_dispersion is None
     assert d3.e_dispersion == pytest.approx(e_d3, abs=1e-14)
     assert d3.energy == pytest.approx(plain.energy + e_d3, abs=1e-12)
-    assert d3.hessian_source == "finite-difference"
+    # D3(BJ) keeps the analytic KS Hessian and adds its own analytic Hessian.
+    assert d3.hessian_source == "analytic-moving-grid"
+    assert d3.n_gradient_evaluations == 0
     # The dispersion Hessian reaches the frequency: the stretch moves.
     assert d3.frequencies[0] != plain.frequencies[0]
 
@@ -58,5 +60,7 @@ def test_open_shell_d3_frequencies_report_the_corrected_energy(reference):
     e_d3 = ferric.d3bj_energy(mol, "pbe")
     assert d3.e_dispersion == pytest.approx(e_d3, abs=1e-14)
     assert d3.energy == pytest.approx(plain.energy + e_d3, abs=1e-12)
-    assert d3.hessian_source == "finite-difference"
+    # UKS has an analytic moving-grid Hessian; ROKS does not.
+    expected = "analytic-moving-grid" if reference == "uhf" else "finite-difference"
+    assert d3.hessian_source == expected
     assert d3.frequencies[0] != plain.frequencies[0]

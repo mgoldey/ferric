@@ -119,6 +119,7 @@ use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::stability::StabilityVerdict;
 use ferric_scf::uhf::solve_uhf;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use serde_json::Value;
 
 const ROW_DIR: &str = "testdata/reference/validation/urpa";
@@ -192,12 +193,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn check_close(ctx: &str, what: &str, got: f64, want: f64, tol: f64) -> f64 {
     let d = (got - want).abs();
     eprintln!("{ctx}: {what:<34} ferric {got:+.12} ref {want:+.12} |d| {d:.2e}");
@@ -250,7 +245,7 @@ fn load_system(system: &str, basis_name: &str) -> Sys {
         &label,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &label),
+        num_ctx(&r, "/nuclear_repulsion", &label),
         TOL_ENUC,
     );
     assert_eq!(
@@ -286,34 +281,25 @@ fn load_system(system: &str, basis_name: &str) -> Sys {
 }
 
 fn rhf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10)
 }
 
 fn uhf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        check_stability: true,
-        scf_stability_descent: true,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_stability(ferric_scf::options::Stability::Descend)
 }
 
 /// UHF on the reference's stable state (energy `e_ref`). First the
 /// stability-following config, then the level-shift + MOM steering that
 /// NH2/cc-pVDZ is known to need; accepted only if E equals the reference.
 fn uhf(sys: &Sys, e_ref: f64) -> ScfResult {
-    let steered = RhfConfig {
-        level_shift: 0.5,
-        mom_after_iter: 5,
-        ..uhf_config()
-    };
+    let steered = uhf_config().with_level_shift(0.5).with_mom_after_iter(5);
     let mut tried = Vec::new();
     for (name, cfg) in [("stability-descent", uhf_config()), ("ls0.5+MOM5", steered)] {
         let res = solve_uhf(&sys.ctx, &sys.mol, &sys.obs, &sys.bounds, &cfg)
@@ -395,7 +381,7 @@ fn assert_full_rank(sys: &Sys, res: &PdepRpaResult) {
 /// then the spin-channel control. Returns (sys, UHF, E_c) for further controls.
 fn open_shell_case(system: &str, basis_name: &str) -> (Sys, ScfResult, f64) {
     let sys = load_system(system, basis_name);
-    let e_ref = num(&sys.r, "/uhf/energy", &sys.label);
+    let e_ref = num_ctx(&sys.r, "/uhf/energy", &sys.label);
     let scf = uhf(&sys, e_ref);
     let res = u_rpa(&sys, &scf, N_QUAD, 0.0);
     assert_full_rank(&sys, &res);
@@ -404,7 +390,7 @@ fn open_shell_case(system: &str, basis_name: &str) -> (Sys, ScfResult, f64) {
         ctx,
         "E_c (U-RPA, 40-pt GL)",
         res.e_rpa,
-        num(&sys.r, "/urpa/e_corr", ctx),
+        num_ctx(&sys.r, "/urpa/e_corr", ctx),
         TOL_E_C,
     );
     // Spin-channel control: the reference distinguishes dropping either Π_s.
@@ -413,7 +399,7 @@ fn open_shell_case(system: &str, basis_name: &str) -> (Sys, ScfResult, f64) {
             ctx,
             &format!("{spin}-only Pi reference"),
             res.e_rpa,
-            num(&sys.r, &format!("/urpa/e_corr_{spin}_only"), ctx),
+            num_ctx(&sys.r, &format!("/urpa/e_corr_{spin}_only"), ctx),
             TOL_E_C,
         );
     }
@@ -426,7 +412,7 @@ fn open_shell_case(system: &str, basis_name: &str) -> (Sys, ScfResult, f64) {
 fn truncation_control(sys: &Sys, scf: &ScfResult, block: &str) {
     let ctx = &sys.label;
     let key = format!("/{block}/truncated/0.01");
-    let t_ref = num(&sys.r, &format!("{key}/trunc_thresh"), ctx);
+    let t_ref = num_ctx(&sys.r, &format!("{key}/trunc_thresh"), ctx);
     assert_eq!(t_ref, TRUNC_CONTROL, "{ctx}: truncation control threshold");
     let res = u_rpa(sys, scf, N_QUAD, TRUNC_CONTROL);
     let n_keep_ref = sys
@@ -448,14 +434,14 @@ fn truncation_control(sys: &Sys, scf: &ScfResult, block: &str) {
         ctx,
         "E_c truncated (emulation)",
         res.e_rpa,
-        num(&sys.r, &format!("{key}/e_corr"), ctx),
+        num_ctx(&sys.r, &format!("{key}/e_corr"), ctx),
         TOL_E_C_TRUNC,
     );
     assert_misses(
         ctx,
         "truncated vs full-rank reference",
         res.e_rpa,
-        num(&sys.r, &format!("/{block}/e_corr"), ctx),
+        num_ctx(&sys.r, &format!("/{block}/e_corr"), ctx),
         TOL_E_C,
     );
 }
@@ -473,7 +459,7 @@ fn truncation_control(sys: &Sys, scf: &ScfResult, block: &str) {
 fn urpa_closed_shell_limit_h2o_vs_pyscf_rpa() {
     let sys = load_system("h2o", "cc-pvdz");
     let ctx = &sys.label;
-    let e_rhf_ref = num(&sys.r, "/rhf/energy", ctx);
+    let e_rhf_ref = num_ctx(&sys.r, "/rhf/energy", ctx);
     let rhf = solve_rhf(
         &sys.ctx,
         &sys.mol,
@@ -501,8 +487,8 @@ fn urpa_closed_shell_limit_h2o_vs_pyscf_rpa() {
     let u = u_rpa(&sys, &scf_u, N_QUAD, 0.0);
     assert_full_rank(&sys, &u);
 
-    let e_rpa_ref = num(&sys.r, "/rpa/e_corr", ctx);
-    let e_urpa_ref = num(&sys.r, "/urpa_on_rhf/e_corr", ctx);
+    let e_rpa_ref = num_ctx(&sys.r, "/rpa/e_corr", ctx);
+    let e_urpa_ref = num_ctx(&sys.r, "/urpa_on_rhf/e_corr", ctx);
     check_close(
         ctx,
         "PySCF RPA vs URPA (same RHF)",
@@ -524,7 +510,7 @@ fn urpa_closed_shell_limit_h2o_vs_pyscf_rpa() {
         ctx,
         "alpha-only Pi reference (U path)",
         u.e_rpa,
-        num(&sys.r, "/urpa_on_rhf/e_corr_alpha_only", ctx),
+        num_ctx(&sys.r, "/urpa_on_rhf/e_corr_alpha_only", ctx),
         TOL_E_C,
     );
 }
@@ -545,7 +531,7 @@ fn urpa_oh_aug_cc_pvdz_vs_pyscf_urpa_and_basis_control() {
         &sys.label,
         "cc-pVDZ reference",
         e_c,
-        num(&other, "/urpa/e_corr", "oh/cc-pvdz"),
+        num_ctx(&other, "/urpa/e_corr", "oh/cc-pvdz"),
         TOL_E_C,
     );
 }
@@ -575,21 +561,21 @@ fn urpa_o2_triplet_vs_pyscf_urpa() {
 fn urpa_quadrature_control_oh() {
     let sys = load_system("oh", "cc-pvdz");
     let ctx = sys.label.clone();
-    let scf = uhf(&sys, num(&sys.r, "/uhf/energy", &ctx));
+    let scf = uhf(&sys, num_ctx(&sys.r, "/uhf/energy", &ctx));
     let res = u_rpa(&sys, &scf, N_QUAD_CONTROL, 0.0);
     assert_eq!(res.quad_freqs.len(), N_QUAD_CONTROL);
     check_close(
         &ctx,
         "E_c 20-pt vs PySCF nw=20",
         res.e_rpa,
-        num(&sys.r, "/urpa/nw_convergence/20", &ctx),
+        num_ctx(&sys.r, "/urpa/nw_convergence/20", &ctx),
         TOL_E_C,
     );
     assert_misses(
         &ctx,
         "20-pt vs the 40-pt reference",
         res.e_rpa,
-        num(&sys.r, "/urpa/e_corr", &ctx),
+        num_ctx(&sys.r, "/urpa/e_corr", &ctx),
         TOL_E_C,
     );
 }
@@ -598,7 +584,7 @@ fn urpa_quadrature_control_oh() {
 #[ignore = "validation: U-RPA"]
 fn urpa_truncation_control_oh() {
     let sys = load_system("oh", "cc-pvdz");
-    let scf = uhf(&sys, num(&sys.r, "/uhf/energy", &sys.label));
+    let scf = uhf(&sys, num_ctx(&sys.r, "/uhf/energy", &sys.label));
     truncation_control(&sys, &scf, "urpa");
 }
 
@@ -606,7 +592,7 @@ fn urpa_truncation_control_oh() {
 #[ignore = "validation: U-RPA"]
 fn urpa_truncation_control_o2_triplet() {
     let sys = load_system("o2", "cc-pvdz");
-    let scf = uhf(&sys, num(&sys.r, "/uhf/energy", &sys.label));
+    let scf = uhf(&sys, num_ctx(&sys.r, "/uhf/energy", &sys.label));
     truncation_control(&sys, &scf, "urpa");
 }
 
@@ -624,12 +610,10 @@ fn urpa_reference_orbital_control_oh_rohf() {
         &sys.obs,
         Operator::coulomb(),
         &sys.bounds,
-        &RhfConfig {
-            max_iter: 400,
-            energy_conv: 1e-11,
-            density_conv: 1e-9,
-            ..Default::default()
-        },
+        &RhfConfig::default()
+            .with_max_iter(400)
+            .with_energy_conv(1e-11)
+            .with_density_conv(1e-9),
     )
     .unwrap_or_else(|e| panic!("{ctx}: solve_rohf failed: {e:?}"));
     assert!(rohf.converged, "{ctx}: ROHF did not converge");
@@ -637,7 +621,7 @@ fn urpa_reference_orbital_control_oh_rohf() {
         &ctx,
         "E_ROHF",
         rohf.energy,
-        num(&sys.r, "/rohf/energy", &ctx),
+        num_ctx(&sys.r, "/rohf/energy", &ctx),
         TOL_E_SCF,
     );
     let res = u_rpa(&sys, &rohf, N_QUAD, 0.0);
@@ -645,7 +629,7 @@ fn urpa_reference_orbital_control_oh_rohf() {
         &ctx,
         "ROHF-based U-RPA vs UHF reference",
         res.e_rpa,
-        num(&sys.r, "/urpa/e_corr", &ctx),
+        num_ctx(&sys.r, "/urpa/e_corr", &ctx),
         TOL_E_C,
     );
 }

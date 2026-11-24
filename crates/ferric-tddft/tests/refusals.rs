@@ -41,8 +41,10 @@ fn water_hf() -> (
     (mol, obs, dfbs, rhf)
 }
 
+/// A τ-only meta-GGA reference passes the functional gate (it has the τ
+/// f_xc kernel) and so reaches the memory gate under the starved budget.
 #[test]
-fn meta_gga_reference_is_refused_not_approximated() {
+fn meta_gga_reference_passes_the_functional_gate() {
     let (mol, obs, dfbs, rhf) = water_hf();
     for method in [TddftMethod::Tda, TddftMethod::Casida] {
         for xc in ["SCAN", "r2SCAN"] {
@@ -54,34 +56,47 @@ fn meta_gga_reference_is_refused_not_approximated() {
                 ..Default::default()
             };
             let err = run_tddft(&mol, &obs, &dfbs, &rhf, &cfg)
-                .expect_err("meta-GGA has no tau f_xc kernel; a number here is the F1 defect")
+                .expect_err("a 1 kB budget cannot hold the response matrices")
                 .to_string();
             assert!(
-                err.contains("meta-GGA"),
-                "{method:?}/{xc}: refusal must name the reason (and must come from the \
-                 functional gate, not the memory gate): {err}"
+                err.contains("memory plan"),
+                "{method:?}/{xc}: must be stopped by the memory gate, not refused by the \
+                 functional gate: {err}"
             );
         }
     }
 }
 
+/// VV10 has no f_xc kernel and is refused by the functional gate, before the
+/// memory gate; a range-separated hybrid is accepted and reaches the memory
+/// gate.
 #[test]
-fn range_separated_and_vv10_references_are_refused() {
+fn vv10_references_are_refused_and_range_separated_ones_accepted() {
     let (mol, obs, dfbs, rhf) = water_hf();
-    for xc in ["wB97X-V", "HYB_GGA_XC_CAM_B3LYP"] {
-        let cfg = TddftConfig {
-            xc: Some(xc.to_string()),
-            memory_budget_bytes: Some(STARVED),
-            ..Default::default()
-        };
-        let err = run_tddft(&mol, &obs, &dfbs, &rhf, &cfg)
-            .expect_err("no complete kernel; must be refused")
-            .to_string();
-        assert!(
-            !err.contains("memory plan"),
-            "{xc}: refused by the memory gate, i.e. the functional gate never fired: {err}"
-        );
-    }
+    let cfg = TddftConfig {
+        xc: Some("HYB_GGA_XC_CAM_B3LYP".to_string()),
+        memory_budget_bytes: Some(STARVED),
+        ..Default::default()
+    };
+    let err = run_tddft(&mol, &obs, &dfbs, &rhf, &cfg)
+        .expect_err("a starved budget")
+        .to_string();
+    assert!(
+        err.contains("memory plan"),
+        "CAM-B3LYP must pass the functional gate and stop at the memory gate: {err}"
+    );
+    let cfg = TddftConfig {
+        xc: Some("wB97X-V".to_string()),
+        memory_budget_bytes: Some(STARVED),
+        ..Default::default()
+    };
+    let err = run_tddft(&mol, &obs, &dfbs, &rhf, &cfg)
+        .expect_err("no complete kernel; must be refused")
+        .to_string();
+    assert!(
+        !err.contains("memory plan"),
+        "wB97X-V: refused by the memory gate, i.e. the functional gate never fired: {err}"
+    );
 }
 
 #[test]
@@ -98,33 +113,53 @@ fn c_hf_override_without_a_functional_is_refused() {
     assert!(err.contains("c_hf"), "unhelpful refusal: {err}");
 }
 
+/// OH doublet, STO-3G: the UHF/UKS reference is accepted (it reaches the
+/// memory gate under the starved budget); a triplet request on it and an
+/// ROHF/ROKS reference are refused before any integral work.
 #[test]
-fn open_shell_reference_is_refused_not_panicking() {
-    // OH doublet. Before this fix `run_tddft` called `eps_r()`/`mos_r()`,
-    // which ASSERT a restricted reference — an open-shell input panicked the
-    // process instead of returning an error.
+fn open_shell_references_unrestricted_accepted_restricted_open_refused() {
     let mol = Molecule::parse_xyz("2\n\nO 0.0 0.0 0.0\nH 0.0 0.0 0.97\n", 0, 2).unwrap();
     let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
     let ctx = ParallelContext::default();
-    let scf_cfg = RhfConfig {
-        max_iter: 200,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default().with_max_iter(200);
     let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &scf_cfg).unwrap();
     assert!(uhf.converged, "OH/STO-3G UHF did not converge");
+    let rohf =
+        ferric_scf::rohf::solve_rohf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &scf_cfg)
+            .unwrap();
+    assert!(rohf.converged, "OH/STO-3G ROHF did not converge");
 
     for xc in [None, Some("PBE".to_string())] {
         let cfg = TddftConfig {
             xc: xc.clone(),
+            memory_budget_bytes: Some(STARVED),
             ..Default::default()
         };
         let err = run_tddft(&mol, &obs, &dfbs, &uhf, &cfg)
-            .expect_err("open-shell reference must be refused")
+            .expect_err("a 1 kB budget")
             .to_string();
         assert!(
-            err.contains("closed-shell"),
+            err.contains("memory plan"),
+            "{xc:?}: UHF must reach the memory gate: {err}"
+        );
+        let triplet = TddftConfig {
+            spin: ferric_tddft::ResponseSpin::Triplet,
+            ..cfg.clone()
+        };
+        let err = run_tddft(&mol, &obs, &dfbs, &uhf, &triplet)
+            .expect_err("triplet on UHF")
+            .to_string();
+        assert!(
+            err.contains("spin-conserving"),
+            "{xc:?}: refusal must say why: {err}"
+        );
+        let err = run_tddft(&mol, &obs, &dfbs, &rohf, &cfg)
+            .expect_err("ROHF/ROKS must be refused")
+            .to_string();
+        assert!(
+            err.contains("ROHF/ROKS"),
             "{xc:?}: refusal must say why: {err}"
         );
     }

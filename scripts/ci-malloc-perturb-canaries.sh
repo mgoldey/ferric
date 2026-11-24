@@ -13,6 +13,7 @@ set -euo pipefail
 
 CANARY_IDS=(
   ferric-integrals::boys_chebyshev_table_edge
+  ferric-integrals::core_eval_singleton_race
   ferric-integrals::tenno_table_edge
   ferric-pbc::pbc_kpoint_ecp_rotation
   ferric-pbc::pbc_krsgdf

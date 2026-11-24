@@ -251,7 +251,8 @@ pub(crate) fn applies(config: &RhfConfig, has_initial_mos: bool) -> bool {
 /// The secondary solve's config: the caller's, minus everything that would
 /// recurse, outrank the guess or only matters for the target solution.
 fn secondary_config(config: &RhfConfig) -> RhfConfig {
-    let mut c = config.clone();
+    // Its RI-JK tensor is in the guess basis: never the gradient's.
+    let mut c = crate::raw_handoff::without_handoff(config);
     c.guess_basis = None;
     c.init_guess_density = None;
     c.check_stability = false;

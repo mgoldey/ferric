@@ -1,0 +1,699 @@
+#!/usr/bin/env python3
+"""Exact checks of the fermionic sign conventions in ferric-ci's Slater-Condon code.
+
+Theory and notation: book/src/17-multireference/02-slater-condon.md. Every claim asserts; the
+script exits nonzero on any mismatch. Negative controls (deliberately wrong
+variants that must NOT pass) guard against a vacuous pass.
+
+Convention under test (ferric-ci, crates/ferric-ci/src):
+  * spin-orbital order is alpha-before-beta: JW mode p = (p, alpha),
+    mode n + p = (p, beta), p = 0..n-1;
+  * |D> = prod_{p in A, ascending} a+_{p alpha} prod_{q in B, ascending}
+    a+_{q beta} |0>, A/B the alpha/beta u64 strings;
+  * a single-channel annihilation/creation at orbital p carries
+    (-1)^{#occupied below p IN THAT CHANNEL'S STRING}
+    (strings.rs phase_below), i.e. the alpha electrons are NOT counted
+    for a beta operator.
+
+Claims
+  1  The Jordan-Wigner matrices a_P = Z x ... x Z x sigma^- x I x ... x I
+     satisfy the CAR {a_P, a+_Q} = delta_PQ, {a_P, a_Q} = 0 (n_so = 8).
+  2  The ascending-creation product of claim "convention" applied to |0> is
+     the computational basis vector with coefficient +1 (so bit strings ARE
+     determinants with no extra phase), and a_P on it has sign
+     (-1)^{#occupied modes < P}.
+  3  For every (bra, ket) pair in the sectors (n, N_alpha, N_beta) =
+     (4,2,2), (5,3,2), (5,2,3), (5,3,3), the full spin-orbital matrix element
+       <D'| sum h_pq a+_{p s} a_{q s}
+            + 1/2 sum (pq|rs) a+_{p s} a+_{r t} a_{s t} a_{q s} |D>
+     built from the explicit JW matrices with SYMBOLIC h_pq = h_qp and
+     8-fold-symmetric (pq|rs) equals, as an exact linear form in those
+     symbols, a line-for-line port of
+       hamiltonian.rs general_element
+         -> diagonal_element
+         -> single_excitation_same_spin   (phase_i * phase_a)
+         -> double_same_spin              (phase: double_phase_same_spin)
+         -> double_opposite_spin          (pa_i pa_a pb_j pb_b)
+     The odd-N_alpha sectors are the ones that test the omission of the alpha
+     parity from beta operators (it cancels pairwise); with N_alpha even it
+     would be invisible.
+  4  Negative controls, each must FAIL claim 3 somewhere:
+       a  same-spin double, create a before b (swap of the two creations in double_phase_same_spin);
+       b  single excitation, phase_a taken in the full ket instead of
+          ket-minus-i (single_excitation_same_spin);
+       c  beta single excitation multiplied by (-1)^{N_alpha} only once
+          (a non-cancelling alpha parity);
+       d  opposite-spin double with the sign dropped from the beta channel;
+       e  the same ferric port compared against an INTERLEAVED JW order
+          (mode 2p + spin). This is a different but equally valid determinant
+          phase convention: it differs from alpha-before-beta by a diagonal
+          +-1 similarity, so it must mismatch element-wise yet give the same
+          spectrum. That is checked numerically below, which shows claim 3
+          is convention-specific (strictly stronger than an energy test).
+          The similarity is asserted in its explicit form
+          S_AB = (-1)^{#{(p,q): p in B, q in A, p < q}} (book
+          `eq:so-ordering-similarity`); the same matrices compared without
+          S_AB must differ, so the sign check cannot pass vacuously.
+
+  5  The spatial second-quantized Hamiltonian (book `eq:hamiltonian-1`, spin sums written
+     out) equals the spin-orbital one with antisymmetrized integrals (book
+     `eq:so-operator-forms` and `eq:hamiltonian-3`), as 64 x 64 Jordan-Wigner matrices on 3 spatial
+     orbitals with random symmetric h, a random 8-fold-symmetric (pq|rs) and a
+     random E_nn. Negative controls: the 1/4 replaced by 1/2, and the exchange
+     term of <pq||rs> with the wrong sign, must differ. Book: verified
+     equation `eq:so-operator-forms`.
+  6  H = E_ref + F_N + V_N as Jordan-Wigner matrices (book `eq:so-ref-energy`
+     to `eq:so-normal-order-split`),
+     with E_ref = E_nn + sum_i h_ii + 1/2 sum_ij <ij||ij>, f_pq = h_pq + sum_k
+     <pk||qk>, and the normal-ordered products {..} formed from the
+     quasi-particle operators of the reference (occupied a+ is a quasi-particle
+     annihilator, occupied a a quasi-particle creator), reordered with the
+     permutation sign and no contraction. That uses only the anticommutation
+     algebra, so it is independent of Wick's theorem. Closed-shell and
+     open-shell references. Negative controls: F_N and V_N without normal
+     ordering, and f without the sum over k, must differ. Book: verified
+     equation `eq:so-normal-order-split`.
+
+  7  H2 in a CAS(2,2): <1a 1b|H|0a 0b> from the explicit JW matrices and from
+     general_element both equal +(10|10), the exchange integral K of the two
+     orbitals (book `02-slater-condon.md`, "Everything else, and a (2,2)
+     check").
+
+Independent route: claim 3 is a brute-force comparison with the explicit
+Jordan-Wigner Hamiltonian in the full Fock space of 8-10 spin orbitals.
+
+Scope: `general_element` is the dense / naive-sigma oracle. The production
+Davidson sigma is `sigma.rs` DirectSigma, which this script does not port; the
+Rust tests compare DirectSigma with the oracle.
+
+Mutations (each turns the script red, marker "FAIL n=" for claim 3; the
+markers for claims 5 and 6 are given with them):
+  - flip the sign of the same-spin exchange integral in the transcribed
+    diagonal_element;
+  - drop the same-spin exchange term (ap|pi) from the transcribed single
+    excitation;
+  - claim 5: the exchange term of <pq||rs> in the spin-orbital build of
+    hamiltonians_claim5 takes a + sign (marker "FAIL claim 5 forms");
+  - claim 6: the mean-field sum over k dropped from the Fock matrix f_pq
+    (marker "FAIL claim 6 split");
+  - claim 7: the opposite-spin double element negated (marker "FAIL claim 7").
+
+Run: python3 scripts/casci_slater_condon_phases_sympy.py
+"""
+
+import itertools
+import sys
+
+import numpy as np
+import sympy as sp
+
+FAILED = []
+
+
+def check(cond, msg):
+    if cond:
+        print(f"  ok   {msg}")
+    else:
+        print(f"  FAIL {msg}")
+        FAILED.append(msg)
+
+
+# ---------------------------------------------------------------- JW matrices
+def jw_annihilators(n_so):
+    """Dense integer JW matrices a_P, P = 0..n_so-1, mode 0 = lowest bit."""
+    I2 = np.eye(2, dtype=np.int64)
+    Z = np.diag([1, -1]).astype(np.int64)
+    # basis |n> with bit P of the state index = occupation of mode P;
+    # sigma^- = |0><1| on one mode.
+    sm = np.array([[0, 1], [0, 0]], dtype=np.int64)
+    ops = []
+    for P in range(n_so):
+        # kron ordering: the LAST factor is bit 0. Build factors for bits
+        # n_so-1 .. 0 left to right.
+        factors = []
+        for bit in reversed(range(n_so)):
+            if bit < P:
+                factors.append(Z)
+            elif bit == P:
+                factors.append(sm)
+            else:
+                factors.append(I2)
+        m = factors[0]
+        for f in factors[1:]:
+            m = np.kron(m, f)
+        ops.append(m)
+    return ops
+
+
+def to_sparse(m):
+    """Each JW operator column has <= 1 nonzero: col -> (row, sign)."""
+    out = {}
+    rows, cols = np.nonzero(m)
+    for r, c in zip(rows, cols):
+        assert c not in out
+        out[int(c)] = (int(r), int(m[r, c]))
+    return out
+
+
+class JW:
+    def __init__(self, n_so):
+        dense = jw_annihilators(n_so)
+        self.n_so = n_so
+        self.dense = dense
+        self.ann = [to_sparse(a) for a in dense]
+        self.cre = [to_sparse(a.T) for a in dense]
+
+    def apply(self, ops, state):
+        """ops applied right-to-left: ops = [(kind, P), ...] as written."""
+        sign = 1
+        for kind, P in reversed(ops):
+            table = self.ann[P] if kind == "a" else self.cre[P]
+            if state not in table:
+                return None, 0
+            state, s = table[state]
+            sign *= s
+        return state, sign
+
+
+# ---------------------------------------------------- symbolic integrals
+def hsym(p, q):
+    p, q = min(p, q), max(p, q)
+    return sp.Symbol(f"h_{p}{q}")
+
+
+def gkey(p, q, r, s):
+    a, b = (p, q) if p <= q else (q, p)
+    c, d = (r, s) if r <= s else (s, r)
+    return min((a, b, c, d), (c, d, a, b))
+
+
+def gsym(p, q, r, s):
+    k = gkey(p, q, r, s)
+    return sp.Symbol("g_" + "".join(map(str, k)))
+
+
+# -------------------------------------------- ferric port (hamiltonian.rs)
+def phase_below(s, p):  # strings.rs phase_below
+    return -1 if bin(s & ((1 << p) - 1)).count("1") % 2 else 1
+
+
+def occ(s):
+    return [p for p in range(64) if s >> p & 1]
+
+
+def diagonal_element(ao, bo):  # hamiltonian.rs diagonal_element
+    e = 0
+    for p in ao + bo:
+        e += hsym(p, p)
+    for occl in (ao, bo):
+        for i in range(len(occl)):
+            for j in range(i + 1, len(occl)):
+                p, q = occl[i], occl[j]
+                e += gsym(p, p, q, q) - gsym(p, q, q, p)
+    for p in ao:
+        for q in bo:
+            e += gsym(p, p, q, q)
+    return e
+
+
+def single(bra, ket, other, mut):  # single_excitation_same_spin
+    diff = bra ^ ket
+    i = (diff & ket).bit_length() - 1
+    a = (diff & bra).bit_length() - 1
+    phase_i = phase_below(ket, i)
+    if mut == "b":
+        phase_a = phase_below(ket, a)
+    else:
+        phase_a = phase_below(ket & ~(1 << i), a)
+    val = hsym(a, i)
+    spect = ket & ~(1 << i) & ~(1 << a)
+    for p in occ(spect):
+        val += gsym(a, i, p, p) - gsym(a, p, p, i)
+    for p in occ(other):
+        val += gsym(a, i, p, p)
+    return phase_i * phase_a * val
+
+
+def double_same(bra, ket, mut):  # double_same_spin, double_phase_same_spin
+    diff = bra ^ ket
+    i, j = occ(diff & ket)
+    a, b = occ(diff & bra)
+    s = ket
+    ph = phase_below(s, i)
+    s &= ~(1 << i)
+    ph *= phase_below(s, j)
+    s &= ~(1 << j)
+    first, second = (a, b) if mut == "a" else (b, a)
+    ph *= phase_below(s, first)
+    s |= 1 << first
+    ph *= phase_below(s, second)
+    return ph * (gsym(a, i, b, j) - gsym(a, j, b, i))
+
+
+def double_opp(a_bra, a_ket, b_bra, b_ket, mut):  # double_opposite_spin
+    da, db = a_bra ^ a_ket, b_bra ^ b_ket
+    i = (da & a_ket).bit_length() - 1
+    a = (da & a_bra).bit_length() - 1
+    j = (db & b_ket).bit_length() - 1
+    b = (db & b_bra).bit_length() - 1
+    pa = phase_below(a_ket, i) * phase_below(a_ket & ~(1 << i), a)
+    pb = phase_below(b_ket, j) * phase_below(b_ket & ~(1 << j), b)
+    if mut == "d":
+        pb = 1
+    return pa * pb * gsym(a, i, b, j)
+
+
+def general_element(a_bra, b_bra, a_ket, b_ket, mut=None):  # general_element
+    da = bin(a_bra ^ a_ket).count("1")
+    db = bin(b_bra ^ b_ket).count("1")
+    nd = da + db
+    if nd == 0:
+        return diagonal_element(occ(a_ket), occ(b_ket))
+    if nd == 2:
+        if da == 2:
+            return single(a_bra, a_ket, b_ket, mut)
+        if db == 2:
+            v = single(b_bra, b_ket, a_ket, mut)
+            if mut == "c" and bin(a_ket).count("1") % 2:
+                v = -v
+            return v
+        return 0
+    if nd == 4:
+        if da == 4:
+            return double_same(a_bra, a_ket, mut)
+        if db == 4:
+            return double_same(b_bra, b_ket, mut)
+        if da == 2 and db == 2:
+            return double_opp(a_bra, a_ket, b_bra, b_ket, mut)
+        return 0
+    return 0
+
+
+# ------------------------------------------------ JW Hamiltonian columns
+def mode(p, spin, n, order):
+    return p + n * spin if order == "ab" else 2 * p + spin
+
+
+def encode(a, b, n, order):
+    st = 0
+    for p in occ(a):
+        st |= 1 << mode(p, 0, n, order)
+    for p in occ(b):
+        st |= 1 << mode(p, 1, n, order)
+    return st
+
+
+def h_column(jw, n, ket_state, order):
+    """H|ket> as {state: sympy linear form} from the explicit JW operators."""
+    col = {}
+
+    def add(st, coef):
+        col[st] = col.get(st, 0) + coef
+
+    spins = (0, 1)
+    for s_ in spins:
+        for p in range(n):
+            for q in range(n):
+                P, Q = mode(p, s_, n, order), mode(q, s_, n, order)
+                st, sg = jw.apply([("c", P), ("a", Q)], ket_state)
+                if sg:
+                    add(st, sg * hsym(p, q))
+    half = sp.Rational(1, 2)
+    for s1, s2 in itertools.product(spins, spins):
+        for p, q, r, s in itertools.product(range(n), repeat=4):
+            P, Q = mode(p, s1, n, order), mode(q, s1, n, order)
+            R, S = mode(r, s2, n, order), mode(s, s2, n, order)
+            st, sg = jw.apply([("c", P), ("c", R), ("a", S), ("a", Q)], ket_state)
+            if sg:
+                add(st, half * sg * gsym(p, q, r, s))
+    return col
+
+
+def strings(n, k):
+    return [sum(1 << p for p in c) for c in itertools.combinations(range(n), k)]
+
+
+def compare_sector(n, na, nb, order="ab", mut=None):
+    """Return number of mismatching (bra, ket) elements (0 = identical)."""
+    jw = JW(2 * n)
+    dets = [(a, b) for a in strings(n, na) for b in strings(n, nb)]
+    bad = 0
+    for ak, bk in dets:
+        col = h_column(jw, n, encode(ak, bk, n, order), order)
+        for ab, bb in dets:
+            jw_val = col.get(encode(ab, bb, n, order), 0)
+            ferric = general_element(ab, bb, ak, bk, mut)
+            if sp.expand(jw_val - ferric) != 0:
+                bad += 1
+    return bad, len(dets)
+
+
+# ------------------------------------------------------------------ claims
+def claim1():
+    print("\n=== 1  JW matrices satisfy the CAR (n_so = 8)")
+    a = [m.astype(float) for m in jw_annihilators(8)]
+    ok = True
+    eye = np.eye(a[0].shape[0])
+    for P, Q in itertools.product(range(8), repeat=2):
+        acr = a[P] @ a[Q].T + a[Q].T @ a[P]
+        aa = a[P] @ a[Q] + a[Q] @ a[P]
+        ok &= np.array_equal(acr, eye if P == Q else 0 * eye)
+        ok &= not aa.any()
+    check(ok, "{a_P, a+_Q} = delta_PQ and {a_P, a_Q} = 0 for all P, Q")
+
+
+def claim2():
+    print("\n=== 2  ascending-creation determinant = basis vector, sign rule")
+    n = 3
+    jw = JW(2 * n)
+    ok_vec, ok_sign = True, True
+    for a in range(1 << n):
+        for b in range(1 << n):
+            modes = [p for p in occ(a)] + [n + q for q in occ(b)]
+            st, sg = jw.apply([("c", P) for P in modes], 0)  # ascending left->right
+            ok_vec &= st == encode(a, b, n, "ab") and sg == 1
+            for P in modes:
+                st2, sg2 = jw.apply([("a", P)], st)
+                ok_sign &= sg2 == (-1) ** bin(st & ((1 << P) - 1)).count("1")
+    check(ok_vec, "prod_{asc} a+ |0> = +|bits> for every (A, B), alpha-before-beta")
+    check(ok_sign, "a_P |bits> sign = (-1)^{#occupied modes < P}")
+
+
+SECTORS = [(4, 2, 2), (5, 3, 2), (5, 2, 3), (5, 3, 3)]
+
+
+def claim3():
+    print("\n=== 3  general_element == explicit JW Hamiltonian (symbolic, exact)")
+    for n, na, nb in SECTORS:
+        bad, nd = compare_sector(n, na, nb)
+        check(bad == 0, f"n={n} (Na,Nb)=({na},{nb}): {nd}^2 elements, {bad} mismatches")
+
+
+# ---------------------------------------- claims 5 and 6: operator algebra
+N_SP = 3  # spatial orbitals; 6 spin orbitals, 64 x 64 Fock-space matrices
+
+
+def random_model(n, seed):
+    rng = np.random.default_rng(seed)
+    h = rng.standard_normal((n, n))
+    h = h + h.T
+    g = rng.standard_normal((n,) * 4)
+    g = sum(
+        np.transpose(g, perm)
+        for perm in [
+            (0, 1, 2, 3),
+            (1, 0, 2, 3),
+            (0, 1, 3, 2),
+            (1, 0, 3, 2),
+            (2, 3, 0, 1),
+            (3, 2, 0, 1),
+            (2, 3, 1, 0),
+            (3, 2, 1, 0),
+        ]
+    )
+    return h, g, float(rng.standard_normal())
+
+
+def spin_orbital_tensors(h, g, n, exchange_sign=-1.0):
+    """h_PQ and <PQ||RS> of book `eq:hamiltonian-3`; mode P = p + n * sigma (alpha first)."""
+    nso = 2 * n
+    sig = lambda P: P // n  # noqa: E731
+    sp_ = lambda P: P % n  # noqa: E731
+    hso = np.zeros((nso, nso))
+    asym = np.zeros((nso,) * 4)
+    for P, Q in itertools.product(range(nso), repeat=2):
+        if sig(P) == sig(Q):
+            hso[P, Q] = h[sp_(P), sp_(Q)]
+    for P, Q, R, S in itertools.product(range(nso), repeat=4):
+        d = 0.0
+        if sig(P) == sig(R) and sig(Q) == sig(S):
+            d += g[sp_(P), sp_(R), sp_(Q), sp_(S)]
+        if sig(P) == sig(S) and sig(Q) == sig(R):
+            d += exchange_sign * g[sp_(P), sp_(S), sp_(Q), sp_(R)]
+        asym[P, Q, R, S] = d
+    return hso, asym
+
+
+def four_op_sum(coef, ops, order):
+    """sum coef[P,Q,R,S] o1 o2 o3 o4, the operators taken in the index order `order`.
+
+    ops[k][P] are the four operator families (matrices). `order` is a permutation
+    of "PQRS" naming which index each factor carries.
+    """
+    nso = coef.shape[0]
+    pos = {c: i for i, c in enumerate("PQRS")}
+    c_op = np.transpose(coef, [pos[c] for c in order])
+    dim = ops[0][0].shape[0]
+    out = np.zeros((dim, dim))
+    for a, b in itertools.product(range(nso), repeat=2):
+        w = np.zeros((dim, dim))
+        for c, d in itertools.product(range(nso), repeat=2):
+            x = c_op[a, b, c, d]
+            if x != 0.0:
+                w += x * (ops[2][c] @ ops[3][d])
+        out += (ops[0][a] @ ops[1][b]) @ w
+    return out
+
+
+def jw_float(nso):
+    a = [m.astype(float) for m in jw_annihilators(nso)]
+    return a, [m.T.copy() for m in a]
+
+
+def hamiltonians_claim5(n, seed, exchange_sign=-1.0, quarter=0.25):
+    h, g, enn = random_model(n, seed)
+    nso = 2 * n
+    ann, cre = jw_float(nso)
+    dim = 1 << nso
+    eye = np.eye(dim)
+    # form eq:hamiltonian-1: spin sums written out, operator order a+_{p s} a+_{r t} a_{s t} a_{q s}
+    c11 = np.zeros((nso,) * 4)  # indexed [P, Q, R, S] = (p s1, q s1, r s2, s s2)
+    for s1, s2 in itertools.product((0, 1), repeat=2):
+        for p, q, r, s_ in itertools.product(range(n), repeat=4):
+            c11[p + n * s1, q + n * s1, r + n * s2, s_ + n * s2] = 0.5 * g[p, q, r, s_]
+    h1 = enn * eye
+    for s1 in (0, 1):
+        for p, q in itertools.product(range(n), repeat=2):
+            h1 = h1 + h[p, q] * cre[p + n * s1] @ ann[q + n * s1]
+    h1 = h1 + four_op_sum(c11, [cre, cre, ann, ann], "PRSQ")
+    # form eq:so-operator-forms: antisymmetrized spin-orbital integrals
+    hso, asym = spin_orbital_tensors(h, g, n, exchange_sign)
+    h2 = enn * eye
+    for P, Q in itertools.product(range(nso), repeat=2):
+        h2 = h2 + hso[P, Q] * cre[P] @ ann[Q]
+    h2 = h2 + four_op_sum(quarter * asym, [cre, cre, ann, ann], "PQSR")
+    return h1, h2
+
+
+def claim5():
+    print("\n=== 5  spatial (1.1) == antisymmetrized spin-orbital (1.2), JW matrices")
+    h1, h2 = hamiltonians_claim5(N_SP, 3)
+    d = np.abs(h1 - h2).max()
+    check(
+        d < 1e-11 and np.abs(h1).max() > 1.0,
+        f"claim 5 forms: max |H(1.1) - H(1.2)| = {d:.1e}",
+    )
+    for tag, kw in (
+        ("1/4 -> 1/2", {"quarter": 0.5}),
+        ("exchange sign +", {"exchange_sign": 1.0}),
+    ):
+        a, b = hamiltonians_claim5(N_SP, 3, **kw)
+        check(np.abs(a - b).max() > 1e-3, f"claim 5 negative control ({tag}) differs")
+
+
+def normal_ordered(ops_cd, occ_modes, ann, cre):
+    """{o1 o2 ...} relative to the determinant `occ_modes`, by anticommutation only.
+
+    ops_cd: [("c" | "a", P), ...]. Each factor is the matrix of a_P or a+_P; as
+    a quasi-particle operator it is a creator when (kind == "c") XOR occupied.
+    The product is reordered creators-first, annihilators-last, with the sign of
+    the permutation (stable), and NO contraction terms.
+    """
+    items = []
+    for kind, P in ops_cd:
+        mat = cre[P] if kind == "c" else ann[P]
+        is_qp_creator = (kind == "c") != (P in occ_modes)
+        items.append((is_qp_creator, mat))
+    inversions = sum(
+        1
+        for i in range(len(items))
+        for j in range(i + 1, len(items))
+        if (not items[i][0]) and items[j][0]
+    )
+    ordered = [m for c, m in items if c] + [m for c, m in items if not c]
+    out = ordered[0]
+    for m in ordered[1:]:
+        out = out @ m
+    return (-1) ** inversions * out
+
+
+def split_claim6(n, seed, occ_modes, drop_k=False, normal_order=True):
+    h, g, enn = random_model(n, seed)
+    nso = 2 * n
+    ann, cre = jw_float(nso)
+    dim = 1 << nso
+    eye = np.eye(dim)
+    hso, asym = spin_orbital_tensors(h, g, n)
+    h_full = enn * eye
+    for P, Q in itertools.product(range(nso), repeat=2):
+        h_full = h_full + hso[P, Q] * cre[P] @ ann[Q]
+    for P, Q, R, S in itertools.product(range(nso), repeat=4):
+        if asym[P, Q, R, S] != 0.0:
+            h_full = h_full + 0.25 * asym[P, Q, R, S] * (
+                cre[P] @ cre[Q] @ ann[S] @ ann[R]
+            )
+    occ = sorted(occ_modes)
+    e_ref = (
+        enn
+        + sum(hso[i, i] for i in occ)
+        + 0.5 * sum(asym[i, j, i, j] for i in occ for j in occ)
+    )
+    if drop_k:
+        f = hso.copy()
+    else:
+        f = hso + np.einsum("pkqk->pq", asym[:, occ, :, :][:, :, :, occ])
+    f_n = np.zeros((dim, dim))
+    v_n = np.zeros((dim, dim))
+    for P, Q in itertools.product(range(nso), repeat=2):
+        if normal_order:
+            f_n = f_n + f[P, Q] * normal_ordered(
+                [("c", P), ("a", Q)], occ_modes, ann, cre
+            )
+        else:
+            f_n = f_n + f[P, Q] * cre[P] @ ann[Q]
+    for P, Q, R, S in itertools.product(range(nso), repeat=4):
+        c = 0.25 * asym[P, Q, R, S]
+        if c != 0.0:
+            if normal_order:
+                v_n = v_n + c * normal_ordered(
+                    [("c", P), ("c", Q), ("a", S), ("a", R)], occ_modes, ann, cre
+                )
+            else:
+                v_n = v_n + c * (cre[P] @ cre[Q] @ ann[S] @ ann[R])
+    return h_full, e_ref * eye + f_n + v_n
+
+
+def claim6():
+    print(
+        "\n=== 6  H = E_ref + F_N + V_N, JW matrices (normal ordering by anticommutation)"
+    )
+    refs = {
+        "closed-shell {0,1 alpha; 0,1 beta}": {0, 1, 3, 4},
+        "open-shell {0,1 alpha; 0 beta}": {0, 1, 3},
+    }
+    for tag, occ_modes in refs.items():
+        h_full, h_split = split_claim6(N_SP, 4, occ_modes)
+        d = np.abs(h_full - h_split).max()
+        check(
+            d < 1e-11 and np.abs(h_full).max() > 1.0,
+            f"claim 6 split, {tag}: max |H - (E_ref + F_N + V_N)| = {d:.1e}",
+        )
+    occ_modes = {0, 1, 3, 4}
+    for tag, kw in (
+        ("no normal ordering", {"normal_order": False}),
+        ("f without the sum over k", {"drop_k": True}),
+    ):
+        a, b = split_claim6(N_SP, 4, occ_modes, **kw)
+        check(np.abs(a - b).max() > 1e-3, f"claim 6 negative control ({tag}) differs")
+
+
+def claim4():
+    print("\n=== 4  negative controls (each must mismatch)")
+    for mut, what in [
+        ("a", "same-spin double, create a before b"),
+        ("b", "single, phase_a in full ket"),
+        ("c", "beta single carries uncancelled (-1)^{N_alpha}"),
+        ("d", "opposite-spin double, beta sign dropped"),
+    ]:
+        bad = sum(compare_sector(n, na, nb, mut=mut)[0] for n, na, nb in SECTORS)
+        check(bad > 0, f"mutation {mut} ({what}): {bad} mismatches")
+
+    bad, _ = compare_sector(5, 3, 2, order="interleaved")
+    check(bad > 0, f"interleaved JW order mismatches element-wise ({bad} elements)")
+
+    # ...but its spectrum is the same: it is a diagonal +-1 similarity.
+    n, na, nb = 5, 3, 2
+    rng = np.random.default_rng(7)
+    hnum = rng.standard_normal((n, n))
+    hnum = hnum + hnum.T
+    gnum = rng.standard_normal((n,) * 4)
+    gnum = sum(
+        np.transpose(gnum, perm)
+        for perm in [
+            (0, 1, 2, 3),
+            (1, 0, 2, 3),
+            (0, 1, 3, 2),
+            (1, 0, 3, 2),
+            (2, 3, 0, 1),
+            (3, 2, 0, 1),
+            (2, 3, 1, 0),
+            (3, 2, 1, 0),
+        ]
+    )
+    subs = {}
+    for p, q in itertools.product(range(n), repeat=2):
+        subs[hsym(p, q)] = float(hnum[p, q])
+    for idx in itertools.product(range(n), repeat=4):
+        subs[gsym(*idx)] = float(gnum[idx])
+    dets = [(a, b) for a in strings(n, na) for b in strings(n, nb)]
+    jw = JW(2 * n)
+
+    def matrix(order):
+        m = np.zeros((len(dets), len(dets)))
+        for k, (ak, bk) in enumerate(dets):
+            col = h_column(jw, n, encode(ak, bk, n, order), order)
+            for b_, (ab, bb) in enumerate(dets):
+                v = col.get(encode(ab, bb, n, order), 0)
+                m[b_, k] = float(sp.sympify(v).xreplace(subs))
+        return m
+
+    m_ab, m_il = matrix("ab"), matrix("interleaved")
+    sim = np.abs(np.abs(m_ab) - np.abs(m_il)).max()
+    dspec = np.abs(np.linalg.eigvalsh(m_ab) - np.linalg.eigvalsh(m_il)).max()
+    check(sim < 1e-12, f"|H_ab| == |H_interleaved| element-wise (max {sim:.1e})")
+    check(dspec < 1e-10, f"same spectrum (max eigenvalue diff {dspec:.1e})")
+
+    # The similarity is the book's S_AB = (-1)^{#{(p,q): p in B, q in A, p<q}}:
+    # moving each beta creator of the blocked string past every later alpha one.
+    s_ab = np.array(
+        [(-1) ** sum(1 for p in occ(bk) for q in occ(ak) if p < q) for ak, bk in dets]
+    )
+    d_sim = np.abs(m_ab - s_ab[:, None] * m_il * s_ab[None, :]).max()
+    check(
+        d_sim < 1e-12, f"H_ab == S H_interleaved S with S_AB explicit (max {d_sim:.1e})"
+    )
+    d_nosign = np.abs(m_ab - m_il).max()
+    check(d_nosign > 1e-6, f"without S_AB the matrices differ (max {d_nosign:.1e})")
+
+
+def claim7():
+    print("\n=== 7  H2 CAS(2,2): the opposite-spin double is +(10|10)")
+    n = 2
+    jw = JW(2 * n)
+    ket, bra = (0b01, 0b01), (0b10, 0b10)
+    col = h_column(jw, n, encode(*ket, n, "ab"), "ab")
+    jw_val = sp.expand(col.get(encode(*bra, n, "ab"), 0))
+    ferric = sp.expand(general_element(bra[0], bra[1], ket[0], ket[1]))
+    want = gsym(1, 0, 1, 0)
+    check(
+        jw_val == want and ferric == want,
+        f"claim 7: <1a 1b|H|0a 0b> = {jw_val} (JW), {ferric} (general_element)",
+    )
+
+
+def main():
+    claim1()
+    claim2()
+    claim3()
+    claim5()
+    claim6()
+    claim7()
+    claim4()
+    if FAILED:
+        print(f"\n{len(FAILED)} FAILED")
+        sys.exit(1)
+    print("\nall claims hold")
+
+
+if __name__ == "__main__":
+    main()

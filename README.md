@@ -6,6 +6,9 @@ functionals.
 
 **Documentation: <https://matthew.thegoldeys.com/ferric/>**
 
+ferric is the bottom layer of a three-repository stack with
+[smeltery](https://github.com/mgoldey/smeltery) and [attestation](https://github.com/mgoldey/attestation); see the [stack overview](docs/stack.md).
+
 ## Install
 
 ```bash
@@ -15,12 +18,15 @@ pip install ferric      # Linux x86_64, CPython 3.10–3.13
 The wheel needs no compiler. To change ferric itself or to use MPI, build from
 source; see [Installation](https://matthew.thegoldeys.com/ferric/using/installation.html).
 
-| Platform | Wheel on PyPI | Source build |
+| Platform (CPython 3.10–3.13) | Wheel on PyPI | Source build |
 |---|---|---|
-| Linux x86_64 (`manylinux_2_28`), CPython 3.10–3.13 | yes | yes, the only tested platform |
-| Linux aarch64 | no | not tested |
-| macOS (x86_64, arm64) | not yet (wanted; no wheel is built) | not tested |
-| Windows | no | not supported |
+| Linux x86_64 (`manylinux_2_28`) | yes | yes (the reference platform) |
+| macOS arm64, macOS 11+ | yes, after 0.1.0rc11 | tested in CI |
+| Windows x86_64 | yes, after 0.1.0rc11 | tested in CI |
+| Linux aarch64, macOS x86_64 | no | not tested |
+
+The x86_64 wheels need a CPU with AVX2 and FMA (Intel Haswell / AMD Zen or
+later); see [Installation](https://matthew.thegoldeys.com/ferric/using/installation.html).
 
 Each release also publishes an sdist, but it is not a self-contained build:
 it compiles only where libint2 (2.13.1 or the 2.7.2 export the wheels use),
@@ -31,8 +37,8 @@ without them. Details:
 [Installation](https://matthew.thegoldeys.com/ferric/using/installation.html#building-from-the-sdist).
 
 Starting with 0.1.0rc8, each [GitHub release](https://github.com/mgoldey/ferric/releases)
-also carries a large-libint wheel per CPython
-(`ferric-<version>-1largeam-cp3NN-...whl`): the same version and commit,
+also carries a large-libint wheel (per CPython, `ferric-<version>-1largeam-cp3NN-...whl`,
+up to 0.1.0rc12; one stable-ABI `...-1largeam-cp310-abi3-...whl` after): the same version and commit,
 built against conda-forge's libint2 2.13.1 (l = 7 shells, analytic 3- and
 2-centre second derivatives, G12/F12 integrals) instead of the PyPI wheel's
 smaller libint2. It is not a strict superset (the PyPI wheel goes higher in
@@ -103,6 +109,17 @@ shells or gradients is tabulated in
 > capability is graded (Proven / Smoke / Spike) against independent references
 > on the same page. Read it before relying on a result.
 
+## Use it from Avogadro
+
+The [`avogadro-ferric`](plugins/avogadro-ferric/) plugin runs ferric from
+inside [Avogadro 2](https://avogadro.cc) (2.1.0 or later, Linux x86_64): QM
+energies and gradients for Avogadro's optimizer, Löwdin, Hirshfeld and CHELPG
+charges with the QM electrostatic potential, single points, geometry
+optimization, animated frequencies, molecular orbitals, and a ferric input
+generator. See the
+[Avogadro plugin](https://matthew.thegoldeys.com/ferric/using/avogadro.html)
+page.
+
 ## Why it exists
 
 ferric is organized around **electronic response**: how the density reacts to a
@@ -117,6 +134,7 @@ getting that object right where standard methods get it wrong. See
 git clone https://github.com/mgoldey/ferric && cd ferric
 scripts/install-libint.sh ~/.local/libint2-2.13.1   # prebuilt libint2, seconds
 export LIBINT2_PREFIX=~/.local/libint2-2.13.1
+scripts/install-libxc.sh ~/.local/libxc-7.0.0        # libxc 7.0.0 from source, minutes
 cargo build --release
 OPENBLAS_NUM_THREADS=1 ./target/release/ferric examples/water-rhf.toml
 OPENBLAS_NUM_THREADS=1 cargo test --workspace
@@ -149,7 +167,7 @@ at your option.
 ferric links against external libraries with their own licenses, notably
 libint2 (LGPL-3.0-or-later), libxc (MPL-2.0), OpenBLAS/LAPACK (BSD), and
 optionally xtb (LGPL-3.0), which govern redistribution of binaries built
-against them. libint2 is a required dependency, not an optional one:
+against them. libint2 is a required dependency, so
 distributing a compiled ferric binary means distributing LGPL-linked code, which
 carries obligations (relinking, source availability) beyond ferric's own MIT/
 Apache-2.0 terms. Building from source for your own use is unaffected.

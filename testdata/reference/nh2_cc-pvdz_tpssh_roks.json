@@ -1,0 +1,25 @@
+{
+  "label": "nh2",
+  "basis": "cc-pvdz",
+  "xc": "tpssh",
+  "pyscf_xc": "HYB_MGGA_XC_TPSSH",
+  "charge": 0,
+  "multiplicity": 2,
+  "main_grid": [
+    75,
+    110
+  ],
+  "nlc_grid": null,
+  "jk": "exact",
+  "hybrid_coeff": 0.1,
+  "rsh_coeff": [
+    0.0,
+    0.1,
+    0.0
+  ],
+  "libxc_version": "7.0.0",
+  "e_total": -55.87780233837243,
+  "e_nuc": 7.538142851371839,
+  "converged": true,
+  "reference": "roks"
+}

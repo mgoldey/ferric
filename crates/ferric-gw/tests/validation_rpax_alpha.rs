@@ -29,7 +29,7 @@
 //! Shared: geometry, the orbital and aux basis JSONs, the DF Coulomb metric
 //! (both fit with the same aux, so the screened comparison is DF vs DF), the
 //! kernel FORMULAS (the generator was written from the bse.rs loop), and for
-//! PBE the grid recipe and the 1e-10 density floor. A conceptual error common
+//! PBE the grid recipe and the semilocal density floor. A conceptual error common
 //! to both formulas is therefore invisible to the screened comparison; the
 //! bare limit is what ties the convention to an independent response code.
 //! Not shared: integral engines, SCF solvers, the W construction (PDEP
@@ -118,6 +118,7 @@ use ferric_rpa::config::{Eigensolver, PdepRpaConfig, QuadratureConfig, Quadratur
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use serde_json::Value;
 
 const ROW_DIR: &str = "testdata/reference/validation/rpax_alpha";
@@ -179,12 +180,6 @@ fn reference(system: &str, basis_name: &str, scf_ref: &str) -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
 }
 
 fn tensor(v: &Value, ptr: &str, ctx: &str) -> [[f64; 3]; 3] {
@@ -278,22 +273,18 @@ struct Sys {
 }
 
 fn rhf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10)
 }
 
 fn pbe_config() -> RhfConfig {
-    RhfConfig {
-        xc: Some("pbe".into()),
+    rhf_config()
+        .with_xc("pbe")
         // Exact J, as the reference (an empty name is the explicit opt-out of
         // the RI-J auto-default in rhf.rs `resolve_aux`).
-        df_j_aux: Some(String::new()),
-        ..rhf_config()
-    }
+        .with_df_j_aux(String::new())
 }
 
 fn load_system(system: &str, basis_name: &str, scf_ref: &str) -> Sys {
@@ -306,7 +297,7 @@ fn load_system(system: &str, basis_name: &str, scf_ref: &str) -> Sys {
         &label,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &label),
+        num_ctx(&r, "/nuclear_repulsion", &label),
         TOL_ENUC,
     );
     assert_eq!(
@@ -355,10 +346,10 @@ fn load_system(system: &str, basis_name: &str, scf_ref: &str) -> Sys {
         &label,
         "E_SCF",
         scf.energy,
-        num(&r, "/scf/energy", &label),
+        num_ctx(&r, "/scf/energy", &label),
         TOL_E_SCF,
     );
-    let scissor = num(&r, "/scissor", &label);
+    let scissor = num_ctx(&r, "/scissor", &label);
     Sys {
         label,
         r,
@@ -414,21 +405,21 @@ fn check_screened(sys: &Sys, d: &RpaxStaticAlphaDetail) {
         &ctx,
         "alpha_iso",
         d.result.iso,
-        num(r, "/screened/iso", &ctx),
+        num_ctx(r, "/screened/iso", &ctx),
         TOL_ALPHA,
     );
     check_close(
         &ctx,
         "min eig A+B",
         d.min_eig_apb.expect("requested"),
-        num(r, "/screened/min_eig_apb", &ctx),
+        num_ctx(r, "/screened/min_eig_apb", &ctx),
         TOL_MIN_EIG,
     );
     check_close(
         &ctx,
         "min eig A-B",
         d.min_eig_amb.expect("requested"),
-        num(r, "/screened/min_eig_amb", &ctx),
+        num_ctx(r, "/screened/min_eig_amb", &ctx),
         TOL_MIN_EIG,
     );
     // Screening is live: the bare-kernel α is MISSED.
@@ -458,17 +449,17 @@ fn check_bare(sys: &Sys, d: &RpaxStaticAlphaDetail) {
         &ctx,
         "min eig A+B",
         d.min_eig_apb.expect("requested"),
-        num(r, "/bare/min_eig_apb", &ctx),
+        num_ctx(r, "/bare/min_eig_apb", &ctx),
         TOL_MIN_EIG,
     );
     check_close(
         &ctx,
         "min eig A-B",
         d.min_eig_amb.expect("requested"),
-        num(r, "/bare/min_eig_amb", &ctx),
+        num_ctx(r, "/bare/min_eig_amb", &ctx),
         TOL_MIN_EIG,
     );
-    let gap = num(
+    let gap = num_ctx(
         r,
         "/anchors/df_fitting_gap_bare_df_vs_exact_cphf_max_rel",
         &ctx,
@@ -486,7 +477,7 @@ fn check_bare(sys: &Sys, d: &RpaxStaticAlphaDetail) {
         "/anchors/a_df_bare_numpy_vs_pyscf_df_cphf_max_rel",
         "/anchors/b_exact_bare_numpy_vs_pyscf_exact_cphf_max_rel",
     ] {
-        let v = num(r, k, &ctx);
+        let v = num_ctx(r, k, &ctx);
         assert!(v <= 1e-9, "{ctx}: generator anchor {k} = {v:.2e} > 1e-9");
     }
 }

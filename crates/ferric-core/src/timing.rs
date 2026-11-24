@@ -57,6 +57,8 @@ pub struct Stage {
 }
 
 impl Stage {
+    /// Start timing the stage `label`; reads the clock only when timing is
+    /// [`enabled`].
     #[inline]
     pub fn start(label: &'static str) -> Self {
         Stage {
@@ -69,6 +71,8 @@ impl Stage {
         }
     }
 
+    /// Print `[timing] <label> <elapsed> ms` to stderr; prints nothing when
+    /// timing was disabled at [`Stage::start`].
     #[inline]
     pub fn end(self) {
         if let Some(t0) = self.t0 {
@@ -81,11 +85,66 @@ impl Stage {
     }
 }
 
+/// CPU seconds consumed so far by every thread of this process
+/// (`CLOCK_PROCESS_CPUTIME_ID`), or `None` where that clock is unavailable.
+/// One syscall; read only at phase boundaries, never inside a parallel loop.
+#[cfg(unix)]
+fn process_cpu_secs() -> Option<f64> {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `ts` is a valid, writable timespec for the duration of the call.
+    let rc = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
+    (rc == 0).then_some(ts.tv_sec as f64 + ts.tv_nsec as f64 * 1e-9)
+}
+
+/// No process CPU clock is read on this platform; the `busy` column shows `-`.
+#[cfg(not(unix))]
+fn process_cpu_secs() -> Option<f64> {
+    None
+}
+
+/// An open region returned by [`PhaseAccumulator::begin`]: its label, wall
+/// start, and the process CPU clock at the start.
+#[derive(Debug, Clone, Copy)]
+pub struct PhaseToken {
+    label: &'static str,
+    t0: Instant,
+    cpu0: Option<f64>,
+}
+
+impl PhaseToken {
+    fn open(label: &'static str) -> Self {
+        PhaseToken {
+            label,
+            t0: Instant::now(),
+            cpu0: process_cpu_secs(),
+        }
+    }
+
+    /// Wall seconds and process CPU seconds since [`PhaseToken::open`].
+    fn close(self) -> (f64, Option<f64>) {
+        let secs = self.t0.elapsed().as_secs_f64();
+        let cpu = match (self.cpu0, process_cpu_secs()) {
+            (Some(a), Some(b)) => Some(b - a),
+            _ => None,
+        };
+        (secs, cpu)
+    }
+}
+
 /// A single phase's running total inside a [`PhaseAccumulator`].
+///
+/// `cpu` is the process CPU time spent while the phase ran, summed over all
+/// threads, so `cpu / secs` is the mean number of busy cores. It is `None`
+/// for rows whose CPU time is not attributable to them alone (overlapped
+/// phases, timed inside one arm of a concurrent region).
 #[derive(Debug, Clone)]
 struct PhaseTotal {
     label: &'static str,
     secs: f64,
+    cpu: Option<f64>,
     calls: u64,
 }
 
@@ -101,11 +160,72 @@ struct PhaseTotal {
 #[derive(Debug, Default)]
 pub struct PhaseAccumulator {
     phases: Vec<PhaseTotal>,
+    /// Phases that ran CONCURRENTLY inside another timed phase (e.g. the RI-J
+    /// build and the XC digest inside the SCF's `jk_xc_wall`). Reported below
+    /// the table and kept out of `TOTAL`, which would otherwise count the
+    /// overlapped wall time twice.
+    overlapped: Vec<PhaseTotal>,
+    /// Sub-phases timed INSIDE another timed phase (e.g. the RI-J and DF-K
+    /// builds inside the SCF's `jk_build`). Reported below the table and kept
+    /// out of `TOTAL`, since their parent already counts that wall time.
+    nested: Vec<PhaseTotal>,
+}
+
+/// Fold `secs` (and `cpu`) into `label`'s row of `rows`, creating it on first
+/// sight. A row's CPU total stays known only while every call reported one.
+fn fold_row(rows: &mut Vec<PhaseTotal>, label: &'static str, secs: f64, cpu: Option<f64>) {
+    match rows.iter_mut().find(|p| p.label == label) {
+        Some(p) => {
+            p.secs += secs;
+            p.cpu = p.cpu.zip(cpu).map(|(a, b)| a + b);
+            p.calls += 1;
+        }
+        None => rows.push(PhaseTotal {
+            label,
+            secs,
+            cpu,
+            calls: 1,
+        }),
+    }
 }
 
 impl PhaseAccumulator {
+    /// An accumulator with no phases recorded (same as `Default`).
     pub fn new() -> Self {
-        Self { phases: Vec::new() }
+        Self {
+            phases: Vec::new(),
+            overlapped: Vec::new(),
+            nested: Vec::new(),
+        }
+    }
+
+    /// End a region opened by [`PhaseAccumulator::begin`] as a NESTED
+    /// sub-phase of an enclosing timed phase: shown in the report under its
+    /// parent, excluded from [`PhaseAccumulator::total_secs`] (the parent
+    /// already counts it). A `None` token is a no-op.
+    #[inline]
+    pub fn stop_nested(&mut self, token: Option<PhaseToken>) {
+        let Some(tok) = token else { return };
+        let (secs, cpu) = tok.close();
+        fold_row(&mut self.nested, tok.label, secs, cpu);
+    }
+
+    /// Accumulated seconds for one nested sub-phase (`None` if never timed).
+    pub fn nested_secs_for(&self, label: &str) -> Option<f64> {
+        self.nested
+            .iter()
+            .find(|p| p.label == label)
+            .map(|p| p.secs)
+    }
+
+    /// Fold `dt` (measured by the caller, e.g. inside one arm of a
+    /// `rayon::join`) into `label`'s OVERLAPPED total: shown in the report,
+    /// excluded from [`PhaseAccumulator::total_secs`]. No-op when timing is off.
+    pub fn add_overlapped(&mut self, label: &'static str, dt: std::time::Duration) {
+        if !enabled() {
+            return;
+        }
+        fold_row(&mut self.overlapped, label, dt.as_secs_f64(), None);
     }
 
     /// Run `f`, adding its elapsed time to `label`'s running total. Returns
@@ -116,26 +236,10 @@ impl PhaseAccumulator {
         if !enabled() {
             return f();
         }
-        let t0 = Instant::now();
+        let tok = PhaseToken::open(label);
         let out = f();
-        self.add(label, t0.elapsed().as_secs_f64());
+        self.stop(Some(tok));
         out
-    }
-
-    /// Fold `dt` seconds into `label`'s running total, creating the row on
-    /// first sight (first-seen order is the report order).
-    fn add(&mut self, label: &'static str, dt: f64) {
-        match self.phases.iter_mut().find(|p| p.label == label) {
-            Some(p) => {
-                p.secs += dt;
-                p.calls += 1;
-            }
-            None => self.phases.push(PhaseTotal {
-                label,
-                secs: dt,
-                calls: 1,
-            }),
-        }
     }
 
     /// Begin timing `label`; the returned token stops it on
@@ -145,20 +249,18 @@ impl PhaseAccumulator {
     /// Returns `None` when timing is off, so the disabled path allocates and
     /// reads no clock.
     #[inline]
-    pub fn begin(&self, label: &'static str) -> Option<(&'static str, Instant)> {
-        if enabled() {
-            Some((label, Instant::now()))
-        } else {
-            None
-        }
+    pub fn begin(&self, label: &'static str) -> Option<PhaseToken> {
+        enabled().then(|| PhaseToken::open(label))
     }
 
     /// End a region opened by [`PhaseAccumulator::begin`], folding its elapsed
-    /// time into that label's running total. A `None` token is a no-op.
+    /// time into that label's running total (first-seen order is the report
+    /// order). A `None` token is a no-op.
     #[inline]
-    pub fn stop(&mut self, token: Option<(&'static str, Instant)>) {
-        let Some((label, t0)) = token else { return };
-        self.add(label, t0.elapsed().as_secs_f64());
+    pub fn stop(&mut self, token: Option<PhaseToken>) {
+        let Some(tok) = token else { return };
+        let (secs, cpu) = tok.close();
+        fold_row(&mut self.phases, tok.label, secs, cpu);
     }
 
     /// Total accumulated seconds across every phase.
@@ -182,7 +284,9 @@ impl PhaseAccumulator {
     /// column is each phase's share of the ACCUMULATED (timed) total, not of
     /// whole-job wall time: anything the caller did not bracket is outside
     /// this table by construction. The caller's own wall-clock is the
-    /// denominator to use for a whole-job claim.
+    /// denominator to use for a whole-job claim. The `busy` column is the
+    /// process CPU time over the phase's wall time: the mean number of cores
+    /// the whole process kept busy while the phase ran.
     ///
     /// The whole table is formatted into one `String` and handed to a locked
     /// stderr in a single `write_all`, so tables from solves running in
@@ -202,8 +306,8 @@ impl PhaseAccumulator {
         let _ = writeln!(out, "[timing] {title} phase totals (accumulated):");
         let _ = writeln!(
             out,
-            "[timing]   {:<32} {:>10} {:>8} {:>7}",
-            "phase", "sec", "calls", "%"
+            "[timing]   {:<32} {:>10} {:>8} {:>7} {:>6}",
+            "phase", "sec", "calls", "%", "busy"
         );
         for p in &self.phases {
             let pct = if total > 0.0 {
@@ -211,16 +315,27 @@ impl PhaseAccumulator {
             } else {
                 0.0
             };
-            let _ = writeln!(
-                out,
-                "[timing]   {:<32} {:>10.3} {:>8} {:>6.1}%",
-                p.label, p.secs, p.calls, pct
-            );
+            let calls = p.calls.to_string();
+            write_row(&mut out, p.label, p.secs, &calls, &format!("{pct:.1}%"), p);
         }
-        let _ = writeln!(
-            out,
-            "[timing]   {:<32} {:>10.3}",
-            "TOTAL (timed phases)", total
+        let total_row = PhaseTotal {
+            label: "TOTAL (timed phases)",
+            secs: total,
+            cpu: self.phases.iter().map(|p| p.cpu).sum(),
+            calls: 0,
+        };
+        write_row(&mut out, total_row.label, total, "", "", &total_row);
+        side_table(
+            &mut out,
+            "nested (inside a phase above, not in TOTAL)",
+            '>',
+            &self.nested,
+        );
+        side_table(
+            &mut out,
+            "overlapped (concurrent, not in TOTAL)",
+            '~',
+            &self.overlapped,
         );
         let _ = std::io::stderr().lock().write_all(out.as_bytes());
     }
@@ -263,6 +378,34 @@ impl std::ops::DerefMut for ReportOnDrop {
 impl Drop for ReportOnDrop {
     fn drop(&mut self) {
         self.acc.report(self.title);
+    }
+}
+
+/// Append one table line: label, wall seconds, calls, share of the total, and
+/// the `busy` cell of `p`.
+fn write_row(out: &mut String, label: &str, secs: f64, calls: &str, pct: &str, p: &PhaseTotal) {
+    use std::fmt::Write as _;
+    let busy = match p.cpu {
+        Some(cpu) if p.secs > 0.0 => format!("{:.2}", cpu / p.secs),
+        _ => "-".to_string(),
+    };
+    let _ = writeln!(
+        out,
+        "[timing]   {label:<32} {secs:>10.3} {calls:>8} {pct:>7} {busy:>6}"
+    );
+}
+
+/// Append a titled side table (phases outside TOTAL) to `out`; nothing when
+/// `phases` is empty. `mark` prefixes each label (`>` nested, `~` overlapped).
+fn side_table(out: &mut String, title: &str, mark: char, phases: &[PhaseTotal]) {
+    use std::fmt::Write as _;
+    if phases.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, "[timing]   {title}:");
+    for p in phases {
+        let label = format!("{mark}{}", p.label);
+        write_row(out, &label, p.secs, &p.calls.to_string(), "", p);
     }
 }
 
@@ -326,6 +469,64 @@ mod tests {
         assert_eq!(guard.secs_for("region").is_some(), enabled());
     }
 
+    /// A nested sub-phase is recorded (when enabled) but never counted in
+    /// `TOTAL`: its parent phase already holds that wall time, so adding it
+    /// would double-count.
+    #[test]
+    fn nested_sub_phases_stay_out_of_the_total() {
+        let mut acc = PhaseAccumulator::new();
+        let outer = acc.begin("parent");
+        let inner = acc.begin("child");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        acc.stop_nested(inner);
+        acc.stop(outer);
+        if enabled() {
+            let parent = acc.secs_for("parent").expect("parent timed");
+            let child = acc.nested_secs_for("child").expect("child timed");
+            assert!(child > 0.0 && child <= parent);
+            assert_eq!(
+                acc.secs_for("child"),
+                None,
+                "child must not be a top-level row"
+            );
+            assert_eq!(acc.total_secs(), parent);
+        } else {
+            assert_eq!(acc.nested_secs_for("child"), None);
+            assert_eq!(acc.total_secs(), 0.0);
+        }
+    }
+
+    /// A phase's CPU column counts the work done inside it: a region that
+    /// spins one thread until the process CPU clock has advanced by `SPIN`
+    /// must record at least `SPIN` of CPU time. Other test threads in this
+    /// process can only add to it, so the lower bound holds under a parallel
+    /// harness. The wall time is at least the CPU time of the spinning thread
+    /// for the same reason.
+    #[test]
+    fn busy_column_counts_cpu_spent_in_the_phase() {
+        const SPIN: f64 = 0.02;
+        let mut acc = PhaseAccumulator::new();
+        acc.time("spin", || {
+            let Some(start) = process_cpu_secs() else {
+                return;
+            };
+            while process_cpu_secs().is_some_and(|now| now - start < SPIN) {
+                std::hint::black_box(0_u64);
+            }
+        });
+        if enabled() && process_cpu_secs().is_some() {
+            let row = &acc.phases[0];
+            let cpu = row.cpu.expect("CPU time recorded");
+            assert!(cpu >= SPIN, "cpu {cpu} < spun {SPIN}");
+            assert!(row.secs > 0.0);
+            let mut line = String::new();
+            write_row(&mut line, row.label, row.secs, "1", "", row);
+            assert!(!line.trim_end().ends_with('-'), "busy cell empty: {line}");
+        } else if !enabled() {
+            assert!(acc.phases.is_empty());
+        }
+    }
+
     /// `enabled()` is fixed per process, so in an untimed run the ON-only
     /// assertions above (coalescing; single evaluation in `time`'s enabled
     /// branch) never execute. Re-run the timing tests in a child with
@@ -351,6 +552,8 @@ mod tests {
         for name in [
             "repeated_labels_accumulate_into_one_row ... ok",
             "time_runs_the_closure_exactly_once ... ok",
+            "nested_sub_phases_stay_out_of_the_total ... ok",
+            "busy_column_counts_cpu_spent_in_the_phase ... ok",
         ] {
             assert!(
                 stdout.contains(name),

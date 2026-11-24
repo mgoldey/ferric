@@ -23,6 +23,12 @@
 //! the blocked energy (symmetry frame) differs from the unblocked input-frame
 //! energy at the grid-error level, so it is bounded loosely, not to 1e-9.
 //! The PySCF comparison is `validation_scf_symmetry.rs` (ignored per-commit).
+// RI-J pinned to the f64 tensor (`ri_j_precision: Some(F64)` in every config
+// here): these tests validate f64 implementation code against finite
+// differences, another tier or f64 reference values at bars below the f32
+// default's effect (its energy shift is ~1e-6 Ha, and its energy surface jitters
+// by ~1e-7..1e-6 Ha between nearby geometries; site/src/methods/scf.md, "RI-J
+// tensor precision").
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -73,14 +79,14 @@ fn run_sym(mol: &Molecule, basis_name: &str, cfg: &RhfConfig) -> Result<Symmetri
 /// PBE with the KS defaults (75x110 grid, RI-J with def2-universal-jkfit).
 /// `energy_conv` is only a sanity bound under RI-J; the density gate decides.
 fn ks(symmetry: bool) -> RhfConfig {
-    RhfConfig {
-        symmetry,
-        xc: Some("PBE".into()),
-        density_conv: 1e-9,
-        energy_conv: 1e-8,
-        max_iter: 200,
-        ..RhfConfig::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_xc("PBE")
+        .with_density_conv(1e-9)
+        .with_energy_conv(1e-8)
+        .with_max_iter(200);
+    c.symmetry = symmetry;
+    c
 }
 
 fn exact_j(mut c: RhfConfig) -> RhfConfig {
@@ -387,6 +393,7 @@ fn ks_coarse_grid_is_refused() {
             n_radial: 50,
             n_angular: ang,
             prune,
+            weight_cut: None,
         });
         let r = run_sym(&mol, "sto-3g", &c);
         match (ok, r) {
@@ -399,6 +406,7 @@ fn ks_coarse_grid_is_refused() {
 
 /// Beyond PBE: a meta-GGA (tau term, auto level shift) and a range-separated
 /// hybrid with VV10 (SR/LR fitted exchange, nonlocal grid) block exactly too.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn ks_blocking_holds_for_scan_and_wb97x_v() {
     let mol = load("water.xyz");

@@ -12,13 +12,11 @@ use ferric_scf::uhf::solve_uhf;
 use ndarray::Array2;
 
 fn cfg() -> RhfConfig {
-    RhfConfig {
-        xc: Some("wB97X-V".into()),
-        energy_conv: 1e-7,
-        density_conv: 1e-5,
-        max_iter: 400,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc("wB97X-V")
+        .with_energy_conv(1e-7)
+        .with_density_conv(1e-5)
+        .with_max_iter(400)
 }
 
 fn fd_gradient(xyz: &str, mult: usize, basis_name: &str, delta: f64) -> Array2<f64> {
@@ -107,6 +105,7 @@ fn run_case(label: &str, xyz: &str, mult: usize, basis_name: &str, tol: f64) {
     }
 }
 
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uks_rsh_grad_oh_ccpvdz_wb97x_v() {
     run_case(

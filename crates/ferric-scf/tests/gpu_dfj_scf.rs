@@ -30,7 +30,7 @@ fn ready() -> bool {
     static INSTALL: std::sync::Once = std::sync::Once::new();
     INSTALL.call_once(|| {
         install(GpuSettingsExplicit {
-            mode: Some(GpuMode::Auto),
+            mode: Some(GpuMode::On),
             memory_gb: Some(1.0),
             ..Default::default()
         })
@@ -49,12 +49,10 @@ fn rhf_ri_j_through_the_solve_path_reaches_the_device() {
     let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        density_conv: 1e-8,
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some(String::new()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_density_conv(1e-8)
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux(String::new());
     let run = |host: bool| {
         FORCE_HOST.store(host, Ordering::SeqCst);
         let r = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg);

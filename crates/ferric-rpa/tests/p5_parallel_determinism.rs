@@ -32,7 +32,7 @@ where
 }
 
 /// `pdep_polarizability_becke_dynamic` (properties.rs :1160, CS frequency
-/// loop at the site formerly cited as :1528) must give bit-identical
+/// loop) must give bit-identical
 /// per-atom α^A(iω_k) tensors whether the frequency axis is processed by a
 /// 1-thread or a 4-thread rayon pool. Small H2O/cc-pVDZ system, a handful
 /// of imaginary frequencies — cheap enough to run at full precision in CI.

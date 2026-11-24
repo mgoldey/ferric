@@ -11,6 +11,8 @@ use super::config::GpuMode;
 use super::precision::{MixedKernelSet, Precision};
 use crate::config::{accept_any, ConfigVar};
 
+/// A `[gpu] preset` / `FERRIC_GPU_PRESET` value: one word that sets `mode` and
+/// `precision` together (see [`GpuPreset::implied`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GpuPreset {
     /// No device, f64 (the default; identical to no `[gpu]` key at all).
@@ -30,12 +32,17 @@ pub enum GpuPreset {
 /// `None` for the f64 presets (the knob keeps its own default).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PresetImplied {
+    /// The `[gpu] mode` the preset sets.
     pub mode: GpuMode,
+    /// The precision the preset sets.
     pub precision: Precision,
+    /// The mixed-kernel set the preset sets: the shipped set for the mixed
+    /// presets, `None` for the f64 presets.
     pub mixed_kernels: Option<MixedKernelSet>,
 }
 
 impl GpuPreset {
+    /// Every preset, in declaration order.
     pub const ALL: [GpuPreset; 5] = [
         GpuPreset::Off,
         GpuPreset::Auto,
@@ -44,6 +51,7 @@ impl GpuPreset {
         GpuPreset::AutoMixed,
     ];
 
+    /// The TOML/env spelling (`off`, `auto`, `on`, `mixed`, `auto-mixed`).
     pub const fn name(self) -> &'static str {
         match self {
             GpuPreset::Off => "off",
@@ -54,7 +62,7 @@ impl GpuPreset {
         }
     }
 
-    /// `shipped` is injected (not read from the constant) so the invariant
+    /// The knob values this preset expands into. `shipped` is injected (not read from the constant) so the invariant
     /// "a preset names only shipped kernels" holds by construction in tests
     /// that drive an empty shipped set.
     pub const fn implied(self, shipped: MixedKernelSet) -> PresetImplied {

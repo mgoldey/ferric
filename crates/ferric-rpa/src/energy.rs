@@ -145,23 +145,13 @@ pub fn rpa_correlation_energy(quad_weights: &[f64], eigenvalues_freq: &Array2<f6
     e_c / (2.0 * std::f64::consts::PI)
 }
 
-/// Evaluate λ_α(iω_k) for each quadrature point given converged eigenpotentials.
-///
-/// Uses the diagonal of the projected dielectric matrix as λ_α(iω_k).
-///
-/// # Arguments
-/// * `eigenvectors` - Converged eigenvectors V_α from PDEP, shape (naux, M)
-/// * `b_ov` - RI-MO tensor B^P_ia, shape (naux, nocc*nvir)
-/// * `eps_occ` - Occupied orbital energies
-/// * `eps_vir` - Virtual orbital energies
-/// * `quad_freqs` - Imaginary quadrature frequencies ω_k
-///
-/// # Returns
-/// Array2 of shape (N_quad, M) containing eigenvalues λ_α(iω_k).
 /// Laplace-separable variant of [`eval_eigenvalues_at_frequencies`].
 ///
 /// Uses the χ₀ kernel from [`crate::laplace_chi0`] in place of the dense
-/// `dielectric_matrix`. The output shape and convention are identical.
+/// `dielectric_matrix`, and returns the eigenvalues of the projected
+/// dielectric matrix `Vᵀ ε̃(iω_k) V` (`m × m`, `m` = number of eigenpotentials)
+/// at each quadrature frequency. The output shape `(N_quad, M)` and convention
+/// are identical to the dense routine's.
 pub fn eval_eigenvalues_at_frequencies_laplace(
     eigenvectors: &Array2<f64>,
     b_ov: &Array2<f64>,
@@ -332,37 +322,118 @@ pub fn quad_panel_width_for_test(
     quad_panel_width(m, nov, n_workers, memory_budget_bytes)
 }
 
-fn quad_panel_width(
+pub(crate) fn quad_panel_width(
     m: usize,
     nov: usize,
     n_workers: usize,
     memory_budget_bytes: Option<usize>,
 ) -> usize {
-    let Some(budget) = memory_budget_bytes else {
-        return nov.max(1);
-    };
+    panel_width(m, nov, n_workers, PanelAllowance::from(memory_budget_bytes))
+}
+
+/// What a frequency loop's per-worker panel is sized against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelAllowance {
+    /// No budget: the loop runs at full width.
+    Unbudgeted,
+    /// A whole budget, which the loop's frequency-independent projection `y`
+    /// (`m·nov·8`) and its per-worker scratch must both fit
+    /// (`quad_panel_width`).
+    Total(usize),
+    /// Bytes for the per-worker scratch alone: the caller has charged
+    /// everything else that is resident beside the loop, `y` included when
+    /// the loop holds one (`quad_panel_width_beside`).
+    Scratch(usize),
+    /// The resident planes leave nothing: the narrowest panel. A caller that
+    /// produces this refuses before any loop runs (the rs-mp2-rpa driver's
+    /// `budget::check_scan_resident`); a pre-flight charges width 1, whose
+    /// total then exceeds the budget.
+    NoRoom,
+}
+
+impl From<Option<usize>> for PanelAllowance {
+    fn from(budget: Option<usize>) -> Self {
+        budget.map_or(PanelAllowance::Unbudgeted, PanelAllowance::Total)
+    }
+}
+
+impl PanelAllowance {
+    /// The bytes this allowance names, for a report (`None` unbudgeted).
+    fn bytes(self) -> Option<usize> {
+        match self {
+            PanelAllowance::Unbudgeted => None,
+            PanelAllowance::Total(b) | PanelAllowance::Scratch(b) => Some(b),
+            PanelAllowance::NoRoom => Some(0),
+        }
+    }
+}
+
+/// The panel width `k` with `n_workers·(m·k + m²)·8 ≤ scratch_bytes`, the
+/// full width `nov` when that fits, never below 1: the per-worker scratch of
+/// the frequency loop sized against an allowance for that scratch alone.
+pub(crate) fn quad_panel_width_beside(
+    m: usize,
+    nov: usize,
+    n_workers: usize,
+    scratch_bytes: usize,
+) -> usize {
     if nov == 0 {
         return 1;
     }
     let n_workers = n_workers.max(1);
-    let y_bytes = m.saturating_mul(nov).saturating_mul(8);
     let full_width_scratch = n_workers
         .saturating_mul(m.saturating_mul(nov).saturating_add(m.saturating_mul(m)))
         .saturating_mul(8);
-    if y_bytes.saturating_add(full_width_scratch) <= budget {
+    if full_width_scratch <= scratch_bytes {
         return nov; // fast path: full width already fits
     }
-    // Panelling needed: solve n_workers·(m·k + m²)·8 + y_bytes <= budget for k,
-    // per worker, leaving headroom for the always-resident y and the (m,m)
-    // `out` term (m² is independent of k, so it's subtracted off first). This
-    // single `m·k` term is exact (not an underestimate) — see the k-term
-    // accounting note above.
-    let remaining = budget.saturating_sub(y_bytes);
-    let per_worker_budget = remaining / n_workers.max(1);
+    // Panelling needed: solve n_workers·(m·k + m²)·8 <= scratch for k, per
+    // worker, with the (m,m) `out` term (independent of k) subtracted off
+    // first. This single `m·k` term is exact (not an underestimate) — see the
+    // k-term accounting note on `quad_panel_width_for_test`.
+    let per_worker_budget = scratch_bytes / n_workers;
     let out_bytes = m.saturating_mul(m).saturating_mul(8);
     let scratch_for_k = per_worker_budget.saturating_sub(out_bytes);
     let per_col_bytes = m.saturating_mul(8).max(1);
     (scratch_for_k / per_col_bytes).clamp(1, nov)
+}
+
+/// The panel width of a loop over an `(m, nov)` projection under
+/// `allowance`. Pure: a loop that runs at the width reports a collapse with
+/// [`warn_if_panel_collapsed`].
+pub(crate) fn panel_width(
+    m: usize,
+    nov: usize,
+    n_workers: usize,
+    allowance: PanelAllowance,
+) -> usize {
+    match allowance {
+        PanelAllowance::Unbudgeted => nov.max(1),
+        _ if nov == 0 => 1,
+        // Room for the always-resident y first, then the per-worker scratch.
+        PanelAllowance::Total(budget) => {
+            let y_bytes = m.saturating_mul(nov).saturating_mul(8);
+            quad_panel_width_beside(m, nov, n_workers, budget.saturating_sub(y_bytes))
+        }
+        PanelAllowance::Scratch(s) => quad_panel_width_beside(m, nov, n_workers, s),
+        PanelAllowance::NoRoom => 1,
+    }
+}
+
+/// Called by a frequency loop that runs at `width` of `nov`: warns
+/// ([`ferric_core::memory::warn_width_collapsed`]) when the allowance forced
+/// the narrowest panel.
+pub(crate) fn warn_if_panel_collapsed(width: usize, nov: usize, allowance: PanelAllowance) {
+    if width == 1 && nov > 1 {
+        ferric_core::memory::warn_width_collapsed(
+            "RPA frequency panel",
+            width,
+            nov,
+            allowance.bytes().unwrap_or(0),
+            "the frequency loop assembles each dielectric matrix one occupied-virtual \
+             column at a time (same result, much slower)",
+        );
+    }
 }
 
 /// Budget-aware sibling of [`eval_eigenvalues_at_frequencies`]. Identical
@@ -386,6 +457,24 @@ pub fn eval_eigenvalues_at_frequencies_budgeted(
     quad_freqs: &[f64],
     memory_budget_bytes: Option<usize>,
 ) -> Result<Array2<f64>, FerricError> {
+    eval_eigenvalues_panelled(
+        eigenvectors,
+        b_ov,
+        (eps_occ, eps_vir),
+        quad_freqs,
+        memory_budget_bytes.into(),
+    )
+}
+
+/// [`eval_eigenvalues_at_frequencies_budgeted`] with the panel sized by
+/// `allowance`.
+pub(crate) fn eval_eigenvalues_panelled(
+    eigenvectors: &Array2<f64>,
+    b_ov: &Array2<f64>,
+    (eps_occ, eps_vir): (&[f64], &[f64]),
+    quad_freqs: &[f64],
+    allowance: PanelAllowance,
+) -> Result<Array2<f64>, FerricError> {
     use crate::sternheimer::{
         build_scale_factors, dielectric_matrix_from_projection_into,
         dielectric_matrix_from_projection_into_panelled,
@@ -403,11 +492,12 @@ pub fn eval_eigenvalues_at_frequencies_budgeted(
 
     // Panel-width sizing happens BEFORE the parallel region (needs only
     // n_workers, not any per-frequency state), so it can be computed here and
-    // captured by `per_frequency`'s `init` closure — the reason this function
-    // used to hand-roll its own with_blas_threads/par_iter/map_init scaffold
-    // (rather than sharing `per_frequency`) no longer holds.
+    // captured by `per_frequency`'s `init` closure — so this function shares
+    // `per_frequency` rather than hand-rolling its own
+    // with_blas_threads/par_iter/map_init scaffold.
     let n_workers = rayon::current_num_threads().max(1);
-    let panel_width = quad_panel_width(m, nov, n_workers, memory_budget_bytes);
+    let panel_width = panel_width(m, nov, n_workers, allowance);
+    warn_if_panel_collapsed(panel_width, nov, allowance);
     let use_panelled = panel_width < nov;
 
     // map_init (not map): each rayon WORKER allocates its own (rhs_scaled, out)
@@ -518,17 +608,241 @@ pub fn eval_trace_log_summands_budgeted(
     quad_freqs: &[f64],
     memory_budget_bytes: Option<usize>,
 ) -> Result<Vec<f64>, FerricError> {
+    eval_trace_log_summands_panelled(
+        eigenvectors,
+        b_ov,
+        (eps_occ, eps_vir),
+        quad_freqs,
+        memory_budget_bytes.into(),
+    )
+}
+
+/// [`eval_trace_log_summands_budgeted`] with the panel sized by `allowance`.
+pub(crate) fn eval_trace_log_summands_panelled(
+    eigenvectors: &Array2<f64>,
+    b_ov: &Array2<f64>,
+    (eps_occ, eps_vir): (&[f64], &[f64]),
+    quad_freqs: &[f64],
+    allowance: PanelAllowance,
+) -> Result<Vec<f64>, FerricError> {
+    let y = eigenvectors.t().dot(b_ov);
+    trace_log_summands_of_projection(&y, eps_occ, eps_vir, quad_freqs, allowance)
+}
+
+/// The same per-frequency summands `S(iω_k) = ln det(ε̃) + tr(I − ε̃)`, with
+/// `ε̃(iω) = I + Π(iω)` assembled in the (dressed) auxiliary basis itself:
+/// `y = b_ov`, no static eigenvectors and no projection GEMM.
+///
+/// Equal to [`eval_trace_log_summands_budgeted`] fed the full-rank static
+/// eigenvectors `U` (orthogonal, `naux` columns), because both terms are
+/// invariant under `ε̃ → Uᵀ ε̃ U`. That is what makes the static eigensolve
+/// unnecessary for an energy that keeps every mode; the two differ only by
+/// rounding (the bar is derived in `tests/rpa_energy_route.rs`).
+pub fn eval_trace_log_summands_aux_budgeted(
+    b_ov: &Array2<f64>,
+    eps_occ: &[f64],
+    eps_vir: &[f64],
+    quad_freqs: &[f64],
+    memory_budget_bytes: Option<usize>,
+) -> Result<Vec<f64>, FerricError> {
+    trace_log_summands_of_projection(
+        b_ov,
+        eps_occ,
+        eps_vir,
+        quad_freqs,
+        memory_budget_bytes.into(),
+    )
+}
+
+/// One χ₀ channel of a signed dielectric (see [`eval_signed_trace_log_summands`]):
+/// the `+` and `−` blocks of a signed factor `K = B₊ᵀ B₊ − B₋ᵀ B₋`
+/// ([`ferric_mp2::rimp2::SignedBOv`]), the active occupied and virtual
+/// energies, and the χ₀ prefactor (4 closed shell, 2 per spin open shell).
+#[derive(Clone, Copy, Debug)]
+pub struct SignedChannel<'a> {
+    /// Rows entering with `+1`, shape `(n₊, nocc·nvir)`.
+    pub pos: &'a Array2<f64>,
+    /// Rows entering with `−1`, shape `(n₋, nocc·nvir)`.
+    pub neg: &'a Array2<f64>,
+    /// Active occupied orbital energies.
+    pub eps_occ: &'a [f64],
+    /// Virtual orbital energies.
+    pub eps_vir: &'a [f64],
+    /// χ₀ prefactor: 4 for a closed-shell channel, 2 for one spin.
+    pub prefactor: f64,
+}
+
+/// Per-frequency dRPA summands `ln det(1 + Σ P) − tr(Σ P)` of a signed factor,
+/// `P(iω) = Σ_c Y_c S_c(iω)² Y_cᵀ`, `Y_c = [B₊; B₋]` of channel `c`,
+/// `S_c² = prefactor·e_ia/(ω² + e_ia²)` and `Σ = diag(1_{n₊}, −1_{n₋})`.
+///
+/// By Sylvester's identity `det(1 + ΣYGYᵀ) = det(1 + G^½ YᵀΣY G^½)`, this is
+/// the dRPA integrand of the kernel `K = YᵀΣY = B₊ᵀB₊ − B₋ᵀB₋` in the
+/// excitation space, which need not be positive semidefinite (the terf
+/// interaction as Coulomb RI minus terfc RI). `ΣP` is not symmetric, so the
+/// determinant is taken by LU ([`ferric_core::linalg::logdet_lu`], which
+/// refuses a nonpositive determinant); no eigenvalues are formed, so no PDEP
+/// truncation or static eigenbasis applies. The frequency integral equals the
+/// plasmon formula of `K` (`scripts/rpa_terf_signed_fit_sympy.py`, checks
+/// `logdet-vs-plasmon`, `u-logdet-vs-plasmon`).
+///
+/// All channels share `n₊` and `n₋` (one aux basis per sign). The per-worker
+/// scratch is `(n₊ + n₋) × panel` plus the `(n₊ + n₋)²` dielectric, with the
+/// panel from `quad_panel_width` at `m = n₊ + n₋`.
+///
+/// # Errors
+/// No channel, mismatched shapes, a non-positive or non-finite `e_ia`, or a
+/// nonpositive determinant.
+pub fn eval_signed_trace_log_summands(
+    channels: &[SignedChannel],
+    quad_freqs: &[f64],
+    memory_budget_bytes: Option<usize>,
+) -> Result<Vec<f64>, FerricError> {
+    eval_signed_summands_panelled(channels, quad_freqs, memory_budget_bytes.into())
+}
+
+/// [`eval_signed_trace_log_summands`] with the panel sized by `allowance`.
+pub(crate) fn eval_signed_summands_panelled(
+    channels: &[SignedChannel],
+    quad_freqs: &[f64],
+    allowance: PanelAllowance,
+) -> Result<Vec<f64>, FerricError> {
+    use crate::sternheimer::{build_scale_factors_with_prefactor, syrk_aat_accumulate_into};
+    use ndarray::{s, Axis, Zip};
+
+    let first = channels
+        .first()
+        .ok_or_else(|| FerricError::General("signed dRPA: no channel".into()))?;
+    let (n_pos, n_neg) = (first.pos.nrows(), first.neg.nrows());
+    let mut nov_max = 0;
+    for c in channels {
+        let nov = c.eps_occ.len() * c.eps_vir.len();
+        if c.pos.nrows() != n_pos
+            || c.neg.nrows() != n_neg
+            || c.pos.ncols() != nov
+            || c.neg.ncols() != nov
+        {
+            return Err(FerricError::General(format!(
+                "signed dRPA: channel shapes {:?} / {:?} do not match ({n_pos}, {n_neg}) rows \
+                 and nocc*nvir = {nov} columns",
+                c.pos.dim(),
+                c.neg.dim()
+            )));
+        }
+        for &eo in c.eps_occ {
+            for &ev in c.eps_vir {
+                let e = ev - eo;
+                if !(e.is_finite() && e > 0.0) {
+                    return Err(FerricError::General(format!(
+                        "signed dRPA: orbital energy gap e_ia = {e} is not finite and positive"
+                    )));
+                }
+            }
+        }
+        nov_max = nov_max.max(nov);
+    }
+    let m = n_pos + n_neg;
+    let n_workers = rayon::current_num_threads().max(1);
+    let panel_width = panel_width(m, nov_max, n_workers, allowance).max(1);
+    warn_if_panel_collapsed(panel_width, nov_max, allowance);
+
+    per_frequency(
+        quad_freqs,
+        || {
+            (
+                Array2::<f64>::zeros((m, panel_width)),
+                Array2::<f64>::zeros((m, m)),
+            )
+        },
+        |(scratch, out), omega| {
+            out.fill(0.0);
+            for c in channels {
+                let scale =
+                    build_scale_factors_with_prefactor(c.eps_occ, c.eps_vir, omega, c.prefactor);
+                let nov = scale.len();
+                let mut c0 = 0;
+                while c0 < nov {
+                    let c1 = (c0 + panel_width).min(nov);
+                    let w = c1 - c0;
+                    let mut panel = scratch.slice_mut(s![.., ..w]);
+                    panel
+                        .slice_mut(s![..n_pos, ..])
+                        .assign(&c.pos.slice(s![.., c0..c1]));
+                    panel
+                        .slice_mut(s![n_pos.., ..])
+                        .assign(&c.neg.slice(s![.., c0..c1]));
+                    let row = scale.slice(s![c0..c1]).insert_axis(Axis(0));
+                    Zip::from(&mut panel)
+                        .and_broadcast(row)
+                        .for_each(|x, &f| *x *= f);
+                    // A ragged final panel is passed as the strided view
+                    // too: no copy, so the scratch charged
+                    // (`budget::signed_quad_scratch_bytes`) is all it holds.
+                    syrk_aat_accumulate_into(panel.view(), out);
+                    c0 = c1;
+                }
+            }
+            // dsyrk wrote one triangle: mirror it, then apply the signature to
+            // the rows of the minus block and add the identity.
+            for i in 0..m {
+                for j in 0..i {
+                    out[(i, j)] = out[(j, i)];
+                }
+            }
+            out.slice_mut(s![n_pos.., ..]).mapv_inplace(|x| -x);
+            for alpha in 0..m {
+                out[(alpha, alpha)] += 1.0;
+            }
+            dielectric_trace_log_summand(out, "signed dielectric log-det failed")
+        },
+    )
+}
+
+/// The dRPA correlation energy of a signed factor:
+/// [`eval_signed_trace_log_summands`] on the quadrature of `quadrature`,
+/// integrated by [`rpa_correlation_energy_from_summands`].
+pub fn signed_drpa_energy(
+    channels: &[SignedChannel],
+    quadrature: &crate::config::QuadratureConfig,
+    memory_budget_bytes: Option<usize>,
+) -> Result<f64, FerricError> {
+    signed_drpa_energy_panelled(channels, quadrature, memory_budget_bytes.into())
+}
+
+/// [`signed_drpa_energy`] with the panel sized by `allowance`.
+pub(crate) fn signed_drpa_energy_panelled(
+    channels: &[SignedChannel],
+    quadrature: &crate::config::QuadratureConfig,
+    allowance: PanelAllowance,
+) -> Result<f64, FerricError> {
+    let (freqs, weights) = crate::quadrature::build_quadrature(quadrature);
+    let summands = eval_signed_summands_panelled(channels, &freqs, allowance)?;
+    Ok(rpa_correlation_energy_from_summands(&weights, &summands))
+}
+
+/// The frequency loop both log-det entries share: per worker, scale the
+/// `(m, nov)` projection `y` by `sqrt(4 e_ia / (ω² + e_ia²))`, form
+/// `ε̃ = I + y S² yᵀ` (full width or nov-panelled, per [`quad_panel_width`]),
+/// and take [`dielectric_trace_log_summand`].
+fn trace_log_summands_of_projection(
+    y: &Array2<f64>,
+    eps_occ: &[f64],
+    eps_vir: &[f64],
+    quad_freqs: &[f64],
+    allowance: PanelAllowance,
+) -> Result<Vec<f64>, FerricError> {
     use crate::sternheimer::{
         build_scale_factors, dielectric_matrix_from_projection_into,
         dielectric_matrix_from_projection_into_panelled,
     };
 
-    let m = eigenvectors.ncols();
+    let m = y.nrows();
     let nov = eps_occ.len() * eps_vir.len();
-    let y = eigenvectors.t().dot(b_ov);
+    assert_eq!(y.ncols(), nov, "projection width must be nocc * nvir");
 
     let n_workers = rayon::current_num_threads().max(1);
-    let panel_width = quad_panel_width(m, nov, n_workers, memory_budget_bytes);
+    let panel_width = panel_width(m, nov, n_workers, allowance);
+    warn_if_panel_collapsed(panel_width, nov, allowance);
     let use_panelled = panel_width < nov;
 
     per_frequency(
@@ -542,9 +856,9 @@ pub fn eval_trace_log_summands_budgeted(
         |(rhs_scaled, out), omega| {
             let scale = build_scale_factors(eps_occ, eps_vir, omega);
             if use_panelled {
-                dielectric_matrix_from_projection_into_panelled(&y, &scale, rhs_scaled, out);
+                dielectric_matrix_from_projection_into_panelled(y, &scale, rhs_scaled, out);
             } else {
-                dielectric_matrix_from_projection_into(&y, &scale, rhs_scaled, out);
+                dielectric_matrix_from_projection_into(y, &scale, rhs_scaled, out);
             }
             dielectric_trace_log_summand(out, "dielectric log-det failed")
         },
@@ -625,6 +939,194 @@ pub fn eval_inv_dielectric_matrices_unrestricted(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Deterministic fill in [-1, 1).
+    fn fill(rows: usize, cols: usize, seed: u64) -> Array2<f64> {
+        let mut x = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        Array2::from_shape_fn((rows, cols), |_| {
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((x >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+        })
+    }
+
+    fn gaps(eps_occ: &[f64], eps_vir: &[f64]) -> Vec<f64> {
+        let mut d = Vec::new();
+        for &o in eps_occ {
+            for &v in eps_vir {
+                d.push(v - o);
+            }
+        }
+        d
+    }
+
+    /// Direct-RPA plasmon energy of kernel `k` over gaps `d`:
+    /// `½(Σ√eig(D½(D + c·K)D½) − ΣD − (c/2)·tr K)` (c = 4 closed shell, 2 for
+    /// the spin-orbital open-shell space).
+    fn plasmon(k: &Array2<f64>, d: &[f64], c: f64) -> f64 {
+        use ndarray_linalg::{Eigh, UPLO};
+        let n = d.len();
+        let m = Array2::from_shape_fn((n, n), |(p, q)| {
+            let a = if p == q { d[p] } else { 0.0 } + c * k[(p, q)];
+            d[p].sqrt() * a * d[q].sqrt()
+        });
+        let (w, _) = m.eigh(UPLO::Upper).unwrap();
+        assert!(w.iter().all(|&x| x > 0.0), "unstable model");
+        0.5 * (w.iter().map(|x| x.sqrt()).sum::<f64>()
+            - d.iter().sum::<f64>()
+            - 0.5 * c * (0..n).map(|p| k[(p, p)]).sum::<f64>())
+    }
+
+    fn quad48() -> crate::config::QuadratureConfig {
+        crate::config::QuadratureConfig {
+            n_points: crate::energy_route::EXACT_DRPA_QUAD_POINTS,
+            ..Default::default()
+        }
+    }
+
+    /// The model: 2 occ x 3 vir, gaps 0.6..2.1 Ha, a `+` block of 7 rows and a
+    /// `−` block of 5, scaled so `K = B₊ᵀB₊ − B₋ᵀB₋` is indefinite but the
+    /// dRPA stays stable.
+    fn signed_model(seed: u64) -> (Array2<f64>, Array2<f64>, Vec<f64>, Vec<f64>) {
+        let pos = fill(7, 6, seed) * 0.11;
+        let neg = fill(5, 6, seed + 17) * 0.09;
+        (pos, neg, vec![-1.3, -0.9], vec![-0.3, 0.2, 0.8])
+    }
+
+    /// The signed log-det, integrated over frequency, equals the plasmon
+    /// energy of the indefinite kernel `B₊ᵀB₊ − B₋ᵀB₋` (closed shell), and
+    /// flipping the signature to `+` misses it by far more than the bar.
+    #[test]
+    fn signed_logdet_matches_plasmon_closed_shell() {
+        let (pos, neg, eo, ev) = signed_model(3);
+        let k = pos.t().dot(&pos) - neg.t().dot(&neg);
+        let (w, _) = {
+            use ndarray_linalg::{Eigh, UPLO};
+            k.eigh(UPLO::Upper).unwrap()
+        };
+        assert!(
+            w[0] < -1e-3 && w[w.len() - 1] > 1e-3,
+            "K must be indefinite: {w}"
+        );
+        let d = gaps(&eo, &ev);
+        let want = plasmon(&k, &d, 4.0);
+        let ch = SignedChannel {
+            pos: &pos,
+            neg: &neg,
+            eps_occ: &eo,
+            eps_vir: &ev,
+            prefactor: 4.0,
+        };
+        let got = signed_drpa_energy(&[ch], &quad48(), None).unwrap();
+        // A tiny budget narrows the panel to a few columns, exercising the
+        // ragged last panel; same sum to rounding.
+        let narrow = signed_drpa_energy(&[ch], &quad48(), Some(1)).unwrap();
+        assert!((narrow - got).abs() < 1e-13, "panelled {narrow} vs {got}");
+        // 48-point Gauss-Legendre on gaps >= 0.5 Ha: quadrature error far
+        // below 1e-9 Ha at |E| ~ 1e-2 (the Coulomb anchor of
+        // terf_signed_fit.rs reaches 1e-8 on Ne2 with smaller gaps).
+        let bar = 1e-9;
+        assert!((got - want).abs() < bar, "signed {got} vs plasmon {want}");
+        // Reachability: the + signature is a different kernel.
+        let k_plus = pos.t().dot(&pos) + neg.t().dot(&neg);
+        let wrong = plasmon(&k_plus, &d, 4.0);
+        assert!((wrong - want).abs() > 1e3 * bar, "{wrong} vs {want}");
+    }
+
+    /// Open shell: two spin channels at prefactor 2 equal the spin-orbital
+    /// plasmon energy of the indefinite kernel over the joint α+β space.
+    #[test]
+    fn signed_logdet_matches_plasmon_open_shell() {
+        let (pa, na, eoa, eva) = signed_model(5);
+        let pb = fill(7, 2, 41) * 0.11;
+        let nb = fill(5, 2, 43) * 0.09;
+        let (eob, evb) = (vec![-1.1], vec![0.1, 0.5]);
+        let pos = ndarray::concatenate(ndarray::Axis(1), &[pa.view(), pb.view()]).unwrap();
+        let neg = ndarray::concatenate(ndarray::Axis(1), &[na.view(), nb.view()]).unwrap();
+        let k = pos.t().dot(&pos) - neg.t().dot(&neg);
+        let mut d = gaps(&eoa, &eva);
+        d.extend(gaps(&eob, &evb));
+        let want = plasmon(&k, &d, 2.0);
+        let chans = [
+            SignedChannel {
+                pos: &pa,
+                neg: &na,
+                eps_occ: &eoa,
+                eps_vir: &eva,
+                prefactor: 2.0,
+            },
+            SignedChannel {
+                pos: &pb,
+                neg: &nb,
+                eps_occ: &eob,
+                eps_vir: &evb,
+                prefactor: 2.0,
+            },
+        ];
+        let got = signed_drpa_energy(&chans, &quad48(), None).unwrap();
+        assert!((got - want).abs() < 1e-9, "signed {got} vs plasmon {want}");
+    }
+
+    /// Trivial limit: with an all-zero `−` block the signed route is the
+    /// unsigned aux-basis log-det of `B₊` (rounding only), per frequency.
+    #[test]
+    fn signed_logdet_with_empty_minus_block_is_the_unsigned_route() {
+        let (pos, _, eo, ev) = signed_model(7);
+        let zero = Array2::<f64>::zeros((5, pos.ncols()));
+        let (freqs, _) = crate::quadrature::build_quadrature(&quad48());
+        let ch = SignedChannel {
+            pos: &pos,
+            neg: &zero,
+            eps_occ: &eo,
+            eps_vir: &ev,
+            prefactor: 4.0,
+        };
+        let signed = eval_signed_trace_log_summands(&[ch], &freqs, None).unwrap();
+        let plain = eval_trace_log_summands_aux_budgeted(&pos, &eo, &ev, &freqs, None).unwrap();
+        // Bar, derived: each summand is ln det(ε) + (m − tr ε) with tr ε ≈ m,
+        // so its rounding is absolute and of order m·ε_mach whatever the
+        // summand's size. The two routes differ only in rounding: a 12×12 LU
+        // here against 7×7 (the zero rows add identity) and SYRK against GEMM
+        // summation order. Bar = 16·m·ε_mach with m = 12 rows.
+        let m = (pos.nrows() + zero.nrows()) as f64;
+        let bar = 16.0 * m * f64::EPSILON;
+        for (s, p) in signed.iter().zip(&plain) {
+            assert!((s - p).abs() <= bar, "{s} vs {p} (bar {bar:.1e})");
+        }
+        // Negative control: perturbing one plus-block entry by 1e-12 must
+        // trip the bar (measured: a 1e-12 bump moves a summand by 1.6e-13,
+        // a 1e-13 bump by 1.7e-14, below it).
+        let mut bumped = pos.clone();
+        bumped[(0, 0)] += 1e-12;
+        let pb = eval_trace_log_summands_aux_budgeted(&bumped, &eo, &ev, &freqs, None).unwrap();
+        let d = signed
+            .iter()
+            .zip(&pb)
+            .map(|(s, p)| (s - p).abs())
+            .fold(0.0, f64::max);
+        assert!(
+            d > bar,
+            "a 1e-12 perturbation ({d:.1e}) must exceed the bar {bar:.1e}"
+        );
+    }
+
+    /// A zero or negative orbital gap is an error, not a NaN.
+    #[test]
+    fn signed_logdet_refuses_a_nonpositive_gap() {
+        let (pos, neg, _, ev) = signed_model(9);
+        let eo = vec![-1.3, -0.3];
+        let ch = SignedChannel {
+            pos: &pos,
+            neg: &neg,
+            eps_occ: &eo,
+            eps_vir: &ev,
+            prefactor: 4.0,
+        };
+        assert!(eval_signed_trace_log_summands(&[ch], &[0.5], None).is_err());
+    }
 
     #[test]
     fn trace_log_two_eigenvalues() {
@@ -745,8 +1247,8 @@ mod tests {
         // that sum GROWS with n_workers. For m=nov=2 it is 32 + 64·n_workers,
         // so any budget >= 96 takes the fast path at n_workers=1 and returns
         // nov=2, never exercising the panelled branch this test exists to
-        // cover. The old 200 did exactly that: it passed on a many-core box
-        // (n_workers>=3) and failed at RAYON_NUM_THREADS=1..2 — an
+        // cover. A budget of 200 does exactly that: it passes on a many-core box
+        // (n_workers>=3) and fails at RAYON_NUM_THREADS=1..2 — an
         // ambient-thread-count dependency, not a physics bug. 64 < 96 forces
         // k=1 at every worker count. n_workers is NOT pinned here on purpose:
         // the production path computes it internally from
@@ -1011,8 +1513,8 @@ mod tests {
         // Must stay below the n_workers=1 fast-path floor (96 bytes for
         // m=nov=2) so panelling is forced at EVERY ambient thread count — see
         // the sibling test `eval_eigenvalues_at_frequencies_budgeted_forced_
-        // panel_matches_manual_reference` for the full derivation. The old 200
-        // silently took the full-width path at RAYON_NUM_THREADS=1..2.
+        // panel_matches_manual_reference` for the full derivation. A budget of 200
+        // silently takes the full-width path at RAYON_NUM_THREADS=1..2.
         let tiny_budget = 64usize;
 
         let n_workers = rayon::current_num_threads().max(1);

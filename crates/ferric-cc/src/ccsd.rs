@@ -27,7 +27,7 @@ use ndarray::{ArrayD, IxDyn};
 
 // Permutation antisymmetrizers P(ij)/P(ab)/P(ij)P(ab) on the i,j,a,b axes are
 // shared with the CCD residual builder — see `helpers.rs`.
-use super::helpers::{p_ab, p_ij, p_ij_ab};
+use super::helpers::{closed_shell_counts, p_ab, p_ij, p_ij_ab};
 
 /// Wrap a `<pq||rs>` ArrayD with axis labels (purely descriptive; einsum! only
 /// uses labels for a debug-mode consistency check).
@@ -62,21 +62,21 @@ pub struct CcsdShape {
 
 /// Build the CCSD [`MemoryPlan`] for a given shape and budget.
 ///
-/// # What dominates, and why the old guard was wrong twice
+/// # What dominates
 ///
-/// The previous guard charged a flat `3·(2nv)⁴ + eri3_ao`. The "3×" was meant
-/// for the VVVV *build* (the chemist-block `d`, exchange-block `e` and the
+/// A flat `3·(2nv)⁴ + eri3_ao` charge is wrong twice. The "3×" would stand for
+/// the VVVV *build* (the chemist-block `d`, exchange-block `e` and the
 /// `asym_phys` output), but `d` and `e` are built from `b_vv`, which is
 /// contracted with the SPATIAL `c_vir` — so they are `nv⁴` each, sixteen
 /// times smaller than `(2nv)⁴`. Only the `asym_phys` result is
-/// spin-orbital-sized, making the build-stage charge an over-count of about
+/// spin-orbital-sized, so the build-stage charge would over-count by about
 /// 2.67×.
 ///
-/// That over-count masked a genuine omission. `vvvv` is built once and stays
-/// resident for the whole amplitude loop, while `wabef` — a SEPARATE `(2nv)⁴`
-/// buffer — is rebuilt every iteration by cloning `vvvv` and is still live
-/// when the ladder term reads it. Both are resident together, so the
-/// sustained peak is `2·(2nv)⁴`, which the old formula never named.
+/// That over-count would mask a genuine omission. `vvvv` is built once and
+/// stays resident for the whole amplitude loop, while `wabef` — a SEPARATE
+/// `(2nv)⁴` buffer — is rebuilt every iteration by cloning `vvvv` and is still
+/// live when the ladder term reads it. Both are resident together, so the
+/// sustained peak is `2·(2nv)⁴`, which a flat `3·(2nv)⁴` never names.
 pub fn ccsd_memory_plan(shape: CcsdShape, budget_bytes: Option<usize>) -> MemoryPlan {
     let CcsdShape {
         no,
@@ -110,7 +110,7 @@ pub fn ccsd_memory_plan(shape: CcsdShape, budget_bytes: Option<usize>) -> Memory
     );
     // `wabef` is a SEPARATE (2nv)^4 buffer, rebuilt every iteration by cloning
     // `vvvv` and held alongside it until the ladder term reads it — the term
-    // the old guard missed entirely.
+    // a flat charge misses entirely.
     plan.reserve(
         "wabef <ab||ef> (rebuilt per iteration, co-resident with vvvv)",
         nv2.saturating_pow(4),
@@ -130,8 +130,23 @@ pub fn ccsd_memory_plan(shape: CcsdShape, budget_bytes: Option<usize>) -> Memory
     plan
 }
 
+/// Spin-orbital RI-CCSD correlation energy on a restricted (RHF) reference.
+///
+/// The occupied count is half the electron count of `mol` and the virtual
+/// count is the rest of the retained MOs ([`closed_shell_counts`]);
+/// `cfg.frozen_core` occupied orbitals are frozen. Integrals are built
+/// with operator `op` from the auxiliary basis `dfbs`. The returned `t1` is
+/// `(2·no, 2·nv)` and `t2` is `(2·no, 2·no, 2·nv, 2·nv)` in spin orbitals.
+/// Convergence is `|ΔE| < min(cfg.energy_conv, 1e-9)` Hartree; DIIS acts on
+/// `t2` only.
+///
+/// # Errors
+///
+/// Fails before allocating when the memory plan exceeds the budget, and
+/// returns `FerricError::Convergence` after `cfg.max_iter` iterations
+/// without convergence.
 pub fn ccsd(
-    _mol: &Molecule,
+    mol: &Molecule,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     op: Operator,
@@ -139,15 +154,15 @@ pub fn ccsd(
     cfg: &CcConfig,
 ) -> Result<CcResult, FerricError> {
     let nbas = obs.nbasis();
-    let nocc_total = rhf.eps_r().iter().filter(|&&e| e < 0.0).count();
+    let (nocc_total, nmo) = closed_shell_counts(mol, rhf)?;
     let first_occ = cfg.frozen_core;
     let no = active_occ(nocc_total, first_occ)?;
-    let nv = nbas - nocc_total; // spatial virtual
+    let nv = nmo - nocc_total; // spatial virtual
 
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
     let c_occ = c.slice(ndarray::s![.., first_occ..nocc_total]).to_owned();
-    let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
+    let c_vir = c.slice(ndarray::s![.., nocc_total..nmo]).to_owned();
 
     // Fail-fast size guard, expressed as a [`MemoryPlan`].
     //
@@ -247,8 +262,6 @@ pub fn ccsd(
 
     // --- Build all 11 antisymmetrized spin-orbital <pq||rs> blocks ---
     // For <P Q || R S>: direct chemist (PR|QS), exchange chemist (PS|QR).
-    use Axis::{O, V};
-
     // OOOO: dir (OO|OO), exc (OO|OO)
     let g_oooo = {
         let d: ArrayD<f64> = einsum!("Pij,Pkl->ijkl", &b_oo, &b_oo); // (ik|jl) indexed [p,r,q,s]
@@ -316,21 +329,7 @@ pub fn ccsd(
         asym_phys(&d, &e, nv, nv, nv, nv)
     };
 
-    // Pre-wrap loop-invariant integral tensors (labels are descriptive only).
-    let oooo = lbl4(g_oooo, [O, O, O, O]);
-    let ooov = lbl4(g_ooov, [O, O, O, V]);
-    let oovo = lbl4(g_oovo, [O, O, V, O]);
-    let oovv = lbl4(g_oovv.clone(), [O, O, V, V]);
-    let ovoo = lbl4(g_ovoo, [O, V, O, O]);
-    let ovov = lbl4(g_ovov, [O, V, O, V]);
-    let ovvo = lbl4(g_ovvo, [O, V, V, O]);
-    let ovvv = lbl4(g_ovvv, [O, V, V, V]);
-    let vovv = lbl4(g_vovv, [V, O, V, V]);
-    let vvvo = lbl4(g_vvvo, [V, V, V, O]);
-    let vvvv = lbl4(g_vvvv, [V, V, V, V]);
-
-    // --- Spin-orbital orbital energies and denominators ---
-    // (no2/nv2 computed above, alongside the size guard)
+    // --- Spin-orbital orbital energies (interleaved: 2k = alpha, 2k+1 = beta) ---
     let mut eo = vec![0.0f64; no2];
     let mut ev = vec![0.0f64; nv2];
     for i in 0..no {
@@ -341,6 +340,72 @@ pub fn ccsd(
         ev[2 * a] = eps[nocc_total + a];
         ev[2 * a + 1] = eps[nocc_total + a];
     }
+    let ints = SoIntegrals {
+        oooo: g_oooo,
+        ooov: g_ooov,
+        oovo: g_oovo,
+        oovv: g_oovv,
+        ovoo: g_ovoo,
+        ovov: g_ovov,
+        ovvo: g_ovvo,
+        ovvv: g_ovvv,
+        vovv: g_vovv,
+        vvvo: g_vvvo,
+        vvvv: g_vvvv,
+    };
+    solve_spin_orbital(ints, &eo, &ev, cfg)
+}
+
+/// The eleven antisymmetrized spin-orbital integral blocks `<pq||rs>` the
+/// Stanton-Gauss CCSD equations read, each indexed `[p,q,r,s]` over the
+/// active occupied (`o`) and virtual (`v`) spin orbitals.
+///
+/// The solver [`solve_spin_orbital`] never looks at how the spin orbitals are
+/// ordered or which spatial orbitals they came from: the restricted driver
+/// [`ccsd`] interleaves one spatial set (`2k` = alpha, `2k+1` = beta), and the
+/// UHF route [`ccsd_uhf_spin_orbital`] stacks the alpha block before the beta
+/// block.
+pub(crate) struct SoIntegrals {
+    pub(crate) oooo: ArrayD<f64>,
+    pub(crate) ooov: ArrayD<f64>,
+    pub(crate) oovo: ArrayD<f64>,
+    pub(crate) oovv: ArrayD<f64>,
+    pub(crate) ovoo: ArrayD<f64>,
+    pub(crate) ovov: ArrayD<f64>,
+    pub(crate) ovvo: ArrayD<f64>,
+    pub(crate) ovvv: ArrayD<f64>,
+    pub(crate) vovv: ArrayD<f64>,
+    pub(crate) vvvo: ArrayD<f64>,
+    pub(crate) vvvv: ArrayD<f64>,
+}
+
+/// Iterate the spin-orbital CCSD equations on prebuilt integrals.
+///
+/// `eo`/`ev` are the occupied/virtual spin-orbital energies in the order of
+/// the integral axes. Uses the canonical-HF simplification (no off-diagonal
+/// Fock), so the orbitals must diagonalize their spin's Fock operator.
+pub(crate) fn solve_spin_orbital(
+    ints: SoIntegrals,
+    eo: &[f64],
+    ev: &[f64],
+    cfg: &CcConfig,
+) -> Result<CcResult, FerricError> {
+    use Axis::{O, V};
+    let (no2, nv2) = (eo.len(), ev.len());
+    let g_oovv = ints.oovv;
+    // Pre-wrap loop-invariant integral tensors (labels are descriptive only).
+    let oooo = lbl4(ints.oooo, [O, O, O, O]);
+    let ooov = lbl4(ints.ooov, [O, O, O, V]);
+    let oovo = lbl4(ints.oovo, [O, O, V, O]);
+    let oovv = lbl4(g_oovv.clone(), [O, O, V, V]);
+    let ovoo = lbl4(ints.ovoo, [O, V, O, O]);
+    let ovov = lbl4(ints.ovov, [O, V, O, V]);
+    let ovvo = lbl4(ints.ovvo, [O, V, V, O]);
+    let ovvv = lbl4(ints.ovvv, [O, V, V, V]);
+    let vovv = lbl4(ints.vovv, [V, O, V, V]);
+    let vvvo = lbl4(ints.vvvo, [V, V, V, O]);
+    let vvvv = lbl4(ints.vvvv, [V, V, V, V]);
+
     let mut dia = ArrayD::zeros(IxDyn(&[no2, nv2]));
     for i in 0..no2 {
         for a in 0..nv2 {
@@ -690,6 +755,127 @@ pub fn ccsd(
     Err(FerricError::Convergence(
         "spin-orbital CCSD did not converge".into(),
     ))
+}
+
+/// Block-diagonal spin-orbital 3-index tensor from per-spin blocks:
+/// rows `[alpha..., beta...]` of the first space, columns likewise of the
+/// second, zero between different spins.
+fn so_b(blocks: [&ndarray::Array3<f64>; 2]) -> ndarray::Array3<f64> {
+    let (naux, pa, qa) = blocks[0].dim();
+    let (_, pb, qb) = blocks[1].dim();
+    let mut out = ndarray::Array3::<f64>::zeros((naux, pa + pb, qa + qb));
+    out.slice_mut(ndarray::s![.., ..pa, ..qa]).assign(blocks[0]);
+    out.slice_mut(ndarray::s![.., pa.., qa..]).assign(blocks[1]);
+    out
+}
+
+/// `<xy||zw> = (xz|yw) - (xw|yz)` from spin-orbital 3-index tensors.
+pub(crate) fn so_asym(
+    b_xz: &ndarray::Array3<f64>,
+    b_yw: &ndarray::Array3<f64>,
+    b_xw: &ndarray::Array3<f64>,
+    b_yz: &ndarray::Array3<f64>,
+) -> ArrayD<f64> {
+    let d1 = crate::u_ccsd::chem(b_xz, b_yw); // [x,z,y,w]
+    let d2 = crate::u_ccsd::chem(b_xw, b_yz); // [x,w,y,z]
+    &permute_to_owned(d1.view().permuted_axes(IxDyn(&[0, 2, 1, 3])))
+        - &permute_to_owned(d2.view().permuted_axes(IxDyn(&[0, 2, 3, 1])))
+}
+
+/// The spin-orbital tensors of a UHF reference: occupied spin orbitals are
+/// the active alpha block followed by the active beta block, virtuals
+/// likewise. Returns `(B_oo, B_ov, B_vo, B_vv, eo, ev)`.
+pub(crate) type SoUhf = (
+    ndarray::Array3<f64>,
+    ndarray::Array3<f64>,
+    ndarray::Array3<f64>,
+    ndarray::Array3<f64>,
+    Vec<f64>,
+    Vec<f64>,
+);
+
+pub(crate) fn so_uhf_tensors(ri: &crate::u_ccsd::URiBlocks) -> SoUhf {
+    let b_oo = so_b([&ri.b_oo[0], &ri.b_oo[1]]);
+    let b_ov = so_b([&ri.b_ov[0], &ri.b_ov[1]]);
+    let b_vv = so_b([&ri.b_vv[0], &ri.b_vv[1]]);
+    let b_vo = b_ov
+        .view()
+        .permuted_axes([0, 2, 1])
+        .as_standard_layout()
+        .into_owned();
+    let eo: Vec<f64> = ri.eo[0].iter().chain(&ri.eo[1]).copied().collect();
+    let ev: Vec<f64> = ri.ev[0].iter().chain(&ri.ev[1]).copied().collect();
+    (b_oo, b_ov, b_vo, b_vv, eo, ev)
+}
+
+/// Spin-orbital RI-CCSD on a UHF reference: the reference-agnostic
+/// equations of [`ccsd`] on the UHF spin orbitals (alpha block, then beta).
+///
+/// This is the independent oracle for [`crate::u_ccsd::u_ccsd`]: no spin
+/// blocks, every tensor over `(no_a + no_b)` occupied and `(nv_a + nv_b)`
+/// virtual spin orbitals, so it costs about `16x` the spin-blocked solver's
+/// `vvvv` memory. `t1`/`t2` come back in that spin-orbital order.
+///
+/// # Errors
+///
+/// As [`ccsd`], plus a reference that is not UHF.
+pub fn ccsd_uhf_spin_orbital(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    scf: &ScfResult,
+    cfg: &CcConfig,
+) -> Result<CcResult, FerricError> {
+    let (nocc, nmo) = crate::u_ccsd::uhf_counts(mol, scf)?;
+    let no2 = active_occ(nocc[0], cfg.frozen_core)? + active_occ(nocc[1], cfg.frozen_core)?;
+    let nv2 = (nmo[0] - nocc[0]) + (nmo[1] - nocc[1]);
+    let mut plan = MemoryPlan::resolve(
+        cfg.memory_budget_bytes,
+        format!("spin-orbital UHF CCSD (no2={no2}, nv2={nv2})"),
+    );
+    plan.reserve(
+        "eri3_ao (P|mn)",
+        dfbs.nbasis()
+            .saturating_mul(obs.nbasis())
+            .saturating_mul(obs.nbasis()),
+        Lifetime::Transient,
+    );
+    plan.reserve(
+        "vvvv build (two chemist blocks) + vvvv + wabef",
+        nv2.saturating_pow(4).saturating_mul(4),
+        Lifetime::Resident,
+    );
+    plan.reserve(
+        "DIIS T2 amplitude + error history (2 x diis_subspace)",
+        crate::diis_history_elems(
+            no2.saturating_pow(2).saturating_mul(nv2.saturating_pow(2)),
+            cfg.diis_subspace,
+        ),
+        Lifetime::Resident,
+    );
+    if let Some(pool) = ferric_core::memory::pool::global() {
+        plan = plan.with_pool(&pool);
+    }
+    let _charge = plan.commit()?;
+
+    let ri = crate::u_ccsd::URiBlocks::build(mol, obs, dfbs, op, scf, cfg.frozen_core)?;
+    let (b_oo, b_ov, b_vo, b_vv, eo, ev) = so_uhf_tensors(&ri);
+    drop(ri);
+    let ints = SoIntegrals {
+        oooo: so_asym(&b_oo, &b_oo, &b_oo, &b_oo),
+        ooov: so_asym(&b_oo, &b_ov, &b_ov, &b_oo),
+        oovo: so_asym(&b_ov, &b_oo, &b_oo, &b_ov),
+        oovv: so_asym(&b_ov, &b_ov, &b_ov, &b_ov),
+        ovoo: so_asym(&b_oo, &b_vo, &b_oo, &b_vo),
+        ovov: so_asym(&b_oo, &b_vv, &b_ov, &b_vo),
+        ovvo: so_asym(&b_ov, &b_vo, &b_oo, &b_vv),
+        ovvv: so_asym(&b_ov, &b_vv, &b_ov, &b_vv),
+        vovv: so_asym(&b_vv, &b_ov, &b_vv, &b_ov),
+        vvvo: so_asym(&b_vv, &b_vo, &b_vo, &b_vv),
+        vvvv: so_asym(&b_vv, &b_vv, &b_vv, &b_vv),
+    };
+    solve_spin_orbital(ints, &eo, &ev, cfg)
 }
 
 /// Clone the underlying `ArrayD` out of a labeled `Tensor<4>` (used to seed a

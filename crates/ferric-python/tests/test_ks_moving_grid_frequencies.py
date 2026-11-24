@@ -17,7 +17,7 @@ and its CLI wiring in `crates/ferric-cli/tests/ks_moving_grid_frequencies.rs`
 * `test_auto_is_the_moving_grid_hessian_for_ks`: `"auto"` equals
   `"analytic-moving-grid"` bit for bit (water, LDA and PBE).
 * `test_auto_falls_back_to_fd_where_unsupported`: `"auto"` equals `"fd"` bit
-  for bit for meta-GGA (SCAN), an open-shell UKS reference and `dispersion=`.
+  for bit for meta-GGA (SCAN, closed shell and UKS) and `dispersion=`.
 * the refusals, each named.
 
 Mutation ledger (each measured to fail): the moving-grid route sent to the
@@ -82,7 +82,7 @@ def _cli_binary():
 
 
 # Tight SCF for the comparisons below (the run_frequencies kwargs).
-TIGHT = {"max_iter": 200, "energy_conv": 1e-13, "density_conv": 1e-11}
+TIGHT = {"scf_max_iter": 200, "scf_energy_conv": 1e-13, "scf_density_conv": 1e-11}
 
 
 @pytest.mark.validation
@@ -180,10 +180,9 @@ def test_auto_is_the_moving_grid_hessian_for_ks(xc):
     "kwargs",
     [
         {"xc": "SCAN"},
-        {"xc": "LDA", "reference": "uhf"},
-        {"xc": "B3LYP", "dispersion": "d3bj"},
+        {"xc": "SCAN", "reference": "uhf"},
     ],
-    ids=["meta-gga", "uks", "dispersion"],
+    ids=["meta-gga", "uks-meta-gga"],
 )
 def test_auto_falls_back_to_fd_where_unsupported(kwargs):
     mol = _mol(H2)
@@ -210,28 +209,27 @@ def _hi(tmp_path):
     "mol, basis, kwargs, fragment",
     [
         (WATER, "sto-3g", {}, "Hartree-Fock has no XC grid"),
-        (H2, "sto-3g", {"xc": "LDA", "reference": "uhf"}, "open-shell (Uhf"),
+        (H2, "sto-3g", {"xc": "SCAN", "reference": "uhf"}, "a meta-GGA ('SCAN')"),
         (H2, "sto-3g", {"xc": "LDA", "reference": "rohf"}, "open-shell (Rohf"),
         (WATER, "sto-3g", {"xc": "SCAN"}, "a meta-GGA ('SCAN')"),
         (WATER, "sto-3g", {"xc": "wB97X-V"}, "VV10 nonlocal correlation"),
         (WATER, "sto-3g", {"xc": "HSE06"}, "a range-separated hybrid ('HSE06')"),
-        ("HI", "def2-svp", {"xc": "LDA"}, "an ECP or an external potential"),
         (
             WATER,
             "sto-3g",
             {"xc": "LDA", "point_charges": [(0.5, 0.0, 0.0, 6.0)]},
-            "an ECP or an external potential",
+            "an external potential",
         ),
         (
             WATER,
             "sto-3g",
             {"xc": "LDA", "external_field": (0.0, 0.0, 1e-3)},
-            "an ECP or an external potential",
+            "an external potential",
         ),
         (
             WATER,
             "sto-3g",
-            {"xc": "B3LYP", "dispersion": "d3bj"},
+            {"xc": "PBE", "dispersion": "mbd"},
             'hessian = "analytic-moving-grid" is not available',
         ),
     ],
@@ -251,3 +249,24 @@ def test_unknown_method_lists_the_new_value():
 def test_saddle_refuses_the_moving_grid_hessian():
     with pytest.raises(ValueError, match="not available in run_saddle"):
         ferric.run_saddle(_mol(H2), "sto-3g", xc="LDA", hessian=MOVING)
+
+
+def test_auto_adds_the_analytic_d3_hessian_to_the_moving_grid_hessian():
+    """D3(BJ) depends on the geometry only, so `auto` keeps the analytic
+    moving-grid KS Hessian and adds the analytic D3(BJ) Hessian."""
+    mol = _mol(WATER)
+    plain = ferric.run_frequencies(mol, "sto-3g", xc="B3LYP")
+    d3 = ferric.run_frequencies(mol, "sto-3g", xc="B3LYP", dispersion="d3bj")
+    assert d3.hessian_source == MOVING
+    assert d3.n_gradient_evaluations == 0
+    assert d3.e_dispersion < 0.0
+    assert abs(d3.energy - plain.energy - d3.e_dispersion) < 1e-12
+    explicit = ferric.run_frequencies(
+        mol, "sto-3g", xc="B3LYP", dispersion="d3bj", hessian=MOVING
+    )
+    _assert_same(d3, explicit)
+    shift = _max_abs_diff(
+        [x for row in d3.cartesian_hessian for x in row],
+        [x for row in plain.cartesian_hessian for x in row],
+    )
+    assert shift > 1e-6, f"D3 Hessian absent: {shift:.2e}"

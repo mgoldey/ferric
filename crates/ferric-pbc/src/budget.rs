@@ -1,5 +1,5 @@
 //! Memory gating for the ferric-pbc builders (Stage 1 step 10,
-//! `reference/pbc/stage1-design.md` §5).
+//! `wiki/archive/ferric-pbc-residue-2026-10-25/reference/pbc/stage1-design.md` §5).
 //!
 //! The budget is ferric's unified one: [`ferric_core::memory::resolve_budget_bytes`]
 //! (explicit config value > `FERRIC_MEM_BUDGET_GB` > legacy env vars > 0.8 ×

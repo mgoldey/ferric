@@ -1,0 +1,23 @@
+# omega-RI-CDD-MP2: Laplace MP2 in pivoted-Cholesky pseudo-MOs with the
+# omega-RI fit and the paper's exchange screens (theta_schwarz 1e-9,
+# theta_ij 1e-6). With cdd_* omitted the CDD route is exact (equals the
+# MO Laplace energy at the same n_quad).
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "laplace-mp2"
+
+[mp2]
+auxbasis = "cc-pvdz-ri"
+n_quad = 7
+cdd_tol = 1e-6
+cdd_schwarz_thresh = 1e-9
+cdd_pair_thresh = 1e-6
+
+[ri]
+metric = "erfc"
+omega_bohr = 0.1

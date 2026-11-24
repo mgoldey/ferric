@@ -1,3 +1,19 @@
+//! `ferric-batch`: run one `ferric` input template over every `*.xyz` file
+//! in a directory.
+//!
+//! ```text
+//! ferric-batch [--jobs N] <template.toml> <xyz_dir> <output_dir>
+//! ```
+//!
+//! For each `<stem>.xyz` the template's `{XYZ_FILE}` placeholder is replaced
+//! with that file's path and written to `<output_dir>/<stem>.toml`; a child
+//! `ferric` process (the sibling binary, else `ferric` on `PATH`) runs it with
+//! stdout and stderr captured to `<stem>.out` and `<stem>.err`. Up to `N`
+//! children (default 1) run at once, each with `OPENBLAS_NUM_THREADS=1` and
+//! `RAYON_NUM_THREADS=1`; the resolved memory budget is divided among the
+//! concurrent children through `FERRIC_MEM_BUDGET_GB` and the child TOMLs'
+//! `[memory] budget_gb`. The process exits 1 if any job fails.
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -23,9 +39,7 @@ struct JobResult {
     success: bool,
 }
 
-fn print_usage() {
-    eprintln!("Usage: ferric-batch [--jobs N] <template.toml> <xyz_dir> <output_dir>");
-}
+const USAGE: &str = "Usage: ferric-batch [--jobs N] <template.toml> <xyz_dir> <output_dir>";
 
 /// Extract `(file_stem, full_path)` as UTF-8 strings, or `None` if either is
 /// unavailable. `file_stem()` is `None` for a path with no stem (e.g. `.xyz`);
@@ -40,7 +54,24 @@ fn utf8_stem_and_path(path: &Path) -> Option<(String, &str)> {
     Some((file_stem, path_str))
 }
 
+/// The process entry point: the only place this binary exits. A setup error
+/// (bad arguments, unreadable template or directory) is printed as returned
+/// and exits 1 before any job runs; a completed batch exits 1 when any job
+/// failed (every job still runs), else 0.
 fn main() {
+    match try_main() {
+        Ok(true) => {}
+        Ok(false) => std::process::exit(1),
+        Err(text) => {
+            eprintln!("{text}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// The whole batch. `Ok(all_succeeded)` once every job has run; `Err` holds
+/// the stderr text of a setup error (some end with the usage line).
+fn try_main() -> Result<bool, String> {
     let raw_args: Vec<String> = env::args().collect();
 
     let mut jobs_n: usize = 1;
@@ -49,37 +80,13 @@ fn main() {
     while i < raw_args.len() {
         let arg = &raw_args[i];
         if arg == "--jobs" {
-            let val = raw_args.get(i + 1).unwrap_or_else(|| {
-                eprintln!("Error: --jobs requires a value");
-                print_usage();
-                std::process::exit(1);
-            });
-            jobs_n = val.parse::<usize>().unwrap_or_else(|_| {
-                eprintln!(
-                    "Error: --jobs value must be a positive integer, got '{}'",
-                    val
-                );
-                print_usage();
-                std::process::exit(1);
-            });
-            if jobs_n == 0 {
-                eprintln!("Error: --jobs must be >= 1");
-                std::process::exit(1);
-            }
+            let val = raw_args
+                .get(i + 1)
+                .ok_or_else(|| format!("Error: --jobs requires a value\n{USAGE}"))?;
+            jobs_n = parse_jobs(val)?;
             i += 2;
         } else if let Some(val) = arg.strip_prefix("--jobs=") {
-            jobs_n = val.parse::<usize>().unwrap_or_else(|_| {
-                eprintln!(
-                    "Error: --jobs value must be a positive integer, got '{}'",
-                    val
-                );
-                print_usage();
-                std::process::exit(1);
-            });
-            if jobs_n == 0 {
-                eprintln!("Error: --jobs must be >= 1");
-                std::process::exit(1);
-            }
+            jobs_n = parse_jobs(val)?;
             i += 1;
         } else {
             positional.push(arg.clone());
@@ -88,8 +95,7 @@ fn main() {
     }
 
     if positional.len() != 3 {
-        print_usage();
-        std::process::exit(1);
+        return Err(USAGE.to_string());
     }
 
     let template_path = &positional[0];
@@ -97,26 +103,19 @@ fn main() {
     let out_dir = Path::new(&positional[2]);
 
     if !xyz_dir.is_dir() {
-        eprintln!("Error: {} is not a directory", xyz_dir.display());
-        std::process::exit(1);
+        return Err(format!("Error: {} is not a directory", xyz_dir.display()));
     }
 
     if !out_dir.exists() {
-        fs::create_dir_all(out_dir).unwrap_or_else(|e| {
-            eprintln!("Failed to create output directory: {}", e);
-            std::process::exit(1);
-        });
+        fs::create_dir_all(out_dir)
+            .map_err(|e| format!("Failed to create output directory: {}", e))?;
     }
 
-    let template = fs::read_to_string(template_path).unwrap_or_else(|e| {
-        eprintln!("Failed to read template: {}", e);
-        std::process::exit(1);
-    });
+    let template =
+        fs::read_to_string(template_path).map_err(|e| format!("Failed to read template: {}", e))?;
 
-    let entries = fs::read_dir(xyz_dir).unwrap_or_else(|e| {
-        eprintln!("Failed to read xyz directory: {}", e);
-        std::process::exit(1);
-    });
+    let entries =
+        fs::read_dir(xyz_dir).map_err(|e| format!("Failed to read xyz directory: {}", e))?;
 
     // Locate the `ferric` binary once, relative to this executable (same
     // logic as before: prefer the sibling binary, fall back to PATH).
@@ -161,7 +160,8 @@ fn main() {
             let out_log_path = out_dir.join(format!("{}.out", file_stem));
             let err_log_path = out_dir.join(format!("{}.err", file_stem));
 
-            fs::write(&toml_path, config_content).unwrap();
+            fs::write(&toml_path, config_content)
+                .map_err(|e| format!("Failed to write {}: {}", toml_path.display(), e))?;
 
             jobs.push(Job {
                 file_stem,
@@ -249,9 +249,20 @@ fn main() {
 
         if !failures.is_empty() {
             println!("Failed jobs: {}", failures.join(", "));
-            std::process::exit(1);
         }
-    });
+        Ok(failures.is_empty())
+    })
+}
+
+/// A `--jobs` value: a positive integer.
+fn parse_jobs(val: &str) -> Result<usize, String> {
+    let n = val.parse::<usize>().map_err(|_| {
+        format!("Error: --jobs value must be a positive integer, got '{val}'\n{USAGE}")
+    })?;
+    if n == 0 {
+        return Err("Error: --jobs must be >= 1".to_string());
+    }
+    Ok(n)
 }
 
 /// Run a single child `ferric` job, capturing stdout/stderr to per-job files

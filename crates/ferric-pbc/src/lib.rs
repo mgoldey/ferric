@@ -1,4 +1,12 @@
-//! Periodic-boundary-condition primitives for ferric — Stages 0-1 (library only).
+//! 3-D periodic Gaussian-basis electronic structure for ferric: Gamma-point and
+//! k-point SCF, MP2 and dRPA, forces and stress, used by the CLI `[cell]`
+//! section and the Python `run_*_{gamma,kpts}` functions.
+//!
+//! Provenance notes in this crate cite `reference/pbc/` prototypes
+//! (`pbc_*.py`, `FINDINGS.md`, `stage1-design.md`). Only `reference/pbc/bench/`
+//! and a few design notes are in the repository; the rest are archived,
+//! untracked, under `wiki/archive/ferric-pbc-residue-2026-10-25/reference/pbc/`
+//! in the main checkout.
 //!
 //! * [`lattice`] — [`Cell`]: a [`Molecule`](ferric_core::mol::Molecule)
 //!   plus three lattice vectors, with volume, reciprocal vectors, real-space
@@ -79,8 +87,9 @@
 //!   Madelung-shifted denominators as at Gamma.
 //!
 //! * [`ecp`] — periodic ECPs: the `apply_ecp` guard ([`check_ecp_applied`])
-//!   and the Bloch sum `V_ECP(k) = Σ_L e^{ik·L} V_L` over libecpint's
-//!   per-shell-pair kernel (`ferric_ecp_block`), added into `h` by
+//!   and the Bloch sum `V_ECP(k) = Σ_L e^{ik·L} V_L` over the per-shell-pair
+//!   kernel `ferric_integrals::ecp::ecp_block_spherical` (quadrature backend by
+//!   default, libecpint by `FERRIC_ECP_BACKEND`), added into `h` by
 //!   `periodic_hcore` / `periodic_hcore_kpts`; FINDINGS "Iteration 14".
 //!   The Gamma force term (`periodic_ecp_gradient`, the three moving centres
 //!   bra / ket image / ECP image over the energy's own triples) is added to
@@ -209,10 +218,12 @@
 //! Units: Bohr and Hartree throughout; G vectors in Bohr⁻¹.
 //!
 //! Bound by the Python bindings (`ferric-python`, `src/pbc.rs`) and the CLI
-//! (`ferric-cli`, the `[cell]` path); `reference/pbc/stage1-design.md` holds
+//! (`ferric-cli`, the `[cell]` path); `wiki/archive/ferric-pbc-residue-2026-10-25/reference/pbc/stage1-design.md` holds
 //! the staging plan.
 
 pub mod budget;
+/// Result certificates of periodic runs.
+pub mod certificate;
 pub mod dense_aft;
 pub mod dft;
 pub mod drpa;

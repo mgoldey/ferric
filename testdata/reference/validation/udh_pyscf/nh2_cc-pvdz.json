@@ -1,0 +1,253 @@
+{
+  "row": "UKS double hybrids",
+  "system": "nh2",
+  "basis": "cc-pvdz",
+  "pt2_aux": "cc-pvdz-ri",
+  "charge": 0,
+  "multiplicity": 2,
+  "nao": 24,
+  "nuclear_repulsion": 7.564094299642846,
+  "sets": {
+    "b2plyp": {
+      "xc": "0.53*HF + 0.47*B88, 0.73*LYP",
+      "c_os": 0.27,
+      "c_ss": 0.27,
+      "ks": {
+        "energy": -55.77217717734186,
+        "s_squared": 0.7541867087903302,
+        "homo_alpha": -0.3865672460859146,
+        "lumo_alpha": 0.10892002950571111,
+        "homo_beta": -0.3576916931691154,
+        "lumo_beta": 0.0070970855534624455
+      },
+      "stability": {
+        "internal_stable": true,
+        "kind": "PySCF UKS internal (real)",
+        "rounds": 0,
+        "selected_guess": "atom",
+        "lambda_min": 0.08172268154684614
+      },
+      "guess_energies": [
+        -55.77217717734183,
+        -55.77217717734186,
+        -55.77217717734184
+      ],
+      "fc0": {
+        "e_os": -0.13619235282652145,
+        "e_ss": -0.03895265448794366,
+        "e_corr": -0.1751450073144651,
+        "total": -55.81946632931677
+      },
+      "fc1": {
+        "e_os": -0.13451972171250276,
+        "e_ss": -0.03821467392080864,
+        "e_corr": -0.1727343956333114,
+        "total": -55.81881546416285
+      },
+      "reproduction": {
+        "note": "|d| between the best-of-three-guesses and the atom-guess PySCF runs of this case and set",
+        "e_ks": 2.842170943040401e-14,
+        "fc0_e_os": 1.6653345369377348e-16,
+        "fc0_e_ss": 4.85722573273506e-17,
+        "fc1_e_os": 1.942890293094024e-16,
+        "fc1_e_ss": 7.632783294297951e-17
+      }
+    },
+    "dsd-pbep86": {
+      "xc": "0.72*HF + 0.28*PBE, 0.44*P86",
+      "c_os": 0.51,
+      "c_ss": 0.36,
+      "ks": {
+        "energy": -55.68692309033883,
+        "s_squared": 0.7554046831830759,
+        "homo_alpha": -0.43599728322485615,
+        "lumo_alpha": 0.1405743797437924,
+        "homo_beta": -0.39996633112011537,
+        "lumo_beta": 0.06343782117213204
+      },
+      "stability": {
+        "internal_stable": true,
+        "kind": "PySCF UKS internal (real)",
+        "rounds": 0,
+        "selected_guess": "huckel",
+        "lambda_min": 0.08130767262551608
+      },
+      "guess_energies": [
+        -55.686923090338766,
+        -55.68692309033881,
+        -55.68692309033883
+      ],
+      "fc0": {
+        "e_os": -0.12554187691953692,
+        "e_ss": -0.036075653005493355,
+        "e_corr": -0.16161752992503026,
+        "total": -55.76393668264977
+      },
+      "fc1": {
+        "e_os": -0.12392128352523046,
+        "e_ss": -0.035364088384756985,
+        "e_corr": -0.15928537190998746,
+        "total": -55.76285401675521
+      },
+      "reproduction": {
+        "note": "|d| between the best-of-three-guesses and the atom-guess PySCF runs of this case and set",
+        "e_ks": 1.4210854715202004e-14,
+        "fc0_e_os": 5.597522445555114e-12,
+        "fc0_e_ss": 1.0319731180707947e-12,
+        "fc1_e_os": 5.648342904507331e-12,
+        "fc1_e_ss": 1.0244513570789593e-12
+      }
+    },
+    "dsd-pbep86-d3bj": {
+      "xc": "0.69*HF + 0.31*PBE, 0.44*P86",
+      "c_os": 0.52,
+      "c_ss": 0.22,
+      "ks": {
+        "energy": -55.685632378780056,
+        "s_squared": 0.7552928520643829,
+        "homo_alpha": -0.42786596056791837,
+        "lumo_alpha": 0.1367237120304221,
+        "homo_beta": -0.39226666168231894,
+        "lumo_beta": 0.056400472145078595
+      },
+      "stability": {
+        "internal_stable": true,
+        "kind": "PySCF UKS internal (real)",
+        "rounds": 0,
+        "selected_guess": "minao",
+        "lambda_min": 0.0812519752319889
+      },
+      "guess_energies": [
+        -55.685632378780056,
+        -55.68563237877997,
+        -55.685632378780035
+      ],
+      "fc0": {
+        "e_os": -0.12706184772560214,
+        "e_ss": -0.03649509198929126,
+        "e_corr": -0.1635569397148934,
+        "total": -55.75973345983501,
+        "total_with_d3bj": -55.76002069198165
+      },
+      "fc1": {
+        "e_os": -0.12543301521057362,
+        "e_ss": -0.03577960780467832,
+        "e_corr": -0.16121262301525194,
+        "total": -55.75872906040658,
+        "total_with_d3bj": -55.75901629255322
+      },
+      "reproduction": {
+        "note": "|d| between the best-of-three-guesses and the atom-guess PySCF runs of this case and set",
+        "e_ks": 2.1316282072803006e-14,
+        "fc0_e_os": 2.0893009544664665e-12,
+        "fc0_e_ss": 3.409564297562895e-13,
+        "fc1_e_os": 2.141314903170155e-12,
+        "fc1_e_ss": 3.3717473257866004e-13
+      },
+      "d3bj": {
+        "method": "dsdpbep86",
+        "energy": -0.00028723214663748384,
+        "params": {
+          "s6": 0.48,
+          "s8": 0.0,
+          "a1": 0.0,
+          "a2": 5.6
+        }
+      }
+    },
+    "b2plyp-d3bj": {
+      "xc": "0.53*HF + 0.47*B88, 0.73*LYP",
+      "c_os": 0.27,
+      "c_ss": 0.27,
+      "same_scf_as": "b2plyp",
+      "d3bj": {
+        "method": "b2plyp",
+        "energy": -0.000306723629968087,
+        "params": {
+          "s6": 0.64,
+          "s8": 0.9147,
+          "a1": 0.3065,
+          "a2": 5.057
+        }
+      },
+      "fc0": {
+        "total_with_d3bj": -55.819773052946736
+      },
+      "fc1": {
+        "total_with_d3bj": -55.81912218779282
+      }
+    }
+  },
+  "provenance": {
+    "code": "PySCF (dft.UKS density_fit + mp.dfump2.DFUMP2) + dftd3",
+    "version": "2.13.1",
+    "keywords": {
+      "ks_jk": "density_fit(auxbasis=def2-universal-jkfit) for J and K",
+      "pt2": "mp.dfump2.DFUMP2 on the UKS orbitals, with_df = df.DF(pt2 aux), frozen 0 and 1; e_corr_os / e_corr_ss tags scaled here",
+      "state": "common.run_open_shell: minao/atom/huckel guesses, internal stability loop, lowest stable state",
+      "numpy": "1.26.4"
+    },
+    "grid": {
+      "main": {
+        "atom_grid": [
+          75,
+          110
+        ],
+        "prune": null,
+        "partition": "Becke (original_becke)",
+        "radii_adjust": "becke_atomic_radii_adjust"
+      }
+    },
+    "aux_basis": {
+      "jk": "def2-universal-jkfit",
+      "jk_json": "crates/ferric-core/src/basis/bundled/def2-universal-jkfit.json",
+      "jk_sha256": "a9fcb52ae8a74e80bd3a65c5e12e7a2d2f391fef62c3c81050ae816399b57671",
+      "pt2": "cc-pvdz-ri",
+      "pt2_json": "crates/ferric-core/src/basis/bundled/cc-pvdz-ri.json",
+      "pt2_sha256": "8221d2a31b5bbebd39218fc3f9244917e173a338ff9c56904038443a06e2a250"
+    },
+    "frozen_core": [
+      0,
+      1
+    ],
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-09
+    },
+    "stability": {
+      "internal_stable": true,
+      "kind": "internal, real (common.run_open_shell)"
+    },
+    "basis": "cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz.json",
+    "basis_sha256": "4c2f450a81a8545e4df9e24a313111642cf70d5f7213fc8e879ef9dacab5da2f",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/nh2.xyz",
+    "geometry_xyz_sha256": "a93f4ddd65a01379beb9335bab6cbeb2165454f5784960ee705f49ec9c0d28e5",
+    "geometry_bohr": [
+      [
+        "N",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "H",
+        0.0,
+        1.5186047006878538,
+        -1.1993217336336612
+      ],
+      [
+        "H",
+        0.0,
+        -1.5186047006878538,
+        -1.1993217336336612
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_udh_pyscf.py",
+    "git_head": "842f9716dc08f4d3756c75002ce713522b977b43",
+    "generated_utc": "2026-11-16T03:17:50+00:00"
+  }
+}

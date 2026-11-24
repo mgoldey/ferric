@@ -29,22 +29,22 @@
 //! 4. Each surviving point's area is `4π·R_A² · w_i · swf` (the Lebedev
 //!    weight already sums to 1 over the *unpruned* sphere).
 //!
-//! **Measured effect (2026-07-19, see `docs/VALIDATION.md`'s PCM row for the
-//! full numbers)**: UNLIKE the earlier null result on the sibling COSMO
+//! **Measured effect (see `docs/VALIDATION.md`'s PCM row for the
+//! full numbers)**: UNLIKE the null result on the sibling COSMO
 //! crate (<0.5% shift there), this switching function is a real, substantial
 //! lever on PCM — but the outcome is a genuine trade, not a clean win.
-//! Methanol's error (previously ~3-4x too NEGATIVE) shrinks to under 2x and
-//! flips sign (now too WEAK), and NH3 tightens from ~8% to ~1.7%; but both
-//! water points (STO-3G and cc-pVDZ), previously ~0.3%/~0% agreement with
-//! PySCF, loosen to ~9-10% off. Total cavity area barely changes and moves
+//! Against a hard cut, methanol's error (~3-4x too NEGATIVE) shrinks to under
+//! 2x and flips sign (too WEAK), and NH3 tightens from ~8% to ~1.7%; but both
+//! water points (STO-3G and cc-pVDZ), at ~0.3%/~0% agreement with
+//! PySCF with a hard cut, loosen to ~9-10% off. Total cavity area barely changes and moves
 //! in opposite directions per molecule (water grows slightly, methanol
 //! shrinks slightly) — the mechanism is a redistribution of area among
-//! tesserae (many small-area tesserae now exist near former hard-cut
+//! tesserae (many small-area tesserae exist near the hard-cut
 //! boundaries, and the self-term `S_ii = ξ·√(4π/area)` diverges as
 //! area→0), not a coverage fix. Kept in the tree because it demonstrably
 //! changes the physics in a direction that helps the worst case (methanol)
-//! and is a prerequisite for any future PCM analytic gradient (a hard cut
-//! is non-differentiable under nuclear motion) — but it does not deliver
+//! and makes the cavity differentiable under nuclear motion, which the
+//! analytic gradient (`crate::gradient`) relies on (a hard cut is not) — but it does not deliver
 //! uniform improvement, and none of the four test systems individually
 //! reach tight (<5%) agreement across the board.
 //!
@@ -63,16 +63,69 @@ use ferric_quadrature::lebedev;
 /// SWIG (switching/Gaussian) transition-zone shape parameter (Lange &
 /// Herbert, JCP 133, 244111 (2010), eq. 3.19): the quintic smoothstep
 /// `h(x) = x^3 (10 - 15x + 6x^2)`, `h(x)=0` for `x<=0`, `h(x)=1` for `x>=1`.
-/// Identical to `ferric_scf::cosmo::switch_h` (duplicated rather than shared
-/// across crates — see `lib.rs`'s "Naming note for a future COSMO merge" for
-/// why a dedup pass is deferred).
-fn switch_h(x: f64) -> f64 {
+/// Shared with `ferric_scf::cosmo`, which builds the same SWIG cavity.
+pub fn switch_h(x: f64) -> f64 {
     if x <= 0.0 {
         0.0
     } else if x >= 1.0 {
         1.0
     } else {
         x * x * x * (10.0 - 15.0 * x + 6.0 * x * x)
+    }
+}
+
+/// Derivative of [`switch_h`]: `h'(x) = 30 x^2 (1 - x)^2` on `(0, 1)`, zero
+/// outside. Used by the cavity gradient (`crate::gradient`).
+pub fn switch_h_deriv(x: f64) -> f64 {
+    if x <= 0.0 || x >= 1.0 {
+        0.0
+    } else {
+        let t = x * (1.0 - x);
+        30.0 * t * t
+    }
+}
+
+/// Per-atom sphere and switching-zone geometry shared by [`build_cavity`]
+/// and the cavity gradient: sphere radius `R_A`, switching-band width
+/// `R_sw,A = R_A sqrt(14/N_Leb)` and inner radius `R_in,A` (Lange & Herbert,
+/// JCP 133, 244111 (2010), eqs. 3.19-3.21; PySCF `gen_surface`).
+#[derive(Debug, Clone)]
+pub(crate) struct SphereGeometry {
+    pub(crate) radii: Vec<f64>,
+    pub(crate) r_sw: Vec<f64>,
+    pub(crate) r_in: Vec<f64>,
+}
+
+impl SphereGeometry {
+    pub(crate) fn new(mol: &Molecule, cfg: &CavityConfig, n_grid: usize) -> Self {
+        let n_grid = n_grid as f64;
+        let radii: Vec<f64> = mol
+            .atoms
+            .iter()
+            .map(|a| crate::radii::modified_bondi_radius_bohr(a.z) * cfg.vdw_scale)
+            .collect();
+        let r_sw: Vec<f64> = radii.iter().map(|&r| r * (14.0 / n_grid).sqrt()).collect();
+        let r_in: Vec<f64> = radii
+            .iter()
+            .zip(r_sw.iter())
+            .map(|(&r, &rsw)| {
+                let ratio = r / rsw;
+                let alpha = 0.5 + ratio - (ratio * ratio - 1.0 / 28.0).sqrt();
+                r - alpha * rsw
+            })
+            .collect();
+        Self { radii, r_sw, r_in }
+    }
+
+    /// Switching argument `x = (|p - R_B| - R_in,B) / R_sw,B` of point `p`
+    /// against sphere `b`, with sub-1e-8 values clamped to 0 (PySCF).
+    pub(crate) fn switch_arg(&self, b: usize, dist: f64) -> f64 {
+        let d = (dist - self.r_in[b]) / self.r_sw[b];
+        if d.abs() < 1e-8 {
+            0.0
+        } else {
+            d
+        }
     }
 }
 
@@ -115,8 +168,7 @@ pub struct CavityConfig {
     /// default (Q-Chem, PySCF's `pcm.py` default `vdw_scale`).
     pub vdw_scale: f64,
     /// Lebedev order used to tessellate each atomic sphere. Must be one of
-    /// the orders supported by `ferric_quadrature::lebedev` (6, 14, 26, 50, 110,
-    /// 302). 110 is a reasonable default resolution for a first correct
+    /// [`crate::config::SUPPORTED_LEBEDEV_ORDERS`]. 110 is a reasonable default resolution for a first correct
     /// implementation (302 for higher accuracy, at higher cost).
     pub lebedev_order: usize,
     /// Skip ghost atoms (no nuclear charge / basis-only centers) when
@@ -150,37 +202,15 @@ pub fn build_cavity(mol: &Molecule, cfg: &CavityConfig) -> Result<Vec<Tessera>, 
             "build_cavity: molecule has no atoms".into(),
         ));
     }
-    let (dirs, weights) = lebedev::lebedev(cfg.lebedev_order);
-    if dirs.is_empty() {
-        return Err(FerricError::General(format!(
-            "build_cavity: unsupported lebedev_order {}",
+    let (dirs, weights) = lebedev::try_lebedev(cfg.lebedev_order).map_err(|e| {
+        FerricError::General(format!(
+            "build_cavity: unsupported lebedev_order {} ({e})",
             cfg.lebedev_order
-        )));
-    }
-    let n_grid = dirs.len() as f64;
-
+        ))
+    })?;
     let centers: Vec<[f64; 3]> = mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
-    let radii: Vec<f64> = mol
-        .atoms
-        .iter()
-        .map(|a| crate::radii::modified_bondi_radius_bohr(a.z) * cfg.vdw_scale)
-        .collect();
-
-    // Per-atom switching-zone geometry (PySCF gen_surface / Lange & Herbert
-    // eq. 3.19-3.21, ported verbatim from `ferric_scf::cosmo::CosmoCavity::build`):
-    // the transition band width R_sw scales with the LOCAL Lebedev point
-    // density (sqrt(14/N)), and R_in is the radius at which the switching
-    // function starts to turn on.
-    let r_sw: Vec<f64> = radii.iter().map(|&r| r * (14.0 / n_grid).sqrt()).collect();
-    let r_in: Vec<f64> = radii
-        .iter()
-        .zip(r_sw.iter())
-        .map(|(&r, &rsw)| {
-            let ratio = r / rsw;
-            let alpha = 0.5 + ratio - (ratio * ratio - 1.0 / 28.0).sqrt();
-            r - alpha * rsw
-        })
-        .collect();
+    let geom = SphereGeometry::new(mol, cfg, dirs.len());
+    let radii = &geom.radii;
 
     let xi_prefactor = crate::matrices::gaussian_xi_table(cfg.lebedev_order)?;
 
@@ -227,11 +257,7 @@ pub fn build_cavity(mol: &Molecule, cfg: &CavityConfig) -> Result<Vec<Tessera>, 
                 let dy = point[1] - cb[1];
                 let dz = point[2] - cb[2];
                 let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-                let d = (dist - r_in[b_idx]) / r_sw[b_idx];
-                // Numerical tidiness (matches PySCF): clamp sub-1e-8 diffs
-                // to exactly 0 before calling switch_h.
-                let d = if d.abs() < 1e-8 { 0.0 } else { d };
-                swf *= switch_h(d);
+                swf *= switch_h(geom.switch_arg(b_idx, dist));
                 if swf == 0.0 {
                     break;
                 }
@@ -272,14 +298,33 @@ pub fn build_cavity(mol: &Molecule, cfg: &CavityConfig) -> Result<Vec<Tessera>, 
 mod tests {
     use super::*;
     use ferric_core::mol::Molecule;
+    use ferric_testkit::molecules::water_xyz;
 
-    fn water() -> Molecule {
-        Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap()
+    #[test]
+    fn switch_h_boundary_values() {
+        assert_eq!(switch_h(-0.5), 0.0);
+        assert_eq!(switch_h(0.0), 0.0);
+        assert_eq!(switch_h(1.0), 1.0);
+        assert_eq!(switch_h(1.5), 1.0);
+    }
+
+    #[test]
+    fn switch_h_is_the_quintic_smoothstep_and_monotonic() {
+        // h(0.5) = 0.125 * (10 - 7.5 + 1.5) = 0.5; h(0.25) = x^3 (10 - 15x + 6x^2).
+        assert!((switch_h(0.5) - 0.5).abs() < 1e-15);
+        assert!((switch_h(0.25) - 0.015625 * (10.0 - 3.75 + 0.375)).abs() < 1e-15);
+        let mut prev = switch_h(0.0);
+        for i in 1..=20 {
+            let x = i as f64 / 20.0;
+            let cur = switch_h(x);
+            assert!(cur >= prev, "switch_h not monotonic at x={x}");
+            prev = cur;
+        }
     }
 
     #[test]
     fn water_cavity_has_positive_tesserae_and_area() {
-        let mol = water();
+        let mol = water_xyz();
         let cfg = CavityConfig::default();
         let tess = build_cavity(&mol, &cfg).unwrap();
         assert!(!tess.is_empty());
@@ -296,7 +341,7 @@ mod tests {
 
     #[test]
     fn every_tessera_normal_is_unit_length() {
-        let mol = water();
+        let mol = water_xyz();
         let cfg = CavityConfig::default();
         let tess = build_cavity(&mol, &cfg).unwrap();
         for t in &tess {
@@ -345,5 +390,20 @@ mod tests {
         if let Ok(mol) = mol {
             assert!(build_cavity(&mol, &CavityConfig::default()).is_err());
         }
+    }
+
+    /// An order Lebedev does not tabulate is an error naming the key, not a
+    /// panic inside the quadrature table.
+    #[test]
+    fn unsupported_lebedev_order_is_an_error() {
+        let cfg = CavityConfig {
+            lebedev_order: 100,
+            ..CavityConfig::default()
+        };
+        let err = build_cavity(&water_xyz(), &cfg).unwrap_err().to_string();
+        assert!(
+            err.contains("build_cavity: unsupported lebedev_order 100"),
+            "{err}"
+        );
     }
 }

@@ -24,7 +24,10 @@ WATER = "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n"
 NH2_ASYM = "3\n\nN 0 0 0\nH 0.12 0.80 0.60\nH -0.05 -0.74 0.52\n"
 # Range-separated: erfc AND erf exact exchange, mix (0.158, 1.0, 0.3).
 WB97X = "HYB_GGA_XC_WB97X"
-TIGHT = {"energy_conv": 1e-11, "density_conv": 1e-9}
+# RI-J pinned to the f64 tensor: these compare against finite differences or
+# f64 references at bars below the f32 default's effect (site/src/methods/scf.md,
+# "RI-J tensor precision").
+TIGHT = {"energy_conv": 1e-11, "density_conv": 1e-9, "ri_j_precision": "f64"}
 EXACT_JK = {"df_j_aux": "none", "df_k_aux": "none"}
 _RNG = np.random.default_rng(5)
 
@@ -91,21 +94,11 @@ def test_numpy_ks_on_eval_reproduces_run_dft(functional):
         "PBE",
         "SCAN",
         WB97X,
-        pytest.param(
-            "wB97X-V",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason="pre-existing: ferric's VV10 V_nl is not the exact derivative "
-                "of E_nl. Measured 2026-10-29, NH2/6-31G, random symmetric X: "
-                "FD(E) - Tr[V X] = -1.31e-7 (3.6e-6 relative), constant over "
-                "h = 4e-4..2.5e-5; wB97X without VV10 agrees to 8.6e-14",
-            ),
-        ),
+        "wB97X-V",
     ],
 )
 def test_vxc_is_the_derivative_of_exc(functional):
-    # Own RNG: the direction must not depend on which tests ran first (the
-    # VV10 defect's size depends on it, which once let the xfail pass).
+    # Own RNG: the direction must not depend on which tests ran first.
     rng = np.random.default_rng(5)
     mol, bs, ints = _ints(NH2_ASYM, "6-31g", multiplicity=2)
     xc = ints.xc_functional(functional)

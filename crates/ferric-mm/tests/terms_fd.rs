@@ -203,6 +203,134 @@ fn torsion_energy_hand_computed_and_gradient_vs_fd() {
     assert_gradient_matches_fd(&top, &coords_180, "torsion (phi ~ 180 deg)");
 }
 
+/// Torsion gradient vs central FD at the geometries where an `acos`-based
+/// dihedral is least forgiving: phi within 1e-3..1e-6 of 0 and of pi (where
+/// `acos` loses ~eps/phi absolute accuracy) and a valence angle i-j-k within
+/// 0.6 deg of linear (|m| small, so |dphi/dR| ~ 1/|m| is large).
+///
+/// The phase is pi/2 so that E = k (1 + sin(n phi)) is LINEAR in phi at
+/// phi = 0 -- with phase 0 the energy is flat in phi there and a noisy phi
+/// would be invisible. The tolerance is derived from the FD step, not
+/// guessed: truncation `h^2/6 |E'''|` with `|E'''| <= 4 k (n G)^3` (G = the
+/// largest |dphi/dR| component, from the analytic gradient itself), plus
+/// rounding `4 eps (2k) / h`, plus the phi-noise term `(2 eps / sin phi) n k / h`
+/// (acos noise at cos = 1 - O(phi^2)).
+#[test]
+fn torsion_gradient_vs_fd_near_phi_0_pi_and_near_linear_angle() {
+    const EPS: f64 = f64::EPSILON;
+    let k_phi = 0.05;
+    let torsion = |periodicity: u32| Torsion {
+        i: 0,
+        j: 1,
+        k: 2,
+        l: 3,
+        periodicity,
+        k_phi,
+        phase: std::f64::consts::FRAC_PI_2,
+    };
+    // (label, |i_xy| displacement s, phi in radians)
+    let pi = std::f64::consts::PI;
+    let cases: [(&str, f64, f64); 7] = [
+        ("phi=1e-3", 1.0, 1e-3),
+        ("phi=1e-6", 1.0, 1e-6),
+        ("phi=pi-1e-3", 1.0, pi - 1e-3),
+        ("phi=pi-1e-6", 1.0, pi - 1e-6),
+        ("linear 0.6deg, phi=60deg", 1e-2, 60.0_f64.to_radians()),
+        ("linear 0.6deg, phi=1e-3", 1e-2, 1e-3),
+        ("linear 0.6deg, phi=pi-1e-3", 1e-2, pi - 1e-3),
+    ];
+    for periodicity in [1_u32, 3] {
+        let top = MmTopology::new(
+            vec![0.0; 4],
+            lj_zero(4),
+            vec![],
+            vec![],
+            vec![torsion(periodicity)],
+        )
+        .unwrap();
+        let nf = periodicity as f64;
+        for (label, s, phi) in cases {
+            // j-k axis = +z; i sits at (s, 0, -1) (small s => i-j-k nearly
+            // collinear); l is rotated by phi about z.
+            let coords = array![
+                [s, 0.0, -1.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [phi.cos(), phi.sin(), 2.0]
+            ];
+            let (e0, g) = gradient(&top, &coords).unwrap();
+            let gmax = g.iter().fold(0.0_f64, |a, x| a.max(x.abs())) / (k_phi * nf);
+            let h = 1e-6 * s;
+            let sin_phi = phi.sin().abs().max(1e-12);
+            let trunc = h * h / 6.0 * 4.0 * k_phi * (nf * gmax).powi(3);
+            let round = 4.0 * EPS * (2.0 * k_phi) / h;
+            let noise = (2.0 * EPS / sin_phi) * nf * k_phi / h;
+            let tol = trunc + round + noise;
+            let mut max_err = 0.0_f64;
+            for i in 0..4 {
+                for c in 0..3 {
+                    let mut plus = coords.clone();
+                    plus[(i, c)] += h;
+                    let mut minus = coords.clone();
+                    minus[(i, c)] -= h;
+                    let fd = (energy(&top, &plus).unwrap().total
+                        - energy(&top, &minus).unwrap().total)
+                        / (2.0 * h);
+                    max_err = max_err.max((fd - g[(i, c)]).abs());
+                }
+            }
+            assert!(
+                max_err < tol,
+                "n={periodicity} {label}: max |analytic - FD| = {max_err:.3e} >= derived tol {tol:.3e} \
+                 (h={h:.1e}, e0={:.6e}, |g|max={:.3e})",
+                e0.total,
+                g.iter().fold(0.0_f64, |a, x| a.max(x.abs()))
+            );
+        }
+    }
+}
+
+/// Exactly linear VALENCE angle (theta = pi and theta = 0): the angle
+/// gradient ~ 1/sin(theta) is singular, so the code returns a zero gradient
+/// for that term
+/// (`book/src/23-embedding/04-molecular-mechanics.md#molecular-mechanics-bonds-angles-torsions`),
+/// matching the degenerate-torsion convention.
+/// Energy is the exact harmonic value; gradient is finite and exactly zero.
+#[test]
+fn exactly_linear_valence_angle_gradient_is_finite_and_zero() {
+    let k_theta = 0.07;
+    let theta0 = 1.9;
+    let angles = vec![Angle {
+        i: 0,
+        j: 1,
+        k: 2,
+        k_theta,
+        theta0,
+    }];
+    let top = MmTopology::new(vec![0.0; 3], lj_zero(3), vec![], angles, vec![]).unwrap();
+    let pi = std::f64::consts::PI;
+    // theta = pi: i and k on opposite sides of j. theta = 0: same side.
+    let cases = [
+        (
+            array![[0.0, 0.0, -1.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.5]],
+            pi,
+        ),
+        (
+            array![[0.0, 0.0, 1.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.5]],
+            0.0,
+        ),
+    ];
+    for (coords, theta) in cases {
+        let (e, g) = gradient(&top, &coords).unwrap();
+        let want = k_theta * (theta - theta0) * (theta - theta0);
+        assert!((e.total - want).abs() < 1e-14, "{} vs {want}", e.total);
+        for v in g.iter() {
+            assert!(v.is_finite(), "non-finite gradient at theta={theta}: {v}");
+            assert_eq!(*v, 0.0, "linear-angle fallback must be exactly zero");
+        }
+    }
+}
+
 /// Genuinely degenerate case: i, j, k EXACTLY collinear, so r_ij is
 /// parallel to r_kj and m = r_ij x r_kj = 0 -- the dihedral plane through
 /// i-j-k is undefined, and so is phi itself (the true derivative is

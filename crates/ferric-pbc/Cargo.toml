@@ -36,4 +36,5 @@ rayon = { workspace = true }
 libc = "0.2"
 
 [dev-dependencies]
+ferric-testkit = { path = "../ferric-testkit" }
 serde_json = { workspace = true }

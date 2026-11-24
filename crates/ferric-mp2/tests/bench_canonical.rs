@@ -68,11 +68,9 @@ fn bench(label: &str, xyz: &str, basis_name: &str, reps: usize) {
         &prep,
         op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-10,
-            density_conv: 1e-9,
-            ..Default::default()
-        },
+        &RhfConfig::default()
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-9),
     )
     .unwrap();
 

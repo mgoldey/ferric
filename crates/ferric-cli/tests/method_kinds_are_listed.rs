@@ -70,13 +70,14 @@ fn supported_kinds_match_the_dispatch_arms_in_run() {
     let src = std::fs::read_to_string(workspace_root().join("crates/ferric-cli/src/lib.rs"))
         .expect("read ferric-cli/src/lib.rs");
 
-    // The body of `run()`: from its signature to the next top-level `fn`.
+    // The body of `try_run()` (the CLI behind `run()`): from its signature to
+    // the next top-level `fn`.
     let start = src
-        .find("pub fn run(args: Vec<String>)")
-        .expect("run() must exist");
+        .find("pub fn try_run(args: Vec<String>)")
+        .expect("try_run() must exist");
     let len = src[start..]
         .find("\nfn ")
-        .expect("a top-level fn must follow run()");
+        .expect("a top-level fn must follow try_run()");
     let body = &src[start..start + len];
 
     let mut dispatched = BTreeSet::new();
@@ -120,5 +121,19 @@ fn supported_kinds_match_the_dispatch_arms_in_run() {
     assert_eq!(
         declared, dispatched,
         "SUPPORTED_METHOD_KINDS (left) and the kinds run() dispatches (right) differ"
+    );
+}
+
+/// `SUPPORTED_TASKS` is the one list behind the accept check, the error text
+/// and the README row; the text is pinned verbatim so behaviour is unchanged.
+#[test]
+fn unknown_task_message_lists_every_supported_task() {
+    assert_eq!(
+        ferric_cli::SUPPORTED_TASKS,
+        &["energy", "optimize", "frequencies", "md"]
+    );
+    assert_eq!(
+        ferric_cli::unsupported_task_message("minimize"),
+        "unsupported method.task = \"minimize\"; expected energy, optimize, frequencies, or md"
     );
 }

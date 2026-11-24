@@ -10,8 +10,10 @@
 //! H2O/NH3 cc-pVDZ that is ≤ 5.6e-8 Ha/Bohr against a converged 5-point FD;
 //! see tests/validation_rpa_gradient.rs).
 //!
-//! An analytic path (3-centre ERI derivatives + Z-vector orbital response,
-//! the same structure as the RI-MP2 gradient) does not exist.
+//! The analytic gradient (3-centre ERI derivatives + Z-vector orbital
+//! response, the RI-MP2 gradient's structure) is
+//! [`crate::gradient_analytic`]; [`RpaGradientMethod`](crate::gradient::RpaGradientMethod) picks one of the two
+//! for the optimizer, and this route stays its oracle.
 
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
@@ -19,8 +21,9 @@ use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_scf::rhf::{solve_rhf, RhfConfig};
+use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::warm_start::{solve_rhf_warm, ScfWarmStart};
 use ndarray::Array2;
 
 use crate::config::Chi0Backend;
@@ -57,6 +60,42 @@ pub fn rpa_correlation_gradient(
     rpa_config: &PdepRpaConfig,
     h: f64,
 ) -> Result<Array2<f64>, FerricError> {
+    rpa_correlation_gradient_warm(
+        mol,
+        obs_basis,
+        aux_basis,
+        op,
+        rpa_config,
+        h,
+        &mut ScfWarmStart::new(false),
+    )
+}
+
+/// [`rpa_correlation_gradient`] with the displaced RHFs warm-started.
+///
+/// Every displaced RHF starts from the orbitals `warm` carries (normally the
+/// reference geometry's converged RHF, solved through `warm` just before;
+/// without one, from the first displaced RHF), never from the previous
+/// displacement: the stencil runs on [`ScfWarmStart::fork_anchored`], so SCF
+/// residuals do not accumulate along it. `warm` itself is left at the
+/// reference solution; the stencil's per-SCF records are appended to it. A
+/// disabled carrier is exactly [`rpa_correlation_gradient`].
+///
+/// The warm and cold gradients differ only at the RHF convergence level
+/// (`density_conv` 1e-9), amplified by the stencil: with `|δD|_F <= n
+/// density_conv` per exit and an energy first order in the density
+/// (E_c^RPA is not stationary in the orbitals), `|g_warm - g_cold| <= 2 K n
+/// density_conv / h`, `K` the energy's density sensitivity (the unit test
+/// `warm_rpa_gradient_matches_cold_within_the_scf_noise_bound` measures it).
+pub fn rpa_correlation_gradient_warm(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    op: Operator,
+    rpa_config: &PdepRpaConfig,
+    h: f64,
+    warm: &mut ScfWarmStart,
+) -> Result<Array2<f64>, FerricError> {
     if !matches!(rpa_config.chi0_backend, Chi0Backend::Dense) {
         return Err(FerricError::General(
             "rpa_correlation_gradient: only Chi0Backend::Dense is supported (Laplace path is energy-only; see C-grad scope)".into(),
@@ -70,6 +109,7 @@ pub fn rpa_correlation_gradient(
 
     let natoms = mol.atoms.len();
     let mut grad = Array2::<f64>::zeros((natoms, 3));
+    let mut stencil = warm.fork_anchored();
 
     for atom in 0..natoms {
         for coord in 0..3 {
@@ -77,11 +117,12 @@ pub fn rpa_correlation_gradient(
             let mut mol_m = mol.clone();
             apply_displacement(&mut mol_p, atom, coord, h);
             apply_displacement(&mut mol_m, atom, coord, -h);
-            let e_p = rpa_total_energy(&mol_p, obs_basis, aux_basis, op, rpa_config)?;
-            let e_m = rpa_total_energy(&mol_m, obs_basis, aux_basis, op, rpa_config)?;
+            let e_p = rpa_total_energy(&mol_p, obs_basis, aux_basis, op, rpa_config, &mut stencil)?;
+            let e_m = rpa_total_energy(&mol_m, obs_basis, aux_basis, op, rpa_config, &mut stencil)?;
             grad[(atom, coord)] = (e_p - e_m) / (2.0 * h);
         }
     }
+    warm.extend_records(&stencil);
 
     Ok(grad)
 }
@@ -103,6 +144,7 @@ fn rpa_total_energy(
     aux_basis: &BasisSet,
     op: Operator,
     rpa_config: &PdepRpaConfig,
+    warm: &mut ScfWarmStart,
 ) -> Result<f64, FerricError> {
     let ctx = ParallelContext::default();
     let obs = PreparedBasis::new(mol, obs_basis)?;
@@ -113,11 +155,8 @@ fn rpa_total_energy(
     // energy_conv is only a loose "not-descending" bound (floors above 1e-10
     // under DF noise), so it is left at the default rather than set to 1e-10 —
     // a tight energy_conv would hang the SCF at MaxIter. See rhf::scf_converged.
-    let rhf_cfg = RhfConfig {
-        density_conv: 1e-9,
-        ..Default::default()
-    };
-    let rhf = solve_rhf(&ctx, mol, &obs, op, &bounds, &rhf_cfg)?;
+    let rhf_cfg = RhfConfig::gradient_reference(None);
+    let rhf = solve_rhf_warm(&ctx, mol, &obs, op, &bounds, &rhf_cfg, warm)?;
     if !rhf.converged {
         return Err(FerricError::ScfConvergence {
             iterations: rhf.iterations,
@@ -139,17 +178,39 @@ pub fn total_rpa_gradient(
     rpa_config: &PdepRpaConfig,
     h: f64,
 ) -> Result<(f64, Array2<f64>), FerricError> {
+    total_rpa_gradient_warm(
+        mol,
+        obs_basis,
+        aux_basis,
+        op,
+        rpa_config,
+        h,
+        &mut ScfWarmStart::new(false),
+    )
+}
+
+/// [`total_rpa_gradient`] through an SCF warm-start carrier: the reference
+/// RHF is solved through `warm` (warm-started from the previous geometry the
+/// carrier saw, e.g. the previous optimizer step) and the displaced RHFs of
+/// the finite difference start from it ([`rpa_correlation_gradient_warm`]).
+/// A disabled carrier is exactly [`total_rpa_gradient`].
+pub fn total_rpa_gradient_warm(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    op: Operator,
+    rpa_config: &PdepRpaConfig,
+    h: f64,
+    warm: &mut ScfWarmStart,
+) -> Result<(f64, Array2<f64>), FerricError> {
     let ctx = ParallelContext::default();
     let obs = PreparedBasis::new(mol, obs_basis)?;
     let dfbs = PreparedBasis::new(mol, aux_basis)?;
     let bounds = SchwarzBounds::compute(op, &obs)?;
     // Tight SCF via density_conv (reachable under the ΔP gate); energy_conv left
     // at the loose default — a tight 1e-10 would hang at MaxIter. See above / gradient.rs:149.
-    let rhf_cfg = RhfConfig {
-        density_conv: 1e-9,
-        ..Default::default()
-    };
-    let rhf = solve_rhf(&ctx, mol, &obs, op, &bounds, &rhf_cfg)?;
+    let rhf_cfg = RhfConfig::gradient_reference(None);
+    let rhf = solve_rhf_warm(&ctx, mol, &obs, op, &bounds, &rhf_cfg, warm)?;
     if !rhf.converged {
         return Err(FerricError::ScfConvergence {
             iterations: rhf.iterations,
@@ -159,8 +220,111 @@ pub fn total_rpa_gradient(
     let r: PdepRpaResult = run_pdep_rpa(mol, &obs, &dfbs, op, &rhf, rpa_config)?;
     let e_tot = rhf.energy + r.e_rpa;
 
-    let grad = rpa_correlation_gradient(mol, obs_basis, aux_basis, op, rpa_config, h)?;
+    let grad = rpa_correlation_gradient_warm(mol, obs_basis, aux_basis, op, rpa_config, h, warm)?;
     Ok((e_tot, grad))
+}
+
+/// How the RPA nuclear gradient is evaluated (`[rpa] gradient`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RpaGradientMethod {
+    /// 3-point central finite difference of `E_RHF + E_c^RPA` with step `h`
+    /// (Bohr), [`rpa_correlation_gradient_warm`]: `6 N_atoms` RHF + RPA
+    /// energies. `[rpa] gradient = "fd"`.
+    FiniteDifference {
+        /// Step in Bohr.
+        h: f64,
+    },
+    /// [`crate::gradient_analytic`]: one RHF, one frequency loop and one
+    /// Z-vector. Full rank (`trunc_thresh = 0`), dense χ₀, Coulomb only.
+    /// `[rpa] gradient = "analytic"`.
+    Analytic,
+}
+
+impl RpaGradientMethod {
+    /// The finite-difference step the CLI and optimizer use, Bohr.
+    pub const DEFAULT_FD_STEP: f64 = 5e-4;
+
+    /// Strict parse of `[rpa] gradient`: `"fd"` (step
+    /// [`Self::DEFAULT_FD_STEP`]) or `"analytic"`; anything else is an error.
+    /// Unset resolves through [`Self::resolve_default`].
+    pub fn parse_config_str(s: &str) -> Result<Self, FerricError> {
+        match s {
+            "fd" => Ok(Self::FiniteDifference {
+                h: Self::DEFAULT_FD_STEP,
+            }),
+            "analytic" => Ok(Self::Analytic),
+            other => Err(FerricError::General(format!(
+                "[rpa] gradient = {other:?}: expected \"fd\" or \"analytic\""
+            ))),
+        }
+    }
+
+    /// The method an unset `[rpa] gradient` (CLI) or `rpa_gradient` (Python)
+    /// resolves to for `cfg` and `op`: [`Self::Analytic`] when
+    /// [`crate::gradient_analytic::check_analytic_scope`] accepts the
+    /// configuration (full-rank PDEP basis, dense chi0, Coulomb operator),
+    /// otherwise the finite-difference gradient at [`Self::DEFAULT_FD_STEP`]
+    /// with the reason the analytic route was not used, which callers print
+    /// and record in the certificate. An explicit `"analytic"` never falls
+    /// back: it raises the same reason as an error.
+    pub fn resolve_default(cfg: &PdepRpaConfig, op: Operator) -> (Self, Option<String>) {
+        match crate::gradient_analytic::check_analytic_scope(cfg, op) {
+            Ok(()) => (Self::Analytic, None),
+            Err(e) => (
+                Self::FiniteDifference {
+                    h: Self::DEFAULT_FD_STEP,
+                },
+                Some(e.to_string()),
+            ),
+        }
+    }
+
+    /// [`Self::certificate_label`] plus, when the default fell back to finite
+    /// differences, why the analytic gradient was not used.
+    pub fn certificate_label_with(&self, fallback: Option<&str>) -> String {
+        match fallback {
+            None => self.certificate_label(),
+            Some(why) => format!(
+                "{} (default fell back from the analytic gradient: {why})",
+                self.certificate_label()
+            ),
+        }
+    }
+
+    /// How the gradient was obtained, for the run certificate.
+    pub fn certificate_label(&self) -> String {
+        match self {
+            Self::Analytic => "analytic RHF + RI-dRPA (Z-vector relaxed densities)".into(),
+            Self::FiniteDifference { h } => {
+                format!("finite difference of RHF + RPA (h = {h:e} Bohr)")
+            }
+        }
+    }
+}
+
+/// `(E_RHF + E_c^RPA, dE/dR)` at `mol` by `method`, the reference RHF solved
+/// through `warm` (see [`total_rpa_gradient_warm`] and
+/// [`crate::gradient_analytic::rpa_analytic_gradient_warm`]).
+pub fn total_rpa_gradient_by(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    op: Operator,
+    rpa_config: &PdepRpaConfig,
+    method: RpaGradientMethod,
+    warm: &mut ScfWarmStart,
+) -> Result<(f64, Array2<f64>), FerricError> {
+    match method {
+        RpaGradientMethod::FiniteDifference { h } => {
+            total_rpa_gradient_warm(mol, obs_basis, aux_basis, op, rpa_config, h, warm)
+        }
+        RpaGradientMethod::Analytic => {
+            let r = crate::gradient_analytic::rpa_analytic_gradient_warm(
+                mol, obs_basis, aux_basis, op, rpa_config, warm,
+            )?;
+            Ok((r.energy, r.gradient))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -186,6 +350,94 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    /// The unset gradient resolves to the analytic one for a full-rank dense
+    /// Coulomb configuration (the default of `[rpa] gradient` and Python's
+    /// `rpa_gradient`) and to finite differences, with the reason, for a
+    /// truncating PDEP basis or a non-Coulomb operator.
+    #[test]
+    fn unset_gradient_defaults_to_analytic_and_falls_back_with_a_reason() {
+        let full = PdepRpaConfig {
+            trunc_thresh: 0.0,
+            ..small_rpa_cfg()
+        };
+        let (m, why) = RpaGradientMethod::resolve_default(&full, Operator::coulomb());
+        assert_eq!(m, RpaGradientMethod::Analytic);
+        assert!(why.is_none());
+
+        let (m, why) = RpaGradientMethod::resolve_default(&small_rpa_cfg(), Operator::coulomb());
+        assert_eq!(
+            m,
+            RpaGradientMethod::FiniteDifference {
+                h: RpaGradientMethod::DEFAULT_FD_STEP
+            }
+        );
+        let why = why.expect("a truncating basis must say why");
+        assert!(why.contains("trunc_thresh"), "{why}");
+        assert!(m
+            .certificate_label_with(Some(&why))
+            .contains("default fell back from the analytic gradient"));
+
+        let (m, why) = RpaGradientMethod::resolve_default(&full, Operator::erf(0.4));
+        assert!(matches!(m, RpaGradientMethod::FiniteDifference { .. }));
+        assert!(why.expect("non-Coulomb must say why").contains("Coulomb"));
+    }
+
+    /// Warm vs cold FD RPA gradient against `2 K n density_conv / h`
+    /// (`rpa_correlation_gradient_warm` docs). `K` (Hartree per unit
+    /// `|δD|_F`) is measured at the reference along the SCF's own convergence
+    /// direction: E_RHF + E_c^RPA from a loose (1e-4) and a tight (1e-10)
+    /// RHF, over the Frobenius norm of their density difference. Full-rank
+    /// PDEP so no truncation decision can differ between the two runs.
+    #[test]
+    fn warm_rpa_gradient_matches_cold_within_the_scf_noise_bound() {
+        let mol = h2o();
+        let obs_bs = basis::bundled("sto-3g").unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let op = Operator::coulomb();
+        let cfg = PdepRpaConfig {
+            trunc_thresh: 0.0,
+            ..small_rpa_cfg()
+        };
+        let h = 5e-4;
+        let (e_c, g_c) = total_rpa_gradient(&mol, &obs_bs, &aux_bs, op, &cfg, h).unwrap();
+        let mut warm = ScfWarmStart::new(true);
+        let (e_w, g_w) =
+            total_rpa_gradient_warm(&mol, &obs_bs, &aux_bs, op, &cfg, h, &mut warm).unwrap();
+
+        let ctx = ParallelContext::default();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let at = |dc: f64| {
+            let rhf_cfg = RhfConfig::default().with_density_conv(dc);
+            let rhf = ferric_scf::rhf::solve_rhf(&ctx, &mol, &obs, op, &bounds, &rhf_cfg).unwrap();
+            let r = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
+            (rhf.energy + r.e_rpa, rhf.density_total)
+        };
+        let ((e_loose, d_loose), (e_tight, d_tight)) = (at(1e-4), at(1e-10));
+        let dd = (&d_loose - &d_tight).mapv(|v| v * v).sum().sqrt();
+        let k = (e_loose - e_tight).abs() / dd;
+        let n = obs.nbasis() as f64;
+        let bound = 2.0 * k * n * 1e-9 / h;
+        let dg = (&g_w - &g_c).mapv(f64::abs).fold(0.0f64, |a, &b| a.max(b));
+        let recs = warm.records();
+        let (iw, nw) = (recs.iter().map(|r| r.iterations).sum::<usize>(), recs.len());
+        eprintln!(
+            "H2O/STO-3G RPA FD gradient: |g_warm - g_cold|_max {dg:.2e} (bound {bound:.2e}, \
+             K {k:.3e}); |dE| {:.2e}; warm SCF iterations {iw} over {nw} SCFs",
+            (e_w - e_c).abs()
+        );
+        assert!(dg <= bound, "|g_warm - g_cold| {dg:e} > bound {bound:e}");
+        // The reference RHF (cold, first geometry) is bit-identical.
+        assert_eq!(e_w.to_bits(), e_c.to_bits());
+        // Reference + 6N displacements, every displacement warm from the reference.
+        assert_eq!(nw, 1 + 6 * mol.atoms.len());
+        assert!(recs[1..]
+            .iter()
+            .all(|r| r.cold.is_none() && !r.retried_cold));
+        assert!(dg > 0.0, "warm and cold gradients are bit-identical");
     }
 
     #[test]

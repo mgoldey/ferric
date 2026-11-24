@@ -67,8 +67,6 @@
 //! refusal window has to be wide enough to target: `b_ov` is 6.56 MB at
 //! benzene against 64 kB at water, and CONTRACT 1 asserts a 1 MB floor on it.
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
 use ferric_core::memory::pool::{clear_global, install_global, MemoryPool};
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
@@ -77,30 +75,7 @@ use ferric_integrals::operator::Operator;
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
-
-fn global_lock() -> MutexGuard<'static, ()> {
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    }
-}
-
-struct CleanSlot(#[allow(dead_code)] MutexGuard<'static, ()>);
-
-impl CleanSlot {
-    fn acquire() -> Self {
-        let g = global_lock();
-        clear_global();
-        Self(g)
-    }
-}
-
-impl Drop for CleanSlot {
-    fn drop(&mut self) {
-        clear_global();
-    }
-}
+use ferric_testkit::pool::CleanSlot;
 
 struct Fixture {
     mol: Molecule,
@@ -190,6 +165,7 @@ impl Fixture {
 /// mutation to find -- the capacity must also clear `check_mo_side_alloc`'s
 /// pre-existing CEILING check, or the run dies there and the contract
 /// measures a gate that has nothing to do with the pool.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_contract_budget_sits_inside_the_measured_refusal_window() {
     let f = fixture();
@@ -232,6 +208,7 @@ fn the_contract_budget_sits_inside_the_measured_refusal_window() {
 /// This is the contract mutation M3 (turn the soft gate hard) must fail. It is
 /// the direct encoding of the standing decision: the pre-migration tree runs
 /// this job, so the migrated tree must too.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn a_budget_inside_the_refusal_window_still_completes() {
     let _s = CleanSlot::acquire();

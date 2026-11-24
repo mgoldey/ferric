@@ -122,6 +122,7 @@ fn closed_shell_build_is_bit_identical_to_the_serial_fold_at_any_thread_count() 
     }
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn open_shell_build_is_bit_identical_to_the_serial_fold_at_any_thread_count() {
     for functional in ["PBE", "SCAN"] {

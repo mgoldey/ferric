@@ -425,7 +425,8 @@ fn permute3(x: &Array3<f64>, axes: [usize; 3]) -> Array3<f64> {
 }
 
 /// `w0[ã,b̃,c̃] = Σ_d̃ (i ã|b̃ d̃)·t2̃[k,j,c̃,d̃] − Σ_l (i ã|l j)·t2̃[l,k,b̃,c̃]`, the
-/// TNO-basis analogue of [`crate::ccsd_t_closed_shell`]'s `raw_w_block`.
+/// TNO-basis analogue of the occupied-triple raw block in
+/// [`crate::ccsd_t_closed_shell`]'s module-doc equations.
 ///
 /// Both terms are BLAS3 GEMMs at dimension `n = ntno`, not `nvir`:
 /// * term 1: `(ãb̃, d̃) · (d̃, c̃)` — `n³·n` multiply-adds;
@@ -474,7 +475,8 @@ fn raw_w_tno(
 
 /// Fully pair-symmetrized `W[ã,b̃,c̃]` for the triple `(i,j,k)`, in the TNO basis.
 ///
-/// Identical structure to [`crate::ccsd_t_closed_shell`]'s `w_block`: sum over
+/// Identical structure to the `W` of [`crate::ccsd_t_closed_shell`]'s module-doc
+/// equations, written for a fixed occupied triple: sum over
 /// the 6 simultaneous permutations of the pairs `(i,ã) (j,b̃) (k,c̃)`, each
 /// permuted raw block having its virtual axes permuted back by `π⁻¹` before
 /// accumulation. The same `Q` serves all six — [`TripleTno`] is a function of
@@ -936,7 +938,8 @@ mod tests {
 
         /// The DENSE `W̃`/`V` for a triple, written out here independently of
         /// this module's TNO path — the oracle. Term for term
-        /// `ccsd_t_closed_shell`'s `w_block` + `add_v_singles` + `r3`.
+        /// the `W`, `V` and `r3` equations of `ccsd_t_closed_shell`'s module doc,
+        /// for a fixed occupied triple.
         fn dense_wt_v(&self, i: usize, j: usize, k: usize) -> (Array3<f64>, Array3<f64>) {
             let (no, nv) = (self.no, self.nv);
             let raw = |i: usize, j: usize, k: usize| -> Array3<f64> {
@@ -1442,10 +1445,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-11,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-11),
         )
         .unwrap();
         let cfg = CcConfig {
@@ -1461,7 +1461,7 @@ mod tests {
         let eps = rhf.eps_r();
         let c = rhf.mos_r();
         let nbas = obs.nbasis();
-        let nocc_total = eps.iter().filter(|&&e| e < 0.0).count();
+        let nocc_total = crate::helpers::closed_shell_counts(&mol, &rhf).unwrap().0;
         let no = nocc_total;
         let nv = nbas - nocc_total;
         let c_occ = c.slice(ndarray::s![.., ..nocc_total]).to_owned();

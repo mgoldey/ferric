@@ -60,13 +60,13 @@ fn run_case(label: &str, xyz: &str, xc: &str, expected_file: &str) {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ctx = ParallelContext::default();
 
-    let cfg = RhfConfig {
-        xc: Some(xc.into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        energy_conv: ENERGY_CONV,
-        density_conv: DENSITY_CONV,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        // PySCF references were generated on the flat 75 x 110 grid.
+        .with_dft_grid(ferric_dft::grid::AtomicGridConfig::default())
+        .with_xc(xc)
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_energy_conv(ENERGY_CONV)
+        .with_density_conv(DENSITY_CONV);
     let res = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
 
     let r: Ref =
@@ -174,14 +174,14 @@ fn run_uks_case(label: &str, xyz: &str, mult: usize, xc: &str, expected_file: &s
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ctx = ParallelContext::default();
 
-    let cfg = RhfConfig {
-        xc: Some(xc.into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        energy_conv: ENERGY_CONV,
-        density_conv: DENSITY_CONV,
-        max_iter: 500,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        // PySCF references were generated on the flat 75 x 110 grid.
+        .with_dft_grid(ferric_dft::grid::AtomicGridConfig::default())
+        .with_xc(xc)
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_energy_conv(ENERGY_CONV)
+        .with_density_conv(DENSITY_CONV)
+        .with_max_iter(500);
     let res = solve_uhf(&ctx, &mol, &obs, &bounds, &cfg).unwrap();
 
     let r: Ref =
@@ -265,7 +265,7 @@ fn tpss_nh2_uks() {
 /// regression; if it grows, the τ term or the d Hessian has changed.
 #[test]
 fn scan_gradient_ccpvdz_d_shell_vs_pyscf() {
-    use ferric_scf::ks_gradient::ks_gradient_closed;
+    use ferric_scf::ks_gradient::{ks_gradient_closed_with_exchange_on_grids, KsGradGrids};
 
     let mol = Molecule::parse_xyz(H2, 0, 1).unwrap();
     let bs = basis::bundled("cc-pvdz").unwrap();
@@ -274,17 +274,28 @@ fn scan_gradient_ccpvdz_d_shell_vs_pyscf() {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ctx = ParallelContext::default();
 
-    let cfg = RhfConfig {
-        xc: Some("SCAN".into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        energy_conv: ENERGY_CONV,
-        density_conv: DENSITY_CONV,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        // PySCF references were generated on the flat 75 x 110 grid.
+        .with_dft_grid(ferric_dft::grid::AtomicGridConfig::default())
+        .with_xc("SCAN")
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_energy_conv(ENERGY_CONV)
+        .with_density_conv(DENSITY_CONV);
     let res = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
 
-    let grad = ks_gradient_closed(&mol, &obs, &bs, op, &bounds, "SCAN", &res, None)
-        .expect("meta-GGA gradients are implemented; this must return a gradient");
+    let grad = ks_gradient_closed_with_exchange_on_grids(
+        &mol,
+        &obs,
+        &bs,
+        op,
+        &bounds,
+        "SCAN",
+        &res,
+        None,
+        None,
+        &KsGradGrids::from_config(&cfg),
+    )
+    .expect("meta-GGA gradients are implemented; this must return a gradient");
 
     // PySCF reports +1.4084639922e-2 on atom 0; atom 1 is its negative.
     const PYSCF_GZ_ATOM1: f64 = -1.4084639922e-2;

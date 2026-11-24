@@ -96,7 +96,8 @@ def test_rijk_reference_is_run_rhf_with_both_fits(water, name):
 
 def test_rijk_rimp2_matches_pyscf_density_fit_dfmp2(water):
     ref = json.loads(REF.read_text())
-    r = ferric.run_rimp2(*water, scf_jk="rijk")
+    # f64 RI-J: PySCF's DF reference is f64; the f32 default is ~1e-6 Ha away.
+    r = ferric.run_rimp2(*water, scf_jk="rijk", scf_ri_j_precision="f64")
     assert abs(r.rhf_energy - ref["rhf_energy"]) <= 1e-8, (r.rhf_energy, ref)
     assert abs(r.mp2_corr - ref["mp2_corr"]) <= 1e-8, (r.mp2_corr, ref)
     assert abs(r.total_energy - ref["total_energy"]) <= 1e-8
@@ -170,7 +171,8 @@ def _hf_energy(r) -> float:
 
 
 # Every entry point that honours scf_jk, with the kwargs that make it run on
-# water/cc-pVDZ. run_oo_rimp2 refuses the fitted modes (tested below).
+# water/cc-pVDZ. run_oo_rimp2 (whose HF energy is that of the optimised
+# orbitals, not the reference SCF's) is tested separately below.
 HONOURING = [
     pytest.param("run_rimp2", {}, id="rimp2"),
     pytest.param(
@@ -182,7 +184,13 @@ HONOURING = [
     pytest.param("run_scs_mp2", {}, id="scs_mp2"),
     pytest.param("run_rs_mp2_rpa", {}, id="rs_mp2_rpa"),
     pytest.param("run_terfc_rimp2", {}, id="terfc_rimp2", marks=needs_terf),
-    pytest.param("run_scs_mp2_2terfc", {}, id="scs_mp2_2terfc", marks=needs_terf),
+    pytest.param(
+        "run_scs_mp2_2terfc",
+        # cc-pVDZ has no aTZ-fit default: both r0 are explicit.
+        {"r0_bonded": 0.75, "r0_nonbonded": 1.05},
+        id="scs_mp2_2terfc",
+        marks=needs_terf,
+    ),
     pytest.param("run_mp2_v", {}, id="mp2_v", marks=needs_terf),
 ]
 
@@ -217,12 +225,24 @@ def test_every_entry_point_runs_the_rijk_reference_it_echoes(
     assert abs(rijk.total_energy - exact.total_energy) > 1e-7
 
 
-@pytest.mark.parametrize("mode", ["rijk", "rijcosx"])
-def test_oo_rimp2_refuses_a_fitted_reference(water, mode):
-    with pytest.raises(ValueError, match="rebuilds exact four-centre J/K") as err:
-        ferric.run_oo_rimp2(*water, scf_jk=mode)
+def test_oo_rimp2_runs_the_rijk_route_it_echoes(water):
+    """HOW THIS FAILS IF BROKEN: run_oo_rimp2 dropping scf_jk solves the
+    four-centre surface while echoing "rijk", so the two totals are equal
+    (the >1e-7 shift fails). The orbital steps' own use of the fit is pinned
+    in ferric-mp2 (oo_hf_energy_on_an_rijk_reference_is_the_scf_energy)."""
+    rijk = ferric.run_oo_rimp2(*water, scf_jk="rijk")
+    exact = ferric.run_oo_rimp2(*water, scf_jk="exact")
+    assert (rijk.scf_jk, rijk.jk_auxbasis) == ("rijk", JK)
+    assert rijk.converged and exact.converged
+    shift = abs(rijk.total_energy - exact.total_energy)
+    assert 1e-7 < shift < 1e-3, (rijk.total_energy, exact.total_energy)
+
+
+def test_oo_rimp2_refuses_rijcosx(water):
+    with pytest.raises(ValueError, match="COSX exchange has no OO route") as err:
+        ferric.run_oo_rimp2(*water, scf_jk="rijcosx")
     assert "run_oo_rimp2" in str(err.value)
-    assert f'scf_jk = "{mode}" is refused' in str(err.value)
+    assert 'scf_jk = "rijcosx" is refused' in str(err.value)
 
 
 def test_exact_echo_names_a_non_default_k_builder(water):

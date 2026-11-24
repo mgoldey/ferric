@@ -52,7 +52,7 @@ Assume `import ferric` and, on the PySCF side, the matching `from pyscf import .
 
 | PySCF | ferric |
 |---|---|
-| `geomopt.geometric_solver.optimize(mf)` | `ferric.run_optimize(mol, "cc-pvdz")` (RHF; basis by name) |
+| `geomopt.geometric_solver.optimize(mf)` | `ferric.run_optimize(mol, "cc-pvdz", xc="PBE")` (basis by name; `reference=`, `method="rimp2"` / `"oo-rimp2"` with `auxbasis=`) |
 | `mf.Hessian().kernel()` then `thermo.harmonic_analysis(mol, h)` | `ferric.run_frequencies(mol, "cc-pvdz")` |
 
 ### Correlation, response and properties
@@ -69,6 +69,22 @@ Assume `import ferric` and, on the PySCF side, the matching `from pyscf import .
 | `mf.mulliken_pop()` | `ferric.mulliken_charges(mol, bs, r)` |
 | `df.incore.aux_e2(mol, auxbasis)` | `ferric.compute_eri3(mol, bs, aux)` |
 | `df.incore.fill_2c2e(mol, auxbasis)` | `ferric.compute_metric_2c(mol, bs, aux)` |
+
+### Integrals and building blocks
+
+With `ints = ferric.AoIntegrals(mol, bs)` (see [Building blocks](./python.md#building-blocks)).
+AO matrices follow libint2's basis-function conventions, not PySCF's, so raw AO matrices differ between the two codes; energies and other invariant quantities agree.
+
+| PySCF | ferric |
+|---|---|
+| `mol.intor("int1e_ovlp")`, `"int1e_kin"`, `"int1e_nuc"` | `ints.overlap()`, `ints.kinetic()`, `ints.nuclear()` |
+| `mf.get_hcore()` | `ints.hcore()` |
+| `mol.intor("int1e_r")` | `ints.dipole()` |
+| `mol.intor("int2e")` | `ints.eri()` |
+| `mf.get_jk(mol, dm)` | `ints.jk(dm)` |
+| `scf.RHF(mol).density_fit(auxbasis=...).get_jk(mol, dm)` | `ints.df_jk(aux).jk(dm)` |
+| `ao2mo.general(mol, (c1, c2, c3, c4), compact=False)` | `ints.ao2mo(c1, c2, c3, c4)` (4-index, not pair-packed) |
+| `lib.einsum(spec, a, b)` | `ferric.einsum(spec, a, b)`; three or more operands run as a left-to-right chain |
 
 ## How ferric differs
 
@@ -124,7 +140,7 @@ and ferric's low-level `compute_eri3_mo` and `compute_metric_2c`, take Bohr⁻¹
 it. `ferric.QmmmSystem` takes Ångström coordinates, and its `point_charges()`
 accessor returns Bohr, ready to pass to `run_rhf`.
 
-**An unconverged SCF can raise.** PySCF's `kernel()` returns the energy
+**Only some drivers raise on an unconverged SCF.** PySCF's `kernel()` returns the energy
 either way. ferric's `run_rhf`, `run_uhf`, `run_rohf` and `run_qmmm` do the
 same, so check `.converged`. `run_dft` and every correlated driver raise
 instead when their SCF does not converge.
@@ -146,7 +162,7 @@ PySCF's default ε is 78.3553.
 
 **AO matrices do not match element by element.** ferric's AO basis-function
 conventions come from libint2 and are not the same as PySCF's (libcint).
-MEASURED on CO/cc-pVDZ: RHF total energies agree to 3e-12 Ha and orbital
+Measured on CO/cc-pVDZ: RHF total energies agree to 3e-12 Ha and orbital
 energies to 8e-9 Ha, while the two AO density matrices differ element by
 element by up to 1.5. Compare invariant quantities (energies, orbital
 energies, charges), not raw AO matrices. Axis order differs too:

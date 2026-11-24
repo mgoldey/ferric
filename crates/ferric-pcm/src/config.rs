@@ -27,8 +27,14 @@ pub const NAMED_SOLVENTS: &[(&str, f64)] = &[
 ];
 
 /// Lebedev orders the PCM cavity (`cavity::build_cavity`) and the
-/// Gaussian-smeared S/D ξ table support.
-pub const SUPPORTED_LEBEDEV_ORDERS: [usize; 6] = [6, 14, 26, 50, 110, 302];
+/// Gaussian-smeared S/D ξ table support: every
+/// [`ferric_quadrature::lebedev::SUPPORTED_ORDERS`] entry except the three
+/// rules with negative weights
+/// ([`ferric_quadrature::lebedev::NEGATIVE_WEIGHT_ORDERS`]: 74, 230, 266),
+/// whose weights would give tesserae of negative area. PySCF's `pcm.py`
+/// `XI` table, the source of the ξ values, omits the same three.
+pub const SUPPORTED_LEBEDEV_ORDERS: [usize; 29] =
+    ferric_quadrature::lebedev::POSITIVE_WEIGHT_ORDERS;
 
 /// Dielectric constant of a named solvent from [`NAMED_SOLVENTS`]
 /// (case-insensitive, surrounding whitespace ignored), or `None`.
@@ -57,19 +63,10 @@ pub struct PcmConfig {
     /// cavity spheres. Default 1.2 (matches PySCF/Q-Chem convention).
     #[serde(default = "default_vdw_scale")]
     pub vdw_scale: f64,
-    /// Lebedev order used to tessellate each atomic sphere (6, 14, 26, 50,
-    /// 110, or 302). Default 110.
+    /// Lebedev order used to tessellate each atomic sphere, one of
+    /// [`SUPPORTED_LEBEDEV_ORDERS`]. Default 110.
     #[serde(default = "default_lebedev_order")]
     pub lebedev_order: usize,
-    /// Maximum number of outer SCF-coupled PCM re-solves per SCF iteration.
-    /// PCM charges are solved exactly (LAPACK, not a fixed-point loop) from
-    /// the CURRENT density each SCF iteration, so a value of 1 (default) is
-    /// standard practice (PySCF/Psi4 default): the outer SCF/DIIS loop is
-    /// itself the self-consistency driver between q and D. A value > 1 is
-    /// accepted for experimentation but is not required for correctness in
-    /// the current implementation (see `pcm.rs`'s per-iteration hook).
-    #[serde(default = "default_inner_iters")]
-    pub inner_iters: usize,
     /// Boundary-element S/D matrix formulation. Default
     /// [`SdKind::GaussianSmeared`] (PySCF `pcm.py` convention, added
     /// 2026-07-19 -- see `matrices.rs`'s module doc). [`SdKind::PointCharge`]
@@ -109,8 +106,10 @@ pub struct PcmConfig {
 ///   It changes the solvation energy by ~1e-6 Ha on water and NH3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum ProbeKind {
+    /// Tesserae couple as point charges (`1/r` kernels). The default.
     #[default]
     Point,
+    /// Tesserae couple as normalized Gaussian charges (`erf(ξ_k r)/r` kernels).
     GaussianSmeared,
 }
 
@@ -119,9 +118,6 @@ fn default_vdw_scale() -> f64 {
 }
 fn default_lebedev_order() -> usize {
     110
-}
-fn default_inner_iters() -> usize {
-    1
 }
 
 impl Default for PcmConfig {
@@ -138,7 +134,6 @@ impl PcmConfig {
             epsilon: 78.4,
             vdw_scale: default_vdw_scale(),
             lebedev_order: default_lebedev_order(),
-            inner_iters: default_inner_iters(),
             sd_kind: SdKind::default(),
             probe: ProbeKind::default(),
             cavity: None,
@@ -232,7 +227,6 @@ mod tests {
         assert_eq!(c.epsilon, 2.38);
         assert_eq!(c.vdw_scale, w.vdw_scale);
         assert_eq!(c.lebedev_order, w.lebedev_order);
-        assert_eq!(c.inner_iters, w.inner_iters);
     }
 
     #[test]
@@ -253,9 +247,32 @@ mod tests {
         assert_eq!(PcmConfig::with_epsilon(4.0).unwrap().epsilon, 4.0);
     }
 
+    /// Catches: a PCM order list that drifts from the Lebedev lookup, admits
+    /// a negative-weight rule, or lacks a ξ value for one of its orders.
+    #[test]
+    fn pcm_orders_are_the_positive_weight_lebedev_orders() {
+        use ferric_quadrature::lebedev::{lebedev, NEGATIVE_WEIGHT_ORDERS, SUPPORTED_ORDERS};
+        let expected: Vec<usize> = SUPPORTED_ORDERS
+            .iter()
+            .copied()
+            .filter(|o| !NEGATIVE_WEIGHT_ORDERS.contains(o))
+            .collect();
+        assert_eq!(SUPPORTED_LEBEDEV_ORDERS.to_vec(), expected);
+        for order in SUPPORTED_ORDERS {
+            let xi = crate::matrices::gaussian_xi_table(order);
+            if SUPPORTED_LEBEDEV_ORDERS.contains(&order) {
+                assert!(lebedev(order).1.iter().all(|&w| w > 0.0), "{order}");
+                let xi = xi.unwrap();
+                assert!((4.8..4.92).contains(&xi), "{order}: xi {xi}");
+            } else {
+                assert!(xi.is_err(), "{order}");
+            }
+        }
+    }
+
     #[test]
     fn with_lebedev_order_refuses_unsupported_orders() {
-        for order in [0, 7, 194] {
+        for order in [0, 7, 74, 230, 266, 6000] {
             assert!(PcmConfig::water().with_lebedev_order(order).is_err());
         }
         for order in SUPPORTED_LEBEDEV_ORDERS {
@@ -270,12 +287,19 @@ mod tests {
     }
 
     #[test]
+    fn removed_inner_iters_key_is_rejected() {
+        // PCM charges are solved exactly from the current density every SCF
+        // iteration; there is no inner loop to configure.
+        let r: Result<PcmConfig, _> = toml::from_str("epsilon = 78.4\ninner_iters = 3\n");
+        assert!(r.is_err(), "inner_iters must be an unknown field");
+    }
+
+    #[test]
     fn defaults_fill_in_when_omitted() {
         let toml_str = "epsilon = 78.4\n";
         let cfg: PcmConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.vdw_scale, 1.2);
         assert_eq!(cfg.lebedev_order, 110);
-        assert_eq!(cfg.inner_iters, 1);
         assert_eq!(cfg.probe, ProbeKind::Point);
         assert!(cfg.cavity.is_none());
     }

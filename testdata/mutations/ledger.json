@@ -1,0 +1,491 @@
+{
+  "about": "One production-code mutation per ENERGY_ANCHORS entry. scripts/check_anchor_mutations.py fills `result`; crates/ferric-core/src/certificate/anchors.rs (mutation_ledger_matches_the_registry) checks every row against the registry and the patch files.",
+  "rows": [
+    {
+      "anchor": "RHF",
+      "patch": "testdata/mutations/rhf.patch",
+      "mutation": "rhf.rs: closed-shell exchange enters the Fock matrix with -1/4 instead of -1/2.",
+      "evidence": "crates/ferric-mp2/tests/validation_basis_coverage.rs",
+      "test": "orbital_sets_match_pyscf_rhf",
+      "env": {
+        "BASIS_COVERAGE_ONLY": "6-31g*/h2o"
+      },
+      "result": {
+        "patch_sha256": "b488a086e3cff9f6baeee4a661448b8d6e70385f1a79c9edcec2bc1c0852bdb7",
+        "base_commit": "ef22daf7dab73341019c86ca0f1a699099ebb1d9",
+        "failing_test": "orbital_sets_match_pyscf_rhf",
+        "assertion": "crates/ferric-mp2/tests/common/basis_coverage.rs:244",
+        "message": "1 of 1 rhf cases failed:",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
+    },
+    {
+      "anchor": "UHF",
+      "patch": "testdata/mutations/uhf.patch",
+      "mutation": "uhf.rs: the beta term of the electronic energy traces D_beta against H + F_alpha instead of H + F_beta.",
+      "evidence": "crates/ferric-scf/tests/validation_open_shell_scf.rs",
+      "test": "uhf_ho2_vs_pyscf",
+      "result": {
+        "patch_sha256": "65f02c674df9a02219faff93aaf14a39e75b6ccb64c51121ba157004552f2ef3",
+        "base_commit": "ef22daf7dab73341019c86ca0f1a699099ebb1d9",
+        "failing_test": "uhf_ho2_vs_pyscf",
+        "assertion": "crates/ferric-scf/tests/validation_open_shell_scf.rs:241",
+        "message": "ho2/6-31g/UHF: energy -150.310124650835 vs reference -150.111420160174 (|d| 1.99e-1 >= 1e-10)",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
+    },
+    {
+      "anchor": "ROHF",
+      "patch": "testdata/mutations/rohf.patch",
+      "mutation": "driver.rs (OpenShellJk::build_fock, shared by ROHF and UHF): the beta Fock matrix subtracts K_alpha instead of K_beta.",
+      "evidence": "crates/ferric-scf/tests/validation_open_shell_scf.rs",
+      "test": "rohf_ho2_vs_pyscf",
+      "result": {
+        "patch_sha256": "303037b751447f605048e23ec17694dd296e218b2a121f4d31fe38d47b3dc894",
+        "base_commit": "ef22daf7dab73341019c86ca0f1a699099ebb1d9",
+        "failing_test": "rohf_ho2_vs_pyscf",
+        "assertion": "crates/ferric-scf/tests/validation_open_shell_scf.rs:241",
+        "message": "ho2/6-31g/ROHF: energy -150.319881238879 vs reference -150.108147407523 (|d| 2.12e-1 >= 1e-10)",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
+    },
+    {
+      "anchor": "RKS",
+      "patch": "testdata/mutations/rks.patch",
+      "mutation": "xc_batch.rs: closed-shell sigma = gx^2 + 2 gy^2 (gz^2 replaced by gy^2) on both density paths.",
+      "evidence": "crates/ferric-scf/tests/validation_ks_energies.rs",
+      "test": "rks_h2s_pbe_vs_pyscf",
+      "result": {
+        "patch_sha256": "3f1d21d3ebd341f9872efd5ca4da3c20fc4b7d6e82af49a4350779c06a9e62d7",
+        "base_commit": "afaf50376db407671d10a415eb949be9fd0ae679",
+        "failing_test": "rks_h2s_pbe_vs_pyscf",
+        "assertion": "crates/ferric-scf/tests/validation_ks_energies.rs:378",
+        "message": "h2s/def2-svp/RKS-pbe: energy -399.071001022430 vs reference -399.083122163304 (|d| 1.21e-2 >= 1e-10)",
+        "baseline_run": true,
+        "date": "2026-11-11"
+      }
+    },
+    {
+      "anchor": "UKS",
+      "patch": "testdata/mutations/uks.patch",
+      "mutation": "xc_batch.rs: polarized sigma_ab = ax bx + ay by + ay bz (az bz replaced by ay bz) on both density paths.",
+      "evidence": "crates/ferric-scf/tests/validation_ks_energies.rs",
+      "test": "uks_nh2_pbe_vs_pyscf",
+      "result": {
+        "patch_sha256": "c77e4cebe447e1f9a178e7ac0079128c6315e0cc3493f0e94a5324460d47f32d",
+        "base_commit": "ab19ac3fc3c020619c7604c5e470e7cef66a8676",
+        "failing_test": "uks_nh2_pbe_vs_pyscf",
+        "assertion": "crates/ferric-scf/tests/validation_ks_energies.rs:378",
+        "message": "nh2/6-31g/UKS-pbe: lambda_min 0.075341828361 vs reference 0.078654451105 (|d| 3.31e-3 >= 5e-5)",
+        "baseline_run": true,
+        "date": "2026-11-11"
+      }
+    },
+    {
+      "anchor": "ROKS",
+      "patch": "testdata/mutations/roks.patch",
+      "mutation": "rohf.rs: the ROKS XC term is evaluated with D_alpha in place of D_beta.",
+      "evidence": "crates/ferric-scf/tests/validation_roks_energies.rs",
+      "test": "roks_nh2_pbe_vs_pyscf",
+      "result": {
+        "patch_sha256": "efd4c52cc730c3066bef3ca742cb7e648aff9bb39424c27f939f1409e06501fe",
+        "base_commit": "ef22daf7dab73341019c86ca0f1a699099ebb1d9",
+        "failing_test": "roks_nh2_pbe_vs_pyscf",
+        "assertion": "crates/ferric-scf/tests/validation_roks_energies.rs:250",
+        "message": "nh2/6-31g/ROKS-pbe: energy -56.364363774466 vs reference -55.776390555882 (|d| 5.88e-1 >= 1e-11)",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
+    },
+    {
+      "anchor": "RI-MP2",
+      "patch": "testdata/mutations/ri-mp2.patch",
+      "mutation": "rimp2.rs: the same-spin pair energy adds the exchange integral (ib|ja) instead of subtracting it.",
+      "evidence": "crates/ferric-mp2/tests/validation_basis_coverage.rs",
+      "test": "auxiliary_sets_match_pyscf_rimp2",
+      "env": {
+        "BASIS_COVERAGE_ONLY": "def2-svp+def2-svp-rifit/h2o"
+      },
+      "result": {
+        "patch_sha256": "27a7d38dd935e48c2d4279a9c45d4c7f4684fe7989d5d64959dcb01e91d4e5e6",
+        "base_commit": "ab19ac3fc3c020619c7604c5e470e7cef66a8676",
+        "failing_test": "auxiliary_sets_match_pyscf_rimp2",
+        "assertion": "crates/ferric-mp2/tests/common/basis_coverage.rs:244",
+        "message": "1 of 1 rimp2 cases failed:",
+        "baseline_run": true,
+        "date": "2026-11-11"
+      }
+    },
+    {
+      "anchor": "U-RI-MP2",
+      "patch": "testdata/mutations/u-ri-mp2.patch",
+      "mutation": "u_rimp2.rs: the beta-beta pair energy uses the alpha orbital energies.",
+      "evidence": "crates/ferric-mp2/tests/validation_u_rimp2.rs",
+      "test": "u_rimp2_oh_ccpvdz_vs_pyscf_dfump2",
+      "result": {
+        "patch_sha256": "8c6b8a944f67b90051fff89cd39036117e70dd1798e7002be1bee377a829ff2c",
+        "base_commit": "afaf50376db407671d10a415eb949be9fd0ae679",
+        "failing_test": "u_rimp2_oh_ccpvdz_vs_pyscf_dfump2",
+        "assertion": "crates/ferric-mp2/tests/validation_u_rimp2.rs:173",
+        "message": "oh/cc-pvdz ump2: E_bb -0.011675578481 vs reference -0.011814219831 (|d| 1.39e-4 >= 1e-8)",
+        "baseline_run": true,
+        "date": "2026-11-11"
+      }
+    },
+    {
+      "anchor": "MP3",
+      "patch": "testdata/mutations/mp3.patch",
+      "mutation": "mp3.rs: the hole-hole ladder term of E(3) is weighted 1/4 instead of 1/8 (the ij and kl pair permutations double-counted).",
+      "evidence": "crates/ferric-cc/tests/validation_cc.rs",
+      "test": "mp3_matches_df_reference",
+      "result": {
+        "patch_sha256": "56272ec771a0ad39dacff8826d189614cf2f4ea1fe8f35036d9b52aea382621a",
+        "base_commit": "3c49625213f684d0d2ae9d997b5732bc7c253ae3",
+        "failing_test": "mp3_matches_df_reference",
+        "assertion": "crates/ferric-cc/tests/validation_cc.rs:301",
+        "message": "MP3: 12 failure(s):",
+        "baseline_run": true,
+        "date": "2026-11-13"
+      }
+    },
+    {
+      "anchor": "CCSD",
+      "patch": "testdata/mutations/ccsd.patch",
+      "mutation": "ccsd_closed_shell.rs: the hole-hole ladder of the T2 residual contracts Woooo with t2 instead of tau = t2 + t1 t1 (the T1 coupling of the ladder dropped).",
+      "evidence": "crates/ferric-cc/tests/validation_cc.rs",
+      "test": "ccsd_spin_adapted_matches_df_reference",
+      "result": {
+        "patch_sha256": "64ed42f75c863bc4638e879043125262e4793d97ffa799d0454aeb083a084a9a",
+        "base_commit": "ef22daf7dab73341019c86ca0f1a699099ebb1d9",
+        "failing_test": "ccsd_spin_adapted_matches_df_reference",
+        "assertion": "crates/ferric-cc/tests/validation_cc.rs:301",
+        "message": "RI-CCSD spin-adapted: 25 failure(s):",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
+    },
+    {
+      "anchor": "Attenuated RI-MP2",
+      "patch": "testdata/mutations/att-rimp2.patch",
+      "mutation": "attenuated.rs: the erfc 3-index integrals are fitted with the Coulomb metric instead of the erfc metric.",
+      "evidence": "crates/ferric-mp2/tests/validation_attenuated_mp2.rs",
+      "test": "attenuated_ri_mp2_h2o_vs_pyscf",
+      "result": {
+        "patch_sha256": "5e340d827b5e8f4ab25093c32ddf035cdb96b7dca804baa0b57219f388aaea8e",
+        "base_commit": "ef22daf7dab73341019c86ca0f1a699099ebb1d9",
+        "failing_test": "attenuated_ri_mp2_h2o_vs_pyscf",
+        "assertion": "crates/ferric-mp2/tests/validation_attenuated_mp2.rs:139",
+        "message": "h2o/aug-cc-pvdz/omega=0.2: E_corr -0.212850863738 vs reference -0.216506983498 (|d| 3.66e-3 >= 1e-10)",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
+    },
+    {
+      "anchor": "SCS-MP2",
+      "patch": "testdata/mutations/scs-mp2.patch",
+      "mutation": "rimp2.rs: half of the same-spin exchange (ib|ja) is moved into the opposite-spin pair energy (E_OS + E_SS, and so RI-MP2, unchanged).",
+      "evidence": "crates/ferric-mp2/tests/validation_scs_mp2.rs",
+      "test": "scs_mp2_h2o_vs_numpy",
+      "result": {
+        "patch_sha256": "1af546c3490db2ae677c70cee54e8e3e514646a7bd28f4b322e04132c0062334",
+        "base_commit": "3c49625213f684d0d2ae9d997b5732bc7c253ae3",
+        "failing_test": "scs_mp2_h2o_vs_numpy",
+        "assertion": "crates/ferric-mp2/tests/validation_scs_mp2.rs:125",
+        "message": "h2o/aug-cc-pvdz: E_OS -0.110952415878 vs reference -0.165151822534 (|d| 5.42e-2 >= 1.0e-10)",
+        "baseline_run": true,
+        "date": "2026-11-13"
+      }
+    },
+    {
+      "anchor": "Laplace RI-MP2",
+      "patch": "testdata/mutations/laplace-mp2.patch",
+      "mutation": "laplace.rs: each MO amplitude factor of the exchange term carries the full Laplace exponent exp(-t(e_a - e_i)) instead of its square root.",
+      "evidence": "crates/ferric-mp2/tests/validation_laplace_mp2.rs",
+      "test": "laplace_mp2_h2o_ccpvdz_vs_pyscf_dfmp2",
+      "result": {
+        "patch_sha256": "1a153dd9601c737fdc1bfc32409959f3a74ea7ce1a25ee32661a4b3cdfaaba3f",
+        "base_commit": "3c49625213f684d0d2ae9d997b5732bc7c253ae3",
+        "failing_test": "laplace_mp2_h2o_ccpvdz_vs_pyscf_dfmp2",
+        "assertion": "crates/ferric-mp2/tests/validation_laplace_mp2.rs:294",
+        "message": "h2o/cc-pvdz: MO vs AO (n_quad=3) -0.1014132584147 vs reference -0.2555822818752 (|d| 1.54e-1 >= 1e-10)",
+        "baseline_run": true,
+        "date": "2026-11-13"
+      }
+    },
+    {
+      "anchor": "PDEP-RPA",
+      "patch": "testdata/mutations/pdep-rpa.patch",
+      "mutation": "sternheimer.rs: the closed-shell chi0 scale factor uses the per-spin prefactor 2 instead of 4 (one spin channel dropped).",
+      "evidence": "crates/ferric-rpa/tests/validation_rpa_gradient.rs",
+      "test": "rpa_gradient_h2o_energy_vs_pyscf",
+      "result": {
+        "patch_sha256": "f7eeac19040c3d5aaf3385b8bba4a35f12da8b20f0f949b959d7ef1756f1881c",
+        "base_commit": "3c49625213f684d0d2ae9d997b5732bc7c253ae3",
+        "failing_test": "rpa_gradient_h2o_energy_vs_pyscf",
+        "assertion": "crates/ferric-rpa/tests/validation_rpa_gradient.rs:183",
+        "message": "h2o_distorted/cc-pvdz: E_c (40-pt GL): ferric -0.065171466969 vs reference -0.231489779443 (|d| 1.66e-1) exceeds 1.0e-12",
+        "baseline_run": true,
+        "date": "2026-11-13"
+      }
+    },
+    {
+      "anchor": "Laplace SOS-MP2",
+      "patch": "testdata/mutations/laplace-sos-mp2.patch",
+      "mutation": "laplace.rs: SosMp2Config::default() sets c_os to 1.0 instead of the Jung/Head-Gordon 1.3.",
+      "evidence": "crates/ferric-mp2/tests/validation_sos_mp2.rs",
+      "test": "sos_mp2_h2o_ccpvdz_vs_pyscf_dfmp2",
+      "result": {
+        "patch_sha256": "81b7d371c565f36b464c804c98370c05992da9e82f1ed237d415dee6b49cedce",
+        "base_commit": "c919fef009af42e4efdea9f88ca5d2a8fba28dcd",
+        "failing_test": "sos_mp2_h2o_ccpvdz_vs_pyscf_dfmp2",
+        "assertion": "crates/ferric-mp2/tests/validation_sos_mp2.rs:303",
+        "message": "assertion `left == right` failed: h2o/cc-pvdz: default c_os",
+        "baseline_run": true,
+        "date": "2026-11-13"
+      }
+    },
+    {
+      "anchor": "CASSCF",
+      "patch": "testdata/mutations/casscf.patch",
+      "mutation": "casscf.rs: the inactive Fock matrix F^I = h + J - K/2 halves its exchange term again (K/4).",
+      "evidence": "crates/ferric-ci/tests/casscf_vs_pyscf.rs",
+      "test": "h2o_cas44_631g_matches_pyscf",
+      "result": {
+        "patch_sha256": "e2c5a688172850429441d936f1607a70a24b63fc29ab9b5e50b1a98806bba8b0",
+        "base_commit": "ef22daf7dab73341019c86ca0f1a699099ebb1d9",
+        "failing_test": "h2o_cas44_631g_matches_pyscf",
+        "assertion": "crates/ferric-ci/tests/casscf_vs_pyscf.rs:121",
+        "message": "h2o_cas44_631g: not converged in 300 iterations",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
+    },
+    {
+      "anchor": "SC-NEVPT2",
+      "patch": "testdata/mutations/nevpt2.patch",
+      "mutation": "nevpt2.rs: the class-r (Sr) energy numerator drops the factor 2 on its v A17 h cross term.",
+      "evidence": "crates/ferric-ci/tests/nevpt2.rs",
+      "test": "matches_pyscf_h2o_cas44",
+      "result": {
+        "patch_sha256": "80c420f057eef0638e7a462bf2a1328680d5dbb24a386a8a9ce331b37ae362c6",
+        "base_commit": "8c86e08508794e0e0182c70527b4553a566ca04d",
+        "failing_test": "matches_pyscf_h2o_cas44",
+        "assertion": "crates/ferric-ci/tests/nevpt2.rs:371",
+        "message": "h2o Sr: -0.0003782463016180647 vs PySCF -0.004444030301156927 (bar 3.7e-7)",
+        "baseline_run": true,
+        "date": "2026-11-13"
+      }
+    },
+    {
+      "anchor": "RS-MP2-RPA",
+      "patch": "testdata/mutations/rs-mp2-rpa.patch",
+      "mutation": "rs_mp2_rpa.rs (Rings::assemble): the DeltaLr (B) ring subtraction uses 1\u00b7E_OS[erf] (half of dMP2[lr] = 2\u00b7E_OS[erf]) instead of 2\u00b7E_OS[erf].",
+      "evidence": "crates/ferric-rpa/tests/validation_rs_mp2_rpa_pyscf.rs",
+      "test": "rs_mp2_rpa_h2o_cc_pvdz_vs_pyscf",
+      "result": {
+        "patch_sha256": "e35a28064f88cfd80eb71eab2610dc03e59516d49e4f1b2a48dfeca8679fafb6",
+        "base_commit": "ef22daf7dab73341019c86ca0f1a699099ebb1d9",
+        "failing_test": "rs_mp2_rpa_h2o_cc_pvdz_vs_pyscf",
+        "assertion": "crates/ferric-rpa/tests/validation_rs_mp2_rpa_pyscf.rs:447",
+        "message": "h2o/cc-pvdz GL-20: B_e_corr: ferric -0.204126208447 vs PySCF -0.204030980885 (|d| 9.52e-5 Ha) exceeds the bar 6.07e-12 Ha (metric shift 3.33e-13, integral shift 6.80e-15, floor 5.73e-12)",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
+    },
+    {
+      "anchor": "B2PLYP",
+      "patch": "testdata/mutations/b2plyp.patch",
+      "mutation": "double_hybrid.rs: the B2PLYP PT2 fraction (shared with B2PLYP-D3BJ) is 0.26 (c_os = c_ss) instead of 0.27.",
+      "evidence": "crates/ferric-mp2/tests/validation_b2plyp_pyscf.rs",
+      "test": "b2plyp_h2o_cc_pvdz_vs_pyscf",
+      "result": {
+        "patch_sha256": "e78c9b9e11cd290d9cf0202a14351efe0bbb2959b6821953bed882cce0796e0b",
+        "base_commit": "ef22daf7dab73341019c86ca0f1a699099ebb1d9",
+        "failing_test": "b2plyp_h2o_cc_pvdz_vs_pyscf",
+        "assertion": "crates/ferric-mp2/tests/validation_b2plyp_pyscf.rs:257",
+        "message": "h2o/cc-pvdz fc0: total -76.351370433848 vs reference -76.353789597077 (|d| 2.42e-3 >= 6e-11)",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
+    },
+    {
+      "anchor": "DSD-PBEP86",
+      "patch": "testdata/mutations/dsd-pbep86.patch",
+      "mutation": "double_hybrid.rs: the DSD-PBEP86 same-spin scaling is 0.29 (the previous value) instead of 0.36.",
+      "evidence": "crates/ferric-mp2/tests/validation_dsd_pbep86_pyscf.rs",
+      "test": "dsd_pbep86_h2o_cc_pvdz_vs_pyscf",
+      "result": {
+        "patch_sha256": "3c85e9f797e2429af5f4046cbeb3e0a3cc73f27f9b945ad11b8b51f1af29316c",
+        "base_commit": "ef22daf7dab73341019c86ca0f1a699099ebb1d9",
+        "failing_test": "dsd_pbep86_h2o_cc_pvdz_vs_pyscf",
+        "assertion": "crates/ferric-mp2/tests/validation_dsd_pbep86_pyscf.rs:264",
+        "message": "h2o/cc-pvdz fc0: total -76.281045389202 vs reference -76.285015637144 (|d| 3.97e-3 >= 1e-10)",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
+    },
+    {
+      "anchor": "RHF gradient",
+      "patch": "testdata/mutations/rhf-gradient.patch",
+      "mutation": "gradient.rs: the closed-shell two-particle density weights exchange by -1/2 (the UHF per-spin weight) instead of -1/4.",
+      "evidence": "crates/ferric-scf/tests/validation_geometry_optimization.rs",
+      "test": "closed_shell_h2o_optimization_vs_pyscf",
+      "result": {
+        "patch_sha256": "928e4d648f004ce89fd99cba1746b3a6c4844498bbd453badab14b463cd05f90",
+        "base_commit": "b6000e209ff112679199ff7ab34814998cf0806f",
+        "failing_test": "closed_shell_h2o_optimization_vs_pyscf",
+        "assertion": "crates/ferric-scf/tests/validation_geometry_optimization.rs:545",
+        "message": "h2o/6-31g/rhf: the reference minimum is not stationary on ferric's surface: max|g| 4.01e-1",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
+    },
+    {
+      "anchor": "UHF gradient",
+      "patch": "testdata/mutations/uhf-gradient.patch",
+      "mutation": "gradient.rs: the beta exchange term of the UHF two-particle density pairs D_alpha with D_beta instead of D_beta with D_beta.",
+      "evidence": "crates/ferric-scf/tests/validation_geometry_optimization.rs",
+      "test": "open_shell_nh2_optimization_vs_pyscf",
+      "result": {
+        "patch_sha256": "f5a0918c66e2e8a344a284acef6ae53d50308286289381fafca57bc8374263ba",
+        "base_commit": "b6000e209ff112679199ff7ab34814998cf0806f",
+        "failing_test": "open_shell_nh2_optimization_vs_pyscf",
+        "assertion": "crates/ferric-scf/tests/validation_geometry_optimization.rs:545",
+        "message": "nh2/6-31g/uhf: the reference minimum is not stationary on ferric's surface: max|g| 1.74e-3",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
+    },
+    {
+      "anchor": "ROHF gradient",
+      "patch": "testdata/mutations/rohf-gradient.patch",
+      "mutation": "gradient.rs: the ROHF energy-weighted density uses D_alpha F_alpha D_beta for its second term instead of D_alpha F_beta D_beta.",
+      "evidence": "crates/ferric-scf/tests/validation_geometry_optimization.rs",
+      "test": "open_shell_nh2_optimization_vs_pyscf",
+      "result": {
+        "patch_sha256": "f4d7cc4619412cbd3e7681a7de87e9040cae725ba29c8e7e62078b69117a2a0a",
+        "base_commit": "b6000e209ff112679199ff7ab34814998cf0806f",
+        "failing_test": "open_shell_nh2_optimization_vs_pyscf",
+        "assertion": "crates/ferric-scf/tests/validation_geometry_optimization.rs:545",
+        "message": "nh2/6-31g/rohf: the reference minimum is not stationary on ferric's surface: max|g| 7.06e-3",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
+    },
+    {
+      "anchor": "KS gradient",
+      "patch": "testdata/mutations/rks-gradient.patch",
+      "mutation": "gradient/screened.rs: the closed-shell GGA gradient weight is w v_sigma instead of 2 w v_sigma.",
+      "evidence": "crates/ferric-scf/tests/validation_geometry_optimization.rs",
+      "test": "closed_shell_h2o_optimization_vs_pyscf",
+      "result": {
+        "patch_sha256": "03df92383efa5e9874f189fbd241a9ada5e46ad7eb495734f4ed56a79be1a6e5",
+        "base_commit": "b6000e209ff112679199ff7ab34814998cf0806f",
+        "failing_test": "closed_shell_h2o_optimization_vs_pyscf",
+        "assertion": "crates/ferric-scf/tests/validation_geometry_optimization.rs:545",
+        "message": "h2o/6-31g/rks_b3lyp: the reference minimum is not stationary on ferric's surface: max|g| 1.90e-2",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
+    },
+    {
+      "anchor": "RI-MP2 gradient",
+      "patch": "testdata/mutations/rimp2-gradient.patch",
+      "mutation": "ferric-mp2 gradient.rs: the virtual-occupied block of the energy-weighted correlation density takes the virtual orbital energy instead of the occupied one.",
+      "evidence": "crates/ferric-mp2/tests/validation_rimp2_gradient.rs",
+      "test": "rimp2_gradient_h2o_ccpvdz_vs_orca_and_pyscf",
+      "result": {
+        "patch_sha256": "dcd9d5c8306341964b4aa06d383d84c20d928ca1ce068e5828d2a9bab610bda3",
+        "base_commit": "b6000e209ff112679199ff7ab34814998cf0806f",
+        "failing_test": "rimp2_gradient_h2o_ccpvdz_vs_orca_and_pyscf",
+        "assertion": "crates/ferric-mp2/tests/validation_rimp2_gradient.rs:220",
+        "message": "h2o_distorted/cc-pvdz: MP2 grad vs PySCF FD max |d| 2.57e-2 >= 2e-8",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
+    },
+    {
+      "anchor": "PDEP-RPA gradient",
+      "patch": "testdata/mutations/pdep-rpa-gradient.patch",
+      "mutation": "gradient_analytic.rs: the occupied-occupied RPA density P_oo is accumulated with +w/4pi instead of -w/4pi.",
+      "evidence": "crates/ferric-rpa/tests/rpa_analytic_gradient.rs",
+      "test": "h2o_matches_fd5_of_the_same_quadrature",
+      "result": {
+        "patch_sha256": "1e3121992d133474a85aaa094dfe23c898d2a7bd1a981f6849ff282b3a4bd09d",
+        "base_commit": "b6000e209ff112679199ff7ab34814998cf0806f",
+        "failing_test": "h2o_matches_fd5_of_the_same_quadrature",
+        "assertion": "crates/ferric-rpa/tests/rpa_analytic_gradient.rs:180",
+        "message": "h2o_distorted n=40: |g - FD5| 1.7323023025343345e-2 > 2e-8",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
+    },
+    {
+      "anchor": "RHF Hessian",
+      "patch": "testdata/mutations/rhf-hessian.patch",
+      "mutation": "hessian.rs: exchange enters the closed-shell first-order Fock matrix with 1/4 instead of 1/2.",
+      "evidence": "crates/ferric-scf/tests/validation_rhf_hessian.rs",
+      "test": "h2o_ccpvdz",
+      "result": {
+        "patch_sha256": "304d34bba506a0e2e6b46b6b426088b2e658f0678fed6c5191f22228f536a351",
+        "base_commit": "b6000e209ff112679199ff7ab34814998cf0806f",
+        "failing_test": "h2o_ccpvdz",
+        "assertion": "crates/ferric-scf/tests/validation_rhf_hessian.rs:206",
+        "message": "h2o/cc-pvdz: Hessian vs analytic: max|d| 1.457e0 >= 1e-6",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
+    },
+    {
+      "anchor": "UHF Hessian",
+      "patch": "testdata/mutations/uhf-hessian.patch",
+      "mutation": "hessian/uhf_df.rs: both spins' first-order Fock matrices take their exchange from D_alpha.",
+      "evidence": "crates/ferric-scf/tests/validation_uhf_hessian.rs",
+      "test": "oh_ccpvdz",
+      "result": {
+        "patch_sha256": "09d6f362a764cf846bfed689500fd155f6eaf344e5e9ab266119b16839e54367",
+        "base_commit": "b6000e209ff112679199ff7ab34814998cf0806f",
+        "failing_test": "oh_ccpvdz",
+        "assertion": "crates/ferric-scf/tests/validation_uhf_hessian.rs:222",
+        "message": "oh/cc-pvdz: Hessian vs analytic: max|d| 1.536e-1 >= 2e-6",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
+    },
+    {
+      "anchor": "ROHF Hessian",
+      "patch": "testdata/mutations/rohf-hessian.patch",
+      "mutation": "hessian/rohf.rs: exchange enters the per-spin first-order Fock matrices with 1/2 instead of 1.",
+      "evidence": "crates/ferric-scf/tests/validation_rohf_hessian.rs",
+      "test": "rohf_hessian_nh2_matches_pyscf_fd_of_analytic_gradient",
+      "result": {
+        "patch_sha256": "2ca7192525c447add8afbe62201a8933c948a35c39ce7409cbacc723c0190c6a",
+        "base_commit": "b6000e209ff112679199ff7ab34814998cf0806f",
+        "failing_test": "rohf_hessian_nh2_matches_pyscf_fd_of_analytic_gradient",
+        "assertion": "crates/ferric-scf/tests/validation_rohf_hessian.rs:245",
+        "message": "nh2/cc-pvdz: Hessian vs PySCF FD 1.126e0",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
+    },
+    {
+      "anchor": "RKS Hessian",
+      "patch": "testdata/mutations/rks-hessian.patch",
+      "mutation": "ks_fixed_grid.rs: the moving-grid XC skeleton adds the weight-derivative cross term W' (df)^T without its transpose.",
+      "evidence": "crates/ferric-scf/tests/ks_moving_grid_hessian.rs",
+      "test": "moving_grid_hessian_matches_difference_of_the_production_gradient",
+      "result": {
+        "patch_sha256": "843337aae1353ed43af6d1a907fb6ab880b5bf4fa2b55fab8a0e60f6fc7e4629",
+        "base_commit": "b6000e209ff112679199ff7ab34814998cf0806f",
+        "failing_test": "moving_grid_hessian_matches_difference_of_the_production_gradient",
+        "assertion": "crates/ferric-scf/tests/ks_moving_grid_common/mod.rs:366",
+        "message": "LDA sto-3g: 1.061e0",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
+    }
+  ]
+}

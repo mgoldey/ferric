@@ -69,18 +69,27 @@
 //! part. A pure functional (`a = 0`) never builds K, so a named `df_k_aux` is
 //! inert there, as in the SCF. RI-K composes with exact or RI-J Coulomb.
 //!
+//! # ECPs
+//!
+//! `V_ECP` is part of the core Hamiltonian, so it adds the same two terms as in
+//! the Hartree-Fock Hessian (`crate::hessian_ecp`): the skeleton
+//! `Σ D ∂²V_ECP` to the one-electron part and `∂V_ECP/∂x` to `F^x`. The XC,
+//! J/K and fitted pieces do not change: the grid and the density are the
+//! valence ones the SCF used.
+//!
 //! Refused with a typed error naming the next unit: meta-GGA, VV10,
 //! range-separated hybrids (and so range-separated RI-K), open-shell
-//! references, ECPs and external potentials.
+//! references (here; UKS has [`crate::hessian::uks_moving_grid_hessian`]) and
+//! external potentials.
 //!
 //! [`HessianMethod::Auto`]: crate::frequencies::HessianMethod::Auto
 //! [`HessianMethod::Analytic`]: crate::frequencies::HessianMethod::Analytic
 //! [`HessianMethod::AnalyticMovingGrid`]: crate::frequencies::HessianMethod::AnalyticMovingGrid
 
 use super::{
-    check_supported, cpks_response_with, first_order_ao, has_ecp, max_abs, nuclear_term,
-    parts_from_terms, skeleton_hess_1e, skeleton_hess_2e, skeleton_hess_overlap, FockSpec,
-    Reference, RhfHessianParts, TwoElectronBuilder,
+    add_extra_first_order, check_supported_except_functional, cpks_response_with, extra_skeleton,
+    first_order_ao, max_abs, nuclear_term, parts_from_terms, skeleton_hess_1e, skeleton_hess_2e,
+    skeleton_hess_overlap, FockSpec, Reference, RhfHessianParts, TwoElectronBuilder,
 };
 use crate::gradient::build_energy_weighted_density;
 use crate::hessian_df::RijMutants;
@@ -143,6 +152,10 @@ pub struct KsFixedGridMutants {
     /// RI-K: the CPHF `DfK` built over the RI-J auxiliary basis instead of
     /// the exchange one (visible only when the two differ).
     pub cphf_dfk_from_j_aux: bool,
+    /// Not a defect: the CPHF fitted K through the density path instead of
+    /// the factored route (the oracle the factored route is anchored
+    /// against).
+    pub cphf_density_path_k: bool,
 }
 
 impl Default for KsFixedGridMutants {
@@ -165,11 +178,12 @@ impl Default for KsFixedGridMutants {
             rik_alpha_ignores_exx: false,
             rik_terms_from_j_aux: false,
             cphf_dfk_from_j_aux: false,
+            cphf_density_path_k: false,
         }
     }
 }
 
-fn unsupported(what: &str, next: &str) -> FerricError {
+pub(super) fn unsupported(what: &str, next: &str) -> FerricError {
     FerricError::General(format!(
         "the analytic Kohn-Sham Hessian (fixed or moving grid) does not support {what} (not yet \
          implemented; next unit: {next}); use the finite-difference Hessian"
@@ -178,12 +192,7 @@ fn unsupported(what: &str, next: &str) -> FerricError {
 
 /// Typed refusals for everything outside closed-shell LDA/GGA (pure or global hybrid)
 /// with exact or RI-J Coulomb and exact or RI-K exchange.
-fn ks_refusal(
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    rks: &ScfResult,
-    config: &RhfConfig,
-) -> Result<(), FerricError> {
+fn ks_refusal(rks: &ScfResult, config: &RhfConfig) -> Result<(), FerricError> {
     let name = config.xc.as_deref().ok_or_else(|| {
         FerricError::General(
             "the analytic Kohn-Sham Hessian needs a Kohn-Sham configuration \
@@ -196,8 +205,9 @@ fn ks_refusal(
     functional_refusal(name, &xc)?;
     if rks.spin != Spin::Restricted {
         return Err(unsupported(
-            "an open-shell (UKS/ROKS) reference",
-            "spin-polarized XC kernel",
+            "an open-shell (UKS/ROKS) reference (a UKS result is differentiated by \
+             uks_moving_grid_hessian)",
+            "the ROKS Roothaan-coupled response",
         ));
     }
     let route = crate::gradient::active_df_route(rks);
@@ -207,18 +217,20 @@ fn ks_refusal(
             "range-separated exchange (erfc/erf pair) in the CPHF",
         ));
     }
-    ecp_or_embedding_refusal(mol, prep.basis_set(), config)
+    embedding_refusal(config)
 }
 
-fn ecp_or_embedding_refusal(
-    mol: &Molecule,
-    bs: &BasisSet,
-    config: &RhfConfig,
-) -> Result<(), FerricError> {
-    if has_ecp(mol, bs) || config.external_potential.is_some() {
+/// An external potential (point charges, a field, smeared charges) is refused.
+/// An ECP is supported: it is a one-electron operator of the core Hamiltonian,
+/// so its skeleton and `∂V_ECP/∂x` enter exactly as in the Hartree-Fock
+/// Hessian ([`super::extra_skeleton`], [`super::add_extra_first_order`]); the
+/// ECP-specific limits (shells above f, the libecpint backend, an ECP not
+/// applied to the molecule) are the closed- and open-shell checklists'.
+pub(super) fn embedding_refusal(config: &RhfConfig) -> Result<(), FerricError> {
+    if config.external_potential.is_some() {
         return Err(unsupported(
-            "an ECP or an external potential",
-            "ECP and embedding terms with the XC kernel",
+            "an external potential",
+            "embedding terms with the XC kernel",
         ));
     }
     Ok(())
@@ -227,8 +239,7 @@ fn ecp_or_embedding_refusal(
 /// The refusals of [`rks_moving_grid_hessian`] that need no SCF, so a driver
 /// can refuse an unsupported request before paying for one: no functional
 /// (Hartree-Fock has no XC grid), meta-GGA, VV10, range-separated or double
-/// hybrids, an ECP, an external potential, an angular-pruned grid
-/// (`AtomicGridConfig::prune`), and everything the closed-shell RHF Hessian
+/// hybrids, an external potential, and everything the closed-shell RHF Hessian
 /// refuses before its SCF (a non-Coulomb operator, COSX, implicit solvation,
 /// polarizable embedding, fractional occupations, cDFT, MOM). The production
 /// SCF grid is always the atom-centred one, so an explicit-point grid cannot
@@ -236,8 +247,8 @@ fn ecp_or_embedding_refusal(
 /// checks that need the SCF (open shell, the recorded fitting route, Fock
 /// consistency) stay in the Hessian itself.
 pub fn rks_moving_grid_hessian_preflight(
-    mol: &Molecule,
-    bs: &BasisSet,
+    _mol: &Molecule,
+    _bs: &BasisSet,
     op: Operator,
     config: &RhfConfig,
 ) -> Result<(), FerricError> {
@@ -252,13 +263,7 @@ pub fn rks_moving_grid_hessian_preflight(
     let xc = xc_def_from_name(name)
         .map_err(|e| FerricError::General(format!("moving-grid KS Hessian: libxc: {e:?}")))?;
     functional_refusal(name, &xc)?;
-    ecp_or_embedding_refusal(mol, bs, config)?;
-    if config.dft_grid.as_ref().is_some_and(|g| g.prune.is_some()) {
-        return Err(unsupported(
-            "an angular-pruned XC grid (AtomicGridConfig::prune, [dft] grid_prune)",
-            "the pruned grid's weight response",
-        ));
-    }
+    embedding_refusal(config)?;
     // Everything but the functional is the closed-shell checklist (operator,
     // COSX, solvation, embedding, fractional occupations, cDFT, MOM), which
     // the Hessian runs again after the SCF.
@@ -297,9 +302,31 @@ pub fn rks_moving_grid_hessian_available(
     op: Operator,
     config: &RhfConfig,
 ) -> Result<(), FerricError> {
+    rks_moving_grid_hessian_check(mol, prep, op, config, super::MetricGate::Auto).map(|_| ())
+}
+
+/// [`rks_moving_grid_hessian_available`] with the RI-K conditioning gate
+/// applied as `gate` says (`Auto` refuses a metric whose roundoff bound
+/// exceeds the finite-difference route's error, `Explicit` accepts and the Hessian
+/// warns, as the explicit Hartree-Fock route does). Returns the exchange
+/// metric's conditioning when K is fitted, for the certificate.
+pub fn rks_moving_grid_hessian_check(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    config: &RhfConfig,
+    gate: super::MetricGate,
+) -> Result<Option<crate::hessian_df_k::RikConditioning>, FerricError> {
     rks_moving_grid_hessian_preflight(mol, prep.basis_set(), op, config)?;
     let name = config.xc.as_deref().unwrap_or_default();
-    let grid = FixedGridKs::new(mol, name, &config.dft_grid.clone().unwrap_or_default())?;
+    let grid = FixedGridKs::new(
+        mol,
+        name,
+        &config
+            .dft_grid
+            .clone()
+            .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production),
+    )?;
     grid.check_response_table(prep.nbasis())?;
     let resolve = |requested: &Option<String>, needed: bool| match requested.as_deref() {
         None if needed => Some(crate::fock_assembly::DEFAULT_JK_AUX.to_string()),
@@ -321,7 +348,16 @@ pub fn rks_moving_grid_hessian_available(
     } else {
         hf
     };
-    super::available(Reference::Rhf, mol, prep, op, &hf).map_err(|e| {
+    super::available(
+        Reference::Rhf,
+        mol,
+        prep,
+        op,
+        &hf,
+        grid.exact_exchange() > 0.0,
+        gate,
+    )
+    .map_err(|e| {
         FerricError::General(format!(
             "the analytic Kohn-Sham Hessian (fixed or moving grid) does not support this system \
              (the closed-shell analytic Hessian's check: {e}); use the finite-difference Hessian"
@@ -329,7 +365,10 @@ pub fn rks_moving_grid_hessian_available(
     })
 }
 
-fn functional_refusal(name: &str, xc: &ferric_dft::libxc::XcDef) -> Result<(), FerricError> {
+pub(super) fn functional_refusal(
+    name: &str,
+    xc: &ferric_dft::libxc::XcDef,
+) -> Result<(), FerricError> {
     let mix = k_mix_from_xc_def(xc);
     if xc.vv10.is_some() {
         return Err(unsupported(
@@ -356,7 +395,7 @@ fn functional_refusal(name: &str, xc: &ferric_dft::libxc::XcDef) -> Result<(), F
     {
         return Err(unsupported(
             &format!("a meta-GGA ('{name}')"),
-            "tau-dependent XC kernel",
+            "tau-dependent XC nuclear derivatives (V_xc^x and the XC skeleton)",
         ));
     }
     if mix.sr != mix.lr {
@@ -373,7 +412,7 @@ fn functional_refusal(name: &str, xc: &ferric_dft::libxc::XcDef) -> Result<(), F
 /// over the default basis), so the SAME `RhfConfig` serves the SCF and the
 /// Hessian. A stated basis that differs from the recorded route is refused here
 /// with a Kohn-Sham message.
-fn checklist_config(
+pub(super) fn checklist_config(
     rks: &ScfResult,
     config: &RhfConfig,
     exx: f64,
@@ -428,6 +467,10 @@ pub struct KsFit<'a> {
     pub aux: &'a dyn Fn() -> Result<PreparedBasis, FerricError>,
     /// Resident three-index budget handed to the fitters, bytes.
     pub budget_bytes: usize,
+    /// Storage precision of the SCF's RI-J tensor, which the RI-J terms and
+    /// the response J follow (unused for the RI-K fit; f64 for the injected
+    /// fixed-grid SCF, whose `DfJ` is f64).
+    pub precision: crate::df_j::RiJPrecision,
 }
 
 /// The RI-J fit (the same type as the RI-K one).
@@ -448,14 +491,22 @@ pub struct KsFits<'a> {
 /// The RI-J auxiliary basis name and budget of the SCF, or `None` for exact J:
 /// the recorded route when the SCF ran the production path, else the name the
 /// configuration states (the injected fixed-grid SCF records no route).
-fn resolve_j_fit(rks: &ScfResult, config: &RhfConfig) -> Option<(String, usize)> {
+fn resolve_j_fit(
+    rks: &ScfResult,
+    config: &RhfConfig,
+) -> Option<(String, usize, crate::df_j::RiJPrecision)> {
     if let Some(r) = crate::gradient::active_df_route(rks) {
-        return r.j_aux.clone().map(|n| (n, r.budget_bytes));
+        return r
+            .j_aux
+            .clone()
+            .map(|n| (n, r.budget_bytes, r.ri_j_precision));
     }
+    // No route: the injected fixed-grid SCF, whose `DfJ::new` is f64.
     let name = config.df_j_aux.clone().filter(|v| !v.is_empty())?;
     Some((
         name,
         crate::rhf::resolve_three_index_budget(config.three_index_budget_bytes),
+        crate::df_j::RiJPrecision::F64,
     ))
 }
 
@@ -483,7 +534,7 @@ fn resolve_k_fit(rks: &ScfResult, config: &RhfConfig, exx: f64) -> Option<(Strin
 /// SCF at 1e-11 and at the library default 1e-6). The bar is 1e-8, seven
 /// orders above that; the wrong-reference scenarios sit at 0.14 (a point charge
 /// of 0.5 the configuration lacks), 0.17 (a PBE result) and 2.0 (an HF result).
-const FOCK_CONSISTENCY_TOL: f64 = 1e-8;
+pub(super) const FOCK_CONSISTENCY_TOL: f64 = 1e-8;
 
 /// The Fock matrix rebuilt from `rks.density_r()` with the (exact or RI-J) J,
 /// (exact or RI-K) K and fixed-grid KS energy this Hessian differentiates must
@@ -533,7 +584,14 @@ pub fn rks_fixed_grid_fock_residual(
     if let Some(fit) = fits.j {
         j.fill(0.0);
         let dfbs = (fit.aux)()?;
-        crate::df_j::DfJ::new(bounds.op, prep, &dfbs, fit.budget_bytes)?.build(d, &mut j)?;
+        crate::df_j::DfJ::new_with_precision(
+            bounds.op,
+            prep,
+            &dfbs,
+            fit.budget_bytes,
+            fit.precision,
+        )?
+        .build(d, &mut j)?;
     }
     if let Some(fit) = fits.k {
         k.fill(0.0);
@@ -572,9 +630,13 @@ pub fn rks_fixed_grid_hessian_parts(
     rks: &ScfResult,
     config: &RhfConfig,
 ) -> Result<RhfHessianParts, FerricError> {
-    ks_refusal(mol, prep, rks, config)?;
+    crate::x2c::refuse_relativistic(rks.relativistic, "analytic Hessian")?;
+    ks_refusal(rks, config)?;
     let name = config.xc.as_deref().unwrap_or_default();
-    let cfg = config.dft_grid.clone().unwrap_or_default();
+    let cfg = config
+        .dft_grid
+        .clone()
+        .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
     let grid = FixedGridKs::new(mol, name, &cfg)?;
     rks_fixed_grid_hessian_parts_with(
         ctx,
@@ -604,6 +666,7 @@ pub fn rks_fixed_grid_hessian_parts_with(
     grid: &FixedGridKs,
     mutants: &KsFixedGridMutants,
 ) -> Result<RhfHessianParts, FerricError> {
+    crate::x2c::refuse_relativistic(rks.relativistic, "analytic Hessian")?;
     ks_hessian_parts_in_mode(
         ctx,
         mol,
@@ -650,9 +713,13 @@ pub fn rks_moving_grid_hessian_parts(
     rks: &ScfResult,
     config: &RhfConfig,
 ) -> Result<RhfHessianParts, FerricError> {
-    ks_refusal(mol, prep, rks, config)?;
+    crate::x2c::refuse_relativistic(rks.relativistic, "analytic Hessian")?;
+    ks_refusal(rks, config)?;
     let name = config.xc.as_deref().unwrap_or_default();
-    let cfg = config.dft_grid.clone().unwrap_or_default();
+    let cfg = config
+        .dft_grid
+        .clone()
+        .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
     let grid = FixedGridKs::new(mol, name, &cfg)?;
     rks_moving_grid_hessian_parts_with(
         ctx,
@@ -683,6 +750,7 @@ pub fn rks_moving_grid_hessian_parts_with(
     grid: &FixedGridKs,
     mutants: &KsFixedGridMutants,
 ) -> Result<RhfHessianParts, FerricError> {
+    crate::x2c::refuse_relativistic(rks.relativistic, "analytic Hessian")?;
     ks_hessian_parts_in_mode(
         ctx,
         mol,
@@ -710,7 +778,15 @@ fn ks_hessian_parts_in_mode(
     mutants: &KsFixedGridMutants,
     mode: GridMode,
 ) -> Result<RhfHessianParts, FerricError> {
-    ks_refusal(mol, prep, rks, config)?;
+    ks_refusal(rks, config)?;
+    let nbf = prep.nbasis();
+    if rks.density_total.dim() != (nbf, nbf) {
+        return Err(FerricError::General(format!(
+            "KS Hessian: the SCF result has a {:?} density but the basis has {nbf} functions; \
+             pass the result converged for this molecule and basis",
+            rks.density_total.dim()
+        )));
+    }
     // Everything but the functional is the closed-shell checklist; a stated or
     // recorded RI-J / RI-K basis goes through the same engine and metric probes
     // as RHF.
@@ -718,16 +794,17 @@ fn ks_hessian_parts_in_mode(
     let j_fit = resolve_j_fit(rks, config);
     let k_fit = resolve_k_fit(rks, config, exx);
     let hf_config = checklist_config(rks, config, exx)?;
-    check_supported(Reference::Rhf, mol, prep, op, bounds, rks, &hf_config)?;
+    check_supported_except_functional(Reference::Rhf, mol, prep, op, bounds, rks, &hf_config)?;
     let aux = |name: String| move || crate::df_gradient::aux_basis(mol, &name);
-    let j_factory = j_fit.clone().map(|(n, _)| aux(n));
+    let j_factory = j_fit.clone().map(|(n, _, _)| aux(n));
     let k_factory = k_fit.clone().map(|(n, _)| aux(n));
     let jf = j_factory
         .as_ref()
         .zip(j_fit)
-        .map(|(f, (_, budget_bytes))| KsFit {
+        .map(|(f, (_, budget_bytes, precision))| KsFit {
             aux: f,
             budget_bytes,
+            precision,
         });
     let kf = k_factory
         .as_ref()
@@ -735,6 +812,7 @@ fn ks_hessian_parts_in_mode(
         .map(|(f, (_, budget_bytes))| KsFit {
             aux: f,
             budget_bytes,
+            precision: crate::df_j::RiJPrecision::F64,
         });
     let fits = KsFits {
         j: jf.as_ref(),
@@ -773,14 +851,15 @@ pub fn rks_fixed_grid_hessian_parts_with_aux(
     fits: KsFits<'_>,
     mutants: &KsFixedGridMutants,
 ) -> Result<RhfHessianParts, FerricError> {
-    ks_refusal(mol, prep, rks, config)?;
+    crate::x2c::refuse_relativistic(rks.relativistic, "analytic Hessian")?;
+    ks_refusal(rks, config)?;
     let hf_config = RhfConfig {
         xc: None,
         df_j_aux: None,
         df_k_aux: None,
         ..config.clone()
     };
-    check_supported(Reference::Rhf, mol, prep, op, bounds, rks, &hf_config)?;
+    check_supported_except_functional(Reference::Rhf, mol, prep, op, bounds, rks, &hf_config)?;
     rks_fixed_grid_hessian_core(
         ctx,
         mol,
@@ -826,7 +905,7 @@ fn fitted_terms(
     let mut skeleton = Array2::<f64>::zeros((n3, n3));
     let mut first_order = vec![Array2::<f64>::zeros(d.dim()); n3];
     if let Some(fit) = fits.j {
-        let rij = crate::hessian_df::rij_terms_with_aux(
+        let rij = crate::hessian_df::rij_terms_with_aux_at_precision(
             natoms,
             prep,
             (fit.aux)()?,
@@ -834,6 +913,7 @@ fn fitted_terms(
             fit.budget_bytes,
             d,
             &mutants.rij,
+            fit.precision,
         )?;
         if !mutants.exact_j_skeleton {
             skeleton += &rij.skeleton;
@@ -905,11 +985,12 @@ fn cphf_fitters(
     FerricError,
 > {
     let df_j = match fits.j {
-        Some(fit) if !mutants.exact_j_response => Some(crate::df_j::DfJ::new(
+        Some(fit) if !mutants.exact_j_response => Some(crate::df_j::DfJ::new_with_precision(
             op,
             prep,
             &(fit.aux)()?,
             fit.budget_bytes,
+            fit.precision,
         )?),
         _ => None,
     };
@@ -938,7 +1019,10 @@ fn rks_fixed_grid_hessian_core(
     fits: KsFits<'_>,
     mutants: &KsFixedGridMutants,
 ) -> Result<RhfHessianParts, FerricError> {
+    let mut phases = ferric_core::timing::PhaseAccumulator::new().report_on_drop("RKS Hessian");
+    let t = phases.begin("Fock consistency check");
     fock_consistency(ctx, mol, prep, bounds, rks, grid, fits)?;
+    phases.stop(t);
 
     let natoms = mol.atoms.len();
     let nocc = (mol.nelec() / 2) as usize;
@@ -948,8 +1032,14 @@ fn rks_fixed_grid_hessian_core(
     let exx = grid.exact_exchange();
 
     let nuclear = nuclear_term(mol, config);
-    let one_electron = skeleton_hess_1e(prep, natoms, &[], d)?;
+    let t = phases.begin("1e + overlap skeleton");
+    // `extra_skeleton` is the ECP skeleton here (an external potential is refused).
+    let one_electron =
+        skeleton_hess_1e(prep, natoms, &[], d)? + extra_skeleton(mol, prep, config, d)?;
     let overlap = skeleton_hess_overlap(prep, natoms, &w)?;
+    phases.stop(t);
+    let t = phases.begin("2e skeleton + J/K first-order");
+    let sub = phases.begin("  fitted RI-J / RI-K terms");
     // Mutants: the RI-K pieces or the CPHF DfK fitted over the RI-J basis.
     let j_for_k = |on: bool| match (on, fits.j, fits.k) {
         (true, Some(j), Some(_)) => KsFits {
@@ -968,6 +1058,7 @@ fn rks_fixed_grid_hessian_core(
         j_for_k(mutants.rik_terms_from_j_aux),
         mutants,
     )?;
+    phases.stop_nested(sub);
     // A fitted Coulomb (exchange) term replaces the four-centre Gamma_J
     // (Gamma_K); the mutants keep the exact one.
     let keep_j = fits.j.is_none() || mutants.exact_j_skeleton;
@@ -978,6 +1069,7 @@ fn rks_fixed_grid_hessian_core(
     } else {
         0.0
     };
+    let sub = phases.begin("  four-centre 2e skeleton");
     let mut two_electron = if c_j == 0.0 && c_k == 0.0 {
         Array2::<f64>::zeros((3 * natoms, 3 * natoms))
     } else {
@@ -986,8 +1078,13 @@ fn rks_fixed_grid_hessian_core(
         };
         skeleton_hess_2e(prep, op, bounds, natoms, max_abs(d), &gam)?
     };
+    phases.stop_nested(sub);
+    phases.stop(t);
+    let t = phases.begin("XC skeleton (2nd derivative)");
     two_electron += &grid.skeleton_hessian_for(mode, &geo, d, &mutants.xc)?;
+    phases.stop(t);
     two_electron += &fitted.skeleton;
+    let t = phases.begin("2e skeleton + J/K first-order");
 
     let no_density = Array2::<f64>::zeros(d.dim());
     let fitted_j_first = fits.j.is_some() && !mutants.exact_j_first_order;
@@ -997,24 +1094,41 @@ fn rks_fixed_grid_hessian_core(
         exchange: if fitted_k_first { &no_density } else { d },
         k_scale: 0.5 * exx * mutants.fock_exx,
     };
+    let sub = phases.begin("  first-order 1e + four-centre Fock");
     let mut first = first_order_ao(prep, op, bounds, natoms, &[], &[spec])?;
+    add_extra_first_order(&mut first, mol, prep, config)?;
+    phases.stop_nested(sub);
     for (f, g) in first.f1[0].iter_mut().zip(&fitted.first_order) {
         *f += g;
     }
-    for (f, v) in
-        first.f1[0]
-            .iter_mut()
-            .zip(grid.first_order_fock_for(mode, &geo, d, &mutants.xc)?)
-    {
+    phases.stop(t);
+    let t = phases.begin("XC first-order Fock");
+    let vx = grid.first_order_fock_for(mode, &geo, d, &mutants.xc)?;
+    phases.stop(t);
+    for (f, v) in first.f1[0].iter_mut().zip(vx) {
         *f += &v;
     }
-    let kernel = grid.response(&geo, d, mutants.response_fxc, mutants.response_gradient)?;
-    let kernel_fn = |d1: &Array2<f64>| kernel.apply(d1);
+    let t = phases.begin("XC response kernel build");
+    let kernel = grid.response_mo(
+        &geo,
+        d,
+        (rks.mos_r(), nocc),
+        mutants.response_fxc,
+        mutants.response_gradient,
+    )?;
+    phases.stop(t);
+    let t = phases.begin("CPKS fitted J/K construction");
     let (df_j, df_k) = cphf_fitters(prep, op, j_for_k(mutants.cphf_dfk_from_j_aux), mutants)?;
+    phases.stop(t);
     let g = TwoElectronBuilder::new(ctx, prep, bounds)?
         .fitted(df_j, df_k, false)
-        .with_xc_response(Some(&kernel_fn), exx * mutants.response_exx);
+        .with_xc_mo_response(&kernel, exx * mutants.response_exx)
+        .with_density_path_k_if(mutants.cphf_density_path_k);
+    let t = phases.begin("CPKS");
     let resp = cpks_response_with(&g, rks, nocc, &first)?;
+    phases.stop(t);
+    g.report_phases("RKS CPKS G builds");
+    super::report_cphf_iterations("RKS", &resp);
     Ok(parts_from_terms(
         [nuclear, one_electron, overlap, two_electron],
         resp,
@@ -1029,43 +1143,48 @@ fn rks_fixed_grid_hessian_core(
 /// derivatives of the surface `ks_gradient::xc_gradient_closed`
 /// differentiates.
 ///
+/// The `*_polarized` functions are the spin-polarized pieces at fixed
+/// `(D^α, D^β)` that [`crate::hessian::uks::uks_moving_grid_hessian`] adds, the second
+/// derivatives of the surface `ks_gradient::xc_gradient_open` differentiates.
+///
 /// Refused with the Hessian's own typed errors: meta-GGA, VV10, range-
-/// separated and double hybrids, unequal short/long-range exchange, an
-/// angular-pruned grid and ghost atoms. These are closed-shell only (no
-/// spin-polarized moving-grid skeleton exists).
+/// separated and double hybrids, unequal short/long-range exchange and ghost
+/// atoms. An ECP is accepted (V_ECP is not an XC term). A pruned grid is supported: every point still rides its
+/// home atom (`atomic_quadrature_points` follows `cfg.prune`).
 pub mod xc_blocks {
     use super::*;
 
-    /// `Ok` when [`hess_xc`] and [`vxc_deriv`] support `xc_name` on a grid
-    /// built with `cfg` for `mol`; otherwise the analytic KS Hessian's typed
-    /// refusal (no SCF or grid is built).
+    /// `Ok` when every function of this module supports `xc_name` on a grid
+    /// built with `cfg` for `mol` in basis `bs`; otherwise the analytic KS
+    /// Hessian's typed refusal (no SCF or grid is built).
     pub fn check(
         mol: &Molecule,
+        bs: &BasisSet,
         xc_name: &str,
-        cfg: &ferric_dft::grid::AtomicGridConfig,
+        // Every grid is supported (pruned or flat, with or without a weight
+        // cutoff); the argument is kept so callers state the grid they mean.
+        _cfg: &ferric_dft::grid::AtomicGridConfig,
     ) -> Result<(), FerricError> {
         let xc = xc_def_from_name(xc_name)
             .map_err(|e| FerricError::General(format!("XC Hessian pieces: libxc: {e:?}")))?;
         functional_refusal(xc_name, &xc)?;
-        if cfg.prune.is_some() {
-            return Err(unsupported(
-                "an angular-pruned XC grid (grid_prune)",
-                "the pruned grid's weight response",
-            ));
-        }
         if mol.atoms.iter().any(|a| a.ghost) {
             return Err(unsupported("ghost atoms", "ghost-atom XC grid response"));
         }
+        // An ECP is not refused: these pieces are the XC grid terms at a
+        // fixed density, and neither the grid nor the AOs depend on V_ECP.
+        let _ = bs;
         Ok(())
     }
 
     /// The production grid of `mol` for `xc_name` with `cfg`, after [`check`].
     fn moving_grid(
         mol: &Molecule,
+        prep: &PreparedBasis,
         xc_name: &str,
         cfg: &ferric_dft::grid::AtomicGridConfig,
     ) -> Result<FixedGridKs, FerricError> {
-        check(mol, xc_name, cfg)?;
+        check(mol, prep.basis_set(), xc_name, cfg)?;
         FixedGridKs::new(mol, xc_name, cfg)
     }
 
@@ -1078,7 +1197,7 @@ pub mod xc_blocks {
         cfg: &ferric_dft::grid::AtomicGridConfig,
         d: &Array2<f64>,
     ) -> Result<Array2<f64>, FerricError> {
-        let grid = moving_grid(mol, xc_name, cfg)?;
+        let grid = moving_grid(mol, prep, xc_name, cfg)?;
         let geo = XcGeometry::new(mol, prep)?;
         grid.skeleton_hessian_moving(&geo, d, &XcMutants::default())
     }
@@ -1093,8 +1212,41 @@ pub mod xc_blocks {
         cfg: &ferric_dft::grid::AtomicGridConfig,
         d: &Array2<f64>,
     ) -> Result<Vec<Array2<f64>>, FerricError> {
-        let grid = moving_grid(mol, xc_name, cfg)?;
+        let grid = moving_grid(mol, prep, xc_name, cfg)?;
         let geo = XcGeometry::new(mol, prep)?;
         grid.first_order_fock_moving(&geo, d, &XcMutants::default())
+    }
+
+    /// `∂²E_xc/∂x∂y` at fixed spin densities `(d_a, d_b)`, (3N, 3N), moving
+    /// grid (the XC part of the skeleton of [`crate::hessian::uks::uks_moving_grid_hessian`]).
+    /// At `d_a = d_b = D/2` it equals [`hess_xc`] at `D`.
+    pub fn hess_xc_polarized(
+        mol: &Molecule,
+        prep: &PreparedBasis,
+        xc_name: &str,
+        cfg: &ferric_dft::grid::AtomicGridConfig,
+        d: [&Array2<f64>; 2],
+    ) -> Result<Array2<f64>, FerricError> {
+        let grid = moving_grid(mol, prep, xc_name, cfg)?;
+        let geo = XcGeometry::new(mol, prep)?;
+        grid.polarized()?
+            .skeleton_hessian_moving(&geo, d, &XcMutants::default())
+    }
+
+    /// `[∂V^α_xc/∂x, ∂V^β_xc/∂x]` at fixed spin densities `(d_a, d_b)`, each
+    /// of length 3N with `nbf × nbf` entries, moving grid (the XC part of the
+    /// first-order Fock matrices of [`crate::hessian::uks::uks_moving_grid_hessian`]). At
+    /// `d_a = d_b = D/2` each spin's list equals [`vxc_deriv`] at `D`.
+    pub fn vxc_deriv_polarized(
+        mol: &Molecule,
+        prep: &PreparedBasis,
+        xc_name: &str,
+        cfg: &ferric_dft::grid::AtomicGridConfig,
+        d: [&Array2<f64>; 2],
+    ) -> Result<[Vec<Array2<f64>>; 2], FerricError> {
+        let grid = moving_grid(mol, prep, xc_name, cfg)?;
+        let geo = XcGeometry::new(mol, prep)?;
+        grid.polarized()?
+            .first_order_fock_moving(&geo, d, &XcMutants::default())
     }
 }

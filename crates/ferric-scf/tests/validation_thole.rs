@@ -27,7 +27,8 @@
 //! | test | QM / basis | MM | method |
 //! |---|---|---|---|
 //! | `thole_h2o_w4_excl_ccpvdz` | H2O / cc-pVDZ | 4 TIP3P waters, α O 0.837 / H 0.496 Å³, intramolecular site pairs excluded | RHF |
-//! | `thole_h2o_w4_noexcl_ccpvdz` | H2O / cc-pVDZ | same waters, NO exclusions (the `run_qmmm` default), α × 0.3 | RHF |
+//! | `thole_h2o_w4_noexcl_ccpvdz` | H2O / cc-pVDZ | same waters, NO exclusions (`run_qmmm(polarization_exclusions="none")`), α × 0.3 | RHF |
+//! | `thole_h2o_w4_o_molexcl_ccpvdz` | H2O / cc-pVDZ | same waters, oxygens only polarizable (0.837 Å³), same-molecule exclusion (each O ignores its own H charges) | RHF |
 //! | `thole_nh2_w3_uhf_ccpvdz` | NH2 (²B1) / cc-pVDZ | 3 TIP3P waters, exclusions | UHF |
 //! | `anchor_far_site_classical_limit` | H2O / cc-pVDZ | 4 waters + a +1 ion as fixed charges, ONE site (10 Å³) 30 Å away | RHF |
 //! | `anchor_tiny_alpha_is_point_charge_embedding` | H2O / cc-pVDZ | the 4 waters, every α × 1e-12 | RHF |
@@ -117,12 +118,14 @@ use ferric_scf::gradient::{
 };
 use ferric_scf::polarizable::{induce, PolarizableSites, DEFAULT_THOLE_A};
 use ferric_scf::qmmm::{
-    full_gradient_with_polarizable, mm_forces, QmSelection, QmmmAtom, QmmmSystem,
+    full_gradient_with_polarizable, mm_forces, PolarizationExclusions, QmSelection, QmmmAtom,
+    QmmmSystem,
 };
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -188,12 +191,6 @@ fn reference(file_stem: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("reference field {ptr} missing or not a number"))
-}
-
 fn xyz3(v: &Value) -> [f64; 3] {
     let a = v.as_array().expect("xyz array");
     [
@@ -239,16 +236,47 @@ fn build_system(r: &Value, alpha_scale: f64) -> QmmmSystem {
         atoms.push(QmmmAtom::new("X", 0, x, y, z, q).with_alpha(alpha));
     }
     let mult = r["multiplicity"].as_u64().unwrap() as usize;
-    QmmmSystem::new(
+    let sys = QmmmSystem::new(
         &atoms,
         QmSelection::Indices((0..nqm).collect()),
         r["charge"].as_i64().unwrap() as i32,
         mult,
     )
-    .unwrap()
+    .unwrap();
+    if !molecule_exclusion(r) {
+        return sys;
+    }
+    // QM atoms get a label no MM water uses; MM atoms the generator's.
+    let ids = (0..nqm)
+        .map(|_| usize::MAX)
+        .chain(
+            r["mm_atoms"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| a["molecule"].as_u64().unwrap() as usize),
+        )
+        .collect();
+    sys.with_residue_ids(ids).unwrap()
+}
+
+/// Whether the reference uses same-molecule exclusion (its MM atoms carry
+/// `molecule` labels and it records the `no_molecule_exclusion` control).
+fn molecule_exclusion(r: &Value) -> bool {
+    r["controls"].get("no_molecule_exclusion").is_some()
 }
 
 fn pol_sites(r: &Value, sys: &QmmmSystem, thole_a: Option<f64>) -> PolarizableSites {
+    if molecule_exclusion(r) {
+        // The production route: QmmmSystem labels -> polarizable_embedding.
+        let ids = sys
+            .polarization_molecule_ids(PolarizationExclusions::Molecule, None)
+            .unwrap();
+        return sys
+            .polarizable_embedding(thole_a, ids.as_deref())
+            .unwrap()
+            .unwrap();
+    }
     let exclusions = r["exclusions"]
         .as_array()
         .unwrap()
@@ -313,14 +341,12 @@ fn scf(
     uhf: bool,
     ctx: &str,
 ) -> ScfResult {
-    let cfg = RhfConfig {
-        external_potential: ext,
-        polarizable: pol,
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        max_iter: 300,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_external_potential(ext)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10)
+        .with_max_iter(300);
+    cfg.polarizable = pol;
     let ctx_p = ParallelContext::default();
     let res = if uhf {
         solve_uhf(&ctx_p, &qm.mol, &qm.prep, &qm.bounds, &cfg)
@@ -480,12 +506,14 @@ fn check_case(file_stem: &str, damping_control: bool, mm_rows: bool) {
     let sys = build_system(&r, 1.0);
     let qm = qm_part(&r, &sys, &ctx);
     let n_mm = r["mm_atoms"].as_array().unwrap().len();
+    let n_sites = r["mm_atoms"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|a| a["alpha_bohr3"].as_f64().unwrap() > 0.0)
+        .count();
     let pol = pol_sites(&r, &sys, Some(thole_a));
-    assert_eq!(
-        pol.sites.len(),
-        n_mm,
-        "{ctx}: every MM atom is a polarizable site"
-    );
+    assert_eq!(pol.sites.len(), n_sites, "{ctx}: polarizable site count");
     let ext = sys.to_external_potential();
     assert!(ext.is_some(), "{ctx}: MM region produced no potential");
 
@@ -539,7 +567,11 @@ fn check_case(file_stem: &str, damping_control: bool, mm_rows: bool) {
     );
 
     // --- controls: ferric must miss every discriminating control --------
-    for name in ["no_mutual", "negated_tensor"] {
+    let mut controls = vec!["no_mutual", "negated_tensor"];
+    if molecule_exclusion(&r) {
+        controls.push("no_molecule_exclusion");
+    }
+    for name in controls {
         let e_c = control_energy(&r, &ctx, name);
         check_misses(
             &ctx,
@@ -653,6 +685,15 @@ fn thole_h2o_w4_excl_ccpvdz() {
 #[ignore = "validation: Thole embedding"]
 fn thole_h2o_w4_noexcl_ccpvdz() {
     check_case("h2o_w4_noexcl_cc-pvdz", true, true);
+}
+
+/// Oxygen-only sites with same-molecule exclusion: each oxygen ignores its
+/// own hydrogens' charges, which are not sites (`excluded_charges`), built
+/// through `QmmmSystem::polarizable_embedding` as `run_qmmm` and the CLI do.
+#[test]
+#[ignore = "validation: Thole embedding"]
+fn thole_h2o_w4_o_molexcl_ccpvdz() {
+    check_case("h2o_w4_o_molexcl_cc-pvdz", false, true);
 }
 
 #[test]

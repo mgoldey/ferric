@@ -51,7 +51,7 @@ pub fn eval_density_closed(
 
     // Phi_{μg} = Σ_ν D_μν χ_νg  (one GEMM; runs before the point-parallel rayon
     // region below starts, never overlapping it). Opt-in BLAS raise via
-    // FERRIC_BLAS_THREADS (default 1, unchanged behavior) — see blas_threads.rs.
+    // FERRIC_BLAS_THREADS (default: the rayon pool size; 1 on a rayon worker) — see blas_threads.rs.
     let phi: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d.dot(chi));
 
     // ρ_g = Σ_μ χ_μg · Φ_μg, and ∇ρ_ag = 2 Σ_μ Φ_μg · ∂_a χ_μg.
@@ -59,8 +59,8 @@ pub fn eval_density_closed(
     // Restructured point-outer / μ-inner (vs. the original μ-outer / point-inner
     // row sweep) so grid points — independent, disjoint output slots — can be
     // split across rayon workers while each point's own Σ_μ accumulation runs
-    // in the same ascending-μ order as before. That makes the result bit-
-    // identical to the old serial code and to itself across thread counts:
+    // in ascending-μ order. That makes the result bit-
+    // identical to a serial loop and to itself across thread counts:
     // this only changes which loop nest visits (μ, g) pairs, not the order in
     // which terms are added into each output element.
     let mut rho = Array1::<f64>::zeros(npts);
@@ -119,9 +119,13 @@ pub fn eval_density_closed(
 ///   `sigma`           : (3, npts) — rows are σ_αα, σ_αβ, σ_ββ
 #[derive(Debug, Clone)]
 pub struct UksDensityGrid {
+    /// α density per point, length `npts`.
     pub rho_a: Array1<f64>,
+    /// β density per point, length `npts`.
     pub rho_b: Array1<f64>,
+    /// ∇ρ_α, shape `(3, npts)`, rows `x, y, z`.
     pub grad_a: Array2<f64>,
+    /// ∇ρ_β, shape `(3, npts)`, rows `x, y, z`.
     pub grad_b: Array2<f64>,
     /// (3, npts) — sigma[(0, g)] = σ_αα, sigma[(1, g)] = σ_αβ, sigma[(2, g)] = σ_ββ.
     pub sigma: Array2<f64>,
@@ -144,8 +148,8 @@ pub fn eval_density_uks(
     debug_assert_eq!(dchi.dim(), (3, nbf, npts));
 
     // Two GEMMs, both before the point-parallel rayon region below starts.
-    // Opt-in BLAS raise via FERRIC_BLAS_THREADS (default 1, unchanged
-    // behavior) — same reasoning as eval_density_closed above.
+    // Opt-in BLAS raise via FERRIC_BLAS_THREADS (default: the rayon pool size; 1 on a rayon
+    // worker) — same reasoning as eval_density_closed above.
     let phi_a: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_a.dot(chi));
     let phi_b: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_b.dot(chi));
 
@@ -251,8 +255,8 @@ pub fn eval_density_uks(
 ///
 /// so τ needs only D and ∇χ — no explicit occupied MO coefficients. This is
 /// PySCF's `eval_rho` meta-GGA path (`dft/numint.py`: `c1 = ∂χ·D`, then
-/// `τ += Σ_μ ∂χ_μ · c1_μ`, finally `τ *= 0.5`), verified against libxc 7.0.0's
-/// unpolarized τ convention (total τ = τ_α + τ_β).
+/// `τ += Σ_μ ∂χ_μ · c1_μ`, finally `τ *= 0.5`), verified against the linked
+/// libxc's unpolarized τ convention (5.2.3 and 7.0.0) (total τ = τ_α + τ_β).
 ///
 /// Passing the **total** D (tr D = N_e) yields the total τ for the unpolarized
 /// libxc kernel; passing a per-spin D_σ (tr D_σ = N_σ) yields τ_σ for the

@@ -34,10 +34,9 @@
 //! by slicing both axes to `p_list` (so dropped aux rows are also dropped
 //! from the V^{-1/2} mixing). At `thresh = 0` no aux shells are dropped and the
 //! result is algebraically equivalent to the dense path — NOT bit-identical.
-//! (This used to claim bit-identity, which was false: the Boys rotation and the
-//! per-orbital accumulation order differ from dense, so the RPA energy agrees
-//! only to a finite-precision floor. Measured 2.6e-10 on H2O/cc-pVDZ after the
-//! 2026-07-28 semicanonicalization fix, improved from 8.2e-9 before it.)
+//! (The Boys rotation and the per-orbital accumulation order differ from
+//! dense, so the RPA energy agrees only to a finite-precision floor: 2.6e-10
+//! on H2O/cc-pVDZ with the semicanonicalization below; 8.2e-9 without it.)
 //!
 //! The (P|μν) integrals are computed only for retained P shells × density-
 //! significant OBS shell pairs, then contracted with `c_loc[:,i] ⊗ c_vir` to
@@ -59,21 +58,23 @@ use ferric_core::linalg::{eigh_dc, Uplo};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::engine::Engine;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::schwarz;
 use ferric_integrals::threeindex;
+use ferric_mp2::rimp2::cholesky_inverse_sqrt;
 use ferric_scf::ScfResult;
 use ndarray::{s, Array2};
-use ndarray_linalg::{Cholesky, UPLO};
 
 /// Sparse representation of (P | i_loc, a) integrals on Boys-localized
 /// occupied orbitals.
 #[derive(Debug, Clone)]
 pub struct ScreenedBov {
+    /// Number of localized active occupied orbitals (columns of `c_occ_loc`).
     pub n_occ_loc: usize,
+    /// Number of virtual orbitals (`nbasis − nocc_total`).
     pub nvir: usize,
+    /// Number of auxiliary basis functions before screening.
     pub naux: usize,
     /// Per-orbital retained aux index list, sorted ascending.
     pub p_lists: Vec<Vec<usize>>,
@@ -87,22 +88,6 @@ pub struct ScreenedBov {
     pub v_inv_sqrt: Array2<f64>,
     /// Diagnostic: retained pairs vs (nocc_loc × naux).
     pub total_retained: usize,
-}
-
-/// Cholesky-based V^{-1/2} (same path as `compute_rpa_intermediates`).
-fn cholesky_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
-    use ndarray_linalg::SolveTriangular;
-    let n = v.nrows();
-    with_blas_threads(opt_in_blas_threads(), || {
-        let l = v
-            .cholesky(UPLO::Lower)
-            .map_err(|e| FerricError::General(format!("V cholesky failed: {e}")))?;
-        let eye = Array2::<f64>::eye(n);
-        let v_inv_sqrt = l
-            .solve_triangular(UPLO::Lower, ndarray_linalg::Diag::NonUnit, &eye)
-            .map_err(|e| FerricError::General(format!("triangular solve failed: {e}")))?;
-        Ok(v_inv_sqrt)
-    })
 }
 
 /// Build the screened, per-orbital B tile representation from a localized
@@ -201,11 +186,11 @@ pub fn build_screened_bov(
     let c = rhf.mos_r();
     let c_vir = c.slice(s![.., nocc_total..]).to_owned();
 
-    // SEMICANONICALIZE the localized occupied block (FIXED 2026-07-28).
+    // SEMICANONICALIZE the localized occupied block.
     //
     // Boys-localized orbitals are NOT Fock eigenvectors, so F_loc = C_loc^T F
-    // C_loc is not diagonal. This code used to take `diag(F_loc)` as per-orbital
-    // "orbital energies" and hand them to `sternheimer_sparse`, which consumes
+    // C_loc is not diagonal. Taking `diag(F_loc)` as per-orbital
+    // "orbital energies" and handing them to `sternheimer_sparse`, which consumes
     // them as `e_ia = eps_a - eps_loc[i]` — i.e. as if they WERE eigenvalues.
     // That silently discards the off-diagonal coupling; measured
     // max|offdiag F_loc| was 2.3e-1..3.1e-1 against a diagonal spread of ~1.0e1

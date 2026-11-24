@@ -29,6 +29,7 @@ use ferric_dft::xc_batch::{
     SeamGuard, FORCE_HOST, MIXED_VXC_HOST_TWIN, POISON_XC_STAGING, XC_GEMM_LOOP,
 };
 use ferric_dft::xc_trait::XcContribution;
+use ferric_testkit::compare::max_abs;
 use ndarray::Array2;
 use std::sync::atomic::Ordering;
 
@@ -98,10 +99,6 @@ fn density(nbf: usize, seed: u64) -> Array2<f64> {
         ((x >> 11) as f64 / (1u64 << 53) as f64 - 0.5) * 0.6
     });
     2.0 * c.dot(&c.t())
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
 }
 
 /// Builds at D0, D1, D1 on a fresh evaluator: (E, V) of each.
@@ -247,12 +244,10 @@ fn a_mixed_device_scf_matches_the_f64_host_scf() {
     let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        xc: Some("PBE".into()),
-        density_conv: 1e-10,
-        energy_conv: 1e-8,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc("PBE")
+        .with_density_conv(1e-10)
+        .with_energy_conv(1e-8);
     let run = |host: bool| {
         let _seam = SeamGuard::set(&FORCE_HOST, host);
         solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap()

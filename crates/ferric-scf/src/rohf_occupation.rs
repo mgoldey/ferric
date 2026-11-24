@@ -193,7 +193,8 @@ fn top_k_by_weight(candidates: &[usize], weight: &[f64], k: usize) -> Vec<usize>
 /// overlap, Gilbert-Besley-Gill): the `nocc_double` eigenvectors with the
 /// largest weight in `c_ref`'s closed block become closed, then the
 /// `nocc_open` of the rest with the largest weight in its open block become
-/// open. Used only once the hole-swap lock is engaged.
+/// open. Used by the loop once the hole-swap lock is engaged, and at every
+/// exit ([`OccupationGuard::exit_labels`]).
 ///
 /// Why continuity and not a spin-Fock (Koopmans) choice: the first version of
 /// this lock picked the open orbitals by `F_α` and the closed ones by `F_β`.
@@ -448,6 +449,35 @@ impl OccupationGuard {
         if !self.locked {
             return (eps, c_new);
         }
+        select_by_continuity(eps, c_new, c_ref, s, self.nocc_double, self.nocc_open)
+    }
+
+    /// Labels for the orbitals an EXIT returns: always by continuity with
+    /// `c_ref`, the iterate whose density built the exit Fock — whether or not
+    /// the guard is enabled or locked.
+    ///
+    /// The exit re-diagonalizes the effective Fock of the converged iterate.
+    /// Index aufbau on that diagonalization re-assigns closed/open/virtual
+    /// whenever the effective-Fock spectrum of the converged state is not in
+    /// aufbau order — which is the normal case for a ROKS degenerate open
+    /// shell (OH ²Π/PBE: open π −0.1103 below closed π −0.0764, see the
+    /// module docs) and is exactly the state MOM (guard off) holds. The
+    /// returned MOs and densities then describe the OTHER determinant, while
+    /// `energy`, `fock_alpha` and `rohf_spin_focks` belong to the converged
+    /// one. MEASURED (OH/STO-3G ROKS/PBE, `mom_after_iter = 5`): the
+    /// semi-canonical β block built from the stored `F_β` on the returned
+    /// orbitals put the occupied π at −0.0364 above the empty π at −0.0628, a
+    /// negative β gap that made the U-PDEP χ₀ scale factors `sqrt(2e/(ω²+e²))`
+    /// NaN and failed U-GW in LAPACK (info 69). Continuity keeps the
+    /// converged occupation and is the identity (no permutation) whenever
+    /// index aufbau already agrees, so aufbau-ordered states are bit-identical.
+    pub(crate) fn exit_labels(
+        &self,
+        c_ref: &Array2<f64>,
+        eps: Vec<f64>,
+        c_new: Array2<f64>,
+        s: &Array2<f64>,
+    ) -> (Vec<f64>, Array2<f64>) {
         select_by_continuity(eps, c_new, c_ref, s, self.nocc_double, self.nocc_open)
     }
 

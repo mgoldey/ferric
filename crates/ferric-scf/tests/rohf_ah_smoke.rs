@@ -29,12 +29,10 @@ fn rohf_ah_step_at_stationary_point_is_noop() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let cfg = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
     let res = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(res.converged);
 
@@ -74,8 +72,14 @@ fn rohf_ah_step_at_stationary_point_is_noop() {
         fxc: None,
         thresh: 1e-12,
         ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
+        j_response: None,
+        k_response: None,
     };
-    let ah_inputs = RohfAhInputs { base: &inputs };
+    let ah_inputs = RohfAhInputs {
+        base: &inputs,
+        newton_level_shift: 1e-6,
+        newton_max_step: 0.1,
+    };
 
     let (c_new, kmax) = rohf_ah_step(
         &ctx, &ah_inputs, /*max_step=*/ 0.2, /*davidson_conv=*/ 1e-7,
@@ -101,19 +105,29 @@ fn rohf_ah_h2_triplet_lda_matches_diis() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let cfg_diis = RhfConfig {
-        xc: Some("LDA".into()),
-        energy_conv: 1e-9,
-        density_conv: 1e-7,
-        max_iter: 200,
-        ..Default::default()
-    };
-    let cfg_ah = RhfConfig {
-        ah_trigger: 1e-2,
-        ..cfg_diis.clone()
-    };
+    let cfg_diis = RhfConfig::default()
+        .with_xc("LDA")
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-7)
+        .with_max_iter(200);
+    let mut cfg_ah = cfg_diis.clone();
+    cfg_ah.ah_trigger = 1e-2;
     let r_diis = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg_diis).unwrap();
+    let (sc0, de0) = (
+        ferric_scf::rohf::screened_fxc_builds_on_this_thread(),
+        ferric_scf::rohf::dense_fxc_builds_on_this_thread(),
+    );
     let r_ah = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg_ah).unwrap();
+    // The AH step's f_xc runs on the SCF's screened grid (no dense kernel).
+    assert!(
+        ferric_scf::rohf::screened_fxc_builds_on_this_thread() - sc0 >= 1,
+        "ROKS AH built no screened f_xc response"
+    );
+    assert_eq!(
+        ferric_scf::rohf::dense_fxc_builds_on_this_thread() - de0,
+        0,
+        "ROKS AH built a dense f_xc kernel"
+    );
 
     eprintln!(
         "H₂ triplet/LDA  DIIS: E={:.10}, iters={}",
@@ -135,6 +149,7 @@ fn rohf_ah_h2_triplet_lda_matches_diis() {
 /// known-hard doublet OH/LDA case where PCG plateaus. If this lands an
 /// energy ≥1 mHa below the DIIS run *and* hits density_conv=1e-3, we can
 /// un-ignore roks_grad_oh_ccpvdz_lda in a follow-up.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rohf_ah_oh_lda_diagnostic() {
     let mol = Molecule::parse_xyz("2\nOH\nO 0 0 0\nH 0 0 0.97\n", 0, 2).unwrap();
@@ -144,18 +159,14 @@ fn rohf_ah_oh_lda_diagnostic() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let cfg_diis = RhfConfig {
-        xc: Some("LDA".into()),
-        energy_conv: 1e-7,
-        density_conv: 1e-3,
-        max_iter: 200,
-        level_shift: 0.2,
-        ..Default::default()
-    };
-    let cfg_ah = RhfConfig {
-        ah_trigger: 1e-2,
-        ..cfg_diis.clone()
-    };
+    let cfg_diis = RhfConfig::default()
+        .with_xc("LDA")
+        .with_energy_conv(1e-7)
+        .with_density_conv(1e-3)
+        .with_max_iter(200)
+        .with_level_shift(0.2);
+    let mut cfg_ah = cfg_diis.clone();
+    cfg_ah.ah_trigger = 1e-2;
     let r_diis = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg_diis);
     let r_ah = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg_ah);
 
@@ -197,12 +208,10 @@ fn rohf_ah_disabled_still_works() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let cfg = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
     let r = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(r.converged);
     assert!(

@@ -63,7 +63,7 @@
 //!   unconverged verdict anywhere, is reported in
 //!   [`OmegaTuneResult::stability_warning`](crate::omega_tuning::OmegaTuneResult::stability_warning).
 //! * `NotAnalysed(skip)` — the Hessian cannot be built for this functional
-//!   (VV10 such as ωB97X-V: [`StabilitySkip::Vv10Kernel`](crate::stability::StabilitySkip::Vv10Kernel); meta-GGA). This is
+//!   (VV10 such as ωB97X-V: [`StabilitySkip::Vv10Kernel`](crate::stability::StabilitySkip::Vv10Kernel)). This is
 //!   NEVER read as stable: it is recorded per eval, summarised in
 //!   `stability_warning` and printed to stderr.
 //!
@@ -86,8 +86,9 @@ use ndarray::Array2;
 pub struct OmegaTuneConfig {
     /// RSH functional name (must carry a libxc `_omega` parameter).
     pub functional: String,
-    /// Search bracket, Bohr⁻¹.
+    /// Lower end of the search bracket, Bohr⁻¹.
     pub omega_lo: f64,
+    /// Upper end of the search bracket, Bohr⁻¹.
     pub omega_hi: f64,
     /// Convergence width on ω (Bohr⁻¹).
     pub omega_tol: f64,
@@ -198,10 +199,13 @@ pub enum OmegaSeed {
     /// continuation was off, or this was the first evaluation and there was no
     /// neighbour to continue from.
     Default,
-    /// Converged orbitals of an earlier evaluation at this ω (Bohr⁻¹) — the
-    /// one NEAREST in ω among those already evaluated, which under
-    /// golden-section search is generally not the previous one.
-    Continued { from_omega: f64 },
+    /// Converged orbitals of an earlier evaluation — the one NEAREST in ω
+    /// among those already evaluated, which under golden-section search is
+    /// generally not the previous one.
+    Continued {
+        /// The ω (Bohr⁻¹) of the evaluation the orbitals came from.
+        from_omega: f64,
+    },
 }
 
 impl std::fmt::Display for OmegaSeed {
@@ -325,9 +329,13 @@ impl CationStability {
 /// this point belongs on the same J curve as its neighbours.
 #[derive(Debug, Clone, Copy)]
 pub struct OmegaEval {
+    /// The range-separation parameter evaluated, Bohr⁻¹.
     pub omega: f64,
+    /// HOMO eigenvalue of the neutral (Hartree).
     pub eps_homo: f64,
+    /// ΔSCF ionization potential `E(N−1) − E(N)` (Hartree).
     pub ip_delta_scf: f64,
+    /// Koopmans residual `ε_HOMO + IP` (Hartree); zero at the tuned ω.
     pub j: f64,
     /// Cation total energy (Ha) — the ΔSCF IP's E(N−1) term, kept so a branch
     /// switch can be read off the energies and not only off the flag.
@@ -362,10 +370,14 @@ pub struct OmegaEval {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct OmegaTuneResult {
+    /// The tuned ω* (Bohr⁻¹): the evaluated ω with the smallest `|J|`.
     pub omega: f64,
     /// J(ω*) — the residual Koopmans violation at the tuned ω.
     pub j: f64,
+    /// Every evaluation, in the order the golden-section search made them.
     pub evals: Vec<OmegaEval>,
+    /// Whether the bracket narrowed below `omega_tol` before `max_evals`
+    /// evaluations were spent.
     pub converged: bool,
     /// Human-readable account of every evaluation whose cation changed
     /// branch, `None` when the check found nothing (or was disabled — read
@@ -691,27 +703,19 @@ pub fn eval_j_seeded(
 /// Both states must build J the same way, or the IP (and ω*) inherits the
 /// difference: measured 2.3e-5 to 2.8e-5 Ha in the IP for ωB97X-V/def2-SVP
 /// H2O, ≈1.4e-4 Bohr⁻¹ in ω*. The cation is range-separated UKS, and
-/// `solve_uhf` never density-fits J when ω > 0: it uses exact J whatever
-/// `df_j_aux` says. `solve_rhf`, by contrast, auto-selects RI-J for a
-/// functional when `df_j_aux` is unset. So the only treatment both states can
-/// share is exact J: an unset `df_j_aux` resolves to exact J (`Some("")`), and
-/// a named aux basis is refused rather than applied to the neutral alone.
+/// `solve_uhf` takes no auto-default aux, while `solve_rhf` auto-selects RI-J
+/// for a functional when `df_j_aux` is unset. So an unset `df_j_aux` resolves
+/// to exact J (`Some("")`) for both states; `""` or a named aux basis reaches
+/// both solvers as given, which fit J on it identically (the J/K route,
+/// `ferric_scf::resolve_jk_route`).
 pub fn state_scf_config(cfg: &OmegaTuneConfig, omega: f64) -> Result<RhfConfig, FerricError> {
     let mut scf = RhfConfig {
         xc: Some(cfg.functional.clone()),
         xc_omega: Some(omega),
         ..cfg.scf.clone()
     };
-    match scf.df_j_aux.as_deref() {
-        None => scf.df_j_aux = Some(String::new()),
-        Some("") => {}
-        Some(aux) => {
-            return Err(FerricError::General(format!(
-                "tune_omega: df_j_aux = {aux:?} cannot be honoured: the range-separated \
-                 UKS cation always uses exact J, so the neutral must too. Leave df_j_aux \
-                 unset or set it to \"\" (exact J)."
-            )))
-        }
+    if scf.df_j_aux.is_none() {
+        scf.df_j_aux = Some(String::new());
     }
     Ok(scf)
 }

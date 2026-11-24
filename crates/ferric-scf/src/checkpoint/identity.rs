@@ -39,8 +39,13 @@ pub enum FieldClass {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IdentityField {
+    /// Field key, e.g. `spin`, `nao`, `basis[Z=8]`, or a `RhfConfig` field
+    /// name; fields are matched across files by this key.
     pub name: String,
+    /// How a mismatch in this field is treated.
     pub class: FieldClass,
+    /// Canonical text of the value; basis, ECP, density and other bulky data
+    /// enter as FNV-1a hashes of explicit text or bytes.
     pub value: String,
 }
 
@@ -49,8 +54,14 @@ pub struct IdentityField {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BuildStamp {
+    /// Package version string; shown in messages, not used to decide whether
+    /// two builds are the same.
     pub version: String,
+    /// Source commit hash, `None` when unknown. Two stamps are the same build
+    /// only when both commits are known and equal.
     pub commit: Option<String>,
+    /// Whether the working tree had uncommitted changes, `None` when unknown.
+    /// Only `Some(false)` on both sides counts as the same build.
     pub dirty: Option<bool>,
 }
 
@@ -81,11 +92,18 @@ impl std::fmt::Display for BuildStamp {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScfIdentity {
+    /// Every compared field except coordinates and the two convergence
+    /// thresholds, in construction order.
     pub fields: Vec<IdentityField>,
     /// Bohr, atom order. Not in `fields` because a guess reports the max shift.
     pub coords_bohr: Vec<[f64; 3]>,
+    /// `RhfConfig::energy_conv`. A skip requires the file's value to be no
+    /// larger than the current one; a guess ignores it.
     pub energy_conv: f64,
+    /// `RhfConfig::density_conv`, compared like `energy_conv`.
     pub density_conv: f64,
+    /// Number of AO basis functions for this molecule and basis (spherical
+    /// `2l+1` or Cartesian `(l+1)(l+2)/2` per shell); fixes the matrix shapes.
     pub nao: usize,
     /// For messages only: the data decides, so an alias of the same basis passes.
     pub basis_name: String,
@@ -289,17 +307,24 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         scf_stability_descent,
         rohf_occupation_guard,
         mom_after_iter,
+        mom_reference,
         constraints,
         cdft_lambda_tol,
         cdft_lambda_init,
         cdft_stability_descent,
+        relativistic,
         // How J, K and the integrals are built.
         k_builder,
         cosx,
         df_j_aux,
         df_k_aux,
+        ri_j_precision,
+        ri_j_task,
+        ri_k_precision,
         integral_thresh,
         screening,
+        eri,
+        gc_rotation,
         // Which converged state the iteration lands in: see `StateSelecting`. Only
         // `use_sad_guess` and `trah_trigger` have a measured difference. The rest
         // are here because nothing shows them to be path-only.
@@ -315,6 +340,7 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         diis_size,
         diis_switch_thresh,
         level_shift,
+        meta_gga_auto_level_shift,
         // Unchecked. Stop rules decide when an iteration ends, and the exit gate
         // judges where it ended. The rest are resources.
         max_iter: _,
@@ -326,6 +352,10 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         // Asks for a post-SCF diagnostic, whose absence on a restored result reads
         // "not checked".
         check_stability: _,
+        // A hand-off slot for the gradient that follows: moves no number.
+        raw_handoff: _,
+        // A record the solver writes of the route it took: moves no number.
+        eri_route: _,
     } = config;
     // An empty potential is the same physics as none: every consumer treats it as
     // a no-op, and QM/MM with no MM atoms produces either.
@@ -354,6 +384,7 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
             format!("{rohf_occupation_guard:?}"),
         ),
         ("mom_after_iter", format!("{mom_after_iter:?}")),
+        ("mom_reference", format!("{mom_reference:?}")),
         ("constraints", format!("{constraints:?}")),
         ("cdft_lambda_tol", format!("{cdft_lambda_tol:?}")),
         ("cdft_lambda_init", format!("{cdft_lambda_init:?}")),
@@ -361,14 +392,33 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
             "cdft_stability_descent",
             format!("{cdft_stability_descent:?}"),
         ),
+        // The core Hamiltonian (X2C-1e or T + V).
+        ("relativistic", format!("{relativistic:?}")),
     ];
     let route = [
-        ("k_builder", format!("{k_builder:?}")),
+        // The spelling's Debug (`Some("cosx")`), as when the field was a
+        // string, so identities written before the enum still match.
+        (
+            "k_builder",
+            format!("{:?}", k_builder.map(crate::options::KBuilderKind::as_str)),
+        ),
         ("cosx", format!("{cosx:?}")),
         ("df_j_aux", format!("{df_j_aux:?}")),
         ("df_k_aux", format!("{df_k_aux:?}")),
+        ("ri_j_precision", format!("{ri_j_precision:?}")),
+        // Picks the default of an unset `ri_j_precision` (f64 for geometry).
+        ("ri_j_task", format!("{ri_j_task:?}")),
+        // As requested (like the aux names): resolving it would read the GPU
+        // mode, which has its own field.
+        ("ri_k_precision", format!("{ri_k_precision:?}")),
         ("integral_thresh", format!("{integral_thresh:?}")),
         ("screening", format!("{screening:?}")),
+        // In-core and direct J/K differ in the last bits (summation order and
+        // the screening the direct builder applies).
+        ("eri", format!("{eri:?}")),
+        // The direct J/K builder's contraction rotation moves cc-pVXZ
+        // energies by up to ~1e-11 Ha (screening noise; `tests/gc_rotation.rs`).
+        ("gc_rotation", format!("{gc_rotation:?}")),
     ];
     let state_selecting = [
         ("use_sad_guess", format!("{use_sad_guess:?}")),
@@ -389,6 +439,10 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         ("diis_size", format!("{diis_size:?}")),
         ("diis_switch_thresh", format!("{diis_switch_thresh:?}")),
         ("level_shift", format!("{level_shift:?}")),
+        (
+            "meta_gga_auto_level_shift",
+            format!("{meta_gga_auto_level_shift:?}"),
+        ),
     ];
     for (class, group) in [
         (FieldClass::Environment, &environment[..]),
@@ -410,7 +464,7 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
 ///
 /// Left out on purpose: thread counts and memory budgets (unchecked by design),
 /// trace toggles, MPI band sizes, and `FERRIC_TEST_*`.
-const ENV_SWITCHES: [(&str, FieldClass); 8] = [
+const ENV_SWITCHES: [(&str, FieldClass); 11] = [
     ("FERRIC_SCF_INCREMENTAL", FieldClass::Route),
     ("FERRIC_SCF_UHF_INCREMENTAL", FieldClass::Route),
     ("FERRIC_SCF_COMBINED_JK", FieldClass::Route),
@@ -419,7 +473,32 @@ const ENV_SWITCHES: [(&str, FieldClass); 8] = [
     ("FERRIC_JK_STORAGE", FieldClass::Route),
     ("FERRIC_TERF_TABLE_DIR", FieldClass::Route),
     ("FERRIC_DF_GUESS_TIGHT", FieldClass::StateSelecting),
+    ("FERRIC_DFK_METRIC", FieldClass::Route),
+    // Recorded parsed (see `env_switch_value`); the config field
+    // `gc_rotation`, when set, wins over it.
+    ("FERRIC_GC_ROTATE", FieldClass::Route),
+    // The k-panel width of the mixed-precision GEMM: it moves the last digits
+    // of a mixed result (`ferric_core::gpu::precision`).
+    ("FERRIC_GPU_MIXED_K_PANEL", FieldClass::Route),
 ];
+
+/// The recorded value of one [`ENV_SWITCHES`] entry: the raw text, except
+/// for a switch with a parsed form, which records that (so `FERRIC_DFK_METRIC`
+/// unset, `auto` and ` AUTO ` are one identity). A value that does not parse
+/// keeps its raw text; the SCF itself refuses it.
+fn env_switch_value(name: &str) -> Option<String> {
+    if name == "FERRIC_DFK_METRIC" {
+        if let Ok(setting) = crate::df_k::dfk_metric_setting() {
+            return Some(setting.as_str().to_string());
+        }
+    }
+    if name == crate::direct_jk::GC_ROTATE_ENV {
+        if let Ok(setting) = crate::direct_jk::GcRotate::env_setting() {
+            return Some(setting.as_str().to_string());
+        }
+    }
+    std::env::var(name).ok()
+}
 
 /// Process-wide state that changes an SCF's numbers and is not in `RhfConfig`. An
 /// exact commit match does not cover it: these are runtime settings, the libint
@@ -473,7 +552,7 @@ impl ProcessSettings {
             ),
             env: ENV_SWITCHES
                 .iter()
-                .map(|(name, _)| std::env::var(name).ok())
+                .map(|(name, _)| env_switch_value(name))
                 .collect(),
         })
     }
@@ -561,16 +640,24 @@ pub enum ReadMode {
     Guess,
     /// Replace the SCF. `allow_other_build` is the explicit override; it exists
     /// only here, so it cannot be passed under a guess.
-    Skip { allow_other_build: bool },
+    Skip {
+        /// Accept a file from a different (or not provably identical) build.
+        allow_other_build: bool,
+    },
 }
 
 /// One field that differs. `file`/`current` are `None` if the field is absent
 /// from that side, which is how a field added by a newer build appears.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Mismatch {
+    /// [`IdentityField::name`] of the field, or `coordinates` / `build` for
+    /// the two comparisons made outside `fields`.
     pub name: String,
+    /// The field's class, which decides error, warning or log.
     pub class: FieldClass,
+    /// The file's value, as canonical text.
     pub file: Option<String>,
+    /// The current calculation's value, as canonical text.
     pub current: Option<String>,
 }
 
@@ -610,7 +697,10 @@ pub struct ReadVerdict {
     pub file_build: BuildStamp,
     /// Set when a skip crossed builds on the explicit override. Goes in the result.
     pub build_override_used: bool,
+    /// [`Checkpoint::file_hash`]: the checksum read from disk, `None` for a
+    /// checkpoint that was never read from a file.
     pub file_hash: Option<u64>,
+    /// [`FORMAT_VERSION`] of this build (a read already refused any other).
     pub format_version: u64,
 }
 
@@ -694,10 +784,9 @@ fn disposition(class: FieldClass, mode: ReadMode) -> Disposition {
 }
 
 /// The exit gate of a skip. No wildcard, so a new exit must be classified.
-/// `Plateau` passes because a fresh run accepts it too; the caller echoes it.
 fn exit_replaces_scf(exit: ScfExit) -> bool {
     match exit {
-        ScfExit::Converged | ScfExit::Plateau => true,
+        ScfExit::Converged => true,
         ScfExit::Stalled | ScfExit::Diverged | ScfExit::MaxIter | ScfExit::NotCertified => false,
     }
 }

@@ -21,8 +21,9 @@
 //!    solutions are near-degenerate, so a mismatch there is a state-selection
 //!    question (the F6 ROKS lane), not a KS-energy one. ROKS is not tested here
 //!    for the same reason.
-//! 2. **Closed-shell second row, triple zeta** (the CLI's `solve_rhf_ladder`
-//!    path, exactly as `dft_pbe.rs`/`dft_b3lyp.rs` drive it): H2S, HCl, SiH4 ×
+//! 2. **Closed-shell, triple zeta** (the CLI's `solve_rhf_ladder`
+//!    path, exactly as `dft_pbe.rs`/`dft_b3lyp.rs` drive it): H2S, HCl, SiH4
+//!    (second row) and CH4, NH3, H2O, HF (first row, C/N/O/F) ×
 //!    PBE, B3LYP, HSE06 × def2-SVP and def2-TZVP. HSE06 (screened,
 //!    short-range-only exact exchange) runs with exact J and K fitted in the
 //!    attenuated metric, and the reference reproduces that construction.
@@ -44,7 +45,7 @@
 //! | RKS HSE06 | **exact J** (`df_j_aux = ""`) + c_SR K[erfc] fitted in the attenuated metric | exact J + attenuated-metric DF-K (`_uks_exact_j_dfk_class(closed_shell=True)`) |
 //! | UKS PBE | RI-J (`df_j_aux`) | `density_fit` |
 //! | UKS B3LYP | RI-J + RI-K | `density_fit` |
-//! | UKS ωB97X-V | **exact J** (uhf.rs: `j_aux_eff` is `None` for ω > 0) + RI-K as c_SR K[erfc] + c_LR K[erf] | exact J + attenuated-metric DF-K, full-range K served as K_SR + K_LR |
+//! | UKS ωB97X-V | **exact J** (`df_j_aux` unset: the open-shell solvers take no auto-default aux) + RI-K as c_SR K[erfc] + c_LR K[erf] | exact J + attenuated-metric DF-K, full-range K served as K_SR + K_LR |
 //!
 //! A `density_fit` reference for UKS ωB97X-V would have compared ferric's
 //! EXACT J against PySCF's RI-J, i.e. measured the fitting error.
@@ -133,14 +134,17 @@ use std::path::{Path, PathBuf};
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
+use ferric_scf::df_j::RiJPrecision;
 use ferric_scf::ladder::{default_ladder_from, solve_rhf_ladder};
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::stability::StabilityVerdict;
 use ferric_scf::uhf::solve_uhf;
 use ferric_scf::{ScfResult, Spin};
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -206,12 +210,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn tol_e(xc: &str) -> f64 {
     match xc {
         "pbe" => TOL_E_PBE,
@@ -265,7 +263,7 @@ fn load_system(system: &str, basis_name: &str, reference: &Value) -> System {
     let ctx = format!("{system}/{basis_name}");
     // Geometry like-for-like FIRST: a constant or unit slip fails here as a
     // geometry defect, not later as an unexplained energy offset.
-    let enuc_ref = num(reference, "/nuclear_repulsion", &ctx);
+    let enuc_ref = num_ctx(reference, "/nuclear_repulsion", &ctx);
     let enuc = mol.nuclear_repulsion();
     eprintln!(
         "{ctx}: E_nuc ferric {enuc:.12} ref {enuc_ref:.12} |d| {:.2e}",
@@ -317,22 +315,26 @@ fn uks_config(xc: &str) -> RhfConfig {
         "pbe" => (Some(AUX.to_string()), None),
         // Plain hybrid: RI-J + RI-K.
         "b3lyp" => (Some(AUX.to_string()), Some(AUX.to_string())),
-        // RSH: the open-shell solver builds J exactly for ω > 0 whatever
-        // df_j_aux says, so leave it unset to make that visible; K is fitted.
+        // RSH: exact J (unset df_j_aux; the open-shell solvers take no
+        // auto-default aux) to match the exact-J reference; K is fitted.
         "wb97x-v" => (None, Some(AUX.to_string())),
         other => panic!("unknown functional {other}"),
     };
-    RhfConfig {
-        xc: Some(ferric_xc(xc).into()),
-        df_j_aux,
-        df_k_aux,
-        max_iter: 500,
-        energy_conv: 1e-10,
-        density_conv: 1e-7,
-        check_stability: true,
-        scf_stability_descent: true,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_xc(ferric_xc(xc))
+        // The PySCF references fit J in f64; pin it (the f32 RI-J default's
+        // storage rounding is 1e-7..1e-6 Ha, far above this test's bar).
+        .with_ri_j_precision(RiJPrecision::F64)
+        .with_max_iter(500)
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-7)
+        .with_stability(ferric_scf::options::Stability::Descend)
+        // The references are PySCF on the flat (75,110) grid (generator: prune=None),
+        // not the pruned KS default AtomicGridConfig::production().
+        .with_dft_grid(AtomicGridConfig::default());
+    c.df_j_aux = df_j_aux;
+    c.df_k_aux = df_k_aux;
+    c
 }
 
 /// Closed-shell config: identical to dft_pbe.rs / dft_b3lyp.rs, driven through
@@ -348,14 +350,19 @@ fn rks_config(xc: &str) -> RhfConfig {
         "hse06" => (String::new(), Some(AUX.to_string())),
         other => panic!("unknown closed-shell functional {other}"),
     };
-    RhfConfig {
-        xc: Some(ferric_xc(xc).into()),
-        df_j_aux: Some(df_j_aux),
-        df_k_aux,
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_xc(ferric_xc(xc))
+        .with_df_j_aux(df_j_aux)
+        // The PySCF references fit J in f64; pin it (the f32 RI-J default's
+        // storage rounding is 1e-7..1e-6 Ha, far above this test's bar).
+        .with_ri_j_precision(RiJPrecision::F64)
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        // The references are PySCF on the flat (75,110) grid (generator: prune=None),
+        // not the pruned KS default AtomicGridConfig::production().
+        .with_dft_grid(AtomicGridConfig::default());
+    c.df_k_aux = df_k_aux;
+    c
 }
 
 fn check_close(ctx: &str, what: &str, got: f64, want: f64, tol: f64) {
@@ -379,7 +386,7 @@ fn assert_functional_discriminates(
 ) {
     let must_miss = MUST_MISS_FACTOR * tol_e(xc);
     for other in all.iter().filter(|o| **o != xc) {
-        let e_other = num(r, &format!("/{prefix}_{other}/energy"), ctx);
+        let e_other = num_ctx(r, &format!("/{prefix}_{other}/energy"), ctx);
         assert!(
             (e - e_other).abs() > must_miss,
             "{ctx}: ferric {xc} energy {e:.10} is within {must_miss:.0e} of the {other} \
@@ -399,7 +406,7 @@ fn assert_basis_discriminates(
     let must_miss = MUST_MISS_FACTOR * tol_e(xc);
     for (i, b_self) in bases.iter().enumerate() {
         let b_other = bases[1 - i];
-        let other = num(
+        let other = num_ctx(
             &reference(system, b_other),
             &format!("/{block}/energy"),
             system,
@@ -442,7 +449,7 @@ fn check_uks(system: &str, basis_name: &str, xc: &str) -> f64 {
                 &ctx,
                 "lambda_min",
                 st.lowest_eigenvalue,
-                num(&r, &format!("/{block}/stability/lambda_min"), &ctx),
+                num_ctx(&r, &format!("/{block}/stability/lambda_min"), &ctx),
                 TOL_LAMBDA,
             );
         }
@@ -453,7 +460,7 @@ fn check_uks(system: &str, basis_name: &str, xc: &str) -> f64 {
         (None, _) => panic!("{ctx}: check_stability was set but no verdict came back"),
     }
 
-    let e_ref = num(&r, &format!("/{block}/energy"), &ctx);
+    let e_ref = num_ctx(&r, &format!("/{block}/energy"), &ctx);
     check_close(&ctx, "energy", res.energy, e_ref, tol_e(xc));
 
     let (na, nb) = nocc_ab(&sys.mol);
@@ -473,7 +480,7 @@ fn check_uks(system: &str, basis_name: &str, xc: &str) -> f64 {
         &ctx,
         "<S^2>",
         s2,
-        num(&r, &format!("/{block}/s_squared"), &ctx),
+        num_ctx(&r, &format!("/{block}/s_squared"), &ctx),
         tol_s2(xc),
     );
     let eb = res.eps_beta.as_ref().unwrap();
@@ -487,14 +494,14 @@ fn check_uks(system: &str, basis_name: &str, xc: &str) -> f64 {
             &ctx,
             what,
             got,
-            num(&r, &format!("/{block}/{ptr}"), &ctx),
+            num_ctx(&r, &format!("/{block}/{ptr}"), &ctx),
             tol_eps(xc),
         );
     }
 
     // Negative controls.
     assert_functional_discriminates(&ctx, &r, "uks", xc, &OPEN_SHELL_XC, res.energy);
-    let e_uhf = num(&r, "/uhf_control/energy", &ctx);
+    let e_uhf = num_ctx(&r, "/uhf_control/energy", &ctx);
     assert!(
         (res.energy - e_uhf).abs() > CONTROL_GAP,
         "{ctx}: UKS {:.10} is within {CONTROL_GAP:.0e} of the exact UHF control {e_uhf:.10} — \
@@ -539,7 +546,7 @@ fn check_rks(system: &str, basis_name: &str, xc: &str) -> f64 {
         &ctx,
         "energy",
         res.energy,
-        num(&r, &format!("/{block}/energy"), &ctx),
+        num_ctx(&r, &format!("/{block}/energy"), &ctx),
         tol_e(xc),
     );
     let nocc = (sys.mol.nelec() as usize) / 2;
@@ -547,19 +554,19 @@ fn check_rks(system: &str, basis_name: &str, xc: &str) -> f64 {
         &ctx,
         "HOMO",
         res.eps_alpha[nocc - 1],
-        num(&r, &format!("/{block}/homo"), &ctx),
+        num_ctx(&r, &format!("/{block}/homo"), &ctx),
         tol_eps(xc),
     );
     check_close(
         &ctx,
         "LUMO",
         res.eps_alpha[nocc],
-        num(&r, &format!("/{block}/lumo"), &ctx),
+        num_ctx(&r, &format!("/{block}/lumo"), &ctx),
         tol_eps(xc),
     );
 
     assert_functional_discriminates(&ctx, &r, "rks", xc, &CLOSED_SHELL_XC, res.energy);
-    let e_rhf = num(&r, "/rhf_control/energy", &ctx);
+    let e_rhf = num_ctx(&r, "/rhf_control/energy", &ctx);
     assert!(
         (res.energy - e_rhf).abs() > CONTROL_GAP,
         "{ctx}: RKS {:.10} is within {CONTROL_GAP:.0e} of the exact RHF control {e_rhf:.10} — \
@@ -713,4 +720,76 @@ fn rks_hcl_hse06_vs_pyscf() {
 #[ignore = "validation: KS-DFT energies"]
 fn rks_sih4_hse06_vs_pyscf() {
     rks_row("sih4", "hse06");
+}
+
+#[test]
+#[ignore = "validation: KS-DFT energies"]
+fn rks_ch4_pbe_vs_pyscf() {
+    rks_row("ch4", "pbe");
+}
+
+#[test]
+#[ignore = "validation: KS-DFT energies"]
+fn rks_ch4_b3lyp_vs_pyscf() {
+    rks_row("ch4", "b3lyp");
+}
+
+#[test]
+#[ignore = "validation: KS-DFT energies"]
+fn rks_ch4_hse06_vs_pyscf() {
+    rks_row("ch4", "hse06");
+}
+
+#[test]
+#[ignore = "validation: KS-DFT energies"]
+fn rks_nh3_pbe_vs_pyscf() {
+    rks_row("nh3", "pbe");
+}
+
+#[test]
+#[ignore = "validation: KS-DFT energies"]
+fn rks_nh3_b3lyp_vs_pyscf() {
+    rks_row("nh3", "b3lyp");
+}
+
+#[test]
+#[ignore = "validation: KS-DFT energies"]
+fn rks_nh3_hse06_vs_pyscf() {
+    rks_row("nh3", "hse06");
+}
+
+#[test]
+#[ignore = "validation: KS-DFT energies"]
+fn rks_h2o_pbe_vs_pyscf() {
+    rks_row("h2o", "pbe");
+}
+
+#[test]
+#[ignore = "validation: KS-DFT energies"]
+fn rks_h2o_b3lyp_vs_pyscf() {
+    rks_row("h2o", "b3lyp");
+}
+
+#[test]
+#[ignore = "validation: KS-DFT energies"]
+fn rks_h2o_hse06_vs_pyscf() {
+    rks_row("h2o", "hse06");
+}
+
+#[test]
+#[ignore = "validation: KS-DFT energies"]
+fn rks_hf_pbe_vs_pyscf() {
+    rks_row("hf", "pbe");
+}
+
+#[test]
+#[ignore = "validation: KS-DFT energies"]
+fn rks_hf_b3lyp_vs_pyscf() {
+    rks_row("hf", "b3lyp");
+}
+
+#[test]
+#[ignore = "validation: KS-DFT energies"]
+fn rks_hf_hse06_vs_pyscf() {
+    rks_row("hf", "hse06");
 }

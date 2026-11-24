@@ -11,11 +11,13 @@
 //!   E = c_OS * E_OS(r0_1) + c_SS * [E_SS(r0_2) - E_SS(r0_1)], using the EXACT
 //!   `terfc` operator (2D interpolation tables), not the erfc approximation.
 
-use crate::rimp2::{ri_mp2_spin_components, RiMp2Config};
+use crate::rimp2::RiMp2Config;
+use crate::u_rimp2::ri_mp2_spin_components_any;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
+use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 
 use ferric_core::units::ANGSTROM_TO_BOHR;
@@ -70,10 +72,24 @@ impl std::fmt::Display for ScsMp2Result {
     }
 }
 
+/// [`scs_mp2`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn scs_mp2_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    config: &ScsMp2Config,
+) -> Result<ScsMp2Result, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(rhf)?;
+    scs_mp2(sys.mol(), sys.basis(), aux.basis(), rhf, config)
+}
+
 /// Standard SCS-MP2: E = c_OS * E_OS + c_SS * E_SS.
 ///
 /// Uses full Coulomb operator (no attenuation). With c_OS=1, c_SS=1 this
-/// recovers standard MP2.
+/// recovers standard MP2. On a UHF or ROHF reference `E_OS = E_αβ` and
+/// `E_SS = E_αα + E_ββ` ([`ri_mp2_spin_components_any`]).
 pub fn scs_mp2(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -86,7 +102,7 @@ pub fn scs_mp2(
         memory_budget_bytes: config.memory_budget_bytes,
         ..Default::default()
     };
-    let (sc, _) = ri_mp2_spin_components(mol, obs, dfbs, Operator::coulomb(), rhf, &ri_config)?;
+    let sc = ri_mp2_spin_components_any(mol, obs, dfbs, Operator::coulomb(), rhf, &ri_config)?;
     let scs_corr = config.c_os * sc.e_os + config.c_ss * sc.e_ss;
     Ok(ScsMp2Result {
         total_energy: rhf.energy + scs_corr,
@@ -102,9 +118,8 @@ pub fn scs_mp2(
 /// Citation note (2026-09-23): this was previously attributed to Goldey, Dutoi
 /// & Head-Gordon, PCCP 15, 15869 (2013). That paper is attenuated MP2 in
 /// aug-cc-pVTZ; the separately-attenuated SCS variant is the 2014 JPCB paper.
-/// The "thesis Eq 5.6" references are to the author's dissertation and were
-/// NOT checked against its text; the formula implemented is the one written
-/// out below and pinned by `scs_2terfc_matches_eq12_assembled_by_hand`.
+/// The formula implemented is the one written out below and pinned by
+/// `scs_2terfc_matches_eq12_assembled_by_hand`.
 #[derive(Debug, Clone)]
 pub struct ScsMp2TerfcConfig {
     /// Bonded attenuation distance r0(1) in Bohr.
@@ -156,12 +171,27 @@ impl Default for ScsMp2TerfcConfig {
     }
 }
 
+/// [`scs_mp2_2terfc`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn scs_mp2_2terfc_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    config: &ScsMp2TerfcConfig,
+) -> Result<ScsMp2Result, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(rhf)?;
+    scs_mp2_2terfc(sys.mol(), sys.basis(), aux.basis(), rhf, config)
+}
+
 /// SCS-MP2(2terfc): E = c_OS * E_OS(r0_1) + c_SS * [E_SS(r0_2) - E_SS(r0_1)].
 ///
 /// Dual-attenuated SCS-MP2 from Goldey & Head-Gordon (JPCB 118, 6519 (2014)). Calls
 /// `ri_mp2_spin_components` twice with the EXACT `terfc` operator at the bonded
 /// (r0_1) and non-bonded (r0_2) attenuation distances. Unlike the deprecated
 /// spike, this uses the interpolation-table terfc integrals, not an erfc fit.
+/// A UHF or ROHF reference takes the open-shell split of
+/// [`ri_mp2_spin_components_any`] at both cutoffs.
 pub fn scs_mp2_2terfc(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -169,6 +199,47 @@ pub fn scs_mp2_2terfc(
     rhf: &ScfResult,
     config: &ScsMp2TerfcConfig,
 ) -> Result<ScsMp2Result, FerricError> {
+    check_scs_2terfc_config(config)?;
+    let ri_config = RiMp2Config {
+        frozen_core: config.frozen_core,
+        memory_budget_bytes: config.memory_budget_bytes,
+        ..Default::default()
+    };
+
+    // Spin components at r0(1) (bonded, shorter range) via exact terfc.
+    let sc1 = ri_mp2_spin_components_any(
+        mol,
+        obs,
+        dfbs,
+        Operator::terfc(config.r0_bonded),
+        rhf,
+        &ri_config,
+    )?;
+    // Spin components at r0(2) (non-bonded, longer range).
+    let sc2 = ri_mp2_spin_components_any(
+        mol,
+        obs,
+        dfbs,
+        Operator::terfc(config.r0_nonbonded),
+        rhf,
+        &ri_config,
+    )?;
+
+    // E = c_OS * E_OS(r0_1) + c_SS * [E_SS(r0_2) - E_SS(r0_1)] (the SCS-MP2(2terfc)
+    // energy; same structure as JCTC 11, 4159 (2015) Eq. 12 without its VV10 term).
+    let e_ss = sc2.e_ss - sc1.e_ss;
+    let scs_corr = config.c_os * sc1.e_os + config.c_ss * e_ss;
+    Ok(ScsMp2Result {
+        total_energy: rhf.energy + scs_corr,
+        scs_corr,
+        e_os: sc1.e_os,
+        e_ss,
+    })
+}
+
+/// The checks of [`scs_mp2_2terfc`] on `config`: both cutoffs finite and
+/// positive, `r0(2) > r0(1)`.
+pub fn check_scs_2terfc_config(config: &ScsMp2TerfcConfig) -> Result<(), FerricError> {
     // Config validation returns an error rather than panicking: r0_bonded /
     // r0_nonbonded are unvalidated user config, and the repo convention is that
     // bad config hard-ERRORS, never aborts the process (and never silently
@@ -193,46 +264,13 @@ pub fn scs_mp2_2terfc(
             config.r0_nonbonded, config.r0_bonded
         )));
     }
-    let ri_config = RiMp2Config {
-        frozen_core: config.frozen_core,
-        memory_budget_bytes: config.memory_budget_bytes,
-        ..Default::default()
-    };
-
-    // Spin components at r0(1) (bonded, shorter range) via exact terfc.
-    let (sc1, _) = ri_mp2_spin_components(
-        mol,
-        obs,
-        dfbs,
-        Operator::terfc(config.r0_bonded),
-        rhf,
-        &ri_config,
-    )?;
-    // Spin components at r0(2) (non-bonded, longer range).
-    let (sc2, _) = ri_mp2_spin_components(
-        mol,
-        obs,
-        dfbs,
-        Operator::terfc(config.r0_nonbonded),
-        rhf,
-        &ri_config,
-    )?;
-
-    // E = c_OS * E_OS(r0_1) + c_SS * [E_SS(r0_2) - E_SS(r0_1)] (the SCS-MP2(2terfc)
-    // energy; same structure as JCTC 11, 4159 (2015) Eq. 12 without its VV10 term).
-    let e_ss = sc2.e_ss - sc1.e_ss;
-    let scs_corr = config.c_os * sc1.e_os + config.c_ss * e_ss;
-    Ok(ScsMp2Result {
-        total_energy: rhf.energy + scs_corr,
-        scs_corr,
-        e_os: sc1.e_os,
-        e_ss,
-    })
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rimp2::ri_mp2_spin_components;
     use ferric_core::basis;
     use ferric_core::mol::Molecule;
     use ferric_integrals::basis_bridge::PreparedBasis;
@@ -262,10 +300,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
@@ -285,10 +320,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();

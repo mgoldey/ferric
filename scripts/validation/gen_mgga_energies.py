@@ -32,7 +32,7 @@ LIKE-FOR-LIKE RECIPE (read from the ferric code)
     grid; `small_rho_cutoff` is PySCF's RKS/UKS default 0 (no grid pruning;
     ferric prunes none either). With this recipe gen_mgga_gradients.py
     matches ferric's SCAN/r2SCAN energies to 5.7e-13 Ha at 6-31G/def2-SVP.
-  * XC density floor: ferric (vxc.rs / xc_batch.rs, DENSITY_FLOOR = 1e-10)
+  * XC density floor: ferric (vxc.rs `DensityFloor::META_GGA` = 1e-10)
     zeroes EVERY V_xc factor (v_rho, v_sigma, v_tau) at points where
     rho <= 1e-10 — the total rho for RKS, rho_sigma per spin for UKS — while
     E_xc sums every point unfloored. `_apply_ferric_density_floor` does exactly
@@ -73,7 +73,8 @@ CONV_TOL = 1e-11
 CONV_TOL_GRAD = 1e-8
 GUESSES = ("minao", "atom", "huckel")
 MAX_STAB_ROUNDS = 10
-# ferric's XC density floor, crates/ferric-dft/src/vxc.rs `DENSITY_FLOOR`.
+# ferric's meta-GGA XC density floor, crates/ferric-dft/src/vxc.rs
+# `DensityFloor::META_GGA` (LDA/GGA use `DensityFloor::SEMILOCAL` = 1e-14).
 FERRIC_DENSITY_FLOOR = 1e-10
 
 PYSCF_XC = {"scan": "SCAN", "r2scan": "R2SCAN"}

@@ -1,0 +1,98 @@
+{
+ "molecule": "oh",
+ "xyz": "testdata/molecules/oh.xyz",
+ "multiplicity": 2,
+ "casida_compared": false,
+ "basis": "6-31g",
+ "response_aux": "cc-pvdz-ri",
+ "scf_jk_aux": "def2-universal-jkfit",
+ "grid": {
+  "atom_grid": [
+   75,
+   110
+  ],
+  "prune": null,
+  "radii_adjust": "becke"
+ },
+ "nstates": 12,
+ "pyscf_version": "2.13.1",
+ "generator": "scripts/validation/gen_tddft_open_shell_refs.py",
+ "note": "dense TDA / Casida on the two-spin A, B of tdscf.uhf.get_ab with the response (pq|rs) by ferric's Coulomb-metric RI and (pq|rs)_omega by its erf-metric RI; flat (75,110) grid; s2 by the book/src/19-tddft/06-unrestricted.md#unrestricted-each-root formula, checked against pyscf.fci.spin_op on the expanded determinant vector when s2_fci_max_dev is not null",
+ "cases": {
+  "HF": {
+   "xc_pyscf": null,
+   "c_sr": 1.0,
+   "c_lr": 1.0,
+   "omega": 0.0,
+   "e_scf": -75.36315760478361,
+   "s2_reference": 0.7537675195263214,
+   "n_alpha": 5,
+   "n_beta": 4,
+   "dim_alpha": 30,
+   "dim": 58,
+   "tda": {
+    "omega_ev": [
+     0.02006425583760514,
+     4.493668783771969,
+     8.98471277399691,
+     10.430032131863962,
+     11.54940717439865,
+     12.510205240492743,
+     15.120007722122851,
+     21.695123128442205,
+     26.253981243598307,
+     28.57706933930098,
+     28.61498711960193,
+     29.483642031679715
+    ],
+    "omega_ha": [
+     0.0007373478019909178,
+     0.1651392818855198,
+     0.3301821043873353,
+     0.3832966111163024,
+     0.4244328851897972,
+     0.45974156286643525,
+     0.555650035078684,
+     0.7972810694876267,
+     0.9648160151145975,
+     1.0501879279860038,
+     1.0515813807104692,
+     1.0835038599338809
+    ],
+    "osc": [
+     1.5897849859166972e-34,
+     0.005159273442268826,
+     0.001552574133216477,
+     0.008237071122176445,
+     0.009072073035807308,
+     0.010520974919867705,
+     0.4904443103544533,
+     0.21591575356759488,
+     0.0019360511565833542,
+     9.827790269864814e-28,
+     0.009118856061933247,
+     0.014546983901808122
+    ],
+    "s2": [
+     0.7544798094604628,
+     0.7557486363059467,
+     2.3434902166777345,
+     1.1586681322151076,
+     2.7108439106280273,
+     0.7521057627356,
+     0.7916951268082876,
+     0.7565237174812058,
+     2.529274980067483,
+     2.057556654152306,
+     2.297655232331879,
+     2.5676703974119754
+    ],
+    "s2_fci_max_dev": 6.217248937900877e-15
+   },
+   "casida": {
+    "skipped": "zero mode of a degenerate ground state",
+    "unstable": null
+   }
+  }
+ }
+}

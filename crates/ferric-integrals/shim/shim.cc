@@ -21,6 +21,34 @@
 #include <algorithm>
 #include <limits>
 
+#ifdef _WIN32
+// Declared here rather than via <windows.h>, whose min/max macros break Eigen.
+extern "C" __declspec(dllimport) unsigned long __stdcall GetEnvironmentVariableA(
+    const char *name, char *buffer, unsigned long size);
+#endif
+
+// Environment lookup for the shim's knobs (FERRIC_SHELLPAIR_CACHE,
+// FERRIC_TERF_TABLE_DIR, ...). On Windows the CRT's getenv reads a copy of the
+// environment taken at process start, so a variable set later through Rust's
+// std::env::set_var or the Win32 API (Python's os.environ also updates that
+// block) was invisible to the shim. GetEnvironmentVariableA reads the live
+// process block. The returned pointer is valid until the next call on the same
+// thread; every caller below consumes it immediately. Elsewhere this is getenv.
+static const char *ferric_getenv(const char *name) {
+#ifdef _WIN32
+    thread_local std::string buf;
+    unsigned long n = GetEnvironmentVariableA(name, nullptr, 0);
+    if (n == 0) return nullptr;
+    buf.assign(n, '\0');
+    unsigned long got = GetEnvironmentVariableA(name, &buf[0], n);
+    if (got == 0 || got >= n) return nullptr;
+    buf.resize(got);
+    return buf.c_str();
+#else
+    return std::getenv(name);
+#endif
+}
+
 using libint2::Engine;
 using libint2::Operator;
 using libint2::Shell;
@@ -173,7 +201,7 @@ struct ShellPairCache {
     void check_env_once() {
         if (env_checked) return;
         env_checked = true;
-        const char *v = std::getenv("FERRIC_SHELLPAIR_CACHE");
+        const char *v = ferric_getenv("FERRIC_SHELLPAIR_CACHE");
         if (v && (std::strcmp(v, "0") == 0 || std::strcmp(v, "off") == 0 ||
                   std::strcmp(v, "false") == 0 || std::strcmp(v, "OFF") == 0 ||
                   std::strcmp(v, "FALSE") == 0)) {
@@ -245,6 +273,42 @@ struct scf_engine {
     Shell                           eri3_shift_slots[3] = {};
 };
 
+#ifdef FERRIC_LIBINT2_TERF
+/* Which terf table set the libint2 terf hook evaluates with. libint2's hook
+ * signature (terf_gm_eval::hook_type) carries no engine context, so every
+ * scf_compute_* entry point that drives eng->engine publishes ITS engine's
+ * table set here for the duration of the call (FERRIC_TERF_HOOK_SCOPE). An
+ * Engine is driven by one thread at a time and libint2 computes on the calling
+ * thread, so a thread_local is exact: the hook always sees the tables the
+ * engine was built with, never another engine's, and never reads the
+ * process-global cache (get_terfc_tables), which a later load of a different
+ * table directory reassigns. The engine owns its shared_ptr for its lifetime,
+ * so the raw pointer cannot dangle during the call. Ordinary engines publish
+ * nullptr, which the terf hook (the only reader) never sees. */
+thread_local const TerfcTableSet *t_terf_hook_tables = nullptr;
+
+class TerfHookTablesScope {
+  public:
+    explicit TerfHookTablesScope(const scf_engine *eng)
+        : prev_(t_terf_hook_tables) {
+        t_terf_hook_tables = eng ? eng->terfc_tables.get() : nullptr;
+    }
+    explicit TerfHookTablesScope(const TerfcTableSet *set)
+        : prev_(t_terf_hook_tables) {
+        t_terf_hook_tables = set;
+    }
+    ~TerfHookTablesScope() { t_terf_hook_tables = prev_; }
+    TerfHookTablesScope(const TerfHookTablesScope &) = delete;
+    TerfHookTablesScope &operator=(const TerfHookTablesScope &) = delete;
+
+  private:
+    const TerfcTableSet *prev_;
+};
+#define FERRIC_TERF_HOOK_SCOPE(eng) TerfHookTablesScope ferric_terf_hook_scope_(eng)
+#else
+#define FERRIC_TERF_HOOK_SCOPE(eng) ((void)(eng))
+#endif
+
 static std::atomic<int> libint_init_count{0};
 
 // libint2's Engine and Shell/BasisSet constructors touch process-global
@@ -274,6 +338,32 @@ static std::mutex libint_ctor_mutex;
 // nothing measurable.
 static std::mutex libint_init_mutex;
 
+/* libint2's core-integral evaluator singletons (FmEval_Chebyshev7,
+ * TennoGmEval, ...) are NOT thread-safe in instance(m_max): when a caller asks
+ * for a larger m_max than the current instance holds, instance() REPLACES the
+ * function-local static std::shared_ptr (under its own private mutex), while
+ * every other caller reads `instance_->max_m()` and copies `instance_` with no
+ * lock at all. A copy racing that replacement touches the freed old instance
+ * (or its control block): ThreadSanitizer reports a data race between the
+ * shared_ptr operator= and the unlocked max_m() read, then a read of the memory
+ * that operator= freed, and the process SIGSEGVs or aborts in free(). The
+ * pattern is identical in stock 2.7.2 and 2.13.1 and in ferric's boys.h
+ * overrides.
+ *
+ * Engine constructors reach instance() through make_core_eval_pack and already
+ * hold libint_ctor_mutex, so every instance() call made through this shim must
+ * hold it too; then no copy can overlap a replacement. Only the acquisition
+ * needs the lock: the returned shared_ptr keeps its instance alive, and eval()
+ * on a constructed instance is const and thread-safe. A parallel
+ * tenno_table_edge run (engine ctors and the unlocked scf_tenno_gm hook at
+ * different m_max) crashed this way in the wheels perturb canary;
+ * tests/core_eval_singleton_race.rs reproduces it. */
+template <typename CoreEval>
+static std::shared_ptr<const CoreEval> core_eval_instance(int mmax) {
+    std::lock_guard<std::mutex> lock(libint_ctor_mutex);
+    return CoreEval::instance(mmax);
+}
+
 /* Boys function F_0..F_mmax at x through libint2's FmEval_Chebyshev7 (the
  * evaluator behind every Coulomb/erf/erfc core integral), so a test can pin
  * its behaviour independent of any integral geometry (issue #433: x == 117.0
@@ -284,7 +374,7 @@ int scf_boys_fm(double x, int mmax, double *out) {
     if (!out || !std::isfinite(x) || x < 0.0 || mmax < 0 || mmax > 40)
         return SCF_EINVAL;
     try {
-        auto fm = libint2::FmEval_Chebyshev7<double>::instance(mmax);
+        auto fm = core_eval_instance<libint2::FmEval_Chebyshev7<double>>(mmax);
         fm->eval(out, x, mmax);
         return mmax + 1;
     } catch (...) {
@@ -309,7 +399,7 @@ int scf_tenno_gm(int kind, double one_over_rho, double T, int mmax, double zeta,
         !std::isfinite(zeta) || zeta <= 0.0 || mmax < 0 || mmax > 40)
         return SCF_EINVAL;
     try {
-        auto ev = libint2::TennoGmEval<double>::instance(mmax);
+        auto ev = core_eval_instance<libint2::TennoGmEval<double>>(mmax);
         if (kind == 0)
             ev->eval_yukawa(out, one_over_rho, T, static_cast<size_t>(mmax), zeta);
         else
@@ -545,6 +635,7 @@ int scf_engine_set_point_charges(scf_engine *eng,
 
 int scf_compute_1e_block(scf_engine *eng, const scf_basis *bs,
                            int sh1, int sh2, double *out) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
   try {
     const auto &shells = bs->bs;
     eng->engine.compute(shells[sh1], shells[sh2]);
@@ -579,6 +670,7 @@ int scf_compute_1e_block(scf_engine *eng, const scf_basis *bs,
 int scf_compute_1e_block_shifted(scf_engine *eng, const scf_basis *bs,
                                    int sh1, int sh2, const double *shift,
                                    double *out) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
     if (!eng || !bs || !shift || !out) return SCF_EINVAL;
     const int nsh = static_cast<int>(bs->bs.size());
     if (sh1 < 0 || sh1 >= nsh || sh2 < 0 || sh2 >= nsh) return SCF_EINVAL;
@@ -657,9 +749,11 @@ static inline Engine::compute2_ptr_type quartet_compute_ptr(const Engine &engine
     return ptrs[static_cast<size_t>(compute_ptr_idx)];
 }
 
-int scf_compute_eri_quartet(scf_engine *eng, const scf_basis *bs,
-                              int sh1, int sh2, int sh3, int sh4, double *out) {
-  try {
+// Compute (sh1 sh2|sh3 sh4) into the engine's own result buffer and return
+// it (nullptr when libint2 screened the quartet). Throws on a libint2 error;
+// the extern "C" wrappers below catch.
+static const double *compute_eri_quartet_raw(scf_engine *eng, const scf_basis *bs,
+                                             int sh1, int sh2, int sh3, int sh4) {
     const auto &shells = bs->bs;
     Engine &engine = eng->engine;
 
@@ -688,13 +782,43 @@ int scf_compute_eri_quartet(scf_engine *eng, const scf_basis *bs,
     } else {
         engine.compute(shells[sh1], shells[sh2], shells[sh3], shells[sh4]);
     }
-    const auto &result = engine.results();
-    if (result[0] == nullptr) {
+    return engine.results()[0];
+}
+
+int scf_compute_eri_quartet(scf_engine *eng, const scf_basis *bs,
+                              int sh1, int sh2, int sh3, int sh4, double *out) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
+  try {
+    const double *result = compute_eri_quartet_raw(eng, bs, sh1, sh2, sh3, sh4);
+    if (result == nullptr) {
         return 0;  // libint screened the quartet (all zero).
     }
     int n = bs->nfunc[sh1] * bs->nfunc[sh2] * bs->nfunc[sh3] * bs->nfunc[sh4];
-    for (int i = 0; i < n; ++i) out[i] = result[0][i];
+    for (int i = 0; i < n; ++i) out[i] = result[i];
     return n;
+  } catch (const std::exception &ex) {
+    std::fprintf(stderr, "%s: %s\n", __func__, ex.what());
+    return SCF_EINTERNAL;
+  } catch (...) {
+    return SCF_EINTERNAL;
+  }
+}
+
+int scf_compute_eri_quartet_view(scf_engine *eng, const scf_basis *bs,
+                                 int sh1, int sh2, int sh3, int sh4,
+                                 const double **out) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
+    if (out == nullptr) {
+        return SCF_EINVAL;
+    }
+    *out = nullptr;
+  try {
+    const double *result = compute_eri_quartet_raw(eng, bs, sh1, sh2, sh3, sh4);
+    if (result == nullptr) {
+        return 0;  // libint screened the quartet (all zero).
+    }
+    *out = result;
+    return bs->nfunc[sh1] * bs->nfunc[sh2] * bs->nfunc[sh3] * bs->nfunc[sh4];
   } catch (const std::exception &ex) {
     std::fprintf(stderr, "%s: %s\n", __func__, ex.what());
     return SCF_EINTERNAL;
@@ -715,7 +839,7 @@ int scf_engine_shellpair_cache_enabled(const scf_engine *eng) {
     if (eng->shellpair_cache.env_checked) {
         return eng->shellpair_cache.enabled ? 1 : 0;
     }
-    const char *v = std::getenv("FERRIC_SHELLPAIR_CACHE");
+    const char *v = ferric_getenv("FERRIC_SHELLPAIR_CACHE");
     if (v && (std::strcmp(v, "0") == 0 || std::strcmp(v, "off") == 0 ||
               std::strcmp(v, "false") == 0 || std::strcmp(v, "OFF") == 0 ||
               std::strcmp(v, "FALSE") == 0)) {
@@ -725,6 +849,7 @@ int scf_engine_shellpair_cache_enabled(const scf_engine *eng) {
 }
 
 int scf_compute_schwarz(scf_engine *eng, const scf_basis *bs, double *qmat) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
   try {
     const int nsh = static_cast<int>(bs->bs.size());
     for (int i = 0; i < nsh; ++i) {
@@ -762,6 +887,7 @@ int scf_compute_schwarz(scf_engine *eng, const scf_basis *bs, double *qmat) {
 
 int scf_compute_1e_deriv_block(scf_engine *eng, const scf_basis *bs,
                                  int sh1, int sh2, double *out) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
 #if LIBINT2_MAX_DERIV_ORDER >= 1
   try {
     const auto &shells = bs->bs;
@@ -812,6 +938,7 @@ int scf_compute_1e_deriv_block(scf_engine *eng, const scf_basis *bs,
 int scf_compute_1e_deriv_block_shifted(scf_engine *eng, const scf_basis *bs,
                                          int sh1, int sh2, const double *shift,
                                          double *out, int out_len) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
 #if LIBINT2_MAX_DERIV_ORDER >= 1
     if (!eng || !bs || !shift || !out || out_len < 0) return SCF_EINVAL;
     const int nsh = static_cast<int>(bs->bs.size());
@@ -859,6 +986,7 @@ int scf_compute_1e_deriv_block_shifted(scf_engine *eng, const scf_basis *bs,
 
 int scf_compute_eri_deriv_quartet(scf_engine *eng, const scf_basis *bs,
                                     int sh1, int sh2, int sh3, int sh4, double *out) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
 #if LIBINT2_MAX_DERIV_ORDER >= 1
   try {
     const auto &shells = bs->bs;
@@ -980,14 +1108,125 @@ int scf_libint_max_deriv_order(void) {
 #define SCF_AM_1B2 (-1)
 #endif
 
+/* A class whose task libint2 did not generate (LIBINT2_TASK_EXISTS_<task>
+ * defined as 0) has no build functions of its own: an engine for it falls
+ * back to libint2's "default" task and the first compute ASSERTS ("null build
+ * function ptr"), e.g. conda-forge's win-64 2.13.1, which has no 4-centre
+ * second derivatives. Report such a class as absent (-1) even if its MAX_AM
+ * macro happens to be defined. */
+#if defined(LIBINT2_TASK_EXISTS_4eri) && !LIBINT2_TASK_EXISTS_4eri
+#undef SCF_AM_ERI0
+#define SCF_AM_ERI0 (-1)
+#endif
+#if defined(LIBINT2_TASK_EXISTS_4eri1) && !LIBINT2_TASK_EXISTS_4eri1
+#undef SCF_AM_ERI1
+#define SCF_AM_ERI1 (-1)
+#endif
+#if defined(LIBINT2_TASK_EXISTS_4eri2) && !LIBINT2_TASK_EXISTS_4eri2
+#undef SCF_AM_ERI2
+#define SCF_AM_ERI2 (-1)
+#endif
+#if defined(LIBINT2_TASK_EXISTS_3eri) && !LIBINT2_TASK_EXISTS_3eri
+#undef SCF_AM_3ERI0
+#define SCF_AM_3ERI0 (-1)
+#endif
+#if defined(LIBINT2_TASK_EXISTS_3eri1) && !LIBINT2_TASK_EXISTS_3eri1
+#undef SCF_AM_3ERI1
+#define SCF_AM_3ERI1 (-1)
+#endif
+#if defined(LIBINT2_TASK_EXISTS_3eri2) && !LIBINT2_TASK_EXISTS_3eri2
+#undef SCF_AM_3ERI2
+#define SCF_AM_3ERI2 (-1)
+#endif
+#if defined(LIBINT2_TASK_EXISTS_2eri) && !LIBINT2_TASK_EXISTS_2eri
+#undef SCF_AM_2ERI0
+#define SCF_AM_2ERI0 (-1)
+#endif
+#if defined(LIBINT2_TASK_EXISTS_2eri1) && !LIBINT2_TASK_EXISTS_2eri1
+#undef SCF_AM_2ERI1
+#define SCF_AM_2ERI1 (-1)
+#endif
+#if defined(LIBINT2_TASK_EXISTS_2eri2) && !LIBINT2_TASK_EXISTS_2eri2
+#undef SCF_AM_2ERI2
+#define SCF_AM_2ERI2 (-1)
+#endif
+#if defined(LIBINT2_TASK_EXISTS_2overlap) && !LIBINT2_TASK_EXISTS_2overlap
+#undef SCF_AM_1B0
+#define SCF_AM_1B0 (-1)
+#endif
+#if defined(LIBINT2_TASK_EXISTS_2overlap1) && !LIBINT2_TASK_EXISTS_2overlap1
+#undef SCF_AM_1B1
+#define SCF_AM_1B1 (-1)
+#endif
+#if defined(LIBINT2_TASK_EXISTS_2overlap2) && !LIBINT2_TASK_EXISTS_2overlap2
+#undef SCF_AM_1B2
+#define SCF_AM_1B2 (-1)
+#endif
+
+/* libint2's default-class limit per derivative order: the ket (non-auxiliary)
+ * shells of a centre-dependent 3- or 2-centre class are generated only up to
+ * it (see the FERRIC_TERF_3ERI_UNIFORM_MAX_AM note further down). */
+#ifdef LIBINT2_MAX_AM_default
+#define SCF_AM_DEFAULT0 LIBINT2_MAX_AM_default
+#else
+#define SCF_AM_DEFAULT0 (-1)
+#endif
+#ifdef LIBINT2_MAX_AM_default1
+#define SCF_AM_DEFAULT1 LIBINT2_MAX_AM_default1
+#else
+#define SCF_AM_DEFAULT1 (-1)
+#endif
+#ifdef LIBINT2_MAX_AM_default2
+#define SCF_AM_DEFAULT2 LIBINT2_MAX_AM_default2
+#else
+#define SCF_AM_DEFAULT2 (-1)
+#endif
+#if defined(LIBINT2_CENTER_DEPENDENT_MAX_AM_3eri) && LIBINT2_CENTER_DEPENDENT_MAX_AM_3eri
+#define SCF_AM_3ERIK0 (SCF_AM_3ERI0 < 0 ? -1 : SCF_AM_DEFAULT0)
+#else
+#define SCF_AM_3ERIK0 SCF_AM_3ERI0
+#endif
+#if defined(LIBINT2_CENTER_DEPENDENT_MAX_AM_3eri1) && LIBINT2_CENTER_DEPENDENT_MAX_AM_3eri1
+#define SCF_AM_3ERIK1 (SCF_AM_3ERI1 < 0 ? -1 : SCF_AM_DEFAULT1)
+#else
+#define SCF_AM_3ERIK1 SCF_AM_3ERI1
+#endif
+#if defined(LIBINT2_CENTER_DEPENDENT_MAX_AM_3eri2) && LIBINT2_CENTER_DEPENDENT_MAX_AM_3eri2
+#define SCF_AM_3ERIK2 (SCF_AM_3ERI2 < 0 ? -1 : SCF_AM_DEFAULT2)
+#else
+#define SCF_AM_3ERIK2 SCF_AM_3ERI2
+#endif
+#if defined(LIBINT2_CENTER_DEPENDENT_MAX_AM_2eri) && LIBINT2_CENTER_DEPENDENT_MAX_AM_2eri
+#define SCF_AM_2ERIK0 (SCF_AM_2ERI0 < 0 ? -1 : SCF_AM_DEFAULT0)
+#else
+#define SCF_AM_2ERIK0 SCF_AM_2ERI0
+#endif
+#if defined(LIBINT2_CENTER_DEPENDENT_MAX_AM_2eri1) && LIBINT2_CENTER_DEPENDENT_MAX_AM_2eri1
+#define SCF_AM_2ERIK1 (SCF_AM_2ERI1 < 0 ? -1 : SCF_AM_DEFAULT1)
+#else
+#define SCF_AM_2ERIK1 SCF_AM_2ERI1
+#endif
+#if defined(LIBINT2_CENTER_DEPENDENT_MAX_AM_2eri2) && LIBINT2_CENTER_DEPENDENT_MAX_AM_2eri2
+#define SCF_AM_2ERIK2 (SCF_AM_2ERI2 < 0 ? -1 : SCF_AM_DEFAULT2)
+#else
+#define SCF_AM_2ERIK2 SCF_AM_2ERI2
+#endif
+
+/* cls 0..3 are the public classes (ferric_integrals::LIBINT_AM_CLASSES:
+ * eri, eri3, eri2, onebody; for eri3/eri2 the limit of the bra = auxiliary
+ * shell). cls 4 and 5 are the KET shells of eri3 (the two orbital shells) and
+ * eri2: the same limit unless the class is centre-dependent, then libint2's
+ * default-class limit. Rust: ferric_integrals::capability. */
 int scf_libint_max_am(int cls, int deriv) {
-    static const int table[4][3] = {
+    static const int table[6][3] = {
         {SCF_AM_ERI0, SCF_AM_ERI1, SCF_AM_ERI2},
         {SCF_AM_3ERI0, SCF_AM_3ERI1, SCF_AM_3ERI2},
         {SCF_AM_2ERI0, SCF_AM_2ERI1, SCF_AM_2ERI2},
         {SCF_AM_1B0, SCF_AM_1B1, SCF_AM_1B2},
+        {SCF_AM_3ERIK0, SCF_AM_3ERIK1, SCF_AM_3ERIK2},
+        {SCF_AM_2ERIK0, SCF_AM_2ERIK1, SCF_AM_2ERIK2},
     };
-    if (cls < 0 || cls > 3 || deriv < 0 || deriv > 2) return -1;
+    if (cls < 0 || cls > 5 || deriv < 0 || deriv > 2) return -1;
     return table[cls][deriv];
 }
 
@@ -1024,6 +1263,7 @@ scf_engine *scf_engine_create_deriv2(int op_kind, double omega,
 
 int scf_compute_1e_deriv2_block(scf_engine *eng, const scf_basis *bs,
                                   int sh1, int sh2, double *out, int out_len) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
 #if LIBINT2_MAX_DERIV_ORDER >= 2
   try {
     if (eng->engine.deriv_order() != 2) return SCF_EINVAL;
@@ -1066,6 +1306,7 @@ int scf_compute_1e_deriv2_block(scf_engine *eng, const scf_basis *bs,
 int scf_compute_eri_deriv2_quartet(scf_engine *eng, const scf_basis *bs,
                                      int sh1, int sh2, int sh3, int sh4,
                                      double *out, int out_len) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
 #if LIBINT2_MAX_DERIV_ORDER >= 2
   try {
     if (eng->engine.deriv_order() != 2) return SCF_EINVAL;
@@ -1249,6 +1490,7 @@ scf_engine *scf_engine_create_2center(int op_kind, double omega,
 int scf_compute_eri3(scf_engine *eng, const scf_basis *obs,
                        const scf_basis *dfbs,
                        int shP, int sh1, int sh2, double *out) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
 #if LIBINT2_SUPPORT_ERI3
   try {
     // BraKet::xs_xx rank=3: compute(aux_shell, obs_shell1, obs_shell2)
@@ -1288,6 +1530,7 @@ int scf_compute_eri3_shifted(scf_engine *eng, const scf_basis *obs,
                                const scf_basis *dfbs,
                                int shP, int sh1, int sh2,
                                const double *shifts, double *out) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
 #if LIBINT2_SUPPORT_ERI3
     if (!eng || !obs || !dfbs || !shifts || !out) return SCF_EINVAL;
     const int nobs = static_cast<int>(obs->bs.size());
@@ -1331,6 +1574,7 @@ int scf_compute_eri3_shifted(scf_engine *eng, const scf_basis *obs,
 
 int scf_compute_eri2(scf_engine *eng, const scf_basis *dfbs,
                        int shP, int shQ, double *out) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
 #if LIBINT2_SUPPORT_ERI2
   try {
     // BraKet::xs_xs rank=2: compute(aux_shell_P, aux_shell_Q)
@@ -1367,6 +1611,7 @@ int scf_compute_eri2(scf_engine *eng, const scf_basis *dfbs,
 int scf_compute_eri2_shifted(scf_engine *eng, const scf_basis *dfbs,
                                int shP, int shQ, const double *shiftQ,
                                double *out) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
 #if LIBINT2_SUPPORT_ERI2
     if (!eng || !dfbs || !shiftQ || !out) return SCF_EINVAL;
     const int ndf = static_cast<int>(dfbs->bs.size());
@@ -1447,6 +1692,7 @@ scf_engine *scf_engine_create_2center_deriv(int op_kind, double omega,
 int scf_compute_eri3_deriv(scf_engine *eng, const scf_basis *obs,
                              const scf_basis *dfbs,
                              int shP, int sh1, int sh2, double *out) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
 #if LIBINT2_SUPPORT_ERI3 && LIBINT2_MAX_DERIV_ORDER >= 1
   try {
     eng->engine.compute(dfbs->bs[shP], obs->bs[sh1], obs->bs[sh2]);
@@ -1494,6 +1740,7 @@ int scf_compute_eri3_deriv_shifted(scf_engine *eng, const scf_basis *obs,
                                      int shP, int sh1, int sh2,
                                      const double *shifts, double *out,
                                      int out_len) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
 #if LIBINT2_SUPPORT_ERI3 && LIBINT2_MAX_DERIV_ORDER >= 1
     if (!eng || !obs || !dfbs || !shifts || !out || out_len < 0) return SCF_EINVAL;
     const int nobs = static_cast<int>(obs->bs.size());
@@ -1542,6 +1789,7 @@ int scf_compute_eri3_deriv_shifted(scf_engine *eng, const scf_basis *obs,
 
 int scf_compute_eri2_deriv(scf_engine *eng, const scf_basis *dfbs,
                              int shP, int shQ, double *out) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
 #if LIBINT2_SUPPORT_ERI2 && LIBINT2_MAX_DERIV_ORDER >= 1
   try {
     eng->engine.compute(dfbs->bs[shP], dfbs->bs[shQ]);
@@ -1588,6 +1836,7 @@ int scf_compute_eri2_deriv(scf_engine *eng, const scf_basis *dfbs,
 int scf_compute_eri2_deriv_shifted(scf_engine *eng, const scf_basis *dfbs,
                                      int shP, int shQ, const double *shiftQ,
                                      double *out, int out_len) {
+    FERRIC_TERF_HOOK_SCOPE(eng);
 #if LIBINT2_SUPPORT_ERI2 && LIBINT2_MAX_DERIV_ORDER >= 1
     if (!eng || !dfbs || !shiftQ || !out || out_len < 0) return SCF_EINVAL;
     const int ndf = static_cast<int>(dfbs->bs.size());
@@ -1723,7 +1972,7 @@ bool load_terfc_table(const std::string &path, int pts, double S_max, double s_m
 // Table directory resolution: explicit arg > env FERRIC_TERF_TABLE_DIR.
 std::string resolve_table_dir(const char *table_dir) {
     if (table_dir && table_dir[0] != '\0') return std::string(table_dir);
-    const char *env = std::getenv("FERRIC_TERF_TABLE_DIR");
+    const char *env = ferric_getenv("FERRIC_TERF_TABLE_DIR");
     if (env && env[0] != '\0') return std::string(env);
     return std::string();
 }
@@ -1744,7 +1993,7 @@ std::shared_ptr<TerfcTableSet> get_terfc_tables(const std::string &dir) {
     // fewer points per unit) can be loaded with the correct delta_S/delta_s.
     // Experiment knob only -- the default path is unchanged.
     int ptsdiv = 1;
-    if (const char *e = std::getenv("FERRIC_TERF_PTS_DIV")) {
+    if (const char *e = ferric_getenv("FERRIC_TERF_PTS_DIV")) {
         // Only 1 and 2 are valid: the shipped pts are 16/8/4/2, so any larger
         // divisor drives the last table's pts to 0 and delta = 1.0/0 = inf,
         // silently corrupting every lookup rather than failing.
@@ -1880,10 +2129,12 @@ void boys_upto(int mmax, double T, double *F) {
 //   df(2i)   = (2i)!! / (2i+1)!!
 //   G_{m,0}(S,s) = sum_i df(2i) * gS[m+1][i] * cdf_s[i]
 //
-// Used when (S,s) lies outside every interpolation table. The only reachable
-// out-of-table region is S > 20 with s < 1/2: the curvature constraint
-// r0*omega = 1/sqrt2 gives s = phi^2 r0^2 <= omega^2 r0^2 = 1/2, so s is always
-// deep inside every table's s-range and coverage reduces to S <= 20.
+// Used when (S,s) lies outside every interpolation table. Every table stops at
+// S = 20, so the series serves all S > 20. Under the curvature constraint
+// r0*omega = 1/sqrt2, s = phi^2 r0^2 <= omega^2 r0^2 = 1/2; with decoupled
+// omega (Operator::terfc_with_omega) s reaches ~80, the s-range of the
+// 2_20_80 table. So the out-of-table region is S > 20 at any s up to ~80
+// (plus s > 80, which only a decoupled omega past that range can produce).
 //
 // float64 series validated against the 256-bit mpmath reference: <= 6e-12
 // relative for S in [20.25, 200], s in [0, 0.5], m <= 16 (worst 5e-5 at m=16,
@@ -2448,7 +2699,8 @@ inline bool terf_aux(const TerfcTableSet &set, double S, double s,
             return true;
         }
     }
-    // Outside all tables: exact series (reachable only for S > 20, s < 1/2).
+    // Outside all tables: exact series (S > 20 at any s; s > 80 only with a
+    // decoupled omega beyond the last table's range).
     __atomic_fetch_add(&g_terf_ser, 1, __ATOMIC_RELAXED);
     double gser[TERFC_DIMM];
     // ROUTE to the tail form. Identical semantics to terf_G_series (verified:
@@ -2457,7 +2709,7 @@ inline bool terf_aux(const TerfcTableSet &set, double S, double s,
     // only ~I terms set by s rather than N = S + 12*sqrt(S) + 60 set by S.
     // Guarded by FERRIC_TERF_TAIL=0 so the old path stays one env var away.
     static const bool use_tail = [](){
-        const char *e = std::getenv("FERRIC_TERF_TAIL");
+        const char *e = ferric_getenv("FERRIC_TERF_TAIL");
         return !(e && e[0] == '0');
     }();
     if (use_tail) terf_G_tail(S, s, mmax, gser);
@@ -2512,11 +2764,15 @@ inline bool terf_gm_eval_impl(const TerfcTableSet &set, double rho, double T,
  * back here. Signature is fixed by libint2::os_core_ints::terf_gm_eval::hook_type.
  * Returns false only if the tables are unavailable.
  *
- * Thread-safety: get_terfc_tables caches a shared_ptr behind the process-global
- * g_terfc_tables; the tables are immutable once loaded and terf_gm_eval_impl
- * only reads them, so concurrent rayon workers are safe. The FIRST call must
- * happen before threads fan out -- scf_engine_create_terf_libint2 forces the
- * load at engine-construction time for exactly that reason.
+ * Thread-safety: the hook evaluates with the table set its CALLER published in
+ * t_terf_hook_tables (the engine's own terfc_tables, via
+ * FERRIC_TERF_HOOK_SCOPE in every scf_compute_* entry point). It never touches
+ * the process-global cache g_terfc_tables: copying that shared_ptr here,
+ * unlocked, raced get_terfc_tables reassigning it under terfc_tables_mutex
+ * when a different table directory was loaded (the same unlocked-copy-vs-
+ * replace use-after-free as libint2's core-evaluator singletons), and it also
+ * evaluated with the LAST-loaded set instead of the engine's. The tables are
+ * immutable once loaded and terf_gm_eval_impl only reads them.
  */
 // Test-only fault injection (scf_terf_libint2_inject_hook_fault).
 std::atomic<bool> g_terf_hook_fault{false};
@@ -2543,8 +2799,12 @@ bool ferric_terf_libint2_hook(double rho, double T, int mmax, double omega,
             "terf libint2 hook: mmax " + std::to_string(mmax) +
             " is outside the table depth [0, " + std::to_string(TERFC_DIMM) + ")");
     }
-    auto set = g_terfc_tables;          // shared_ptr copy: no torn read
-    if (!set) throw std::runtime_error("terf libint2 hook: terf tables not loaded");
+    const TerfcTableSet *set = t_terf_hook_tables;
+    if (!set) {
+        throw std::runtime_error(
+            "terf libint2 hook: no engine table set in scope (called outside an "
+            "scf_compute_* entry point)");
+    }
     if (!terf_gm_eval_impl(*set, rho, T, mmax, omega, r0, Gm)) {
         // terf_gm_eval_impl only declines rho <= 0 or omega <= 0 (or NaN).
         throw std::invalid_argument("terf libint2 hook: needs rho > 0 and omega > 0");
@@ -3041,6 +3301,647 @@ bool compute_cart_eri2(const Shell &shP, const Shell &shQ,
     return any;
 }
 
+// --------------------------------------------------------------------------
+//  First nuclear derivatives of the MD 3-center / 2-center integrals.
+//
+//  The derivative of a primitive Cartesian Gaussian with respect to its own
+//  centre is a combination of the same Gaussian one angular-momentum unit up
+//  and down (`book/src/03-integrals/03-derivatives.md#integrals-derivatives`):
+//
+//      d/dA_x [ x_A^i e^{-a x_A^2} ] = 2a x_A^{i+1} e^{-a x_A^2} - i x_A^{i-1} e^{-a x_A^2}.
+//
+//  In the Hermite form this is the same linear combination of the E
+//  coefficients, so the derivative of an E table is
+//      dE^{i,j}_t/dA_x = 2a E^{i+1,j}_t - i E^{i-1,j}_t   (t <= i+j+1),
+//  and the operator enters only through R_{tuv}, now needed to t+u+v <= Ltot+1.
+//  Nothing here depends on the operator: the same tables give Coulomb, terf
+//  and terfc, which is what lets the Coulomb branch be checked against
+//  libint2's derivative engine.
+//
+//  The aux centre P and the bra centre A are differentiated explicitly; the
+//  ket centre B follows from translational invariance, dB = -(dP + dA), since
+//  each kernel depends on r12 only.
+// --------------------------------------------------------------------------
+
+// Which kernel an MD derivative pass contracts: Coulomb (Boys F_m), terf
+// (the table G_m), or terfc = Coulomb - terf, formed on the Hermite R table
+// before the contraction (both pieces share the same E coefficients and the
+// same prefactor, so subtracting R is the same as subtracting the integrals).
+enum class MdKernel { Coulomb = 0, Terf = 1, Terfc = 2 };
+
+// A 1-D Hermite table T(i, j, t) with i <= ni, j <= nj and t <= i + j + extra.
+// Out-of-range indices read as zero.
+struct HermiteTab {
+    int ni = 0, nj = 0, nt = 0;
+    std::vector<double> v;
+    void init(int ni_, int nj_, int extra) {
+        ni = ni_;
+        nj = nj_;
+        nt = ni_ + nj_ + extra;
+        v.assign((size_t)(ni + 1) * (nj + 1) * (nt + 1), 0.0);
+    }
+    inline double at(int i, int j, int t) const {
+        if (i < 0 || j < 0 || t < 0 || i > ni || j > nj || t > nt) return 0.0;
+        return v[((size_t)i * (nj + 1) + j) * (nt + 1) + t];
+    }
+    inline void set(int i, int j, int t, double x) {
+        v[((size_t)i * (nj + 1) + j) * (nt + 1) + t] = x;
+    }
+};
+
+// Value table (i <= li, j <= lj) copied out of an E table built to (li+1, lj+1).
+void hermite_value_tab(const HermiteE &H, int li, int lj, HermiteTab &T) {
+    T.init(li, lj, 0);
+    for (int i = 0; i <= li; ++i)
+        for (int j = 0; j <= lj; ++j)
+            for (int t = 0; t <= i + j; ++t) T.set(i, j, t, H.at(i, j, t));
+}
+
+// d/d(first centre) of an E table built to (li+1, lj): 2a E^{i+1,j} - i E^{i-1,j}.
+void hermite_deriv_first(const HermiteE &H, double a, int li, int lj, HermiteTab &T) {
+    T.init(li, lj, 1);
+    for (int i = 0; i <= li; ++i)
+        for (int j = 0; j <= lj; ++j)
+            for (int t = 0; t <= i + j + 1; ++t) {
+                double x = 2.0 * a * H.at(i + 1, j, t);
+                if (i > 0) x -= i * H.at(i - 1, j, t);
+                T.set(i, j, t, x);
+            }
+}
+
+// Contract one Cartesian block of the 3-center form
+//   sum_{t'u'v'} P_x P_y P_z sum_{tuv} X Y Z (-1)^{t+u+v} R_{t'+t, u'+u, v'+v}
+// into out (row-major [ncP][ncA][ncB]), times `scale`.
+void md_contract3(const std::vector<std::array<int, 3>> &compP,
+                  const std::vector<std::array<int, 3>> &compA,
+                  const std::vector<std::array<int, 3>> &compB,
+                  const HermiteTab &Px, const HermiteTab &Py, const HermiteTab &Pz,
+                  const HermiteTab &X, const HermiteTab &Y, const HermiteTab &Z,
+                  const HermiteR &R, double scale, double *out) {
+    const int ncA = (int)compA.size(), ncB = (int)compB.size();
+    for (size_t ip = 0; ip < compP.size(); ++ip) {
+        const int px = compP[ip][0], py = compP[ip][1], pz = compP[ip][2];
+        for (int ia = 0; ia < ncA; ++ia) {
+            const int ax = compA[ia][0], ay = compA[ia][1], az = compA[ia][2];
+            for (int ib = 0; ib < ncB; ++ib) {
+                const int bx = compB[ib][0], by = compB[ib][1], bz = compB[ib][2];
+                double sum = 0.0;
+                for (int tp = 0; tp <= px + 1; ++tp) {
+                    const double e1 = Px.at(px, 0, tp);
+                    if (e1 == 0.0) continue;
+                    for (int up = 0; up <= py + 1; ++up) {
+                        const double e2 = Py.at(py, 0, up);
+                        if (e2 == 0.0) continue;
+                        for (int vp = 0; vp <= pz + 1; ++vp) {
+                            const double e3 = Pz.at(pz, 0, vp);
+                            if (e3 == 0.0) continue;
+                            const double eP = e1 * e2 * e3;
+                            for (int t = 0; t <= ax + bx + 1; ++t) {
+                                const double ex = X.at(ax, bx, t);
+                                if (ex == 0.0) continue;
+                                for (int u = 0; u <= ay + by + 1; ++u) {
+                                    const double ey = Y.at(ay, by, u);
+                                    if (ey == 0.0) continue;
+                                    for (int v = 0; v <= az + bz + 1; ++v) {
+                                        const double ez = Z.at(az, bz, v);
+                                        if (ez == 0.0) continue;
+                                        const double sgn = ((t + u + v) & 1) ? -1.0 : 1.0;
+                                        sum += eP * ex * ey * ez * sgn *
+                                               R.at(tp + t, up + u, vp + v);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                out[((size_t)ip * ncA + ia) * ncB + ib] += scale * sum;
+            }
+        }
+    }
+}
+
+// The Hermite R table of `kernel` for one primitive pair of Gaussian
+// distributions (reduced Coulomb exponent theta2, separation PQ), built to
+// t+u+v <= L. terfc is R[Coulomb] - R[terf].
+void md_kernel_R(MdKernel kernel, int L, double theta2, double PQx, double PQy,
+                 double PQz, const TerfcTableSet *tables, double omega, double r0,
+                 HermiteR &R) {
+    const double PQ2 = PQx * PQx + PQy * PQy + PQz * PQz;
+    double Fn[TERFC_DIMM];
+    if (L >= TERFC_DIMM) md_Ltot_overflow(L);
+    if (kernel == MdKernel::Coulomb || kernel == MdKernel::Terfc) {
+        boys_upto(L, theta2 * PQ2, Fn);
+        build_hermite_R(L, theta2, PQx, PQy, PQz, Fn, R);
+    }
+    if (kernel == MdKernel::Terf || kernel == MdKernel::Terfc) {
+        if (!tables) throw std::invalid_argument("terf MD derivative: no table set");
+        const double omega2 = omega * omega;
+        const double phi2 = theta2 * omega2 / (theta2 + omega2);
+        const double S = phi2 * PQ2;
+        const double s = phi2 * r0 * r0;
+        const double phi_over_theta = std::sqrt(phi2 / theta2);
+        if (!terf_aux(*tables, S, s, phi_over_theta, L, Fn)) md_Ltot_overflow(L);
+        if (kernel == MdKernel::Terf) {
+            build_hermite_R(L, phi2, PQx, PQy, PQz, Fn, R);
+        } else {
+            HermiteR Rt;
+            build_hermite_R(L, phi2, PQx, PQy, PQz, Fn, Rt);
+            for (size_t k = 0; k < R.r.size(); ++k) R.r[k] -= Rt.r[k];
+        }
+    }
+}
+
+// The 9 Cartesian first-derivative blocks of (P|AB) under `kernel`, layout
+// [dP_x, dP_y, dP_z, dA_x, dA_y, dA_z, dB_x, dB_y, dB_z], each row-major
+// [ncP][ncA][ncB] (the order of libint2's 3-center derivative engine).
+void compute_cart_eri3_deriv(const Shell &shP, const Shell &shA, const Shell &shB,
+                             MdKernel kernel, const TerfcTableSet *tables,
+                             double omega, double r0, std::vector<double> &out) {
+    const int lP = shP.contr[0].l, lA = shA.contr[0].l, lB = shB.contr[0].l;
+    const int L = lP + lA + lB + 1;
+    if (L >= TERFC_DIMM) md_Ltot_overflow(L);
+    const int ncP = ncart_of(lP), ncA = ncart_of(lA), ncB = ncart_of(lB);
+    const size_t blk = (size_t)ncP * ncA * ncB;
+    out.assign(9 * blk, 0.0);
+    std::vector<std::array<int, 3>> compP, compA, compB;
+    cart_components(lP, compP);
+    cart_components(lA, compA);
+    cart_components(lB, compB);
+    const auto &AO = shA.O, &BO = shB.O, &PO = shP.O;
+
+    for (size_t pa = 0; pa < shA.alpha.size(); ++pa) {
+        const double a = shA.alpha[pa];
+        const double ca = shA.contr[0].coeff[pa];
+        for (size_t pb = 0; pb < shB.alpha.size(); ++pb) {
+            const double b = shB.alpha[pb];
+            const double cb = shB.contr[0].coeff[pb];
+            const double q = a + b;
+            const double Qx = (a * AO[0] + b * BO[0]) / q;
+            const double Qy = (a * AO[1] + b * BO[1]) / q;
+            const double Qz = (a * AO[2] + b * BO[2]) / q;
+            HermiteE Hx, Hy, Hz;
+            build_hermite_E(a, b, AO[0], BO[0], lA + 1, lB, Hx);
+            build_hermite_E(a, b, AO[1], BO[1], lA + 1, lB, Hy);
+            build_hermite_E(a, b, AO[2], BO[2], lA + 1, lB, Hz);
+            HermiteTab Ex, Ey, Ez, DAx, DAy, DAz;
+            hermite_value_tab(Hx, lA, lB, Ex);
+            hermite_value_tab(Hy, lA, lB, Ey);
+            hermite_value_tab(Hz, lA, lB, Ez);
+            hermite_deriv_first(Hx, a, lA, lB, DAx);
+            hermite_deriv_first(Hy, a, lA, lB, DAy);
+            hermite_deriv_first(Hz, a, lA, lB, DAz);
+            for (size_t pp = 0; pp < shP.alpha.size(); ++pp) {
+                const double p = shP.alpha[pp];
+                const double cP = shP.contr[0].coeff[pp];
+                HermiteE GPx, GPy, GPz;
+                build_hermite_E(p, 0.0, PO[0], PO[0], lP + 1, 0, GPx);
+                build_hermite_E(p, 0.0, PO[1], PO[1], lP + 1, 0, GPy);
+                build_hermite_E(p, 0.0, PO[2], PO[2], lP + 1, 0, GPz);
+                HermiteTab EPx, EPy, EPz, DPx, DPy, DPz;
+                hermite_value_tab(GPx, lP, 0, EPx);
+                hermite_value_tab(GPy, lP, 0, EPy);
+                hermite_value_tab(GPz, lP, 0, EPz);
+                hermite_deriv_first(GPx, p, lP, 0, DPx);
+                hermite_deriv_first(GPy, p, lP, 0, DPy);
+                hermite_deriv_first(GPz, p, lP, 0, DPz);
+
+                const double theta2 = p * q / (p + q);
+                HermiteR R;
+                md_kernel_R(kernel, L, theta2, PO[0] - Qx, PO[1] - Qy, PO[2] - Qz,
+                            tables, omega, r0, R);
+                const double scale = 2.0 * std::pow(M_PI, 2.5) /
+                                     (p * q * std::sqrt(p + q)) * ca * cb * cP;
+                double *o = out.data();
+                md_contract3(compP, compA, compB, DPx, EPy, EPz, Ex, Ey, Ez, R, scale, o + 0 * blk);
+                md_contract3(compP, compA, compB, EPx, DPy, EPz, Ex, Ey, Ez, R, scale, o + 1 * blk);
+                md_contract3(compP, compA, compB, EPx, EPy, DPz, Ex, Ey, Ez, R, scale, o + 2 * blk);
+                md_contract3(compP, compA, compB, EPx, EPy, EPz, DAx, Ey, Ez, R, scale, o + 3 * blk);
+                md_contract3(compP, compA, compB, EPx, EPy, EPz, Ex, DAy, Ez, R, scale, o + 4 * blk);
+                md_contract3(compP, compA, compB, EPx, EPy, EPz, Ex, Ey, DAz, R, scale, o + 5 * blk);
+            }
+        }
+    }
+    // Translational invariance: dB = -(dP + dA).
+    for (int c = 0; c < 3; ++c)
+        for (size_t k = 0; k < blk; ++k)
+            out[(6 + c) * blk + k] = -(out[c * blk + k] + out[(3 + c) * blk + k]);
+}
+
+// The 6 Cartesian first-derivative blocks of (P|Q) under `kernel`, layout
+// [dP_x, dP_y, dP_z, dQ_x, dQ_y, dQ_z], each row-major [ncP][ncQ]. Q is a
+// single Gaussian, written as the 3-center form with an s "partner" of
+// exponent 0 at its own centre; dQ = -dP.
+void compute_cart_eri2_deriv(const Shell &shP, const Shell &shQ, MdKernel kernel,
+                             const TerfcTableSet *tables, double omega, double r0,
+                             std::vector<double> &out) {
+    const int lP = shP.contr[0].l, lQ = shQ.contr[0].l;
+    const int L = lP + lQ + 1;
+    if (L >= TERFC_DIMM) md_Ltot_overflow(L);
+    const int ncP = ncart_of(lP), ncQ = ncart_of(lQ);
+    const size_t blk = (size_t)ncP * ncQ;
+    out.assign(6 * blk, 0.0);
+    std::vector<std::array<int, 3>> compP, compQ, compS;
+    cart_components(lP, compP);
+    cart_components(lQ, compQ);
+    cart_components(0, compS);
+    const auto &PO = shP.O, &QO = shQ.O;
+    for (size_t pp = 0; pp < shP.alpha.size(); ++pp) {
+        const double p = shP.alpha[pp];
+        const double cP = shP.contr[0].coeff[pp];
+        HermiteE GPx, GPy, GPz;
+        build_hermite_E(p, 0.0, PO[0], PO[0], lP + 1, 0, GPx);
+        build_hermite_E(p, 0.0, PO[1], PO[1], lP + 1, 0, GPy);
+        build_hermite_E(p, 0.0, PO[2], PO[2], lP + 1, 0, GPz);
+        HermiteTab EPy, EPz, EPx, DPx, DPy, DPz;
+        hermite_value_tab(GPx, lP, 0, EPx);
+        hermite_value_tab(GPy, lP, 0, EPy);
+        hermite_value_tab(GPz, lP, 0, EPz);
+        hermite_deriv_first(GPx, p, lP, 0, DPx);
+        hermite_deriv_first(GPy, p, lP, 0, DPy);
+        hermite_deriv_first(GPz, p, lP, 0, DPz);
+        for (size_t pq = 0; pq < shQ.alpha.size(); ++pq) {
+            const double q = shQ.alpha[pq];
+            const double cQ = shQ.contr[0].coeff[pq];
+            HermiteE HQx, HQy, HQz;
+            build_hermite_E(q, 0.0, QO[0], QO[0], lQ, 0, HQx);
+            build_hermite_E(q, 0.0, QO[1], QO[1], lQ, 0, HQy);
+            build_hermite_E(q, 0.0, QO[2], QO[2], lQ, 0, HQz);
+            HermiteTab EQx, EQy, EQz;
+            hermite_value_tab(HQx, lQ, 0, EQx);
+            hermite_value_tab(HQy, lQ, 0, EQy);
+            hermite_value_tab(HQz, lQ, 0, EQz);
+            const double theta2 = p * q / (p + q);
+            HermiteR R;
+            md_kernel_R(kernel, L, theta2, PO[0] - QO[0], PO[1] - QO[1], PO[2] - QO[2],
+                        tables, omega, r0, R);
+            const double scale =
+                2.0 * std::pow(M_PI, 2.5) / (p * q * std::sqrt(p + q)) * cP * cQ;
+            double *o = out.data();
+            // (P | Q s): the ket pair is Q with an s partner, so the ket table is
+            // EQ(i, 0, t) and the B axis is the single s component.
+            md_contract3(compP, compQ, compS, DPx, EPy, EPz, EQx, EQy, EQz, R, scale, o + 0 * blk);
+            md_contract3(compP, compQ, compS, EPx, DPy, EPz, EQx, EQy, EQz, R, scale, o + 1 * blk);
+            md_contract3(compP, compQ, compS, EPx, EPy, DPz, EQx, EQy, EQz, R, scale, o + 2 * blk);
+        }
+    }
+    for (int c = 0; c < 3; ++c)
+        for (size_t k = 0; k < blk; ++k) out[(3 + c) * blk + k] = -out[c * blk + k];
+}
+
+// --------------------------------------------------------------------------
+//  Term-list form of the MD 3-center kernels (values and first derivatives).
+//
+//  These compute the same integrals as compute_cart_eri3 and
+//  compute_cart_eri3_deriv above, which stay as the reference the tests
+//  compare against. Three things change:
+//
+//  1. Each Cartesian component's Hermite expansion is gathered once into a
+//     list of (coefficient, offset) terms, the offset being the flat index of
+//     (t, u, v) in an R cube of stride L + 1. The index is linear in (t, u, v),
+//     so R[t'+t, u'+u, v'+v] = R[off_P + off_K] and each integral is a double
+//     loop over two short lists. Lists of the orbital pair are built once per
+//     primitive pair, those of the aux shell once per call. The terms keep the
+//     reference loop order and products, so a single-kernel value (Coulomb or
+//     terf) is bit-identical to compute_cart_eri3.
+//  2. terfc = Coulomb - terf is formed on the seeds of the R recurrence,
+//     R^n_000 = (-2 theta)^n F_n - (-2 phi)^n G_n. The recurrence
+//     R^n_{t+1,u,v} = t R^{n+1}_{t-1,u,v} + X_PQ R^{n+1}_{t,u,v} is linear in
+//     its seeds and does not involve the exponent, so one recurrence and one
+//     contraction give the difference (the reference runs two full passes).
+//  3. Scratch is thread-local and reused, so a call allocates only its output.
+// --------------------------------------------------------------------------
+namespace md_terms {
+
+// Test switch: route the production terf/terfc 3-center entry points through
+// the reference kernels (scf_debug_md_use_reference). Off by default; a
+// relaxed load per shell triple.
+std::atomic<bool> use_reference{false};
+
+struct Term {
+    double c;
+    int off;
+};
+
+// Term lists of a set of Cartesian components: component k owns
+// terms[start[k] .. start[k + 1]).
+struct TermLists {
+    std::vector<Term> terms;
+    std::vector<int> start;
+    void reset() {
+        terms.clear();
+        start.assign(1, 0);
+    }
+    void close() { start.push_back((int)terms.size()); }
+};
+
+// Derivative of a 1-D E table built to (i + 1, j): 2a E^{i+1,j}_t - i E^{i-1,j}_t.
+inline double e_deriv(const HermiteE &H, double a, int i, int j, int t) {
+    double x = 2.0 * a * H.at(i + 1, j, t);
+    if (i > 0) x -= i * H.at(i - 1, j, t);
+    return x;
+}
+
+// One axis of a ket list: either the value table or its derivative.
+struct KetAxis {
+    const HermiteE *H;
+    double a;     // exponent of the differentiated centre
+    bool deriv;   // true: differentiate (one more Hermite order)
+    inline int tmax(int i, int j) const { return i + j + (deriv ? 1 : 0); }
+    inline double at(int i, int j, int t) const {
+        return deriv ? e_deriv(*H, a, i, j, t) : H->at(i, j, t);
+    }
+};
+
+// Ket (orbital pair) lists: one per (ia, ib), coefficient (ex ey ez) * (-1)^{t+u+v}.
+void ket_lists(const std::vector<std::array<int, 3>> &compA,
+               const std::vector<std::array<int, 3>> &compB, const KetAxis &X,
+               const KetAxis &Y, const KetAxis &Z, int S, TermLists &out) {
+    out.reset();
+    for (const auto &ca : compA) {
+        for (const auto &cb : compB) {
+            const int ax = ca[0], ay = ca[1], az = ca[2];
+            const int bx = cb[0], by = cb[1], bz = cb[2];
+            for (int t = 0; t <= X.tmax(ax, bx); ++t) {
+                const double ex = X.at(ax, bx, t);
+                if (ex == 0.0) continue;
+                for (int u = 0; u <= Y.tmax(ay, by); ++u) {
+                    const double ey = Y.at(ay, by, u);
+                    if (ey == 0.0) continue;
+                    for (int v = 0; v <= Z.tmax(az, bz); ++v) {
+                        const double ez = Z.at(az, bz, v);
+                        if (ez == 0.0) continue;
+                        const double sgn = ((t + u + v) & 1) ? -1.0 : 1.0;
+                        out.terms.push_back({ex * ey * ez * sgn, (t * S + u) * S + v});
+                    }
+                }
+            }
+            out.close();
+        }
+    }
+}
+
+// Aux (single Gaussian) lists: one per component, coefficient e1 e2 e3.
+void aux_lists(const std::vector<std::array<int, 3>> &compP, const KetAxis &X,
+               const KetAxis &Y, const KetAxis &Z, int S, TermLists &out) {
+    out.reset();
+    for (const auto &cp : compP) {
+        const int px = cp[0], py = cp[1], pz = cp[2];
+        for (int t = 0; t <= X.tmax(px, 0); ++t) {
+            const double e1 = X.at(px, 0, t);
+            if (e1 == 0.0) continue;
+            for (int u = 0; u <= Y.tmax(py, 0); ++u) {
+                const double e2 = Y.at(py, 0, u);
+                if (e2 == 0.0) continue;
+                for (int v = 0; v <= Z.tmax(pz, 0); ++v) {
+                    const double e3 = Z.at(pz, 0, v);
+                    if (e3 == 0.0) continue;
+                    out.terms.push_back({e1 * e2 * e3, (t * S + u) * S + v});
+                }
+            }
+        }
+        out.close();
+    }
+}
+
+// out[ip][k] += scale * sum_{a in P[ip]} sum_{b in K[k]} c_a c_b R[off_a + off_b].
+inline void contract(const TermLists &P, const TermLists &K, const double *R,
+                     double scale, double *out) {
+    const int nP = (int)P.start.size() - 1, nK = (int)K.start.size() - 1;
+    const Term *pt = P.terms.data();
+    const Term *kt = K.terms.data();
+    for (int ip = 0; ip < nP; ++ip) {
+        const int p0 = P.start[ip], p1 = P.start[ip + 1];
+        double *o = out + (size_t)ip * nK;
+        for (int k = 0; k < nK; ++k) {
+            const int k0 = K.start[k], k1 = K.start[k + 1];
+            double sum = 0.0;
+            for (int a = p0; a < p1; ++a) {
+                const double ca = pt[a].c;
+                const double *Ra = R + pt[a].off;
+                for (int b = k0; b < k1; ++b) sum += ca * kt[b].c * Ra[kt[b].off];
+            }
+            o[k] += scale * sum;
+        }
+    }
+}
+
+// Per-thread scratch of one kernel call.
+struct Scratch {
+    std::vector<double> Rn;                  // (L+1) levels of an (L+1)^3 cube
+    HermiteE Ex, Ey, Ez;                     // orbital pair
+    TermLists kval, kd[3];                   // ket lists: value, d/dA_{x,y,z}
+    std::vector<TermLists> pval, pd[3];      // aux lists per aux primitive
+    std::vector<std::array<int, 3>> compP, compA, compB;
+};
+
+Scratch &scratch() {
+    thread_local Scratch s;
+    return s;
+}
+
+// R^0_{tuv} (stride L+1, t+u+v <= L) of `kernel` for one primitive triple,
+// left in s.Rn[0 .. (L+1)^3). Same recurrence and arithmetic as
+// build_hermite_R; entries with t+u+v > L are never written or read.
+const double *kernel_R(MdKernel kernel, int L, double theta2, double PQx, double PQy,
+                       double PQz, const TerfcTableSet *tables, double omega, double r0,
+                       Scratch &s) {
+    const int S = L + 1;
+    const size_t dim = (size_t)S * S * S;
+    if (s.Rn.size() < (size_t)S * dim) s.Rn.resize((size_t)S * dim);
+    double *Rn = s.Rn.data();
+    auto RI = [&](int n, int t, int u, int v) {
+        return (size_t)n * dim + (size_t)(t * S + u) * S + v;
+    };
+    const double PQ2 = PQx * PQx + PQy * PQy + PQz * PQz;
+    double F[TERFC_DIMM], G[TERFC_DIMM];
+    if (L >= TERFC_DIMM) md_Ltot_overflow(L);
+    double phi2 = 0.0;
+    if (kernel == MdKernel::Coulomb || kernel == MdKernel::Terfc) {
+        boys_upto(L, theta2 * PQ2, F);
+    }
+    if (kernel == MdKernel::Terf || kernel == MdKernel::Terfc) {
+        if (!tables) throw std::invalid_argument("terf MD kernel: no table set");
+        const double omega2 = omega * omega;
+        phi2 = theta2 * omega2 / (theta2 + omega2);
+        const double S_arg = phi2 * PQ2;
+        const double r02 = r0 * r0;   // phi2 * r02, as compute_cart_eri3 forms s
+        const double s_arg = phi2 * r02;
+        const double phi_over_theta = std::sqrt(phi2 / theta2);
+        if (!terf_aux(*tables, S_arg, s_arg, phi_over_theta, L, G)) md_Ltot_overflow(L);
+    }
+    double facC = 1.0, facT = 1.0;
+    for (int n = 0; n <= L; ++n) {
+        double seed;
+        if (kernel == MdKernel::Coulomb) {
+            seed = facC * F[n];
+        } else if (kernel == MdKernel::Terf) {
+            seed = facT * G[n];
+        } else {
+            seed = facC * F[n] - facT * G[n];
+        }
+        Rn[RI(n, 0, 0, 0)] = seed;
+        facC *= (-2.0 * theta2);
+        facT *= (-2.0 * phi2);
+    }
+    for (int tot = 1; tot <= L; ++tot) {
+        for (int t = 0; t <= tot; ++t) {
+            for (int u = 0; u <= tot - t; ++u) {
+                const int v = tot - t - u;
+                for (int n = 0; n <= L - tot; ++n) {
+                    double val;
+                    if (t > 0) {
+                        val = PQx * Rn[RI(n + 1, t - 1, u, v)];
+                        if (t > 1) val += (t - 1) * Rn[RI(n + 1, t - 2, u, v)];
+                    } else if (u > 0) {
+                        val = PQy * Rn[RI(n + 1, t, u - 1, v)];
+                        if (u > 1) val += (u - 1) * Rn[RI(n + 1, t, u - 2, v)];
+                    } else {
+                        val = PQz * Rn[RI(n + 1, t, u, v - 1)];
+                        if (v > 1) val += (v - 1) * Rn[RI(n + 1, t, u, v - 2)];
+                    }
+                    Rn[RI(n, t, u, v)] = val;
+                }
+            }
+        }
+    }
+    return Rn;
+}
+
+// Cartesian (P|AB) values under `kernel`, row-major [ncP][ncA][ncB].
+void eri3_values(const Shell &shP, const Shell &shA, const Shell &shB, MdKernel kernel,
+                 const TerfcTableSet *tables, double omega, double r0,
+                 std::vector<double> &out) {
+    Scratch &s = scratch();
+    const int lP = shP.contr[0].l, lA = shA.contr[0].l, lB = shB.contr[0].l;
+    const int L = lP + lA + lB;
+    if (L >= TERFC_DIMM) md_Ltot_overflow(L);
+    const int S = L + 1;
+    cart_components(lP, s.compP);
+    cart_components(lA, s.compA);
+    cart_components(lB, s.compB);
+    out.assign((size_t)s.compP.size() * s.compA.size() * s.compB.size(), 0.0);
+    const auto &AO = shA.O, &BO = shB.O, &PO = shP.O;
+
+    const size_t nprimP = shP.alpha.size();
+    if (s.pval.size() < nprimP) s.pval.resize(nprimP);
+    for (size_t pp = 0; pp < nprimP; ++pp) {
+        const double p = shP.alpha[pp];
+        HermiteE &Hx = s.Ex, &Hy = s.Ey, &Hz = s.Ez;   // reused, rebuilt below
+        build_hermite_E(p, 0.0, PO[0], PO[0], lP, 0, Hx);
+        build_hermite_E(p, 0.0, PO[1], PO[1], lP, 0, Hy);
+        build_hermite_E(p, 0.0, PO[2], PO[2], lP, 0, Hz);
+        aux_lists(s.compP, {&Hx, p, false}, {&Hy, p, false}, {&Hz, p, false}, S,
+                  s.pval[pp]);
+    }
+
+    for (size_t pa = 0; pa < shA.alpha.size(); ++pa) {
+        const double a = shA.alpha[pa];
+        const double ca = shA.contr[0].coeff[pa];
+        for (size_t pb = 0; pb < shB.alpha.size(); ++pb) {
+            const double b = shB.alpha[pb];
+            const double cb = shB.contr[0].coeff[pb];
+            const double q = a + b;
+            const double Qx = (a * AO[0] + b * BO[0]) / q;
+            const double Qy = (a * AO[1] + b * BO[1]) / q;
+            const double Qz = (a * AO[2] + b * BO[2]) / q;
+            const double cab = ca * cb;
+            build_hermite_E(a, b, AO[0], BO[0], lA, lB, s.Ex);
+            build_hermite_E(a, b, AO[1], BO[1], lA, lB, s.Ey);
+            build_hermite_E(a, b, AO[2], BO[2], lA, lB, s.Ez);
+            ket_lists(s.compA, s.compB, {&s.Ex, a, false}, {&s.Ey, a, false},
+                      {&s.Ez, a, false}, S, s.kval);
+            for (size_t pp = 0; pp < nprimP; ++pp) {
+                const double p = shP.alpha[pp];
+                const double cP = shP.contr[0].coeff[pp];
+                const double theta2 = p * q / (p + q);
+                const double *R = kernel_R(kernel, L, theta2, PO[0] - Qx, PO[1] - Qy,
+                                           PO[2] - Qz, tables, omega, r0, s);
+                const double pref = 2.0 * std::pow(M_PI, 2.5) / (p * q * std::sqrt(p + q));
+                const double scale = pref * cab * cP;
+                contract(s.pval[pp], s.kval, R, scale, out.data());
+            }
+        }
+    }
+}
+
+// The 9 first-derivative blocks of (P|AB) under `kernel`, the layout of
+// compute_cart_eri3_deriv: [dP, dA, dB] x [x, y, z], each [ncP][ncA][ncB].
+void eri3_derivs(const Shell &shP, const Shell &shA, const Shell &shB, MdKernel kernel,
+                 const TerfcTableSet *tables, double omega, double r0,
+                 std::vector<double> &out) {
+    Scratch &s = scratch();
+    const int lP = shP.contr[0].l, lA = shA.contr[0].l, lB = shB.contr[0].l;
+    const int L = lP + lA + lB + 1;
+    if (L >= TERFC_DIMM) md_Ltot_overflow(L);
+    const int S = L + 1;
+    cart_components(lP, s.compP);
+    cart_components(lA, s.compA);
+    cart_components(lB, s.compB);
+    const size_t blk = s.compP.size() * s.compA.size() * s.compB.size();
+    out.assign(9 * blk, 0.0);
+    const auto &AO = shA.O, &BO = shB.O, &PO = shP.O;
+
+    const size_t nprimP = shP.alpha.size();
+    if (s.pval.size() < nprimP) s.pval.resize(nprimP);
+    for (int c = 0; c < 3; ++c)
+        if (s.pd[c].size() < nprimP) s.pd[c].resize(nprimP);
+    for (size_t pp = 0; pp < nprimP; ++pp) {
+        const double p = shP.alpha[pp];
+        HermiteE &Hx = s.Ex, &Hy = s.Ey, &Hz = s.Ez;
+        build_hermite_E(p, 0.0, PO[0], PO[0], lP + 1, 0, Hx);
+        build_hermite_E(p, 0.0, PO[1], PO[1], lP + 1, 0, Hy);
+        build_hermite_E(p, 0.0, PO[2], PO[2], lP + 1, 0, Hz);
+        const KetAxis vx{&Hx, p, false}, vy{&Hy, p, false}, vz{&Hz, p, false};
+        const KetAxis dx{&Hx, p, true}, dy{&Hy, p, true}, dz{&Hz, p, true};
+        aux_lists(s.compP, vx, vy, vz, S, s.pval[pp]);
+        aux_lists(s.compP, dx, vy, vz, S, s.pd[0][pp]);
+        aux_lists(s.compP, vx, dy, vz, S, s.pd[1][pp]);
+        aux_lists(s.compP, vx, vy, dz, S, s.pd[2][pp]);
+    }
+
+    double *o = out.data();
+    for (size_t pa = 0; pa < shA.alpha.size(); ++pa) {
+        const double a = shA.alpha[pa];
+        const double ca = shA.contr[0].coeff[pa];
+        for (size_t pb = 0; pb < shB.alpha.size(); ++pb) {
+            const double b = shB.alpha[pb];
+            const double cb = shB.contr[0].coeff[pb];
+            const double q = a + b;
+            const double Qx = (a * AO[0] + b * BO[0]) / q;
+            const double Qy = (a * AO[1] + b * BO[1]) / q;
+            const double Qz = (a * AO[2] + b * BO[2]) / q;
+            build_hermite_E(a, b, AO[0], BO[0], lA + 1, lB, s.Ex);
+            build_hermite_E(a, b, AO[1], BO[1], lA + 1, lB, s.Ey);
+            build_hermite_E(a, b, AO[2], BO[2], lA + 1, lB, s.Ez);
+            const KetAxis vx{&s.Ex, a, false}, vy{&s.Ey, a, false}, vz{&s.Ez, a, false};
+            const KetAxis dx{&s.Ex, a, true}, dy{&s.Ey, a, true}, dz{&s.Ez, a, true};
+            ket_lists(s.compA, s.compB, vx, vy, vz, S, s.kval);
+            ket_lists(s.compA, s.compB, dx, vy, vz, S, s.kd[0]);
+            ket_lists(s.compA, s.compB, vx, dy, vz, S, s.kd[1]);
+            ket_lists(s.compA, s.compB, vx, vy, dz, S, s.kd[2]);
+            for (size_t pp = 0; pp < nprimP; ++pp) {
+                const double p = shP.alpha[pp];
+                const double cP = shP.contr[0].coeff[pp];
+                const double theta2 = p * q / (p + q);
+                const double *R = kernel_R(kernel, L, theta2, PO[0] - Qx, PO[1] - Qy,
+                                           PO[2] - Qz, tables, omega, r0, s);
+                const double scale = 2.0 * std::pow(M_PI, 2.5) /
+                                     (p * q * std::sqrt(p + q)) * ca * cb * cP;
+                for (int c = 0; c < 3; ++c) {
+                    contract(s.pd[c][pp], s.kval, R, scale, o + c * blk);
+                    contract(s.pval[pp], s.kd[c], R, scale, o + (3 + c) * blk);
+                }
+            }
+        }
+    }
+    // Translational invariance: dB = -(dP + dA).
+    for (int c = 0; c < 3; ++c)
+        for (size_t k = 0; k < blk; ++k)
+            out[(6 + c) * blk + k] = -(out[c * blk + k] + out[(3 + c) * blk + k]);
+}
+
+} // namespace md_terms
+
 // 4-center quartet (a b | c d): both sides are GENUINE Gaussian pairs.
 //
 // compute_cart_eri3 is the special case of this routine in which the bra side
@@ -3516,8 +4417,8 @@ extern "C" int scf_terfc_debug_coulomb_eri3(const scf_basis *obs,
         const Shell &shBsh = obs->bs[sh2];
         if (eri3_Ltot_exceeds_tables(shPsh, shAsh, shBsh)) return SCF_EINVAL;
         std::vector<double> cart;
-        compute_cart_eri3(shPsh, shAsh, shBsh, nullptr, 0.0, 0.0,
-                          /*use_boys=*/true, cart);
+        md_terms::eri3_values(shPsh, shAsh, shBsh, MdKernel::Coulomb, nullptr, 0.0, 0.0,
+                              cart);
         int n = dfbs->nfunc[shP] * obs->nfunc[sh1] * obs->nfunc[sh2];
         std::vector<double> pureout;
         transform_cart_to_pure3(shPsh, shAsh, shBsh, cart, pureout);
@@ -3633,29 +4534,15 @@ extern "C" int scf_compute_terfc_eri3(scf_engine *eng, const scf_basis *obs,
         // ordering, prefactor, normalisation, cart->pure transform), so the
         // subtraction is valid element-by-element in the Cartesian basis.
         if (eri3_Ltot_exceeds_tables(shPsh, shAsh, shBsh)) return SCF_EINVAL;
-        std::vector<double> cart_coul, cart_terf;
-        bool any_c = compute_cart_eri3(shPsh, shAsh, shBsh, nullptr,
-                                       eng->omega, eng->r0, /*use_boys=*/true,
-                                       cart_coul);
-        bool any_t = compute_cart_eri3(shPsh, shAsh, shBsh, eng->terfc_tables.get(),
-                                       eng->omega, eng->r0, /*use_boys=*/false,
-                                       cart_terf);
-        int nP = dfbs->nfunc[shP];
-        int n1 = obs->nfunc[sh1];
-        int n2 = obs->nfunc[sh2];
-        int n = nP * n1 * n2;
-        if (!any_c && !any_t) {
-            for (int i = 0; i < n; ++i) out[i] = 0.0;
-            return 0;  // fully screened
-        }
-        // Form the Cartesian difference (terf may screen where Coulomb doesn't;
-        // treat a screened piece as an all-zero block of the right size).
-        std::vector<double> cart(cart_coul.size(), 0.0);
-        if (any_c) cart = cart_coul;
-        if (any_t) {
-            if (cart_terf.size() != cart.size()) return SCF_EINTERNAL;
-            for (size_t i = 0; i < cart.size(); ++i) cart[i] -= cart_terf[i];
-        }
+        // One MD pass with the difference formed on the R seeds
+        // (md_terms::eri3_values); compute_cart_eri3 run twice and subtracted
+        // is the reference (scf_debug_md_reference_eri3).
+        if (md_terms::use_reference.load(std::memory_order_relaxed))
+            return scf_debug_md_reference_eri3(eng, obs, dfbs, shP, sh1, sh2, out);
+        std::vector<double> cart;
+        md_terms::eri3_values(shPsh, shAsh, shBsh, MdKernel::Terfc,
+                              eng->terfc_tables.get(), eng->omega, eng->r0, cart);
+        int n = dfbs->nfunc[shP] * obs->nfunc[sh1] * obs->nfunc[sh2];
         std::vector<double> pureout;
         transform_cart_to_pure3(shPsh, shAsh, shBsh, cart, pureout);
         if ((int)pureout.size() != n) return SCF_EINTERNAL;
@@ -3754,18 +4641,13 @@ extern "C" int scf_compute_terf_eri3(scf_engine *eng, const scf_basis *obs,
         // terf is the SAME Cartesian block terfc subtracts from Coulomb --
         // return it directly (no combine), so terf + terfc = coulomb exactly.
         if (eri3_Ltot_exceeds_tables(shPsh, shAsh, shBsh)) return SCF_EINVAL;
+        // Bit-identical to compute_cart_eri3 (md_terms keeps its arithmetic).
+        if (md_terms::use_reference.load(std::memory_order_relaxed))
+            return scf_debug_md_reference_eri3(eng, obs, dfbs, shP, sh1, sh2, out);
         std::vector<double> cart_terf;
-        bool any_t = compute_cart_eri3(shPsh, shAsh, shBsh, eng->terfc_tables.get(),
-                                       eng->omega, eng->r0, /*use_boys=*/false,
-                                       cart_terf);
-        int nP = dfbs->nfunc[shP];
-        int n1 = obs->nfunc[sh1];
-        int n2 = obs->nfunc[sh2];
-        int n = nP * n1 * n2;
-        if (!any_t) {
-            for (int i = 0; i < n; ++i) out[i] = 0.0;
-            return 0;  // fully screened
-        }
+        md_terms::eri3_values(shPsh, shAsh, shBsh, MdKernel::Terf,
+                              eng->terfc_tables.get(), eng->omega, eng->r0, cart_terf);
+        int n = dfbs->nfunc[shP] * obs->nfunc[sh1] * obs->nfunc[sh2];
         std::vector<double> pureout;
         transform_cart_to_pure3(shPsh, shAsh, shBsh, cart_terf, pureout);
         if ((int)pureout.size() != n) return SCF_EINTERNAL;
@@ -3861,6 +4743,184 @@ extern "C" int scf_compute_terf_eri2(scf_engine *eng, const scf_basis *dfbs,
     } catch (...) {
         return SCF_EINTERNAL;
     }
+}
+
+/* --------------------------------------------------------------------------
+ *  C ABI: first nuclear derivatives of the terf / terfc table integrals.
+ *
+ *  compute_cart_eri3_deriv / compute_cart_eri2_deriv (the MD kernels above)
+ *  followed by the solid-harmonic transform of each derivative block. The
+ *  layout is libint2's: 3-center [dP, d1, d2] x [x, y, z], 2-center
+ *  [dP, dQ] x [x, y, z], each block row-major and spherical where a shell is
+ *  pure. The table engines never screen, so a successful call always writes
+ *  every block.
+ * -------------------------------------------------------------------------- */
+namespace {
+
+// `reference` selects compute_cart_eri3_deriv (the kernel md_terms::eri3_derivs
+// is checked against) instead of md_terms::eri3_derivs.
+int md_eri3_deriv_entry(MdKernel kernel, const TerfcTableSet *tables, double omega,
+                        double r0, const scf_basis *obs, const scf_basis *dfbs,
+                        int shP, int sh1, int sh2, double *out, int out_len,
+                        bool reference = false) {
+    if (!obs || !dfbs || !out) return SCF_EINVAL;
+    if (shP < 0 || sh1 < 0 || sh2 < 0 || shP >= (int)dfbs->bs.size() ||
+        sh1 >= (int)obs->bs.size() || sh2 >= (int)obs->bs.size()) {
+        return SCF_EINVAL;
+    }
+    const Shell &sP = dfbs->bs[shP];
+    const Shell &sA = obs->bs[sh1];
+    const Shell &sB = obs->bs[sh2];
+    // One unit more angular momentum than the values: refuse at the table depth.
+    if (sP.contr[0].l + sA.contr[0].l + sB.contr[0].l + 1 >= TERFC_DIMM) return SCF_EINVAL;
+    const int n = dfbs->nfunc[shP] * obs->nfunc[sh1] * obs->nfunc[sh2];
+    if (out_len < 9 * n) return SCF_EINVAL;
+    std::vector<double> cart;
+    if (reference || md_terms::use_reference.load(std::memory_order_relaxed)) {
+        compute_cart_eri3_deriv(sP, sA, sB, kernel, tables, omega, r0, cart);
+    } else {
+        md_terms::eri3_derivs(sP, sA, sB, kernel, tables, omega, r0, cart);
+    }
+    const size_t cblk = cart.size() / 9;
+    std::vector<double> one(cblk), pure;
+    for (int d = 0; d < 9; ++d) {
+        std::copy(cart.begin() + d * cblk, cart.begin() + (d + 1) * cblk, one.begin());
+        transform_cart_to_pure3(sP, sA, sB, one, pure);
+        if ((int)pure.size() != n) return SCF_EINTERNAL;
+        std::copy(pure.begin(), pure.end(), out + (size_t)d * n);
+    }
+    return 9 * n;
+}
+
+int md_eri2_deriv_entry(MdKernel kernel, const TerfcTableSet *tables, double omega,
+                        double r0, const scf_basis *dfbs, int shP, int shQ,
+                        double *out, int out_len) {
+    if (!dfbs || !out) return SCF_EINVAL;
+    if (shP < 0 || shQ < 0 || shP >= (int)dfbs->bs.size() || shQ >= (int)dfbs->bs.size()) {
+        return SCF_EINVAL;
+    }
+    const Shell &sP = dfbs->bs[shP];
+    const Shell &sQ = dfbs->bs[shQ];
+    if (sP.contr[0].l + sQ.contr[0].l + 1 >= TERFC_DIMM) return SCF_EINVAL;
+    const int n = dfbs->nfunc[shP] * dfbs->nfunc[shQ];
+    if (out_len < 6 * n) return SCF_EINVAL;
+    std::vector<double> cart;
+    compute_cart_eri2_deriv(sP, sQ, kernel, tables, omega, r0, cart);
+    const size_t cblk = cart.size() / 6;
+    std::vector<double> one(cblk), pure;
+    for (int d = 0; d < 6; ++d) {
+        std::copy(cart.begin() + d * cblk, cart.begin() + (d + 1) * cblk, one.begin());
+        transform_cart_to_pure2(sP, sQ, one, pure);
+        if ((int)pure.size() != n) return SCF_EINTERNAL;
+        std::copy(pure.begin(), pure.end(), out + (size_t)d * n);
+    }
+    return 6 * n;
+}
+
+} // anonymous namespace
+
+extern "C" int scf_compute_terf_table_eri3_deriv(scf_engine *eng, const scf_basis *obs,
+                                                 const scf_basis *dfbs, int shP, int sh1,
+                                                 int sh2, double *out, int out_len) {
+    try {
+        if (!eng || !eng->is_terfc || !eng->terfc_tables) return SCF_EINVAL;
+        const MdKernel k = eng->is_terf_complement ? MdKernel::Terf : MdKernel::Terfc;
+        return md_eri3_deriv_entry(k, eng->terfc_tables.get(), eng->omega, eng->r0, obs,
+                                   dfbs, shP, sh1, sh2, out, out_len);
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+}
+
+extern "C" int scf_compute_terf_table_eri2_deriv(scf_engine *eng, const scf_basis *dfbs,
+                                                 int shP, int shQ, double *out,
+                                                 int out_len) {
+    try {
+        if (!eng || !eng->is_terfc || !eng->terfc_tables) return SCF_EINVAL;
+        const MdKernel k = eng->is_terf_complement ? MdKernel::Terf : MdKernel::Terfc;
+        return md_eri2_deriv_entry(k, eng->terfc_tables.get(), eng->omega, eng->r0, dfbs,
+                                   shP, shQ, out, out_len);
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+}
+
+extern "C" int scf_debug_md_coulomb_eri3_deriv(const scf_basis *obs, const scf_basis *dfbs,
+                                               int shP, int sh1, int sh2, double *out,
+                                               int out_len) {
+    try {
+        return md_eri3_deriv_entry(MdKernel::Coulomb, nullptr, 0.0, 0.0, obs, dfbs, shP,
+                                   sh1, sh2, out, out_len);
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+}
+
+extern "C" int scf_debug_md_coulomb_eri2_deriv(const scf_basis *dfbs, int shP, int shQ,
+                                               double *out, int out_len) {
+    try {
+        return md_eri2_deriv_entry(MdKernel::Coulomb, nullptr, 0.0, 0.0, dfbs, shP, shQ,
+                                   out, out_len);
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+}
+
+// The reference MD kernels (compute_cart_eri3, run twice and subtracted for
+// terfc, and compute_cart_eri3_deriv) on a terf/terfc table engine, for
+// checking md_terms against them. Same layouts and return contracts as
+// scf_compute_terf{,c}_eri3 and scf_compute_terf_table_eri3_deriv.
+extern "C" int scf_debug_md_reference_eri3(scf_engine *eng, const scf_basis *obs,
+                                           const scf_basis *dfbs, int shP, int sh1,
+                                           int sh2, double *out) {
+    try {
+        if (!eng || !eng->is_terfc || !eng->terfc_tables || !obs || !dfbs || !out)
+            return SCF_EINVAL;
+        if (shP < 0 || sh1 < 0 || sh2 < 0 || shP >= (int)dfbs->bs.size() ||
+            sh1 >= (int)obs->bs.size() || sh2 >= (int)obs->bs.size())
+            return SCF_EINVAL;
+        const Shell &sP = dfbs->bs[shP];
+        const Shell &sA = obs->bs[sh1];
+        const Shell &sB = obs->bs[sh2];
+        if (eri3_Ltot_exceeds_tables(sP, sA, sB)) return SCF_EINVAL;
+        std::vector<double> cart, cart_terf;
+        compute_cart_eri3(sP, sA, sB, eng->terfc_tables.get(), eng->omega, eng->r0,
+                          /*use_boys=*/false, cart_terf);
+        if (eng->is_terf_complement) {
+            cart = cart_terf;
+        } else {
+            compute_cart_eri3(sP, sA, sB, nullptr, eng->omega, eng->r0,
+                              /*use_boys=*/true, cart);
+            for (size_t i = 0; i < cart.size(); ++i) cart[i] -= cart_terf[i];
+        }
+        const int n = dfbs->nfunc[shP] * obs->nfunc[sh1] * obs->nfunc[sh2];
+        std::vector<double> pureout;
+        transform_cart_to_pure3(sP, sA, sB, cart, pureout);
+        if ((int)pureout.size() != n) return SCF_EINTERNAL;
+        std::copy(pureout.begin(), pureout.end(), out);
+        return n;
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+}
+
+extern "C" int scf_debug_md_reference_eri3_deriv(scf_engine *eng, const scf_basis *obs,
+                                                 const scf_basis *dfbs, int shP, int sh1,
+                                                 int sh2, double *out, int out_len) {
+    try {
+        if (!eng || !eng->is_terfc || !eng->terfc_tables) return SCF_EINVAL;
+        const MdKernel k = eng->is_terf_complement ? MdKernel::Terf : MdKernel::Terfc;
+        return md_eri3_deriv_entry(k, eng->terfc_tables.get(), eng->omega, eng->r0, obs,
+                                   dfbs, shP, sh1, sh2, out, out_len, /*reference=*/true);
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+}
+
+// Process-wide test switch: nonzero routes scf_compute_terf{,c}_eri3 and
+// scf_compute_terf_table_eri3_deriv through the reference kernels.
+extern "C" void scf_debug_md_use_reference(int on) {
+    md_terms::use_reference.store(on != 0, std::memory_order_relaxed);
 }
 
 extern "C" int scf_compute_terf_eri4(scf_engine *eng, const scf_basis *obs,
@@ -4058,8 +5118,16 @@ extern "C" scf_engine *scf_engine_create_terf_libint2(double r0, double omega,
             st = SCF_EUNSUPPORTED;
             return nullptr;
         }
-        libint2::os_core_ints::terf_gm_eval<double>::hook() =
-            &ferric_terf_libint2_hook;
+        // Install the hook ONCE per process. hook() is a plain (non-atomic)
+        // function-pointer static in libint2's header; rewriting it on every
+        // engine creation raced the reads libint2 makes from compute on other
+        // threads' terf engines. The value never changes, and call_once's
+        // completion happens-before any engine this or a later call returns.
+        static std::once_flag terf_hook_once;
+        std::call_once(terf_hook_once, [] {
+            libint2::os_core_ints::terf_gm_eval<double>::hook() =
+                &ferric_terf_libint2_hook;
+        });
 
         libint2::BraKet bk;
         switch (braket) {
@@ -4111,7 +5179,9 @@ extern "C" int scf_terf_libint2_hook_probe(const char *table_dir, double rho,
                                            double r0, double *Gm, int gm_len) {
     try {
         if (!Gm || mmax < 0 || gm_len < mmax + 1) return SCF_EINVAL;
-        if (!get_terfc_tables(resolve_table_dir(table_dir))) return SCF_EUNSUPPORTED;
+        auto set = get_terfc_tables(resolve_table_dir(table_dir));
+        if (!set) return SCF_EUNSUPPORTED;
+        TerfHookTablesScope scope(set.get());   // what libint2's caller publishes
         try {
             return ferric_terf_libint2_hook(rho, T, mmax, omega, r0, Gm)
                        ? SCF_OK
@@ -4176,7 +5246,7 @@ extern "C" int scf_terf_libint2_vs_md_eri3(const scf_basis *obs,
             if (max_rel) *max_rel = 0.0;
             return n;
         }
-        if (std::getenv("FERRIC_TERF_DUMP")) {
+        if (ferric_getenv("FERRIC_TERF_DUMP")) {
             std::fprintf(stderr, "block (%d,%d,%d) n=%d  nP=%d n1=%d n2=%d\n",
                          shP, sh1, sh2, n, nP, n1, n2);
             for (int i = 0; i < n && i < 24; ++i) {
@@ -4382,7 +5452,7 @@ extern "C" int scf_terf_asym_probe(int mmax, int reps,
         const double ss[] = {0.05, 0.2, 0.5};
         double worst = 0.0;
         // accuracy first -- per (S,s), so the crossover is chosen from data
-        if (std::getenv("FERRIC_ASYM_DUMP")) {
+        if (ferric_getenv("FERRIC_ASYM_DUMP")) {
             std::fprintf(stderr, "      S      s       worst rel err (m=0..%d)\n", mmax);
             for (double S : {20.,30.,50.,75.,100.,150.,200.,300.,400.,600.}) {
                 for (double sv : {0.05,0.2,0.5,1.0}) {

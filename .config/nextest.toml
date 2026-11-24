@@ -44,6 +44,27 @@ slow-timeout = { period = "120s", terminate-after = 4 }
 [profile.ci.junit]
 path = "junit.xml"
 
+# The nightly "Tiered tests in the deferred binaries" step (ci.yml slow-tests).
+# Those tests are tier slow/exhaustive AND live in the SLOW binaries; before
+# the tiering (#626) they ran under plain `cargo test` with no per-test cap
+# (2026-11-04 nightly: screening_exactness 1532 s, csam_screening 891 s,
+# link_scf_anchor 573 s per binary). Under the `ci` profile's 480 s cap and
+# num-cpus concurrency, 13 of 48 were killed twice (run 42027056352). Tiers are
+# measured in release on a quiet 6-core box; CI is a debug build on a shared
+# runner, so a "slow (>=60s)" test can take far longer there.
+# - slow-timeout 300 s x 6: kill only a test stuck for 30 min;
+# - retries 0: retrying a timeout doubles its cost and adds no information;
+# - test-threads 2: the tests are rayon-parallel inside, so running num-cpus
+#   of them at once mostly adds contention.
+[profile.ci-tiered]
+fail-fast = false
+retries = 0
+test-threads = 2
+slow-timeout = { period = "300s", terminate-after = 6 }
+
+[profile.ci-tiered.junit]
+path = "junit.xml"
+
 # Tests that allocate against the shared MemoryPool. FERRIC_MEM_BUDGET_GB is
 # per-process, so these must not run many-at-once: 4 concurrent x 3 GB is
 # 12 GB against a runner that has ~14 GB free and has already died with

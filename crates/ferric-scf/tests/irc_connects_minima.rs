@@ -193,6 +193,7 @@ fn both_endpoints_are_downhill_from_the_saddle() {
 /// saddle you found. Nothing new is needed: `follow_irc` takes the same
 /// closure as `find_saddle`, so the embedding enters through `RhfConfig`
 /// exactly as it does there.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_irc_runs_under_qmmm_embedding() {
     let a: f64 = 120.0_f64.to_radians();
@@ -216,11 +217,9 @@ fn the_irc_runs_under_qmmm_embedding() {
     ];
     let system =
         QmmmSystem::new(&atoms, QmSelection::Indices(vec![0, 1, 2, 3]), 0, 1).expect("qmmm system");
-    let mut scf = RhfConfig {
-        external_potential: system.to_external_potential(),
-        ..Default::default()
-    };
-    scf.max_iter = 300;
+    let scf = RhfConfig::default()
+        .with_external_potential(system.to_external_potential())
+        .with_max_iter(300);
     let op = Operator::coulomb();
 
     let eg = move |m: &Molecule| -> Result<(f64, Array1<f64>), FerricError> {
@@ -267,6 +266,7 @@ fn the_irc_runs_under_qmmm_embedding() {
 /// Damping the step to `min(step, 2*|g|)` fixed it: all three now converge, in
 /// 71/71/89 steps. That near-invariance in the step COUNT is the real evidence
 /// the integrator is following one path rather than three.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_endpoints_do_not_depend_on_the_step_size() {
     let mut results = Vec::new();

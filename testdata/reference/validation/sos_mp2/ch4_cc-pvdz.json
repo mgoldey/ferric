@@ -1,0 +1,88 @@
+{
+  "row": "Laplace SOS-MP2",
+  "system": "ch4",
+  "basis": "cc-pvdz",
+  "aux_basis": "cc-pvdz-ri",
+  "geometry_stem": "ch4",
+  "nao": 34,
+  "nocc": 5,
+  "nuclear_repulsion": 13.439527889904605,
+  "e_rhf": -40.198708542481434,
+  "dfmp2": {
+    "e_os": -0.1328670900448981,
+    "e_ss": -0.031196979102757524,
+    "e_corr": -0.16406406914765564
+  },
+  "sos": {
+    "c_os_default": 1.3,
+    "sos_corr_default": -0.17272721705836755,
+    "sos_total_default": -40.3714357595398
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "scf": "scf.RHF exact J/K, conv_tol 1e-12, conv_tol_grad 1e-10",
+      "mp2": "mp.dfmp2.DFMP2(frozen=None), with_df auxmol from ferric's aux JSON; e_corr_os / e_corr_ss"
+    },
+    "grid": "none",
+    "aux_basis": "cc-pvdz-ri",
+    "frozen_core": 0,
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-10
+    },
+    "stability": null,
+    "basis": "cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz.json",
+    "basis_sha256": "4c2f450a81a8545e4df9e24a313111642cf70d5f7213fc8e879ef9dacab5da2f",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/ch4.xyz",
+    "geometry_xyz_sha256": "bdc436de2d7b7694752df7c4a783b709bf83566726b186b08745985d13519537",
+    "geometry_bohr": [
+      [
+        "C",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "H",
+        1.1888607200341226,
+        1.1888607200341226,
+        1.1888607200341226
+      ],
+      [
+        "H",
+        -1.1888607200341226,
+        -1.1888607200341226,
+        1.1888607200341226
+      ],
+      [
+        "H",
+        -1.1888607200341226,
+        1.1888607200341226,
+        -1.1888607200341226
+      ],
+      [
+        "H",
+        1.1888607200341226,
+        -1.1888607200341226,
+        -1.1888607200341226
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/gen_pyscf_sos_mp2_refs.py",
+    "git_head": "45a4e24269136d39df9a0e1fe1ca09ac646b4b3e",
+    "generated_utc": "2026-11-13T08:00:39+00:00",
+    "basis_self_check": {
+      "nao": 34,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 34,
+      "diag_skipped_cartesian": 0
+    },
+    "aux_basis_json_sha256": "8221d2a31b5bbebd39218fc3f9244917e173a338ff9c56904038443a06e2a250"
+  }
+}

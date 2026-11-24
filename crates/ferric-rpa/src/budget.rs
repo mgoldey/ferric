@@ -126,12 +126,11 @@ pub struct PeakEstimateShape {
     /// `0` contributes nothing, so a caller that has no meaningful `nao`
     /// estimates byte-identically to before this field existed.
     ///
-    /// # Why this is not the "negligible" scratch the old comment described
+    /// # Why the raw AO scratch is not "negligible"
     ///
-    /// The intermediates comment below used to say the raw AO scratch is
-    /// "chunk-sized, `MO_STREAM_CHUNK` aux rows wide, not naux-wide, so it's
-    /// negligible next to the full b_ov". That is true of what the stream
-    /// reads INTO and false of what it reads FROM.
+    /// The raw AO scratch is "chunk-sized, `MO_STREAM_CHUNK` aux rows wide, not
+    /// naux-wide, so it's negligible next to the full b_ov" for what the stream
+    /// reads INTO, and not for what it reads FROM.
     /// `compute_rpa_intermediates` (rimp2.rs) does:
     ///
     /// ```text
@@ -232,11 +231,11 @@ pub fn estimate_grid_bytes(g: GridEstimateShape) -> usize {
     // chi: evaluated PER GRID CHUNK inside the banded accumulation, one buffer
     // per rayon worker, each `chunk_size = npts/TARGET_CHUNKS` points wide.
     //
-    // This used to be a single contiguous Array2::zeros((nbf, npts)) — ~3.75 GB
-    // at nbf=800/npts=586k — built up front even though every consumer reads it
-    // one grid point at a time. Fusing it into the loop cut that to ~44 MB at 12
+    // A single contiguous Array2::zeros((nbf, npts)) would be ~3.75 GB
+    // at nbf=800/npts=586k, though every consumer reads it
+    // one grid point at a time. Fusing it into the loop gives ~44 MB at 12
     // workers (85x less; 3.7 MB serial). The estimate tracks the fused form: an
-    // estimator that still charged the monolithic figure would over-reject, and
+    // estimator that charged the monolithic figure would over-reject, and
     // an over-estimating gate is as broken as an under-estimating one (it
     // becomes a wall and trains users to inflate budgets).
     let chunk_size = npts.div_ceil(dipole_chunk_count(npts).max(1)).max(1);
@@ -257,8 +256,8 @@ pub fn estimate_grid_bytes(g: GridEstimateShape) -> usize {
         .saturating_mul(F64_BYTES);
 
     // One band of chunk-partials, each a full d_ai_ao-sized set. This is the
-    // term that used to scale with rayon worker count via the thread floor in
-    // `dipole_band_width`; the byte cap now wins, but the partials are still
+    // term that would scale with rayon worker count via the thread floor in
+    // `dipole_band_width`; the byte cap wins, but the partials are still
     // genuinely co-resident with the accumulator, so they are additive here.
     let band_partial_bytes = per_atom_dipole_bytes.saturating_mul(dipole_band_width.max(1));
 
@@ -322,7 +321,7 @@ pub fn estimate_grid_bytes(g: GridEstimateShape) -> usize {
 /// scales with `n_workers`, so at HIGH widths it fails on its own and the
 /// fallback engages correctly, while at LOW widths it squeezes in and starves
 /// the tensor. Measured (binary search for the smallest completing capacity,
-/// water/cc-pVDZ) before the fix:
+/// water/cc-pVDZ) with a greedy soft charge:
 ///
 /// ```text
 ///   workers   soft       hard+AO   hard+soft+AO   measured minimum
@@ -397,6 +396,438 @@ pub fn quad_scratch_bytes(shape: PeakEstimateShape) -> usize {
         .saturating_mul(shape.n_workers.max(1))
 }
 
+/// [`quad_scratch_bytes`] at the nov-panel `width` the frequency loop
+/// actually allocates (`energy::quad_panel_width`); `width >= nov` is the
+/// full-width term itself.
+pub fn quad_scratch_bytes_at_width(shape: PeakEstimateShape, width: usize) -> usize {
+    let m = shape.n_keep.min(shape.naux).max(1);
+    let nov = shape.nocc.saturating_mul(shape.nvir);
+    let rows = m.max(shape.naux);
+    let cols = width.min(nov);
+    rows.saturating_mul(cols)
+        .saturating_add(rows.saturating_mul(rows))
+        .saturating_mul(F64_BYTES)
+        .saturating_mul(shape.n_workers.max(1))
+}
+
+/// The planes only the static-eigenbasis route allocates: the assembled
+/// `naux x naux` ε̃(0) and its eigenvectors (`2 naux²`), the projection
+/// `y = Vᵀ·B_ov` (`m·nov`), and the eigenvector outputs (eigenvectors and
+/// eigenpotentials, `2 naux·m`).
+pub fn static_eigensolve_bytes(shape: PeakEstimateShape) -> usize {
+    let naux = shape.naux;
+    let m = shape.n_keep.min(naux).max(1);
+    let nov = shape.nocc.saturating_mul(shape.nvir);
+    let eigensolve = naux.saturating_mul(naux).saturating_mul(2);
+    let y_projection = m.saturating_mul(nov);
+    let outputs = naux.saturating_mul(m).saturating_mul(2);
+    eigensolve
+        .saturating_add(y_projection)
+        .saturating_add(outputs)
+        .saturating_mul(F64_BYTES)
+}
+
+/// Which planes a closed-shell energy run allocates (see `crate::energy_route`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnergyRoutePlanes {
+    /// The PDEP eigensolve and the frequency loop in its eigenbasis.
+    StaticEigenbasis,
+    /// The frequency loop in the aux basis: no eigensolve planes, plus one
+    /// `naux x naux` ε̃(0) for the keep-all Cholesky check.
+    AuxBasisLogDet,
+}
+
+/// What the closed-shell preflight charges: the ceiling-check `total` and its
+/// pool split (`hard` refuses, `soft` is the per-worker scratch, and the AO
+/// tensor is `total - hard - soft`, charged by `ferric-integrals`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunCharge {
+    /// Bytes the ceiling check compares to the budget.
+    pub total: usize,
+    /// Planes with no streaming fallback.
+    pub hard: usize,
+    /// The per-worker frequency scratch at the width the loop allocates.
+    pub soft: usize,
+}
+
+/// The preflight charge of a closed-shell energy run on `planes`, with the
+/// per-worker scratch at `panel_width` (the width the frequency loop will
+/// allocate under the run's budget) rather than the full `nov`.
+///
+/// At `panel_width >= nov` on [`EnergyRoutePlanes::StaticEigenbasis`] this is
+/// exactly [`estimate_peak_bytes`] / [`estimate_peak_split`]; a budgeted run
+/// whose loop panels is charged the panel it allocates.
+pub fn closed_shell_run_charge(
+    shape: PeakEstimateShape,
+    planes: EnergyRoutePlanes,
+    panel_width: usize,
+) -> RunCharge {
+    let (static_hard, _) = estimate_peak_split(shape);
+    let hard = match planes {
+        EnergyRoutePlanes::StaticEigenbasis => static_hard,
+        EnergyRoutePlanes::AuxBasisLogDet => static_hard
+            .saturating_sub(static_eigensolve_bytes(shape))
+            .saturating_add(
+                shape
+                    .naux
+                    .saturating_mul(shape.naux)
+                    .saturating_mul(F64_BYTES),
+            ),
+    };
+    let soft = quad_scratch_bytes_at_width(shape, panel_width);
+    RunCharge {
+        total: hard
+            .saturating_add(soft)
+            .saturating_add(ao_tensor_bytes(shape)),
+        hard,
+        soft,
+    }
+}
+
+/// What the Laplace-chi0 dielectric kernel
+/// (`crate::laplace_chi0::dielectric_matrix_laplace_into`) allocates per
+/// active frequency worker beyond the full-width loop scratch
+/// ([`quad_scratch_bytes_at_width`] at `nov`): the larger of its two branches.
+/// The Laplace branch keeps a copy of the unscaled projection (`m·nov`); the
+/// high-frequency dense fallback (`sternheimer::dielectric_matrix`) builds the
+/// projection and its scaled copy (`2 m·nov`) and a fresh `m²` matrix. Both
+/// are charged with `m = naux`, as the loop scratch is.
+pub fn laplace_kernel_extra_bytes(shape: PeakEstimateShape) -> usize {
+    let m = shape.naux.max(shape.n_keep.min(shape.naux));
+    let nov = shape.nocc.saturating_mul(shape.nvir);
+    m.saturating_mul(nov)
+        .saturating_mul(2)
+        .saturating_add(m.saturating_mul(m))
+        .saturating_mul(F64_BYTES)
+        .saturating_mul(shape.n_workers.max(1))
+}
+
+/// [`ScanCharge`] with `extra` bytes more in the dRPA phase's per-worker
+/// scratch (`drpa_soft` and the total).
+pub fn with_drpa_scratch(base: ScanCharge, extra: usize) -> ScanCharge {
+    let drpa_soft = base.drpa_soft.saturating_add(extra);
+    let build = base.ao_resident.saturating_add(base.stream_scratch);
+    let drpa = base.drpa_hard.saturating_add(drpa_soft);
+    ScanCharge {
+        total: base
+            .persistent
+            .saturating_add(build.max(base.spin_scratch).max(drpa)),
+        drpa_soft,
+        ..base
+    }
+}
+
+/// Planes the rs-mp2-rpa scan holds for its whole run: the metric buffers
+/// (`3 naux²`, as in [`estimate_peak_bytes`]) and one `b_ov` (`naux·nov`).
+/// The driver keeps one `RpaIntermediates` at a time, so one `b_ov`.
+pub fn scan_persistent_bytes(shape: PeakEstimateShape) -> usize {
+    let nov = shape.nocc.saturating_mul(shape.nvir);
+    shape
+        .naux
+        .saturating_mul(shape.naux)
+        .saturating_mul(3)
+        .saturating_add(shape.naux.saturating_mul(nov))
+        .saturating_mul(F64_BYTES)
+}
+
+/// What the rs-mp2-rpa preflight charges, phase by phase.
+///
+/// Every operator of a scan (Coulomb, then the long- and short-range pair of
+/// each ω) runs the same three phases on top of [`scan_persistent_bytes`],
+/// and the AO tensor of one phase is dropped before the next starts:
+///
+/// ```text
+///   build   AO tensor at its tier + the stream chunk   (compute_rpa_intermediates)
+///   spin    per-worker g_i, nocc·nvir² each            (spin_components_from_b_ov)
+///   drpa    static eigensolve planes + freq scratch     (run_pdep_rpa_from_intermediates)
+/// ```
+///
+/// All operators share one shape, so the charge is the same for every ω and
+/// both formulations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScanCharge {
+    /// The ceiling-check figure: `persistent + max(build, spin, drpa)`.
+    pub total: usize,
+    /// [`scan_persistent_bytes`].
+    pub persistent: usize,
+    /// The budget handed to `ThreeIndexSource::build`: what is left after the
+    /// persistent planes and the stream chunk. The AO tier is chosen at it.
+    pub ao_budget: usize,
+    /// The tier the AO tensor takes at `ao_budget`.
+    pub ao_tier: ferric_integrals::three_index_source::jk_storage::Tier,
+    /// The AO tensor's resident peak at that tier.
+    pub ao_resident: usize,
+    /// The `mo_blk` chunk of the stream.
+    pub stream_scratch: usize,
+    /// The spin-component phase: `n_workers · nocc · nvir² · 8`.
+    pub spin_scratch: usize,
+    /// The dRPA planes with no fallback ([`static_eigensolve_bytes`]).
+    pub drpa_hard: usize,
+    /// The dRPA per-worker frequency scratch at the loop's panel width.
+    pub drpa_soft: usize,
+}
+
+/// [`ScanCharge`] for `shape` under `budget_bytes`, with the frequency
+/// scratch at `panel_width` and the stream chunk at `stream_scratch` bytes.
+///
+/// The AO tier is planned with `ferric_integrals::three_index_source::
+/// planned_residency`, which is the decision `ThreeIndexSource::build` makes,
+/// so the charge follows the tier the build takes: the whole tensor in core,
+/// the packed triangle, or two spill blocks.
+pub fn scan_charge(
+    shape: PeakEstimateShape,
+    budget_bytes: usize,
+    panel_width: usize,
+    stream_scratch: usize,
+) -> ScanCharge {
+    let persistent = scan_persistent_bytes(shape);
+    let ao_budget = budget_bytes
+        .saturating_sub(persistent)
+        .saturating_sub(stream_scratch);
+    let (ao_tier, ao_resident) =
+        ferric_integrals::three_index_source::planned_residency(shape.nao, shape.naux, ao_budget);
+    let spin_scratch = shape
+        .nocc
+        .saturating_mul(shape.nvir)
+        .saturating_mul(shape.nvir)
+        .saturating_mul(F64_BYTES)
+        .saturating_mul(shape.n_workers.max(1));
+    let drpa_hard = static_eigensolve_bytes(shape);
+    let drpa_soft = quad_scratch_bytes_at_width(shape, panel_width);
+    let build = ao_resident.saturating_add(stream_scratch);
+    let drpa = drpa_hard.saturating_add(drpa_soft);
+    ScanCharge {
+        total: persistent.saturating_add(build.max(spin_scratch).max(drpa)),
+        persistent,
+        ao_budget,
+        ao_tier,
+        ao_resident,
+        stream_scratch,
+        spin_scratch,
+        drpa_hard,
+        drpa_soft,
+    }
+}
+
+/// [`ScanCharge`] of the open-shell rs-mp2-rpa driver: [`scan_charge`]'s
+/// three phases on top of TWO co-resident spin sets.
+///
+/// Per operator the alpha intermediates are built, then the beta ones with
+/// alpha still resident, and both live through the spin and dRPA phases.
+/// So:
+///
+/// ```text
+///   persistent  scan_persistent_bytes(alpha) + scan_persistent_bytes(beta)
+///   build       AO tensor at its tier (once: `shape_b.nao` is 0) + stream
+///   spin        the larger spin's n_workers · nocc · nvir² (the U-MP2 and
+///               D_σσ kernels run one spin at a time)
+///   drpa        static_eigensolve_bytes and the frequency scratch of each
+///               spin, summed
+/// ```
+///
+/// The two eigensolve terms each count the `2 naux²` ε̃(0) planes, which the
+/// spin-summed eigensolve allocates once, so the dRPA phase over-counts by
+/// `2 naux² + 2 naux·m` doubles. That is the over-estimating direction. On a
+/// closed-shell shape pair (`shape_a == shape_b` but for `nao`) the
+/// persistent term is twice the closed-shell one, as it must be: two `b_ov`
+/// are resident where the closed-shell driver holds one.
+pub fn scan_charge_unrestricted(
+    (shape_a, shape_b): (PeakEstimateShape, PeakEstimateShape),
+    budget_bytes: usize,
+    (panel_a, panel_b): (usize, usize),
+    stream_scratch: usize,
+) -> ScanCharge {
+    let persistent = scan_persistent_bytes(shape_a).saturating_add(scan_persistent_bytes(shape_b));
+    let ao_budget = budget_bytes
+        .saturating_sub(persistent)
+        .saturating_sub(stream_scratch);
+    let nao = shape_a.nao.max(shape_b.nao);
+    let (ao_tier, ao_resident) =
+        ferric_integrals::three_index_source::planned_residency(nao, shape_a.naux, ao_budget);
+    let spin = |s: PeakEstimateShape| {
+        s.nocc
+            .saturating_mul(s.nvir)
+            .saturating_mul(s.nvir)
+            .saturating_mul(F64_BYTES)
+            .saturating_mul(s.n_workers.max(1))
+    };
+    let spin_scratch = spin(shape_a).max(spin(shape_b));
+    let drpa_hard =
+        static_eigensolve_bytes(shape_a).saturating_add(static_eigensolve_bytes(shape_b));
+    let drpa_soft = quad_scratch_bytes_at_width(shape_a, panel_a)
+        .saturating_add(quad_scratch_bytes_at_width(shape_b, panel_b));
+    let build = ao_resident.saturating_add(stream_scratch);
+    let drpa = drpa_hard.saturating_add(drpa_soft);
+    ScanCharge {
+        total: persistent.saturating_add(build.max(spin_scratch).max(drpa)),
+        persistent,
+        ao_budget,
+        ao_tier,
+        ao_resident,
+        stream_scratch,
+        spin_scratch,
+        drpa_hard,
+        drpa_soft,
+    }
+}
+
+/// Bytes a closed-shell rs-mp2-rpa scan holds through its eigenbasis dRPA
+/// phase besides the frequency scratch: the persistent planes
+/// ([`scan_persistent_bytes`]), the Coulomb `b_ov` a terf scan keeps
+/// (`held_b_ov_bytes`, 0 otherwise) and the static eigensolve planes
+/// ([`static_eigensolve_bytes`]).
+pub fn scan_dielectric_resident_bytes(shape: PeakEstimateShape, held_b_ov_bytes: usize) -> usize {
+    scan_persistent_bytes(shape)
+        .saturating_add(held_b_ov_bytes)
+        .saturating_add(static_eigensolve_bytes(shape))
+}
+
+/// What a frequency loop's per-worker scratch may use: what `budget` leaves
+/// beside the `resident` planes (everything the caller charges besides that
+/// scratch, a projection the loop holds included), so that
+/// `resident + scratch ≤ budget`. `None` (no set budget) runs the loop at full
+/// width. A `resident` at or over the budget is
+/// [`PanelAllowance::NoRoom`](crate::energy::PanelAllowance::NoRoom): the
+/// narrowest panel, which a pre-flight charges and the rs-mp2-rpa driver
+/// refuses before any loop runs ([`check_scan_resident`]).
+///
+/// Sizing the panel against the whole budget and then adding the resident
+/// planes on top put every panelled run's demand at `budget + resident`, so
+/// the ceiling check refused runs the narrower panel would have fitted.
+pub fn panel_budget_beside(
+    budget: Option<usize>,
+    resident: usize,
+) -> crate::energy::PanelAllowance {
+    use crate::energy::PanelAllowance;
+    match budget {
+        None => PanelAllowance::Unbudgeted,
+        Some(b) if resident >= b => PanelAllowance::NoRoom,
+        Some(b) => PanelAllowance::Scratch(b - resident),
+    }
+}
+
+/// The planes a closed-shell or open-shell scan holds through its dRPA phase,
+/// for [`check_scan_resident`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScanResident {
+    /// Aux metric + the current operator's `b_ov` (per spin).
+    pub persistent: usize,
+    /// The Coulomb `b_ov` a terf scan keeps for every point (0 otherwise).
+    pub held_coulomb: usize,
+    /// The static eigensolve planes.
+    pub eigensolve: usize,
+}
+
+/// The refusal when the planes a scan holds through its dRPA phase
+/// ([`ScanResident`]) leave nothing of `budget_bytes` for a frequency panel.
+pub fn check_scan_resident(
+    label: &str,
+    planes: ScanResident,
+    budget_bytes: usize,
+) -> Result<(), ferric_core::error::FerricError> {
+    let ScanResident {
+        persistent,
+        held_coulomb,
+        eigensolve,
+    } = planes;
+    let kept = persistent.saturating_add(held_coulomb);
+    let resident = kept.saturating_add(eigensolve);
+    if resident < budget_bytes {
+        return Ok(());
+    }
+    let gb = |b: usize| b as f64 / 1e9;
+    let what = if kept >= budget_bytes {
+        "the persistent planes alone"
+    } else {
+        "the persistent planes and the dRPA eigensolve planes"
+    };
+    let held = if held_coulomb > 0 {
+        format!(
+            " + the Coulomb b_ov a terf scan holds for every point {:.3} GB",
+            gb(held_coulomb)
+        )
+    } else {
+        String::new()
+    };
+    Err(ferric_core::error::FerricError::MemoryExhausted(format!(
+        "{label}: {what} exceed the memory budget: persistent planes (aux metric + b_ov) \
+         {:.3} GB{held} + static eigensolve planes {:.3} GB = {:.3} GB against a budget of \
+         {:.3} GB, which leaves no room for the frequency panel (it is sized against the \
+         budget minus these planes). Raise [memory] budget_gb / FERRIC_MEM_BUDGET_GB, or \
+         shrink the auxiliary basis or the active space (frozen_core)",
+        gb(persistent),
+        gb(eigensolve),
+        gb(resident),
+        gb(budget_bytes),
+    )))
+}
+
+/// The per-worker scratch of the signed log-det dRPA
+/// (`crate::energy::eval_signed_trace_log_summands`) at panel width `width`:
+/// a `2 naux × width` panel and the `(2 naux)²` dielectric.
+pub fn signed_quad_scratch_bytes(naux: usize, width: usize, n_workers: usize) -> usize {
+    let m = naux.saturating_mul(2);
+    m.saturating_mul(width)
+        .saturating_add(m.saturating_mul(m))
+        .saturating_mul(F64_BYTES)
+        .saturating_mul(n_workers.max(1))
+}
+
+/// A [`ScanCharge`] adjusted for the terf long-range fit (Coulomb RI minus
+/// terfc RI, `ferric_mp2::rimp2::SignedBOv`).
+///
+/// The Coulomb `b_ov` of each spin (`held_b_ov_bytes` in all) stays resident
+/// for the whole scan and joins the persistent planes, which shrinks the
+/// budget left for the AO tensor, so its tier is re-planned. The long-range
+/// dRPA runs the signed log-det, whose scratch (`signed_drpa_bytes`, from
+/// [`signed_quad_scratch_bytes`]) is its own phase: it forms no static
+/// eigenbasis, so the eigensolve planes are not live beside it, and the dRPA
+/// phase is the larger of `drpa_hard + drpa_soft` and the signed scratch.
+/// `drpa_soft` becomes the larger of the two scratches (the pool's soft
+/// reservation around either loop). The terf three-index build itself is
+/// gone, so no phase is added.
+pub fn with_signed_lr(
+    base: ScanCharge,
+    (nao, naux): (usize, usize),
+    budget_bytes: usize,
+    held_b_ov_bytes: usize,
+    signed_drpa_bytes: usize,
+) -> ScanCharge {
+    let persistent = base.persistent.saturating_add(held_b_ov_bytes);
+    let ao_budget = budget_bytes
+        .saturating_sub(persistent)
+        .saturating_sub(base.stream_scratch);
+    let (ao_tier, ao_resident) =
+        ferric_integrals::three_index_source::planned_residency(nao, naux, ao_budget);
+    let drpa_soft = base.drpa_soft.max(signed_drpa_bytes);
+    let build = ao_resident.saturating_add(base.stream_scratch);
+    let drpa = base
+        .drpa_hard
+        .saturating_add(base.drpa_soft)
+        .max(signed_drpa_bytes);
+    ScanCharge {
+        total: persistent.saturating_add(build.max(base.spin_scratch).max(drpa)),
+        persistent,
+        ao_budget,
+        ao_tier,
+        ao_resident,
+        drpa_soft,
+        ..base
+    }
+}
+
+/// Upper-bound estimate, in bytes, of the peak resident memory of a PDEP-RPA
+/// run with the given shape.
+///
+/// Sums the terms live at the frequency loop: the RI intermediates (three
+/// `naux²` metric buffers, the `naux·nocc·nvir` `b_ov`, and the
+/// `naux·nao²` AO three-index tensor), the full-rank Lanczos eigensolve
+/// (`2·naux²`), the per-worker quadrature scratch
+/// ([`quad_scratch_bytes`]), the `y` projection, the eigenvector outputs,
+/// the retained inverse-dielectric stack and its per-worker clones when
+/// `need_inv_dielectric` is set, and the per-atom grid term when `grid` is
+/// `Some`. All arithmetic saturates. The contract is to over- rather than
+/// under-estimate.
 pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
     let PeakEstimateShape {
         naux,
@@ -427,7 +858,7 @@ pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
     //     raw AO block SCRATCH is chunk-sized, `MO_STREAM_CHUNK` aux rows
     //     wide, not naux-wide, so it's negligible next to the full b_ov).
     //
-    //     CAVEAT the above used to omit: that is the buffer the stream reads
+    //     CAVEAT: that is the buffer the stream reads
     //     INTO. The `ThreeIndexSource` it reads FROM is a separate full
     //     `(naux, nao, nao)` tensor, live across the whole streaming call and
     //     admitted in-core at up to 100% of this very budget. It is charged
@@ -447,13 +878,10 @@ pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
         .saturating_add(eri3_and_bov_bytes)
         .saturating_add(ao_tensor_bytes);
 
-    // (2) Lanczos full-rank eigensolve: assembled A (naux×naux, always fully
-    // resident regardless of matvec panel width) + its eigh output
-    // (eigenvectors naux×naux + eigenvalues naux, folded into the naux² term).
-    let lanczos_peak = naux
-        .saturating_mul(naux)
-        .saturating_mul(2)
-        .saturating_mul(F64_BYTES);
+    // (2) The static eigensolve and what it leaves resident for the loop
+    // ([`static_eigensolve_bytes`]): the assembled ε̃(0) and its eigenvectors,
+    // the projection y = Vᵀ·B_ov, and the eigenvector outputs.
+    let lanczos_peak = static_eigensolve_bytes(shape);
 
     // (3) Frequency-quadrature loop: per-worker (m, nov) + (m, m) scratch via
     // map_init, times n_workers (this is the term that scales with rayon
@@ -467,7 +895,7 @@ pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
     // and then form `eps_mat = b_scaled.dot(&b_scaled.t())`, a full
     // (naux, naux). Those shapes are naux-wide, not m-wide.
     //
-    // That distinction used to be invisible because every caller passes
+    // That distinction is invisible when every caller passes
     // `n_keep = naux` (pre-eigensolve the retained count is unknown, and the
     // production `trunc_thresh = 0.0` keeps every mode anyway), so `m == naux`
     // and the m-based figure happened to land on the right number. It was
@@ -485,7 +913,6 @@ pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
         .saturating_add(per_worker_width.saturating_mul(per_worker_width))
         .saturating_mul(F64_BYTES);
     let quad_scratch_peak = per_worker_scratch.saturating_mul(n_workers);
-    let y_projection_bytes = m.saturating_mul(nov).saturating_mul(F64_BYTES);
 
     // The b_ov held by the intermediate the eigensolve/quadrature stages
     // borrow from is already counted in eri3_and_bov_bytes above (it's the
@@ -494,10 +921,6 @@ pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
     // distinct, simultaneously-live allocations at the point the frequency
     // loop runs (b_ov + eigensolve output + per-worker scratch), but we must
     // not double the eri3/b_ov term again here.
-    let output_arrays = naux
-        .saturating_mul(m)
-        .saturating_mul(2)
-        .saturating_mul(F64_BYTES); // eigenvectors + eigenpotentials_aux
 
     // (3b) The per-frequency inverse-dielectric stack, when the caller keeps it.
     //
@@ -575,8 +998,6 @@ pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
     intermediates_peak
         .saturating_add(lanczos_peak)
         .saturating_add(quad_scratch_peak)
-        .saturating_add(y_projection_bytes)
-        .saturating_add(output_arrays)
         .saturating_add(grid_peak)
         .saturating_add(inv_dielectric_bytes)
 }
@@ -584,6 +1005,54 @@ pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn run_charge_shape() -> PeakEstimateShape {
+        PeakEstimateShape {
+            naux: 700,
+            nocc: 25,
+            nvir: 169,
+            n_quad: 20,
+            n_workers: 6,
+            n_keep: 700,
+            grid: None,
+            need_inv_dielectric: false,
+            nao: 202,
+        }
+    }
+
+    /// At full panel width the static route's charge IS the estimate the
+    /// ceiling check used before the panel width was threaded through, and a
+    /// narrower panel lowers only the per-worker scratch. Mutation-tested:
+    /// charging `quad_scratch_bytes(shape)` (full width) in
+    /// `closed_shell_run_charge` fails the second assertion.
+    #[test]
+    fn the_run_charge_follows_the_panel_width_the_loop_allocates() {
+        let shape = run_charge_shape();
+        let nov = shape.nocc * shape.nvir;
+        let full = closed_shell_run_charge(shape, EnergyRoutePlanes::StaticEigenbasis, nov);
+        assert_eq!(full.total, estimate_peak_bytes(shape));
+        let narrow = closed_shell_run_charge(shape, EnergyRoutePlanes::StaticEigenbasis, 64);
+        assert_eq!(narrow.hard, full.hard);
+        assert_eq!(narrow.soft, quad_scratch_bytes_at_width(shape, 64));
+        assert!(narrow.total < full.total);
+        assert_eq!(full.total - narrow.total, full.soft - narrow.soft);
+    }
+
+    /// The aux route drops the static eigensolve planes and keeps one
+    /// `naux x naux` matrix; everything else is the static route's charge.
+    #[test]
+    fn the_aux_route_charges_no_static_eigensolve() {
+        let shape = run_charge_shape();
+        let nov = shape.nocc * shape.nvir;
+        let stat = closed_shell_run_charge(shape, EnergyRoutePlanes::StaticEigenbasis, nov);
+        let aux = closed_shell_run_charge(shape, EnergyRoutePlanes::AuxBasisLogDet, nov);
+        let square = shape.naux * shape.naux * F64_BYTES;
+        assert_eq!(
+            stat.hard - aux.hard,
+            static_eigensolve_bytes(shape) - square
+        );
+        assert_eq!(aux.soft, stat.soft);
+    }
 
     /// The hard/soft split must reconstruct the total EXACTLY. If it drifts,
     /// the pool gate admits a different number of bytes than the ceiling
@@ -775,5 +1244,31 @@ mod tests {
             ..shape
         });
         assert_eq!(est, clamped);
+    }
+
+    /// The open-shell scan charge holds two spin sets: on a singlet shape
+    /// pair (β carrying no AO tensor) every per-spin term doubles against the
+    /// closed-shell charge, the AO tier and the spin scratch do not, and a
+    /// larger β spin raises the total. Charging only the α set (the closed-
+    /// shell `scan_charge` on `shape_a`) fails the first and last assertions.
+    #[test]
+    fn the_open_shell_scan_charge_holds_both_spins() {
+        let a = run_charge_shape();
+        let b = PeakEstimateShape { nao: 0, ..a };
+        let budget = 64usize << 30;
+        let nov = a.nocc * a.nvir;
+        let cs = scan_charge(a, budget, nov, 1 << 20);
+        let u = scan_charge_unrestricted((a, b), budget, (nov, nov), 1 << 20);
+        assert_eq!(u.persistent, 2 * cs.persistent);
+        assert_eq!(u.drpa_hard, 2 * cs.drpa_hard);
+        assert_eq!(u.drpa_soft, 2 * cs.drpa_soft);
+        assert_eq!(u.spin_scratch, cs.spin_scratch);
+        assert!(u.total > cs.total);
+        let bigger = PeakEstimateShape {
+            nocc: a.nocc + 5,
+            ..b
+        };
+        let u2 = scan_charge_unrestricted((a, bigger), budget, (nov, nov), 1 << 20);
+        assert!(u2.total > u.total && u2.persistent > u.persistent);
     }
 }

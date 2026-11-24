@@ -21,10 +21,10 @@
 //! Each anchor also checks the library value against siblings a mis-routed
 //! CLI would produce (the GGA PBE for SCAN, SCAN for r2SCAN, UKS for ROKS,
 //! dense for RS-GDF): each differs by far more than one ulp, so a bit-equal
-//! pass cannot come from the wrong route. The derivatives of these routes are
-//! refused by name (`periodic_kpoint_open_shell.rs`,
-//! `periodic_rsh_open_mgga_derivs.rs`); the k-point ROKS meta-GGA force and
-//! stress are library work in progress (#586), not wired here.
+//! pass cannot come from the wrong route. The Gamma-point derivatives of
+//! these routes are refused by name (`periodic_kpoint_open_shell.rs`); the
+//! k-point ROKS SCAN / r2SCAN force and stress are anchored in
+//! `periodic_kroks_mgga_derivs.rs`.
 
 mod open_rsh_cli;
 

@@ -319,7 +319,7 @@ fn flagging_is_neither_vacuous_nor_universal() {
 /// THE HEADLINE: the corrected statistic, and the fact that it went UP.
 ///
 /// Both numbers are pinned: the all-pairs statistic (directly comparable to
-/// the old 0.482 / +0.450 on the same N=17) and the confident subset (the
+/// the 0.482 / +0.450 of the earlier statistic on the same N=17) and the confident subset (the
 /// states surviving the intensity gate, with the count stated).
 #[test]
 fn corrected_statistic_is_worse_than_the_naive_one_and_both_are_pinned() {

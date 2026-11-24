@@ -82,8 +82,8 @@ fn v_dressed() -> Array2<f64> {
 /// CONTRACT 1: a budget that fits ONLY m_proj must be REFUSED.
 ///
 /// The defect itself. `1.5x` one tensor is comfortably above `m_proj` alone
-/// and comfortably below the true `m_proj + b_full` peak, so the old guard
-/// admitted it and the new one must not.
+/// and comfortably below the true `m_proj + b_full` peak, so a guard that
+/// ignores `b_full` admits it and the guard must not.
 #[test]
 fn a_budget_that_fits_only_m_proj_is_refused() {
     let budget = one_tensor_bytes() * 3 / 2;

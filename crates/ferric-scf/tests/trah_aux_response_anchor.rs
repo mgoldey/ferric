@@ -98,12 +98,10 @@ impl Point {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &prep).unwrap();
         let ctx = ParallelContext::default();
-        let cfg = RhfConfig {
-            energy_conv: 1e-11,
-            density_conv: 1e-9,
-            max_iter: 200,
-            ..Default::default()
-        };
+        let cfg = RhfConfig::default()
+            .with_energy_conv(1e-11)
+            .with_density_conv(1e-9)
+            .with_max_iter(200);
         let res = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
         assert!(res.converged);
         let n = prep.nbasis();
@@ -350,16 +348,14 @@ fn step_diff(auxbasis: &str, rot: f64, radius: f64) -> StepDiff {
         exact_full_gap: true,
         ..Default::default()
     };
-    let (_, ex) = rhf_trah_step(&pt.ctx, &inp, radius, &exact_cfg).unwrap();
+    let (_, ex) = rhf_trah_step(&pt.ctx, &inp, None, radius, &exact_cfg).unwrap();
     let mut slot = Some(pt.aux_stale(auxbasis));
-    let rcfg = RhfConfig {
-        trah: TrahConfig {
-            aux_curvature: true,
-            ..Default::default()
-        },
-        aurora: Point::aux_cfg(auxbasis),
+    let mut rcfg = RhfConfig::default();
+    rcfg.trah = TrahConfig {
+        aux_curvature: true,
         ..Default::default()
     };
+    rcfg.aurora = Point::aux_cfg(auxbasis);
     let geom = (&pt.mol, &pt.prep, pt.c.view(), pt.nocc, 1.0);
     let (_, ax) = rhf_trah_step_aux_cached(&mut slot, geom, &rcfg, &inp, radius).unwrap();
     let norm = |v: &[f64]| v.iter().map(|x| x * x).sum::<f64>().sqrt();
@@ -377,6 +373,7 @@ fn step_diff(auxbasis: &str, rot: f64, radius: f64) -> StepDiff {
 /// block is `f_oo`) and `rhf_trah_step_aux_cached` (`refresh_orbitals` onto the
 /// rotated orbitals), and it needs a NONZERO gradient, so it starts off the
 /// converged point. Mutants of each give an O(1) step difference.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn aux_trah_step_matches_full_gap_exact_step_off_canonical() {
     let d = step_diff("def2-universal-jkfit", 0.1, 0.3);

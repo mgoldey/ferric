@@ -41,10 +41,7 @@ fn setup(xyz: &str) -> Setup {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_energy_conv(1e-10),
     )
     .unwrap();
     Setup {
@@ -795,6 +792,7 @@ fn schwarz_candidates_cover_every_retained_element() {
 /// below the ε-threshold truncation itself (the family's port-fidelity
 /// bar); (c) mutation — an absurd budget must gut the aux domains and
 /// wreck the energy, proving the selection actually drops rows.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn aux_truncation_trivial_limit_subdominance_and_mutation() {
     let su = setup("alkane_8.xyz");
@@ -1002,4 +1000,78 @@ fn vvhv_refuses_ecp_molecules() {
         Err(e) => e.to_string(),
     };
     assert!(msg.contains("ECP") && msg.contains("I carries"), "{msg}");
+}
+
+/// The plain local MP2 drivers refuse a Kohn-Sham reference with the typed
+/// `Unsupported` error (before this guard they ran MP2 with KS
+/// denominators silently). The SCF is Hartree-Fock; only its recorded
+/// functional is changed, so the refusal can only come from the guard.
+/// Each driver (global, integral-direct, and both `*_with_virtuals` entry
+/// points) is checked, and the HF result itself still runs.
+#[test]
+fn kohn_sham_reference_is_refused() {
+    use ferric_core::error::FerricError;
+    use ferric_mp2::lmp2_direct::{
+        amplitude_lmp2_direct, amplitude_lmp2_direct_with_virtuals, DirectConfig,
+    };
+    let su = setup("water.xyz");
+    let op = Operator::coulomb();
+    let cfg = AmplitudeLmp2Config::default();
+    let dcfg = DirectConfig::default();
+    let vvhv = build_vvhv(&su.mol, &su.obs, &su.obs_bs, &su.rhf).unwrap();
+    assert!(su.rhf.xc.is_none());
+    let hf = amplitude_lmp2_with_virtuals(&su.mol, &su.obs, &su.dfbs, op, &su.rhf, &cfg, &vvhv);
+    assert!(hf.unwrap().e_corr < 0.0);
+    let mut ks = su.rhf.clone();
+    ks.xc = Some("PBE".to_string());
+    let refused = |r: Result<(), FerricError>, who: &str| match r {
+        Err(FerricError::Unsupported { feature, .. }) => {
+            assert!(feature.contains("Kohn-Sham"), "{who}: {feature}")
+        }
+        other => panic!("{who}: KS reference not refused: {other:?}"),
+    };
+    refused(
+        amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &ks, &cfg).map(|_| ()),
+        "amplitude_lmp2",
+    );
+    refused(
+        amplitude_lmp2_with_virtuals(&su.mol, &su.obs, &su.dfbs, op, &ks, &cfg, &vvhv).map(|_| ()),
+        "amplitude_lmp2_with_virtuals",
+    );
+    refused(
+        amplitude_lmp2_direct(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &ks, &cfg, &dcfg)
+            .map(|_| ()),
+        "amplitude_lmp2_direct",
+    );
+    refused(
+        amplitude_lmp2_direct_with_virtuals(
+            &su.mol, &su.obs, &su.dfbs, op, &ks, &cfg, &dcfg, &vvhv,
+        )
+        .map(|_| ()),
+        "amplitude_lmp2_direct_with_virtuals",
+    );
+}
+
+/// The Fock-injection seam: `localized_spaces_with_fock` with
+/// `rhf.fock_r()` is `localized_spaces` bit for bit, and the Fock blocks
+/// come from the INJECTED matrix — 2F gives exactly 2·f_oo and 2·f_vv
+/// (power-of-two scaling is exact; plain Boys does not read F). A seam that
+/// ignored `f_ao` fails the second check.
+#[test]
+fn injected_fock_drives_the_localized_fock_blocks() {
+    use ferric_mp2::lmp2_amplitude::{localized_spaces, localized_spaces_with_fock};
+    let su = setup("water.xyz");
+    let vvhv = build_vvhv(&su.mol, &su.obs, &su.obs_bs, &su.rhf).unwrap();
+    let bits = |a: &ndarray::Array2<f64>| a.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    let base = localized_spaces(&su.mol, &su.obs, &su.rhf, 0, &vvhv).unwrap();
+    let same =
+        localized_spaces_with_fock(&su.mol, &su.obs, &su.rhf, su.rhf.fock_r(), 0, &vvhv, 0.0)
+            .unwrap();
+    assert_eq!(bits(&same.f_oo), bits(&base.f_oo));
+    assert_eq!(bits(&same.f_vv), bits(&base.f_vv));
+    assert_eq!(bits(&same.c_locc), bits(&base.c_locc));
+    let f2 = su.rhf.fock_r() * 2.0;
+    let twice = localized_spaces_with_fock(&su.mol, &su.obs, &su.rhf, &f2, 0, &vvhv, 0.0).unwrap();
+    assert_eq!(bits(&twice.f_oo), bits(&(&base.f_oo * 2.0)));
+    assert_eq!(bits(&twice.f_vv), bits(&(&base.f_vv * 2.0)));
 }

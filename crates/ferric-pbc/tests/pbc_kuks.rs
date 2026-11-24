@@ -29,6 +29,7 @@ use support::*;
 
 // -------------------------------------------------- closed-shell limit
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn closed_shell_limit_is_krks() {
     let cell = h2_cell(4.0);
@@ -93,6 +94,7 @@ fn mutants_are_detected() {
 
 // ----------------------------------------------------- 1-point = Gamma
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn one_point_mesh_is_gamma_uks() {
     let cases: Vec<(&str, Cell, BasisSet)> = vec![
@@ -144,6 +146,7 @@ fn one_point_mesh_is_gamma_uks() {
     }
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn k_mesh_is_the_gamma_supercell() {
     let h2t = cell_mult(&H2_ATOMS, 4.0, 3);
@@ -167,6 +170,7 @@ fn k_mesh_is_the_gamma_supercell() {
 /// (Hd PBE0 1x1x3: phases, Madelung-scaled exchange, spin-polarized XC) and
 /// the triplet GGA (H2t PBE 1x1x1), the two pins that exercise the most of
 /// the path per second.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uniform_grid_kuks_matches_a_pinned_pyscf_subset() {
     let subset: Vec<_> = PYSCF

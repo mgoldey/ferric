@@ -80,8 +80,8 @@ fn shape(nao: usize) -> PeakEstimateShape {
 
 /// CONTRACT 1: the estimate must GROW with `nao`.
 ///
-/// The defect itself. Before the fix `nao` was not even an input, so no value
-/// of it could move the estimate.
+/// The property itself: `nao` is an input of the estimate, so its value
+/// moves the estimate.
 #[test]
 fn the_estimate_responds_to_the_ao_dimension() {
     let small = estimate_peak_bytes(shape(NAO / 2));

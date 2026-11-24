@@ -5,14 +5,15 @@ follow from it.
 
 ## Run it
 
-**Python and the Rust library; there is no CLI section.**
+Python, the CLI (`[cdft]`, below) and the Rust library. The coupling is Python
+and Rust only.
 
 - `run_cdft(mol, basis_set, constraints, functional=None, ...)` returns a
   `CdftResult`: a constrained UHF solve, or UKS when `functional` names a
   libxc functional other than `"HF"` (`None` and `"HF"`, any case, give UHF).
 - `CdftConstraint(atoms, target, kind="charge")` defines one fragment
   constraint. `atoms` are 0-based atom indices. `target` is the electron
-  **population** on the fragment, the Becke-weighted trace
+  population on the fragment, the Becke-weighted trace
   \\( \mathrm{Tr}[W D] \\), not a net charge: \\( N_\alpha + N_\beta \\) for
   `kind="charge"` and \\( N_\alpha - N_\beta \\) for `kind="spin"`. A neutral
   He atom has a charge population of 2.0; He⁺ has 1.0.
@@ -21,6 +22,35 @@ follow from it.
   diabat energies `e_a`, `e_b`. The raw element uses each state's free energy
   F = E + λN, which makes the coupling independent of a constant shift of the
   constraint operator.
+
+From the CLI, a `[cdft]` section turns `kind = "uhf"` into the same constrained
+solve (UKS with `[dft] functional`), `task = "energy"` only:
+
+```toml
+[method]
+kind = "uhf"
+task = "energy"
+
+[cdft]
+lambda_tol = 1e-5   # electrons
+max_outer = 40      # the lambda loop's own cap; [scf] max_iter caps each inner SCF
+
+[[cdft.constraint]]
+atoms = [0]         # zero-based
+target = 2.2        # a POPULATION in electrons, not a net charge
+kind = "charge"     # or "spin"
+```
+
+`examples/lih-cdft-charge.toml`, `lih-plus-cdft-spin.toml` and `henep-cdft.toml`
+are runnable inputs; `henep-cdft.toml` is the pinned HeNe⁺ state below. The
+keys, with their Python names, are in the [input reference](../reference/input.md#cdft).
+The CLI energy, multipliers, populations and certificate equal `run_cdft`'s bit
+for bit on these cases (`crates/ferric-python/tests/test_cli_cdft_thole.py`).
+The run log's `result` record (`kind = "cdft"`) carries the multipliers,
+populations, residuals and the certificate, ungraded like `CdftResult.certificate`.
+Every section and `[scf]` key the constrained solve does not read is an error at
+load time, and the grid is `[cdft] grid_radial` / `grid_angular`, not `[dft]`.
+The coupling needs two solves that share one Hamiltonian and has no CLI form.
 
 In Rust the entry points are `ferric_scf::cdft_driver::solve_cdft_uhf` and
 `ferric_scf::cdft_coupling::coupling_hab`; see the
@@ -44,7 +74,7 @@ r = ferric.run_cdft(
     [ferric.CdftConstraint([0], 2.0, kind="charge")],
     guess="hcore",
     level_shift=0.5,
-    max_iter=400,
+    scf_max_iter=400,
     lambda_tol=1e-5,
     max_outer=40,
     stability_descent=False,
@@ -108,7 +138,7 @@ What to know before using it:
 - **`cdft_coupling` has strict preconditions** and raises `ValueError` when
   one fails. Each state carries exactly one `kind="charge"` constraint, both
   are converged, and both come from the same molecule, geometry, basis,
-  charge and multiplicity **and the same Hamiltonian**: functional,
+  charge and multiplicity, and the same Hamiltonian: functional,
   `df_j_aux`/`df_k_aux`, `k_builder`, XC grid, point charges and external
   field. Two states that are the same determinant (\\( |S_{ab}| \to 1 \\))
   also raise. The sign of `h_ab` is a determinant-phase convention; compare
@@ -127,8 +157,8 @@ is stated for UHF-cDFT energies apart from the HeNe⁺ and LiH⁺ states in
 `validation_cdft_state.rs`. On HeNe⁺/def2-SVP at R = 2.0 Å the hole-on-Ne
 state (N_He = 2) is NWChem's lower state once NWChem's Becke partition is
 given ferric's He/Ne radius ratio (0.667; NWChem's own is 0.700). Against
-NWChem's native partition it sits 0.563 eV higher, and that offset is the
-partition difference, not a missing state: with NWChem's radii patched into
+NWChem's native partition it sits 0.563 eV higher. The offset comes from the
+partition: with NWChem's radii patched into
 ferric's radius table (a one-off measurement, not a test), ferric reaches
 −130.447404 Ha against NWChem's native −130.447401 Ha. The He₂⁺ coupling
 ingredients (determinant overlap, one- and two-electron transition elements,
@@ -144,7 +174,7 @@ matrices and He₂⁺ identities (`ferric-scf/tests/cdft_coupling.rs`). On HeNe�
 an asymmetric pair, the same file checks that both diabats carry the requested
 charge, that the hole-on-He state is reached through either fragment (3.9e-6
 Ha apart), that the hole prefers Ne, the lower-IP atom (gap 1.7646 eV with the
-default stability descent; the 1.0975 eV once reported came from a saddle),
+default stability descent; 1.0975 eV is a saddle point),
 and that H_ab is invariant under W → W − cS. These run at R = 2.0 Å only: from
 the hcore start, at 2.5, 3.5 and 4.0 Å the outer loop does not converge or
 returns the unconstrained state, and from MINAO at 2.5 Å the two routes to the
@@ -165,35 +195,32 @@ fragment-weighted density operator. The derivative
 
 \\[ \frac{\partial N}{\partial \lambda} \\]
 
-— how much charge moves per unit constraint potential — **is a susceptibility**.
-So cDFT probes the same object as [RPA and GW](./rpa-gw.md) and
+is the charge moved per unit constraint potential, a susceptibility.
+cDFT therefore probes the same object as [RPA and GW](./rpa-gw.md) and
 [attenuated MP2](./mp2.md), through a different coupling.
 
 ## Implementation
 
-- **Fragment charge and spin constraints** via a grid-Becke weight operator
-- A **nested Lagrange-multiplier solve** (Wu–Van Voorhis): an inner SCF at fixed
+- Fragment charge and spin constraints via a grid-Becke weight operator
+- A nested Lagrange-multiplier solve (Wu–Van Voorhis): an inner SCF at fixed
   \\( \lambda \\), an outer Newton iteration on \\( \lambda \\) itself
 
-The nesting is what makes cDFT more expensive than a plain SCF — each outer step
-is a full converged inner solve.
+Each outer step is a full converged inner solve, so cDFT costs several
+plain SCFs.
 
 ## Electron-transfer coupling
 
-Once you have two charge-localized diabatic states, the coupling
-\\( H_{ab} \\) between them follows from a **non-orthogonal determinant
-overlap**, computed via Löwdin biorthogonalization.
+The coupling \\( H_{ab} \\) between two charge-localized diabatic states
+follows from a non-orthogonal determinant overlap, computed via Löwdin
+biorthogonalization. It is the matrix element governing electron-transfer
+rates in Marcus theory.
 
-That gives the matrix element governing electron-transfer rates in Marcus
-theory, from states that are constructed rather than guessed.
-
-## A caveat
+## Tolerance and coupling error
 
 The λ convergence tolerance (`lambda_tol` in Python, `cdft_lambda_tol` in
-Rust, default 1e-5 electrons) interacts with the coupling calculation in a
-way worth checking: a loosely converged \\( \lambda \\) produces diabatic
-states that are not quite the ones you asked for, and \\( H_{ab} \\) inherits
-that error. Tighten it before trusting a coupling. The exception is a
+Rust, default 1e-5 electrons) affects the coupling: a loosely converged
+\\( \lambda \\) produces diabatic states that miss their targets, and
+\\( H_{ab} \\) inherits that error. Tighten it before trusting a coupling. The exception is a
 constraint whose population barely responds to \\( \lambda \\), such as He₂⁺
 at the localized-hole plateau with a UHF reference: on He₂⁺/def2-SVP UHF at
 2.5–3.5 Å the outer loop does not converge in 40 iterations at 1e-5, while at

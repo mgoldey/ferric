@@ -81,13 +81,12 @@ fn water() -> Sys {
 }
 
 fn cfg(budget: usize, max_iter: usize) -> RhfConfig {
-    RhfConfig {
-        xc: Some("PBE".into()),
-        df_j_aux: Some(AUX.into()),
-        three_index_budget_bytes: budget,
-        max_iter,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_xc("PBE")
+        .with_df_j_aux(AUX)
+        .with_max_iter(max_iter);
+    c.three_index_budget_bytes = budget;
+    c
 }
 
 /// `P/T` from below the tensor through past the highest old band, at half-`T`
@@ -160,6 +159,7 @@ fn sweep_with(solver: Solver, cfg: impl Fn(usize, usize) -> RhfConfig + Sync) {
     }
 }
 
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn raising_the_budget_never_turns_a_running_rhf_job_into_a_refused_one() {
     let _s = slot();
@@ -167,22 +167,23 @@ fn raising_the_budget_never_turns_a_running_rhf_job_into_a_refused_one() {
 }
 
 /// Hybrids also build a dressed tensor, which spills rather than refuses.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn raising_the_budget_never_turns_a_running_hybrid_job_into_a_refused_one() {
     let _s = slot();
-    sweep_with(Solver::Rhf, |p, n| RhfConfig {
-        xc: Some("B3LYP".into()),
-        df_k_aux: Some(AUX.into()),
-        ..cfg(p, n)
+    sweep_with(Solver::Rhf, |p, n| {
+        cfg(p, n).with_xc("B3LYP").with_df_k_aux(AUX)
     });
 }
 
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn raising_the_budget_never_turns_a_running_uhf_job_into_a_refused_one() {
     let _s = slot();
     sweep(Solver::Uhf);
 }
 
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn raising_the_budget_never_turns_a_running_rohf_job_into_a_refused_one() {
     let _s = slot();
@@ -240,6 +241,7 @@ fn the_raw_tier_does_not_read_the_thread_count() {
         n_radial: 30,
         n_angular: 50,
         prune: None,
+        weight_cut: None,
     };
     let p = s.tensor * 95 / 100;
     let mut rows = Vec::new();
@@ -304,24 +306,25 @@ fn energy_is_the_same_for_every_xc_mode_and_thread_count() {
 }
 
 fn vv10_cfg(budget: usize, max_iter: usize) -> RhfConfig {
-    RhfConfig {
-        xc: Some("wB97X-V".into()),
-        df_j_aux: Some(AUX.into()),
-        df_k_aux: Some(AUX.into()),
-        three_index_budget_bytes: budget,
-        max_iter,
-        dft_grid: Some(AtomicGridConfig {
+    let mut c = RhfConfig::default()
+        .with_xc("wB97X-V")
+        .with_df_j_aux(AUX)
+        .with_df_k_aux(AUX)
+        .with_max_iter(max_iter)
+        .with_dft_grid(AtomicGridConfig {
             n_radial: 30,
             n_angular: 50,
             prune: None,
-        }),
-        nlc_grid: Some(AtomicGridConfig {
-            n_radial: 10,
-            n_angular: 14,
-            prune: None,
-        }),
-        ..Default::default()
-    }
+            weight_cut: None,
+        });
+    c.three_index_budget_bytes = budget;
+    c.nlc_grid = Some(AtomicGridConfig {
+        n_radial: 10,
+        n_angular: 14,
+        prune: None,
+        weight_cut: None,
+    });
+    c
 }
 
 fn nlc_cache(s: &Sys, c: &RhfConfig) -> usize {
@@ -338,6 +341,7 @@ fn nlc_cache(s: &Sys, c: &RhfConfig) -> usize {
 
 /// Below `T`, raw has soft tiers and the NLC cache has none. If raw decided first
 /// it would take the packed tier here, leaving the cache unable to fit.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn a_budget_that_holds_the_nlc_cache_beside_a_soft_raw_tier_runs() {
     let _s = slot();
@@ -383,6 +387,7 @@ fn an_nlc_cache_that_cannot_fit_is_refused_up_front_by_name() {
 }
 
 /// From `P/T` = 0.3, where the NLC cache fits, a VV10 job runs at every budget.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn a_vv10_job_runs_at_every_budget_that_holds_its_cache() {
     let _s = slot();

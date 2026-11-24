@@ -1,0 +1,100 @@
+{
+  "row": "IEF-PCM gradient",
+  "system": "water",
+  "basis": "sto-3g",
+  "epsilon": 78.4,
+  "energy": -74.9692387671565,
+  "e_pcm": -0.006390300361494035,
+  "gradient": [
+    [
+      -1.374461615605931e-16,
+      -3.715287725731045e-16,
+      -0.05797248145416238
+    ],
+    [
+      -9.446526312334073e-16,
+      -0.022176861421979204,
+      0.028986240727082176
+    ],
+    [
+      1.0737696948796778e-15,
+      0.02217686142198009,
+      0.02898624072707997
+    ]
+  ],
+  "cavity": {
+    "ng": 302,
+    "n_tesserae": 556,
+    "total_area": 164.58528333818674,
+    "area_centroid": [
+      0.0,
+      -1.44355389771753e-16,
+      -0.03604341579974267
+    ]
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "methods": [
+        "scf.RHF(mol).PCM()",
+        "nuc_grad_method()"
+      ],
+      "pcm_method": "IEF-PCM",
+      "lebedev_order": 29,
+      "vdw_scale": 1.2,
+      "radii": "pyscf.solvent.pcm.modified_Bondi (H = 1.1 A)",
+      "surface_discretization_method": "SWIG",
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-09,
+      "eri": "exact 4-index (no density fitting)",
+      "numpy": "1.26.4"
+    },
+    "grid": "PCM cavity: Lebedev 302 per sphere, SWIG",
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-09
+    },
+    "stability": null,
+    "basis": "sto-3g",
+    "basis_json": "crates/ferric-core/src/basis/bundled/sto-3g.json",
+    "basis_sha256": "fc10db84e56bf6623fde21a81e77c07474484b91135e6c9b9a8d85d432da538c",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/water.xyz",
+    "geometry_xyz_sha256": "9cc3d45aae83e5796d40e0b4f1ccc017e6e0d8dc559fabf4b8b3204fe59c99d1",
+    "geometry_bohr": [
+      [
+        "O",
+        0.0,
+        0.0,
+        0.22259084021251865
+      ],
+      [
+        "H",
+        0.0,
+        1.4275992699810498,
+        -0.8903652505761991
+      ],
+      [
+        "H",
+        0.0,
+        -1.4275992699810498,
+        -0.8903652505761991
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_pcm_grad.py",
+    "git_head": "c86a1335d7c016b13c402ca9ee824d11d219806d",
+    "generated_utc": "2026-11-05T21:12:30+00:00",
+    "basis_self_check": {
+      "nao": 7,
+      "replica_self_overlap_max_dev": 2.220446049250313e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 7,
+      "diag_skipped_cartesian": 0
+    }
+  }
+}

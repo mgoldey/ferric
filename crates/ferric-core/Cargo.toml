@@ -21,6 +21,20 @@ mpi = { workspace = true, optional = true }
 cudarc = { workspace = true, optional = true }
 libloading = { workspace = true, optional = true }
 
+# libc: the process CPU clock behind the `busy` column of src/timing.rs (all
+# unix), and the macOS memory probe in src/memory/sys.rs. windows-sys: the
+# Windows memory probe. Both are already in Cargo.lock.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_ProcessStatus",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }
+
 [features]
 default = []
 mpi = ["dep:mpi"]

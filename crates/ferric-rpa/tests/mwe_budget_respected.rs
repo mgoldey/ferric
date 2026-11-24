@@ -128,7 +128,7 @@ fn dipole_band_width_floors_at_one() {
 /// closed a loop: a bigger budget bought a wider band, which raised the
 /// estimate by about as much, so the pre-flight gate refused the job again one
 /// rung higher. Measured on a 9-atom aug-cc-pVDZ molecule (naux=648, nbf=207,
-/// npts=74250) before the fix: budget 4 GB -> "requires 4.45 GB"; 8 GB ->
+/// npts=74250) with a requirement tracking its limit: budget 4 GB -> "requires 4.45 GB"; 8 GB ->
 /// "requires 8.74 GB"; the gate only passed at 12 GB, where the 1024-chunk
 /// clamp finally bound the width instead of the budget.
 ///

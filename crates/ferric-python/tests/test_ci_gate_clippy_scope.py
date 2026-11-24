@@ -24,9 +24,37 @@ import pytest
 REPO = Path(__file__).resolve().parents[3]
 SCRIPTS = REPO / "scripts"
 SELECTOR = SCRIPTS / "ci_gate_clippy_scope.py"
-REAL_CARGO = shutil.which("cargo")
 
-pytestmark = pytest.mark.skipif(not REAL_CARGO, reason="needs cargo")
+
+def _real_cargo():
+    """The first cargo on PATH that is not the ferric cargo shim.
+
+    The stub below sits FIRST on PATH and execs this path for everything but
+    clippy. If it were the shim (~/.local/share/ferric-cargo-shim/cargo, first
+    on PATH on the dev box), the shim would resolve its "real" cargo as the
+    first non-shim cargo on PATH, i.e. the stub, and the two would exec each
+    other until the selector's cargo-metadata timeout, which reads as
+    "cargo metadata failed" and silently widens every scope to the workspace.
+    """
+    path = os.pathsep.join(
+        d
+        for d in os.environ.get("PATH", "").split(os.pathsep)
+        if "ferric-cargo-shim" not in d
+    )
+    return shutil.which("cargo", path=path)
+
+
+REAL_CARGO = _real_cargo()
+
+# scripts/ci-gate.sh runs every step under util-linux `flock` and coreutils
+# `timeout` (macOS and Windows have neither), so without them it exits 127.
+pytestmark = [
+    pytest.mark.skipif(not REAL_CARGO, reason="needs cargo"),
+    pytest.mark.skipif(
+        not (shutil.which("flock") and shutil.which("timeout")),
+        reason="needs util-linux flock and coreutils timeout",
+    ),
+]
 
 
 def _env():
@@ -57,7 +85,8 @@ def _add_crate(root, directory, name):
         f"{directory}/Cargo.toml",
         f'[package]\nname = "{name}"\nversion = "0.1.0"\n',
     )
-    _write(root, f"{directory}/src/lib.rs", "")
+    # rustfmt formats an empty file as one newline; the gate runs cargo fmt --check.
+    _write(root, f"{directory}/src/lib.rs", "\n")
 
 
 def _commit(root, message="change"):
@@ -432,6 +461,7 @@ def _run_gate(gate, stub_dir, **extra):
         "PATH": f"{stub_dir}{os.pathsep}{os.environ['PATH']}",
         "CI_GATE_SKIP_TESTS": "1",
         "CI_GATE_SKIP_COMPLEXITY": "1",
+        "CI_GATE_SKIP_RATCHET": "1",
         "CI_GATE_SKIP_DOCS": "1",
         "CI_GATE_SKIP_PYTEST": "1",
         **extra,
@@ -623,6 +653,7 @@ def test_tier_full_forces_the_workspace_through_the_real_hook(repo, tmp_path):
         "CI_GATE_TIER": "full",
         "CI_GATE_SKIP_TESTS": "1",
         "CI_GATE_SKIP_COMPLEXITY": "1",
+        "CI_GATE_SKIP_RATCHET": "1",
         "CI_GATE_SKIP_DOCS": "1",
         "CI_GATE_SKIP_PYTEST": "1",
     }

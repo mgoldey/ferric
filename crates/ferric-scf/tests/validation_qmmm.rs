@@ -98,14 +98,16 @@ use ferric_core::basis::{self, BasisSet};
 use ferric_core::elements;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::gradient::rhf_gradient;
-use ferric_scf::ks_gradient::ks_gradient_closed;
+use ferric_scf::ks_gradient::{ks_gradient_closed_with_exchange_on_grids, KsGradGrids};
 use ferric_scf::qmmm::{mm_forces, QmSelection, QmmmAtom, QmmmSystem};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -170,12 +172,6 @@ fn reference(file_stem: &str) -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("reference field {ptr} missing or not a number"))
 }
 
 fn xyz3(v: &Value) -> [f64; 3] {
@@ -286,24 +282,25 @@ fn config(
     ext: Option<ferric_core::external_potential::ExternalPotential>,
 ) -> RhfConfig {
     match xc {
-        None => RhfConfig {
-            external_potential: ext,
-            energy_conv: 1e-11,
-            density_conv: 1e-10,
-            max_iter: 300,
-            ..Default::default()
-        },
-        Some(xc) => RhfConfig {
-            xc: Some(ferric_xc(xc).into()),
-            // Exact four-centre J and K, matching PySCF RKS without density_fit.
-            df_j_aux: Some(String::new()),
-            df_k_aux: Some(String::new()),
-            external_potential: ext,
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            max_iter: 300,
-            ..Default::default()
-        },
+        None => RhfConfig::default()
+            .with_external_potential(ext)
+            .with_energy_conv(1e-11)
+            .with_density_conv(1e-10)
+            .with_max_iter(300),
+        Some(xc) => {
+            RhfConfig::default()
+                .with_xc(ferric_xc(xc))
+                // Exact four-centre J and K, matching PySCF RKS without density_fit.
+                .with_df_j_aux(String::new())
+                .with_df_k_aux(String::new())
+                .with_external_potential(ext)
+                .with_energy_conv(1e-10)
+                .with_density_conv(1e-8)
+                .with_max_iter(300)
+                // The references are PySCF on the flat (75,110) grid (gen_qmmm.py:
+                // prune=None), not the pruned KS default AtomicGridConfig::production().
+                .with_dft_grid(AtomicGridConfig::default())
+        }
     }
 }
 
@@ -338,7 +335,7 @@ fn gradient(qm: &Qm, res: &ScfResult, sys: Option<&QmmmSystem>, xc: Option<&str>
             ext.as_ref(),
         )
         .unwrap(),
-        Some(xc) => ks_gradient_closed(
+        Some(xc) => ks_gradient_closed_with_exchange_on_grids(
             &qm.mol,
             &qm.prep,
             &qm.bs,
@@ -347,6 +344,9 @@ fn gradient(qm: &Qm, res: &ScfResult, sys: Option<&QmmmSystem>, xc: Option<&str>
             ferric_xc(xc),
             res,
             ext.as_ref(),
+            None,
+            // The grid `config` ran the SCF on.
+            &KsGradGrids::from_config(&config(Some(xc), None)),
         )
         .unwrap(),
     }

@@ -79,11 +79,9 @@ fn run_rhf(xyz: &str, basis_name: &str) -> RhfSetup {
         &prep,
         op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-12,
-            density_conv: 1e-11,
-            ..Default::default()
-        },
+        &RhfConfig::default()
+            .with_energy_conv(1e-12)
+            .with_density_conv(1e-11),
     )
     .unwrap();
     let density = rhf.density_r().clone();

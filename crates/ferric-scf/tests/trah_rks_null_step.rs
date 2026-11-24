@@ -96,10 +96,8 @@ fn assert_declines_null_steps(what: &str, cfg_diis: RhfConfig) {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let cfg_trah = RhfConfig {
-        trah_trigger: Some(1e-3),
-        ..cfg_diis.clone()
-    };
+    let mut cfg_trah = cfg_diis.clone();
+    cfg_trah.trah_trigger = Some(1e-3);
     let r_diis = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg_diis).unwrap();
 
     let (s0, r0, d0) = (
@@ -148,27 +146,24 @@ fn assert_declines_null_steps(what: &str, cfg_diis: RhfConfig) {
 
 /// ONE test, two sequential cases, so the counter deltas belong to each case
 /// alone (see the module doc).
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn closed_shell_trah_declines_null_steps_instead_of_cycling() {
     assert_declines_null_steps(
         "RKS/PBE/H2O/cc-pVDZ",
-        RhfConfig {
-            xc: Some("PBE".into()),
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            max_iter: 200,
-            level_shift: 0.0,
-            ..Default::default()
-        },
+        RhfConfig::default()
+            .with_xc("PBE")
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8)
+            .with_max_iter(200)
+            .with_level_shift(0.0),
     );
     assert_declines_null_steps(
         "RHF/H2O/cc-pVDZ",
-        RhfConfig {
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            max_iter: 200,
-            level_shift: 0.2,
-            ..Default::default()
-        },
+        RhfConfig::default()
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8)
+            .with_max_iter(200)
+            .with_level_shift(0.2),
     );
 }

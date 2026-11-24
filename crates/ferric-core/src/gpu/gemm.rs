@@ -424,6 +424,7 @@ pub(crate) fn check_dev_geometry(
 /// column-major (n × m) layout that is row-major (m × n). Numerics unchanged:
 /// `gemm_f64` is upload + this + download. Geometry and buffer lengths are
 /// checked first (typed `GpuError::Layout`, nothing launched).
+#[allow(clippy::too_many_arguments)]
 pub fn gemm_f64_dev(
     dev: &Device,
     m: usize,
@@ -440,6 +441,7 @@ pub fn gemm_f64_dev(
 /// [`gemm_f64_dev`] writing into a sub-range of a larger device buffer (the
 /// first m·n elements of `c`), so many small products can share one staging
 /// allocation. Same geometry checks, same numerics.
+#[allow(clippy::too_many_arguments)]
 pub fn gemm_f64_dev_into(
     dev: &Device,
     m: usize,

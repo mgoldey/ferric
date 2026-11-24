@@ -27,12 +27,17 @@ pub const M_LMAX: usize = 10;
 /// One monomial `coef · x^a y^b z^c`.
 #[derive(Debug, Clone, Copy)]
 pub struct Mono {
+    /// Power of x.
     pub a: u8,
+    /// Power of y.
     pub b: u8,
+    /// Power of z.
     pub c: u8,
+    /// Coefficient multiplying the monomial.
     pub coef: f64,
 }
 
+/// Number of Cartesian functions of angular momentum `l`: `(l+1)(l+2)/2`.
 #[inline]
 pub fn ncart(l: usize) -> usize {
     (l + 1) * (l + 2) / 2

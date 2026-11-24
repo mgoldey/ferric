@@ -1,32 +1,11 @@
 //! `ferric --version` reports the same build identity as `ferric.build_info()`:
 //! one `key: value` line per field, every value fixed at compile time.
 
-use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The `ferric-cli` binary, resolved at RUN TIME.
-///
-/// `env!("CARGO_BIN_EXE_ferric-cli")` is baked in when the test binary is
-/// COMPILED. CI builds tests in one job and runs them from a `cargo nextest
-/// archive` in another, so that path points at the build job's `target/debug/`
-/// -- which does not exist on the shard runner.
-///
-/// Prefer a sibling of the currently-running test binary
-/// (`<extract-dir>/target/debug/deps/<test>` -> `../ferric-cli`), which is
-/// where nextest puts it, then fall back to the compile-time path for plain
-/// `cargo test`.
-fn ferric_cli_bin() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        // .../target/<profile>/deps/<test-binary>  ->  .../target/<profile>/
-        if let Some(profile_dir) = exe.parent().and_then(Path::parent) {
-            let p = profile_dir.join("ferric-cli");
-            if p.is_file() {
-                return p;
-            }
-        }
-    }
-    PathBuf::from(env!("CARGO_BIN_EXE_ferric-cli"))
-}
+#[path = "support/cli_bin.rs"]
+mod cli_bin;
+use cli_bin::ferric_cli_bin;
 
 fn version_output(flag: &str) -> String {
     let out = Command::new(ferric_cli_bin())
@@ -96,4 +75,68 @@ fn version_prints_every_identity_field_and_matches_the_embedded_values() {
 #[test]
 fn short_flag_is_the_same_as_long() {
     assert_eq!(version_output("-V"), version_output("--version"));
+}
+
+/// `--version` into a full device (`> /dev/full`, every write fails with
+/// `ENOSPC`) is an error with status 1, not a panic (status 101).
+#[cfg(target_os = "linux")]
+#[test]
+fn version_into_a_full_device_is_an_error_not_a_panic() {
+    let full = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .expect("open /dev/full");
+    let out = Command::new(ferric_cli_bin())
+        .arg("--version")
+        .stdout(full)
+        .output()
+        .expect("ferric runs");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.starts_with("error: cannot write the --version text to stdout: "),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("panicked"), "{stderr}");
+}
+
+/// `--help` with stderr on a full device: status 1, and the error message,
+/// which would go to the same stderr, is dropped instead of panicking.
+#[cfg(target_os = "linux")]
+#[test]
+fn help_into_a_full_device_is_an_error_not_a_panic() {
+    let full = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .expect("open /dev/full");
+    let out = Command::new(ferric_cli_bin())
+        .arg("--help")
+        .stderr(full)
+        .output()
+        .expect("ferric runs");
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stdout.is_empty());
+}
+
+/// The reader of the pipe exits before ferric writes (`ferric --help 2>&1 |
+/// true`, ferric delayed so the read end is closed first): the broken pipe
+/// is success, status 0, with nothing on the original stderr. If the reader
+/// were still there the write succeeds and the status is 0 as well, so
+/// the delay only makes the test exercise the broken pipe, not pass.
+#[cfg(unix)]
+#[test]
+fn a_broken_pipe_is_success() {
+    for (flag, redirect) in [("--version", ""), ("--help", "2>&1"), ("-h", "2>&1")] {
+        let script = format!(
+            "{{ sleep 0.3; \"$0\" {flag} {redirect}; echo \"status=$?\" >&3; }} 3>&2 | true"
+        );
+        let out = Command::new("bash")
+            .arg("-c")
+            .arg(&script)
+            .arg(ferric_cli_bin())
+            .output()
+            .expect("bash runs");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(stderr, "status=0\n", "{flag}: {stderr}");
+    }
 }

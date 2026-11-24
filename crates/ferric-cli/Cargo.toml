@@ -37,6 +37,7 @@ path = "src/bin/ferric-batch.rs"
 [dependencies]
 ferric-build-info = { path = "../ferric-build-info" }
 ferric-core = { path = "../ferric-core" }
+ferric-md = { path = "../ferric-md" }
 ferric-integrals = { path = "../ferric-integrals" }
 ferric-scf = { path = "../ferric-scf" }
 ferric-mp2 = { path = "../ferric-mp2" }
@@ -50,6 +51,9 @@ ferric-rpa = { path = "../ferric-rpa" }
 ferric-gw = { path = "../ferric-gw" }
 ferric-export = { path = "../ferric-export" }
 ferric-cc = { path = "../ferric-cc" }
+# `method.kind = "casscf"` / `"nevpt2"` (src/cas.rs): the shared drivers of
+# `ferric_ci::driver`, which the Python run_casscf / run_nevpt2 also call.
+ferric-ci = { path = "../ferric-ci" }
 ferric-tddft = { path = "../ferric-tddft" }
 # `[pcm]`: the solvent table and PcmConfig validation live in ferric-pcm
 # (`PcmConfig::for_solvent` / `with_epsilon` / `with_lebedev_order`), shared
@@ -70,3 +74,6 @@ rayon = { workspace = true }
 # device-resident DF-K occupied path). (ferric-tensors is not a dependency
 # of this crate, so it has nothing to forward to.)
 gpu = ["ferric-core/gpu", "ferric-cc/gpu", "ferric-mp2/gpu", "ferric-scf/gpu"]
+
+[dev-dependencies]
+ferric-testkit = { path = "../ferric-testkit" }

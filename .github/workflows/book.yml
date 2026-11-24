@@ -1,0 +1,296 @@
+name: book
+
+# The ferric book (book/). On pull requests: run the derivation proofs the
+# change can affect, check the book against the code, build the HTML with
+# mdBook. Nightly (schedule) and on workflow_dispatch: every proof and the same
+# checks. On v* tags: every proof and the checks in --release mode, then a PDF
+# through pandoc and LaTeX. The PDF job also runs from workflow_dispatch, so it
+# can be tried before a tag; it never runs on the schedule.
+#
+# Proof selection on a pull request (scripts/select_proofs.py, tested by
+# test_select_proofs.py): every proof when the runners, the book checker, the
+# selector, this file, the registry's shape or any other file under scripts/
+# changed; only the changed proof scripts (plus the scripts of changed registry
+# entries, plus the scripts that read a changed file) when only those changed;
+# none for book prose and crates/*/theory.md. The registry test, the checker's
+# tests and the selector's tests run every time (about 15 s).
+#
+# "Every proof" in the html job is the runner's fast tier, on every event:
+# pyproject.toml's addopts deselects the validation tier (scripts with a budget
+# of SLOW_S or more, minutes each), and the selector never lists those scripts.
+# Nightly and on workflow_dispatch, the slow-proofs job runs that tier (no
+# other workflow does: ci.yml's validation pytest ignores the proof runner),
+# one job per script, so the longest (about 90 min at its budget) sets the
+# wall time instead of the sum. Pull requests and tags never run it.
+#
+# Builds no Rust. The proof runners import only pytest, sympy and the standard
+# library, so they run with --noconftest (conftest.py would skip every file when
+# the ferric extension is missing). A skipped test, a missing sympy or zero
+# collected tests is a red job, never a green one; an empty selection runs no
+# proof by design and says so in the log.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'book/**'
+      - 'crates/*/theory.md'
+      - 'scripts/*_sympy.py'
+      - 'scripts/mp2_variant_identities.py'
+      - 'scripts/book_build.py'
+      - 'scripts/select_proofs.py'
+      - 'testdata/derivations/registry.json'
+      - 'crates/ferric-python/tests/test_derivation_*.py'
+      - 'crates/ferric-python/tests/test_book_build.py'
+      - 'crates/ferric-python/tests/test_select_proofs.py'
+      - '.github/workflows/book.yml'
+  push:
+    tags: ['v*']
+  schedule:
+    # 07:23 UTC daily: the full proof set, so a selection that missed a
+    # dependency is caught within a day. Off the hour, and a different hour
+    # from ci.yml (04:17) and wheels.yml (10:53), as those nightlies do.
+    - cron: '23 7 * * *'
+  workflow_dispatch:
+    inputs:
+      label:
+        description: "Title-page label and file name for the PDF (default: the branch name), e.g. v0.1.0rc12 when rebuilding a release's book"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+# A scheduled or dispatched run is alone in its group (run_id): both can run
+# the slow-proofs matrix (hours), which a second dispatch on the same ref
+# must never cancel. Pull requests and tags still cancel their older run.
+concurrency:
+  group: book-${{ github.event.pull_request.number || ((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.run_id) || github.ref }}
+  cancel-in-progress: true
+
+env:
+  MDBOOK_VERSION: '0.4.40'
+
+jobs:
+  html:
+    name: book (proofs, check, mdbook)
+    runs-on: ubuntu-22.04
+    # 75: the full proof set takes about 26 min, and up to 43+ on slow runners.
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install proof dependencies
+        run: python3 -m pip install pytest sympy numpy scipy mpmath
+
+      - name: Install mdBook
+        run: |
+          tar_url="https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          mkdir -p "$HOME/.local/bin"
+          curl -sSL "$tar_url" | tar -xz -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Select the proofs
+        id: select
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            python3 scripts/select_proofs.py --base "origin/$BASE_REF" \
+              --github-output "$GITHUB_OUTPUT"
+          else
+            echo "$EVENT run: every proof"
+            printf 'mode=all\nscripts=\n' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run the proofs (selected on pull requests, none skipped)
+        env:
+          MODE: ${{ steps.select.outputs.mode }}
+          SCRIPTS: ${{ steps.select.outputs.scripts }}
+        run: |
+          python3 -c "import sympy, numpy, scipy, mpmath"
+          tests=(crates/ferric-python/tests/test_derivation_registry.py
+                 crates/ferric-python/tests/test_book_build.py
+                 crates/ferric-python/tests/test_select_proofs.py)
+          case "$MODE" in
+            all) tests+=(crates/ferric-python/tests/test_derivation_scripts.py) ;;
+            some)
+              export FERRIC_PROOF_SCRIPTS="$SCRIPTS"
+              echo "proofs selected: $SCRIPTS"
+              tests+=(crates/ferric-python/tests/test_derivation_scripts.py) ;;
+            none)
+              echo "no proof inputs changed: test_derivation_scripts.py not run;" \
+                "the registry, book-checker and selector tests still run" ;;
+            *) echo "unknown proof selection mode '$MODE'"; exit 1 ;;
+          esac
+          python3 -m pytest --noconftest -p no:cacheprovider -rs \
+            --junitxml="$RUNNER_TEMP/proofs.xml" "${tests[@]}"
+          python3 - "$RUNNER_TEMP/proofs.xml" "$MODE" "$SCRIPTS" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          root = ET.parse(sys.argv[1]).getroot()
+          suite = root if root.tag == "testsuite" else root.find("testsuite")
+          tests, skipped = int(suite.get("tests")), int(suite.get("skipped"))
+          mode, scripts = sys.argv[2], set(sys.argv[3].split())
+          ran = set()
+          proofs = 0
+          for case in suite.iter("testcase"):
+              if case.get("classname", "").endswith("test_derivation_scripts"):
+                  proofs += 1
+                  name = case.get("name", "")
+                  if name.startswith("test_script_holds["):
+                      ran.add(name[len("test_script_holds[") : -1])
+          print(f"tests: {tests}, skipped: {skipped}, proof tests: {proofs} ({mode})")
+          if tests == 0 or skipped:
+              sys.exit("tests were skipped or not collected; a missing dependency is a failure")
+          if mode != "none" and proofs == 0:
+              sys.exit("proofs were selected but none was collected")
+          if mode == "some" and ran != scripts:
+              sys.exit(f"selected {sorted(scripts)} but ran {sorted(ran)}")
+          PY
+
+      - name: Check the book against the code
+        run: |
+          base=()
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base=(--ceiling-base "origin/${{ github.base_ref }}")
+          fi
+          release=()
+          if [ "${{ github.ref_type }}" = "tag" ]; then release=(--release); fi
+          python3 scripts/book_build.py --check "${base[@]}" "${release[@]}"
+
+      - name: Build the HTML
+        run: python3 scripts/book_build.py --build
+
+      - name: Check internal links and anchors
+        run: python3 scripts/check_doc_links.py book/out/html
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: book-html
+          path: book/out/html
+
+  slow-proofs-list:
+    name: book (slow proof list)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      slow: ${{ steps.list.outputs.slow }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: List the slow-tier proofs
+        id: list
+        run: |
+          python3 scripts/select_proofs.py --slow --github-output "$GITHUB_OUTPUT"
+          # An empty tier would give the matrix nothing to run: say so and fail,
+          # so a runner change that drops the tier is noticed, not a green no-op.
+          grep -q '^slow=\[\]$' "$GITHUB_OUTPUT" && { echo "no slow-tier proofs"; exit 1; } || true
+
+  slow-proofs:
+    name: book (slow proofs, ${{ matrix.script }})
+    needs: slow-proofs-list
+    runs-on: ubuntu-22.04
+    # Per script: the script and each of its mutations, run one after another
+    # at the script's budget (uks_xc_hessian_sympy.py: 3 x 1800 s = 90 min;
+    # the runner's own per-subprocess timeout is 4x the budget, longer than
+    # this job, so a genuine hang is cut here, by the job timeout).
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        script: ${{ fromJSON(needs.slow-proofs-list.outputs.slow) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install proof dependencies
+        run: python3 -m pip install pytest sympy numpy scipy mpmath
+
+      - name: Run the slow proof and its mutations (none skipped)
+        env:
+          FERRIC_PROOF_SCRIPTS: ${{ matrix.script }}
+        run: |
+          python3 -c "import sympy, numpy, scipy, mpmath"
+          # -m validation overrides addopts' "not validation": only this
+          # script's slow-tier cases are collected.
+          python3 -m pytest --noconftest -p no:cacheprovider -rs -m validation \
+            --junitxml="$RUNNER_TEMP/slow.xml" \
+            crates/ferric-python/tests/test_derivation_scripts.py
+          python3 - "$RUNNER_TEMP/slow.xml" "$FERRIC_PROOF_SCRIPTS" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          root = ET.parse(sys.argv[1]).getroot()
+          suite = root if root.tag == "testsuite" else root.find("testsuite")
+          tests, skipped = int(suite.get("tests")), int(suite.get("skipped"))
+          ran = {
+              c.get("name", "")[len("test_script_holds[") : -1]
+              for c in suite.iter("testcase")
+              if c.get("name", "").startswith("test_script_holds[")
+          }
+          print(f"tests: {tests}, skipped: {skipped}, script runs: {sorted(ran)}")
+          if tests < 2 or skipped:
+              sys.exit("the script and at least one mutation must run, none skipped")
+          if ran != {sys.argv[2]}:
+              sys.exit(f"expected {sys.argv[2]}, ran {sorted(ran)}")
+          PY
+
+  pdf:
+    name: book (PDF, release tags)
+    # Tags and dispatch only; the nightly schedule builds no PDF.
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+    needs: html
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pandoc and LaTeX
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pandoc texlive-xetex texlive-latex-extra texlive-fonts-recommended fonts-dejavu librsvg2-bin
+
+      - name: Concatenate (release-strict check first)
+        run: python3 scripts/book_build.py --release --concat "$RUNNER_TEMP/ferric-book.md"
+
+      - name: Build the PDF
+        env:
+          LABEL: ${{ github.event.inputs.label }}
+        run: |
+          # A dispatch runs on a branch name, which may hold a slash; its
+          # optional `label` input names the build instead (a release rebuilt
+          # from a fix branch).
+          NAME="${LABEL:-$GITHUB_REF_NAME}"
+          NAME="${NAME//\//-}"
+          # No --number-sections: --concat writes each chapter and section number
+          # into its title, and pandoc's own would print each one twice.
+          pandoc "$RUNNER_TEMP/ferric-book.md" \
+            --from markdown+tex_math_dollars --pdf-engine=xelatex \
+            --resource-path=.:book/src \
+            --toc -V mainfont="DejaVu Serif" \
+            -V monofont="DejaVu Sans Mono" -V geometry:margin=2.5cm \
+            -M title="ferric: theory and implementation" \
+            -M author="Matthew Goldey, with ferric contributors" \
+            -M date="${NAME}" \
+            -o "ferric-book-${NAME}.pdf"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: book-pdf
+          path: ferric-book-*.pdf

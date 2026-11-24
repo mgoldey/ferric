@@ -27,8 +27,6 @@
 //! The production-shape peak numbers live in the `#[ignore]`d
 //! `gradient_pool_peak_measurement.rs`.
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
 use ferric_core::memory::pool::{clear_global, global, install_global, MemoryPool};
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
@@ -41,48 +39,12 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::pool::CleanSlot;
 use ndarray::Array2;
 
 /// A pool large enough that nothing is ever refused, so a width it produces is
 /// "the whole grid" and a peak it records is pure demand.
 const AMPLE: usize = 200_000_000_000;
-
-/// The memory pool is PROCESS-GLOBAL, and cargo runs these tests on parallel
-/// threads by default. Every test here installs a pool of its own and reads
-/// back a width or a peak, so without serialization one test's `install_global`
-/// silently becomes another's budget.
-///
-/// MEASURED, and the reason this exists: under mutation `m7_charge_whole_grid`
-/// the parallel run reported `the_batch_width_is_a_function_of_the_pool_ledger`
-/// as failing — a test that never calls the gradient at all and could not
-/// possibly see that mutation. Serially it passed and only the intended killer
-/// failed. A cross-talking test attributes failures to the wrong cause, which
-/// is worse than no test: it would have sent a future reader after the wrong
-/// defect. Same `CleanSlot` pattern as
-/// `mwe_gradient_planes_compose_in_one_pool.rs`.
-fn global_lock() -> MutexGuard<'static, ()> {
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    }
-}
-
-struct CleanSlot(#[allow(dead_code)] MutexGuard<'static, ()>);
-
-impl CleanSlot {
-    fn acquire() -> Self {
-        let g = global_lock();
-        clear_global();
-        Self(g)
-    }
-}
-
-impl Drop for CleanSlot {
-    fn drop(&mut self) {
-        clear_global();
-    }
-}
 
 struct Case {
     mol: Molecule,
@@ -104,10 +66,7 @@ fn converged(mol_name: &str, basis: &str) -> Case {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).expect("schwarz");
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        xc: Some("PBE".into()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default().with_xc("PBE");
     let scf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).expect("KS-DFT must converge");
     let d = scf.density_r().clone();
     let npts = ferric_dft::grid::build_atomic_grid(&mol, &AtomicGridConfig::default()).len();
@@ -171,8 +130,12 @@ fn a_full_width_batch_is_bit_identical_to_the_unbatched_gradient() {
         );
     }
 
-    // And against the production entry point when the pool is ample, which is
-    // the same one-batch decision arrived at by the sizing rather than by hand.
+    // And against the production entry point when the pool is ample. The
+    // ample-pool sizing still picks one batch for this whole-grid path; the
+    // production entry point is now the screened, spatially batched gradient
+    // (`ks_gradient_screened.rs` anchors it per path), which re-associates
+    // every grid sum, so it is held to the re-association floor rather than to
+    // the bit.
     install_global(MemoryPool::with_capacity_bytes(AMPLE));
     let width = grad_batch_pts_for_test(case.nbf, case.npts, case.mol.atoms.len(), false);
     let production = xc_gradient_closed_gga_from_density(
@@ -193,13 +156,11 @@ fn a_full_width_batch_is_bit_identical_to_the_unbatched_gradient() {
         "an AMPLE pool must take the whole grid in one batch, not {width} of {}",
         case.npts
     );
-    for (a, b) in whole.iter().zip(production.iter()) {
-        assert_eq!(
-            a.to_bits(),
-            b.to_bits(),
-            "the production path at an ample budget must be the one-batch path"
-        );
-    }
+    let d = max_abs_diff(&whole, &production);
+    assert!(
+        d < 1e-12,
+        "the screened production gradient misses the one-batch whole-grid one by {d:.3e}"
+    );
 }
 
 /// THE RISK, MEASURED. Batching re-associates `row_dot`'s sum over grid points,

@@ -26,6 +26,7 @@ fn pbe() -> D3Params {
         s8: 0.7875,
         a1: 0.4289,
         a2: 4.4407,
+        s9: 0.0,
     }
 }
 
@@ -99,6 +100,7 @@ fn zero_scaling_coefficients_give_exactly_zero() {
         s8: 0.0,
         a1: 0.4289,
         a2: 4.4407,
+        s9: 0.0,
     };
     // A real, compact molecule -- the geometry where the correction is LARGEST,
     // so a leak is most visible.
@@ -201,6 +203,7 @@ fn non_finite_coordinates_are_refused_by_both_energy_and_gradient() {
         s8: 1.2177,
         a1: 0.4145,
         a2: 4.8593,
+        s9: 0.0,
     };
     for (tag, bad) in [("NaN", f64::NAN), ("inf", f64::INFINITY)] {
         let coords = vec![[0.0, 0.0, 0.0], [0.0, 0.0, bad]];

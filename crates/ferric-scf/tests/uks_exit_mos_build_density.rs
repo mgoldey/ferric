@@ -53,12 +53,10 @@ fn sys(xyz: &str, charge: i32) -> Sys {
 }
 
 fn ks(xc: &str) -> RhfConfig {
-    RhfConfig {
-        xc: Some(xc.into()),
-        density_conv: 1e-6,
-        max_iter: 200,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc(xc)
+        .with_density_conv(1e-6)
+        .with_max_iter(200)
 }
 
 fn solve(sys: &Sys, cfg: &RhfConfig) -> ScfResult {
@@ -107,12 +105,14 @@ fn ascending(e: &[f64]) -> bool {
 }
 
 /// The analytic UHF Hessian's refusal of this result's STATE, handed a plain
-/// HF config so the KS config check does not fire first (as in
-/// `uhf_degenerate_swap.rs`).
+/// HF config and the result with its recorded functional (`ScfResult::xc`)
+/// cleared, so neither KS check fires first (as in `uhf_degenerate_swap.rs`).
 fn hessian_state_refusal(sys: &Sys, r: &ScfResult, cfg: &RhfConfig) -> String {
-    let hf = RhfConfig {
+    let mut hf = cfg.clone();
+    hf.xc = None;
+    let r = &ScfResult {
         xc: None,
-        ..cfg.clone()
+        ..r.clone()
     };
     uhf_hessian(
         &ParallelContext::default(),
@@ -192,7 +192,16 @@ fn check_stagnated(xyz: &str, charge: i32, nocc: (usize, usize)) {
 
 #[test]
 fn sh_uks_lda_exit_mos_build_the_density() {
-    check_stagnated("2\nSH\nS 0 0 0\nH 0 0 1.3409\n", 0, (9, 8));
+    // Whether DIIS settles on the stagnated state (rather than cycling to
+    // max_iter) depends on the trajectory, which here depends on which vector
+    // of the degenerate pi pair the Fock eigensolver hands back first (the
+    // beta hole splits that block). MEASURED settle iterations, 1e-14 semilocal
+    // density floor, r = 1.30/1.32/1.3409/1.36/1.38/1.40 Å:
+    //   dsyev  (QR, before 2026-11-06): 45/28/>200/197/>200/145
+    //   dsyevd (divide and conquer):    198/>200/49/133/181/46
+    // 1.40 has the widest margin under dsyevd. check_stagnated asserts the
+    // state is the non-aufbau one (Hessian eigenvalue refusal).
+    check_stagnated("2\nSH\nS 0 0 0\nH 0 0 1.40\n", 0, (9, 8));
 }
 
 #[test]
@@ -250,11 +259,9 @@ fn ordinary_uks_exit_keeps_canonical_eigenvectors() {
 }
 
 fn hf(density_conv: f64) -> RhfConfig {
-    RhfConfig {
-        density_conv,
-        max_iter: 200,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_density_conv(density_conv)
+        .with_max_iter(200)
 }
 
 const SH: &str = "2\nSH\nS 0 0 0\nH 0 0 1.3409\n";
@@ -415,10 +422,8 @@ fn symmetry_blocked_exit_keeps_blocked_eigenpairs() {
         ("B2".into(), (1, 1)),
     ];
     for dconv in [1e-2, 1e-4] {
-        let cfg = RhfConfig {
-            symmetry: true,
-            ..hf(dconv)
-        };
+        let mut cfg = hf(dconv);
+        cfg.symmetry = true;
         let u = ferric_scf::symmetric_open::solve_uhf_symmetric(
             &ParallelContext::default(),
             &mol,

@@ -24,6 +24,11 @@ pub struct DirectJ<'a> {
     // libint2 engine construction is serialized behind a global ctor mutex,
     // so hoist the builder out of the SCF loop to pay it once, not per iteration.
     pool: Option<crate::engine_pool::EnginePool>,
+    /// The contraction rotation of generally contracted shells
+    /// ([`crate::direct_jk::gc_rotation`]), resolved at the first build.
+    gc: crate::direct_jk::gc_rotation::BuilderGc,
+    /// Engines on the rotated shells, owned like `pool`.
+    rot_pool: Option<crate::engine_pool::EnginePool>,
 }
 
 impl<'a> std::fmt::Debug for DirectJ<'a> {
@@ -51,12 +56,48 @@ impl<'a> DirectJ<'a> {
             thresh,
             mem_budget,
             pool: None,
+            gc: Default::default(),
+            rot_pool: None,
         }
+    }
+
+    /// The build on the rotated shells of `bounds.gc` when the basis has
+    /// generally contracted shells and the rotation is on
+    /// ([`crate::direct_jk::gc_rotation`]): `D' = Tᵀ D T`, this builder's
+    /// walk on the rotated basis, then `x += T X' Tᵀ`. `None`: unrotated.
+    fn build_rotated(
+        &mut self,
+        d: &Array2<f64>,
+        x: &mut Array2<f64>,
+    ) -> Result<Option<usize>, FerricError> {
+        let Some(r) = self.gc.resolve(self.prep, self.bounds)? else {
+            return Ok(None);
+        };
+        let _charge = r.charge_collective(self.ctx, 2)?;
+        let dr = r.forward(d);
+        let n = dr.nrows();
+        let mut xr = Array2::<f64>::zeros((n, n));
+        let mut inner = DirectJ::new(
+            self.ctx,
+            &r.basis.prep,
+            &r.bounds,
+            self.thresh,
+            self.mem_budget,
+        );
+        inner.pool = self.rot_pool.take();
+        let computed = <DirectJ as JBuilder>::build(&mut inner, &dr, &mut xr);
+        self.rot_pool = inner.pool.take();
+        let computed = computed?;
+        r.back_add(&xr, x)?;
+        Ok(Some(computed))
     }
 }
 
 impl<'a> JBuilder for DirectJ<'a> {
     fn build(&mut self, d: &Array2<f64>, j: &mut Array2<f64>) -> Result<usize, FerricError> {
+        if let Some(computed) = self.build_rotated(d, j)? {
+            return Ok(computed);
+        }
         use crate::quartet_scatter::{scatter_bra_pair, DensityScreen, JkMode};
         use std::sync::atomic::{AtomicUsize, Ordering};
 

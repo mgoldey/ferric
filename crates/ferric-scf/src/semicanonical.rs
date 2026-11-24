@@ -72,7 +72,10 @@ impl<'a> XcSpec<'a> {
         mol: &ferric_core::mol::Molecule,
         prep: &PreparedBasis,
     ) -> Result<Box<dyn ferric_dft::xc_trait::UksXcContribution>, FerricError> {
-        let main = self.grid.clone().unwrap_or_default();
+        let main = self
+            .grid
+            .clone()
+            .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
         let nlc = self
             .nlc_grid
             .clone()
@@ -235,10 +238,11 @@ pub fn semicanonicalize(
     let d_total = d_a + d_b;
 
     let n = prep.nbasis();
-    // V_ECP included, as the SCF's hcore has it (driver::prepare); an external
+    // The SCF's core Hamiltonian (V_ECP, or X2C-1e for a relativistic
+    // reference, as driver::prepare builds it); an external
     // potential is not available here, so an embedded reference must use
     // `semicanonicalize_from_spin_focks`, which reuses the SCF's own F_σ.
-    let h = ferric_integrals::oneelectron::hcore_ecp(prep, mol, prep.basis_set());
+    let h = crate::x2c::reference_hcore(prep, mol, prep.basis_set(), None, rohf.relativistic)?;
 
     // Build the XC contribution first: its k_mix decides how exchange is assembled.
     let xc_contrib = match xc {
@@ -275,6 +279,7 @@ pub fn semicanonicalize(
             None,
             k_mix.omega,
             ooc_budget,
+            crate::df_k::RiKPrecision::F64,
         )?;
         // occ_factor/scale = 1.0: these are per-spin Focks built from per-spin
         // densities, matching how solve_uhf calls this (uhf.rs:314-319).
@@ -403,10 +408,12 @@ impl SemicanonicalOrbitals {
             // Same energy as the ROHF reference, so the same J/K builders.
             df_jk: rohf.df_jk.clone(),
             rohf_spin_focks: rohf.rohf_spin_focks.clone(),
+            xc: rohf.xc.clone(),
             cosx_final: rohf.cosx_final,
             cosx_schedule: rohf.cosx_schedule.clone(),
             convergence: rohf.convergence,
             precision: rohf.precision.clone(),
+            relativistic: rohf.relativistic,
         }
     }
 }

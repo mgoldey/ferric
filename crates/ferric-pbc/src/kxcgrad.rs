@@ -134,7 +134,7 @@
 //! taken after the contraction and a `1/N_k`; GGA needs the AO Hessian
 //! (`∂_i∂_jφ`), which is NOT cached (the energy cache holds `φ, ∇φ`), so it is
 //! recomputed chunk by chunk (`LatticeAoHess::eval_bloch`) with
-//! all k inside the chunk. The kernel gates (`ρ > DENSITY_FLOOR`) are the
+//! all k inside the chunk. The kernel gates (`ρ` above the functional's `DensityFloor`) are the
 //! energy's.
 //!
 //! # Meta-GGA: the tau term
@@ -147,7 +147,7 @@
 //! ```
 //!
 //! with `v_τ = ∂ε/∂τ` from libxc (gated like the other kernel pieces by
-//! `ρ > DENSITY_FLOOR`). The force reuses everything above unchanged
+//! `ρ` above the `DensityFloor`). The force reuses everything above unchanged
 //! (`ρ`/`σ` terms, X3, X4, the Fock guard with `V_xc` now including `V^τ`) and
 //! adds one AO-derivative term. An atom move shifts `φ_μ → φ_μ(r − R_A)` for
 //! `μ ∈ A`, hence `∂_iφ_μ` moves by `−∂_j∂_iφ_μ` (the AO Hessian, already
@@ -178,10 +178,10 @@
 //! SCAN, r2SCAN and TPSS are validated end to end for the closed shell
 //! (TPSS: FD of the TPSS SCF energy and the 1x1x1 = Gamma-route anchor, plus
 //! the fixed-`D` finite difference on its raw components `MGGA_X_TPSS` /
-//! `MGGA_C_TPSS`); open-shell TPSS is refused by the UKS gates. No hybrid
-//! meta-GGA resolves ([`ferric_dft::libxc::xc_def_from_name`] rejects
-//! `HYB_MGGA_*`), so there is nothing for the exchange fraction to compose
-//! with.
+//! `MGGA_C_TPSS`); open-shell TPSS is refused by the UKS gates. Hybrid
+//! meta-GGAs (TPSSh, M06-2X, ...) resolve for molecules but every periodic
+//! route refuses them ([`crate::dft::resolve_periodic_functional_mgga`]), so
+//! there is nothing here for an exchange fraction to compose with.
 //!
 //! Limits of the checks. The H2 fixtures have `α ≈ 0` (single-orbital
 //! regions) and never reach SCAN's `α ≈ 1` switching region. The null-tau hook
@@ -291,7 +291,7 @@ use ferric_core::FerricError;
 use ferric_dft::density_on_grid::DensityGrid;
 use ferric_dft::grid::GridPoint;
 use ferric_dft::libxc::{FunctionalFamily, XcDef};
-use ferric_dft::vxc::{closed_kernel, DENSITY_FLOOR};
+use ferric_dft::vxc::{above_density_floor, closed_kernel};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::{Array1, Array2, Array3, Axis};
 use num_complex::Complex64 as C64;
@@ -727,7 +727,7 @@ impl KXcResponse for GridXc<'_> {
             let dens = chunk_density(d, &bl.chi, &bl.dchi, self.gga);
             let tau = self.mgga.then(|| chunk_tau(d, &bl.dchi));
             let kern = closed_kernel(&dens, tau.as_ref(), &self.xc);
-            let live = |g: usize| dens.rho[g] > DENSITY_FLOOR;
+            let live = |g: usize| above_density_floor(dens.rho[g], kern.floor);
             let mut e = 0.0;
             let mut ne = 0.0;
             for g in 0..np {
@@ -745,7 +745,7 @@ impl KXcResponse for GridXc<'_> {
                     0.0
                 }
             });
-            // v_tau, gated like the energy's V^tau (ρ > DENSITY_FLOOR).
+            // v_tau, gated like the energy's V^tau (ρ above the `DensityFloor`).
             let vt: Vec<f64> = (0..np)
                 .map(|g| {
                     if self.mgga && live(g) {
@@ -1008,15 +1008,14 @@ pub enum Deriv {
 /// * UKS: SCAN and r2SCAN on the dense-AFT J/K
 ///   ([`crate::kuxcgrad::kpoint_uks_gradient`],
 ///   [`crate::kuxcstress::kpoint_uks_stress`]).
-/// * ROKS: no meta-GGA. The k-point ROKS SCAN / r2SCAN ENERGY is wired in
-///   the bindings (dense-AFT J/K, #498), and the library force and stress
-///   exist ([`crate::kuxcgrad::kpoint_roks_gradient`],
-///   [`crate::kuxcstress::kpoint_roks_stress`], dense-AFT J/K, #492), but
-///   those derivatives are not wired, so this gate keeps refusing them.
+/// * ROKS: SCAN and r2SCAN on the dense-AFT J/K
+///   ([`crate::kuxcgrad::kpoint_roks_gradient`],
+///   [`crate::kuxcstress::kpoint_roks_stress`]; #492, wired #498), the only
+///   J/K its meta-GGA SCF runs on.
 ///
 /// Refused by name: TPSS on RS-GDF and on UKS / ROKS, SCAN / r2SCAN on the
-/// UKS RS-GDF J/K, hybrid meta-GGA and other range-separated hybrids (wB97X,
-/// ...).
+/// UKS / ROKS RS-GDF J/K, hybrid meta-GGA and other range-separated hybrids
+/// (wB97X, ...).
 pub fn check_deriv_functional(
     spin: DerivSpin,
     rsgdf: bool,
@@ -1035,7 +1034,8 @@ pub fn check_deriv_functional(
                 .funcs
                 .iter()
                 .all(|f| matches!(f.family(), FunctionalFamily::MetaGga));
-        // SCAN / r2SCAN: closed and open shell, either J/K (UKS: dense only).
+        // SCAN / r2SCAN: closed shell on either J/K, open shell (UKS, ROKS)
+        // on the dense-AFT J/K only.
         // TPSS: closed shell, dense-AFT J only.
         let scan_family = is_validated_mgga(functional);
         return match (spin, rsgdf) {
@@ -1051,23 +1051,18 @@ pub fn check_deriv_functional(
                  only (jk = \"dense\"); on jk = \"rsgdf\" only SCAN / r2SCAN have meta-GGA \
                  derivatives"
             )),
-            (DerivSpin::Unrestricted, _) if !scan_family => err(
-                "the open-shell (UKS) meta-GGA force and stress cover SCAN / r2SCAN only \
-                 (TPSS is closed-shell only)"
-                    .into(),
-            ),
-            (DerivSpin::Unrestricted, false) => Ok(()),
-            (DerivSpin::Unrestricted, true) => err(
-                "the open-shell (UKS) meta-GGA force and stress run on the dense-AFT J/K only; \
-                 use jk = \"dense\""
-                    .into(),
-            ),
-            (DerivSpin::RestrictedOpen, _) => err(
-                "the k-point ROKS meta-GGA force and stress are library-only (SCAN / r2SCAN, \
-                 #492) and not wired in the bindings (#498); the UKS force and stress cover \
-                 SCAN / r2SCAN on the dense-AFT J/K"
-                    .into(),
-            ),
+            // UKS and ROKS: SCAN / r2SCAN on the dense-AFT J/K only.
+            (_, _) if !scan_family => err(format!(
+                "the open-shell ({}) meta-GGA force and stress cover SCAN / r2SCAN only \
+                 (TPSS is closed-shell only)",
+                spin.label()
+            )),
+            (_, false) => Ok(()),
+            (_, true) => err(format!(
+                "the open-shell ({}) meta-GGA force and stress run on the dense-AFT J/K only; \
+                 use jk = \"dense\"",
+                spin.label()
+            )),
         };
     }
     if force_covers(&xc) {
@@ -1086,8 +1081,8 @@ pub fn check_deriv_functional(
                  hybrid functionals only (no VV10, double hybrid or other meta-GGA)"
             }
             DerivSpin::RestrictedOpen => {
-                "LDA, GGA, global-hybrid and range-separated hybrid functionals only (no \
-                 meta-GGA, VV10 or double hybrid)"
+                "LDA, GGA, global-hybrid, SCAN / r2SCAN (dense-AFT J/K) and range-separated \
+                 hybrid functionals only (no VV10, double hybrid or other meta-GGA)"
             }
         }
     ))
@@ -1606,8 +1601,8 @@ mod force_allowlist_tests {
     /// derivative gate (force and stress share it): every validated route
     /// accepted, every other refused. Mutation-tested: routing a
     /// range-separated hybrid past the validated check (wB97X accepted), or
-    /// refusing the open-shell RS-GDF rows (the pre-#498 arms restored), each
-    /// fail a row below.
+    /// refusing the open-shell RS-GDF rows (the pre-#498 arms restored), or
+    /// restoring the blanket ROKS meta-GGA refusal, each fail a row below.
     #[test]
     fn derivative_gate_accepts_exactly_the_validated_routes() {
         use DerivSpin::{Restricted as R, RestrictedOpen as O, Unrestricted as U};
@@ -1621,6 +1616,8 @@ mod force_allowlist_tests {
             (R, true, "r2SCAN"),
             (U, false, "SCAN"),
             (U, false, "R2SCAN"),
+            (O, false, "SCAN"),
+            (O, false, "r2SCAN"),
             (R, false, "TPSS"),
         ];
         for spin in [R, U, O] {
@@ -1648,9 +1645,9 @@ mod force_allowlist_tests {
             ),
             (
                 O,
-                false,
+                true,
                 "SCAN",
-                "ROKS meta-GGA force and stress are library-only",
+                "ROKS) meta-GGA force and stress run on the dense-AFT",
             ),
             (R, true, "TPSS", "validated on the dense-AFT J only"),
             (U, false, "TPSS", "TPSS is closed-shell only"),
@@ -1658,7 +1655,7 @@ mod force_allowlist_tests {
                 O,
                 false,
                 "TPSS",
-                "ROKS meta-GGA force and stress are library-only",
+                "(ROKS) meta-GGA force and stress cover SCAN",
             ),
         ];
         for &(s, g, f, msg) in refused {

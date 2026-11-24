@@ -50,6 +50,7 @@ use ferric_scf::link_k::LinkK;
 use ferric_scf::pairs::{DensityPairs, SignificantPairs};
 use ferric_scf::rhf::{build_jk, solve_rhf, RhfConfig};
 use ferric_scf::screening::{Bound, SchwarzBounds};
+use ferric_testkit::compare::max_abs_diff;
 use ndarray::Array2;
 use std::time::Instant;
 
@@ -144,10 +145,6 @@ fn load_matrix(path: &str, nbf: usize) -> Array2<f64> {
     Array2::from_shape_vec((nbf, nbf), vals).expect("matrix shape")
 }
 
-fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    (a - b).iter().fold(0.0f64, |m, v| m.max(v.abs()))
-}
-
 /// PRE-fix pair-list criteria (origin/main a131b69f `pairs.rs`), recomputed on
 /// the same density so the kept fractions can be compared like for like:
 /// old sp `estimate(i,j,i,j) > thresh` (i.e. `Q² > thresh`); old dp
@@ -223,16 +220,14 @@ fn link_fixed_audit_cell() {
         println!("density loaded from {path} (provenance: an earlier direct-SCF process of this harness)");
         d
     } else {
-        let scf_cfg = RhfConfig {
-            max_iter: env_num("LFA_SCF_MAXITER", RhfConfig::default().max_iter),
-            verbose: true,
-            init_guess_density: std::env::var("LFA_SCF_RESTART_IN").ok().map(|p| {
-                let d0 = load_matrix(&p, nbf);
-                println!("SCF restart density loaded from {p}");
-                d0
-            }),
-            ..RhfConfig::default()
-        };
+        let mut scf_cfg = RhfConfig::default()
+            .with_max_iter(env_num("LFA_SCF_MAXITER", RhfConfig::default().max_iter))
+            .with_verbose(true);
+        scf_cfg.init_guess_density = std::env::var("LFA_SCF_RESTART_IN").ok().map(|p| {
+            let d0 = load_matrix(&p, nbf);
+            println!("SCF restart density loaded from {p}");
+            d0
+        });
         println!(
             "direct SCF pool: {} rayon threads (not a timing)",
             rayon::current_num_threads()

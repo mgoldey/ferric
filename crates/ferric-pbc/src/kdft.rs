@@ -78,7 +78,7 @@ use ferric_core::FerricError;
 use ferric_dft::density_on_grid::DensityGrid;
 use ferric_dft::grid::GridPoint;
 use ferric_dft::libxc::{FunctionalFamily, XcDef};
-use ferric_dft::vxc::{closed_kernel, DENSITY_FLOOR};
+use ferric_dft::vxc::{above_density_floor, closed_kernel};
 use ferric_integrals::ao_grid::{collect_shells, eval_shell_and_grad};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::{Array1, Array2, Array3, ArrayView2, Axis};
@@ -657,7 +657,13 @@ impl KPeriodicXc {
         for g in 0..np {
             e += c.points[g].weight * dens.rho[g] * kern.exc[g];
         }
-        let gated = |g: usize, x: f64| if dens.rho[g] > DENSITY_FLOOR { x } else { 0.0 };
+        let gated = |g: usize, x: f64| {
+            if above_density_floor(dens.rho[g], kern.floor) {
+                x
+            } else {
+                0.0
+            }
+        };
         let a: Vec<f64> = (0..np)
             .map(|g| gated(g, c.points[g].weight * kern.vrho[g]))
             .collect();

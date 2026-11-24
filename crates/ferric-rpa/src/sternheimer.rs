@@ -142,11 +142,12 @@ pub(crate) fn syrk_aat_into(a: &Array2<f64>, c: &mut Array2<f64>) {
 /// responsible for zeroing `c` (or pre-seeding it, e.g. with the identity
 /// diagonal) before the first panel.
 ///
-/// Takes a view (not `&Array2`) so a full-width panel — which is already a
-/// contiguous row-major sub-slice of the caller's `(m, panel_width)` scratch —
-/// can be passed directly with no copy; only the caller's ragged final panel
-/// (`w < panel_width`) needs an owned, right-sized `to_owned()` first.
-fn syrk_aat_accumulate_into(a: ArrayView2<f64>, c: &mut Array2<f64>) {
+/// Takes a view (not `&Array2`) so a panel can be passed directly with no
+/// copy: a full-width panel is a contiguous row-major sub-slice of the
+/// caller's `(m, panel_width)` scratch, and a ragged final panel
+/// (`w < panel_width`) is its column slice, whose row stride `panel_width`
+/// is passed to BLAS as the leading dimension.
+pub(crate) fn syrk_aat_accumulate_into(a: ArrayView2<f64>, c: &mut Array2<f64>) {
     let m = a.nrows();
     let kdim = a.ncols();
     assert_eq!(
@@ -157,18 +158,25 @@ fn syrk_aat_accumulate_into(a: ArrayView2<f64>, c: &mut Array2<f64>) {
     if m == 0 || kdim == 0 {
         return;
     }
-    let a_slice = a
-        .as_slice()
-        .expect("syrk_aat_accumulate_into: input must be contiguous (row-major)");
+    // Row-major with unit column stride; the row stride may exceed the width
+    // (a column slice of a wider buffer), which BLAS takes as `lda`.
+    let strides = a.strides();
+    assert!(
+        (strides[1] == 1 || kdim == 1) && (m == 1 || strides[0] >= kdim as isize),
+        "syrk_aat_accumulate_into: input must be row-major with unit column stride"
+    );
+    let row_stride = if m == 1 { kdim } else { strides[0] as usize };
     let alpha = 1.0f64;
     let beta = 1.0f64; // accumulate, don't overwrite
     let n_i32 = m as i32;
     let k_i32 = kdim as i32;
-    let lda = kdim as i32;
+    let lda = row_stride as i32;
     let ldc = m as i32;
-    // SAFETY: same contract as syrk_aat — contiguous input (as_slice above),
-    // correctly-sized output buffer (asserted above), consistent BLAS
-    // dimensions. beta=1 accumulates into c rather than overwriting.
+    // SAFETY: `a` is row-major with unit column stride and row stride
+    // `lda >= kdim` (asserted above), so BLAS's column-major `kdim × m` view
+    // with leading dimension `lda` addresses exactly `a`'s elements; the
+    // output buffer is correctly sized (asserted above). beta=1 accumulates
+    // into c rather than overwriting.
     unsafe {
         #[allow(clippy::manual_c_str_literals)]
         dsyrk_(
@@ -177,7 +185,7 @@ fn syrk_aat_accumulate_into(a: ArrayView2<f64>, c: &mut Array2<f64>) {
             &n_i32,
             &k_i32,
             &alpha,
-            a_slice.as_ptr(),
+            a.as_ptr(),
             &lda,
             &beta,
             c.as_mut_ptr(),
@@ -219,22 +227,21 @@ fn descent_count(v: &[f64]) -> usize {
 ///
 /// # Why not "sorted ascending"
 ///
-/// Strict sortedness was the original test, and it was WRONG — it conflated two
+/// A strict sortedness test would be WRONG — it conflates two
 /// different properties:
 ///
 /// * "came from a diagonalization" (⇒ sorted), and
 /// * "the basis is Fock-diagonal" (⇒ the scalar `e_ia = eps_a − eps_i` is valid).
 ///
 /// Only the second is what this function's callers actually require, and
-/// sortedness is *not* necessary for it. evGW is the counterexample that broke
-/// the strict check: `ferric_gw::sigma::run_evgw` overlays self-consistent
+/// sortedness is *not* necessary for it. evGW is the counterexample to a strict check: `ferric_gw::sigma::run_evgw` overlays self-consistent
 /// quasiparticle energies onto the canonical set (`sigma.rs`, the single
 /// `shifted_rhf.eps_alpha[mo_abs] = eps_qp[idx]` assignment — the MO
 /// COEFFICIENTS are never touched, so the basis stays exactly canonical). A QP
 /// correction can legitimately push a level past its neighbour: for H2O/cc-pVDZ
 /// evGW@PBE the HOMO sinks from −0.3046 to −0.4293 Ha, crossing HOMO-1 at
 /// −0.4567. The basis is still perfectly diagonal and the scalar denominator is
-/// still exactly right — the set is simply no longer sorted.
+/// still exactly right — the set is simply not sorted.
 ///
 /// # What this checks instead
 ///
@@ -280,9 +287,9 @@ fn is_plausibly_diagonal(v: &[f64]) -> bool {
 ///
 /// This is not hypothetical. `screen.rs` fed exactly this function per-orbital
 /// energies taken as `diag(C_locᵀ F C_loc)` from Boys-localized orbitals; the
-/// discarded coupling was 1.3–2.9% of the diagonal spread (fixed 2026-07-28,
-/// commit 17e994e, by semicanonicalizing). The same defect class also produced
-/// a fully bogus locality result in the AO-Laplace path (commit 3693d5d).
+/// discarded coupling was 1.3–2.9% of the diagonal spread (`screen.rs`
+/// semicanonicalizes to avoid it). The same defect class produces
+/// a fully bogus locality result in the AO-Laplace path.
 ///
 /// Every current caller passes canonical `rhf.eps_r()`-derived values, so this
 /// is a LATENT trap rather than a live bug — hence a `debug_assert`-grade guard
@@ -521,21 +528,13 @@ pub fn dielectric_matrix_from_projection_into_panelled(
             .and_broadcast(scale_row)
             .for_each(|x, &s| *x *= s);
 
-        // syrk_aat_accumulate_into requires a contiguous row-major view. A
-        // `..w` column sub-slice of the (m, panel_width) scratch IS contiguous
-        // whenever w == panel_width (a full-column-range slice of a row-major
-        // array is the whole array, unchanged strides) — true for every panel
-        // except a ragged final one (w < panel_width), where the sub-slice's
-        // row stride (panel_width) no longer matches its row length (w), so
-        // `.as_slice()` would fail. Only that ragged tail needs an owned,
-        // right-sized copy; every full-width panel is passed straight through
-        // with no copy at all.
-        if w == panel_width {
-            syrk_aat_accumulate_into(panel_view.view(), out);
-        } else {
-            let owned_panel = panel_view.to_owned();
-            syrk_aat_accumulate_into(owned_panel.view(), out);
-        }
+        // A ragged final panel (w < panel_width) is a column slice of the
+        // (m, panel_width) scratch; it is passed as that strided view (row
+        // stride = BLAS leading dimension), so no copy is ever made and the
+        // per-worker footprint is the scratch alone, as `quad_panel_width`
+        // charges it. Bitwise the copy's result
+        // (`syrk_on_a_strided_column_slice_is_the_copy_bitwise`).
+        syrk_aat_accumulate_into(panel_view.view(), out);
 
         col0 = col1;
     }
@@ -652,6 +651,24 @@ pub fn dielectric_matrix_unrestricted(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A ragged column slice of a wider row-major buffer, passed with its row
+    /// stride as BLAS's leading dimension, accumulates exactly what an owned
+    /// copy of it does (the signed log-det's final panel; no copy is made).
+    #[test]
+    fn syrk_on_a_strided_column_slice_is_the_copy_bitwise() {
+        let (m, width, w) = (7, 11, 4);
+        let buf = Array2::from_shape_fn((m, width), |(i, j)| {
+            ((i * 31 + j * 17) % 13) as f64 * 0.37 - 1.9
+        });
+        let view = buf.slice(ndarray::s![.., ..w]);
+        let owned = view.to_owned();
+        let (mut a, mut b) = (Array2::<f64>::eye(m), Array2::<f64>::eye(m));
+        syrk_aat_accumulate_into(view, &mut a);
+        syrk_aat_accumulate_into(owned.view(), &mut b);
+        let bits = |x: &Array2<f64>| x.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&a), bits(&b));
+    }
 
     #[test]
     fn chi_static_two_level_system() {
@@ -912,8 +929,8 @@ mod canonical_guard_tests {
     ///
     /// A tripwire nobody has seen trip is an assumption, not a check. This is
     /// the lesson from the union-rank gate, whose GO condition turned out to be
-    /// unreachable, and from the AO-Laplace tripwire that only fired after the
-    /// bug was fixed.
+    /// unreachable, and from the AO-Laplace tripwire that fires only once the
+    /// bug is absent.
     /// The guard is a `debug_assert!` (free in release, see
     /// `build_scale_factors_with_prefactor`), so the `should_panic` tests below
     /// run only with debug assertions. This one checks the predicate itself,
@@ -932,7 +949,7 @@ mod canonical_guard_tests {
 
     /// A Boys/PNO-localized occupied set: `diag(C_locᵀ F C_loc)` is a scrambled
     /// permutation of the energy range, not a sorted eigenvalue list. This is
-    /// the shape of the REAL bug fixed in screen.rs (commit 17e994e).
+    /// the shape of the bug `screen.rs` avoids by semicanonicalizing.
     ///
     /// Built as an explicit shuffle of a canonical ladder so the values are all
     /// physically plausible orbital energies — only their ORDER is wrong.

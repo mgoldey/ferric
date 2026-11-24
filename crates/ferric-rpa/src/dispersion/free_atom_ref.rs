@@ -12,31 +12,23 @@
 //! The production TS C6 path (`ferric-cli`'s TS-C6 branch) supplies the
 //! denominator from a live free-atom SCF run on the SAME integration scale
 //! (same xc, same Hirshfeld quadrature) as the molecular volume — the only
-//! ratio that is physically meaningful — and now hard-skips TS C6 with a
+//! ratio that is physically meaningful — and hard-skips TS C6 with a
 //! warning if that live SCF fails, rather than dividing by a hardcoded number.
 //!
-//! History (G7 verification 2026-07-17, docs/vol-free-verification.md;
-//! G8 removal, docs/perf-tasks/G8-fix-vol-free-table.md): the Z=1..=18 rows
-//! previously carried `Some(..)` hardcoded volumes. G7 checked all 18 against
-//! ferric's own free-atom UKS/RKS-PBE + Becke-volume pipeline and found that
-//! 12 of them (N, O, F, Ne, Na, Mg, Al, Si, P, S, Cl, Ar) disagreed by
-//! 11%–98% (growing with Z), and a `git log --follow` dig showed those 12
-//! were never actually sourced (the original commit 007bfe8 attributed all
-//! 18 to TS PRL Table I, which does not tabulate vol_free; the follow-up
-//! f3ec1ca only touched {H,He,C,N,O,F,Ne}, citing a Bučko-2013 table later
-//! downgraded to "could not be independently verified", commit 1907ec5). The
-//! CLI already ran a scale-consistent live free-atom SCF as its PRIMARY path
-//! and only used these table numbers as a last-resort, scale-mismatched
-//! fallback. G8 removed that fallback entirely (extending this repo's
-//! established no-silent-fallback / TS-MBD-honesty convention — see the 2026
-//! -07-09 `ts_atom_params` / `ts_dynamic_polarizability` / `mbd_screen` hard
-//! -error work) and, consequently, dropped the now-dead Z≤18 `Some(..)`
-//! values to `None`. Nothing in the codebase reads a Z≤18 `vol_free` anymore
-//! (the MBD path destructures it away; the CLI takes only the live-SCF value).
+//! Z≤18 `vol_free` is `None` (docs/vol-free-verification.md, G7;
+//! docs/perf-tasks/G8-fix-vol-free-table.md): hardcoded values checked against
+//! ferric's own free-atom UKS/RKS-PBE + Becke-volume pipeline disagreed by
+//! 11%–98% for N, O, F, Ne, Na, Mg, Al, Si, P, S, Cl, Ar (growing with Z), and
+//! TS PRL Table I does not tabulate vol_free. The CLI runs a scale-consistent
+//! live free-atom SCF and has no table fallback, consistent with this repo's
+//! no-silent-fallback / TS-MBD-honesty convention (`ts_atom_params` /
+//! `ts_dynamic_polarizability` / `mbd_screen` hard errors). Nothing in the
+//! codebase reads a Z≤18 `vol_free` (the MBD path destructures it away; the
+//! CLI takes only the live-SCF value).
 //!
 //! Z=19–54 α_free/C6_free are from Gould & Bučko JCTC 12, 3603 (2016) Table 2
 //! (same Chu-Dalgarno lineage as TS-PRL Table I; cross-checks vs the Z≤18 rows
-//! agree <5% — see docs/superpowers/specs/refs/source-crosscheck.md), except
+//! agree <5% — see wiki/superpowers/specs/refs/source-crosscheck.md), except
 //! Pd. Gould–Bučko's Pd (α 61.7, C6 628) is not the closed-shell 4d¹⁰ ground
 //! state: relativistic CCSDTQP gives α = 26.14(10) a.u. (Jerabek, Schwerdtfeger,
 //! Nagle, PRA 98, 012508 (2018); the 2018/2025 Schwerdtfeger–Nagle tables
@@ -60,11 +52,9 @@ pub fn ts_free_atom(z: usize) -> Option<(f64, f64, Option<f64>)> {
     //                        branch) supplies the volume on a scale consistent
     //                        with the molecular volume; if that SCF fails, TS C6
     //                        is skipped with a warning — no fabricated denominator.
-    //                        (Z≤18 previously carried Some(..) values; G7 found 12
-    //                        of 18 were never sourced and disagreed 11%–98% with a
-    //                        live free-atom PBE/Becke calc, and G8 removed the
-    //                        CLI's table fallback that read them — see the module
-    //                        doc and docs/vol-free-verification.md.)
+    //                        (Z≤18 carry `None`: hardcoded values disagreed
+    //                        11%–98% with a live free-atom PBE/Becke calc — see
+    //                        the module doc and docs/vol-free-verification.md.)
     let row = match z {
         1 => (4.500, 6.500, None),       // H
         2 => (1.380, 1.460, None),       // He

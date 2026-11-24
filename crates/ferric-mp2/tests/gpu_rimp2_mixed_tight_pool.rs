@@ -2,9 +2,10 @@
 //! The mixed arm under a tight pool: a process pool too small for the mixed
 //! scratch (and a fortiori for the f32 B_ov) makes the dispatcher run the CPU
 //! path, count `PoolFull` exactly once, upload and compute nothing on the
-//! device, move neither `gemm_mixed` nor `mixed_fallback_f64` (the refusal is a
-//! pool refusal, not a mixed-kernel one), and return the mode-off f64 energy
-//! bit for bit. The ample direction is gpu_rimp2_mixed.rs. A separate binary
+//! device, leave `gemm_mixed` unchanged, record the call once in
+//! `mixed_fallback_f64` (a `MixedFallback::CpuF64`: a mixed-allowed call that
+//! ran in f64 on the CPU, counted for the precision provenance record since
+//! #603), and return the mode-off f64 energy bit for bit. The ample direction is gpu_rimp2_mixed.rs. A separate binary
 //! because `install` is once per process.
 use ferric_core::gpu::{
     install, probe, stats, GpuMode, GpuSettingsExplicit, GpuStatus, MixedKernel, MixedKernelSet,
@@ -82,18 +83,21 @@ fn a_tight_pool_runs_the_cpu_path_bit_identically_under_mixed_and_counts_it() {
         (
             s1.gemm_offloaded,
             s1.gemm_mixed,
-            s1.mixed_fallback_f64,
             s1.resident_uploads,
             s1.bytes_h2d
         ),
         (
             s0.gemm_offloaded,
             s0.gemm_mixed,
-            s0.mixed_fallback_f64,
             s0.resident_uploads,
             s0.bytes_h2d
         ),
-        "nothing reached the device and no mixed fallback was recorded"
+        "nothing reached the device"
+    );
+    assert_eq!(
+        s1.mixed_fallback_f64 - s0.mixed_fallback_f64,
+        1,
+        "the mixed-allowed call that ran in f64 on the CPU is one CpuF64 fallback (#603)"
     );
     for (name, a, b) in [
         ("vs mode-off CPU", &via, &cpu),

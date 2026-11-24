@@ -76,7 +76,7 @@ fn ready() -> bool {
     static INSTALL: std::sync::Once = std::sync::Once::new();
     INSTALL.call_once(|| {
         install(GpuSettingsExplicit {
-            mode: Some(GpuMode::Auto),
+            mode: Some(GpuMode::On),
             memory_gb: Some(3.5),
             ..Default::default()
         })
@@ -105,14 +105,12 @@ type Run = (f64, usize, bool);
 fn rhf(mol: &Molecule, prep: &PreparedBasis, arm: Arm) -> Run {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, prep).unwrap();
-    let cfg = RhfConfig {
-        energy_conv: 1e-3, // a loose "not still descending" bound; dP is the real gate
-        density_conv: 1e-8,
-        max_iter: 200,
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-3) // a loose "not still descending" bound; dP is the real gate
+        .with_density_conv(1e-8)
+        .with_max_iter(200)
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit");
     set(arm);
     let r = solve_rhf(&ParallelContext::default(), mol, prep, op, &bounds, &cfg);
     set(Arm::Device);
@@ -122,14 +120,12 @@ fn rhf(mol: &Molecule, prep: &PreparedBasis, arm: Arm) -> Run {
 fn uhf(mol: &Molecule, prep: &PreparedBasis, arm: Arm) -> Run {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, prep).unwrap();
-    let cfg = UhfConfig {
-        energy_conv: 1e-3,
-        density_conv: 1e-8,
-        max_iter: 300,
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        ..Default::default()
-    };
+    let cfg = UhfConfig::default()
+        .with_energy_conv(1e-3)
+        .with_density_conv(1e-8)
+        .with_max_iter(300)
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit");
     set(arm);
     let r = solve_uhf(&ParallelContext::default(), mol, prep, &bounds, &cfg);
     set(Arm::Device);

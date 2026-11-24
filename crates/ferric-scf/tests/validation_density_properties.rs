@@ -101,6 +101,7 @@ use std::path::{Path, PathBuf};
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::properties::{
@@ -110,6 +111,7 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::stability::StabilityVerdict;
 use ferric_scf::uhf::solve_uhf;
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -130,13 +132,12 @@ const TOL_FIELD_CHAIN: f64 = 3e-8;
 const TOL_VOL_CHAIN_REL: f64 = 5e-8;
 const TOL_E_ATOM: f64 = 1e-10;
 const TOL_VOL_ATOM_CHAIN_REL: f64 = 5e-8;
-/// Atoms whose ferric-chain volume is moved by ferric's XC density floor
-/// (e_xc = v_xc = 0 where rho <= 1e-10, `ferric-dft` vxc.rs DENSITY_FLOOR), which
-/// the PySCF reference does not apply. The floor reshapes the diffuse tail, and the
-/// r^3 weight makes the volume far more tail-sensitive than the energy (which
-/// agrees to <= 3e-12 Ha for these atoms). Measured 2026-09-30: Li 1.2e-6, Na
-/// 1.5e-6, Be 1.2e-7, Al 7.8e-8 relative; with the floor lowered to 1e-14 the same
-/// four fall to 2.8e-11 .. 5.4e-9, so the floor is the whole effect.
+/// Atoms whose ferric-chain volume is moved by a semilocal XC density floor of
+/// 1e-10 (v_xc = 0 where rho <= 1e-10), which the PySCF reference does not
+/// apply. The floor reshapes the diffuse tail, and the r^3 weight makes the
+/// volume far more tail-sensitive than the energy. Measured 2026-09-30 at
+/// 1e-10: Li 1.2e-6, Na 1.5e-6, Be 1.2e-7, Al 7.8e-8 relative; at 1e-14 (the
+/// current `ferric-dft` vxc.rs `DensityFloor::SEMILOCAL`) 2.8e-11 .. 5.4e-9.
 const FLOOR_SENSITIVE_ATOMS: [&str; 4] = ["li", "be", "na", "al"];
 const TOL_VOL_ATOM_CHAIN_REL_FLOOR: f64 = 2e-6;
 const TOL_ENUC: f64 = 1e-9;
@@ -184,12 +185,6 @@ fn reference(dir: &str, system: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn vec1(v: &Value, ptr: &str, ctx: &str) -> Vec<f64> {
     v.pointer(ptr)
         .and_then(Value::as_array)
@@ -234,7 +229,7 @@ fn load_system(system: &str, basis_name: &str, r: &Value, ctx: &str) -> System {
     let xyz = workspace_root().join(MOL_DIR).join(format!("{system}.xyz"));
     let mol = Molecule::load_xyz_with_charge(xyz.to_str().unwrap(), charge, mult)
         .unwrap_or_else(|e| panic!("{}: {e:?}", xyz.display()));
-    let enuc_ref = num(r, "/nuclear_repulsion", ctx);
+    let enuc_ref = num_ctx(r, "/nuclear_repulsion", ctx);
     let enuc = mol.nuclear_repulsion();
     assert!(
         (enuc - enuc_ref).abs() < TOL_ENUC,
@@ -312,23 +307,18 @@ fn ref_field(r: &Value, key: &str, ctx: &str) -> Vec<f64> {
 }
 
 fn rhf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
 }
 
 fn uhf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        check_stability: true,
-        scf_stability_descent: true,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_stability(ferric_scf::options::Stability::Descend)
 }
 
 /// One molecule × basis: same-density, controls, full chain. Returns ferric's
@@ -452,7 +442,7 @@ fn check_molecule(system: &str, basis_name: &str) -> Vec<f64> {
     check(
         &ctx,
         "SCF energy",
-        (res.energy - num(&r, "/scf/energy", &ctx)).abs(),
+        (res.energy - num_ctx(&r, "/scf/energy", &ctx)).abs(),
         TOL_E_SCF,
     );
     let p2 = props(&sys, res.density_total());
@@ -535,15 +525,16 @@ fn atom_row(symbol_lc: &str) {
     let frac = r["uks"]["fractional_occupation"]
         .as_bool()
         .expect("uks.fractional_occupation");
-    let cfg = RhfConfig {
-        xc: Some("PBE".to_string()),
-        fractional_occ: sys.mol.multiplicity > 1,
-        mom_after_iter: if sys.mol.multiplicity > 1 { 5 } else { 0 },
-        max_iter: 400,
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_xc("PBE")
+        .with_mom_after_iter(if sys.mol.multiplicity > 1 { 5 } else { 0 })
+        .with_max_iter(400)
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        // The references are PySCF on the flat (75,110) grid (generator: prune=None),
+        // not the pruned KS default AtomicGridConfig::production().
+        .with_dft_grid(AtomicGridConfig::default());
+    cfg.fractional_occ = sys.mol.multiplicity > 1;
     let res = solve_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &cfg)
         .unwrap_or_else(|e| panic!("{ctx}: solve_uhf (UKS-PBE) failed: {e:?}"));
     assert!(res.converged, "{ctx}: ferric UKS not converged");
@@ -551,7 +542,7 @@ fn atom_row(symbol_lc: &str) {
     check(
         &ctx,
         "UKS-PBE energy",
-        (res.energy - num(&r, "/uks/energy", &ctx)).abs(),
+        (res.energy - num_ctx(&r, "/uks/energy", &ctx)).abs(),
         TOL_E_ATOM,
     );
     let v2 =

@@ -54,29 +54,64 @@
 
 use crate::gradient::integral_response_gradient_3c2c;
 use crate::oo_rimp2::{
-    build_mp2_density, compute_b_full_mo, compute_t2_and_integrals, OoRiMp2Result,
+    build_mp2_density, compute_b_full_mo, compute_t2_and_integrals, DensityJk, OoRiMp2Result,
+    JK_THRESH,
 };
 use crate::rimp2::{active_occ, cholesky_inverse_sqrt, Mp2Intermediates};
-use crate::zvector::{build_imat_ri, build_x_ov};
+use crate::zvector::{build_imat_ri, build_x_ov, x_ov_worker_bytes};
 use ferric_core::external_potential::ExternalPotential;
 use ferric_core::mol::Molecule;
 use ferric_core::orbitals::OrbitalSpace;
+use ferric_core::timing::PhaseAccumulator;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::threeindex;
-use ferric_scf::gradient::{
-    ecp_gradient, oneelectron_gradient, overlap_deriv_contract, twoelectron_gradient_bilinear,
-};
-use ferric_scf::rhf::build_jk;
+use ferric_scf::gradient::{ecp_gradient, oneelectron_gradient, overlap_deriv_contract};
+use ferric_scf::response_jk::ResponseJk;
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::PreparedAux;
 use ndarray::Array2;
+
+/// [`oo_ri_mp2_gradient`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// the optimised orbitals of `result` (`mos`, `orbital_energies`) are
+/// checked against that system first
+/// ([`ferric_scf::PreparedSystem::check_closed_shell_orbitals`]).
+pub fn oo_ri_mp2_gradient_on(
+    aux: &PreparedAux<'_>,
+    result: &OoRiMp2Result,
+    frozen_core: usize,
+    ext: Option<&ExternalPotential>,
+) -> Result<Array2<f64>, FerricError> {
+    let sys = aux.system();
+    sys.check_closed_shell_orbitals(&result.mos, &result.orbital_energies)?;
+    oo_ri_mp2_gradient(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        sys.bounds(),
+        result,
+        frozen_core,
+        ext,
+    )
+}
 
 /// Compute the analytical nuclear gradient for OO-RI-MP2.
 ///
 /// See the module doc comment for the no-Z-vector derivation and its
 /// numerical verification.
+///
+/// J/K route: the one `result` was optimised on (`result.jk_route`):
+/// four-centre, or the reference SCF's RI-JK fit, whose J/K and bilinear
+/// two-electron derivative come from [`ResponseJk`]. The two J/K builds here
+/// (of the HF density and of `2·C W Cᵀ`) reuse `result.hf_jk` /
+/// `result.response_jk` when their densities agree with the ones formed
+/// here to [`REUSE_TOL`]; otherwise they are built.
+///
+/// With `FERRIC_TIMING` set, prints a phase table ("OO-RI-MP2 gradient").
+#[allow(clippy::too_many_arguments)]
 pub fn oo_ri_mp2_gradient(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -94,23 +129,30 @@ pub fn oo_ri_mp2_gradient(
     let nvir = nbas - nocc_total;
     let naux = dfbs.nbasis();
     let nmo = nbas;
+    let mut acc = PhaseAccumulator::new().report_on_drop("OO-RI-MP2 gradient");
 
+    let ctx = ferric_core::parallel::ParallelContext::default();
+    let jk = acc.time("J/K route setup", || {
+        ResponseJk::for_route(&ctx, mol, obs, bounds, result.jk_route.as_ref())
+    })?;
     // The z = 0 formula below needs the SEMICANONICAL frame; see
     // `semicanonical_frame`.
-    let ctx = ferric_core::parallel::ParallelContext::default();
-    let (f_ao, c_sc, eps_sc) = semicanonical_frame(
-        &ctx,
-        mol,
-        obs,
-        bounds,
-        &result.mos,
-        nocc_total,
-        first_occ,
-        ext,
-    )?;
+    let (f_ao, c_sc, eps_sc) = acc.time("semicanonical frame (J/K of D_HF)", || {
+        semicanonical_frame(
+            &jk,
+            mol,
+            obs,
+            &result.mos,
+            &result.hf_jk,
+            nocc_total,
+            first_occ,
+            ext,
+        )
+    })?;
     let c = &c_sc;
     let eps = &eps_sc;
 
+    let tok = acc.begin("b_full, t2, MP2 density");
     let b_full = compute_b_full_mo(obs, dfbs, op, c)?;
     let b_ov_3d = b_full.slice(ndarray::s![.., first_occ..nocc_total, nocc_total..]);
     let b_ov = b_ov_3d
@@ -121,27 +163,15 @@ pub fn oo_ri_mp2_gradient(
     let (t2, _) = compute_t2_and_integrals(&b_ov, eps, nocc, nvir, nocc_total, first_occ, naux);
 
     let (p_oo, p_vv) = build_mp2_density(&t2, nocc, nvir);
+    acc.stop(tok);
 
-    // --- Relaxed 1-PDM in MO basis: NO Z-vector (occ-vir/vir-occ blocks are
-    // exactly zero — see module doc comment). Same doo+doo^T / dvv+dvv^T
-    // structure as plain RI-MP2's unrelaxed correlation density, but here
-    // this full object already IS the relaxed density (nothing left to add).
-    let mut dm1mo = Array2::<f64>::zeros((nmo, nmo));
-    for i in 0..nocc {
-        let i_mo = first_occ + i;
-        for j in 0..nocc {
-            let j_mo = first_occ + j;
-            dm1mo[(i_mo, j_mo)] = p_oo[(i, j)] + p_oo[(j, i)];
-        }
-    }
-    for a in 0..nvir {
-        let a_mo = nocc_total + a;
-        for b in 0..nvir {
-            let b_mo = nocc_total + b;
-            dm1mo[(a_mo, b_mo)] = p_vv[(a, b)] + p_vv[(b, a)];
-        }
-    }
-    // occ-vir / vir-occ: z = 0, left at zero.
+    let orb = OrbitalSpace {
+        nocc,
+        nvir,
+        nocc_total,
+        first_occ,
+    };
+    let dm1mo = relaxed_dm1_mo(&p_oo, &p_vv, &orb, nmo);
 
     let dm1_corr_ao = {
         let cp = c.dot(&dm1mo);
@@ -162,34 +192,24 @@ pub fn oo_ri_mp2_gradient(
     // needs F_ov explicitly.
     let f_mo = c.t().dot(&f_ao).dot(c);
 
-    // --- Imat (RI-MP2 Lagrangian matrix), same object plain-MP2's Z-vector
-    // pipeline builds, evaluated at the OO orbitals/t2 (no z contribution
-    // enters build_imat_ri itself -- it is purely an x_ov/b_full contraction).
-    let x_ov = build_x_ov(&t2, &b_ov, nocc, nvir, naux);
-    let orb = OrbitalSpace {
-        nocc,
-        nvir,
-        nocc_total,
-        first_occ,
-    };
-    let imat = build_imat_ri(&x_ov, &b_full, &orb);
-    let mut imat_pulay = imat.clone();
-    for a in 0..nvir {
-        let a_mo = nocc_total + a;
-        for i in 0..nocc {
-            let i_mo = first_occ + i;
-            imat_pulay[(a_mo, i_mo)] = imat[(i_mo, a_mo)];
-        }
-    }
-    let im1 = {
-        let cp = c.dot(&imat_pulay);
-        cp.dot(&c.t())
-    };
+    // --- Imat (RI-MP2 Lagrangian matrix); see `pulay_imat_ao`.
+    let im1 = acc.time("x_ov and Imat", || {
+        pulay_imat_ao(&t2, &b_ov, &b_full, &orb, naux, c)
+    });
 
     let zeta_ao = energy_weighted_density(&f_mo, &dm1mo, c, nocc_total);
-    let vhf_s1occ = vhf_s1occ(&ctx, obs, bounds, &dm1_corr_ao, c, nocc_total)?;
+    let vhf_s1occ = acc.time("vhf_s1occ (J/K of 2·dm1_corr)", || {
+        vhf_s1occ(
+            &jk,
+            &dm1_corr_ao,
+            result.response_jk.as_ref(),
+            c,
+            nocc_total,
+        )
+    })?;
 
     // --- Assemble (same signs as plain RI-MP2's mp2_relaxed_lagrangian_gradient).
+    let tok = acc.begin("1e, ECP and overlap derivatives");
     let zero_w = Array2::<f64>::zeros((nmo, nmo));
     let mut grad = oneelectron_gradient(mol, obs, &dm1_total_ao, &zero_w, ext)?;
     // ECP: V_ECP enters the energy as a plain one-electron operator (through
@@ -201,15 +221,19 @@ pub fn oo_ri_mp2_gradient(
 
     let w_overlap = &im1 - &zeta_ao - &vhf_s1occ;
     grad += &overlap_deriv_contract(obs, &w_overlap)?;
+    acc.stop(tok);
 
     // 2e-integral-derivative: bilinear Gamma(hf_dm1, hf_dm1 + 2*dm1_corr),
-    // same structure as plain RI-MP2's bilinear term.
+    // same structure as plain RI-MP2's bilinear term, on the J/K route.
     let two_dm_corr = 2.0 * &dm1_corr_ao;
     let dm1p = &hf_dm1 + &two_dm_corr;
-    grad += &twoelectron_gradient_bilinear(obs, op, bounds, &hf_dm1, &dm1p)?;
+    grad += &acc.time("2e derivative (bilinear)", || {
+        jk.two_electron_gradient_bilinear(mol, op, &hf_dm1, &dm1p)
+    })?;
 
     // RI 3c/2c integral-response term: reuse plain RI-MP2's implementation by
     // packaging OO-MP2's own t2/b_ov/v_inv_sqrt into an Mp2Intermediates.
+    let tok = acc.begin("RI 3c/2c response");
     let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
     let v_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
     // `uncharged`, not a struct literal: these buffers were built by the
@@ -230,8 +254,99 @@ pub fn oo_ri_mp2_gradient(
         result.mp2_corr,
     );
     grad += &integral_response_gradient_3c2c(mol, obs, dfbs, op, &inter, c)?;
+    acc.stop(tok);
 
     Ok(grad)
+}
+
+/// Elementwise agreement (relative to `max(1, max|D|)`) at which a density
+/// carried in [`OoRiMp2Result`] counts as the one formed here, so its J/K are
+/// reused. The two differ only by the rounding of re-forming the density
+/// from the re-semicanonicalised orbitals (~1e-14 at these sizes); any
+/// change of the orbitals' occupied space is many orders larger.
+pub const REUSE_TOL: f64 = 1e-10;
+
+/// J/K of `d`: `cached`'s when it holds the same density (scaled by
+/// `scale`, which multiplies the cached matrices), else a build on `jk`.
+fn jk_or_reuse(
+    jk: &ResponseJk<'_>,
+    d: &Array2<f64>,
+    cached: Option<&DensityJk>,
+    scale: f64,
+) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
+    if let Some(c) = cached {
+        if c.is_for(&(d / scale), REUSE_TOL) {
+            return Ok((scale * &c.j, scale * &c.k));
+        }
+    }
+    jk.jk(d, JK_THRESH)
+}
+
+/// Relaxed 1-PDM in the MO basis: NO Z-vector (occ-vir/vir-occ blocks are
+/// exactly zero, see the module doc). Same `doo + dooᵀ` / `dvv + dvvᵀ`
+/// structure as plain RI-MP2's unrelaxed correlation density, but here this
+/// full object already IS the relaxed density (nothing left to add).
+fn relaxed_dm1_mo(
+    p_oo: &Array2<f64>,
+    p_vv: &Array2<f64>,
+    orb: &OrbitalSpace,
+    nmo: usize,
+) -> Array2<f64> {
+    let (o0, v0) = (orb.first_occ, orb.nocc_total);
+    let mut dm1mo = Array2::<f64>::zeros((nmo, nmo));
+    let oo = &p_oo.view() + &p_oo.t();
+    let vv = &p_vv.view() + &p_vv.t();
+    dm1mo
+        .slice_mut(ndarray::s![o0..o0 + orb.nocc, o0..o0 + orb.nocc])
+        .assign(&oo);
+    dm1mo
+        .slice_mut(ndarray::s![v0..v0 + orb.nvir, v0..v0 + orb.nvir])
+        .assign(&vv);
+    dm1mo
+}
+
+/// Imat (RI-MP2 Lagrangian matrix) with its occ-vir block taken in the
+/// virtual-derivative representation, in AO: `C · Imat_pulay · Cᵀ`. Same
+/// object plain-MP2's Z-vector pipeline builds, at the OO orbitals/t2 (no z
+/// contribution enters `build_imat_ri`: it is an x_ov/b_full contraction).
+///
+/// `build_x_ov` holds one `tt_i` block per worker. SOFT, for the reason the
+/// RI-MP2 response path's per-worker charge is soft (`gradient.rs`): the size
+/// reads the pool width, so a refusal would make admission depend on
+/// `RAYON_NUM_THREADS`. Dropped once `x_ov` is built.
+fn pulay_imat_ao(
+    t2: &[f64],
+    b_ov: &Array2<f64>,
+    b_full: &ndarray::Array3<f64>,
+    orb: &OrbitalSpace,
+    naux: usize,
+    c: &Array2<f64>,
+) -> Array2<f64> {
+    let OrbitalSpace {
+        nocc,
+        nvir,
+        nocc_total,
+        first_occ,
+    } = *orb;
+    let x_ov = {
+        let _worker_charge = crate::rimp2::charge_mo_side_soft(
+            "OO-RI-MP2 gradient x_ov per-worker transients (tt_i)",
+            rayon::current_num_threads()
+                .max(1)
+                .saturating_mul(x_ov_worker_bytes(nocc, nvir)),
+        );
+        build_x_ov(t2, b_ov, nocc, nvir, naux)
+    };
+    let imat = build_imat_ri(&x_ov, b_full, orb);
+    let mut imat_pulay = imat.clone();
+    for a in 0..nvir {
+        let a_mo = nocc_total + a;
+        for i in 0..nocc {
+            let i_mo = first_occ + i;
+            imat_pulay[(a_mo, i_mo)] = imat[(i_mo, a_mo)];
+        }
+    }
+    c.dot(&imat_pulay).dot(&c.t())
 }
 
 /// Re-establish the SEMICANONICAL frame of `mos` and return
@@ -242,24 +357,23 @@ pub fn oo_ri_mp2_gradient(
 /// it again means a caller that rotated the orbitals cannot silently get a
 /// wrong gradient. The energy is invariant to this rotation, so for a
 /// well-formed input it is a no-op up to eigenvector phase.
+#[allow(clippy::too_many_arguments)]
 fn semicanonical_frame(
-    ctx: &ferric_core::parallel::ParallelContext,
+    jk: &ResponseJk<'_>,
     mol: &Molecule,
     obs: &PreparedBasis,
-    bounds: &SchwarzBounds,
     mos: &Array2<f64>,
+    hf_jk: &DensityJk,
     nocc_total: usize,
     first_occ: usize,
     ext: Option<&ExternalPotential>,
 ) -> Result<(Array2<f64>, Array2<f64>, Vec<f64>), FerricError> {
-    let nmo = mos.nrows();
     // Same hcore as `oo_ri_mp2` (V_ECP included for an ECP basis), so the
     // Fock matrix here is the one the OO energy was stationary for.
     let h = oneelectron::hcore_ecp_with_external(obs, mol, obs.basis_set(), ext)?;
     let c_occ = mos.slice(ndarray::s![.., ..nocc_total]);
     let d = c_occ.dot(&c_occ.t()) * 2.0;
-    let (mut jv, mut kv) = (Array2::zeros((nmo, nmo)), Array2::zeros((nmo, nmo)));
-    build_jk(ctx, obs, bounds, 1e-12, &d, &mut jv, &mut kv)?;
+    let (jv, kv) = jk_or_reuse(jk, &d, Some(hf_jk), 1.0)?;
     let f_ao = &h + &jv - 0.5 * &kv;
     let (u_sc, eps_sc) = crate::oo_rimp2::semicanonical_rotation(
         &mos.t().dot(&f_ao).dot(mos),
@@ -314,17 +428,14 @@ fn energy_weighted_density(
 /// F(D_HF) inside Σ W_pq F_pq, and it is present at z = 0. Dropping it was
 /// 2.2e-4 / 3.2e-4 of the pre-F2 residual.
 fn vhf_s1occ(
-    ctx: &ferric_core::parallel::ParallelContext,
-    obs: &PreparedBasis,
-    bounds: &SchwarzBounds,
+    jk: &ResponseJk<'_>,
     dm1_corr_ao: &Array2<f64>,
+    response_jk: Option<&DensityJk>,
     c: &Array2<f64>,
     nocc_total: usize,
 ) -> Result<Array2<f64>, FerricError> {
-    let n = c.nrows();
     let two_dm_corr = 2.0 * dm1_corr_ao;
-    let (mut jv, mut kv) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
-    build_jk(ctx, obs, bounds, 1e-12, &two_dm_corr, &mut jv, &mut kv)?;
+    let (jv, kv) = jk_or_reuse(jk, &two_dm_corr, response_jk, 2.0)?;
     let veff = &jv - &(0.5 * &kv);
     let c_occ = c.slice(ndarray::s![.., ..nocc_total]);
     let p_occ = c_occ.dot(&c_occ.t());
@@ -351,24 +462,12 @@ mod tests {
         aux_bs: &ferric_core::basis::BasisSet,
         op: Operator,
         oo_config: &OoRiMp2Config,
+        jk_aux: Option<&str>,
     ) -> f64 {
         let obs = PreparedBasis::new(mol, obs_bs).unwrap();
         let dfbs = PreparedBasis::new(mol, aux_bs).unwrap();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf = solve_rhf(
-            &ferric_core::parallel::ParallelContext::default(),
-            mol,
-            &obs,
-            op,
-            &bounds,
-            &RhfConfig {
-                energy_conv: 1e-11,
-                density_conv: 1e-10,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert!(rhf.converged);
+        let rhf = reference_rhf(mol, &obs, op, &bounds, jk_aux);
         let oo = oo_ri_mp2(mol, &obs, &dfbs, op, &bounds, &rhf, oo_config, None).unwrap();
         assert!(
             oo.converged,
@@ -378,6 +477,37 @@ mod tests {
         oo.total_energy
     }
 
+    /// Tightly converged RHF reference: four-centre J/K, or RI-JK on
+    /// `jk_aux` (J and K fitted on one basis, the route `oo_ri_mp2` follows).
+    fn reference_rhf(
+        mol: &Molecule,
+        obs: &PreparedBasis,
+        op: Operator,
+        bounds: &SchwarzBounds,
+        jk_aux: Option<&str>,
+    ) -> ferric_scf::ScfResult {
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            mol,
+            obs,
+            op,
+            bounds,
+            &{
+                let mut c = RhfConfig::default()
+                    .with_energy_conv(1e-11)
+                    .with_density_conv(1e-10);
+                c.df_j_aux = jk_aux.map(str::to_string);
+                c.df_k_aux = jk_aux.map(str::to_string);
+                c
+            }
+            .for_geometry_task(),
+        )
+        .unwrap();
+        assert!(rhf.converged);
+        assert_eq!(rhf.df_jk.is_some(), jk_aux.is_some());
+        rhf
+    }
+
     fn oo_rimp2_gradient_fd(
         mol: &Molecule,
         obs_bs: &ferric_core::basis::BasisSet,
@@ -385,6 +515,7 @@ mod tests {
         op: Operator,
         oo_config: &OoRiMp2Config,
         delta: f64,
+        jk_aux: Option<&str>,
     ) -> Array2<f64> {
         let natoms = mol.atoms.len();
         let mut grad = Array2::zeros((natoms, 3));
@@ -406,8 +537,8 @@ mod tests {
                         mol_m.atoms[atom].zpos -= delta;
                     }
                 }
-                let e_p = oo_rimp2_total_energy(&mol_p, obs_bs, aux_bs, op, oo_config);
-                let e_m = oo_rimp2_total_energy(&mol_m, obs_bs, aux_bs, op, oo_config);
+                let e_p = oo_rimp2_total_energy(&mol_p, obs_bs, aux_bs, op, oo_config, jk_aux);
+                let e_m = oo_rimp2_total_energy(&mol_m, obs_bs, aux_bs, op, oo_config, jk_aux);
                 grad[(atom, coord)] = (e_p - e_m) / (2.0 * delta);
             }
         }
@@ -455,18 +586,16 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-11,
-                density_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default()
+                .with_energy_conv(1e-11)
+                .with_density_conv(1e-10),
         )
         .unwrap();
         let oo = oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &rhf, &oo_config, None).unwrap();
         assert!(oo.converged);
 
         let analytic = oo_ri_mp2_gradient(&mol, &obs, &dfbs, op, &bounds, &oo, 0, None).unwrap();
-        let fd = oo_rimp2_gradient_fd(&mol, &obs_bs, &aux_bs, op, &oo_config, 1e-4);
+        let fd = oo_rimp2_gradient_fd(&mol, &obs_bs, &aux_bs, op, &oo_config, 1e-4, None);
 
         eprintln!("=== H2/cc-pVDZ OO-RI-MP2 analytic vs FD gradient ===");
         let mut max_diff = 0.0f64;
@@ -513,18 +642,16 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-11,
-                density_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default()
+                .with_energy_conv(1e-11)
+                .with_density_conv(1e-10),
         )
         .unwrap();
         let oo = oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &rhf, &oo_config, None).unwrap();
         assert!(oo.converged);
 
         let analytic = oo_ri_mp2_gradient(&mol, &obs, &dfbs, op, &bounds, &oo, 0, None).unwrap();
-        let fd = oo_rimp2_gradient_fd(&mol, &obs_bs, &aux_bs, op, &oo_config, 1e-4);
+        let fd = oo_rimp2_gradient_fd(&mol, &obs_bs, &aux_bs, op, &oo_config, 1e-4, None);
 
         eprintln!("=== H2O/STO-3G OO-RI-MP2 analytic vs FD gradient ===");
         let mut max_diff = 0.0f64;
@@ -550,5 +677,104 @@ mod tests {
             "H2O OO-RI-MP2 analytic vs FD max diff = {:.2e}",
             max_diff
         );
+    }
+
+    const H2O_XYZ: &str = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
+    const JKFIT: &str = "def2-universal-jkfit";
+
+    /// RI-JK reference: the nuclear gradient of the FITTED functional against
+    /// FD of its re-converged energy, H2O/STO-3G. Same bar as the four-centre
+    /// tests (`NUC_GRAD_BAR`): the fitted J/K have no screening, so the floor
+    /// is the FD truncation and re-convergence terms of that derivation.
+    ///
+    /// TEETH: the fitted and four-centre analytic gradients at this geometry
+    /// differ by more than the bar, so a gradient that ignored the route
+    /// (four-centre 2e derivative or J/K under a fitted functional) fails.
+    #[test]
+    fn oo_rimp2_gradient_on_an_rijk_reference_matches_fd_h2o_sto3g() {
+        let mol = Molecule::parse_xyz(H2O_XYZ, 0, 1).unwrap();
+        let obs_bs = basis::bundled("sto-3g").unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let op = Operator::coulomb();
+        let cfg = tight_oo_config();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = reference_rhf(&mol, &obs, op, &bounds, Some(JKFIT));
+        let oo = oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &rhf, &cfg, None).unwrap();
+        assert!(oo.converged);
+        assert!(
+            oo.jk_route.is_some(),
+            "an RI-JK reference must give the fitted route"
+        );
+        let analytic = oo_ri_mp2_gradient(&mol, &obs, &dfbs, op, &bounds, &oo, 0, None).unwrap();
+        let fd = oo_rimp2_gradient_fd(&mol, &obs_bs, &aux_bs, op, &cfg, 1e-4, Some(JKFIT));
+        let err = (&analytic - &fd).iter().fold(0.0f64, |m, v| m.max(v.abs()));
+
+        let rhf_ex = reference_rhf(&mol, &obs, op, &bounds, None);
+        let oo_ex = oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &rhf_ex, &cfg, None).unwrap();
+        let g_ex = oo_ri_mp2_gradient(&mol, &obs, &dfbs, op, &bounds, &oo_ex, 0, None).unwrap();
+        let fit_effect = (&analytic - &g_ex)
+            .iter()
+            .fold(0.0f64, |m, v| m.max(v.abs()));
+        eprintln!(
+            "H2O/STO-3G RI-JK OO-RI-MP2: max|analytic − FD| = {err:.3e}, \
+             max|fitted − four-centre gradient| = {fit_effect:.3e}"
+        );
+        assert!(
+            fit_effect > 10.0 * NUC_GRAD_BAR,
+            "fit effect {fit_effect:.3e}"
+        );
+        assert!(err < NUC_GRAD_BAR, "max|analytic − FD| = {err:.3e}");
+    }
+
+    /// The J/K the result carries are reused only for the densities they
+    /// belong to. A result whose cached densities are wrong (scaled by 1.01)
+    /// gives the same gradient as the correct cache, to the rebuild's
+    /// rounding (bar 1e-10 Ha/Bohr: the cached J/K and a fresh build of the
+    /// same density differ only by the summation order of identical
+    /// integrals and the re-formed density's rounding, ~1e-14 relative).
+    ///
+    /// TEETH: with the density check removed, the wrong cache moves the
+    /// gradient by ~1e-2 relative of the J/K terms.
+    #[test]
+    fn oo_rimp2_gradient_reuses_only_matching_jk() {
+        let mol = Molecule::parse_xyz(H2O_XYZ, 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = reference_rhf(&mol, &obs, op, &bounds, None);
+        let oo = oo_ri_mp2(
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &bounds,
+            &rhf,
+            &tight_oo_config(),
+            None,
+        )
+        .unwrap();
+        assert!(oo.converged);
+        assert!(
+            oo.response_jk.is_some(),
+            "a converged run carries the response J/K"
+        );
+        let g = oo_ri_mp2_gradient(&mol, &obs, &dfbs, op, &bounds, &oo, 0, None).unwrap();
+        let mut stale = oo.clone();
+        fn wrong(x: &DensityJk) -> DensityJk {
+            DensityJk {
+                d: 1.01 * &x.d,
+                j: 1.01 * &x.j + 1e-3,
+                k: 1.01 * &x.k + 1e-3,
+            }
+        }
+        stale.hf_jk = wrong(&stale.hf_jk);
+        stale.response_jk = stale.response_jk.as_ref().map(wrong);
+        let g_stale = oo_ri_mp2_gradient(&mol, &obs, &dfbs, op, &bounds, &stale, 0, None).unwrap();
+        let diff = (&g - &g_stale).iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        eprintln!("cached vs rebuilt J/K: max|Δg| = {diff:.3e}");
+        assert!(diff < 1e-10, "max|Δg| = {diff:.3e}");
     }
 }

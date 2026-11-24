@@ -2,6 +2,7 @@
 
 use super::identity::{BuildStamp, Fnv, ScfIdentity};
 use super::{Checkpoint, CheckpointError, FinalState, OrbitalState, FORMAT_VERSION};
+use crate::incore_jk::{EriMode, EriRoute};
 use crate::result::{ConvergenceReport, DfJkRoute, DiisFallback, GradientVetoes, ScfExit, Spin};
 use ferric_integrals::operator::{Operator, OperatorKind};
 use ndarray::{arr1, Array1, Array2, ArrayD, Ix1, Ix2, IxDyn};
@@ -106,6 +107,9 @@ struct ConvergenceMeta {
     de_noise_floor: Option<f64>,
     diis_fallback: Option<FallbackMeta>,
     gradient_vetoes: Option<VetoesMeta>,
+    /// Absent in checkpoints written before the field existed.
+    #[serde(default, with = "opt_float_bits")]
+    one_step_energy_drop: Option<f64>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -120,12 +124,28 @@ struct OperatorMeta {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RouteMeta {
+pub(super) struct RouteMeta {
     j_aux: Option<String>,
     k_aux: Option<String>,
     rsh_k: Option<(String, f64)>,
     op: OperatorMeta,
     budget_bytes: usize,
+    /// `"f32"` / `"f64"`. Absent in a checkpoint written before the field
+    /// existed, whose RI-J tensor was f64.
+    #[serde(default = "f64_spelling")]
+    ri_j_precision: String,
+    /// Absent in checkpoints written before the field existed: those SCFs
+    /// stored the f64 tensor.
+    #[serde(default = "default_ri_k_precision")]
+    ri_k_precision: String,
+}
+
+fn f64_spelling() -> String {
+    crate::df_j::RiJPrecision::F64.as_str().to_string()
+}
+
+fn default_ri_k_precision() -> String {
+    "f64".to_string()
 }
 
 #[derive(Serialize, Deserialize)]
@@ -142,7 +162,54 @@ struct FinalMeta {
     convergence: Option<ConvergenceMeta>,
     precision_summary: String,
     precision_detail: String,
+    /// Absent in checkpoints written before the field existed.
+    #[serde(default)]
+    precision_json: Option<String>,
+    /// Absent in checkpoints written before the field existed.
+    #[serde(default)]
+    eri_route: Option<EriRouteMeta>,
+    /// Absent in checkpoints written before the field existed.
+    #[serde(default)]
+    writer_threads: Option<usize>,
     not_stored: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EriRouteMeta {
+    nbasis: usize,
+    bytes: usize,
+    quartets: usize,
+    #[serde(with = "float_bits")]
+    build_seconds: f64,
+    mode: String,
+}
+
+fn eri_route_to_meta(r: &EriRoute) -> EriRouteMeta {
+    let EriRoute {
+        nbasis,
+        bytes,
+        quartets,
+        build_seconds,
+        mode,
+    } = r;
+    EriRouteMeta {
+        nbasis: *nbasis,
+        bytes: *bytes,
+        quartets: *quartets,
+        build_seconds: *build_seconds,
+        mode: mode.as_str().to_string(),
+    }
+}
+
+fn eri_route_from_meta(m: EriRouteMeta) -> Result<EriRoute, CheckpointError> {
+    Ok(EriRoute {
+        nbasis: m.nbasis,
+        bytes: m.bytes,
+        quartets: m.quartets,
+        build_seconds: m.build_seconds,
+        mode: EriMode::parse_config_str(&m.mode).map_err(CheckpointError::Format)?,
+    })
 }
 
 #[derive(Serialize, Deserialize)]
@@ -193,7 +260,6 @@ fn kind_from_name(name: &str) -> Result<OperatorKind, CheckpointError> {
 fn exit_name(exit: ScfExit) -> &'static str {
     match exit {
         ScfExit::Converged => "Converged",
-        ScfExit::Plateau => "Plateau",
         ScfExit::Stalled => "Stalled",
         ScfExit::Diverged => "Diverged",
         ScfExit::MaxIter => "MaxIter",
@@ -204,7 +270,6 @@ fn exit_name(exit: ScfExit) -> &'static str {
 fn exit_from_name(name: &str) -> Result<ScfExit, CheckpointError> {
     Ok(match name {
         "Converged" => ScfExit::Converged,
-        "Plateau" => ScfExit::Plateau,
         "Stalled" => ScfExit::Stalled,
         "Diverged" => ScfExit::Diverged,
         "MaxIter" => ScfExit::MaxIter,
@@ -244,13 +309,15 @@ fn operator_from_meta(meta: OperatorMeta) -> Result<Operator, CheckpointError> {
     Ok(op)
 }
 
-fn route_to_meta(route: &DfJkRoute) -> RouteMeta {
+pub(super) fn route_to_meta(route: &DfJkRoute) -> RouteMeta {
     let DfJkRoute {
         j_aux,
         k_aux,
         rsh_k,
         op,
         budget_bytes,
+        ri_j_precision,
+        ri_k_precision,
     } = route;
     RouteMeta {
         j_aux: j_aux.clone(),
@@ -258,16 +325,22 @@ fn route_to_meta(route: &DfJkRoute) -> RouteMeta {
         rsh_k: rsh_k.clone(),
         op: operator_to_meta(op),
         budget_bytes: *budget_bytes,
+        ri_j_precision: ri_j_precision.as_str().to_string(),
+        ri_k_precision: ri_k_precision.as_str().to_string(),
     }
 }
 
-fn route_from_meta(meta: RouteMeta) -> Result<DfJkRoute, CheckpointError> {
+pub(super) fn route_from_meta(meta: RouteMeta) -> Result<DfJkRoute, CheckpointError> {
     Ok(DfJkRoute {
         j_aux: meta.j_aux,
         k_aux: meta.k_aux,
         rsh_k: meta.rsh_k,
         op: operator_from_meta(meta.op)?,
         budget_bytes: meta.budget_bytes,
+        ri_j_precision: crate::df_j::RiJPrecision::parse_config_str(&meta.ri_j_precision)
+            .map_err(|e| CheckpointError::Format(e.to_string()))?,
+        ri_k_precision: crate::df_k::RiKPrecision::parse_config_str(&meta.ri_k_precision)
+            .map_err(|e| CheckpointError::Format(e.to_string()))?,
     })
 }
 
@@ -283,6 +356,7 @@ fn convergence_to_meta(report: &ConvergenceReport) -> ConvergenceMeta {
         de_noise_floor,
         diis_fallback,
         gradient_vetoes,
+        one_step_energy_drop,
     } = *report;
     ConvergenceMeta {
         iteration,
@@ -321,6 +395,7 @@ fn convergence_to_meta(report: &ConvergenceReport) -> ConvergenceMeta {
                 bound,
             }
         }),
+        one_step_energy_drop,
     }
 }
 
@@ -363,6 +438,7 @@ fn convergence_from_meta(meta: ConvergenceMeta) -> Result<ConvergenceReport, Che
             last_orbital_gradient: v.last_orbital_gradient,
             bound: v.bound,
         }),
+        one_step_energy_drop: meta.one_step_energy_drop,
     })
 }
 
@@ -379,6 +455,9 @@ fn final_to_meta(state: &FinalState) -> FinalMeta {
         convergence: state.convergence.as_ref().map(convergence_to_meta),
         precision_summary: state.precision_summary.clone(),
         precision_detail: state.precision_detail.clone(),
+        precision_json: state.precision_json.clone(),
+        eri_route: state.eri_route.as_ref().map(eri_route_to_meta),
+        writer_threads: state.writer_threads,
         not_stored: state.not_stored.clone(),
     }
 }
@@ -575,12 +654,59 @@ fn temp_path(path: &Path, prefix: &str) -> PathBuf {
 
 /// The open file is still what `temp` names, so no cleaner removed it between its
 /// creation and its lock.
+#[cfg(unix)]
 fn still_named(file: &File, temp: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
     match (file.metadata(), fs::symlink_metadata(temp)) {
         (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
         _ => false,
     }
+}
+
+/// The open file is still what `temp` names, so no cleaner removed it between its
+/// creation and its lock. Windows has no (dev, ino) in stable std; its file
+/// identity is (volume serial number, file index), read from the open handle and
+/// from a second handle on `temp` opened without following a reparse point (as
+/// unix uses `symlink_metadata`). Creation times are NOT an identity there: file
+/// system tunnelling gives a file re-created under a just-deleted name the old
+/// creation time.
+#[cfg(windows)]
+fn still_named(file: &File, temp: &Path) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    };
+    let Ok(named) = OpenOptions::new()
+        .access_mode(0)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(temp)
+    else {
+        return false;
+    };
+    match (windows_file_id(file), windows_file_id(&named)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// (volume serial number, 64-bit file index) of an open handle.
+#[cfg(windows)]
+fn windows_file_id(file: &File) -> Option<(u32, u64)> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+    // SAFETY: the handle belongs to a live `File` borrowed for the whole call,
+    // and `info` is a correctly sized, aligned out-parameter the call only writes.
+    let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) };
+    if ok == 0 {
+        return None;
+    }
+    // SAFETY: a nonzero return means the call filled `info`.
+    let info = unsafe { info.assume_init() };
+    let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+    Some((info.dwVolumeSerialNumber, index))
 }
 
 /// Create and lock a new temp file. The lock is what marks a writer as alive: the
@@ -691,6 +817,9 @@ pub(super) fn write_atomic(
     sync_parent(path)
 }
 
+/// Make the rename durable by syncing the directory entry (Unix: fsync of the
+/// parent directory).
+#[cfg(unix)]
 fn sync_parent(path: &Path) -> Result<(), CheckpointError> {
     let parent = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
@@ -699,6 +828,20 @@ fn sync_parent(path: &Path) -> Result<(), CheckpointError> {
     File::open(parent)
         .and_then(|dir| dir.sync_all())
         .map_err(|e| io_error(path, "cannot sync the directory", &e))
+}
+
+/// Windows has no directory fsync: `File::open` on a directory fails with
+/// "Access is denied" (it needs FILE_FLAG_BACKUP_SEMANTICS), and
+/// FlushFileBuffers on a directory handle is not a supported durability call.
+/// So this branch does NOT sync the directory after the rename: the temp
+/// file's data was synced before the rename, but `fs::rename` gives no
+/// documented power-loss guarantee for the rename itself. The Windows contract
+/// is therefore weaker than Unix's (see `Checkpoint::write`): a crash right
+/// after a write can leave the previous state (the old complete file, or no
+/// file at all after a first write), never a partial file.
+#[cfg(not(unix))]
+fn sync_parent(_path: &Path) -> Result<(), CheckpointError> {
+    Ok(())
 }
 
 fn read_scalar_u64<R: io::Read + Seek>(
@@ -912,6 +1055,9 @@ fn decode_final(
         convergence: meta.convergence.map(convergence_from_meta).transpose()?,
         precision_summary: meta.precision_summary,
         precision_detail: meta.precision_detail,
+        precision_json: meta.precision_json,
+        eri_route: meta.eri_route.map(eri_route_from_meta).transpose()?,
+        writer_threads: meta.writer_threads,
         not_stored: meta.not_stored,
     })
 }

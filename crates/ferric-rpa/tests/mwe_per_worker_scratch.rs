@@ -1,28 +1,18 @@
 //! MWE: the estimate must scale the frequency scratch by the WORKER COUNT.
 //!
-//! # What this file used to be, and why it was replaced
+//! # Scope
 //!
-//! Its previous version defined its own `scratch_bytes` / `total_scratch_bytes`
-//! helpers and asserted things about them. It imported nothing —
-//! `grep -c 'ferric_'` over the file returned **0** — so all four "contracts"
-//! tested locally-declared arithmetic and could not fail for any change to
-//! ferric. A green run implied coverage that did not exist. It was found by an
-//! adversarially-verified memory-budget audit and confirmed 2/3.
+//! Every assertion goes through `ferric_rpa::budget`; a test of locally
+//! declared arithmetic could not fail for any change to ferric.
 //!
-//! Its narrative was also stale twice over:
+//! `properties.rs:1529` builds the per-worker scratch with
+//! `Array2::zeros(inter_a.b_ov.raw_dim())` rather than `b_ov.clone()` (23.5 GB
+//! of data that is immediately overwritten). Four `b_ov.clone()` calls remain
+//! (properties.rs:280, 451, 608, 1198); each clones and then scales in place
+//! (`col.mapv_inplace(|x| x * s)`), so the cloned contents ARE read and `zeros`
+//! would be wrong for them.
 //!
-//! * It described `b_ov.clone()` inside `properties.rs`'s `map_init` closures
-//!   copying 23.5 GB of data that is immediately overwritten. **That site is
-//!   already fixed** — `properties.rs:1529` now builds the per-worker scratch
-//!   with `Array2::zeros(inter_a.b_ov.raw_dim())`, and its comment records the
-//!   same 23.5 GB figure as the reason.
-//! * Four `b_ov.clone()` calls do remain (properties.rs:280, 451, 608, 1198),
-//!   but they are NOT the same defect: each clones and then scales in place
-//!   (`col.mapv_inplace(|x| x * s)`), so the cloned contents ARE read.
-//!   Replacing those with `zeros` would be wrong, and the old file's premise
-//!   does not apply to them.
-//!
-//! # What it tests now
+//! # What it tests
 //!
 //! The accounting that actually matters and is actually reachable: that
 //! `estimate_peak_bytes` multiplies the per-worker frequency scratch by
@@ -54,7 +44,6 @@ fn shape(n_workers: usize) -> PeakEstimateShape {
 
 /// CONTRACT 1: the estimate GROWS with the worker count.
 ///
-/// The property the old file gestured at but never checked against ferric.
 /// Each rayon worker in the frequency loop holds its own scratch, so an
 /// estimate flat in `n_workers` under-predicts by exactly that factor.
 #[test]

@@ -21,8 +21,10 @@
 //!   gives the `analytic-moving-grid` record bit for bit for a closed-shell
 //!   KS reference (water, LDA and PBE).
 //! * `cli_auto_falls_back_to_fd_where_unsupported`: `auto` gives the `fd`
-//!   record bit for bit for meta-GGA (SCAN), an open-shell UKS reference and
-//!   `[dft] dispersion` (H2).
+//!   record bit for bit for meta-GGA (SCAN, closed shell and UKS).
+//! * `cli_auto_adds_the_analytic_d3_hessian`: with `[dft] dispersion =
+//!   "d3bj"`, `auto` and `analytic-moving-grid` give the moving-grid KS
+//!   Hessian plus `ferric_d3::d3bj_hessian_for_molecule` (to round-off).
 //! * `cli_fd_stays_selectable_for_ks`: `hessian = "fd"` still differences
 //!   gradients for a supported KS reference.
 //! * `cli_refusals_are_named`: every refusal names what it refuses, and
@@ -140,8 +142,7 @@ fn cli_auto_falls_back_to_fd_where_unsupported() {
     // (label, method kind, functional, extra [dft] lines)
     let cases = [
         ("mgga", "ksdft", "SCAN", ""),
-        ("uks", "uhf", "LDA", ""),
-        ("disp", "ksdft", "B3LYP", "dispersion = \"d3bj\"\n"),
+        ("uks-mgga", "uhf", "SCAN", ""),
     ];
     for (label, kind, xc, extra) in cases {
         let auto = run_cli_kind_ok(&format!("auto_fb_{label}"), H2, kind, xc, "", extra);
@@ -151,6 +152,46 @@ fn cli_auto_falls_back_to_fd_where_unsupported() {
         assert_same_record(&auto, &diff, &format!("{label}: auto vs fd"));
         eprintln!("{label}: auto == fd, {:?} cm^-1", auto.frequencies);
     }
+}
+
+/// `[dft] dispersion = "d3bj"` keeps the analytic moving-grid KS Hessian
+/// under `auto` and adds the analytic D3(BJ) Hessian: the CLI's Hessian minus
+/// the dispersion-free run's equals `ferric_d3::d3bj_hessian_for_molecule` to
+/// round-off, with no gradient evaluations.
+#[test]
+fn cli_auto_adds_the_analytic_d3_hessian() {
+    if !has_deriv2() {
+        return;
+    }
+    let disp = "dispersion = \"d3bj\"\n";
+    let plain = run_cli_ok("d3_plain", WATER, "B3LYP", "", "");
+    let d3 = run_cli_ok("d3_auto", WATER, "B3LYP", "", disp);
+    assert_eq!(d3.source, "analytic-moving-grid");
+    assert_eq!(d3.n_grad, 0);
+    let mol = Molecule::load_xyz(workspace_root().join(WATER).to_str().unwrap()).unwrap();
+    let params = ferric_d3::d3bj_params_for_functional("B3LYP").unwrap();
+    let h_d3 = ferric_d3::d3bj_hessian_for_molecule(&mol, &params).unwrap();
+    let miss = d3
+        .hessian
+        .iter()
+        .zip(&plain.hessian)
+        .zip(h_d3.iter())
+        .fold(0.0f64, |m, ((a, b), c)| m.max((a - b - c).abs()));
+    let e_d3 = ferric_d3::d3bj_energy_for_molecule(&mol, &params).unwrap();
+    eprintln!(
+        "CLI D3: H(KS+D3) - H(KS) - H_D3 = {miss:.2e} (max |H_D3| {:.2e})",
+        h_d3.iter().fold(0.0f64, |m, v| m.max(v.abs()))
+    );
+    assert!(miss < 1e-12, "{miss:.3e}");
+    assert!((d3.energy - plain.energy - e_d3).abs() < 1e-10);
+    let explicit = run_cli_ok(
+        "d3_moving",
+        WATER,
+        "B3LYP",
+        "[frequencies]\nhessian = \"analytic-moving-grid\"\n",
+        disp,
+    );
+    assert_same_record(&d3, &explicit, "D3: auto vs analytic-moving-grid");
 }
 
 #[test]
@@ -175,13 +216,13 @@ fn cli_refusals_are_named() {
             "Hartree-Fock has no XC grid",
         ),
         (
-            "uks",
+            "uks-mgga",
             H2,
             "uhf",
-            "LDA",
+            "SCAN",
             "",
             "sto-3g",
-            "open-shell (Uhf, i.e. UKS/ROKS) reference",
+            "a meta-GGA ('SCAN')",
         ),
         (
             "roks",
@@ -190,7 +231,7 @@ fn cli_refusals_are_named() {
             "LDA",
             "",
             "sto-3g",
-            "open-shell (Rohf, i.e. UKS/ROKS) reference",
+            "open-shell (Rohf, i.e. ROKS) reference",
         ),
         (
             "mgga",
@@ -220,37 +261,19 @@ fn cli_refusals_are_named() {
             "a range-separated hybrid ('HSE06')",
         ),
         (
-            "ecp",
-            HI,
-            "ksdft",
-            "LDA",
-            "",
-            "def2-svp",
-            "an ECP or an external potential",
-        ),
-        (
             "extpot",
             WATER,
             "ksdft",
             "LDA",
             "[[external_potential.point_charges]]\nq = 0.5\nx = 0.0\ny = 0.0\nz = 6.0\n",
             "sto-3g",
-            "an ECP or an external potential",
+            "an external potential",
         ),
         (
-            "prune",
+            "mbd",
             WATER,
             "ksdft",
-            "LDA",
-            "",
-            "sto-3g",
-            "an angular-pruned XC grid",
-        ),
-        (
-            "disp",
-            WATER,
-            "ksdft",
-            "B3LYP",
+            "PBE",
             "",
             "sto-3g",
             "hessian = \"analytic-moving-grid\" is not available",
@@ -261,11 +284,8 @@ fn cli_refusals_are_named() {
         let mut dft = String::new();
         if !xc.is_empty() {
             dft = format!("[dft]\nfunctional = \"{xc}\"\n");
-            if label == "prune" {
-                dft.push_str("grid_prune = \"nwchem\"\n");
-            }
-            if label == "disp" {
-                dft.push_str("dispersion = \"d3bj\"\n");
+            if label == "mbd" {
+                dft.push_str("dispersion = \"mbd\"\n");
             }
         }
         let toml = toml_body(mol, basis, kind, &dft, &format!("{moving}{extra}"));

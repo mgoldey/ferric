@@ -35,8 +35,6 @@
 //! admitted everything) fails one of the two. A test whose GO conditions
 //! cannot both be reached returns arithmetic, not measurement.
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
 use ferric_core::memory::pool::{clear_global, global, install_global, MemoryPool};
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
@@ -48,35 +46,9 @@ use ferric_scf::ks_gradient::ks_gradient_closed;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::molecules::water_xyz;
+use ferric_testkit::pool::CleanSlot;
 use ndarray::Array2;
-
-fn global_lock() -> MutexGuard<'static, ()> {
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    }
-}
-
-struct CleanSlot(#[allow(dead_code)] MutexGuard<'static, ()>);
-
-impl CleanSlot {
-    fn acquire() -> Self {
-        let g = global_lock();
-        clear_global();
-        Self(g)
-    }
-}
-
-impl Drop for CleanSlot {
-    fn drop(&mut self) {
-        clear_global();
-    }
-}
-
-fn water() -> Molecule {
-    Molecule::load_xyz("../../testdata/molecules/water.xyz").expect("water.xyz")
-}
 
 /// Converge the SCF ONCE, with no pool installed, and hand back everything the
 /// gradient needs.
@@ -93,16 +65,14 @@ struct Fixture {
 }
 
 fn fixture(xc: Option<&str>) -> Fixture {
-    let mol = water();
+    let mol = water_xyz();
     let bs = ferric_core::basis::bundled("6-31g").expect("6-31g");
     let obs = PreparedBasis::new(&mol, &bs).expect("prepared basis");
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).expect("schwarz");
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        xc: xc.map(str::to_string),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.xc = xc.map(str::to_string);
     let scf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).expect("SCF must converge");
     Fixture {
         mol,
@@ -359,14 +329,43 @@ fn an_incumbent_charge_narrows_what_the_gradient_may_take() {
          it, else the narrowing below is not about composition. Got {alone:?}"
     );
 
+    // The production XC gradient is the screened, spatially batched one: its
+    // batchable working set is one 128-point batch per CONCURRENTLY LIVE
+    // reduction group, so "narrower" now means fewer groups in flight (the
+    // result does not depend on it). The floor is one live group — what a
+    // one-thread pool takes — and the non-batchable grid + weight1 dominates
+    // the peak at this size, so the old "leave half of `needed`" squeeze no
+    // longer leaves room for even that floor. Leave room for the floor plus
+    // half of the batchable remainder instead: enough to complete, not enough
+    // for every worker's batch at once.
+    let needed_min = {
+        install_global(MemoryPool::with_capacity_bytes(8_000_000_000));
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap()
+            .install(|| fx.ks_gradient())
+            .expect("ample pool must admit the one-worker gradient");
+        let p = global().expect("pool").peak_bytes();
+        clear_global();
+        p
+    };
+    if rayon::current_num_threads() < 2 || needed_min >= needed {
+        eprintln!(
+            "SKIP narrowing: one rayon thread (or no batchable headroom: \
+             {needed_min} vs {needed} B), so there is nothing to narrow"
+        );
+        return;
+    }
+
     // The same pool, but another subsystem is already holding most of it.
     // Against a re-readable ceiling (`MemoryPlan::resolve`) the gradient would
-    // see the full capacity and take its full-width batch, because a ceiling
+    // see the full capacity and run every group at once, because a ceiling
     // does not know what is outstanding. Against the pool it must see only
     // what is left and narrow accordingly.
     let pool = MemoryPool::with_capacity_bytes(needed * 2);
     install_global(pool.clone());
-    let incumbent_bytes = needed * 2 - needed / 2;
+    let incumbent_bytes = needed * 2 - (needed_min + (needed - needed_min) / 2);
     let _incumbent = pool
         .reserve("pretend DF 3-index tensor", incumbent_bytes)
         .expect("incumbent fits");

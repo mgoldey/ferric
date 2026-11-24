@@ -44,6 +44,7 @@ impl SpinBlocks<'_> {
     /// spin block, which is why the caller must pass spatial indices already resolved
     /// for the right spin.
     #[inline]
+    #[allow(clippy::too_many_arguments)]
     fn get(
         &self,
         sp: usize,

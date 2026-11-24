@@ -6,12 +6,12 @@
 //! to observe resident memory while tuning. This module provides that
 //! observation without coupling to the `MemoryPlan` budget machinery: it is
 //! purely informational, never affects numerical results, and degrades
-//! silently on non-Linux or sandboxed systems.
+//! silently on unsupported or sandboxed systems.
 
 /// Read the current process's resident set size in bytes.
 ///
-/// Delegates to [`crate::memory::read_own_rss_bytes`] (`/proc/self/status`,
-/// VmRSS) so there is a single canonical RSS reader.
+/// Delegates to [`crate::memory::read_own_rss_bytes`] (per platform, see
+/// [`crate::memory::sys`]) so there is a single canonical RSS reader.
 pub fn current_rss_bytes() -> Option<usize> {
     crate::memory::read_own_rss_bytes()
 }

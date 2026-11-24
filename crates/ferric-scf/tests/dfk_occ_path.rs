@@ -80,19 +80,17 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 fn rhf_dfjk_energy(mol: &Molecule, prep: &PreparedBasis, force_density: bool) -> f64 {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, prep).unwrap();
-    let cfg = RhfConfig {
+    let cfg = RhfConfig::default()
         // `energy_conv` is a LOOSE "not still descending" sanity bound, not a
         // target — see `rhf::scf_converged`. Under DF-JK the energy jitters on a
         // ~1e-8 fitting-noise floor, so the old 1e-11 here was unreachable: BOTH
         // runs burned their full iteration cap and compared two noise-floor
         // plateaus that agreed only by luck. ΔP (density_conv) is the real gate.
-        energy_conv: 1e-3,
-        density_conv: 1e-8,
-        max_iter: 200,
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        ..Default::default()
-    };
+        .with_energy_conv(1e-3)
+        .with_density_conv(1e-8)
+        .with_max_iter(200)
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit");
     let ctx = ParallelContext::default();
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if force_density {
@@ -108,19 +106,17 @@ fn rhf_dfjk_energy(mol: &Molecule, prep: &PreparedBasis, force_density: bool) ->
 fn uhf_dfjk_energy(mol: &Molecule, prep: &PreparedBasis, force_density: bool) -> f64 {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, prep).unwrap();
-    let cfg = UhfConfig {
+    let cfg = UhfConfig::default()
         // `energy_conv` is a LOOSE "not still descending" sanity bound, not a
         // target — see `rhf::scf_converged`. Under DF-JK the energy jitters on a
         // ~1e-8 fitting-noise floor, so the old 1e-11 here was unreachable: BOTH
         // runs burned their full iteration cap and compared two noise-floor
         // plateaus that agreed only by luck. ΔP (density_conv) is the real gate.
-        energy_conv: 1e-3,
-        density_conv: 1e-8,
-        max_iter: 300,
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        ..Default::default()
-    };
+        .with_energy_conv(1e-3)
+        .with_density_conv(1e-8)
+        .with_max_iter(300)
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit");
     let ctx = ParallelContext::default();
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if force_density {
@@ -149,6 +145,7 @@ fn uhf_dfjk_energy(mol: &Molecule, prep: &PreparedBasis, force_density: bool) ->
 /// This compares against the genuine density contraction `DfK::build(&D)` at a
 /// fixed converged C_occ — one Fock build, no SCF trajectory in the loop — so
 /// any caller-side factor shows up directly as a K-matrix mismatch.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn dfk_occ_path_caller_scaling_matches_true_density_build() {
     use ferric_scf::fock::KBuilder;
@@ -159,11 +156,9 @@ fn dfk_occ_path_caller_scaling_matches_true_density_build() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit");
     let res = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
 
     let nocc = (mol.nelec() / 2) as usize;

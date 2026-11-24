@@ -68,20 +68,26 @@
 //! GGA skeleton only (`ferric_integrals::ao_grid_third`).
 
 use crate::rhf::XcBuilder;
+
+mod mo_response;
+mod polarized;
+mod response_block;
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_dft::becke::becke_weights_and_grad;
 use ferric_dft::becke_hessian::becke_home_weight_hess;
-use ferric_dft::grid::{atomic_quadrature_points, build_atomic_grid, AtomicGridConfig};
+use ferric_dft::grid::{atomic_quadrature_points, build_atomic_grid_pruned, AtomicGridConfig};
 use ferric_dft::libxc::{k_mix_from_xc_def, xc_def_from_name, FunctionalFamily, XcDef};
-use ferric_dft::vxc::DENSITY_FLOOR;
+use ferric_dft::vxc::{above_density_floor, DensityFloor};
 use ferric_integrals::ao_grid::{
     eval_basis_and_grad_on_points, eval_basis_grad_hess_on_points, eval_basis_on_points,
 };
 use ferric_integrals::ao_grid_third::{eval_basis_third_on_points, THIRD_ORDER};
 use ferric_integrals::basis_bridge::PreparedBasis;
+pub use mo_response::MoRows;
 use ndarray::{s, Array1, Array2, Array3, Array4, ArrayView2, Axis};
+pub use polarized::{PolarizedKs, PolarizedXcMoResponse, PolarizedXcResponse, SpinMutants};
 use rayon::prelude::*;
 
 /// Grid points per batch (AO planes are `nbf × BATCH`; the Hessian-level
@@ -171,6 +177,8 @@ pub struct XcMutants {
     pub gradient_terms: f64,
     /// The moving-grid constructions (read only by the `*_moving` entry points).
     pub moving: MovingMutants,
+    /// The spin-polarized constructions (read only by [`PolarizedKs`]).
+    pub spin: SpinMutants,
 }
 
 impl Default for XcMutants {
@@ -182,6 +190,7 @@ impl Default for XcMutants {
             fock_vxc: 1.0,
             gradient_terms: 1.0,
             moving: MovingMutants::default(),
+            spin: SpinMutants::default(),
         }
     }
 }
@@ -277,6 +286,8 @@ pub enum GridMode {
 /// A frozen XC grid with its functional (closed-shell LDA or GGA, pure or
 /// global hybrid).
 pub struct FixedGridKs {
+    /// The functional's name (the spin-polarized definition is built from it).
+    name: String,
     xc: XcDef,
     /// Global-hybrid fraction of exact exchange `a` (0 for a pure functional).
     exx: f64,
@@ -358,6 +369,19 @@ struct Kernel {
 }
 
 impl Kernel {
+    /// The points `c0..c1`.
+    fn slice(&self, c0: usize, c1: usize) -> Self {
+        let f = |a: &Array1<f64>| a.slice(s![c0..c1]).to_owned();
+        Kernel {
+            exc: f(&self.exc),
+            fr: f(&self.fr),
+            fs: f(&self.fs),
+            frr: f(&self.frr),
+            frs: f(&self.frs),
+            fss: f(&self.fss),
+        }
+    }
+
     fn zeros(n: usize) -> Self {
         let z = || Array1::<f64>::zeros(n);
         Kernel {
@@ -382,7 +406,8 @@ struct GradPart {
 }
 
 struct Batch {
-    ao: Ao,
+    /// Shared by the two spin views of a polarized batch.
+    ao: std::sync::Arc<Ao>,
     p: Array2<f64>,
     rho: Array1<f64>,
     w: Array1<f64>,
@@ -439,17 +464,29 @@ fn scale_view(m: ndarray::ArrayView2<'_, f64>, v: &Array1<f64>) -> Array2<f64> {
 
 /// `V[F, G]` for the AOs of `ao` (symmetric by construction).
 fn vmat(ao: &Ao, fw: &Array1<f64>, gw: Option<&Array2<f64>>) -> Array2<f64> {
-    let mut v = scale_cols(&ao.chi, fw).dot(&ao.chi.t());
-    if let Some(gw) = gw {
-        let dchi = ao.dchi();
+    vmat_views(ao.chi.view(), ao.dchi.as_ref().map(|d| d.view()), fw, gw)
+}
+
+/// `V[F, G]_μν = Σ_g F χ_μ χ_ν + G_γ (∂γχ_μ χ_ν + χ_μ ∂γχ_ν)` as `M + Mᵀ` with
+/// `M = (½ F χ + Σ_γ G_γ ∂γχ) χᵀ`: ONE `nbf × npts × nbf` product (not one
+/// per term), exactly symmetric. `dchi` is read only when `gw` is given.
+fn vmat_views(
+    chi: ArrayView2<'_, f64>,
+    dchi: Option<ndarray::ArrayView3<'_, f64>>,
+    fw: &Array1<f64>,
+    gw: Option<&Array2<f64>>,
+) -> Array2<f64> {
+    let mut a = &chi * &(0.5 * fw).insert_axis(Axis(0));
+    if let (Some(gw), Some(dchi)) = (gw, dchi) {
         for gam in 0..3 {
-            let t =
-                scale_view(dchi.index_axis(Axis(0), gam), &gw.row(gam).to_owned()).dot(&ao.chi.t());
-            v += &t;
-            v += &t.t();
+            ndarray::Zip::from(&mut a)
+                .and(&dchi.index_axis(Axis(0), gam))
+                .and_broadcast(&gw.row(gam).insert_axis(Axis(0)))
+                .for_each(|a, &d, &g| *a += g * d);
         }
     }
-    v
+    let m = a.dot(&chi.t());
+    &m + &m.t()
 }
 
 /// Response of the weights `(F, G)` to a first-order density `(ρ1, g1)`.
@@ -495,15 +532,9 @@ impl FixedGridKs {
     /// Build the grid of `mol` (the reference geometry) with `cfg`. A functional
     /// outside closed-shell LDA/GGA, pure or global hybrid, is a typed error.
     pub fn new(mol: &Molecule, xc_name: &str, cfg: &AtomicGridConfig) -> Result<Self, FerricError> {
-        if cfg.prune.is_some() {
-            return Err(FerricError::General(
-                "fixed-grid XC: an angular-pruned grid (AtomicGridConfig::prune) is not \
-                 supported; the production SCF builds the pruned grid but this unit freezes \
-                 the flat grid, so the two would silently differ (use prune = None)"
-                    .into(),
-            ));
-        }
-        let grid = build_atomic_grid(mol, cfg);
+        // The SCF's grid, pruned or not, with its home-atom quadrature points
+        // in the same order (`atomic_quadrature_points` follows `cfg.prune`).
+        let grid = build_atomic_grid_pruned(mol, cfg, cfg.prune)?;
         let quad = atomic_quadrature_points(mol, cfg);
         debug_assert!(grid
             .iter()
@@ -567,6 +598,7 @@ impl FixedGridKs {
         }
         let gga = xc.funcs.iter().any(|f| f.family() != FunctionalFamily::Lda);
         Ok(FixedGridKs {
+            name: xc_name.to_string(),
             xc,
             exx: mix.sr,
             gga,
@@ -643,8 +675,9 @@ impl FixedGridKs {
                 k.fss[g] += wi * fss[g];
             }
         }
+        let floor = DensityFloor::for_xc(&self.xc);
         for (g, &rg) in r.iter().enumerate() {
-            if rg < DENSITY_FLOOR {
+            if !above_density_floor(rg, floor) {
                 k.exc[g] = 0.0;
                 k.fr[g] = 0.0;
                 k.fs[g] = 0.0;
@@ -686,7 +719,7 @@ impl FixedGridKs {
             (false, Level::Third) => Level::Hess,
             (false, l) => l,
         };
-        let ao = eval_ao(geo, &self.pts[g0..g1], level)?;
+        let ao = std::sync::Arc::new(eval_ao(geo, &self.pts[g0..g1], level)?);
         let p = d.dot(&ao.chi);
         let rho = (&ao.chi * &p).sum_axis(Axis(0));
         let gdens = self.gga.then(|| Self::gradient_densities(d, &ao, &p));
@@ -1094,7 +1127,8 @@ impl FixedGridKs {
 
     /// The second nuclear derivative of `E_xc` at fixed density on the MOVING
     /// grid (points riding their home atom, Becke weights differentiated),
-    /// `(3N, 3N)`. See the module doc.
+    /// `(3N, 3N)`. See the module doc. Batches run in parallel and are added in
+    /// batch order (`fold_batches`).
     pub fn skeleton_hessian_moving(
         &self,
         geo: &XcGeometry<'_>,
@@ -1104,30 +1138,43 @@ impl FixedGridKs {
         let riding = self.riding_for(geo)?;
         let mm = &m.moving;
         let n3 = 3 * geo.natoms();
+        let ranges = self.home_ranges(riding, mm.unsplit_batches);
         let mut h = Array2::<f64>::zeros((n3, n3));
-        for (g0, g1, home) in self.home_ranges(riding, mm.unsplit_batches) {
-            let b = self.batch(geo, d, (g0, g1), Level::Third, true, m.gradient_terms)?;
-            let mut g = Self::batch_skeleton(geo, d, &b, m);
-            let f = &b.rho * &b.k.exc;
-            let wd = weight_derivatives(geo.mol, riding, (g0, g1), &self.pts, home, Some(&f));
-            if let Some(w2f) = &wd.hess_f {
-                g.scaled_add(mm.weight_hess, w2f);
-            }
-            let df = Self::f_derivative(geo, &b);
-            if mm.riding_cross {
-                let c = riding_derivatives(&wd.grad, home).dot(&df.t());
-                h.scaled_add(mm.weight_cross, &(&c + &c.t()));
-            } else {
-                let c = wd.grad.dot(&df.t());
-                g.scaled_add(mm.weight_cross, &(&c + &c.t()));
-            }
-            h += &translation_fill(g.view(), home, mm.fill);
-        }
+        fold_batches(
+            &ranges,
+            2 * n3 * n3,
+            |&(g0, g1, home)| {
+                let b = self.batch(geo, d, (g0, g1), Level::Third, true, m.gradient_terms)?;
+                let mut g = Self::batch_skeleton(geo, d, &b, m);
+                let f = &b.rho * &b.k.exc;
+                let wd = weight_derivatives(geo.mol, riding, (g0, g1), &self.pts, home, Some(&f));
+                if let Some(w2f) = &wd.hess_f {
+                    g.scaled_add(mm.weight_hess, w2f);
+                }
+                let df = Self::f_derivative(geo, &b);
+                let mut riding_cross = None;
+                if mm.riding_cross {
+                    let c = riding_derivatives(&wd.grad, home).dot(&df.t());
+                    riding_cross = Some(&c + &c.t());
+                } else {
+                    let c = wd.grad.dot(&df.t());
+                    g.scaled_add(mm.weight_cross, &(&c + &c.t()));
+                }
+                Ok((riding_cross, translation_fill(g.view(), home, mm.fill)))
+            },
+            |(riding_cross, filled)| {
+                if let Some(c) = riding_cross {
+                    h.scaled_add(mm.weight_cross, &c);
+                }
+                h += &filled;
+            },
+        )?;
         Ok(h)
     }
 
     /// `∂V_xc/∂R_x` at fixed density on the MOVING grid for every coordinate
     /// `x = 3·atom + axis` (symmetric, `nbf × nbf` each). See the module doc.
+    /// Batches run in parallel and are added in batch order (`fold_batches`).
     pub fn first_order_fock_moving(
         &self,
         geo: &XcGeometry<'_>,
@@ -1138,42 +1185,59 @@ impl FixedGridKs {
         let mm = &m.moving;
         let nbf = d.nrows();
         let n3 = 3 * geo.natoms();
+        let ranges = self.home_ranges(riding, mm.unsplit_batches);
         let mut v = vec![Array2::<f64>::zeros((nbf, nbf)); n3];
-        for (g0, g1, home) in self.home_ranges(riding, mm.unsplit_batches) {
-            let b = self.batch(geo, d, (g0, g1), Level::Hess, true, m.gradient_terms)?;
-            let rx = Self::rho_derivative(geo, &b);
-            let gx = b.grad.as_ref().map(|_| Self::grad_rho_derivative(geo, &b));
-            let w1 = weight_derivatives(geo.mol, riding, (g0, g1), &self.pts, home, None).grad;
-            for x in (0..n3).filter(|x| x / 3 != home) {
-                let g1x = gx.as_ref().map(|gx| gx.index_axis(Axis(0), x).to_owned());
-                let (df, dg) = weights_response(
-                    &b.k,
-                    &b.w,
-                    b.grad.as_ref().map(|g| &g.g),
-                    &rx.row(x).to_owned(),
-                    g1x.as_ref(),
-                );
-                let mut c = m.fock_fxc * vmat(&b.ao, &df, dg.as_ref());
-                c.scaled_add(
-                    mm.fock_weight,
-                    &Self::weight_fock(&b, &w1.row(x).to_owned()),
-                );
-                v[x] += &c;
-                v[3 * home + x % 3].scaled_add(mm.fill, &c);
-            }
-            Self::add_ao_derivative_fock(geo, &b, m.fock_vxc, Some((home, mm.fill)), &mut v);
-        }
+        fold_batches(
+            &ranges,
+            n3 * nbf * nbf,
+            |&(g0, g1, home)| {
+                let mut part = vec![Array2::<f64>::zeros((nbf, nbf)); n3];
+                let b = self.batch(geo, d, (g0, g1), Level::Hess, true, m.gradient_terms)?;
+                let rx = Self::rho_derivative(geo, &b);
+                let gx = b.grad.as_ref().map(|_| Self::grad_rho_derivative(geo, &b));
+                let w1 = weight_derivatives(geo.mol, riding, (g0, g1), &self.pts, home, None).grad;
+                for x in (0..n3).filter(|x| x / 3 != home) {
+                    let g1x = gx.as_ref().map(|gx| gx.index_axis(Axis(0), x).to_owned());
+                    let (df, dg) = weights_response(
+                        &b.k,
+                        &b.w,
+                        b.grad.as_ref().map(|g| &g.g),
+                        &rx.row(x).to_owned(),
+                        g1x.as_ref(),
+                    );
+                    // The kernel term and the weight term in ONE V matrix
+                    // (V is linear in its weights).
+                    let (wf, wg) = Self::weight_terms(&b, &w1.row(x).to_owned());
+                    let fw = m.fock_fxc * &df + mm.fock_weight * &wf;
+                    let gw = match (dg, wg) {
+                        (Some(dg), Some(wg)) => Some(m.fock_fxc * &dg + mm.fock_weight * &wg),
+                        _ => None,
+                    };
+                    let c = vmat(&b.ao, &fw, gw.as_ref());
+                    part[x] += &c;
+                    part[3 * home + x % 3].scaled_add(mm.fill, &c);
+                }
+                Self::add_ao_derivative_fock(geo, &b, m.fock_vxc, Some((home, mm.fill)), &mut part);
+                Ok(part)
+            },
+            |part| {
+                for (vx, px) in v.iter_mut().zip(&part) {
+                    *vx += px;
+                }
+            },
+        )?;
         Ok(v)
     }
 
-    /// `V[W'_x f_ρ, 2 W'_x f_σ ∇ρ]` of a batch for the weight derivative `wx`.
-    fn weight_fock(b: &Batch, wx: &Array1<f64>) -> Array2<f64> {
+    /// The weights `(W'_x f_ρ, 2 W'_x f_σ ∇ρ)` of `V` for the weight
+    /// derivative `wx` of a batch.
+    fn weight_terms(b: &Batch, wx: &Array1<f64>) -> (Array1<f64>, Option<Array2<f64>>) {
         let fw = wx * &b.k.fr;
         let gw = b.grad.as_ref().map(|gp| {
             let coef = 2.0 * &(wx * &b.k.fs);
             &gp.g * &coef.insert_axis(Axis(0))
         });
-        vmat(&b.ao, &fw, gw.as_ref())
+        (fw, gw)
     }
 
     /// The kernel `D1 ↦ V1[D1]` of the response, with the AOs and the
@@ -1186,12 +1250,45 @@ impl FixedGridKs {
         factor: f64,
         gradient_terms: f64,
     ) -> Result<XcResponse, FerricError> {
-        let nbf = d.nrows();
+        let mut table = response_block::AoTable::zeros(d.nrows(), self.npts(), self.gga);
+        let kernel = self.response_kernel(geo, d, (factor, gradient_terms), |g0, ao| {
+            table.store(g0, &ao.chi, ao.dchi.as_ref())
+        })?;
+        Ok(XcResponse { table, kernel })
+    }
+
+    /// [`Self::response`] in the MO form the CPKS iterates in: the MOs `c`
+    /// (the first `nocc` occupied) on the grid replace the AO table
+    /// ([`XcMoResponse`]). The table is `nmo × npts` per plane, at most the
+    /// AO table [`check_response_table`] charges.
+    pub fn response_mo(
+        &self,
+        geo: &XcGeometry<'_>,
+        d: &Array2<f64>,
+        (c, nocc): (&Array2<f64>, usize),
+        factor: f64,
+        gradient_terms: f64,
+    ) -> Result<XcMoResponse, FerricError> {
+        let mut table = mo_response::MoTable::zeros(c.ncols(), nocc, self.npts(), self.gga);
+        let kernel = self.response_kernel(geo, d, (factor, gradient_terms), |g0, ao| {
+            table.store(c, g0, &ao.chi, ao.dchi.as_ref());
+        })?;
+        Ok(XcMoResponse { table, kernel })
+    }
+
+    /// The response kernel at `d` over the whole grid, each batch's AOs
+    /// handed to `store(g0, ao)` (the table of the route being built). Runs
+    /// [`Self::check_response_table`] first.
+    fn response_kernel(
+        &self,
+        geo: &XcGeometry<'_>,
+        d: &Array2<f64>,
+        (factor, gradient_terms): (f64, f64),
+        mut store: impl FnMut(usize, &Ao),
+    ) -> Result<ResponseKernel, FerricError> {
         let npts = self.npts();
-        self.check_response_table(nbf)?;
-        let mut resp = XcResponse {
-            chi: Array2::<f64>::zeros((nbf, npts)),
-            dchi: self.gga.then(|| Array3::<f64>::zeros((3, nbf, npts))),
+        self.check_response_table(d.nrows())?;
+        let mut kernel = ResponseKernel {
             w: Array1::from(self.w.clone()),
             g: self.gga.then(|| Array2::<f64>::zeros((3, npts))),
             k: Kernel::zeros(npts),
@@ -1199,19 +1296,53 @@ impl FixedGridKs {
         };
         for (g0, g1) in self.ranges() {
             let b = self.batch(geo, d, (g0, g1), Level::Value, true, gradient_terms)?;
-            resp.chi.slice_mut(s![.., g0..g1]).assign(&b.ao.chi);
-            if let (Some(gp), Some(dst), Some(gd)) = (&b.grad, resp.dchi.as_mut(), resp.g.as_mut())
-            {
-                dst.slice_mut(s![.., .., g0..g1]).assign(b.ao.dchi());
+            store(g0, &b.ao);
+            if let (Some(gp), Some(gd)) = (&b.grad, kernel.g.as_mut()) {
                 gd.slice_mut(s![.., g0..g1]).assign(&gp.g);
             }
-            resp.k.fs.slice_mut(s![g0..g1]).assign(&b.k.fs);
-            resp.k.frr.slice_mut(s![g0..g1]).assign(&b.k.frr);
-            resp.k.frs.slice_mut(s![g0..g1]).assign(&b.k.frs);
-            resp.k.fss.slice_mut(s![g0..g1]).assign(&b.k.fss);
+            kernel.k.fs.slice_mut(s![g0..g1]).assign(&b.k.fs);
+            kernel.k.frr.slice_mut(s![g0..g1]).assign(&b.k.frr);
+            kernel.k.frs.slice_mut(s![g0..g1]).assign(&b.k.frs);
+            kernel.k.fss.slice_mut(s![g0..g1]).assign(&b.k.fss);
         }
-        Ok(resp)
+        Ok(kernel)
     }
+}
+
+/// Largest live set (bytes) of per-batch results [`fold_batches`] holds
+/// before folding them.
+const BATCH_BAND_BYTES: usize = 512 << 20;
+
+/// Most per-batch results [`fold_batches`] holds at once.
+const MAX_BATCH_BAND: usize = 24;
+
+/// `batch` over `ranges` in parallel, in bands of a width set by the result
+/// size `partial_elems` (f64s) alone, each band's results handed to `fold` in
+/// ascending batch order. Every result is computed by a rayon worker (BLAS at
+/// the process baseline) and folded in the serial loop's order, so the sum does
+/// not depend on the thread count.
+fn fold_batches<R, T, B, F>(
+    ranges: &[R],
+    partial_elems: usize,
+    batch: B,
+    mut fold: F,
+) -> Result<(), FerricError>
+where
+    R: Sync,
+    T: Send,
+    B: Fn(&R) -> Result<T, FerricError> + Sync,
+    F: FnMut(T),
+{
+    let bytes = partial_elems.max(1) * std::mem::size_of::<f64>();
+    let band = (BATCH_BAND_BYTES / bytes).clamp(1, MAX_BATCH_BAND);
+    for chunk in ranges.chunks(band) {
+        let parts = chunk
+            .par_iter()
+            .map(&batch)
+            .collect::<Result<Vec<T>, FerricError>>()?;
+        parts.into_iter().for_each(&mut fold);
+    }
+    Ok(())
 }
 
 /// Point-fixed Becke weight derivatives of one batch.
@@ -1308,41 +1439,104 @@ fn translation_fill(g: ArrayView2<'_, f64>, home: usize, fill: f64) -> Array2<f6
     t.dot(&g).dot(&t.t())
 }
 
-/// `V1[D1] = V[dF[ρ1, g1], dG[ρ1, g1]]` for a symmetric response density `D1`.
-pub struct XcResponse {
-    chi: Array2<f64>,
-    dchi: Option<Array3<f64>>,
+/// The closed-shell kernel at the converged density: the quadrature weights,
+/// `∇ρ` and the functional's derivatives on every point, shared by the AO
+/// ([`XcResponse`]) and MO ([`XcMoResponse`]) routes.
+struct ResponseKernel {
     w: Array1<f64>,
     g: Option<Array2<f64>>,
     k: Kernel,
     factor: f64,
 }
 
-impl XcResponse {
-    /// The XC potential response to the density change `d1`.
-    pub fn apply(&self, d1: &Array2<f64>) -> Array2<f64> {
-        let pd = d1.dot(&self.chi);
-        let rho1 = (&self.chi * &pd).sum_axis(Axis(0));
-        let g1 = self.dchi.as_ref().map(|dchi| {
-            let mut g1 = Array2::<f64>::zeros((3, self.chi.ncols()));
-            for gam in 0..3 {
-                g1.row_mut(gam)
-                    .assign(&(2.0 * (&dchi.index_axis(Axis(0), gam) * &pd).sum_axis(Axis(0))));
-            }
-            g1
-        });
-        let (df, dg) = weights_response(&self.k, &self.w, self.g.as_ref(), &rho1, g1.as_ref());
-        let mut v = scale_cols(&self.chi, &(self.factor * &df)).dot(&self.chi.t());
-        if let (Some(dg), Some(dchi)) = (dg, self.dchi.as_ref()) {
-            for gam in 0..3 {
-                let gw = self.factor * &dg.row(gam).to_owned();
-                let t = scale_view(dchi.index_axis(Axis(0), gam), &gw).dot(&self.chi.t());
-                v += &t;
-                v += &t.t();
-            }
-        }
-        v
+impl ResponseKernel {
+    /// The potential weights of every density of a chunk `c0..c1` from its
+    /// point densities: the kernel is sliced once and applied per density.
+    fn chunk_weights(
+        &self,
+        c0: usize,
+        c1: usize,
+        pd: &response_block::PointDensities,
+    ) -> Vec<response_block::PotentialWeights> {
+        let k = self.k.slice(c0, c1);
+        let w = self.w.slice(s![c0..c1]).to_owned();
+        let g = self.g.as_ref().map(|g| g.slice(s![.., c0..c1]).to_owned());
+        (0..pd.rho1.nrows())
+            .map(|i| {
+                let (df, dg) = weights_response(&k, &w, g.as_ref(), &pd.rho1(i), pd.g1(i).as_ref());
+                (self.factor * &df, dg.map(|dg| self.factor * dg))
+            })
+            .collect()
     }
+}
+
+/// `V1[D1] = V[dF[ρ1, g1], dG[ρ1, g1]]` for a symmetric response density `D1`
+/// (the AO route, over the resident AO table).
+pub struct XcResponse {
+    table: response_block::AoTable,
+    kernel: ResponseKernel,
+}
+
+impl XcResponse {
+    /// The XC potential response to the density change `d1` ([`Self::apply_many`]
+    /// of one density).
+    pub fn apply(&self, d1: &Array2<f64>) -> Array2<f64> {
+        self.apply_many(&[d1]).remove(0)
+    }
+
+    /// The XC potential responses to every density change of `d1s`, in
+    /// lockstep: per point chunk, all densities on the points by one product
+    /// with the resident table, the kernel pointwise per density, one stacked
+    /// product back (the `response_block` module).
+    pub fn apply_many(&self, d1s: &[&Array2<f64>]) -> Vec<Array2<f64>> {
+        self.table
+            .resident()
+            .apply(d1s, 1, |c0, c1, pd| self.kernel.chunk_weights(c0, c1, pd))
+    }
+}
+
+/// The closed-shell response in MO form (the `mo_response` module): for rotations `U`
+/// (rows over the MOs `input`, occupied columns) of the density
+/// `D1 = 2 (C_r U C_oᵀ + C_o Uᵀ C_rᵀ)`, the projections `C_pᵀ V1[D1] C_o` on
+/// the MO rows `output`.
+pub struct XcMoResponse {
+    table: mo_response::MoTable,
+    kernel: ResponseKernel,
+}
+
+impl XcMoResponse {
+    /// Occupied MOs of the table.
+    pub fn nocc(&self) -> usize {
+        self.table.nocc()
+    }
+
+    /// `C_outᵀ V1[D1(U)] C_o` for every rotation of `us`, in lockstep blocks.
+    pub fn apply_many(
+        &self,
+        us: &[&Array2<f64>],
+        input: MoRows,
+        output: MoRows,
+    ) -> Vec<Array2<f64>> {
+        let product = mo_response::MoProduct {
+            tables: &[&self.table],
+            input,
+            output,
+            scale: 4.0,
+        };
+        product.apply(us, |c0, c1, pd| self.kernel.chunk_weights(c0, c1, pd))
+    }
+}
+
+/// Points per parallel task of the CPHF kernel products.
+const RESPONSE_CHUNK: usize = 1024;
+
+/// The point chunks `(c0, c1)` of a resident response table of `npts` points
+/// (a pure function of `npts`, never of the thread count).
+fn response_chunks(npts: usize) -> Vec<(usize, usize)> {
+    (0..npts)
+        .step_by(RESPONSE_CHUNK)
+        .map(|c0| (c0, (c0 + RESPONSE_CHUNK).min(npts)))
+        .collect()
 }
 
 /// [`FixedGridKs`] at one geometry as the SCF's [`XcBuilder`] (global-hybrid

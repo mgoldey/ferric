@@ -92,13 +92,29 @@ pub fn hirshfeld_margin() -> f64 {
     positive_f64("FERRIC_HIRSHFELD_MARGIN", 6.0)
 }
 
+mod hirshfeld_grid;
+mod slater_proatom;
+pub use hirshfeld_grid::{
+    atomic_effective_volumes_hirshfeld, atomic_effective_volumes_hirshfeld_on_grid,
+    estimate_hirshfeld_grid_scan_bytes, estimate_hirshfeld_volume_gradient_bytes,
+    hirshfeld_charges, hirshfeld_i_charges, hirshfeld_volume_density_derivative,
+    hirshfeld_volume_gradient, hirshfeld_volume_grid, hirshfeld_volume_grid_config,
+    mbd_volume_grid, nbf_for_basis, preflight_hirshfeld_grid_scan,
+    preflight_hirshfeld_grid_scan_reserved, HIRSHFELD_GRAD_CHUNK_POINTS,
+    HIRSHFELD_VOLUME_CHUNK_POINTS,
+};
+pub use slater_proatom::SlaterProatom;
+
 /// Evaluate the electrostatic potential V(R_A) at each nuclear position,
 /// excluding the divergent self-interaction Z_A/|R_A − R_A|.
 ///
 /// ```text
-///     V(R_A) = Σ_{B ≠ A} Z_B / |R_A − R_B|
+///     V(R_A) = Σ_{B ≠ A} Z_B^eff / |R_A − R_B|
 ///            − Σ_{μν} D_{μν} ⟨μ| 1/|r − R_A| |ν⟩
 /// ```
+///
+/// `Z_B^eff` is [`Atom::effective_z`](ferric_core::mol::Atom::effective_z): the
+/// valence charge on an ECP atom, zero on a ghost atom.
 ///
 /// Returns a `Vec<f64>` of length `mol.atoms.len()`, in Hartree (a.u.).
 ///
@@ -226,7 +242,7 @@ pub fn esp_at_atoms(
                                 "esp_at_atoms: atoms {a} and {b} coincide"
                             )));
                         }
-                        v_nuc += atom_b.z as f64 / r;
+                        v_nuc += atom_b.effective_z() as f64 / r;
                     }
 
                     Ok(v_nuc + v_elec)
@@ -435,7 +451,7 @@ pub fn electric_field_at_atoms(
                             )));
                         }
                         let inv_r3 = 1.0 / (r2 * r);
-                        let zb = atom_b.z as f64;
+                        let zb = atom_b.effective_z() as f64;
                         e_nuc[0] += zb * dx * inv_r3;
                         e_nuc[1] += zb * dy * inv_r3;
                         e_nuc[2] += zb * dz * inv_r3;
@@ -679,7 +695,7 @@ pub fn becke_charges_chunked(
     };
 
     Ok((0..natoms)
-        .map(|a| mol.atoms[a].z as f64 - scale * n_e[a])
+        .map(|a| mol.atoms[a].effective_z() as f64 - scale * n_e[a])
         .collect())
 }
 
@@ -1053,6 +1069,11 @@ pub fn scf_proatom_radii() -> Vec<f64> {
 ///   `config.xc` is set, fractional (ensemble) occupation of the degenerate
 ///   frontier orbitals so the open-shell GGA atom stays spherical and converges.
 ///
+/// When `bs` carries an effective core potential for `z`, the free atom gets
+/// it ([`Molecule::apply_ecp`]), exactly as the molecule's SCF does: the
+/// proatom is then the valence density, integrating to `z - n_core`, and
+/// consistent with the (valence) molecular density it partitions.
+///
 /// The total density is spherically averaged by [`spherically_averaged_proatom`]
 /// onto [`scf_proatom_radii`]. It returns `None` — so the Hirshfeld routine
 /// falls back to the Slater proatom of [`slater_xi_for_z`] for that atom — for a
@@ -1074,7 +1095,12 @@ pub fn scf_proatom_provider<'a>(
         let mult = proatom_ground_state_mult(z);
         let sym = ferric_core::elements::z_to_symbol(z).unwrap_or("X");
         let axyz = format!("1\n{sym}\n{sym} 0 0 0\n");
-        let amol = Molecule::parse_xyz(&axyz, 0, mult).ok()?;
+        let mut amol = Molecule::parse_xyz(&axyz, 0, mult).ok()?;
+        // The basis set's ECP, as the molecule's own SCF applies it: the
+        // molecular density of an ECP basis is the valence density, so the
+        // proatom must be the valence density too (and an all-electron count
+        // in an ECP basis overfills it). A no-op for an all-electron basis.
+        amol.apply_ecp(bs);
         let aobs = PreparedBasis::new(&amol, bs).ok()?;
         let abounds = crate::screening::SchwarzBounds::compute(op, &aobs).ok()?;
         let mut acfg = config.clone();
@@ -1089,6 +1115,10 @@ pub fn scf_proatom_provider<'a>(
         // A free atom is solved in the input frame, never point-group blocked.
         acfg.symmetry = false;
         acfg.irrep_nelec = None;
+        // A starting density (`dm0`) has the molecule's basis dimension; the
+        // free atom starts from its own default guess.
+        acfg.init_guess_density = None;
+        acfg.cdft_lambda_init = None;
         if mult != 1 {
             acfg.mom_after_iter = 5;
             // Pure HF free atoms do not need this (K is orbital-invariant in
@@ -1143,27 +1173,24 @@ pub fn scf_proatom_provider<'a>(
 ///
 /// # Convention note
 ///
-/// Löwdin charges depend on the *AO ordering convention* of the basis set.
-/// Within a given convention the answer is well-defined and self-consistent
-/// (and conserves N_e exactly). Across conventions the per-atom split can
-/// differ — e.g. ferric (libint conventions) returns q_O = −0.48 on H2O /
-/// cc-pVDZ while PySCF returns q_O = −0.10 on the same density. Both are
-/// "Löwdin charges"; the difference reflects how each library orders d-
-/// functions (libint: l-major Cartesian or pure-spherical depending on
-/// shell setup; PySCF: spherical with its own canonical order).
+/// The per-atom sums are invariant to the ORDER of the AOs (and to any
+/// orthogonal mixing of the functions on one atom): permuting the basis
+/// permutes `S^{1/2} D S^{1/2}` the same way and leaves each atom's diagonal
+/// sum unchanged. A different split between codes therefore means a different
+/// BASIS (Cartesian vs spherical d shells, contraction or normalisation), not
+/// a different ordering. On the same pure-function basis, density and ECP,
+/// ferric agrees with PySCF to the SCF floor
+/// (`tests/properties_effective_z.rs`, HI and CH3I/def2-SVP). The nuclear
+/// charge is `Atom::effective_z`, so on an ECP atom `q_A` is the valence
+/// charge.
 ///
-/// This matters downstream only if you intend to mix Löwdin charges across
-/// engines. As a baseline for CM5 within ferric the result is fully
-/// self-consistent.
-///
-/// Closed-shell only.
+/// `density` is the TOTAL (alpha + beta) AO density, so the formula holds for
+/// closed- and open-shell references alike.
 pub fn lowdin_charges(
     mol: &Molecule,
     prep: &PreparedBasis,
     density: &Array2<f64>,
 ) -> Result<Vec<f64>, FerricError> {
-    use ndarray_linalg::Eigh;
-
     let nbf = prep.nbasis();
     if density.nrows() != nbf || density.ncols() != nbf {
         return Err(FerricError::General(format!(
@@ -1176,20 +1203,8 @@ pub fn lowdin_charges(
     let s = oneelectron::overlap(prep);
 
     // S = U diag(λ) U^T → S^{1/2} = U diag(√λ) U^T.
-    let (eigvals, eigvecs) = s
-        .eigh(ndarray_linalg::UPLO::Upper)
-        .map_err(|e| FerricError::General(format!("lowdin_charges: S eigh failed: {e}")))?;
-    let mut sqrt_lambda = Array2::<f64>::zeros((nbf, nbf));
-    for i in 0..nbf {
-        if eigvals[i] <= 0.0 {
-            return Err(FerricError::General(format!(
-                "lowdin_charges: overlap eigenvalue {} <= 0 (linear dependence)",
-                eigvals[i]
-            )));
-        }
-        sqrt_lambda[(i, i)] = eigvals[i].sqrt();
-    }
-    let s_half = eigvecs.dot(&sqrt_lambda).dot(&eigvecs.t());
+    let s_half = ferric_core::linalg::symmetric_sqrt(&s)
+        .map_err(|e| FerricError::General(format!("lowdin_charges: S^1/2: {e}")))?;
 
     // M = S^{1/2} · D · S^{1/2}
     let m = s_half.dot(density).dot(&s_half);
@@ -1209,7 +1224,7 @@ pub fn lowdin_charges(
     }
 
     Ok((0..natoms)
-        .map(|a| mol.atoms[a].z as f64 - atom_pop[a])
+        .map(|a| mol.atoms[a].effective_z() as f64 - atom_pop[a])
         .collect())
 }
 
@@ -1222,7 +1237,8 @@ pub fn lowdin_charges(
 /// analysis, well known to be basis-set-sensitive (can misbehave badly with
 /// diffuse/augmented functions) but included here as the standard baseline
 /// every QC package provides, not as a recommended charge scheme. Prefer
-/// `lowdin_charges` for a more basis-stable partition. Closed-shell only.
+/// `lowdin_charges` for a more basis-stable partition. `density` is the TOTAL
+/// (alpha + beta) AO density; there is no closed-shell restriction.
 pub fn mulliken_charges(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -1257,7 +1273,7 @@ pub fn mulliken_charges(
     }
 
     Ok((0..natoms)
-        .map(|a| mol.atoms[a].z as f64 - atom_pop[a])
+        .map(|a| mol.atoms[a].effective_z() as f64 - atom_pop[a])
         .collect())
 }
 
@@ -1279,8 +1295,9 @@ struct EspGridPoint {
 ///     accurate — close to a nucleus the true multi-center ESP is dominated
 ///     by the local cusp, not the far-field 1/r tail a fitted point charge
 ///     reproduces); and
-///   * it lies **within** `outer_cutoff` (Bohr) of at least one atom (bounds
-///     the fit region to where the ESP is still chemically meaningful — far
+///   * it lies **within** `outer_cutoff` (Bohr) of at least one atom's scaled
+///     vdW sphere SURFACE, i.e. `dist <= vdw_scale·R_bondi + outer_cutoff`
+///     (bounds the fit region to where the ESP is still chemically meaningful — far
 ///     outside the molecule V_QM → 0 and contributes no information, only
 ///     numerical noise, to the fit).
 ///
@@ -1304,6 +1321,7 @@ struct EspGridPoint {
 /// resolver. Every production caller passes `None` (the ambient budget); the
 /// parameter is a TEST SEAM so the guard's refusal can be exercised at a
 /// chosen budget, not a user-facing knob.
+#[allow(clippy::too_many_arguments)]
 fn chelpg_grid_esp(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -1599,7 +1617,7 @@ pub fn esp_at_points(
                         let dy = r[1] - atom_b.y;
                         let dz = r[2] - atom_b.zpos;
                         let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-                        v_nuc += atom_b.z as f64 / dist;
+                        v_nuc += atom_b.effective_z() as f64 / dist;
                     }
 
                     Ok(v_nuc + v_elec)
@@ -1774,7 +1792,7 @@ fn chelpg_outer_cutoff() -> f64 {
 /// large charges on buried heavy atoms):
 ///
 /// ```text
-///     minimize  Σ_g (V_QM(r_g) − V_fit(r_g))²
+///     minimize  ½ Σ_g (V_QM(r_g) − V_fit(r_g))²
 ///               + restraint_weight · Σ_{A: Z_A≠1} (√(q_A² + b²) − b)
 ///     subject to Σ_A q_A = q_total
 /// ```
@@ -1796,9 +1814,9 @@ fn chelpg_outer_cutoff() -> f64 {
 ///
 /// The restraint term `√(q_A²+b²) − b` is nonlinear in `q_A`, so the fit is
 /// not a single linear solve. Standard RESP practice (and the approach here)
-/// is a fixed-point/Newton iteration: at each iteration, linearize the
-/// restraint's contribution to the gradient by evaluating its second
-/// derivative at the *current* charge estimate,
+/// is a fixed-point iteration (iteratively reweighted least squares): at each
+/// iteration, freeze the restraint's denominator at the *current* charge
+/// estimate,
 ///
 /// ```text
 ///     d/dq_A [ restraint_weight · (√(q_A²+b²) − b) ] = restraint_weight · q_A / √(q_A²+b²)
@@ -1808,8 +1826,10 @@ fn chelpg_outer_cutoff() -> f64 {
 /// which just adds a diagonal term `restraint_weight / √(q_A^(k)²+b²)` to the
 /// CHELPG normal-equations matrix `A` (non-hydrogen rows only) at each
 /// iteration `k`, then re-solves the same bordered linear system with the
-/// updated diagonal — a short Newton/fixed-point loop over an otherwise
-/// unchanged linear solve, not a black-box nonlinear optimizer.
+/// updated diagonal — a short reweighted-least-squares loop over an otherwise
+/// unchanged linear solve, not a black-box nonlinear optimizer. The loop stops
+/// when the largest charge change drops below 1e-8 e; if it has not done so
+/// after 50 iterations the fit returns an error rather than the last iterate.
 ///
 /// Returns `Vec<f64>` of length `mol.atoms.len()`, units of e.
 pub fn resp_charges(
@@ -1895,14 +1915,15 @@ fn resp_restraint_b() -> f64 {
     positive_f64("FERRIC_RESP_RESTRAINT_B", 0.1)
 }
 
-/// Newton/fixed-point iteration solving the RESP-restrained bordered normal
-/// equations. See [`resp_charges`]'s doc comment for the derivation.
+/// Reweighted-least-squares fixed-point iteration solving the RESP-restrained
+/// bordered normal equations. See [`resp_charges`]'s doc comment for the
+/// derivation.
 ///
-/// Starts from the unrestrained CHELPG solution (iteration 0's diagonal
-/// correction uses q_A=0 as the initial linearization point, which for the
-/// hyperbolic penalty is a finite, well-defined starting slope
-/// `restraint_weight / b` — no singularity at q=0 the way a bare `|q|`
-/// restraint would have).
+/// The iteration starts at q = 0 (iteration 0's diagonal correction is the
+/// finite slope `restraint_weight / b`; there is no singularity at q=0 the way
+/// a bare `|q|` restraint would have). It returns an error if the largest
+/// charge change has not dropped below 1e-8 e after [`RESP_MAX_ITER`]
+/// iterations.
 fn solve_resp_restrained(
     atom_pos: &[[f64; 3]],
     grid: &[EspGridPoint],
@@ -1910,6 +1931,29 @@ fn solve_resp_restrained(
     is_heavy: &[bool],
     restraint_weight: f64,
     b: f64,
+) -> Result<Vec<f64>, FerricError> {
+    solve_resp_restrained_with_max_iter(
+        atom_pos,
+        grid,
+        q_total,
+        is_heavy,
+        restraint_weight,
+        b,
+        RESP_MAX_ITER,
+    )
+}
+
+/// Iteration cap of the RESP fixed point.
+const RESP_MAX_ITER: usize = 50;
+
+fn solve_resp_restrained_with_max_iter(
+    atom_pos: &[[f64; 3]],
+    grid: &[EspGridPoint],
+    q_total: f64,
+    is_heavy: &[bool],
+    restraint_weight: f64,
+    b: f64,
+    max_iter: usize,
 ) -> Result<Vec<f64>, FerricError> {
     use ndarray_linalg::Solve;
 
@@ -1947,11 +1991,11 @@ fn solve_resp_restrained(
     }
     rhs[natoms] = q_total;
 
-    // Fixed-point/Newton loop on the restraint diagonal.
+    // Fixed-point (reweighted least squares) loop on the restraint diagonal.
     let mut q = vec![0.0_f64; natoms];
-    const MAX_ITER: usize = 50;
     const TOL: f64 = 1e-8;
-    for _iter in 0..MAX_ITER {
+    let mut max_dq = f64::INFINITY;
+    for _iter in 0..max_iter {
         let mut mat = base_mat.clone();
         for a in 0..natoms {
             if is_heavy[a] {
@@ -1965,18 +2009,21 @@ fn solve_resp_restrained(
             ))
         })?;
         let q_new: Vec<f64> = sol.iter().take(natoms).copied().collect();
-        let max_dq = q_new
+        max_dq = q_new
             .iter()
             .zip(&q)
             .map(|(a, b)| (a - b).abs())
             .fold(0.0_f64, f64::max);
         q = q_new;
         if max_dq < TOL {
-            break;
+            return Ok(q);
         }
     }
 
-    Ok(q)
+    Err(FerricError::Convergence(format!(
+        "solve_resp_restrained: restraint fixed point did not converge in {max_iter} \
+         iterations (last max |dq| = {max_dq:.3e} e, tolerance {TOL:.0e})"
+    )))
 }
 
 /// Slater single-exponential proatom exponent ξ (Bohr⁻¹) for element Z.
@@ -1993,7 +2040,10 @@ fn solve_resp_restrained(
 /// qualitative: on H2O, CO and CH3OH they differ from the free-atom SCF
 /// proatom charges by 0.23–0.72 e and flip the sign of the CH3OH carbon
 /// (`crates/ferric-rpa/tests/validation_hirshfeld.rs`).
-/// [`scf_proatom_provider`] supplies the free-atom SCF proatoms. The additive per-atom
+/// [`scf_proatom_provider`] supplies the free-atom SCF proatoms. An atom
+/// carrying an ECP does not use this exponent: [`SlaterProatom::for_atom`]
+/// gives it a valence-shell proatom instead (a single exponential has no core
+/// to remove). The additive per-atom
 /// polarizability partition in `pdep_polarizability_hirshfeld` is less
 /// sensitive to the proatom shape, since its sum rule is enforced numerically.
 pub fn slater_xi_for_z(z: i32) -> f64 {
@@ -2047,6 +2097,130 @@ mod tests {
     use ferric_core::basis;
     use ferric_core::parallel::ParallelContext;
     use ferric_integrals::operator::Operator;
+
+    /// The RESP fixed point reports a missed tolerance as an error instead of
+    /// returning the last iterate: a one-iteration cap cannot converge from
+    /// q = 0, while the production cap does on the same synthetic problem.
+    #[test]
+    fn resp_fixed_point_errors_when_the_iteration_cap_is_reached() {
+        let atom_pos = [[0.0, 0.0, 0.0], [0.0, 0.0, 2.0]];
+        let mut grid = Vec::new();
+        for i in 0..6 {
+            for j in 0..6 {
+                let r = [-3.0 + i as f64, -3.0 + j as f64, 3.5];
+                let v: f64 = atom_pos
+                    .iter()
+                    .zip([0.3, -0.3])
+                    .map(|(p, q)| {
+                        let d: f64 = (0..3).map(|k| (r[k] - p[k]).powi(2)).sum::<f64>().sqrt();
+                        q / d
+                    })
+                    .sum();
+                grid.push(EspGridPoint { r, v });
+            }
+        }
+        let heavy = [true, true];
+        let ok = solve_resp_restrained(&atom_pos, &grid, 0.0, &heavy, 0.0005, 0.1)
+            .expect("production cap converges");
+        assert_eq!(ok.len(), 2);
+        let err =
+            solve_resp_restrained_with_max_iter(&atom_pos, &grid, 0.0, &heavy, 0.0005, 0.1, 1);
+        assert!(
+            matches!(err, Err(FerricError::Convergence(_))),
+            "got {err:?}"
+        );
+    }
+
+    /// A molecular starting density (`dm0`, the molecule's basis dimension)
+    /// does not reach the free-atom SCF: the proatom is bit-identical to the
+    /// default-guess one (water/STO-3G is 7 functions, O and Ne alone 5).
+    /// Ne takes the RHF path, O (triplet) the UHF path.
+    #[test]
+    fn proatom_provider_ignores_the_molecular_starting_density() {
+        let bs = basis::bundled("sto-3g").unwrap();
+        let ctx = ParallelContext::default();
+        let op = Operator::coulomb();
+        let plain = RhfConfig::default();
+        let with_dm0 = RhfConfig {
+            init_guess_density: Some(Array2::eye(7)),
+            ..RhfConfig::default()
+        };
+        let a = scf_proatom_provider(&ctx, &bs, op, &plain);
+        let b = scf_proatom_provider(&ctx, &bs, op, &with_dm0);
+        for z in [10, 8] {
+            let pa = a(z, 0).expect("default-guess proatom");
+            let pb = b(z, 0).unwrap_or_else(|| panic!("Z={z}: proatom lost with a molecular dm0"));
+            assert_eq!(pa.radii, pb.radii);
+            assert_eq!(pa.rho, pb.rho, "Z={z}");
+        }
+    }
+
+    /// An ECP element's free atom carries the basis set's ECP, like the
+    /// molecule's SCF: iodine in def2-SVP (28-electron core) is solved with its
+    /// 25 valence electrons, so the proatom integrates to Z - n_core = 25. It
+    /// used to be solved with all 53 electrons in the valence basis and panicked
+    /// in `UhfState::new` (occupied block past the basis dimension).
+    #[test]
+    fn proatom_provider_applies_the_basis_ecp() {
+        let bs = basis::bundled("def2-svp").unwrap();
+        let n_core = bs
+            .ecp_for_element(53)
+            .expect("def2-SVP has an I ECP")
+            .n_core;
+        let ctx = ParallelContext::default();
+        let cfg = RhfConfig::default();
+        let provider = scf_proatom_provider(&ctx, &bs, Operator::coulomb(), &cfg);
+        let pa = provider(53, 0).expect("iodine SCF proatom");
+        // 4 pi Int r^2 rho dr by the trapezoid rule on the 0.05 Bohr table
+        // (the [0, 0.05] Bohr sliver carries ~r^3 of the density: negligible).
+        let (r, rho) = (pa.radii(), pa.rho());
+        let n: f64 = (1..r.len())
+            .map(|k| {
+                let f = |i: usize| r[i] * r[i] * rho[i];
+                0.5 * (f(k - 1) + f(k)) * (r[k] - r[k - 1])
+            })
+            .sum::<f64>()
+            * 4.0
+            * std::f64::consts::PI;
+        let valence = f64::from(53 - n_core);
+        assert!(
+            (n - valence).abs() < 0.05,
+            "iodine proatom holds {n} electrons, expected the {valence} valence ones"
+        );
+    }
+
+    /// The Slater fallback proatom of an ECP atom holds the valence electrons
+    /// of the density it partitions: iodine with def2-SVP's ECP applied (as
+    /// every Hirshfeld caller passes the molecule) integrates to 53 - 28 = 25,
+    /// numerically as well as by construction, and H keeps the single
+    /// exponential normalized to 1.
+    #[test]
+    fn slater_fallback_proatom_of_an_ecp_atom_is_the_valence_one() {
+        let bs = basis::bundled("def2-svp").unwrap();
+        let mut mol = Molecule::parse_xyz("2\nHI\nH 0 0 0\nI 0 0 3.3\n", 0, 1).unwrap();
+        mol.apply_ecp(&bs);
+        assert_eq!(mol.atoms[1].n_core_ecp, 28);
+        let quad = |p: &SlaterProatom| -> f64 {
+            let h = 1e-3;
+            (1..=40_000)
+                .map(|k| {
+                    let r = k as f64 * h;
+                    r * r * p.at(r) * h
+                })
+                .sum::<f64>()
+                * 4.0
+                * std::f64::consts::PI
+        };
+        let i = SlaterProatom::for_atom(&mol.atoms[1]);
+        assert!(
+            (i.n_electrons() - 25.0).abs() < 1e-12,
+            "{}",
+            i.n_electrons()
+        );
+        assert!((quad(&i) - 25.0).abs() < 1e-6, "{}", quad(&i));
+        let h = SlaterProatom::for_atom(&mol.atoms[0]);
+        assert!((quad(&h) - 1.0).abs() < 1e-6, "{}", quad(&h));
+    }
 
     fn build_h2() -> (
         Molecule,
@@ -2318,14 +2492,16 @@ pub fn esp_on_surface_counted(
     n_angular: usize,
 ) -> Result<(Vec<[f64; 3]>, Vec<f64>, usize), FerricError> {
     use ferric_pcm::radii::bondi_radius_bohr;
-    use ferric_quadrature::lebedev::lebedev;
+    use ferric_quadrature::lebedev::try_lebedev;
 
     if !(vdw_scale.is_finite() && vdw_scale > 0.0) {
         return Err(FerricError::General(format!(
             "esp_on_surface: vdw_scale must be finite > 0, got {vdw_scale}"
         )));
     }
-    let (unit, _w) = lebedev(n_angular);
+    // An unsupported order is a user config error, not a panic.
+    let (unit, _w) =
+        try_lebedev(n_angular).map_err(|e| FerricError::General(format!("esp_on_surface: {e}")))?;
     let pos: Vec<[f64; 3]> = mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
     let radii: Vec<f64> = mol
         .atoms

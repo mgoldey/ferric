@@ -65,12 +65,10 @@ fn u_pdep_rpa_matches_closed_shell_on_h2o() {
         .e_rpa;
 
     // UHF (spin-symmetric) → U-RPA.
-    let uhf_cfg = UhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let uhf_cfg = UhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
     let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
     assert!(
         (uhf.energy - rhf.energy).abs() < 1e-7,
@@ -103,12 +101,10 @@ fn u_pdep_rpa_h_atom_matches_pyscf() {
     let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
     let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let uhf_cfg = UhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let uhf_cfg = UhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
     let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
     let cfg = cfg_full_basis();
     let r = run_u_pdep_rpa(&mol, &obs, &dfbs, op, &uhf, &cfg).unwrap();
@@ -139,12 +135,10 @@ fn u_pdep_rpa_oh_matches_pyscf() {
     let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
     let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let uhf_cfg = UhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let uhf_cfg = UhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
     let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
     let cfg = cfg_full_basis();
     let r = run_u_pdep_rpa(&mol, &obs, &dfbs, op, &uhf, &cfg).unwrap();
@@ -177,12 +171,10 @@ fn u_pdep_rpa_ch3_matches_pyscf() {
     let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
     let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let uhf_cfg = UhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let uhf_cfg = UhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
     let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
     let cfg = cfg_full_basis();
     let r = run_u_pdep_rpa(&mol, &obs, &dfbs, op, &uhf, &cfg).unwrap();
@@ -212,12 +204,10 @@ fn u_pdep_rpa_rohf_reference_runs() {
     let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
     let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let rohf_cfg = RohfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let rohf_cfg = RohfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
     let rohf = solve_rohf(&ctx, &mol, &obs, op, &bounds, &rohf_cfg).unwrap();
     let cfg = cfg_full_basis();
     let r = run_u_pdep_rpa(&mol, &obs, &dfbs, op, &rohf, &cfg).unwrap();
@@ -251,19 +241,15 @@ fn u_pdep_rpa_uhf_vs_rohf_close_on_doublet() {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let cfg = cfg_full_basis();
 
-    let uhf_cfg = UhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let uhf_cfg = UhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
     let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
-    let rohf_cfg = RohfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let rohf_cfg = RohfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
     let rohf = solve_rohf(&ctx, &mol, &obs, op, &bounds, &rohf_cfg).unwrap();
     let e_u = run_u_pdep_rpa(&mol, &obs, &dfbs, op, &uhf, &cfg)
         .unwrap()
@@ -304,10 +290,7 @@ fn u_ri_drpa_diagnostic_h_atom_matches_pyscf() {
         &mol,
         &obs,
         &bounds,
-        &UhfConfig {
-            max_iter: 200,
-            ..Default::default()
-        },
+        &UhfConfig::default().with_max_iter(200),
     )
     .unwrap();
 
@@ -343,8 +326,8 @@ fn u_ri_drpa_diagnostic_h_atom_matches_pyscf() {
 
 #[test]
 fn closed_shell_rpa_laplace_chebyshev_matches_dense_h2o() {
-    // ChebyshevTan ω-grid keeps Laplace in its safe regime (bounded ω),
-    // so the fallback runs only at the highest-ω points (if at all).
+    // Nodes above the Laplace limit ω·t_max = π/2 take the dense fallback; at
+    // equal (n, u₀) ChebyshevTan has within one of GL's count.
     // This validates the actual Laplace path under the Eshuis quadrature.
     use ferric_rpa::config::{Chi0Backend, QuadratureConfig, QuadratureScheme};
     use ferric_rpa::run_pdep_rpa;
@@ -372,8 +355,8 @@ fn closed_shell_rpa_laplace_chebyshev_matches_dense_h2o() {
         n_points: 20,
         u0: 0.5,
     };
-    // n_quad=20 is not tabulated ({3,5,7} only); the old code silently fell
-    // back to the 7-point table, so request 7 explicitly (numerics unchanged).
+    // n_quad=20 is not tabulated ({3,5,7} only); an untabulated size is
+    // an error (no silent 7-point fallback), so request 7 explicitly.
     cfg.chi0_backend = Chi0Backend::Laplace { n_quad: 7 };
     let e_cheb_lap = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg)
         .unwrap()
@@ -445,15 +428,12 @@ fn u_pdep_rpa_laplace_matches_dense_closed_shell_h2o() {
         &mol,
         &obs,
         &bounds,
-        &UhfConfig {
-            max_iter: 200,
-            ..Default::default()
-        },
+        &UhfConfig::default().with_max_iter(200),
     )
     .unwrap();
     let mut cfg = cfg_full_basis();
-    // n_quad=20 is not tabulated ({3,5,7} only); the old code silently fell
-    // back to the 7-point table, so request 7 explicitly (numerics unchanged).
+    // n_quad=20 is not tabulated ({3,5,7} only); an untabulated size is
+    // an error (no silent 7-point fallback), so request 7 explicitly.
     cfg.chi0_backend = Chi0Backend::Laplace { n_quad: 7 };
     let e_u_lap = run_u_pdep_rpa(&mol, &obs, &dfbs, op, &uhf, &cfg)
         .unwrap()
@@ -491,10 +471,7 @@ fn u_laplace_dielectric_matches_u_dense_at_omega_zero_oh() {
         &mol,
         &obs,
         &bounds,
-        &UhfConfig {
-            max_iter: 200,
-            ..Default::default()
-        },
+        &UhfConfig::default().with_max_iter(200),
     )
     .unwrap();
 
@@ -517,8 +494,8 @@ fn u_laplace_dielectric_matches_u_dense_at_omega_zero_oh() {
     let chan_b = ferric_rpa::channel::RpaChannel::new(&ib.b_ov, &eo_b, &ev_b);
     let dense = dielectric_matrix_unrestricted(&v, &chan_a, &chan_b, 0.0);
 
-    // n_quad=20 is not tabulated ({3,5,7} only); the old code silently fell
-    // back to the 7-point table, so request 7 explicitly (numerics unchanged).
+    // n_quad=20 is not tabulated ({3,5,7} only); an untabulated size is
+    // an error (no silent 7-point fallback), so request 7 explicitly.
     let qa = build_laplace_for_gaps(&eo_a, &ev_a, 7).unwrap();
     let qb = build_laplace_for_gaps(&eo_b, &ev_b, 7).unwrap();
     let lap = dielectric_matrix_laplace_unrestricted(&v, &chan_a, &qa, &chan_b, &qb, 0.0);
@@ -554,10 +531,7 @@ fn u_pdep_rpa_laplace_matches_dense_oh() {
         &mol,
         &obs,
         &bounds,
-        &UhfConfig {
-            max_iter: 200,
-            ..Default::default()
-        },
+        &UhfConfig::default().with_max_iter(200),
     )
     .unwrap();
 
@@ -605,10 +579,7 @@ fn u_polarizability_matches_closed_shell_on_h2o() {
         &mol,
         &obs,
         &bounds,
-        &UhfConfig {
-            max_iter: 200,
-            ..Default::default()
-        },
+        &UhfConfig::default().with_max_iter(200),
     )
     .unwrap();
 
@@ -647,10 +618,7 @@ fn u_polarizability_oh_matches_pyscf() {
         &mol,
         &obs,
         &bounds,
-        &UhfConfig {
-            max_iter: 200,
-            ..Default::default()
-        },
+        &UhfConfig::default().with_max_iter(200),
     )
     .unwrap();
     let cfg = PdepRpaConfig::default();
@@ -678,12 +646,10 @@ fn u_pdep_rpa_lanczos_matches_davidson() {
     let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
     let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let uhf_cfg = UhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let uhf_cfg = UhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
     let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
 
     let mut cfg_d = cfg_full_basis();
@@ -700,4 +666,327 @@ fn u_pdep_rpa_lanczos_matches_davidson() {
 
     let dev = (e_davidson - e_lanczos).abs();
     assert!(dev < 1e-7, "Davidson vs Lanczos U-RPA disagree: {dev:.2e}");
+}
+
+// ---------------------------------------------------------------------------
+// Option coverage of the open-shell path (T046).
+//
+// Exactness anchors:
+//   * full rank (trunc_thresh = 0): the Lanczos (one dense eigh) and Davidson
+//     eigensolves and the full-basis U-RI-dRPA diagnostic (`run_diagnostics`,
+//     no eigensolver at all) evaluate the same trace-log integral, so they
+//     agree to eigensolver/LAPACK precision on OH and CH3 doublets;
+//   * a UHF singlet run through `run_u_pdep_rpa` reproduces `run_pdep_rpa`
+//     (Lanczos, Laplace χ₀, diagnostic), bounded by the UHF-vs-RHF SCF
+//     agreement only.
+// Config honesty: options the open-shell path cannot run are refused.
+// ---------------------------------------------------------------------------
+
+fn tight_uhf() -> UhfConfig {
+    UhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_max_iter(300)
+}
+
+struct System {
+    mol: Molecule,
+    obs: PreparedBasis,
+    dfbs: PreparedBasis,
+    bounds: SchwarzBounds,
+}
+
+fn system(xyz: &str, mult: usize) -> System {
+    let mol = Molecule::parse_xyz(xyz, 0, mult).unwrap();
+    let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+    let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
+    System {
+        mol,
+        obs,
+        dfbs,
+        bounds,
+    }
+}
+
+const OH_XYZ: &str = "2\noh\nO 0 0 0\nH 0 0 0.97\n";
+const CH3_XYZ: &str = "4\nch3\nC 0 0 0\nH 1.079 0 0\nH -0.5395 0.934441 0\nH -0.5395 -0.934441 0\n";
+const H2O_XYZ: &str = "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n";
+
+/// Full rank: Lanczos ≡ Davidson ≡ full-basis diagnostic on one reference.
+fn assert_full_rank_solvers_agree(label: &str, s: &System, scf: &ferric_scf::ScfResult) {
+    let op = Operator::coulomb();
+    let mut cfg_l = cfg_full_basis();
+    cfg_l.eigensolver = Eigensolver::Lanczos;
+    cfg_l.run_diagnostics = true;
+    let rl = run_u_pdep_rpa(&s.mol, &s.obs, &s.dfbs, op, scf, &cfg_l).unwrap();
+    let diag = rl
+        .e_rpa_dft_diag
+        .expect("run_diagnostics = true must fill e_rpa_dft_diag on the open-shell path");
+    assert_eq!(rl.n_eigenpotentials, s.dfbs.nbasis(), "{label}: full rank");
+
+    let mut cfg_d = cfg_full_basis();
+    cfg_d.eigensolver = Eigensolver::Davidson;
+    cfg_d.eigensolver_conv_thresh = 1e-10;
+    let rd = run_u_pdep_rpa(&s.mol, &s.obs, &s.dfbs, op, scf, &cfg_d).unwrap();
+    assert!(
+        rd.eigensolver_converged,
+        "{label}: Davidson did not converge"
+    );
+    assert!(
+        rd.e_rpa_dft_diag.is_none(),
+        "{label}: diagnostic off by default"
+    );
+
+    let d_ld = (rl.e_rpa - rd.e_rpa).abs();
+    let d_ldiag = (rl.e_rpa - diag).abs();
+    eprintln!(
+        "{label}: lanczos {:.12} davidson {:.12} diag {diag:.12} |L-D| {d_ld:.2e} |L-diag| {d_ldiag:.2e}",
+        rl.e_rpa, rd.e_rpa
+    );
+    assert!(
+        d_ldiag <= 1e-10,
+        "{label}: Lanczos vs full-basis diagnostic {d_ldiag:.2e}"
+    );
+    assert!(d_ld <= 1e-10, "{label}: Lanczos vs Davidson {d_ld:.2e}");
+
+    // The full-rank energy is invariant to the static basis, so it cannot see
+    // the ω=0 matvec. The static spectrum and a truncated energy can: the
+    // two eigensolvers build ε̃_U(0) through independent closures.
+    let d_lam = rl
+        .eigenvalues_static
+        .iter()
+        .zip(&rd.eigenvalues_static)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f64, f64::max);
+    assert!(
+        d_lam <= 1e-8,
+        "{label}: static spectra differ by {d_lam:.2e}"
+    );
+    let mut tl = cfg_l.clone();
+    tl.trunc_thresh = 1e-2;
+    let mut td = cfg_d.clone();
+    td.trunc_thresh = 1e-2;
+    let rtl = run_u_pdep_rpa(&s.mol, &s.obs, &s.dfbs, op, scf, &tl).unwrap();
+    let rtd = run_u_pdep_rpa(&s.mol, &s.obs, &s.dfbs, op, scf, &td).unwrap();
+    assert!(
+        rtl.n_eigenpotentials < s.dfbs.nbasis(),
+        "{label}: truncation inactive"
+    );
+    assert_eq!(
+        rtl.n_eigenpotentials, rtd.n_eigenpotentials,
+        "{label}: kept modes"
+    );
+    let d_t = (rtl.e_rpa - rtd.e_rpa).abs();
+    eprintln!(
+        "{label}: |dλ(0)| {d_lam:.2e}; trunc 1e-2 keeps {}/{} modes, |L-D| {d_t:.2e}",
+        rtl.n_eigenpotentials,
+        s.dfbs.nbasis()
+    );
+    assert!(
+        d_t <= 1e-10,
+        "{label}: truncated Lanczos vs Davidson {d_t:.2e}"
+    );
+}
+
+#[test]
+fn u_full_rank_lanczos_davidson_diagnostic_agree_oh_uhf() {
+    let ctx = ParallelContext::default();
+    let s = system(OH_XYZ, 2);
+    let uhf = solve_uhf(&ctx, &s.mol, &s.obs, &s.bounds, &tight_uhf()).unwrap();
+    assert_full_rank_solvers_agree("OH/UHF", &s, &uhf);
+}
+
+#[test]
+fn u_full_rank_lanczos_davidson_diagnostic_agree_oh_rohf() {
+    let ctx = ParallelContext::default();
+    let s = system(OH_XYZ, 2);
+    let rohf_cfg = RohfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_max_iter(300);
+    let rohf = solve_rohf(
+        &ctx,
+        &s.mol,
+        &s.obs,
+        Operator::coulomb(),
+        &s.bounds,
+        &rohf_cfg,
+    )
+    .unwrap();
+    assert_full_rank_solvers_agree("OH/ROHF", &s, &rohf);
+}
+
+#[test]
+fn u_full_rank_lanczos_davidson_diagnostic_agree_ch3_uhf() {
+    let ctx = ParallelContext::default();
+    let s = system(CH3_XYZ, 2);
+    let uhf = solve_uhf(&ctx, &s.mol, &s.obs, &s.bounds, &tight_uhf()).unwrap();
+    assert_full_rank_solvers_agree("CH3/UHF", &s, &uhf);
+}
+
+/// UHF singlet through the open-shell path ≡ closed-shell `run_pdep_rpa`,
+/// option by option (Lanczos, Laplace χ₀, run_diagnostics).
+#[test]
+fn u_singlet_matches_closed_shell_for_each_option_h2o() {
+    use ferric_rpa::config::Chi0Backend;
+    let ctx = ParallelContext::default();
+    let op = Operator::coulomb();
+    let s = system(H2O_XYZ, 1);
+    let rhf_cfg = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9);
+    let rhf = solve_rhf(&ctx, &s.mol, &s.obs, op, &s.bounds, &rhf_cfg).unwrap();
+    let uhf = solve_uhf(&ctx, &s.mol, &s.obs, &s.bounds, &tight_uhf()).unwrap();
+    assert!((uhf.energy - rhf.energy).abs() < 1e-9, "UHF singlet ≠ RHF");
+
+    let mut lanczos = cfg_full_basis();
+    lanczos.eigensolver = Eigensolver::Lanczos;
+    let mut laplace = cfg_full_basis();
+    laplace.chi0_backend = Chi0Backend::Laplace { n_quad: 7 };
+    let mut diag = cfg_full_basis();
+    diag.run_diagnostics = true;
+    // Truncated PDEP (trunc_thresh > 0): same mode count and energy.
+    let mut trunc = cfg_full_basis();
+    trunc.trunc_thresh = 1e-2;
+
+    for (label, cfg) in [
+        ("lanczos", &lanczos),
+        ("laplace", &laplace),
+        ("diagnostics", &diag),
+        ("trunc 1e-2", &trunc),
+    ] {
+        let rc = run_pdep_rpa(&s.mol, &s.obs, &s.dfbs, op, &rhf, cfg).unwrap();
+        let ru = run_u_pdep_rpa(&s.mol, &s.obs, &s.dfbs, op, &uhf, cfg).unwrap();
+        let de = (rc.e_rpa - ru.e_rpa).abs();
+        eprintln!(
+            "H2O singlet {label}: closed {:.12} open {:.12} dev {de:.2e}",
+            rc.e_rpa, ru.e_rpa
+        );
+        assert!(
+            de <= 1e-10,
+            "{label}: closed {} vs open {} dev {de:.2e}",
+            rc.e_rpa,
+            ru.e_rpa
+        );
+        assert_eq!(
+            rc.n_eigenpotentials, ru.n_eigenpotentials,
+            "{label}: mode count"
+        );
+        if cfg.run_diagnostics {
+            let (dc, du) = (rc.e_rpa_dft_diag.unwrap(), ru.e_rpa_dft_diag.unwrap());
+            assert!(
+                (dc - du).abs() <= 1e-10,
+                "diagnostic closed {dc} vs open {du}"
+            );
+        }
+    }
+}
+
+/// Config honesty: the Boys-screened χ₀ (explicit, or `Auto` resolving to it)
+/// and Laplace + inverse-dielectric are refused on the open-shell path;
+/// `Auto` resolving to Dense runs the dense path unchanged.
+#[test]
+fn u_refuses_options_it_cannot_run() {
+    use ferric_rpa::config::Chi0Backend;
+    use ferric_rpa::Chi0Sparsity;
+    let ctx = ParallelContext::default();
+    let op = Operator::coulomb();
+    let s = system("1\nh\nH 0 0 0\n", 2);
+    let uhf = solve_uhf(&ctx, &s.mol, &s.obs, &s.bounds, &tight_uhf()).unwrap();
+    let run = |cfg: &PdepRpaConfig| run_u_pdep_rpa(&s.mol, &s.obs, &s.dfbs, op, &uhf, cfg);
+
+    let mut boys = cfg_full_basis();
+    boys.chi0_sparsity = Chi0Sparsity::BoysScreened {
+        thresh: 1e-4,
+        dist_cutoff: f64::INFINITY,
+    };
+    let e = run(&boys).unwrap_err().to_string();
+    assert!(e.contains("Boys-screened"), "{e}");
+
+    let mut auto_boys = cfg_full_basis();
+    auto_boys.chi0_sparsity = Chi0Sparsity::Auto {
+        boys_thresh: 1e-4,
+        atom_cutoff: 1,
+        dist_cutoff: f64::INFINITY,
+    };
+    let e = run(&auto_boys).unwrap_err().to_string();
+    assert!(e.contains("Boys-screened"), "{e}");
+
+    let mut auto_dense = cfg_full_basis();
+    auto_dense.chi0_sparsity = Chi0Sparsity::Auto {
+        boys_thresh: 1e-4,
+        atom_cutoff: 1000,
+        dist_cutoff: f64::INFINITY,
+    };
+    let e_auto = run(&auto_dense).unwrap().e_rpa;
+    let e_dense = run(&cfg_full_basis()).unwrap().e_rpa;
+    assert_eq!(e_auto, e_dense, "Auto→Dense must be the dense path");
+
+    let mut lap_inv = cfg_full_basis();
+    lap_inv.chi0_backend = Chi0Backend::Laplace { n_quad: 7 };
+    lap_inv.need_inv_dielectric_freq = true;
+    let e = run(&lap_inv).unwrap_err().to_string();
+    assert!(e.contains("need_inv_dielectric_freq"), "{e}");
+}
+
+/// The closed-shell path refuses Laplace + inverse-dielectric too (it does not
+/// return `inv_dielectric_freq = None` without saying so).
+#[test]
+fn closed_shell_refuses_laplace_with_inverse_dielectric() {
+    use ferric_rpa::config::Chi0Backend;
+    let ctx = ParallelContext::default();
+    let op = Operator::coulomb();
+    let s = system("2\nh2\nH 0 0 0\nH 0 0 0.74\n", 1);
+    let rhf = solve_rhf(&ctx, &s.mol, &s.obs, op, &s.bounds, &RhfConfig::default()).unwrap();
+    let mut cfg = cfg_full_basis();
+    cfg.chi0_backend = Chi0Backend::Laplace { n_quad: 7 };
+    cfg.need_inv_dielectric_freq = true;
+    let e = run_pdep_rpa(&s.mol, &s.obs, &s.dfbs, op, &rhf, &cfg)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("need_inv_dielectric_freq"), "{e}");
+}
+
+/// A reference whose occupied block is not below its virtual block (negative
+/// per-spin gap) must be refused with the gap, not fed to χ₀ as NaN scale
+/// factors (which surfaced as "Full-rank PDEP eigh failed ... return_code =
+/// 69"). The β HOMO/LUMO energies of an OH/STO-3G UHF are swapped by hand.
+/// Control: the unswapped reference runs.
+#[test]
+fn u_pdep_rpa_refuses_a_negative_spin_gap() {
+    let ctx = ParallelContext::default();
+    let mol = Molecule::parse_xyz("2\n\nO 0 0 0\nH 0 0 0.97\n", 0, 2).unwrap();
+    let op = Operator::coulomb();
+    let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &UhfConfig::default()).unwrap();
+    assert!(uhf.converged);
+    let mut cfg = cfg_full_basis();
+    cfg.quadrature.n_points = 8;
+    let control =
+        run_u_pdep_rpa(&mol, &obs, &dfbs, op, &uhf, &cfg).expect("control: gapped UHF must run");
+    assert!(control.e_rpa.is_finite() && control.e_rpa < 0.0);
+
+    let mut bad = uhf.clone();
+    let eb = bad.eps_beta.as_mut().unwrap();
+    eb.swap(3, 4); // nocc_beta = 4
+    let err = run_u_pdep_rpa(&mol, &obs, &dfbs, op, &bad, &cfg).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("beta orbital energies are not gapped"),
+        "{msg}"
+    );
+
+    // A NaN that is not the HOMO: f64::max skips it, so the extremes alone
+    // still look gapped. Every energy must be checked.
+    let mut nan = uhf.clone();
+    nan.eps_beta.as_mut().unwrap()[1] = f64::NAN;
+    let err = run_u_pdep_rpa(&mol, &obs, &dfbs, op, &nan, &cfg).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("beta orbital energies are not gapped"),
+        "{msg}"
+    );
 }

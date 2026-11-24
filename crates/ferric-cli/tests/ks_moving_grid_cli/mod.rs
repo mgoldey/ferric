@@ -26,18 +26,9 @@ pub const CLI_THREADS: usize = 2;
 pub const SCF: &str =
     "[scf]\nmax_iter = 200\nenergy_conv = 1e-13\ndensity_conv = 1e-11\ndf_guess = false\n";
 
-/// See `ccsd_dispatch.rs`: resolved at RUN time for `cargo nextest archive`.
-pub fn ferric_cli_bin() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(profile_dir) = exe.parent().and_then(Path::parent) {
-            let p = profile_dir.join("ferric-cli");
-            if p.is_file() {
-                return p;
-            }
-        }
-    }
-    PathBuf::from(env!("CARGO_BIN_EXE_ferric-cli"))
-}
+#[path = "../support/cli_bin.rs"]
+mod cli_bin;
+pub use cli_bin::ferric_cli_bin;
 
 /// See `ccsd_dispatch.rs`: resolved at RUN time for `cargo nextest archive`.
 pub fn workspace_root() -> PathBuf {
@@ -201,15 +192,13 @@ pub fn assert_same_record(a: &Freq, b: &Freq, what: &str) {
 /// The `RhfConfig` the CLI builds from [`run_cli_ok`]'s TOML: a Kohn-Sham
 /// SCF fits J and K over the default basis, the rest are the CLI defaults.
 pub fn library_config(xc: &str) -> RhfConfig {
-    RhfConfig {
-        xc: Some(xc.to_string()),
-        df_j_aux: Some("def2-universal-jkfit".to_string()),
-        df_k_aux: Some("def2-universal-jkfit".to_string()),
-        max_iter: 200,
-        energy_conv: 1e-13,
-        density_conv: 1e-11,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc(xc.to_string())
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit")
+        .with_max_iter(200)
+        .with_energy_conv(1e-13)
+        .with_density_conv(1e-11)
 }
 
 /// Run `f` on a rayon pool of [`CLI_THREADS`] threads.

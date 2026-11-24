@@ -54,10 +54,7 @@ fn setup(xyz: &str) -> Setup {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_energy_conv(1e-10),
     )
     .unwrap();
     Setup {
@@ -322,6 +319,7 @@ fn finite_eps_trivial_maps_matches_global_path() {
 /// |E(1e-3) − E(1e-4)| at trivial maps (the C8 spin-orbital canonical and
 /// the ε=0 solve are unaffordable in CI; the 1e-3→1e-4 delta is a lower
 /// bound on the 1e-3 truncation, so passing this bar is conservative).
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn production_maps_error_is_subdominant_to_eps_truncation() {
     let su = setup("alkane_8.xyz");

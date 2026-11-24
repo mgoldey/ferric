@@ -196,7 +196,8 @@
 //! none, for ALL `r0` and `w`, including the decoupled `(r0, omega)` family.
 //!
 //! **`Terf` is NOT positive-definite, and is therefore OUT OF SCOPE for CSB
-//! and for plain Schwarz alike.** Since `terf = Coulomb - terfc`:
+//! and for plain Schwarz alike** (CSB through its Schwarz term `Q*Q`; the
+//! `M*M` terms alone need only a pointwise non-negative kernel). Since `terf = Coulomb - terfc`:
 //!
 //! ```text
 //!   F_terf(k) = 1/(2 pi^2 k^2) - F_terfc(k)
@@ -400,7 +401,7 @@ pub fn csb_m_table(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, Fe
         // is `min{Q Q, M M, M M}` and every one of those terms comes from the
         // SAME Cauchy-Schwarz argument, so CSB inherits Schwarz's requirement
         // that the kernel be positive-definite. terf is not (sign change at
-        // k*r0 = pi; measured -7.543e-3 diagonal), so CSB is invalid there
+        // k*r0 = pi/2; measured -7.543e-3 diagonal), so CSB is invalid there
         // permanently. terfc IS positive-definite and CSB-eligible; the
         // 4-center engine it needed now exists (shim.cc compute_cart_eri4), and
         // the bound has been measured for Schwarz on water/cc-pVDZ at r0=2
@@ -409,9 +410,10 @@ pub fn csb_m_table(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, Fe
         // in schwarz.rs.
         OperatorKind::Terf => {
             return Err(FerricError::Libint(
-                "CSB screening is INVALID for the Terf operator, not merely unimplemented: CSB's \
-                 M terms come from the same Cauchy-Schwarz argument as Schwarz, and terf's \
-                 kernel is not positive-definite. See schwarz() for the measured evidence."
+                "CSB screening is INVALID for the Terf operator, not merely unimplemented: the \
+                 CSB minimum contains the Schwarz term Q*Q, which needs a positive-definite \
+                 kernel, and terf's kernel is not positive-definite (the M*M terms alone need \
+                 only terf(r) >= 0). See schwarz() for the measured evidence."
                     .to_string(),
             ))
         }

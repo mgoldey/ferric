@@ -20,8 +20,10 @@
 //! `auto_is_the_moving_grid_hessian_for_closed_shell_ks`: `Auto` ==
 //! `AnalyticMovingGrid` bit for bit (water/STO-3G, LDA and PBE).
 //! `auto_falls_back_to_finite_differences_where_unsupported`: `Auto` ==
-//! `FiniteDifference` bit for bit for meta-GGA (SCAN), an open-shell UKS
-//! reference and a pruned grid (H2/STO-3G). The dispersion surface is a
+//! `FiniteDifference` bit for bit for meta-GGA (SCAN), closed shell and UKS
+//! (H2 singlet and triplet / STO-3G; an LDA/GGA UKS reference takes the
+//! analytic UKS Hessian, `uks_moving_grid_hessian.rs`). The default (pruned, weight-cut) grid takes the
+//! moving-grid route. The dispersion surface is a
 //! separate driver (`harmonic_frequencies_with_scf_correction`, always finite
 //! differences); its `Auto` is pinned through the CLI and Python.
 //!
@@ -34,8 +36,7 @@
 //! SCF runs and the RHF Hessian's post-SCF message lacks the KS prefix); the
 //! `check_scf_correction_config` branch deleted fails
 //! `the_dispersion_driver_refuses_it`; the preflight call
-//! deleted from `harmonic_frequencies_ks_moving_grid` fails the HF and
-//! pruned-grid cases here (the post-SCF messages differ) and every preflight
+//! deleted from `harmonic_frequencies_ks_moving_grid` fails the HF case here (the post-SCF messages differ) and every preflight
 //! case of the CLI test (SCF iterations logged). `Auto` routed back to finite
 //! differences for KS (the `Auto` arm of `analytic_route` deleted) fails
 //! `auto_is_the_moving_grid_hessian_for_closed_shell_ks` (`hessian_source`
@@ -112,39 +113,23 @@ fn run_op(
 }
 
 fn ks(xc: &str) -> RhfConfig {
-    RhfConfig {
-        xc: Some(xc.into()),
-        ..Default::default()
-    }
+    RhfConfig::default().with_xc(xc)
 }
 
 #[test]
 fn every_refusal_is_named() {
     let water = Molecule::parse_xyz(WATER, 0, 1).unwrap();
     let h2_triplet = Molecule::parse_xyz("2\nh2\nH 0 0 0\nH 0 0 0.74\n", 0, 3).unwrap();
-    let svp = basis::bundled("def2-svp").unwrap();
-    let mut hi = Molecule::parse_xyz("2\nHI\nH 0 0 0\nI 0 0 1.75\n", 0, 1).unwrap();
-    hi.apply_ecp(&svp);
     let rhf = FrequencyReference::Rhf;
-    let pruned = RhfConfig {
-        dft_grid: Some(AtomicGridConfig {
-            prune: Some(ferric_dft::prune::PruneScheme::NwchemLike),
-            ..Default::default()
-        }),
-        ..ks("LDA")
-    };
-    let embedded = RhfConfig {
-        external_potential: Some(ExternalPotential {
-            point_charges: vec![PointCharge {
-                q: 0.5,
-                x: 0.0,
-                y: 0.0,
-                z: 6.0,
-            }],
-            ..Default::default()
-        }),
-        ..ks("LDA")
-    };
+    let embedded = ks("LDA").with_external_potential(ExternalPotential {
+        point_charges: vec![PointCharge {
+            q: 0.5,
+            x: 0.0,
+            y: 0.0,
+            z: 6.0,
+        }],
+        ..Default::default()
+    });
     // (label, message, fragments it must carry)
     let cases: Vec<(&str, String, Vec<&str>)> = vec![
         (
@@ -153,9 +138,9 @@ fn every_refusal_is_named() {
             vec!["Hartree-Fock has no XC grid"],
         ),
         (
-            "UKS",
-            run(&h2_triplet, "sto-3g", ks("LDA"), FrequencyReference::Uhf),
-            vec!["open-shell (Uhf", "spin-polarized XC kernel"],
+            "UKS meta-GGA",
+            run(&h2_triplet, "sto-3g", ks("SCAN"), FrequencyReference::Uhf),
+            vec![PREFIX, "a meta-GGA ('SCAN')"],
         ),
         (
             "ROKS",
@@ -178,31 +163,13 @@ fn every_refusal_is_named() {
             vec![PREFIX, "a range-separated hybrid ('HSE06')"],
         ),
         (
-            "ECP",
-            run(&hi, "def2-svp", ks("LDA"), rhf),
-            vec![PREFIX, "an ECP or an external potential"],
-        ),
-        (
             "external potential",
             run(&water, "sto-3g", embedded, rhf),
-            vec![PREFIX, "an ECP or an external potential"],
-        ),
-        (
-            "pruned grid",
-            run(&water, "sto-3g", pruned, rhf),
-            vec![PREFIX, "an angular-pruned XC grid"],
+            vec![PREFIX, "an external potential"],
         ),
         (
             "MOM",
-            run(
-                &water,
-                "sto-3g",
-                RhfConfig {
-                    mom_after_iter: 3,
-                    ..ks("LDA")
-                },
-                rhf,
-            ),
+            run(&water, "sto-3g", ks("LDA").with_mom_after_iter(3), rhf),
             vec![PREFIX, "maximum-overlap (MOM) occupations"],
         ),
         (
@@ -210,9 +177,10 @@ fn every_refusal_is_named() {
             run(
                 &water,
                 "sto-3g",
-                RhfConfig {
-                    smearing_sigma: Some(1e-3),
-                    ..ks("LDA")
+                {
+                    let mut c = ks("LDA");
+                    c.smearing_sigma = Some(1e-3);
+                    c
                 },
                 rhf,
             ),
@@ -254,10 +222,7 @@ fn the_route_reaches_the_moving_grid_hessian() {
         return;
     }
     let water = Molecule::parse_xyz(WATER, 0, 1).unwrap();
-    let cfg = RhfConfig {
-        density_conv: 1e-9,
-        ..ks("PBE")
-    };
+    let cfg = ks("PBE").with_density_conv(1e-9);
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
     let routed = harmonic_frequencies(
@@ -278,6 +243,9 @@ fn the_route_reaches_the_moving_grid_hessian() {
     let bs = basis::bundled("sto-3g").unwrap();
     let prep = ferric_integrals::basis_bridge::PreparedBasis::new(&water, &bs).unwrap();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    // The frequency driver is a geometry task (an unset RI-J precision is
+    // f64 there), so the direct pieces run on the same config.
+    let cfg = cfg.for_geometry_task();
     let res = solve_rhf(&ctx, &water, &prep, op, &bounds, &cfg).unwrap();
     let direct = rks_moving_grid_hessian(&ctx, &water, &prep, op, &bounds, &res, &cfg).unwrap();
     assert_eq!(routed.energy.to_bits(), res.energy.to_bits(), "energy");
@@ -378,24 +346,27 @@ fn auto_is_the_moving_grid_hessian_for_closed_shell_ks() {
     }
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn auto_falls_back_to_finite_differences_where_unsupported() {
     let h2 = Molecule::parse_xyz("2\nh2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
-    let pruned = RhfConfig {
-        dft_grid: Some(AtomicGridConfig {
-            prune: Some(ferric_dft::prune::PruneScheme::NwchemLike),
-            ..Default::default()
-        }),
-        ..ks("LDA")
-    };
     let cases = [
         ("meta-GGA (SCAN)", ks("SCAN"), FrequencyReference::Rhf),
-        ("open-shell UKS", ks("LDA"), FrequencyReference::Uhf),
-        ("pruned grid", pruned, FrequencyReference::Rhf),
+        (
+            "open-shell UKS meta-GGA",
+            ks("SCAN"),
+            FrequencyReference::Uhf,
+        ),
     ];
+    let h2_triplet = Molecule::parse_xyz("2\nh2\nH 0 0 0\nH 0 0 0.74\n", 0, 3).unwrap();
     for (label, cfg, reference) in cases {
-        let auto = freq(&h2, &cfg, reference, HessianMethod::Auto);
-        let fd = freq(&h2, &cfg, reference, HessianMethod::FiniteDifference);
+        let mol = if reference == FrequencyReference::Uhf {
+            &h2_triplet
+        } else {
+            &h2
+        };
+        let auto = freq(mol, &cfg, reference, HessianMethod::Auto);
+        let fd = freq(mol, &cfg, reference, HessianMethod::FiniteDifference);
         assert_eq!(
             auto.hessian_source,
             HessianSource::FiniteDifference,
@@ -427,16 +398,16 @@ fn auto_sends_a_system_above_the_response_table_cap_to_fd_before_the_scf() {
     }
     use ferric_scf::ks_fixed_grid::ResponseTableCapOverride;
     let h2 = Molecule::parse_xyz("2\nh2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
-    let cfg = ks("LDA");
+    // The flat 75 x 110 grid, so the point count (2 x 8250) is derivable.
+    let cfg = ks("LDA").with_dft_grid(AtomicGridConfig::default());
     let rhf = FrequencyReference::Rhf;
     {
         let _cap = ResponseTableCapOverride::new(263_999);
-        let one_iteration = RhfConfig {
-            max_iter: 1,
-            energy_conv: 1e-14,
-            density_conv: 1e-14,
-            ..ks("LDA")
-        };
+        let one_iteration = cfg
+            .clone()
+            .with_max_iter(1)
+            .with_energy_conv(1e-14)
+            .with_density_conv(1e-14);
         let msg = run(&h2, "sto-3g", one_iteration, rhf);
         assert!(
             msg.contains("resident AO table") && msg.contains("2 basis functions x 16500"),
@@ -483,12 +454,10 @@ fn auto_returns_a_non_converged_scf() {
         return;
     }
     let water = Molecule::parse_xyz(WATER, 0, 1).unwrap();
-    let cfg = RhfConfig {
-        max_iter: 1,
-        energy_conv: 1e-14,
-        density_conv: 1e-14,
-        ..ks("LDA")
-    };
+    let cfg = ks("LDA")
+        .with_max_iter(1)
+        .with_energy_conv(1e-14)
+        .with_density_conv(1e-14);
     let err = harmonic_frequencies(
         &ParallelContext::default(),
         &water,

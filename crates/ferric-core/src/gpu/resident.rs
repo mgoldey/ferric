@@ -8,7 +8,7 @@
 //!
 //! All size arithmetic is checked: an element count whose byte size overflows
 //! `usize` is a typed `GpuError::Layout`, never a wrap or a panic.
-use cudarc::driver::CudaSlice;
+use cudarc::driver::{CudaSlice, LaunchConfig, PushKernelArg};
 use ndarray::ArrayView2;
 
 use super::device::{Device, GpuError};
@@ -157,6 +157,64 @@ impl DeviceMatrix<f32> {
             buf,
             rows: m.nrows(),
             cols: m.ncols(),
+            bytes,
+            _lease: lease,
+        })
+    }
+}
+
+impl DeviceMatrix<f32> {
+    /// `src` rounded to f32 ON THE DEVICE (round-to-nearest-even, the same
+    /// rounding as [`upload_rounded`](Self::upload_rounded), so the two copies
+    /// are bit-identical), moving no bytes over PCIe. Charges `4·rows·cols`
+    /// under `label`. A finite element beyond `f32::MAX` is refused
+    /// (`GpuError::F32Range`, the charge released); an unloadable kernel is
+    /// `GpuError::Kernel`, reported before the pool is touched.
+    pub fn round_from_device(
+        dev: &Device,
+        pool: &DevicePool,
+        label: &str,
+        src: &DeviceMatrix<f64>,
+    ) -> Result<Self, GpuError> {
+        let func = dev.round_f64_to_f32()?;
+        let len = src.rows * src.cols;
+        let bytes = byte_len(len, 4)?;
+        let lease = pool.reserve(label, bytes)?;
+        let cuda =
+            |what: &str, e: &dyn std::fmt::Debug| GpuError::Cuda(format!("{what} {label}: {e:?}"));
+        let s = &dev.stream;
+        // SAFETY: allocation only; every element is written by the kernel below.
+        let mut buf = unsafe { s.alloc::<f32>(len) }.map_err(|e| cuda("alloc", &e))?;
+        let mut flag = s
+            .alloc_zeros::<u32>(1)
+            .map_err(|e| cuda("alloc flag", &e))?;
+        let n_elems = len as u64;
+        let cfg = LaunchConfig {
+            grid_dim: (len.div_ceil(256).clamp(1, 4096) as u32, 1, 1),
+            block_dim: (256, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        // SAFETY: the kernel signature is (float*, const double*, u64, u32*);
+        // `buf` and `src.buf` hold exactly `len` elements and `flag` one.
+        unsafe {
+            s.launch_builder(func)
+                .arg(&mut buf)
+                .arg(&src.buf)
+                .arg(&n_elems)
+                .arg(&mut flag)
+                .launch(cfg)
+        }
+        .map_err(|e| cuda("round_f64_to_f32", &e))?;
+        let overflow = s.clone_dtoh(&flag).map_err(|e| cuda("D2H flag", &e))?;
+        if overflow.first().copied().unwrap_or(0) != 0 {
+            return Err(GpuError::F32Range(format!(
+                "{label}: an element exceeds f32::MAX"
+            )));
+        }
+        Ok(Self {
+            buf,
+            rows: src.rows,
+            cols: src.cols,
             bytes,
             _lease: lease,
         })

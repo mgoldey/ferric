@@ -172,8 +172,9 @@ impl StabilityKind {
 pub struct StabilityResult {
     /// Which rotation space this verdict covers.
     pub kind: StabilityKind,
-    /// Lowest eigenvalue of the electronic orbital Hessian, in Hartree per
-    /// (radian²) of orbital rotation. Negative ⇒ a downhill rotation exists.
+    /// Lowest eigenvalue of the code's Newton operator (Hartree): a quarter of
+    /// the curvature per radian² of orbital rotation for RHF, half for UHF.
+    /// Negative ⇒ a downhill rotation exists.
     pub lowest_eigenvalue: f64,
     /// **NOT-PROVEN-UNSTABLE**, i.e. `lowest_eigenvalue > -noise_floor`.
     ///
@@ -356,9 +357,33 @@ pub struct StabilityConfig {
     /// `davidson_single_root_converges_inside_a_symmetry_block`.
     pub n_block: usize,
     /// Extra safety margin folded into [`StabilityResult::noise_floor`] on top
-    /// of the achieved eigensolver residual. Defaults to `1e-6` Ha: the
-    /// Hessian matvec rebuilds J/K at `integral_thresh`, so eigenvalues below
-    /// roughly this magnitude are not meaningfully resolved.
+    /// of the achieved eigensolver residual. Defaults to `1e-6` Ha: eigenvalues
+    /// below roughly this magnitude are not meaningfully resolved by the
+    /// response builds (integral screening at `integral_thresh`, fitting).
+    ///
+    /// # Which Hessian
+    ///
+    /// The matvec's response J/K come from the SCF's own builders, so λ is the
+    /// curvature of the energy the SCF minimised: RI-J / DF-K on a fitted
+    /// route, `DirectJ` / `DirectK` for the direct half of a mixed route, a
+    /// direct four-centre build at `integral_thresh` on an all-exact route
+    /// (and for the K half of RIJCOSX, whose COSX K is not lent; see
+    /// `rhf::lend_scf_jk`). On a fitted route that curvature differs from the
+    /// exact-integral one by the fitting error, which can exceed this floor:
+    /// measured at the same converged fitted point (cc-pVDZ,
+    /// def2-universal-jkfit), RHF water internal λ_min 0.350237639 vs
+    /// 0.350241800 with the exact response (4.2e-6 Ha, rel 1.2e-5), external
+    /// 4.9e-6 Ha, UHF NH2 2.0e-6 Ha (rel 2.5e-5).
+    ///
+    /// Near zero this decides the verdict. OH ²Π UHF has an exact zero mode
+    /// (the β hole's rotation about the axis; PySCF λ₀ = −7e-13 with exact
+    /// integrals, asserted MARGINAL by `validation_scf_stability.rs`). On a
+    /// fitted route the fitted Hessian keeps it a zero mode (λ_min 8.8e-10,
+    /// MARGINAL), while the exact response at the same fitted point puts
+    /// 5.6e-6 Ha of curvature on it, which would read STABLE: that curvature
+    /// belongs to neither energy. Pinned by
+    /// `oh_pi_radical_on_a_fitted_route_is_marginal` in
+    /// `tests/mixed_route_second_order_wiring.rs`.
     pub noise_floor: f64,
 }
 
@@ -489,6 +514,24 @@ pub fn rhf_internal_stability(
     inp: &RhfNewtonInputs,
     cfg: &StabilityConfig,
 ) -> Result<StabilityResult, FerricError> {
+    rhf_internal_stability_jk(ctx, inp, None, cfg)
+}
+
+/// [`rhf_internal_stability`] with the matvec's response J/K from the SCF's
+/// own builders when `jk` lends them
+/// ([`rhf_newton::ScfJkResponse`](crate::rhf_newton::ScfJkResponse)): the
+/// Hessian of the fitted (or mixed-route) energy the SCF converged, rather than of
+/// the exact four-centre one. `None` is [`rhf_internal_stability`].
+///
+/// # Errors
+///
+/// As [`rhf_internal_stability`].
+pub fn rhf_internal_stability_jk(
+    ctx: &ParallelContext,
+    inp: &RhfNewtonInputs,
+    jk: Option<&crate::rhf_newton::ScfJkResponse<'_, '_>>,
+    cfg: &StabilityConfig,
+) -> Result<StabilityResult, FerricError> {
     let n = inp.c.nrows();
     let no = inp.nocc;
     let nv = n - no;
@@ -519,7 +562,7 @@ pub fn rhf_internal_stability(
     let matvec = |v: &[f64]| -> Result<Vec<f64>, FerricError> {
         let k = Array2::from_shape_vec((nv, no), v.to_vec())
             .expect("rotation block shape is (nvirt, nocc) by construction");
-        let h = crate::rhf_newton::hessian_matvec(ctx, inp, &k, &pool)?;
+        let h = crate::rhf_newton::hessian_matvec_jk(ctx, inp, &k, &pool, jk)?;
         Ok(h.iter().copied().collect())
     };
 
@@ -581,6 +624,23 @@ pub fn rhf_external_stability(
     inp: &RhfNewtonInputs,
     cfg: &StabilityConfig,
 ) -> Result<StabilityResult, FerricError> {
+    rhf_external_stability_jk(ctx, inp, None, cfg)
+}
+
+/// [`rhf_external_stability`] with the triplet exchange response from the
+/// SCF's own ω = 0 exchange builder when `jk` lends one
+/// ([`rhf_newton::triplet_hessian_matvec_jk`](crate::rhf_newton::triplet_hessian_matvec_jk)).
+/// `None` is [`rhf_external_stability`].
+///
+/// # Errors
+///
+/// As [`rhf_external_stability`].
+pub fn rhf_external_stability_jk(
+    ctx: &ParallelContext,
+    inp: &RhfNewtonInputs,
+    jk: Option<&crate::rhf_newton::ScfJkResponse<'_, '_>>,
+    cfg: &StabilityConfig,
+) -> Result<StabilityResult, FerricError> {
     if inp.fxc.is_some() {
         return Err(FerricError::General(format!(
             "RHF external (RHF->UHF triplet) stability analysis: {}",
@@ -620,7 +680,7 @@ pub fn rhf_external_stability(
     let matvec = |v: &[f64]| -> Result<Vec<f64>, FerricError> {
         let k = Array2::from_shape_vec((nv, no), v.to_vec())
             .expect("rotation block shape is (nvirt, nocc) by construction");
-        let h = crate::rhf_newton::triplet_hessian_matvec(ctx, inp, &k, &pool)?;
+        let h = crate::rhf_newton::triplet_hessian_matvec_jk(ctx, inp, &k, &pool, jk)?;
         Ok(h.iter().copied().collect())
     };
 
@@ -656,24 +716,31 @@ fn noise_floor_of(cfg: &StabilityConfig, residual: f64) -> f64 {
 /// Lowest eigenpair from a fallible matvec, with residual reporting.
 #[derive(Debug, Clone)]
 pub struct LowestEigenpair {
+    /// Lowest Ritz value found.
     pub eigenvalue: f64,
+    /// The corresponding Ritz vector, length `dim`.
     pub eigenvector: Vec<f64>,
+    /// Residual norm `‖Hv − θv‖` of that vector.
     pub residual: f64,
+    /// Davidson iterations run (0 for the exact `dim == 1` case).
     pub iterations: usize,
+    /// Whether the iteration met the convergence test (see
+    /// [`davidson_lowest`]).
     pub converged: bool,
 }
 
 /// Davidson iteration for the algebraically LOWEST eigenvalue of a symmetric
 /// operator supplied as `matvec: v ↦ Hv`.
 ///
-/// This is a third Davidson in the workspace, and that is deliberate rather
-/// than sloppy: `ferric_rpa::davidson` cannot be imported (ferric-rpa depends
-/// on ferric-scf), the in-crate [`davidson_local`](crate::davidson_local) copy
-/// takes a *projected-matrix* closure shaped for the dielectric operator
-/// rather than a plain `Hv`, and `ferric_ci::davidson` lives in a crate that
-/// depends on this one. What is genuinely new here is that the matvec is
-/// **fallible** — a J/K build inside the orbital Hessian can fail, and that
-/// must propagate as an `Err`, never be unwrapped inside the iteration.
+/// `ferric_rpa::davidson` cannot be imported here (ferric-rpa depends on
+/// ferric-scf) and takes a *projected-matrix* closure shaped for the
+/// dielectric operator rather than a plain `Hv`; `ferric_ci::davidson` lives
+/// in a crate that depends on this one. (ferric-scf's own projected-matrix
+/// copy, a `davidson_local`, would not do: its residual is formed inside the
+/// subspace and is identically zero, so an ROHF AH step using it never moves;
+/// the AH step calls this function.) The matvec is **fallible**: a J/K build
+/// inside the orbital Hessian can fail, and that must propagate as an `Err`,
+/// never be unwrapped inside the iteration.
 ///
 /// The returned pair is variational (Rayleigh–Ritz over the built subspace),
 /// so `eigenvalue` is an upper bound on the true λ_min even when `converged`
@@ -1012,9 +1079,11 @@ pub enum StabilitySkip {
     /// at MO coefficients that are not a UHF stationary point — a wrong-operator
     /// verdict that would look authoritative. Skipped deliberately.
     Rohf,
-    /// The functional carries VV10 nonlocal correlation, whose linear response
-    /// exists NOWHERE in this workspace: `ferric_dft::fxc` has no VV10 term, so
-    /// `rohf::FxcKernelStore` silently omits it.
+    /// The functional carries VV10 nonlocal correlation. Its linear response
+    /// exists (`ferric_dft::vv10::Vv10Response`, used by the Python block
+    /// CPKS through `XcFunctional.response`) but is not wired into the
+    /// stability Hessian: `ferric_dft::fxc` has no VV10 term, so
+    /// `rohf::FxcKernelStore` would silently omit it.
     /// `zvector_ks` and `ferric_dft::lr_kernel::resolve_singlet_response_xc`
     /// refuse VV10 functionals for the same reason.
     ///
@@ -1025,10 +1094,6 @@ pub enum StabilitySkip {
     /// VV10 gap, which is a SEPARATE missing term in the XC response rather
     /// than a wrong exchange kernel.
     Vv10Kernel,
-    /// Meta-GGA functional. There is no τ-dependent f_xc kernel in this
-    /// workspace (`xc_is_metagga` gates the Newton f_xc path for the same
-    /// reason), so the XC response term of the Hessian cannot be formed.
-    MetaGga,
     /// A per-iteration Fock modifier was active (the cDFT path,
     /// `solve_uhf_fockmod` with `fock_mod = Some(..)`). Such a run converges
     /// the CONSTRAINED Fock, so the Brillouin condition that holds at its exit
@@ -1052,6 +1117,25 @@ pub enum StabilitySkip {
     /// prevent — so a KS reference is refused here. The INTERNAL (singlet)
     /// verdict is unaffected and is still computed.
     TripletXcKernel,
+    /// The SCF ran in a responsive environment: PCM or COSMO implicit
+    /// solvent, or polarizable embedding. Each adds a density-dependent
+    /// reaction-field term to the converged Fock, and neither orbital
+    /// Hessian here has the matching response term. A verdict would describe
+    /// the vacuum Hessian at the solvated density, and a descent would follow
+    /// it, so both are skipped.
+    Solvent,
+}
+
+/// `Err(StabilitySkip::Solvent)` when `config` puts the SCF in a responsive
+/// environment (PCM, COSMO or polarizable embedding). The one gate shared by
+/// the RHF and UHF/UKS stability checks; static point charges have no
+/// response and are not refused.
+pub fn environment_is_analysable(config: &crate::rhf::RhfConfig) -> Result<(), StabilitySkip> {
+    if config.pcm.is_some() || config.cosmo.is_some() || config.polarizable.is_some() {
+        Err(StabilitySkip::Solvent)
+    } else {
+        Ok(())
+    }
 }
 
 impl StabilitySkip {
@@ -1070,11 +1154,6 @@ impl StabilitySkip {
                  functional's own energy contains (the range-separated exchange response \
                  itself IS now built, from the converged Fock's own SR/LR fitters)"
             }
-            StabilitySkip::MetaGga => {
-                "the functional is a meta-GGA and no tau-dependent f_xc kernel exists in \
-                 this workspace, so the XC response term of the orbital Hessian cannot \
-                 be formed"
-            }
             StabilitySkip::FockModified => {
                 "a per-iteration Fock modifier (cDFT constraint) was active, so the converged \
                  state is stationary for the CONSTRAINED Fock and not for the bare UHF one that \
@@ -1087,18 +1166,22 @@ impl StabilitySkip {
                  in this workspace supplies the singlet combination f_aa + f_ab; the external \
                  check is refused rather than analysing the HF triplet Hessian at a KS density"
             }
+            StabilitySkip::Solvent => {
+                "the SCF ran with PCM/COSMO implicit solvent or polarizable embedding, whose \
+                 reaction-field response the orbital Hessian does not include, so the verdict \
+                 (and any descent from it) would belong to the vacuum Hessian, not to the \
+                 solvated solution"
+            }
         }
     }
 }
 
-/// Decide whether a KS/HF reference can be analysed at all, given the
-/// functional's range-separation and meta-GGA status.
+/// Decide whether a KS/HF reference can be analysed at all.
 ///
 /// Returns `Ok(())` when the reference is analysable with the operators that
-/// exist, or `Err(skip)` naming the precondition that failed. Mirrors EXACTLY
-/// the gates the Newton paths use (`k_mix.omega == 0.0` and
-/// `!rohf::xc_is_metagga(xc)`), because the stability analysis drives the same
-/// `hessian_matvec` those gates protect.
+/// exist, or `Err(skip)` naming the precondition that failed. LDA, GGA,
+/// hybrid, range-separated and τ-only meta-GGA references are analysable
+/// (`rohf::FxcKernelStore` builds their f_xc); VV10 is not.
 ///
 /// It deliberately does NOT gate on `xc.is_some()`: an LDA/GGA/hybrid KS
 /// reference IS analysable, provided the caller threads the same `fxc`
@@ -1116,9 +1199,6 @@ pub fn ks_reference_is_analysable(xc: Option<&str>, omega: f64) -> Result<(), St
     // see the note there — and because removing it would silently change every
     // caller's argument list.
     let _ = omega;
-    if crate::rohf::xc_is_metagga(xc) {
-        return Err(StabilitySkip::MetaGga);
-    }
     // VV10 nonlocal correlation has NO response kernel anywhere in this
     // workspace: `ferric_dft::fxc` does not mention it, so
     // `rohf::FxcKernelStore` silently omits it, and `zvector_ks` and

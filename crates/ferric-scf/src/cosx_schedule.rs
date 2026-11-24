@@ -39,6 +39,7 @@
 use crate::cosx_k::{validate_grid, CosxConfig};
 use crate::diis::HistoryReset;
 use crate::fock::KBuilder;
+use crate::options::KBuilderKind;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
@@ -82,6 +83,7 @@ impl Default for CosxGridSchedule {
                 n_radial,
                 n_angular,
                 prune,
+                weight_cut: None,
             },
             switch_dp_max: COSX_DEFAULT_SWITCH_DP_MAX,
         }
@@ -137,10 +139,14 @@ pub(crate) struct ScheduleRun {
 /// Start a schedule for a run whose resolved pluggable K is `k_kind`. `None`
 /// (no schedule, or K is not COSX) makes every helper here a pass-through.
 pub(crate) fn start(
-    k_kind: Option<&str>,
+    k_kind: Option<KBuilderKind>,
     cfg: &CosxConfig,
 ) -> Result<Option<ScheduleRun>, FerricError> {
-    let Some(s) = cfg.schedule.as_ref().filter(|_| k_kind == Some("cosx")) else {
+    let Some(s) = cfg
+        .schedule
+        .as_ref()
+        .filter(|_| k_kind == Some(KBuilderKind::Cosx))
+    else {
         return Ok(None);
     };
     s.validate()?;
@@ -155,11 +161,11 @@ pub(crate) fn start(
 /// Hard error for a solver without schedule support (`solver`, e.g.
 /// "ROHF/ROKS") when a schedule is configured and K is COSX.
 pub(crate) fn refuse(
-    k_kind: Option<&str>,
+    k_kind: Option<KBuilderKind>,
     cfg: &CosxConfig,
     solver: &str,
 ) -> Result<(), FerricError> {
-    if k_kind == Some("cosx") && cfg.schedule.is_some() {
+    if k_kind == Some(KBuilderKind::Cosx) && cfg.schedule.is_some() {
         return Err(FerricError::General(format!(
             "COSX grid schedule is implemented for RHF/RKS and UHF/UKS, not {solver}; \
              unset it for {solver} runs"
@@ -171,7 +177,7 @@ pub(crate) fn refuse(
 /// Everything `fock_assembly::build_pluggable_k` needs, so the solver loops
 /// can hand the schedule one value to rebuild the exchange builder from.
 pub(crate) struct KBuilderArgs<'a, B> {
-    pub kind: Option<&'a str>,
+    pub kind: Option<KBuilderKind>,
     pub ctx: &'a ParallelContext,
     pub mol: &'a Molecule,
     pub prep: &'a PreparedBasis,
@@ -314,7 +320,7 @@ mod tests {
             schedule: Some(CosxGridSchedule::default()),
             ..CosxConfig::default()
         };
-        start(Some("cosx"), &cfg).unwrap()
+        start(Some(KBuilderKind::Cosx), &cfg).unwrap()
     }
 
     #[test]
@@ -323,9 +329,9 @@ mod tests {
             schedule: Some(CosxGridSchedule::default()),
             ..CosxConfig::default()
         };
-        assert!(start(Some("link"), &cfg).unwrap().is_none());
+        assert!(start(Some(KBuilderKind::Link), &cfg).unwrap().is_none());
         assert!(start(None, &cfg).unwrap().is_none());
-        assert!(start(Some("cosx"), &CosxConfig::default())
+        assert!(start(Some(KBuilderKind::Cosx), &CosxConfig::default())
             .unwrap()
             .is_none());
         let mut none = None;
@@ -371,6 +377,7 @@ mod tests {
                 n_radial: 25,
                 n_angular: 26,
                 prune: Some(ferric_dft::prune::PruneScheme::Sgx),
+                weight_cut: None,
             },
             ..Default::default()
         };

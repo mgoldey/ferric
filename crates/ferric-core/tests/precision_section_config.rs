@@ -191,7 +191,7 @@ fn cpu_only_mixed_needs_every_kernel_to_have_a_cpu_path() {
         err,
         "[precision] mode = mixed requires mode = auto or on (FERRIC_GPU / [gpu] mode is \
          off): rimp2-energy runs only on a device; CPU mixed-precision kernels in this \
-         build: none"
+         build: dfj-f32"
     );
     // The historical alias message keeps its prefix.
     let err = GpuSettings::resolve(
@@ -234,7 +234,7 @@ fn cpu_only_mixed_needs_every_kernel_to_have_a_cpu_path() {
     )
     .unwrap_err();
     assert!(
-        err.ends_with("rimp2-energy runs only on a device; CPU mixed-precision kernels in this build: cosx-kern"),
+        err.ends_with("rimp2-energy runs only on a device; CPU mixed-precision kernels in this build: cosx-kern, dfj-f32"),
         "{err}"
     );
     // ...and the default (shipped) set with the GPU off is refused too.

@@ -28,6 +28,12 @@
 //! Artifact hypothesis, written before measuring: a broken composition (ECP
 //! term lost or doubled in the fitted route) misses FD by 1e-2..1e-1, a correct
 //! one sits at the FD floor <1e-6.
+// RI-J pinned to the f64 tensor (`ri_j_precision: Some(F64)` in every config
+// here): these tests validate f64 implementation code against finite
+// differences, another tier or f64 reference values at bars below the f32
+// default's effect (its energy shift is ~1e-6 Ha, and its energy surface jitters
+// by ~1e-7..1e-6 Ha between nearby geometries; site/src/methods/scf.md, "RI-J
+// tensor precision").
 
 mod ecp_df_common;
 
@@ -41,8 +47,8 @@ use ferric_scf::frequencies::{
     harmonic_frequencies, FrequencyConfig, FrequencyReference, HessianMethod, HessianSource,
 };
 use ferric_scf::hessian::{analytic_rohf_hessian_available, analytic_uhf_hessian_available};
-use ferric_scf::rhf::RhfConfig;
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rhf_ri_jk_ecp_matches_fd_of_the_ri_gradient() {
     check_against_fd(
@@ -55,6 +61,7 @@ fn rhf_ri_jk_ecp_matches_fd_of_the_ri_gradient() {
     );
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uhf_ri_jk_ecp_matches_fd_of_the_ri_gradient() {
     check_against_fd(
@@ -69,6 +76,7 @@ fn uhf_ri_jk_ecp_matches_fd_of_the_ri_gradient() {
 
 /// ROHF exact J/K: the stored-vs-rebuilt Fock check failed by 25 Ha before
 /// `trusted_focks` used `hcore_ecp`.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rohf_exact_ecp_matches_fd_of_the_rohf_gradient() {
     check_against_fd(
@@ -81,6 +89,7 @@ fn rohf_exact_ecp_matches_fd_of_the_rohf_gradient() {
     );
 }
 
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rohf_ri_j_ecp_matches_fd_of_the_rohf_gradient() {
     check_against_fd(
@@ -94,6 +103,7 @@ fn rohf_ri_j_ecp_matches_fd_of_the_rohf_gradient() {
 }
 
 /// RI-J-only is not the RI-JK Hessian (guards a `Fit::J` that silently fits K).
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn ri_j_only_differs_from_ri_jk() {
     if !has_deriv2() {
@@ -164,42 +174,45 @@ fn probe_accepts_ri_with_ecp_for_every_reference_where_the_metric_is_conditioned
     }
 }
 
-/// RI-K with the ordinary jkfit on iodine has cond 1e9 > RIK_COND_WARN: the
-/// probe refuses (for the conditioning, not the ECP) and `Auto` runs FD.
+/// RI-K with the ordinary jkfit on iodine has cond 4.9e8 .. 1.4e9 but a
+/// smallest metric eigenvalue far above the gate (`hessian_df_k`,
+/// "Conditioning": the roundoff follows `1/λ_min²`, not cond), so the probe
+/// admits it, `Auto` runs the analytic Hessian, and the result records the
+/// conditioning it was admitted under. Its accuracy at this cond is the
+/// `validation_ecp_df_hessian.rs` jkfit evidence.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
-fn ill_conditioned_ri_k_with_ecp_is_refused_by_the_probe_and_auto_runs_fd() {
+fn high_cond_ri_k_with_ecp_is_admitted_on_its_smallest_eigenvalue() {
     if !has_deriv2() {
         return;
     }
     let (mol, prep) = iodine(HOI, 1);
     let cfg = config(Fit::Jk(AUX_HIGH_COND));
-    let err =
-        ferric_scf::hessian::analytic_hessian_available(&mol, &prep, Operator::coulomb(), &cfg)
-            .expect_err("cond 1e9 RI-K must be refused by the probe");
-    let msg = err.to_string();
-    assert!(msg.contains("cond"), "{msg}");
-    assert!(!msg.contains("effective core potential"), "{msg}");
+    ferric_scf::hessian::analytic_hessian_available(&mol, &prep, Operator::coulomb(), &cfg)
+        .expect("jkfit on HOI: cond above 1e8, lambda_min above the gate");
 
     let bs = basis::bundled("def2-svp").unwrap();
     let mut hi = Molecule::parse_xyz("2\nHI\nH 0 0 0\nI 0 0 1.75\n", 0, 1).unwrap();
     hi.apply_ecp(&bs);
-    let run = |hessian| {
-        harmonic_frequencies(
-            &ParallelContext::default(),
-            &hi,
-            "def2-svp",
-            Operator::coulomb(),
-            &config(Fit::Jk(AUX_HIGH_COND)),
-            &FrequencyConfig {
-                reference: FrequencyReference::Rhf,
-                hessian,
-                ..Default::default()
-            },
-        )
-    };
-    let auto = run(HessianMethod::Auto).expect("Auto falls back, never fails");
-    assert_eq!(auto.hessian_source, HessianSource::FiniteDifference);
-    assert_eq!(auto.n_gradient_evaluations, 12);
+    let auto = harmonic_frequencies(
+        &ParallelContext::default(),
+        &hi,
+        "def2-svp",
+        Operator::coulomb(),
+        &config(Fit::Jk(AUX_HIGH_COND)),
+        &FrequencyConfig {
+            reference: FrequencyReference::Rhf,
+            hessian: HessianMethod::Auto,
+            ..Default::default()
+        },
+    )
+    .expect("Auto runs");
+    assert_eq!(auto.hessian_source, HessianSource::Analytic);
+    let m = auto
+        .rik_metric
+        .expect("the admitted conditioning is recorded");
+    eprintln!("HI jkfit: {}", m.describe());
+    assert!(m.cond > 1e8 && m.admits_analytic(), "{}", m.describe());
 }
 
 #[test]
@@ -208,13 +221,12 @@ fn ri_with_an_external_potential_stays_refused() {
         return;
     }
     let (mol, prep) = iodine(HOI, 1);
-    let cfg = RhfConfig {
-        external_potential: Some(ferric_core::external_potential::ExternalPotential {
+    let cfg = config(Fit::J(AUX_OK))
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_external_potential(ferric_core::external_potential::ExternalPotential {
             field: Some([0.0, 0.0, 0.004]),
             ..Default::default()
-        }),
-        ..config(Fit::J(AUX_OK))
-    };
+        });
     let err =
         ferric_scf::hessian::analytic_hessian_available(&mol, &prep, Operator::coulomb(), &cfg)
             .expect_err("RI + environment stays refused");

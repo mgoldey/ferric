@@ -46,10 +46,13 @@
 //!   Allreduce is a no-op and this reproduces
 //!   [`crate::rimp2::ri_mp2_spin_components`] to ~machine precision (same
 //!   `eri3_mo_block_dressed_band` code path with a full band == the serial
-//!   `eri3_mo_block_dressed`, and the same per-`i` contraction structure as
-//!   [`crate::rimp2::spin_components_from_b_ov`], just walked sequentially
-//!   instead of via rayon; both sum `i = 0, 1, ..., nocc-1` in ascending order
-//!   into a single running total).
+//!   `eri3_mo_block_dressed`). The contraction is NOT the same loop as
+//!   [`crate::rimp2::spin_components_from_b_ov`]: that one visits only the
+//!   unique pairs `j >= i` and weights the `j > i` pairs by 2, whereas this
+//!   path visits every `(i, j)` with weight 1 (each rank needs the full-width
+//!   `g_i` for its round-robin share). Both are exact for the same pair sums;
+//!   this one walks `i = 0, 1, ..., nocc-1` sequentially into a single running
+//!   total.
 //!
 //!   NOT bit-identical: this path forms the full-width `g_i = b_i^T · b_ov`
 //!   while the serial path now forms only the `j >= i` tail
@@ -76,6 +79,65 @@
 //! serial path does — it restricts the occupied index RANGE, which is
 //! orthogonal to (and applied before) the aux-P band split.
 
+/// Refuse [`RiMp2Config`] knobs the MPI path does not implement.
+///
+/// `run_mpi_ri_mp2` builds the dressed `B^P_{ia}` band from the physical
+/// operator's own metric, squares `(ia|jb)` with the plain MP2 denominator and
+/// builds the 3-index tensor densely. A set `kappa`, `metric_op` or
+/// `eri3_screen_thresh` would therefore be dropped without a word, so each is a
+/// hard error rather than a silently different energy.
+#[cfg_attr(not(feature = "mpi"), allow(dead_code))]
+pub(crate) fn refuse_unsupported_mpi_config(
+    config: &crate::rimp2::RiMp2Config,
+) -> Result<(), ferric_core::FerricError> {
+    let mut unsupported: Vec<&str> = Vec::new();
+    if config.kappa.is_some() {
+        unsupported.push("kappa (kappa-regularized MP2)");
+    }
+    if config.metric_op.is_some() {
+        unsupported.push("metric_op (decoupled fitting metric)");
+    }
+    if config.eri3_screen_thresh.is_some() {
+        unsupported.push("eri3_screen_thresh (3-index screening)");
+    }
+    if unsupported.is_empty() {
+        Ok(())
+    } else {
+        Err(ferric_core::FerricError::General(format!(
+            "run_mpi_ri_mp2 does not implement: {}; run the serial RI-MP2 path or leave \
+             these at their defaults (None)",
+            unsupported.join(", ")
+        )))
+    }
+}
+
+#[cfg(test)]
+mod refuse_tests {
+    use super::refuse_unsupported_mpi_config;
+    use crate::rimp2::RiMp2Config;
+    use ferric_integrals::operator::Operator;
+
+    #[test]
+    fn mpi_ri_mp2_refuses_knobs_it_would_ignore() {
+        assert!(refuse_unsupported_mpi_config(&RiMp2Config::default()).is_ok());
+        let kappa = RiMp2Config {
+            kappa: Some(1.1),
+            ..Default::default()
+        };
+        assert!(refuse_unsupported_mpi_config(&kappa).is_err());
+        let metric = RiMp2Config {
+            metric_op: Some(Operator::erfc(0.4)),
+            ..Default::default()
+        };
+        assert!(refuse_unsupported_mpi_config(&metric).is_err());
+        let screen = RiMp2Config {
+            eri3_screen_thresh: Some(1e-10),
+            ..Default::default()
+        };
+        assert!(refuse_unsupported_mpi_config(&screen).is_err());
+    }
+}
+
 #[cfg(feature = "mpi")]
 mod inner {
     use crate::rimp2::{
@@ -89,7 +151,6 @@ mod inner {
     use ferric_integrals::three_index_source::ThreeIndexSource;
     use ferric_integrals::threeindex::coulomb_metric_2c;
     use ferric_scf::ScfResult;
-    use ndarray::Array2;
 
     /// Result of an MPI-distributed RI-MP2 run. Every rank returns the same
     /// (post-Allreduce) totals.
@@ -118,6 +179,7 @@ mod inner {
         rhf: &ScfResult,
         config: &RiMp2Config,
     ) -> Result<MpiMp2Result, FerricError> {
+        super::refuse_unsupported_mpi_config(config)?;
         // Rank-aware rayon width. Without this, `mpirun -np N` starts N
         // processes that each build a FULL-width rayon pool on the SAME node,
         // so N ranks x (all cores) threads contend for (all cores) — the
@@ -139,12 +201,7 @@ mod inner {
         // thread outside a worker is the bug just fixed in ferric-cc. BLAS
         // stays at the process-wide pin of 1 (`init_threading`), which is
         // exactly right inside a rayon region.
-        let threads = ctx.rayon_threads();
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build()
-            .map_err(|e| FerricError::Libint(format!("rank-aware rayon pool build failed: {e}")))?;
-        pool.install(|| run_mpi_ri_mp2_inner(ctx, mol, obs, dfbs, op, rhf, config))
+        ctx.with_rank_pool(|| run_mpi_ri_mp2_inner(ctx, mol, obs, dfbs, op, rhf, config))?
     }
 
     fn run_mpi_ri_mp2_inner(
@@ -192,7 +249,6 @@ mod inner {
         let b_band = eri3_mo_block_dressed_band(&mut raw, &v_inv_sqrt, &c_occ, &c_vir, p0, p1)?;
         drop(raw);
 
-        let world = ctx.world();
         let size = ctx.size.max(1);
         let rank = ctx.rank;
 
@@ -220,16 +276,9 @@ mod inner {
             let b_i_band = b_band.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]);
             let mut g_i = b_i_band.t().dot(&b_band); // partial sum over this rank's P band
 
-            if let Some(world) = &world {
-                use mpi::traits::CommunicatorCollectives;
-                let mut g_i_global = Array2::<f64>::zeros(g_i.dim());
-                world.all_reduce_into(
-                    g_i.as_slice().unwrap(),
-                    g_i_global.as_slice_mut().unwrap(),
-                    mpi::collective::SystemOperation::sum(),
-                );
-                g_i = g_i_global;
-            }
+            // A `dot` result can come back column-major (e.g. a one-row band
+            // on this rank only); the array reduction sums in logical order.
+            ctx.all_reduce_sum_array(&mut g_i);
 
             // Round-robin: only the owning rank spends FLOPs squaring this i's
             // (now-complete) g_i into the energy sum. Every rank still paid
@@ -254,19 +303,10 @@ mod inner {
         }
 
         // Final scalar reduction: sum each rank's round-robin energy share.
-        if let Some(world) = &world {
-            use mpi::traits::CommunicatorCollectives;
-            let mut totals = [e_os, e_ss];
-            let mut totals_global = [0.0_f64; 2];
-            world.all_reduce_into(
-                &totals[..],
-                &mut totals_global[..],
-                mpi::collective::SystemOperation::sum(),
-            );
-            totals = totals_global;
-            e_os = totals[0];
-            e_ss = totals[1];
-        }
+        let mut totals = [e_os, e_ss];
+        ctx.all_reduce_sum(&mut totals);
+        e_os = totals[0];
+        e_ss = totals[1];
 
         let mp2_corr = e_os + e_ss;
         Ok(MpiMp2Result {

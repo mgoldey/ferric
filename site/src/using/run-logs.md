@@ -3,9 +3,9 @@
 Every ferric CLI run writes a machine-readable JSON Lines log, without being
 asked.
 
-The format is ferric's own. It is **not QCSchema**, and there is no QCSchema
+The format is ferric's own; it is not QCSchema, and there is no QCSchema
 exporter. Each record's `schema` field (currently `1`, on `run_start`) versions
-this format. It is not a QCSchema version.
+this format.
 
 ```
 $ ferric water-rhf.toml
@@ -15,11 +15,9 @@ $ ferric water-rhf.toml
 
 ## Why it is on by default
 
-A result whose run left no artifact can't be checked. Stdout captures get
-truncated, and a claim such as "173 iterations, converged" that survives only
-in a truncated capture can be repeated but never checked. The run log keeps
-the record on disk whether or not anyone captured stdout, which is why it is
-on by default.
+A result whose run left no artifact can't be checked, and stdout captures get
+truncated. The run log keeps the record on disk whether or not anyone captured
+stdout.
 
 Opt out explicitly if you need to:
 
@@ -39,13 +37,13 @@ ferric --json runs/benzene.jsonl input.toml
 The default path is the input file's name with `.ferric.jsonl` in place of its
 extension, written beside the input.
 
-**A log never fails a calculation.** If the path cannot be opened or the disk
+A log never fails a calculation. If the path cannot be opened or the disk
 fills, ferric warns once on stderr and the run continues.
 
 ## Format
 
-One JSON object per line, written and flushed as it happens — not buffered to
-the end of the run. A job that is OOM-killed, hits a wall-clock limit, or is
+One JSON object per line, written and flushed as it happens rather than
+buffered to the end of the run. A job that is OOM-killed, hits a wall-clock limit, or is
 Ctrl-C'd at iteration 90 of 100 leaves those 90 iterations on disk. Only the
 final line may be truncated; everything before it parses.
 
@@ -61,8 +59,10 @@ missing record is detectable) and `t` (seconds since the run started).
 Written before any expensive work, so it survives a job killed in the first
 iteration. Carries the ferric version, the git SHA the binary was built from
 (`null` if the build had no checkout; a `-dirty` suffix means uncommitted
-changes were compiled in), a UTC timestamp, the resolved config — including the
-memory budget actually used, not the key as written — and the molecule.
+changes were compiled in), a UTC timestamp, the resolved config (including the
+memory budget in effect, not the key as written; `ri_j_precision` as written
+next to `ri_j_precision_resolved`, `ri_j_precision_source` and `ri_j_task`,
+which say what an omitted value became and why) and the molecule.
 
 ### `scf_iter`
 
@@ -72,27 +72,27 @@ iteration belongs to. `method` is `rhf`/`uhf`/`rohf` or their KS counterparts
 `rks`/`uks`/`roks`.
 
 These are the quantities the solver already computes for its convergence
-decision (see `scf_converged`) — the log reports them, it does not create them.
+decision (see `scf_converged`); the log only reports them.
 
 `dp_rms` and `dp_max` are `"inf"` on the first iteration of each SCF, before
 there is a previous density to compare against. JSON has no infinity, so
 non-finite values are written as the strings `"inf"`, `"-inf"` and `"NaN"`
 rather than as `null`, which would make a NaN indistinguishable from a field
-that was simply not reported.
+that was not reported.
 
 ### `guess_scf_iter`
 
 Identical shape, but for the free-atom SCFs the SAD/MINAO initial guess runs
-per element. They are real work and can fail, so they are logged — under a
+per element. They are real work and can fail, so they are logged, under a
 different record type so that free oxygen's energy is never mistaken for the
 molecule's.
 
 ### `ladder_rung`
 
 One per convergence-ladder rung: `rung`, `tricks` (which accelerators it
-enables), `iterations`, `exit`, `energy`, `converged` — and **`max_iter`**.
+enables), `iterations`, `exit`, `energy`, `converged` and `max_iter`.
 
-That last field matters more than it looks. In the CLI, `kind = "rhf"` and
+`max_iter` is the rung's own cap. In the CLI, `kind = "rhf"` and
 `kind = "ksdft"` run through a convergence ladder, and unless you define your
 own `[[scf.ladder]]` rungs, the default ladder sets its own per-rung iteration
 caps:
@@ -107,16 +107,39 @@ So for `rhf`, `[scf] max_iter` does not set the per-rung cap. A run that reports
 hundred-iteration SCF. The cap and the count are recorded together so the log
 can't be misread that way.
 
+### `ri_j_tensor`
+
+One per SCF that builds an RI-J tensor: `aux` (the auxiliary basis),
+`precision_requested` (`"f32"` or `"f64"`, the resolved `[scf] ri_j_precision`),
+`precision_source` (why: `"explicit"`, `"geometry-task default"` for
+`task = "optimize"`/`"frequencies"`, `"gpu default"`, `"default"`, or
+`"path default"` for a library path that fixes its own) and `precision` (what the tensor was actually stored at: an f32 request falls
+back to f64 when the f32 tensor does not fit or `jk_storage` keeps it out of
+core, and Split-RI-J reports f64). See
+[RI-J tensor precision](../methods/scf.md#ri-j-tensor-precision).
+
 ### `run_end`
 
 The terminal record: `energy`, `converged`, `exit`, `wall_s`, `cpu_s` and
 `peak_rss_bytes` (the high-water mark, not the RSS at exit).
 
-For a post-SCF method the `energy` is the **SCF reference**, not the method's
+For a post-SCF method the `energy` is the SCF reference, not the method's
 total. `extra.energy_is` says which. Per-iteration records for MP2/RPA/CC/GW
 are not implemented yet.
 
-**Only `task = "energy"` and periodic `task = "optimize"` write `run_end`.**
+With `[scf] read_reference`, `extra.scf_iterations` is 0 (the iterations this
+run took) and `extra.scf_reference` records the file: `read`, `checksum`,
+`file_iterations`, `file_energy_conv`, `file_density_conv`, `file_threads` (the saving run's rayon threads; `null` when unknown), `file_build` and `build_override_used`; `extra.scf_precision`
+is the read reference's record (as the run that solved it wrote it), while
+`extra.precision` covers only the kernels this run ran. A run with
+`save_reference` writes a `scf_reference_saved` record with the path and
+checksum.
+
+`run_end.extra.certificate` holds the validation certificate. Its measured
+error and envelope warnings depend on the run's settings; see
+[Certificates](../reference/validation.md#certificates).
+
+Only `task = "energy"` and periodic `task = "optimize"` write `run_end`.
 A molecular `task = "optimize"` and `task = "frequencies"` currently write
 `run_start` and the SCF iteration records, but no `run_end`, `ladder_rung` or
 `result`. A periodic `[cell]` optimization writes `run_end` (see below), also
@@ -129,8 +152,8 @@ doesn't mean the run failed (MEASURED on `examples/h2-lda-opt.toml`,
 
 ### Precision provenance (`precision`)
 
-`run_end.extra.precision` records which mixed-precision kernels the **whole
-run** went through: every kernel, counted from the start of the run to
+`run_end.extra.precision` records which mixed-precision kernels the whole
+run went through: every kernel, counted from the start of the run to
 `run_end`, whichever code called it (the SCF, the method, and MP2 variants such
 as SCS-MP2, SCS-MP2(2terfc), terfc `att-rimp2` and the double hybrids, which
 carry no record of their own). `run_end.extra.scf_precision` is the SCF's own
@@ -143,7 +166,9 @@ shell and unrestricted). The Python results carry
 the same object as `RhfResult.precision`, `UhfResult.precision`,
 `DftResult.precision`, `RiMp2Result.precision` and
 `RiMp2Result.scf_precision`. An all-f64 run, which is every run that does not
-set `[precision] mode = "mixed"`, says so explicitly:
+set `[precision] mode = "mixed"` and builds no f32 RI-J tensor (the default for
+RI-J since 2026-11-07, see `[scf] ri_j_precision`; set it to `"f64"` for an
+all-f64 run), says so explicitly:
 
 ```json
 {"precision": "f64", "counter_scope": "process", "kernels": []}
@@ -154,8 +179,8 @@ for that result, or that ran mixed:
 
 | field | meaning |
 |---|---|
-| `kernel` | the kernel name (`rimp2-energy`, `xc-vxc`, `dfj-pack`, `dfk-occ`, `cosx-kern`) |
-| `requested` | `mixed` when `[precision]` allowed it, `f64` when only a test seam ran it |
+| `kernel` | the kernel name (`rimp2-energy`, `xc-vxc`, `dfj-pack`, `dfk-occ`, `cosx-kern`, `dfj-f32`) |
+| `requested` | `mixed` when `[precision]` allowed it (for `dfj-f32`: whenever it ran, since `[scf] ri_j_precision` requests it), `f64` when only a test seam ran it |
 | `mode` | `mixed` when at least one call ran mixed, else `f64` (allowed, but nothing ran mixed) |
 | `device` | where the mixed calls ran: `"cpu"`, or `{"ordinal", "name", "cc"}` of the CUDA device; `null` when `calls_mixed` is 0 |
 | `calls_mixed` | calls that ran mixed: one RI-MP2 energy (per spin block when unrestricted), one XC potential pass, one RI-J or DF-K build, one COSX K build with f32 units |
@@ -186,15 +211,19 @@ precision:
 | `asymmetry` | largest \|H_ij − H_ji\| of the raw Hessian, Hartree/Bohr² |
 | `n_gradient_evaluations` | gradients the finite-difference Hessian took (0 when analytic) |
 | `cartesian_hessian` | the Cartesian Hessian before mass-weighting, row-major 3N × 3N, Hartree/Bohr² |
+| `thermochemistry` | RRHO thermochemistry: `temperature_k`, `pressure_pa`, `symmetry_number`, `rotor`, `rotational_constants_ghz`, `e0`, `zpe`, `n_imaginary_excluded`, `warnings`, and `electronic`/`translational`/`rotational`/`vibrational`/`total`, each `{energy, enthalpy, entropy, gibbs, cv, cp}` in Hartree and Hartree/K |
+| `ir_intensities_km_mol` | IR intensity of each mode, km/mol, in the order of `frequencies_cm1`; `null` for the correlated kinds or with `ir_intensities = false` |
+| `dipole_derivatives` | the dipole derivative ∂μ_a/∂R_i, row-major 3 × 3N, e (only with intensities) |
+| `ir_sum_rule_residual` | max \|Σ_A ∂μ_a/∂R_{A,b} − Q δ_ab\|, e; `null` with external point charges (only with intensities) |
 
 Non-finite floats are written as the strings `"NaN"`, `"inf"`, `"-inf"`, as
 everywhere in the log.
 
 ### `result`
 
-**The number a correlated run was launched to produce.** It's written once,
-after the method finishes. Plain SCF runs (`rhf`, `uhf`, `rohf`, `ksdft`) don't
-write one, because for them `run_end.energy` *is* the answer.
+The number a correlated run was launched to produce, written once after the
+method finishes. Plain SCF runs (`rhf`, `uhf`, `rohf`, `ksdft`) don't write
+one, because for them `run_end.energy` is the answer.
 
 | field | meaning |
 |---|---|
@@ -202,21 +231,20 @@ write one, because for them `run_end.energy` *is* the answer.
 | `total` | the headline number a user would quote |
 | `components` | the decomposition that makes `total` checkable — `e_corr`, `e_os`/`e_ss`, the reference energy, and whatever else the method defines |
 
-`total` and `run_end.energy` are **different numbers** for every post-SCF
+`total` and `run_end.energy` are different numbers for every post-SCF
 method. A `kind="rimp2"` run's `run_end.energy` is the RHF energy it was built
-on; its `result.total` is the RI-MP2 total. Reading the wrong one silently
-gives an uncorrelated answer.
+on; its `result.total` is the RI-MP2 total. Reading the wrong one gives an
+uncorrelated answer without any error.
 
 `components` exists because a total alone cannot be reconciled against a
-reference implementation — you need the pieces to see *where* a disagreement
-comes from.
+reference implementation; the pieces show where a disagreement comes from.
 
 ### `result_unlogged`
 
 A post-SCF method that isn't wired up to `result` yet writes this instead,
 naming the `kind`. The methods that do write `result` are `rimp2`,
 `oo-rimp2`, `att-rimp2`, `laplace-mp2`, `laplace-sos-mp2`, `scs-mp2`,
-`scs-mp2-2terfc`, `mp3`, `ccsd`, `ccd`, `ccsd(t)`, `linlccd`, `drpa`, `mp2-v` and
+`scs-mp2-2terfc`, `mp3`, `ccsd`, `ccd`, `ccsd(t)`, `eom-ccsd`, `linlccd`, `drpa`, `mp2-v` and
 `rs-mp2-rpa`. For `rimp2`, `drpa` and `linlccd` the record's `components`
 carry `"local"`: `null` for the exact method, else `{"scheme", "eps",
 "keep_fraction", "integral_direct"}`. A `rimp2` record also carries
@@ -236,18 +264,26 @@ wall-clock seconds `{"t_spaces_s", "t_assembly_s", "t_solve_s",
 `aux_major_in_flight_peak`, `aux_major_coeff_bytes`, `n_batches`, `batch_work_max_s`,
 `batch_work_mean_s`, `t_metric_s`, `t_pairs_s`, `n_pair_groups`,
 `n_distinct_occ_per_group`, `n_trsm`, `n_w_reused`, `own_w_bytes`,
-`own_w_bytes_held`, `group_scratch_bytes_max`, `t_loc_s`). The
+`own_w_bytes_held`, `group_scratch_bytes_max`, `t_loc_s`, and the
+pre-flight and stage-5 schedule: `memory_strips_bytes`,
+`memory_metric_bytes`, `memory_stage3_scratch_bytes`,
+`memory_pair_block_bytes`, `memory_pcg_vector_bytes`,
+`memory_resident_peak_bytes`, `memory_exact` (a boolean: the pair-block and
+PCG figures are exact at `eps = 0` and candidate bounds otherwise),
+`group_concurrency` (the most domain groups a budget-sized wave let run at
+once; 1 with several groups means the budget serialised the pair fits),
+`group_scratch_bound_bytes`, `group_in_flight_peak` (groups measured in
+flight at once) and `n_group_waves` (waves the budget split the groups
+into; 1 when they all fit at once)). The
 `*_thread_s` fields are summed over batch workers (thread-seconds), the
 eval/scatter split is `null` unless it was measured, and `t_reference_s` is
 `0` when the opt-in reference was off. `t_loc_s` is counted inside
 `t_assembly_s`, so do not add it to the other stages. Timings are not
 reproducible run to run.
 
-It exists because **silence is ambiguous**: a log with no `result` record could
-mean the method does not record one yet, or that the run died before producing
-one. Those demand opposite responses from whatever reads the log. This makes
-the first case explicit and leaves "the run failed" as the only remaining
-reading of a genuinely missing record.
+Without it, a log with no `result` record could mean the method does not
+record one yet, or that the run died before producing one. With it, a missing
+record means the run failed.
 
 ## Example
 
@@ -298,12 +334,11 @@ no `symmetry` field.
 
 ## Does it change the answer?
 
-No, and that is a regression test, not a claim: SCF energies are bit-identical
-(`f64::to_bits()`) with the log on and off, asserted across RHF, RKS, UHF and
-ROHF in `crates/ferric-scf/tests/runlog_bit_identity.rs`. Logging is
-observation, never participation — every value written is one the solver had
-already computed for its own convergence decision, and nothing is ever read
-back.
+No. SCF energies are bit-identical (`f64::to_bits()`) with the log on and
+off, asserted across RHF, RKS, UHF and ROHF in
+`crates/ferric-scf/tests/runlog_bit_identity.rs`. Every value written is one
+the solver had already computed for its own convergence decision, and nothing
+is read back.
 
 ## Does it cost anything?
 

@@ -80,23 +80,21 @@ fn print_ks_bits_table() {
             };
             clear_global();
             install_global(MemoryPool::with_capacity_bytes(p));
-            let c = RhfConfig {
-                xc: Some(xc.into()),
-                df_j_aux: Some(AUX.into()),
-                df_k_aux: (xc != "PBE").then(|| AUX.into()),
-                three_index_budget_bytes: p,
-                dft_grid: small.then_some(AtomicGridConfig {
-                    n_radial: 30,
-                    n_angular: 50,
-                    prune: None,
-                }),
-                nlc_grid: small.then_some(AtomicGridConfig {
-                    n_radial: 10,
-                    n_angular: 14,
-                    prune: None,
-                }),
-                ..Default::default()
-            };
+            let mut c = RhfConfig::default().with_xc(xc).with_df_j_aux(AUX);
+            c.df_k_aux = (xc != "PBE").then(|| AUX.into());
+            c.three_index_budget_bytes = p;
+            c.dft_grid = small.then_some(AtomicGridConfig {
+                n_radial: 30,
+                n_angular: 50,
+                prune: None,
+                weight_cut: None,
+            });
+            c.nlc_grid = small.then_some(AtomicGridConfig {
+                n_radial: 10,
+                n_angular: 14,
+                prune: None,
+                weight_cut: None,
+            });
             let ctx = ParallelContext::default();
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(t)

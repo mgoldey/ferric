@@ -23,13 +23,14 @@
 //!   (`α = −c_K/4` for a closed-shell total density, `−c_K/2` per spin for
 //!   UHF/ROHF): `E_K = Σ_s α_s Σ_ij L^s_ij · M L^s_ij`,
 //!   `L^s_{P,ij} = Σ_μν X_μi (P|μν) X_νj`, `M` the metric (pseudo-)inverse
-//!   `DfK` applies (`V^{-1/2}·V^{-1/2}` with its eigenvalue cut). The
+//!   `DfK` applies (`MᵀM` of its dressing factor: `V⁻¹` through Cholesky
+//!   when no mode is cut, else `V^{-1/2}·V^{-1/2}` with its eigenvalue cut). The
 //!   three-centre weight is `2 α_s X_s Γ^s_P X_sᵀ`, `Γ^s = M L^s`; the
 //!   two-centre weight is the derivative of `M` contracted with
 //!   `Y = Σ_s α_s Σ_ij L^s_ij L^s_ijᵀ`.
 //!
-//! These are the standard DF-SCF gradient expressions (Weigend, Häser, Patzelt
-//! & Ahlrichs, Chem. Phys. Lett. 294, 143 (1998) for RI-J; Weigend, Kattannek
+//! These are the standard DF-SCF gradient expressions (Eichkorn, Treutler, Öhm,
+//! Häser & Ahlrichs, Chem. Phys. Lett. 240, 283 (1995) for RI-J; Weigend, Kattannek
 //! & Ahlrichs, J. Chem. Phys. 130, 164106 (2009) for RI-K), the orbital
 //! response being carried as usual by the energy-weighted density in the
 //! one-electron Pulay term. A numpy prototype of exactly these contractions
@@ -37,8 +38,12 @@
 //!
 //! ## The truncated exchange metric
 //!
-//! `DfK` builds `V^{-1/2}` from `eigh(V)` and DROPS modes with eigenvalue
-//! below `crate::df_k::DFK_LINDEP_THRESH` (1e-10); the long-range erf metric
+//! When a mode would be cut, `DfK` builds `V^{-1/2}` from `eigh(V)` (its
+//! Cholesky route is taken only when it certifies that no mode is cut, and
+//! then fits the same `V⁻¹`) and DROPS modes with eigenvalue
+//! below the cut of `crate::df_k::metric_lindep_cut` (nominally 1e-10, moved
+//! into a spectral gap when an eigenvalue lies within rounding of it; this
+//! gradient applies the same rule to the same `eigh`); the long-range erf metric
 //! with a JK-fit basis always has such modes (17 of 113 for water /
 //! def2-universal-jkfit at ω = 0.3). The energy is then `E(M)` with the
 //! spectral function `M = f(V)`, `f(λ) = 1/λ` above the cut, `0` below. Its
@@ -74,13 +79,15 @@
 //!
 //! ## Memory
 //!
-//! The raw `(P|μν)` tensor is streamed through a budget-bounded
-//! `ThreeIndexSource` (in core, or spilled / recomputed). Resident on top of
-//! it: the `(naux, m_s²)` exchange intermediates per channel (`m_s` = density
-//! rank, i.e. the occupied count), a handful of `(naux, naux)` metric
-//! matrices, and per rayon worker one `(n_P, nao, nao)` weight slab for the
-//! current auxiliary shell. All are charged to the global memory pool before
-//! allocation.
+//! The raw `(P|μν)` tensor is read once, so it is never stored: it is
+//! computed one aux-shell-aligned block at a time (at most
+//! [`GRADIENT_3C_BLOCK_CAP_BYTES`](crate::df_gradient::GRADIENT_3C_BLOCK_CAP_BYTES)
+//! and a quarter of the budget), contracted into `d_P` / `L^s`, and freed.
+//! Resident beside that block: the `(naux, m_s²)` exchange intermediates per
+//! channel (`m_s` = density rank, i.e. the occupied count), a handful of
+//! `(naux, naux)` metric matrices, and per rayon worker one `(n_P, nao, nao)`
+//! weight slab for the current auxiliary shell. All are charged to the global
+//! memory pool before allocation.
 //!
 //! ## MPI
 //!
@@ -90,30 +97,35 @@
 //! iteration), so it is correct under MPI but its memory does not shrink with
 //! rank count.
 
-use crate::df_k::DFK_LINDEP_THRESH;
+mod deriv3c;
+
+use crate::df_j::RiJPrecision;
+use crate::df_k::metric_lindep_cut;
+use crate::raw_handoff::KeptRaw;
 use crate::result::DfJkRoute;
 use crate::screening::SchwarzBounds;
+use ferric_core::linalg::par_gemm;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::engine::Engine;
 use ferric_integrals::operator::Operator;
-use ferric_integrals::three_index_source::ThreeIndexSource;
+use ferric_integrals::three_index_source::{PairScreen, ThreeIndexSource};
 use ferric_integrals::threeindex::coulomb_metric_2c;
-use ndarray::{Array1, Array2, Array3, Axis};
+use ndarray::{Array1, Array2, Array3, ArrayView2, Axis};
 use ndarray_linalg::cholesky::{FactorizeC, SolveC};
 use ndarray_linalg::{Eigh, UPLO};
 use rayon::prelude::*;
 
 /// Metric eigenvalue below which the exchange GRADIENT treats a mode as
-/// dropped, even when the energy (cut at `DFK_LINDEP_THRESH`) kept it. See
+/// dropped, even when the energy (cut by `crate::df_k::metric_lindep_cut`) kept it. See
 /// the module doc: the modes in `[1e-10, 1e-7)` are noise-dominated in the
 /// derivative but hold ~1e-9 Ha of energy.
 pub const DFK_GRADIENT_NOISE_FLOOR: f64 = 1e-7;
 
 /// Warn when the exchange energy held by metric modes in the noise band
-/// `[DFK_LINDEP_THRESH, DFK_GRADIENT_NOISE_FLOOR)` exceeds this (Ha): the
+/// `[energy cut, DFK_GRADIENT_NOISE_FLOOR)` exceeds this (Ha): the
 /// gradient's residual against the energy is the derivative of that band.
 pub const NOISE_BAND_ENERGY_WARN: f64 = 1e-6;
 
@@ -124,7 +136,9 @@ const DENSITY_FACTOR_REL_CUT: f64 = 1e-12;
 /// One density-fitted exchange channel: an AO density `D_s` and the weight
 /// `α_s` of `Σ_μνλσ D_μν D_λσ (μλ|νσ)_fit` in the energy.
 pub struct DfKChannel<'a> {
+    /// The AO density `D_s`, `nao x nao`; must be positive semidefinite.
     pub density: &'a Array2<f64>,
+    /// The channel weight `α_s` in the energy expression above.
     pub alpha: f64,
 }
 
@@ -221,90 +235,267 @@ pub fn df_k_gradient_any(
     df_jk_gradient(natoms, obs, dfbs, op, None, &ch, budget_bytes)
 }
 
-/// Divided difference of the truncated inverse `f(λ) = 1/λ` (λ kept), `0`
-/// (dropped) — the Daleckii–Krein kernel of `∂M` (see the module doc).
-#[inline]
-fn truncated_inverse_divided_difference(lk: f64, kk: bool, ll: f64, kl: bool) -> f64 {
-    match (kk, kl) {
-        (true, true) => -1.0 / (lk * ll),
-        (true, false) => 1.0 / (lk * (lk - ll)),
-        (false, true) => 1.0 / (ll * (ll - lk)),
-        (false, false) => 0.0,
-    }
+/// Largest raw `(P|μν)` block the gradient's one-pass contraction holds.
+///
+/// The block is transient (computed, contracted, freed), so width only trades
+/// load balance across the aux shells of one `eri3_block` call against
+/// memory; the values do not depend on it. 512 MiB is 127 aux rows at
+/// nao = 724.
+pub const GRADIENT_3C_BLOCK_CAP_BYTES: usize = 512 * 1024 * 1024;
+
+/// Aux rows per one-pass block: [`GRADIENT_3C_BLOCK_CAP_BYTES`] or a quarter
+/// of the budget, whichever is smaller, and at least one row (a whole shell
+/// is always admitted by [`aux_shell_blocks`]).
+fn gradient_block_rows(nao: usize, budget_bytes: usize) -> usize {
+    let row = nao.saturating_mul(nao).saturating_mul(8).max(1);
+    ((budget_bytes / 4).min(GRADIENT_3C_BLOCK_CAP_BYTES) / row).max(1)
 }
 
-/// Gradient of `E_J^DF(D_J) + Σ_s α_s E_K^DF(D_s)` with respect to the nuclei,
-/// at FIXED AO densities (the orbital response is the caller's Pulay term).
-///
-/// `op` must be the operator the energy's fit used, for both the three-centre
-/// integrals and the metric (Coulomb for RI-J; erfc/erf for RSH exchange).
-/// `j_density` is the TOTAL density for RI-J, or `None`; channels with
-/// `alpha == 0` are skipped. Returns `(natoms, 3)`.
-///
-/// Deterministic: both derivative passes map over auxiliary shells, collect in
-/// shell order, and fold serially, so the result is bit-identical across
-/// thread counts.
-#[allow(clippy::too_many_arguments)]
-pub fn df_jk_gradient(
-    natoms: usize,
+/// Split the aux functions into contiguous `[p0, p1)` blocks of whole shells,
+/// each at most `max_rows` rows unless a single shell is wider. Never splitting
+/// a shell keeps `eri3_block` from computing a straddling shell twice.
+fn aux_shell_blocks(offsets: &[usize], dims: &[usize], max_rows: usize) -> Vec<(usize, usize)> {
+    let mut blocks = Vec::new();
+    let mut start: Option<usize> = None;
+    let mut end = 0;
+    for (&off, &dim) in offsets.iter().zip(dims) {
+        match start {
+            Some(p0) if off + dim - p0 > max_rows => {
+                blocks.push((p0, end));
+                start = Some(off);
+            }
+            None => start = Some(off),
+            _ => {}
+        }
+        end = off + dim;
+    }
+    if let Some(p0) = start {
+        blocks.push((p0, end));
+    }
+    blocks
+}
+
+/// The `[p0, p1)` aux blocks of the one pass under `budget_bytes`.
+fn pass_blocks(
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
-    op: Operator,
-    j_density: Option<&Array2<f64>>,
-    k_channels: &[DfKChannel<'_>],
     budget_bytes: usize,
-) -> Result<Array2<f64>, FerricError> {
+) -> Vec<(usize, usize)> {
+    aux_shell_blocks(
+        dfbs.shell_offsets(),
+        dfbs.shell_dims(),
+        gradient_block_rows(obs.nbasis(), budget_bytes),
+    )
+}
+
+/// Bytes of the widest unpacked `(b, nao, nao)` block of the one pass: what
+/// it holds while computing a block, or while unpacking a packed kept tensor.
+#[doc(hidden)]
+pub fn pass_block_bytes(obs: &PreparedBasis, dfbs: &PreparedBasis, budget_bytes: usize) -> usize {
     let n = obs.nbasis();
-    let naux = dfbs.nbasis();
-    let mut grad = Array2::<f64>::zeros((natoms, 3));
-
-    let factors: Vec<(Array2<f64>, f64)> = k_channels
+    pass_blocks(obs, dfbs, budget_bytes)
         .iter()
-        .filter(|c| c.alpha != 0.0)
-        .map(|c| Ok((density_factor(c.density)?, c.alpha)))
-        .collect::<Result<Vec<_>, FerricError>>()?
-        .into_iter()
-        .filter(|(x, _)| x.ncols() > 0)
-        .collect();
-    if j_density.is_none() && factors.is_empty() {
-        return Ok(grad);
+        .map(|&(p0, p1)| p1 - p0)
+        .max()
+        .unwrap_or(0)
+        .saturating_mul(n)
+        .saturating_mul(n)
+        .saturating_mul(8)
+}
+
+/// An upper bound on [`pass_block_bytes`] from the shapes alone (a block can
+/// exceed its row target by less than one aux shell, < 32 functions).
+pub(crate) fn pass_block_bytes_upper_bound(nao: usize, naux: usize, budget_bytes: usize) -> usize {
+    (gradient_block_rows(nao, budget_bytes) + 32)
+        .min(naux)
+        .saturating_mul(nao)
+        .saturating_mul(nao)
+        .saturating_mul(8)
+}
+
+/// Debit the memory pool for the gradient's intermediates (`bytes`) and,
+/// when a kept tensor is read by unpacking (`unpack_block` > 0), its one
+/// unpacked block. With a kept tensor held, a pool that cannot take both
+/// beside it gets the tensor back first (dropped, so the pass recomputes and
+/// reserves its block itself, exactly as without it); otherwise this is the
+/// hard reservation it always was. Returns whether the block is covered.
+fn charge_intermediates(
+    bytes: usize,
+    unpack_block: usize,
+    raw: Option<KeptRaw>,
+) -> Result<(ferric_core::memory::pool::Reservation, Option<KeptRaw>), FerricError> {
+    const LABEL: &str = "DF-JK gradient metric + exchange intermediates";
+    if let Some(kept) = raw {
+        let with_block = bytes.saturating_add(unpack_block);
+        if let Some(r) = ferric_core::memory::pool::try_reserve_global(LABEL, with_block) {
+            return Ok((r, Some(kept)));
+        }
+        drop(kept);
+        crate::raw_handoff::note(
+            "kept tensor dropped: the pool cannot hold the gradient intermediates beside it",
+        );
     }
+    Ok((
+        ferric_core::memory::pool::reserve_global(LABEL, bytes)?,
+        None,
+    ))
+}
 
-    // --- memory plane: everything resident beyond the budget-bounded source.
-    // (naux, m²) per channel for L/Lt and then Γ (two live at a time), plus
-    // five (naux, naux) metric matrices (V, U, Ỹ, H and one GEMM temporary).
-    let k_bytes: usize = factors
+thread_local! {
+    /// `eri3_block` calls made by `dfg:3c-pass` on this thread (test observable).
+    static DFG_3C_BLOCKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Metric `eigh`s computed by the DF-K gradient on this thread (test observable).
+    static DFG_METRIC_EIGHS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many auxiliary-metric `eigh`s the DF-K gradient has computed on this
+/// thread so far (0 added by a pass that reused the SCF's). Test hook.
+#[doc(hidden)]
+pub fn dfg_metric_eighs_computed_for_test() -> usize {
+    DFG_METRIC_EIGHS.with(std::cell::Cell::get)
+}
+
+/// How many raw `(P|μν)` blocks the DF gradient's one pass has COMPUTED on
+/// this thread so far (0 added by a pass that read a kept tensor). Test hook.
+#[doc(hidden)]
+pub fn dfg_3c_blocks_computed_for_test() -> usize {
+    DFG_3C_BLOCKS.with(std::cell::Cell::get)
+}
+
+/// `d̃_P = Σ_{(μν) kept} (P|μν) D_μν` over the stored columns of a
+/// pair-screened tensor (`data`: `(naux, screen.ncols())`, the full aux
+/// range): the same `d_P` the SCF's J pass formed, a dropped pair
+/// contributing zero. An off-diagonal column stands for `(μν)` and `(νμ)`,
+/// so its weight is `D_μν + D_νμ`.
+fn screened_d_p(data: ArrayView2<'_, f64>, screen: &PairScreen, d: &Array2<f64>) -> Array1<f64> {
+    let w: Vec<f64> = screen
+        .cols()
         .iter()
-        .map(|(x, _)| 2 * naux * x.ncols() * x.ncols() * 8)
-        .sum();
-    let _charge = ferric_core::memory::pool::reserve_global(
-        "DF-JK gradient metric + exchange intermediates",
-        k_bytes.saturating_add(5 * naux * naux * 8),
+        .map(|&(mu, nu)| {
+            let (mu, nu) = (mu as usize, nu as usize);
+            if mu == nu {
+                d[(mu, mu)]
+            } else {
+                d[(mu, nu)] + d[(nu, mu)]
+            }
+        })
+        .collect();
+    let vals: Vec<f64> = (0..data.nrows())
+        .into_par_iter()
+        .map(|q| {
+            data.row(q)
+                .iter()
+                .zip(w.iter())
+                .map(|(a, c)| a * c)
+                .sum::<f64>()
+        })
+        .collect();
+    Array1::from(vals)
+}
+
+/// `d` with every pair the screen dropped set to zero (both triangles). The
+/// three-centre derivative pass contracts this density, so it differentiates
+/// exactly the integrals the screened energy kept.
+fn density_on_kept_pairs(d: &Array2<f64>, screen: &PairScreen) -> Array2<f64> {
+    let mut out = Array2::<f64>::zeros(d.dim());
+    for &(mu, nu) in screen.cols() {
+        let (mu, nu) = (mu as usize, nu as usize);
+        out[(mu, nu)] = d[(mu, nu)];
+        out[(nu, mu)] = d[(nu, mu)];
+    }
+    out
+}
+
+/// The one pass over the raw `(P|μν)`: `d_P = Σ (P|μν) D_μν` for J (`j`:
+/// the density and whether the SCF's RI-J tensor was f32) and `L^s_P = Xᵀ
+/// (P|··) X` per exchange factor.
+///
+/// The rows come from `kept` (the SCF's tensor) when given, else they are
+/// computed one aux-shell-aligned block at a time and never stored: storing
+/// them here (the old `ThreeIndexSource`, in core when it fit the budget)
+/// cost the same integrals plus a resident copy of the whole tensor — 7.6 GB
+/// packed for danuglipron/def2-SVP (nao 724, naux 3635), the job's peak.
+/// Each row's values are the same `eri3_block` writes (write-once per
+/// element; the kept tiers hold exactly those), and every row is contracted
+/// independently, so the result depends neither on the blocking nor on
+/// where the rows came from.
+///
+/// A kept tensor's unpack block (packed tier) was charged with the
+/// intermediates ([`charge_intermediates`]); a computed block is charged here.
+fn three_center_pass(
+    (obs, dfbs, op): (&PreparedBasis, &PreparedBasis, Operator),
+    j: Option<(&Array2<f64>, bool)>,
+    factors: &[(Array2<f64>, f64)],
+    budget_bytes: usize,
+    kept: Option<&ThreeIndexSource>,
+) -> Result<(Array1<f64>, Vec<Array2<f64>>), FerricError> {
+    let naux = dfbs.nbasis();
+    let blocks = pass_blocks(obs, dfbs, budget_bytes);
+    // (A recompute is reported where the tensor was not kept or not used.)
+    if let Some(s) = kept {
+        crate::raw_handoff::note(&format!(
+            "dfg:3c-pass reads the SCF's raw tensor ({:.2} GB{})",
+            s.kept_f64_bytes().unwrap_or(0) as f64 / 1e9,
+            if s.pair_screened().is_some() {
+                ", pair-screened"
+            } else {
+                ""
+            }
+        ));
+        if let Some((data, screen)) = s.pair_screened() {
+            let Some((dj, false)) = j else {
+                return Err(FerricError::General(
+                    "DF gradient: a pair-screened kept tensor serves an f64 J-only pass".into(),
+                ));
+            };
+            if !factors.is_empty() {
+                return Err(FerricError::General(
+                    "DF gradient: a pair-screened kept tensor cannot feed an exchange pass".into(),
+                ));
+            }
+            return Ok((screened_d_p(data, screen, dj), Vec::new()));
+        }
+    }
+    let block_bytes = if kept.is_some() {
+        0
+    } else {
+        pass_block_bytes(obs, dfbs, budget_bytes)
+    };
+    let _block_charge = ferric_core::memory::pool::reserve_global(
+        "DF-JK gradient 3-index block (computed once, not stored)",
+        block_bytes,
     )?;
-
-    let v = coulomb_metric_2c(op, dfbs)?;
-
-    // ---- one streamed pass over the raw (P|μν): d_P for J, L^s for K ----
-    let mut source = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
     let mut d_p = Array1::<f64>::zeros(naux);
     let mut ls: Vec<Array2<f64>> = factors
         .iter()
         .map(|(x, _)| Array2::<f64>::zeros((naux, x.ncols() * x.ncols())))
         .collect();
-    source.for_each_block(|blk| {
-        let b = blk.data.shape()[0];
-        let p0 = blk.p0;
-        let data = &blk.data;
-        if let Some(dj) = j_density {
+    let mut scratch = Array3::<f64>::zeros((0, 0, 0));
+    for &(p0, p1) in &blocks {
+        let computed;
+        let data = match kept {
+            Some(s) => s.rows_f64(p0, p1, &mut scratch)?,
+            None => {
+                computed = ferric_integrals::threeindex::eri3_block(op, obs, dfbs, p0, p1)?;
+                DFG_3C_BLOCKS.with(|c| c.set(c.get() + 1));
+                computed.view()
+            }
+        };
+        let b = p1 - p0;
+        if let Some((dj, j_f32)) = j {
             // Disjoint writes per aux row: order-independent, bit-identical.
             let vals: Vec<f64> = (0..b)
                 .into_par_iter()
                 .map(|q| {
-                    data.index_axis(Axis(0), q)
-                        .iter()
-                        .zip(dj.iter())
-                        .map(|(a, c)| a * c)
-                        .sum::<f64>()
+                    let row = data.index_axis(Axis(0), q);
+                    if j_f32 {
+                        row.iter()
+                            .zip(dj.iter())
+                            .map(|(&a, c)| f64::from(a as f32) * c)
+                            .sum::<f64>()
+                    } else {
+                        row.iter().zip(dj.iter()).map(|(a, c)| a * c).sum::<f64>()
+                    }
                 })
                 .collect();
             for (q, val) in vals.into_iter().enumerate() {
@@ -329,9 +520,224 @@ pub fn df_jk_gradient(
                 }
             }
         }
-        Ok(())
-    })?;
-    drop(source);
+    }
+    Ok((d_p, ls))
+}
+
+/// Divided difference of the truncated inverse `f(λ) = 1/λ` (λ kept), `0`
+/// (dropped) — the Daleckii–Krein kernel of `∂M` (see the module doc).
+#[inline]
+fn truncated_inverse_divided_difference(lk: f64, kk: bool, ll: f64, kl: bool) -> f64 {
+    match (kk, kl) {
+        (true, true) => -1.0 / (lk * ll),
+        (true, false) => 1.0 / (lk * (lk - ll)),
+        (false, true) => 1.0 / (ll * (ll - lk)),
+        (false, false) => 0.0,
+    }
+}
+
+/// Gradient of `E_J^DF(D_J) + Σ_s α_s E_K^DF(D_s)` with respect to the nuclei,
+/// at FIXED AO densities (the orbital response is the caller's Pulay term).
+///
+/// `op` must be the operator the energy's fit used, for both the three-centre
+/// integrals and the metric (Coulomb for RI-J; erfc/erf for RSH exchange).
+/// `j_density` is the TOTAL density for RI-J, or `None`; channels with
+/// `alpha == 0` are skipped. Returns `(natoms, 3)`.
+///
+/// Deterministic: both derivative passes map over auxiliary shells, collect in
+/// shell order, and fold serially, so the result is bit-identical across
+/// thread counts.
+///
+/// The RI-J fitted density `d_P` is formed from f64 integrals: the gradient of
+/// an SCF whose RI-J tensor was f64 ([`df_jk_gradient_at_precision`] with
+/// `RiJPrecision::F64`, bit-identical).
+#[allow(clippy::too_many_arguments)]
+pub fn df_jk_gradient(
+    natoms: usize,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    j_density: Option<&Array2<f64>>,
+    k_channels: &[DfKChannel<'_>],
+    budget_bytes: usize,
+) -> Result<Array2<f64>, FerricError> {
+    df_jk_gradient_at_precision(
+        natoms,
+        obs,
+        dfbs,
+        op,
+        j_density,
+        k_channels,
+        budget_bytes,
+        RiJPrecision::F64,
+    )
+}
+
+/// [`df_jk_gradient`] for an SCF whose RI-J tensor was stored at
+/// `j_precision`. With f32 the RI-J fitted density `d̂_P = Σ f64(fl32(B))·D`
+/// is formed from the SAME rounded integrals the SCF's `DfJ` stored (each
+/// f64 integral rounded to nearest, then contracted in f64), so `ĉ = V⁻¹d̂`
+/// is the SCF's own fit coefficient vector and the gradient is that of the
+/// rounded-B functional `E'_J = ½d̂ᵀV⁻¹d̂` the SCF minimised (derivative
+/// integrals and the metric derivative stay f64: `fl32(B(R))` is treated as
+/// `B(R)(1+δ)` with `δ` fixed, so its derivative is `∂B` to `u32` relative).
+/// Exchange channels are unaffected (DF-K is always f64). The pair screen of
+/// the SCF tensor is not reproduced (it drops pairs below `integral_thresh`,
+/// as for an f64 tensor).
+#[allow(clippy::too_many_arguments)]
+pub fn df_jk_gradient_at_precision(
+    natoms: usize,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    j_density: Option<&Array2<f64>>,
+    k_channels: &[DfKChannel<'_>],
+    budget_bytes: usize,
+    j_precision: RiJPrecision,
+) -> Result<Array2<f64>, FerricError> {
+    df_jk_gradient_core(
+        natoms,
+        (obs, dfbs, op),
+        j_density,
+        k_channels,
+        budget_bytes,
+        j_precision,
+        None,
+    )
+}
+
+/// [`df_jk_gradient_at_precision`] reading the raw `(P|μν)` from `raw`, the
+/// tensor the SCF kept ([`crate::raw_handoff`]), instead of regenerating it in
+/// the `dfg:3c-pass` stage. `raw` is used only when it was built for `aux`
+/// (the name of `dfbs`), `op`, `mol` and `obs` ([`KeptRaw::check`]) and the
+/// gradient's intermediates fit the memory pool beside it; otherwise it is
+/// dropped and the integrals are recomputed as without it, which
+/// `FERRIC_TIMING` reports. Either way the result equals the recomputed
+/// gradient to rounding: the kept values are `eri3_block`'s (the unpacked
+/// tier holds them, the packed tier their exactly symmetric lower triangle),
+/// and each aux row is contracted independently of the blocking.
+///
+/// Takes `raw` by value so a tensor that does not fit beside the
+/// intermediates is freed before they are allocated.
+#[allow(clippy::too_many_arguments)]
+pub fn df_jk_gradient_with_raw(
+    mol: &Molecule,
+    (obs, dfbs, aux): (&PreparedBasis, &PreparedBasis, &str),
+    op: Operator,
+    j_density: Option<&Array2<f64>>,
+    k_channels: &[DfKChannel<'_>],
+    budget_bytes: usize,
+    j_precision: RiJPrecision,
+    raw: Option<KeptRaw>,
+) -> Result<Array2<f64>, FerricError> {
+    let raw = raw.and_then(|k| match k.check(mol, obs, dfbs, aux, op) {
+        Ok(()) => Some(k),
+        Err(why) => {
+            crate::raw_handoff::note(&format!("kept tensor not used ({why}): recomputing"));
+            None
+        }
+    });
+    df_jk_gradient_core(
+        mol.atoms.len(),
+        (obs, dfbs, op),
+        j_density,
+        k_channels,
+        budget_bytes,
+        j_precision,
+        raw,
+    )
+}
+
+/// Body of [`df_jk_gradient_at_precision`] / [`df_jk_gradient_with_raw`];
+/// `raw` has already been checked against the bases, operator and geometry.
+fn df_jk_gradient_core(
+    natoms: usize,
+    (obs, dfbs, op): (&PreparedBasis, &PreparedBasis, Operator),
+    j_density: Option<&Array2<f64>>,
+    k_channels: &[DfKChannel<'_>],
+    budget_bytes: usize,
+    j_precision: RiJPrecision,
+    raw: Option<KeptRaw>,
+) -> Result<Array2<f64>, FerricError> {
+    let naux = dfbs.nbasis();
+    let mut grad = Array2::<f64>::zeros((natoms, 3));
+
+    let factors: Vec<(Array2<f64>, f64)> = k_channels
+        .iter()
+        .filter(|c| c.alpha != 0.0)
+        .map(|c| Ok((density_factor(c.density)?, c.alpha)))
+        .collect::<Result<Vec<_>, FerricError>>()?
+        .into_iter()
+        .filter(|(x, _)| x.ncols() > 0)
+        .collect();
+    if j_density.is_none() && factors.is_empty() {
+        return Ok(grad);
+    }
+    // Only a J-only pass in f64 can read a pair-screened tensor.
+    let raw = raw.filter(|k| {
+        let ok = k.source().pair_screened().is_none()
+            || (factors.is_empty() && j_density.is_some() && j_precision == RiJPrecision::F64);
+        if !ok {
+            crate::raw_handoff::note(
+                "kept pair-screened tensor not used (not a J-only f64 pass): recomputing",
+            );
+        }
+        ok
+    });
+
+    // --- memory plane: everything resident beyond the budget-bounded source.
+    // (naux, m²) per channel for L/Lt and then Γ (two live at a time), plus
+    // five (naux, naux) metric matrices (V, U, Ỹ, H and one GEMM temporary).
+    let k_bytes: usize = factors
+        .iter()
+        .map(|(x, _)| 2 * naux * x.ncols() * x.ncols() * 8)
+        .sum();
+    // An unpacked kept tensor is viewed in place; a packed one is unpacked
+    // one block at a time.
+    let unpack_block = match raw.as_ref() {
+        Some(k) if k.source().packed_flat().is_some() => pass_block_bytes(obs, dfbs, budget_bytes),
+        _ => 0,
+    };
+    // The SCF's kept `eigh` of this metric, taken before the plane below is
+    // reserved: its evictable charge is credited here and the plane's
+    // `(naux, naux)` matrices include `U`, so the bytes are counted once.
+    let kept_metric = if factors.is_empty() {
+        None
+    } else {
+        crate::raw_handoff::take_active_metric(op, &dfbs.basis_set().name)
+    };
+    let (_charge, raw) = charge_intermediates(
+        k_bytes.saturating_add(5 * naux * naux * 8),
+        unpack_block,
+        raw,
+    )?;
+
+    // A pair-screened kept tensor is the one the SCF energy used: pairs it
+    // dropped contribute zero to `d_P` and, through this density, to the
+    // derivative pass too.
+    let screened_density = match (
+        raw.as_ref().and_then(|k| k.source().pair_screened()),
+        j_density,
+    ) {
+        (Some((_, screen)), Some(d)) => Some(density_on_kept_pairs(d, screen)),
+        _ => None,
+    };
+    let j_density = screened_density.as_ref().or(j_density);
+
+    let t_st = ferric_core::timing::Stage::start("dfg:metric2c");
+    let v = coulomb_metric_2c(op, dfbs)?;
+    t_st.end();
+    let t_st = ferric_core::timing::Stage::start("dfg:3c-pass");
+    let (d_p, mut ls) = three_center_pass(
+        (obs, dfbs, op),
+        j_density.map(|d| (d, j_precision == RiJPrecision::F32)),
+        &factors,
+        budget_bytes,
+        raw.as_ref().map(KeptRaw::source),
+    )?;
+    drop(raw);
+    t_st.end();
+    let t_st = ferric_core::timing::Stage::start("dfg:metric-weights");
 
     // ---- two-centre weight H (Σ_PQ H_PQ ∂V_PQ) and J coefficients ----
     let mut h2 = Array2::<f64>::zeros((naux, naux));
@@ -359,19 +765,48 @@ pub fn df_jk_gradient(
     // Exchange: Γ^s (naux, m²) in the ORIGINAL aux basis, plus the metric term.
     let mut gammas: Vec<Array2<f64>> = Vec::with_capacity(factors.len());
     if !factors.is_empty() {
-        // Identical call to DfK's `v_inv_sqrt_lindep`, so the same modes are
-        // classified as kept/dropped.
-        let (lam, u) = with_blas_threads(opt_in_blas_threads(), || v.eigh(UPLO::Upper))
-            .map_err(|e| FerricError::Lapack(format!("DF-K gradient: V eigh failed: {e}")))?;
-        let tau_g = DFK_LINDEP_THRESH.max(DFK_GRADIENT_NOISE_FLOOR);
-        let keep_e: Vec<bool> = lam.iter().map(|&l| l >= DFK_LINDEP_THRESH).collect();
+        // Divide and conquer (`dsyevd`), the same solver as DfK's
+        // `v_inv_sqrt_lindep` (`dsyev` MEASURED 3.5 s on one core against
+        // 0.65 s for this call at naux = 1538, sulfamethoxazole,
+        // def2-universal-jkfit). The gradient depends on the eigenbasis only
+        // through which modes sit above or below the energy's cut /
+        // DFK_GRADIENT_NOISE_FLOOR, and the energy's cut (at most
+        // LINDEP_CUT_WINDOW · 1e-10 = 1e-8, below the floor) enters the
+        // gradient only through the band-energy diagnostic.
+        //
+        // The SCF's DF-K diagonalised this same metric with this same routine
+        // (`v_inv_sqrt_lindep`); a geometry task keeps that `eigh` for here
+        // (`kept_metric` above), used only when `v` is bit-identical to the
+        // matrix it decomposed.
+        let t_e = ferric_core::timing::Stage::start("dfg:metric-eigh");
+        let (lam, u) = match kept_metric.and_then(|k| k.accept(dfbs, &v)) {
+            Some(kept) => kept,
+            None => {
+                DFG_METRIC_EIGHS.with(|c| c.set(c.get() + 1));
+                with_blas_threads(opt_in_blas_threads(), || {
+                    ferric_core::linalg::eigh_dc(&v, ferric_core::linalg::Uplo::Upper)
+                })
+                .map_err(|e| FerricError::Lapack(format!("DF-K gradient: V eigh failed: {e}")))?
+            }
+        };
+        t_e.end();
+        let t_e = ferric_core::timing::Stage::start("dfg:metric-gemms");
+        // The energy's cut, by the rule DfK applies (`metric_lindep_cut`).
+        let cut_e = metric_lindep_cut(&lam);
+        let tau_g = cut_e.cut.max(DFK_GRADIENT_NOISE_FLOOR);
+        let keep_e: Vec<bool> = lam.iter().map(|&l| cut_e.keeps(l)).collect();
         let keep_g: Vec<bool> = lam.iter().map(|&l| l >= tau_g).collect();
 
+        // These four products are O(naux² m²) and O(naux³) (~76 GFLOP for a
+        // 28-atom def2-SVP hybrid) and run outside any rayon region, so they
+        // are column-blocked over the rayon pool (`par_gemm`), one-thread BLAS
+        // per block.
         let mut y_t = Array2::<f64>::zeros((naux, naux));
         let mut band_energy = 0.0f64;
         for ((_, alpha), l) in factors.iter().zip(ls.drain(..)) {
             // Lt = Uᵀ L: the fitted integrals in the metric eigenbasis.
-            let lt = with_blas_threads(opt_in_blas_threads(), || u.t().dot(&l));
+            let mut lt = Array2::<f64>::zeros(l.dim());
+            par_gemm(1.0, &u.t(), &l.view(), 0.0, &mut lt);
             drop(l);
             for k in 0..naux {
                 if keep_e[k] && !keep_g[k] {
@@ -379,24 +814,25 @@ pub fn df_jk_gradient(
                 }
             }
             // Ỹ += α Lt Ltᵀ
-            with_blas_threads(opt_in_blas_threads(), || {
-                ndarray::linalg::general_mat_mul(*alpha, &lt, &lt.t(), 1.0, &mut y_t)
-            });
+            par_gemm(*alpha, &lt.view(), &lt.t(), 1.0, &mut y_t);
             // Γ = U diag(w) Lt, w_k = 1/λ_k on gradient-kept modes, else 0.
             let mut wlt = lt;
             for k in 0..naux {
                 let w = if keep_g[k] { 1.0 / lam[k] } else { 0.0 };
                 wlt.row_mut(k).mapv_inplace(|v| v * w);
             }
-            gammas.push(with_blas_threads(opt_in_blas_threads(), || u.dot(&wlt)));
+            let mut gam = Array2::<f64>::zeros(wlt.dim());
+            par_gemm(1.0, &u.view(), &wlt.view(), 0.0, &mut gam);
+            gammas.push(gam);
         }
         if band_energy.abs() > NOISE_BAND_ENERGY_WARN {
             eprintln!(
                 "[ferric] warning: DF-K gradient: {band_energy:.3e} Ha of fitted exchange sits in \
-                 auxiliary-metric modes with eigenvalue in [{DFK_LINDEP_THRESH:.0e}, \
+                 auxiliary-metric modes with eigenvalue in [{:.2e}, \
                  {DFK_GRADIENT_NOISE_FLOOR:.0e}); the gradient treats them as dropped, so it \
                  differs from the derivative of the reported energy by the derivative of that \
-                 band"
+                 band",
+                cut_e.cut
             );
         }
         // H_K = U (F ∘ Ỹ) Uᵀ
@@ -406,107 +842,29 @@ pub fn df_jk_gradient(
                     truncated_inverse_divided_difference(lam[k], keep_g[k], lam[l], keep_g[l]);
             }
         }
-        let hk = with_blas_threads(opt_in_blas_threads(), || u.dot(&y_t).dot(&u.t()));
-        h2 += &hk;
+        let mut uy = Array2::<f64>::zeros((naux, naux));
+        par_gemm(1.0, &u.view(), &y_t.view(), 0.0, &mut uy);
+        drop(y_t);
+        // h2 += (U F̃) Uᵀ, accumulated in place.
+        par_gemm(1.0, &uy.view(), &u.t(), 1.0, &mut h2);
+        t_e.end();
     }
 
+    t_st.end();
+    let t_st = ferric_core::timing::Stage::start("dfg:3c-deriv-pass");
     // ---- three-centre derivative pass, one auxiliary shell per task ----
-    let nsh_obs = obs.nshells();
+    let weights = deriv3c::SlabWeights {
+        j: c_j.as_ref().zip(j_density),
+        factors: &factors,
+        gammas: &gammas,
+    };
+    grad += &deriv3c::three_center_deriv_pass(natoms, (obs, dfbs, op), &weights)?;
+    t_st.end();
     let nsh_df = dfbs.nshells();
-    let dims_obs = obs.shell_dims();
-    let offs_obs = obs.shell_offsets();
     let dims_df = dfbs.shell_dims();
     let offs_df = dfbs.shell_offsets();
-    let sh2at_obs = obs.shell_to_atom();
     let sh2at_df = dfbs.shell_to_atom();
-
-    let max_np = dims_df.iter().copied().max().unwrap_or(0);
-    let workers = rayon::current_num_threads().max(1);
-    let _slab_charge = ferric_core::memory::pool::reserve_global(
-        "DF-JK gradient per-worker 3c weight slabs",
-        workers
-            .saturating_mul(max_np)
-            .saturating_mul(n)
-            .saturating_mul(n)
-            .saturating_mul(8),
-    )?;
-
-    // Surface an engine-construction error serially before the fan-out.
-    Engine::new_3center_deriv(op, obs, dfbs, 1e-14)?;
-    let partials: Vec<Array2<f64>> = (0..nsh_df)
-        .into_par_iter()
-        .map_init(
-            || {
-                Engine::new_3center_deriv(op, obs, dfbs, 1e-14)
-                    .expect("3-center deriv engine (pre-validated)")
-            },
-            |eng, sp| {
-                let np = dims_df[sp];
-                let pf0 = offs_df[sp];
-                let mut local = Array2::<f64>::zeros((natoms, 3));
-                // G[p, μ, ν] = ∂E/∂(P|μν) for this shell's aux functions.
-                let mut slab = Array3::<f64>::zeros((np, n, n));
-                for p in 0..np {
-                    let pf = pf0 + p;
-                    let mut g = slab.index_axis_mut(Axis(0), p);
-                    if let (Some(c), Some(dj)) = (c_j.as_ref(), j_density) {
-                        g.scaled_add(c[pf], dj);
-                    }
-                    for ((x, alpha), gam) in factors.iter().zip(gammas.iter()) {
-                        let m = x.ncols();
-                        let gp = Array2::from_shape_fn((m, m), |(i, j)| gam[(pf, i * m + j)]);
-                        let xg = x.dot(&gp);
-                        let contrib = xg.dot(&x.t());
-                        g.scaled_add(2.0 * alpha, &contrib);
-                    }
-                }
-                let atom_p = sh2at_df[sp];
-                for s1 in 0..nsh_obs {
-                    for s2 in 0..=s1 {
-                        let Some(deriv) = eng.compute_eri3_deriv(obs, dfbs, sp, s1, s2) else {
-                            continue;
-                        };
-                        let n1 = dims_obs[s1];
-                        let n2 = dims_obs[s2];
-                        let block_sz = np * n1 * n2;
-                        let sym12 = s1 != s2;
-                        let atom_1 = sh2at_obs[s1];
-                        let atom_2 = sh2at_obs[s2];
-                        for p in 0..np {
-                            for i in 0..n1 {
-                                let mu = offs_obs[s1] + i;
-                                for j in 0..n2 {
-                                    let nu = offs_obs[s2] + j;
-                                    let idx = (p * n1 + i) * n2 + j;
-                                    let gval = if sym12 {
-                                        slab[(p, mu, nu)] + slab[(p, nu, mu)]
-                                    } else {
-                                        slab[(p, mu, nu)]
-                                    };
-                                    if gval == 0.0 {
-                                        continue;
-                                    }
-                                    // 9 blocks: [dP_xyz, d1_xyz, d2_xyz].
-                                    for coord in 0..3 {
-                                        local[(atom_p, coord)] +=
-                                            gval * deriv[coord * block_sz + idx];
-                                        local[(atom_1, coord)] +=
-                                            gval * deriv[(3 + coord) * block_sz + idx];
-                                        local[(atom_2, coord)] +=
-                                            gval * deriv[(6 + coord) * block_sz + idx];
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                local
-            },
-        )
-        .collect();
-    for p in &partials {
-        grad += p;
-    }
+    let t_st = ferric_core::timing::Stage::start("dfg:2c-deriv-pass");
 
     // ---- two-centre metric derivative pass ----
     Engine::new_2center_deriv(op, dfbs, 1e-14)?;
@@ -555,6 +913,7 @@ pub fn df_jk_gradient(
     for p in &partials {
         grad += p;
     }
+    t_st.end();
     Ok(grad)
 }
 
@@ -565,7 +924,9 @@ pub enum TwoElectronDensity<'a> {
     Closed(&'a Array2<f64>),
     /// Open shell (UHF/ROHF/UKS/ROKS): per-spin densities.
     Open {
+        /// AO α density.
         alpha: &'a Array2<f64>,
+        /// AO β density.
         beta: &'a Array2<f64>,
     },
 }
@@ -574,7 +935,10 @@ pub enum TwoElectronDensity<'a> {
 /// Some((c_sr, c_lr, ω))` replaces it with `c_sr·K[erfc(ω)] + c_lr·K[erf(ω)]`.
 #[derive(Clone, Copy, Debug)]
 pub struct ExchangeMix {
+    /// Fraction of full-range (ω = 0) exact exchange; used when `rsh` is
+    /// `None`.
     pub c_k: f64,
+    /// `(c_sr, c_lr, ω)` for range-separated exchange, ω in Bohr⁻¹.
     pub rsh: Option<(f64, f64, f64)>,
 }
 
@@ -636,7 +1000,7 @@ pub(crate) fn df_j_gradient(
         FerricError::General("df_j_gradient: the SCF route has no RI-J aux basis".into())
     })?;
     let dfbs = aux_basis(mol, ja)?;
-    df_jk_gradient(
+    df_jk_gradient_at_precision(
         mol.atoms.len(),
         prep,
         &dfbs,
@@ -644,6 +1008,7 @@ pub(crate) fn df_j_gradient(
         Some(d),
         &[],
         route.budget_bytes,
+        route.ri_j_precision,
     )
 }
 
@@ -714,22 +1079,35 @@ pub fn routed_two_electron_gradient(
     let budget = route.budget_bytes;
     match (j_df, k0_df) {
         (Some(ja), Some(ka)) if ja == ka => {
+            // The SCF's raw tensor, when its driver kept one for this
+            // gradient (`crate::raw_handoff::with_kept_raw`).
             let dfbs = aux_basis(mol, ja)?;
-            grad += &df_jk_gradient(
-                natoms,
-                prep,
-                &dfbs,
+            grad += &df_jk_gradient_with_raw(
+                mol,
+                (prep, &dfbs, ja),
                 route.op,
                 Some(&d_total),
                 &channels(mix.c_k),
                 budget,
+                route.ri_j_precision,
+                crate::raw_handoff::take_active(mol, prep, &dfbs, ja, route.op),
             )?;
         }
         _ => {
+            // The J-only pass of a pure functional (or of a separate K aux)
+            // reads the SCF's RI-J tensor when its driver kept one.
             if let Some(ja) = j_df {
                 let dfbs = aux_basis(mol, ja)?;
-                grad +=
-                    &df_jk_gradient(natoms, prep, &dfbs, route.op, Some(&d_total), &[], budget)?;
+                grad += &df_jk_gradient_with_raw(
+                    mol,
+                    (prep, &dfbs, ja),
+                    route.op,
+                    Some(&d_total),
+                    &[],
+                    budget,
+                    route.ri_j_precision,
+                    crate::raw_handoff::take_active(mol, prep, &dfbs, ja, route.op),
+                )?;
             }
             if let Some(ka) = k0_df {
                 let dfbs = aux_basis(mol, ka)?;
@@ -816,5 +1194,42 @@ mod tests {
             truncated_inverse_divided_difference(1.0, false, 2.0, false),
             0.0
         );
+    }
+
+    /// Blocks tile `[0, naux)` exactly, in order, never split a shell, and stay
+    /// within `max_rows` except for a single shell wider than it. FAILS if a
+    /// boundary row is dropped or duplicated (the gradient would then miss or
+    /// double-count `d_P` rows) or if a shell is split.
+    #[test]
+    fn aux_shell_blocks_tile_whole_shells() {
+        let dims = [1usize, 3, 5, 1, 7, 9, 3, 1];
+        let offsets: Vec<usize> = dims
+            .iter()
+            .scan(0, |acc, &d| {
+                let o = *acc;
+                *acc += d;
+                Some(o)
+            })
+            .collect();
+        let naux: usize = dims.iter().sum();
+        for max_rows in [1, 4, 8, 9, 10, 16, naux, usize::MAX] {
+            let blocks = aux_shell_blocks(&offsets, &dims, max_rows);
+            assert_eq!(blocks.first().unwrap().0, 0, "max_rows {max_rows}");
+            assert_eq!(blocks.last().unwrap().1, naux, "max_rows {max_rows}");
+            for w in blocks.windows(2) {
+                assert_eq!(w[0].1, w[1].0, "gap/overlap at max_rows {max_rows}");
+            }
+            for &(p0, p1) in &blocks {
+                assert!(offsets.contains(&p0), "block starts mid-shell");
+                assert!(p1 == naux || offsets.contains(&p1), "block ends mid-shell");
+                let one_shell = offsets.iter().filter(|&&o| o >= p0 && o < p1).count() == 1;
+                assert!(p1 - p0 <= max_rows || one_shell, "oversized block");
+            }
+        }
+        assert_eq!(
+            aux_shell_blocks(&offsets, &dims, usize::MAX),
+            vec![(0, naux)]
+        );
+        assert!(aux_shell_blocks(&[], &[], 4).is_empty());
     }
 }

@@ -256,6 +256,7 @@ const EXX: [ExxDiv; 2] = [ExxDiv::None, ExxDiv::Ewald];
 // (1) Closed shell UKS ≡ RKS.
 // ===========================================================================
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn closed_shell_uks_equals_rks_lda_pbe_pbe0_both_exxdiv() {
     let cases: [(&str, Setup, &[&str], &[ExxDiv]); 2] = [
@@ -436,6 +437,7 @@ fn uks_with_an_hf_equivalent_builder_is_gamma_uhf() {
 // (3) Open-shell pins: prototype construction (tight) + PySCF (grid gap).
 // ===========================================================================
 
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn open_shell_uks_matches_the_prototype_construction_and_pyscf() {
     type Row = (
@@ -654,6 +656,7 @@ fn polarized_vxc_is_the_derivative_of_exc_per_spin() {
 /// LDA dE 3.1e-14. Artifacts: Madelung on the full K → a 1/a term; K unscaled
 /// → 4× c3. Molecular UKS on the identical grid rules (TA-M4 75 × Lebedev
 /// 302; one atom, so every partition weight is 1 near it), exact J/K.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn h_atom_sto3g_pbe0_box_limit_is_hyb_times_the_uhf_c3() {
     let c3 = -(2.0 * PI / 3.0) * 0.25 * H_OMEGA_A;
@@ -665,20 +668,19 @@ fn h_atom_sto3g_pbe0_box_limit_is_hyb_times_the_uhf_c3() {
     let prep_mol = PreparedBasis::new(&mol, &basis).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep_mol).unwrap();
     let molecular = |xc: &str| {
-        let cfg = RhfConfig {
-            xc: Some(xc.to_string()),
-            dft_grid: Some(AtomicGridConfig {
+        let cfg = RhfConfig::default()
+            .with_xc(xc.to_string())
+            .with_dft_grid(AtomicGridConfig {
                 n_radial: 75,
                 n_angular: 302,
                 prune: None,
-            }),
-            df_j_aux: Some(String::new()),
-            df_k_aux: Some(String::new()),
-            use_sad_guess: false,
-            density_conv: 1e-10,
-            max_iter: 200,
-            ..Default::default()
-        };
+                weight_cut: None,
+            })
+            .with_df_j_aux(String::new())
+            .with_df_k_aux(String::new())
+            .with_guess(ferric_scf::options::Guess::Core)
+            .with_density_conv(1e-10)
+            .with_max_iter(200);
         let r = solve_uhf(&ParallelContext::default(), &mol, &prep_mol, &bounds, &cfg).unwrap();
         assert!(r.converged);
         r

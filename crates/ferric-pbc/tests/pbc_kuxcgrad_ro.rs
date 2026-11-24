@@ -313,6 +313,7 @@ fn one_point_vs_gamma_ro(f: Option<&str>, w_mutant: bool) {
     }
 }
 
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn one_point_mesh_matches_the_gamma_rohf_gradient_per_part() {
     one_point_vs_gamma_ro(None, true);
@@ -396,6 +397,7 @@ fn w_ro_mutants_and_the_fock_guard() {
 /// message, NOT the Fock-guard message (the stored Fock is the density's own);
 /// the same state with the gate off returns a force wrong by far more than
 /// the FD bar, so the gate matters.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_orbital_gradient_gate_fires_and_matters() {
     let tight = fixture(&H3, [1, 1, 1], Some("PBE"), ExxDiv::None);
@@ -496,7 +498,8 @@ fn gate_error_is_first_order_in_g_between_two_states() {
 /// The gate's scratch charge is read from the typed error of the PRODUCTION
 /// ROHF force path (zero XC, so no chunk gate precedes it): the charge must be
 /// `RO_GATE_N2_ARRAYS` `n^2` complex arrays and at least the 22 the gate's code
-/// holds; the old eight fails both.
+/// holds; a charge of eight fails both.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn the_force_gate_scratch_charge_is_read_from_the_production_error() {
     let fx = fixture(&H3, [1, 1, 1], None, ExxDiv::Ewald);
@@ -570,6 +573,7 @@ fn ro_gate_probe() {
 }
 
 /// A short MO set is a typed refusal.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn short_mos_are_refused() {
     let fx = fixture(&H3, [1, 1, 1], Some("PBE"), ExxDiv::None);
@@ -582,6 +586,24 @@ fn short_mos_are_refused() {
     eprintln!("short mos: {e}");
     assert!(
         e.contains("kpoint_roks_gradient:") && e.contains("MO sets for 1 k-points"),
+        "{e}"
+    );
+}
+
+/// The SCF's k-points must be the mesh's to `max |Δk| <= 1e-12` (kgrad.rs
+/// `check_inputs_rsh`): a displaced list names a different Bloch phase set, so
+/// the force would differentiate another density. 1e-11 sits one decade above
+/// the gate; the SCF itself is untouched.
+#[test]
+fn scf_kpoints_displaced_from_the_mesh_are_refused() {
+    let fx = fixture(&H3, [1, 1, 1], None, ExxDiv::None);
+    let mut t = fx.res.scf.clone();
+    t.kpts[0][0] += 1e-11;
+    let e = force_scf(&fx, &t, &gcfg(None, None))
+        .expect_err("displaced k-point")
+        .to_string();
+    assert!(
+        e.contains("kpoint_rohf_gradient:") && e.contains("the SCF's k-points are not this mesh's"),
         "{e}"
     );
 }

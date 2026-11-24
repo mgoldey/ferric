@@ -84,6 +84,78 @@ struct PoolInner {
     /// label -> currently outstanding bytes under that label. Only touched on
     /// reserve/release, never on a compute path.
     by_label: Mutex<HashMap<String, usize>>,
+    /// The part of `outstanding` held by evictable reservations
+    /// ([`MemoryPool::reserve_evictable`]).
+    evictable_bytes: AtomicUsize,
+    /// Live evictable reservations, oldest first.
+    evictable: Mutex<Vec<EvictEntry>>,
+    /// Id source for evictable reservations.
+    next_evict_id: AtomicUsize,
+}
+
+/// One live evictable reservation: what to call to free its data.
+struct EvictEntry {
+    id: usize,
+    label: String,
+    bytes: usize,
+    evict: Box<dyn FnOnce() + Send>,
+}
+
+impl std::fmt::Debug for EvictEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EvictEntry")
+            .field("id", &self.id)
+            .field("label", &self.label)
+            .field("bytes", &self.bytes)
+            .finish_non_exhaustive()
+    }
+}
+
+/// An RAII handle to bytes debited from a [`MemoryPool`] for data that can
+/// be recomputed: a cache.
+///
+/// The bytes count as outstanding, so the ledger stays honest, and as
+/// available, so no sizing or admission decision sees less room than it would
+/// without the cache. A [`MemoryPool::reserve`] that does not fit otherwise
+/// evicts such reservations, oldest first: it calls their `evict` closure,
+/// which frees the data, and then credits the bytes. Dropping the handle
+/// credits the bytes without calling `evict`.
+#[derive(Debug)]
+pub struct EvictableReservation {
+    pool: Option<MemoryPool>,
+    id: usize,
+    bytes: usize,
+}
+
+impl EvictableReservation {
+    /// A handle against no pool (nothing installed): holds and evicts nothing.
+    pub fn inert() -> Self {
+        Self {
+            pool: None,
+            id: 0,
+            bytes: 0,
+        }
+    }
+
+    /// Bytes debited (0 when inert or already evicted).
+    pub fn bytes(&self) -> usize {
+        match self.pool.as_ref() {
+            Some(p) if p.holds_evictable(self.id) => self.bytes,
+            _ => 0,
+        }
+    }
+}
+
+impl Drop for EvictableReservation {
+    fn drop(&mut self) {
+        let Some(pool) = self.pool.take() else {
+            return;
+        };
+        let entry = pool.take_evictable_entry(self.id);
+        if let Some(e) = entry {
+            pool.credit_evictable(&e.label, e.bytes);
+        }
+    }
 }
 
 /// An RAII handle to bytes debited from a [`crate::memory::pool::MemoryPool`].
@@ -112,6 +184,9 @@ impl MemoryPool {
                 outstanding: AtomicUsize::new(0),
                 peak: AtomicUsize::new(0),
                 by_label: Mutex::new(HashMap::new()),
+                evictable_bytes: AtomicUsize::new(0),
+                evictable: Mutex::new(Vec::new()),
+                next_evict_id: AtomicUsize::new(1),
             }),
         }
     }
@@ -147,10 +222,130 @@ impl MemoryPool {
     /// This is the number a gate should compare against — NOT
     /// [`capacity_bytes`](Self::capacity_bytes), which is the whole point of
     /// the pool.
+    ///
+    /// Bytes held by evictable reservations count as available: a reservation
+    /// that needs them evicts them ([`EvictableReservation`]).
     pub fn available_bytes(&self) -> usize {
         self.inner
             .capacity
             .saturating_sub(self.inner.outstanding.load(Ordering::Acquire))
+            .saturating_add(self.inner.evictable_bytes.load(Ordering::Acquire))
+            .min(self.inner.capacity)
+    }
+
+    /// Debit `bytes` under `label` for recomputable data, if they fit in what
+    /// is free without evicting anything; `None` otherwise. `evict` frees the
+    /// data when a later [`reserve`](Self::reserve) needs the bytes; it runs
+    /// on that caller's thread, without any pool lock held.
+    pub fn reserve_evictable(
+        &self,
+        label: &str,
+        bytes: usize,
+        evict: Box<dyn FnOnce() + Send>,
+    ) -> Option<EvictableReservation> {
+        let cap = self.inner.capacity;
+        let id = self.inner.next_evict_id.fetch_add(1, Ordering::AcqRel);
+        // The entry is listed before the bytes are debited, under the list
+        // lock, so a concurrent eviction never credits bytes not yet debited.
+        let mut list = self
+            .inner
+            .evictable
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        #[allow(deprecated)]
+        let outcome =
+            self.inner
+                .outstanding
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
+                    let next = cur.saturating_add(bytes);
+                    (next <= cap).then_some(next)
+                });
+        let prev = outcome.ok()?;
+        self.inner
+            .evictable_bytes
+            .fetch_add(bytes, Ordering::AcqRel);
+        self.inner
+            .peak
+            .fetch_max(prev.saturating_add(bytes), Ordering::AcqRel);
+        if let Ok(mut m) = self.inner.by_label.lock() {
+            *m.entry(label.to_string()).or_insert(0) += bytes;
+        }
+        list.push(EvictEntry {
+            id,
+            label: label.to_string(),
+            bytes,
+            evict,
+        });
+        Some(EvictableReservation {
+            pool: Some(self.clone()),
+            id,
+            bytes,
+        })
+    }
+
+    /// Bytes currently held by evictable reservations.
+    pub fn evictable_bytes(&self) -> usize {
+        self.inner.evictable_bytes.load(Ordering::Acquire)
+    }
+
+    fn holds_evictable(&self, id: usize) -> bool {
+        self.inner
+            .evictable
+            .lock()
+            .map(|l| l.iter().any(|e| e.id == id))
+            .unwrap_or(false)
+    }
+
+    fn take_evictable_entry(&self, id: usize) -> Option<EvictEntry> {
+        let mut list = self
+            .inner
+            .evictable
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let i = list.iter().position(|e| e.id == id)?;
+        Some(list.remove(i))
+    }
+
+    /// Credit an evictable reservation's bytes back.
+    fn credit_evictable(&self, label: &str, bytes: usize) {
+        self.inner
+            .evictable_bytes
+            .fetch_sub(bytes, Ordering::AcqRel);
+        self.release(label, bytes);
+    }
+
+    /// Evict the oldest evictable reservations until `need` bytes are free or
+    /// none is left. Returns whether anything was evicted.
+    fn evict_for(&self, need: usize) -> bool {
+        let victims: Vec<EvictEntry> = {
+            let mut list = self
+                .inner
+                .evictable
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let free = self
+                .inner
+                .capacity
+                .saturating_sub(self.inner.outstanding.load(Ordering::Acquire));
+            let held: usize = list.iter().map(|e| e.bytes).sum();
+            if free.saturating_add(held) < need {
+                // Evicting everything would not make room: keep the caches.
+                return false;
+            }
+            let mut freed = 0usize;
+            let mut n = 0;
+            while n < list.len() && free.saturating_add(freed) < need {
+                freed = freed.saturating_add(list[n].bytes);
+                n += 1;
+            }
+            list.drain(..n).collect()
+        };
+        let any = !victims.is_empty();
+        for e in victims {
+            (e.evict)();
+            self.credit_evictable(&e.label, e.bytes);
+        }
+        any
     }
 
     /// Debit `bytes` under `label`, returning an RAII guard that credits them
@@ -162,7 +357,17 @@ impl MemoryPool {
     ///
     /// Thread-safe: concurrent callers contend on one `fetch_update`, so two
     /// workers each asking for 3 GiB of a 4.72 GiB pool cannot both succeed.
+    ///
+    /// When the request does not fit, evictable reservations are evicted
+    /// (oldest first) and the request is tried again.
     pub fn reserve(&self, label: &str, bytes: usize) -> Result<Reservation, FerricError> {
+        match self.reserve_once(label, bytes) {
+            Err(e) if self.evict_for(bytes) => self.reserve_once(label, bytes).map_err(|_| e),
+            r => r,
+        }
+    }
+
+    fn reserve_once(&self, label: &str, bytes: usize) -> Result<Reservation, FerricError> {
         let cap = self.inner.capacity;
         // REFUSE when the request would exceed the ceiling. `Some(next)`
         // unconditionally (the shape this had while it was being written)
@@ -419,6 +624,20 @@ pub fn try_reserve_global(label: &str, bytes: usize) -> Option<Reservation> {
     }
 }
 
+/// [`MemoryPool::reserve_evictable`] against the process-global pool. With no
+/// pool installed, an inert handle (the data is kept unbudgeted, as every other
+/// plane is then).
+pub fn reserve_evictable_global(
+    label: &str,
+    bytes: usize,
+    evict: Box<dyn FnOnce() + Send>,
+) -> Option<EvictableReservation> {
+    match global() {
+        Some(pool) => pool.reserve_evictable(label, bytes, evict),
+        None => Some(EvictableReservation::inert()),
+    }
+}
+
 /// What the global pool has left, or `None` when no pool is installed.
 ///
 /// A gate that needs to *size* something (a batch width) rather than admit it
@@ -596,5 +815,87 @@ mod tests {
         drop(a);
         assert_eq!(pool.outstanding_bytes(), 0);
         assert!(!pool.occupancy_report().contains("batch"));
+    }
+
+    /// An evictable reservation is debited (the ledger is honest) but counts
+    /// as available, so a decision made against `available_bytes` is the one
+    /// it would be without the cache. FAILS if `available_bytes` stops adding
+    /// the evictable bytes back.
+    #[test]
+    fn evictable_bytes_are_debited_but_count_as_available() {
+        let pool = MemoryPool::with_capacity_bytes(10 * GB);
+        let _firm = pool.reserve("firm", 4 * GB).unwrap();
+        let before = pool.available_bytes();
+        let h = pool
+            .reserve_evictable("cache", 3 * GB, Box::new(|| {}))
+            .expect("fits");
+        assert_eq!(pool.outstanding_bytes(), 7 * GB);
+        assert_eq!(pool.evictable_bytes(), 3 * GB);
+        assert_eq!(pool.available_bytes(), before);
+        assert_eq!(h.bytes(), 3 * GB);
+        drop(h);
+        assert_eq!(pool.outstanding_bytes(), 4 * GB);
+        assert_eq!(pool.evictable_bytes(), 0);
+    }
+
+    /// A reservation that fits only without the cache evicts it: the evict
+    /// closure runs (the data is freed) before the bytes are handed out.
+    /// FAILS if `reserve` does not evict (the request errors) or credits the
+    /// bytes without calling `evict`.
+    #[test]
+    fn a_reservation_that_needs_the_bytes_evicts_the_cache() {
+        use std::sync::atomic::AtomicBool;
+        let pool = MemoryPool::with_capacity_bytes(10 * GB);
+        let freed = Arc::new(AtomicBool::new(false));
+        let f = freed.clone();
+        let h = pool
+            .reserve_evictable(
+                "cache",
+                6 * GB,
+                Box::new(move || f.store(true, Ordering::SeqCst)),
+            )
+            .unwrap();
+        let r = pool
+            .reserve("big", 8 * GB)
+            .expect("fits once the cache is evicted");
+        assert!(freed.load(Ordering::SeqCst), "evict was not called");
+        assert_eq!(pool.outstanding_bytes(), 8 * GB);
+        assert_eq!(pool.evictable_bytes(), 0);
+        assert_eq!(h.bytes(), 0, "an evicted handle holds nothing");
+        drop(h); // credits nothing a second time
+        assert_eq!(pool.outstanding_bytes(), 8 * GB);
+        drop(r);
+        assert_eq!(pool.outstanding_bytes(), 0);
+    }
+
+    /// A request that fits without evicting, or would not fit even after
+    /// evicting everything, leaves the cache in place.
+    #[test]
+    fn eviction_happens_only_when_it_makes_room() {
+        use std::sync::atomic::AtomicBool;
+        let pool = MemoryPool::with_capacity_bytes(10 * GB);
+        let freed = Arc::new(AtomicBool::new(false));
+        let f = freed.clone();
+        let _h = pool
+            .reserve_evictable(
+                "cache",
+                2 * GB,
+                Box::new(move || f.store(true, Ordering::SeqCst)),
+            )
+            .unwrap();
+        let small = pool.reserve("small", 5 * GB).unwrap();
+        assert!(
+            !freed.load(Ordering::SeqCst),
+            "evicted although the request fit"
+        );
+        assert!(pool.reserve("huge", 9 * GB).is_err());
+        assert!(
+            !freed.load(Ordering::SeqCst),
+            "evicted for a request that cannot fit"
+        );
+        drop(small);
+        assert!(pool
+            .reserve_evictable("too big", 9 * GB, Box::new(|| {}))
+            .is_none());
     }
 }

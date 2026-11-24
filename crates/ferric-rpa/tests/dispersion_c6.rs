@@ -60,8 +60,8 @@ fn free_atom_c6_matches_ts_reference() {
 
 /// Molecular sum rule: Σ_A α^A(iω) == α_mol(iω) for all ω.
 /// And: for N₂ (bond along z), α_mol_zz > α_mol_xx (σ > π polarizability),
-/// so C6_zz > C6_xx.  The atom-centred Becke partition used to invert this;
-/// the molecular-tensor × static-fraction fix restores the correct sign.
+/// so C6_zz > C6_xx.  An atom-centred Becke partition inverts this;
+/// the molecular-tensor × static-fraction form gives the correct sign.
 #[test]
 fn pdep_dynamic_n2_anisotropy_correct_sign() {
     let xyz = "2\nN2\nN 0 0 0\nN 0 0 2.074\n"; // 1.098 Å in Bohr
@@ -306,7 +306,7 @@ fn pdep_dynamic_c6_free_he_vs_reference() {
 /// cross-checked 2026-07-19, not just transcribed from the Kumar-Meath
 /// abstract):
 ///   - α∥≈14.8, α⊥≈10.2 a.u. (mean 11.73 a.u.) — the Kumar-Meath-school DOSD
-///     value quoted in this test's own history.
+///     value.
 ///   - Mean α(0) = 1.710 Å³ = 11.54 a.u. (Olney, Cann, Cooper & Brion,
 ///     Chem. Phys. 223 (1997) 59, DOSD-derived experimental; NIST CCCBDB
 ///     casno 7727379) — agrees with the above to 1.7%, independent source.
@@ -377,13 +377,11 @@ fn anisotropic_c6_vs_kumar_meath() {
         let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let scf_cfg = RhfConfig {
-            energy_conv: 1e-9,
-            xc: Some("PBE".to_string()),
-            df_j_aux: Some("def2-universal-jkfit".to_string()),
-            df_k_aux: Some("def2-universal-jkfit".to_string()),
-            ..Default::default()
-        };
+        let scf_cfg = RhfConfig::default()
+            .with_energy_conv(1e-9)
+            .with_xc("PBE")
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
 
         let dp = pdep_dynamic_polarizability(

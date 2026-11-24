@@ -41,6 +41,12 @@
 //! remains. The grid residual cancels; the DF defect does not.
 //!
 //! Cost: every FD case solves 2·3·natoms displaced SCFs (in parallel).
+// RI-J pinned to the f64 tensor (`ri_j_precision: Some(F64)` in every config
+// here): these tests validate f64 implementation code against finite
+// differences, another tier or f64 reference values at bars below the f32
+// default's effect (its energy shift is ~1e-6 Ha, and its energy surface jitters
+// by ~1e-7..1e-6 Ha between nearby geometries; site/src/methods/scf.md, "RI-J
+// tensor precision").
 
 use ferric_core::basis::{self, BasisSet};
 use ferric_core::mol::Molecule;
@@ -56,6 +62,7 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
+use ferric_testkit::compare::max_abs_diff;
 use ndarray::Array2;
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -87,14 +94,13 @@ enum Kind {
 }
 
 fn base_cfg() -> RhfConfig {
-    RhfConfig {
+    RhfConfig::default()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
         // ΔE is only a sanity bound under DF (see RhfConfig docs); ΔP drives
         // convergence. Energy error of a variational SCF is O(ΔP²).
-        energy_conv: 1e-8,
-        density_conv: 1e-9,
-        max_iter: 500,
-        ..Default::default()
-    }
+        .with_energy_conv(1e-8)
+        .with_density_conv(1e-9)
+        .with_max_iter(500)
 }
 
 fn solve(kind: Kind, mol: &Molecule, bs: &BasisSet, cfg: &RhfConfig) -> ScfResult {
@@ -162,11 +168,11 @@ fn fd(
     seed: &Array2<f64>,
 ) -> Array2<f64> {
     let natoms = mol.atoms.len();
-    let cfg = RhfConfig {
-        init_guess_density: Some(seed.clone()),
-        use_sad_guess: false,
-        ..cfg.clone()
-    };
+    let cfg = cfg
+        .clone()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_init_guess_density(seed.clone())
+        .with_guess(ferric_scf::options::Guess::Core);
     let pairs: Vec<(usize, usize)> = (0..natoms)
         .flat_map(|a| (0..3).map(move |c| (a, c)))
         .collect();
@@ -190,10 +196,6 @@ fn fd(
         g[(a, c)] = v;
     }
     g
-}
-
-fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    (a - b).iter().fold(0.0f64, |m, v| m.max(v.abs()))
 }
 
 /// Absolute check (no grid): analytic of the fitted energy == FD of it, and
@@ -232,6 +234,7 @@ fn check_absolute(
 
 /// Differential check for KS: the fitted run's residual must equal the
 /// residual of the same functional with exact J/K (grid residual cancels).
+#[allow(clippy::too_many_arguments)]
 fn check_differential(
     label: &str,
     kind: Kind,
@@ -244,11 +247,11 @@ fn check_differential(
 ) {
     let mol = Molecule::parse_xyz(xyz, 0, mult).unwrap();
     let bs = basis::bundled(basis).unwrap();
-    let exact_cfg = RhfConfig {
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        ..fitted.clone()
-    };
+    let exact_cfg = fitted
+        .clone()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new());
 
     let res_f = solve(kind, &mol, &bs, &fitted);
     assert!(
@@ -288,11 +291,10 @@ fn check_differential(
 }
 
 fn df(j: bool, k: bool) -> RhfConfig {
-    RhfConfig {
-        df_j_aux: j.then(|| JKFIT.to_string()),
-        df_k_aux: k.then(|| JKFIT.to_string()),
-        ..base_cfg()
-    }
+    let mut c = base_cfg().with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64);
+    c.df_j_aux = j.then(|| JKFIT.to_string());
+    c.df_k_aux = k.then(|| JKFIT.to_string());
+    c
 }
 
 // ---------------------------------------------------------------- anchors --
@@ -322,6 +324,62 @@ fn hf_ri_jk_gradient_matches_fd_of_ri_energy() {
         "cc-pvdz",
         df(true, true),
         5e-6,
+    );
+}
+
+/// RI-K stored as f32 (`ri_k_precision = "f32"`). The gradient recomputes the
+/// f64 integrals, so it is the gradient of the f64 functional at the f32
+/// SCF's density; the f32 ENERGY carries a rounding offset `E' − E` whose
+/// rounding pattern is re-drawn at every geometry (each dressed element moves
+/// by ~1e-3 relative per 1e-3 Bohr, far beyond its 6e-8 rounding), so FD of
+/// the f32 energy has noise ~`|E' − E|/h` that no analytic gradient can
+/// follow. What is pinned (MEASURED, see the printout):
+/// * the f32 SCF's analytic gradient is the f64 SCF's to the first-order
+///   density change, far below the FD floor `TOL`;
+/// * the f32 energy's FD misses the analytic gradient by at most
+///   `2·max|E' − E|/(2h)`, the jitter bound, measured `E' − E` at the
+///   reference geometry standing in for its size at the displaced ones
+///   (plus `TOL`).
+#[test]
+fn hf_ri_jk_f32_gradient_is_the_f64_one_and_bounds_the_fd_jitter() {
+    use ferric_scf::df_k::RiKPrecision;
+    let mol = Molecule::parse_xyz(WATER, 0, 1).unwrap();
+    let bs = basis::bundled("cc-pvdz").unwrap();
+    let with = |p| {
+        let mut c = df(true, true);
+        c.ri_k_precision = Some(p);
+        c
+    };
+    let r64 = solve(Kind::Rhf, &mol, &bs, &with(RiKPrecision::F64));
+    let r32 = solve(Kind::Rhf, &mol, &bs, &with(RiKPrecision::F32));
+    assert_eq!(
+        r32.df_jk.as_ref().unwrap().ri_k_precision,
+        RiKPrecision::F32
+    );
+    let g64 = analytic(Kind::Rhf, None, &mol, &bs, &r64);
+    let g32 = analytic(Kind::Rhf, None, &mol, &bs, &r32);
+    let dg = max_abs_diff(&g32, &g64);
+    let de = (r32.energy - r64.energy).abs();
+    let fd32 = fd(
+        Kind::Rhf,
+        &mol,
+        &bs,
+        &with(RiKPrecision::F32),
+        r32.density_total(),
+    );
+    let fd_err = max_abs_diff(&g32, &fd32);
+    let jitter = 2.0 * de / (2.0 * FD_STEP);
+    eprintln!(
+        "f32 RI-K water/cc-pVDZ: |E32 − E64| {de:.3e}; max|g32 − g64| {dg:.3e}; \
+         max|g32 − FD(E32)| {fd_err:.3e} (jitter bound {jitter:.3e} + TOL)"
+    );
+    assert!(
+        dg < 0.1 * TOL,
+        "f32 SCF gradient moved {dg:.3e} off the f64 one"
+    );
+    assert!(
+        fd_err <= jitter + TOL,
+        "FD of the f32 energy misses the analytic gradient by {fd_err:.3e}"
     );
 }
 
@@ -355,10 +413,9 @@ fn rohf_ri_jk_gradient_matches_fd_of_ri_energy() {
 #[test]
 fn pbe_default_ri_j_gradient_matches_fd() {
     // The default KS path: df_j_aux unset → RI-J auto-default. Predicted 7.2e-6.
-    let cfg = RhfConfig {
-        xc: Some("PBE".into()),
-        ..base_cfg()
-    };
+    let cfg = base_cfg()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_xc("PBE");
     check_differential(
         "PBE (default RI-J) water/6-31G",
         Kind::Rhf,
@@ -371,13 +428,13 @@ fn pbe_default_ri_j_gradient_matches_fd() {
     );
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn b3lyp_default_ri_jk_gradient_matches_fd() {
     // Hybrid default: RI-J and RI-K both auto-default. Predicted 6.0e-6.
-    let cfg = RhfConfig {
-        xc: Some("B3LYP".into()),
-        ..base_cfg()
-    };
+    let cfg = base_cfg()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_xc("B3LYP");
     check_differential(
         "B3LYP (default RI-JK) water/6-31G",
         Kind::Rhf,
@@ -390,13 +447,13 @@ fn b3lyp_default_ri_jk_gradient_matches_fd() {
     );
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uks_b3lyp_ri_jk_gradient_matches_fd() {
     // Open-shell KS: no auto-default on the UHF path, so name the aux basis.
-    let cfg = RhfConfig {
-        xc: Some("B3LYP".into()),
-        ..df(true, true)
-    };
+    let cfg = df(true, true)
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_xc("B3LYP");
     // Predicted defect 1.65e-5 (PySCF prototype, same geometry and basis).
     check_differential(
         "UKS B3LYP RI-JK HO2/6-31G",
@@ -423,10 +480,9 @@ fn wb97x_rsh_gradient_matches_fd() {
     let xc = "HYB_GGA_XC_WB97X"; // wB97X without VV10: no NLC-grid residual
     let mol = Molecule::parse_xyz(WATER, 0, 1).unwrap();
     let bs = basis::bundled("6-31g").unwrap();
-    let cfg = RhfConfig {
-        xc: Some(xc.into()),
-        ..base_cfg()
-    };
+    let cfg = base_cfg()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_xc(xc);
     let res = solve(Kind::Rhf, &mol, &bs, &cfg);
     let route = res
         .df_jk
@@ -552,10 +608,8 @@ fn scf_records_the_df_route_it_used() {
             Kind::Rhf,
             &mol,
             &bs,
-            &RhfConfig {
-                density_conv: 1e-7,
-                ..cfg
-            },
+            &cfg.with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+                .with_density_conv(1e-7),
         )
     };
     let uhf = |cfg: RhfConfig| {
@@ -563,10 +617,8 @@ fn scf_records_the_df_route_it_used() {
             Kind::Uhf,
             &oh,
             &bs,
-            &RhfConfig {
-                density_conv: 1e-7,
-                ..cfg
-            },
+            &cfg.with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+                .with_density_conv(1e-7),
         )
     };
     let j = Some(JKFIT.to_string());
@@ -574,10 +626,12 @@ fn scf_records_the_df_route_it_used() {
     // Plain HF: nothing fitted, no route (exact gradient path).
     assert!(rhf(RhfConfig::default()).df_jk.is_none());
     // PBE: RI-J auto-default; the requested-but-unconsumed DF-K is NOT recorded.
-    let r = rhf(RhfConfig {
-        xc: Some("PBE".into()),
-        df_k_aux: j.clone(),
-        ..Default::default()
+    let r = rhf({
+        let mut c = RhfConfig::default()
+            .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+            .with_xc("PBE");
+        c.df_k_aux = j.clone();
+        c
     })
     .df_jk
     .unwrap();
@@ -586,27 +640,24 @@ fn scf_records_the_df_route_it_used() {
         (j.clone(), None, None)
     );
     // B3LYP: both auto-default.
-    let r = rhf(RhfConfig {
-        xc: Some("B3LYP".into()),
-        ..Default::default()
-    })
+    let r = rhf(RhfConfig::default()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_xc("B3LYP"))
     .df_jk
     .unwrap();
     assert_eq!((r.j_aux.clone(), r.k_aux.clone()), (j.clone(), j.clone()));
     // B3LYP with the explicit opt-out: exact J and K, no route at all.
-    assert!(rhf(RhfConfig {
-        xc: Some("B3LYP".into()),
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        ..Default::default()
-    })
+    assert!(rhf(RhfConfig::default()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_xc("B3LYP")
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new()))
     .df_jk
     .is_none());
     // RSH: RI-J + the SR/LR pair at the functional's ω; no ω = 0 DF-K.
-    let r = rhf(RhfConfig {
-        xc: Some("HYB_GGA_XC_WB97X".into()),
-        ..Default::default()
-    })
+    let r = rhf(RhfConfig::default()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_xc("HYB_GGA_XC_WB97X"))
     .df_jk
     .unwrap();
     assert_eq!(r.k_aux, None);
@@ -614,27 +665,27 @@ fn scf_records_the_df_route_it_used() {
     assert_eq!(aux, JKFIT);
     assert!((omega - 0.3).abs() < 1e-12, "wB97X ω = {omega}");
     // Open shell: no auto-default, so PBE UKS without names is all exact...
-    assert!(uhf(RhfConfig {
-        xc: Some("PBE".into()),
-        ..Default::default()
-    })
+    assert!(uhf(RhfConfig::default()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_xc("PBE"))
     .df_jk
     .is_none());
     // ...and named aux bases are recorded as used.
-    let r = uhf(RhfConfig {
-        xc: Some("B3LYP".into()),
-        df_j_aux: j.clone(),
-        df_k_aux: j.clone(),
-        ..Default::default()
+    let r = uhf({
+        let mut c = RhfConfig::default()
+            .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+            .with_xc("B3LYP");
+        c.df_j_aux = j.clone();
+        c.df_k_aux = j.clone();
+        c
     })
     .df_jk
     .unwrap();
     assert_eq!((r.j_aux.clone(), r.k_aux.clone()), (j.clone(), j.clone()));
     // Open-shell RSH: J exact (the UHF path fits no J when ω > 0), exchange fitted.
-    let r = uhf(RhfConfig {
-        xc: Some("HYB_GGA_XC_WB97X".into()),
-        ..Default::default()
-    })
+    let r = uhf(RhfConfig::default()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_xc("HYB_GGA_XC_WB97X"))
     .df_jk
     .unwrap();
     assert_eq!(r.j_aux, None);
@@ -655,11 +706,10 @@ fn exact_jk_gradient_is_bit_identical_to_the_unrouted_path() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     for cfg in [
         base_cfg(),
-        RhfConfig {
-            df_j_aux: Some(String::new()),
-            df_k_aux: Some(String::new()),
-            ..base_cfg()
-        },
+        base_cfg()
+            .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+            .with_df_j_aux(String::new())
+            .with_df_k_aux(String::new()),
     ] {
         let res = solve(Kind::Rhf, &mol, &bs, &cfg);
         assert!(
@@ -698,10 +748,8 @@ fn exact_jk_gradient_is_bit_identical_to_the_unrouted_path() {
 fn exact_open_shell_vs_fd(label: &str, kind: Kind, xc: Option<&str>, basis: &str, tol: f64) {
     let mol = Molecule::parse_xyz(HO2, 0, 2).unwrap();
     let bs = basis::bundled(basis).unwrap();
-    let cfg = RhfConfig {
-        xc: xc.map(Into::into),
-        ..df(false, false)
-    };
+    let mut cfg = df(false, false).with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64);
+    cfg.xc = xc.map(Into::into);
     let res = solve(kind, &mol, &bs, &cfg);
     assert!(res.df_jk.is_none(), "{label}: expected exact J/K");
     let g = analytic(kind, xc, &mol, &bs, &res);
@@ -719,6 +767,7 @@ fn rohf_exact_gradient_matches_fd_on_a_coupled_radical() {
     exact_open_shell_vs_fd("ROHF exact HO2/STO-3G", Kind::Rohf, None, "sto-3g", TOL);
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn roks_exact_gradient_matches_fd_on_a_coupled_radical() {
     exact_open_shell_vs_fd(

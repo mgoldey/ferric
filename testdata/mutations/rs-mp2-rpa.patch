@@ -1,0 +1,13 @@
+diff --git a/crates/ferric-rpa/src/rs_mp2_rpa.rs b/crates/ferric-rpa/src/rs_mp2_rpa.rs
+index 04e9d39..ac2c2ee 100644
+--- a/crates/ferric-rpa/src/rs_mp2_rpa.rs
++++ b/crates/ferric-rpa/src/rs_mp2_rpa.rs
+@@ -786,7 +786,7 @@ impl Rings {
+                 RsMp2RpaFormulation::DeltaLr => {
+                     let e_drpa = self.drpa_lr.expect("B requested => LR dRPA computed");
+                     (
+-                        self.full.e_total + e_drpa - self.lr.dmp2,
++                        self.full.e_total + e_drpa - 0.5 * self.lr.dmp2,
+                         Some(e_drpa),
+                         Some(self.sr.e_total + e_drpa),
+                         None,

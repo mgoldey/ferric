@@ -176,17 +176,15 @@ fn terf_tail_form_matches_series_and_is_faster() {
          reference by {worst_rel_delta:.3e}. This is the assertion that matters \
          most: G can cancel at large s, Delta cannot."
     );
-    // 1e-10, not the 1e-12 this gate originally asserted. CORRECTED 2026-09-16
-    // after CI run 35108758569 failed here at 2.730e-12, reproduced locally
-    // bit-for-bit (same value, same reported I), so this was never platform
-    // noise -- the bar had simply never been run against the finished kernel.
+    // 1e-10, not 1e-12 (which a run at 2.730e-12 reproduces as a failure
+    // bit-for-bit, so it is not platform noise).
     //
-    // The 1e-12 was derived by loosening PROOF B's 6.3e-16 (I=14) by two
-    // orders "to absorb f64-vs-mpmath rounding". That derivation does not
-    // apply to what this probe actually measures: PROOF B is an mpmath 200-bit
+    // Loosening PROOF B's 6.3e-16 (I=14) by two orders "to absorb
+    // f64-vs-mpmath rounding" gives 1e-12, a derivation that does not
+    // apply to what this probe measures: PROOF B is an mpmath 200-bit
     // number, but the probe compares f64 `terf_G_tail` against f64
     // `terf_G_series`, so BOTH sides carry f64 rounding and the reconstruction
-    // G = F - Delta is a subtraction. 6.3e-16 was never reachable through it.
+    // G = F - Delta is a subtraction. 6.3e-16 is not reachable through it.
     //
     // Truncation is ruled out as the cause: every G comparison runs at
     // s <= 0.5 (the probe `continue`s above that, since F - Delta has no
@@ -194,8 +192,8 @@ fn terf_tail_form_matches_series_and_is_faster() {
     // supplies I = 41 -- about 3x PROOF B's converged I = 14. A truncation
     // residual would already be at the 1e-16 floor there. The reported
     // "worst truncation I=76" belongs to the s = 20 cells, which are EXCLUDED
-    // from worst_rel; the old panic message therefore blamed a truncation
-    // length that no G comparison ever used.
+    // from worst_rel, so the panic message does not blame a truncation
+    // length that no G comparison uses.
     //
     // The right scale is terf_G_tail's own ACCURACY DOMAIN note, measured
     // independently against a long-double evaluation of the defining series
@@ -235,7 +233,7 @@ fn terf_tail_form_matches_series_and_is_faster() {
     // doing exactly what its term counts say. Even the single most favourable
     // cell (S = 49, the top of the sweep, s <= 0.5) is only 193/41 = 4.7x,
     // because TERF_ASYMPTOTIC_S = 50 caps S before the series ever gets long
-    // enough for 10x to exist. The old bar could only have passed if the
+    // enough for 10x to exist. A bar of 10x could only pass if the
     // series were being mismeasured.
     //
     // 2x still fails loudly for the regression this guard is for -- the tail

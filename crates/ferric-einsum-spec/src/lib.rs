@@ -20,17 +20,34 @@
 /// extents are read from the left operand).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Spec {
+    /// Number of indices in the left input term (the left operand's rank).
     pub left_rank: usize,
+    /// Number of indices in the right input term (the right operand's rank).
     pub right_rank: usize,
+    /// Left-operand axis of each batch index, in output order.
     pub left_batch: Vec<usize>,
+    /// Left-operand axis of each left-free index, in output order.
     pub left_free: Vec<usize>,
+    /// Left-operand axis of each contracted index, in the order the indices
+    /// appear in the left term.
     pub left_contr: Vec<usize>,
+    /// Right-operand axis of each batch index, in output order.
     pub right_batch: Vec<usize>,
+    /// Right-operand axis of each right-free index, in output order.
     pub right_free: Vec<usize>,
+    /// Right-operand axis of each contracted index, in the same index order as
+    /// `left_contr` (so `left_contr[k]` and `right_contr[k]` are one index).
     pub right_contr: Vec<usize>,
+    /// The output term's indices, in the order written after `->`.
     pub out: Vec<char>,
+    /// Left-operand axes supplying the batch output extents (equal to
+    /// `left_batch`).
     pub out_from_batch: Vec<usize>,
+    /// Left-operand axes supplying the left-free output extents (equal to
+    /// `left_free`).
     pub out_from_left: Vec<usize>,
+    /// Right-operand axes supplying the right-free output extents (equal to
+    /// `right_free`).
     pub out_from_right: Vec<usize>,
 }
 

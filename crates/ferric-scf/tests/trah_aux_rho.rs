@@ -75,25 +75,23 @@ fn run_with_aux(
     let bounds = SchwarzBounds::compute(op, &prep).expect("schwarz");
     let ctx = ParallelContext::default();
 
-    let cfg = RhfConfig {
-        xc: xc.map(|s| s.to_string()),
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 300,
-        trah_trigger: Some(1e-2),
-        trah: TrahConfig {
-            aux_curvature: aux,
-            exact_full_gap: full_gap,
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(300);
+    cfg.xc = xc.map(|s| s.to_string());
+    cfg.trah_trigger = Some(1e-2);
+    cfg.trah = TrahConfig {
+        aux_curvature: aux,
+        exact_full_gap: full_gap,
+        ..Default::default()
+    };
+    cfg.aurora = match auxbasis {
+        Some(b) => AuroraConfig {
+            auxbasis: b.to_string(),
             ..Default::default()
         },
-        aurora: match auxbasis {
-            Some(b) => AuroraConfig {
-                auxbasis: b.to_string(),
-                ..Default::default()
-            },
-            None => AuroraConfig::default(),
-        },
-        ..Default::default()
+        None => AuroraConfig::default(),
     };
 
     reset_rho_log();
@@ -263,13 +261,11 @@ fn run_diis(xyz: &str, bas: &str, xc: Option<&str>) -> usize {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).expect("schwarz");
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        xc: xc.map(|s| s.to_string()),
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 300,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(300);
+    cfg.xc = xc.map(|s| s.to_string());
     solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg)
         .expect("scf")
         .iterations

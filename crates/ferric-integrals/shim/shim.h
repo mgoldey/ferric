@@ -133,6 +133,15 @@ int scf_compute_eri_quartet(scf_engine *eng, const scf_basis *bs,
                               int sh1, int sh2, int sh3, int sh4,
                               double *out);
 
+/* scf_compute_eri_quartet without the copy: on success *out points at the
+ * engine's own result buffer (n1*n2*n3*n4 doubles, same layout), valid until
+ * the next compute call on this engine. Returns the count, 0 if libint
+ * screened the quartet (*out = NULL), SCF_EINVAL for out == NULL, or
+ * SCF_EINTERNAL. */
+int scf_compute_eri_quartet_view(scf_engine *eng, const scf_basis *bs,
+                                 int sh1, int sh2, int sh3, int sh4,
+                                 const double **out);
+
 /* Enable/disable the per-engine shell-pair (ShellPair::init) cache used by
  * scf_compute_eri_quartet. Cache is lazily populated (one entry per unique
  * (shell,shell) pair actually requested, triangular: (i,j) and (j,i) share
@@ -276,7 +285,11 @@ int scf_libint_max_deriv_order(void);
  * class and derivative order: cls 0 = 4-centre ERI (LIBINT2_MAX_AM_eri*),
  * 1 = 3-centre ERI (LIBINT2_MAX_AM_3eri*), 2 = 2-centre ERI
  * (LIBINT2_MAX_AM_2eri*), 3 = one-body (LIBINT2_MAX_AM_overlap*); deriv 0..2.
- * Returns -1 when the macro is undefined or the arguments are out of range.
+ * For 1 and 2 this is the bra (auxiliary) shell's limit; cls 4 and 5 are the
+ * KET shells' limits of the 3- and 2-centre classes (libint2's default-class
+ * limit when the class is centre-dependent, else the same as 1 / 2).
+ * Returns -1 when the macro is undefined, the class's task was not generated
+ * (LIBINT2_TASK_EXISTS_<task> 0), or the arguments are out of range.
  * Compile-time constants: cannot fail, needs no libint init. */
 int scf_libint_max_am(int cls, int deriv);
 
@@ -392,6 +405,44 @@ int scf_compute_terf_eri2(scf_engine *eng, const scf_basis *dfbs,
  * error. terf_eri4 + terfc_eri4 = the Coulomb quartet, element-wise. */
 int scf_compute_terf_eri4(scf_engine *eng, const scf_basis *obs,
                              int sh1, int sh2, int sh3, int sh4, double *out);
+
+/* First nuclear derivatives of the terf / terfc table integrals (the MD
+ * kernel of scf_compute_terf{,c}_eri3/2 differentiated through
+ * d/dA x_A^i e^{-a x_A^2} = 2a x_A^{i+1} e - i x_A^{i-1} e). `eng` is a terf or
+ * terfc table engine; which kernel is the engine's. 3-center: 9 blocks
+ * [dP, d1, d2] x [x, y, z] of nP*n1*n2, 2-center: 6 blocks [dP, dQ] x [x, y, z]
+ * of nP*nQ, the order of libint2's derivative engines. `out_len` is the
+ * capacity of `out` in doubles. Returns the count written, SCF_EINVAL (bad
+ * engine, null pointer, shell out of range, short buffer, or total angular
+ * momentum + 1 at the table depth) or SCF_EINTERNAL. */
+int scf_compute_terf_table_eri3_deriv(scf_engine *eng, const scf_basis *obs,
+                                      const scf_basis *dfbs, int shP, int sh1,
+                                      int sh2, double *out, int out_len);
+int scf_compute_terf_table_eri2_deriv(scf_engine *eng, const scf_basis *dfbs,
+                                      int shP, int shQ, double *out, int out_len);
+
+/* Validation hooks: the same derivative kernels with the plain Coulomb
+ * kernel (no engine, no tables), for comparison with libint2's derivative
+ * engines. Same layout and return contract. */
+int scf_debug_md_coulomb_eri3_deriv(const scf_basis *obs, const scf_basis *dfbs,
+                                    int shP, int sh1, int sh2, double *out,
+                                    int out_len);
+int scf_debug_md_coulomb_eri2_deriv(const scf_basis *dfbs, int shP, int shQ,
+                                    double *out, int out_len);
+
+/* Validation hooks: the reference MD kernels of a terf/terfc table engine
+ * (compute_cart_eri3, two passes subtracted for terfc; compute_cart_eri3_deriv),
+ * for comparison with scf_compute_terf{,c}_eri3 and
+ * scf_compute_terf_table_eri3_deriv. Same layouts and return contracts. */
+int scf_debug_md_reference_eri3(scf_engine *eng, const scf_basis *obs,
+                                const scf_basis *dfbs, int shP, int sh1, int sh2,
+                                double *out);
+int scf_debug_md_reference_eri3_deriv(scf_engine *eng, const scf_basis *obs,
+                                      const scf_basis *dfbs, int shP, int sh1,
+                                      int sh2, double *out, int out_len);
+/* Process-wide test switch: nonzero routes scf_compute_terf{,c}_eri3 and
+ * scf_compute_terf_table_eri3_deriv through the reference kernels above. */
+void scf_debug_md_use_reference(int on);
 
 /* Validation hook: the 4-center MD path with the plain Coulomb kernel, for
  * cross-checking against libint2's scf_compute_eri_quartet. Needs no engine.

@@ -18,8 +18,8 @@ use ndarray::Array2;
 use rayon::prelude::*;
 
 fn cfg() -> RhfConfig {
-    RhfConfig {
-        xc: Some("PBE".into()),
+    RhfConfig::default()
+        .with_xc("PBE")
         // energy_conv follows rhf.rs's documented convergence philosophy
         // (see RhfConfig::default doc comment): dp_rms is the real
         // convergence signal, ΔE floors well above any very tight bound and
@@ -29,11 +29,9 @@ fn cfg() -> RhfConfig {
         // affected geometries silently ran to max_iter with a stale,
         // sometimes-wrong-basin density/energy (root cause of the FD
         // reference blowing up at isolated displaced geometries).
-        energy_conv: 1e-8,
-        density_conv: 1e-8,
-        max_iter: 500,
-        ..Default::default()
-    }
+        .with_energy_conv(1e-8)
+        .with_density_conv(1e-8)
+        .with_max_iter(500)
 }
 
 fn fd_gradient(xyz: &str, basis_name: &str, delta: f64) -> Array2<f64> {
@@ -63,11 +61,9 @@ fn fd_gradient(xyz: &str, basis_name: &str, delta: f64) -> Array2<f64> {
         &base_cfg,
     )
     .unwrap();
-    let cfg = RhfConfig {
-        init_guess_density: Some(res0.density_r().clone()),
-        use_sad_guess: false,
-        ..base_cfg
-    };
+    let cfg = base_cfg
+        .with_init_guess_density(res0.density_r().clone())
+        .with_guess(ferric_scf::options::Guess::Core);
 
     // Each (atom, coord) displacement pair is independent given the shared
     // `cfg` (which embeds the common equilibrium-density seed established
@@ -189,6 +185,7 @@ fn pbe_gradient_h2_augccpvtz_vs_fd() {
 
 /// H2O/def2-TZVP also exercises f-shells (one f-set on O), and exercises the
 /// Turbomole-convention contraction renormalization fix (P1.2.b).
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn pbe_gradient_h2o_def2_tzvp_vs_fd() {
     run_case(

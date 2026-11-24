@@ -19,8 +19,6 @@
 //! Davidson bytes (high-water stays at the transform chain or zero). The
 //! predictions differ, so the tests can tell them apart.
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
 use ferric_ci::integrals::active_space_integral_elems;
 use ferric_ci::{run_cas_ci, CasCiConfig, CasCiResult};
 use ferric_core::memory::pool::{clear_global, install_global, reserve_global, MemoryPool};
@@ -31,34 +29,9 @@ use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::pool::CleanSlot;
 
 const AMPLE: usize = 64_000_000_000;
-
-fn global_lock() -> MutexGuard<'static, ()> {
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    }
-}
-
-/// Clear the process-global pool on entry AND exit, so one test's pool can
-/// never refuse a sibling (see ferric-mp2's `mwe_mp2_planes_compose_in_one_pool.rs`).
-struct CleanSlot(#[allow(dead_code)] MutexGuard<'static, ()>);
-
-impl CleanSlot {
-    fn acquire() -> Self {
-        let g = global_lock();
-        clear_global();
-        Self(g)
-    }
-}
-
-impl Drop for CleanSlot {
-    fn drop(&mut self) {
-        clear_global();
-    }
-}
 
 struct Fixture {
     mol: Molecule,
@@ -105,12 +78,17 @@ impl Fixture {
         .map_err(|e| e.to_string())
     }
     /// The Davidson plan's peak: two bases of max_subspace vectors + 7 work
-    /// vectors (diag, x, hx, resid, best_vec, t, x_unit), all N_det doubles.
+    /// vectors (diag, x, hx, resid, best_vec, t, x_unit) + 4 direct-sigma
+    /// vectors (output, transpose, σ1 image, σ3 gather), all N_det doubles,
+    /// plus the direct-sigma excitation lists: 15 strings per channel with
+    /// k(n-k)+k = 12 replacements each, 16-byte entries (2 doubles), β stored
+    /// twice: 2 * (15*12 + 2*15*12) = 1080 doubles; and the α and β
+    /// determinant string lists, 15 + 15 u64 bitmasks.
     fn davidson_peak(&self) -> usize {
         let ms = self.config(None).max_subspace.max(2);
-        225 * (2 * ms + 7) * 8
+        (225 * (2 * ms + 7 + 4) + 1080) * 8 + (15 + 15) * 8
     }
-    /// The transform chain's peak (ao_eri + mo_eri + t1 + t2 + t3).
+    /// The transform chain's peak (ao_eri + first quarter-transform output).
     fn transform_peak(&self) -> usize {
         active_space_integral_elems(self.prep.nbasis(), 1 + 6) * 8
     }

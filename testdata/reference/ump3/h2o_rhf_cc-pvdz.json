@@ -1,0 +1,80 @@
+{
+  "system": "h2o",
+  "reference": "rhf",
+  "basis": "cc-pvdz",
+  "aux_basis": "cc-pvdz-ri",
+  "charge": 0,
+  "multiplicity": 1,
+  "nao": 24,
+  "naux": 84,
+  "nuclear_repulsion": 9.189193229309746,
+  "frozen_core": 0,
+  "scf": {
+    "energy": -76.02676799737651
+  },
+  "exact": {
+    "e2": -0.2040484091351721,
+    "e2_aa": -0.02576955331787987,
+    "e2_bb": -0.02576955331787987,
+    "e2_ab": -0.15250930249941233,
+    "e3": -0.006783779451640742,
+    "anchor_numpy_ss_diff": 1.734723475976807e-16,
+    "anchor_numpy_os_diff": -1.3877787807814457e-16,
+    "anchor_adc_mp2_diff": 2.498001805406602e-16
+  },
+  "ri": {
+    "e2": -0.20403345705422335,
+    "e2_aa": -0.02579662182656165,
+    "e2_bb": -0.02579662182656165,
+    "e2_ab": -0.15244021340110034,
+    "e3": -0.00689364361211986,
+    "anchor_numpy_ss_diff": -1.8041124150158794e-16,
+    "anchor_numpy_os_diff": -1.1102230246251565e-16,
+    "anchor_adc_mp2_diff": 2.7755575615628914e-17
+  },
+  "provenance": {
+    "generator": "scripts/gen_pyscf_ump3_refs.py",
+    "git_head": "441472242d3a857fe99b4499281f28ca1bca47a1",
+    "pyscf": "2.13.1",
+    "numpy": "1.26.4",
+    "xyz": "testdata/molecules/validation/h2o.xyz",
+    "coords_bohr": [
+      [
+        0.0,
+        0.0,
+        0.22259084021251865
+      ],
+      [
+        0.0,
+        1.4275992699810498,
+        -0.8903652505761991
+      ],
+      [
+        0.0,
+        -1.4275992699810498,
+        -0.8903652505761991
+      ]
+    ],
+    "symbols": [
+      "O",
+      "H",
+      "H"
+    ],
+    "basis_json_sha256": "4c2f450a81a8545e4df9e24a313111642cf70d5f7213fc8e879ef9dacab5da2f",
+    "aux_json_sha256": "8221d2a31b5bbebd39218fc3f9244917e173a338ff9c56904038443a06e2a250",
+    "scf_conv": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-09
+    },
+    "e2": "mp.MP2/UMP2 (exact), DFMP2/DFUMP2 (ri); split from numpy",
+    "e3": "adc.RADC/UADC kernel_gs: adc(3) minus adc(2)",
+    "rohf": "numpy semicanonicalization on the UHF Fock of the ROHF density",
+    "basis_self_check": {
+      "nao": 24,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 24,
+      "diag_skipped_cartesian": 0
+    }
+  }
+}

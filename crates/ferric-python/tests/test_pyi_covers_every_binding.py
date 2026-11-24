@@ -126,12 +126,19 @@ def _stub_params(stub: str, name: str) -> list[str] | None:
 
 def _exported_classes(src: str) -> list[str]:
     py_name = {}
-    for m in re.finditer(r"((?:#\[[^\]]*\]\s*)+)(?:pub\s+)?struct\s+(\w+)", src):
+    for m in re.finditer(
+        r"((?:#\[[^\]]*\]\s*)+)(?:pub(?:\([^)]*\))?\s+)?struct\s+(\w+)", src
+    ):
         attrs, rust = m.groups()
         if "pyclass" in attrs:
             n = re.search(r'name\s*=\s*"(\w+)"', attrs)
             py_name[rust] = n.group(1) if n else rust
-    return [py_name.get(c, c) for c in re.findall(r"add_class::<\s*(\w+)\s*>", src)]
+    classes = [py_name.get(c, c) for c in re.findall(r"add_class::<\s*(\w+)\s*>", src)]
+    # The exception classes are built at module init (src/errors.rs), not
+    # with `add_class`; `Kind::X => "NameError"` is where each name is spelled.
+    builtin = {"ValueError", "RuntimeError", "NotImplementedError"}
+    named = re.findall(r'Kind::\w+ => "(\w+Error)",', src)
+    return classes + ["FerricError"] + [n for n in named if n not in builtin]
 
 
 def _exported_constants(src: str) -> list[str]:

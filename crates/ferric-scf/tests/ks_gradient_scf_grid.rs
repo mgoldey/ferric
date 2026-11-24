@@ -14,6 +14,12 @@
 //! assertion of `check` takes the plain `ks_gradient_*` entry points (which
 //! differentiate the default grid by construction, i.e. the pre-fix pairing) and
 //! requires them to miss by >= 10x the bar, so the anchor can discriminate.
+// RI-J pinned to the f64 tensor (`ri_j_precision: Some(F64)` in every config
+// here): these tests validate f64 implementation code against finite
+// differences, another tier or f64 reference values at bars below the f32
+// default's effect (its energy shift is ~1e-6 Ha, and its energy surface jitters
+// by ~1e-7..1e-6 Ha between nearby geometries; site/src/methods/scf.md, "RI-J
+// tensor precision").
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -48,14 +54,14 @@ enum Kind {
 }
 
 fn config(xc: &str, grid: Option<AtomicGridConfig>) -> RhfConfig {
-    RhfConfig {
-        xc: Some(xc.into()),
-        dft_grid: grid,
-        energy_conv: 1e-11,
-        density_conv: 1e-8,
-        max_iter: 200,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_xc(xc)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
+    c.dft_grid = grid;
+    c
 }
 
 fn energy(kind: Kind, mol: &Molecule, cfg: &RhfConfig) -> f64 {
@@ -152,6 +158,7 @@ fn flat() -> Option<AtomicGridConfig> {
         n_radial: 40,
         n_angular: 194,
         prune: None,
+        weight_cut: None,
     })
 }
 
@@ -164,6 +171,7 @@ fn pruned() -> Option<AtomicGridConfig> {
         n_radial: 20,
         n_angular: 194,
         prune: Some(PruneScheme::Sgx),
+        weight_cut: None,
     })
 }
 
@@ -172,6 +180,7 @@ fn pruned_nwchem() -> Option<AtomicGridConfig> {
         n_radial: 30,
         n_angular: 194,
         prune: Some(PruneScheme::NwchemLike),
+        weight_cut: None,
     })
 }
 
@@ -231,6 +240,7 @@ fn default_grid_floor_rks_lda() {
     assert!(res < BAR && plain < BAR);
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn default_grid_floor_uks_pbe() {
     let (res, plain) = residuals(Kind::Uks, NH2, 2, "PBE", None);
@@ -260,6 +270,7 @@ fn rks_pbe_pruned_grid() {
     );
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uks_pbe_non_default_grid() {
     check("UKS PBE flat 40x194", Kind::Uks, NH2, 2, "PBE", flat());
@@ -277,6 +288,7 @@ fn uks_pbe_pruned_grid() {
     );
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn roks_pbe_non_default_grid() {
     check("ROKS PBE flat 40x194", Kind::Roks, NH2, 2, "PBE", flat());
@@ -316,6 +328,7 @@ fn rks_pbe_pruned_nwchem_grid() {
 /// point of THAT grid's energy. Pre-fix it converged on the default-grid
 /// gradient, leaving a true residual gradient of the size of the miss
 /// (~3e-4 Ha/Bohr on this system, see `rks_lda_non_default_grid`).
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn optimize_stops_at_a_stationary_point_of_the_scf_grid() {
     let mol = Molecule::parse_xyz(WATER, 0, 1).unwrap();
@@ -360,6 +373,7 @@ fn optimize_stops_at_a_stationary_point_of_the_scf_grid() {
 /// discriminate (the VV10 term has no Becke weight response, so it sits on a
 /// ~1e-5 plateau), so compare two evaluations of the SAME converged SCF result
 /// with a 30x50 and a 50x50 nonlocal grid: they must differ.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn nlc_grid_reaches_the_vv10_gradient() {
     use ferric_scf::ks_gradient::{ks_gradient_closed_with_exchange_on_grids, KsGradGrids};
@@ -384,6 +398,7 @@ fn nlc_grid_reaches_the_vv10_gradient() {
         n_radial: 30,
         n_angular: 50,
         prune: None,
+        weight_cut: None,
     });
     let default = grad(AtomicGridConfig::default_nlc());
     let diff = coarse

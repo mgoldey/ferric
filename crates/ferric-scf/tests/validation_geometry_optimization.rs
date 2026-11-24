@@ -119,6 +119,7 @@ use std::path::{Path, PathBuf};
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::gradient::{restricted_scf_gradient, rohf_gradient, unrestricted_scf_gradient};
@@ -132,6 +133,7 @@ use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::stability::StabilityVerdict;
 use ferric_scf::uhf::solve_uhf;
 use ferric_scf::{ScfResult, Spin};
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -155,7 +157,8 @@ const TOL_ANG_DEG: f64 = 1e-3;
 /// Optimized energy (ferric's minimum vs the reference's minimum). Measured
 /// max 9.3e-13 Ha.
 const TOL_E_OPT: f64 = 1e-10;
-/// ⟨S²⟩ (UHF/UKS) at start and end. Measured max 4.9e-9.
+/// ⟨S²⟩ (UHF/UKS) at the start and at the reference minimum (shared
+/// geometries). Measured max 4.9e-9.
 const TOL_S2: f64 = 5e-8;
 /// Distances that must be MISSED (moved-from-start, method swaps): this
 /// factor × TOL_R. The closest pair is UHF vs ROHF on NH2 (2.64e-3 Bohr).
@@ -268,12 +271,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn arr<'a>(v: &'a Value, ptr: &str, ctx: &str) -> &'a Vec<Value> {
     v.pointer(ptr)
         .and_then(Value::as_array)
@@ -376,21 +373,24 @@ fn check_close(ctx: &str, what: &str, got: f64, want: f64, tol: f64) -> f64 {
 
 fn scf_config(m: &Method) -> RhfConfig {
     let unrestricted = m.kind == Kind::Uhf;
-    RhfConfig {
-        xc: m.xc.map(str::to_string),
+    let mut c = RhfConfig::default()
         // Explicit EXACT J/K: `None` auto-enables RI-J for closed-shell KS.
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        energy_conv: SCF_ENERGY_CONV,
-        density_conv: SCF_DENSITY_CONV,
-        max_iter: 500,
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new())
+        .with_energy_conv(SCF_ENERGY_CONV)
+        .with_density_conv(SCF_DENSITY_CONV)
+        .with_max_iter(500)
         // UHF/UKS end on a stable state, as the reference does. ferric's ROHF
         // skips stability by design (see the UHF/ROHF row); the reference is
         // ROHF-stable, so a ferric saddle shows as an energy/geometry miss.
-        check_stability: unrestricted,
-        scf_stability_descent: unrestricted,
-        ..Default::default()
-    }
+        .with_check_stability(unrestricted)
+        // The KS references are PySCF on the flat (75,110) grid
+        // (gen_geometry_optimization.py: prune=None), not the pruned KS default
+        // AtomicGridConfig::production(). Unused by the HF methods.
+        .with_dft_grid(AtomicGridConfig::default());
+    c.xc = m.xc.map(str::to_string);
+    c.scf_stability_descent = unrestricted;
+    c
 }
 
 fn opt_config() -> OptimizeConfig {
@@ -509,7 +509,7 @@ fn check_method(system: &str, m: &Method) -> Molecule {
         &ctx,
         "E_nuc (start)",
         start.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &ctx),
+        num_ctx(&r, "/nuclear_repulsion", &ctx),
         TOL_ENUC,
     );
     let bs = basis::bundled(m.basis).unwrap();
@@ -526,11 +526,11 @@ fn check_method(system: &str, m: &Method) -> Molecule {
         &ctx,
         "E_nuc (ref minimum)",
         ref_min.nuclear_repulsion(),
-        num(&r, &format!("{blk}/nuclear_repulsion_opt"), &ctx),
+        num_ctx(&r, &format!("{blk}/nuclear_repulsion_opt"), &ctx),
         TOL_ENUC,
     );
     let at_ref = single_point(&ctx, m, &ref_min);
-    let e_opt_ref = num(&r, &format!("{blk}/energy_opt"), &ctx);
+    let e_opt_ref = num_ctx(&r, &format!("{blk}/energy_opt"), &ctx);
     check_close(&ctx, "E at ref minimum", at_ref.energy, e_opt_ref, TOL_E_SP);
     let g_at_ref = max_abs(&at_ref.grad);
     eprintln!(
@@ -543,7 +543,7 @@ fn check_method(system: &str, m: &Method) -> Molecule {
 
     // 3. Start point: same state and integrals before the optimizer runs.
     let at_start = single_point(&ctx, m, &start);
-    let e_start_ref = num(&r, &format!("{blk}/energy_start"), &ctx);
+    let e_start_ref = num_ctx(&r, &format!("{blk}/energy_start"), &ctx);
     check_close(&ctx, "E at start", at_start.energy, e_start_ref, TOL_E_SP);
     if m.kind == Kind::Uhf {
         assert_stable(&format!("{ctx} (start)"), &at_start);
@@ -551,7 +551,7 @@ fn check_method(system: &str, m: &Method) -> Molecule {
             &ctx,
             "<S^2> start",
             s_squared(&at_start, &start),
-            num(&r, &format!("{blk}/s_squared_start"), &ctx),
+            num_ctx(&r, &format!("{blk}/s_squared_start"), &ctx),
             TOL_S2,
         );
     }
@@ -572,7 +572,7 @@ fn check_method(system: &str, m: &Method) -> Molecule {
         res.steps,
         res.energy_trace.len(),
         res.converged,
-        num(
+        num_ctx(
             &r,
             &format!("{blk}/optimizer/energy_gradient_evaluations"),
             &ctx
@@ -635,15 +635,23 @@ fn check_method(system: &str, m: &Method) -> Molecule {
     }
     eprintln!("{ctx}: max |d angle| vs reference {a_miss:.2e} deg (tol {TOL_ANG_DEG:.0e})");
 
-    // 8. Open-shell state at the end.
+    // 8. Open-shell state at the end. ⟨S²⟩ is compared like for like, at the
+    // reference minimum, where both codes see the same geometry. At ferric's
+    // own end point it also carries the geometry difference, which step 7
+    // already bounds: ⟨S²⟩ is not variational, so it moves at first order in
+    // the geometry (HO2: 1.1e-7 from a 1.1e-6 Bohr difference, inside TOL_R).
     if m.kind == Kind::Uhf {
         assert_stable(&format!("{ctx} (end)"), &at_end);
         check_close(
             &ctx,
-            "<S^2> end",
-            s_squared(&at_end, &end),
-            num(&r, &format!("{blk}/s_squared_opt"), &ctx),
+            "<S^2> at ref minimum",
+            s_squared(&at_ref, &ref_min),
+            num_ctx(&r, &format!("{blk}/s_squared_opt"), &ctx),
             TOL_S2,
+        );
+        eprintln!(
+            "{ctx}: <S^2> at ferric's end point {:.12} (geometry-dependent, not asserted)",
+            s_squared(&at_end, &end)
         );
     }
 

@@ -196,7 +196,10 @@ where
             let lk = evals[k];
             let vk = ritz.column(k);
 
-            // residual = ε̃ @ vk − lk * vk
+            // residual = ε̃ @ vk − lk * vk, formed from the projected matrix, so it
+            // is identically zero inside the subspace: safe only because callers
+            // seed with n_desired = naux (the full space). ferric-scf's copy of
+            // this loop made the ROHF AH step a silent no-op (removed 2026-11).
             let eps_vk = v_mat.dot(&eps_proj.dot(&evecs.column(k)));
             let resid: Array1<f64> = &eps_vk - &(lk * &vk);
             let resid_norm = resid.dot(&resid).sqrt();
@@ -412,8 +415,8 @@ mod tests {
     /// `Err(FerricError::General("Davidson did not converge"))` on `max_iter`
     /// exhaustion instead of returning an unconverged `Ok`) — so `converged`
     /// must be `true` at both `Ok(DavidsonResult { .. })` sites. Regression
-    /// guard for the TD-CONV field-threading fix: previously `DavidsonResult`
-    /// had no `converged` field at all and the flag was dropped everywhere.
+    /// guard for the TD-CONV field threading: `DavidsonResult` carries a
+    /// `converged` field and no site drops the flag.
     #[test]
     fn davidson_result_reports_converged_true() {
         use ndarray::array;
@@ -439,8 +442,8 @@ mod tests {
     /// eigenvalues: lz.eigenvalues, eigenvectors: lz.eigenvectors, converged:
     /// lz.converged }` wiring used at the three Lanczos call sites in
     /// `lib.rs` (`run_pdep_rpa_from_intermediates`'s Boys-screened Lanczos arm
-    /// and both `run_lanczos_full_rank` sites). Before the fix, `converged`
-    /// was silently dropped when a `LanczosResult` was folded into a
+    /// and both `run_lanczos_full_rank` sites). `converged`
+    /// must not be silently dropped when a `LanczosResult` was folded into a
     /// `DavidsonResult`; this test drives `run_lanczos_seeded` into the same
     /// deliberately-unconverged regime as
     /// `lanczos::tests::seeded_lanczos_max_iter_one_reports_unconverged`

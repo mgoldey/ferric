@@ -64,12 +64,10 @@ fn main() {
 
     // Run with very loose convergence to see iter-1 / iter-2 / etc. trajectory.
     for max_iter in [1usize, 2, 3, 5, 10, 20, 50] {
-        let cfg = UhfConfig {
-            max_iter,
-            energy_conv: 1e-20,
-            density_conv: 1e-20,
-            ..Default::default()
-        };
+        let cfg = UhfConfig::default()
+            .with_max_iter(max_iter)
+            .with_energy_conv(1e-20)
+            .with_density_conv(1e-20);
         match solve_uhf(&ctx, &cation, &prep, &bounds, &cfg) {
             Ok(r) => println!(
                 "[max_iter={:>3}] E={:.6}, conv={}, iters={}",
@@ -97,12 +95,10 @@ fn main() {
     println!("  cycle 11: E = -75.6318  (converged)");
     println!();
     println!();
-    let cfg = UhfConfig {
-        max_iter: 500,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let cfg = UhfConfig::default()
+        .with_max_iter(500)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9);
     let res = solve_uhf(&ctx, &cation, &prep, &bounds, &cfg)
         .unwrap_or_else(|e| panic!("final unwrap: {e:?}"));
     let s_ao = oneelectron::overlap(&prep);

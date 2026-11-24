@@ -245,14 +245,13 @@ fn gfn2_gradient_matches_xtb_cli_gradient_file() {
 /// proves ferric reports what xtb computed, this one proves what xtb computed
 /// is right.
 ///
-/// # History: this used to assert the opposite
+/// # Why the libxtb optimisation level matters
 ///
-/// Until 2026-07-27 this test asserted a *known-broken* upstream state, because
-/// xtb's analytic gradient disagreed with FD by ~20x (water O-z: analytic
-/// -8.641e-2 vs FD +3.638e-3 Ha/Bohr), `xtb --opt` on H2 ran the bond from
-/// 0.75 to 2.92 Ang while raising the energy, and xtb's own `meson test` failed
-/// `unit - xtb:gfn1`, `gfn2` and `hessian` with "expected 0.6457E-2 but got
-/// 0.1348".
+/// A libxtb built at `-O3` returns an analytic gradient that disagrees with FD
+/// by ~20x (water O-z: analytic -8.641e-2 vs FD +3.638e-3 Ha/Bohr), `xtb --opt`
+/// on H2 runs the bond from 0.75 to 2.92 Ang while raising the energy, and
+/// xtb's own `meson test` fails `unit - xtb:gfn1`, `gfn2` and `hessian` with
+/// "expected 0.6457E-2 but got 0.1348".
 ///
 /// **Root cause: a gfortran 13.3 miscompilation of xtb 6.7.1 at `-O3`**, not a
 /// bug in xtb's source, its dftd4/multicharge subprojects (both were correctly
@@ -266,7 +265,7 @@ fn gfn2_gradient_matches_xtb_cli_gradient_file() {
 /// `LD_PRELOAD` of reference netlib BLAS/LAPACK).
 ///
 /// So libxtb **must be built at `-O2` or lower** with gfortran 13.x. If this
-/// test starts failing again, check the optimisation level of the installed
+/// test starts failing, check the optimisation level of the installed
 /// libxtb before suspecting ferric.
 #[test]
 fn gfn2_gradient_matches_finite_difference() {

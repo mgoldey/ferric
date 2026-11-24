@@ -468,6 +468,7 @@ fn richardson(f1: f64, f2: f64) -> f64 {
 /// transposed, missing phase) changes the analytic value but NOT the FD,
 /// because the FD differentiates the same `V_ECP(k)` the energy uses;
 /// `D(k)` is complex at the two non-TRIM points, so the phases are exercised.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn ecp_force_at_fixed_density_matches_fd_hi_1x1x3() {
     let bs = hi_basis();
@@ -519,6 +520,7 @@ fn ecp_force_at_fixed_density_matches_fd_hi_1x1x3() {
 /// The strain analogue of the force gate: all nine components of the ECP
 /// strain at fixed `D(k)` (`kpoint_hcore_stress_fixed_d(..).ecp`) vs FD on
 /// `Cell::strained` cells with the mesh rebuilt from the same numerators.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn ecp_strain_at_fixed_density_matches_fd_hi_1x1x3() {
     let bs = hi_basis();
@@ -569,6 +571,7 @@ fn ecp_strain_at_fixed_density_matches_fd_hi_1x1x3() {
 /// the k ECP strain equals the supercell's divided by N. Both sides use the
 /// same lattice-sum code (one `EcpPlan`), so this tests the image weights
 /// and the Bloch phases, not libecpint.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn ecp_term_at_fixed_density_is_the_supercell_term_per_cell() {
     let bs = hi_basis();
@@ -698,6 +701,7 @@ fn grad_miss(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
 /// its force and strain. The MP mesh's pair-image modulus is 4 (the
 /// residue bins of `W_L` have 2N = 4 entries), so a weight read at residue
 /// modulo the mesh counts (2) aliases images L and L + 2 and breaks it.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn shifted_mesh_ecp_terms_are_a_gamma_mesh_combination_at_fixed_density() {
     let bs = hi_basis();
@@ -935,7 +939,9 @@ fn gamma_restricted(d: Array2<f64>) -> ScfResult {
         cosx_schedule: None,
         convergence: None,
         rohf_spin_focks: None,
+        xc: None,
         precision: Default::default(),
+        relativistic: None,
     }
 }
 
@@ -1264,6 +1270,7 @@ fn part_of(p: &Parts, name: &str) -> f64 {
 /// explicit supercell (non-TRIM mesh). Every part, the SR attraction
 /// derivative included, is at roundoff at any gradient nucleus exponent (see
 /// `hi_and_control_sr_floor_scan_over_the_nucleus_exponent`).
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn hi_1x1x3_force_and_stress_are_the_supercell_ones_per_cell() {
     let bs = hi_basis();
@@ -1286,11 +1293,11 @@ fn hi_1x1x3_supercell_anchor_both_exxdiv() {
 }
 
 /// DIAGNOSTIC + ASSERTION: the k-vs-supercell SR miss is independent of the
-/// gradient nucleus exponent. History: this scan found a miss of 1.5e-8 that
-/// rose ~10-30x per decade above 1e8, present without any ECP (the Z = 7
-/// no-ECP control, identical AO shells and nuclear charges, showed the same);
-/// it was coordinate-dependent rounding in libint2's SR derivative (#434), not
-/// an ECP defect. With the nucleus-frame evaluation all parts of both HI and
+/// gradient nucleus exponent. A miss of 1.5e-8 rising ~10-30x per decade above 1e8 would signal
+/// coordinate-dependent rounding in libint2's SR derivative (#434), not an ECP
+/// defect (the Z = 7 no-ECP control, with identical AO shells and nuclear
+/// charges, shows the same). With the nucleus-frame
+/// evaluation all parts of both HI and
 /// the control are at roundoff at every exponent, so the assertion is the
 /// flat `SC_BAR_P`.
 #[test]
@@ -1422,6 +1429,7 @@ fn strip_ecp(hk: &PeriodicHcoreK) -> PeriodicHcoreK {
 /// `v_ecp` marker cleared while `h` carries the ECP, and `h` stripped of the
 /// ECP while the marker is kept (the SCF run on that `h` is self-consistent,
 /// so only the `h = T + V + V_ECP` check sees it).
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn ecp_fock_guard_refuses_an_scf_run_without_the_ecp() {
     let bs = hi_basis();
@@ -1517,6 +1525,7 @@ fn bits_equal(a: &Array2<f64>, b: &Array2<f64>) -> bool {
 /// The ordered-parallel image loop is bit-identical at 1/2/6 threads for the
 /// k force and strain, and the frozen serial image loop gives the same ECP
 /// force part bit for bit (`SerialDerivWalks`).
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn ecp_k_force_and_strain_are_thread_bit_identical() {
     let bs = hi_basis();
@@ -1610,6 +1619,7 @@ fn k_energy_none(cell: &Cell, bs: &BasisSet, n: [usize; 3]) -> f64 {
 /// a fresh SCF at every displaced geometry (the analytic value is at the
 /// converged density, so the density response drops out). Components: H z
 /// (no ECP centre of its own) and I x (bra + ket + centre).
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn hi_1x1x3_force_matches_fd_of_own_k_energy() {
     let bs = hi_basis();
@@ -1961,6 +1971,7 @@ fn k_fit_energy(cell: &Cell, bs: &BasisSet, n: [usize; 3]) -> f64 {
 /// the k energy built on the same fit (fresh `KRsGdf` per displaced / strained
 /// cell). ARTIFACT: a fit-specific slip (e.g. dropping the ECP from the
 /// rebuilt `F` of the Pulay weight) is invisible to (a) and caught by (b).
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn hi_1x1x3_rsgdf_ecp_force_and_stress() {
     let bs = hi_basis();

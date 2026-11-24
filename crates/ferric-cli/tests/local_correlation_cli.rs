@@ -6,31 +6,22 @@
 //!   (`"<method> (exact)"`, `"local": null`);
 //! * `[local] scheme = "amplitude-threshold"` states its threshold and kept
 //!   fraction in the printout and logs a `local` object;
-//! * exact `drpa` IS the ε = 0 Riccati solve, to <= 1e-12 Ha;
+//! * exact `drpa` (the frequency route) and the ε = 0 Riccati solve agree
+//!   to <= 1e-9 Ha (their quadrature and residual bars are far below it; the
+//!   derived bars live in `ferric-rpa/tests/validation_drpa_frequency.rs`);
 //! * the opt-in exact reference (`[local] reference`) is honest when off: no
 //!   NaN in the printout, `null` in the log;
 //! * the removed kinds/keys fail, and an exact `drpa` that cannot fit the
-//!   memory budget is refused BEFORE the SCF with a pointer to `pdep-rpa`.
+//!   memory budget is refused BEFORE the SCF with the knobs that shrink it.
 //!
 //! Water/6-31G with cc-pVDZ-RI: seconds per run.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Path to the `ferric-cli` binary, resolved at RUN TIME -- see
-/// `dispersion_guards.rs` for why `env!("CARGO_BIN_EXE_ferric-cli")` alone is
-/// wrong under `cargo nextest archive`.
-fn ferric_cli_bin() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(profile_dir) = exe.parent().and_then(Path::parent) {
-            let p = profile_dir.join("ferric-cli");
-            if p.is_file() {
-                return p;
-            }
-        }
-    }
-    PathBuf::from(env!("CARGO_BIN_EXE_ferric-cli"))
-}
+#[path = "support/cli_bin.rs"]
+mod cli_bin;
+use cli_bin::ferric_cli_bin;
 
 /// Workspace root, resolved at RUN TIME -- see `ccsd_dispatch.rs`.
 fn workspace_root() -> PathBuf {
@@ -145,8 +136,8 @@ fn local(body: &str) -> String {
     format!("{MP2}\n[local]\nscheme = \"amplitude-threshold\"\n{body}\n")
 }
 
-/// The exact `drpa` is the ε = 0 Riccati solve: the two runs agree to
-/// <= 1e-12 Ha; the exact printout says "(exact)" and logs `local: null`,
+/// The exact `drpa` (frequency route) and the ε = 0 Riccati solve agree to
+/// <= 1e-9 Ha, the bar of the CLI-vs-library tests; the exact printout says "(exact)" and logs `local: null`,
 /// the ε = 0 local one states its threshold and logs the object.
 #[test]
 fn exact_drpa_equals_local_eps_zero_and_says_exact() {
@@ -170,7 +161,7 @@ fn exact_drpa_equals_local_eps_zero_and_says_exact() {
         ex.results[0]["total"].as_f64().unwrap(),
         lo.results[0]["total"].as_f64().unwrap(),
     );
-    assert!((a - b).abs() <= 1e-12, "exact {a:.14} vs eps=0 {b:.14}");
+    assert!((a - b).abs() <= 1e-9, "exact {a:.14} vs eps=0 {b:.14}");
 }
 
 /// A finite ε prints the threshold and the kept fraction, and moves the
@@ -223,6 +214,32 @@ fn rimp2_and_linlccd_state_their_model() {
         assert!(c["e_corr_canonical_ri"].is_null(), "{c}");
         assert_eq!(c["local"]["eps"], 1e-3, "{c}");
         assert_eq!(c["local"]["integral_direct"], !direct.is_empty(), "{c}");
+        // the Fock-propagated screen: on by default on both paths (κ = 1,
+        // reaching the solver config the certificate is built from)
+        assert_eq!(c["local"]["fock_screen"], 1.0, "{c}");
+        assert!(
+            lo.stdout.contains("Fock screen           = kappa 1"),
+            "{}",
+            lo.stdout
+        );
+    }
+    // `fock_screen = false` turns it off on either path
+    for (tag, direct) in [
+        ("rimp2_incore_screen_off", ""),
+        ("rimp2_direct_screen_off", "integral_direct = true\n"),
+    ] {
+        let off = ok_run(
+            tag,
+            "rimp2",
+            &local(&format!("eps = 1e-3\n{direct}fock_screen = false\n")),
+        );
+        let c = &off.results[0]["components"];
+        assert!(c["local"]["fock_screen"].is_null(), "{c}");
+        assert!(
+            off.stdout.contains("Fock screen           = off"),
+            "{}",
+            off.stdout
+        );
     }
 
     let lex = ok_run("linlccd_exact", "linlccd", MP2);
@@ -250,7 +267,13 @@ fn rimp2_and_linlccd_state_their_model() {
 /// Keys of the run-log `timings` object (`StageTimings` fields) and of its
 /// `direct` sub-object (`DirectStats` fields). Written out here, not derived
 /// from the serializer, so a dropped key fails.
-const STAGE_KEYS: &[&str] = &["t_spaces_s", "t_assembly_s", "t_solve_s", "t_reference_s"];
+const STAGE_KEYS: &[&str] = &[
+    "t_spaces_s",
+    "t_loc_s",
+    "t_assembly_s",
+    "t_solve_s",
+    "t_reference_s",
+];
 const DIRECT_KEYS: &[&str] = &[
     "strip_rows_mean",
     "strip_rows_max",
@@ -290,8 +313,21 @@ const DIRECT_KEYS: &[&str] = &[
     "own_w_bytes",
     "own_w_bytes_held",
     "group_scratch_bytes_max",
+    "group_scratch_bound_bytes",
+    "group_in_flight_peak",
+    "n_group_waves",
+    "group_concurrency",
+    "memory_exact",
+    "memory_metric_bytes",
+    "memory_pair_block_bytes",
+    "memory_pcg_vector_bytes",
+    "memory_resident_peak_bytes",
+    "memory_stage3_scratch_bytes",
+    "memory_strips_bytes",
     "t_loc_s",
 ];
+/// Keys whose value is a JSON boolean rather than a number.
+const BOOL_KEYS: &[&str] = &["memory_exact"];
 /// The eval/scatter split of the eri3 fill is only measured with
 /// `DirectConfig::split_eri3_timers`, which the CLI leaves off: NaN in the
 /// library, `null` in the log.
@@ -307,6 +343,10 @@ fn assert_timing_keys(obj: &serde_json::Value, keys: &[&str], extra: &[&str]) {
     for k in keys {
         let v = o.get(*k).unwrap_or_else(|| panic!("missing {k}: {obj}"));
         if SPLIT_ONLY.contains(k) && v.is_null() {
+            continue;
+        }
+        if BOOL_KEYS.contains(k) {
+            assert!(v.is_boolean(), "{k} is not a bool: {obj}");
             continue;
         }
         let x = v
@@ -376,9 +416,48 @@ fn rimp2_local_logs_every_stage_timing() {
     }
 }
 
+/// `[local] virtual_space`: the default dense build and the opt-in local
+/// build both run through the binary, print the one virtual-space line on
+/// stderr, and log the build in the `local` object (with the local build's
+/// thresholds and counters); eps = 0 energies agree.
+#[test]
+fn rimp2_local_logs_the_virtual_space_build() {
+    let mut e = Vec::new();
+    for (tag, vs) in [
+        ("rimp2_vs_default", ""),
+        ("rimp2_vs_local", "virtual_space = \"local\"\n"),
+    ] {
+        let lo = ok_run(
+            tag,
+            "rimp2",
+            &local(&format!("eps = 0.0\nintegral_direct = true\n{vs}")),
+        );
+        let l = &lo.results[0]["components"]["local"];
+        let line = l["virtual_space_log"].as_str().unwrap().to_string();
+        assert!(
+            lo.stderr.contains(&line),
+            "the line is not printed: {}",
+            lo.stderr
+        );
+        if vs.is_empty() {
+            assert_eq!(l["virtual_space"], "dense", "{l}");
+            assert!(l["virtual_space_local"].is_null(), "{l}");
+            assert!(line.contains("dense VV-HV build"), "{line}");
+        } else {
+            assert_eq!(l["virtual_space"], "local", "{l}");
+            let st = &l["virtual_space_local"];
+            assert_eq!(st["tau"], 1e-9, "{st}");
+            assert!(st["n_products"].as_u64().unwrap() > 0, "{st}");
+            assert!(line.contains("LOCAL VV-HV build"), "{line}");
+        }
+        e.push(lo.results[0]["components"]["e_corr"].as_f64().unwrap());
+    }
+    assert!((e[0] - e[1]).abs() < 1e-9, "{e:?}");
+}
+
 /// Refused configurations fail through the binary, before any SCF output:
 /// the removed kinds and keys, `[local]` without `eps`, and an exact `drpa`
-/// whose Riccati solve cannot fit the budget (pointing at `pdep-rpa`).
+/// that cannot fit the budget (naming the knobs that shrink it).
 #[test]
 fn refusals_fail_before_the_scf() {
     let cases: &[(&str, &str, &str, &str)] = &[
@@ -430,7 +509,7 @@ fn refusals_fail_before_the_scf() {
             "exact_drpa_oom",
             "drpa",
             "[memory]\nbudget_gb = 1e-4\n",
-            "pdep-rpa",
+            "[memory] budget_gb",
         ),
     ];
     for (tag, kind, extra, needle) in cases {

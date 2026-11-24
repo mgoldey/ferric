@@ -51,8 +51,9 @@ fock_assembly.rs `build_rsh_dfk_pair`):
     SR/LR K split (`rsh_and_hybrid_coeff`). Anchored below: at the published
     ω the override is bit-identical to no override, and at another ω it moves
     the energy.
-  * XC density floor: ferric zeroes XC where ρ ≤ 1e-10; not emulated here (it
-    moves occupied eigenvalues ~1e-10 Ha, see gen_gw.py), far below the
+  * XC density floor: ferric zeroes V_xc where ρ ≤ 1e-14 (semilocal floor,
+    vxc.rs `DensityFloor`); not emulated here (it reaches only the far tail,
+    see gen_gw.py), far below the
     DF-K / VV10 floor of this functional.
   * convergence: conv_tol 1e-10, conv_tol_grad 1e-7 (both states).
 

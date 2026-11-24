@@ -25,7 +25,7 @@
 //!    formulation [`crate::cosmo::SMatrixKind::GaussianSmeared`] (PySCF `pcm.py`
 //!    convention, Li/Scalmani/Frisch, J. Chem. Phys. 122, 194110 (2005)):
 //!    each segment is a Gaussian charge distribution of width `xi_k` set by
-//!    the LOCAL Lebedev grid density, giving off-diagonal `S_kl = erf(xi_kl *
+//!    its sphere's radius and its Lebedev weight only, giving off-diagonal `S_kl = erf(xi_kl *
 //!    r_kl) / r_kl` (`xi_kl` the harmonic-combined width of segments k,l) and
 //!    diagonal `S_kk = xi_k * sqrt(2/pi) / switch_fun_k`. The original
 //!    [`crate::cosmo::SMatrixKind::PointCharge`] formulation is still available (for two
@@ -67,11 +67,11 @@
 //!   is the pure electrostatic COSMO reaction field only.
 //! * **Analytic gradients**: not implemented (no `cosmo_gradient` function).
 //! * **GEPOL-style segment re-tessellation** of partially-buried spheres:
-//!   segments are either fully kept or fully discarded based on their
-//!   center point only (no partial-area accounting for a segment whose
-//!   Lebedev "tile" straddles a burial boundary). This is a well-known
-//!   simplification relative to production GEPOL cavities but converges to
-//!   the same physics as the angular grid is refined.
+//!   not implemented. Each Lebedev segment keeps its own point and has its area
+//!   scaled by a smooth SWIG switching weight (see the cavity section above)
+//!   rather than being clipped to the exposed part of its tile. This is a
+//!   simplification relative to production GEPOL cavities but converges to the
+//!   same physics as the angular grid is refined.
 //! * **Point-charge vs Gaussian-smeared segment representation
 //!   (RESOLVED 2026-07-19)**: the `S`-matrix now defaults to
 //!   [`crate::cosmo::SMatrixKind::GaussianSmeared`] (PySCF `pcm.py` convention). This was
@@ -103,12 +103,16 @@
 //!   that earlier discrepancy.
 
 use ferric_core::mol::Molecule;
+use ferric_core::special::erf;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
 use ferric_integrals::ffi::{self, CAtom};
 use ndarray::{Array1, Array2};
 use ndarray_linalg::Solve;
+
+use ferric_pcm::cavity::switch_h;
+use ferric_pcm::matrices::gaussian_xi_table;
 
 /// COSMO self-term prefactor (Klamt & Schuurmann 1993, eq. 7): `S_kk = xi *
 /// sqrt(4*pi / a_k)`. This is the standard constant quoted throughout the
@@ -117,68 +121,31 @@ use ndarray_linalg::Solve;
 /// superseded by default with [`SMatrixKind::GaussianSmeared`] below.
 const COSMO_XI: f64 = 3.8;
 
-/// Per-Lebedev-order Gaussian-charge-width prefactor `XI[ng]` (Table II, Li &
-/// Frisch/Scalmani, "Continuous Surface Charge Polarizable Continuum Models",
-/// J. Chem. Phys. 122, 194110 (2005), as used by PySCF's `pcm.py`). Each
-/// segment's Gaussian width is `xi_k = XI[ng] / (r_vdw_k * sqrt(w_k))`, `w_k`
-/// the segment's *unnormalized* Lebedev weight (PySCF convention: sums to
-/// `4*pi` over a sphere, i.e. `4*pi * ferric's normalized weight`). Only the
-/// six Lebedev orders this module supports (see [`CosmoConfig::validate`])
-/// are tabulated; an order outside this set is rejected by config
-/// validation before this table is ever consulted.
-fn gaussian_xi_table(lebedev_order: usize) -> f64 {
-    match lebedev_order {
-        6 => 4.84566077868,
-        14 => 4.86458714334,
-        26 => 4.85478226219,
-        50 => 4.89250673295,
-        110 => 4.90101060987,
-        302 => 4.90498088169,
-        _ => unreachable!(
-            "gaussian_xi_table: lebedev_order {lebedev_order} not in the validated set \
-             {{6,14,26,50,110,302}} -- CosmoConfig::validate should have rejected this earlier"
-        ),
-    }
-}
-
 /// Which `S`-matrix (segment-interaction) formulation to use.
 ///
 /// * [`SMatrixKind::PointCharge`] -- the original ferric formulation: each
 ///   segment is a bare point charge (`S_kl = 1/|s_k - s_l|` off-diagonal,
 ///   `S_kk = xi_COSMO * sqrt(4*pi/a_k)` diagonal, `xi_COSMO = 3.8` fixed).
 /// * [`SMatrixKind::GaussianSmeared`] -- PySCF `pcm.py`'s formulation: each
-///   segment is a Gaussian charge distribution of width `xi_k` set by the
-///   LOCAL grid density (`gaussian_xi_table`), giving `S_kl = erf(xi_kl *
-///   r_kl) / r_kl` off-diagonal (`xi_kl` the harmonic-sum combined width of
-///   segments k,l) and a density-dependent diagonal `S_kk = xi_k *
+///   segment is a Gaussian charge distribution of width `xi_k` set by its
+///   sphere's radius and Lebedev weight only (`gaussian_xi_table`), giving
+///   `S_kl = erf(xi_kl * r_kl) / r_kl` off-diagonal (`xi_kl` the harmonic-sum
+///   combined width of segments k,l) and a diagonal `S_kk = xi_k *
 ///   sqrt(2/pi) / switch_fun_k`. This is the default (see
 ///   [`CosmoConfig::default`]); `PointCharge` is kept only for the
 ///   regression test that measures the isolated S-matrix effect and for any
 ///   future need to reproduce the pre-2026-07-19 numbers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SMatrixKind {
+    /// Bare point-charge segments with the fixed `xi_COSMO = 3.8` diagonal.
     PointCharge,
+    /// PySCF-style Gaussian-smeared segments (the default).
     GaussianSmeared,
 }
 
 impl Default for SMatrixKind {
     fn default() -> Self {
         SMatrixKind::GaussianSmeared
-    }
-}
-
-/// SWIG (switching/Gaussian) transition-zone shape parameter (Lange &
-/// Herbert, JCP 133, 244111 (2010), eq. 3.19): the quintic smoothstep
-/// `h(x) = x^3 (10 - 15x + 6x^2)`, `h(x)=0` for `x<=0`, `h(x)=1` for `x>=1`.
-/// This is a faithful port of PySCF's `pcm.py::switch_h` (same functional
-/// form; see the `switch_h_*` unit tests below for direct value checks).
-fn switch_h(x: f64) -> f64 {
-    if x <= 0.0 {
-        0.0
-    } else if x >= 1.0 {
-        1.0
-    } else {
-        x * x * x * (10.0 - 15.0 * x + 6.0 * x * x)
     }
 }
 
@@ -260,8 +227,9 @@ pub struct CosmoConfig {
     #[serde(default = "default_radius_scale")]
     pub radius_scale: f64,
     /// Lebedev angular grid order per atomic sphere. Default
-    /// [`DEFAULT_LEBEDEV_ORDER`]. Must be one of the orders supported by
-    /// [`ferric_dft::lebedev::lebedev`] (6, 14, 26, 50, 110, 302).
+    /// [`DEFAULT_LEBEDEV_ORDER`]. Must be one of
+    /// [`ferric_pcm::SUPPORTED_LEBEDEV_ORDERS`] (the positive-weight Lebedev
+    /// rules, which have a Gaussian-charge width).
     #[serde(default = "default_lebedev_order")]
     pub lebedev_order: usize,
     /// Segment-interaction (`S`-matrix) formulation. Default
@@ -314,9 +282,11 @@ impl CosmoConfig {
                 self.radius_scale
             )));
         }
-        if !matches!(self.lebedev_order, 6 | 14 | 26 | 50 | 110 | 302) {
+        if !ferric_pcm::SUPPORTED_LEBEDEV_ORDERS.contains(&self.lebedev_order) {
             return Err(FerricError::General(format!(
-                "cosmo: lebedev_order must be one of 6, 14, 26, 50, 110, 302, got {}",
+                "cosmo: lebedev_order must be one of {:?} (the positive-weight Lebedev rules \
+                 with a Gaussian-charge width), got {}",
+                ferric_pcm::SUPPORTED_LEBEDEV_ORDERS,
                 self.lebedev_order
             )));
         }
@@ -422,7 +392,9 @@ impl CosmoCavity {
             })
             .collect();
 
-        let xi_prefactor = gaussian_xi_table(config.lebedev_order);
+        let xi_prefactor = gaussian_xi_table(config.lebedev_order).unwrap_or_else(|e| {
+            unreachable!("CosmoConfig::validate should have rejected this earlier: {e}")
+        });
 
         let mut segments = Vec::new();
         for &(ia, center_a, r_a) in real_atoms.iter() {
@@ -534,7 +506,7 @@ impl CosmoCavity {
                         let r = (dx * dx + dy * dy + dz * dz).sqrt();
                         let xi_kl = xi_k * xi_l / (xi_k * xi_k + xi_l * xi_l).sqrt();
                         // SAFETY: erf is the C standard library error function; f64 input is always valid.
-                        let v = unsafe { erf(xi_kl * r) } / r;
+                        let v = erf(xi_kl * r) / r;
                         s[(k, l)] = v;
                         s[(l, k)] = v;
                     }
@@ -543,16 +515,6 @@ impl CosmoCavity {
         }
         s
     }
-}
-
-// libm's `erf` (C99) is already transitively linked into every ferric binary
-// (libint2/OpenBLAS both pull in libm), so bind it directly instead of
-// adding a new crate dependency or a lower-precision hand-rolled
-// approximation -- full ~1e-16 double precision, exactly matching what
-// PySCF's `scipy.special.erf` (itself backed by the same C library family)
-// produces to numerical noise.
-extern "C" {
-    fn erf(x: f64) -> f64;
 }
 
 /// Result of a single COSMO reaction-field evaluation for a given density.
@@ -704,10 +666,9 @@ pub fn cosmo_reaction_field(
     // E_cosmo = 1/2 sum_k q_k v_k.
     let e_cosmo = 0.5 * charges.dot(&v);
 
-    // Pass 2: V_reaction_uv = -sum_k q_k * M_k_uv (M_k as defined above,
-    // <mu|-1/|r-s_k||nu> with Z=+1... wait: M_k = engine output with Z=+1 =
-    // <mu|-1/|r-s_k||nu>. We want the electron-charge interaction operator
-    // for a REAL charge q_k at s_k: <mu| -q_k/|r-s_k| |nu> = q_k * M_k.
+    // Pass 2: M_k is the engine output with a Z=+1 probe at s_k, i.e.
+    // <mu|-1/|r-s_k||nu>. The electron interaction operator for a REAL charge
+    // q_k at s_k is <mu| -q_k/|r-s_k| |nu> = q_k * M_k.
     // Summed over segments: V_reaction = sum_k q_k * M_k.
     let mut v_reaction = Array2::<f64>::zeros((nbas, nbas));
     for (k, seg) in cavity.segments.iter().enumerate() {
@@ -764,34 +725,8 @@ pub fn cosmo_reaction_field(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ferric_core::mol::Molecule;
 
-    fn water() -> Molecule {
-        Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap()
-    }
-
-    #[test]
-    fn switch_h_boundary_values() {
-        assert_eq!(switch_h(-0.5), 0.0);
-        assert_eq!(switch_h(0.0), 0.0);
-        assert_eq!(switch_h(1.0), 1.0);
-        assert_eq!(switch_h(1.5), 1.0);
-    }
-
-    #[test]
-    fn switch_h_midpoint_and_monotonic() {
-        // h(0.5) = 0.5^3 * (10 - 7.5 + 1.5) = 0.125 * 4.0 = 0.5 (symmetric
-        // quintic smoothstep is centered at x=0.5).
-        assert!((switch_h(0.5) - 0.5).abs() < 1e-12);
-        // Monotonically non-decreasing on [0,1].
-        let mut prev = switch_h(0.0);
-        for i in 1..=20 {
-            let x = i as f64 / 20.0;
-            let cur = switch_h(x);
-            assert!(cur >= prev - 1e-12, "switch_h not monotonic at x={x}");
-            prev = cur;
-        }
-    }
+    use ferric_testkit::molecules::water_xyz;
 
     #[test]
     fn bondi_radius_known_elements() {
@@ -812,7 +747,7 @@ mod tests {
 
     #[test]
     fn f_epsilon_matches_pyscf_cosmo_convention() {
-        // f(eps) = (eps-1)/(eps+0.5); water eps=78.39 -> ~0.9873.
+        // f(eps) = (eps-1)/(eps+0.5); water eps=78.39 -> ~0.9810.
         let cfg = CosmoConfig {
             epsilon: 78.39,
             ..Default::default()
@@ -852,16 +787,26 @@ mod tests {
 
     #[test]
     fn config_rejects_invalid_lebedev_order() {
-        let cfg = CosmoConfig {
-            lebedev_order: 7,
-            ..Default::default()
-        };
-        assert!(cfg.validate().is_err());
+        // 7 is no Lebedev rule; 230 is one, with negative weights.
+        for order in [7, 230] {
+            let cfg = CosmoConfig {
+                lebedev_order: order,
+                ..Default::default()
+            };
+            assert!(cfg.validate().is_err(), "{order}");
+        }
+        for order in ferric_pcm::SUPPORTED_LEBEDEV_ORDERS {
+            let cfg = CosmoConfig {
+                lebedev_order: order,
+                ..Default::default()
+            };
+            assert!(cfg.validate().is_ok(), "{order}");
+        }
     }
 
     #[test]
     fn cavity_build_water_nonzero_segments() {
-        let mol = water();
+        let mol = water_xyz();
         let cfg = CosmoConfig::default();
         let cavity = CosmoCavity::build(&mol, &cfg).unwrap();
         assert!(cavity.n_segments() > 0);
@@ -878,7 +823,7 @@ mod tests {
 
     #[test]
     fn cavity_build_ghost_only_errors() {
-        let mut mol = water();
+        let mut mol = water_xyz();
         for atom in mol.atoms.iter_mut() {
             atom.ghost = true;
         }
@@ -888,7 +833,7 @@ mod tests {
 
     #[test]
     fn s_matrix_symmetric_and_diagonal_positive_point_charge() {
-        let mol = water();
+        let mol = water_xyz();
         let cfg = CosmoConfig {
             lebedev_order: 26,
             ..Default::default()
@@ -909,7 +854,7 @@ mod tests {
 
     #[test]
     fn s_matrix_symmetric_and_diagonal_positive_gaussian_smeared() {
-        let mol = water();
+        let mol = water_xyz();
         let cfg = CosmoConfig {
             lebedev_order: 26,
             ..Default::default()

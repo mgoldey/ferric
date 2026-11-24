@@ -23,6 +23,19 @@ controls are included.
 Claim 7 evaluates the two stopping rules and is arithmetic on inputs quoted from
 the wiki and #605, not a proof.
 
+Independent route: claims 5 and 6 solve the one-pair model exactly
+(brute force in a 4-dimensional amplitude space) and evaluate both energy forms
+and the claim-3 bound on concrete numbers.
+
+Every check is an assert, so a failure exits nonzero with an AssertionError.
+Mutations (each turns the script red):
+  - flip the sign of the exchange term in the transcription of the code
+    energy sum (2 t_ab - t_ba) J_ab (`swap_contract`)
+    (marker "claim 4: exchange sign");
+  - drop the 2 on J in the transcribed Hylleraas form <t~, 2J + A t>
+    (`hylleraas_energy_and_residual`) (marker "closed mask must have no
+    first-order term").
+
 Run: python scripts/lmp2_hylleraas_vs_wshg23_sympy.py
 """
 
@@ -118,7 +131,9 @@ _code_energy = sum(
     for a in range(2)
     for b in range(2)
 )
-assert sp.expand((C * _t).dot(J) - _code_energy) == 0
+assert sp.expand((C * _t).dot(J) - _code_energy) == 0, (
+    "claim 4: exchange sign of the code energy differs from <(2-S) t, J>"
+)
 print("S^2 = 1; [S, A] = 0; (2-S)A symmetric; eig(2-S) = {1, 3}, so ||2-S|| = 3")
 
 

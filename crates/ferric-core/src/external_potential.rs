@@ -1,87 +1,22 @@
 //! Classical external potentials: fixed point charges and a uniform
-//! external electric field. See docs/superpowers/specs/2026-07-10-external-potentials-design.md.
+//! external electric field. See wiki/superpowers/specs/2026-07-10-external-potentials-design.md.
 
 use crate::mol::Molecule;
+use crate::special::erf;
 use ndarray::Array2;
-
-/// `erf(x) = 1 − erfc(x)`; see [`erfc_scalar`] for the underlying fit.
-///
-/// Hand-rolled because `f64::erfc`/`erf` are not in stable Rust's core
-/// numerics and `ferric-core` carries no special-function dependency —
-/// same rationale and same 28-term Numerical Recipes Chebyshev fit as
-/// `ferric_dft::vv10::erf_scalar` (duplicated here rather than shared,
-/// because `ferric-core` sits below `ferric-dft` in the dependency graph and
-/// this crate cannot depend on it).
-#[inline]
-fn erf(x: f64) -> f64 {
-    1.0 - erfc_scalar(x)
-}
-
-/// Complementary error function via the Numerical Recipes 28-term Chebyshev
-/// fit `erfc(x) ≈ t·exp(−x² + P(t))`, `t = 2/(2+|x|)`, sign-extended to
-/// negative arguments through `erfc(−x) = 2 − erfc(x)`.
-///
-/// MEASURED (in `ferric_dft::vv10`, same coefficients) against
-/// `scipy.special.erfc` on a 1201-point sweep of `x ∈ [−6, 6]`: maximum
-/// relative error 6.8e-15, essentially double-precision exact.
-#[inline]
-fn erfc_scalar(x: f64) -> f64 {
-    let z = x.abs();
-    let t = 2.0 / (2.0 + z);
-    let ty = 4.0 * t - 2.0;
-    const COF: [f64; 28] = [
-        -1.302_653_719_781_709_4,
-        6.419_697_923_564_902e-1,
-        1.947_647_320_418_583_6e-2,
-        -9.561_514_786_808_631e-3,
-        -9.465_953_444_820_36e-4,
-        3.668_394_978_527_61e-4,
-        4.252_332_480_690_7e-5,
-        -2.027_857_811_253_4e-5,
-        -1.624_290_004_647e-6,
-        1.303_655_835_580e-6,
-        1.562_644_172_2e-8,
-        -8.523_809_591_5e-8,
-        6.529_054_439e-9,
-        5.059_343_495e-9,
-        -9.913_641_56e-10,
-        -2.273_651_22e-10,
-        9.646_791_1e-11,
-        2.394_038e-12,
-        -6.886_027e-12,
-        8.944_87e-13,
-        3.130_92e-13,
-        -1.127_08e-13,
-        3.81e-16,
-        7.106e-15,
-        -1.523e-15,
-        -9.4e-17,
-        1.21e-16,
-        -2.8e-17,
-    ];
-    let mut d = 0.0_f64;
-    let mut dd = 0.0_f64;
-    for j in (1..COF.len()).rev() {
-        let tmp = d;
-        d = ty * d - dd + COF[j];
-        dd = tmp;
-    }
-    let ans = t * (-z * z + 0.5 * (COF[0] + ty * d) - dd).exp();
-    if x >= 0.0 {
-        ans
-    } else {
-        2.0 - ans
-    }
-}
 
 /// A fixed classical point charge in Bohr / atomic units. Not a physical
 /// atom: no basis shells, and `q` may be fractional (e.g. QM/MM partial
 /// charges).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PointCharge {
+    /// Charge in units of the elementary charge (may be fractional).
     pub q: f64,
+    /// x coordinate (Bohr).
     pub x: f64,
+    /// y coordinate (Bohr).
     pub y: f64,
+    /// z coordinate (Bohr).
     pub z: f64,
 }
 
@@ -94,9 +29,13 @@ pub struct PointCharge {
 /// [`ExternalPotential::smeared_charges`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SmearedCharge {
+    /// Total charge of the Gaussian distribution (elementary charges).
     pub q: f64,
+    /// x coordinate of the Gaussian centre (Bohr).
     pub x: f64,
+    /// y coordinate of the Gaussian centre (Bohr).
     pub y: f64,
+    /// z coordinate of the Gaussian centre (Bohr).
     pub z: f64,
     /// Gaussian width in Bohr (`ζ = 1/width²`). Must be `> 0`.
     pub width: f64,
@@ -108,6 +47,7 @@ pub struct SmearedCharge {
 /// field) — every consumer must treat this as a true no-op.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ExternalPotential {
+    /// Fixed classical point charges. Empty by default.
     pub point_charges: Vec<PointCharge>,
     /// Gaussian-smeared classical charges (see [`SmearedCharge`]). Empty by
     /// default: every consumer of this struct must take the exact same code
@@ -115,6 +55,9 @@ pub struct ExternalPotential {
     /// identical (this is `is_empty`'s and `hcore_with_external`'s exactness
     /// anchor).
     pub smeared_charges: Vec<SmearedCharge>,
+    /// Uniform electric field `E = [E_x, E_y, E_z]` (atomic units, lab
+    /// frame); a charge `q` at `R` gains energy `-q E·R` (see
+    /// [`ExternalPotential::field_nuclear_energy`]). `None` means no field.
     pub field: Option<[f64; 3]>,
 }
 

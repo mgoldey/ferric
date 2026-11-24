@@ -78,6 +78,7 @@ fn probe(backend: &str) -> Result<(), ferric_core::FerricError> {
     r
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn libecpint_backend_is_refused_by_the_probe_and_its_skeleton_agrees_on_hoi() {
     // Typed refusal on libecpint, before any SCF and whatever the libint.
@@ -95,14 +96,12 @@ fn libecpint_backend_is_refused_by_the_probe_and_its_skeleton_agrees_on_hoi() {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        max_iter: 300,
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_max_iter(300)
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10)
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new());
     let scf = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(scf.converged);
     let d = scf.density_r();

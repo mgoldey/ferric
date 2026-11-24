@@ -43,6 +43,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::cosx_gradient::{cosx_exchange_gradient, scf_exchange_is_cosx};
 use ferric_scf::cosx_k::{CosxConfig, CosxHalfTransform, CosxK};
+use ferric_scf::df_j::RiJPrecision;
 use ferric_scf::fock::KBuilder;
 use ferric_scf::gradient::{
     build_energy_weighted_density, gradient_task_config, oneelectron_gradient,
@@ -54,6 +55,7 @@ use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
+use ferric_testkit::compare::max_abs;
 use ndarray::Array2;
 use rayon::prelude::*;
 
@@ -85,10 +87,6 @@ fn displaced(mol: &Molecule, atom: usize, c: usize, d: f64) -> Molecule {
     m
 }
 
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
-}
-
 /// COSX with the screens and the fit OFF: the energy the gradient
 /// differentiates exactly.
 /// `cfg` with the final pass off (the tests that want one set it).
@@ -108,6 +106,7 @@ fn cosx_exact() -> CosxConfig {
             n_radial: 50,
             n_angular: 110,
             prune: None,
+            weight_cut: None,
         },
         final_grid: None,
         ..CosxConfig::flat_reference()
@@ -137,17 +136,21 @@ fn sgx(cfg: CosxConfig, n_radial: usize) -> CosxConfig {
 /// `xc = None`: HF. `j_fit`: RI-J on (named), else exact J (`""`).
 /// `cosx = None`: exact K (direct, or `""` DF-K for a functional).
 fn cfg(xc: Option<&str>, j_fit: bool, cosx: Option<CosxConfig>) -> RhfConfig {
-    RhfConfig {
-        k_builder: cosx.as_ref().map(|_| "cosx".to_string()),
-        cosx: cosx.unwrap_or_default(),
-        xc: xc.map(str::to_string),
-        df_j_aux: Some(if j_fit { JK.to_string() } else { String::new() }),
-        df_k_aux: Some(String::new()),
-        energy_conv: 1e-8,
-        density_conv: 1e-10,
-        max_iter: 300,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_cosx(cosx.clone().unwrap_or_default())
+        .with_df_j_aux(if j_fit { JK.to_string() } else { String::new() })
+        .with_df_k_aux(String::new())
+        .with_energy_conv(1e-8)
+        .with_density_conv(1e-10)
+        .with_max_iter(300)
+        // The gradients here are checked against finite differences of the
+        // energy, which the f32 RI-J tensor makes jagged; pin f64.
+        .with_ri_j_precision(RiJPrecision::F64);
+    c.k_builder = cosx
+        .as_ref()
+        .map(|_| ferric_scf::options::KBuilderKind::Cosx);
+    c.xc = xc.map(str::to_string);
+    c
 }
 
 fn prep_of(
@@ -201,11 +204,9 @@ fn fd(mol: &Molecule, solve: &(dyn Fn(&Molecule) -> f64 + Sync)) -> Array2<f64> 
 }
 
 fn seeded(c: &RhfConfig, seed: &Array2<f64>) -> RhfConfig {
-    RhfConfig {
-        init_guess_density: Some(seed.clone()),
-        use_sad_guess: false,
-        ..c.clone()
-    }
+    c.clone()
+        .with_init_guess_density(seed.clone())
+        .with_guess(ferric_scf::options::Guess::Core)
 }
 
 // ---------------------------------------------------------------------------
@@ -221,17 +222,12 @@ fn rijcosx_dispatch_rules() {
     assert!(scf_exchange_is_cosx(&named_j, false).unwrap());
     assert!(scf_exchange_is_cosx(&named_j, true).unwrap());
     // B3LYP with the RHF auto-defaults (df_j_aux / df_k_aux unset): RIJCOSX.
-    let auto = RhfConfig {
-        k_builder: Some("cosx".into()),
-        xc: Some("B3LYP".into()),
-        ..Default::default()
-    };
+    let auto = RhfConfig::default()
+        .with_k_builder(ferric_scf::options::KBuilderKind::Cosx)
+        .with_xc("B3LYP");
     assert!(scf_exchange_is_cosx(&auto, false).unwrap());
     // A named DF-K next to COSX is a conflict, in the predicate AND the SCF.
-    let conflict = RhfConfig {
-        df_k_aux: Some(JK.into()),
-        ..named_j.clone()
-    };
+    let conflict = named_j.clone().with_df_k_aux(JK);
     let err = scf_exchange_is_cosx(&conflict, false).unwrap_err();
     assert!(format!("{err}").contains("df_k_aux"), "{err}");
     let mol = mol_of(WATER, 1);
@@ -250,15 +246,9 @@ fn rijcosx_dispatch_rules() {
         "{err}"
     );
     // A pure functional or an RSH functional still ignores COSX.
-    let pbe = RhfConfig {
-        xc: Some("PBE".into()),
-        ..auto.clone()
-    };
+    let pbe = auto.clone().with_xc("PBE");
     assert!(!scf_exchange_is_cosx(&pbe, false).unwrap());
-    let rsh = RhfConfig {
-        xc: Some("wB97X-V".into()),
-        ..auto
-    };
+    let rsh = auto.with_xc("wB97X-V");
     assert!(!scf_exchange_is_cosx(&rsh, false).unwrap());
 }
 
@@ -331,6 +321,7 @@ const CROSS_ABS_FLOOR: f64 = 1e-10;
 
 /// HF water/6-31G, RIJCOSX with the fit off, at the (50,110) and a coarse
 /// (30,50) COSX grid: the cross term must scale with the COSX error.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rijcosx_energy_is_rij_plus_the_cosx_error_hf() {
     let mol = mol_of(WATER, 1);
@@ -381,20 +372,14 @@ fn rijcosx_energy_is_rij_plus_the_cosx_error_uhf() {
 #[test]
 fn b3lyp_auto_default_is_rijcosx() {
     let mol = mol_of(WATER, 1);
-    let auto = RhfConfig {
-        k_builder: Some("cosx".into()),
-        cosx: cosx_exact(),
-        xc: Some("B3LYP".into()),
-        energy_conv: 1e-8,
-        density_conv: 1e-9,
-        max_iter: 300,
-        ..Default::default()
-    };
-    let named = RhfConfig {
-        df_j_aux: Some(JK.into()),
-        df_k_aux: Some(String::new()),
-        ..auto.clone()
-    };
+    let auto = RhfConfig::default()
+        .with_k_builder(ferric_scf::options::KBuilderKind::Cosx)
+        .with_cosx(cosx_exact())
+        .with_xc("B3LYP")
+        .with_energy_conv(1e-8)
+        .with_density_conv(1e-9)
+        .with_max_iter(300);
+    let named = auto.clone().with_df_j_aux(JK).with_df_k_aux(String::new());
     let a = solve_r(&mol, "sto-3g", &auto);
     let b = solve_r(&mol, "sto-3g", &named);
     println!("B3LYP auto {:.12} named {:.12}", a.energy, b.energy);
@@ -461,6 +446,7 @@ fn rhf_rijcosx_fd_case(basis: &str, cosx: CosxConfig, tol: f64) {
     );
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn rhf_rijcosx_gradient_matches_fd_sto3g() {
     rhf_rijcosx_fd_case("sto-3g", cosx_exact(), TOL_FD);
@@ -547,6 +533,7 @@ fn uhf_rijcosx_gradient_matches_fd_ho2_sto3g() {
 /// SCF-free anchor on the PRUNED grid: at a fixed density, the COSX exchange
 /// gradient is the derivative of `tr[D K(D; R)]` (4-point stencil). Same bar as
 /// the flat-grid anchor in `cosx_gradient.rs` (measured 7e-11 there).
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn pruned_grid_exchange_gradient_is_the_derivative_at_fixed_density() {
     let basis = "6-31g";
@@ -598,6 +585,7 @@ fn pruned_grid_exchange_gradient_is_the_derivative_at_fixed_density() {
 /// SCF-grid energy BIT FOR BIT (RHF and UHF), and the record says so.
 /// Fails if the pass reads a stale K (K of the previous density) or builds
 /// with different knobs.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn final_pass_on_the_scf_grid_is_bit_identical() {
     let mol = mol_of(WATER, 1);

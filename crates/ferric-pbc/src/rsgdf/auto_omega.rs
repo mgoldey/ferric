@@ -97,6 +97,7 @@ pub const FITTED: CostModel = CostModel {
 /// One evaluated candidate.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Candidate {
+    /// Candidate Ewald split ω (Bohr⁻¹), one of [`AUTO_OMEGA_CANDIDATES`].
     pub omega: f64,
     /// SR 3-centre shell triplets the build would compute.
     pub n_sr3: f64,
@@ -111,9 +112,12 @@ pub struct Candidate {
 pub struct AutoOmega {
     /// The chosen RS-GDF ω (Bohr⁻¹), one of [`AUTO_OMEGA_CANDIDATES`].
     pub omega: f64,
+    /// Every evaluated candidate, in [`AUTO_OMEGA_CANDIDATES`] order.
     pub candidates: Vec<Candidate>,
-    /// Pair-FT work per G vector `W` (millions) and `nao² naux` (millions).
+    /// Pair-FT work per G vector `W` (millions); NaN when the lowest
+    /// candidate's G sphere is empty.
     pub work_m: f64,
+    /// `nao² naux` (millions), the J3/J2 GEMM size per G vector.
     pub gemm_m: f64,
 }
 

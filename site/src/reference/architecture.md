@@ -23,7 +23,7 @@ integrals and core, not on each other.
 +---+---+      |           |              |            |
     |          +-----+-----+------+-------+------------+
     |                |     |      |
-    |   +------------v--+ +v------v-----+   ferric-tensors (sparse),
+    |   +------------v--+ +v------v-----+   ferric-tensors (dense),
     |   |ferric-export | |ferric-      |   ferric-quadrature (Laplace/grid roots)
     |   |cube,NPZ,GTO  | |integrals    |   support crates
     |   +--------------+ |libint2 FFI  |
@@ -38,26 +38,29 @@ integrals and core, not on each other.
 
 ## Layers
 
-**`ferric-core`** — molecular structure, basis sets, shells, elements, and the
+**`ferric-core`**: molecular structure, basis sets, shells, elements, and the
 BSE-JSON / Gaussian-94 parsers. Also the home of shared infrastructure:
 configuration (`ConfigVar`), memory budgets (`MemoryPlan`), the BLAS-thread
 hazard model, and MPI context.
 
-**`ferric-integrals`** — the libint2 FFI and its C++ shim. Coulomb, erf and erfc
-operators; 1-electron, 2-electron, 3-center and 2-center integrals; first
-derivatives. The shim wraps every libint2 call in `try`/`catch` and returns a
+**`ferric-integrals`**: the libint2 FFI and its C++ shim. Coulomb, erf, erfc,
+Yukawa and Slater-geminal operators, fitted Gaussian geminals, and the
+truncated terf/terfc kernels; 1-electron, 2-electron, 3-center and 2-center
+integrals; first derivatives, and second derivatives for the Hessians. The shim wraps every libint2 call in `try`/`catch` and returns a
 sentinel, so a C++ exception never unwinds across the FFI boundary.
 
-**Method crates** — `ferric-scf`, `ferric-mp2`, `ferric-dft`, `ferric-rpa`,
+**Method crates**: `ferric-scf`, `ferric-mp2`, `ferric-dft`, `ferric-rpa`,
 `ferric-gw`, `ferric-cc`, `ferric-ci`, `ferric-tddft`, `ferric-pcm`,
 `ferric-mm`, `ferric-xtb`, `ferric-d3` (Grimme D3(BJ) dispersion energy and
-gradient).
+gradient, optional ATM three-body term), `ferric-md` (molecular dynamics
+integrators and thermostats over any energy/gradient source; the SCF and MM
+front ends are `ferric_scf::run_aimd` and `ferric_mm::run_ffmd`).
 
-**Support** — `ferric-tensors` (the `einsum!` contraction macro),
+**Support**: `ferric-tensors` (the `einsum!` contraction macro),
 `ferric-quadrature` (Lebedev grids, minimax Laplace roots), `ferric-export`
 (cube files, NPZ, GTO evaluation).
 
-**Interfaces** — `ferric-cli` (TOML-driven) and `ferric-python` (pyo3).
+**Interfaces**: `ferric-cli` (TOML-driven) and `ferric-python` (pyo3).
 
 ## Cross-cutting conventions
 
@@ -67,8 +70,8 @@ across many jobs comes from many single-threaded processes, not one wide job.
 
 **Determinism.** Reductions fold in a fixed ascending order independent of
 thread count, so results are bit-identical across `RAYON_NUM_THREADS`. This is
-pinned by tests. A different-but-deterministic order — a tree-fold, say — would
-*not* be acceptable, because floating-point addition is not associative.
+pinned by tests. Another deterministic order, such as a tree-fold, would change
+the bits, because floating-point addition is not associative.
 
 **Memory.** `MemoryPlan` expresses what a path will allocate and when. An
 allocation that exceeds the budget and has no spill-to-disk or recompute

@@ -1,5 +1,5 @@
 //! Stage timers for the periodic builds and SCF (Performance plan item 0,
-//! `reference/pbc/FINDINGS.md` "Performance plan (research) — 2026-09-25").
+//! `wiki/archive/ferric-pbc-residue-2026-10-25/reference/pbc/FINDINGS.md` "Performance plan (research) — 2026-09-25").
 //!
 //! Every later optimisation in that plan is stated as a RATIO of stage times,
 //! so the stages must be measured, not estimated. The timers here are
@@ -82,10 +82,14 @@ impl StageClock {
 /// One leaf stage: accumulated wall/CPU seconds over `calls` timed calls.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StageTiming {
+    /// Stage label.
     pub name: &'static str,
+    /// Accumulated wall-clock seconds.
     pub wall_s: f64,
-    /// `None` when the process CPU clock is unavailable.
+    /// Accumulated process CPU seconds; `None` when the process CPU clock is
+    /// unavailable.
     pub cpu_s: Option<f64>,
+    /// Number of timed calls accumulated.
     pub calls: u64,
 }
 

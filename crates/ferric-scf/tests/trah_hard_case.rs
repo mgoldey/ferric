@@ -53,14 +53,12 @@ fn run(trah: Option<f64>) -> Result<ferric_scf::result::ScfResult, ferric_core::
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        check_stability: true,
-        trah_trigger: trah,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200)
+        .with_check_stability(true);
+    cfg.trah_trigger = trah;
     solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg)
 }
 
@@ -186,14 +184,12 @@ fn run_uhf_h2(
     let bs = basis::bundled("sto-3g").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
-    let cfg = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        check_stability: true,
-        trah_trigger: trah,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200)
+        .with_check_stability(true);
+    cfg.trah_trigger = trah;
     ferric_scf::uhf::solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg)
 }
 
@@ -267,14 +263,12 @@ fn a_rejected_trah_step_is_retried_not_handed_to_diis() {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        use_sad_guess: false,
-        trah_trigger: Some(1e-2),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200)
+        .with_guess(ferric_scf::options::Guess::Core);
+    cfg.trah_trigger = Some(1e-2);
     let r0 = ferric_scf::trah::TRAH_STEPS_REJECTED.load(std::sync::atomic::Ordering::Relaxed);
     let r = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
     let rej = ferric_scf::trah::TRAH_STEPS_REJECTED.load(std::sync::atomic::Ordering::Relaxed) - r0;
@@ -315,14 +309,12 @@ fn handoffs_after_rejection(uhf: bool) -> (usize, usize, f64) {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        use_sad_guess: false,
-        trah_trigger: Some(1e-2),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200)
+        .with_guess(ferric_scf::options::Guess::Core);
+    cfg.trah_trigger = Some(1e-2);
     let h0 = ferric_scf::trah::TRAH_HANDOFFS_AFTER_REJECTION.load(Relaxed);
     let r0 = ferric_scf::trah::TRAH_STEPS_REJECTED.load(Relaxed);
     let ctx = ParallelContext::default();
@@ -352,6 +344,7 @@ fn rhf_trah_keeps_control_after_a_rejection() {
     assert!((e - E_STABLE).abs() < 1e-7, "E = {e:.10}");
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uhf_trah_keeps_control_after_a_rejection() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -391,6 +384,7 @@ fn uhf_trah_keeps_control_after_a_rejection() {
 /// O2/STO-3G triplet UHF with DF-J/DF-K, core guess, tail-mode TRAH (above).
 const E_O2_STO3G_UHF_DFK: f64 = -147.635_627_928_824;
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uhf_dfk_trah_refreshes_the_occupied_orbital_cache() {
     use std::sync::atomic::Ordering::Relaxed;
@@ -399,16 +393,16 @@ fn uhf_dfk_trah_refreshes_the_occupied_orbital_cache() {
     let bs = basis::bundled("sto-3g").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
-    let cfg = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        use_sad_guess: false,
-        trah_trigger: Some(1e-2),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200)
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit")
+        // The golden below is an f64 RI-J energy at 1e-8.
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64);
+    cfg.trah_trigger = Some(1e-2);
     let r0 = ferric_scf::trah::TRAH_STEPS_REJECTED.load(Relaxed);
     let h0 = ferric_scf::trah::TRAH_HANDOFFS_AFTER_REJECTION.load(Relaxed);
     let r = ferric_scf::uhf::solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg)
@@ -458,15 +452,13 @@ fn uhf_dfk_newton_refreshes_the_occupied_orbital_cache() {
         let bs = basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
-        let cfg = RhfConfig {
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            max_iter: 200,
-            newton_trigger: 1e-1,
-            df_j_aux: dfk.then(|| "def2-universal-jkfit".into()),
-            df_k_aux: dfk.then(|| "def2-universal-jkfit".into()),
-            ..Default::default()
-        };
+        let mut cfg = RhfConfig::default()
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8)
+            .with_max_iter(200);
+        cfg.newton_trigger = 1e-1;
+        cfg.df_j_aux = dfk.then(|| "def2-universal-jkfit".into());
+        cfg.df_k_aux = dfk.then(|| "def2-universal-jkfit".into());
         ferric_scf::uhf::solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg)
     };
     let exact = run(false).expect("exact-J/K Newton UHF converges");

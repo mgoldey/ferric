@@ -4,7 +4,9 @@
 //!
 //! The budget is derived from the tensor's bytes, so the test stays in the band
 //! however the basis data changes. Butane, because on anything much smaller the
-//! fast path's per-worker plan refuses the band before the pool is ever asked. HOW THIS FAILS IF BROKEN: the budget-only
+//! fast path's per-worker plan refuses the band before the pool is ever asked.
+//! `[scf] jk = "exact"`: the DF-guess pre-stage runs in front of the
+//! four-centre reference only (a fitted reference skips it). HOW THIS FAILS IF BROKEN: the budget-only
 //! in-core decision exits 1 at the dressed tensor's charge.
 
 use ferric_core::basis;
@@ -13,20 +15,9 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use std::path::PathBuf;
 use std::process::Command;
 
-/// The compile-time `CARGO_BIN_EXE_` path does not exist where a nextest archive
-/// is unpacked, so prefer the sibling of the running test binary; see
-/// `ccsd_dispatch.rs`.
-fn ferric_cli_bin() -> PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(profile_dir) = exe.parent().and_then(std::path::Path::parent) {
-            let p = profile_dir.join("ferric-cli");
-            if p.is_file() {
-                return p;
-            }
-        }
-    }
-    PathBuf::from(env!("CARGO_BIN_EXE_ferric-cli"))
-}
+#[path = "support/cli_bin.rs"]
+mod cli_bin;
+use cli_bin::ferric_cli_bin;
 
 /// `CARGO_MANIFEST_DIR` is stale in an unpacked nextest archive as well.
 fn root() -> PathBuf {
@@ -64,6 +55,7 @@ fn run(tag: &str, budget_gb: f64) -> (std::process::Output, f64) {
              [basis]\nname = \"6-31g\"\n\
              [method]\nkind = \"rimp2\"\n\
              [mp2]\nauxbasis = \"cc-pvdz-ri\"\n\
+             [scf]\njk = \"exact\"\n\
              [memory]\nbudget_gb = {budget_gb:.9}\n"
         ),
     )
@@ -112,7 +104,11 @@ fn a_tensor_that_fits_the_budget_once_but_not_twice_still_runs_the_guess() {
         String::from_utf8_lossy(&ample.stderr)
     );
 
-    let (band, e_band) = run("band", needed as f64 * 1.5 / gib);
+    // The band, measured with FERRIC_OOC_TRACE: the budget holds the square
+    // dressed tensor (>= needed) but not the packed raw tensor beside the packed
+    // dressed one plus its dressing scratch (~1.02-1.03 x needed for this
+    // system). At 1.25 x both packed tensors fit and nothing spills.
+    let (band, e_band) = run("band", needed as f64 * 1.005 / gib);
     let stderr = String::from_utf8_lossy(&band.stderr);
     assert!(!stderr.contains("SCF failed"), "{stderr}");
     assert!(

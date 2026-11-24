@@ -74,10 +74,10 @@ the same object in the Cholesky-RI basis. What is left to match:
     Becke-1988 radii adjustment -- ferric's default, the KS-DFT row's recipe.
   * Basis and aux: ferric's bundled JSON for BOTH (common.py), AO and aux
     counts checked against ferric's parser.
-  * XC density floor: ferric zeroes e_xc/v_xc where rho <= 1e-10; the @PBE
-    reference applies the same floor (FERRIC_DENSITY_FLOOR). Without it the
-    h2o/aug-cc-pvdz diffuse virtuals differ by up to 5e-7 Ha; that shift is
-    recorded as `density_floor_mo_energy_shift_max`.
+  * XC density floor: ferric zeroes v_xc where rho <= its semilocal floor
+    (1e-14, ferric-dft vxc.rs `DensityFloor::SEMILOCAL`); the @PBE reference
+    applies the same floor (FERRIC_DENSITY_FLOOR). The unfloored MO-energy
+    shift is recorded as `density_floor_mo_energy_shift_max`.
   * Frozen core: none, except the explicit `g0w0_hf_fc1` block (PySCF
     frozen=1; ferric GwConfig.frozen_core = PdepRpaConfig.frozen_core = 1).
 
@@ -118,6 +118,8 @@ Run (light; about a minute per system):
         uv run --no-sync python scripts/validation/gen_gw.py [system ...]
 Only the U-G0W0@UKS/PBE block, leaving every other block untouched:
     ... gen_gw.py --uks-only [oh ch3 nh2]
+Only the grid-free `exact` sub-block of the U-G0W0@UHF rows:
+    ... gen_gw.py --uhf-exact-only [oh ch3 nh2 o2 ch2_triplet]
 Only the COHSEX@PBE block, leaving every other block untouched:
     ... gen_gw.py --cohsex-ks-only [h2o n2]
 """
@@ -219,12 +221,11 @@ def rhf_exact(mol):
     return mf, bool(stable)
 
 
-# ferric zeroes e_xc and v_xc at grid points with rho <= 1e-10
-# (ferric-dft vxc.rs DENSITY_FLOOR); libxc's own PBE threshold is lower. The
-# floor only reaches the far tail, so it moves occupied eigenvalues ~1e-10 Ha
-# but diffuse virtuals up to 5e-7 Ha (h2o/aug-cc-pvdz MO 6). The reference
-# applies the same floor; the unfloored shift is recorded per block.
-FERRIC_DENSITY_FLOOR = 1e-10
+# ferric zeroes v_xc at grid points with rho <= 1e-14 for LDA/GGA/hybrid/RSH
+# (ferric-dft vxc.rs `DensityFloor::SEMILOCAL`; libxc's own PBE_X threshold is
+# 1e-15, PBE_C 1e-12). The reference applies the same floor; the unfloored
+# shift is recorded per block.
+FERRIC_DENSITY_FLOOR = 1e-14
 
 
 def _apply_density_floor(mf, floor):
@@ -989,7 +990,8 @@ def u_spin_block(mf, gw, s, orbs):
 #   `posthoc_minus_textbook_max` records the size of the difference.
 #
 # Matched recipe (the closed-shell @PBE block's, per spin):
-#   * UKS/PBE, EXACT J (no density fitting), (75,110) unpruned Becke grid,
+#   * UKS/PBE, EXACT J (no density fitting), (75,110) unpruned Becke grid
+#     (OH: (99,590), see UKS_GRID below; the block records it as `grid`),
 #     Becke-1988 radii, stability-followed from 3 guesses (common.run_open_shell).
 #   * ferric's XC density floor, SPIN-POLARIZED form (ferric-dft vxc.rs
 #     `semilocal_vxc_polarized_scratch`): V^sigma is zeroed where
@@ -1007,8 +1009,32 @@ def u_spin_block(mf, gw, s, orbs):
 #   * Pade: textbook Thiele fraction (`thiele_eval`) on PySCF's Sigma_c(ef+iw)
 #     at the 18 `_get_ac_idx` nodes, coefficients cross-checked against
 #     UGWAC's fit (`thiele_coeffs`).
+#
+# Sub-block `exact` per spin (2026-11-08): PySCF's Sigma_c(ef+iw) above is NOT
+# converged in nw for these radicals -- the per-spin mid-gap ef sits within
+# 0.015 Ha of two beta states (OH), so the kernel a/(a^2 + w'^2) has a ridge of
+# that width at w' = w, which the nw = 100 Gauss-Legendre W grid does not
+# resolve (worst node error 0.11 Ha at nw = 100, 0.02 Ha at 400, against the
+# pole sum; the QP energies move by up to ~2 eV with nw). ferric integrates the
+# kernel exactly against the interpolated W (sigma.rs sigma_c_at_z_product),
+# so its reference is grid-free: `exact_u_drpa` (Casida on the same Lpq) ->
+# exact pole-sum Sigma_c at the same 18 nodes -> the same textbook Thiele ->
+# the same QP start (`eps_qp`, `eps_qp_posthoc`), plus the exact real-axis
+# roots with their weights Z (`real_axis_top_roots`) as a diagnostic of what
+# the continuation itself costs.
 
 UKS_CASES = {("oh", "cc-pvdz"), ("ch3", "cc-pvdz"), ("nh2", "cc-pvdz")}
+
+# PBE grid of the `u_g0w0_uks_pbe` block, per system (recorded in the block as
+# `grid`; the Rust test runs ferric on it). MAIN_GRID except where the open
+# shell has a degenerate hole: OH 2Pi's beta hole can sit at any angle in its
+# pi pair, and on (75,110) the energy vs that angle ripples with the angular
+# grid (stationary states 1.4e-6 Ha apart, stable ones 4.9e-7, beta orbital
+# energies 5.4e-6), so which ripple minimum a run lands in decides the row. On
+# (99,590) the ripple is below the row's bars (ferric, 10 hole orientations,
+# 2026-11-09: E spread 1.4e-10 Ha, orbital-energy spread 1.9e-9 Ha;
+# scripts/queue/out/oh-grid-2026-11-09/). (99,302) is not: 6.3e-9 / 1.8e-7.
+UKS_GRID = {"oh": (99, 590)}
 
 
 def _apply_density_floor_polarized(mf, floor):
@@ -1031,14 +1057,14 @@ def _apply_density_floor_polarized(mf, floor):
     ni.eval_xc_eff = floored
 
 
-def uks_pbe_factory(density_floor=FERRIC_DENSITY_FLOOR):
+def uks_pbe_factory(density_floor=FERRIC_DENSITY_FLOOR, grid=MAIN_GRID):
     from pyscf import dft
 
     def factory(mol):
         mf = dft.UKS(mol, xc="PBE,PBE")
         if density_floor is not None:
             _apply_density_floor_polarized(mf, density_floor)
-        mf.grids.atom_grid = MAIN_GRID
+        mf.grids.atom_grid = grid
         mf.grids.prune = None
         mf.grids.radii_adjust = dft.radi.becke_atomic_radii_adjust
         return mf
@@ -1073,7 +1099,134 @@ def ferric_qp_start(sc_re, e0, shift):
     return x
 
 
-def u_textbook_spin(gw, mf, s, orbs):
+def exact_u_drpa(Lpq, mo_energy, nocc):
+    """Unrestricted direct RPA (spin-summed chi, Coulomb kernel) by Casida on
+    the RI Lpq: C = D^2 + 2 D^1/2 K D^1/2, (X+Y) = D^1/2 Z / sqrt(Omega).
+    Returns (Omega (ns,), rho (naux, ns)), rho = sum_ia L_ia (X+Y)_ia. No
+    frequency grid anywhere: the reference for the W frequency integral."""
+    np = _np()
+    blocks, dvec = [], []
+    for s in range(2):
+        no = nocc[s]
+        e = np.asarray(mo_energy[s])
+        L = Lpq[s][:, :no, no:]
+        blocks.append(L.reshape(L.shape[0], -1))
+        dvec.append((e[no:][None, :] - e[:no][:, None]).ravel())
+    Lia = np.concatenate(blocks, axis=1)
+    D = np.concatenate(dvec)
+    assert D.min() > 0, "non-positive orbital gap in a spin channel"
+    sd = np.sqrt(D)
+    C = np.diag(D * D) + 2.0 * (sd[:, None] * (Lia.T @ Lia) * sd[None, :])
+    w2, Z = np.linalg.eigh(C)
+    assert w2.min() > 0, "U-dRPA instability"
+    om = np.sqrt(w2)
+    return om, Lia @ (sd[:, None] * Z / np.sqrt(om)[None, :])
+
+
+def exact_sigma_c(Lpq_s, e_s, nocc_s, om, rho, p):
+    """Sigma_c,pp(z) of spin s as the exact G0W0 pole sum: occupied n at
+    e_n - Omega, virtual n at e_n + Omega, residues (L_pn . rho)^2.
+    Returns (f(z) for complex array z, pole positions, residues)."""
+    np = _np()
+    w = (Lpq_s[:, p, :].T @ rho) ** 2
+    e = np.asarray(e_s)
+    occ = np.arange(len(e)) < nocc_s
+    poles = np.where(occ[:, None], e[:, None] - om[None, :], e[:, None] + om[None, :])
+
+    def f(z):
+        z = np.asarray(z, dtype=complex)
+        return np.sum(
+            w[None] / (z.reshape(-1, 1, 1) - poles[None]), axis=(1, 2)
+        ).reshape(z.shape)
+
+    return f, poles.ravel(), w.ravel()
+
+
+def exact_real_axis_roots(f, poles, wts, e0, shift, half=1.0):
+    """Every root of w - e0 - shift - Re Sigma_c(w) on (e0+shift) +/- half
+    (one per inter-pole interval, the exact Sigma_c is monotone between its
+    poles), with its weight Z = 1/(1 - Sigma_c'), sorted by Z descending."""
+    np = _np()
+    from scipy.optimize import brentq
+
+    lo, hi = e0 + shift - half, e0 + shift + half
+    pin = np.sort(poles[(poles > lo) & (poles < hi)])
+    edges = np.concatenate(([lo], pin, [hi]))
+    poles_all = poles
+
+    def g(x):
+        return x - e0 - shift - float(f(np.array([x]))[0].real)
+
+    out = []
+    for a, b in zip(edges[:-1], edges[1:]):
+        a, b = a + 1e-10, b - 1e-10
+        if b > a and np.sign(g(a)) != np.sign(g(b)):
+            x = brentq(g, a, b, xtol=1e-13)
+            dsig = -float(np.sum(wts / (x - poles_all) ** 2))
+            out.append((float(x), 1.0 / (1.0 - dsig)))
+    out.sort(key=lambda t: -t[1])
+    return out
+
+
+def ferric_qp_rule(sc_re, e0, shift):
+    """ferric's full QP root rule (sigma.rs `solve_qp_for_mo_with`): the
+    Newton of `ferric_qp_start`; if it does not meet |step| < 1e-7 within 30
+    steps (or hits |f'| < 1e-3), the root of LARGEST weight Z in (0, 1] among
+    all roots within e0 + shift +/- 1 Ha (`qp_root_by_weight`: 4001 samples,
+    |f| < 0.5 on both sides of a sign change, bisection, Z from a 4-point FD
+    slope with h = 1e-5). Returns (root, rule) with rule "newton" (then
+    refined to QP_TOL) or "max_weight"."""
+    np = _np()
+    h = 0.05
+
+    def d(x, hh=h):
+        return (
+            -sc_re(x + 2 * hh)
+            + 8 * sc_re(x + hh)
+            - 8 * sc_re(x - hh)
+            + sc_re(x - 2 * hh)
+        ) / (12 * hh)
+
+    z = min(max(1.0 / (1.0 - d(e0)), 0.0), 1.5)
+    x = e0 + z * (sc_re(e0) + shift)
+    for _ in range(30):
+        fp = 1.0 - d(x)
+        if abs(fp) < 1e-3:
+            break
+        step = -(x - e0 - shift - sc_re(x)) / fp
+        x += step
+        if abs(step) < 1e-7:
+            return _refine(lambda w: w - e0 - shift - sc_re(w), x), "newton"
+
+    def f(w):
+        return w - e0 - shift - sc_re(w)
+
+    c = e0 + shift
+    xs = np.linspace(c - 1.0, c + 1.0, 4001)
+    fv = np.array([f(w) for w in xs])
+    best = None
+    for i in range(len(xs) - 1):
+        a, b, fa, fb = xs[i], xs[i + 1], fv[i], fv[i + 1]
+        if np.sign(fa) != np.sign(fb) and abs(fa) < 0.5 and abs(fb) < 0.5:
+            for _ in range(40):
+                m = 0.5 * (a + b)
+                fm = f(m)
+                if np.sign(fm) == np.sign(fa):
+                    a, fa = m, fm
+                else:
+                    b = m
+                if b - a < 1e-12:
+                    break
+            r = 0.5 * (a + b)
+            zz = 1.0 / (1.0 - d(r, 1e-5))
+            if 0.0 < zz <= 1.0 and (best is None or zz > best[1]):
+                best = (r, zz)
+    if best is None:
+        return float("nan"), "none"
+    return float(best[0]), "max_weight"
+
+
+def u_textbook_spin(gw, mf, s, orbs, exact_rpa=None):
     """Spin `s` of a UGWAC run (ef already overridden to that spin's mid-gap):
     PySCF's Sigma_c(ef + iw) at the Pade nodes, textbook Thiele, and the two QP
     equations of the block comment (shift inside vs the post-hoc recipe)."""
@@ -1186,25 +1339,86 @@ def u_textbook_spin(gw, mf, s, orbs):
         "root_selection": "tight Newton started from an emulation of ferric's "
         "solve_qp_for_mo search (ferric_qp_start)",
     }
+    if exact_rpa is not None:
+        out["exact"] = u_exact_spin(gw, mf, s, orbs, zn, exact_rpa, out)
     return out
 
 
-def u_g0w0_uks_pbe_block(mol, aux, orbs):
+def u_exact_spin(gw, mf, s, orbs, zn, exact_rpa, tb):
+    """The grid-free reference of spin `s` (block comment above UKS_CASES):
+    Sigma_c(ef + iw) at the Pade nodes from the exact pole sum, the QP root of
+    the textbook Thiele fraction through THOSE values (ferric's start, tight
+    Newton), and the exact real-axis roots with their weights."""
+    np = _np()
+    om, rho = exact_rpa
+    nocc_s = gw.nocc[s]
+    e_s = np.asarray(mf.mo_energy[s])
+    blk = {
+        "construction": "U-dRPA Casida on UGWAC's Lpq (exact_u_drpa), pole-sum "
+        "Sigma_c; no frequency grid",
+        "omega_lowest": [float(x) for x in om[:6]],
+        "sigma_c_iw_nodes_re": [],
+        "sigma_c_iw_nodes_im": [],
+        "eps_qp": [],
+        "eps_qp_posthoc": [],
+        "root_rule": [],
+        "qp_roots_within_1ha": [],
+        "real_axis_top_roots": [],
+        "pyscf_nw100_minus_exact_nodes_max": [],
+    }
+    for ip, p in enumerate(orbs):
+        f, poles, wts = exact_sigma_c(gw.Lpq[s], e_s, nocc_s, om, rho, p)
+        fn = f(zn)
+        a = thiele_coeffs(fn[:, None], zn)[:, 0]
+        e0 = tb["eps_mf"][ip]
+        shift = tb["sigma_x_df"][ip] - tb["v_xc"][ip]
+
+        def sc_re(w, a=a):
+            return thiele_eval(w + 0.0j, zn, a).real
+
+        def fq(w, e0=e0, shift=shift, sc_re=sc_re):
+            return w - e0 - shift - sc_re(w)
+
+        def gq(w, e0=e0, sc_re=sc_re):
+            return w - e0 - sc_re(w)
+
+        root, rule = ferric_qp_rule(sc_re, e0, shift)
+        w0, _rule0 = ferric_qp_rule(sc_re, e0, 0.0)
+        blk.setdefault("root_rule", []).append(rule)
+        blk["sigma_c_iw_nodes_re"].append([float(x) for x in fn.real])
+        blk["sigma_c_iw_nodes_im"].append([float(x) for x in fn.imag])
+        blk["eps_qp"].append(root)
+        blk["eps_qp_posthoc"].append(w0 + shift)
+        blk["qp_roots_within_1ha"].append(len(_qp_roots_in_window(fq, e0 + shift)))
+        blk["real_axis_top_roots"].append(
+            [list(t) for t in exact_real_axis_roots(f, poles, wts, e0, shift)[:3]]
+        )
+        py = np.array(tb["ac"]["sigma_c_iw_nodes_re"][ip]) + 1j * np.array(
+            tb["ac"]["sigma_c_iw_nodes_im"][ip]
+        )
+        blk["pyscf_nw100_minus_exact_nodes_max"].append(float(np.max(np.abs(py - fn))))
+    return blk
+
+
+def u_g0w0_uks_pbe_block(mol, aux, orbs, grid=MAIN_GRID):
     uks, mf = common.run_open_shell(
         mol,
         "uks",
         conv_tol=CONV_TOL,
         conv_tol_grad=CONV_TOL_GRAD,
-        mf_factory=uks_pbe_factory(),
+        mf_factory=uks_pbe_factory(grid=grid),
         return_mf=True,
     )
     na, nb = mol.nelec
     ea, eb = mf.mo_energy
     ef = (0.5 * (ea[na - 1] + ea[na]), 0.5 * (eb[nb - 1] + eb[nb]))
     spins = {}
+    exact = None
     for s, name in ((0, "alpha"), (1, "beta")):
         gw = run_ugwac(mf, aux, orbs, ef_override=float(ef[s]))
-        spins[name] = u_textbook_spin(gw, mf, s, orbs)
+        if exact is None:
+            exact = exact_u_drpa(gw.Lpq, mf.mo_energy, (na, nb))
+        spins[name] = u_textbook_spin(gw, mf, s, orbs, exact_rpa=exact)
     # The unfloored UKS, for the record only (how much the floor moves eps_mf).
     # Diagnostic: its failure to converge is recorded, not fatal (OH/cc-pVDZ
     # unfloored does not reach conv_tol from any guess, measured 2026-09-25).
@@ -1214,7 +1428,7 @@ def u_g0w0_uks_pbe_block(mol, aux, orbs):
             "uks",
             conv_tol=CONV_TOL,
             conv_tol_grad=CONV_TOL_GRAD,
-            mf_factory=uks_pbe_factory(density_floor=None),
+            mf_factory=uks_pbe_factory(density_floor=None, grid=grid),
             return_mf=True,
         )[1]
         shift_max = float(
@@ -1229,6 +1443,7 @@ def u_g0w0_uks_pbe_block(mol, aux, orbs):
     return {
         "orbs": orbs,
         "xc": "PBE",
+        "grid": list(grid),
         "j": "exact (no density fitting)",
         "density_floor": FERRIC_DENSITY_FLOOR,
         "density_floor_form": "spin-polarized: V^sigma zeroed where rho_sigma <= floor",
@@ -1261,7 +1476,9 @@ def gen_open_uks_only(system):
         assert payload["nao"] == mol.nao_nr() and payload["aux"] == aux_name
         aux = aux_dict(aux_name, symbols)
         orbs = payload["u_g0w0_uhf"]["orbs"]
-        payload["u_g0w0_uks_pbe"] = u_g0w0_uks_pbe_block(mol, aux, orbs)
+        payload["u_g0w0_uks_pbe"] = u_g0w0_uks_pbe_block(
+            mol, aux, orbs, grid=UKS_GRID.get(system, MAIN_GRID)
+        )
         prov = payload.pop("provenance")
         blocks = prov.setdefault("blocks", [])
         if "u_g0w0_uks_pbe" not in blocks:
@@ -1275,6 +1492,265 @@ def gen_open_uks_only(system):
         _print_uks(system, basis_name, payload)
 
 
+def gen_uhf_exact_only(system):
+    """Add `u_g0w0_uhf/{alpha,beta}/exact` to every basis of an open-shell
+    system: the grid-free reference (block comment above UKS_CASES) for the
+    U-G0W0@UHF row -- exact U-dRPA pole-sum Sigma_c at the 18 Pade nodes,
+    textbook Thiele, ferric's root rule (`ferric_qp_rule`), no static shift.
+    The UHF is re-solved and must reproduce the stored energy to 1e-8 Ha (the
+    same state); every other block stays byte-for-byte."""
+    import json
+
+    np = _np()
+    from pyscf.gw.utils.ac_grid import _get_ac_idx
+
+    xyz_rel, mult, bases = OPEN[system]
+    xyz = common.MOL_DIR / xyz_rel
+    for basis_name in bases:
+        path = common.reference_path(ROW, system, basis_name)
+        payload = json.loads(path.read_text())
+        aux_name = AUX_FOR[basis_name]
+        mol, symbols, _c, _ll = mol_and_prov_base(xyz, basis_name, mult=mult)
+        aux = aux_dict(aux_name, symbols)
+        _u, mf = common.run_open_shell(
+            mol, "uhf", conv_tol=CONV_TOL, conv_tol_grad=CONV_TOL_GRAD, return_mf=True
+        )
+        e_ref = payload["uhf"]["energy"]
+        assert abs(mf.e_tot - e_ref) < 1e-8, (
+            f"{system}/{basis_name}: UHF {mf.e_tot:.10f} is not the stored state {e_ref:.10f}"
+        )
+        blk = payload["u_g0w0_uhf"]
+        orbs = blk["orbs"]
+        na, nb = mol.nelec
+        ea, eb = mf.mo_energy
+        efs = (0.5 * (ea[na - 1] + ea[na]), 0.5 * (eb[nb - 1] + eb[nb]))
+        exact = None
+        for s, name in ((0, "alpha"), (1, "beta")):
+            gw = run_ugwac(mf, aux, orbs, ef_override=float(efs[s]))
+            if exact is None:
+                exact = exact_u_drpa(gw.Lpq, mf.mo_energy, (na, nb))
+            om, rho = exact
+            eval_f = np.concatenate(([0.0], gw.freqs))
+            idx = _get_ac_idx(len(eval_f), npts=PADE_NPTS, step_ratio=PADE_STEP_RATIO)
+            zn = efs[s] + 1j * eval_f[idx]
+            out = {
+                "construction": "U-dRPA Casida pole sum at the Pade nodes, textbook "
+                "Thiele, ferric_qp_rule, no static shift (gen_gw.gen_uhf_exact_only)",
+                "eps_qp": [],
+                "sigma_c_at_qp": [],
+                "root_rule": [],
+                "pyscf_nw100_eps_qp_minus_exact_max": 0.0,
+            }
+            e_s = np.asarray(mf.mo_energy[s])
+            for ip, p in enumerate(orbs):
+                f, _poles, _w = exact_sigma_c(gw.Lpq[s], e_s, (na, nb)[s], om, rho, p)
+                a = thiele_coeffs(f(zn)[:, None], zn)[:, 0]
+
+                def sc_re(w, a=a):
+                    return thiele_eval(w + 0.0j, zn, a).real
+
+                root, rule = ferric_qp_rule(sc_re, float(e_s[p]), 0.0)
+                out["eps_qp"].append(root)
+                out["sigma_c_at_qp"].append(float(sc_re(root)))
+                out["root_rule"].append(rule)
+            out["pyscf_nw100_eps_qp_minus_exact_max"] = float(
+                max(abs(x - y) for x, y in zip(out["eps_qp"], blk[name]["eps_qp"]))
+            )
+            blk[name]["exact"] = out
+            print(
+                f"{system}/{basis_name} UHF {name}: exact eps_qp "
+                f"{[round(v * 27.211386245988, 4) for v in out['eps_qp']]} eV, "
+                f"|PySCF nw100 - exact| max "
+                f"{out['pyscf_nw100_eps_qp_minus_exact_max'] * 27211.386245988:.3f} meV, "
+                f"rule {out['root_rule']}",
+                flush=True,
+            )
+        prov = payload.pop("provenance")
+        prov["u_g0w0_uhf_exact_generated"] = {
+            "git_head": common.git_head(),
+            "mode": "gen_gw.py --uhf-exact-only (other blocks untouched)",
+        }
+        payload["provenance"] = prov
+        common.write_reference(ROW, system, basis_name, payload)
+
+
+def exact_r_drpa(Lpq, mo_energy, nocc):
+    """Closed-shell (singlet) direct RPA by Casida on the RI Lpq:
+    C = D^2 + 4 D^1/2 K D^1/2, rho = sqrt(2) L_ia (X+Y). Equal to
+    `exact_u_drpa` on the spin-duplicated problem (asserted by
+    `closed_exact_block`); the triplet half carries no Coulomb residue."""
+    np = _np()
+    e = np.asarray(mo_energy)
+    lia = Lpq[:, :nocc, nocc:].reshape(Lpq.shape[0], -1)
+    d = (e[nocc:][None, :] - e[:nocc][:, None]).ravel()
+    assert d.min() > 0, "non-positive orbital gap"
+    sd = np.sqrt(d)
+    w2, z = np.linalg.eigh(
+        np.diag(d * d) + 4.0 * (sd[:, None] * (lia.T @ lia) * sd[None, :])
+    )
+    assert w2.min() > 0, "dRPA instability"
+    om = np.sqrt(w2)
+    return om, np.sqrt(2.0) * (lia @ (sd[:, None] * z / np.sqrt(om)[None, :]))
+
+
+def closed_exact_block(gw, mf, blk, ks):
+    """The grid-free reference of one closed-shell G0W0 block: Sigma_c(ef + iw)
+    at the 18 Pade nodes from the exact dRPA pole sum (no W frequency grid),
+    textbook Thiele through those values, ferric's root rule (`ferric_qp_rule`).
+    Static shift Sigma_x(DF) - v_xc for a KS block (as ferric), 0 at @HF (ferric
+    passes no v_xc there). Also stores the exact real-axis roots (largest Z
+    first), which measure the analytic continuation itself."""
+    np = _np()
+    from pyscf.gw.utils.ac_grid import _get_ac_idx, _get_scaled_legendre_roots
+
+    lpq = np.asarray(gw.Lpq)
+    e = np.asarray(mf.mo_energy, dtype=float)
+    nocc = int(gw.nocc)
+    assert lpq.shape[1] == len(e), "frozen core is not supported here"
+    om, rho = exact_r_drpa(lpq, e, nocc)
+    # Anchor: the closed-shell Casida equals the spin-duplicated U Casida.
+    om_u, rho_u = exact_u_drpa(np.array([lpq, lpq]), [e, e], (nocc, nocc))
+    # The stored block's ef (the z at which the plain nodes were sampled),
+    # after checking the re-solved SCF is the same state.
+    ef_now = 0.5 * (e[nocc - 1] + e[nocc])
+    ef = float(blk["ef"])
+    assert abs(ef_now - ef) < 1e-8, f"ef {ef_now} vs stored {ef}"
+    zz = ef + 1j * np.array([0.0, 0.3, 2.0])
+    p0 = blk["orbs"][0]
+    d_anchor = float(
+        np.max(
+            np.abs(
+                exact_sigma_c(lpq, e, nocc, om, rho, p0)[0](zz)
+                - exact_sigma_c(lpq, e, nocc, om_u, rho_u, p0)[0](zz)
+            )
+        )
+    )
+    assert d_anchor < 1e-10, f"closed vs U Casida: {d_anchor:.2e} Ha"
+    leg, _ = _get_scaled_legendre_roots(NW, X0)
+    eval_f = np.concatenate(([0.0], leg))
+    idx = _get_ac_idx(len(eval_f), npts=PADE_NPTS, step_ratio=PADE_STEP_RATIO)
+    zn = ef + 1j * eval_f[idx]
+    out = {
+        "construction": "closed-shell dRPA Casida pole sum on GWAC's Lpq "
+        "(exact_r_drpa), Sigma_c at the 18 Pade nodes, textbook Thiele, "
+        "ferric_qp_rule; no W frequency grid (gen_gw.py --closed-exact-only)",
+        "static_shift": "sigma_x_df - v_mf" if ks else "0 (HF)",
+        "closed_vs_u_casida_anchor": d_anchor,
+        "omega_lowest": [float(x) for x in om[:6]],
+        "sigma_c_iw_nodes_re": [],
+        "sigma_c_iw_nodes_im": [],
+        "eps_qp": [],
+        "sigma_c_at_qp": [],
+        "root_rule": [],
+        "real_axis_top_roots": [],
+    }
+    for ip, p in enumerate(blk["orbs"]):
+        f, poles, wts = exact_sigma_c(lpq, e, nocc, om, rho, p)
+        fn = f(zn)
+        a = thiele_coeffs(fn[:, None], zn)[:, 0]
+        shift = blk["sigma_x_df"][ip] - blk["v_mf"][ip] if ks else 0.0
+
+        def sc_re(w, a=a):
+            return thiele_eval(w + 0.0j, zn, a).real
+
+        root, rule = ferric_qp_rule(sc_re, float(e[p]), shift)
+        out["sigma_c_iw_nodes_re"].append([float(x) for x in fn.real])
+        out["sigma_c_iw_nodes_im"].append([float(x) for x in fn.imag])
+        out["eps_qp"].append(root)
+        out["sigma_c_at_qp"].append(float(sc_re(root)))
+        out["root_rule"].append(rule)
+        out["real_axis_top_roots"].append(
+            [
+                list(t)
+                for t in exact_real_axis_roots(f, poles, wts, float(e[p]), shift)[:3]
+            ]
+        )
+    out["pyscf_nw100_eps_qp_minus_exact_max"] = float(
+        max(abs(x - y) for x, y in zip(out["eps_qp"], blk["eps_qp"]))
+    )
+    return out
+
+
+def gen_closed_exact_only(system):
+    """Add `g0w0_hf/exact` and (where present) `g0w0_pbe/exact` to every basis
+    of a closed-shell system (`closed_exact_block`). The SCF is re-solved and
+    must reproduce the stored energy to 1e-9 Ha; every other block stays
+    byte-for-byte."""
+    import json
+
+    xyz_rel, bases = CLOSED[system]
+    xyz = common.MOL_DIR / xyz_rel
+    ha_mev = 27211.386245988
+    for basis_name in bases:
+        path = common.reference_path(ROW, system, basis_name)
+        payload = json.loads(path.read_text())
+        aux_name = AUX_FOR[basis_name]
+        mol, symbols, _c, _ll = mol_and_prov_base(xyz, basis_name)
+        aux = aux_dict(aux_name, symbols)
+        mf, _ = rhf_exact(mol)
+        assert abs(mf.e_tot - payload["rhf"]["energy"]) < 1e-9, "RHF state"
+        blocks = [("g0w0_hf", mf, False)]
+        if "g0w0_pbe" in payload:
+            mks = rks_pbe_exact(mol)
+            assert abs(mks.e_tot - payload["g0w0_pbe"]["rks_energy"]) < 1e-9, (
+                "RKS state"
+            )
+            blocks.append(("g0w0_pbe", mks, True))
+        for name, m, ks in blocks:
+            blk = payload[name]
+            gw, _ = run_gwac(m, aux, blk["orbs"], vhf_df=ks, nw=20, nw2=NW)
+            blk["exact"] = closed_exact_block(gw, m, blk, ks)
+            x = blk["exact"]
+            print(
+                f"{system}/{basis_name} {name}: exact eps_qp "
+                f"{[round(v * 27.211386245988, 4) for v in x['eps_qp']]} eV, "
+                f"|PySCF nw100 - exact| max "
+                f"{x['pyscf_nw100_eps_qp_minus_exact_max'] * ha_mev:.3f} meV, "
+                f"rule {x['root_rule']}",
+                flush=True,
+            )
+        prov = payload.pop("provenance")
+        prov["g0w0_closed_exact_generated"] = {
+            "git_head": common.git_head(),
+            "mode": "gen_gw.py --closed-exact-only (other blocks untouched)",
+        }
+        payload["provenance"] = prov
+        common.write_reference(ROW, system, basis_name, payload)
+
+
+def gen_ecp_exact_only(system):
+    """`gen_closed_exact_only` for an ECP row: adds `g0w0_hf/exact` only."""
+    import json
+
+    xyz = common.MOL_DIR / ECP[system]
+    basis_name = ECP_BASIS
+    ecp_json = common.basis_json_path(basis_name)
+    path = common.reference_path(ROW, system, basis_name)
+    payload = json.loads(path.read_text())
+    mol, symbols, _c, _ll = mol_and_prov_base(xyz, basis_name, ecp_json=ecp_json)
+    aux = aux_dict(AUX_FOR[basis_name], symbols)
+    mf, _ = rhf_exact(mol)
+    assert abs(mf.e_tot - payload["rhf"]["energy"]) < 1e-9, "RHF state"
+    blk = payload["g0w0_hf"]
+    gw, _ = run_gwac(mf, aux, blk["orbs"], nw=20, nw2=NW)
+    blk["exact"] = closed_exact_block(gw, mf, blk, False)
+    x = blk["exact"]
+    print(
+        f"{system}/{basis_name} g0w0_hf: exact eps_qp "
+        f"{[round(v * 27.211386245988, 4) for v in x['eps_qp']]} eV, |PySCF nw100 - exact| max "
+        f"{x['pyscf_nw100_eps_qp_minus_exact_max'] * 27211.386245988:.3f} meV, "
+        f"rule {x['root_rule']}",
+        flush=True,
+    )
+    prov = payload.pop("provenance")
+    prov["g0w0_closed_exact_generated"] = {
+        "git_head": common.git_head(),
+        "mode": "gen_gw.py --closed-exact-only (other blocks untouched)",
+    }
+    payload["provenance"] = prov
+    common.write_reference(ROW, system, basis_name, payload)
+
+
 def _print_uks(system, basis_name, payload):
     ha = 27.211386245988
     blk = payload["u_g0w0_uks_pbe"]
@@ -1286,6 +1762,15 @@ def _print_uks(system, basis_name, payload):
             f"resid {b['qp_residual_max']:.1e} roots {b['ac']['qp_roots_within_1ha_textbook']}",
             flush=True,
         )
+        if "exact" in b:
+            x = b["exact"]
+            print(
+                f"  exact: eps_qp {[round(v * ha, 4) for v in x['eps_qp']]} eV, "
+                f"nw100-vs-exact node err max "
+                f"{max(x['pyscf_nw100_minus_exact_nodes_max']):.2e} Ha, "
+                f"roots {x['qp_roots_within_1ha']} rule {x['root_rule']}",
+                flush=True,
+            )
 
 
 def gen_open(system):
@@ -1330,7 +1815,9 @@ def gen_open(system):
             payload["diagnostics"]["old_recipe"] = old_u_recipe(mol, aux, orbs)
         blocks = ["uhf", "u_g0w0_uhf", "diagnostics"]
         if (system, basis_name) in UKS_CASES:
-            payload["u_g0w0_uks_pbe"] = u_g0w0_uks_pbe_block(mol, aux, orbs)
+            payload["u_g0w0_uks_pbe"] = u_g0w0_uks_pbe_block(
+                mol, aux, orbs, grid=UKS_GRID.get(system, MAIN_GRID)
+            )
             blocks.append("u_g0w0_uks_pbe")
         payload["provenance"] = provenance(
             xyz,
@@ -1387,6 +1874,21 @@ def main(argv):
         rest = [a for a in argv if a != "--uks-only"]
         for s in rest or sorted({sys_ for sys_, _ in UKS_CASES}):
             gen_open_uks_only(s)
+        return
+    if "--closed-exact-only" in argv:
+        # Add only the grid-free `exact` sub-blocks of the closed-shell G0W0 rows.
+        rest = [a for a in argv if a != "--closed-exact-only"]
+        for s in rest or sorted(CLOSED) + sorted(ECP):
+            if s in ECP:
+                gen_ecp_exact_only(s)
+            else:
+                gen_closed_exact_only(s)
+        return
+    if "--uhf-exact-only" in argv:
+        # Add only the grid-free `exact` sub-block of the U-G0W0@UHF rows.
+        rest = [a for a in argv if a != "--uhf-exact-only"]
+        for s in rest or sorted(OPEN):
+            gen_uhf_exact_only(s)
         return
     want = set(argv) or (set(CLOSED) | set(ECP) | set(OPEN))
     for s in CLOSED:

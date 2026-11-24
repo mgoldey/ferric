@@ -54,10 +54,7 @@ fn oh_sto3g() -> Oh {
     let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
-    let cfg = RhfConfig {
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default().with_max_iter(200);
     let uhf = solve_uhf(&ParallelContext::default(), &mol, &obs, &bounds, &cfg).unwrap();
     assert!(uhf.converged, "OH/STO-3G UHF did not converge");
     Oh {

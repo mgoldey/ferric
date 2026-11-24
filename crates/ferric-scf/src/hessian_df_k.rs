@@ -14,15 +14,21 @@
 //!
 //! # Scope: no dropped metric modes
 //!
-//! `DfK` drops metric modes below `DFK_LINDEP_THRESH`. With none dropped,
+//! `DfK` drops metric modes below the cut of `crate::df_k::metric_lindep_cut`
+//! (nominally 1e-10; the Hessian counts dropped modes with the same rule, on
+//! its own `dsyevd` spectrum, which that rule classifies solver-independently
+//! by construction). With none dropped,
 //! `M = V⁻¹` exactly (the product of the two `V^{-1/2}` factors), so every
 //! derivative below follows from `∂M = −M V_x M`. A metric with a dropped mode
 //! is refused with a typed error naming the count (the energy is then a
 //! spectral function of `V` and its second derivative needs the
 //! Daleckii–Krein formula to second order, which is not implemented). Modes in
-//! `[1e-10, 1e-7)` are kept (the Hessian warns above cond 1e8; the pre-SCF
-//! probe that `Auto` consults refuses them and cond above 1e8, see
-//! `probe_exchange_metric`).
+//! `[1e-10, 1e-7)` are kept by the Hessian; every pre-SCF route check refuses
+//! them (`exchange_metric_conditioning`), and the probe that `Auto` consults
+//! also refuses a metric whose roundoff bound exceeds the finite-difference
+//! route's error (`probe_exchange_metric`,
+//! [`RikConditioning`](crate::hessian_df_k::RikConditioning); see
+//! "Conditioning").
 //!
 //! # Derivation (fixed `D`, i.e. fixed `X`; derivatives of integrals only)
 //!
@@ -70,12 +76,16 @@
 //! ## CPHF
 //!
 //! `G(D1) = J(D1) − ½K(D1)` is linear in `D1`; the response uses the SCF's own
-//! `DfK` (the dressed `V^{-1/2}(Q|μν)` source) through its density path
-//! `K = Σ_P B_P D1 B_P`. That path is written for a general matrix: it never
-//! factors `D1`, so the non-positive-semidefinite response density
-//! `D1 = C_v U C_oᵀ + h.c.` and the occupied-block density are handled with no
-//! change (the occupied-orbital path `build_from_occ` is NOT used, it needs
-//! `D = C Cᵀ`).
+//! `DfK` (the dressed `M (Q|μν)` source, `MᵀM = V⁻¹`), `K = Σ_P B_P D1 B_P`.
+//! A Hessian built outside a geometry task's metric capture may get a DfK on
+//! the Cholesky route while its SCF used `eigh` (or the reverse); the two
+//! differ only by rounding, about 1e-12 relative in the CPHF `K`. The
+//! response density `D1 = X C_oᵀ + C_o Xᵀ` (`X = 2 C_v U`; the occupied
+//! block `X = −C_o S_oo`) is indefinite, so the occupied path `build_from_occ`
+//! (which needs `D = C Cᵀ`) does not apply; instead
+//! `K = Σ_P (B_P X)(B_P C_o)ᵀ + h.c.` with `B_P C_o` built once per solve
+//! (`crate::df_k::DfK::build_factored_many`). The open-shell kernels below
+//! use the same route per spin (see "CPHF kernel").
 //!
 //! # UHF: one channel per spin
 //!
@@ -108,9 +118,17 @@
 //!   the spin Fock derivative gets `2α_σ K^x[D_σ] = −K^x[D_σ]`.
 //! * **CPHF kernel.** `v_σ(D1_α, D1_β) = J_DF(D1_α + D1_β) − K_DF(D1_σ)`:
 //!   `DfJ` on the TOTAL response density (one Coulomb matrix, both spins), `DfK`
-//!   on each spin's own response density (its density path takes the indefinite
-//!   `C_v U C_oᵀ + h.c.` as it is). The α and β rotations stay ONE coupled
-//!   system through the Coulomb term.
+//!   on each spin's own response density. Every such density is
+//!   `D1_σ = X_σ C_σ,oᵀ + C_σ,o X_σᵀ` (`X_σ = C_σ,v U_σ`, the occupied block
+//!   `X_σ = −½ C_σ,o S_σ,oo`), so
+//!   `K(D1_σ) = Σ_P (B_P X_σ)(B_P C_σ,o)ᵀ + h.c.` with `B_P C_σ,o` built once
+//!   per spin per solve and the K of every coordinate of a lockstep block from
+//!   one factored pass per spin (`crate::df_k::DfK::build_factored_many`,
+//!   `4 naux n² n_σ` flops per spin density instead of `4 naux n³`). ROHF's
+//!   response densities `C (U n_σ + n_σ Uᵀ) Cᵀ` have the same form with
+//!   `C_σ,o = C[:, ..n_σ]`, `X_σ = (C U)[:, ..n_σ]` (`crate::hessian::rohf`).
+//!   The α and β rotations stay ONE coupled system through the Coulomb term.
+//!   Derivation: `book/src/14-derivatives/04-hf-hessian.md#hf-hessian-factored-ri-k`.
 //! * **Closed-shell limit.** `D_α = D_β = D/2`: `X_σ = X/√2`, `L^σ = L/2`, so
 //!   `Σ_σ α_σ L^σ·M L^σ = 2(−½)(¼) L·M L = −¼ L·M L`, the closed-shell
 //!   energy; every piece above reduces to the closed-shell piece, which is the
@@ -125,8 +143,8 @@
 //!
 //! ## Factorization
 //!
-//! `M` is built as `W·W` with `W = U Λ^{-1/2} Uᵀ` from the same `eigh` as
-//! `DfK::v_inv_sqrt_lindep`, i.e. the SCF's own construction (no explicit
+//! `M` is built as `W·W` with `W = U Λ^{-1/2} Uᵀ`, the construction of
+//! `DfK::v_inv_sqrt_lindep` (both `dsyevd`), i.e. the SCF's own construction (no explicit
 //! `V⁻¹` from LU). With nothing dropped it agrees with `V⁻¹` to `~ε·cond(V)`.
 //!
 //! ## What the tests establish (and what they cannot see)
@@ -200,28 +218,62 @@
 //!
 //! ## Conditioning
 //!
-//! The Cholesky-free `M` amplifies integral noise by `cond(V)`. Measured (water
-//! 6-31G, Hessian vs the Richardson finite difference of ferric's own DF-K
-//! gradient, fitting bases with no metric mode in the gradient's noise band):
-//! cond 2.5e5 (cc-pVDZ-RI) 1.4e-10, 2.4e6 (aug-cc-pVDZ-RIFIT) 1.6e-10, 9.1e6
-//! (aug-cc-pVTZ-RIFIT) 2.5e-10, 2.5e7 (def2-universal-jkfit) 1.3e-10, 2.4e7
-//! (def2-QZVPP-RIFIT) 4.4e-10, **2.0e8 (aug-cc-pVQZ-RIFIT) 6.7e-9**: the error
-//! begins to differ near cond 1e8, hence the warning above `RIK_COND_WARN`.
-//! The RI-J analogue on the same fit (same metric, 3c integrals) stays at
-//! 1.7e-10 there, and the two finite-difference references (h = 2e-3 and 4e-3,
-//! Richardson) differ by only 3e-10, but PySCF's analytic DF Hessian agrees
-//! with ferric as well at cond 2e8 (2.7e-8) as at cond 2.5e5 (2.2e-8), at its own
-//! raw-asymmetry floor of 1.8e-8: the larger miss against the differenced
-//! K gradient is attributed to that gradient's Daleckii–Krein roundoff
-//! (unproven; no K-specific loss is established for the Hessian). Fixed-density
-//! twin-augmented bases up to cond 7.9e8 show K and J skeletons with the same
-//! 8e-8 (h = 1e-4) finite-difference truncation floor, so they cannot see 1e-9
-//! effects. One real point above the threshold, hence the conservative
-//! refusal in the probe. A
-//! metric with a mode below the DF-K cut is refused (see Scope). The
-//! reference gradient itself treats kept modes in `[1e-10, 1e-7)` as dropped
-//! (its noise floor), so a basis with such a mode has no valid finite-difference
-//! reference and yields no accuracy datum.
+//! `M = V⁻¹` is built from the eigenpairs of `V`, so roundoff in `V` and its
+//! products enters as `δM = −M δV M`, of size `‖δV‖ / λ_min²`. The analytic
+//! Hessian's roundoff therefore follows `1/λ_min²`, not `cond(V)`. Measured
+//! scale: the same Hessian with `M` built by LU instead (an independent
+//! construction, `RikMutants::explicit_inverse`) differs by `g` with
+//! `g · λ_min²` between 1.1e-20 and 4.1e-20 over λ_min 5.8e-8 .. 1.1e-5 (four
+//! decades of `g`, 2.0e-10 .. 6.2e-6): water, propane, butane, pentane and
+//! benzene at def2-SVP / def2-universal-jkfit, water and propane at def2-TZVP,
+//! propane and octane at STO-3G, and benzene at STO-3G with def2-QZVPP-RIFIT,
+//! aug-cc-pVTZ-RIFIT and aug-cc-pVQZ-RIFIT (cond 2.5e7 .. 3.1e10). The
+//! exchange skeleton alone at a fixed density (a twin auxiliary basis, same
+//! comparison) reaches 6.6e-20 (octane). `g / cond` instead spreads from
+//! 4.9e-18 to 2.0e-16, so cond is not the variable.
+//! [`RIK_ROUNDOFF_COEFF`](crate::hessian_df_k::RIK_ROUNDOFF_COEFF) = 1e-19 is
+//! the envelope over both.
+//!
+//! Against references (RHF, RI-J + RI-K, every SCF converged to 1e-14 /
+//! 1e-12): the Hessian agrees with the Richardson difference (h = 1e-3 /
+//! 2e-3) of ferric's own DF gradient, over def2-universal-jkfit, to 2.5e-10
+//! (water, cond 2.5e7), 1.4e-9 (propane, 1.7e8), 1.7e-9 (butane, 2.1e8) and
+//! 3.6e-9 (benzene, 7.1e8) at def2-SVP and 2.8e-10 / 1.4e-9 (water / propane)
+//! at def2-TZVP, each at that reference's own asymmetry, and with PySCF's
+//! analytic DF Hessian to 1.5e-8 .. 2.8e-8 (flat in cond; 4.4e-9 for propane
+//! at def2-TZVP). Near the gate the roundoff is visible and tracks the
+//! eigen-vs-LU gap: distorted water / 6-31G with aug-cc-pVQZ-RIFIT (λ_min
+//! 2.9e-6, cond 2.0e8) misses by 4.6e-9 (gap 4.5e-9, bound 1.2e-8), benzene /
+//! STO-3G with aug-cc-pVTZ-RIFIT (λ_min 1.6e-7, cond 9.3e9) by 7.7e-7 (gap
+//! 6.8e-7, PySCF 8.3e-7, bound 3.8e-6), with the reference's own spread at
+//! 9e-9. Every miss is below the bound. The finite-difference route `Auto`
+//! falls back to (central, `delta` 5e-3) misses the Richardson Hessian by
+//! 6.8e-6 (butane) to 1.9e-5 (benzene / aug-cc-pVTZ-RIFIT) on the same systems
+//! from truncation alone (0.05 .. 0.37 cm⁻¹ on modes above 50 cm⁻¹, against
+//! 1e-6 .. 2.8e-3 cm⁻¹ for the analytic Hessian), and by more at the default
+//! SCF thresholds: [`FD_ROUTE_ERROR`](crate::hessian_df_k::FD_ROUTE_ERROR) =
+//! 6.8e-6 is that route at its best.
+//!
+//! The gate: `Auto` takes the analytic route when `RIK_ROUNDOFF_COEFF / λ_min²
+//! <= FD_ROUTE_ERROR`, i.e. `λ_min >= 1.21e-7`, just above the gradient's noise
+//! floor `DFK_GRADIENT_NOISE_FLOOR` (1e-7), under which the pre-SCF checks
+//! already refuse (a kept mode there makes the Hessian differentiate a
+//! different function than the gradient). Every jkfit metric measured is
+//! inside it: λ_min >= 8.4e-7 on the organic molecules (cond up to 7.1e8 for
+//! benzene and 2.2e9 for a 24-atom drug at STO-3G), 3.3e-7 on HI (cond
+//! 4.9e8); a diffuse fitting basis comes nearer (benzene with
+//! aug-cc-pVTZ-RIFIT 1.6e-7, admitted; aug-cc-pVQZ-RIFIT 5.8e-8, refused by the
+//! pre-SCF checks). The bound and λ_min are recorded in the frequency
+//! certificate. The explicit analytic routes (Hartree-Fock and the KS moving
+//! grid, which share this metric construction) run whatever the bound, with a
+//! warning above it. A metric with a mode below the DF-K cut is refused (see
+//! Scope). The reference gradient itself treats kept
+//! modes in `[1e-10, 1e-7)` as dropped (its noise floor), so a basis with such
+//! a mode has no valid finite-difference reference and yields no accuracy
+//! datum.
+//!
+//! Measurement harness: `tests/df_hessian_rik_conditioning.rs`
+//! (`measure_one_system`, `measure_inverse_construction_gap_versus_cond`).
 
 use crate::df_gradient::aux_basis;
 use crate::hessian_df::{check_metric_spectrum, chunk_len, MetricUse};
@@ -230,6 +282,7 @@ use crate::hessian_df_stencil::{
 };
 use crate::result::DfJkRoute;
 use ferric_core::mol::Molecule;
+use ferric_core::timing::PhaseAccumulator;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
@@ -238,19 +291,69 @@ use ferric_integrals::operator::Operator;
 use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_integrals::threeindex::coulomb_metric_2c;
 use ndarray::{s, Array1, Array2, Array3, Axis};
-use ndarray_linalg::{Eigh, Inverse, UPLO};
+use ndarray_linalg::Inverse;
 use rayon::prelude::*;
 
-/// Condition number of the exchange metric above which the Hessian warns and
-/// the pre-SCF probe (`Auto`) falls back to finite differences. Measured (water
-/// 6-31G, Hessian vs the differenced DF-K gradient): 1.3e-10 .. 4.4e-10 for
-/// cond 2.5e5 .. 2.5e7 and 6.7e-9 at cond 2e8 (the RI-J analogue on the same
-/// metric: 1.7e-10; the two differenced references differ by 3e-10). Against
-/// PySCF's analytic DF Hessian the agreement is 2.2e-8 at cond 2.5e5 and
-/// 2.7e-8 at 2e8 (PySCF's own raw asymmetry is 1.8e-8), so the larger
-/// disagreement with the differenced gradient is not established as an error
-/// of the Hessian; above 1e8 accuracy is simply not established.
-pub const RIK_COND_WARN: f64 = 1e8;
+/// Roundoff of the analytic RI-K Hessian against the smallest eigenvalue of
+/// the exchange metric: `|δH| <= RIK_ROUNDOFF_COEFF / λ_min²` (Hartree/Bohr²,
+/// `λ_min` in the metric's units), the upper envelope over the measured
+/// systems (module doc, "Conditioning"). The error follows `1/λ_min²`, not
+/// `cond(V)`: the first-order perturbation `δM = −M δV M` of `M = V⁻¹`.
+pub const RIK_ROUNDOFF_COEFF: f64 = 1e-19;
+
+/// Error of the route `Auto` falls back to, Hartree/Bohr²: central differences
+/// of the analytic gradient at [`crate::frequencies::DEFAULT_DELTA`], measured
+/// as the smallest `max |H_FD − H_Richardson|` over the systems of the module
+/// doc with the displaced SCFs converged far below the default thresholds (the
+/// truncation error alone: the finite-difference route at its best).
+pub const FD_ROUTE_ERROR: f64 = 6.8e-6;
+
+/// The exchange metric's spectrum and the roundoff bound it implies for the
+/// analytic RI-K Hessian (recorded in the frequency certificate).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RikConditioning {
+    /// Smallest eigenvalue of the exchange metric `V`.
+    pub lambda_min: f64,
+    /// `λ_max / λ_min`.
+    pub cond: f64,
+    /// `RIK_ROUNDOFF_COEFF / λ_min²`, Hartree/Bohr².
+    pub bound: f64,
+}
+
+impl RikConditioning {
+    /// The bound for a metric with extreme eigenvalues `lambda_min`, `lambda_max`.
+    pub fn from_spectrum(lambda_min: f64, lambda_max: f64) -> Self {
+        Self {
+            lambda_min,
+            cond: lambda_max / lambda_min,
+            bound: RIK_ROUNDOFF_COEFF / (lambda_min * lambda_min),
+        }
+    }
+
+    /// Whether the analytic Hessian's roundoff bound is at or below the
+    /// finite-difference route's own error [`FD_ROUTE_ERROR`], i.e.
+    /// `λ_min >= sqrt(RIK_ROUNDOFF_COEFF / FD_ROUTE_ERROR)`.
+    pub fn admits_analytic(&self) -> bool {
+        self.bound <= FD_ROUTE_ERROR
+    }
+
+    /// One line for the certificate and the warnings.
+    pub fn describe(&self) -> String {
+        format!(
+            "exchange metric lambda_min {:.2e} (cond {:.2e}): analytic RI-K roundoff bound \
+             {:.1e} Ha/Bohr^2, {} the finite-difference route's {:.1e}",
+            self.lambda_min,
+            self.cond,
+            self.bound,
+            if self.admits_analytic() {
+                "within"
+            } else {
+                "ABOVE"
+            },
+            FD_ROUTE_ERROR
+        )
+    }
+}
 
 /// Closed-shell exchange weight `α` of `E_K = α Σ_ij L_ij · M L_ij`.
 pub const RIK_ALPHA: f64 = -0.25;
@@ -344,6 +447,10 @@ pub struct UhfDfMutants {
     /// The CPHF kernel applies each spin's exchange to the TOTAL response
     /// density `D1_α + D1_β` instead of that spin's own.
     pub cphf_k_from_total: bool,
+    /// Not a defect: the CPHF kernel builds every fitted K through the density
+    /// path instead of the per-spin factored route (the oracle the factored
+    /// route is anchored against).
+    pub cphf_density_path_k: bool,
 }
 
 /// Exchange weight of one UHF spin channel: `E_K = −½ Σ_σ tr(D_σ K[D_σ])`,
@@ -409,10 +516,16 @@ impl Fit {
             op
         };
         let v = coulomb_metric_2c(metric_op, &dfbs)?;
-        // ONE eigendecomposition, the (BLAS-thread-wrapped) call DfK makes, so
-        // the dropped-mode classification and M come from the same numbers.
-        let (lam, u) = with_blas_threads(opt_in_blas_threads(), || v.eigh(UPLO::Upper))
-            .map_err(|e| FerricError::Lapack(format!("analytic RI-K Hessian: eigh: {e}")))?;
+        // ONE eigendecomposition, so the dropped-mode classification (DfK's
+        // rule, `metric_lindep_cut`) and M come from the same numbers.
+        // Divide and conquer, as DfK: M is a matrix function of V (invariant to
+        // the basis inside a degenerate block) and the gap cut keeps the kept
+        // set solver-independent.
+        let (lam, u) = with_blas_threads(opt_in_blas_threads(), || {
+            ferric_core::linalg::eigh_dc(&v, ferric_core::linalg::Uplo::Upper)
+        })
+        .map_err(|e| FerricError::Lapack(format!("analytic RI-K Hessian: eigh: {e}")))?;
+        let lam = Array1::from(lam);
         if !mutants.allow_ill_conditioned {
             check_metric_spectrum(&lam, MetricUse::ExchangeFit)?;
         }
@@ -427,8 +540,14 @@ impl Fit {
                 let sc = 1.0 / lam[k].sqrt();
                 us.column_mut(k).mapv_inplace(|x| x * sc);
             }
-            let w = us.dot(&u.t());
-            w.dot(&w)
+            // Two O(naux³) GEMMs over the rayon pool (fixed column blocks,
+            // one-thread BLAS each), as DfK forms its V^{-1/2}.
+            let n = lam.len();
+            let mut w = Array2::<f64>::zeros((n, n));
+            ferric_core::linalg::par_gemm(1.0, &us.view(), &u.t(), 0.0, &mut w);
+            let mut m = Array2::<f64>::zeros((n, n));
+            ferric_core::linalg::par_gemm(1.0, &w.view(), &w.view(), 0.0, &mut m);
+            m
         };
         let m_cut = mutants.channel_metric_cut.map(|(channel, cut)| {
             let mut us = u.clone();
@@ -633,11 +752,13 @@ fn build_core(
     x: &Array2<f64>,
     mutants: &RikMutants,
     with_k1: bool,
+    ph: &mut PhaseAccumulator,
 ) -> Result<Core, FerricError> {
     let (n, naux, m) = (obs.nbasis(), fit.dfbs.nbasis(), x.ncols());
     let m2 = m * m;
 
     // Pass 1: L_P = Xᵀ (P|··) X and B_{P,λj} = Σ_σ (P|λσ) X_σj.
+    let t = ph.begin("3c integrals + occupied half-transform");
     let mut source = ThreeIndexSource::build(fit.op, obs, &fit.dfbs, fit.budget)?;
     let mut l = Array2::<f64>::zeros((naux, m2));
     let mut b = Array3::<f64>::zeros((naux, n, m));
@@ -660,7 +781,9 @@ fn build_core(
         Ok(())
     })?;
     drop(source);
+    ph.stop(t);
 
+    let t = ph.begin("metric GEMMs (Gamma, C-hat)");
     let gamma = m_metric.dot(&l).as_standard_layout().to_owned();
     drop(l);
     let b_flat = b
@@ -678,8 +801,12 @@ fn build_core(
         .as_standard_layout()
         .to_owned();
 
+    ph.stop(t);
+
     // Pass 2: first-derivative 3c blocks: L_x always, K1_x on request.
+    let t = ph.begin("3c first-derivative pass (L_x, K1_x)");
     let (lx, k1) = first_derivative_3c(obs, fit, natoms, x, &chat_p, mutants, with_k1)?;
+    ph.stop(t);
     Ok(Core {
         gamma,
         lx,
@@ -774,9 +901,14 @@ pub fn rik_channel_terms_with_aux(
         "RI-K Hessian fit tensors, L^x/Z^x, V^x and K^x matrices",
         rik_peak_bytes_channels(natoms, n, &noccs, naux),
     )?;
+    let mut ph = PhaseAccumulator::new().report_on_drop("RI-K Hessian terms");
+    let t = ph.begin("metric factorization");
     let fit = Fit::new(dfbs, op, budget, mutants)?;
+    ph.stop(t);
     let n3 = 3 * natoms;
+    let t = ph.begin("2c first derivatives V_x");
     let vx = first_derivative_2c(&fit, natoms)?;
+    ph.stop(t);
 
     let mut gammas: Vec<Array2<f64>> = Vec::with_capacity(channels.len());
     let mut cross: Option<Array2<f64>> = None;
@@ -786,8 +918,9 @@ pub fn rik_channel_terms_with_aux(
         let m2 = m * m;
         let alpha = ch.alpha * mutants.alpha_factor;
         let m_metric = fit.m_for(ci);
-        let mut core = build_core(natoms, obs, &fit, m_metric, x, mutants, true)?;
+        let mut core = build_core(natoms, obs, &fit, m_metric, x, mutants, true, &mut ph)?;
         let gamma = core.gamma.clone();
+        let t = ph.begin("cross term (Z_x, M Z_x)");
 
         // Z_x = L_x - V_x Γ (in place), then ∂_xΓ = M Z_x.
         if !mutants.drop_cross {
@@ -820,6 +953,8 @@ pub fn rik_channel_terms_with_aux(
             None => cross = Some(cross_s),
             Some(acc) => *acc += &cross_s,
         }
+        ph.stop(t);
+        let t = ph.begin("K^x per coordinate");
 
         // K^x = K1 + K1ᵀ - Σ_j Ĉ_jᵀ V_x Ĉ_j
         let chat_flat = core
@@ -859,6 +994,7 @@ pub fn rik_channel_terms_with_aux(
             first_order_fock.push(&kx * scale);
             first_order_k.push(kx);
         }
+        ph.stop(t);
         fock_out.push(RikChannelFock {
             first_order_k,
             first_order_fock,
@@ -876,6 +1012,7 @@ pub fn rik_channel_terms_with_aux(
         .iter()
         .map(|c| c.alpha * mutants.alpha_factor)
         .collect();
+    let t = ph.begin("3c second-derivative stencil");
     let three_centre = eri3_deriv2_contract(obs, dfbs, fit.op, cfg, |sp, s1, s2, w| {
         for (ci, ch) in channels.iter().enumerate() {
             let scale = 2.0 * alphas[ci];
@@ -899,6 +1036,8 @@ pub fn rik_channel_terms_with_aux(
         }
         true
     })?;
+    ph.stop(t);
+    let t = ph.begin("2c second-derivative stencil");
     let metric_second = if mutants.drop_metric_second {
         Array2::zeros((n3, n3))
     } else {
@@ -910,6 +1049,7 @@ pub fn rik_channel_terms_with_aux(
             weight_matrix(dfbs, &m2w, (sp, sq), w)
         })?
     };
+    ph.stop(t);
     let raw = &three_centre + &metric_second + &cross;
     let skeleton_asymmetry = raw
         .iter()
@@ -950,7 +1090,16 @@ pub fn rik_first(
     )?;
     let n3 = 3 * natoms;
     let vx = first_derivative_2c(&fit, natoms)?;
-    let core = build_core(natoms, obs, &fit, &fit.m, x, &mutants, false)?;
+    let core = build_core(
+        natoms,
+        obs,
+        &fit,
+        &fit.m,
+        x,
+        &mutants,
+        false,
+        &mut PhaseAccumulator::new(),
+    )?;
     let g_star = gamma_fixed.unwrap_or(&core.gamma);
     let mut lg = Array1::<f64>::zeros(n3);
     let mut gvg = Array1::<f64>::zeros(n3);

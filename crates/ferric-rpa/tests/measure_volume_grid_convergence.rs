@@ -196,6 +196,7 @@ fn measure_volume_grid_convergence() {
                     n_radial: nr,
                     n_angular: na,
                     prune: None,
+                    weight_cut: None,
                 };
                 let (v, n_e, npts) = volumes_on(&mol, &bs, &d, &tabs, &cfg);
                 let worst = v
@@ -243,6 +244,7 @@ fn measure_volume_grid_convergence() {
                     n_radial: nr,
                     n_angular: na,
                     prune: None,
+                    weight_cut: None,
                 };
                 let (v, _n, npts) = volumes_on(&mol, &bs, &d, &empty, &cfg);
                 // The reference `volume_dense_grid` applies NO Hirshfeld

@@ -95,6 +95,7 @@ fn lmp2_signature(
         virt_schwarz_kappa: None,
         split_eri3_timers: false,
         eri3_pass: Default::default(),
+        mpi: None,
     };
     let (r, st) =
         amplitude_lmp2_direct(&s.mol, &s.obs, &s.obs_bs, &s.dfbs, op, rhf, &cfg, &dcfg).unwrap();
@@ -129,6 +130,7 @@ fn lmp2_signature(
 /// EXACTNESS ANCHOR. Catches: a cache that loses, reorders or re-lays-out
 /// anything the driver reads. Also pins the driver's own run-to-run determinism,
 /// without which a bitwise comparison of two runs could not mean anything.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn cached_rhf_gives_bitwise_equal_lmp2() {
     let dir = scratch("anchor");

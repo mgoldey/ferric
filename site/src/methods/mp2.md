@@ -5,7 +5,13 @@ needs an orbital basis and a matching RI auxiliary basis (`[mp2] auxbasis`, or
 the `auxbasis` argument in Python). Formal cost is O(N⁵) for the RI-MP2
 transformation. Grades per `method.kind` are on
 [Capabilities and validation](../reference/validation.md). The `[mp2]` keys are in
-[Input file](../reference/input.md#mp2).
+[Input file](../reference/input.md#mp2). The working equations of every
+variant on this page (spin factors, frozen core, operator and unit
+conventions), with the code path behind each, are in
+the MP2 chapter of the ferric book,
+[`book/src/10-mp2/`](https://github.com/mgoldey/ferric/tree/main/book/src/10-mp2);
+the identities it relies on are checked by
+[`scripts/mp2_variant_identities.py`](https://github.com/mgoldey/ferric/blob/main/scripts/mp2_variant_identities.py).
 
 ## RI-MP2
 
@@ -14,38 +20,146 @@ for an open shell, below) with 3-centre/2-centre density fitting. Canonical (non
 for cross-validation, not production.
 
 **Open shells.** `rimp2` and `oo-rimp2` accept an open-shell molecule
-(`multiplicity > 1`) from the CLI, for `task = "energy"` only: they solve the
-same plain UHF that `kind = "uhf"` runs, then take unrestricted RI-MP2 (UMP2,
-as PySCF `mp.MP2(uhf)`) or unrestricted OO-RI-MP2. There is no unrestricted
-MP2 nuclear gradient, and `[mp2] kappa` is refused on an open shell. From
-Python, `run_rimp2` does the same (UHF + UMP2 when `multiplicity > 1`;
+(`multiplicity > 1`) from the CLI for `task = "energy"`, and `rimp2` also for
+`task = "optimize"`: they solve the same plain UHF that `kind = "uhf"` runs,
+then take unrestricted RI-MP2 (UMP2, as PySCF `mp.MP2(uhf)`) or unrestricted
+OO-RI-MP2. `[mp2] kappa` is refused on an open shell. From Python,
+`run_rimp2` does the same (UHF + UMP2 when `multiplicity > 1`;
 `result.reference` says which, and `kappa` raises); `run_oo_rimp2` is closed
-shell only. Both unrestricted methods are validated on the CH3 doublet at
+shell only.
+
+**Open-shell geometry optimization.** `kind = "rimp2"`, `task = "optimize"` on
+an open-shell molecule, and Python `run_optimize(method="rimp2")` on one (or
+with `reference="uhf"`), optimize on the UHF + U-RI-MP2 surface with an
+analytic gradient: the per-spin Lagrangian of the closed-shell gradient, a
+coupled UHF Z-vector and one RI-response channel per spin (derivation in
+`book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-energy-weights`). Frozen core applies to both spins. An
+omitted `[scf] jk` gives the RI-JK reference on the matched JK-fit set, as
+for the closed-shell optimization, and the fitted gradient checks its peak
+memory first; `jk = "exact"` gives the four-centre reference. A ROHF
+reference is refused (`reference="rohf"` in Python): its gradient needs the
+ROHF Z-vector and the semicanonicalization response, which are not built.
+`oo-rimp2` and `scs-mp2` optimize closed shells only, and the open-shell
+`rimp2` has no analytic Hessian (`task = "frequencies"` is closed shell). The
+gradient matches a finite difference of the U-RI-MP2 energy on OH, NH2 and O2
+in 6-31G on both routes, and a closed-shell molecule written as a UHF gives
+the restricted gradient (see the [anchors](../reference/validation.md#anchors));
+PySCF has no density-fitted UMP2 gradient to compare against. Both unrestricted methods are validated on the CH3 doublet at
 cc-pVDZ: U-RI-MP2 against ORCA `RI-MP2 NoRI`, U-OO-RI-MP2 against an
 independent numpy OO-RI-MP2 (see the
 [anchors](../reference/validation.md#anchors)).
 
-The other MP2-family kinds (`mp3`, `att-rimp2`, `scs-mp2`, `scs-mp2-2terfc`,
-`laplace-mp2`, `laplace-sos-mp2`, `rs-mp2-rpa`) and their Python drivers are
-closed shell only: set `multiplicity = 1`. `mp2-v` switches to a UHF reference
+**Open-shell attenuated, SCS and RS-MP2 + LR-RPA energies.** `att-rimp2`
+(erfc and terfc), `scs-mp2`, `scs-mp2-2terfc` and `rs-mp2-rpa` take a UHF
+reference when `multiplicity > 1`. So do Python
+`run_attenuated_rimp2`, `run_terfc_rimp2`, `run_scs_mp2`,
+`run_scs_mp2_2terfc` and `run_rs_mp2_rpa`; `result.reference` says which. The
+opposite-spin component is the αβ block of U-RI-MP2 and the same-spin
+component is the αα plus ββ blocks, under the kind's operator. `rs-mp2-rpa`
+uses the spin-summed U-dRPA, and subtracts its second-order term
+$E_{\alpha\beta} + \tfrac12(D_{\alpha\alpha} + D_{\beta\beta})$, not
+$2E_{\alpha\beta}$ (derivations in `book/src/10-mp2/04-attenuated-mp2.md#attenuated-mp2` and
+`book/src/26-rs-mp2-rpa/04-two-formulations.md#two-formulations`). The QQR-3
+screened `att-rimp2` build is closed shell
+only, and so is the Boys-screened χ₀ of `rs-mp2-rpa`. The values match PySCF
+`DFUMP2` and `URPA` and a numpy route on OH, NH2 and O2 at cc-pVDZ
+(`crates/ferric-rpa/tests/validation_u_attenuated_pyscf.rs`).
+
+**Open-shell attenuated gradient.** `att-rimp2` with erfc has an analytic
+gradient on a UHF reference: `task = "optimize"` and `"frequencies"` (central
+differences of the gradient) at `multiplicity > 1`, and Python
+`run_optimize(method="att-rimp2")` with `reference="uhf"` (the default for an
+open shell). It is the U-RI-MP2 gradient with erfc in the correlation pieces
+and Coulomb in the reference's terms (`book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-attenuated-erfc-variant`).
+Open-shell terfc (`att_operator = "terfc"`) and `scs-mp2-2terfc` have the same
+analytic gradient on a UHF (`book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-terfc-scs-mp2-2terfc`). The other
+open-shell kinds above stay energy only.
+The gradient matches finite differences of ferric's own energy on OH and NH2
+and of PySCF's UHF + DF-UMP2 energy on an erfc fit (see the
+[anchors](../reference/validation.md#anchors)).
+
+The other MP2-family kinds (`mp3`, `laplace-mp2`, `laplace-sos-mp2`) and
+their Python drivers are closed shell only: set `multiplicity = 1`. `mp2-v` switches to a UHF reference
 when `multiplicity > 1` (CLI, energy only); Python `run_mp2_v` is closed shell
 only.
 
 **The reference SCF: exact, RI-JK or RIJCOSX.** The `auxbasis` above fits the
 correlation step only. The reference SCF is a separate choice, `scf_jk` on
-every MP2-family Python driver (`[scf] jk` in the CLI, task `energy`):
-`"exact"` (four-centre J and K, the default), `"rijk"` (RI-J + RI-K) or
-`"rijcosx"` (RI-J + COSX K). The fitted modes use `jk_auxbasis` (`[scf]
-jk_aux`), a JK-fit basis with default `def2-universal-jkfit`. It is never the
-MP2 `auxbasis`, because an MP2-fit set used for K costs mHa. `rs-mp2-rpa` is the
-exception: it has always run RI-JK, so its default is `"rijk"`. Every result
-echoes `scf_jk` and `jk_auxbasis`. An unknown mode, `jk_auxbasis` with
-`"exact"`, or a `k_builder` the mode would override is an error (so is any
-`k_builder` on `rs-mp2-rpa`'s RI-JK default, in the CLI as in Python). A
-`jk_auxbasis` whose name lacks "jkfit" draws a warning. `oo-rimp2` accepts only
-`"exact"`: orbital optimisation rebuilds exact four-centre J/K at every orbital
-step, so a fitted reference would change only the starting orbitals; threading
-RI-JK through the OO Fock builds is not implemented. In the CLI a fitted
+every MP2-family Python driver (`[scf] jk` in the CLI, task `energy`, and
+`optimize` for `rimp2`, `scs-mp2` and `oo-rimp2`):
+`"exact"` (four-centre J and K), `"rijk"` (RI-J + RI-K) or `"rijcosx"`
+(RI-J + COSX K). The fitted modes use `jk_auxbasis` (`[scf] jk_aux`), a JK-fit
+basis. It is never the MP2 `auxbasis`, because an MP2-fit set used for K costs
+mHa.
+
+In the CLI an omitted `[scf] jk` gives a closed-shell energy of these kinds,
+a closed-shell `rimp2`, `scs-mp2` or `oo-rimp2` optimization, and an
+open-shell `rimp2` optimization,
+`"rijk"` on the JK-fit set matched to the orbital basis: `cc-pvtz-jkfit` for
+cc-pVDZ and cc-pVTZ, `cc-pvqz-jkfit` for cc-pVQZ, `aug-cc-pvXz-jkfit` for
+aug-cc-pVXZ, `def2-universal-jkfit` for every other basis. The reference stays
+four-centre for an open-shell energy and for an input that sets a key only
+the four-centre route reads (`k_builder`, `eri`, `screening`,
+`df_increments`, `df_guess = true`, `df_guess_aux`). `rs-mp2-rpa` takes
+`"rijk"` on `def2-universal-jkfit`. The run prints `Reference SCF J/K:` with
+the route, its aux set and why it was chosen, and the certificate lists the fit
+as `scf ri-j` and `scf ri-k` with the aux set (an optimization's `gradient`
+line names the RI-JK reference). `jk = "exact"` gives the four-centre
+reference. Python's `run_optimize` resolves an omitted `scf_jk` for
+`method="rimp2"`, `"scs-mp2"` and `"oo-rimp2"` the same way (four-centre for
+`oo-rimp2` when `scf_eri` is set). The energy entry points' `scf_jk` keyword
+defaults to `"exact"` (`jk_auxbasis` default `def2-universal-jkfit`). Every
+result echoes `scf_jk` and `jk_auxbasis`.
+
+**Memory of the fitted gradient.** The gradient on an RI-JK reference keeps
+the reference's RI-J and RI-K tensors for the Z-vector and differentiates the
+fitted two-electron energy of the full-rank relaxed density, whose exchange
+intermediates are several times the RI-J tensor. Its peak is a multiple of
+the four-centre route's at the same size (measured below). Before the
+reference SCF it declares that peak from the shapes
+(`ferric_mp2::gradient_memory`, model in
+`book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-fitted-peak-memory`) and
+stops with the per-term breakdown when it exceeds `[memory] budget_gb`
+(Python `memory_budget_gb`; unset, the auto-detected budget). Raise the
+budget or set `jk = "exact"`.
+
+On the matched set the fitted reference moves the RI-MP2 total energy by
+less than the RI-MP2 fit error itself. Closed-shell n-alkanes against the
+four-centre reference:
+
+| System | Basis (functions) | JK aux | ΔE(HF) | ΔE(corr) | ΔE(total) | max \|Δg\| | RI-MP2 fit error |
+|---|---|---|---|---|---|---|---|
+| propane | cc-pVTZ (202), fc | def2-universal-jkfit | +29.8 | +70.0 | +99.8 | 37.5 | +90.8 |
+| | | cc-pvtz-jkfit | +15.4 | +48.8 | +64.2 | 10.1 | |
+| hexane | cc-pVDZ (154) | def2-universal-jkfit | +19.1 | +93.3 | +112 | 11.3 | |
+| | | cc-pvtz-jkfit | +26.9 | +29.4 | +56.3 | 7.4 | |
+| octane | cc-pVDZ (202) | def2-universal-jkfit | +31.7 | +123 | +155 | 11.1 | +280 (23.2) |
+| | | cc-pvtz-jkfit | +39.1 | +39.1 | +78.2 | 7.6 | |
+| dodecane | cc-pVDZ (298) | def2-universal-jkfit | +56.4 | +184 | +240 | 11.1 | |
+| | | cc-pvtz-jkfit | +63.6 | +58.5 | +122 | 7.6 | |
+| octane | cc-pVTZ (492), fc | def2-universal-jkfit | +104 | +171 | +275 | — | |
+| | | cc-pvtz-jkfit | +62.6 | +127 | +189 | — | |
+
+ΔE in µHa and max |Δg| in µHa/Bohr, f64 RI-J, fitted minus four-centre. The
+RI-MP2 fit error is PySCF DF-MP2 minus conventional MP2 at the same orbitals
+(energy, and in parentheses the largest gradient component); ferric's
+four-centre RI-MP2 matches PySCF DF-MP2 to 6e-8 Ha on both systems. The
+matched set halves the total shift relative to def2-universal-jkfit and stays
+below the fit error; both shifts are positive, so they add: on propane/cc-pVTZ
+the deviation from conventional MP2 grows from 91 to 155 µHa. The CLI's
+default f32 RI-J storage moves the fitted octane energy by 2.7 µHa (cc-pVDZ)
+and 3.9 µHa (cc-pVTZ), toward the four-centre value. On butane/cc-pVDZ the
+default moves `rimp2`, `scs-mp2`, `att-rimp2`, `laplace-sos-mp2` and
+`oo-rimp2` alike, by +30 to +32 µHa.
+
+An unknown mode, `jk_auxbasis` with `"exact"`, or a `k_builder` the mode would
+override is an error (so is any `k_builder` on `rs-mp2-rpa`'s RI-JK default, in the CLI as in Python). A
+`jk_auxbasis` whose name lacks "jkfit" draws a warning. `oo-rimp2` accepts
+`"exact"` and `"rijk"`: orbital optimisation rebuilds J/K at every orbital step
+on the reference's own route, so under `"rijk"` its HF energy, orbital steps
+and analytic gradient all use the RI-JK fit; `"rijcosx"` is refused (COSX
+exchange has no OO route). The unrestricted OO-RI-MP2 of an open-shell
+molecule follows an RI-JK reference the same way, per spin. In the CLI a fitted
 reference cannot be combined with `[scf] df_increments` (an exact-J/K scheme)
 or an explicit `df_guess = true`, and it skips the default DF-guess
 pre-stage. At aug-cc-pVTZ
@@ -57,19 +171,19 @@ PySCF DF-MP2 (frozen core, `aug-cc-pvXz-ri` for MP2) on the S66 water dimer:
 | Basis | JK aux | ΔE_total(dimer) | ΔIE (CP) |
 |---|---|---|---|
 | aug-cc-pVDZ | def2-universal-jkfit | +98 µHa | +0.0059 kcal/mol |
-| aug-cc-pVDZ | aug-cc-pvdz-jkfit (not bundled) | +58 µHa | +0.0001 kcal/mol |
+| aug-cc-pVDZ | aug-cc-pvdz-jkfit | +58 µHa | +0.0001 kcal/mol |
 | aug-cc-pVTZ | def2-universal-jkfit | +69 µHa | +0.0043 kcal/mol |
 | aug-cc-pVTZ | cc-pvtz-jkfit | +78 µHa | +0.0026 kcal/mol |
-| aug-cc-pVTZ | aug-cc-pvtz-jkfit (not bundled) | +63 µHa | <0.00001 kcal/mol |
+| aug-cc-pVTZ | aug-cc-pvtz-jkfit | +63 µHa | <0.00001 kcal/mol |
 
 **Run it.** `method.kind = "rimp2"` (`examples/water-rimp2.toml`,
 `examples/water-rimp2-frozen-core.toml`); Python `ferric.run_rimp2(mol, bs, aux)`.
 
-**Accuracy.** Proven. RI-MP2 is size-extensive to **2e-12 Ha** for a
+**Accuracy.** Proven. RI-MP2 is size-extensive to 2e-12 Ha for a
 well-separated dimer against twice the monomer
 (`ferric-mp2/tests/rimp2_size_extensivity.rs`, which asserts 1e-7).
 
-**Knobs.** `frozen_core` defaults to **0** (all electrons correlated). Several
+**Knobs.** `frozen_core` defaults to 0 (all electrons correlated). Several
 published parameterizations below assume frozen core, so set it when you use
 them.
 
@@ -89,25 +203,51 @@ replaced by a short-range one. Two forms are implemented:
 **Why.** MP2's error for non-covalent interactions has two parts that partly
 cancel in small basis sets: basis-set superposition error, and an error in the
 long-range part of the correlation energy. Attenuation removes the long-range
-part. That also means attenuated MP2 has **no long-range dispersion at all**:
+part, so attenuated MP2 has no long-range dispersion:
 its asymptotic \\( C_6 \\) is zero. The method works in the basis and on the
 systems it was fitted for; MP2-V (below) adds long-range dispersion back
 through VV10.
 
-**Parameterization.** The attenuation parameters are **fitted**, not derived,
-and each fit belongs to one basis. The aug-cc-pVTZ sets that ferric ships as
-defaults were fitted on S66 **without counterpoise and with frozen core**
+**Parameterization.** The attenuation parameters are fitted, and each fit belongs to one basis. The aug-cc-pVTZ sets that ferric ships as
+defaults were fitted on S66 without counterpoise and with frozen core
 (stated in `crates/ferric-mp2/src/scs.rs`):
 
 | Variant | Parameters | Basis of the fit | Source |
 |---|---|---|---|
 | erfc | ω; ferric's default is 0.420 Å⁻¹, recorded in the code as the dissertation's erfc optimum | aug-cc-pVDZ in the 2012 paper | Goldey & Head-Gordon 2012 |
-| terfc | one cutoff \\( r_0 \\) | aug-cc-pVTZ | Goldey, Dutoi & Head-Gordon 2013 |
+| terfc | one cutoff \\( r_0 \\) per basis set (table below); omitted `att_r0` / `r0` takes the tabulated value | S66-trained, no counterpoise, per basis | Goldey & Head-Gordon, Chem. Phys. Lett. 608, 249 (2014); dissertation Tables 6.2 and 6.4 |
 | SCS-MP2(2terfc) | \\( r_0(1) \\) = 0.75 Å, \\( r_0(2) \\) = 1.05 Å, c<sub>OS</sub> = 1.27, c<sub>SS</sub> = 4.05 | aug-cc-pVTZ, no counterpoise, frozen core | Goldey & Head-Gordon 2014 |
 | MP2-V | \\( r_0 \\) = 1.00 Å, b = 11.0, C = 0.0089, terfc | aug-cc-pVTZ, no counterpoise, frozen core | Goldey, Belzunces & Head-Gordon 2015 |
 
 Running a fitted variant in another basis, with counterpoise, or with
 `frozen_core = 0` (the default) is extrapolation outside the fit.
+
+**Default terfc \\( r_0 \\) by basis.** With `att_operator = "terfc"` and no
+`att_r0` (Python `run_terfc_rimp2` without `r0`), the run uses the S66-optimal
+\\( r_0 \\) of its basis set and prints one line naming the value and its
+source. An explicit `att_r0` / `r0` always wins. A basis not in the table is
+an error that asks for an explicit \\( r_0 \\); there is no fallback value.
+Names resolve through the basis registry, so `6-31G(d)` and `6-31G*` hit the
+same row. The table lives in `crates/ferric-mp2/src/terfc_r0.rs` (the calendar
+sets of the paper are not bundled and have no row).
+
+| Basis | \\( r_0 \\) (Å) | Basis | \\( r_0 \\) (Å) |
+|---|---|---|---|
+| cc-pVDZ | 1.55 | 6-31G* | 1.75 |
+| aug-cc-pVDZ | 1.05 | 6-31+G* | 1.45 |
+| cc-pVTZ | 1.50 | 6-31++G** | 1.35 |
+| aug-cc-pVTZ | 1.35 | 6-311++G** | 1.35 |
+| cc-pVQZ | 1.55 | def2-SVPD | 0.75 |
+| aug-cc-pVQZ | 1.50 | def2-TZVPD | 1.30 |
+| | | def2-TZVPPD | 1.35 |
+
+SCS-MP2(2terfc) is a four-parameter model fitted in aug-cc-pVTZ only, so its
+defaults (\\( r_0(1) \\) = 0.75 Å, \\( r_0(2) \\) = 1.05 Å, c<sub>OS</sub> = 1.27,
+c<sub>SS</sub> = 4.05) apply to aug-cc-pVTZ alone. In any other basis
+`scs-mp2-2terfc` / `run_scs_mp2_2terfc` is an error unless `r0_bonded` and
+`r0_nonbonded` are set; c<sub>OS</sub> and c<sub>SS</sub> are also aTZ-fit values
+and keep those defaults only with a printed note. The erfc \\( \\omega \\) and
+MP2-V defaults are not basis-aware.
 
 **Run it.**
 
@@ -122,6 +262,20 @@ Running a fitted variant in another basis, with counterpoise, or with
 ω is in Å⁻¹ in the CLI and Python and in Bohr⁻¹ in the Rust API. The SCS-MP2
 defaults are Grimme's c<sub>OS</sub> = 1.2, c<sub>SS</sub> = 0.333.
 
+**Gradients.** `att-rimp2` has an analytic gradient with both operators, so
+`task = "optimize"` and `"frequencies"` work, as do Python
+`run_optimize(method="att-rimp2")` and `run_frequencies(method="att-rimp2")`.
+Both run on an RHF or a UHF reference. terfc is `[mp2] att_operator =
+"terfc"` (Python `att_operator="terfc"` with `r0=` in Å).
+`scs-mp2-2terfc` has an analytic gradient too, on an RHF or a UHF: the two
+terfc terms share one Z-vector. Python takes `method="scs-mp2-2terfc"` with
+`r0_bonded=`, `r0_nonbonded=` (Å), `c_os=` and `c_ss=`. The terf and terfc
+derivative integrals come from the interpolation tables, so a terfc gradient
+needs `FERRIC_TERF_TABLE_DIR` too. `mp2-v` has no gradient. Derivations:
+`book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-attenuated-erfc-ri-mp2` (erfc), §9.5 (terfc), §9.6
+(SCS-MP2(2terfc)), §15.1 (open-shell erfc), §15.2 (open-shell terfc and
+SCS-MP2(2terfc)).
+
 **Accuracy.** `att-rimp2`, `scs-mp2` and `scs-mp2-2terfc` are Proven (the erfc
 energy is pinned against PySCF/libcint in
 `testdata/reference/h2o_cc-pvdz_attenuated-rimp2-erfc0p420.json`). `mp2-v`'s
@@ -131,9 +285,15 @@ parameterization is unbenchmarked: there is no published MP2-V total energy to
 compare with, only an aug-cc-pVTZ S66 subset run (n=5, H-bonded/mixed, S66x8 geometry, no CP-anchored reference), and ferric evaluates the VV10 term on the converged HF
 density (the post-HF variant) on its own 50×50 grid rather than SG-1. Read the header of `examples/water-mp2v.toml` before quoting a number.
 
-**Robust fitting.** When the RI metric differs from the operator in the
-integrals, as it does for attenuated operators, robust (Dunlap) density fitting
-is required, not optional.
+**Fitting metric.** Each attenuated energy fits its integrals in the metric
+of the same operator, \\( (P|\hat w|Q) \\), so the fit is variational for
+that operator. Robust (Dunlap) fitting is required only when the metric
+operator differs from the integral operator.
+
+**The range split is not additive.** MP2 is quadratic in the integrals, so
+the erfc and erf energies at the same ω do not sum to the Coulomb MP2 energy;
+the difference is the short-range × long-range cross term. RS-MP2 + LR-RPA
+(below) is built on it.
 
 ## RS-MP2 + LR-RPA
 
@@ -147,6 +307,16 @@ by a fitted dispersion term. Two formulations:
 **Run it.** `method.kind = "rs-mp2-rpa"` (`examples/water-rs-mp2-rpa.toml`,
 `[mp2] formulation`); Python `run_rs_mp2_rpa(..., omega=0.420, formulation="delta-lr")`.
 
+**Scanning ω.** `omega_scan` and `formulations` run several points in one job
+(`examples/water-rs-mp2-rpa-scan.toml`): the SCF and the ω-independent
+Coulomb stage (MP2 spin components, and for `coupled-rings` the Coulomb dRPA)
+run once, and each ω adds only its erf and erfc intermediates, shared between
+the two formulations. Each (ω, formulation) result equals a separate
+single-ω run bit for bit, and peak memory does not grow with the number of
+points. Python takes lists: `run_rs_mp2_rpa(..., omega=[0.2, 0.42, 0.673],
+formulation=["delta-lr", "coupled-rings"])` returns a list of results,
+ω-major.
+
 **Accuracy.** Smoke. The ω→0 and ω→∞ limits reduce exactly to MP2 and to
 MP2 + dRPA; numbers at production ω are not established on new systems.
 
@@ -158,32 +328,72 @@ orbital DIIS, Cayley rotations and backtracking. Proven (narrow): the energy
 matches an independent numpy OO-RI-MP2 to 7.5e-13 Ha (H2O, NH3, UHF CH3 at
 cc-pVDZ), and the closed-shell analytic gradient matches a finite difference of
 its own energy to 8e-9 Ha/Bohr. ORCA 6.1.1's OO-RI-MP2 stops 3.7e-8 to
-7.0e-8 Ha above the same minimum, so it is only a loose cross-check.
+7.0e-8 Ha above the same minimum, so it is only a loose cross-check. On an
+RI-JK reference (`scf_jk = "rijk"`) the orbital steps, the HF energy and the
+gradient all use the reference's fit: the gradient matches a finite
+difference of the fitted energy to 1.2e-8 Ha/Bohr (H2O / STO-3G), and at the
+end of a water optimization the analytic gradient matches the fitted
+energy's finite difference to the stencil's h² error (3.1e-7 at h = 1e-3,
+7.7e-8 at h = 5e-4) while missing the four-centre energy's by 2.0e-5.
 
 **MP3** (`mp3`, `examples/water-mp3.toml`, `run_mp3`): spin-orbital
 third-order Møller–Plesset through the `einsum!` framework. Proven.
+
+## OP-MP3
+
+**OP-MP3, SOP-MP3 and SSD-OPMP3** (`opmp3`, `examples/oh-opmp3-pbe0.toml`,
+`run_opmp3`): the orbital-partitioned Padé resummation of MP3 of Bystrom,
+Berkelbach and Hait (arXiv:2609.25330). The second- and third-order pair
+energies are collected into occupied-orbital matrices W⁽²⁾ and W⁽³⁾, split into
+same-spin and opposite-spin channels, and resummed as
+Tr W⁽²⁾(W⁽²⁾ − xW⁽³⁾)⁻¹W⁽²⁾. SSD-OPMP3 damps the same-spin third order by the
+`x_ss` the paper prints for each reference (HF 0, PBE0 0.5, PBE 0.7, r²SCAN
+0.6, …). The reference is RHF/ROHF or RKS/ROKS; the perturbation theory is
+built on the HF Fock operator of its density, with semicanonical orbitals and
+the non-Brillouin singles energy, and every total is E_HF[ρ] + E_NBS + E_c.
+Exact integrals by default (`[opmp3] integrals = "ri"` with `auxbasis`
+otherwise); energy only. Smoke: the resummation reproduces the paper's
+per-reaction W4-17 errors from its own W matrices, and the reference path is
+compared with the paper's Q-Chem values (see the
+[validation page](../reference/validation.md)). Derivation:
+`book/src/10-mp2/11-opmp3.md#opmp3`.
+
+**Local OP-MP3** (`opmp3` with [`[local]`](../reference/input.md#local)
+`scheme = "amplitude-threshold"`, `examples/butane-local-opmp3-pbe0.toml`,
+`run_opmp3(local="amplitude-threshold", eps=...)`): both amplitude orders
+are solved on one amplitude pattern, the local MP2 pattern of the same `eps`
+(λ-Boys occupied orbitals, VV-HV virtuals and the Fock-propagated screen, all
+built against the HF Fock of the reference density), so W⁽²⁾ and W⁽³⁾ come from
+the same truncation and E⁽³⁾ obeys the 2n+1 identity on it. Closed shell,
+RI integrals, energy only. With `eps = 0` it reproduces the canonical OP-MP3
+to round-off for HF and PBE0 references (`crates/ferric-mp2/tests/local_opmp3.rs`).
+The third-order residual is still built densely, so this is not a
+reduced-cost method yet. Derivation:
+`book/src/13-local-mp2/04-local-opmp3.md#local-opmp3`.
 
 ## Laplace formulations
 
 **RI-Laplace MP2** (`laplace-mp2`, `examples/water-laplace-rimp2.toml`,
 `run_laplace_mp2`): MP2 through a Laplace transform of the energy denominator,
-using pseudo-density matrices in the AO basis. The implementation is **dense**.
-It is the correctness reference for that formulation, not a reduced-scaling
-path, and no reduced scaling has been measured.
+using pseudo-density matrices in the AO basis. The implementation is dense.
+It is the correctness reference for that formulation; no reduced scaling has
+been measured.
 
 **Laplace SOS-MP2** (`laplace-sos-mp2`, `examples/water-laplace-sos-mp2.toml`,
 `run_laplace_sos_mp2`): opposite-spin-only MP2 (Jung et al. 2004,
 c<sub>OS</sub> = 1.3 by default) with a minimax Laplace quadrature
-(`n_quad` must be 3, 5 or 7; anything else is an error). There is deliberately
+(`n_quad` must be 3, 5 or 7; anything else is an error). There is
 no c<sub>SS</sub>: dropping the same-spin term is what lets the denominator
 factorize. With c<sub>OS</sub> = 1.0 it reproduces the opposite-spin component
-of RI-MP2 to quadrature error, which is the test anchor. Three formulations
+of RI-MP2 to quadrature error, and it matches PySCF `DFMP2`'s opposite-spin
+energy at the same aux basis (see the validation page). Four formulations
 (`sos_formulation`):
 
-- `mo` (default) and `ao` are both exact and agree to round-off.
+- `mo` (default) and `ao` are both exact and agree to round-off; this is the graded method.
 - `ao-sparse` restricts each Boys-localized orbital's pseudo-density to an AO
-  domain of radius `domain_cutoff_bohr` (required, no default). It is the one
-  approximate variant.
+  domain of radius `domain_cutoff_bohr` (required, no default). Approximate.
+- `local` keeps, for each Boys-localized orbital, the localized virtuals within
+  `domain_cutoff_bohr` (required, no default). Approximate; see below.
 
 **What is measured for `ao-sparse`:**
 
@@ -209,8 +419,50 @@ comment) are measurements, not assertions. The alkane sweep is kept in the proje
 than the molecule. That points to a finite decay length rather than strict
 saturation: no single radius is shown to suffice at every size.
 
-**What is not claimed:** any speedup. The domains discard contributions but
-the tensor algebra is still dense, so there are no timings to report.
+**What is not claimed for `ao-sparse`:** any speedup. The domains discard
+contributions, but every tensor and loop stays `naux·nbas²`, so the cutoff
+changes the energy and not the cost. Measured on C20H42/6-31G at 8 Bohr: 44-47 s
+for the SOS stage and 12.6 GB peak, against 5.4 s and 2.0 GB for `mo`.
+
+**`local`** (`sos_formulation = "local"`, `domain_cutoff_bohr` required) is the
+approximate variant whose radius sets the cost. Boys-localized occupied
+orbitals are paired with VV-HV localized virtuals (the space the amplitude-
+threshold local MP2 uses). Each occupied orbital keeps the virtuals whose
+centroid lies within the radius. That sets the inner dimension of the dense
+`naux × |T| × naux` Gram product per quadrature point (`|T|` instead of
+`nocc·nvir`), and the memory, `naux·|T|`. The aux metric stays the global
+Coulomb metric, so the cost is still cubic. A vacuous radius reproduces `mo`
+to 1e-15 (`sos_local_infinite_cutoff_reproduces_mo`).
+
+Measured on n-alkanes (6-31G / cc-pVDZ-RI, frozen core, `n_quad` = 7,
+2026-11-08, one run per point):
+
+| | C20 | C32 | C40 | C48 |
+|---|---|---|---|---|
+| `local` 8 Bohr, relative error | 9.9e-4 | 1.07e-3 | 1.09e-3 | 1.11e-3 |
+| `local` 10 Bohr, relative error | 1.6e-4 | 1.7e-4 | 1.8e-4 | 1.8e-4 |
+| `local` 8 Bohr, `|T|`/(`nocc·nvir`) | 0.28 | 0.18 | 0.15 | 0.12 |
+| `local` 8 Bohr, SOS stage (s) / peak RSS (GB), 2026-11-21 | 5.2 / 1.1 | 15.9 / 1.0 | 27.4 / 1.5 | 43.3 / 2.1 |
+| `mo`, SOS stage (s) / peak RSS (GB) | 5.4 / 2.0 | 88.9 / 5.9 | 71.6 / 11.0 | killed above 15 GB |
+
+The relative error at a fixed radius stays flat with size, and the per-orbital
+virtual domain is saturated (about 54 virtuals at 8 Bohr from C20 on). `|T|`
+falls relative to `nocc·nvir` roughly as 1/N. The `local` timings
+(2026-11-21) are the mean of two runs that agree to 1%, at 4 threads, with
+the metric whitened by one Cholesky and a triangular solve; the SOS stage
+grows as N^2.5 from C32 to C48 against the basis size (N^2.53 from C40 to
+C48). The C20 entry and the `mo` row are single runs from 2026-11-08 (the
+`mo` C32 run is slower than C40, so at least one of those runs is
+disturbed). At C48 the `mo` path did not fit in 15 GB, while `local` peaked
+at 2.1 GB (process peak, SCF included).
+
+Two constructions were measured to FAIL and are not used. Keeping the virtual
+side in AOs and cutting its index by distance overestimated |E_OS| by 8.6% to
+0.6% at 6 to 10 Bohr (C12H26/6-31G). Cutting any orbital's AO expansion by
+distance breaks occupied/virtual orthogonality, and the resulting charge
+couples through the Coulomb tail. `local` therefore drops only whole
+(occupied, virtual) pairs, and chooses the AO neighbourhood of the integrals by
+Schwarz significance. STO-3G hid the failure.
 
 ## Exact and local MP2
 
@@ -227,7 +479,23 @@ single-threshold local MP2 of Wang, Aldossary, Shi, Liu, Li & Head-Gordon
 (2023), with localized virtuals and per-pair domain-local RI fits. `eps` has
 no default: it is part of the model. `eps = 0` reproduces RI-MP2 exactly; a
 finite `eps` carries a one-sided truncation error that grows faster than
-linearly in `eps`.
+linearly in `eps`. That error need not reach zero as `eps` shrinks: the
+retention test reads integrals only, and an amplitude driven by the Fock
+coupling to kept ones but sitting on a zero integral is never kept. On
+adamantane/6-31G the error stays at 2.4e-7 Ha at `eps = 1e-8` with 99.998% of
+amplitudes kept. The Fock-propagated screen also keeps the amplitudes whose
+one-step Fock-dressed integral exceeds `eps`, which removes this floor. It is on by
+default in the CLI and Python, in core and integral-direct (`[local] fock_screen`,
+default `true`; Python `fock_screen=`), and `false` keeps the plain integral mask.
+The Rust library default (`AmplitudeLmp2Config::fock_screen = None`) uses the
+plain mask. Measured on 6-31G n-alkanes C12–C32, naphthalene, adamantane and the
+ACONF20 conformers, the screen lowers the truncation error at every `eps` tried on
+both paths (by 34–49% at `1e-4`, by 62–99.6% at `1e-6` and below). Integral-direct it
+costs 6–9% more wall time on C24 and C32 and 0.3–0.7 GB more peak memory; in core
+6–10% on C24. At equal error it is cheaper than the plain mask in core (cost
+ratio 0.74–0.98); integral-direct the ratio is 0.85–1.03, just above 1 on C24
+and C32 at `eps = 1e-4`
+(book chapter 13, "On by default in the CLI and Python" and "The in-core path").
 Every printout and run-log record of a local run states `eps` and the
 fraction of amplitudes kept.
 
@@ -253,7 +521,7 @@ target needs more than the 1e-11 floor or the true residual drifted from the
 recursive one. The bound limits solver error
 only, not the truncation error of `eps`.
 
-The exact RI-MP2 reference that measures that error is **opt-in**. It is a
+The exact RI-MP2 reference that measures that error is opt-in. It is a
 full canonical RI-MP2 and forms the global `(naux, nocc·nvir)` tensor, so a
 run with it switched on is not reduced-cost. In the CLI, `[local] reference =
 true` computes it and prints the local error against it; without it the
@@ -272,18 +540,27 @@ domains (`aux_radius`, `virt_radius`), and truncation of each orbital's AO
 support (`ao_tail`). With every map at its trivial setting it reproduces the
 global 3-index path and canonical RI-MP2 (`tests/lmp2_direct.rs`).
 
-**What is measured for the integral-direct local MP2** (n-alkanes C20 → C48, 6-31G with
-cc-pVDZ-RI, a quiet machine, 2026-09-07; benchmark
-`bench_direct_alkane_series` in `crates/ferric-mp2/tests/lmp2_direct.rs`).
-The run froze the carbon cores (`frozen_core` = number of carbons) and
-calibrated the pair gate (0.7 Coulomb, 0.02 erfc with ω = 1.0) at
-`eps = 1e-4`; the defaults are all-electron with no pair gate. Timings are the correlation
-stage (assembly + solve) and exclude the canonical reference:
+**What is measured for the integral-direct local MP2** (n-alkanes C20,
+C32 and C48, 6-31G with cc-pVDZ-RI, 2026-11-18, CLI `rimp2` and
+`att-rimp2` with `[local] integral_direct = true`). The runs froze the
+carbon cores (`frozen_core` = number of carbons) and calibrated the pair
+gate (0.7 Coulomb, 0.02 erfc with ω = 1.0); every other map was at its
+default (`virt_radius` 20, `ao_tail` 1e-4, Fock screen κ = 1, λ-Boys
+λ = 10). The defaults are all-electron with no pair gate. Timings are the
+correlation stage (assembly + solve) and exclude the canonical reference.
+They also exclude the VV-HV virtual-space build (`t_spaces_s` in the JSON
+log and the Python `local` dict), a dense O(N³) step whose cost the fitted
+exponents below do not cover:
 
-- Correlation-stage cost grows as about N<sup>1.24</sup> with the erfc
-  kernel and N<sup>1.4</sup> with Coulomb, fitted to the last three sizes.
-- It is at about parity with canonical RI-MP2 at C20 (about 1.1× slower)
-  and about 6× faster at C32 (5.7–6.3×).
+- Correlation-stage cost grows as about N<sup>1.45</sup> with Coulomb and
+  N<sup>1.35</sup> with erfc at `eps = 1e-4`, and N<sup>1.61</sup> and
+  N<sup>1.55</sup> at `eps = 1e-3`, fitted to the three sizes.
+- The slope falls from C20→C32 to C32→C48 (Coulomb, `eps = 1e-4`: 1.56 then
+  1.31), so the large-N exponent is not settled.
+- The Fock screen and λ-Boys together cost 0–10% of the correlation stage
+  at each size, with no trend in N. One repeat per point resolves the
+  exponent to about ±0.1, and the exponents with and without them do not
+  differ by more than that.
 
 **How to read it (provisional):** sub-quadratic on this series, but the fit
 has three points on one family of molecules in one basis. It is not shown
@@ -309,6 +586,97 @@ for terfc (n-alkanes, 6-31G with cc-pVDZ-RI, `eps = 5e-5`, default maps, plain S
 At `1e-5` the cut skips 55% of the shell triples at C12 and 67% at C16 (51% and 63% at `1e-6`). The pair gate
 (`gate_cal = 0.7`) leaves the C12 result unchanged. At `1e-6` the energy changes by
 1e-10 (C12 linked) to 1.8e-9 (C16 NCP).
+
+### Local VV-HV build
+
+Both local MP2 paths build the VV-HV localized virtuals the same way by
+default (`[local] virtual_space = "dense"`): a dense O(N³) construction.
+`virtual_space = "local"` (Python `virtual_space="local"`) selects an opt-in
+threshold-sparse build of the same construction (`ferric_mp2::vvhv_local`).
+Atom-group block-sparse products replace each dense global step:
+
+- domain-local solves for the projected minimal functions;
+- the occupied projector from the block-sparse density;
+- a purified spectral projector for the valence space;
+- heap-ordered pivoted Cholesky and Newton-Schulz Löwdin;
+- per-atom Fock blocks and screened Boys;
+- a final re-projection and re-orthonormalization.
+
+Thresholds (see [`[local]`](../reference/input.md#local)):
+
+- `virtual_tau` (span-critical steps): default 1e-9;
+- `virtual_tau_loose` (basis-choice steps): default 1e-6;
+- `virtual_solve_radius`: default 30 Bohr;
+- `virtual_boys_tau`: default 1e-8.
+
+Every run prints one line that names the build, gives its thresholds and
+sparsity counters (local build only), and states what share of the
+correlation time went into building the localized spaces. The run log and
+the Python `local` dict carry the same fields (`virtual_space`,
+`virtual_space_log`, `virtual_space_local`).
+
+**Exactness.** With every threshold at zero, one global projected-minimal
+solve (no `virtual_solve_radius` cut) and the dense build's valence starting
+basis, the local build reproduces the dense build. The dense valence start is
+a library-only option; the CLI and Python always use the local start. Measured on
+water, C4 and C8 (6-31G):
+
+- the same hard-virtual pivot sequence;
+- columns within 1e-12;
+- energies within 1e-14 at `eps` 0 and 1e-4.
+
+Each stage has a mutation test that breaks this. The local valence start
+(purification) reaches the same Boys maximum, but its columns differ from
+the dense build's by up to 7e-10, the imprint of Boys's convergence
+tolerance. That changes energies by 1e-13.
+
+<!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 --> **Defaults (n-alkanes C8–C32, 6-31G/cc-pVDZ-RI, `eps` = 1e-4, production
+maps).** The local build moves the energy by 4e-13 (C8), 3e-10 (C16),
+1.6e-7 (C24) and 5.8e-8 (C32) Ha against the dense build. That is at most
+1.6e-5 of the `eps` truncation error itself (2.5e-3 to 1.4e-2 Ha). The
+construction check stays at 7e-10 or below.
+
+`virtual_tau` = 1e-8 fails the 1e-8 construction check at C16 and C24
+(1.3e-7 and 2.2e-7), which is why the default is 1e-9. Most of the C24/C32
+shift comes from the 30 Bohr solve radius; with a global solve it is 4e-11
+at C24.
+
+<!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 --> **What it costs, measured** (2026-11-06; integral-direct local MP2 on
+n-alkanes, 6-31G/cc-pVDZ-RI, Coulomb, `eps` = 1e-3, production maps, carbon
+cores frozen; benchmark `bench_scaling_decisive` with
+`FERRIC_LMP2_VIRTUAL_SPACE`; release build, OPENBLAS_NUM_THREADS=1,
+RAYON_NUM_THREADS=6; 3 repeats, median [range]; each repeat started only
+with at most 1.5 busy cores on the box):
+
+| C | build | t_spaces s | t_loc s | t_corr s | peak RSS GiB |
+|---|---|---|---|---|---|
+| 32 | dense | 0.35 [0.34–0.36] | 0.19 | 9.8 [9.6–10.5] | 3.2 |
+| 32 | local | 0.74 [0.72–0.83] | 0.20 | 9.6 [9.6–10.0] | 3.2 |
+| 48 | dense | 1.36 [1.34–1.36] | 0.71 | 15.9 [15.5–16.6] | 3.7 |
+| 48 | local | 1.78 [1.73–1.81] | 0.71 | 16.2 [15.7–16.4] | 3.6 |
+| 64 | dense | 3.13 [3.10–3.14] | 1.63 | 23.5 [23.4–23.6] | 4.2 |
+| 64 | local | 2.89 [2.88–2.97] | 1.68 | 23.8 [23.2–24.4] | 4.3 |
+| 96 | dense | 9.58 [9.53–9.74] | 5.16 | 44.5 [44.0–44.6] | 5.3 |
+| 96 | local | 5.58 [5.57–5.62] | 4.95 | 40.1 [39.9–40.2] | 4.7 |
+
+`t_spaces` is the VV-HV build and its check; `t_loc` (the occupied Boys
+and the localized Fock blocks) does not change with the build. The two
+builds' energies agree to within 4.1e-9 Ha. The local build multiplies its block
+products over 6 rayon threads, while the dense build's BLAS calls run on
+one thread here: compare the single-thread figures below before reading
+these wall times as a per-core speed-up. With RAYON_NUM_THREADS=1 (one
+run each), `t_spaces` is 3.36 s (dense) against 3.54 s (local) at C64, and
+10.3 s against 6.5 s at C96.
+
+Counters of the local build, C32 → C96:
+
+- Newton-Schulz (9/10/2), purification (12-14) and Boys (9 sweeps)
+  iteration counts are flat.
+- Kept blocks per atom group are still rising (4.7k, 5.9k, 6.6k, 7.4k).
+- The C_v block-row fill only starts to fall (mean 1.00, 0.99, 0.89, 0.69).
+
+So these sizes are at the onset of sparsity, not past it. They support no
+scaling order.
 
 **Local MP2 without `integral_direct` makes no scaling claim.** Its assembly
 is pair-local (no dense J is formed), but it still builds the global 3-index

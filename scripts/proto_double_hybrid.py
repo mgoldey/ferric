@@ -8,9 +8,9 @@ B2PLYP (Grimme, JCP 124, 034108, 2006):
     SCF: 0.53 HF + 0.47 B88 exchange, 0.73 LYP correlation
     Post-SCF: 0.27 * E_MP2(total)
 
-DSD-PBEP86 (Kozuch & Martin, PCCP 13, 20104, 2011):
-    SCF: 0.69 HF + 0.31 PBE exchange, 0.44 P86 correlation
-    Post-SCF: SCS-MP2 with c_os=0.56, c_ss=0.29
+DSD-PBEP86, no dispersion (Kozuch & Martin, J. Comput. Chem. 34, 2327, 2013):
+    SCF: 0.72 HF + 0.28 PBE exchange, 0.44 P86 correlation
+    Post-SCF: SCS-MP2 with c_os=0.51, c_ss=0.36
 """
 
 import os
@@ -108,7 +108,7 @@ print("=" * 72)
 mol2 = water_pyscf()
 
 mf2 = dft.RKS(mol2)
-mf2.xc = "0.69*HF + 0.31*PBE, 0.44*P86"
+mf2.xc = "0.72*HF + 0.28*PBE, 0.44*P86"
 mf2.conv_tol = 1e-11
 e_ks2 = mf2.kernel()
 print(f"  E_KS (DSD-PBEP86 SCF)   = {e_ks2:.10f} Ha")
@@ -122,7 +122,7 @@ print(f"  E_OS                    = {e_os2:.10f} Ha")
 print(f"  E_SS                    = {e_ss2:.10f} Ha")
 assert abs(e_os2 + e_ss2 - pt2.e_corr) < 1e-8
 
-c_os_dsd, c_ss_dsd = 0.56, 0.29
+c_os_dsd, c_ss_dsd = 0.51, 0.36
 e_corr_dsd = c_os_dsd * e_os2 + c_ss_dsd * e_ss2
 e_dsd = e_ks2 + e_corr_dsd
 print(f"\n  DSD-PBEP86 = E_KS + {c_os_dsd}*E_OS + {c_ss_dsd}*E_SS")
@@ -144,7 +144,7 @@ The double-hybrid pattern exists in ferric via wB97X-L-V
 
 1. FUNCTIONAL DEFINITION (libxc.rs friendly_to_libxc):
    - "B2PLYP" -> HYB_GGA_XC_B2PLYP or manual "0.53 HF + 0.47 B88, 0.73 LYP"
-   - "DSD-PBEP86" -> manual GGA_X_PBE + GGA_C_P86 with b3lyp_mix = 0.69
+   - "DSD-PBEP86" -> manual GGA_X_PBE + GGA_C_P86 with b3lyp_mix = 0.72
 
 2. DOUBLE-HYBRID DRIVER (ferric-mp2/src/double_hybrid.rs):
    - GenericDoubleHybridConfig {{ c_os: f64, c_ss: f64, xc: String }}

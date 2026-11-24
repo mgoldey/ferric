@@ -17,6 +17,24 @@
 #   (build scripts, examples, tests, benches, `cargo run`). Users who
 #   want multi-threaded BLAS for a particular run can override on the
 #   command line: `OPENBLAS_NUM_THREADS=8 cargo run --release ...`.
+#
+# RUST_MIN_STACK:
+#   64 MiB for every thread a cargo-launched process spawns, the test
+#   harness's own threads included (they start before any test code could
+#   call `init_threading`). Threaded OpenBLAS LU (`dgetrf_parallel`) needs
+#   more than 3 MiB of stack and overflows Rust's 2 MiB default; see
+#   ferric_core::blas_threads::THREAD_STACK_BYTES.
+#
+# FERRIC_BLAS_THREADS:
+#   1 for cargo-launched processes (unless exported). The OpenBLAS thread
+#   count is process-global, and the test harness runs tests concurrently: a
+#   serial section of one test raising it (the default is the rayon pool size)
+#   lands under another test's rayon region and breaks that test's
+#   bit-identity-across-thread-counts assertion (seen 2026-11-08 on
+#   oo_rimp2::test_oo_gradient_bit_identical_across_thread_counts, 1 run in 3).
+#   ferric-scf/tests/serial_blas_threads.rs clears it to test the default.
 [env]
 OPENBLAS_NUM_THREADS = "1"
 OMP_NUM_THREADS = "1"
+RUST_MIN_STACK = "67108864"
+FERRIC_BLAS_THREADS = "1"

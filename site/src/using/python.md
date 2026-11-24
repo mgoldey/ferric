@@ -29,7 +29,7 @@ H   0.000000  -0.755453  -0.471161
 bs = ferric.BasisSet.bundled("sto-3g")
 ```
 
-The string is standard XYZ: an atom count on the **first** line, a comment
+The string is standard XYZ: an atom count on the first line, a comment
 line, then one `symbol x y z` line per atom. The count must be the first line,
 so start the string with `"""3`. Starting it with `"""` and a newline gives an
 empty first line, and parsing fails with `bad atom count`. `Molecule.from_xyz(path)`
@@ -140,7 +140,7 @@ and normalisation.
 
 Most drivers take a `BasisSet` object. The drivers that move atoms
 (`run_optimize`, `run_frequencies`, `run_saddle`, `run_irc`, `run_qmmm`,
-`run_optimize_qmmm`) take the basis **name** as a string instead, because they
+`run_optimize_qmmm`) take the basis name as a string instead, because they
 rebuild the basis at every geometry.
 
 ## Ground state
@@ -186,28 +186,88 @@ print(f"B3LYP {dft.total_energy:.10f}")
 ```
 
 `run_dft` is closed-shell only, and its default functional is LDA. It uses
-density fitting for Coulomb by default (`def2-universal-jkfit`); `run_rhf`
-does not. Pass `df_j_aux="exact"` for conventional four-centre Coulomb when you
-compare against an exact-Coulomb code. `dispersion="d3bj"` adds Grimme D3(BJ);
+density fitting by default (`def2-universal-jkfit`); `run_rhf` does not. Every
+functional gets RI-J; a global hybrid also gets RI-K, and a range-separated
+one two RI-K fitters (short- and long-range); a pure functional builds no RI-K.
+Pass `df_j_aux="exact"` for conventional four-centre Coulomb when you
+compare against an exact-Coulomb code. `run_uks`, `run_roks`, `run_optimize` and
+`run_frequencies` with `xc=` take the same default for RKS, UKS and ROKS alike, so a
+geometry run and a single point of the same input use the same J/K. The RI-J tensor is stored as f32 by
+default (half the memory; about 1e-7 Ha per atom of energy shift, see
+[RI-J tensor precision](../methods/scf.md#ri-j-tensor-precision));
+`ri_j_precision="f64"` restores the f64 tensor bit for bit, any other value
+than `"f32"`/`"f64"` raises `ValueError`, and `dft.ri_j_precision` says which
+was used. Drivers with more than one iterative stage (`run_frequencies`,
+`run_cdft`, the MP2 family, GW, TDDFT, ...) spell it `scf_ri_j_precision`.
+The geometry and frequency drivers (`run_optimize`, `run_optimize_uhf`,
+`run_optimize_qmmm`, `run_frequencies`, `run_saddle`, `run_irc`) default to
+the f64 tensor instead, because the f32 energy surface jitters between nearby
+geometries; `scf_ri_j_precision="f32"` there is still honoured, and the
+certificate's `ri-j` entry says which was requested and why.
+The RI-K tensor (hybrids, HF with `df_k_aux`) is a second three-index
+tensor beside RI-J's. `df_j_aux` and `df_k_aux` are independent, so each
+tensor is sized by its own auxiliary basis: RI-K's has
+`naux_K * nbf * (nbf + 1) / 2` elements (`naux_K * nbf**2` in a `[gpu]` mode
+that may build K on the device), RI-J's at most `naux_J * nbf * (nbf + 1) / 2`
+(Schwarz pair screening can drop AO pairs). `BasisSet.n_functions(mol)` gives
+`nbf` and each `naux`. For a global hybrid, `df_k_aux=""` selects exact
+four-centre K and builds no RI-K tensor. While RI-K is active `k_builder` is
+ignored with a warning: `k_builder="direct"` needs `df_k_aux=""`, and
+`"link"` needs `df_j_aux=""` as well, since RI-J replaces the four-centre
+pass LinK builds J and K in. The RI-K tensor is held
+as its packed
+symmetric half; `ri_k_precision="f32"` (opt-in; `scf_ri_k_precision` on
+`run_cdft` and `run_frequencies`) stores it in f32 for another factor of
+two, at a cost described in
+[RI-K tensor storage](../methods/scf.md#ri-k-tensor-storage);
+`dft.ri_k_precision` says which was used.
+`dispersion="d3bj"` adds Grimme D3(BJ);
 the result then carries `e_scf`, `e_dispersion` and their sum in
 `total_energy`. `with_gradient=True` also returns the analytic nuclear gradient
-from `dft.gradient()`. There is no open-shell `run_dft`. Unrestricted
-Kohn–Sham is reachable from Python only inside other drivers:
+from `dft.gradient()`. `run_dft` refuses a molecule with `multiplicity > 1`;
+the open-shell entry points are `run_uks(mol, bs, "pbe")` (unrestricted) and
+`run_roks(mol, bs, "pbe")` (restricted open-shell). Both take the functional
+as a required argument, return the `UhfResult` of `run_uhf` (α and β densities,
+orbital energies, MOs and occupations, `certificate`) and accept
+`with_gradient=True` for the analytic gradient. Their SCF settings are
+`run_dft`'s (RI-J/RI-K through `def2-universal-jkfit`, the production grid,
+`dm0=(D_a, D_b)`); dispersion, COSX, symmetry and `fock_hook` are not offered.
+Energy and certificate equal the CLI (`kind = "ksdft"` on an open-shell
+molecule, `kind = "rohf"` with `[dft] functional`) bit for bit.
+Unrestricted Kohn–Sham is also reachable inside other drivers:
 `run_frequencies(reference="uhf", xc=...)`, `run_u_gw(xc=...)`,
 `run_qmmm(method="uks")` and `run_cdft(functional=...)`.
 
 `run_rhf` also takes implicit solvent (`solvent=78.4` or `solvent="water"`,
-IEF-PCM), point charges and a uniform field. See its docstring
+IEF-PCM), point charges and a uniform field. `run_optimize` and
+`run_optimize_uhf` take the same `solvent` and `pcm_lebedev_order` and follow
+the analytic IEF-PCM gradient; there is no Python COSMO option, and COSMO has
+no gradient. See its docstring
 (`help(ferric.run_rhf)`) for the full SCF knob set, which matches the CLI
 `[scf]` section.
 
+### Naming the convergence keywords
+
+A bare `max_iter`, `energy_conv` or `density_conv` belongs to a driver whose
+method is the SCF itself (`run_rhf`, `run_uhf`, `run_rohf`, `run_dft`,
+`run_ksdft`, `run_qmmm`). Every other driver solves a reference SCF as one stage
+among others (MP2, CC, RPA, GW, TDDFT, orbital optimization, constrained DFT,
+frequencies, geometry optimizers, saddle and IRC searches), so its SCF knobs are
+`scf_max_iter`, `scf_energy_conv` and `scf_density_conv`, with the meaning and
+defaults of `run_rhf`'s. Another stage's iteration knob is stage-named
+(`oo_max_iter`, `max_outer`, `max_steps`, `eigensolver_*`). The bare spellings
+that older releases accepted on `run_cdft`, `run_frequencies` and
+`run_oo_rimp2` (`max_iter` there) still work, warn with a
+`DeprecationWarning`, and raise if combined with the prefixed one. The CLI keeps
+each key in its own section (`[scf]`, `[optimize]`, `[gw]`, `[rpa]`, `[mp2] oo_*`).
+
 ### Check `.converged`, and know what it means
 
-`run_rhf`, `run_uhf`, `run_rohf` and `run_qmmm` **return a result whether or
-not the SCF converged**. A non-converged result is not an error; it is a result
-with `converged = False`, and its energy is a plausible, wrong number.
+`run_rhf`, `run_uhf`, `run_rohf` and `run_qmmm` return a result whether or
+not the SCF converged. A non-converged result has `converged = False`, and its
+energy is a plausible, wrong number.
 `run_dft`, `run_ksdft` and the correlated drivers (MP2, CC, RPA, GW, TDDFT)
-behave differently: they **raise** if their reference SCF does not converge.
+behave differently: they raise if their reference SCF does not converge.
 
 `converged = True` means the SCF reached a stationary point. It does not mean
 the lowest one. The O2 triplet above with `sto-3g` instead of `cc-pvdz` shows
@@ -296,9 +356,20 @@ example `xc="pbe"`); by default it corrects HOMO−2 through LUMO+2. Check
 `gw.outer_converged` and `gw.qp_converged` before using the numbers.
 `run_u_gw` is the open-shell version.
 
-`run_tddft` is closed-shell only. With `functional=...` it includes the
-`(ia|f_xc|jb)` exchange-correlation kernel; meta-GGA, VV10 and range-separated
-functionals are refused because their kernel is not built. With no
+`run_tddft` runs on an RHF/RKS reference for a closed-shell molecule and on a
+UHF/UKS reference for an open-shell one (`reference="auto"`, the default;
+`"restricted"` or `"unrestricted"` force it). An unrestricted run returns
+spin-conserving roots with `result.spin = None`, `result.s2` (`<S^2>` per
+root) and `result.s2_reference`; `spin="triplet"` there is a ValueError.
+`solver="dense"` builds the full A and B
+matrices, `"davidson"` is matrix-free (an unconverged root raises), and
+`"auto"` (default) is dense up to `nocc * nvir = 200` and Davidson above;
+`result.solver` and `result.residuals` report what ran. With `functional=...` it includes the
+`(ia|f_xc|jb)` exchange-correlation kernel; VV10 functionals are refused
+because their kernel is not built. A τ-only meta-GGA
+(SCAN, r2SCAN, TPSS, and hybrids such as TPSSh and M06-2X) defaults to a 150 × 434 grid; `result.grid` reports the
+grid the reference SCF and the kernel shared, and `result.certificate` lists it
+as `response-grid`. With no
 `functional`, it is CIS (`method="tda"`) or TDHF (`method="casida"`). Both
 methods match PySCF `TDA`/`TDDFT` to 1e-3 eV on the systems listed in
 [Capabilities and validation](../reference/validation.md#anchors).
@@ -338,6 +409,95 @@ restrained fit, not the multi-stage, multi-conformer RESP procedure. `esp_at_ato
 potential at each nucleus. `hirshfeld_polarizability` returns per-atom 3×3
 polarizability tensors (Bohr³) and needs an RI basis.
 
+### PDEP-RPA properties and the NPZ bundle
+
+`run_pdep_rpa(..., properties=True)` also computes the property bundle that
+the CLI writes under `[rpa]`, with the TOML key names and defaults: every
+`compute_*` switch is on except `compute_esp_surface`, `c6_source` is `"ts"`
+and an unset `c6_partition` is the source's default (Hirshfeld for `"pdep"`,
+Becke for `"ts"` and `"mbd"`). `export_npz="bundle.npz"` writes the CLI's NPZ
+and implies `properties=True`; `export_eigpot_prefix="p"` writes the leading
+`export_eigpot_count` eigenpotential densities as `p_eigpot_NNN.cube`
+(`cube_spacing`, `cube_margin`, in Bohr).
+
+```python
+r = ferric.run_pdep_rpa(
+    water, bs, aux,                       # closed shell only
+    properties=True,
+    c6_source="pdep",                     # "ts" (default), "pdep" or "mbd"
+    c6_partition="becke",                 # unset: the source's default
+    df_j_aux="def2-universal-jkfit",      # the CLI's reference SCF is RI-JK
+    df_k_aux="def2-universal-jkfit",
+)
+r.alpha_tensor          # (3, 3) molecular static polarizability
+r.alpha_atomic          # (N, 3, 3) per-atom intrinsic Becke polarizability
+r.alpha_ct              # (3, 3) charge-transfer remainder
+r.alpha_atomic_dynamic  # (N, nfreq, 3, 3), with c6_freqs and c6_weights
+r.c6_molecular_iso      # molecular C6, a.u.
+```
+
+The arrays carry their NPZ names: `esp_atoms`, `electric_field`, `dipole`,
+`lowdin_charges`, `hirshfeld_charges`, `mulliken_charges`, `chelpg_charges`,
+`resp_charges`, `alpha_tensor`, `alpha_atomic`, `alpha_ct`,
+`alpha_atomic_dynamic`, `alpha_ct_dynamic` (`c6_source="pdep"` only),
+`c6_iso`, `c6_aniso`, `c6_freqs`, `c6_weights`, `c6_molecular_iso`,
+`c6_partition`, `c6_source`, `esp_surface` and `esp_points`, plus
+`density_matrix`, `mo_coeffs`, `orbital_energies`, `orbital_centers`,
+`orbital_spreads` and `density_second_moment`. An array that was not requested
+is `None`. `alpha_atomic` is the charge-transfer-free intrinsic polarizability,
+so `alpha_atomic.sum(0)` differs from `alpha_tensor` by `alpha_ct`; `c6_iso`
+and `c6_aniso` are per-atom-pair tensors that depend on the partition, and the
+partition-independent molecular value is `c6_molecular_iso`.
+
+For the same settings the arrays are bitwise the CLI's NPZ arrays, because
+both call one library function. "Same settings" includes the reference SCF:
+the CLI's `pdep-rpa` reference uses RI-JK on `def2-universal-jkfit` and a
+DF-guess pre-stage, while `run_pdep_rpa` uses exact J/K and no pre-stage unless
+`df_j_aux=` / `df_k_aux=` are passed, so a default Python run and a default CLI
+run differ at the SCF convergence level (about 5e-14 with tight thresholds).
+
+A property that fails is `None`, listed in `r.property_gaps`, and raised as a
+`RuntimeWarning` (the same text the CLI prints, e.g. a skipped TS C6). With
+`export_npz=` the file is written first, then the call raises `RuntimeError`
+unless `allow_partial_npz=True`, the Python form of the CLI's nonzero exit. An
+unknown `c6_source` or `c6_partition` raises `ValueError` before the SCF, and
+so does a `compute_*` or `c6_*` key passed without `properties=True` or
+`export_npz=`.
+
+### Orbitals, density and cube files
+
+`eval_ao_on_points`, `eval_density_on_points` and `eval_mo_on_points` evaluate
+basis functions, the total electron density and restricted MOs at an (N, 3)
+array of points. **Points and cube grids are in Bohr**, like `esp_at_points`.
+`eval_ao_on_points` returns an (N, nbasis) array (PySCF `eval_gto` layout);
+`eval_mo_on_points` takes 0-based `mo_indices` into `mo_coefficients` and
+returns (N, len(mo_indices)). Orbital signs are the SCF's arbitrary phase.
+`write_cube` writes the density (e/Bohr³) or one MO (`what="mo"`, `mo_index=`)
+on an axis-aligned grid, from the atoms' bounding box plus `padding` unless
+`origin` and `shape` are given, and returns the `(origin, shape)` used.
+
+<!-- doctest -->
+```python
+import numpy as np
+
+rhf = ferric.run_rhf(water, bs)
+pts = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]])    # Bohr
+print(np.round(ferric.eval_density_on_points(water, bs, rhf, pts), 4))
+
+origin, shape = ferric.write_cube("homo.cube", water, bs, rhf,
+                                  what="mo", mo_index=4, spacing=0.3)
+print(shape)
+```
+
+```text
+[10.2392  0.8103]
+[28, 38, 32]
+```
+
+`ferric.molden.write(path, mol, bs, result)` writes the orbitals of an RHF,
+KS, UHF or ROHF result as a Molden file for Avogadro, Jmol, Multiwfn and
+other viewers; see [Export](export.md#molden-files).
+
 For NPZ export of ML-ready features (MO coefficients, PDEP eigenvectors, ESP,
 charges, polarizabilities, C6 coefficients) in one run, use the CLI's
 `[rpa] export_npz` section; see [Input file (TOML)](../reference/input.md).
@@ -359,10 +519,181 @@ ESP values) come back as Python lists; wrap them in `np.asarray` if you need
 arrays. `run_drpa`, `run_linlccd` and `tune_omega` return plain `dict`s, and
 `run_drpa_scan` returns a list of them.
 
+Most results carry a `.certificate`: the grade of the method, the build, the
+approximations in effect and warnings. It holds a measured error only for a run
+inside the settings the validation test ran; see
+[Certificates](../reference/validation.md#certificates).
+
 AO-basis matrices follow libint2's basis-function conventions, which are not
-PySCF's. MEASURED on CO/cc-pVDZ: total and orbital energies agree with
+PySCF's. Measured on CO/cc-pVDZ: total and orbital energies agree with
 PySCF to 3e-12 and 8e-9 Ha, and the two AO density matrices differ element by
 element by up to 1.5. Compare invariant quantities, not raw AO matrices.
+
+## Building blocks
+
+`ferric.AoIntegrals(mol, basis_set)` exposes the integrals and J/K builds the
+drivers use, as numpy arrays, so a method can be written in numpy the way it
+is on top of PySCF's `get_hcore` / `get_jk` / `ao2mo`. Bohr and Hartree
+throughout; AOs are in ferric's shell order (`shell_offsets()`).
+
+| Block | Returns |
+|---|---|
+| `overlap()`, `kinetic()`, `nuclear()`, `ecp()`, `hcore()`, `dipole(origin)` | (nao, nao); `hcore()` includes the ECP; `dipole` is (3, nao, nao) |
+| `jk(D)` | (J, K) of the TOTAL density, direct and Schwarz-screened: the RHF Fock matrix is `hcore() + J - 0.5 * K` |
+| `df_jk(aux)` | a `DfJk` holding the RI-J/RI-K fit, reused for every `.jk(D)` |
+| `eri()` | dense (μν\|λσ), chemists' order, refused above `max_gb` (default 2 GiB) |
+| `eri3(aux)`, `eri2(aux)` | raw (P\|μν) as (naux, nao, nao) and the metric (P\|Q) |
+| `df_mo(aux, C1, C2)` | fitted B^P_pq, (naux, k1, k2), with (pq\|rs) ≈ Σ_P B^P_pq B^P_rs (the RI-MP2 fit) |
+| `ao2mo(C1, C2, C3, C4)` | exact (pq\|rs), integral-direct, never holding the nao⁴ AO tensor |
+| `grad_*`, `hess_*`, `cphf`, `xc_functional` | nuclear-derivative, response and XC pieces |
+| `ferric.einsum(spec, a, b, ...)` | the contraction engine of ferric's correlation codes ([grammar](../reference/einsum.md)) |
+
+Every two-electron method takes `operator="coulomb" | "erf" | "erfc"` with
+`omega` in Bohr⁻¹. Orbitals come from the result objects
+(`mo_coefficients()`, `orbital_energies()`, `density()`) or from a numpy SCF on
+the blocks.
+
+<!-- doctest -->
+```python
+ints = ferric.AoIntegrals(water, bs)
+J, K = ints.jk(D)
+F = ints.hcore() + J - 0.5 * K
+E = 0.5 * np.sum(D * (ints.hcore() + F)) + ints.nuclear_repulsion()
+print(abs(E - rhf.energy) < 1e-8)
+B = ints.df_mo(aux, C[:, :5], C[:, 5:])    # (naux, nocc, nvir)
+print(B.shape)
+```
+
+```text
+True
+(84, 5, 2)
+```
+
+Three methods written this way are in `examples/python/` and are tested
+against the Rust drivers: `rhf_from_blocks.py` (DIIS RHF from `hcore()` and
+`jk()`, equal to `run_rhf` and PySCF to 1e-8 Ha), `rimp2_from_blocks.py`
+(RI-MP2 from `df_mo`, equal to `run_rimp2` and PySCF `DFMP2` to 1e-8 Ha) and
+`cis_from_blocks.py` (singlet CIS from `df_mo` or `ao2mo`, equal to
+`run_tddft(method="tda")` and PySCF `TDA`).
+
+### Spin-free X2C core Hamiltonian
+
+`ints.hcore_x2c(c=None)` is the spin-free X2C-1e core Hamiltonian, the
+matrix that replaces `T + V`. It is built in the uncontracted basis (one shell
+per unique exponent and angular momentum) and contracted back, with the
+settings of PySCF `scf.RHF(mol).sfx2c1e()` (`approx='1e'`,
+`xuncontract=True`); `c` defaults to PySCF's 137.03599967994. Only the core
+Hamiltonian is transformed: the two-electron interaction and property
+operators stay nonrelativistic. A basis with an ECP atom raises `ValueError`,
+since the ECP already carries the core's scalar relativity.
+
+A scalar-relativistic SCF is `relativistic="x2c1e"` on `run_rhf`, `run_uhf`,
+`run_rohf`, `run_dft`/`run_ksdft`, `run_uks` and `run_roks`: the driver uses
+this matrix as its core Hamiltonian, records `x2c1e` among the certificate's
+approximations and grades the run Ungraded. It is for energies only:
+`with_gradient=True`, and `scf_relativistic=` on `run_optimize` and
+`run_frequencies`, raise `ValueError`, and post-SCF methods that rebuild the
+nonrelativistic core Hamiltonian (orbital-optimized MP2) refuse an X2C
+reference. The same SCF runs from the block through a constant Fock hook,
+which must return `Tr[D dH]` as its energy (not half of it):
+
+<!-- doctest -->
+```python
+neon = ferric.Molecule.from_xyz_string("1\n\nNe 0 0 0\n")
+dz = ferric.BasisSet.bundled("cc-pvdz")
+ints_ne = ferric.AoIntegrals(neon, dz)
+dh = ints_ne.hcore_x2c() - ints_ne.hcore()
+nr = ferric.run_rhf(neon, dz)
+rel = ferric.run_rhf(neon, dz, fock_hook=lambda d: (float(np.sum(d * dh)), dh))
+drv = ferric.run_rhf(neon, dz, relativistic="x2c1e")
+print(f"{rel.energy - nr.energy:.5f} {drv.energy - nr.energy:.5f}")
+```
+
+```text
+-0.12694 -0.12694
+```
+
+PySCF gives −0.1269416 Ha for the same shift. Validation is in the
+[Python entry points](../reference/validation.md#python-entry-points) table.
+
+### Fock hooks and starting densities
+
+`fock_hook=hook` on `run_rhf` and `run_dft` adds one density-dependent term:
+`hook(D)` receives the total density every iteration and returns `(E, V)`.
+`run_uhf` and `run_rohf` take `hook(D_a, D_b) -> (E, V_a, V_b)`.
+
+| Rule | Detail |
+|---|---|
+| Symmetry of V | `max \|V - Vᵀ\|` at most `4 n ε ‖V‖_F` (n = nao), the round-off of a product chain of up to four GEMMs; the driver uses `½ (V + Vᵀ)`. A larger asymmetry raises `ValueError`. |
+| `run_dft` ladder | Every convergence-ladder rung runs with the hook. Rungs that switch on SOSCF run without it, keeping their level shift, ADIIS and smearing: the SOSCF orbital Hessian does not include the hook. |
+| Energy noise floor | Round-off in the hook term adds `ε Σ\|D_ij V_ij\|` to the noise floor of dE (summed over spins for an open-shell hook), with D and V from the hook's last call. A user-set `energy_conv` below the floor including this term emits a `RuntimeWarning` after the SCF; the warning before the SCF cannot include it. MEASURED 2026-11-11, HF-in-PBE projection embedding of water/cc-pVDZ (O as subsystem A, `run_rhf`, exact J/K, three starting guesses): the RMS of dE over iterations 31 to 60 is 1.8e-11 to 2.2e-11 Ha at μ = 1e5, 1.6e-10 to 2.1e-10 at μ = 1e6 and 1.3e-9 to 2.3e-9 at μ = 1e7, against a term of 8.7e-11, 8.7e-10 and 8.7e-9 Ha. The final \|ΔE\| after 200 iterations is 4.6e-10 Ha at μ = 1e7 and 4.1e-9 Ha at μ = 1e8, so `energy_conv=1e-11` does not converge there. |
+
+`dm0=D` on `run_rhf` and `run_dft` starts the SCF from a total closed-shell AO
+density `(nao, nao)`, such as a previous run's `density()`; the first Fock
+matrix is built from it. `D` must be finite, symmetric within the bound above
+and hold the system's electron count, `|tr(D S) − N| ≤ n² ε Σ|D_ij S_ij|`, the
+round-off of the trace. A density of another charge state raises `ValueError`.
+A converged density of an identical run restarts in at most two iterations.
+`dm0` with `guess=` or `guess_basis=` raises `ValueError`.
+
+`dm0=(D_a, D_b)` on `run_uhf` and `run_rohf` starts from per-spin AO
+densities, such as a previous run's `(density_alpha(), density_beta())`. Each
+`D_s` passes the checks above with the spin's electron count N_s. The start is
+the natural orbitals of each density (for ROHF, the doubly occupied orbitals
+from `D_b` and the singly occupied ones from `D_a` in the rest of the space),
+so a converged open-shell pair is reproduced on the first iteration and restarts in at
+most two. A closed-shell density D is passed as `(D / 2, D / 2)` and gives
+`run_rhf(dm0=D)`'s energy. A closed shell has its β HOMO and LUMO turned by
+0.1 rad, as from any UHF start.
+
+#### Gradients of a hooked SCF
+
+`with_gradient=True` with a `fock_hook` needs `fock_hook_grad=grad`, the
+hook's explicit nuclear derivative: `grad(D, mol)` (`run_rhf`, `run_dft`) or
+`grad(D_a, D_b, mol)` (`run_uhf`, `run_rohf`) returns `∂E_hook/∂R` at fixed AO
+density, shape `(natoms, 3)` in Hartree/Bohr, for the converged densities and
+the `Molecule` being differentiated. `result.gradient()` is the analytic
+gradient of the hooked SCF plus this term. Without `fock_hook_grad` the
+gradient raises `ValueError`.
+
+What `grad` must and must not contain:
+
+| Term | In `grad`? | Why |
+|---|---|---|
+| Integrals over AOs centred on atoms, operator centres on atoms, classical terms of `E_hook` | Yes | Only the hook knows how `E_hook` depends on the atom positions at fixed D. |
+| The Pulay term of `V`, `−Tr[W_V ∂S/∂R]` | No | The energy-weighted density comes from the hooked orbitals and eigenvalues (for ROHF, the hooked spin Fock matrices), so it is already included. |
+| The change of D with geometry | No | The SCF is stationary in the orbitals; the Lagrangian handles it. |
+
+A hook that depends on D only (for example `E = λ Σ D_ij²`) has `grad = 0`.
+A hook built from a geometry-dependent AO matrix has a nonzero one: for
+`V = λ h`, `E = λ Tr[D h]`, `grad` is `λ Tr[D ∂h/∂R]`:
+
+```python
+ints = ferric.AoIntegrals(water, bs)
+lam, h = 0.1, ints.hcore()
+r = ferric.run_rhf(
+    water, bs, with_gradient=True,
+    fock_hook=lambda d: (lam * float(np.sum(d * h)), lam * h),
+    fock_hook_grad=lambda d, mol: lam * ints.grad_hcore(d),
+)
+```
+
+`E = λ Tr[D S]` is the check that both halves are right: its explicit term
+`λ Tr[D ∂S/∂R]` and its Pulay term `−λ Tr[D ∂S/∂R]` cancel, as they must for
+the constant `λN`, so the hooked gradient equals the plain one.
+`run_optimize(method="scf", fock_hook=, fock_hook_grad=)` optimizes the
+hooked surface; because the geometry moves, both callables there receive the
+step's `Molecule` as their last argument (`hook(D, mol)`, `grad(D, mol)`),
+and each step's SCF starts from the default guess. The derivation is in
+`book/src/07-hartree-fock/06-fock-hooks.md#fock-hooks-equations`; the
+checks (finite differences of the hooked energy for RHF, UHF, ROHF and LDA,
+and a point charge entered as a hook against `point_charges`) are in
+`crates/ferric-python/tests/test_fock_hook_gradient.py` and
+`crates/ferric-scf/tests/fock_hook_gradient.rs`.
+
+Not exposed: the Rust-side structs (`PreparedBasis`, `Engine`, screening
+bounds), method intermediates (CC amplitudes, GW self-energies, PDEP
+eigenpairs) and periodic (PBC) integrals. Those stay behind the drivers.
 
 ## Memory, threads and MPI
 
@@ -377,7 +708,7 @@ and allow 90% of the remainder: the KS-DFT decision to store or recompute the
 grid AO cache, and the UKS Newton/TRAH f<sub>xc</sub> kernel's second grid
 cache. Because RSS includes everything already resident, those two see less
 than the full budget.
-It is **not** a cap on total process memory; see
+It does not cap total process memory; see
 [Sharp bits](./sharp-bits.md#memory-budget_gb-does-not-cap-the-whole-process).
 
 <!-- doctest -->
@@ -385,8 +716,16 @@ It is **not** a cap on total process memory; see
 mp2 = ferric.run_rimp2(water, bs_dz, aux, memory_budget_gb=8.0)
 ```
 
-`import ferric` pins OpenBLAS to one thread unless `OPENBLAS_NUM_THREADS` is
-already set. ferric parallelizes with rayon instead. `run_rhf`, `run_uhf`,
+`import ferric` runs OpenBLAS at one thread inside ferric's parallel regions
+unless `OPENBLAS_NUM_THREADS` is already set; ferric parallelizes with rayon
+(`RAYON_NUM_THREADS`). Serial sections such as the per-iteration Fock
+diagonalization use `ferric.blas_threads()` OpenBLAS threads, by default the
+rayon thread count; `ferric.set_blas_threads(1)` makes results bit-identical
+across thread counts. The OpenBLAS thread count is process-wide, so when you
+run several jobs at once from Python threads, call `ferric.set_blas_threads(1)`
+first: otherwise one job's serial section raises the count under the other
+jobs' parallel regions, which oversubscribes the machine and makes their
+results vary at the last bit from run to run. `run_rhf`, `run_uhf`,
 `run_rohf`, `run_dft`, `run_rimp2`, `run_ccsd`, `run_ccsd_t`, `run_gw` and
 `run_tddft` release the GIL, so independent jobs submitted from a
 `ThreadPoolExecutor` run in parallel. The other drivers hold it. For throughput
@@ -415,26 +754,28 @@ capability is Python-only. How well each one is validated is on
 
 | Name | Purpose | CLI |
 |---|---|---|
-| `Molecule` | Geometry, charge and multiplicity. `from_xyz`, `from_xyz_string`, `coords`, `coords_bohr`, `symbols`, `atomic_numbers`, `is_ghost`, `natoms`, `nelec`, `nuclear_repulsion`, `to_xyz_string`. | `[molecule]` |
+| `Molecule` | Geometry, charge and multiplicity. `from_xyz`, `from_xyz_string`, `from_arrays` (symbols or atomic numbers, coordinates in `units="angstrom"` or `"bohr"`, optional `ghost=` flags), `coords`, `coords_bohr`, `symbols`, `atomic_numbers`, `is_ghost`, `natoms`, `nelec`, `nuclear_repulsion`, `to_xyz_string`. | `[molecule]` |
 | `BasisSet` | A Gaussian basis set, orbital or auxiliary. `BasisSet.bundled(name)`. | `[basis]` |
 
 ### SCF and DFT
 
 | Name | Purpose | CLI |
 |---|---|---|
-| `run_rhf` | Closed-shell RHF with the full SCF knob set, point charges, field and IEF-PCM solvent. | `rhf` |
-| `run_uhf` | Unrestricted HF; α/β counts come from the molecule's charge and multiplicity. | `uhf` |
-| `run_rohf` | Restricted open-shell HF (Guest–Saunders coupling); returns a `UhfResult`. | `rohf` |
-| `run_dft` | Closed-shell Kohn–Sham DFT (LDA/GGA/hybrid/RSH/meta-GGA by name), optional dispersion (`dispersion="d3bj"` or `"mbd"`, added to the energy and, with `with_gradient=True`, to the gradient) and analytic gradient. | `ksdft` |
+| `run_rhf` | Closed-shell RHF with the full SCF knob set, point charges, field and IEF-PCM solvent; `with_gradient=True` adds the analytic gradient (an unset `ri_j_precision` is then `"f64"`). | `rhf` |
+| `run_uhf` | Unrestricted HF; α/β counts come from the molecule's charge and multiplicity. `with_gradient=True` as for `run_rhf`. | `uhf` |
+| `run_rohf` | Restricted open-shell HF (Guest–Saunders coupling); returns a `UhfResult`. `with_gradient=True` as for `run_rhf`. | `rohf` |
+| `run_dft` | Closed-shell Kohn–Sham DFT (LDA/GGA/hybrid/RSH/meta-GGA, pure or hybrid, by name), optional dispersion (`dispersion="d3bj"` or `"mbd"`, added to the energy and, with `with_gradient=True`, to the gradient) and analytic gradient. | `ksdft` |
 | `run_ksdft` | Alias of `run_dft`. | `ksdft` |
-| `d3bj_energy` | Grimme D3(BJ) dispersion energy for a molecule and functional, in Hartree. | `[dft] dispersion` |
+| `run_uks` | Unrestricted Kohn–Sham for an open-shell molecule (functional required); returns a `UhfResult`; `with_gradient=True` gives the analytic UKS gradient. | `ksdft` (multiplicity > 1) |
+| `run_roks` | Restricted open-shell Kohn–Sham (functional required); returns a `UhfResult`; `with_gradient=True` gives the analytic ROKS gradient. | `rohf` + `[dft] functional` |
+| `d3bj_energy` | Grimme D3(BJ) dispersion energy for a molecule and functional, in Hartree; `s9=1.0` adds the ATM three-body term (default 0, off). | `[dft] dispersion` |
 | `mbd_rsscs_energy` | MBD@rsSCS dispersion energy (Hartree) from per-atom Hirshfeld volume ratios and β (or a functional with a published β); returns `MbdRsscsResult` with the screened α₀, C6, R_vdW and ω. | — |
 | `tune_omega` | IP-based (Baer/Kronik) tuning of an RSH functional's ω (Bohr⁻¹); closed-shell neutral plus doublet cation. `continuation=True` seeds each evaluation from the nearest already-evaluated ω, which keeps the cation on one branch across an out-of-order golden-section search; `branch_tol` flags an evaluation whose cation spin-population asymmetry jumps. `check_cation_stability` (default `True`) runs the UKS internal-stability analysis on every cation: each eval dict carries `cation_lambda_min` and `cation_stability`, and a tuned ω whose cation is an internal saddle raises `RuntimeError` naming ω and λ_min. Functionals without an orbital-Hessian kernel (VV10 such as ωB97X-V, meta-GGA) are reported `not_analysed` with a `stability_warning`, never as stable. | — |
 | `dft_grid_point_count` | Number of points in the main KS grid `run_dft` would build for the molecule with the same `grid_*` kwargs, without running an SCF (shows what pruning saves). | — |
 | `SymmetricRhfResult` | Result of `run_rhf(symmetry=True)` (point-group-blocked RHF): `energy` (of the symmetrized geometry), `point_group`, `orbital_irreps`, `max_symmetrization_shift`, `irrep_occupations()`, `orbital_energies()`, `symmetrized_coords()`, `frame_transform()`. `density()`, `mo_coefficients()` and `gradient()` raise: the AO matrices live in the rotated frame. | |
-| `RhfResult` | Result of `run_rhf`: `energy`, `converged`, `iterations`, `density()`, `orbital_energies()`, `mo_coefficients()`. | |
-| `UhfResult` | Result of `run_uhf`/`run_rohf`: α and β densities and orbital energies. | |
-| `DftResult` | Result of `run_dft`: `total_energy` (= `e_scf + e_dispersion`), `e_scf`, `e_dispersion` (`None` when not requested), `dispersion_model` (`"D3(BJ)"`, `"MBD@rsSCS"` or `None`), `volume_ratios` (MBD@rsSCS only), `converged`, `exit_reason()`, `density()`, `gradient()`. | |
+| `RhfResult` | Result of `run_rhf`: `energy`, `converged`, `iterations`, `density()`, `orbital_energies()`, `mo_coefficients()`, `gradient()` (`None` unless `with_gradient=True`), `one_step_energy_drop` and `stationarity_tol` (the converged exit is stationary when the drop is above `-stationarity_tol`; both `None` for a non-aufbau or unconverged exit). | |
+| `UhfResult` | Result of `run_uhf`/`run_rohf`/`run_uks`/`run_roks`: α and β densities and orbital energies, `gradient()`, `one_step_energy_drop`, `stationarity_tol`. | |
+| `DftResult` | Result of `run_dft`: `total_energy` (= `e_scf + e_dispersion`), `e_scf`, `e_dispersion` (`None` when not requested), `dispersion_model` (`"D3(BJ)"`, `"MBD@rsSCS"` or `None`), `volume_ratios` (MBD@rsSCS only), `converged`, `exit_reason()`, `one_step_energy_drop`, `stationarity_tol`, `density()`, `gradient()`. | |
 
 ### Constrained DFT
 
@@ -452,15 +793,28 @@ See [Constrained DFT](../methods/cdft.md) for a worked example.
 
 | Name | Purpose | CLI |
 |---|---|---|
-| `run_optimize` | RHF geometry optimization (basis by name). | `task = "optimize"` |
-| `run_frequencies` | Harmonic frequencies from the analytic Hessian (RHF, UHF, ROHF with exact J/K, or RI-J / RI-K) or finite differences of the analytic gradient; RHF/UHF/ROHF or their KS variants. Closed-shell KS (LDA/GGA, pure or global hybrid) uses the analytic moving-grid Hessian under the default `hessian="auto"` (explicitly: `hessian="analytic-moving-grid"`); other KS references use finite differences. | `task = "frequencies"` |
-| `run_saddle` | First-order saddle-point (transition-state) search by P-RFO; closed-shell. `hessian="fd"` (default) / `"analytic"` / `"auto"`; `.hessian_source` reports which ran. | — |
-| `run_irc` | Intrinsic reaction coordinate in both directions from a saddle; closed-shell. | — |
+| `run_optimize` | Geometry optimization (basis by name). `method="scf"` (default): RHF/UHF/ROHF, RKS/UKS/ROKS with `xc=` (`reference=`, unset: by multiplicity), `dispersion=` as in `run_dft`, `df_j_aux` / `df_k_aux` as in `run_frequencies`; `method="rimp2"` (`auxbasis=`, `scf_jk="exact"`/`"rijk"`), `method="scs-mp2"` (as `"rimp2"`, plus `c_os=` / `c_ss=`, defaults 6/5 and 1/3), `method="oo-rimp2"` (`auxbasis=`, `scf_jk="exact"`/`"rijk"`, `oo_max_iter`, `oo_grad_conv`), `method="att-rimp2"` (as `"rimp2"`, plus `omega=` in Å⁻¹, erfc; or `att_operator="terfc"` with `r0=` in Å), `method="scs-mp2-2terfc"` (as `"rimp2"`, plus `r0_bonded=` / `r0_nonbonded=` in Å, defaults 0.75 / 1.05, and `c_os=` / `c_ss=`, defaults 1.27 / 4.05) and `method="pdep-rpa"` (`auxbasis=`, `rpa_gradient=`, `n_quad=`), closed shell; `"rimp2"`, `"att-rimp2"` and `"scs-mp2-2terfc"` also on a UHF open shell (ROHF raises). A kwarg the method does not read raises. `run_optimize_uhf` is `reference="uhf"`. `solvent` / `pcm_lebedev_order` optimize on the IEF-PCM surface (`method="scf"`); `scf_warm_start=False` re-guesses every geometry's SCF instead of starting from the previous geometry's orbitals (`[optimize] scf_warm_start`); `coordinates="cartesian"` (default) or `"internal"` (redundant internal coordinates) sets the step coordinates for every method (`[optimize] coordinates`), and anything else raises `ValueError`; `coordinates="internal"` together with `point_charges=` or `external_field=` also raises `ValueError`, because fixed charges and a field exert a net force and torque that internal steps cannot follow (use `"cartesian"`; `solvent=` is fine); `initial_hessian="lindh"` (default) or `"simple"` and `trust_update="ratio"` (default) or `"fixed"` set the BFGS start and the trust-radius rule (`[optimize] initial_hessian`, `trust_update`). | `task = "optimize"` |
+| `run_frequencies` | Harmonic frequencies from the analytic Hessian (RHF, UHF, ROHF with exact J/K, or RI-J / RI-K) or finite differences of the analytic gradient; RHF/UHF/ROHF or their KS variants. Closed-shell KS and UKS (`reference="uhf"`) (LDA/GGA, pure or global hybrid) use the analytic moving-grid Hessian under the default `hessian="auto"` (explicitly: `hessian="analytic-moving-grid"`); other KS references use finite differences. `method="pdep-rpa"`, `"att-rimp2"`, `"rimp2"`, `"scs-mp2"`, `"scs-mp2-2terfc"` and `"oo-rimp2"` (`auxbasis=` required) difference the analytic gradient of that method centrally, as the CLI's `task = "frequencies"` does for those kinds; `att-rimp2` reads `omega=` (inverse Angstrom), `att_operator=` and `r0=` (Å), `scf_jk=`, `jk_auxbasis=` and `frozen_core=`; `rimp2` (UHF reference and unrestricted gradient when the molecule's multiplicity is above 1), `scs-mp2` (`c_os=`, `c_ss=`), `scs-mp2-2terfc` (`r0_bonded=`, `r0_nonbonded=`, `c_os=`, `c_ss=`; UHF when the multiplicity is above 1) and `oo-rimp2` (`oo_max_iter=`, `oo_grad_conv=`, `frozen_core` 0) read the same reference kwargs, with `scs-mp2` and `oo-rimp2` closed shell only; `pdep-rpa` reads `rpa_gradient=`, `n_quad=`, `quadrature=` and `trunc_thresh=`; neither gives IR intensities. `scf_warm_start=True` (opt-in) starts every displaced SCF of a finite-difference Hessian from the reference geometry's orbitals (`[frequencies] scf_warm_start`); pair it with a tighter `scf_density_conv`. | `task = "frequencies"` |
+| `run_xtb_energy_gradient` | GFN1/GFN2/GFN-FF energy and gradient (Hartree, Hartree/Bohr). Present in every build; raises `RuntimeError` unless the extension was built with the `xtb` cargo feature (libxtb on the loader path). | no CLI kind |
+| `run_xtb_optimize` | Geometry optimization on a GFN-xTB surface with the `run_optimize` BFGS driver; `max_steps` bounds geometry steps, `scc_max_iter` the SCC at each geometry, and an unconverged SCC raises. Certificate is `not graded`. | no CLI kind |
+| `run_xtb_frequencies` | Harmonic frequencies on a GFN-xTB surface: central differences of the xTB gradient (`6N` evaluations), shared mass-weighting and translation/rotation projection. | no CLI kind |
+| `run_saddle` | First-order saddle-point (transition-state) search by P-RFO; closed-shell. `hessian="fd"` (default) / `"analytic"` / `"auto"`; `.hessian_source` reports which ran. `scf_warm_start=False` re-guesses every step's SCF instead of warm-starting it (the FD Hessians are always cold). | — |
+| `run_irc` | Intrinsic reaction coordinate in both directions from a saddle; closed-shell. `scf_warm_start=False` re-guesses every point's SCF. | — |
 | `OptimizeResult` | `energy`, `converged`, `steps`, `energy_trace`, `mol()`. | |
 | `FrequencyResult` | Frequencies in cm⁻¹ (negative = imaginary), normal modes, `cartesian_hessian`, `asymmetry` diagnostic, `hessian_source`. | |
 | `SaddleResult` | Outcome of a P-RFO search: geometry (Å), `n_imaginary`, `imaginary_mode`, `is_transition_state()`. | |
 | `IrcResult` | Both directions of an IRC, plus the saddle they came from. | |
 | `IrcBranch` | One direction of an IRC walk. | |
+
+### Molecular dynamics
+
+| Name | Purpose | CLI |
+|---|---|---|
+| `run_aimd` | Born-Oppenheimer MD on the SCF surface: RHF/UHF/ROHF, or RKS/UKS/ROKS with `xc=` (`reference=`, unset: by multiplicity), `dispersion=` and `df_j_aux` / `df_k_aux` as in `run_optimize`. `thermostat="nve"` (velocity Verlet), `"berendsen"` (`tau_fs=`, equilibration only) or `"langevin"` (BAOAB, `friction_per_ps=`); `temperature_k`, `init_temperature_k`, `seed`, `stride`, `scf_warm_start`, `masses_amu`; `trajectory_path=` / `energies_path=` write XYZ and CSV. A thermostat parameter of another thermostat raises `ValueError`. | `task = "md"` |
+| `run_ffmd` | MD on the force field of an `MmTopology`, atoms given by `symbols` and `coords_angstrom`; `cutoff_angstrom=` for the non-periodic reaction-field cutoff. The MD kwargs of `run_aimd`. | — |
+| `MdResult` | Per-frame `times_fs`, `potential_energies`, `kinetic_energies`, `total_energies`, `conserved`, `temperatures`; `positions_angstrom`, `velocities` (Å/fs); `n_dof`, `max_conserved_drift`, `scf_iterations`, `certificate` (ungraded), `mol()`. | |
+
+See [Molecular dynamics](./md.md).
 
 ### QM/MM
 
@@ -469,7 +823,7 @@ See [Constrained DFT](../methods/cdft.md) for a worked example.
 | `QmmmSystem` | A QM/MM partition with link atoms and boundary-charge schemes (coordinates in Å). | `[qmmm]` |
 | `MmTopology` | Explicit-parameter AMBER-form MM force field; assigns no parameters itself. | — |
 | `run_qmmm` | Embedded SCF energy plus QM gradient, MM forces and full gradient. | `[qmmm]` (energy) |
-| `run_optimize_qmmm` | Optimize a `QmmmSystem`; QM atoms always move, MM atoms per `move_mm`. | — |
+| `run_optimize_qmmm` | Optimize a `QmmmSystem`; QM atoms always move, MM atoms per `move_mm`; `initial_hessian=` and `trust_update=` as on `run_optimize`. | — |
 | `QmmmResult` | `energy`, `qm_gradient()`, `mm_forces()` (forces, not gradients), `full_gradient()`. | |
 | `QmmmOptimizeResult` | The relaxed partition and its energy trajectory. | |
 
@@ -479,47 +833,47 @@ See [QM/MM](./qmmm.md) for a worked example.
 
 | Name | Purpose | CLI |
 |---|---|---|
-| `run_rimp2` | RI-MP2 on an RHF reference; UHF + unrestricted RI-MP2 when `multiplicity > 1` (`reference` says which). Exact by default; `local=`/`eps=` for the local approximation. | `rimp2` |
-| `run_oo_rimp2` | Orbital-optimized RI-MP2 (level-shifted Newton + DIIS + Cayley rotation). Closed shell only; open-shell OO-RI-MP2 is CLI-only. | `oo-rimp2` |
+| `run_rimp2` | RI-MP2 on an RHF reference; UHF + unrestricted RI-MP2 when `multiplicity > 1` (`reference` says which). Exact by default; `local=`/`eps=` for the local approximation. `with_gradient=True` adds the analytic gradient (closed-shell exact RI-MP2 on an exact-J/K RHF). | `rimp2` |
+| `run_oo_rimp2` | Orbital-optimized RI-MP2 (level-shifted Newton + DIIS + Cayley rotation). Closed shell only; open-shell OO-RI-MP2 is CLI-only. `with_gradient=True` adds the analytic gradient (`frozen_core=0`, converged loop). | `oo-rimp2` |
 | `run_mp3` | MP3 on an RHF reference, with RI integrals. | `mp3` |
 | `run_attenuated_rimp2` | RI-MP2 with the erfc-attenuated operator; ω in Å⁻¹, default 0.420. | `att-rimp2` |
 | `run_terfc_rimp2` | RI-MP2 with the exact tempered-erfc operator at one cutoff `r0` (Å); needs the terfc tables. | — |
 | `run_scs_mp2` | Spin-component-scaled MP2 (defaults c_OS = 6/5, c_SS = 1/3). | `scs-mp2` |
 | `run_scs_mp2_2terfc` | Dual-attenuated SCS-MP2(2terfc); needs the terfc tables. | `scs-mp2-2terfc` |
 | `run_mp2_v` | MP2-V: attenuated MP2 plus damped VV10 nonlocal correlation. | `mp2-v` |
-| `run_double_hybrid` | B2PLYP or DSD-PBEP86 double hybrid. | `b2plyp`, `dsd-pbep86` |
+| `run_double_hybrid` | B2PLYP or DSD-PBEP86 double hybrid; UKS reference for `multiplicity > 1` or `unrestricted=True`; `dispersion="d3bj"` selects the kind's D3(BJ) set; the result carries a `certificate` (Proven). | `b2plyp`, `dsd-pbep86` |
 | `run_laplace_mp2` | Laplace-transform RI-MP2 (default 7 quadrature points). | `laplace-mp2` |
 | `run_laplace_sos_mp2` | Laplace-transform SOS-MP2, `E = c_os · E_OS`; MO, AO or AO-sparse formulations. | `laplace-sos-mp2` |
-| `RiMp2Result` | Result of `run_rimp2` and `run_terfc_rimp2`: `total_energy`, `rhf_energy` (the reference SCF energy, RHF or UHF), `mp2_corr`, `reference`, and `local` (`None` for the exact method, else the local model dict). | |
-| `OoRiMp2Result` | Result of `run_oo_rimp2`, with `converged` and `grad_norm`. | |
+| `RiMp2Result` | Result of `run_rimp2` and `run_terfc_rimp2`: `total_energy`, `rhf_energy` (the reference SCF energy, RHF or UHF), `mp2_corr`, `reference`, `local` (`None` for the exact method, else the local model dict) and `gradient()`. | |
+| `OoRiMp2Result` | Result of `run_oo_rimp2`, with `converged`, `grad_norm` and `gradient()`. | |
 | `Mp3Result` | `e_hf`, `e_mp2`, `e_mp3`, `e_corr`, `e_total`. | |
 | `AttenuatedMp2Result` | Attenuated MP2 total, correlation and spin components. | |
 | `ScsMp2Result` | Result of `run_scs_mp2`/`run_scs_mp2_2terfc`, with `e_os`/`e_ss`. | |
 | `Mp2VResult` | MP2-V total, attenuated MP2 part and VV10 part. | |
 | `LaplaceMp2Result` | Laplace MP2 total, correlation and spin components. | |
 | `SosMp2Result` | Scaled and unscaled OS energy, `c_os`, `n_quad` and `formulation` echoed back. | |
-| `DoubleHybridResult` | Result of `run_double_hybrid`: `total_energy`, `e_ks`, `e_corr_scaled`, `e_os`, `e_ss`, `c_os`, `c_ss`. | |
+| `DoubleHybridResult` | Result of `run_double_hybrid`: `total_energy`, `e_ks`, `e_corr_scaled`, `e_os`, `e_ss`, `c_os`, `c_ss`, `certificate`. | |
 
 `run_rimp2`, `run_oo_rimp2`, `run_attenuated_rimp2`, `run_terfc_rimp2`,
 `run_scs_mp2`, `run_scs_mp2_2terfc`, `run_mp2_v`, `run_laplace_mp2`,
 `run_laplace_sos_mp2` and `run_rs_mp2_rpa` take `scf_jk="exact"|"rijk"|"rijcosx"`
 and `jk_auxbasis=` to choose how the reference SCF builds J and K, and their
 results echo `scf_jk` and `jk_auxbasis`. The default is `"exact"`, except for
-`run_rs_mp2_rpa`, whose default is `"rijk"`. `run_oo_rimp2` accepts only
-`"exact"` and raises on the fitted modes, because it rebuilds exact J/K at
-every orbital step. See
+`run_rs_mp2_rpa`, whose default is `"rijk"`. `run_oo_rimp2` and
+`run_optimize(method="oo-rimp2")` accept `"exact"` and `"rijk"` (the orbital
+steps rebuild J/K on the reference's route) and raise on `"rijcosx"`. See
 [The MP2 family](../methods/mp2.md).
 
 ### Exact and local correlation
 
 `run_rimp2`, `run_drpa` and `run_linlccd` name a method and compute it
-**exactly** by default. The local approximation is asked for with keywords
+exactly by default. The local approximation is asked for with keywords
 that mirror the CLI's [`[local]`](../reference/input.md#local) section, under
 the same rules, raised as `ValueError` before any SCF:
 
 - `local=` is `None` (exact; `"none"` is the same) or `"amplitude-threshold"`;
   any other value is an error.
-- `eps=` is **required** with `local="amplitude-threshold"`: the threshold is
+- `eps=` is required with `local="amplitude-threshold"`: the threshold is
   part of the model and has no default. `eps=0` reproduces the exact method.
   `eps=` without `local=` is an error, not ignored.
 - `compute_reference=True` (local only) also computes the exact method and
@@ -529,8 +883,11 @@ the same rules, raised as `ValueError` before any SCF:
   removes any cost saving.
 - `run_rimp2(integral_direct=True, ...)` selects the integral-direct local
   MP2, with its locality maps `aux_radius`, `virt_radius` (Bohr), `ao_tail`,
-  `schwarz_skip`, `batch_merge`, `gate_cal` and `virt_schwarz_kappa` (the CLI
-  names and defaults). They are errors without `integral_direct=True`.
+  `schwarz_skip`, `batch_merge`, `gate_cal` and `virt_schwarz_kappa`, with
+  the CLI names and defaults. They are errors without `integral_direct=True`.
+  `fock_screen` (default `True`, the Fock-propagated mask screen; `False` keeps
+  the plain integral mask) applies to the local MP2 on both paths, in core and
+  integral-direct.
   `kappa` is an error on the local MP2.
 
 Every result says which model it is: `RiMp2Result.local` and the dicts'
@@ -540,7 +897,7 @@ paths are closed shell.
 
 | Name | Purpose | CLI |
 |---|---|---|
-| `run_drpa` | dRPA@HF by the drCCD Riccati solve. Exact by default (equals the plasmon formula); `MemoryError` before the SCF when the exact solve cannot fit (use `run_pdep_rpa(..., trunc_thresh=0)`). `diis=` (default 8); `eps_rtol_factor=` (local only). | `drpa` |
+| `run_drpa` | dRPA@HF by the drCCD Riccati solve. Exact by default (equals the plasmon formula); `MemoryError` before the SCF when the exact solve cannot fit (use `run_pdep_rpa(..., trunc_thresh=0)`). `diis=` (default 8); `eps_rtol_factor=` (local only). The CLI's exact `drpa` takes the frequency route instead (no static eigensolve, 48 Gauss–Legendre points); the two agree to the quadrature and rounding error (4.3e-11 Ha on n-hexane / cc-pVDZ). | `drpa` (`[local]` for the local scheme) |
 | `run_drpa_scan` | The local dRPA over a list of `eps` values, sharing one SCF and localization; each dict carries `"local"`. | `drpa` + `[local] eps_sweep` |
 | `run_linlccd` | Linearized ladder CCD, `variant` = `"hh"` (default), `"drivers-only"`, `"full"`. Exact by default. | `linlccd` |
 
@@ -551,29 +908,44 @@ reference.
 
 | Name | Purpose | CLI |
 |---|---|---|
-| `run_ccd` | CCD correlation energy. | — |
+| `run_ccd` | CCD correlation energy. | `ccd` |
 | `run_ccsd` | Spin-adapted closed-shell CCSD. | `ccsd` |
-| `run_ccsd_t` | CCSD plus the spin-adapted (T) correction. | — |
+| `run_ccsd_t` | CCSD plus the spin-adapted (T) correction. | `ccsd(t)` |
 | `CcResult` | `correlation_energy` and `t_correction` (`None` without triples). No reference energy. | |
+| `run_eom_ccsd` | EE-EOM-CCSD singlet excitation energies on the spin-adapted CCSD. | `eom-ccsd` |
+| `EomCcsdResult` | `excitation_energies`, `residuals`, `singles_weight`, `r1(k)` / `r2(k)` (right eigenvectors), `rhf_energy`, `ccsd_correlation_energy`, `certificate`. | |
+
+### Multireference
+
+All start from the canonical exact-J/K RHF orbitals of a closed-shell molecule.
+`casscf_optimizer` is `"ah"` (default, augmented-Hessian step) or `"bfgs"`;
+`casscf_integrals` is `"auto"` (default), `"dense"` or `"direct"`. See
+[CAS-CI and CASSCF](../methods/ci.md).
+
+| Name | Purpose | CLI |
+|---|---|---|
+| `run_casci` | CAS-CI, lowest root of the `(n_alpha, n_beta)` sector; `compute_rdms=True` returns the RDMs. | library only |
+| `run_casscf` | Two-step CASSCF; `casscf_grad_tol`, `casscf_energy_tol`, `casscf_max_iter`, `casscf_max_step`, `casscf_optimizer`, `casscf_integrals`, `casscf_integral_thresh`, `canonicalize`. Returns a `CasScfResult` with a `certificate`. | `casscf` |
+| `run_nevpt2` | Strongly contracted NEVPT2 on a CASSCF (`reference="casscf"`) or CAS-CI (`"casci"`) reference, closed-shell active space (`n_alpha = n_beta`). Returns a `Nevpt2Result` with the eight class `energies`. | `nevpt2` |
 
 ### RPA, GW and excited states
 
 | Name | Purpose | CLI |
 |---|---|---|
-| `run_pdep_rpa` | Direct RPA correlation energy by PDEP (projective dielectric eigenpotentials); accepts point charges, field and solvent. Closed shell only; open-shell U-PDEP-RPA is CLI-only. | `pdep-rpa` |
-| `run_rs_mp2_rpa` | Range-separated SR-MP2 + LR-RPA (`formulation` = `"delta-lr"` or `"coupled-rings"`; ω in Å⁻¹). | `rs-mp2-rpa` |
+| `run_pdep_rpa` | Direct RPA correlation energy by PDEP (projective dielectric eigenpotentials); accepts point charges, field and solvent. `properties=True` / `export_npz=` add the CLI's `[rpa]` property bundle (polarizabilities, per-atom and charge-transfer α, C6, charges, ESP, field, NPZ); `export_eigpot_prefix=` writes eigenpotential cubes. Closed shell only; open-shell U-PDEP-RPA is CLI-only. `with_gradient=True` adds the analytic nuclear gradient of the total energy (`result.gradient()`, `(natoms, 3)` Hartree/Bohr, as `run_rimp2`): full-rank dense Coulomb RPA on an exact RHF reference, so an unset `trunc_thresh` is 0 and an unset `scf_density_conv` is 1e-9; a nonzero `trunc_thresh`, `chi0_sparsity`, `k_builder="cosx"`, `df_j_aux` / `df_k_aux`, point charges, field, solvent, the property keys, `run_diagnostics` and an open shell raise `ValueError` before the SCF. | `pdep-rpa` |
+| `run_rs_mp2_rpa` | Range-separated SR-MP2 + LR-RPA (`formulation` = `"delta-lr"` or `"coupled-rings"`; ω in Å⁻¹; a list for `omega` or `formulation` returns a list of results from one SCF). | `rs-mp2-rpa` |
 | `run_gw` | Closed-shell G0W0 / COHSEX / evGW0 / evGW on an RHF or RKS reference. | `gw` |
 | `run_u_gw` | Open-shell GW variants on a UHF/UKS or ROHF reference. | `gw` with multiplicity > 1 |
 | `run_bse_tda` | BSE-TDA singlet excitation energies on a closed-shell RHF reference. | `bse-tda` |
 | `run_tdhf_static_polarizability` | RPAx@KS static (ω = 0) polarizability on a closed-shell KS reference. | `tdhf-static-polarizability` |
-| `run_tddft` | TDA or Casida excitations on a closed-shell HF (CIS/TDHF) or KS reference, with the f_xc kernel. | `tda`, `tddft` |
+| `run_tddft` | TDA or Casida excitations on an HF (CIS/TDHF) or KS reference, restricted or unrestricted, with the f_xc kernel and `<S^2>` per root. | `tda`, `tddft` |
 | `PdepRpaResult` | `total_energy`, `e_rpa`, `eigensolver_converged`, eigenvalues and quadrature grid. | |
 | `RsMp2RpaResult` | SR-MP2, LR-MP2 and dRPA pieces; which fields are set depends on `formulation`. | |
 | `GwResult` | `eps_qp`, `eps_mf`, `sigma_x`, `sigma_c`, `z_factor`, `outer_converged`, `qp_converged`. | |
 | `UGwResult` | α and β versions of the `GwResult` fields. | |
 | `BseResult` | Excitation energies and oscillator strengths. | |
 | `TdhfStaticPolarizabilityResult` | Polarizability `tensor` and its isotropic value `iso`. | |
-| `TddftResult` | `excitation_energies`, `oscillator_strengths`, `method`. | |
+| `TddftResult` | `excitation_energies`, `oscillator_strengths`, `method`, `grid`, `certificate`. | |
 
 ### Properties and charges
 
@@ -593,6 +965,10 @@ Each takes `(mol, basis_set, result)` with a converged closed-shell
 | `hirshfeld_polarizability` | Per-atom Hirshfeld-partitioned static polarizability tensors (Bohr³) from PDEP-RPA. | — |
 | `orbital_moments` | Per-orbital centroids and spatial spreads (Bohr) of the restricted MOs. | — |
 | `density_second_moment` | 3×3 second-moment tensor of the electron density (Bohr²). | — |
+| `eval_ao_on_points` | AO values at (N, 3) points in Bohr, shape (N, nbasis). | — |
+| `eval_density_on_points` | Total electron density (e/Bohr³) at points in Bohr. | — |
+| `eval_mo_on_points` | Restricted MO values at points in Bohr, for chosen 0-based MO indices. | — |
+| `write_cube` | Gaussian cube file of the density or one restricted MO; all lengths in Bohr. | — |
 
 The `[rpa] compute_*` keys write into the CLI's NPZ export.
 
@@ -602,6 +978,11 @@ These take `omega`/`r0` in raw Bohr units, unlike the `run_*` drivers.
 
 | Name | Purpose | CLI |
 |---|---|---|
+| `AoIntegrals` | One-electron matrices, ERIs (dense, 3- and 2-index, MO-transformed), J/K, gradient/Hessian/response/XC pieces for one molecule and basis; see [Building blocks](#building-blocks). | — |
+| `DfJk` | From `AoIntegrals.df_jk(aux)`: RI-J/RI-K `j(D)`, `k(D)`, `jk(D)` over a fit built once. | — |
+| `XcFunctional` | From `AoIntegrals.xc_functional(name)`: E_xc, V_xc, f_xc response and XC gradient/Hessian on `run_dft`'s grid. | — |
+| `Cphf`, `Ucphf` | From `AoIntegrals.cphf(...)` / `ucphf(...)`: orbital-Hessian `matvec`, CPHF/CPKS `solve`, response `density`. | — |
+| `einsum` | Contraction of two or more operands under ferric's einsum spec grammar; three or more run as a fixed left-to-right chain of binary contractions with no order search. | — |
 | `compute_eri3` | Raw 3-centre Coulomb integrals (P\|μν), shape (naux, n_bf, n_bf). | — |
 | `compute_eri3_mo` | MO-basis 3-centre integrals (P\|pq) for any two coefficient matrices, built blockwise under a memory budget. | — |
 | `compute_metric_2c` | 2-centre metric (P\|w\|Q) over the auxiliary basis, Coulomb by default. | — |
@@ -621,3 +1002,109 @@ These take `omega`/`r0` in raw Bohr units, unlike the `run_*` drivers.
 | `weighted_stats` | Weighted mean and standard deviation of a scalar property. | — |
 | `weighted_stats_vector` | The same, component-wise, for a vector property. | — |
 | `weighted_stats_tensor` | The same, element-wise, for a rank-2 tensor property. | — |
+
+## Porting published methods
+
+Three published methods run on the [building blocks](#building-blocks) with
+no change to ferric's Rust. The only ferric calls are `AoIntegrals`,
+`XcFunctional`, `Molecule.from_xyz(charge=)` and the `fock_hook` argument of
+`run_rhf` / `run_dft`. Each port is a script in `examples/python/` with under
+100 lines of method code, an exactness anchor against an independent ferric
+construction, and a comparison with PySCF numbers written by
+`scripts/gen_pyscf_block_ports_refs.py` to
+`testdata/reference/block_ports_pyscf.json`. The checks are in
+`crates/ferric-python/tests/test_block_ports.py`.
+
+| Script | Method | Blocks used | Method lines |
+|---|---|---|---|
+| `drpa_from_blocks.py` | RI direct RPA by imaginary-frequency quadrature (Eshuis, Yarkony, Furche, JCP 132, 234114 (2010)) | `df_mo` | 22 |
+| `adc2_from_blocks.py` | singlet ADC(2) excitation energies (Schirmer, PRA 26, 2395 (1982)), spin orbitals | `ao2mo` | 72 |
+| `embedding_from_blocks.py` | projection-based HF-in-DFT and DFT-in-DFT embedding (Manby, Stella, Goodpaster, Miller, JCTC 8, 2564 (2012)), SPADE partition | `veff`, `xc_functional`, `hcore`, `overlap`, `ao_atoms`, `fock_hook` | 59 |
+
+Measured agreement, water and NH3, all electrons (2026-11-11, Hartree):
+
+| Port | Anchor | Anchor residual | PySCF reference | Difference |
+|---|---|---|---|---|
+| dRPA, cc-pVDZ / cc-pVDZ-RI | `run_drpa` (Riccati, no quadrature), 80 nodes | <= 4e-12 | `gw.rpa.RPA`, same 40 nodes | <= 1e-12 |
+| ADC(2), 6-31G | ADC(1) equals `cis_from_blocks` | <= 4e-15 | `adc.RADC`, `"adc(2)"`, `"ee"`, 3 roots | <= 2.7e-9 |
+| Embedding, PBE, cc-pVDZ, heavy atom as A | PBE-in-PBE equals full PBE, extrapolated from mu = 1e5 and 1e6 | <= 1.2e-9 | the same algorithm on PySCF's RKS, flat 99 x 590 grid | 3.5e-8 (water), 1.8e-9 (NH3) |
+
+The embedding comparison is limited by the XC grids: PySCF's HF-in-PBE energy
+moves 2.3e-7 (water) and 2.7e-7 (NH3) between its 99 x 590 and 150 x 974
+grids, and the test's bar is the sum of both codes' grid changes and their
+full-KS difference.
+
+Notes for writing a port:
+
+- `fock_hook` refuses a V that is not symmetric to round-off. A level-shift
+  projector `mu S C C^T S` with mu = 1e6 is asymmetric by 2e-10, so
+  symmetrize it before returning it.
+- At finite mu the subsystem density leaks into B's space and the embedding
+  energy is low by c / mu, with c = 6.96 Ha (water) and 5.44 Ha (NH3): 7e-6
+  Ha at mu = 1e6. PySCF's reference has the same c to 4e-5 relative.
+  Extrapolate in 1/mu rather than raising mu: at mu = 1e7
+  `run_dft(fock_hook=)` does not converge in 200 iterations from its own
+  guess. `dm0=` supplies a starting density to every driver, but a better
+  start does not remove the energy noise floor of the hook term (see
+  "Energy noise floor" above), which sets the limit on `energy_conv` at
+  large mu.
+- A subsystem SCF with N_A electrons is a `Molecule` with all nuclei and
+  charge Q_total + N_B, where N_B is the number of electrons assigned to B; the hook adds v_emb, so no ghost atoms or new integrals are
+  needed.
+- `ao2mo` returns the full (pq|rs) block, so the spin-orbital ADC(2) port
+  holds (2 nmo)^4 arrays and is for small bases; it builds the singles-doubles
+  coupling one occupied pair at a time. A
+  density-fitted ADC(2) would build the same intermediates from `df_mo`.
+
+### Second set: `dm0`, open-shell hooks, `cphf` and `einsum`
+
+Three more ports cover the blocks the first set does not use: `run_uhf`'s
+`dm0` and `mom_reference`, `veff_polarized`, `dipole`, `cphf` and
+`ferric.einsum`, on the `RhfResult`, `UhfResult` and `DftResult` accessors. The
+references are PySCF's own implementations, written by
+`scripts/gen_pyscf_block_ports_set2_refs.py` to
+`testdata/reference/block_ports_set2_pyscf.json`; the checks are in
+`crates/ferric-python/tests/test_block_ports_set2.py`.
+
+| Script | Method | Blocks used | Method lines |
+|---|---|---|---|
+| `delta_scf_from_blocks.py` | core-hole ΔSCF (Bagus, Phys. Rev. 139, A619 (1965)) held by initial maximum overlap (Barca, Gilbert, Gill, JCTC 14, 1501 (2018)) | `run_uhf(dm0=, mom_reference="initial")`, `veff_polarized`, `hcore`, `overlap` | 29 |
+| `cphf_polarizability_from_blocks.py` | CPHF / CPKS static polarizability (Pople, Krishnan, Schlegel, Binkley, IJQC S13, 225 (1979)) | `dipole`, `cphf`, `xc_functional` | 14 |
+| `fno_mp2_from_blocks.py` | DF-MP2 frozen natural orbitals (Taube, Bartlett, Collect. Czech. Chem. Commun. 70, 837 (2005)) | `df_mo`, `ferric.einsum` | 21 |
+
+Measured agreement, water and NH3, cc-pVDZ, all electrons (2026-11-13, Hartree
+and atomic units):
+
+| Port | Anchor | Anchor residual | PySCF reference | Difference |
+|---|---|---|---|---|
+| ΔSCF, O / N 1s binding energy (19.9003 / 14.9760 Ha) | a numpy MOM-UHF on `veff_polarized` from the same start, previous-iteration reference | <= 5.7e-14 | `scf.addons.mom_occ` UHF minus RHF | <= 5.7e-14 |
+| CPHF polarizability | finite field on `run_rhf(external_field=)`, Richardson in the step | 2.7e-7 (HF), 3.0e-7 (PBE0, water) | the CPHF equations on PySCF's response function, solved densely | 1.9e-9 (water), 1.6e-9 (NH3) |
+| FNO-MP2, cc-pVDZ-RI | every virtual kept equals `run_rimp2` | <= 1.9e-16 | `DFMP2.make_fno`: occupations, and E_corr with 1/4, 1/2 and all virtuals | <= 3.4e-12 (occupations), <= 5.6e-12 (energies) |
+
+Mutations seen to fail (each applied to the port, the named test run, the port
+restored):
+
+| Port | Mutation | Failing test, measured shift |
+|---|---|---|
+| ΔSCF | `mom_reference="initial"` dropped from `run_uhf` | both ΔSCF comparisons (water): the cation falls to the valence hole, the binding energy moves by 19.5 Ha |
+| CPHF | `r[j]` for `r[i]` in alpha_ij | PySCF comparison (water): off-diagonal elements become alpha_jj, up to 6.9 a.u. |
+| FNO | the exchange term dropped from D_ab | PySCF comparison (water): occupations move by 1.3e-2; the all-virtual anchor still passes, since E_corr does not depend on the virtual rotation |
+| FNO | (ia\|jb) for (ib\|ja) in the energy | all-virtual anchor (water): E_corr moves by 5.2e-2 Ha |
+
+Notes from these ports:
+
+- `run_uhf(mom_after_iter=k)` arms MOM after iteration k >= 1 (k = 0 is
+  off), so it cannot hold the occupation of a `dm0` start: the first
+  iterations' aufbau refills the core hole, and from the water core-hole start
+  `mom_after_iter=1` converges to the valence-hole cation (-75.632 Ha instead
+  of -56.126 Ha). `mom_reference="initial"` takes the start's occupied
+  orbitals as the reference, fixed, from the first iteration, as PySCF's
+  `mom_occ` does; it converges the core-hole cation in 15 iterations at the
+  default `diis_size=8` (water, cc-pVDZ, energy_conv 1e-11, density_conv
+  1e-9).
+- PySCF's `scf.cphf.solve` (the solver of `prop.polarizability.rhf`) stops up
+  to 2.5e-7 a.u. short of the dense solution of its own equations, at tol 1e-11
+  and 1e-13 alike, so the comparison is made against the dense solve.
+- `ferric.einsum` takes explicit `->` specs with no repeated index within a term;
+  the semicanonical orbital energies of the FNO port (a three-operand diagonal)
+  use `numpy.einsum`.

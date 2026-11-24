@@ -364,11 +364,11 @@ mod tests {
     /// `vvvv_t` (the `(2nv)^4` VVVV block, only built under `LadderVariant::Full`)
     /// must be charged.
     ///
-    /// The regression: the old guard charged only the AO buffer and the
-    /// `v_oovv`/`d` working set, so a `Full`-variant job whose VVVV block alone
-    /// exceeded the budget was still admitted. This bisects between a budget
+    /// The regression: a guard charging only the AO buffer and the
+    /// `v_oovv`/`d` working set would admit a `Full`-variant job whose VVVV
+    /// block alone exceeds the budget. This bisects between a budget
     /// that holds everything EXCEPT `vvvv_t` (accepted for `Hh`, which never
-    /// builds it) and the same budget under `Full` (must now be refused).
+    /// builds it) and the same budget under `Full` (must be refused).
     #[test]
     fn linlccd_exact_full_charges_vvvv_that_hh_does_not_need() {
         let mol = Molecule::parse_xyz(
@@ -393,7 +393,7 @@ mod tests {
         // everything else — so Full must be refused, while Hh (which never
         // builds vvvv_t) should still be accepted at the same budget for the
         // AO+oovv-only terms if they fit. We only assert the Full-refusal
-        // direction here, which is the one the old guard got wrong.
+        // direction here, which is the one a guard without the VVVV charge gets wrong.
         let cfg_full = CcConfig {
             frozen_core: 0,
             max_iter: 1,

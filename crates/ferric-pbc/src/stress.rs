@@ -127,7 +127,8 @@ use ferric_dft::density_on_grid::{eval_density_closed, eval_density_uks};
 use ferric_dft::grid::GridPoint;
 use ferric_dft::libxc::{xc_def_from_name_nspin, FunctionalFamily};
 use ferric_dft::vxc::{
-    closed_kernel, polarized_kernel, semilocal_vxc_closed, semilocal_vxc_polarized, DENSITY_FLOOR,
+    above_density_floor, closed_kernel, polarized_kernel, semilocal_vxc_closed,
+    semilocal_vxc_polarized,
 };
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
@@ -282,24 +283,29 @@ pub struct GammaStressParts {
     pub eri: Mat3,
     /// `−(α/2) Σ_σ tr(D_σ S D_σ S) dv_M/dε` (zero for exxdiv = none).
     pub madelung: Mat3,
-    /// Ewald `E_nn`: real-space, reciprocal (with volume), background.
+    /// Ewald `E_nn` strain, real-space part.
     pub nn_sr: Mat3,
+    /// Ewald `E_nn` strain, reciprocal-space part (with volume term).
     pub nn_lr: Mat3,
+    /// Ewald `E_nn` strain, neutralising-background part.
     pub nn_background: Mat3,
     /// XC AO strain term (zero for HF).
     pub xc_ao: Mat3,
     /// XC grid-weight strain term (zero for HF).
     pub xc_weight: Mat3,
-    /// RS-GDF `Σ Y dJ3`: SR, LR (with volume).
+    /// RS-GDF `Σ Y dJ3`, SR part.
     pub fit_j3_sr: Mat3,
+    /// RS-GDF `Σ Y dJ3`, LR part (with volume term).
     pub fit_j3_lr: Mat3,
-    /// RS-GDF `Σ Wm dJ2`: SR, LR (with volume).
+    /// RS-GDF `Σ Wm dJ2`, SR part.
     pub fit_j2_sr: Mat3,
+    /// RS-GDF `Σ Wm dJ2`, LR part (with volume term).
     pub fit_j2_lr: Mat3,
     /// RS-GDF J3 G = 0 through `dS` (`Σ M_g0 dS`).
     pub fit_g0_overlap: Mat3,
-    /// RS-GDF `+δ c0 Σ (Yq)·S` and `+δ c0 qᵀ Wm q`.
+    /// RS-GDF J3 G = 0 volume term `+δ c0 Σ (Yq)·S`.
     pub fit_j3_g0_volume: Mat3,
+    /// RS-GDF J2 G = 0 volume term `+δ c0 qᵀ Wm q`.
     pub fit_j2_g0_volume: Mat3,
 }
 
@@ -372,12 +378,16 @@ pub struct GammaStress {
     pub e_vlr: f64,
     /// Dense-AFT `E_2e` recomputed from the strain kernel's `P` (0 on RS-GDF).
     pub e_eri: f64,
-    /// SR attraction triplets, pair images, half-sphere G counts and pair-FT
-    /// chunks (V_LR + ERI).
+    /// SR attraction shell triplets differentiated.
     pub n_sr_triplets: usize,
+    /// Lattice images of the orbital pairs visited.
     pub n_images: usize,
+    /// Half-sphere G vectors in the V_LR strain sum.
     pub n_g_lr: usize,
+    /// Half-sphere G vectors of the two-electron strain (dense AFT ERI or the
+    /// RS-GDF fit's LR sum).
     pub n_g_eri: usize,
+    /// Pair-FT chunks of the V_LR and two-electron strain sums combined.
     pub n_chunks: usize,
     /// Resolved memory budget (bytes).
     pub budget_bytes: usize,
@@ -1572,7 +1582,7 @@ fn xc_stress(
                 let dens = eval_density_closed(d, chi, dchi);
                 let k = closed_kernel(&dens, None, &xc_def);
                 let (e, v) = semilocal_vxc_closed(&pts, chi, dchi, &dens, None, &xc_def);
-                let live = |g: usize| dens.rho[g] > DENSITY_FLOOR;
+                let live = |g: usize| above_density_floor(dens.rho[g], k.floor);
                 let vr: Vec<f64> = (0..np)
                     .map(|g| if live(g) { k.vrho[g] } else { 0.0 })
                     .collect();
@@ -1595,14 +1605,20 @@ fn xc_stress(
                 let (e, va, vb) = semilocal_vxc_polarized(&pts, chi, dchi, &dens, None, xp);
                 let gate = |rho: &ndarray::Array1<f64>, v: &ndarray::Array1<f64>| -> Vec<f64> {
                     (0..np)
-                        .map(|g| if rho[g] > DENSITY_FLOOR { v[g] } else { 0.0 })
+                        .map(|g| {
+                            if above_density_floor(rho[g], k.floor) {
+                                v[g]
+                            } else {
+                                0.0
+                            }
+                        })
                         .collect()
                 };
                 let vr_a = gate(&dens.rho_a, &k.vrho_a);
                 let vr_b = gate(&dens.rho_b, &k.vrho_b);
                 let (c_a, c_b) = if gga {
                     let ca = Array2::from_shape_fn((3, np), |(i, g)| {
-                        if dens.rho_a[g] > DENSITY_FLOOR {
+                        if above_density_floor(dens.rho_a[g], k.floor) {
                             2.0 * k.vsigma_aa[g] * dens.grad_a[(i, g)]
                                 + k.vsigma_ab[g] * dens.grad_b[(i, g)]
                         } else {
@@ -1610,7 +1626,7 @@ fn xc_stress(
                         }
                     });
                     let cb = Array2::from_shape_fn((3, np), |(i, g)| {
-                        if dens.rho_b[g] > DENSITY_FLOOR {
+                        if above_density_floor(dens.rho_b[g], k.floor) {
                             2.0 * k.vsigma_bb[g] * dens.grad_b[(i, g)]
                                 + k.vsigma_ab[g] * dens.grad_a[(i, g)]
                         } else {

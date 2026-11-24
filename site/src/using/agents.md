@@ -7,7 +7,7 @@ most time. The linked pages hold the details.
 ## Start here
 
 **Don't build from source unless you need to.** The prebuilt wheel installs in
-about a minute. A source build takes ~30 minutes, most of it libint2.
+about a minute. A source build takes about 10 minutes, mostly compiling ferric.
 
 ```bash
 pip install ferric
@@ -30,8 +30,8 @@ source build. The wheel holds only the compiled library and that command. The
 | **PyPI** | Built by the Wheels workflow on a `v*` tag. So far only pre-releases (`0.1.0rc*`) exist, and pip and uv pick them when there's no final release. | `pip install ferric` |
 | **GitHub nightly** | Built every night (`53 10 * * *` UTC) from `main`. It's a workflow-run artifact, not a PyPI upload. | Download it from the Wheels workflow run, then `pip install ./<wheel>` |
 
-Use the **nightly artifact** when you need a fix that has landed on `main` but
-hasn't been tagged. Don't build from source just to get an unreleased fix.
+Use the nightly artifact when you need a fix that has landed on `main` but
+hasn't been tagged, instead of building from source.
 
 Build from source when you are changing ferric or need MPI. MPI builds are
 source-only (see [Installation](installation.md)).
@@ -70,24 +70,24 @@ read the `result` record ([Run logs](run-logs.md)).
 1. **Charge/multiplicity parity.** An odd electron count needs an even
    multiplicity. The error message prints the arithmetic and the rule, and it
    means your `.xyz` or your charge is wrong. ferric can handle ions.
-2. **Debug instead of release.** A debug binary is far slower. MEASURED: a
+2. **Debug instead of release.** A debug binary is far slower. Measured: a
    27-atom cation didn't converge a single point in 34 minutes on one. If a job
    seems hung, check which binary is running. `cargo run --release --bin ferric`
    and the wheel are both release builds. `./target/debug/ferric` is not.
 3. **MPI is a workspace feature, not a CLI one.** `ferric-cli` has no `mpi`
    feature of its own, so `-p ferric-cli --features mpi` fails. The working
    build is `cargo build --release --workspace --features mpi`.
-4. **Threading.** Don't set `OPENBLAS_NUM_THREADS` above 1. The CLI and
-   `import ferric` pin OpenBLAS to one thread when the variable is unset and
-   honour an explicit value, and `cargo` sets it to 1 only when it is unset
-   (an exported value wins). Multithreaded BLAS
-   under ferric's rayon parallelism can crash (LU routines) or oversubscribe
-   the machine. It's a correctness setting, not a performance tip.
+4. **Threading.** Set the thread count with `RAYON_NUM_THREADS` and leave
+   `OPENBLAS_NUM_THREADS` unset: above 1 it threads BLAS inside every rayon
+   region and oversubscribes the machine. Serial sections (Fock
+   diagonalization, DIIS) already use the rayon thread count for BLAS;
+   `[parallel] blas_threads = 1` (Python `ferric.set_blas_threads(1)`) makes
+   results bit-identical across thread counts.
 5. **Under-converged density.** `energy_conv` alone doesn't converge the
    density. Correlation energies and properties inherit the full first-order
    density error. E_HF doesn't, because it's variational. Set `density_conv`.
-6. **Serialize QM jobs.** Two concurrent ferric runs don't just halve
-   throughput. MEASURED: a pair of them pushed a single point that normally
+6. **Serialize QM jobs.** Two concurrent ferric runs slow each other by more
+   than half. Measured: a pair of them pushed a single point that normally
    takes seconds past a 15-minute timeout. Each run wants all the cores and
    several GB. Run one at a time.
 
@@ -106,20 +106,20 @@ recomputed on demand, or refused with an error naming it, depending on the
 allocation (see
 [Sharp bits](sharp-bits.md#memory-budget_gb-does-not-cap-the-whole-process)).
 
-**The budget isn't a cap on process memory (RSS).** It covers the dominant
+The budget isn't a cap on process memory (RSS). It covers the dominant
 tensors, not every allocation. Basis-sized matrices, integral engines (for
 example libint2's C++-side pools), BLAS and per-thread scratch and allocator
 overhead aren't charged, so treat the printed number as a floor on what the
 process needs. Lowering `FERRIC_MEM_BUDGET_GB` changes how the charged work
 is split into blocks. It doesn't shrink the uncharged part.
 
-**Size the budget from a gradient, not a single point.** MEASURED on
+Size the budget from a gradient run. Measured on
 benzene/cc-pVDZ/PBE/RI-J: the SCF alone peaked at 0.616 GB, and the SCF plus
 gradient at 3.033 GB. The KS gradient holds the AO second derivatives on the
 grid. A budget sized from an energy run under-provisions a geometry
 optimization by roughly 4x, and the first optimization step is where it fails.
 
-**The cgroup is the only hard ceiling.** On Linux with systemd:
+The cgroup is the only hard ceiling. On Linux with systemd:
 
 ```bash
 scripts/ferric-limited --max=8G --high=7G -- ferric input.toml
@@ -128,7 +128,7 @@ scripts/ferric-limited --max=8G --high=7G -- ferric input.toml
 An unbounded overshoot triggers the system-wide OOM killer, which can kill
 unrelated processes. Inside a cgroup, only the job dies. `dmesg | grep -i oom`
 confirms a kill. A truncated log doesn't prove one. As a rule of thumb, plan on
-**~6 GB for 27 atoms at def2-SVP**.
+~6 GB for 27 atoms at def2-SVP.
 
 ### Telling a running job from a dead one
 
@@ -141,17 +141,17 @@ confirms a kill. A truncated log doesn't prove one. As a rule of thumb, plan on
   so watch it instead.
 - **`Terminated` usually means timeout(1), not the OOM killer.** Check whether
   a `timeout` wrapped the command before you look in `dmesg`.
-- **A grep filter that matches nothing** looks exactly like "the job produced
+- **A grep filter that matches nothing** looks the same as "the job produced
   nothing". Test the filter against known-good output first.
 
-## Honest scope
+## Scope
 
 ferric is a quantum chemistry engine: energies, gradients, finite-difference
 Hessians and properties. It isn't a protein-engineering tool, a docking
 program or an MD code. The QM is the product.
 
-Its analytic Hessian covers RHF, UHF and ROHF only (other frequencies are finite
-differences of the gradient), and it has no thermochemistry (entropy, enthalpy,
+Its analytic Hessian covers RHF, UHF, ROHF and closed-shell KS LDA/GGA (other
+frequencies are finite differences of the gradient), and it has no thermochemistry (entropy, enthalpy,
 free energy). Transition-state search and IRC are Python-only and closed-shell only
 ([Golden paths](applications.md) Step 5). If a task asks for something ferric
 can't do, such as designing mutations or predicting ΔΔG, say so instead of

@@ -119,8 +119,9 @@ pub struct RsGdfFitDiagnostics {
     pub n_dropped: usize,
     /// The absolute cut used.
     pub lindep: f64,
-    /// Smallest kept / largest dropped metric eigenvalue.
+    /// Smallest kept metric eigenvalue.
     pub s_kept_min: f64,
+    /// Largest dropped metric eigenvalue (`None` when nothing is dropped).
     pub s_dropped_max: Option<f64>,
     /// `max |Wm_Loewner − Wm_textbook|`: the size of the kept–dropped block
     /// (0 when nothing is dropped). Reported even when the textbook mutant
@@ -128,11 +129,13 @@ pub struct RsGdfFitDiagnostics {
     pub cross_norm: f64,
     /// Whether the kept–dropped block was OMITTED (test mutant only).
     pub textbook_metric: bool,
-    /// Shifted 3-centre / 2-centre derivative calls (SR).
+    /// Shifted 3-centre derivative calls (SR).
     pub n_sr3_deriv: usize,
+    /// Shifted 2-centre derivative calls (SR).
     pub n_sr2_deriv: usize,
-    /// Half-sphere G vectors and `pair_ft_deriv` chunks (LR).
+    /// Half-sphere G vectors (LR).
     pub n_g_half: usize,
+    /// `pair_ft_deriv` chunks the LR G vectors were processed in.
     pub n_g_chunks: usize,
 }
 
@@ -535,7 +538,7 @@ impl SrRotatedDeriv {
                 rot.mutant
             )));
         }
-        let Some(rb) = RotatedBasis::detect(cell, obs, rot, "RS-GDF derivatives")? else {
+        let Some(rb) = crate::sr_rotation::detect(cell, obs, rot, "RS-GDF derivatives")? else {
             return Err(FerricError::General(
                 "RS-GDF derivatives: the build rotated its SR walk but the orbital basis given \
                  to the derivative has nothing to rotate (another basis than the build's)"

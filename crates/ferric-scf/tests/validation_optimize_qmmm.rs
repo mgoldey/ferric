@@ -553,12 +553,15 @@ fn build_system(case: &Case, atoms: &[QmmmAtom]) -> QmmmSystem {
 
 /// `cfg.scf` handed to `optimize_qmmm` (and reproduced by [`evaluate`]).
 fn base_scf() -> RhfConfig {
-    RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        max_iter: 300,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        // The FD checks difference single-point KS energies over 5e-5 Bohr.
+        // The f32 RI-J default moves each energy by ~1e-7 Ha, which misses
+        // the analytic gradient by 1e-4..1e-3 Ha/Bohr. The relaxations are
+        // geometry tasks and resolve to f64 without the pin.
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10)
+        .with_max_iter(300)
 }
 
 fn coords_of(atoms: &[QmmmAtom]) -> Array2<f64> {
@@ -1628,7 +1631,7 @@ fn rhf_rcd_ethane_waters_residues() {
 //   differentiate the energy the SCF computed, so the pre-registered looser
 //   KS floor (1e-7..1e-6) did not materialize.
 // - Keep: the host charge (q = -0.1) sits 0.8315 Bohr = 0.44 A from the link H,
-//   and the optimization CONVERGES (13 steps, gradient FD-correct). The
+//   and the optimization CONVERGES (8 steps from the Lindh start, gradient FD-correct). The
 //   divergence recorded elsewhere for Keep does not occur at this host charge.
 // - UHF/UKS: <S^2> 0.7525..0.7649, stability STABLE at start and end; <S^2>
 //   drift over every FD displacement < 1e-4.

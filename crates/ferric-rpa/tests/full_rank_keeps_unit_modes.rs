@@ -1,7 +1,7 @@
 //! `trunc_thresh = 0` means full rank: every static dielectric mode is kept,
 //! including one whose λ(0) is exactly 1.0.
 //!
-//! The old filter `|λ − 1| > trunc_thresh` dropped such a mode at
+//! A filter `|λ − 1| > trunc_thresh` drops such a mode at
 //! `trunc_thresh = 0`. The energy cannot see the drop (the mode is a null
 //! vector of Π(iω) at every ω and contributes ln 1 + 1 − 1 = 0), so this test
 //! pins what CAN see it: the returned rank and eigenpotentials.
@@ -15,7 +15,7 @@ use ndarray::Array2;
 ///
 /// The EXACT 1.0 relies on LAPACK returning the decoupled row/column of ε̃(0)
 /// untouched (it does with the OpenBLAS LAPACK here). A LAPACK that rounds it
-/// to 1 ± ε would make the old filter keep it too; the setup asserts in the
+/// to 1 ± ε would make that filter keep it too; the setup asserts in the
 /// test turn that into a loud failure rather than a silently vacuous pass.
 fn inter_with_a_null_aux_row() -> RpaIntermediates {
     let (naux, nocc, nvir) = (6, 2, 3);

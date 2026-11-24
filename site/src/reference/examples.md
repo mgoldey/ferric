@@ -1,7 +1,9 @@
 # Examples
 
-This page indexes every input file in `examples/`. There are 81 TOML files
-and no Python scripts. Run one from the repository root:
+This page indexes every input file in `examples/`. There are 103 TOML files.
+Three Python scripts that build methods from `AoIntegrals` blocks are in
+`examples/python/` ([Python bindings](../using/python.md#building-blocks)).
+Run a TOML file from the repository root:
 
 ```bash
 OPENBLAS_NUM_THREADS=1 cargo run --release --bin ferric -- examples/water-rhf.toml
@@ -9,13 +11,19 @@ OPENBLAS_NUM_THREADS=1 cargo run --release --bin ferric -- examples/water-rhf.to
 
 ## What CI checks
 
-**CI parses every shipped example, but runs only the three listed below.** The test
+CI parses every shipped example and runs the three listed below. The test
 `all_shipped_examples_parse` (in `crates/ferric-cli/src/config.rs`) loads
-every `examples/*.toml` through the strict parser. It also checks that each
-file's `[molecule] xyz` path exists. It does not execute the calculation or
-compare any energy.
+every `examples/*.toml` and `examples/full/*.toml` through the strict parser.
+It also checks that each file's `[molecule] xyz` path exists. It does not
+execute the calculation or compare any energy.
 
-Three examples are also executed by integration tests in
+`examples/full/` holds one fully specified input per `method.kind`: every key
+written at its default (see
+[Fully specified examples](./input.md#fully-specified-examples)). The test
+`full_examples_anchor.rs` runs each of them and the minimal input in its
+header, and requires identical run logs.
+
+Four examples are also executed by integration tests in
 `crates/ferric-cli/tests/`:
 
 | Example | Test | What the test asserts |
@@ -23,11 +31,11 @@ Three examples are also executed by integration tests in
 | `water-rhf.toml` | `epistemic_warning.rs`, `verbose_trace.rs`, `qmmm_reports_the_pqr_as_its_geometry.rs` | The run completes and prints no `[warning]` grade line. |
 | `water-tdhf-static-alpha.toml` | `epistemic_warning.rs` | The Smoke-grade warning goes to stderr and not to stdout. |
 | `water-qmmm.toml` | `qmmm_reports_the_pqr_as_its_geometry.rs` | The embedded energy `-74.9653197421` appears in the output. |
+| `water-rhf-md.toml` | `md_task.rs` | The run writes 21 trajectory frames and 21 CSV rows, and the conserved energy stays within 5e-5 Hartree of its start (measured 1.8e-5). |
 
 Every other number in the "Reference in header" column below is copied
-verbatim from that file's comment block. **Nothing in CI re-checks it.** Where
-the header cites a Rust test as the real reference, that test is the check,
-not the example.
+verbatim from that file's comment block, and CI does not re-check it. Where
+the header cites a Rust test as the reference, that test is the check.
 
 ## Examples that need extra setup
 
@@ -55,7 +63,9 @@ See [SCF and DFT](../methods/scf.md).
 | `water-rhf-symmetry.toml` | H2O / STO-3G | `rhf` + `[scf] symmetry` | — | Point-group-blocked RHF (C2v); `irrep_nelec` shown commented. |
 | `h_uhf.toml` | H atom / STO-3G, doublet | `uhf` | — | |
 | `h2_opt.toml` | stretched H2 / STO-3G | `rhf` / optimize | — | |
+| `h2-rimp2-frequencies.toml` | H2 / cc-pVDZ | `rimp2` / frequencies | — | Central differences of the analytic RI-MP2 gradient (6 N gradients); also `scs-mp2`, `oo-rimp2`, `pdep-rpa`. |
 | `water-frequencies.toml` | H2O / STO-3G | `rhf` / frequencies | — | Finite-difference Hessian (`hessian = "fd"`). Check `Hessian asymmetry`. |
+| `water-rhf-md.toml` | H2O / STO-3G | `rhf` / md | "stays within 1.8e-5 Hartree of its start" (the conserved column) | Twenty NVE velocity Verlet steps of 0.25 fs from 300 K Maxwell-Boltzmann velocities; writes `water-rhf-md.md.xyz` and `.md.csv`. See [Molecular dynamics](../using/md.md). Run by `crates/ferric-cli/tests/md_task.rs`. |
 | `nh2-rohf-frequencies.toml` | NH2 doublet / cc-pVDZ | `rohf` / frequencies | `crates/ferric-scf/tests/validation_rohf_hessian.rs` | Analytic ROHF Hessian. |
 | `benzene-dfb3lyp.toml` | benzene / def2-SVP | `ksdft` B3LYP | — | RI-JK is on automatically for `ksdft`. |
 | `benzene-dfb3lyp-mpi.toml` | benzene / cc-pVDZ | `ksdft` B3LYP | — | Run under `mpirun` with the MPI build (see its header). |
@@ -65,9 +75,15 @@ See [SCF and DFT](../methods/scf.md).
 | `water-pbe-pruned-grid.toml` | H2O / cc-pVDZ | `ksdft` PBE / energy | "removes ~23% of the grid points" (at 75×110) | Validated in `crates/ferric-dft/tests/grid_prune_live_scf.rs`. |
 | `h2-lda-opt.toml` | H2 / STO-3G | `ksdft` LDA / optimize | — | |
 | `water-qmmm.toml` | H2O + Na⁺ (PQR) / STO-3G | `rhf` + `[qmmm]` | "vacuum −74.9629466809, embedded −74.9653197421, i.e. −1.489 kcal/mol from the ion at 4 A. Verified against `ferric.run_rhf(point_charges=...)` to all 10 digits." | The vacuum number is at the PQR geometry, not the xyz. The embedded number is asserted by a test. |
+| `water-qmmm-thole.toml` | H2O + 3 polarizable MM sites (PQR) / STO-3G | `rhf` + `[qmmm]` with `polarizabilities_angstrom3` | "E = -75.02570291 Ha, E_pol = -0.06596986 Ha" (the PySCF-based prototype, `testdata/reference/water_sto-3g_pe_three_sites.json`) | Thole-damped induced dipoles, `thole_a = 2.1304`. The CLI energy equals `run_qmmm` bit for bit (`test_cli_cdft_thole.py`). |
+| `lih-cdft-charge.toml` | LiH / def2-SVP | `uhf` + `[cdft]` | — | Li population held at 2.2 electrons (`kind = "charge"`). The `cdft_uhf.rs` configuration. |
+| `lih-plus-cdft-spin.toml` | LiH⁺ doublet / def2-SVP | `uhf` + `[cdft]` | — | N<sub>α</sub> − N<sub>β</sub> on Li held at 0.45 (`kind = "spin"`). |
+| `henep-cdft.toml` | HeNe⁺ doublet / def2-SVP | `uhf` + `[cdft]` | "E = -130.4021906 Ha, lambda = -2.754 Ha per electron" | The state pinned by `cdft_outer_loop.rs`: h-core start, level shift 0.5, descent off, 99 × 302 grid. |
 | `water-pcm.toml` | H2O / STO-3G | `rhf` + `[pcm]` | — | IEF-PCM water (`solvent = "water"`, ε = 78.4). |
 | `water-rhf-smeared-charge.toml` | H2O / STO-3G | `rhf` + `[external_potential]` | — | One Gaussian-smeared charge (`width`, Bohr) and one point charge. |
+| `hbr-x2c-rhf.toml` | HBr / cc-pVDZ | `rhf` + `[scf] relativistic = "x2c1e"` | — | Spin-free X2C-1e core Hamiltonian; energy only, Ungraded. PySCF `sfx2c1e()` gives −2597.626993 Ha (testdata/reference/x2c_scf_sfx2c1e.json; the agreement is asserted in crates/ferric-scf/tests/x2c_scf.rs). |
 | `o2-uhf-stability-descent.toml` | O2 triplet / STO-3G | `uhf` | "the descent follows the downhill eigenvector to the UHF minimum (-147.63530 Ha)" | `[scf] stability_descent = true`. |
+| `water-cation-uhf-initial-mom.toml` | H2O+ doublet / STO-3G | `uhf` | — | `[scf] mom_reference = "initial"`: initial MOM holds the starting guess's occupied block. |
 | `h2-cell-rhf.toml` | H2 / STO-3G, 4 Bohr cubic cell | `rhf` + `[cell]`, Gamma point | — | Periodic, dense J/K, `exxdiv = "ewald"`. |
 | `h2-cell-kpts-rhf.toml` | H2 / STO-3G, 4 Bohr cubic cell | `rhf` + `[cell]`, 2×2×2 k-mesh | — | Periodic k-point RHF, dense J/K. |
 | `h2-cell-kpts-ksdft.toml` | H2 / STO-3G, 4 Bohr cubic cell | `ksdft` + `[cell]`, 1×1×2 k-mesh | PBE0 | Periodic k-point closed-shell KS-DFT, dense J/K. |
@@ -91,16 +107,22 @@ See [The MP2 family](../methods/mp2.md).
 | `water-drpa.toml` | H2O / 6-31G | `drpa` | — | Exact dRPA (no `[local]`). |
 | `water-drpa-local.toml` | H2O / 6-31G | `drpa` + `[local]` | — | Amplitude-threshold dRPA, `eps = 1e-4`, `reference = true` (prints the error against the canonical plasmon dRPA). A comment shows the `eps_sweep` form. |
 | `water-mp3.toml` | H2O / cc-pVDZ | `mp3` | — | |
+| `oh-opmp3-pbe0.toml` | OH / cc-pVDZ | `opmp3` | — | SSD-OPMP3 on a ROKS/PBE0 reference at the paper's x_ss = 0.5; exact integrals. Smoke grade. |
+| `butane-local-opmp3-pbe0.toml` | butane / 6-31G | `opmp3` + `[local]` | — | Amplitude-threshold local OP-MP3 on an RKS/PBE0 reference (RI integrals, `eps = 1e-5`). Sets `reference = true`, so it also runs the canonical OP-MP3 and prints the local error. |
 | `water-oo-rimp2.toml` | H2O / cc-pVDZ | `oo-rimp2` | — | Proven (narrow) grade. |
 | `water-attmp2.toml` | H2O / aug-cc-pVDZ | `att-rimp2` | — | ω = 0.420 Å⁻¹. |
-| `water-attmp2-terfc.toml` | H2O / aug-cc-pVDZ | `att-rimp2` | — | `att_operator = "terfc"`, `att_r0` = 1.05 Å. Needs the terf tables. |
+| `water-attmp2-terfc.toml` | H2O / aug-cc-pVDZ | `att-rimp2` | — | `att_operator = "terfc"`, `att_r0` = 1.05 Å (the aug-cc-pVDZ table value, set explicitly). Needs the terf tables. |
 | `alkane8-attmp2-terfc-local-direct.toml` | C8H18 / 6-31G | `att-rimp2` | `[local]` | Integral-direct amplitude-threshold LMP2 with a decoupled terfc seam (`att_omega`, r0·ω = 4). Needs the terf tables. |
 | `water-scs-mp2.toml` | H2O / cc-pVDZ | `scs-mp2` | — | Grimme coefficients (defaults). |
-| `water-scs-mp2-2terfc.toml` | H2O / cc-pVDZ | `scs-mp2-2terfc` | — | Thesis defaults r0 = 0.75/1.05 Å. Needs the terf tables. |
+| `water-scs-mp2-2terfc.toml` | H2O / cc-pVDZ | `scs-mp2-2terfc` | — | aTZ-fit r0 = 0.75/1.05 Å set explicitly (cc-pVDZ has no fit of its own). Needs the terf tables. |
 | `water-laplace-rimp2.toml` | H2O / cc-pVDZ | `laplace-mp2` | — | |
+| `water-omega-ri-mp2.toml` | H2O / cc-pVDZ | `rimp2` | — | omega-RI fit, `[ri] metric = "erfc"`, ω = 0.1 Bohr⁻¹ |
+| `water-omega-ri-cdd-mp2.toml` | H2O / cc-pVDZ | `laplace-mp2` | — | omega-RI-CDD-MP2 with the paper's screens |
+| `water-omega-ri-rpa.toml` | H2O / cc-pVDZ | `pdep-rpa` | — | omega-RI RPA, energy only |
 | `water-laplace-sos-mp2.toml` | H2O / cc-pVDZ | `laplace-sos-mp2` | — | |
 | `water-mp2v.toml` | H2O / aug-cc-pVDZ | `mp2-v` | — | The header warns that aDZ is outside the fitted basis. Needs the terf tables. |
-| `water-rs-mp2-rpa.toml` | H2O / aug-cc-pVDZ | `rs-mp2-rpa` | — | Smoke grade. |
+| `water-rs-mp2-rpa.toml` | H2O / aug-cc-pVDZ | `rs-mp2-rpa` | — | Proven grade; prints a notice that the ω choice is unbenchmarked. |
+| `water-rs-mp2-rpa-scan.toml` | H2O / aug-cc-pVDZ | `rs-mp2-rpa` | — | Three ω and both formulations in one job (`omega_scan`, `formulations`). |
 
 ## Coupled cluster and double hybrids
 
@@ -114,8 +136,22 @@ See [Coupled cluster](../methods/cc.md) and
 | `water-linlccd-local.toml` | H2O / 6-31G | `linlccd` + `[local]` | — | Amplitude-threshold LinLCCD(hh), `eps = 1e-4`. |
 | `water-ccd.toml` | H2O / STO-3G | `ccd` | — | |
 | `water-ccsd-t.toml` | H2O / STO-3G | `ccsd(t)` | — | Prints the CCSD correlation energy, the (T) correction and the total. |
+| `water-eom-ccsd.toml` | H2O / cc-pVDZ | `eom-ccsd` | "PySCF EOMEESinglet run on the same density-fitted integrals gives the lowest root omega = 0.2999479405 Ha" | Five lowest singlets, all electrons, aux `cc-pvdz-ri`. |
 | `water-wb97xlv.toml` | H2O / 6-31G | `wb97x-l-v` | — | λ = 0.6, ω = 0.1 Bohr⁻¹ (published values). Proven (narrow) grade. |
-| `water-b2plyp.toml` | H2O / cc-pVDZ | `b2plyp` | — | Spike grade. Aux `cc-pvdz-rifit` (an alias of `cc-pvdz-ri`). |
+| `water-dsd-pbep86.toml` | H2O / cc-pVDZ | `dsd-pbep86` | — | Proven grade (Kozuch and Martin 2013, no dispersion); same notice as `water-b2plyp.toml`. |
+| `nh2-b2plyp.toml` | NH2 doublet / cc-pVDZ | `b2plyp` | — | UKS reference with unrestricted RI-MP2 spin components (energy only). |
+| `nh2-dsd-pbep86-d3bj.toml` | NH2 doublet / cc-pVDZ | `dsd-pbep86` + `[dft] dispersion = "d3bj"` | — | The DSD-PBEP86-D3(BJ) refit set on a UKS reference. |
+| `water-b2plyp.toml` | H2O / cc-pVDZ | `b2plyp` | — | Proven grade; prints a notice that the default grid and RI-J storage are outside the evidence. Aux `cc-pvdz-rifit` (an alias of `cc-pvdz-ri`). |
+
+## Multireference
+
+See [CAS-CI and CASSCF](../methods/ci.md).
+
+| File | System / basis | `kind` | Reference in header | Notes |
+|---|---|---|---|---|
+| `water-casscf.toml` | H2O / 6-31G | `casscf` | "PySCF mcscf.CASSCF on ferric's AO integrals gives E = -76.0369690965 Ha" | CAS(4,4) above 3 core orbitals, canonical orbitals on return. |
+| `o2-casscf-triplet.toml` | O2 / 6-31G | `casscf` | "PySCF mcscf.CASSCF on ferric's AO integrals gives E = -149.6367298537 Ha" | The triplet as the lowest M_s = 1 root of CAS(8,6), `n_elec_active = [5, 3]`, from the closed-shell RHF. |
+| `n2-nevpt2.toml` | N2 / 6-31G | `nevpt2` | — | SC-NEVPT2 on a CAS(6,6) CASSCF reference; prints the eight class energies. |
 
 ## RPA, C6 and properties
 
@@ -152,6 +188,8 @@ See [RPA and GW](../methods/rpa-gw.md).
 |---|---|---|---|---|
 | `water-tda.toml` | H2O / cc-pVDZ | `tda` (CIS, 5 roots) | — | Default aux `cc-pvdz-rifit` (an alias of `cc-pvdz-ri`). |
 | `water-tddft-pbe.toml` | H2O / cc-pVDZ | `tddft` @PBE (5 roots) | — | Includes the f_xc kernel. |
+| `water-tddft-cam-b3lyp-triplet.toml` | H2O / 6-31G | `tddft` @CAM-B3LYP, `spin = "triplet"` (5 roots) | — | Range-separated exchange (erf-metric RI) and the triplet kernel. |
+| `nh2-tddft-uks.toml` | NH2 / 6-31G | `tddft` @B3LYP on a UKS reference (6 roots) | — | Spin-conserving unrestricted response; prints the reference and per-root ⟨S²⟩. |
 
 See also [Capabilities and validation](./validation.md) for the grade of
 each `kind` and its evidence, and [Input reference](./input.md) for every key.

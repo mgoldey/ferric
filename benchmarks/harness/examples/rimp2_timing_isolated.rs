@@ -19,14 +19,12 @@ fn main() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
 
-    let rhf_cfg = RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        max_iter: 100,
-        energy_conv: 1e-8,
-        density_conv: 1e-7,
-        ..Default::default()
-    };
+    let rhf_cfg = RhfConfig::default()
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit")
+        .with_max_iter(100)
+        .with_energy_conv(1e-8)
+        .with_density_conv(1e-7);
 
     eprintln!("Solving RHF/aug-cc-pVTZ on benzene (not timed)...");
     let t_rhf = Instant::now();

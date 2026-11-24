@@ -87,6 +87,7 @@ use ferric_rpa::PdepRpaConfig;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -138,12 +139,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
 }
 
 fn text<'a>(v: &'a Value, ptr: &str, ctx: &str) -> &'a str {
@@ -220,7 +215,7 @@ fn alpha_row(system: &str, basis_name: &str) {
     let xyz = workspace_root().join(MOL_DIR).join(format!("{system}.xyz"));
     let mol = Molecule::load_xyz_with_charge(xyz.to_str().unwrap(), 0, 1)
         .unwrap_or_else(|e| panic!("{}: {e:?}", xyz.display()));
-    let enuc_ref = num(&r, "/nuclear_repulsion", &ctx);
+    let enuc_ref = num_ctx(&r, "/nuclear_repulsion", &ctx);
     assert!(
         (mol.nuclear_repulsion() - enuc_ref).abs() < TOL_ENUC,
         "{ctx}: nuclear repulsion mismatch — geometry/unit slip"
@@ -241,19 +236,17 @@ fn alpha_row(system: &str, basis_name: &str) {
     // inject PySCF's orbitals into.
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let cfg = RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9);
     let own = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg)
         .unwrap_or_else(|e| panic!("{ctx}: solve_rhf failed: {e:?}"));
     assert!(own.converged, "{ctx}: ferric RHF not converged");
     check(
         &ctx,
         "RHF energy |d|",
-        (own.energy - num(&r, "/scf/energy", &ctx)).abs(),
+        (own.energy - num_ctx(&r, "/scf/energy", &ctx)).abs(),
         TOL_E_SCF,
     );
 

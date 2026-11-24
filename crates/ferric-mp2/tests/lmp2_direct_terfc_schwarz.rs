@@ -62,10 +62,7 @@ fn setup(xyz: &str, nc: usize) -> Setup {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_energy_conv(1e-10),
     )
     .unwrap();
     Setup {
@@ -174,6 +171,7 @@ fn check(xyz: &str, nc: usize, min_frac: f64, which: &[usize]) {
 }
 
 /// Cheap: C4 linked.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn terfc_schwarz_trivial_limit_and_mutant_c4() {
     check("alkane_4.xyz", 4, 0.04, &[0]);

@@ -40,6 +40,7 @@
 mod kpoint_open_shell_cli;
 use kpoint_open_shell_cli::*;
 
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn printed_force_equals_the_library_force_for_uks_with_mutants() {
     let (g, at) = force_anchor("uks", Method::Uks, "PBE", "UKS");
@@ -81,21 +82,25 @@ fn printed_force_equals_the_library_force_for_uks_with_mutants() {
     assert!(max_diff(&g, &bad) > 1e-4, "functional mutant not detected");
 }
 
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn printed_force_equals_the_library_force_for_roks() {
     force_anchor("roks", Method::Roks, "PBE", "ROKS");
 }
 
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn printed_force_equals_the_library_force_for_rohf() {
     force_anchor("rohf", Method::Rohf, "", "ROHF");
 }
 
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn printed_force_equals_the_library_force_for_a_uks_global_hybrid() {
     force_anchor("uks-pbe0", Method::Uks, "PBE0", "UKS");
 }
 
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn printed_energy_equals_the_library_energy_for_every_open_shell_route() {
     for (tag, method, f, key) in [
@@ -218,12 +223,10 @@ fn library_gamma_uks_energy(functional: &str) -> f64 {
     .unwrap();
     let mut c = GammaUksConfig::new(functional);
     (c.grid, c.exxdiv) = (grid(), ExxDiv::Ewald);
-    c.scf = RhfConfig {
-        use_sad_guess: false,
-        density_conv: 1e-10,
-        max_iter: 200,
-        ..Default::default()
-    };
+    c.scf = RhfConfig::default()
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_density_conv(1e-10)
+        .with_max_iter(200);
     let sizing = GammaRshSizing {
         rsgdf_omega: DEFAULT_RSGDF_OMEGA,
         budget_bytes: None,
@@ -265,6 +268,7 @@ const SAME_ARITHMETIC: f64 = 1e-12;
 /// log) to [`SAME_ARITHMETIC`]. MUTANTS the anchor must tell apart: the global
 /// functional of the same family (PBE for SCAN, PBE0 for HSE06) and the other
 /// mesh centring.
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn cli_open_shell_scan_and_hse06_equal_library_solve_kuks() {
     for (f, sibling) in [("SCAN", "PBE"), ("HSE06", "PBE0")] {
@@ -370,13 +374,14 @@ fn open_shell_refusals_have_exact_messages() {
             && e.contains("the k-point ROKS SCAN / r2SCAN energy is validated on the dense-AFT"),
         "{tag}: {e}"
     );
-    let tag = "roks-opt-SCAN";
-    let e = refused(&run(&input(tag, Method::Roks, "SCAN", "optimize")), tag);
-    assert!(
-        e.contains("method.task = \"optimize\" with [cell] kmesh")
-            && e.contains("SCAN: the k-point ROKS meta-GGA force and stress"),
-        "{tag}: {e}"
-    );
+    // The ROKS SCAN force runs on the dense-AFT J/K (#498,
+    // periodic_kroks_mgga_derivs.rs); on RS-GDF the energy refusal fires
+    // first, so optimize is refused at plan time too.
+    let tag = "roks-opt-SCAN-rsgdf";
+    let mut i = input(tag, Method::Roks, "SCAN", "optimize");
+    i.jk = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
+    let e = refused(&run(&i), tag);
+    assert!(e.contains("dense-AFT") && e.contains("SCAN"), "{tag}: {e}");
     // ROKS wB97X has an energy here but no validated force: optimize is
     // refused by the derivative allowlist, before any integral (the ROKS and
     // UKS HSE06 / CAM-B3LYP forces run: periodic_rsh_open_mgga_derivs.rs).

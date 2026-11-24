@@ -17,12 +17,12 @@
 //!
 //! | test | systems / basis (aux) | reference |
 //! |---|---|---|
-//! | G0W0@HF | H2O, NH3, N2 / cc-pVDZ (cc-pvdz-ri), aug-cc-pVDZ (aug-cc-pvdz-rifit) | `gw_ac` |
-//! | G0W0@PBE | H2O / cc-pVDZ, aug-cc-pVDZ; N2 / cc-pVDZ | `gw_ac`, `vhf_df = True` |
+//! | G0W0@HF | H2O, NH3, N2 / cc-pVDZ (cc-pvdz-ri), aug-cc-pVDZ (aug-cc-pvdz-rifit) | the grid-free dRPA pole sum at the Padé nodes (sub-block `exact`), and `gw_ac` itself |
+//! | G0W0@PBE | H2O / cc-pVDZ, aug-cc-pVDZ; N2 / cc-pVDZ | the grid-free `exact` sub-block (`gw_ac`'s Σx(DF) − v_xc, `vhf_df = True`); `gw_ac`'s own QP energies are a must-miss control |
 //! | G0W0@HF, frozen core 1 | H2O / cc-pVDZ | `gw_ac`, `frozen = 1` |
-//! | G0W0@HF + ECP | I2, Xe, Ag2 / aug-cc-pVDZ-PP (def2-tzvp-rifit) | `gw_ac`, same inline ECP |
+//! | G0W0@HF + ECP | I2, Xe, Ag2 / aug-cc-pVDZ-PP (def2-tzvp-rifit) | the grid-free `exact` sub-block, same inline ECP |
 //! | U-G0W0@UHF | OH, CH3, NH2 / cc-pVDZ, aug-cc-pVDZ; O2 (³Σg⁻), CH2 (³B1) / aug-cc-pVDZ | `ugw_ac` on a stability-checked UHF |
-//! | U-G0W0@UKS/PBE | OH, CH3, NH2 / cc-pVDZ | `ugw_ac` Σc(iω) on a stability-checked exact-J UKS/PBE, textbook Thiele, QP solved in numpy with Σx − v_xc inside the QP equation (block `u_g0w0_uks_pbe`) |
+//! | U-G0W0@UKS/PBE | OH, CH3, NH2 / cc-pVDZ | `ugw_ac` Σc(iω) on a stability-checked exact-J UKS/PBE (the plain integral), and the grid-free U-dRPA pole sum at the same Padé nodes, textbook Thiele, ferric's root rule, Σx − v_xc inside the QP equation (block `u_g0w0_uks_pbe`, sub-block `exact`) |
 //! | COHSEX@HF | H2O, N2 / cc-pVDZ | numpy on PySCF's Lpq and Π(0) |
 //! | COHSEX@PBE | H2O, N2 / cc-pVDZ | same numpy on the `g0w0_pbe` RKS orbitals + PySCF Σx(DF) − v_xc (`vhf_df = True`, ferric's density floor) |
 //! | evGW₀@HF, evGW@HF | H2O / cc-pVDZ | PySCF `gw_ac.get_sigma` iterated as ferric iterates |
@@ -83,7 +83,8 @@
 //!   HF reference ferric applies no shift and PySCF's vk − v_mf is 0 (the
 //!   generator records it at ≤1e-13 Ha).
 //! * SCF: exact 4-index integrals on both sides (PBE: `df_j_aux = Some("")`;
-//!   grid (75,110) unpruned Becke, ferric's default).
+//!   grid (75,110) unpruned Becke, ferric's default; OH's UKS/PBE block is
+//!   on (99,590), see `uks_grid`).
 //! * Open shell: ferric uses a PER-SPIN mid-gap Fermi level (u_sigma.rs)
 //!   where `ugw_ac` uses one common ef; the generator runs `ugw_ac` once per
 //!   spin with ef overridden. MEASURED: the two conventions differ by ≤4 µeV
@@ -129,19 +130,21 @@
 //!
 //! | quantity | measured max \|d\| (Ha) | bar |
 //! |---|---:|---:|
-//! | QP energies, closed shell @HF | 1.32e-7 | `TOL_QP` 1e-6 |
-//! | QP energies, @PBE | 6.2e-8 | `TOL_QP_PBE` 1e-6 |
-//! | QP energies, ECP | 2.5e-6 | `TOL_QP_ECP` 2e-5 |
-//! | QP energies, U-G0W0 | 7.0e-6 (OH/cc-pVDZ, marginal); others ≤ 8.7e-7 | `TOL_QP_U` 3e-5 |
+//! | QP energies, closed shell @HF, vs the grid-free `exact` block | 1.2e-8 (vs PySCF nw = 100: 1.6e-7) | `TOL_QP` 1e-6 |
+//! | QP energies, @PBE, vs the grid-free `exact` block | 1.8e-8 (N2 MO 9) | `TOL_QP_PBE` 1e-6 |
+//! | QP energies, ECP, vs the grid-free `exact` block | 8.0e-10 (Xe); PySCF nw = 100 is 2.1e-5 off on Ag2 HOMO−1 | `TOL_QP_ECP` 2e-5 |
+//! | QP energies, U-G0W0@UHF vs the grid-free `exact` block | 1.2e-5 (OH/cc-pVDZ β LUMO+2, an ill-conditioned continuation); others ≤ 3.8e-8 | `TOL_QP_U` 3e-5 |
 //! | COHSEX | 9.4e-10 | `TOL_COHSEX` 1e-8 |
 //! | COHSEX@PBE | 1.19e-9 | `TOL_COHSEX_KS` 1e-8 |
 //! | evGW₀ / evGW | 5.7e-7 | `TOL_EV` 5e-6 |
 //! | Σx (DF) | 4.9e-9 | `TOL_SX` 3e-8 |
 //! | Σx (DF), ECP | 4.6e-6 | `TOL_SX_ECP` 2e-5 |
-//! | Σc(ef + iω) at the Padé nodes (no continuation) | 8.6e-11 | `TOL_SIGMA_C_IW` 1e-9 |
-//! | U-G0W0@UKS: Σc(ef_σ + iω) at the Padé nodes | 8.7e-9 (OH β); CH3 3.0e-11 | `TOL_SIGMA_C_IW_UKS` 1e-7 |
+//! | Σc(ef + iω) at the Padé nodes (no continuation), plain quadrature vs PySCF | 8.6e-11 | `TOL_SIGMA_C_IW` 1e-9 |
+//! | closed shell: product-rule Σc(ef + iω) vs the exact pole sum | 6.6e-11 (H2O @PBE); the plain sum at the same 100 points misses by 3.1e-3–9.6e-3 | `TOL_SIGMA_C_IW_EXACT` 1e-8 |
+//! | U-G0W0@UKS: plain-quadrature Σc(ef_σ + iω) vs PySCF at the Padé nodes | 8.7e-9 (OH β); CH3 3.0e-11 | `TOL_SIGMA_C_IW_UKS` 1e-7 |
+//! | U-G0W0@UKS: product-rule Σc(ef_σ + iω) vs the exact pole sum | 4.4e-10 (CH3 β) | `TOL_SIGMA_C_IW_UKS_EXACT` 1e-8 |
 //! | U-G0W0@UKS: v_xc diagonal | 7.1e-10 | `TOL_VXC_UKS` 1e-8 |
-//! | U-G0W0@UKS: QP energies vs textbook (single-root orbitals) | 2.6e-8 | `TOL_QP_UKS` 3e-7 |
+//! | U-G0W0@UKS: QP energies vs the `exact` reference (every orbital) | 2.7e-8 (OH α) | `TOL_QP_UKS` 3e-7 |
 //! | SCF energy | 4.7e-11 (ECP: 5.1e-8, Ag2) | `TOL_E_SCF` 1e-9, `TOL_E_SCF_ECP` 2.5e-7 |
 //! | ε_mf | 3.6e-9 | `TOL_EPS_MF` 3e-8 |
 //! | ε_mf, ECP | 2.9e-6 | `TOL_EPS_MF_ECP` 1e-5 |
@@ -155,9 +158,15 @@
 //! * Basis: ferric's QP energies at basis A miss basis B's reference.
 //! * Starting point: ferric G0W0@PBE misses the @HF reference.
 //! * W quadrature: ferric @PBE with a 16-point W integral must MISS the
-//!   100-point reference and MATCH PySCF's 16-point value (recorded in
-//!   `diagnostics.pbe_recipe_sensitivity.nw_16`, Padé grid kept at 101
-//!   points as ferric does). This proves `n_points` reaches W.
+//!   100-point `exact` reference (H2O/cc-pVDZ: 76 meV). This proves
+//!   `n_points` reaches W. (ferric's closed shell integrates the Σc kernel exactly, as
+//!   the open shell does, so it does not reproduce PySCF's 16-point plain
+//!   sum.)
+//! * Plain quadrature: ferric @PBE must MISS PySCF's nw = 100 QP energies
+//!   (H2O/cc-pVDZ: 102 meV on HOMO−2), and the plain Σc(iω) at 100 points
+//!   must miss the exact pole sum by 10× its bar, so the closed-shell
+//!   reference resolves the quadrature defect the product rule removes
+//!   (wiki/notes/gw-deep-states-2026-11-09).
 //! * Frozen core: ferric at frozen core 1 matches the frozen-core reference
 //!   and misses the all-electron one.
 //! * Spin: ferric's α HOMO misses the reference β HOMO.
@@ -206,7 +215,9 @@ use std::path::{Path, PathBuf};
 use ferric_core::basis::{self, BasisSet};
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
-use ferric_gw::vxc_mo::vxc_diagonal_mo;
+use ferric_core::FerricError;
+use ferric_dft::grid::AtomicGridConfig;
+use ferric_gw::vxc_mo::vxc_diagonal_mo_on_grids;
 use ferric_gw::{run_gw, run_u_gw, GwConfig, GwMethod, GwResult, UGwResult};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
@@ -217,6 +228,7 @@ use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::stability::StabilityVerdict;
 use ferric_scf::uhf::solve_uhf;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use num_complex::Complex64;
 use serde_json::Value;
 
@@ -227,17 +239,20 @@ const HA_TO_EV: f64 = 27.211_386_245_988;
 const N_QUAD: usize = 100;
 
 // Measured floors (worst |d| over every orbital in the window, all systems).
-// Closed-shell G0W0@HF: 1.32e-7 Ha (H2O/cc-pVDZ MO 7; the Padé continuation
-// and QP root, since Σc on the imaginary axis agrees to 1e-10).
+// Closed-shell G0W0@HF: 1.2e-8 Ha vs the grid-free `exact` block (H2O/cc-pVDZ
+// MO 7); 1.6e-7 Ha vs PySCF's nw = 100 plain quadrature, which this file also
+// requires at @HF.
 const TOL_QP: f64 = 1e-6;
 // U-G0W0@UHF: 7.0e-6 Ha on OH/cc-pVDZ β MO 7 (OH's π hole is MARGINAL: the
 // lowest orbital-Hessian eigenvalue is zero). Every other open-shell case,
 // OH/aug-cc-pVDZ included, is ≤ 8.7e-7.
 const TOL_QP_U: f64 = 3e-5;
-// G0W0@PBE: 6.2e-8 Ha (N2/cc-pVDZ MO 9), references with ferric's XC density
-// floor and the textbook Thiele continuation (see gen_gw.py).
+// G0W0@PBE: 1.8e-8 Ha (N2/cc-pVDZ MO 9) vs the grid-free `exact` block, built
+// on PySCF's RKS with ferric's XC density floor and the textbook Thiele
+// continuation (see gen_gw.py).
 const TOL_QP_PBE: f64 = 1e-6;
-// ECP: 2.5e-6 Ha (I2 MO 26), from the ε_mf offset below.
+// ECP: 8.0e-10 Ha vs the grid-free `exact` block (Xe); the bar is the old
+// PySCF-comparison bar (2.5e-6 Ha on I2, from the ε_mf offset below).
 const TOL_QP_ECP: f64 = 2e-5;
 // COHSEX is closed form (no Padé, no quadrature): 9.4e-10 Ha.
 const TOL_COHSEX: f64 = 1e-8;
@@ -268,6 +283,9 @@ const TOL_RESID: f64 = 1e-6;
 // 8.6e-11 Ha (H2O/cc-pVDZ @PBE). PySCF against itself moves these by 1.7e-9 Ha
 // when its PBE SCF restarts from another guess at the same thresholds.
 const TOL_SIGMA_C_IW: f64 = 1e-9;
+// Closed shell: product-rule Σc(ef + iω) vs the exact dRPA pole sum at the
+// Padé nodes (block `exact`): 6.6e-11 Ha (H2O/cc-pVDZ @PBE).
+const TOL_SIGMA_C_IW_EXACT: f64 = 1e-8;
 const TOL_ENUC: f64 = 1e-9;
 /// A reference ferric must MISS is missed by at least this multiple of the bar.
 const MUST_MISS_FACTOR: f64 = 10.0;
@@ -317,12 +335,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
 }
 
 fn vec_f64(v: &Value, ptr: &str, ctx: &str) -> Vec<f64> {
@@ -458,7 +470,7 @@ fn load_system(system: &str, xyz_rel: &str, basis_name: &str, ecp: bool) -> Sys 
         &label,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &label),
+        num_ctx(&r, "/nuclear_repulsion", &label),
         TOL_ENUC,
     );
     assert_eq!(
@@ -494,23 +506,18 @@ fn load_system(system: &str, xyz_rel: &str, basis_name: &str, ecp: bool) -> Sys 
 }
 
 fn rhf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10)
 }
 
 fn uhf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        check_stability: true,
-        scf_stability_descent: true,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_stability(ferric_scf::options::Stability::Descend)
 }
 
 /// Closed-shell HF through the level-shift ladder (Ag2 needs it; for the
@@ -531,7 +538,7 @@ fn rhf(sys: &Sys, tol_e: f64) -> ScfResult {
         &sys.label,
         "E_RHF",
         scf.energy,
-        num(&sys.r, "/rhf/energy", &sys.label),
+        num_ctx(&sys.r, "/rhf/energy", &sys.label),
         tol_e,
     );
     scf
@@ -542,12 +549,8 @@ fn rhf(sys: &Sys, tol_e: f64) -> ScfResult {
 /// NH2/cc-pVDZ and OH/aug-cc-pVTZ are known to need; the state is accepted
 /// only if its energy equals the stability-checked reference's.
 fn uhf(sys: &Sys) -> ScfResult {
-    let e_ref = num(&sys.r, "/uhf/energy", &sys.label);
-    let steered = RhfConfig {
-        level_shift: 0.5,
-        mom_after_iter: 5,
-        ..uhf_config()
-    };
+    let e_ref = num_ctx(&sys.r, "/uhf/energy", &sys.label);
+    let steered = uhf_config().with_level_shift(0.5).with_mom_after_iter(5);
     let mut tried = Vec::new();
     for (name, cfg) in [("stability-descent", uhf_config()), ("ls0.5+MOM5", steered)] {
         let res = solve_uhf(&sys.ctx, &sys.mol, &sys.obs, &sys.bounds, &cfg)
@@ -647,10 +650,13 @@ fn run_closed(
 }
 
 /// Exactness anchors + QP comparison for one closed-shell G0W0 block.
-/// `vxc` is the absolute-MO v_xc diagonal for a KS reference.
+/// `vxc` is the absolute-MO v_xc diagonal for a KS reference. The QP
+/// energies and Σc(ε_qp) are compared against `{block}{qp_sub}` (`""` for
+/// PySCF's own numbers, `"/exact"` for the grid-free pole-sum reference).
 fn check_g0w0_block(
     sys: &Sys,
     block: &str,
+    qp_sub: &str,
     res: &GwResult,
     vxc: Option<&ndarray::Array1<f64>>,
     tol_qp: f64,
@@ -701,7 +707,7 @@ fn check_g0w0_block(
         "sigma_c(eps_qp)",
         &orbs,
         res.sigma_c.as_slice().unwrap(),
-        &vec_f64(&sys.r, &format!("/{block}/sigma_c_at_qp"), &ctx),
+        &vec_f64(&sys.r, &format!("/{block}{qp_sub}/sigma_c_at_qp"), &ctx),
         tol_qp,
     );
     check_vec(
@@ -709,7 +715,7 @@ fn check_g0w0_block(
         "eps_qp",
         &orbs,
         res.eps_qp.as_slice().unwrap(),
-        &vec_f64(&sys.r, &format!("/{block}/eps_qp"), &ctx),
+        &vec_f64(&sys.r, &format!("/{block}{qp_sub}/eps_qp"), &ctx),
         tol_qp,
     )
 }
@@ -736,12 +742,17 @@ fn g0w0_hf_row(system: &str) {
             0,
             None,
         );
-        let worst = check_g0w0_block(&sys, "g0w0_hf", &res, None, TOL_QP);
+        // The grid-free reference (product-rule Σc is what run_gw computes),
+        // and PySCF's nw = 100 numbers, which at an HF start sit within the
+        // same bar over this window (the ridge is 0.3 Ha wide here).
+        let worst = check_g0w0_block(&sys, "g0w0_hf", "/exact", &res, None, TOL_QP);
+        let worst_py = check_g0w0_block(&sys, "g0w0_hf", "", &res, None, TOL_QP);
         eprintln!(
-            "{}: G0W0@HF worst |d| {:.3e} Ha ({:.4} meV)",
+            "{}: G0W0@HF worst |d| vs exact {:.3e} Ha ({:.4} meV), vs PySCF nw = 100 {:.3e} Ha",
             sys.label,
             worst,
-            worst * HA_TO_EV * 1e3
+            worst * HA_TO_EV * 1e3,
+            worst_py
         );
         qp.push(res.eps_qp.to_vec());
     }
@@ -778,16 +789,36 @@ fn g0w0_hf_n2_vs_pyscf_gw_ac() {
     g0w0_hf_row("n2");
 }
 
+/// V_xc on the SCF's grids: the flat (75,110) main grid the `*_pbe_config`
+/// SCFs pin (the reference's) and the default (50,50) VV10 grid.
+fn vxc_diagonal_mo(
+    mol: &Molecule,
+    bs: &BasisSet,
+    xc: &str,
+    scf: &ScfResult,
+) -> Result<(ndarray::Array1<f64>, ndarray::Array1<f64>), FerricError> {
+    vxc_diagonal_mo_on_grids(
+        mol,
+        bs,
+        xc,
+        scf,
+        &AtomicGridConfig::default(),
+        &AtomicGridConfig::default_nlc(),
+        None,
+    )
+}
+
 fn pbe_config() -> RhfConfig {
-    RhfConfig {
-        xc: Some("pbe".into()),
+    rhf_config()
+        .with_xc("pbe")
         // Exact J, as the reference (an empty name is the explicit opt-out of
         // the RI-J auto-default in rhf.rs `resolve_aux`).
-        df_j_aux: Some(String::new()),
+        .with_df_j_aux(String::new())
         // KS densities floor above 1e-10 on the grid (KS-DFT row uses 1e-8).
-        density_conv: 1e-10,
-        ..rhf_config()
-    }
+        .with_density_conv(1e-10)
+        // The references are PySCF on the flat (75,110) grid (gen_gw.py),
+        // not the pruned KS default AtomicGridConfig::production().
+        .with_dft_grid(AtomicGridConfig::default())
 }
 
 fn g0w0_pbe_case(system: &str, basis_name: &str, quadrature_control: bool) {
@@ -807,7 +838,7 @@ fn g0w0_pbe_case(system: &str, basis_name: &str, quadrature_control: bool) {
         &ctx,
         "E_RKS",
         scf.energy,
-        num(&sys.r, "/g0w0_pbe/rks_energy", &ctx),
+        num_ctx(&sys.r, "/g0w0_pbe/rks_energy", &ctx),
         TOL_E_SCF,
     );
     let (vxc, _) = vxc_diagonal_mo(&sys.mol, &sys.obs_bs, "pbe", &scf)
@@ -828,7 +859,11 @@ fn g0w0_pbe_case(system: &str, basis_name: &str, quadrature_control: bool) {
         0,
         Some(&vxc),
     );
-    check_g0w0_block(&sys, "g0w0_pbe", &res, Some(&vxc), TOL_QP_PBE);
+    // The headline: the grid-free reference (exact dRPA pole sum at the Padé
+    // nodes, textbook Thiele, ferric's root rule). run_gw integrates the Σc
+    // kernel exactly (`sigma::sigma_c_at_z_product`); PySCF's nw = 100 plain
+    // quadrature is not converged for the states below the HOMO at @PBE.
+    check_g0w0_block(&sys, "g0w0_pbe", "/exact", &res, Some(&vxc), TOL_QP_PBE);
     // Control: the starting point matters — @PBE misses the @HF reference.
     assert_misses(
         &ctx,
@@ -839,25 +874,25 @@ fn g0w0_pbe_case(system: &str, basis_name: &str, quadrature_control: bool) {
         MUST_MISS_FACTOR,
     );
     if quadrature_control {
-        // Control: a 16-point W integral must MISS the 100-point reference and
-        // MATCH PySCF's 16-point value on the HOMO (Padé grid held at 101
-        // points on both sides), i.e. `n_points` really reaches W.
-        let res16 = run_closed(&sys, &scf, GwMethod::G0W0, qp, 16, 0, Some(&vxc));
-        let nocc = (sys.mol.nelec() as usize) / 2;
-        let k = orbs.iter().position(|&p| p == nocc - 1).expect("HOMO");
-        let want16 = num(&sys.r, "/diagnostics/pbe_recipe_sensitivity/nw_16", &ctx) / HA_TO_EV;
-        check_close(
-            &ctx,
-            "HOMO eps_qp, n_quad 16",
-            res16.eps_qp[k],
-            want16,
-            TOL_QP_PBE,
-        );
+        // Control: PySCF's nw = 100 plain-quadrature QP energies must be
+        // MISSED (H2O/cc-pVDZ HOMO−2: 102 meV), so the bar resolves the
+        // quadrature defect the product rule removes.
         assert_misses(
             &ctx,
-            "n_quad 16 vs the 100-point reference",
-            &[res16.eps_qp[k]],
-            &[vec_f64(&sys.r, "/g0w0_pbe/eps_qp", &ctx)[k]],
+            "PySCF nw = 100 (plain quadrature)",
+            res.eps_qp.as_slice().unwrap(),
+            &vec_f64(&sys.r, "/g0w0_pbe/eps_qp", &ctx),
+            TOL_QP_PBE,
+            MUST_MISS_FACTOR,
+        );
+        // Control: a 16-point W integral must MISS the reference, i.e.
+        // `n_points` really reaches W.
+        let res16 = run_closed(&sys, &scf, GwMethod::G0W0, qp, 16, 0, Some(&vxc));
+        assert_misses(
+            &ctx,
+            "n_quad 16 vs the exact reference",
+            res16.eps_qp.as_slice().unwrap(),
+            &vec_f64(&sys.r, "/g0w0_pbe/exact/eps_qp", &ctx),
             TOL_QP_PBE,
             MUST_MISS_FACTOR,
         );
@@ -910,11 +945,12 @@ fn ferric_sigma_c_iw(
     res: &GwResult,
     block: &str,
     ctx: &str,
+    product: bool,
 ) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
     let orbs = vec_usize(&sys.r, &format!("/{block}/orbs"), ctx);
     let omegas = vec_f64(&sys.r, &format!("/{block}/ac/ac_nodes_omega"), ctx);
     let node_idx = vec_usize(&sys.r, &format!("/{block}/ac/ac_nodes_index"), ctx);
-    let ef_ref = num(&sys.r, &format!("/{block}/ef"), ctx);
+    let ef_ref = num_ctx(&sys.r, &format!("/{block}/ef"), ctx);
     assert_eq!(res.mo_indices, orbs, "{ctx}: QP window");
 
     // The stored nodes are ferric's own AC grid: [0] + GL(100, u0 = 0.5)
@@ -951,6 +987,11 @@ fn ferric_sigma_c_iw(
         .inv_dielectric_freq
         .as_ref()
         .expect("GW keeps inv_dielectric_freq");
+    let pq = ferric_gw::sigma::ProductQuadrature::from_scaled_gauss_legendre(
+        &res.pdep.quad_freqs,
+        &res.pdep.quad_weights,
+    )
+    .expect("the validated W rule is scaled Gauss–Legendre");
     let mut re = Vec::with_capacity(orbs.len());
     let mut im = Vec::with_capacity(orbs.len());
     for &p in &orbs {
@@ -958,15 +999,27 @@ fn ferric_sigma_c_iw(
         let vals: Vec<Complex64> = omegas
             .iter()
             .map(|&w| {
-                ferric_gw::sigma::sigma_c_at_z(
-                    m_loc,
-                    Complex64::new(ef_ref, w),
-                    &m_proj,
-                    inv,
-                    &res.pdep.quad_weights,
-                    &res.pdep.quad_freqs,
-                    &mo_b.eps_act,
-                )
+                let z = Complex64::new(ef_ref, w);
+                if product {
+                    ferric_gw::sigma::sigma_c_at_z_product(
+                        m_loc,
+                        z,
+                        &m_proj,
+                        inv,
+                        &pq,
+                        &mo_b.eps_act,
+                    )
+                } else {
+                    ferric_gw::sigma::sigma_c_at_z(
+                        m_loc,
+                        z,
+                        &m_proj,
+                        inv,
+                        &res.pdep.quad_weights,
+                        &res.pdep.quad_freqs,
+                        &mo_b.eps_act,
+                    )
+                }
             })
             .collect();
         re.push(vals.iter().map(|z| z.re).collect());
@@ -1028,7 +1081,7 @@ fn sigma_c_iw_case(system: &str, basis_name: &str, block: &str) {
         0,
         vxc.as_ref(),
     );
-    let got = ferric_sigma_c_iw(&sys, &scf, &res, block, &ctx);
+    let got = ferric_sigma_c_iw(&sys, &scf, &res, block, &ctx, false);
     let want = (
         mat_f64(&sys.r, &format!("/{block}/ac/sigma_c_iw_nodes_re"), &ctx),
         mat_f64(&sys.r, &format!("/{block}/ac/sigma_c_iw_nodes_im"), &ctx),
@@ -1060,6 +1113,27 @@ fn sigma_c_iw_case(system: &str, basis_name: &str, block: &str) {
             "{ctx}: control: ferric also matches the {other} nodes ({miss:.2e} Ha)"
         );
     }
+    // The product rule run_gw uses is the grid-free pole sum (no W frequency
+    // grid at all); the plain quadrature at the same 100 points misses it.
+    let got_pr = ferric_sigma_c_iw(&sys, &scf, &res, block, &ctx, true);
+    let want_ex = (
+        mat_f64(&sys.r, &format!("/{block}/exact/sigma_c_iw_nodes_re"), &ctx),
+        mat_f64(&sys.r, &format!("/{block}/exact/sigma_c_iw_nodes_im"), &ctx),
+    );
+    let worst_pr = sigma_c_iw_worst(&format!("{ctx} product vs exact"), &orbs, &got_pr, &want_ex);
+    let worst_plain = sigma_c_iw_worst(&format!("{ctx} plain vs exact"), &orbs, &got, &want_ex);
+    eprintln!(
+        "{ctx}: product Σc(ef+iω) vs the exact pole sum {worst_pr:.3e} Ha; plain {worst_plain:.3e} Ha"
+    );
+    assert!(
+        worst_pr < TOL_SIGMA_C_IW_EXACT,
+        "{ctx}: product-rule Σc(ef + iω) differs from the exact pole sum by {worst_pr:.2e} Ha \
+         (bar {TOL_SIGMA_C_IW_EXACT:.0e})"
+    );
+    assert!(
+        worst_plain > MUST_MISS_FACTOR * TOL_SIGMA_C_IW_EXACT,
+        "{ctx}: control: the plain quadrature also matches the exact pole sum ({worst_plain:.2e} Ha)"
+    );
 }
 
 #[test]
@@ -1096,7 +1170,7 @@ fn g0w0_hf_frozen_core_h2o_vs_pyscf_gw_ac() {
         1,
         None,
     );
-    check_g0w0_block(&sys, "g0w0_hf_fc1", &res, None, TOL_QP);
+    check_g0w0_block(&sys, "g0w0_hf_fc1", "", &res, None, TOL_QP);
     // Control: frozen-core ferric misses the all-electron reference.
     assert_misses(
         &sys.label,
@@ -1133,7 +1207,21 @@ fn g0w0_ecp_case(system: &str) {
         0,
         None,
     );
-    check_g0w0_block(&sys, "g0w0_hf", &res, None, TOL_QP_ECP);
+    // Against the grid-free reference: Ag2's HF gap is small enough (half-gap
+    // 0.12 Ha) that PySCF's nw = 100 plain quadrature is 0.58 meV off it on
+    // HOMO−1, which this bar resolves; I2 and Xe agree with PySCF too.
+    check_g0w0_block(&sys, "g0w0_hf", "/exact", &res, None, TOL_QP_ECP);
+    let d_py = res
+        .eps_qp
+        .iter()
+        .zip(vec_f64(&sys.r, "/g0w0_hf/eps_qp", &sys.label))
+        .map(|(g, w)| (g - w).abs())
+        .fold(0.0_f64, f64::max);
+    eprintln!(
+        "{}: G0W0@HF vs PySCF nw = 100 (plain quadrature): max |d| {d_py:.3e} Ha ({:.4} meV)",
+        sys.label,
+        d_py * HA_TO_EV * 1e3
+    );
 }
 
 #[test]
@@ -1202,12 +1290,21 @@ fn check_u_spin(ctx: &str, r: &Value, spin: &str, orbs: &[usize], res: &UGwResul
             "{ctx}: QP residual {resid:.2e} Ha at MO {p}"
         );
     }
+    // The grid-free reference (`exact`: U-dRPA pole sum at the Padé nodes,
+    // gen_gw.py --uhf-exact-only), which is what run_u_gw's product-rule Σc
+    // reproduces; PySCF's own nw = 100 plain quadrature is off by up to
+    // ~1.5 meV here (OH/cc-pVDZ β LUMO+2), recorded in the JSON.
+    let q = if r.pointer(&format!("{p}/exact")).is_some() {
+        format!("{p}/exact")
+    } else {
+        p.clone()
+    };
     check_vec(
         &ctx,
         "sigma_c(eps_qp)",
         orbs,
         sc.as_slice().unwrap(),
-        &vec_f64(r, &format!("{p}/sigma_c_at_qp"), &ctx),
+        &vec_f64(r, &format!("{q}/sigma_c_at_qp"), &ctx),
         TOL_QP_U,
     );
     check_vec(
@@ -1215,7 +1312,7 @@ fn check_u_spin(ctx: &str, r: &Value, spin: &str, orbs: &[usize], res: &UGwResul
         "eps_qp",
         orbs,
         eps_qp.as_slice().unwrap(),
-        &vec_f64(r, &format!("{p}/eps_qp"), &ctx),
+        &vec_f64(r, &format!("{q}/eps_qp"), &ctx),
         TOL_QP_U,
     );
     eps_qp.to_vec()
@@ -1324,80 +1421,85 @@ fn u_g0w0_triplets_o2_ch2_vs_pyscf_ugw_ac() {
 // `u_g0w0_uks_pbe_*_qp` checks the QP energies against both roots.
 
 /// U-G0W0@UKS: Σc(ef_σ + iω) at the Padé nodes. Measured 3.0e-11 (CH3) to
-/// 8.7e-9 Ha (OH β, whose ε_mf also agrees least well, 1.0e-9).
+/// 8.7e-9 Ha on the (75,110) blocks; OH on its (99,590) block (2026-11-09):
+/// 2.4e-8 Ha (β LUMO).
 const TOL_SIGMA_C_IW_UKS: f64 = 1e-7;
-/// U-G0W0@UKS QP energies vs the textbook reference, single-root orbitals
-/// only (see `unique_root_orbs`). Measured ≤ 2.6e-8 Ha (CH3 β).
+/// U-G0W0@UKS: ferric's product-rule Σc(ef_σ + iω) (what `run_u_gw` uses)
+/// vs the grid-free U-dRPA pole sum at the Padé nodes (block `exact`).
+/// Measured ≤ 5.2e-10 Ha (OH β, (99,590) block; CH3 β 4.4e-10); the plain
+/// quadrature at the same 100 points misses by 1.9e-3 (CH3) to 0.11 Ha (OH β).
+const TOL_SIGMA_C_IW_UKS_EXACT: f64 = 1e-8;
+/// U-G0W0@UKS QP energies vs the `exact` reference (ferric's root rule on
+/// the continuation of the exact Σc), every orbital, multi-root ones
+/// included. Measured ≤ 2.7e-8 Ha (OH α HOMO−2 on the former (75,110)
+/// block; 1.5e-8 on its (99,590) block).
 const TOL_QP_UKS: f64 = 3e-7;
 /// v_xc diagonal (ferric `vxc_diagonal_mo` vs PySCF UGWAC `vxc`).
-/// Measured ≤ 7.1e-10 Ha (OH β).
+/// Measured ≤ 7.1e-10 Ha on the (75,110) blocks; OH on its (99,590)
+/// block: 2.4e-9 Ha (β LUMO).
 const TOL_VXC_UKS: f64 = 1e-8;
 
-/// Positions (into `orbs`) whose textbook QP equation has exactly one root
-/// within 1 Ha, as the generator counted (`ac/qp_roots_within_1ha_textbook`).
-/// Where it has several (NH2 α MOs 3 and 4 have three each: satellite
-/// structure of Σc near the QP energy), the root is a property of the solver's
-/// start, not of the method, so comparing it tests nothing about GW; ferric's
-/// Newton also reports those as unconverged. Every other quantity (ε_mf, v_xc,
-/// Σx, Σc on the imaginary axis) is still compared for all orbitals.
-fn unique_root_orbs(r: &Value, p: &str, ctx: &str) -> Vec<usize> {
-    let n = vec_usize(r, &format!("{p}/ac/qp_roots_within_1ha_textbook"), ctx);
-    let keep: Vec<usize> = (0..n.len()).filter(|&k| n[k] == 1).collect();
-    assert!(
-        !keep.is_empty(),
-        "{ctx}: no single-root orbital left to compare — the QP check would be vacuous"
-    );
-    if keep.len() < n.len() {
-        eprintln!("{ctx}: QP comparison skips multi-root positions (root counts {n:?})");
+/// The flat (unpruned, uncut) PBE grid the `u_g0w0_uks_pbe` block was
+/// generated on: the block's own `grid` (gen_gw.py `UKS_GRID`; OH is on
+/// (99,590)), or, for blocks written before it was recorded, the file's
+/// `provenance/grid` (75,110).
+fn uks_grid(sys: &Sys) -> AtomicGridConfig {
+    let g = sys
+        .r
+        .pointer("/u_g0w0_uks_pbe/grid")
+        .or_else(|| sys.r.pointer("/provenance/grid"))
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("{}: no UKS grid in the reference", sys.label));
+    let n = |k: usize| g[k].as_u64().expect("grid entry") as usize;
+    AtomicGridConfig {
+        n_radial: n(0),
+        n_angular: n(1),
+        ..AtomicGridConfig::default()
     }
-    keep
 }
 
-fn uks_pbe_config() -> RhfConfig {
-    RhfConfig {
-        xc: Some("pbe".into()),
+fn uks_pbe_config(grid: &AtomicGridConfig) -> RhfConfig {
+    uhf_config()
+        .with_xc("pbe")
         // Exact J, as the reference (an empty name is the explicit "no
         // density fitting"; solve_uhf's build_df_jk filters it to None). The
         // CLI's default for `gw` + `[rpa] xc` is RI-J/RI-K with the JK aux —
         // that choice is the fitting error, not what this row measures.
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        ..uhf_config()
-    }
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new())
+        // The references are PySCF on a flat grid ([`uks_grid`]), not the
+        // pruned KS default AtomicGridConfig::production().
+        .with_dft_grid(grid.clone())
 }
 
 /// UKS/PBE on the reference's stable state (same fallback as `uhf`).
 ///
 /// The reference is the LOWEST stable state over three PySCF starts
 /// (`common.run_open_shell`), so ferric runs three starts too and applies the
-/// same rule ([`select_lowest_stable`]). OH ²Π
-/// needs that: on the (75,110) grid the π-hole orientation is a near-zero mode
-/// with more than one stationary state. Measured (ferric, cc-pVDZ, 2026-10-22):
-/// two internally STABLE states, −75.6448989187 (λ_min +1.23e-4, the
-/// reference) and −75.6448984257 (λ_min +9.0e-5, 4.93e-7 higher, which
-/// PySCF's own `minao` start reaches to < 1e-10: `guess_scan` in the JSON),
-/// and an UNSTABLE one at −75.6448978044 (λ_min −9.6e-5; the hole turned 45°).
-/// Which basin the MINAO start falls into is decided by perturbations far below
-/// any physics: the libint ERI precision change 1e-14 → 1e-20 (8d1961c32,
-/// which moves E_J by ~1e-9) moved it from the first to the second (issue
-/// #516). The core-Hamiltonian start reaches the reference state there.
-/// Mutation-checked: shifting the MINAO start's energy to e_ref − 2e-9 fails
-/// the "none below the reference" assert; dropping the core-Hamiltonian
-/// start fails the "lowest is the reference" assert (lowest 4.93e-7 off).
+/// same rule ([`select_lowest_stable`]).
+///
+/// OH ²Π: the β hole can sit at any angle in its π pair. Physically every
+/// angle is the same state; on a DFT grid the energy ripples with the angle.
+/// MEASURED (ferric, cc-pVDZ, bond on z, 2026-11-09, 10 starts: the default
+/// guess, the core Hamiltonian, and the default state's hole turned by
+/// 0.1..π/4; scripts/queue/out/oh-grid-2026-11-09/): on (75,110) they end on
+/// five stationary states spanning 1.38e-6 Ha (the three stable ones 4.93e-7,
+/// β orbital energies 5.4e-6), so which ripple minimum a start reached
+/// decided the row (issue #516, a5be0e8cd); on (99,302) 6.3e-9 Ha / 1.8e-7;
+/// on (99,590) 1.4e-10 Ha / 1.9e-9, every state marginal (|λ_min| ≤ 2e-8).
+/// OH's block is therefore generated and run on (99,590) ([`uks_grid`]):
+/// the spread is 7x below `TOL_E_SCF` and 16x below `TOL_EPS_MF`, so any
+/// start that converges is the reference state.
 fn uks_pbe(sys: &Sys) -> ScfResult {
-    let e_ref = num(&sys.r, "/u_g0w0_uks_pbe/uks/energy", &sys.label);
-    let steered = RhfConfig {
-        level_shift: 0.5,
-        mom_after_iter: 5,
-        ..uks_pbe_config()
-    };
-    let hcore = RhfConfig {
-        use_sad_guess: false,
-        ..uks_pbe_config()
-    };
+    let e_ref = num_ctx(&sys.r, "/u_g0w0_uks_pbe/uks/energy", &sys.label);
+    let grid = uks_grid(sys);
+    let steered = uks_pbe_config(&grid)
+        .with_level_shift(0.5)
+        .with_mom_after_iter(5);
+    let hcore = uks_pbe_config(&grid).with_guess(ferric_scf::options::Guess::Core);
     let mut runs = Vec::new();
     for (name, cfg) in [
-        ("stability-descent", uks_pbe_config()),
+        ("stability-descent", uks_pbe_config(&grid)),
         ("ls0.5+MOM5", steered),
         ("hcore guess", hcore),
     ] {
@@ -1478,8 +1580,17 @@ fn u_gw_at_uks(
     scf: &ScfResult,
     orbs: &[usize],
 ) -> (UGwResult, ndarray::Array1<f64>, ndarray::Array1<f64>) {
-    let (va, vb) = vxc_diagonal_mo(&sys.mol, &sys.obs_bs, "pbe", scf)
-        .unwrap_or_else(|e| panic!("{}: vxc_diagonal_mo: {e:?}", sys.label));
+    // V_xc on the SCF's own grid (the reference's: PySCF's gw.vxc uses mf's).
+    let (va, vb) = vxc_diagonal_mo_on_grids(
+        &sys.mol,
+        &sys.obs_bs,
+        "pbe",
+        scf,
+        &uks_grid(sys),
+        &AtomicGridConfig::default_nlc(),
+        None,
+    )
+    .unwrap_or_else(|e| panic!("{}: vxc_diagonal_mo: {e:?}", sys.label));
     let res = run_u_gw(
         &sys.mol,
         &sys.obs,
@@ -1497,19 +1608,27 @@ fn u_gw_at_uks(
 
 /// ferric Σc(ef_σ + iω) at the reference's Padé nodes for one spin, from
 /// the U-GW result's own PDEP (build_full_b_both_spins → redress with the α
-/// metric, as run_u_gw does → project → sigma_c_at_z). No continuation.
+/// metric, as run_u_gw does → project → Σc). No continuation. `product`
+/// selects `sigma_c_at_z_product` (what `run_u_gw` uses) instead of the
+/// plain-quadrature `sigma_c_at_z` (what PySCF's `get_sigma` computes).
 fn ferric_u_sigma_c_iw(
     sys: &Sys,
     scf: &ScfResult,
     res: &UGwResult,
     spin: &str,
     ctx: &str,
+    product: bool,
 ) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
+    let pq = ferric_gw::sigma::ProductQuadrature::from_scaled_gauss_legendre(
+        &res.pdep.quad_freqs,
+        &res.pdep.quad_weights,
+    )
+    .expect("the validated W grid is scaled Gauss-Legendre");
     let p = format!("/u_g0w0_uks_pbe/{spin}");
     let orbs = vec_usize(&sys.r, "/u_g0w0_uks_pbe/orbs", ctx);
     let omegas = vec_f64(&sys.r, &format!("{p}/ac/ac_nodes_omega"), ctx);
     let node_idx = vec_usize(&sys.r, &format!("{p}/ac/ac_nodes_index"), ctx);
-    let ef_ref = num(&sys.r, &format!("{p}/ef"), ctx);
+    let ef_ref = num_ctx(&sys.r, &format!("{p}/ef"), ctx);
     let (leg, _) = ferric_rpa::quadrature::gauss_legendre_nodes(100, 0.5);
     for (&i, &w) in node_idx.iter().zip(&omegas) {
         let mine = if i == 0 { 0.0 } else { leg[i - 1] };
@@ -1549,15 +1668,27 @@ fn ferric_u_sigma_c_iw(
         let vals: Vec<Complex64> = omegas
             .iter()
             .map(|&w| {
-                ferric_gw::sigma::sigma_c_at_z(
-                    m_loc,
-                    Complex64::new(ef_ref, w),
-                    &m_proj,
-                    inv,
-                    &res.pdep.quad_weights,
-                    &res.pdep.quad_freqs,
-                    &mo_s.eps_act,
-                )
+                let z = Complex64::new(ef_ref, w);
+                if product {
+                    ferric_gw::sigma::sigma_c_at_z_product(
+                        m_loc,
+                        z,
+                        &m_proj,
+                        inv,
+                        &pq,
+                        &mo_s.eps_act,
+                    )
+                } else {
+                    ferric_gw::sigma::sigma_c_at_z(
+                        m_loc,
+                        z,
+                        &m_proj,
+                        inv,
+                        &res.pdep.quad_weights,
+                        &res.pdep.quad_freqs,
+                        &mo_s.eps_act,
+                    )
+                }
             })
             .collect();
         re.push(vals.iter().map(|z| z.re).collect());
@@ -1596,10 +1727,10 @@ fn u_g0w0_uks_sigma_c_case(system: &str) {
     ] {
         let c = format!("{ctx} {spin}");
         let p = format!("/u_g0w0_uks_pbe/{spin}");
-        let keep = unique_root_orbs(&sys.r, &p, &c);
+        // Every state has a root: Newton, or the largest-weight fallback.
         assert!(
-            keep.iter().all(|&k| conv[k]),
-            "{c}: QP Newton not converged on a single-root orbital"
+            conv.iter().all(|&k| k),
+            "{c}: a QP solve returned no root: {conv:?}"
         );
         check_vec(
             &c,
@@ -1628,28 +1759,46 @@ fn u_g0w0_uks_sigma_c_case(system: &str) {
         );
         // ferric's own QP equation, with Σx − v_xc INSIDE it, is satisfied
         // (Σc is reported at the root).
-        for &k in &keep {
-            let q = orbs[k];
+        for (k, &q) in orbs.iter().enumerate() {
             let resid = eps_qp[k] - eps_mf[k] - (sx[k] - vxc[q]) - sc[k];
             assert!(
                 resid.abs() < TOL_RESID,
                 "{c}: shifted QP residual {resid:.2e} Ha at MO {q}"
             );
         }
-        // Σc on the imaginary axis, no continuation.
-        let got = ferric_u_sigma_c_iw(&sys, &scf, &res, spin, &c);
+        // Σc on the imaginary axis, no continuation. (1) The plain quadrature
+        // is PySCF's `get_sigma` integral: same numbers at nw = 100.
+        let got = ferric_u_sigma_c_iw(&sys, &scf, &res, spin, &c, false);
         let want = (
             mat_f64(&sys.r, &format!("{p}/ac/sigma_c_iw_nodes_re"), &c),
             mat_f64(&sys.r, &format!("{p}/ac/sigma_c_iw_nodes_im"), &c),
         );
         let worst = sigma_c_iw_worst(&c, &orbs, &got, &want);
         eprintln!(
-            "{c}: Σc(ef+iω) worst |d| {worst:.3e} Ha ({:.6} meV)",
+            "{c}: plain Σc(ef+iω) vs PySCF nw = 100: worst |d| {worst:.3e} Ha ({:.6} meV)",
             worst * HA_TO_EV * 1e3
         );
         assert!(
             worst < TOL_SIGMA_C_IW_UKS,
             "{c}: Σc(ef + iω) differs from PySCF by {worst:.2e} Ha (bar {TOL_SIGMA_C_IW_UKS:.0e})"
+        );
+        // (2) The product rule run_u_gw uses is the grid-free pole sum.
+        let got_pr = ferric_u_sigma_c_iw(&sys, &scf, &res, spin, &c, true);
+        let want_ex = (
+            mat_f64(&sys.r, &format!("{p}/exact/sigma_c_iw_nodes_re"), &c),
+            mat_f64(&sys.r, &format!("{p}/exact/sigma_c_iw_nodes_im"), &c),
+        );
+        let worst_pr = sigma_c_iw_worst(&c, &orbs, &got_pr, &want_ex);
+        // Control: the plain quadrature at the same 100 points misses it.
+        let worst_plain_ex = sigma_c_iw_worst(&c, &orbs, &got, &want_ex);
+        eprintln!(
+            "{c}: product Σc(ef+iω) vs the exact pole sum: worst |d| {worst_pr:.3e} Ha; \
+             plain quadrature {worst_plain_ex:.3e} Ha"
+        );
+        assert!(
+            worst_pr < TOL_SIGMA_C_IW_UKS_EXACT,
+            "{c}: product-rule Σc(ef + iω) differs from the exact pole sum by {worst_pr:.2e} Ha \
+             (bar {TOL_SIGMA_C_IW_UKS_EXACT:.0e})"
         );
     }
 }
@@ -1666,14 +1815,14 @@ fn u_g0w0_uks_qp_case(system: &str) {
     for (spin, eps_qp) in [("alpha", &res.eps_qp_a), ("beta", &res.eps_qp_b)] {
         let c = format!("{ctx} {spin}");
         let p = format!("/u_g0w0_uks_pbe/{spin}");
-        let keep = unique_root_orbs(&sys.r, &p, &c);
-        let pick = |v: &[f64]| keep.iter().map(|&k| v[k]).collect::<Vec<f64>>();
-        let got_all = eps_qp.as_slice().unwrap();
-        let got = pick(got_all);
-        let got = got.as_slice();
-        let orbs: Vec<usize> = keep.iter().map(|&k| orbs[k]).collect();
-        let textbook = pick(&vec_f64(&sys.r, &format!("{p}/eps_qp"), &c));
-        let posthoc = pick(&vec_f64(&sys.r, &format!("{p}/eps_qp_posthoc"), &c));
+        // Every orbital, multi-root ones included: the reference applies
+        // ferric's own root rule (Newton, else largest weight) to the
+        // continuation of the EXACT Σc(ef + iω) (gen_gw.py `ferric_qp_rule`).
+        let got = eps_qp.as_slice().unwrap();
+        let orbs = orbs.clone();
+        let textbook = vec_f64(&sys.r, &format!("{p}/exact/eps_qp"), &c);
+        let posthoc = vec_f64(&sys.r, &format!("{p}/exact/eps_qp_posthoc"), &c);
+        let pick = |v: &[f64]| v.to_vec();
         let max_d = |want: &[f64]| {
             got.iter()
                 .zip(want)
@@ -1712,6 +1861,23 @@ fn u_g0w0_uks_qp_case(system: &str) {
             &pick(&vec_f64(&sys.r, &format!("/u_g0w0_uhf/{spin}/eps_qp"), &c)),
             TOL_QP_UKS,
             MUST_MISS_FACTOR,
+        );
+        // Control: the W frequency integral matters — ferric misses PySCF's
+        // plain nw = 100 quadrature (the reference of the earlier row).
+        let pyscf_nw100 = vec_f64(&sys.r, &format!("{p}/eps_qp"), &c);
+        let d_old = got
+            .iter()
+            .zip(&pyscf_nw100)
+            .map(|(g, w)| (g - w).abs())
+            .fold(0.0_f64, f64::max);
+        eprintln!(
+            "{c}: max |d| vs PySCF ugw_ac nw = 100 (plain quadrature) {:.3} meV",
+            d_old * HA_TO_EV * 1e3
+        );
+        assert!(
+            d_old > MUST_MISS_FACTOR * TOL_QP_UKS,
+            "{c}: ferric agrees with PySCF's unconverged nw = 100 quadrature to {d_old:.2e} Ha; \
+             the product rule is not reaching the QP solve"
         );
     }
 }
@@ -1830,7 +1996,7 @@ fn cohsex_ks_case(system: &str) {
         &ctx,
         "E_RKS",
         scf.energy,
-        num(&sys.r, "/cohsex_pbe/rks_energy", &ctx),
+        num_ctx(&sys.r, "/cohsex_pbe/rks_energy", &ctx),
         TOL_E_SCF,
     );
     let (vxc, _) = vxc_diagonal_mo(&sys.mol, &sys.obs_bs, "pbe", &scf)

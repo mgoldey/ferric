@@ -1,11 +1,12 @@
 //! Both states of an ω-tuning evaluation must use the SAME Coulomb treatment.
 //!
-//! The cation is range-separated UKS, and `solve_uhf` never density-fits J
-//! when ω > 0. `solve_rhf` auto-selects RI-J for a functional when `df_j_aux`
+//! The cation is range-separated UKS, and `solve_uhf` takes no auto-default
+//! aux basis; `solve_rhf` auto-selects RI-J for a functional when `df_j_aux`
 //! is unset. With no resolution, the neutral ran RI-J and the cation exact J,
 //! so the ΔSCF IP carried the neutral's fitting error (2.3e-5 to 2.8e-5 Ha for
 //! ωB97X-V/def2-SVP H2O, ~1.4e-4 Bohr⁻¹ in ω*). `state_scf_config` therefore
-//! resolves an unset `df_j_aux` to exact J and refuses a named aux basis.
+//! resolves an unset `df_j_aux` to exact J; a named aux basis reaches both
+//! solvers, which fit J on it for ω > 0 as for any functional.
 //!
 //! The end-to-end test carries its own negative control: the unresolved
 //! default config must give DIFFERENT routes, so the equality it asserts for
@@ -27,16 +28,17 @@ const FUNCTIONAL: &str = "wB97X-V";
 fn cfg_with(df_j_aux: Option<&str>) -> OmegaTuneConfig {
     OmegaTuneConfig {
         functional: FUNCTIONAL.into(),
-        scf: RhfConfig {
-            df_j_aux: df_j_aux.map(str::to_string),
-            ..Default::default()
+        scf: {
+            let mut c = RhfConfig::default();
+            c.df_j_aux = df_j_aux.map(str::to_string);
+            c
         },
         ..Default::default()
     }
 }
 
 #[test]
-fn unset_resolves_to_exact_j_and_a_named_aux_is_refused() {
+fn unset_resolves_to_exact_j_and_a_named_aux_passes_through() {
     let unset = state_scf_config(&cfg_with(None), 0.4).expect("unset is accepted");
     assert_eq!(
         unset.df_j_aux.as_deref(),
@@ -52,11 +54,12 @@ fn unset_resolves_to_exact_j_and_a_named_aux_is_refused() {
         Some(""),
         "explicit exact J must pass through"
     );
-    let err = state_scf_config(&cfg_with(Some("cc-pvdz-jkfit")), 0.4)
-        .expect_err("a named RI-J aux cannot reach the RSH UKS cation, so it must be refused");
-    assert!(
-        err.to_string().contains("cc-pvdz-jkfit"),
-        "the refusal must name the offending aux basis: {err}"
+    assert_eq!(
+        state_scf_config(&cfg_with(Some("cc-pvdz-jkfit")), 0.4)
+            .expect("a named aux reaches both states")
+            .df_j_aux
+            .as_deref(),
+        Some("cc-pvdz-jkfit"),
     );
 }
 
@@ -67,6 +70,7 @@ fn j_route(r: &ScfResult) -> Option<String> {
 /// End to end on water/STO-3G, ωB97X-V at ω = 0.4: the neutral RKS and the
 /// cation UKS record the same J route (exact J) under the resolved config,
 /// and different routes under the unresolved one.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn neutral_and_cation_run_the_same_coulomb_route() {
     let ctx = ParallelContext::default();
@@ -96,11 +100,23 @@ fn neutral_and_cation_run_the_same_coulomb_route() {
     );
     assert!(j_route(&neutral).is_none(), "the resolved route is exact J");
 
+    // A named aux: both states fit J on it (the RSH cation included).
+    let named = state_scf_config(&cfg_with(Some("def2-universal-jkfit")), 0.4).unwrap();
+    let neutral_ri = solve_rhf(&ctx, &mol, &prep, op, &bounds, &named).unwrap();
+    let cat_ri = solve_uhf(&ctx, &cation, &prep, &bounds, &named).unwrap();
+    assert_eq!(
+        j_route(&neutral_ri).as_deref(),
+        Some("def2-universal-jkfit")
+    );
+    assert_eq!(
+        j_route(&cat_ri),
+        j_route(&neutral_ri),
+        "named aux: J routes differ"
+    );
+
     // Negative control: the same config with df_j_aux left unresolved.
-    let unresolved = RhfConfig {
-        df_j_aux: None,
-        ..resolved
-    };
+    let mut unresolved = resolved;
+    unresolved.df_j_aux = None;
     let neutral_raw = solve_rhf(&ctx, &mol, &prep, op, &bounds, &unresolved).unwrap();
     let cat_raw = solve_uhf(&ctx, &cation, &prep, &bounds, &unresolved).unwrap();
     assert_ne!(

@@ -25,13 +25,61 @@ contributes here. How much it saves depends on the threshold; runs that need
 the full-rank answer set `trunc_thresh = 0.0`, as the GW, BSE and \\( C_6 \\)
 examples do.
 
+A `pdep-rpa` energy run with `trunc_thresh = 0` and no export (no
+`export_npz`, no `export_eigpot_prefix`) skips the static eigensolve: with
+every mode kept the eigenbasis is a full rotation of the RI space, the
+log-det and the trace are invariant under it, and the CLI evaluates them in
+the RI space directly (the "aux-basis log-det" route, named in the log and
+the certificate). A positive `trunc_thresh` keeps the eigensolve.
+
+### Response modes as real-space densities
+
+Each dielectric eigenvector is a set of auxiliary-basis coefficients
+\\( c_{P\alpha} \\), and the function
+\\( \rho_\alpha(\mathbf r) = \sum_P c_{P\alpha} \chi_P(\mathbf r) \\) is a
+**charge density**, not a potential. The coefficients solve
+\\( (V + \Pi)\,c_\alpha = \lambda_\alpha V c_\alpha \\) with
+\\( V_{PQ} = (P|Q) \\), \\( \Pi = (P|ia)\,\tfrac{4\Delta_{ia}}{\Delta_{ia}^2+\omega^2}\,(ia|Q) \\)
+and \\( c_\alpha^\top V c_\alpha = 1 \\) (unit Coulomb self-energy). Read
+\\( \rho_\alpha \\) as electron density added to the molecule. Its Hartree
+potential \\( \delta V_\alpha = \int \rho_\alpha(\mathbf r')/|\mathbf r-\mathbf r'|\,d\mathbf r' \\)
+is the perturbation, and the independent-electron density it induces,
+Coulomb-fitted in the same basis, is \\( -(\lambda_\alpha - 1)\rho_\alpha \\).
+With full RPA screening, \\( \rho_\alpha \\) is reduced to
+\\( \rho_\alpha/\lambda_\alpha \\). The perturbing potential is the Coulomb
+potential of \\( \rho_\alpha \\), so drawing \\( \sum_P c_{P\alpha}\chi_P \\)
+shows the density, not the potential. The PDEP eigenpotentials
+(`PdepRpaResult.eigenpotentials`, the `[rpa] export_eigpot_prefix` cubes and
+the NPZ `pdep_eigenvectors`) are the same coefficients at \\( \omega = 0 \\).
+
+`ferric.response_modes(mol, basis, auxbasis, result, n_modes=10, omega=0.0)`
+returns the leading modes of the closed-shell dielectric at imaginary
+frequency \\( i\omega \\) (Hartree; 0 is static), by a dense eigensolve on an
+RHF or RKS result. `ferric.write_response_mode_cube(path, mol, auxbasis,
+modes, index)` writes one as a Gaussian cube file, scaled to
+\\( \int\rho_\alpha^2\,d\mathbf r = 1 \\) by default so isovalues compare with
+an orbital's (`normalization="coulomb"` writes the stored coefficients). The
+Avogadro plugin draws the same modes in its Orbitals panel (Extensions >
+ferric > Response Modes).
+
+`ResponseModes.field_couplings` \\( s_{\alpha d} \\) is the Coulomb overlap of
+mode \\( \alpha \\) with the uncoupled density a unit field along \\( d \\)
+induces. Summed over every mode,
+\\( \alpha(i\omega) = \alpha_\text{bare} - \sum_\alpha s_\alpha s_\alpha^\top/\lambda_\alpha \\)
+is the RPA polarizability (`polarizability_from_modes()`; with fewer modes,
+its truncation). For water/cc-pVDZ with cc-pVDZ-RI, the mode sum equals
+`pdep_polarizability_static` to \\( 4\times10^{-15} \\) a.u., and the
+8 leading of 84 modes carry 95% of the screening trace.
+
 ## RPA correlation energy
 
 **What it is.** Direct RPA (dRPA) correlation from the dielectric eigenvalues
 on an imaginary-frequency quadrature.
 
 - **PDEP-RPA**, closed shell: `method.kind = "pdep-rpa"`
-  (`examples/water-pdep-rpa.toml`); Python `ferric.run_pdep_rpa`. Proven.
+  (`examples/water-pdep-rpa.toml`); Python `ferric.run_pdep_rpa`, which also
+  returns the CLI's `[rpa]` property bundle (see
+  [PDEP-RPA properties](../using/python.md#pdep-rpa-properties-and-the-npz-bundle)). Proven.
 - **U-PDEP-RPA**, open shell over a spin-summed dielectric. From the CLI, set
   `method.kind = "pdep-rpa"` with `multiplicity > 1` and `task = "energy"`: the
   CLI solves UHF (UKS with `[rpa] xc`) with MOM after 5 iterations and runs
@@ -40,6 +88,11 @@ on an imaginary-frequency quadrature.
   reference, which it semi-canonicalizes first: each spin uses the orbitals and
   energies of its own Fock matrix, diagonalized in its occupied and virtual
   blocks (see the [anchors](../reference/validation.md#anchors)).
+  It runs the Lanczos (default) and Davidson eigensolvers, PDEP truncation
+  (`trunc_thresh`), the Dense and Laplace χ₀ backends and `run_diagnostics`
+  (full-basis U-RI-dRPA check). It refuses `chi0_sparsity = "boys"`, and
+  `"auto"` when that resolves to Boys for the molecule: the Boys-screened χ₀
+  is closed shell only.
 - **Attenuated RPA**: short-range correlation with an erfc operator.
 - **RS-MP2 + LR-RPA**: short-range MP2 plus long-range dRPA, on the
   [MP2 page](./mp2.md#rs-mp2--lr-rpa).
@@ -47,25 +100,50 @@ on an imaginary-frequency quadrature.
 The static eigensolve defaults to **Lanczos**, with a dense path for small
 problems. Geometry optimization with `pdep-rpa` is supported
 (`task = "optimize"`) on a closed-shell RHF reference.
+The nuclear gradient comes from `[rpa] gradient`: `"analytic"` is
+the RI-dRPA gradient with Z-vector relaxed densities, the exact derivative of
+the n-point quadrature sum (one RHF, one frequency loop, one CPHF solve), and
+`"fd"` takes three-point finite differences of the RHF plus RPA energy. Unset,
+the analytic gradient runs whenever it applies (closed shell, all-electron or
+frozen core, Coulomb operator, `trunc_thresh = 0`, dense `chi0_sparsity`, and
+an unset `trunc_thresh` is then 0); otherwise the run uses finite differences
+and the printed note and the certificate's `gradient` entry give the reason.
+An explicit `"analytic"` with a truncating `trunc_thresh` is an error. On
+distorted H2O, NH3 and CH4 / cc-pVDZ with cc-pVDZ-RI at n = 16 the analytic
+gradient takes 0.6 s against 2.6 to 5.3 s for the finite-difference one, and
+the two differ by at most 5.6e-8 Ha/Bohr, within the finite-difference
+truncation (h = 5e-4 against h = 2.5e-4 differ by 4.2e-8 at most). On
+n-hexane / cc-pVDZ at n = 20 it took 38.4 s against 1556.6 s, and the two
+gradients differ by at most 2.25e-8 Ha/Bohr (one run each, one BLAS thread,
+loaded box).
+
+Python takes the same route: `run_optimize(mol, basis, method="pdep-rpa",
+auxbasis=..., rpa_gradient="analytic" | "fd")` with the same default and the
+same refusal, and `run_frequencies(..., method="pdep-rpa")` differences that
+gradient (`6 N_atoms` gradients). The keys are in the
+[input reference](../reference/input.md).
 
 ## Exact and local dRPA
 
-**What it is.** `method.kind = "drpa"` (Python `ferric.run_drpa`) is dRPA@HF
-computed by the drCCD Riccati equations in the Boys-localized basis,
-closed shell, energy only. It is **exact by default**: no amplitude is
-truncated (`examples/water-drpa.toml`), and the energy equals the canonical
-plasmon formula to ≤ 1e-12 Ha. Riccati, plasmon and full-rank PDEP-RPA are
-algorithms for the same exact dRPA; measured agreement is ≤ 2.6e-14 Ha
-(H2/STO-3G, water/6-31G with and without frozen core, PDEP with
-`trunc_thresh = 0` at 64 Gauss–Legendre points). Proven (narrow).
+**What it is.** `method.kind = "drpa"` is dRPA@HF, closed shell, energy
+only. It is **exact by default**: nothing is truncated
+(`examples/water-drpa.toml`). Without `[local]` the CLI integrates
+ln det(1 + Π(iω)) − tr Π(iω) over imaginary frequency in the dressed
+auxiliary basis, Gauss–Legendre with 48 points at `u0 = 0.5`, with no static
+eigensolve (the "aux-basis log-det" route; the log and the certificate name
+it). Python `ferric.run_drpa` without `local` runs the drCCD Riccati
+equations in the Boys-localized basis instead. The frequency route, the
+Riccati solve and the canonical plasmon formula are algorithms for the same
+exact dRPA; see [What is validated](../reference/validation.md) for the
+measured agreement. Proven (narrow).
 
 **Which exact algorithm.** The Riccati solve holds a ring-product plan of
 no³·nv² numbers, `no` times the size of the amplitudes, so it is the
-small-system path: C12 thrashed and was then killed for memory. A run that
-cannot fit the memory budget is refused before the SCF and pointed at
-`pdep-rpa` with `[rpa] trunc_thresh = 0`, which gives the same energy (to its
-frequency-quadrature error) at far lower memory and is faster at every size
-measured (n-alkanes C4–C16).
+small-system path: C12 thrashed and was then killed for memory. The
+frequency route holds the dressed (P|ia) tensor, the aux metric and one
+naux × naux dielectric per worker, so the CLI's exact `drpa` reaches the
+sizes `pdep-rpa` does. A run that cannot fit the memory budget is refused
+before the SCF.
 
 **The local approximation** (`[local] scheme = "amplitude-threshold"` with
 `eps`, `examples/water-drpa-local.toml`; Python
@@ -76,7 +154,13 @@ dRPA is not variational, so the error is first order in what is dropped. It
 is positive (less correlation) at every point measured, which is a
 measurement, not a guarantee, and grows faster than linearly in `eps`: on
 n-octane / 6-31G it is 6.7e-7, 3.9e-5, 5.5e-4 and 1.0e-2 Ha at `eps` = 1e-6,
-1e-5, 1e-4 and 1e-3, keeping 82%, 50%, 18% and 3% of the amplitudes. `[local] reference = true`
+1e-5, 1e-4 and 1e-3, keeping 82%, 50%, 18% and 3% of the amplitudes
+(measured with the solver stopped at relative residual 1e-12). By default the
+CLI and Python stop the local solve at relative residual max(1e-12, 0.1·`eps`)
+(Python `eps_rtol_factor=`, 0 to disable the link; the CLI has no key for it); on water / 6-31G
+that solver error (±3e-8 Ha at `eps` = 1e-4) is larger than the truncation
+error, which is exactly zero there, so compare with the exact limit at
+`eps_rtol_factor=0`. `[local] reference = true`
 (Python `compute_reference=True`) also computes the canonical plasmon dRPA and
 prints the error against it. `[local] eps_sweep` (Python `run_drpa_scan`)
 evaluates several `eps` on one SCF and one localized assembly. Proven
@@ -104,6 +188,13 @@ range. **No speedup over PDEP is claimed for local dRPA.**
 
 ## GW
 
+The equations and conventions of this section, the BSE-TDA and the RPAx
+polarizability, with the code paths and tests behind each, are in
+the GW chapter of the ferric book,
+[`book/src/20-gw-bse/`](https://github.com/mgoldey/ferric/tree/main/book/src/20-gw-bse);
+the identities it relies on are checked by
+[`scripts/gw_self_energy_sympy.py`](https://github.com/mgoldey/ferric/blob/main/scripts/gw_self_energy_sympy.py).
+
 **What it is.** Quasiparticle energies from the GW self-energy: **G0W0**,
 **COHSEX**, **evGW0** and **evGW**, closed shell, plus unrestricted **U-GW**.
 The starting point is HF by default or a KS functional (`[rpa] xc`). From a
@@ -119,13 +210,36 @@ static, add it to the quasiparticle energy.
 instead, or ROKS with `[rpa] xc` (`examples/oh-ugw-rohf.toml`), semi-canonicalized
 per spin as for U-PDEP-RPA.
 
-**Accuracy.** Smoke; treat results as about ±0.3 eV.
+**Accuracy.** Proven (narrow). At matched settings (`[rpa] n_quad = 100`,
+`trunc_thresh = 0`) G0W0@HF matches PySCF `gw_ac` to ≤1.6e-7 Ha. Against
+the grid-free dRPA pole sum, G0W0@HF and G0W0@PBE agree to ≤1.8e-8 Ha,
+U-G0W0@UKS to ≤2.7e-8 Ha and U-G0W0@UHF to ≤1.2e-5 Ha (table below). Every driver, closed and open shell, integrates
+the Σc frequency kernel exactly against the interpolated W (product
+integration) whenever the frequency grid is the scaled Gauss–Legendre rule;
+other grids fall back to the plain sum. The plain sum cannot resolve the
+kernel for states away from the frontier or close to the per-spin Fermi
+level (the OH β HOMO and LUMO sit 0.015 Ha away); PySCF `gw_ac`/`ugw_ac`
+carry that error. The defaults are Gauss–Legendre `n_quad = 40` (GW has its
+own default; `pdep-rpa` and the other RPA energy kinds use 20),
+`trunc_thresh = 1e-4` and, for evGW₀/evGW, `ev_conv_thresh = 1e-4` Ha. At the
+defaults the HOMO and LUMO stay within 10 meV of the matched settings. Every
+quasiparticle state of the default window (HOMO−2 to LUMO+2) of G0W0@PBE
+moves ≤0.06 meV between `n_quad` 40 and 100 (CH2O, NH3), and U-G0W0@UKS on
+OH and NH2 ≤0.005 meV. The analytic continuation limits states far from ε_F
+with split spectral weight: Thiele through the exact Σc(iω) is 45 meV off
+the exact real-axis root on H2O@PBE HOMO−2 and 0.3–0.5 eV on 2s-like valence
+states. When the quasiparticle equation has several roots near the solution
+and Newton fails (NH2 α HOMO), ferric returns the root with the largest
+spectral weight. U-evGW₀, U-evGW and U-COHSEX on a KS reference, and any
+ROKS reference, are not compared, and such runs warn.
+These are numerical errors against ferric's own matched-settings result,
+not the method's error against experiment.
 
 | Quantity | System / basis | Reference | Pinned by |
 |---|---|---|---|
 | G0W0@HF, G0W0@PBE, U-G0W0@UHF, ECP, COHSEX, evGW₀, evGW quasiparticle energies (HOMO−2 to LUMO+2) | H2O, NH3, N2, OH, CH3, NH2, O2, CH2, I2, Xe, Ag2 / cc-pVDZ, aug-cc-pVDZ(-PP) | PySCF `gw_ac`/`ugw_ac` at matched settings (`[rpa] n_quad = 100`, `trunc_thresh = 0`); see [What is validated](../reference/validation.md) | `ferric-gw/tests/validation_gw.rs` |
 | G0W0@PBE HOMO IP | H2O / cc-pVDZ | PySCF `gw_ac`, 11.1714 eV; asserted to <0.1 eV | `ferric-gw/tests/g0w0_pbe_h2o.rs` |
-| U-G0W0@UKS/PBE quasiparticle energies, Σx − v_xc inside each spin's equation | OH, CH3, NH2 / cc-pVDZ | PySCF `ugw_ac` Σc(ef + iω), quasiparticle equation solved in numpy: ≤2.6e-8 Ha on orbitals whose quasiparticle equation has a single root | `ferric-gw/tests/validation_gw.rs` |
+| U-G0W0@UKS/PBE quasiparticle energies, Σx − v_xc inside each spin's equation | OH, CH3, NH2 / cc-pVDZ | grid-free U-dRPA pole sum at the Padé nodes, continued and solved in numpy with ferric's root rule: ≤2.7e-8 Ha on every orbital; the U-G0W0@UHF rows use the same reference (≤1.2e-5 Ha) | `ferric-gw/tests/validation_gw.rs`, `validation_gw_defaults.rs` |
 | Σx − v_xc placement in U-GW (inside the quasiparticle equation; none for a UHF reference) | OH / STO-3G | internal: shifted residual, bit-identity of the no-shift path | `ferric-gw/tests/u_gw_ks_shift.rs` |
 | U-G0W0@UHF α-HOMO IP | OH / cc-pVDZ | ~13–14 eV window, brackets experiment 13.02 eV | `ferric-gw/tests/oh_u_g0w0.rs` |
 
@@ -156,21 +270,119 @@ ill-conditioned, which moves the lowest five excitations by at most
 ## TDDFT and TDA
 
 **What it is.** Linear-response excitations in the Tamm–Dancoff approximation
-(TDA, which is CIS for an HF reference) and the full Casida equations, closed
-shell.
+(TDA, which is CIS for an HF reference) and the full Casida equations, on a
+restricted (RHF/RKS) or unrestricted (UHF/UKS) reference.
 
 **Run it.** `method.kind = "tda"` or `"tddft"` with `[tddft] n_roots` and
 optionally `xc` (`examples/water-tda.toml`, `examples/water-tddft-pbe.toml`); Python
 `ferric.run_tddft(mol, bs, aux, functional=..., method="tda")` or
 `method="casida"`.
 
-**Scope.** Closed-shell references, singlet excitations. With a DFT
-reference the \\( (ia|f_{xc}|jb) \\) XC-kernel term is included; with no
-functional the result is CIS/TDHF. Meta-GGA, VV10 and range-separated
-functionals are refused. Grade: Proven (narrow, closed shell): water,
-formaldehyde and NH3 at 6-31G and aug-cc-pVDZ with HF, LDA, PBE and B3LYP match
-PySCF `TDA`/`TDDFT` to at most 6.5e-4 eV, test bar 1e-3 eV
-(`ferric-tddft/tests/validation_tddft.rs`).
+**Solver.** `[tddft] solver` (Python `solver=`) is `"dense"` (A and B as
+nocc·nvir square matrices, full diagonalization, one f_xc kernel application
+per (jb) column), `"davidson"` (matrix-free block Davidson: RI Coulomb, RI
+exchange and one batched f_xc application per block of trial vectors) or
+`"auto"` (dense up to nocc·nvir = 200, Davidson above; the default). Every
+root carries its residual in the printout, the result and the certificate;
+a Davidson root that does not converge is an error. Both solvers pass the
+same PySCF comparisons below.
+
+**Scope.** On a closed-shell reference, singlet or triplet excitations
+(`[tddft] spin = "singlet" | "triplet"`, Python `spin=`; default singlet).
+An open-shell molecule runs on a UHF/UKS reference (see **Open shells**
+below).
+With a DFT reference the \\( (ia|f_{xc}|jb) \\) XC-kernel term is included;
+with no functional the result is CIS/TDHF. τ-only meta-GGAs (SCAN, r2SCAN,
+TPSS) take the τ kernel; VV10 functionals are refused.
+
+**Range-separated hybrids.** A functional such as `HYB_GGA_XC_CAM_B3LYP` or
+`HYB_GGA_XC_WB97X` takes its short-range and long-range exact-exchange
+fractions \\(c_{sr}\\) and \\(c_{lr}\\) and the range-separation parameter
+\\(\omega\\) from libxc. The response exchange is
+\\(c_{sr}(pq|rs) + (c_{lr}-c_{sr})(pq|rs)_\omega\\), where the second term uses a second
+set of RI tensors for \\(\mathrm{erf}(\omega r)/r\\). Those tensors are fitted in the erf
+metric, so the fit error is second order in the erf-norm residual of the
+quantity being fitted (`book/src/19-tddft/04-rsh.md#rsh-split`). The printout and
+`TddftResult` report `c_sr` (as `c_hf`), `c_lr` and `omega`. A `[tddft] c_hf`
+override on a range-separated functional is refused.
+
+**Triplets.** `spin = "triplet"` drops the Coulomb term and uses the
+\\(f_{\alpha\alpha} - f_{\alpha\beta}\\) kernel. Oscillator strengths are exactly 0. A
+triplet Casida problem with \\(\Omega^2 < 0\\) (a triplet instability of the
+reference, e.g. RHF ethylene) is an error; TDA has no such failure.
+
+**Open shells.** A molecule with `multiplicity > 1` runs on a UHF (no
+functional) or UKS reference (`examples/nh2-tddft-uks.toml`; Python
+`run_tddft` picks it with `reference="auto"`). The response space is the
+α and β occupied→virtual pairs; A and B couple them through the Coulomb
+term and the α-β block of the spin-resolved f<sub>xc</sub> kernel, and
+exact exchange acts within each spin (`book/src/19-tddft/06-unrestricted.md#unrestricted-spin-problem`).
+Every functional class the closed-shell route takes works here, including
+range-separated hybrids, τ-only meta-GGAs and hybrid meta-GGAs (TPSSh,
+M06-2X). The roots are spin-conserving and not spin-adapted, so there is no
+singlet/triplet label: the printout and `TddftResult.s2` give
+\\(\langle S^2\rangle\\) of each root and of the reference (§11; for Casida, of
+the renormalized X part). `[tddft] spin = "triplet"` on an open shell is
+refused, and so is an ROHF/ROKS reference: its Roothaan-coupled Fock
+operator is not the stationarity condition this response linearizes. A
+closed-shell molecule forced through the unrestricted route (Python
+`reference="unrestricted"`) gives the restricted singlets and triplets
+together.
+
+Grade: Proven (narrow): water, formaldehyde and NH3 at 6-31G and
+aug-cc-pVDZ with HF, LDA, PBE and B3LYP match PySCF `TDA`/`TDDFT` to at most
+8.1e-4 eV on the default pruned grid (2.8e-6 eV for B3LYP/aug-cc-pVDZ on the
+reference's flat grid), test bar 1e-3 eV, and water/6-31G r2SCAN matches on the flat
+75 × 110 grid (`ferric-tddft/tests/validation_tddft.rs`). Range-separated
+hybrids (CAM-B3LYP, ωB97X) and triplets (HF, LDA, PBE, B3LYP, r2SCAN,
+CAM-B3LYP, ωB97X) match PySCF `get_ab` on water, C2H4 and benzene at 6-31G
+on the flat 75 × 110 grid to at most 4.4e-7 eV, bar 2e-5 eV
+(`ferric-tddft/tests/validation_tddft_rsh.rs`). The reference matches the
+response RI (both operators), the range-separated SCF fit and the grid, so
+the residual is SCF convergence. Any other range-separated functional, and
+a triplet on any other functional, is certified Smoke. On UHF/UKS references
+(HF, LDA, PBE, B3LYP, r2SCAN, TPSSh, CAM-B3LYP) NH2 and O2 at 6-31G, and OH
+on UHF (TDA), match PySCF `tdscf.uhf.get_ab` to at most 5.0e-7 eV, with
+\\(\langle S^2\rangle\\) per root within 2.5e-7
+(`ferric-tddft/tests/validation_tddft_open_shell.rs`); any other functional on
+an unrestricted reference is certified Smoke.
+
+**Meta-GGA response needs a finer grid.** A TDA/TDDFT run on a meta-GGA
+(SCAN, r2SCAN, TPSS) with no `[dft]` grid key (Python: no `grid_*` kwarg)
+runs its reference SCF and its f_xc kernel on 150 × 434 with the default
+`nwchem-radial` pruning and 1e-14 weight cut. Every other functional keeps
+the production 75 × 110 grid. Any grid key replaces the meta-GGA default.
+The run prints the grid it used (CLI: the `TDDFT grid` line; Python:
+`TddftResult.grid`).
+
+On the same grid, ferric and PySCF agree: fed ferric's own coordinates and
+weights, PySCF reproduces ferric's r2SCAN excitation energies to 6e-8 eV and
+its SCF energy to 1e-12 Ha. The grid itself is the error. Largest deviation
+of the five lowest TDA roots from a flat 150 × 590 grid (Casida roots follow the
+same pattern):
+
+| Grid (`nwchem-radial` unless noted) | Points (water) | r2SCAN water/6-31G | r2SCAN water/aug-cc-pVDZ | r2SCAN H2CO/6-31G | r2SCAN H2S/6-31G | SCAN water/6-31G |
+|---|---|---|---|---|---|---|
+| 75 × 110 (production) | 13 914 | 2.1e-3 | 1.0e-3 | 3.9e-3 | 5.5e-3 | 4.2e-2 |
+| 99 × 302 | 43 044 | 3.9e-4 | 2.0e-4 | 5.0e-4 | 3.9e-4 | 1.7e-2 |
+| 99 × 302, `nwchem` (angular only) | 58 720 | 3.5e-4 | 1.5e-4 | 3.5e-4 | 3.8e-4 | 1.2e-2 |
+| 99 × 434 | 60 102 | 8.4e-4 | 2.1e-4 | 3.2e-4 | 4.0e-4 | 3.5e-2 |
+| 150 × 302 | 65 326 | 1.6e-4 | 2.2e-5 | 2.8e-4 | 9.8e-5 | 4.2e-3 |
+| **150 × 434 (meta-GGA default)** | **91 216** | **9.2e-5** | **5.5e-6** | **1.0e-4** | **4.2e-5** | **3.6e-3** |
+| 150 × 590 | 105 186 | 9.9e-5 | 3.6e-6 | 6.7e-5 | 8.6e-6 | 3.5e-3 |
+| flat 200 × 590 (reference check) | 354 000 | 2.4e-5 | 4.2e-6 | 2.7e-5 | 4.1e-5 | 1.2e-3 |
+
+All values in eV. 150 × 434 is the smallest grid tested with every r2SCAN
+case at or below 1e-4 eV (H2CO: 9.96e-5 TDA, 1.02e-4 Casida); the margin is
+comparable to the reference's own distance from flat 200 × 590 (2-4e-5 eV).
+
+PBE on the production grid is 4.4e-4 eV from flat 150 × 590, and radial
+pruning moves it by 1.6e-7 eV. For r2SCAN the radial shells the production
+grid removes from H (50) and O (66) shift the roots; the radial count matters
+more than the angular order (99 × 434 is worse than 99 × 302). SCAN is not
+grid-converged even at flat 150 × 590 (1.2e-3 eV from 200 × 590), so no grid
+here gets its roots to 1e-4 eV; the 150 × 434 default is 3.6e-3 eV from
+flat 150 × 590. Compare codes only on the same grid.
 
 A separate, **library-only** TDA-DFT in `ferric-gw/src/tddft.rs` uses the same
 kernel (`ferric_dft::lr_kernel`) and is pinned against PySCF

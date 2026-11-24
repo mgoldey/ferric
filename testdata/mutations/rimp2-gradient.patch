@@ -1,0 +1,13 @@
+diff --git a/crates/ferric-mp2/src/gradient.rs b/crates/ferric-mp2/src/gradient.rs
+index 6545a72a8..8881034ac 100644
+--- a/crates/ferric-mp2/src/gradient.rs
++++ b/crates/ferric-mp2/src/gradient.rs
+@@ -406,7 +406,7 @@ fn mp2_relaxed_lagrangian_gradient(
+     for a in 0..nvir {
+         let a_mo = nocc_total + a;
+         for i_mo in 0..nocc_total {
+-            zeta_mo[(a_mo, i_mo)] = eps[i_mo] * dm1mo[(a_mo, i_mo)];
++            zeta_mo[(a_mo, i_mo)] = eps[a_mo] * dm1mo[(a_mo, i_mo)];
+             zeta_mo[(i_mo, a_mo)] = eps[i_mo] * dm1mo[(i_mo, a_mo)];
+         }
+     }

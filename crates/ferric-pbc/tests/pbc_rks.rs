@@ -368,6 +368,7 @@ fn huge_box_worst_weight_error(n_ang: usize) -> ([f64; 2], usize) {
 /// Uniform grid (no partition) through the full KS machinery vs PySCF pbc
 /// RKS UniformGrids: H2 a = 4 LDA and PBE0 (the hybrid-scaled Madelung K),
 /// triclinic 4H s+p LDA (p functions → the AO gradient path).
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uniform_grid_rks_matches_pinned_pyscf_uniform() {
     let su = h2_setup(4.0);
@@ -430,6 +431,7 @@ fn uniform_rks(su: &Setup, grid: &PeriodicGrid, xc: &str) -> f64 {
 /// prototype's own construction: identical point count and energies. The
 /// residual vs the spectrally converged uniform reference is the partition
 /// error (LDA −3.8e-4 Ha here; Becke −4.2e-4, PySCF A1 −4.4e-4).
+#[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn ssf_grid_rks_matches_the_prototype_construction() {
     let su = h2_setup(4.0);
@@ -493,6 +495,7 @@ fn ssf_grid_rks_matches_the_prototype_construction() {
 /// Mutation ledger (measured 2026-10-22): `lebedev(302)` behind a 590 label:
 /// 75×590 |dN| 9.5006e-4 (identical to 302), 100×590 9.5101e-4 (ratio 1.001)
 /// — the test fails.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn lebedev_590_partition_of_unity_is_no_worse_than_302() {
     let su = h2_setup(4.0);
@@ -540,6 +543,7 @@ fn lebedev_590_partition_of_unity_is_no_worse_than_302() {
 /// Mutation ledger (measured 2026-10-22): `lebedev(302)` behind a 590 label:
 /// errors −3.790e-4 / −3.793e-4 / −3.793e-4 (ratio 1.001), the first
 /// monotonicity assert fails (the ratio bar would too).
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn larger_lebedev_orders_refine_the_periodic_energy() {
     let su = h2_setup(4.0);
@@ -567,20 +571,26 @@ fn larger_lebedev_orders_refine_the_periodic_energy() {
     assert!(ratio < REFINE_RATIO_BAR, "590/302 error ratio {ratio:.4}");
 }
 
-/// Orders outside ferric's Lebedev table (974 included, the order the #228
-/// bench README first asked for) are a typed `InvalidGrid`, and pruning is
+/// Orders outside ferric's Lebedev table are a typed `InvalidGrid`, the
+/// refinement orders above 590 (974 and 1202 here) build, and pruning is
 /// still refused, at every refinement order.
 #[test]
 fn unsupported_lebedev_orders_are_invalid_grid() {
     let cell = h2_cell(4.0);
-    for n_ang in [0, 7, 38, 146, 974, 5810] {
+    for n_ang in [0, 7, 39, 147, 975, 5811] {
         let e = PeriodicGrid::build(&cell, &PeriodicGridConfig::with_size(75, n_ang))
             .unwrap_err()
             .to_string();
         assert!(e.contains("invalid n_angular"), "{n_ang}: {e}");
         assert!(e.contains(&n_ang.to_string()), "{n_ang}: {e}");
     }
-    for n_ang in [302, 434, 590] {
+    for n_ang in [974, 1202] {
+        let grid = PeriodicGrid::build(&cell, &PeriodicGridConfig::with_size(10, n_ang))
+            .unwrap_or_else(|e| panic!("{n_ang}: {e}"));
+        // 2 atoms x 10 shells x n_ang directions, before the zero-weight cut.
+        assert_eq!(grid.n_generated(), 2 * 10 * n_ang, "{n_ang}");
+    }
+    for n_ang in [302, 434, 590, 974] {
         let pruned = PeriodicGridConfig {
             prune: Some(PruneScheme::NwchemLike),
             ..PeriodicGridConfig::with_size(75, n_ang)
@@ -612,20 +622,19 @@ fn pbe0_box_limit_is_hyb_times_the_hf_madelung_term() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &su.prep).unwrap();
     let molecular = |xc: &str| {
-        let cfg = RhfConfig {
-            xc: Some(xc.to_string()),
-            dft_grid: Some(AtomicGridConfig {
+        let cfg = RhfConfig::default()
+            .with_xc(xc.to_string())
+            .with_dft_grid(AtomicGridConfig {
                 n_radial: 75,
                 n_angular: 302,
                 prune: None,
-            }),
+                weight_cut: None,
+            })
             // Exact four-centre J/K (no RI fitting error).
-            df_j_aux: Some(String::new()),
-            df_k_aux: Some(String::new()),
-            density_conv: 1e-10,
-            max_iter: 200,
-            ..Default::default()
-        };
+            .with_df_j_aux(String::new())
+            .with_df_k_aux(String::new())
+            .with_density_conv(1e-10)
+            .with_max_iter(200);
         let r = solve_rhf(
             &ParallelContext::default(),
             &mol,
@@ -696,7 +705,7 @@ fn unsupported_functionals_and_grid_knobs_are_refused_by_name() {
     };
     let e = PeriodicGrid::build(&cell, &pruned).unwrap_err().to_string();
     assert!(e.contains("prune is not supported"), "{e}");
-    let e = PeriodicGrid::build(&cell, &PeriodicGridConfig::with_size(75, 974))
+    let e = PeriodicGrid::build(&cell, &PeriodicGridConfig::with_size(75, 975))
         .unwrap_err()
         .to_string();
     assert!(e.contains("invalid n_angular"), "{e}");
@@ -787,10 +796,7 @@ fn uhf_injected_refuses_a_closed_shell_only_xc_builder() {
         k: Box::new(su.eri.k_builder()),
         xc: Some(Box::new(ClosedOnly(pxc))),
     };
-    let cfg = UhfConfig {
-        use_sad_guess: false,
-        ..Default::default()
-    };
+    let cfg = UhfConfig::default().with_guess(ferric_scf::options::Guess::Core);
     let e = solve_uhf_injected(
         &ParallelContext::default(),
         su.cell.mol(),

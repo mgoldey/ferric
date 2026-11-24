@@ -14,6 +14,14 @@ SpinFockHook = Callable[
     [NDArray[np.float64], NDArray[np.float64]],
     tuple[float, NDArray[np.float64], NDArray[np.float64]],
 ]
+# fock_hook_grad: grad(D_total, mol) -> dE_hook/dR at fixed D, (natoms, 3),
+# Hartree/Bohr (run_rhf / run_dft); grad(D_a, D_b, mol) for run_uhf / run_rohf.
+FockHookGrad = Callable[[NDArray[np.float64], Molecule], NDArray[np.float64]]
+SpinFockHookGrad = Callable[
+    [NDArray[np.float64], NDArray[np.float64], Molecule], NDArray[np.float64]
+]
+# run_optimize: the same hooks with the step's Molecule as the last argument,
+# hook(D, mol) / hook(D_a, D_b, mol) and grad(D, mol) / grad(D_a, D_b, mol).
 
 # ── Module-level constants ──
 
@@ -54,6 +62,19 @@ class BuildInfo(TypedDict):
 
 def build_info() -> BuildInfo:
     """Which build of ferric is loaded. All values are fixed at compile time."""
+
+def set_blas_threads(n: int | None = None) -> None:
+    """OpenBLAS threads for serial sections (Fock diagonalization, DIIS, dense
+    linear algebra outside parallel regions), for the rest of the process.
+
+    ``None``: ``FERRIC_BLAS_THREADS`` if set, else the rayon thread count.
+    ``1`` gives results bit-identical across thread counts; other values move
+    results at the last bit (about 1e-14 relative)."""
+
+def blas_threads() -> int:
+    """The OpenBLAS thread count serial sections use now: the requested count
+    clamped to the OpenBLAS build's ``MAX_THREADS`` (a request above it warns
+    once on stderr)."""
 
 class GpuDevice(TypedDict):
     ordinal: int
@@ -153,6 +174,42 @@ def configure_precision(
     """
     ...
 
+# ── Exceptions ──
+# Every class below also derives from the builtin class the same failure raised
+# before the hierarchy existed, so existing `except RuntimeError` /
+# `except ValueError` / `except NotImplementedError` handlers are unchanged.
+# Messages are the same text as before. See src/errors.rs for the mapping.
+
+class FerricError(Exception):
+    """Root of the ferric exception hierarchy; never raised itself."""
+
+class ConvergenceError(FerricError, RuntimeError):
+    """A typed non-convergence (SCF, CC, a response solver, the orbital
+    optimisation). A failure still returned as untyped text is a
+    ``ComputationError``."""
+
+class NumericalError(FerricError, RuntimeError):
+    """A typed linear-algebra failure (eigensolver, factorization)."""
+
+class MemoryBudgetError(FerricError, RuntimeError):
+    """A typed memory refusal (``MemoryExhausted``). The pre-flight
+    ``check_alloc`` still returns untyped text, so it is a ``ComputationError``."""
+
+class UnsupportedError(FerricError, NotImplementedError):
+    """A valid option combination the method does not implement."""
+
+class ComputationError(FerricError, RuntimeError):
+    """Any failure that carries no type (also a ``RuntimeError``). Not "all
+    runtime failures": catch ``RuntimeError`` for that."""
+
+class InputError(FerricError, ValueError):
+    """An invalid argument or option value."""
+
+class BasisError(InputError, RuntimeError):
+    """A basis set or ECP could not be loaded, parsed or does not cover the
+    molecule. Both a ``ValueError`` and a ``RuntimeError``: ``BasisSet.bundled`` raised
+    the former and the ``run_*`` drivers the latter."""
+
 # ── Classes ──
 
 class Molecule:
@@ -166,6 +223,26 @@ class Molecule:
     @staticmethod
     def from_xyz_string(s: str, charge: int = 0, multiplicity: int = 1) -> Molecule:
         """Parse a molecule from an XYZ-format string."""
+        ...
+
+    @staticmethod
+    def from_arrays(
+        elements: Sequence[str | int],
+        coords: Sequence[Sequence[float]] | NDArray[np.float64],
+        units: str = "angstrom",
+        charge: int = 0,
+        multiplicity: int = 1,
+        ghost: Sequence[bool] | None = None,
+    ) -> Molecule:
+        """Build a molecule from arrays: one element symbol ("O") or atomic
+        number (8) per atom, (natoms, 3) coordinates in ``units``
+        ("angstrom", the default, or "bohr"; case-insensitive) and optional
+        per-atom ghost (basis-only) flags. Equal, field for field, to
+        from_xyz_string of the same atoms written with repr() coordinates
+        (a symbol is kept as written; an atomic number gets its canonical
+        symbol). ValueError: unknown element or unit, length mismatch, a row
+        that is not three finite numbers, a symbol with the XYZ "@" ghost
+        prefix (use ghost=), or an impossible charge/multiplicity."""
         ...
 
     def nuclear_repulsion(self) -> float:
@@ -192,12 +269,41 @@ class Molecule:
         """Element symbols in atom order."""
         ...
 
+    def atomic_numbers(self) -> list[int]:
+        """Atomic numbers in atom order (true Z, not reduced by ECP cores)."""
+        ...
+
+    def is_ghost(self) -> list[bool]:
+        """Per-atom ghost (basis-only, zero-charge) flags, in atom order."""
+        ...
+
+    def to_xyz_string(self) -> str:
+        """XYZ-format string (Angstrom). The comment line records charge and
+        multiplicity, but from_xyz_string does not parse them back."""
+        ...
+
+    @property
+    def charge(self) -> int:
+        """Net molecular charge in elementary charges (read-only)."""
+        ...
+
+    @property
+    def multiplicity(self) -> int:
+        """Spin multiplicity 2S+1 (read-only)."""
+        ...
+
+    def __repr__(self) -> str:
+        """``Molecule(H2O, 3 atoms, charge=0, multiplicity=1)``: Hill formula of the
+        non-ghost atoms, then the atom count including ghosts."""
+        ...
+
 class QmmmSystem:
     """A QM/MM partition: full structure split into a QM region and fixed MM point charges.
 
     Constructor takes Angstrom; point_charges() returns Bohr (the units run_rhf/run_optimize
     take for point_charges=). Select the QM region with qm_indices OR qm_seeds + qm_radius_angstrom
-    (+ optional residue_ids to pull in whole residues instead of individual atoms).
+    (+ optional residue_ids to pull in whole residues instead of individual atoms). With
+    qm_indices, residue_ids only labels molecules (read by run_qmmm's polarization_exclusions).
     """
 
     def __init__(
@@ -304,6 +410,13 @@ class QmmmResult:
     """Result of run_qmmm. Gradients are dE/dR (Hartree/Bohr); mm_forces() is the FORCE on each charge."""
 
     @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (same keys as ``RhfResult.certificate``).
+        ``capability`` is ``"qmmm:<method>"`` and the grade is ``"ungraded"``: the
+        validation page does not grade this entry point. The QM-region SCF certificate is the reference (its approximations and warnings carry the ``scf`` prefix); the partition, the embedding (MM charges, boundary scheme, link atoms, polarizable sites) and the MM force field are approximations; an unconverged SCF is a warning."""
+        ...
+
+    @property
     def energy(self) -> float: ...
     @property
     def converged(self) -> bool: ...
@@ -363,6 +476,8 @@ def run_qmmm(
     guess: str | None = None,
     mm_topology: MmTopology | None = None,
     thole_a: float | None = None,
+    ri_j_precision: str | None = None,
+    polarization_exclusions: str | None = None,
 ) -> QmmmResult:
     """Embedded SCF ("rhf" default, "uhf", "rks" or "uks") energy + QM gradient + MM forces + full gradient.
 
@@ -387,11 +502,24 @@ def run_qmmm(
     on a colocated charge+alpha MM atom and a two-site mutual-induction case.
     Boundary charges (RC/RCD) combined with a polarizable site have no FD
     cross-check yet.
+
+    polarization_exclusions: "molecule" (None = default) -- a site feels neither
+    the permanent charges nor the induced dipoles of its own molecule, labelled
+    by the system's residue_ids, else by the bonds of mm_topology; with neither,
+    ValueError. "none" -- no exclusions (isolated sites such as ions only; an
+    unexcluded TIP3P oxygen is polarized by its own hydrogens).
     """
     ...
 
 class QmmmOptimizeResult:
     """Result of run_optimize_qmmm."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (same keys as ``RhfResult.certificate``).
+        ``capability`` is ``"qmmm-optimize:<method>"`` and the grade is ``"ungraded"``: the
+        validation page does not grade this entry point. The SCF at the returned partition (re-solved: the driver does not return its own) is the reference; the partition, the embedding, the MM force field, the MM atoms that moved and the optimizer settings are approximations; ``converged = False`` is a warning."""
+        ...
 
     @property
     def energy(self) -> float: ...
@@ -416,6 +544,13 @@ def run_optimize_qmmm(
     mm_topology: MmTopology | None = None,
     max_steps: int | None = None,
     e_conv: float | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+    scf_warm_start: bool | None = None,
+    scf_ri_j_precision: str | None = None,
+    initial_hessian: str | None = None,
+    trust_update: str | None = None,
 ) -> QmmmOptimizeResult:
     """Optimize a QmmmSystem's geometry. Real QM atoms always move; MM atoms move per move_mm.
 
@@ -427,6 +562,18 @@ def run_optimize_qmmm(
 
     method/xc follow run_qmmm's convention: "rhf" (default), "uhf", "rks", "uks"; xc is
     required for the KS variants and rejected otherwise.
+
+    `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the SCF at every
+    step (names and defaults of `run_rhf`'s `max_iter`, `energy_conv`, `density_conv`).
+    `scf_warm_start`: as in `run_optimize` (default True).
+    `scf_ri_j_precision`: RI-J tensor storage, "f32" or "f64"; unset is "f64" here
+    (geometry task: the f32 surface jitters between nearby geometries), an explicit
+    "f32" is honoured.
+    `initial_hessian`: "lindh" (default; the Lindh model Hessian of the whole structure,
+    QM and MM atoms, restricted to the free atoms) or "simple" (the identity).
+    `trust_update`: "ratio" (default) or "fixed". The search is Cartesian; the certificate
+    records all three as `optimizer-coordinates`, `optimizer-initial-hessian` and
+    `optimizer-trust-update`. Anything else raises ValueError.
     """
     ...
 
@@ -457,9 +604,31 @@ class BasisSet:
         """Atomic numbers this basis has shells for, ascending."""
         ...
 
+    def shells(self, z: int) -> list[tuple[int, bool, list[float], list[float]]]:
+        """Shells on element `z` in AO order: (l, pure, exponents [Bohr^-2],
+        coefficients of normalised primitives). ValueError if `z` is absent."""
+        ...
+
+    def ecp_core_electrons(self, z: int) -> int:
+        """Core electrons this basis's ECP replaces on element `z` (0 without
+        an ECP for `z`)."""
+        ...
+
     @staticmethod
     def from_bse_json(path: str) -> BasisSet:
         """Load a Basis Set Exchange JSON file (contractions renormalised)."""
+        ...
+
+    def n_functions(self, mol: Molecule) -> int:
+        """Number of basis functions this set places on `mol` (spherical or
+        Cartesian per shell, as the SCF builds them; ghost atoms included).
+        For an orbital basis it is the run's ``nbf``; for an auxiliary
+        (RI/JK-fit) basis it is ``naux``, which sizes the density-fitting
+        tensors: a packed ``(P|mn)`` tensor holds at most
+        ``naux * nbf * (nbf + 1) / 2`` elements (8 bytes each at f64, 4 at
+        f32; see ``run_dft`` for which tensors a run holds and when one is
+        smaller or square). Builds no integrals.
+        ValueError when the basis does not cover an element of `mol`."""
         ...
 
 class AoIntegrals:
@@ -661,6 +830,7 @@ class AoIntegrals:
         grid_radial: int | None = None,
         grid_angular: int | None = None,
         grid_prune: str | None = None,
+        grid_weight_cut: float | None = None,
     ) -> XcFunctional:
         """The functional on run_dft's grid (same grid kwargs), built once."""
         ...
@@ -673,13 +843,39 @@ class AoIntegrals:
     ) -> DfJk:
         """RI-J/RI-K fitters against `aux`, built once and reused per density."""
         ...
+    def pvp(self) -> NDArray[np.float64]:
+        """pVp W = sum_a <d_a mu|V|d_a nu> over the nuclei (nao x nao),
+        ECP-effective charges as nuclear(): PySCF's int1e_pnucp, the
+        small-component potential W / (4 c^2) of spin-free X2C and DKH."""
+        ...
+    def hcore_x2c(self, c: float | None = None) -> NDArray[np.float64]:
+        """Spin-free X2C-1e core Hamiltonian (nao x nao), replacing T + V:
+        built in the uncontracted basis and contracted back, as PySCF sfx2c1e
+        (approx='1e', xuncontract=True). c in atomic units, default PySCF's
+        137.03599967994. ValueError for an ECP atom or a non-positive c."""
+        ...
+    def provenance(self) -> dict[str, Any]:
+        """What this object computed, as a dict (JSON-safe): ``object``,
+        ``build`` (version, commit, dirty), ``basis`` (``name`` and
+        ``elements``: ``[{z, source}]``, each element's data source:
+        ``"BSE <set> v<n>, BSE package <v>"``, a fill, a local extension,
+        ``"Psi4 <set> @<commit>"``, or ``"user-supplied"`` when the shells
+        differ from the bundled set of that name), ``approximations``
+        (``ecp``), and ``uses``: every distinct block configuration called so
+        far, in first-call order, each ``{block, operator, aux, xc,
+        approximations, calls}`` (``aux`` a basis record for fitted blocks,
+        ``xc`` ``"<functional> on <grid>"``, ``None`` where not applicable).
+        Recording never changes an array. Compose records with
+        ``certificate_from_blocks``."""
+        ...
 
 class XcFunctional:
     """An XC functional on one molecule's grid, from AoIntegrals.xc_functional.
 
     eval / eval_polarized: semilocal (+ VV10) E_xc and V_xc as the SCF adds them;
     grad / grad_polarized: the XC gradient at fixed density (grid response
-    included); hess / vxc_deriv: its closed-shell Hessian pieces (moving grid).
+    included); hess / vxc_deriv and hess_polarized / vxc_deriv_polarized: its
+    closed-shell and spin-polarized Hessian pieces (moving grid).
     Exact exchange is not included: see exchange_mix."""
 
     @property
@@ -699,7 +895,7 @@ class XcFunctional:
         self, density: NDArray[np.float64], d1: NDArray[np.float64]
     ) -> NDArray[np.float64]:
         """d/dt V_xc(D + t D1) at t = 0 (LDA/GGA/hybrid/RSH-GGA and the tau-only
-        meta-GGAs SCAN/r2SCAN/TPSS; VV10 functionals add the derivative of the
+        meta-GGAs, pure or hybrid: SCAN/r2SCAN/TPSS/TPSSh/M06-2X; VV10 functionals add the derivative of the
         V_nl the SCF assembles, on its NLC grid)."""
         ...
     def response_polarized(
@@ -717,13 +913,28 @@ class XcFunctional:
         """d2 E_xc / dx dy at fixed total density, (3N, 3N), index 3*atom + xyz:
         the XC skeleton of run_frequencies(hessian="analytic-moving-grid"),
         grid response included (the derivative of grad). Closed-shell LDA/GGA,
-        pure or global hybrid, unpruned grid; meta-GGA, VV10, range-separated
-        or double hybrids, grid_prune and ghost atoms raise ValueError."""
+        pure or global hybrid, on any grid (pruned or flat); meta-GGA, VV10,
+        range-separated or double hybrids and ghost atoms raise
+        ValueError. An ECP basis is accepted (V_ECP is not an XC term)."""
         ...
     def vxc_deriv(self, density: NDArray[np.float64]) -> NDArray[np.float64]:
         """dV_xc / dx at fixed total density, (3N, n, n), same moving grid as
         hess (the derivative of eval's V_xc): the XC part of the first-order
         KS matrix of a CPKS right-hand side. Same limits as hess."""
+        ...
+    def hess_polarized(
+        self, d_a: NDArray[np.float64], d_b: NDArray[np.float64]
+    ) -> NDArray[np.float64]:
+        """d2 E_xc / dx dy at fixed spin densities, (3N, 3N): the XC skeleton of
+        the analytic UKS Hessian (the derivative of grad_polarized).
+        hess_polarized(D/2, D/2) equals hess(D). Same limits as hess."""
+        ...
+    def vxc_deriv_polarized(
+        self, d_a: NDArray[np.float64], d_b: NDArray[np.float64]
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """(dV_a / dx, dV_b / dx) at fixed spin densities, each (3N, n, n): the
+        derivatives of eval_polarized's V_a and V_b. At (D/2, D/2) each equals
+        vxc_deriv(D). Same limits as hess."""
         ...
 
 class Cphf:
@@ -731,7 +942,14 @@ class Cphf:
 
     matvec(U) = (e_a - e_i) U + C_v^T F1(D1) C_o, D1 = density(U) =
     2 (C_v U C_o^T + h.c.), F1 = J - 0.5 mix K + f_xc. solve(rhs) gives U with
-    matvec(U) = rhs; for a perturbation h1, rhs = -C_v^T h1 C_o."""
+    matvec(U) = rhs; for a perturbation h1, rhs = -C_v^T h1 C_o.
+
+    solve runs preconditioned CG until max |residual| < tol (tol > 0, else
+    ValueError). The exact J/K screen is applied to the trial density scaled
+    to unit size, so matvec is linear down to the smallest CG directions. A
+    curvature p.matvec(p) below minus its dot-product round-off bound raises
+    RuntimeError (the reference is not a minimum); one within the bound of
+    zero raises RuntimeError as a stall."""
 
     def matvec(self, u: NDArray[np.float64]) -> NDArray[np.float64]: ...
     def solve(
@@ -779,6 +997,7 @@ class SymmetricRhfResult:
     NotImplementedError; no function that takes an RhfResult accepts this."""
 
     energy: float
+    total_energy: float
     converged: bool
     iterations: int
     point_group: str
@@ -807,6 +1026,17 @@ class RhfResult:
     """Result of a closed-shell RHF (or run_ksdft KS-DFT) calculation."""
 
     @property
+    def ri_j_precision(self) -> str | None:
+        """Storage precision of the RI-J tensor the SCF actually used:
+        ``"f32"`` (the default; f64 accumulation) or ``"f64"`` (the
+        ``ri_j_precision="f64"`` opt-out, or an f32 request whose tensor did
+        not fit). ``None`` when J was not density-fitted."""
+        ...
+    @property
+    def ri_k_precision(self) -> str | None:
+        """RI-K dressed-tensor storage the SCF used ("f64"/"f32"), None without RI-K."""
+        ...
+    @property
     def precision(self) -> dict[str, Any]:
         """Precision provenance: ``{"precision": "f64" | "mixed",
         "counter_scope": "process", "kernels": [...]}``, one kernel entry per
@@ -817,6 +1047,23 @@ class RhfResult:
         calculation running concurrently in this process is counted too
         (sequential runs are exact). An all-f64 run is
         ``{"precision": "f64", "counter_scope": "process", "kernels": []}``."""
+        ...
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate: ``capability`` (``"rhf"``, ``"ksdft"``,
+        ``"uhf"`` or ``"rohf"``), ``build`` (``{"version", "commit",
+        "dirty"}``), ``grade`` (``"proven"``, ``"proven_narrow"``,
+        ``"smoke"``, ``"spike"``, ``"stub"`` or ``"ungraded"``; an
+        unconverged SCF is ``"ungraded"``), ``grade_source``,
+        ``measured_error``, ``approximations`` (``[{"name", "detail"}]``),
+        ``precision`` and ``warnings`` (``list[str]``, with one entry per
+        element, basis or functional of the run outside the solver's energy
+        anchor; such a warning does not change the grade)."""
+        ...
+
+    @property
+    def total_energy(self) -> float:
+        """Alias of `energy` (the same value)."""
         ...
 
     @property
@@ -840,9 +1087,27 @@ class RhfResult:
         ...
 
     @property
+    def one_step_energy_drop(self) -> float | None:
+        """First-order energy change (Hartree) of one plain Roothaan step from the
+        converged density, ``Tr[F[D] (D' - D)]``; ``<= 0``, and zero (to rounding)
+        only at a stationary aufbau state. A value below ``-stationarity_tol``
+        marks a converged exit that is not a stationary point. ``None`` when the
+        exit is not an aufbau convergence (not converged, MOM, Fermi smearing,
+        ``fractional_occ``, ``irrep_nelec``)."""
+        ...
+
+    @property
+    def stationarity_tol(self) -> float | None:
+        """The tolerance ``one_step_energy_drop`` is judged against:
+        ``energy_conv + span * (nbasis * density_conv)**2`` with ``span`` the
+        orbital-energy range of the final Fock matrix; ``None`` without a
+        convergence record."""
+        ...
+
+    @property
     def exit_reason(self) -> str:
-        """ScfExit variant name: "Converged", "Stalled", "Diverged" or "MaxIter" (the
-        iteration cap was reached). ("Plateau" is reserved: not produced by run_rhf today.)"""
+        """ScfExit variant name: "Converged", "Stalled", "Diverged", "MaxIter" (the
+        iteration cap was reached) or "NotCertified" (ROHF/ROKS only)."""
         ...
 
     @property
@@ -900,6 +1165,13 @@ class RhfResult:
         """MO coefficient matrix C (n_bf x n_mo), column k = MO k."""
         ...
 
+    def gradient(self) -> NDArray[np.float64] | None:
+        """Analytic nuclear gradient dE/dR as an (natoms, 3) array in
+        Hartree/Bohr, rows in the Molecule's atom order, if the run had
+        with_gradient=True, else None. Same layout as DftResult.gradient()
+        and the periodic results' gradient()."""
+        ...
+
     @property
     def cosx_final_pass(self) -> dict[str, float | int | str] | None:
         """The COSX final-grid pass: ``{"e_scf_grid", "e_final",
@@ -919,7 +1191,17 @@ class RhfResult:
         ...
 
 class UhfResult:
-    """Result of an open-shell UHF or ROHF calculation."""
+    """Result of an open-shell UHF or ROHF calculation.
+
+    Orbital layout, per spin s in (alpha, beta): ``mo_coefficients_s()`` is
+    (n_bf, n_mo) with column k = MO k in ascending ``orbital_energies_s()``
+    order, ``occupations_s()`` holds each column's occupation (0 or 1 for an
+    aufbau or MOM state) and ``density_s() == C_s @ diag(occ_s) @ C_s.T``
+    to the SCF's density convergence (UHF returns the last iteration's
+    density next to the orbitals of that iteration's Fock matrix).
+    ROHF has one MO set: the beta coefficients and energies are the alpha
+    ones (energies of the Roothaan effective Fock), and only the occupations
+    differ. AOs are in ferric's shell order (see ``AoIntegrals``)."""
 
     @property
     def precision(self) -> dict[str, Any]:
@@ -932,6 +1214,39 @@ class UhfResult:
         calculation running concurrently in this process is counted too
         (sequential runs are exact). An all-f64 run is
         ``{"precision": "f64", "counter_scope": "process", "kernels": []}``."""
+        ...
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate: ``capability`` (``"rhf"``, ``"ksdft"``,
+        ``"uhf"`` or ``"rohf"``), ``build`` (``{"version", "commit",
+        "dirty"}``), ``grade`` (``"proven"``, ``"proven_narrow"``,
+        ``"smoke"``, ``"spike"``, ``"stub"`` or ``"ungraded"``; an
+        unconverged SCF is ``"ungraded"``), ``grade_source``,
+        ``measured_error``, ``approximations`` (``[{"name", "detail"}]``),
+        ``precision`` and ``warnings`` (``list[str]``, with one entry per
+        element, basis or functional of the run outside the solver's energy
+        anchor; such a warning does not change the grade)."""
+        ...
+    @property
+    def one_step_energy_drop(self) -> float | None:
+        """First-order energy change (Hartree) of one plain Roothaan step from the
+        converged density, ``Tr[F[D] (D' - D)]``; ``<= 0``, and zero (to rounding)
+        only at a stationary aufbau state. A value below ``-stationarity_tol``
+        marks a converged exit that is not a stationary point. ``None`` when the
+        exit is not an aufbau convergence (not converged, MOM, Fermi smearing,
+        ``fractional_occ``, ``irrep_nelec``)."""
+        ...
+    @property
+    def stationarity_tol(self) -> float | None:
+        """The tolerance ``one_step_energy_drop`` is judged against:
+        ``energy_conv + span * (nbasis * density_conv)**2`` with ``span`` the
+        orbital-energy range of the final Fock matrix; ``None`` without a
+        convergence record."""
+        ...
+
+    @property
+    def total_energy(self) -> float:
+        """Alias of `energy` (the same value)."""
         ...
 
     @property
@@ -967,7 +1282,30 @@ class UhfResult:
         ...
 
     def orbital_energies_beta(self) -> NDArray[np.float64]:
-        """Beta-spin orbital energies (Hartree), ascending."""
+        """Beta-spin orbital energies (Hartree), ascending; ROHF: the alpha ones."""
+        ...
+
+    def mo_coefficients_alpha(self) -> NDArray[np.float64]:
+        """Alpha MO coefficients (n_bf x n_mo), column k = alpha MO k."""
+        ...
+
+    def mo_coefficients_beta(self) -> NDArray[np.float64]:
+        """Beta MO coefficients (n_bf x n_mo); ROHF: the alpha matrix."""
+        ...
+
+    def occupations_alpha(self) -> NDArray[np.float64]:
+        """Alpha occupation per alpha MO column, diag(C^T S D_alpha S C)."""
+        ...
+
+    def occupations_beta(self) -> NDArray[np.float64]:
+        """Beta occupation per beta MO column, diag(C^T S D_beta S C)."""
+        ...
+
+    def gradient(self) -> NDArray[np.float64] | None:
+        """Analytic nuclear gradient dE/dR as an (natoms, 3) array in
+        Hartree/Bohr, rows in the Molecule's atom order, if the run had
+        with_gradient=True, else None. Same layout as DftResult.gradient()
+        and the periodic results' gradient()."""
         ...
 
     @property
@@ -1017,6 +1355,18 @@ class CdftResult:
     unconverged one raises ``RuntimeError`` -- but the inner SCF at the final
     lambda may not be; ``converged`` requires both.
     """
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (same keys as ``RhfResult.certificate``).
+        ``capability`` is ``"cdft:uhf"`` or ``"cdft:uks"`` and the grade is ``"ungraded"``: the
+        validation page does not grade this entry point. The UHF/UKS certificate at the constrained density is the reference; each constraint (fragment, kind, target, multiplier, population), the Becke weight grid and the outer-loop settings are approximations; an unconverged inner SCF or constraint is a warning."""
+        ...
+
+    @property
+    def total_energy(self) -> float:
+        """Alias of `energy` (the same value)."""
+        ...
 
     @property
     def energy(self) -> float:
@@ -1116,6 +1466,13 @@ class CdftCouplingResult:
     """Wu-Van Voorhis coupling between two cDFT diabats (``cdft_coupling``)."""
 
     @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (same keys as ``RhfResult.certificate``).
+        ``capability`` is ``"cdft-coupling"`` and the grade is ``"ungraded"``: the
+        validation page does not grade this entry point. State A's certificate is the reference; state B's approximations and warnings carry the prefix ``state B``; the Wu-Van Voorhis formula is recorded as an approximation."""
+        ...
+
+    @property
     def h_ab(self) -> float:
         """Orthogonalized coupling (Ha). The sign is a phase convention; compare |h_ab|."""
         ...
@@ -1168,8 +1525,121 @@ class OptimizeResult:
         """
         ...
 
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (same keys as ``RhfResult.certificate``).
+        ``capability`` is ``"optimize:<kind>"``; the grade is that method.kind's row of
+        validation.md, capped at the grade of the SCF at the returned geometry (re-solved: the
+        driver does not return its own), whose approximations and warnings are
+        inherited. The gradient and optimizer settings are approximations; ``converged = False`` is ``"ungraded"``; a failed final-point SCF is ``"ungraded"`` with the reason as a warning."""
+        ...
+
+class MdResult:
+    """Result of a molecular dynamics run (`run_aimd`, `run_ffmd`).
+
+    One entry per recorded frame: step 0 and every `stride`-th step. Energies in
+    Hartree, times in fs, positions in Angstrom, velocities in Angstrom/fs.
+    """
+
+    @property
+    def steps(self) -> list[int]:
+        """Step index of each recorded frame."""
+        ...
+
+    @property
+    def times_fs(self) -> NDArray[np.float64]:
+        """Simulation time of each frame, fs."""
+        ...
+
+    @property
+    def potential_energies(self) -> NDArray[np.float64]:
+        """Potential energy of each frame, Hartree."""
+        ...
+
+    @property
+    def kinetic_energies(self) -> NDArray[np.float64]:
+        """Kinetic energy of each frame, Hartree."""
+        ...
+
+    @property
+    def total_energies(self) -> NDArray[np.float64]:
+        """Potential plus kinetic energy of each frame, Hartree."""
+        ...
+
+    @property
+    def conserved(self) -> NDArray[np.float64]:
+        """Total energy minus the kinetic energy the thermostat put in, Hartree.
+
+        Equal to `total_energies` under NVE; constant up to integration error for
+        every thermostat.
+        """
+        ...
+
+    @property
+    def temperatures(self) -> NDArray[np.float64]:
+        """Instantaneous temperature of each frame, K (over `n_dof`)."""
+        ...
+
+    @property
+    def positions_angstrom(self) -> NDArray[np.float64]:
+        """Positions, shape `(n_frames, n_atoms, 3)`, Angstrom."""
+        ...
+
+    @property
+    def velocities(self) -> NDArray[np.float64]:
+        """Velocities, shape `(n_frames, n_atoms, 3)`, Angstrom/fs."""
+        ...
+
+    @property
+    def n_dof(self) -> int:
+        """Degrees of freedom of the temperatures: 3N - 3 with COM removal (NVE,
+        Berendsen, N > 1), else 3N."""
+        ...
+
+    @property
+    def n_force_evaluations(self) -> int:
+        """Energy/gradient evaluations (`n_steps + 1`)."""
+        ...
+
+    @property
+    def max_conserved_drift(self) -> float:
+        """Largest `|conserved - conserved[0]|`, Hartree."""
+        ...
+
+    @property
+    def label(self) -> str:
+        """The force provider's label (`"rhf/sto-3g"`, `"mm"`, ...)."""
+        ...
+
+    @property
+    def scf_iterations(self) -> list[int] | None:
+        """SCF iterations per force evaluation (`run_aimd`); `None` for `run_ffmd`."""
+        ...
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (same keys as ``RhfResult.certificate``).
+        ``capability`` is ``"md:<label>"`` and the grade is always ``"ungraded"``. The
+        integrator, thermostat, time step and seed are approximations; the maximum
+        conserved-quantity drift is a warning. For `run_aimd` the SCF at the final
+        geometry is folded in as the reference."""
+        ...
+
+    def mol(self) -> Molecule | None:
+        """The final geometry as a new Molecule (`run_aimd`); `None` for `run_ffmd`."""
+        ...
+
 class FrequencyResult:
     """Result of a harmonic vibrational frequency calculation."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (same keys as ``RhfResult.certificate``).
+        ``capability`` is ``"frequencies:<kind>"``; the grade is that method.kind's row of
+        validation.md, capped at the grade of the SCF at the input geometry (re-solved: the
+        driver does not return its own), whose approximations and warnings are
+        inherited. The Hessian construction (analytic, analytic-moving-grid, finite-difference with delta and gradient count) and its asymmetry are approximations; each imaginary frequency count is a warning."""
+        ...
 
     @property
     def frequencies(self) -> list[float]:
@@ -1207,6 +1677,14 @@ class FrequencyResult:
         ...
 
     @property
+    def normal_modes(self) -> list[list[float]]:
+        """Cartesian displacement vector of each mode (one row per entry of
+        `frequencies`, 3N values ordered [x0, y0, z0, x1, ...]): the unit
+        mass-weighted eigenvector (masses in electron masses) divided by
+        sqrt(m), i.e. dR/dQ for the mass-weighted normal coordinate Q."""
+        ...
+
+    @property
     def energy(self) -> float:
         """Electronic energy at the undisplaced geometry (KS + dispersion with `dispersion=`)."""
         ...
@@ -1214,6 +1692,43 @@ class FrequencyResult:
     @property
     def e_dispersion(self) -> float | None:
         """Dispersion energy at the undisplaced geometry, included in `energy`; None without `dispersion=`."""
+        ...
+
+    def thermo(
+        self,
+        temperature: float = 298.15,
+        pressure: float = 101325.0,
+        symmetry_number: int = 1,
+    ) -> dict[str, Any]:
+        """Ideal-gas rigid-rotor / harmonic-oscillator thermochemistry (PySCF
+        ``hessian.thermo`` conventions) at ``temperature`` (K) and ``pressure``
+        (Pa, default one atmosphere).
+
+        ``symmetry_number`` is the rotational symmetry number (default 1; ferric
+        does not detect it: 2 for water, 3 for NH3, 12 for CH4). Imaginary modes
+        are left out of the vibrational terms with a ``RuntimeWarning``.
+
+        Keys: ``temperature_k``, ``pressure_pa``, ``symmetry_number``, ``rotor``
+        ("atom", "linear", "nonlinear"), ``rotational_constants_ghz``, ``e0``
+        (= ``energy``), ``zpe``, ``n_imaginary_excluded``, ``warnings``, and
+        ``electronic``, ``translational``, ``rotational``, ``vibrational``,
+        ``total``, each a dict of ``energy``, ``enthalpy``, ``entropy``,
+        ``gibbs``, ``cv``, ``cp``. Energies in Hartree, entropies and heat
+        capacities in Hartree/K, per molecule. ``total["gibbs"]`` includes
+        ``e0``.
+        """
+        ...
+
+    def ir_intensities(self) -> list[float]:
+        """Harmonic IR intensity of each mode in km/mol, in the order of
+        ``frequencies`` (imaginary modes included).
+
+        The dipole derivative comes from the analytic gradient of SCFs solved in
+        a uniform field of +-1e-3 a.u. (six SCF + gradient evaluations, run on
+        the first call and cached; SCFs at ``scf_density_conv`` capped at
+        1e-9). SCF references only: raises ``ValueError`` for
+        ``method="pdep-rpa"`` and xTB results.
+        """
         ...
 
 class WeightedStats:
@@ -1409,6 +1924,21 @@ class ConformerEnsemble:
 class RiMp2Result:
     """Result of a run_rimp2 calculation."""
 
+    def gradient(self) -> NDArray[np.float64] | None:
+        """Analytic nuclear gradient of total_energy (natoms, 3; Hartree/Bohr;
+        the Molecule's atom order) if run_rimp2 had with_gradient=True, else
+        None."""
+        ...
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"rimp2"``; ``"att-rimp2"`` for ``run_terfc_rimp2``), its grade capped by the reference SCF's,
+        the method's settings in ``approximations`` and the reference's as
+        ``"scf <name>"``, and ``warnings`` (for exact ``"rimp2"``, one per
+        element, basis or auxiliary basis outside the RI-MP2 energy anchor)."""
+        ...
+
     @property
     def precision(self) -> dict[str, Any]:
         """Precision provenance: ``{"precision": "f64" | "mixed",
@@ -1470,6 +2000,20 @@ class RiMp2Result:
 class OoRiMp2Result:
     """Result of an orbital-optimized RI-MP2 calculation."""
 
+    def gradient(self) -> NDArray[np.float64] | None:
+        """Analytic nuclear gradient of total_energy (natoms, 3; Hartree/Bohr;
+        the Molecule's atom order) if run_oo_rimp2 had with_gradient=True,
+        else None."""
+        ...
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"oo-rimp2"``), its grade from the validation page capped
+        by the reference SCF's, the method's settings in ``approximations``
+        and the reference's as ``"scf <name>"``, and ``warnings``."""
+        ...
+
     @property
     def total_energy(self) -> float: ...
     @property
@@ -1492,8 +2036,70 @@ class OoRiMp2Result:
         """The SCF's JK-fitting basis (None for "exact")."""
         ...
 
+class Opmp3Result:
+    """Result of an OP-MP3 calculation (``run_opmp3``)."""
+
+    @property
+    def e_scf(self) -> float:
+        """The reference SCF energy as converged (the KS energy for DFT)."""
+        ...
+    @property
+    def e_hf(self) -> float:
+        """HF energy of the reference density."""
+        ...
+    @property
+    def e_nbs(self) -> float:
+        """Non-Brillouin singles energy."""
+        ...
+    @property
+    def x_ss(self) -> float:
+        """SSD-OPMP3 same-spin damping used."""
+        ...
+    @property
+    def correlation(self) -> dict[str, float]:
+        """Correlation energy of every model, keyed ``mp2``, ``mp3``,
+        ``p-mp3``, ``op-mp3``, ``sop-mp3``, ``ssd-opmp3`` (Hartree, without
+        ``e_hf`` or ``e_nbs``)."""
+        ...
+    def total(self, model: str) -> float:
+        """``e_hf + e_nbs + correlation[model]``."""
+        ...
+    def w(self, order: int) -> dict[str, NDArray[np.float64]]:
+        """W matrices of ``order`` 2 or 3, keyed ``alpha_ss``, ``alpha_os``,
+        ``beta_ss``, ``beta_os`` (active occupied of that spin)."""
+        ...
+    @property
+    def max_ov(self) -> tuple[float, float]:
+        """``max |F_ia|`` per spin in the semicanonical basis."""
+        ...
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"opmp3"``), its grade capped by the reference
+        SCF's, the method's settings in ``approximations`` and the
+        reference's as ``"scf <name>"``, and ``warnings``."""
+        ...
+    @property
+    def local(self) -> dict[str, Any] | None:
+        """``None`` for the exact method. For ``local="amplitude-threshold"``:
+        ``scheme``, ``eps``, ``keep_fraction``, ``integral_direct`` (False),
+        ``n_pairs``, ``cg_iterations``, ``cg_relres``, ``lambda_boys``, the
+        third-order energy of both routes (``e3`` = c2.K, ``e3_2n1`` =
+        c1.R(c1), equal on one pattern) and, with ``compute_reference=True``,
+        ``canonical`` (canonical correlation energies keyed like
+        ``correlation``)."""
+        ...
+
 class Mp3Result:
     """Result of an MP3 calculation."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"mp3"``), its grade from the validation page capped
+        by the reference SCF's, the method's settings in ``approximations``
+        and the reference's as ``"scf <name>"``, and ``warnings``."""
+        ...
 
     @property
     def e_hf(self) -> float: ...
@@ -1506,8 +2112,54 @@ class Mp3Result:
     @property
     def e_total(self) -> float: ...
 
+class OmegaRiResult:
+    """Result of :func:`run_omega_ri`."""
+
+    @property
+    def total_energy(self) -> float: ...
+    @property
+    def rhf_energy(self) -> float: ...
+    @property
+    def e_corr(self) -> float:
+        """Correlation energy of ``method`` (SOS-scaled for ``"cdd-sos-mp2"``)."""
+        ...
+    @property
+    def e_os(self) -> float | None:
+        """Unscaled opposite-spin MP2 component (``None`` for ``"rpa"``)."""
+        ...
+    @property
+    def e_ss(self) -> float | None:
+        """Same-spin MP2 component (``None`` for ``"rpa"`` and ``"cdd-sos-mp2"``)."""
+        ...
+    @property
+    def method(self) -> str: ...
+    @property
+    def fit(self) -> str:
+        """The fit, e.g. ``"erfc(omega=0.1 Bohr^-1)"``."""
+        ...
+    @property
+    def mean_rank_occ(self) -> float | None:
+        """Mean occupied pseudo-MO rank over the Laplace points (CDD methods)."""
+        ...
+    @property
+    def mean_rank_vir(self) -> float | None: ...
+    @property
+    def pair_fraction(self) -> float | None:
+        """Occupied pairs kept by the exchange screen (``"cdd-mp2"`` only)."""
+        ...
+    @property
+    def virtual_fraction(self) -> float | None: ...
+
 class LaplaceMp2Result:
     """Result of a Laplace RI-MP2 calculation."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"laplace-mp2"``), its grade from the validation page capped
+        by the reference SCF's, the method's settings in ``approximations``
+        and the reference's as ``"scf <name>"``, and ``warnings``."""
+        ...
 
     @property
     def total_energy(self) -> float: ...
@@ -1529,6 +2181,14 @@ class LaplaceMp2Result:
 
 class SosMp2Result:
     """Result of a Laplace SOS-MP2 calculation."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"laplace-sos-mp2"``), its grade from the validation page capped
+        by the reference SCF's, the method's settings in ``approximations``
+        and the reference's as ``"scf <name>"``, and ``warnings``."""
+        ...
 
     @property
     def total_energy(self) -> float: ...
@@ -1573,7 +2233,21 @@ class AttenuatedMp2Result:
     """Result of an attenuated RI-MP2 calculation."""
 
     @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"att-rimp2"``), its grade from the validation page capped
+        by the reference SCF's, the method's settings in ``approximations``
+        and the reference's as ``"scf <name>"``, and ``warnings``."""
+        ...
+
+    @property
     def total_energy(self) -> float: ...
+    @property
+    def reference(self) -> str:
+        """ "RHF" for a singlet, "UHF" for multiplicity > 1 (then
+        ``rhf_energy`` is the UHF energy, ``e_os`` = E_ab, ``e_ss`` = E_aa + E_bb)."""
+        ...
+
     @property
     def rhf_energy(self) -> float: ...
     @property
@@ -1596,7 +2270,21 @@ class ScsMp2Result:
     """Result of a spin-component-scaled MP2 calculation."""
 
     @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"scs-mp2"`` (``"scs-mp2-2terfc"`` for ``run_scs_mp2_2terfc``)), its grade from the validation page capped
+        by the reference SCF's, the method's settings in ``approximations``
+        and the reference's as ``"scf <name>"``, and ``warnings``."""
+        ...
+
+    @property
     def total_energy(self) -> float: ...
+    @property
+    def reference(self) -> str:
+        """ "RHF" for a singlet, "UHF" for multiplicity > 1 (then
+        ``rhf_energy`` is the UHF energy, ``e_os`` = E_ab, ``e_ss`` = E_aa + E_bb)."""
+        ...
+
     @property
     def rhf_energy(self) -> float: ...
     @property
@@ -1617,6 +2305,14 @@ class ScsMp2Result:
 
 class Mp2VResult:
     """Result of an MP2-V (attenuated MP2 + VV10) calculation."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"mp2-v"``), its grade from the validation page capped
+        by the reference SCF's, the method's settings in ``approximations``
+        and the reference's as ``"scf <name>"``, and ``warnings``."""
+        ...
 
     @property
     def total_energy(self) -> float:
@@ -1658,7 +2354,21 @@ class RsMp2RpaResult:
     """Result of an RS-MP2-RPA (SR-MP2 + LR-dRPA) calculation."""
 
     @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"rs-mp2-rpa"``), its grade from the validation page capped
+        by the reference SCF's, the method's settings in ``approximations``
+        and the reference's as ``"scf <name>"``, and ``warnings``."""
+        ...
+
+    @property
     def total_energy(self) -> float: ...
+    @property
+    def reference(self) -> str:
+        """ "RHF" for a singlet, "UHF" for multiplicity > 1 (then
+        ``rhf_energy`` is the UHF energy and ``e_dmp2_lr`` = E_ab + (D_aa + D_bb)/2)."""
+        ...
+
     @property
     def rhf_energy(self) -> float: ...
     @property
@@ -1705,6 +2415,17 @@ class DftResult:
     """Result of a KS-DFT calculation."""
 
     @property
+    def ri_j_precision(self) -> str | None:
+        """Storage precision of the RI-J tensor the SCF actually used:
+        ``"f32"`` (the default; f64 accumulation) or ``"f64"`` (the
+        ``ri_j_precision="f64"`` opt-out, or an f32 request whose tensor did
+        not fit). ``None`` when J was not density-fitted."""
+        ...
+    @property
+    def ri_k_precision(self) -> str | None:
+        """RI-K dressed-tensor storage the SCF used ("f64"/"f32"), None without RI-K."""
+        ...
+    @property
     def precision(self) -> dict[str, Any]:
         """Precision provenance: ``{"precision": "f64" | "mixed",
         "counter_scope": "process", "kernels": [...]}``, one kernel entry per
@@ -1715,6 +2436,36 @@ class DftResult:
         calculation running concurrently in this process is counted too
         (sequential runs are exact). An all-f64 run is
         ``{"precision": "f64", "counter_scope": "process", "kernels": []}``."""
+        ...
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate: ``capability`` (``"rhf"``, ``"ksdft"``,
+        ``"uhf"`` or ``"rohf"``), ``build`` (``{"version", "commit",
+        "dirty"}``), ``grade`` (``"proven"``, ``"proven_narrow"``,
+        ``"smoke"``, ``"spike"``, ``"stub"`` or ``"ungraded"``; an
+        unconverged SCF is ``"ungraded"``), ``grade_source``,
+        ``measured_error``, ``approximations`` (``[{"name", "detail"}]``),
+        ``precision`` and ``warnings`` (``list[str]``, with one entry per
+        element, basis or functional of the run outside the solver's energy
+        anchor; such a warning does not change the grade)."""
+        ...
+
+    @property
+    def one_step_energy_drop(self) -> float | None:
+        """First-order energy change of one plain Roothaan step from the converged
+        density (see ``RhfResult.one_step_energy_drop``); ``None`` when the exit is
+        not an aufbau convergence."""
+        ...
+
+    @property
+    def stationarity_tol(self) -> float | None:
+        """The tolerance ``one_step_energy_drop`` is judged against (see
+        ``RhfResult.stationarity_tol``)."""
+        ...
+
+    @property
+    def energy(self) -> float:
+        """Alias of `total_energy` (the same value)."""
         ...
 
     @property
@@ -1778,6 +2529,14 @@ class DftResult:
         """AO-basis density matrix (n_bf x n_bf)."""
         ...
 
+    def orbital_energies(self) -> NDArray[np.float64]:
+        """Kohn-Sham orbital energies (Hartree), ascending; one per MO column."""
+        ...
+
+    def mo_coefficients(self) -> NDArray[np.float64]:
+        """Kohn-Sham MO coefficients (n_bf x n_mo), column k = MO k, ascending energy."""
+        ...
+
     def gradient(self) -> NDArray[np.float64] | None:
         """Analytic nuclear gradient (natoms x 3) if with_gradient=True, else None."""
         ...
@@ -1804,6 +2563,14 @@ class CcResult:
     """Result of a coupled-cluster calculation."""
 
     @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"ccd"``, ``"ccsd"`` or ``"ccsd(t)"``), its grade capped by the reference SCF's,
+        the method's settings in ``approximations`` and the reference's as
+        ``"scf <name>"``, and ``warnings``."""
+        ...
+
+    @property
     def correlation_energy(self) -> float: ...
     @property
     def t_correction(self) -> float | None: ...
@@ -1815,9 +2582,65 @@ class CcResult:
     def ladder_block(self) -> int | None:
         """RI ladder block width (None unless ladder_route == "ri")."""
         ...
+    @property
+    def reference(self) -> str:
+        """The reference the CC ran on: "rhf", or "uhf" for an open-shell molecule."""
+        ...
+    @property
+    def spin_components(self) -> dict[str, float] | None:
+        """UHF reference only (None on RHF): ``e_aa``, ``e_ab``, ``e_bb`` (CCSD)
+        and, from ``run_ccsd_t``, ``t_aaa``, ``t_aab``, ``t_abb``, ``t_bbb``
+        (the (T) classes by occupied spins), in Hartree."""
+        ...
+
+class EomCcsdResult:
+    """Result of an EE-EOM-CCSD singlet calculation (right eigenvectors)."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``),
+        ``capability`` ``"eom-ccsd"``."""
+        ...
+
+    @property
+    def rhf_energy(self) -> float: ...
+    @property
+    def ccsd_correlation_energy(self) -> float: ...
+    @property
+    def iterations(self) -> int: ...
+    @property
+    def products(self) -> int: ...
+    @property
+    def ladder_route(self) -> str:
+        """Particle-particle ladder route of the EOM products: "dense" or "ri"."""
+        ...
+    @property
+    def excitation_energies(self) -> NDArray[np.float64]:
+        """Singlet excitation energies (Hartree), ascending."""
+        ...
+    @property
+    def residuals(self) -> NDArray[np.float64]: ...
+    @property
+    def singles_weight(self) -> NDArray[np.float64]:
+        """``2|r1|^2 / |R|^2`` per root in the spin-orbital norm."""
+        ...
+    def r1(self, k: int) -> NDArray[np.float64]:
+        """Singles part ``r1[i, a]`` of root ``k`` (active occupied x virtual)."""
+        ...
+    def r2(self, k: int) -> NDArray[np.float64]:
+        """Doubles part ``r2[i, j, a, b]`` (alpha-beta amplitude) of root ``k``."""
+        ...
 
 class PdepRpaResult:
     """Result of a PDEP-RPA calculation."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"pdep-rpa"``), its grade capped by the reference SCF's,
+        the method's settings in ``approximations`` and the reference's as
+        ``"scf <name>"``, and ``warnings``."""
+        ...
 
     @property
     def rhf_energy(self) -> float: ...
@@ -1829,6 +2652,12 @@ class PdepRpaResult:
     def n_eigenpotentials(self) -> int: ...
     @property
     def e_rpa_dft_diag(self) -> float | None: ...
+    def gradient(self) -> NDArray[np.float64] | None:
+        """Analytic nuclear gradient of total_energy (natoms, 3; Hartree/Bohr;
+        the Molecule's atom order) if run_pdep_rpa had with_gradient=True, else
+        None."""
+        ...
+
     @property
     def eigensolver_converged(self) -> bool:
         """Whether the static-dielectric eigensolve met its convergence tolerance."""
@@ -1841,7 +2670,9 @@ class PdepRpaResult:
 
     @property
     def eigenpotentials(self) -> NDArray[np.float64]:
-        """PDEP eigenpotential coefficients (naux, M)."""
+        """PDEP eigenpotential coefficients (naux, M): column alpha is the charge
+        density sum_P c_P chi_P(r) whose Coulomb potential is the eigenpotential
+        (see response_modes)."""
         ...
 
     @property
@@ -1859,12 +2690,166 @@ class PdepRpaResult:
         """Eigenvalue tensor at imaginary frequencies (N_quad, M)."""
         ...
 
+    # -- property bundle: run_pdep_rpa(properties=True) or export_npz=. Names are
+    # the NPZ keys. None = not requested, or failed (see property_gaps).
+    @property
+    def property_gaps(self) -> list[str]:
+        """Requested properties that failed to compute ([] if none, or if the
+        bundle was not requested)."""
+        ...
+
+    @property
+    def property_warnings(self) -> list[str]:
+        """Warnings of the property computation (TS C6 skipped, a property failed,
+        ...); each is also raised as a RuntimeWarning."""
+        ...
+
+    @property
+    def written_files(self) -> list[str]:
+        """Files written by ``export_npz=`` and ``export_eigpot_prefix=``."""
+        ...
+
+    @property
+    def density_matrix(self) -> NDArray[np.float64] | None:
+        """Reference AO density (nao, nao) (bundle only; None with compute_density_matrix=False)."""
+        ...
+
+    @property
+    def mo_coeffs(self) -> NDArray[np.float64] | None:
+        """Reference MO coefficients (nao, nmo) (bundle only)."""
+        ...
+
+    @property
+    def orbital_energies(self) -> NDArray[np.float64] | None:
+        """Reference orbital energies (nmo,), Hartree (bundle only)."""
+        ...
+
+    @property
+    def esp_atoms(self) -> NDArray[np.float64] | None:
+        """ESP at the nuclei (N,), a.u., the nucleus's own term excluded."""
+        ...
+
+    @property
+    def esp_surface(self) -> NDArray[np.float64] | None:
+        """ESP on the vdW surface shell (npts,) (compute_esp_surface=True)."""
+        ...
+
+    @property
+    def esp_points(self) -> NDArray[np.float64] | None:
+        """Points of esp_surface (npts, 3), Bohr."""
+        ...
+
+    @property
+    def electric_field(self) -> NDArray[np.float64] | None:
+        """Electric field at the nuclei (N, 3), a.u."""
+        ...
+
+    @property
+    def alpha_tensor(self) -> NDArray[np.float64] | None:
+        """Molecular static PDEP-RPA polarizability (3, 3), a.u."""
+        ...
+
+    @property
+    def alpha_atomic(self) -> NDArray[np.float64] | None:
+        """Per-atom intrinsic Becke polarizability (N, 3, 3), a.u.; charge transfer
+        excluded, so alpha_atomic.sum(0) != alpha_tensor (the remainder is alpha_ct)."""
+        ...
+
+    @property
+    def alpha_ct(self) -> NDArray[np.float64] | None:
+        """Charge-transfer remainder alpha_tensor - alpha_atomic.sum(0), (3, 3)."""
+        ...
+
+    @property
+    def dipole(self) -> NDArray[np.float64] | None:
+        """Molecular dipole (3,), a.u."""
+        ...
+
+    @property
+    def lowdin_charges(self) -> NDArray[np.float64] | None: ...
+    @property
+    def hirshfeld_charges(self) -> NDArray[np.float64] | None:
+        """Hirshfeld charges from same-basis free-atom SCF proatoms."""
+        ...
+
+    @property
+    def mulliken_charges(self) -> NDArray[np.float64] | None: ...
+    @property
+    def chelpg_charges(self) -> NDArray[np.float64] | None: ...
+    @property
+    def resp_charges(self) -> NDArray[np.float64] | None: ...
+    @property
+    def orbital_centers(self) -> NDArray[np.float64] | None:
+        """Orbital centroids (nmo, 3), Bohr."""
+        ...
+
+    @property
+    def orbital_spreads(self) -> NDArray[np.float64] | None:
+        """Orbital spreads (nmo,), Bohr."""
+        ...
+
+    @property
+    def density_second_moment(self) -> NDArray[np.float64] | None:
+        """Electronic-density second moment about the origin (3, 3)."""
+        ...
+
+    @property
+    def c6_freqs(self) -> NDArray[np.float64] | None:
+        """Imaginary-frequency nodes of the C6 quadrature (nfreq,)."""
+        ...
+
+    @property
+    def c6_weights(self) -> NDArray[np.float64] | None: ...
+    @property
+    def c6_iso(self) -> NDArray[np.float64] | None:
+        """Per-atom-PAIR isotropic C6 (N, N): a partition convention (see
+        c6_partition); c6_iso.sum() is NOT the molecular C6 (use c6_molecular_iso)."""
+        ...
+
+    @property
+    def c6_aniso(self) -> NDArray[np.float64] | None:
+        """Per-atom-pair anisotropic C6 (N, N, 3, 3)."""
+        ...
+
+    @property
+    def alpha_atomic_dynamic(self) -> NDArray[np.float64] | None:
+        """Per-atom dynamic polarizability alpha^A(i omega) (N, nfreq, 3, 3)."""
+        ...
+
+    @property
+    def alpha_ct_dynamic(self) -> NDArray[np.float64] | None:
+        """Dynamic charge-transfer remainder (nfreq, 3, 3); c6_source="pdep" only."""
+        ...
+
+    @property
+    def c6_molecular_iso(self) -> float | None:
+        """Molecular isotropic C6, a.u.: the DOSD-comparable, partition-independent value."""
+        ...
+
+    @property
+    def c6_partition(self) -> str | None:
+        """Partition behind the per-atom C6 arrays: "becke" or "hirshfeld"."""
+        ...
+
+    @property
+    def c6_source(self) -> str | None:
+        """alpha(i omega) source behind the per-atom C6 arrays: "ts", "pdep" or "mbd"."""
+        ...
+
     def save_scree_plot(self, path: str, title: str | None = None) -> None:
         """Write a scree plot of static dielectric eigenvalues to path (PNG)."""
         ...
 
 class GwResult:
     """Result of a closed-shell GW calculation."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"gw"``; a run off ``n_quad = 100``, ``trunc_thresh = 0`` warns), its grade capped by the reference SCF's,
+        the method's settings in ``approximations`` and the reference's as
+        ``"scf <name>"``, and ``warnings``."""
+        ...
 
     @property
     def ref_energy(self) -> float: ...
@@ -1917,6 +2902,14 @@ class UGwResult:
     """Result of an open-shell U-GW calculation."""
 
     @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"gw"``), its grade from the validation page capped
+        by the reference SCF's, the method's settings in ``approximations``
+        and the reference's as ``"scf <name>"``, and ``warnings``."""
+        ...
+
+    @property
     def ref_energy(self) -> float: ...
     @property
     def mo_indices(self) -> list[int]: ...
@@ -1953,6 +2946,14 @@ class BseResult:
     """Result of a BSE-TDA calculation."""
 
     @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"bse-tda"``), its grade capped by the reference SCF's,
+        the method's settings in ``approximations`` and the reference's as
+        ``"scf <name>"``, and ``warnings``."""
+        ...
+
+    @property
     def nocc(self) -> int: ...
     @property
     def nvir(self) -> int: ...
@@ -1983,6 +2984,14 @@ class TdhfStaticPolarizabilityResult:
     """Result of an RPAx@KS static polarizability calculation."""
 
     @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` (``"tdhf-static-polarizability"``), its grade from the validation page capped
+        by the reference SCF's, the method's settings in ``approximations``
+        and the reference's as ``"scf <name>"``, and ``warnings``."""
+        ...
+
+    @property
     def nocc(self) -> int: ...
     @property
     def nvir(self) -> int: ...
@@ -1997,7 +3006,8 @@ class TdhfStaticPolarizabilityResult:
         ...
 
 class TddftResult:
-    """Result of a closed-shell linear-response TDA/TDDFT (or CIS/TDHF) calculation."""
+    """Result of a linear-response TDA/TDDFT (or CIS/TDHF) calculation on a
+    restricted (RHF/RKS) or unrestricted (UHF/UKS) reference."""
 
     @property
     def n_roots(self) -> int:
@@ -2011,13 +3021,87 @@ class TddftResult:
 
     @property
     def c_hf(self) -> float:
-        """Exact-exchange fraction used on the -c_HF terms (1.0 for HF)."""
+        """Exact-exchange fraction used on the -c_HF terms (1.0 for HF); for a
+        range-separated hybrid, the short-range fraction c_sr."""
+        ...
+
+    @property
+    def c_lr(self) -> float:
+        """Long-range exact-exchange fraction; equal to c_hf unless the
+        functional is range-separated."""
+        ...
+
+    @property
+    def omega(self) -> float:
+        """Range-separation parameter in bohr^-1 (0.0 for a global hybrid)."""
+        ...
+
+    @property
+    def spin(self) -> str | None:
+        """Spin of the excited states of a restricted reference: "singlet" or
+        "triplet". None on an unrestricted reference, whose spin-conserving
+        roots are not spin-adapted (read ``s2``)."""
+        ...
+
+    @property
+    def reference(self) -> str:
+        """The reference the roots were computed on: "restricted" or
+        "unrestricted"."""
+        ...
+
+    @property
+    def s2(self) -> NDArray[np.float64]:
+        """<S^2> of each root, same order as the energies: exactly 0 (singlet)
+        or 2 (triplet) on a restricted reference; on an unrestricted one, the
+        expectation value of the excited determinant expansion (TDA: the CIS
+        vector; Casida: the X amplitudes, renormalized)."""
+        ...
+
+    @property
+    def s2_reference(self) -> float:
+        """<S^2> of the reference determinant (0.0 for a restricted one)."""
+        ...
+
+    @property
+    def grid(self) -> tuple[int, int, str | None, float | None] | None:
+        """(n_radial, n_angular, prune, weight_cut) of the main grid the KS
+        reference and the f_xc kernel shared; prune is None for the flat grid.
+        None for an HF reference."""
         ...
 
     @property
     def fxc_included(self) -> bool:
         """True when the (ia|f_xc|jb) kernel block was included -- always for a
         KS reference; False only for an HF reference (CIS/TDHF)."""
+        ...
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (same fields as ``RhfResult.certificate``):
+        ``capability`` ``"tda"`` or ``"tddft"``, ``grade`` ``"proven_narrow"``
+        capped by the SCF reference's. A KS run lists ``response-grid`` in
+        ``approximations`` (the grid the reference SCF and the f_xc kernel
+        shared, equal to ``grid``, with whether it was the meta-GGA response
+        default 150 x 434 or an explicit ``grid_*`` choice); a meta-GGA run
+        also warns that its roots are grid-sensitive. Every run lists
+        ``eigensolver``: the solver, the root count and the largest root
+        residual (Davidson: also its conv_tol and iteration count)."""
+        ...
+
+    @property
+    def solver(self) -> str:
+        """The eigensolver that ran: "dense" or "davidson"."""
+        ...
+
+    @property
+    def iterations(self) -> int:
+        """Davidson iterations (0 for the dense solver)."""
+        ...
+
+    @property
+    def residuals(self) -> NDArray[np.float64]:
+        """Residual norm of each root (Hartree), same order as the energies:
+        ||A X - omega X|| for TDA, sqrt((||r+||^2 + ||r-||^2)/2) for Casida."""
         ...
 
     @property
@@ -2054,13 +3138,42 @@ class DoubleHybridResult:
         ...
 
     @property
-    def e_os(self) -> float: ...
+    def e_os(self) -> float:
+        """Unscaled opposite-spin RI-MP2 energy on the KS orbitals (alpha-beta
+        for a UKS reference)."""
+        ...
+
     @property
-    def e_ss(self) -> float: ...
+    def e_ss(self) -> float:
+        """Unscaled same-spin RI-MP2 energy (alpha-alpha + beta-beta for a UKS
+        reference)."""
+        ...
+
+    @property
+    def e_dispersion(self) -> float | None:
+        """D3(BJ) energy included in ``total_energy``; None without
+        ``dispersion=``."""
+        ...
+
+    @property
+    def reference(self) -> str:
+        """``"restricted"`` (RKS) or ``"unrestricted"`` (UKS reference)."""
+        ...
+
     @property
     def c_os(self) -> float: ...
     @property
     def c_ss(self) -> float: ...
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (same fields as ``RhfResult.certificate``):
+        ``capability`` ``"b2plyp"`` or ``"dsd-pbep86"``, ``grade`` ``"proven"``
+        (both are compared with PySCF built from the definition; the
+        ``measured_error`` anchor rides only on the evidence's settings),
+        ``approximations`` the KS
+        reference's (``scf ...``), ``ri``, ``frozen-core`` and
+        ``spin-component-scaling`` (``c_os``, ``c_ss``)."""
+        ...
 
 class BoysResult:
     """Result of Boys localization."""
@@ -2083,6 +3196,14 @@ class GammaRhfResult:
     """Result of run_rhf_gamma (closed-shell Gamma-point periodic RHF)."""
 
     @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` ``"<method>-gamma"`` or ``"<method>-kpts"``, ``grade``
+        ``"ungraded"`` (no periodic row on the validation page), and
+        ``approximations`` for the J/K route, ``exxdiv`` and the k-point mesh."""
+        ...
+
+    @property
     def timings(self) -> dict[str, Any]:
         """Stage timings and counters (observation only; energies are unaffected):
         {"wall_s": float, "cpu_s": float | None, "unattributed_wall_s": float,
@@ -2091,6 +3212,11 @@ class GammaRhfResult:
         build, SCF J/K/XC calls, correlation); counters include SR triplets,
         G vectors, chunks and RS-GDF aux dropped."""
         ...
+    @property
+    def total_energy(self) -> float:
+        """Alias of `energy` (the same value)."""
+        ...
+
     @property
     def energy(self) -> float:
         """Total energy per cell (Hartree), incl. e_nuc and any Madelung shift."""
@@ -2241,6 +3367,14 @@ class GammaOpenShellResult:
     """Result of run_uhf_gamma / run_rohf_gamma / run_uks_gamma / run_roks_gamma."""
 
     @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` ``"<method>-gamma"`` or ``"<method>-kpts"``, ``grade``
+        ``"ungraded"`` (no periodic row on the validation page), and
+        ``approximations`` for the J/K route, ``exxdiv`` and the k-point mesh."""
+        ...
+
+    @property
     def timings(self) -> dict[str, Any]:
         """Stage timings and counters (observation only; energies are unaffected):
         {"wall_s": float, "cpu_s": float | None, "unattributed_wall_s": float,
@@ -2255,6 +3389,11 @@ class GammaOpenShellResult:
         ...
     @property
     def functional(self) -> str | None: ...
+    @property
+    def total_energy(self) -> float:
+        """Alias of `energy` (the same value)."""
+        ...
+
     @property
     def energy(self) -> float: ...
     @property
@@ -2322,6 +3461,14 @@ class GammaRksResult:
     """Result of run_rks_gamma (closed-shell Gamma-point periodic RKS)."""
 
     @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` ``"<method>-gamma"`` or ``"<method>-kpts"``, ``grade``
+        ``"ungraded"`` (no periodic row on the validation page), and
+        ``approximations`` for the J/K route, ``exxdiv`` and the k-point mesh."""
+        ...
+
+    @property
     def timings(self) -> dict[str, Any]:
         """Stage timings and counters (observation only; energies are unaffected):
         {"wall_s": float, "cpu_s": float | None, "unattributed_wall_s": float,
@@ -2332,6 +3479,11 @@ class GammaRksResult:
         ...
     @property
     def functional(self) -> str: ...
+    @property
+    def total_energy(self) -> float:
+        """Alias of `energy` (the same value)."""
+        ...
+
     @property
     def energy(self) -> float: ...
     @property
@@ -2376,6 +3528,14 @@ class GammaRksResult:
 
 class GammaCorrelationResult:
     """Result of run_mp2_gamma / run_drpa_gamma (Gamma RHF + correlation)."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` ``"<method>-gamma"`` or ``"<method>-kpts"``, ``grade``
+        ``"ungraded"`` (no periodic row on the validation page), and
+        ``approximations`` for the J/K route, ``exxdiv`` and the k-point mesh."""
+        ...
 
     @property
     def timings(self) -> dict[str, Any]:
@@ -2431,9 +3591,22 @@ class KpointRksResult:
     """Result of run_rks_kpts (closed-shell k-point RKS, energies per cell)."""
 
     @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` ``"<method>-gamma"`` or ``"<method>-kpts"``, ``grade``
+        ``"ungraded"`` (no periodic row on the validation page), and
+        ``approximations`` for the J/K route, ``exxdiv`` and the k-point mesh."""
+        ...
+
+    @property
     def timings(self) -> dict[str, Any]: ...
     @property
     def functional(self) -> str: ...
+    @property
+    def total_energy(self) -> float:
+        """Alias of `energy` (the same value)."""
+        ...
+
     @property
     def energy(self) -> float: ...
     @property
@@ -2493,6 +3666,14 @@ class KpointScfResult:
     electrons_on_grid are set for the Kohn-Sham methods (uks, roks) only."""
 
     @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` ``"<method>-gamma"`` or ``"<method>-kpts"``, ``grade``
+        ``"ungraded"`` (no periodic row on the validation page), and
+        ``approximations`` for the J/K route, ``exxdiv`` and the k-point mesh."""
+        ...
+
+    @property
     def functional(self) -> str | None: ...
     @property
     def e_xc(self) -> float | None: ...
@@ -2528,6 +3709,11 @@ class KpointScfResult:
         ...
     @property
     def method(self) -> str: ...
+    @property
+    def total_energy(self) -> float:
+        """Alias of `energy` (the same value)."""
+        ...
+
     @property
     def energy(self) -> float: ...
     @property
@@ -2595,6 +3781,14 @@ class KpointScfResult:
 
 class KpointCorrelationResult:
     """Result of run_mp2_kpts / run_drpa_kpts (k-point RHF + correlation)."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` ``"<method>-gamma"`` or ``"<method>-kpts"``, ``grade``
+        ``"ungraded"`` (no periodic row on the validation page), and
+        ``approximations`` for the J/K route, ``exxdiv`` and the k-point mesh."""
+        ...
 
     @property
     def timings(self) -> dict[str, Any]:
@@ -3012,16 +4206,15 @@ def run_uks_kpts(
 ) -> KpointScfResult:
     """k-point UKS (LDA / GGA / global hybrids; spin state from the Molecule's
     multiplicity, electrons per cell). Mesh, ewald_start and jk as
-    run_uhf_kpts, functional and grid as run_rks_kpts. SCAN / r2SCAN
-    (jk="dense", energy, with_gradient and with_stress) and the range-separated
-    (CAM) GGA hybrids (energy on either J/K; any libxc one is accepted,
-    "HSE06" and "HYB_GGA_XC_CAM_B3LYP" are pinned, open-shell
-    "HYB_GGA_XC_WB97X" is accepted, not pinned; with_gradient for HSE06 and
-    CAM-B3LYP on jk="dense"). with_stress with a range-separated hybrid (no
-    range-separated UKS stress term), its with_gradient on jk="rsgdf" or for
-    wB97X, other meta-GGAs, a meta-GGA with jk="rsgdf" and VV10 raise
-    ValueError. with_gradient / with_stress as
-    run_rks_kpts (dense or RS-GDF J/K) for LDA / GGA / global hybrids."""
+    run_uhf_kpts, functional and grid as run_rks_kpts. SCAN / r2SCAN (energy
+    on either J/K; with_gradient and with_stress on jk="dense") and the
+    range-separated (CAM) GGA hybrids (energy on either J/K; any libxc one is
+    accepted, "HSE06" and "HYB_GGA_XC_CAM_B3LYP" are pinned, open-shell
+    "HYB_GGA_XC_WB97X" is accepted, not pinned; with_gradient and with_stress
+    for HSE06 and CAM-B3LYP on either J/K). Derivatives of wB97X, a meta-GGA
+    with_gradient / with_stress on jk="rsgdf", TPSS and other meta-GGAs, and
+    VV10 raise ValueError. with_gradient / with_stress as run_rks_kpts (dense
+    or RS-GDF J/K) for LDA / GGA / global hybrids."""
     ...
 
 def run_roks_kpts(
@@ -3052,12 +4245,13 @@ def run_roks_kpts(
     neighbour_switch: float = 0.0,
 ) -> KpointScfResult:
     """k-point ROKS (restricted open-shell Kohn-Sham, Roothaan effective Fock)
-    with the arguments of run_uks_kpts; LDA / GGA / global hybrids, and the
-    range-separated (CAM) GGA hybrids as an energy (either J/K); meta-GGA
-    raises. with_gradient / with_stress run with jk="dense" or the unsplit
-    jk="rsgdf" (not with a range-separated hybrid, which raises); converge
-    grad_conv well below 1e-5 for the stress (the ROHF orbital-gradient
-    gate). level_shift=None: a 0.05 Ha ramped level shift for a hybrid
+    with the arguments of run_uks_kpts; LDA / GGA / global hybrids and the
+    range-separated (CAM) GGA hybrids on either J/K, SCAN / r2SCAN on
+    jk="dense" only (TPSS, other meta-GGAs and a meta-GGA with jk="rsgdf"
+    raise). with_gradient / with_stress run with jk="dense" or the unsplit
+    jk="rsgdf" (range-separated hybrids: HSE06 / CAM-B3LYP, wB97X raises;
+    SCAN / r2SCAN: jk="dense"); converge grad_conv well below 1e-5 for the
+    stress (the ROHF orbital-gradient gate). level_shift=None: a 0.05 Ha ramped level shift for a hybrid
     (a > 0 or range-separated), else no shift; max_iter stays 200 either way.
     A float >= 0 overrides it (0.0 disables it); negative or non-finite
     raises ValueError. The applied value is result.level_shift."""
@@ -3147,6 +4341,7 @@ def run_rhf(
     k_builder: str | None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
+    ri_k_precision: str | None = None,
     level_shift: float | None = None,
     mom_after_iter: int | None = None,
     guess: str | None = None,
@@ -3171,8 +4366,63 @@ def run_rhf(
     fock_hook: FockHook | None = None,
     guess_basis: str | None = None,
     guess_projection: str | None = None,
+    ri_j_precision: str | None = None,
+    dm0: NDArray[np.float64] | None = None,
+    with_gradient: bool = False,
+    eri: Literal["auto", "direct", "incore"] | None = None,
+    relativistic: Literal["x2c1e"] | None = None,
+    fock_hook_grad: FockHookGrad | None = None,
+    gc_rotation: Literal["auto", "rot1", "off"] | None = None,
 ) -> RhfResult:
     """Closed-shell Restricted Hartree-Fock.
+
+    relativistic="x2c1e" (default None, nonrelativistic) replaces T + V by the
+    spin-free X2C-1e core Hamiltonian (PySCF sfx2c1e(); decoupled in the
+    uncontracted basis, c = 137.036). Same kwarg on run_uhf, run_rohf,
+    run_dft/run_ksdft, run_uks and run_roks. Energies only: with_gradient=True,
+    run_optimize(scf_relativistic=) and run_frequencies(scf_relativistic=)
+    raise, as does an ECP atom. Two-electron and property operators stay
+    nonrelativistic; the certificate records "x2c1e" and is Ungraded.
+
+    gc_rotation="auto" | "rot1" | "off" (default None: FERRIC_GC_ROTATE, then
+    "auto"; the CLI's [scf] gc_rotation) chooses the internal contraction
+    rotation of generally contracted bases (cc-pVXZ, ANO) in the exact
+    four-centre J/K builds: the SCF, its in-core ERI store, the Newton,
+    stability and response builds on the same geometry, and with
+    with_gradient=True the gradient's four-centre derivative integrals.
+    "auto" runs both stages, "rot1" the first only, "off" the unrotated
+    builds bit for bit; the spelling is exact (lowercase).
+    It changes energies at the screening-noise level (~1e-11 Ha), never the
+    AO basis; a basis with nothing to rotate (def2, Pople, STO-3G) is
+    unaffected. Same kwarg on run_uhf, run_rohf, run_dft, run_uks and
+    run_roks (not run_ksdft); any other value raises ValueError.
+
+    with_gradient=True (default False) also returns the analytic nuclear
+    gradient of the reported energy in result.gradient() (natoms x 3,
+    Hartree/Bohr). It differentiates the SCF the run built: exact or
+    density-fitted J/K, COSX exchange (the final-grid pass is dropped, so
+    energy and gradient share the SCF grid), point charges / smeared charges
+    / external field and IEF-PCM solvent. A gradient run is a geometry task:
+    an unset ri_j_precision is "f64" (an explicit one is kept), so pass
+    ri_j_precision="f64" to energy-only runs that must lie on the same
+    surface (finite differences, line searches). An unconverged SCF raises
+    RuntimeError. ValueError before the SCF: symmetry=True / irrep_nelec,
+    a fock_hook without fock_hook_grad, smearing_sigma, mom_after_iter, and
+    the COSX setups the gradient cannot differentiate. Ghost atoms raise
+    RuntimeError.
+
+    fock_hook_grad=grad (with fock_hook and with_gradient=True; otherwise
+    ValueError): grad(D, mol) returns the hook's EXPLICIT nuclear derivative
+    dE_hook/dR at fixed AO density D (the converged total density), shape
+    (natoms, 3), Hartree/Bohr; mol is the Molecule being differentiated. The
+    gradient is the analytic gradient of the hooked SCF plus this term. The
+    hook's Pulay term is already in it (the energy-weighted density comes
+    from the hooked orbitals), so grad must NOT include it, nor any change of
+    D with geometry. It MUST include every dependence of E_hook on the atom
+    positions at fixed D: integrals over AOs centred on the atoms (for
+    V = lam * hcore, lam * AoIntegrals.grad_hcore(D)), operator centres on
+    atoms, classical terms. A hook that depends on D only has grad = zeros.
+    Derivation: `book/src/07-hartree-fock/06-fock-hooks.md#fock-hooks-equations`.
 
     symmetry=True (default False; False is byte-identical to before): detect
     the highest Abelian point group, symmetrize and reorient the geometry, and
@@ -3192,7 +4442,18 @@ def run_rhf(
     so the result is variational when V = dE/dD. An exception raised by the
     hook propagates unchanged. soscf, stability_descent, symmetry, aurora and
     trah_trigger raise ValueError with a hook (their Hessians or blocked solve
-    do not see it).
+    do not see it). V must be symmetric to round-off: max |V - V^T| at most
+    4 n eps ||V||_F (n = nao); the driver then uses (V + V^T)/2. A larger
+    asymmetry raises ValueError. Round-off in E grows with ||V||: an
+    energy_conv below it does not converge (site/src/using/python.md,
+    "Fock hooks and starting densities").
+
+    dm0: starting density, the total closed-shell AO density (nao, nao) of
+    this molecule (for example a previous run's ``density()``). The first Fock
+    matrix is built from it. It must be finite, symmetric within the bound
+    above and hold the system's electrons: |tr(D S) - N| at most
+    n^2 eps sum|D_ij S_ij|; otherwise ValueError. Combining it with guess or
+    guess_basis raises ValueError.
 
     SCF controls (defaults): max_iter 200 (the iteration cap, the Rust RhfConfig default; reaching it returns
     converged=False and emits a RuntimeWarning naming the unmet criteria),
@@ -3217,10 +4478,33 @@ def run_rhf(
     "none" / "off" / "conventional" select conventional four-centre integrals
     (the same spellings run_dft accepts, also for run_uhf / run_rohf).
 
+    ri_j_precision: storage of the RI-J three-index tensor, "f32" (the default:
+    half the memory, f64 accumulation) or "f64" (bit-identical to the default
+    before 2026-11-07); any other value raises ValueError, and it is ignored
+    without RI-J. The same setting is ``ri_j_precision`` on run_uhf / run_rohf /
+    run_dft / run_ksdft / run_qmmm and ``scf_ri_j_precision`` on drivers with
+    more than one iterative stage (run_cdft, run_frequencies, the MP2 family,
+    GW, TDDFT, ...). Gradients, Hessians, optimisation and frequencies follow
+    the SCF's value; ``result.ri_j_precision`` and the certificate's ``ri-j``
+    entry say what was used and why. The geometry and frequency drivers
+    (run_optimize, run_optimize_uhf, run_optimize_qmmm, run_frequencies,
+    run_saddle, run_irc) default to "f64" instead (the f32 energy surface
+    jitters between nearby geometries); an explicit "f32" is honoured there.
+
+    ri_k_precision: storage of the RI-K (DF-K) V^{-1/2}-dressed three-index
+    tensor, "f64" (default) or "f32" (strict). Both hold
+    the packed lower triangle and contract K in f64; "f64" gives K bit-for-bit
+    the former square f64 tensor, "f32" rounds each stored element once (a
+    quarter of the square tensor's memory). Also accepted by run_uhf,
+    run_rohf, run_dft and run_ksdft, and as ``scf_ri_k_precision`` by run_cdft and
+    run_frequencies. Ignored
+    without RI-K.
+
     solvent: IEF-PCM implicit solvation, as a dielectric constant (> 1.0) or a
     solvent name (water, dmso, methanol, ethanol, acetone, dichloromethane,
     thf, chloroform, toluene, hexane). None = vacuum.
-    pcm_lebedev_order: tesserae per atomic sphere (6/14/26/50/110/302).
+    pcm_lebedev_order: tesserae per atomic sphere (a Lebedev order with
+        positive weights: any `grid_angular` order except 74, 230, 266).
 
     smeared_charges: list of (q, x, y, z, width) Gaussian-smeared classical
     charges (Bohr / Hartree atomic units).
@@ -3254,6 +4538,7 @@ def run_rhf(
     k_builder: str | None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
+    ri_k_precision: str | None = None,
     level_shift: float | None = None,
     mom_after_iter: int | None = None,
     guess: str | None = None,
@@ -3279,6 +4564,13 @@ def run_rhf(
     fock_hook: None = None,
     guess_basis: str | None = None,
     guess_projection: str | None = None,
+    ri_j_precision: str | None = None,
+    dm0: None = None,
+    with_gradient: Literal[False] = False,
+    eri: Literal["auto", "direct", "incore"] | None = None,
+    relativistic: Literal["x2c1e"] | None = None,
+    fock_hook_grad: None = None,
+    gc_rotation: Literal["auto", "rot1", "off"] | None = None,
 ) -> SymmetricRhfResult: ...
 def run_uhf(
     mol: Molecule,
@@ -3291,6 +4583,7 @@ def run_uhf(
     k_builder: str | None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
+    ri_k_precision: str | None = None,
     level_shift: float | None = None,
     mom_after_iter: int | None = None,
     point_charges: list[tuple[float, float, float, float]] | None = None,
@@ -3306,13 +4599,50 @@ def run_uhf(
     fock_hook: SpinFockHook | None = None,
     guess_basis: str | None = None,
     guess_projection: str | None = None,
+    ri_j_precision: str | None = None,
+    dm0: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None,
+    with_gradient: bool = False,
+    mom_reference: Literal["previous", "initial"] | None = None,
+    eri: Literal["auto", "direct", "incore"] | None = None,
+    relativistic: Literal["x2c1e"] | None = None,
+    fock_hook_grad: SpinFockHookGrad | None = None,
+    soscf: bool | None = None,
+    smeared_charges: list[tuple[float, float, float, float, float]] | None = None,
+    solvent: float | str | None = None,
+    pcm_lebedev_order: int | None = None,
+    gc_rotation: Literal["auto", "rot1", "off"] | None = None,
 ) -> UhfResult:
-    """Unrestricted Hartree-Fock (open-shell). fock_hook=hook adds one
+    """Unrestricted Hartree-Fock (open-shell). with_gradient=True: the
+    analytic gradient in result.gradient() under run_rhf's rules (a
+    fock_hook needs fock_hook_grad; MOM and stability_descent states are
+    differentiated). fock_hook_grad=grad: as for run_rhf, called as
+    grad(D_a, D_b, mol) with the converged per-spin densities.
+    fock_hook=hook adds one
     density-dependent term: hook(D_a, D_b) gets the per-spin densities every
     iteration and returns (E, V_a, V_b); V_s is added to F_s and E to the
     energy, so the result is variational when V_s = dE/dD_s. The exception
     and refusal rules are run_rhf's (stability_descent and trah_trigger raise
-    ValueError with a hook). Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today; non-convergence raises. A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts.
+    ValueError with a hook). Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today; non-convergence raises. A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts; with a fock_hook, one more after it when the hook's term eps * sum|D_s*V_s| puts energy_conv below the floor.
+
+    dm0: starting densities, a pair (D_alpha, D_beta) of AO matrices
+    (nao, nao), such as a previous run's (density_alpha(), density_beta()).
+    Each spin starts from the natural orbitals of its density, so the first
+    iteration runs at (D_alpha, D_beta) when each is idempotent (a converged
+    density) and at its aufbau projection otherwise. Each D_s must be finite,
+    symmetric to round-off and hold the spin's electron count,
+    |tr(D_s S) - N_s| <= n^2 eps sum|D_s*S|; a closed-shell total density D
+    is passed as (D / 2, D / 2). A closed shell (N_alpha = N_beta) has its
+    beta HOMO and LUMO turned by 0.1 rad, as from any start. dm0 with guess=
+    or guess_basis= raises ValueError.
+
+    mom_reference: "previous" (default): MOM, armed by mom_after_iter > 0,
+    compares each iteration's orbitals with the previous iteration's occupied
+    set. "initial": it compares them with the STARTING occupied orbitals (the
+    first N_s natural orbitals of dm0, or the guess's), held fixed and applied
+    from the first iteration, as PySCF's scf.addons.mom_occ does. This holds
+    a non-aufbau start, such as a core hole, that aufbau would refill on the
+    first iteration. With mom_after_iter > 0 or stability_descent=True it
+    raises ValueError.
 
 
     cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit: COSX
@@ -3325,6 +4655,12 @@ def run_uhf(
     checks internal stability and follows a downhill orbital-Hessian mode off a
     saddle (e.g. O2 triplet/STO-3G, whose default-guess solution is a saddle
     1.33 mHa above the UHF minimum).
+
+    soscf, smeared_charges, solvent, pcm_lebedev_order: as for run_rhf
+    (solve_uhf honours them; with_gradient=True includes the smeared-charge
+    and IEF-PCM terms). Not offered (solve_uhf cannot honour them): diis,
+    smearing_sigma, aurora (closed-shell solver only) and symmetry (the
+    blocked open-shell solve has no Python result type yet).
     """
     ...
 
@@ -3339,6 +4675,7 @@ def run_rohf(
     k_builder: str | None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
+    ri_k_precision: str | None = None,
     level_shift: float | None = None,
     mom_after_iter: int | None = None,
     point_charges: list[tuple[float, float, float, float]] | None = None,
@@ -3347,9 +4684,177 @@ def run_rohf(
     fock_hook: SpinFockHook | None = None,
     guess_basis: str | None = None,
     guess_projection: str | None = None,
+    ri_j_precision: str | None = None,
+    dm0: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None,
+    with_gradient: bool = False,
+    eri: Literal["auto", "direct", "incore"] | None = None,
+    relativistic: Literal["x2c1e"] | None = None,
+    fock_hook_grad: SpinFockHookGrad | None = None,
+    guess: str | None = None,
+    soscf: bool | None = None,
+    smeared_charges: list[tuple[float, float, float, float, float]] | None = None,
+    solvent: float | str | None = None,
+    pcm_lebedev_order: int | None = None,
+    cosx_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_final_pass: bool | None = None,
+    cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_overlap_fit: bool | None = None,
+    gc_rotation: Literal["auto", "rot1", "off"] | None = None,
 ) -> UhfResult:
-    """Restricted Open-Shell Hartree-Fock. fock_hook: as for run_uhf; V_a and
-    V_b enter before the Roothaan effective-Fock combination. Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today. A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts."""
+    """Restricted Open-Shell Hartree-Fock. with_gradient=True: the analytic
+    gradient in result.gradient() under run_rhf's rules (a fock_hook needs
+    fock_hook_grad, called as for run_uhf; the ROHF energy-weighted density
+    is built from the hooked spin Fock matrices). fock_hook: as for run_uhf; V_a and
+    V_b enter before the Roothaan effective-Fock combination. Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today. A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts; with a fock_hook, one more after it as for run_uhf.
+
+    dm0: a pair (D_alpha, D_beta) with run_uhf's checks. The start is one MO
+    set: the doubly occupied orbitals are the leading natural orbitals of
+    D_beta, the singly occupied ones those of D_alpha in the rest of the
+    space, so a converged ROHF pair is reproduced on the first iteration.
+    dm0 with guess= or guess_basis= raises ValueError.
+
+    guess, soscf, smeared_charges, solvent, pcm_lebedev_order and the cosx_*
+    knobs: as for run_uhf (solve_rohf honours them; soscf is the ROHF Newton
+    step, with_gradient=True includes the smeared-charge and IEF-PCM terms).
+    solve_rohf has no COSX final-grid pass: the default one is skipped (the
+    energy is the SCF-grid energy), and an explicit cosx_final_pass=True or
+    cosx_final_grid raises RuntimeError at the solve. Not offered (solve_rohf cannot
+    honour them): stability_descent (no ROHF stability analysis), trah_trigger
+    (no ROHF TRAH step), mom_reference ("initial" is UHF/UKS only), diis,
+    smearing_sigma, aurora and symmetry."""
+    ...
+
+def run_uks(
+    mol: Molecule,
+    basis_set: BasisSet,
+    functional: str,
+    k_builder: str | None = None,
+    with_gradient: bool = False,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
+    level_shift: float | None = None,
+    mom_after_iter: int | None = None,
+    point_charges: list[tuple[float, float, float, float]] | None = None,
+    external_field: tuple[float, float, float] | None = None,
+    memory_budget_gb: float | None = None,
+    df_j_aux: str | None = None,
+    df_k_aux: str | None = None,
+    ri_k_precision: str | None = None,
+    ri_j_precision: str | None = None,
+    grid_radial: int | None = None,
+    grid_angular: int | None = None,
+    grid_prune: str | None = None,
+    grid_weight_cut: float | None = None,
+    guess: str | None = None,
+    dm0: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None,
+    relativistic: Literal["x2c1e"] | None = None,
+    diis_size: int | None = None,
+    integral_thresh: float | None = None,
+    eri: Literal["auto", "direct", "incore"] | None = None,
+    soscf: bool | None = None,
+    smeared_charges: list[tuple[float, float, float, float, float]] | None = None,
+    solvent: float | str | None = None,
+    pcm_lebedev_order: int | None = None,
+    stability_descent: bool | None = None,
+    cosx_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_final_pass: bool | None = None,
+    cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_overlap_fit: bool | None = None,
+    trah_trigger: float | None = None,
+    guess_basis: str | None = None,
+    guess_projection: str | None = None,
+    mom_reference: Literal["previous", "initial"] | None = None,
+    fock_hook: SpinFockHook | None = None,
+    fock_hook_grad: SpinFockHookGrad | None = None,
+    gc_rotation: Literal["auto", "rot1", "off"] | None = None,
+) -> UhfResult:
+    """Unrestricted Kohn-Sham (open-shell DFT): solve_uhf with RhfConfig.xc set,
+    the route the CLI takes for kind="ksdft" on an open-shell molecule.
+
+    `functional` is required (no silent LDA default). alpha/beta electron counts
+    come from the molecule's charge and multiplicity; a singlet is allowed and
+    equals RKS. Returns run_uhf's UhfResult (per-spin densities, orbital
+    energies, MO coefficients, occupations, certificate). with_gradient=True:
+    the analytic UKS gradient in result.gradient() (ks_gradient_uks), at the
+    RI-J precision f64 unless ri_j_precision says otherwise, as for run_dft.
+
+    The SCF settings are run_dft's: RI-J and RI-K through def2-universal-jkfit
+    unless df_j_aux / df_k_aux say "" or "none" (exact), the production
+    Becke-Lebedev grid unless grid_* say otherwise, run_rhf's convergence
+    defaults. Range-separated hybrids and meta-GGAs run (energy and gradient); the
+    gradient, VV10 (wB97X-V) included, agrees with finite differences of the
+    energy to ~2e-7 Ha/Bohr (NH2/6-31G).
+    dm0 is a pair (D_alpha, D_beta) with run_uhf's checks; guess is
+    "minao" (default) or "hcore". run_dft raises for multiplicity > 1.
+
+    The keywords after relativistic are run_uhf's, with its meaning (solve_uhf
+    honours them with a functional too): diis_size, integral_thresh, eri,
+    soscf (range-separated hybrids stay on DIIS), smeared_charges, solvent /
+    pcm_lebedev_order (IEF-PCM, with its gradient), stability_descent (the UKS
+    stability analysis; a functional it cannot analyse is skipped with a
+    printed reason), the cosx_* knobs (with k_builder="cosx"), trah_trigger
+    (not for meta-GGAs or range-separated hybrids), guess_basis /
+    guess_projection, mom_reference and fock_hook / fock_hook_grad. Not
+    offered: diis, smearing_sigma, aurora (closed-shell solver only), symmetry
+    (the blocked open-shell solve has no Python result type yet) and
+    dispersion (UhfResult has no dispersion fields)."""
+    ...
+
+def run_roks(
+    mol: Molecule,
+    basis_set: BasisSet,
+    functional: str,
+    k_builder: str | None = None,
+    with_gradient: bool = False,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
+    level_shift: float | None = None,
+    mom_after_iter: int | None = None,
+    point_charges: list[tuple[float, float, float, float]] | None = None,
+    external_field: tuple[float, float, float] | None = None,
+    memory_budget_gb: float | None = None,
+    df_j_aux: str | None = None,
+    df_k_aux: str | None = None,
+    ri_k_precision: str | None = None,
+    ri_j_precision: str | None = None,
+    grid_radial: int | None = None,
+    grid_angular: int | None = None,
+    grid_prune: str | None = None,
+    grid_weight_cut: float | None = None,
+    dm0: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None,
+    relativistic: Literal["x2c1e"] | None = None,
+    diis_size: int | None = None,
+    integral_thresh: float | None = None,
+    eri: Literal["auto", "direct", "incore"] | None = None,
+    guess: str | None = None,
+    soscf: bool | None = None,
+    smeared_charges: list[tuple[float, float, float, float, float]] | None = None,
+    solvent: float | str | None = None,
+    pcm_lebedev_order: int | None = None,
+    cosx_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_final_pass: bool | None = None,
+    cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_overlap_fit: bool | None = None,
+    guess_basis: str | None = None,
+    guess_projection: str | None = None,
+    fock_hook: SpinFockHook | None = None,
+    fock_hook_grad: SpinFockHookGrad | None = None,
+    gc_rotation: Literal["auto", "rot1", "off"] | None = None,
+) -> UhfResult:
+    """Restricted open-shell Kohn-Sham: solve_rohf with RhfConfig.xc set, the
+    route the CLI takes for kind="rohf" with [dft] functional.
+
+    One set of spin-pure MOs: multiplicity - 1 singly occupied orbitals, the
+    rest doubly occupied (run_rohf's occupations and Guest-Saunders coupling).
+    Settings, result, gradient (ks_gradient_roks) and exclusions as for
+    run_uks; guess= ("minao" default, or "hcore") comes after relativistic
+    here. dm0 is run_rohf's pair. As in run_rohf, an explicit
+    cosx_final_pass=True or cosx_final_grid raises RuntimeError at the solve
+    (no ROHF/ROKS COSX final-grid pass), and solve_rohf has no TRAH step,
+    no stability analysis and no mom_reference="initial", so trah_trigger,
+    stability_descent and mom_reference are not offered."""
     ...
 
 def run_cdft(
@@ -3368,6 +4873,7 @@ def run_cdft(
     k_builder: str | None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
+    scf_ri_k_precision: str | None = None,
     level_shift: float | None = None,
     mom_after_iter: int | None = None,
     point_charges: list[tuple[float, float, float, float]] | None = None,
@@ -3376,6 +4882,10 @@ def run_cdft(
     guess: str | None = None,
     grid_radial: int | None = None,
     grid_angular: int | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+    scf_ri_j_precision: str | None = None,
 ) -> CdftResult:
     """Constrained UHF/UKS (Wu-Van Voorhis cDFT) with Becke fragment populations.
 
@@ -3405,8 +4915,155 @@ def run_optimize(
     e_conv: float | None = None,
     point_charges: list[tuple[float, float, float, float]] | None = None,
     external_field: tuple[float, float, float] | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+    solvent: float | str | None = None,
+    pcm_lebedev_order: int | None = None,
+    scf_warm_start: bool | None = None,
+    method: str = "scf",
+    reference: str | None = None,
+    xc: str | None = None,
+    dispersion: str | None = None,
+    df_j_aux: str | None = None,
+    df_k_aux: str | None = None,
+    scf_ri_j_precision: str | None = None,
+    scf_ri_k_precision: str | None = None,
+    auxbasis: str | None = None,
+    frozen_core: int | None = None,
+    scf_jk: str | None = None,
+    jk_auxbasis: str | None = None,
+    memory_budget_gb: float | None = None,
+    oo_max_iter: int | None = None,
+    oo_grad_conv: float | None = None,
+    c_os: float | None = None,
+    c_ss: float | None = None,
+    scf_eri: Literal["auto", "direct", "incore"] | None = None,
+    scf_relativistic: Literal["x2c1e"] | None = None,
+    fock_hook: Callable[..., tuple[Any, ...]] | None = None,
+    fock_hook_grad: Callable[..., NDArray[np.float64]] | None = None,
+    coordinates: Literal["cartesian", "internal"] | None = None,
+    rpa_gradient: Literal["fd", "analytic"] | None = None,
+    n_quad: int | None = None,
+    quadrature: str | None = None,
+    trunc_thresh: float | None = None,
+    omega: float | None = None,
+    initial_hessian: Literal["simple", "lindh"] | None = None,
+    trust_update: Literal["fixed", "ratio"] | None = None,
+    att_operator: Literal["erfc", "terfc"] | None = None,
+    r0: float | None = None,
+    r0_bonded: float | None = None,
+    r0_nonbonded: float | None = None,
 ) -> OptimizeResult:
-    """Geometry optimization (RHF)."""
+    """Geometry optimization on any surface with an analytic or finite-difference gradient.
+
+    `method` picks the surface:
+
+    - "scf" (default): HF, or Kohn-Sham with `xc`. `reference` is "rhf", "uhf" or
+      "rohf" (with `xc`: RKS, UKS, ROKS); unset, "rhf" for a singlet and "uhf" for an
+      open-shell molecule. `dispersion` (needs `xc`; "d3bj", "d3(bj)", "d3bj(<name>)",
+      "mbd", "mbd(<name>)" as in `run_dft`) optimizes KS + dispersion, energy and
+      gradient from one set of parameters. `df_j_aux` / `df_k_aux` density-fit J / K as
+      in `run_frequencies` (unset: exact four-centre J/K for HF; with `xc`,
+      RI-J/RI-K on def2-universal-jkfit for RKS, UKS and ROKS as in the CLI);
+      `scf_ri_j_precision` (unset: "f64" on geometry tasks) / `scf_ri_k_precision`.
+    - "rimp2": RI-MP2 (analytic Z-vector gradient): RHF + RI-MP2 on a singlet, UHF +
+      unrestricted RI-MP2 on an open-shell molecule or with `reference="uhf"`
+      (`reference="rohf"` raises: the gradient needs a UHF reference). Needs `auxbasis` (the
+      RI basis name, e.g. "cc-pvdz-ri"); `scf_jk` "rijk" or "exact" on `jk_auxbasis`.
+      Unset, `scf_jk` resolves as the CLI's omitted `[scf] jk`: "rijk" on the JK-fit
+      set matched to the orbital basis (cc-pvtz-jkfit for cc-pVDZ / cc-pVTZ,
+      def2-universal-jkfit for a basis without one); `jk_auxbasis` without `scf_jk`
+      raises. The RI-JK gradient checks its declared peak memory against
+      `memory_budget_gb` (unset: the auto-detected budget) before the reference SCF
+      and raises with the breakdown when it does not fit. `frozen_core`,
+      `memory_budget_gb` as in `run_rimp2`. The gradient driver solves its reference
+      RHF / UHF at density_conv 1e-9, so the `scf_*` convergence kwargs raise.
+    - "oo-rimp2": closed-shell OO-RI-MP2 (zero-response gradient at converged orbitals).
+      Needs `auxbasis`; `scf_jk` "rijk" or "exact" with the default of "rimp2"
+      (four-centre when `scf_eri` is set) on `jk_auxbasis`, whose fitted J/K the
+      orbital steps and the gradient reuse (RI-J stored in f64);
+      `frozen_core` must be 0; `oo_max_iter` / `oo_grad_conv` control the orbital loop, the `scf_*` kwargs its starting RHF. An
+      orbital optimization that does not converge at some geometry raises.
+    - "scs-mp2": closed-shell SCS-MP2, E_HF + c_os E_os + c_ss E_ss (analytic Z-vector
+      gradient of that energy). `c_os` / `c_ss` default to 6/5 and 1/3 as in
+      `run_scs_mp2`; the other kwargs as for "rimp2".
+    - "att-rimp2": attenuated RI-MP2, E_HF + E_c[erfc(ωr)/r] on a Coulomb RHF, or on a
+      Coulomb UHF for an open shell (reference="uhf", the default at multiplicity > 1;
+      reference="rohf" raises as for "rimp2"), with the analytic Z-vector gradient of
+      the `run_attenuated_rimp2` energy. `omega` in Å⁻¹ (default 0.420; it raises for
+      every other method); the other kwargs as for "rimp2". `att_operator="terfc"`
+      replaces erfc with terfc(r; r0)/r, the `run_terfc_rimp2` energy on an RHF or UHF:
+      `r0` in Å (default: the basis default of `run_terfc_rimp2`), and `omega` raises.
+      `att_operator` and `r0` raise for every other method.
+    - "scs-mp2-2terfc": SCS-MP2(2terfc), the `run_scs_mp2_2terfc` energy
+      E_HF + c_os E_OS[terfc r0(1)] + c_ss (E_SS[terfc r0(2)] - E_SS[terfc r0(1)]), on a
+      Coulomb RHF for a singlet or a Coulomb UHF for an open shell (the reference follows
+      the multiplicity; reference="uhf" on a singlet and "rohf" raise). `r0_bonded` /
+      `r0_nonbonded` in Å and `c_os` / `c_ss` with the defaults and basis rules of
+      `run_scs_mp2_2terfc`; the other kwargs as for "rimp2". `r0_bonded` and
+      `r0_nonbonded` raise for every other method.
+    - "pdep-rpa": closed-shell RHF + RI-dRPA (Coulomb), the CLI's `[rpa]` optimize
+      route. Needs `auxbasis`; `frozen_core`, `memory_budget_gb`, `n_quad` (default 16),
+      `quadrature` (default "gauss-legendre") as in `run_pdep_rpa`. The reference RHF is
+      exact four-centre, solved at density_conv 1e-9, so the `scf_*`, `scf_jk`,
+      `point_charges` and `external_field` kwargs raise. `rpa_gradient` picks the gradient:
+      "analytic" is the RI-dRPA Z-vector gradient (full-rank PDEP basis, dense chi0,
+      Coulomb only; with a nonzero `trunc_thresh` it raises); "fd" is the 3-point central
+      difference of RHF + RPA at h = 5e-4 Bohr (6 N_atoms energies). Unset, the analytic
+      gradient runs whenever it applies, and finite differences otherwise, with the reason
+      recorded in the certificate's `gradient` entry. `trunc_thresh` unset is 0 for the
+      analytic gradient and 1e-4 for an explicit "fd". `rpa_gradient`, `n_quad`,
+      `quadrature` and `trunc_thresh` raise for every other method.
+
+    "rimp2", "att-rimp2" and "scs-mp2-2terfc" also run open shells; the other
+    correlated methods are closed-shell only. None takes `xc`, `dispersion` or
+    `solvent`; any kwarg a method does not read raises ValueError.
+
+    `solvent`, `pcm_lebedev_order` ("scf" only): IEF-PCM implicit solvation, as in
+    `run_rhf`. The optimizer follows the analytic IEF-PCM gradient (cavity and
+    reaction-field terms), and the certificate lists an `scf pcm` approximation. COSMO has
+    no analytic gradient and is refused by the gradient dispatchers. `point_charges` /
+    `external_field` work with every method.
+
+    `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the SCF run at
+    every geometry (names and defaults of `run_rhf`'s `max_iter`, `energy_conv`,
+    `density_conv`). `max_steps` / `e_conv` are the geometry steps and energy criterion.
+
+    `scf_warm_start` (default True): start each geometry's SCF from the previous
+    geometry's converged orbitals, re-orthonormalized in the new overlap, instead of the
+    MINAO guess. Falls back to the cold guess on the first step, on a poor orbital overlap
+    (large step) and after a failed warm-started SCF. Energies agree with a cold start to
+    SCF convergence tolerance, not bitwise; False restores the from-scratch guess.
+
+    `coordinates` (default "cartesian"): the coordinates of the BFGS step, as the CLI's
+    `[optimize] coordinates`, for every method. "internal" uses redundant internal
+    coordinates (bonds, angles, dihedrals) with a Schlegel initial Hessian; it often
+    needs fewer steps on floppy molecules, and falls back to Cartesian with a printed
+    warning if the coordinates cannot be built. Any other value raises ValueError. The
+    certificate's `optimizer` approximation names the requested coordinates.
+
+    `initial_hessian`, `trust_update`: as the CLI's `[optimize]` keys. "simple" starts
+    BFGS from the identity (Cartesian) or the Schlegel diagonal (internal); "lindh" from
+    the Lindh (1995) model Hessian. "fixed" keeps the trust radius and accepts every
+    step; "ratio" moves the radius with the actual/predicted energy ratio and rejects a
+    step that raises the energy. Unset is "lindh" and "ratio"; "simple" with "fixed"
+    reproduces the search before these options existed. Any other value raises
+    ValueError.
+
+    `fock_hook` / `fock_hook_grad` ("scf" only, both or neither): optimize the
+    hooked surface (run_rhf's fock_hook and fock_hook_grad). The geometry moves,
+    so both are called with the step's Molecule as their LAST argument:
+    closed-shell hook(D, mol) -> (E, V) and grad(D, mol); open-shell
+    hook(D_a, D_b, mol) -> (E, V_a, V_b) and grad(D_a, D_b, mol). Each step's SCF
+    starts from the default guess (scf_warm_start=True raises); dispersion raises.
+    The certificate's reference is the hooked SCF at the returned geometry and
+    lists an `scf fock-hook` approximation.
+
+    Each route calls the library driver the CLI's `task = "optimize"` calls for the same
+    `method.kind`. The certificate's capability is "optimize:<kind>" (rhf, ksdft, uhf,
+    rohf, rimp2, scs-mp2, att-rimp2, oo-rimp2, pdep-rpa).
+    """
     ...
 
 def run_optimize_uhf(
@@ -3416,11 +5073,141 @@ def run_optimize_uhf(
     e_conv: float | None = None,
     point_charges: list[tuple[float, float, float, float]] | None = None,
     external_field: tuple[float, float, float] | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+    solvent: float | str | None = None,
+    pcm_lebedev_order: int | None = None,
+    scf_warm_start: bool | None = None,
+    coordinates: Literal["cartesian", "internal"] | None = None,
 ) -> OptimizeResult:
-    """Geometry optimization (UHF) -- for open-shell systems.
+    """Geometry optimization (UHF): `run_optimize(..., reference="uhf")`.
+
+    `solvent`, `pcm_lebedev_order`: IEF-PCM implicit solvation, as in `run_optimize`.
 
     The spin state comes from the `Molecule`'s multiplicity, as in `run_uhf`.
-    `run_optimize` uses an RHF reference and cannot relax a radical.
+    `scf_max_iter`, `scf_energy_conv`, `scf_density_conv` control the SCF at every
+    geometry, `scf_warm_start` the guess and `coordinates` the step coordinates, as in
+    `run_optimize`.
+    """
+    ...
+
+def run_xtb_energy_gradient(
+    mol: Molecule,
+    method: str = "gfn2",
+    accuracy: float | None = None,
+    scc_max_iter: int | None = None,
+    electronic_temp: float | None = None,
+) -> tuple[float, list[list[float]]]:
+    """GFN-xTB energy (Hartree) and gradient (Hartree/Bohr, one row per atom).
+
+    `method`: "gfn1", "gfn2" (default) or "gfnff". `scc_max_iter` bounds the SCC
+    iterations (ignored by GFN-FF); an unconverged SCC raises. Needs a build with
+    the `xtb` cargo feature (libxtb); otherwise raises RuntimeError.
+    """
+    ...
+
+def run_xtb_optimize(
+    mol: Molecule,
+    method: str = "gfn2",
+    max_steps: int | None = None,
+    e_conv: float | None = None,
+    g_max_thresh: float | None = None,
+    g_rms_thresh: float | None = None,
+    accuracy: float | None = None,
+    scc_max_iter: int | None = None,
+    electronic_temp: float | None = None,
+) -> OptimizeResult:
+    """Geometry optimization on a GFN-xTB surface with the `run_optimize` BFGS driver.
+
+    `max_steps` are geometry steps; `scc_max_iter` bounds the SCC at each geometry
+    and an unconverged SCC raises. The certificate is `not graded`. Needs the `xtb`
+    cargo feature.
+    """
+    ...
+
+def run_xtb_frequencies(
+    mol: Molecule,
+    method: str = "gfn2",
+    delta: float | None = None,
+    accuracy: float | None = None,
+    scc_max_iter: int | None = None,
+    electronic_temp: float | None = None,
+) -> FrequencyResult:
+    """Harmonic frequencies on a GFN-xTB surface (central differences of the xTB
+    gradient, `delta` in Bohr, default 5e-3). Input should be an xTB minimum;
+    check `.asymmetry`. Needs the `xtb` cargo feature.
+    """
+    ...
+
+def run_aimd(
+    mol: Molecule,
+    basis_name: str,
+    n_steps: int,
+    dt_fs: float = 0.5,
+    thermostat: str = "nve",
+    temperature_k: float | None = None,
+    init_temperature_k: float | None = None,
+    tau_fs: float | None = None,
+    friction_per_ps: float | None = None,
+    seed: int = 0,
+    remove_com_motion: bool = True,
+    stride: int = 1,
+    reference: str | None = None,
+    xc: str | None = None,
+    dispersion: str | None = None,
+    df_j_aux: str | None = None,
+    df_k_aux: str | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+    scf_warm_start: bool | None = None,
+    masses_amu: Sequence[float] | None = None,
+    trajectory_path: str | None = None,
+    energies_path: str | None = None,
+) -> MdResult:
+    """Born-Oppenheimer molecular dynamics on the SCF surface (HF, or KS with `xc`).
+
+    `thermostat`: `"nve"` (velocity Verlet), `"berendsen"` (needs `tau_fs` and
+    `temperature_k`; equilibration only, not canonical) or `"langevin"` (BAOAB;
+    needs `friction_per_ps` and `temperature_k`). A parameter of a thermostat that
+    was not chosen raises `ValueError`. Initial velocities are Maxwell-Boltzmann at
+    `init_temperature_k` (unset: `temperature_k`; neither: zero) from `seed`,
+    rescaled to that temperature exactly. `reference`, `xc`, `dispersion`,
+    `df_j_aux`/`df_k_aux` and the `scf_*` kwargs as in `run_optimize`;
+    `scf_warm_start` (default True) starts each SCF from the previous step's
+    orbitals. `masses_amu` overrides the standard masses (required beyond Z = 54).
+    `trajectory_path` / `energies_path` write a multi-frame XYZ (Angstrom) and an
+    energy CSV as the run proceeds. The CLI equivalent is `task = "md"`.
+    """
+    ...
+
+def run_ffmd(
+    topology: MmTopology,
+    symbols: Sequence[str],
+    coords_angstrom: Sequence[Sequence[float]] | NDArray[np.float64],
+    n_steps: int,
+    dt_fs: float = 1.0,
+    thermostat: str = "nve",
+    temperature_k: float | None = None,
+    init_temperature_k: float | None = None,
+    tau_fs: float | None = None,
+    friction_per_ps: float | None = None,
+    seed: int = 0,
+    remove_com_motion: bool = True,
+    stride: int = 1,
+    masses_amu: Sequence[float] | None = None,
+    cutoff_angstrom: float | None = None,
+    trajectory_path: str | None = None,
+    energies_path: str | None = None,
+) -> MdResult:
+    """Molecular dynamics on the AMBER-form force field of an `MmTopology`.
+
+    `symbols` and `coords_angstrom` give the atoms in topology order; the masses
+    come from the symbols unless `masses_amu` is given (the topology carries none).
+    `cutoff_angstrom` switches the nonbonded sum to OpenMM's `CutoffNonPeriodic`
+    (reaction-field Coulomb, truncated LJ); unset sums every pair. The MD kwargs
+    and the output files as in `run_aimd`. Python only (no CLI task).
     """
     ...
 
@@ -3440,13 +5227,94 @@ def run_frequencies(
     density_conv: float | None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
+    scf_ri_k_precision: str | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+    scf_warm_start: bool | None = None,
+    scf_ri_j_precision: str | None = None,
+    scf_eri: Literal["auto", "direct", "incore"] | None = None,
+    scf_relativistic: Literal["x2c1e"] | None = None,
+    method: Literal[
+        "scf", "pdep-rpa", "att-rimp2", "rimp2", "scs-mp2", "oo-rimp2", "scs-mp2-2terfc"
+    ] = "scf",
+    auxbasis: str | None = None,
+    frozen_core: int | None = None,
+    rpa_gradient: Literal["fd", "analytic"] | None = None,
+    n_quad: int | None = None,
+    quadrature: str | None = None,
+    trunc_thresh: float | None = None,
+    omega: float | None = None,
+    scf_jk: str | None = None,
+    jk_auxbasis: str | None = None,
+    memory_budget_gb: float | None = None,
+    oo_max_iter: int | None = None,
+    oo_grad_conv: float | None = None,
+    c_os: float | None = None,
+    c_ss: float | None = None,
+    att_operator: Literal["erfc", "terfc"] | None = None,
+    r0: float | None = None,
+    r0_bonded: float | None = None,
+    r0_nonbonded: float | None = None,
 ) -> FrequencyResult:
     """Harmonic vibrational frequencies.
 
+    `method="pdep-rpa"`: closed-shell RHF + RI-dRPA frequencies, central differences
+    (`delta`, `scf_warm_start`) of the RPA nuclear gradient (6 N_atoms gradients,
+    `.hessian_source` "finite-difference"). Needs `auxbasis`; `frozen_core`,
+    `rpa_gradient`, `n_quad`, `quadrature` and `trunc_thresh` are as in
+    `run_optimize(method="pdep-rpa")`, including the default that runs the analytic
+    gradient wherever it applies. Every SCF-route kwarg (`reference`, `xc`, `hessian`,
+    `dispersion`, `multiplicity`, `point_charges`, `external_field`, the SCF controls and
+    the density-fitting kwargs) raises. The RPA kwargs raise for `method="scf"`.
+
+    `method="att-rimp2"`: RHF (UHF when the molecule's multiplicity is above 1) + attenuated RI-MP2
+    (erfc(omega r)/r correlation) frequencies, central differences of its analytic nuclear gradient
+    (`ferric_mp2::att_rimp2_gradient`), as the CLI's `kind = "att-rimp2"`,
+    `task = "frequencies"`. Needs `auxbasis`; `frozen_core` (default 0), `omega`
+    (inverse Angstrom, default 0.420), `scf_jk` ("exact" or "rijk"; unset is RI-JK
+    on the matched JK-fit basis, or four-centre with `scf_eri`), `jk_auxbasis` and
+    `memory_budget_gb` are as in `run_optimize(method="att-rimp2")`, and so are
+    `att_operator` / `r0` (`"terfc"` on an RHF or UHF). The SCF-route
+    kwargs raise, `omega`, `att_operator`, `r0`, `scf_jk`, `jk_auxbasis` and
+    `memory_budget_gb` raise for the other methods; `reference="rohf"` raises. No IR
+    intensities.
+
+    `method="rimp2"`, `"scs-mp2"`, `"oo-rimp2"`, `"scs-mp2-2terfc"`: central differences
+    of the analytic nuclear gradient of RHF + RI-MP2, SCS-MP2, orbital-optimized RI-MP2
+    and SCS-MP2(2terfc), as the CLI's
+    `task = "frequencies"` for those kinds (`ferric_mp2::gradient`,
+    `ferric_mp2::optimize::oo_rimp2_energy_gradient`). Need `auxbasis`; `frozen_core`
+    (default 0; must be 0 for `"oo-rimp2"`), `scf_jk`, `jk_auxbasis` and
+    `memory_budget_gb` are as in `run_optimize` for the same method, `c_os` / `c_ss`
+    (defaults 6/5 and 1/3) read by `"scs-mp2"` and `"scs-mp2-2terfc"` (whose defaults and
+    `r0_bonded` / `r0_nonbonded` are those of `run_scs_mp2_2terfc`), `oo_max_iter` /
+    `oo_grad_conv` by `"oo-rimp2"` only. `"rimp2"` and `"scs-mp2-2terfc"` on an
+    open-shell molecule run a UHF reference with the unrestricted gradient (the
+    molecule's multiplicity picks it; `reference="rohf"` raises); `"scs-mp2"` and
+    `"oo-rimp2"` are closed shell only. The SCF-route kwargs
+    (`xc`, `hessian`, `dispersion`, `multiplicity`, `point_charges`, `external_field`,
+    the SCF controls, `scf_eri` and the density-fitting kwargs) and the other methods'
+    kwargs raise. No IR intensities.
+
+    `scf_max_iter`, `scf_energy_conv`, `scf_density_conv` control every SCF of the run
+    (`run_rhf`'s `max_iter`, `energy_conv`, `density_conv`); the bare spellings are
+    deprecated aliases that warn.
+
+    `scf_ri_j_precision`: RI-J tensor storage, "f32" or "f64"; unset is "f64" here
+    (frequency task: the f32 surface jitters between nearby geometries, which a
+    finite-difference Hessian differences), an explicit "f32" is honoured. The
+    certificate's `ri-j` entry records which and why.
+
+    `scf_warm_start` (default False, opt-in): a finite-difference Hessian
+    starts every displaced SCF from the undisplaced geometry's converged
+    orbitals (anchored, never chained). At equal `scf_density_conv` the warm
+    Hessian is noisier, so pair it with a ~100x tighter `scf_density_conv`.
+
     `df_j_aux` / `df_k_aux` density-fit every SCF of the
-    run as in `run_rhf`. Unset means exact J/K for HF, but for KS (`xc=`) the
-    SCF's own default, RI-J (and RI-K for a hybrid) in def2-universal-jkfit;
-    pass `"none"` for exact. The analytic RHF/UHF/ROHF Hessian differentiates
+    run as in `run_rhf`. Unset means exact J/K for HF and, for KS (`xc=`),
+    RI-J and RI-K in def2-universal-jkfit for every reference (RKS, UKS,
+    ROKS: the CLI's default); pass `"none"` for exact. The analytic RHF/UHF/ROHF Hessian differentiates
     the fitted energy (RI-J, RI-K or both) and `"fd"` differences the fitted
     analytic gradient. RI with point charges / a field takes the
     finite-difference path under "auto" (`"analytic"` raises).
@@ -3455,10 +5323,10 @@ def run_frequencies(
     (any multiplicity) with exact J/K, with or without an ECP, or ROHF with
     exact J/K and no ECP or external potential (`point_charges` /
     `external_field` are analytic for RHF and UHF only), and a basis up to f
-    functions; for closed-shell Kohn-Sham (`xc` with `reference="rhf"`) the
+    functions; for Kohn-Sham (`xc` with `reference="rhf"` or `"uhf"`) the
     `"analytic-moving-grid"` Hessian below wherever it applies; and a finite
-    difference of analytic gradients otherwise (UKS, ROKS, meta-GGA, VV10,
-    range-separated hybrids, ECPs or external potentials with `xc`,
+    difference of analytic gradients otherwise (ROKS, meta-GGA, VV10,
+    range-separated hybrids, external potentials with `xc`, MBD@rsSCS
     `dispersion`, and large systems whose response AO table -- basis
     functions x grid points x 4 for a GGA, 8 bytes each -- exceeds 2 GiB: on
     the default grid a GGA above about 8,100 basis functions x atoms). The
@@ -3470,13 +5338,14 @@ def run_frequencies(
     differences gradients. `.hessian_source` says which ran.
 
     `hessian="analytic-moving-grid"` is
-    the analytic closed-shell Kohn-Sham Hessian on the production (moving)
-    grid, Becke weight response included: the Hessian of the surface the KS
-    gradient differentiates, so it agrees with `"fd"` to the finite-difference
-    error. It needs `xc` (LDA/GGA, pure or global hybrid) and
-    `reference="rhf"`, and raises before the SCF for Hartree-Fock,
-    `"uhf"`/`"rohf"`, meta-GGA, VV10, range-separated hybrids, ECPs,
-    `point_charges` / `external_field` and `dispersion`.
+    the analytic RKS or UKS Hessian on the production (moving) grid, Becke
+    weight response included: the Hessian of the surface the KS gradient
+    differentiates, so it agrees with `"fd"` to the finite-difference error.
+    It needs `xc` (LDA/GGA, pure or global hybrid) and `reference="rhf"` or
+    `"uhf"`, and raises before the SCF for Hartree-Fock, `"rohf"` (ROKS),
+    meta-GGA, VV10, range-separated hybrids, `point_charges` /
+    `external_field` and MBD@rsSCS `dispersion`. An ECP is supported (shells
+    up to f), as is D3(BJ) `dispersion` (its analytic Hessian is added).
 
     `max_iter`, `energy_conv`, `density_conv` are the SCF controls of every
     SCF the run does (defaults 200, 1e-3, 1e-6, as in `run_rhf`); a
@@ -3487,14 +5356,25 @@ def run_frequencies(
 
     `dispersion` ("d3bj", "d3(bj)", "d3bj(<functional>)", "mbd",
     "mbd(<functional>)", as in `run_dft`) requires `xc` and works on every
-    reference (RKS, UKS, ROKS); the Hessian is then the finite difference of
-    the KS + dispersion analytic gradient, so `hessian="analytic"` and
-    `hessian="analytic-moving-grid"` raise.
+    reference (RKS, UKS, ROKS). D3(BJ) depends on the geometry only: wherever
+    the run without dispersion would use an analytic Hessian, the Hessian is
+    that one plus the analytic D3(BJ) Hessian; otherwise the finite difference
+    of the KS + D3(BJ) analytic gradient. MBD@rsSCS follows the density: its
+    Hessian is always the finite difference of the KS + MBD analytic gradient,
+    so `hessian="analytic"` and `hessian="analytic-moving-grid"` raise with
+    it.
     """
     ...
 
 class SaddleResult:
     """A first-order saddle point found by P-RFO."""
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (same keys as ``RhfResult.certificate``).
+        ``capability`` is ``"saddle:<kind>"`` and the grade is ``"ungraded"``: the
+        validation page does not grade this entry point. The SCF at the returned geometry (re-solved) is the reference; the P-RFO settings and the Hessian construction are approximations; an unconverged gradient or a result that is not a first-order saddle is a warning."""
+        ...
 
     @property
     def energy(self) -> float: ...
@@ -3515,7 +5395,10 @@ class SaddleResult:
     @property
     def symbols(self) -> list[str]: ...
     @property
-    def coords(self) -> list[tuple[float, float, float]]: ...
+    def coords(self) -> list[tuple[float, float, float]]:
+        """Final-geometry coordinates in Angstrom, matching ``symbols``. Valid
+        to inspect even when ``converged`` is false."""
+        ...
     @property
     def imaginary_mode(self) -> list[float] | None:
         """The followed mode as a flat 3N Cartesian displacement vector.
@@ -3580,6 +5463,11 @@ def run_saddle(
     point_charges: list[tuple[float, float, float, float]] | None = None,
     external_field: tuple[float, float, float] | None = None,
     hessian: str = "fd",
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+    scf_warm_start: bool | None = None,
+    scf_ri_j_precision: str | None = None,
 ) -> SaddleResult:
     """Partitioned rational function optimization to a first-order saddle.
 
@@ -3593,7 +5481,12 @@ def run_saddle(
     angular momentum); `"auto"` uses it where it applies (with `xc`, the
     analytic moving-grid Kohn-Sham Hessian of `run_frequencies`) and otherwise
     falls back to FD. `delta=` with `"analytic"` or `"auto"` raises. The result's
-    `hessian_source` reports which ran.
+    `hessian_source` reports which ran. `scf_max_iter`, `scf_energy_conv`,
+    `scf_density_conv` control every SCF of the search (gradients and Hessians).
+    `scf_warm_start` (default True) starts each step's SCF from the previous
+    step's orbitals; False re-guesses them. The FD Hessians stay cold.
+    `scf_ri_j_precision` ("f32" or "f64"; RI-J runs with `xc`): unset is "f64",
+    as for every geometry task; an explicit "f32" is honoured.
     """
     ...
 
@@ -3609,12 +5502,24 @@ def run_irc(
     initial_displacement: float | None = None,
     point_charges: list[tuple[float, float, float, float]] | None = None,
     external_field: tuple[float, float, float] | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+    scf_warm_start: bool | None = None,
+    scf_ri_j_precision: str | None = None,
 ) -> IrcResult:
     """Follow the intrinsic reaction coordinate both ways from a saddle.
 
     `mode` is the imaginary-mode VECTOR (3N, e.g. `SaddleResult.imaginary_mode`),
     not an index. Walk it in the SAME field the saddle was found in: a
     gas-phase walk from an embedded saddle descends a different surface.
+
+    `scf_max_iter`, `scf_energy_conv`, `scf_density_conv` control the SCF at every
+    point (as in `run_optimize`); an unconverged SCF raises. `scf_warm_start`
+    (default True) starts each point's SCF from the previous point's orbitals;
+    False re-guesses every SCF. `scf_ri_j_precision` ("f32" or "f64"; RI-J runs
+    with `xc`): unset is "f64", as for every geometry task; an explicit "f32" is
+    honoured.
     """
     ...
 
@@ -3637,14 +5542,40 @@ def run_rimp2(
     batch_merge: int | None = None,
     gate_cal: float | None = None,
     virt_schwarz_kappa: float | None = None,
+    fock_screen: bool | None = None,
     att_operator: str | None = None,
     omega: float | None = None,
     att_r0: float | None = None,
     att_omega: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
+    scf_ri_j_precision: str | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+    virtual_space: str | None = None,
+    virtual_tau: float | None = None,
+    virtual_tau_loose: float | None = None,
+    virtual_solve_radius: float | None = None,
+    virtual_boys_tau: float | None = None,
+    with_gradient: bool = False,
+    scf_eri: Literal["auto", "direct", "incore"] | None = None,
+    lambda_boys: float | None = None,
+    save_reference: str | None = None,
+    read_reference: str | None = None,
+    read_reference_other_build: bool = False,
 ) -> RiMp2Result:
     """Resolution-of-identity (density-fitted) MP2. Exact by default.
+    with_gradient=True adds the analytic gradient of total_energy
+    (result.gradient(), natoms x 3, Hartree/Bohr; Z-vector relaxed density
+    plus the RI 3c/2c response), point charges included. Closed-shell exact
+    Coulomb RI-MP2 on a four-centre RHF or on scf_jk="rijk" (the SCF,
+    Z-vector and two-electron derivative terms then all use the RI-JK fit, so
+    the gradient is that of the fitted energy): an open-shell molecule,
+    local=, the att_* keys, kappa, scf_jk="rijcosx" or k_builder="cosx" raise
+    ValueError. A Z-vector that misses its tolerance raises. The Z-vector
+    assumes a stationary RHF, so the gradient error follows scf_density_conv
+    (tighten it for finite-difference work).
 
     RHF reference for a singlet; UHF reference + unrestricted RI-MP2 (UMP2)
     for multiplicity > 1 (`result.reference` says which). `kappa` is
@@ -3654,7 +5585,10 @@ def run_rimp2(
     amplitude-threshold local MP2 (closed-shell; eps=0 reproduces the exact
     RI-MP2); `integral_direct=True` its integral-direct variant with the
     locality maps aux_radius/virt_radius (Bohr), ao_tail, schwarz_skip,
-    batch_merge, gate_cal and virt_schwarz_kappa. Same rules as the CLI
+    batch_merge, gate_cal and virt_schwarz_kappa (which needs
+    fock_screen=False; it bounds the plain integral mask only). On both paths
+    `fock_screen` (default True) runs the Fock-propagated mask screen,
+    kappa = 1; False keeps the plain integral mask. Same rules as the CLI
     `[local]` section: every local kwarg is a ValueError on the exact method,
     and `kappa` a ValueError on the local one. `result.local` is None for the
     exact method, else the local model dict.
@@ -3662,12 +5596,30 @@ def run_rimp2(
     Local runs only: `att_operator="erfc"|"terfc"` runs the local MP2 of the
     attenuated correlation (the SCF stays full Coulomb) with the CLI's `[mp2]`
     keys of the same names: `omega` (1/Angstrom, erfc, default 0.420),
-    `att_r0` (Angstrom, terfc, default 1.05) and `att_omega` (1/Angstrom,
+    `att_r0` (Angstrom, terfc, default: the basis-aware table of ``ferric_mp2::terfc_r0``, ValueError for an untabulated basis) and `att_omega` (1/Angstrom,
     terfc only: the decoupled seam sharpness; omitted = the linked
     1/(r0*sqrt(2))). terfc needs `FERRIC_TERF_TABLE_DIR`; with
     `integral_direct=True` it takes the same `schwarz_skip` cut as the other
     operators (`schwarz_skip=0.0` evaluates every triple). These four are a ValueError on the exact
     method (use `run_terfc_rimp2` / `run_attenuated_rimp2` there).
+
+    Local runs only: `virtual_space="dense"` (default) or `"local"` selects
+    the VV-HV localized-virtual build. `"local"` is the opt-in
+    threshold-sparse build, exact as its thresholds go to zero, with
+    `virtual_tau` (span-critical, default 1e-9), `virtual_tau_loose`
+    (basis-choice, default 1e-6), `virtual_solve_radius` (Bohr, default 30)
+    and `virtual_boys_tau` (default 1e-8); the thresholds are a ValueError
+    without `virtual_space="local"`. `result.local["virtual_space"]` names the
+    build, `["virtual_space_log"]` is the line the run prints, and
+    `["virtual_space_local"]` holds the local build's thresholds and sparsity
+    counters (None for the dense build).
+
+    Local runs only: `lambda_boys` (Bohr^2/Ha^2, finite and >= 0, default
+    10.0) is the weight of sum_i F_ii^2 in the lambda-Boys occupied
+    localization, started from the converged Boys orbitals; 0.0 is plain
+    Boys. It does not change the eps=0 energy. A ValueError on the exact
+    method. `result.local["lambda_boys"]`, `["lambda_boys_sweeps"]`,
+    `["lambda_boys_max_grad"]` and `["lambda_boys_t_s"]` record it.
 
     `scf_jk` sets how the reference SCF builds J/K: "exact" (default,
     four-centre), "rijk" (RI-J + RI-K) or "rijcosx" (RI-J + COSX K), fitted on
@@ -3676,6 +5628,27 @@ def run_rimp2(
     every MP2-family entry point. Strict: an unknown mode, `jk_auxbasis` with
     "exact", or a `k_builder` the mode overrides raise ValueError. Echoed as
     `result.scf_jk` / `result.jk_auxbasis`.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` (`run_uhf` for an open-shell molecule) solves.
+    `local="amplitude-threshold"` refuses an ECP basis set: its localized virtual space
+    cannot count valence virtuals on ECP atoms.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    ``save_reference="ref.npz"`` writes the converged reference SCF to that
+    file (the CLI's ``[scf] save_reference`` checkpoint); ``read_reference``
+    reads one instead of solving it, so no SCF iteration runs and the
+    correlated stage gets the stored orbitals bit for bit (its energy is the
+    saving call's reference's, equal to a fresh call's at the same
+    thresholds, thread count, ERI route and build). ``run_rimp2``,
+    ``run_ccsd`` and ``run_ccsd_t`` share the files: a reference saved by
+    ``run_rimp2(scf_jk="exact")`` is read by ``run_ccsd``. A file is read
+    only when it is the reference this call would solve (molecule, basis,
+    spin, every SCF setting that moves its numbers, this build unless
+    ``read_reference_other_build=True``); anything else, a missing or
+    corrupted file included, raises ``InputError`` naming why, never a fresh
+    SCF. CLI and Python files are not interchangeable. Exact energy only:
+    with ``local=`` or ``with_gradient=True`` the two keys raise ValueError.
     """
     ...
 
@@ -3692,13 +5665,36 @@ def run_oo_rimp2(
     memory_budget_gb: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
+    scf_ri_j_precision: str | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+    oo_max_iter: int | None = None,
+    with_gradient: bool = False,
+    scf_eri: Literal["auto", "direct", "incore"] | None = None,
 ) -> OoRiMp2Result:
-    """Orbital-optimized RI-MP2.
+    """Orbital-optimized RI-MP2. with_gradient=True adds the analytic
+    gradient of total_energy (result.gradient(), natoms x 3, Hartree/Bohr):
+    at a converged OO-MP2 point no orbital response is needed, so an
+    unconverged loop raises RuntimeError and the error follows grad_conv.
+    frozen_core > 0 raises ValueError (the core rotations are not
+    optimised).
 
-    `scf_jk` accepts only "exact" here: orbital optimisation rebuilds exact
-    four-centre J/K at every orbital step, so "rijk"/"rijcosx" raise
-    ValueError (threading RI-JK through the OO Fock builds is not
-    implemented)."""
+    `oo_max_iter` caps the orbital-optimization iterations (bare `max_iter` is a
+    deprecated alias that warns). `scf_max_iter`, `scf_energy_conv`,
+    `scf_density_conv` control the internal reference RHF, as in `run_rhf`.
+
+    `scf_jk` is "exact" (default) or "rijk": orbital optimisation rebuilds
+    J/K at every orbital step on the reference's route, four-centre or RI-JK
+    on `jk_auxbasis`, so the HF part of total_energy is the fitted one under
+    "rijk". "rijcosx" raises ValueError (COSX exchange has no OO route).
+    with_gradient=True solves the reference with RI-J stored in f64.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def run_mp3(
@@ -3708,8 +5704,97 @@ def run_mp3(
     frozen_core: int | None = None,
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
 ) -> Mp3Result:
-    """Spin-orbital MP3 via einsum."""
+    """Spin-orbital MP3 via einsum.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
+    ...
+
+def run_opmp3(
+    mol: Molecule,
+    basis_set: BasisSet,
+    reference: str = "hf",
+    x_ss: float | None = None,
+    auxbasis: BasisSet | None = None,
+    frozen_core: int | None = None,
+    memory_budget_gb: float | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+    local: str | None = None,
+    eps: float | None = None,
+    compute_reference: bool | None = None,
+    fock_screen: bool | None = None,
+    lambda_boys: float | None = None,
+    virtual_space: str | None = None,
+    virtual_tau: float | None = None,
+    virtual_tau_loose: float | None = None,
+    virtual_solve_radius: float | None = None,
+    virtual_boys_tau: float | None = None,
+) -> Opmp3Result:
+    """OP-MP3, SOP-MP3, SSD-OPMP3 (and MP2, MP3, scalar Pade) on an RHF/ROHF
+    (``reference="hf"``) or RKS/ROKS (``reference=<functional>``) reference,
+    built on the HF Fock of the reference density with non-Brillouin
+    singles. ``x_ss=None`` uses the paper's printed damping for the
+    reference; ``auxbasis=None`` runs exact four-centre integrals.
+
+    ``local="amplitude-threshold"`` with ``eps=`` (required) runs the local
+    OP-MP3: both amplitude orders solved on one local-MP2 pattern in
+    localized orbitals (closed shell, RI: ``auxbasis`` required). The maps
+    and their defaults are those of ``run_rimp2(local=...)``
+    (``fock_screen``, ``lambda_boys``, ``virtual_space`` and its
+    thresholds); ``compute_reference=True`` also runs the canonical OP-MP3
+    into ``result.local["canonical"]``. The local run refuses an ECP basis set.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` / `run_rohf` (`run_dft` / `run_roks` for a functional reference)
+    solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
+    ...
+
+def run_omega_ri(
+    mol: Molecule,
+    basis_set: BasisSet,
+    auxbasis: BasisSet,
+    omega_bohr: float,
+    method: str = "rimp2",
+    frozen_core: int | None = None,
+    n_quad: int | None = None,
+    cdd_tol: float | None = None,
+    cdd_schwarz_thresh: float | None = None,
+    cdd_pair_thresh: float | None = None,
+    c_os: float | None = None,
+    memory_budget_gb: float | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+) -> OmegaRiResult:
+    """Correlation energy with the omega-RI fitting metric.
+
+    The three-index integrals are erfc(omega r)/r-attenuated and the fit uses
+    the metric V~^-1 V V~^-1 (Glasbrenner, Graf, Ochsenfeld, JCTC 16, 6856
+    (2020); Luenser, Schurkus, Ochsenfeld, JCTC 13, 1647 (2017)).
+    ``omega_bohr`` is in Bohr^-1 (the papers recommend 0.1); 0 is the
+    Coulomb fit. The algebra is dense: the fit changes the energy, not the
+    cost.
+
+    ``method``: ``"rimp2"`` (canonical RI-MP2), ``"cdd-mp2"`` /
+    ``"cdd-sos-mp2"`` (Laplace MP2 / SOS-MP2 in pivoted-Cholesky pseudo-MOs;
+    ``n_quad`` in {3, 5, 7}, default 7; ``cdd_tol`` default 0 keeps every
+    pseudo-MO; ``cdd_schwarz_thresh`` / ``cdd_pair_thresh`` are the paper's
+    exchange screens, default 0 = none; ``c_os`` default 1.3), or ``"rpa"``
+    (full-rank PDEP-RPA, closed shell or UHF). A key the chosen method does
+    not read raises ``ValueError``. The MP2 methods are closed-shell only.
+    """
     ...
 
 def run_laplace_mp2(
@@ -3722,8 +5807,18 @@ def run_laplace_mp2(
     memory_budget_gb: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
+    scf_ri_j_precision: str | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
 ) -> LaplaceMp2Result:
-    """Laplace-transform RI-MP2."""
+    """Laplace-transform RI-MP2.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def run_laplace_sos_mp2(
@@ -3739,8 +5834,18 @@ def run_laplace_sos_mp2(
     memory_budget_gb: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
+    scf_ri_j_precision: str | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
 ) -> SosMp2Result:
-    """Laplace-transform SOS-MP2: E = c_os * E_OS."""
+    """Laplace-transform SOS-MP2: E = c_os * E_OS.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def run_attenuated_rimp2(
@@ -3753,8 +5858,22 @@ def run_attenuated_rimp2(
     memory_budget_gb: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
+    scf_ri_j_precision: str | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
 ) -> AttenuatedMp2Result:
-    """Attenuated RI-MP2 (erfc(omega*r)/r). omega in Angstrom^-1."""
+    """Attenuated RI-MP2 (erfc(omega*r)/r). omega in Angstrom^-1.
+
+    RHF reference for a singlet; UHF reference + unrestricted RI-MP2 for
+    multiplicity > 1 (`result.reference` says which; e_os = E_ab,
+    e_ss = E_aa + E_bb).
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` (`run_uhf` for an open-shell molecule) solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def run_terfc_rimp2(
@@ -3767,8 +5886,25 @@ def run_terfc_rimp2(
     memory_budget_gb: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
+    scf_ri_j_precision: str | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
 ) -> RiMp2Result:
-    """MP2(terfc): RI-MP2 with exact tempered-erfc operator. r0 in Angstrom."""
+    """MP2(terfc): RI-MP2 with exact tempered-erfc operator. r0 in Angstrom.
+
+    RHF reference for a singlet; UHF reference + unrestricted RI-MP2 for
+    multiplicity > 1 (`result.reference` says which).
+
+    ``r0`` omitted: the S66-trained basis-aware default (aug-cc-pVTZ 1.35, aug-cc-pVDZ 1.05;
+    Goldey & Head-Gordon, Chem. Phys. Lett. 608, 249 (2014)); ValueError for an
+    untabulated basis. An explicit ``r0`` always wins.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` (`run_uhf` for an open-shell molecule) solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def run_scs_mp2(
@@ -3782,8 +5918,21 @@ def run_scs_mp2(
     memory_budget_gb: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
+    scf_ri_j_precision: str | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
 ) -> ScsMp2Result:
-    """Spin-component-scaled MP2."""
+    """Spin-component-scaled MP2.
+
+    RHF reference for a singlet; UHF reference for multiplicity > 1, with
+    e_os = E_ab and e_ss = E_aa + E_bb (`result.reference` says which).
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` (`run_uhf` for an open-shell molecule) solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def run_scs_mp2_2terfc(
@@ -3799,8 +5948,24 @@ def run_scs_mp2_2terfc(
     memory_budget_gb: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
+    scf_ri_j_precision: str | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
 ) -> ScsMp2Result:
-    """SCS-MP2(2terfc): dual-attenuated SCS-MP2 with exact terfc. r0 in Angstrom."""
+    """SCS-MP2(2terfc): dual-attenuated SCS-MP2 with exact terfc. r0 in Angstrom.
+
+    RHF reference for a singlet; UHF reference for multiplicity > 1, with
+    e_os = E_ab and e_ss = E_aa + E_bb at both cutoffs.
+
+    The defaults (r0 0.75/1.05, c_os 1.27, c_ss 4.05) are the aug-cc-pVTZ fit; any
+    other basis needs explicit ``r0_bonded`` and ``r0_nonbonded`` (ValueError otherwise).
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` (`run_uhf` for an open-shell molecule) solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def run_mp2_v(
@@ -3818,8 +5983,18 @@ def run_mp2_v(
     memory_budget_gb: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
+    scf_ri_j_precision: str | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
 ) -> Mp2VResult:
-    """MP2-V: attenuated MP2 + Eq-11-damped VV10. r0 in Angstrom, omega in Angstrom^-1."""
+    """MP2-V: attenuated MP2 + Eq-11-damped VV10. r0 in Angstrom, omega in Angstrom^-1.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def run_mp2_v_scan(
@@ -3836,13 +6011,25 @@ def run_mp2_v_scan(
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
     include_coulomb_mp2: bool = False,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+    scf_ri_j_precision: str | None = None,
 ) -> dict[str, Any]:
     """EXPERIMENTAL (research harness). MP2-V scan on ONE converged RHF reference:
     the attenuated-MP2 half for every `(r0, omega)` arm (Angstrom, Angstrom^-1;
     omega None = the published linked width) and the Eq-11-damped VV10 half for
     every arm x `b`. Returns `{rhf_energy, n_nlc_points, arms: [{r0, omega,
-    att_mp2_corr, e_os, e_ss, vv10_e_nl: [per b]}]}`; `total(arm, k) = rhf_energy
-    + att_mp2_corr + vv10_e_nl[k]`. Closed shell, terfc only."""
+    att_mp2_corr, e_os, e_ss, vv10_e_nl: [per b], certificate}]}`; `total(arm, k) =
+    rhf_energy + att_mp2_corr + vv10_e_nl[k]`. Each arm's `certificate` is the
+    `run_mp2_v` certificate of that arm's config (one covers its `b` list).
+    Closed shell, terfc only.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def run_vv10_variants(
@@ -3854,34 +6041,63 @@ def run_vv10_variants(
     nlc_grid: tuple[int, int] | None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+    scf_ri_j_precision: str | None = None,
 ) -> list[float]:
     """EXPERIMENTAL (research harness). Post-HF VV10 E_nl (Ha) for alternative
     short-range weights: each spec is `(kind, r0_angstrom, r0_times_omega_or_None,
     power)` with kind "none" (bare VV10), "eq11" (1 - terfc^2) or "terf" (terf^power,
-    terf = 1 - terfc). No MP2 is run. Closed shell."""
+    terf = 1 - terfc). No MP2 is run. Closed shell.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` solves.
+    """
     ...
 
 def run_rs_mp2_rpa(
     mol: Molecule,
     basis_set: BasisSet,
     auxbasis: BasisSet,
-    omega: float | None = None,
+    omega: float | Sequence[float] | None = None,
     frozen_core: int | None = None,
     k_builder: str | None = None,
-    formulation: str | None = None,
+    formulation: str | Sequence[str] | None = None,
     attenuator: str | None = None,
     r0: float | None = None,
-    terf_omega: float | None = None,
+    terf_omega: float | Sequence[float] | None = None,
     memory_budget_gb: float | None = None,
     scf_jk: str | None = None,
     jk_auxbasis: str | None = None,
-) -> RsMp2RpaResult:
+    scf_ri_j_precision: str | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+) -> RsMp2RpaResult | list[RsMp2RpaResult]:
     """SR-MP2 + LR-dRPA. omega/terf_omega in Angstrom^-1, r0 in Angstrom.
+
+    RHF reference for a singlet; UHF reference for multiplicity > 1, with the
+    spin-summed U-MP2 and U-dRPA (eps = I + Pi_a + Pi_b) and
+    dMP2 = E_ab + (D_aa + D_bb)/2 (`result.reference` says which).
 
     `scf_jk` / `jk_auxbasis` as in `run_rimp2`, but the default differs: this
     entry point has always used RI-JK, so `scf_jk` defaults to "rijk" (on
     "def2-universal-jkfit") here, not "exact". A `k_builder` under "rijk" is
     a ValueError. The mode used is echoed as `result.scf_jk`.
+
+    `omega` (erf split) or `terf_omega` (terf split, at the fixed `r0`) and
+    `formulation` each accept a list. A list for either returns a list of
+    results, omega-major in the order given, from ONE reference SCF and one
+    omega-independent Coulomb stage (each entry is bit-identical to the
+    separate single-omega call). `omega` as a list with attenuator="terf", or
+    `terf_omega` as a list with "erf", is a ValueError; empty lists and
+    repeated formulations are ValueErrors. Scalars return one result.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` (`run_uhf` for an open-shell molecule) solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
     """
     ...
 
@@ -3903,6 +6119,7 @@ def run_dft(
     dispersion: str | None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
+    ri_k_precision: str | None = None,
     grid_radial: int | None = None,
     grid_angular: int | None = None,
     grid_prune: str | None = None,
@@ -3915,11 +6132,40 @@ def run_dft(
     fock_hook: FockHook | None = None,
     guess_basis: str | None = None,
     guess_projection: str | None = None,
+    grid_weight_cut: float | None = None,
+    ri_j_precision: str | None = None,
+    dm0: NDArray[np.float64] | None = None,
+    relativistic: Literal["x2c1e"] | None = None,
+    fock_hook_grad: FockHookGrad | None = None,
+    diis_size: int | None = None,
+    integral_thresh: float | None = None,
+    eri: Literal["auto", "direct", "incore"] | None = None,
+    guess: str | None = None,
+    smeared_charges: list[tuple[float, float, float, float, float]] | None = None,
+    solvent: float | str | None = None,
+    pcm_lebedev_order: int | None = None,
+    stability_descent: bool | None = None,
+    aurora: bool | None = None,
+    trah_trigger: float | None = None,
+    gc_rotation: Literal["auto", "rot1", "off"] | None = None,
 ) -> DftResult:
     """Kohn-Sham DFT (closed-shell). fock_hook: as for run_rhf; with a
-    hook only the first convergence-ladder rung runs, and with_gradient,
-    dispersion and symmetry raise ValueError. Note: the final_* residuals, unmet_criteria and the
+    hook every convergence-ladder rung runs with the hook applied and SOSCF
+    off on the rungs that would switch it on (its orbital Hessian does not
+    include the hook); dispersion and symmetry raise ValueError, and so does
+    with_gradient=True without fock_hook_grad (as for run_rhf; the KS
+    gradient of the hooked SCF plus grad(D, mol)). dm0: as for run_rhf; ladder rung 0 starts from it. Note: the final_* residuals, unmet_criteria and the
     non-convergence RuntimeWarning are RHF-only today (this result has exit_reason and iterations).
+
+    diis_size, integral_thresh, eri, guess, smeared_charges, solvent /
+    pcm_lebedev_order, stability_descent, aurora, trah_trigger: as for run_rhf
+    (solve_rhf honours them with a functional too, on every ladder rung).
+    aurora takes effect only for a hybrid with at least the validated
+    exact-exchange fraction (the solver keeps other functionals on DIIS);
+    trah_trigger is skipped for meta-GGAs and range-separated hybrids. dm0
+    with guess= raises ValueError.
+    Not offered: diis, smearing_sigma and soscf (the convergence ladder sets
+    them per rung) and mom_reference ("initial" is UHF/UKS only).
 
 
     cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit: COSX
@@ -3941,13 +6187,28 @@ def run_dft(
     a zero correction".
 
     `grid_radial` / `grid_angular` / `grid_prune` set the main XC grid. All
-    `None` (the default) is the 75x110 unpruned grid, unchanged. `grid_angular`
-    must be a supported Lebedev order (6, 14, 26, 50, 110, 194, 302, 434, 590).
+    `None` (the default) is the production grid: 75x110 pruned with
+    `"nwchem-radial"` (50 radial shells for H/He, 66 for Li-Ne) and a 1e-14
+    weight cutoff. A size given alone keeps that scheme at that size. `grid_angular`
+    must be a supported Lebedev order: 6, 14, 26, 38, 50, 74, 86, 110, 146,
+    170, 194, 230, 266, 302, 350, 434, 590, 770, 974, 1202, 1454, 1730, 2030,
+    2354, 2702, 3074, 3470, 3890, 4334, 4802, 5294 or 5810 (every
+    Lebedev-Laikov rule PySCF has).
     `grid_prune="nwchem"` applies NWChem-style radial-region angular pruning
-    (~23% fewer points at 75x110, ~1e-10 Ha); `"none"` is the flat grid, and
-    any other value raises ValueError. Pruning has no table at
-    `grid_angular=50`. With `with_gradient=True` the analytic gradient
+    (~23% fewer points at 75x110, ~1e-10 Ha), `"nwchem-radial"` (the
+    default) also thins light atoms' radial grids; `"none"` is the flat grid;
+    `"defgrid1"` / `"defgrid2"` / `"defgrid3"` are ORCA's DEFGRIDs, which fix
+    both grid sizes themselves, so combining one with `grid_radial` or
+    `grid_angular` raises ValueError. Any other value raises ValueError.
+    Pruning has no table at `grid_angular=50`. With `with_gradient=True` the analytic gradient
     differentiates the grid the SCF ran on (including a pruned one).
+    `grid_weight_cut` (ORCA's WeightCut, e.g. 1e-14) drops every main-grid
+    point whose final weight (radial x angular x Becke partition) has
+    absolute value below it; `None` (the default) is 1e-14, and 0.0 is no
+    cutoff (the grid is then the uncut one bit for bit), and a negative, NaN or infinite value
+    raises ValueError. The gradient drops the same points, so it is the
+    gradient of the cut energy (which jumps where a weight crosses the cutoff
+    under displacement, by about cutoff x integrand).
     With `k_builder="cosx"` and `with_gradient=True` the gradient
     differentiates the COSX energy; the overlap fit with a functional is not
     differentiable (its response needs the XC Fock nuclear derivative), so
@@ -3968,6 +6229,132 @@ def run_dft(
     ValueError with symmetry=True. The blocked SCF is one plain solve (no
     convergence ladder); non-convergence returns converged=False with a
     RuntimeWarning.
+
+    Density fitting is on by default. ``df_j_aux`` and ``df_k_aux`` are set
+    independently, each defaulting to ``def2-universal-jkfit``, so RI-J and
+    RI-K can use different auxiliary bases with different sizes (``naux_J`` and
+    ``naux_K`` below):
+
+    - Coulomb: RI-J for every functional. ``df_j_aux`` names another auxiliary
+      basis; ``df_j_aux=""`` selects conventional four-centre J. RI-J keeps the
+      raw packed ``(P|mn)`` (f32 when it fits, ``ri_j_precision``) of at most
+      ``naux_J * nbf * (nbf + 1) / 2`` elements (Schwarz pair screening can
+      drop AO pairs).
+    - Exchange, by functional:
+
+      - pure (LDA/GGA/meta-GGA): no exact exchange, so no RI-K tensor is
+        built and ``df_k_aux`` has no effect.
+      - global hybrid (B3LYP, PBE0, ...): RI-K, a SECOND three-index tensor
+        beside RI-J's: the V^-1/2-dressed packed ``(P|mn)`` (f64,
+        ``ri_k_precision``) of ``naux_K * nbf * (nbf + 1) / 2`` elements
+        (``naux_K * nbf**2`` in a ``[gpu]`` mode that may build K on the
+        device). ``df_k_aux=""`` selects exact four-centre K and builds no
+        RI-K tensor.
+      - range-separated hybrid (wB97X-V, CAM-B3LYP, ...): exchange only via
+        two RI-K fitters (short-range erfc and long-range erf), each its own
+        dressed tensor; ``df_k_aux=""`` raises RuntimeError.
+      - ``k_builder="cosx"``: COSX replaces RI-K (RIJCOSX), RI-J stays on;
+        a named ``df_k_aux`` next to it raises.
+
+    - ``k_builder`` (``"direct"``, ``"link"``, ``"cosx"``) picks the
+      exact-exchange builder and is honoured only where exchange is not
+      density-fitted. While RI-K is active (the hybrid default) ``"direct"``
+      and ``"link"`` are IGNORED with a warning, as is any ``k_builder`` for a
+      pure or range-separated functional. For a hybrid, ``"direct"`` needs
+      ``df_k_aux=""``; ``"link"`` needs ``df_j_aux=""`` as well, because LinK
+      builds J and K in one four-centre pass, which RI-J replaces.
+    - ``BasisSet.n_functions(mol)`` gives ``nbf`` (orbital basis) and the
+      ``naux`` of an auxiliary basis, for a memory estimate.
+    """
+    ...
+
+@overload
+def run_dft(
+    mol: Molecule,
+    basis_set: BasisSet,
+    functional: str | None = None,
+    k_builder: str | None = None,
+    with_gradient: Literal[False] = False,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
+    level_shift: float | None = None,
+    mom_after_iter: int | None = None,
+    point_charges: list[tuple[float, float, float, float]] | None = None,
+    external_field: tuple[float, float, float] | None = None,
+    memory_budget_gb: float | None = None,
+    dispersion: None = None,
+    df_j_aux: str | None = None,
+    df_k_aux: str | None = None,
+    ri_k_precision: str | None = None,
+    grid_radial: int | None = None,
+    grid_angular: int | None = None,
+    grid_prune: str | None = None,
+    cosx_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_final_pass: bool | None = None,
+    cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_overlap_fit: bool | None = None,
+    *,
+    symmetry: Literal[True],
+    irrep_nelec: dict[str, int] | None = None,
+    fock_hook: None = None,
+    guess_basis: str | None = None,
+    guess_projection: str | None = None,
+    grid_weight_cut: float | None = None,
+    ri_j_precision: str | None = None,
+    dm0: None = None,
+    relativistic: Literal["x2c1e"] | None = None,
+    fock_hook_grad: None = None,
+    diis_size: int | None = None,
+    integral_thresh: float | None = None,
+    eri: Literal["auto", "direct", "incore"] | None = None,
+    guess: str | None = None,
+    smeared_charges: list[tuple[float, float, float, float, float]] | None = None,
+    solvent: float | str | None = None,
+    pcm_lebedev_order: int | None = None,
+    stability_descent: bool | None = None,
+    aurora: bool | None = None,
+    trah_trigger: float | None = None,
+    gc_rotation: Literal["auto", "rot1", "off"] | None = None,
+) -> SymmetricRhfResult:
+    """Point-group-blocked closed-shell RKS (see the ``symmetry=True``
+    paragraph of the DftResult overload). Same density-fitting defaults:
+
+    Density fitting is on by default. ``df_j_aux`` and ``df_k_aux`` are set
+    independently, each defaulting to ``def2-universal-jkfit``, so RI-J and
+    RI-K can use different auxiliary bases with different sizes (``naux_J`` and
+    ``naux_K`` below):
+
+    - Coulomb: RI-J for every functional. ``df_j_aux`` names another auxiliary
+      basis; ``df_j_aux=""`` selects conventional four-centre J. RI-J keeps the
+      raw packed ``(P|mn)`` (f32 when it fits, ``ri_j_precision``) of at most
+      ``naux_J * nbf * (nbf + 1) / 2`` elements (Schwarz pair screening can
+      drop AO pairs).
+    - Exchange, by functional:
+
+      - pure (LDA/GGA/meta-GGA): no exact exchange, so no RI-K tensor is
+        built and ``df_k_aux`` has no effect.
+      - global hybrid (B3LYP, PBE0, ...): RI-K, a SECOND three-index tensor
+        beside RI-J's: the V^-1/2-dressed packed ``(P|mn)`` (f64,
+        ``ri_k_precision``) of ``naux_K * nbf * (nbf + 1) / 2`` elements
+        (``naux_K * nbf**2`` in a ``[gpu]`` mode that may build K on the
+        device). ``df_k_aux=""`` selects exact four-centre K and builds no
+        RI-K tensor.
+      - range-separated hybrid (wB97X-V, CAM-B3LYP, ...): exchange only via
+        two RI-K fitters (short-range erfc and long-range erf), each its own
+        dressed tensor; ``df_k_aux=""`` raises RuntimeError.
+      - ``k_builder="cosx"`` is not supported with ``symmetry=True``
+        (ValueError).
+
+    - ``k_builder`` (``"direct"``, ``"link"``, ``"cosx"``) picks the
+      exact-exchange builder and is honoured only where exchange is not
+      density-fitted. While RI-K is active (the hybrid default) ``"direct"``
+      and ``"link"`` are IGNORED with a warning, as is any ``k_builder`` for a
+      pure or range-separated functional. For a hybrid, ``"direct"`` needs
+      ``df_k_aux=""``; ``"link"`` needs ``df_j_aux=""`` as well, because LinK
+      builds J and K in one four-centre pass, which RI-J replaces.
+    - ``BasisSet.n_functions(mol)`` gives ``nbf`` (orbital basis) and the
+      ``naux`` of an auxiliary basis, for a memory estimate.
     """
     ...
 
@@ -3989,38 +6376,7 @@ def run_dft(
     dispersion: str | None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
-    grid_radial: int | None = None,
-    grid_angular: int | None = None,
-    grid_prune: str | None = None,
-    cosx_grid: tuple[int, int] | tuple[int, int, str] | None = None,
-    cosx_final_pass: bool | None = None,
-    cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
-    cosx_overlap_fit: bool | None = None,
-    *,
-    symmetry: Literal[True],
-    irrep_nelec: dict[str, int] | None = None,
-    fock_hook: None = None,
-    guess_basis: str | None = None,
-    guess_projection: str | None = None,
-) -> SymmetricRhfResult: ...
-@overload
-def run_dft(
-    mol: Molecule,
-    basis_set: BasisSet,
-    functional: str | None = None,
-    k_builder: str | None = None,
-    with_gradient: bool = False,
-    max_iter: int | None = None,
-    energy_conv: float | None = None,
-    density_conv: float | None = None,
-    level_shift: float | None = None,
-    mom_after_iter: int | None = None,
-    point_charges: list[tuple[float, float, float, float]] | None = None,
-    external_field: tuple[float, float, float] | None = None,
-    memory_budget_gb: float | None = None,
-    dispersion: str | None = None,
-    df_j_aux: str | None = None,
-    df_k_aux: str | None = None,
+    ri_k_precision: str | None = None,
     grid_radial: int | None = None,
     grid_angular: int | None = None,
     grid_prune: str | None = None,
@@ -4033,14 +6389,35 @@ def run_dft(
     fock_hook: FockHook | None = None,
     guess_basis: str | None = None,
     guess_projection: str | None = None,
+    grid_weight_cut: float | None = None,
+    ri_j_precision: str | None = None,
+    dm0: NDArray[np.float64] | None = None,
+    relativistic: Literal["x2c1e"] | None = None,
+    fock_hook_grad: FockHookGrad | None = None,
+    diis_size: int | None = None,
+    integral_thresh: float | None = None,
+    eri: Literal["auto", "direct", "incore"] | None = None,
+    guess: str | None = None,
+    smeared_charges: list[tuple[float, float, float, float, float]] | None = None,
+    solvent: float | str | None = None,
+    pcm_lebedev_order: int | None = None,
+    stability_descent: bool | None = None,
+    aurora: bool | None = None,
+    trah_trigger: float | None = None,
+    gc_rotation: Literal["auto", "rot1", "off"] | None = None,
 ) -> DftResult | SymmetricRhfResult: ...
 def dft_grid_point_count(
     mol: Molecule,
     grid_radial: int | None = None,
     grid_angular: int | None = None,
     grid_prune: str | None = None,
+    grid_weight_cut: float | None = None,
 ) -> int:
-    """Number of points in the main XC grid `run_dft` builds with these kwargs."""
+    """Number of points in the main XC grid `run_dft` builds with these kwargs.
+
+    With the default 1e-14 weight cutoff every point's Becke weight is
+    evaluated (about the cost of building the grid, without its memory);
+    with `grid_weight_cut=0.0` it is a closed-form count (no grid is built)."""
     ...
 
 def cosx_grid_point_count(
@@ -4069,6 +6446,7 @@ def run_ksdft(
     dispersion: str | None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
+    ri_k_precision: str | None = None,
     grid_radial: int | None = None,
     grid_angular: int | None = None,
     grid_prune: str | None = None,
@@ -4076,8 +6454,13 @@ def run_ksdft(
     irrep_nelec: None = None,
     guess_basis: str | None = None,
     guess_projection: str | None = None,
+    grid_weight_cut: float | None = None,
+    ri_j_precision: str | None = None,
+    dm0: NDArray[np.float64] | None = None,
+    relativistic: Literal["x2c1e"] | None = None,
 ) -> DftResult:
-    """Kohn-Sham DFT (closed-shell). Alias of run_dft (same grid_* kwargs).
+    """Kohn-Sham DFT (closed-shell). Alias of run_dft (same grid_* kwargs,
+    grid_weight_cut included).
 
     `dispersion` adds a dispersion correction to the SCF energy (and, with
     `with_gradient=True`, its analytic gradient to the gradient):
@@ -4091,6 +6474,7 @@ def run_ksdft(
     parameters, raises ValueError -- there is no spelling that means "compute
     a zero correction".
     symmetry / irrep_nelec: as for run_dft (blocked RKS, SymmetricRhfResult).
+    dm0: as for run_dft (ladder rung 0 starts from it).
     """
     ...
 
@@ -4100,7 +6484,7 @@ def run_ksdft(
     basis_set: BasisSet,
     functional: str | None = None,
     k_builder: str | None = None,
-    with_gradient: bool = False,
+    with_gradient: Literal[False] = False,
     max_iter: int | None = None,
     energy_conv: float | None = None,
     density_conv: float | None = None,
@@ -4109,9 +6493,10 @@ def run_ksdft(
     point_charges: list[tuple[float, float, float, float]] | None = None,
     external_field: tuple[float, float, float] | None = None,
     memory_budget_gb: float | None = None,
-    dispersion: str | None = None,
+    dispersion: None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
+    ri_k_precision: str | None = None,
     grid_radial: int | None = None,
     grid_angular: int | None = None,
     grid_prune: str | None = None,
@@ -4120,6 +6505,10 @@ def run_ksdft(
     irrep_nelec: dict[str, int] | None = None,
     guess_basis: str | None = None,
     guess_projection: str | None = None,
+    grid_weight_cut: float | None = None,
+    ri_j_precision: str | None = None,
+    dm0: None = None,
+    relativistic: Literal["x2c1e"] | None = None,
 ) -> SymmetricRhfResult: ...
 @overload
 def run_ksdft(
@@ -4139,6 +6528,7 @@ def run_ksdft(
     dispersion: str | None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
+    ri_k_precision: str | None = None,
     grid_radial: int | None = None,
     grid_angular: int | None = None,
     grid_prune: str | None = None,
@@ -4146,14 +6536,23 @@ def run_ksdft(
     irrep_nelec: dict[str, int] | None = None,
     guess_basis: str | None = None,
     guess_projection: str | None = None,
+    grid_weight_cut: float | None = None,
+    ri_j_precision: str | None = None,
+    dm0: NDArray[np.float64] | None = None,
+    relativistic: Literal["x2c1e"] | None = None,
 ) -> DftResult | SymmetricRhfResult: ...
-def d3bj_energy(mol: Molecule, functional: str) -> float:
-    """Grimme D3(BJ) dispersion energy in Hartree (two-body term).
+def d3bj_energy(mol: Molecule, functional: str, s9: float = 0.0) -> float:
+    """Grimme D3(BJ) dispersion energy in Hartree.
 
     `functional` names the XC functional whose published D3(BJ) damping
     parameters to use; the correction is fitted per functional, so this is
-    required. Raises for an unknown functional or for an element outside the
+    required. Raises for an unknown functional, for one with no published
+    D3(BJ) fit (M06-2X, which has D3(0) only), or for an element outside the
     D3 parameterisation, rather than silently returning a smaller number.
+
+    `s9` scales the Axilrod-Teller-Muto three-body term: 0.0 (default, the
+    reference default for a named functional) is two-body only, 1.0 is
+    D3(BJ)-ATM. A non-finite `s9` raises ValueError.
     """
     ...
 
@@ -4228,8 +6627,17 @@ def run_ccd(
     frozen_core: int | None = None,
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
 ) -> CcResult:
-    """Coupled-cluster doubles (CCD)."""
+    """Coupled-cluster doubles (CCD).
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def run_ccsd(
@@ -4240,8 +6648,20 @@ def run_ccsd(
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
     ladder: str = "auto",
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+    save_reference: str | None = None,
+    read_reference: str | None = None,
+    read_reference_other_build: bool = False,
 ) -> CcResult:
-    """Coupled-cluster singles and doubles (CCSD), spin-adapted.
+    """Coupled-cluster singles and doubles (CCSD).
+
+    A closed-shell molecule runs spin-adapted CCSD on an RHF reference. An
+    open-shell molecule (multiplicity > 1) runs spin-blocked UCCSD on a UHF
+    reference; ``CcResult.reference`` is then ``"uhf"`` and
+    ``CcResult.spin_components`` holds the aa / ab / bb energies.
+    ``frozen_core`` drops the lowest orbitals of each spin.
 
     ``ladder`` picks how the particle-particle ladder is evaluated:
     ``"auto"`` (default: dense when its memory plan fits the budget, RI
@@ -4249,7 +6669,60 @@ def run_ccsd(
     ``"ri"`` (integral-direct: at most one nv^4-sized panel at full width,
     narrower panels when the budget requires; same energy to round-off,
     1.3-1.5x slower per iteration). The route taken is on
-    ``CcResult.ladder_route``. Any other value raises ValueError.
+    ``CcResult.ladder_route``. Any other value raises ValueError. An
+    open-shell molecule accepts ``ladder="auto"`` only.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` (`run_uhf` for an open-shell molecule) solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    ``save_reference="ref.npz"`` writes the converged reference SCF to that
+    file (the CLI's ``[scf] save_reference`` checkpoint); ``read_reference``
+    reads one instead of solving it, so no SCF iteration runs and the
+    correlated stage gets the stored orbitals bit for bit (its energy is the
+    saving call's reference's, equal to a fresh call's at the same
+    thresholds, thread count, ERI route and build). ``run_rimp2``,
+    ``run_ccsd`` and ``run_ccsd_t`` share the files: a reference saved by
+    ``run_rimp2(scf_jk="exact")`` is read by ``run_ccsd``. A file is read
+    only when it is the reference this call would solve (molecule, basis,
+    spin, every SCF setting that moves its numbers, this build unless
+    ``read_reference_other_build=True``); anything else, a missing or
+    corrupted file included, raises ``InputError`` naming why, never a fresh
+    SCF. CLI and Python files are not interchangeable.
+    """
+    ...
+
+def run_eom_ccsd(
+    mol: Molecule,
+    basis_set: BasisSet,
+    auxbasis: BasisSet,
+    n_roots: int = 5,
+    conv_tol: float = 1e-6,
+    max_iter: int = 100,
+    max_space: int | None = None,
+    frozen_core: int | None = None,
+    k_builder: str | None = None,
+    memory_budget_gb: float | None = None,
+    ladder: str = "auto",
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+) -> EomCcsdResult:
+    """EE-EOM-CCSD singlet excitation energies on an RHF reference.
+
+    Spin-adapted CCSD (amplitudes converged to |dE| < 1e-10), then the lowest
+    ``n_roots`` right eigenpairs of the similarity-transformed Hamiltonian on
+    the singlet singles+doubles space by a non-symmetric Davidson stopping at
+    residual ``conv_tol`` (the energy error is first order in it). An
+    unconverged root raises. ``ladder`` is the CCSD ladder route as in
+    ``run_ccsd``; the EOM products take the dense nv^4 ladder when its memory
+    plan fits and an RI-panel one otherwise. No left vectors, so no
+    oscillator strengths.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
     """
     ...
 
@@ -4261,8 +6734,19 @@ def run_ccsd_t(
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
     ladder: str = "auto",
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+    save_reference: str | None = None,
+    read_reference: str | None = None,
+    read_reference_other_build: bool = False,
 ) -> CcResult:
-    """CCSD(T): CCSD plus perturbative triples correction, spin-adapted.
+    """CCSD(T): CCSD plus perturbative triples correction.
+
+    A closed-shell molecule runs spin-adapted CCSD(T) on an RHF reference. An
+    open-shell molecule (multiplicity > 1) runs spin-blocked UCCSD(T) on a
+    UHF reference; ``CcResult.spin_components`` then holds the CCSD aa / ab /
+    bb energies and the four (T) classes.
 
     ``ladder`` picks how the particle-particle ladder is evaluated:
     ``"auto"`` (default: dense when its memory plan fits the budget, RI
@@ -4270,7 +6754,26 @@ def run_ccsd_t(
     ``"ri"`` (integral-direct: at most one nv^4-sized panel at full width,
     narrower panels when the budget requires; same energy to round-off,
     1.3-1.5x slower per iteration). The route taken is on
-    ``CcResult.ladder_route``. Any other value raises ValueError.
+    ``CcResult.ladder_route``. Any other value raises ValueError. An
+    open-shell molecule accepts ``ladder="auto"`` only.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` (`run_uhf` for an open-shell molecule) solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    ``save_reference="ref.npz"`` writes the converged reference SCF to that
+    file (the CLI's ``[scf] save_reference`` checkpoint); ``read_reference``
+    reads one instead of solving it, so no SCF iteration runs and the
+    correlated stage gets the stored orbitals bit for bit (its energy is the
+    saving call's reference's, equal to a fresh call's at the same
+    thresholds, thread count, ERI route and build). ``run_rimp2``,
+    ``run_ccsd`` and ``run_ccsd_t`` share the files: a reference saved by
+    ``run_rimp2(scf_jk="exact")`` is read by ``run_ccsd``. A file is read
+    only when it is the reference this call would solve (molecule, basis,
+    spin, every SCF setting that moves its numbers, this build unless
+    ``read_reference_other_build=True``); anything else, a missing or
+    corrupted file included, raises ``InputError`` naming why, never a fresh
+    SCF. CLI and Python files are not interchangeable.
     """
     ...
 
@@ -4292,6 +6795,36 @@ def run_pdep_rpa(
     external_field: tuple[float, float, float] | None = None,
     solvent: float | str | None = None,
     pcm_lebedev_order: int | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+    properties: bool = False,
+    export_npz: str | None = None,
+    allow_partial_npz: bool = False,
+    compute_esp: bool | None = None,
+    compute_esp_surface: bool | None = None,
+    esp_surface_vdw_scale: float | None = None,
+    esp_surface_n_angular: int | None = None,
+    compute_polarizability: bool | None = None,
+    compute_electric_field: bool | None = None,
+    compute_alpha_atomic: bool | None = None,
+    compute_density_matrix: bool | None = None,
+    compute_dipole: bool | None = None,
+    compute_lowdin_charges: bool | None = None,
+    compute_hirshfeld_charges: bool | None = None,
+    compute_mulliken_charges: bool | None = None,
+    compute_chelpg_charges: bool | None = None,
+    compute_resp_charges: bool | None = None,
+    compute_c6: bool | None = None,
+    c6_source: str | None = None,
+    c6_partition: str | None = None,
+    df_j_aux: str | None = None,
+    df_k_aux: str | None = None,
+    export_eigpot_prefix: str | None = None,
+    export_eigpot_count: int | None = None,
+    cube_spacing: float | None = None,
+    cube_margin: float | None = None,
+    with_gradient: bool = False,
 ) -> PdepRpaResult:
     """PDEP-RPA (dielectric eigendecomposition RPA).
 
@@ -4301,6 +6834,44 @@ def run_pdep_rpa(
     (Molecule.coords() is Angstrom -- convert first); external_field is
     (Ex, Ey, Ez) in atomic units (Hartree / (e * Bohr)). solvent and
     pcm_lebedev_order are as in run_rhf.
+
+    df_j_aux / df_k_aux select density-fitted J / K for the reference SCF, with
+    run_rhf's spellings. Unset keeps exact four-centre J/K; the CLI's pdep-rpa
+    reference defaults to RI-JK on "def2-universal-jkfit".
+
+    PROPERTIES. properties=True (or export_npz=) also computes the property
+    bundle the CLI writes under ``[rpa]``, with the TOML key names and defaults
+    (every compute_* is on except compute_esp_surface; c6_source "ts" by
+    default, c6_partition unset = the source's default). The arrays appear on
+    the result under their NPZ names (esp_atoms, alpha_tensor, alpha_atomic,
+    alpha_ct, c6_iso, ...); one that was not requested or failed is None and a
+    failure is listed in ``result.property_gaps``. Setting a compute_* /
+    c6_* / esp_surface_* key without properties=True or export_npz= raises
+    ValueError, as do unknown c6_source / c6_partition strings (before the SCF).
+
+    export_npz=path writes the CLI's NPZ bundle. A requested property that
+    failed raises RuntimeError AFTER the file is written, unless
+    allow_partial_npz=True. export_eigpot_prefix=P writes the leading
+    export_eigpot_count (default 10) eigenpotential densities as
+    ``P_eigpot_NNN.cube`` on a grid of cube_spacing (0.2) / cube_margin (4.0)
+    Bohr. Closed-shell only (the property bundle shares the CLI's code).
+
+    GRADIENT. with_gradient=True also computes the analytic nuclear gradient of
+    ``total_energy`` (the Z-vector relaxed RHF + RI-dRPA gradient the CLI's
+    ``task = "optimize"`` uses), read with ``result.gradient()``: (natoms, 3),
+    Hartree/Bohr, the Molecule's atom order, the same layout as
+    ``RiMp2Result.gradient()``. It differentiates the full-rank dense Coulomb
+    RPA on an exact four-centre closed-shell RHF reference, so an unset
+    trunc_thresh is 0 (instead of 1e-4) and an unset scf_density_conv is 1e-9.
+    These raise ValueError before any integral is computed: multiplicity > 1,
+    a nonzero trunc_thresh, chi0_sparsity other than "dense", k_builder="cosx",
+    df_j_aux / df_k_aux, point_charges / external_field / solvent, properties /
+    export_npz / compute_* / export_eigpot_*, and run_diagnostics.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
     """
     ...
 
@@ -4324,8 +6895,23 @@ def run_gw(
     k_builder: str | None = None,
     chi0_sparsity: str | None = None,
     memory_budget_gb: float | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+    scf_ri_j_precision: str | None = None,
 ) -> GwResult:
-    """Closed-shell G0W0/COHSEX/evGW0/evGW on an RHF or RKS reference."""
+    """Closed-shell G0W0/COHSEX/evGW0/evGW on an RHF or RKS reference.
+
+    Defaults: n_quad = 40 Gauss-Legendre points for W (GW's own default; the
+    RPA energy paths use 20), trunc_thresh = 1e-4, ev_conv_thresh = 1e-4 Ha.
+    Calibrated against the validated settings (n_quad = 100, trunc_thresh = 0):
+    HOMO/LUMO within 10 meV (G0W0@PBE worst 5.7 meV; @HF starts < 0.1 meV).
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` (`run_dft` with `xc`) solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def run_u_gw(
@@ -4349,8 +6935,20 @@ def run_u_gw(
     k_builder: str | None = None,
     chi0_sparsity: str | None = None,
     memory_budget_gb: float | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+    scf_ri_j_precision: str | None = None,
 ) -> UGwResult:
-    """Open-shell U-G0W0/U-COHSEX/U-evGW0/U-evGW on a UHF/ROHF reference."""
+    """Open-shell U-G0W0/U-COHSEX/U-evGW0/U-evGW on a UHF/ROHF reference.
+
+    Same defaults as run_gw (n_quad = 40, trunc_thresh = 1e-4).
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_uhf` / `run_rohf` (`run_uks` / `run_roks` with `xc`) solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def run_bse_tda(
@@ -4366,8 +6964,17 @@ def run_bse_tda(
     k_builder: str | None = None,
     chi0_sparsity: str | None = None,
     memory_budget_gb: float | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
 ) -> BseResult:
-    """BSE-TDA singlet excitation energies on a closed-shell RHF reference."""
+    """BSE-TDA singlet excitation energies on a closed-shell RHF reference.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def run_tdhf_static_polarizability(
@@ -4385,12 +6992,21 @@ def run_tdhf_static_polarizability(
     k_builder: str | None = None,
     chi0_sparsity: str | None = None,
     memory_budget_gb: float | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+    scf_ri_j_precision: str | None = None,
 ) -> TdhfStaticPolarizabilityResult:
     """RPAx@KS static polarizability (omega=0). xc is REQUIRED.
 
     Not validated: water/cc-pVDZ/PBE at scissor=0.36 gives 5.20 a.u. vs DOSD
     9.64 (46% low). At the default scissor=0.0 the kernel is often unstable
     and the call raises on a negative alpha diagonal; use scissor ~0.3-0.4 Ha.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_dft` solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
     """
     ...
 
@@ -4401,15 +7017,65 @@ def run_tddft(
     functional: str | None = None,
     n_roots: int = 3,
     method: str = "tda",
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+    grid_radial: int | None = None,
+    grid_angular: int | None = None,
+    grid_prune: str | None = None,
+    grid_weight_cut: float | None = None,
+    scf_ri_j_precision: str | None = None,
+    solver: str = "auto",
+    spin: str = "singlet",
+    reference: str = "auto",
 ) -> TddftResult:
-    """Closed-shell singlet linear response. functional=None runs on an RHF
+    """Linear response on an RHF/RKS or UHF/UKS reference. functional=None runs on an RHF
     reference (CIS for method="tda"/"cis", TDHF for "casida"/"rpa"/"tddft"/
     "tdhf"); a functional converges that KS reference (RI-JK,
-    def2-universal-jkfit, default 75x110 grid) and adds the (ia|f_xc|jb)
-    kernel block to A (and B for Casida) on the same grid. Meta-GGA, VV10 and
-    range-separated functionals raise ValueError (no complete kernel); there
-    is no kernel-less DFT result. Coulomb/exchange response integrals are RI
-    over `auxbasis`."""
+    def2-universal-jkfit) and adds the (ia|f_xc|jb) kernel block to A (and B
+    for Casida) on the same grid.
+
+    Grid: the grid_* kwargs mean what they mean in run_dft. With none set, a
+    meta-GGA (SCAN, r2SCAN, TPSS, or a hybrid such as TPSSh, M06-2X) runs
+    on 150x434 nwchem-radial (default
+    weight cut), every other functional on the production 75x110
+    nwchem-radial grid. On 75x110, r2SCAN water roots sit up to 2.1e-3 eV
+    from a flat 150x590 grid; on 150x434, within 1e-4 eV. Any grid_* kwarg
+    replaces that default. With functional=None a grid_* kwarg is a
+    ValueError. TddftResult.grid reports the grid used.
+
+    Range-separated hybrids (e.g. "HYB_GGA_XC_CAM_B3LYP", "HYB_GGA_XC_WB97X")
+    take c_sr, c_lr and omega from libxc; the long-range exchange in the
+    response uses a second RI tensor set fitted in the erf(omega r)/r metric.
+    VV10 functionals raise ValueError (no complete kernel); there is no
+    kernel-less DFT result.
+
+    spin: "singlet" (default) or "triplet" (no Coulomb term, the
+    f_aa - f_ab kernel, oscillator strengths exactly 0). A triplet Casida
+    problem with Omega^2 < 0 (a triplet instability of the reference) raises.
+    Any other value is a ValueError. Coulomb/exchange response
+    integrals are RI over `auxbasis`. `scf_max_iter`, `scf_energy_conv`,
+    `scf_density_conv` set the reference SCF as in `run_rhf` (defaults unchanged
+    when omitted).
+
+    solver: "dense" (full A, B and eigh), "davidson" (matrix-free block
+    Davidson; an unconverged root raises) or "auto" (dense up to
+    nocc*nvir = 200, Davidson above). Any other value is a ValueError.
+    TddftResult.solver and .residuals report what ran.
+
+    reference: "auto" (default: restricted for a singlet molecule, UHF/UKS
+    for multiplicity > 1), "restricted" (alias "rhf"/"rks"; a ValueError on an
+    open-shell molecule) or "unrestricted" (alias "uhf"/"uks"; also accepted
+    for a closed-shell molecule, where the roots are the restricted singlets
+    and triplets together). An unrestricted run solves the spin-conserving
+    alpha/beta problem for every functional class above, including
+    meta-GGAs and hybrid meta-GGAs, reports <S^2> per root in
+    TddftResult.s2, and refuses spin="triplet" with a ValueError. ROHF/ROKS
+    references are not offered.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` / `run_uhf` (`run_dft` / `run_uks` with `functional`) solves.
+    """
     ...
 
 def run_double_hybrid(
@@ -4420,8 +7086,33 @@ def run_double_hybrid(
     frozen_core: int | None = None,
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+    scf_ri_j_precision: str | None = None,
+    dispersion: str | None = None,
+    unrestricted: bool = False,
 ) -> DoubleHybridResult:
-    """MP2-based double hybrid: kind="b2plyp" or "dsd-pbep86"."""
+    """MP2-based double hybrid: kind="b2plyp" (Grimme 2006) or "dsd-pbep86"
+    (Kozuch and Martin 2013, no dispersion: 0.72 HF, 0.28 PBE, 0.44 P86,
+    c_os 0.51, c_ss 0.36).
+
+    ``dispersion="d3bj"`` (or ``"d3(bj)"``) selects the kind's published
+    D3(BJ) set and adds the D3(BJ) energy: B2PLYP-D3(BJ) keeps B2PLYP's
+    coefficients; DSD-PBEP86-D3(BJ) is the refit set of Kozuch and Martin
+    (2013): 0.69 HF, 0.31 PBE, 0.44 P86, c_os 0.52, c_ss 0.22, D3(BJ) s6 0.48,
+    a1 0, s8 0, a2 5.6. Other values raise ValueError.
+
+    The reference is a UKS when ``mol.multiplicity > 1`` or ``unrestricted``
+    is True (a singlet UKS equals the RKS route); the PT2 term then uses the
+    unrestricted RI-MP2 spin components: E_OS = alpha-beta, E_SS =
+    alpha-alpha + beta-beta.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_dft` (`run_uks` for the unrestricted route) solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def run_drpa(
@@ -4436,6 +7127,9 @@ def run_drpa(
     compute_reference: bool | None = None,
     diis: int | None = None,
     eps_rtol_factor: float | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
 ) -> dict[str, object]:
     """Direct RPA (dRPA@HF) by the drCCD Riccati solve, closed-shell.
 
@@ -4444,7 +7138,14 @@ def run_drpa(
     run_pdep_rpa(..., trunc_thresh=0) instead). local="amplitude-threshold"
     with eps (required) runs the local approximation; compute_reference and
     eps_rtol_factor are local-only. The dict carries "local": None (exact)
-    or the local model dict.
+    or the local model dict, and "certificate": the validation certificate
+    dict (capability "drpa"; schema of ``RhfResult.certificate``; a finite eps
+    or an unconverged fixed point is not graded).
+
+    An ECP basis set is refused: the amplitude solver's localized virtual space cannot
+    count valence virtuals on ECP atoms.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
     """
     ...
 
@@ -4459,9 +7160,19 @@ def run_drpa_scan(
     compute_reference: bool | None = None,
     diis: int | None = None,
     eps_rtol_factor: float | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
 ) -> list[dict[str, object]]:
     """The LOCAL (amplitude-threshold) dRPA over a list of eps values, one
-    SCF and one localized assembly. Each dict carries "local"."""
+    SCF and one localized assembly. Each dict carries "local" and the
+    "certificate" `run_drpa(local=..., eps=...)` returns at that point.
+
+    An ECP basis set is refused: the amplitude solver's localized virtual space cannot
+    count valence virtuals on ECP atoms.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def run_linlccd(
@@ -4475,11 +7186,23 @@ def run_linlccd(
     frozen_core: int | None = None,
     k_builder: str | None = None,
     memory_budget_gb: float | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
 ) -> dict[str, object]:
     """Linearized ladder CCD, closed-shell. variant: "hh" (default),
     "drivers-only" or "full". Exact by default; local="amplitude-threshold"
     with eps (required) runs the local approximation (compute_reference adds
-    the exact energy as local["e_corr_exact"]). The dict carries "local"."""
+    the exact energy as local["e_corr_exact"]). The dict carries "local" and
+    "certificate" (capability "linlccd"; schema of ``RhfResult.certificate``).
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` solves.
+    `local="amplitude-threshold"` refuses an ECP basis set: its localized virtual space
+    cannot count valence virtuals on ECP atoms.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def tune_omega(
@@ -4502,8 +7225,11 @@ def tune_omega(
     "marginal", "indeterminate", "not_analysed", "not_checked") and
     ``cation_stability_skip``; the result gains ``stability_warning``. A tuned
     omega whose cation is an internal saddle raises RuntimeError. Functionals
-    without an orbital-Hessian kernel (VV10, meta-GGA) are reported
+    without an orbital-Hessian kernel (VV10) are reported
     "not_analysed", never stable. False reproduces earlier results bit for bit.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_dft` for the neutral molecule and `run_uks` for the cation solves.
     """
     ...
 
@@ -4515,16 +7241,40 @@ def esp_at_atoms(
     """Electrostatic potential at each nucleus (Hartree atomic units)."""
     ...
 
+def certificate_from_blocks(
+    capability: str,
+    records: Sequence[dict[str, Any]],
+    approximations: Sequence[tuple[str, str]] = (),
+    warnings: Sequence[str] = (),
+    reference: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The certificate (schema of ``RhfResult.certificate``, plus ``blocks``)
+    of a result composed from building blocks: ``capability`` is
+    ``"blocks:<capability>"`` and ``grade`` ``"ungraded"``, whatever the
+    records or the reference hold (no validation row covers the caller's
+    code); ``blocks`` holds ``records`` (``AoIntegrals.provenance()``
+    dicts) unchanged; ``approximations`` are those the records imply (``ri``
+    naming each auxiliary basis, ``operator``, ``xc-grid``, ``screening``,
+    ``ecp``, ``x2c``), then the ``reference`` certificate's (prefixed
+    ``scf ``), then ``approximations``; ``warnings`` adds to those raised
+    (records from different builds raise one). ValueError on no records or
+    a malformed record or reference."""
+    ...
+
 def einsum(
     spec: str,
-    a: NDArray[np.float64],
-    b: NDArray[np.float64],
+    *operands: NDArray[np.float64],
     scale: float = 1.0,
 ) -> NDArray[np.float64] | float:
-    """Binary contraction on ferric's GEMM engine (the einsum! macro's).
+    """Contraction on ferric's GEMM engine (the einsum! macro's).
 
-    Two operands, explicit '->', no repeated index within a term; output lists
-    batch, then left-free, then right-free indices. Scalar specs return float.
+    Two operands: one binary contraction. Three or more: a fixed left-to-right
+    chain of binary contractions ``((A.B).C)``, in the order written, no
+    contraction-order search; an index shared by the running result and the
+    next operand is summed there unless a later operand or the output still
+    carries it. Explicit '->', no repeated index within a term, no implicit
+    single-operand sums; the output lists batch, then left-free, then
+    right-free indices of the last step. Scalar specs return float.
     """
     ...
 
@@ -4628,6 +7378,135 @@ def density_second_moment(
     """Density second-moment tensor (3x3, Bohr^2) about the origin."""
     ...
 
+def eval_ao_on_points(
+    mol: Molecule,
+    basis_set: BasisSet,
+    points: NDArray[np.float64],
+) -> NDArray[np.float64]:
+    """AO values chi_mu(r) at arbitrary points: (N, nbasis) array, Bohr^-3/2.
+    `points` is (N, 3) in Bohr."""
+    ...
+
+def eval_density_on_points(
+    mol: Molecule,
+    basis_set: BasisSet,
+    result: RhfResult | DftResult,
+    points: NDArray[np.float64],
+) -> list[float]:
+    """Total electron density at arbitrary points (N,3) in Bohr; e/Bohr^3."""
+    ...
+
+def eval_mo_on_points(
+    mol: Molecule,
+    basis_set: BasisSet,
+    result: RhfResult | DftResult,
+    mo_indices: list[int],
+    points: NDArray[np.float64],
+) -> NDArray[np.float64]:
+    """Restricted MO values at points (N,3) in Bohr: (N, len(mo_indices)),
+    Bohr^-3/2. mo_indices are 0-based columns of mo_coefficients."""
+    ...
+
+def write_cube(
+    path: str,
+    mol: Molecule,
+    basis_set: BasisSet,
+    result: RhfResult | DftResult,
+    what: Literal["density", "mo"] = "density",
+    mo_index: int | None = None,
+    spacing: float = 0.3,
+    padding: float = 4.0,
+    origin: tuple[float, float, float] | None = None,
+    shape: tuple[int, int, int] | None = None,
+) -> tuple[list[float], list[int]]:
+    """Write a Gaussian cube file of the density (e/Bohr^3) or a restricted MO
+    (what="mo", needs mo_index). All lengths in Bohr. Grid is axis-aligned with
+    isotropic `spacing`; omitted origin/shape come from the atoms' bounding box
+    plus `padding`. Returns the (origin, shape) used."""
+    ...
+
+class ResponseModes:
+    """Leading eigenmodes of the closed-shell RPA dielectric at one imaginary
+    frequency (``response_modes``). Mode alpha is the charge density
+    rho_alpha(r) = sum_P c[P, alpha] chi_P(r) in the auxiliary basis, with unit
+    Coulomb self-energy. Added to the molecule as electron density, its Hartree
+    potential induces the Coulomb-fitted density -(lambda_alpha - 1) rho_alpha
+    (independent particles); with RPA screening it is reduced to
+    rho_alpha / lambda_alpha. The perturbing potential is the Coulomb potential
+    of rho_alpha, not sum_P c_P chi_P(r)."""
+
+    @property
+    def omega(self) -> float:
+        """Imaginary frequency (Hartree); 0 is static."""
+        ...
+    @property
+    def naux(self) -> int: ...
+    @property
+    def n_modes(self) -> int: ...
+    @property
+    def eigenvalues(self) -> NDArray[np.float64]:
+        """Dielectric eigenvalues lambda_alpha >= 1, descending, (M,)."""
+        ...
+    @property
+    def coefficients(self) -> NDArray[np.float64]:
+        """Aux coefficients (naux, M), c^T V c = I with V = (P|Q). Sign: the
+        largest-magnitude coefficient of each column is positive."""
+        ...
+    @property
+    def l2_norms(self) -> NDArray[np.float64]:
+        """sqrt(integral of rho_alpha^2), (M,)."""
+        ...
+    @property
+    def field_couplings(self) -> NDArray[np.float64]:
+        """(M, 3): Coulomb overlap of each mode with the uncoupled induced
+        density of a unit field along x, y, z."""
+        ...
+    @property
+    def alpha_bare(self) -> NDArray[np.float64]:
+        """Uncoupled polarizability (3, 3), a.u."""
+        ...
+    def polarizability_from_modes(self) -> NDArray[np.float64]:
+        """alpha_bare - sum_alpha s_alpha s_alpha^T / lambda_alpha (3, 3): the
+        RPA polarizability at i*omega when every mode was kept (n_modes >=
+        naux), its truncation to the leading modes otherwise."""
+        ...
+
+def response_modes(
+    mol: Molecule,
+    basis_set: BasisSet,
+    auxbasis: BasisSet,
+    result: RhfResult | DftResult,
+    n_modes: int = 10,
+    omega: float = 0.0,
+    memory_budget_gb: float | None = None,
+) -> ResponseModes:
+    """Leading n_modes eigenmodes of the closed-shell RPA dielectric built on
+    `result` (RHF or RKS, run in `basis_set`), by a dense eigensolve in the
+    `auxbasis` (e.g. "cc-pvdz-ri"). omega is an imaginary frequency in Hartree.
+    The static modes are the PDEP eigenpotentials of run_pdep_rpa.
+
+    With an ECP basis set the occupied count is the valence one, as in a `result` from
+    `run_rhf` / `run_dft` on that basis.
+    """
+    ...
+
+def write_response_mode_cube(
+    path: str,
+    mol: Molecule,
+    auxbasis: BasisSet,
+    modes: ResponseModes,
+    index: int,
+    normalization: Literal["l2", "coulomb"] = "l2",
+    spacing: float = 0.3,
+    padding: float = 4.0,
+    origin: tuple[float, float, float] | None = None,
+    shape: tuple[int, int, int] | None = None,
+) -> tuple[list[float], list[int]]:
+    """Write mode `index` as a Gaussian cube file (Bohr). normalization "l2"
+    scales to integral rho^2 = 1 (orbital-like isovalues); "coulomb" writes the
+    stored coefficients. Grid arguments as in write_cube; returns (origin, shape)."""
+    ...
+
 def boltzmann_weights(
     energies: list[float],
     temperature_k: float = ...,
@@ -4703,4 +7582,293 @@ def shell_info(
     basis_set: BasisSet,
 ) -> tuple[NDArray[np.float64], NDArray[np.int64], NDArray[np.int64]]:
     """Shell geometry: (centers (n_shells,3), offsets (n_shells,), dims (n_shells,))."""
+    ...
+
+# ── CAS-CI (crates/ferric-python/src/ci.rs) ──
+
+class CasCiResult:
+    """Result of run_casci: the lowest root of the active-space CI Hamiltonian."""
+
+    e_total: float
+    """CAS-CI energy, ``e_core + e_active`` (Ha)."""
+    e_core: float
+    """Nuclear repulsion plus the inactive doubly occupied orbitals' energy."""
+    e_active: float
+    """``e_total - e_core`` (PySCF ``CASCI.e_cas``)."""
+    rhf_energy: float
+    n_determinants: int
+    converged: bool
+    iterations: int
+    active_start: int
+    @property
+    def ci_vector(self) -> NDArray[np.float64]:
+        """CI coefficients, shape ``(n_alpha_strings, n_beta_strings)``,
+        strings in ascending bitmask order (bit ``p`` set = active orbital
+        ``p`` occupied)."""
+        ...
+    @property
+    def dm1(self) -> NDArray[np.float64] | None:
+        """Spin-summed 1-RDM ``dm1[p,q] = <E_pq>`` over the active orbitals;
+        ``None`` when ``compute_rdms=False``."""
+        ...
+    @property
+    def dm2(self) -> NDArray[np.float64] | None:
+        """Spin-summed 2-RDM, ``dm2[p,q,r,s]`` = the sum over spins
+        ``σ, τ`` of ``<a+(pσ) a+(rτ) a(sτ) a(qσ)>`` (PySCF ``make_rdm12``
+        convention), so
+        ``e_active = sum(h_active*dm1) + 0.5*sum(eri_active*dm2)``."""
+        ...
+    @property
+    def h_active(self) -> NDArray[np.float64]:
+        """Active one-electron integrals with the inactive-core potential."""
+        ...
+    @property
+    def eri_active(self) -> NDArray[np.float64]:
+        """Active two-electron integrals ``(pq|rs)``, shape ``(n,)*4``."""
+        ...
+    @property
+    def mo_coeff_active(self) -> NDArray[np.float64]:
+        """Active RHF orbitals, shape ``(nbasis, n_active)``."""
+        ...
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (schema of ``RhfResult.certificate``):
+        ``capability`` ``"casci"`` (a library capability, ``"not graded"``),
+        and ``warnings`` (an unconverged Davidson adds one)."""
+        ...
+
+def run_casci(
+    mol: Molecule,
+    basis_set: BasisSet,
+    n_active: int,
+    n_elec_active: tuple[int, int],
+    active_start: int | None = None,
+    compute_rdms: bool = True,
+    conv_thresh: float = 1e-9,
+    max_subspace: int = 50,
+    max_iter: int = 200,
+    memory_budget_gb: float | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+) -> CasCiResult:
+    """CAS-CI on the canonical RHF orbitals ``active_start ..
+    active_start + n_active`` (exact-J/K RHF; closed-shell reference),
+    lowest root of the ``(n_alpha, n_beta)`` sector. ``active_start``
+    defaults to ``(N - n_alpha - n_beta) / 2``."""
+    ...
+
+class CasScfResult:
+    """Result of run_casscf: two-step CASSCF, single root."""
+
+    e_total: float
+    """CASSCF energy at ``mo_coeff`` (Ha)."""
+    e_core: float
+    """Nuclear repulsion plus the core orbitals' energy at ``mo_coeff``."""
+    rhf_energy: float
+    n_determinants: int
+    iterations: int
+    """Macro iterations (gradient evaluations) taken."""
+    grad_norm: float
+    """2-norm of the orbital gradient at ``mo_coeff``."""
+    converged: bool
+    ci_residual_norm: float
+    """Residual of the final CI vector; a CI solve that misses
+    ``ci_conv_thresh`` at any macro iteration raises instead."""
+    n_core: int
+    integrals: str
+    """Integral route the run used: ``"dense"``, ``"direct"`` or ``"ri"``
+    (``"auto"`` resolved). On ``"ri"`` the energy, orbitals and RDMs are
+    those of the density-fitted Hamiltonian."""
+    auxbasis: str | None
+    """Auxiliary basis of the ``"ri"`` route, else None."""
+    stability_lowest_eigenvalue: float | None
+    """Lowest eigenvalue of the CI-relaxed orbital Hessian at ``mo_coeff``
+    (Ha): negative at a saddle of the CASSCF energy. None with
+    ``casscf_stability="off"`` or an unconverged run."""
+    stability_verdict: str | None
+    """``"STABLE"``, ``"UNSTABLE"`` (a saddle), ``"MARGINAL"`` (``|lambda|``
+    at the 1e-6 Ha noise floor) or ``"INDETERMINATE (eigensolver not
+    converged)"``; None without a check."""
+    stability_follow_steps: int
+    """Steps taken along negative modes with ``casscf_stability="follow"``."""
+    @property
+    def ci_vector(self) -> NDArray[np.float64]:
+        """CI coefficients, shape ``(n_alpha_strings, n_beta_strings)``, in
+        the optimized active orbitals."""
+        ...
+    @property
+    def dm1(self) -> NDArray[np.float64]:
+        """Spin-summed 1-RDM over the active orbitals."""
+        ...
+    @property
+    def dm2(self) -> NDArray[np.float64]:
+        """Spin-summed 2-RDM, PySCF ``make_rdm12`` convention."""
+        ...
+    @property
+    def mo_coeff(self) -> NDArray[np.float64]:
+        """Optimized orbitals, shape ``(nbasis, nmo)``: core, active and
+        virtual columns. With ``canonicalize=True`` the core and virtual
+        blocks of ``F^I + F^A`` are diagonal (ascending) and the active
+        orbitals are natural orbitals (occupations descending); otherwise
+        they are not canonicalized within a block."""
+        ...
+    @property
+    def mo_energy(self) -> NDArray[np.float64] | None:
+        """Diagonal of ``F^I + F^A`` in ``mo_coeff`` (Ha) with
+        ``canonicalize=True``, else None."""
+        ...
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate: ``capability`` ``"casscf"`` (graded
+        Proven; the CLI kind ``casscf``), the active space as an
+        approximation, the second-order check as the ``stability`` route; a
+        non-converged macro loop, or a converged point the check proves a
+        saddle, adds a warning and caps the grade to ``"ungraded"``."""
+        ...
+
+def run_casscf(
+    mol: Molecule,
+    basis_set: BasisSet,
+    n_active: int,
+    n_elec_active: tuple[int, int],
+    n_core: int | None = None,
+    casscf_grad_tol: float = 1e-7,
+    casscf_energy_tol: float = 1e-12,
+    casscf_max_iter: int = 300,
+    casscf_max_step: float = 0.2,
+    ci_conv_thresh: float = 1e-10,
+    ci_max_subspace: int = 50,
+    ci_max_iter: int = 200,
+    memory_budget_gb: float | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+    canonicalize: bool = False,
+    casscf_integrals: str = "auto",
+    casscf_integral_thresh: float | None = None,
+    casscf_optimizer: str = "ah",
+    casscf_auxbasis: str | None = None,
+    casscf_stability: str = "off",
+) -> CasScfResult:
+    """Two-step CASSCF from the canonical exact-J/K RHF orbitals:
+    ``n_active`` active orbitals above ``n_core`` doubly occupied ones,
+    lowest root of the ``(n_alpha, n_beta)`` sector (one restricted orbital
+    set; ``n_alpha != n_beta`` gives the lowest state of that ``M_s``). The
+    molecule must have an even electron count for the RHF start. Each macro
+    iteration solves the CAS-CI with RDMs and takes an orbital step:
+    ``casscf_optimizer="ah"`` (default) is an augmented-Hessian step on the
+    exact orbital Hessian at fixed RDMs, ``"bfgs"`` inverse BFGS from an
+    approximate diagonal Hessian (1.4 to 5 times the macro iterations, no
+    Hessian products). Converged when
+    ``grad_norm < casscf_grad_tol`` and the energy change is below
+    ``casscf_energy_tol``; otherwise a ``RuntimeWarning`` is emitted and
+    ``converged`` is False. ``n_core`` defaults to
+    ``(N - n_alpha - n_beta) / 2``. ``canonicalize=True`` returns canonical
+    orbitals (see ``CasScfResult.mo_coeff``) with the CI vector and RDMs in
+    them, and fills ``mo_energy``. ``casscf_integrals="direct"``
+    rebuilds J/K and ``(pu|vw)`` from shell quartets every iteration with
+    Schwarz threshold ``casscf_integral_thresh`` (default 1e-12), with no
+    ``nbas^4`` array; ``"dense"`` holds the ``nbas^4`` AO block; ``"auto"``
+    (default) is dense when that block fits in half the memory budget;
+    ``"ri"`` density-fits the integrals in the bundled auxiliary basis
+    ``casscf_auxbasis`` (required there and refused elsewhere, e.g.
+    ``"def2-universal-jkfit"``), holding ``naux * nbas^2`` doubles. RI is an
+    approximation of the Hamiltonian: the energy differs from the exact one
+    by the fitting error, and the certificate records it (``ri``) and is
+    capped to Proven (narrow). ``casscf_stability="check"`` computes the
+    lowest eigenvalue of the CI-relaxed orbital Hessian at the converged
+    point (Davidson, one CI linear solve per product; it costs 0.5 to 3
+    times the CASSCF itself, so the default is ``"off"``); a negative one
+    makes the point a saddle, emits a ``RuntimeWarning`` and caps the
+    certificate to ``"ungraded"``. ``"follow"`` then steps along the
+    negative mode and converges again (at most 5 times)."""
+    ...
+
+class Nevpt2Result:
+    """Result of run_nevpt2: strongly contracted NEVPT2 on a CAS reference."""
+
+    e_corr: float
+    """Second-order energy, the sum of the eight class energies (Ha)."""
+    e_total: float
+    """``e_reference + e_corr`` (Ha)."""
+    e_reference: float
+    """CASSCF or CAS-CI energy of the reference (Ha)."""
+    reference: str
+    """``"casscf"`` or ``"casci"``."""
+    rhf_energy: float
+    reference_iterations: int
+    """CASSCF macro iterations, or CAS-CI Davidson iterations."""
+    reference_grad_norm: float | None
+    """CASSCF orbital-gradient norm; None for a CAS-CI reference."""
+    reference_stability_lowest_eigenvalue: float | None
+    """Lowest CI-relaxed orbital Hessian eigenvalue of the CASSCF reference
+    (Ha, see ``run_casscf``); None for a CAS-CI reference or with
+    ``casscf_stability="off"``."""
+    ci_residual_norm: float
+    """``|Hc - Ec|`` of the reference CI vector."""
+    n_core: int
+    n_active: int
+    n_virtual: int
+    @property
+    def energies(self) -> dict[str, float]:
+        """Class energies (Ha) keyed by PySCF's names ``Sr``, ``Si``,
+        ``Sijrs``, ``Sijr``, ``Srsi``, ``Srs``, ``Sij``, ``Sir``."""
+        ...
+    @property
+    def norms(self) -> dict[str, float]:
+        """Class norms: the perturber norms summed over every label."""
+        ...
+    @property
+    def mo_coeff(self) -> NDArray[np.float64]:
+        """Orbitals used, shape ``(nbasis, nmo)``: canonical core and virtual
+        columns (eigenvectors of the blocks of ``F^I + F^A``), the
+        reference's active columns."""
+        ...
+    @property
+    def mo_energy(self) -> NDArray[np.float64]:
+        """Diagonal of ``F^I + F^A`` in ``mo_coeff`` (Ha)."""
+        ...
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate: ``capability`` ``"nevpt2"`` (graded Proven
+        on a CASSCF reference, ``"ungraded"`` on a CAS-CI one; the CLI kind
+        ``nevpt2``), with the active space and reference as approximations."""
+        ...
+
+def run_nevpt2(
+    mol: Molecule,
+    basis_set: BasisSet,
+    n_active: int,
+    n_elec_active: tuple[int, int],
+    n_core: int | None = None,
+    reference: str = "casscf",
+    casscf_grad_tol: float = 1e-7,
+    casscf_energy_tol: float = 1e-12,
+    casscf_max_iter: int = 300,
+    casscf_max_step: float = 0.2,
+    ci_conv_thresh: float = 1e-10,
+    ci_max_subspace: int = 50,
+    ci_max_iter: int = 200,
+    memory_budget_gb: float | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+    casscf_integrals: str = "auto",
+    casscf_integral_thresh: float | None = None,
+    casscf_optimizer: str = "ah",
+    casscf_auxbasis: str | None = None,
+    casscf_stability: str = "off",
+) -> Nevpt2Result:
+    """Strongly contracted NEVPT2 (Angeli et al., JCP 117, 9138 (2002)) on
+    a CASSCF (``reference="casscf"``, the ``run_casscf`` settings) or CAS-CI
+    (``reference="casci"``, on the canonical RHF orbitals) reference from
+    the exact-J/K RHF; ``casscf_optimizer``, ``casscf_integrals``,
+    ``casscf_auxbasis`` and ``casscf_stability`` as in ``run_casscf`` (``"ri"`` also density-fits the
+    SC-NEVPT2 integrals, and is refused with ``reference="casci"``). Dyall
+    zeroth-order Hamiltonian; core and virtual
+    orbitals canonical in ``F^I + F^A``, as PySCF ``mrpt.NEVPT``. Raises
+    when the reference does not converge, for ``n_alpha != n_beta``, and
+    when the memory budget cannot hold the dense AO integrals and the
+    ``n_active**6`` intermediates. Single root."""
     ...

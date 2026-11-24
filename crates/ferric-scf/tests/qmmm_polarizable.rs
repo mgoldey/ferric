@@ -61,9 +61,11 @@ fn sto3g_prep(mol: &Molecule) -> PreparedBasis {
     PreparedBasis::new(mol, &bs).unwrap()
 }
 
-/// Path (2), the independent reference: `∂/∂R_site ⟨μ|1/|r-R_site||ν⟩` for a
-/// unit point charge, contracted over ALL shell pairs into an (nbasis,
-/// nbasis) matrix per Cartesian component `[x, y, z]`.
+/// Path (2), the independent reference: `∂/∂R_site ⟨μ|-1/|r-R_site||ν⟩`, the
+/// libint `OP_NUCLEAR` derivative block for a +1 point charge (attraction
+/// carries the minus sign), contracted over ALL shell pairs into an (nbasis,
+/// nbasis) matrix per Cartesian component `[x, y, z]`. The p-shell potential
+/// is the derivative of `+1/|r-R|`, hence `reference == -norm_p * p_shell`.
 fn point_charge_field_matrix(prep: &PreparedBasis, site: [f64; 3]) -> [Array2<f64>; 3] {
     let nbas = prep.nbasis();
     let natoms = prep.atoms().len();
@@ -290,15 +292,9 @@ fn scf_energy(mol: &Molecule, cfg: &RhfConfig) -> f64 {
 #[test]
 fn polarizable_none_is_bit_identical_to_plain_scf() {
     let mol = water_bohr();
-    let cfg_before = RhfConfig {
-        density_conv: 1e-11,
-        ..Default::default()
-    };
-    let cfg_after = RhfConfig {
-        density_conv: 1e-11,
-        polarizable: None,
-        ..Default::default()
-    };
+    let cfg_before = RhfConfig::default().with_density_conv(1e-11);
+    let mut cfg_after = RhfConfig::default().with_density_conv(1e-11);
+    cfg_after.polarizable = None;
     let e_before = scf_energy(&mol, &cfg_before);
     let e_after = scf_energy(&mol, &cfg_after);
     assert_eq!(
@@ -314,21 +310,16 @@ fn polarizable_none_is_bit_identical_to_plain_scf() {
 #[test]
 fn polarizable_empty_sites_is_bit_identical_to_plain_scf() {
     let mol = water_bohr();
-    let cfg_before = RhfConfig {
-        density_conv: 1e-11,
-        ..Default::default()
-    };
-    let cfg_after = RhfConfig {
-        density_conv: 1e-11,
-        polarizable: Some(PolarizableSites {
-            sites: vec![],
-            thole_a: Some(2.1304),
-            exclusions: vec![],
-            dipole_zeta: 1e4,
-            max_sites_dense: 4000,
-        }),
-        ..Default::default()
-    };
+    let cfg_before = RhfConfig::default().with_density_conv(1e-11);
+    let mut cfg_after = RhfConfig::default().with_density_conv(1e-11);
+    cfg_after.polarizable = Some(PolarizableSites {
+        sites: vec![],
+        thole_a: Some(2.1304),
+        exclusions: vec![],
+        excluded_charges: vec![],
+        dipole_zeta: 1e4,
+        max_sites_dense: 4000,
+    });
     let e_before = scf_energy(&mol, &cfg_before);
     let e_after = scf_energy(&mol, &cfg_after);
     assert_eq!(
@@ -357,21 +348,16 @@ fn alpha_zero_gives_zero_polarization_energy() {
         z: 4.0,
         alpha: 1e-12,
     };
-    let cfg_plain = RhfConfig {
-        density_conv: 1e-11,
-        ..Default::default()
-    };
-    let cfg_pol = RhfConfig {
-        density_conv: 1e-11,
-        polarizable: Some(PolarizableSites {
-            sites: vec![site],
-            thole_a: Some(2.1304),
-            exclusions: vec![],
-            dipole_zeta: 1e4,
-            max_sites_dense: 4000,
-        }),
-        ..Default::default()
-    };
+    let cfg_plain = RhfConfig::default().with_density_conv(1e-11);
+    let mut cfg_pol = RhfConfig::default().with_density_conv(1e-11);
+    cfg_pol.polarizable = Some(PolarizableSites {
+        sites: vec![site],
+        thole_a: Some(2.1304),
+        exclusions: vec![],
+        excluded_charges: vec![],
+        dipole_zeta: 1e4,
+        max_sites_dense: 4000,
+    });
     let e_plain = scf_energy(&mol, &cfg_plain);
     let e_pol = scf_energy(&mol, &cfg_pol);
     assert!(
@@ -396,10 +382,7 @@ fn distant_single_site_matches_perturbative_limit() {
     let ctx = ParallelContext::default();
 
     // Gas-phase field at the site from the converged gas-phase density.
-    let cfg_gas = RhfConfig {
-        density_conv: 1e-12,
-        ..Default::default()
-    };
+    let cfg_gas = RhfConfig::default().with_density_conv(1e-12);
     let r_gas = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg_gas).unwrap();
     assert!(r_gas.converged);
     let site_xyz = [0.0, 0.0, -12.0];
@@ -414,17 +397,15 @@ fn distant_single_site_matches_perturbative_limit() {
         z: site_xyz[2],
         alpha,
     };
-    let cfg_pol = RhfConfig {
-        density_conv: 1e-12,
-        polarizable: Some(PolarizableSites {
-            sites: vec![site],
-            thole_a: Some(2.1304),
-            exclusions: vec![],
-            dipole_zeta: 1e4,
-            max_sites_dense: 4000,
-        }),
-        ..Default::default()
-    };
+    let mut cfg_pol = RhfConfig::default().with_density_conv(1e-12);
+    cfg_pol.polarizable = Some(PolarizableSites {
+        sites: vec![site],
+        thole_a: Some(2.1304),
+        exclusions: vec![],
+        excluded_charges: vec![],
+        dipole_zeta: 1e4,
+        max_sites_dense: 4000,
+    });
     let r_pol = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg_pol).unwrap();
     assert!(r_pol.converged);
     let mu = r_pol
@@ -554,23 +535,22 @@ fn run_pe_case(tag: &str) {
         })
         .collect();
 
-    let cfg = RhfConfig {
-        density_conv: 1e-11,
-        max_iter: 200,
-        external_potential: Some(ExternalPotential {
+    let mut cfg = RhfConfig::default()
+        .with_density_conv(1e-11)
+        .with_max_iter(200)
+        .with_external_potential(ExternalPotential {
             point_charges,
             smeared_charges: vec![],
             field: None,
-        }),
-        polarizable: Some(PolarizableSites {
-            sites,
-            thole_a: r.thole_a,
-            exclusions: vec![],
-            dipole_zeta: 1e4,
-            max_sites_dense: 4000,
-        }),
-        ..Default::default()
-    };
+        });
+    cfg.polarizable = Some(PolarizableSites {
+        sites,
+        thole_a: r.thole_a,
+        exclusions: vec![],
+        excluded_charges: vec![],
+        dipole_zeta: 1e4,
+        max_sites_dense: 4000,
+    });
     let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(result.converged, "{tag}: SCF did not converge");
 
@@ -612,6 +592,7 @@ fn run_pe_case(tag: &str) {
         sites: sites2,
         thole_a: r.thole_a,
         exclusions: vec![],
+        excluded_charges: vec![],
         dipole_zeta: 1e4,
         max_sites_dense: 4000,
     };
@@ -682,6 +663,7 @@ fn induce_empty_sites_returns_zero_result() {
         sites: vec![],
         thole_a: Some(2.1304),
         exclusions: vec![],
+        excluded_charges: vec![],
         dipole_zeta: 1e4,
         max_sites_dense: 4000,
     };
@@ -715,6 +697,7 @@ fn induce_rejects_more_sites_than_max_sites_dense() {
         ],
         thole_a: Some(2.1304),
         exclusions: vec![],
+        excluded_charges: vec![],
         dipole_zeta: 1e4,
         max_sites_dense: 1, // exceeded by 2 sites
     };
@@ -755,6 +738,7 @@ fn induce_rejects_non_positive_alpha() {
             }],
             thole_a: Some(2.1304),
             exclusions: vec![],
+            excluded_charges: vec![],
             dipole_zeta: 1e4,
             max_sites_dense: 8,
         };
@@ -794,6 +778,7 @@ fn two_site_setup() -> (Molecule, PolarizableSites, ExternalPotential) {
         ],
         thole_a: Some(2.1304),
         exclusions: vec![],
+        excluded_charges: vec![],
         dipole_zeta: 1e4,
         max_sites_dense: 4000,
     };
@@ -851,6 +836,7 @@ fn two_site_setup_no_colocated_charge() -> (Molecule, PolarizableSites, External
         ],
         thole_a: Some(2.1304),
         exclusions: vec![],
+        excluded_charges: vec![],
         dipole_zeta: 1e4,
         max_sites_dense: 4000,
     };
@@ -888,13 +874,11 @@ fn scf_energy_polarizable(
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        density_conv: 1e-12,
-        max_iter: 300,
-        external_potential: Some(ext.clone()),
-        polarizable: Some(sites.clone()),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_density_conv(1e-12)
+        .with_max_iter(300)
+        .with_external_potential(ext.clone());
+    cfg.polarizable = Some(sites.clone());
     let r = solve_rhf(&ctx, mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(r.converged);
     r.energy
@@ -907,13 +891,11 @@ fn qm_gradient_with_polarizable_sites_matches_finite_difference() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        density_conv: 1e-12,
-        max_iter: 300,
-        external_potential: Some(ext.clone()),
-        polarizable: Some(sites.clone()),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_density_conv(1e-12)
+        .with_max_iter(300)
+        .with_external_potential(ext.clone());
+    cfg.polarizable = Some(sites.clone());
     let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(result.converged);
 
@@ -972,13 +954,11 @@ fn site_force_with_polarizable_sites_matches_finite_difference() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        density_conv: 1e-12,
-        max_iter: 300,
-        external_potential: Some(ext.clone()),
-        polarizable: Some(sites.clone()),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_density_conv(1e-12)
+        .with_max_iter(300)
+        .with_external_potential(ext.clone());
+    cfg.polarizable = Some(sites.clone());
     let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(result.converged);
     let mu = result.induced_dipoles.clone().unwrap();
@@ -1066,6 +1046,7 @@ fn qm_and_site_gradients_sum_to_zero_translational_invariance() {
         ],
         thole_a: Some(2.1304),
         exclusions: vec![],
+        excluded_charges: vec![],
         dipole_zeta: 1e4,
         max_sites_dense: 4000,
     };
@@ -1073,12 +1054,10 @@ fn qm_and_site_gradients_sum_to_zero_translational_invariance() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        density_conv: 1e-12,
-        max_iter: 300,
-        polarizable: Some(sites.clone()),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_density_conv(1e-12)
+        .with_max_iter(300);
+    cfg.polarizable = Some(sites.clone());
     let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(result.converged);
     let mu = result.induced_dipoles.clone().unwrap();
@@ -1163,13 +1142,11 @@ fn charge_gradient_contribution_matches_finite_difference() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        density_conv: 1e-12,
-        max_iter: 300,
-        external_potential: Some(ext.clone()),
-        polarizable: Some(sites.clone()),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_density_conv(1e-12)
+        .with_max_iter(300)
+        .with_external_potential(ext.clone());
+    cfg.polarizable = Some(sites.clone());
     let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(result.converged);
     let mu = result.induced_dipoles.clone().unwrap();

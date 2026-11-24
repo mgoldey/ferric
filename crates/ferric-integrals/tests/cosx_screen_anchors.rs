@@ -37,6 +37,7 @@ use ferric_integrals::md3c1e::Md3c1e;
 use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
 use ferric_quadrature::lebedev::lebedev;
+use ferric_testkit::compare::max_abs;
 use ndarray::{Array2, Axis};
 
 fn testdata(rel: &str) -> String {
@@ -820,6 +821,7 @@ fn hcore_guess_density(prep: &PreparedBasis, nocc: usize) -> Array2<f64> {
 
 /// COSX exchange `K_{mu,nu} = Σ_g w_g χ_mu(g) [A^g (D χ(g))]_nu`, symmetrized,
 /// through `Md3c1e::for_each_pair` with the given screen. Returns `(K, kept, total)`.
+#[allow(clippy::too_many_arguments)]
 fn cosx_k(
     kern: &Md3c1e,
     mol: &Molecule,
@@ -915,10 +917,6 @@ fn exact_k(prep: &PreparedBasis, d: &Array2<f64>) -> Array2<f64> {
         }
     }
     k
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
 }
 
 /// The number that was 0.71.

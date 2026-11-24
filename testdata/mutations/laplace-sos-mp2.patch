@@ -1,0 +1,13 @@
+diff --git a/crates/ferric-mp2/src/laplace.rs b/crates/ferric-mp2/src/laplace.rs
+index 244a82a82..42fa58e6c 100644
+--- a/crates/ferric-mp2/src/laplace.rs
++++ b/crates/ferric-mp2/src/laplace.rs
+@@ -426,7 +426,7 @@ impl Default for SosMp2Config {
+     /// 7-point minimax quadrature (the tightest supported grid).
+     fn default() -> Self {
+         Self {
+-            c_os: 1.3,
++            c_os: 1.0,
+             frozen_core: 0,
+             n_quad: 7,
+             memory_budget_bytes: None,

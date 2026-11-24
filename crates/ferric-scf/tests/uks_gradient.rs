@@ -17,13 +17,11 @@ fn cfg(xc: &str) -> RhfConfig {
     // even though the energy is converged to 1e-5 Ha. PBE/B3LYP don't show this.
     // The corresponding FD noise from delta=5e-4 is ~1e-3 Ha/Bohr anyway, so
     // tighter SCF buys nothing for the comparison.
-    RhfConfig {
-        xc: Some(xc.into()),
-        energy_conv: 1e-7,
-        density_conv: 1e-4,
-        max_iter: 400,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc(xc)
+        .with_energy_conv(1e-7)
+        .with_density_conv(1e-4)
+        .with_max_iter(400)
 }
 
 fn fd_gradient(xyz: &str, mult: usize, basis_name: &str, xc: &str, delta: f64) -> Array2<f64> {
@@ -118,6 +116,7 @@ fn uks_grad_h_atom_ccpvdz_lda() {
     run_case("H/cc-pVDZ", "LDA", "1\nH\nH 0 0 0\n", 2, "cc-pvdz", 1e-3);
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uks_grad_oh_ccpvdz_lda() {
     run_case(
@@ -130,6 +129,7 @@ fn uks_grad_oh_ccpvdz_lda() {
     );
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uks_grad_oh_ccpvdz_pbe() {
     run_case(
@@ -142,6 +142,7 @@ fn uks_grad_oh_ccpvdz_pbe() {
     );
 }
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn uks_grad_oh_ccpvdz_b3lyp() {
     run_case(

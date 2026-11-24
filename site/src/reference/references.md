@@ -10,8 +10,8 @@ If you publish a number computed with ferric, cite three things:
    > Goldey, M. *ferric: a Rust-native quantum chemistry engine.*
    > <https://github.com/mgoldey/ferric>. Licensed MIT OR Apache-2.0.
 
-   Give the commit hash you ran; the crates are at version 0.1.0 and there are
-   no tagged releases yet.
+   Give the version and commit hash you ran (`ferric.build_info()` reports
+   both); the only releases so far are pre-releases (`0.1.0rc*`).
 
 2. **The libraries every calculation goes through.**
    - libint2 (all Gaussian integrals): E. F. Valeev, *Libint: a library for the
@@ -107,6 +107,8 @@ references the source code itself cites.
 - Hirata, Podeszwa, Tobita & Bartlett, *J. Chem. Phys.* **120**, 2581 (2004): spin-adapted closed-shell CCSD equations
 - Raghavachari, Trucks, Pople & Head-Gordon, *Chem. Phys. Lett.* **157**, 479 (1989): CCSD(T)
 - Rendell, Lee & Komornicki, *Chem. Phys. Lett.* **178**, 462 (1991): closed-shell (T) algorithm
+- Stanton & Bartlett, *J. Chem. Phys.* **98**, 7029 (1993): EOM-CCSD excitation energies
+- Olsen, Jørgensen & Simons, *Chem. Phys. Lett.* **169**, 463 (1990): Olsen correction in the Davidson solver
 - Carter-Fenk, *J. Phys. Chem. A* **129**, 7251 (2025): LinLCCD(hh)
 - Ransford & Carter-Fenk, *Phys. Chem. Chem. Phys.* **28**, 14428 (2026): ωB97X-L-V
 - Bartlett & Musiał, *Rev. Mod. Phys.* **79**, 291 (2007): coupled-cluster theory (review)
@@ -114,7 +116,7 @@ references the source code itself cites.
 ### Double hybrids
 
 - Grimme, *J. Chem. Phys.* **124**, 034108 (2006): B2PLYP
-- Kozuch & Martin, *Phys. Chem. Chem. Phys.* **13**, 20104 (2011): DSD-PBEP86
+- Kozuch & Martin, *J. Comput. Chem.* **34**, 2327 (2013): DSD-PBEP86 (no-dispersion set)
 
 ### RPA, GW and excited states
 
@@ -131,7 +133,7 @@ references the source code itself cites.
 
 ### Background on MP2's dispersion error
 
-Not implemented in ferric; cited on [Electronic response](../idea/response.md):
+Not implemented in ferric; cited on [Research focus: electronic response](../idea/response.md):
 
 - Cybulski & Lytle, *J. Chem. Phys.* **127**, 141102 (2007)
 - Heßelmann, *J. Chem. Phys.* **128**, 144112 (2008)

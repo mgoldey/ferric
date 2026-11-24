@@ -4,8 +4,13 @@
 //! budget. In-core when the full tensor fits the budget; disk-spill otherwise.
 //! Consumers apply their own metric (V^{-1} for J, V^{-1/2} for K).
 
+pub mod dressed_packed;
+pub mod f32_store;
 pub mod jk_storage;
 pub mod pair_screen;
+mod spill_os;
+pub use dressed_packed::{DressedLayout, DressedRows, PackedDressOutcome};
+pub use f32_store::{F32Declined, F32Outcome, F32Rounding, F32_UNDERFLOW_ABS};
 pub use jk_storage::{jk_storage, set_jk_storage, validate_jk_storage, JkStorage};
 pub use pair_screen::PairScreen;
 
@@ -14,13 +19,12 @@ use crate::operator::Operator;
 use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::FerricError;
 use ndarray::{Array2, Array3, ArrayView3};
+use spill_os::{free_bytes_at, Advice};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::unix::io::AsRawFd;
 
 /// `FERRIC_OOC_TRACE` descriptor: 3-index in-core/spill decision trace (env-only
-/// debug toggle). NOTE behavior change: previously `.is_ok()` (any value, incl.
-/// `=0`, enabled it); now `=0`/`false`/`off` disable it.
+/// debug toggle). `=0`/`false`/`off` disable it (any other value enables it).
 static OOC_TRACE: ferric_core::config::ConfigVar<bool> = ferric_core::config::ConfigVar {
     env_name: "FERRIC_OOC_TRACE",
     default: false,
@@ -46,6 +50,46 @@ fn block_naux_for(budget_bytes: usize, nao: usize) -> usize {
 /// (one live scratch block) also stays well within budget.
 fn spill_block_naux_for(budget_bytes: usize, nao: usize) -> usize {
     block_naux_for(budget_bytes / 2, nao)
+}
+
+/// The tier [`ThreeIndexSource::build_band`] takes for a band of `band` aux
+/// rows under `budget_bytes`, and the most bytes that tier holds resident at
+/// once, build included.
+///
+/// `build_band_screened` reads its tier from here, so a caller that plans
+/// with this function sees the tier the build takes. The packed test also
+/// reads the shared pool's free bytes (`packed_in_core_fits`), so plan after
+/// the planes that stay resident across the build have been reserved.
+///
+/// ```text
+///   tier          resident peak
+///   InCore        band·nao²·8
+///   InCorePacked  band·nao(nao+1)/2·8 + step·nao²·8   (one unpacked block)
+///   Spill         2·block·nao²·8                      (build double buffer)
+/// ```
+///
+/// The spill read-back holds one unpacked block plus one packed read buffer,
+/// 1.5 blocks, below the build's two.
+pub fn planned_residency(
+    nao: usize,
+    band: usize,
+    budget_bytes: usize,
+) -> (jk_storage::Tier, usize) {
+    let tier = jk_storage::memory_tier(nao, band, budget_bytes).unwrap_or(jk_storage::Tier::Spill);
+    let row = nao.saturating_mul(nao).saturating_mul(8);
+    let bytes = match tier {
+        jk_storage::Tier::InCore => band.saturating_mul(row),
+        jk_storage::Tier::InCorePacked => {
+            let packed = band.saturating_mul(packed_pair_len(nao)).saturating_mul(8);
+            let step = packed_scratch_rows(packed, nao, budget_bytes).min(band.max(1));
+            packed.saturating_add(step.saturating_mul(row))
+        }
+        jk_storage::Tier::Spill | jk_storage::Tier::Recompute => {
+            let block = spill_block_naux_for(budget_bytes, nao).min(band.max(1));
+            block.saturating_mul(row).saturating_mul(2)
+        }
+    };
+    (tier, bytes)
 }
 
 /// Largest unpacked scratch block (bytes) a packed in-core source unpacks into
@@ -138,8 +182,10 @@ pub fn blocked_dressing_overshoot_report_for_test(
     blocked_dressing_overshoot_report(budget_bytes, in_core, band, block_naux, nao)
 }
 
-/// Output aux rows per dressing GEMM in `build_dressed_band`'s parallel fast
-/// path.
+/// The aux-row grid of the dressing: a spilled dressing's passes (and DF-K's
+/// read-back) start on it. The in-core dressing's GEMMs span the whole band
+/// (see [`DRESS_COL_BLOCK`]); a pass-wise GEMM reproduces it bitwise because
+/// every pass but the last has a multiple of this many rows.
 ///
 /// A COMPILE-TIME constant, and an EVEN one, on purpose. Splitting a GEMM's
 /// output rows is only bit-identical to the unsplit product when the row count
@@ -153,8 +199,8 @@ pub fn blocked_dressing_overshoot_report_for_test(
 /// exact — a 2-wide SIMD accumulation effect, not a k-blocking effect as first
 /// assumed. So a thread-derived block count (`band / nthreads`) would silently
 /// change the dressed tensor, and hence the SCF energy, whenever it landed on an
-/// odd value. 64 is even, keeps each GEMM wide enough for BLAS3 efficiency, and
-/// gives ~9 blocks at benzene/aTZ (naux = 558) — enough to fill a 12-core box.
+/// odd value. 64 is even (and was the in-core GEMM height until the dressing
+/// moved to band-tall column tiles).
 ///
 /// `dressed_tensor_bitidentical_across_thread_counts` pins this; it deliberately
 /// forces an ODD split to stay mutation-sensitive.
@@ -165,9 +211,9 @@ const DRESS_ROW_BLOCK: usize = 64;
 /// An ACCURACY knob as much as a determinism one. Summing the k axis in
 /// fixed-size blocks and accumulating the partials is a coarse pairwise
 /// summation: partial sums stay smaller, so less magnitude is lost to rounding
-/// than in one full-k reduction. Note the in-core path previously did NO
-/// blocking at all — an in-core source reports `block_naux = band`, so
-/// `block_edges()` yields a single block — i.e. the least accurate option.
+/// than in one full-k reduction. Every dressing route uses it, the in-core
+/// fast path included: there each [`DRESS_COL_BLOCK`]-column tile sweeps Q in
+/// ascending blocks of this many rows (`dress_resident_into_packed`).
 ///
 /// Both axes measured; 128 is the knee, not a guess:
 /// ```text
@@ -298,9 +344,10 @@ fn dress_pass_cost(raw: &ThreeIndexSource, passes: usize) -> Option<String> {
     match raw.backend {
         Backend::DiskSpill { .. } => Some(format!("~{:.1} GB of IO", bytes as f64 / 1e9)),
         Backend::Recompute { .. } => Some(format!("{passes} rebuilds of the integrals")),
-        Backend::InCore(_) | Backend::InCorePacked { .. } | Backend::InCorePairScreened { .. } => {
-            None
-        }
+        Backend::InCore(_)
+        | Backend::InCorePacked { .. }
+        | Backend::InCorePairScreened { .. }
+        | Backend::InCoreF32 { .. } => None,
     }
 }
 
@@ -400,47 +447,41 @@ pub fn spilled_dressing_report_for_test(
 /// `Σ_Q m[P,Q] raw[Q,μν]` for `P` in `[p0, p1)`, returned as the packed lower
 /// triangle `(p1 - p0, pair)`.
 ///
-/// The GEMMs are the in-core fast path's: [`DRESS_ROW_BLOCK`] output rows by
-/// [`DRESS_K_BLOCK`] Q rows, on the same grids, accumulated in ascending Q. Each
-/// element therefore sees the identical term sequence, so at one BLAS thread the
-/// spilled tensor is bitwise the in-core one (with OpenBLAS threaded, splitting
-/// a GEMM moves bits, and that holds for either path).
+/// The GEMMs are the in-core fast path's ([`dress_tile`]: [`DRESS_COL_BLOCK`]
+/// packed columns by [`DRESS_K_BLOCK`] Q rows, accumulated in ascending Q, on
+/// the same grids), so each element sees the identical term sequence and the
+/// spilled tensor is bitwise the in-core one at one BLAS thread (only the GEMM's
+/// row count differs, which does not move a bit: see [`DRESS_COL_BLOCK`]).
 fn dress_rows_packed(
     raw: &mut ThreeIndexSource,
     m: &Array2<f64>,
     (p0, p1): (usize, usize),
     band_p0: usize,
 ) -> Result<Array2<f64>, FerricError> {
-    let nao = raw.nao();
-    let pair = packed_pair_len(nao);
+    let pair = packed_pair_len(raw.nao());
     let mut accum = Array2::<f64>::zeros((p1 - p0, pair));
-    let edges = dress_row_edges(p1 - p0, DRESS_ROW_BLOCK);
     debug_assert_eq!((p0 - band_p0) % DRESS_ROW_BLOCK, 0);
-    raw.for_each_dress_k_block(|q0, flat| {
-        let q1 = q0 + flat.nrows();
-        for &(r0, r1) in &edges {
-            let msub = m.slice(ndarray::s![p0 + r0..p0 + r1, q0..q1]);
-            let contrib = msub.dot(&flat);
-            for (i, row) in contrib.outer_iter().enumerate() {
-                let mut dst = accum.row_mut(r0 + i);
-                let mut k = 0usize;
-                for mu in 0..nao {
-                    for nu in 0..=mu {
-                        dst[k] += row[mu * nao + nu];
-                        k += 1;
-                    }
-                }
-            }
-        }
+    raw.for_each_dress_k_block_packed(|q0, rblk| {
+        dress_packed_q_block(m, (p0, q0), &rblk, accum.view_mut());
         Ok(())
     })?;
     Ok(accum)
 }
 
-/// Can the in-core fast path hold the band plus its per-worker `contrib`? Reads
-/// the thread count, which is safe only because the choice it steers does not
-/// move a bit at one BLAS thread: see [`dress_rows_packed`].
-fn fast_path_plan(budget_bytes: usize, band: usize, n_blocks: usize, nao: usize) -> MemoryPlan {
+/// Can the in-core fast path hold the band plus its per-worker scratch? The
+/// dressing accumulates in place, so its real per-worker scratch is the
+/// gathered Q panel of a dense `raw` (`naux × DRESS_COL_BLOCK`). The charge is
+/// the larger of that and the `DRESS_ROW_BLOCK × nao²` `contrib` an earlier
+/// dressing held, an overestimate kept so the choice of path (and of storage
+/// tier, which shares these figures) does not move. Reads the thread count,
+/// which is safe only because the choice it steers does not move a bit at one
+/// BLAS thread: see [`dress_rows_packed`].
+fn fast_path_plan(
+    budget_bytes: usize,
+    (band, naux): (usize, usize),
+    n_blocks: usize,
+    nao: usize,
+) -> MemoryPlan {
     // Concurrency is bounded by the number of blocks as well as by the pool:
     // charging `nthreads` copies when there are only 3 blocks would over-count.
     let workers = rayon::current_num_threads().max(1).min(n_blocks.max(1));
@@ -450,44 +491,267 @@ fn fast_path_plan(budget_bytes: usize, band: usize, n_blocks: usize, nao: usize)
         band * nao * nao,
         Lifetime::Resident,
     );
-    // Each worker holds one `contrib` GEMM result: `b × nao²`, `b ≤ DRESS_ROW_BLOCK`.
+    let contrib = DRESS_ROW_BLOCK.min(band.max(1)) * nao * nao;
+    let panel = naux * DRESS_COL_BLOCK.min(packed_pair_len(nao));
     plan.reserve_per_worker(
-        "dressing GEMM contrib (per worker)",
-        DRESS_ROW_BLOCK.min(band.max(1)) * nao * nao,
+        "dressing GEMM scratch (per worker)",
+        contrib.max(panel),
         workers,
     );
     plan
 }
 
-/// One fast-path block: an ascending Q sweep, sub-blocked to [`DRESS_K_BLOCK`]. The
-/// outer edges follow the source's own blocks; the inner split is a fixed constant,
-/// which both pins the summation order and improves accuracy (see
-/// [`DRESS_K_BLOCK`]). `dst` starts at zero, so `acc += contrib` accumulates the
-/// identical term sequence a private buffer would, in the identical order.
-fn dress_block_in_place(
-    dst: &mut [f64],
-    (l0, l1): (usize, usize),
+/// Packed μν columns per dressing GEMM, and per parallel task.
+///
+/// The dressing works on the packed lower μν triangle (`(P|μν)` is exactly
+/// symmetric). A task owns `DRESS_COL_BLOCK` packed columns of every output row
+/// and sweeps Q in ascending [`DRESS_K_BLOCK`] blocks, one GEMM
+/// `rows × DRESS_K_BLOCK × DRESS_COL_BLOCK` per block accumulated straight into
+/// the output (`β = 1`). Every route (in-core fast path, blocked in-core output,
+/// spill) issues these GEMMs on these column and Q grids, and the grids are
+/// compile-time constants, so no thread count or budget can move a bit.
+///
+/// The GEMM's row count is the band (in core) or a spill pass's rows, so it is
+/// NOT the same across routes. MEASURED not to matter: on sulfamethoxazole /
+/// def2-SVP (naux 1538, nao 297) the dressed tensor is bitwise identical for
+/// GEMM row counts 64..1538 and column widths 128..1024, and bitwise identical
+/// to the earlier dressing (one GEMM per 64 rows and per μ over `ν ∈ 0..=μ`);
+/// `spilled_dressed_tensor_is_bitwise_the_in_core_one` (several pass heights)
+/// and `dressed_tensor_bitidentical_across_thread_counts` pin it. Even, as
+/// [`DRESS_ROW_BLOCK`] is.
+///
+/// 512 is the measured knee (6 threads, same system): the per-μ dressing it
+/// replaced took 1.74 s (narrow GEMMs re-reading the whole raw tensor once per
+/// 64 output rows); band-tall GEMMs take 1.25 s at 256 columns, 1.16 s at 512,
+/// and 1.21 s at 1024 with 1024-row tiles; see wiki/notes/dfk-dress-2026-11-07.
+const DRESS_COL_BLOCK: usize = 512;
+
+/// `out += m_rows · panel` as ONE GEMM (see [`DRESS_COL_BLOCK`] for why its row
+/// count is free), skipping the leading rows of `m_rows` that are exactly zero.
+///
+/// A lower-triangular metric factor (DF-K's Cholesky `L⁻¹`) has `m[P, Q] = 0`
+/// for every `Q > P`, so the Q block `[qa, qb)` contributes nothing to rows
+/// `P < qa`: those rows are skipped, which halves the dressing's flops (the
+/// flop count of a triangular solve; the measured wall-time saving is 20–35%,
+/// the dressing being partly memory bound). The skipped products are exact
+/// zeros and the kept rows see the same term sequence, so the result is the
+/// dense GEMM's: only the GEMM's row count changes, which does not move a
+/// bit on the CI kernel (`OPENBLAS_CORETYPE=Haswell`; see [`DRESS_COL_BLOCK`]
+/// for what is measured, and other kernels may differ). A dense (symmetric)
+/// factor has a nonzero first row and is dressed exactly as before.
+///
+/// The streamed routes still read every Q block of `raw`, including those
+/// past the last output row, whose GEMMs this skips; not streaming them is a
+/// follow-up.
+fn dress_tile(
+    m_rows: &ndarray::ArrayView2<'_, f64>,
+    panel: &ndarray::ArrayView2<'_, f64>,
+    out: &mut ndarray::ArrayViewMut2<'_, f64>,
+) {
+    let r0 = leading_zero_rows(m_rows);
+    if r0 == m_rows.nrows() {
+        return;
+    }
+    if r0 == 0 {
+        ndarray::linalg::general_mat_mul(1.0, m_rows, panel, 1.0, out);
+    } else {
+        ndarray::linalg::general_mat_mul(
+            1.0,
+            &m_rows.slice(ndarray::s![r0.., ..]),
+            panel,
+            1.0,
+            &mut out.slice_mut(ndarray::s![r0.., ..]),
+        );
+    }
+}
+
+/// How many leading rows of `m` are exactly zero (stops at the first nonzero).
+fn leading_zero_rows(m: &ndarray::ArrayView2<'_, f64>) -> usize {
+    m.outer_iter()
+        .position(|row| row.iter().any(|&x| x != 0.0))
+        .unwrap_or(m.nrows())
+}
+
+/// Split a packed accumulator `(rows, pair)` into disjoint column tiles of
+/// [`DRESS_COL_BLOCK`] packed columns over all its rows, each with its first
+/// column.
+fn packed_tiles(
+    acc: ndarray::ArrayViewMut2<'_, f64>,
+) -> Vec<(usize, ndarray::ArrayViewMut2<'_, f64>)> {
+    let mut tiles = Vec::new();
+    let (mut col_rest, mut c0) = (acc, 0usize);
+    while col_rest.ncols() > 0 && col_rest.nrows() > 0 {
+        let w = DRESS_COL_BLOCK.min(col_rest.ncols());
+        let (tile, rest) = col_rest.split_at(ndarray::Axis(1), w);
+        col_rest = rest;
+        tiles.push((c0, tile));
+        c0 += w;
+    }
+    tiles
+}
+
+/// `acc += m[p0.., q0..q1] · rblk` for one packed Q block `rblk` `(q, pair)`,
+/// tile-parallel over the rayon pool (one-thread BLAS per tile). `acc` row 0 is
+/// global aux row `p0`. The routes
+/// that stream `raw` (spilled, recomputed or packed) call this once per Q block
+/// in ascending Q.
+fn dress_packed_q_block(
+    m: &Array2<f64>,
+    (p0, q0): (usize, usize),
+    rblk: &ndarray::ArrayView2<'_, f64>,
+    acc: ndarray::ArrayViewMut2<'_, f64>,
+) {
+    use rayon::prelude::*;
+    let q1 = q0 + rblk.nrows();
+    packed_tiles(acc).into_par_iter().for_each(|(c0, mut t)| {
+        let (h, w) = t.dim();
+        let m_rows = m.slice(ndarray::s![p0..p0 + h, q0..q1]);
+        dress_tile(&m_rows, &rblk.slice(ndarray::s![.., c0..c0 + w]), &mut t);
+    });
+}
+
+/// The contiguous runs `(square offset, panel offset, length)` of packed columns
+/// `[c0, c1)` within a square `nao × nao` row: one run per μ the range touches.
+fn packed_column_runs(c0: usize, c1: usize, nao: usize) -> Vec<(usize, usize, usize)> {
+    let mut runs = Vec::new();
+    let mut mu = 0usize;
+    while packed_pair_len(mu + 1) <= c0 {
+        mu += 1;
+    }
+    let mut c = c0;
+    while c < c1 && mu < nao {
+        let row_start = packed_pair_len(mu);
+        let row_end = packed_pair_len(mu + 1).min(c1);
+        let nu = c - row_start;
+        runs.push((mu * nao + nu, c - c0, row_end - c));
+        c = row_end;
+        mu += 1;
+    }
+    runs
+}
+
+/// The fast path: `raw` resident (dense or packed) and the output's packed
+/// accumulator `acc` `(band, pair)` resident, so each tile sweeps all Q in
+/// ascending [`DRESS_K_BLOCK`] blocks with its Q panel held once: from a packed
+/// `raw` a view, from a dense one gathered into a per-worker buffer. Tiles are
+/// independent, so this runs over the rayon pool; every element sees the same
+/// GEMMs as on the streamed routes ([`dress_packed_q_block`]).
+fn dress_resident_into_packed(
+    raw: &ThreeIndexSource,
+    m: &Array2<f64>,
     band_p0: usize,
-    q_edges: &[(usize, usize)],
-    (m, raw_flat, raw_p0): (&Array2<f64>, &ndarray::ArrayView2<'_, f64>, usize),
+    acc: ndarray::ArrayViewMut2<'_, f64>,
 ) -> Result<(), FerricError> {
-    let b = l1 - l0;
-    let p0 = band_p0 + l0;
-    let row_elems = raw_flat.ncols();
-    let mut acc = ndarray::ArrayViewMut2::from_shape((b, row_elems), dst)
-        .map_err(|e| FerricError::General(format!("dress out reshape: {e}")))?;
-    for &(q0, q1) in q_edges {
-        let mut qa = q0;
-        while qa < q1 {
-            let qb = (qa + DRESS_K_BLOCK).min(q1);
-            let msub = m.slice(ndarray::s![p0..p0 + b, qa..qb]);
-            let rblk = raw_flat.slice(ndarray::s![qa - raw_p0..qb - raw_p0, ..]);
-            let contrib: Array2<f64> = msub.dot(&rblk);
-            acc += &contrib;
-            qa = qb;
+    use rayon::prelude::*;
+    let (naux, nao) = (raw.band_naux(), raw.nao());
+    let dense = raw.incore_flat();
+    let packed = raw.packed_flat();
+    if dense.is_none() && packed.is_none() {
+        return Err(FerricError::General(
+            "dress: the fast path needs a dense or packed in-core raw".into(),
+        ));
+    }
+    packed_tiles(acc)
+        .into_par_iter()
+        .for_each_init(Vec::<f64>::new, |buf, (c0, mut t)| {
+            let (h, w) = t.dim();
+            let panel = match (&packed, &dense) {
+                (Some(p), _) => p.slice(ndarray::s![.., c0..c0 + w]),
+                (None, Some(d)) => {
+                    buf.resize(naux * w, 0.0);
+                    let runs = packed_column_runs(c0, c0 + w, nao);
+                    for (q, dst) in buf.chunks_exact_mut(w).enumerate() {
+                        let src = d.row(q);
+                        let src = src.as_slice().expect("dense raw rows are contiguous");
+                        for &(s0, d0, len) in &runs {
+                            dst[d0..d0 + len].copy_from_slice(&src[s0..s0 + len]);
+                        }
+                    }
+                    ndarray::ArrayView2::from_shape((naux, w), &buf[..])
+                        .expect("panel buffer sized naux x w")
+                }
+                (None, None) => unreachable!("checked above"),
+            };
+            let m_rows = m.slice(ndarray::s![band_p0..band_p0 + h, ..]);
+            for qa in (0..naux).step_by(DRESS_K_BLOCK) {
+                let qb = (qa + DRESS_K_BLOCK).min(naux);
+                dress_tile(
+                    &m_rows.slice(ndarray::s![.., qa..qb]),
+                    &panel.slice(ndarray::s![qa..qb, ..]),
+                    &mut t,
+                );
+            }
+        });
+    Ok(())
+}
+
+/// Copy the lower μν triangle of each `nao × nao` row of `rows` onto its upper
+/// triangle (in square tiles, so both the reads and the writes stay in cache).
+fn mirror_lower_to_upper(rows: &mut [f64], nao: usize) {
+    const T: usize = 32;
+    for sq in rows.chunks_exact_mut(nao * nao) {
+        for i0 in (0..nao).step_by(T) {
+            for j0 in (0..=i0).step_by(T) {
+                for i in i0..(i0 + T).min(nao) {
+                    for j in j0..(j0 + T).min(i) {
+                        sq[j * nao + i] = sq[i * nao + j];
+                    }
+                }
+            }
         }
     }
-    Ok(())
+}
+
+/// One packed lower-triangle row `src` into the full symmetric square `dst`.
+fn expand_packed_row(src: &[f64], dst: &mut [f64], nao: usize) {
+    for mu in 0..nao {
+        let s = packed_pair_len(mu);
+        dst[mu * nao..=mu * nao + mu].copy_from_slice(&src[s..=s + mu]);
+    }
+    mirror_lower_to_upper(dst, nao);
+}
+
+/// Expand `rows` packed rows held at the FRONT of `buf` (row `P` at `P·pair`)
+/// into full symmetric squares (row `P` at `P·nao²`), in place, so the dressing
+/// can accumulate packed in the output's own storage and needs no second band.
+///
+/// A row's square slot never starts below its packed one, so rows move from the
+/// last down. They move in waves `[lo, hi)` with `lo·nao² ≥ hi·pair`: every
+/// source of the wave then lies below its first destination, and no unmoved
+/// row's source lies at or above it, so a wave's rows run over the rayon pool.
+/// Each wave roughly halves `hi`; the last few rows go one at a time through a
+/// copy of the row.
+fn expand_packed_front_in_place(buf: &mut [f64], rows: usize, nao: usize) {
+    use rayon::prelude::*;
+    let (pair, sq) = (packed_pair_len(nao), nao * nao);
+    if rows == 0 || nao == 0 {
+        return;
+    }
+    assert!(
+        buf.len() >= rows * sq,
+        "expand: buffer holds fewer than {rows} squares"
+    );
+    let mut hi = rows;
+    while hi > 0 {
+        let lo = (hi * pair).div_ceil(sq);
+        if lo >= hi {
+            break;
+        }
+        let (src, dst) = buf.split_at_mut(lo * sq);
+        dst[..(hi - lo) * sq]
+            .par_chunks_mut(sq)
+            .enumerate()
+            .for_each(|(i, row)| {
+                let p = lo + i;
+                expand_packed_row(&src[p * pair..(p + 1) * pair], row, nao);
+            });
+        hi = lo;
+    }
+    let mut tmp = vec![0.0; pair];
+    for p in (0..hi).rev() {
+        tmp.copy_from_slice(&buf[p * pair..(p + 1) * pair]);
+        expand_packed_row(&tmp, &mut buf[p * sq..(p + 1) * sq], nao);
+    }
 }
 
 /// Memory is why a refused band is spilling at all, so when the disk then refuses
@@ -536,31 +800,45 @@ fn admit_dressed_in_core(
     (charge, refused)
 }
 
-/// The in-core output of a source that is not itself in core, on the fast path's
-/// GEMM grid: every element sees the same term sequence as there and as in
-/// [`dress_rows_packed`], so at one BLAS thread the three routes agree bitwise.
-/// One pass over `raw`, since all the output rows are already resident.
-fn dress_band_in_core_blocked(
+/// Dress `raw` into the zeroed in-core output band `arr` `(band, nao, nao)`.
+///
+/// The packed accumulator `(band, pair)` lives at the front of `arr`'s own
+/// storage and is expanded to full squares in place at the end, so no second
+/// band is ever held. A resident `raw` (dense or packed) takes the tile-parallel
+/// fast path ([`dress_resident_into_packed`]); a spilled or recomputed one is
+/// streamed once, each Q block tile-parallel ([`dress_packed_q_block`]). Both
+/// issue the same GEMMs as [`dress_rows_packed`], so at one BLAS thread the
+/// routes agree bitwise, and the fixed tiles make each independent of the
+/// thread count.
+fn dress_band_in_core(
     raw: &mut ThreeIndexSource,
     m: &Array2<f64>,
     arr: &mut Array3<f64>,
-    (band_p0, band_p1): (usize, usize),
+    band_p0: usize,
 ) -> Result<(), FerricError> {
-    let nao = raw.nao();
-    let edges = dress_row_edges(band_p1 - band_p0, DRESS_ROW_BLOCK);
-    raw.for_each_dress_k_block(|q0, flat| {
-        let q1 = q0 + flat.nrows();
-        for &(l0, l1) in &edges {
-            let msub = m.slice(ndarray::s![band_p0 + l0..band_p0 + l1, q0..q1]);
-            let contrib = msub.dot(&flat);
-            let mut dst = arr
-                .slice_mut(ndarray::s![l0..l1, .., ..])
-                .into_shape_with_order((l1 - l0, nao * nao))
-                .map_err(|e| FerricError::General(format!("dress out reshape: {e}")))?;
-            dst += &contrib;
+    let (band, nao) = (arr.shape()[0], raw.nao());
+    let pair = packed_pair_len(nao);
+    let rows = arr
+        .as_slice_mut()
+        .ok_or_else(|| FerricError::General("dress out: non-contiguous output band".into()))?;
+    {
+        let mut acc = ndarray::ArrayViewMut2::from_shape((band, pair), &mut rows[..band * pair])
+            .map_err(|e| FerricError::General(format!("dress accumulator: {e}")))?;
+        let t_st = ferric_core::timing::Stage::start("dfk:dress-gemm");
+        if raw.incore_flat().is_some() || raw.packed_flat().is_some() {
+            dress_resident_into_packed(raw, m, band_p0, acc)?;
+        } else {
+            raw.for_each_dress_k_block_packed(|q0, rblk| {
+                dress_packed_q_block(m, (band_p0, q0), &rblk, acc.view_mut());
+                Ok(())
+            })?;
         }
-        Ok(())
-    })
+        t_st.end();
+    }
+    let t_st = ferric_core::timing::Stage::start("dfk:dress-expand");
+    expand_packed_front_in_place(rows, band, nao);
+    t_st.end();
+    Ok(())
 }
 
 /// Write the dressed band to `file` in the packed spill format.
@@ -604,13 +882,8 @@ fn dress_band_to_spill(
 fn drop_page_cache(file: &File) {
     // DONTNEED only drops CLEAN pages; flush dirty pages to disk first.
     let _ = file.sync_data();
-    let fd = file.as_raw_fd();
-    // offset 0, len 0 == "to end of file".
-    // SAFETY: fd is a valid open file descriptor (from as_raw_fd on a live
-    // File). posix_fadvise with DONTNEED is advisory and cannot corrupt data.
-    unsafe {
-        libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_DONTNEED);
-    }
+    // offset 0, len 0 == "to end of file". Advisory; a no-op off Linux.
+    spill_os::fadvise(file, 0, 0, Advice::DontNeed);
 }
 
 // ---------------------------------------------------------------------------
@@ -658,6 +931,22 @@ const SPILL_HEADROOM_FRACTION: f64 = 0.02;
 /// `ferric_gw::cohsex`'s `M_PROJ_WARNED`.
 static SPILL_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Once-latch for the RI-K spill warning, separate from [`SPILL_WARNED`] so a
+/// raw tensor that spilled first (RI-J's, or a post-SCF B tensor) cannot
+/// suppress the one warning that names the exact-K remedy.
+static RI_K_SPILL_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Which tensor a spill writes, so the messages name only remedies that apply.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpillKind {
+    /// A raw `(P|mn)` tensor: RI-J's, the shared RI-JK raw, or a post-SCF
+    /// (RI-MP2/RPA/GW/TDDFT) B tensor. No exchange-specific remedy applies.
+    Raw,
+    /// RI-K's V^{-1/2}-dressed tensor (`build_dressed_band`, whose only
+    /// production caller is `DfK`): `df_k_aux = ""` would not build it.
+    RiKDressed,
+}
+
 /// The directory the spill file is created in.
 ///
 /// `tempfile::tempfile()` (used below) creates an unlinked file in
@@ -669,54 +958,7 @@ fn spill_dir() -> std::path::PathBuf {
     std::env::temp_dir()
 }
 
-/// Free bytes available to an unprivileged process on the filesystem holding
-/// `path`, or `None` if the path cannot be statted.
-///
-/// `f_bavail` (not `f_bfree`): the reserved-blocks pool that `f_bfree` includes
-/// is unavailable to a normal ferric process, so `f_bfree` would over-promise by
-/// the usual 5% root reservation.
-///
-/// `None` on failure is deliberate. A missing/unstattable spill directory means
-/// the probe could not measure, not that the disk is full: fabricating `0` there
-/// would refuse every spill on any system whose `statvfs` we cannot read, which
-/// is a worse failure than the one being fixed. The caller degrades to the old
-/// (unchecked) behaviour in that case — but still warns.
-fn free_bytes_at(path: &std::path::Path) -> Option<u64> {
-    use std::os::unix::ffi::OsStrExt;
-    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
-    // SAFETY: `c_path` is a valid NUL-terminated C string that outlives the
-    // call, and `buf` is a correctly-sized, properly-aligned `statvfs` we hand
-    // over exclusively for the duration of the call. `statvfs` only writes into
-    // `buf` and returns 0/-1.
-    let mut buf = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    let rc = unsafe { libc::statvfs(c_path.as_ptr(), buf.as_mut_ptr()) };
-    if rc != 0 {
-        return None;
-    }
-    // SAFETY: statvfs returned 0, so `buf` is fully initialized.
-    let st = unsafe { buf.assume_init() };
-    // f_frsize is the fragment size the f_b* counts are expressed in.
-    //
-    // The widening goes through `try_from` because libc's statvfs field types
-    // are PLATFORM-DEPENDENT (`u64` on linux-gnu, `u32` on some 32-bit targets,
-    // `c_ulong` in general). `as` would be a same-type cast here and a lossy one
-    // elsewhere; `u64::from` is not implemented for every candidate type. This
-    // form compiles unchanged on all of them, and the `ok()?` arm is genuinely
-    // unreachable on any target where the field is unsigned and ≤64 bits —
-    // which is all of them — so it degrades to "could not measure", never to a
-    // fabricated figure.
-    //
-    // clippy's `useless_conversion` fires because on THIS target (linux-gnu)
-    // the fields already are `u64`, making the conversion an identity. Allowed
-    // rather than removed: dropping it would silently truncate on any target
-    // where the field is narrower, and re-adding it under a `cfg` for a
-    // one-line widening is worse than the lint.
-    #[allow(clippy::useless_conversion)]
-    let frsize = u64::try_from(st.f_frsize).ok()?;
-    #[allow(clippy::useless_conversion)]
-    let bavail = u64::try_from(st.f_bavail).ok()?;
-    frsize.checked_mul(bavail)
-}
+// `free_bytes_at` (the free-space probe) lives in `spill_os`.
 
 /// The spill preflight: refuse a write that the destination cannot hold with
 /// headroom to spare.
@@ -727,6 +969,18 @@ fn free_bytes_at(path: &std::path::Path) -> Option<u64> {
 /// and lists every remedy, so a user never has to read this file to understand
 /// the refusal (the standard `cosx_k::check_budget` sets).
 fn check_spill_disk(needed: u64, free: u64, dir: &std::path::Path) -> Result<(), FerricError> {
+    check_spill_disk_kind(needed, free, dir, SpillKind::Raw)
+}
+
+/// [`check_spill_disk`] with the remedy list for a spill of `kind`. Recomputing
+/// each pass (`jk_storage = "direct"`) applies to a raw tensor only: the RI-K
+/// dressed band is spilled by its own builder regardless of `jk_storage`.
+fn check_spill_disk_kind(
+    needed: u64,
+    free: u64,
+    dir: &std::path::Path,
+    kind: SpillKind,
+) -> Result<(), FerricError> {
     let headroom = SPILL_HEADROOM_BYTES.max((free as f64 * SPILL_HEADROOM_FRACTION) as u64);
     if needed.saturating_add(headroom) <= free {
         return Ok(());
@@ -736,27 +990,81 @@ fn check_spill_disk(needed: u64, free: u64, dir: &std::path::Path) -> Result<(),
          (a {:.2} GB safety margin is reserved so the spill cannot fill the partition \
          out from under the rest of the system). Remedies: raise the in-core ceiling so \
          the tensor never spills ([memory] budget_gb / FERRIC_MEM_BUDGET_GB); point the \
-         spill elsewhere (TMPDIR=/path/with/room); use a smaller auxiliary basis; or use \
-         a K builder that does not materialize the 3-index tensor ([scf] k_builder); or \
-         recompute the integrals each pass instead of writing them (jk_storage = \"direct\").",
+         spill elsewhere (TMPDIR=/path/with/room); {}use a smaller auxiliary basis.",
         needed as f64 / 1e9,
         dir.display(),
         free as f64 / 1e9,
         headroom as f64 / 1e9,
+        match kind {
+            SpillKind::Raw =>
+                "recompute the integrals each pass instead of writing them \
+                               (jk_storage = \"direct\"); or ",
+            SpillKind::RiKDressed => "or ",
+        },
     )))
 }
 
+/// [`check_spill_disk`] for a spill of `kind`: an RI-K refusal also names
+/// [`exact_k_remedy`]; a raw one is unchanged.
+fn check_spill_disk_for(
+    needed: u64,
+    free: u64,
+    dir: &std::path::Path,
+    kind: SpillKind,
+) -> Result<(), FerricError> {
+    match (check_spill_disk_kind(needed, free, dir, kind), kind) {
+        (Err(FerricError::General(m)), SpillKind::RiKDressed) => Err(FerricError::General(
+            format!("{m}{}", exact_k_remedy(needed)),
+        )),
+        (r, _) => r,
+    }
+}
+
+/// The exact-exchange memory remedy an RI-K spill names, as a sentence
+/// appended to the warning or refusal ([`SpillKind::RiKDressed`] only).
+///
+/// For HF or a global hybrid whose exchange is density-fitted (RI-K: the
+/// Kohn–Sham default, or a named `df_k_aux`), the SCF holds RI-K's
+/// V^{-1/2}-dressed tensor beside RI-J's raw one. `df_k_aux = ""` selects
+/// exact four-centre K, which builds no three-index tensor for exchange;
+/// `k_builder` only takes effect once RI-K is off. `needed` is the size of
+/// the dressed band being spilled (this rank's band under MPI). A
+/// range-separated functional has no exact-K route, so the remedy is scoped
+/// to ω = 0.
+fn exact_k_remedy(needed: u64) -> String {
+    format!(
+        " If exchange is density-fitted for HF or a global hybrid (RI-K, the default for \
+         hybrid functionals), df_k_aux = \"\" selects exact four-centre K, which does not \
+         build RI-K's tensor (the {:.2} GB being spilled; k_builder has no effect while RI-K \
+         is active, and range-separated functionals have no exact-K route).",
+        needed as f64 / 1e9,
+    )
+}
+
 /// The text of the spill warning. Pure so its content is testable; emitted by
-/// [`warn_spill_once`].
-fn spill_warning_text(needed: u64, dir: &std::path::Path) -> String {
+/// [`warn_spill_once_for`]. The cost line depends on who reads the tensor: an
+/// RI-K tensor is re-read by `DfK::build` on every SCF iteration; a raw tensor
+/// is RI-J's (also every iteration) or a post-SCF stage's B tensor, read once
+/// per pass of that stage.
+fn spill_warning_text(needed: u64, dir: &std::path::Path, kind: SpillKind) -> String {
+    let (reader, unit) = match kind {
+        SpillKind::RiKDressed => (
+            "DfK::build re-reads the ENTIRE spilled tensor on every SCF iteration, so each \
+             iteration pays",
+            "iteration",
+        ),
+        SpillKind::Raw => (
+            "every pass over it (each SCF iteration for RI-J, each read of a post-SCF \
+             stage) re-reads the ENTIRE spilled tensor, so each pass pays",
+            "pass",
+        ),
+    };
     format!(
         "[ferric] warning: 3-index tensor ({:.2} GB) exceeds the memory budget and is being \
          spilled to disk in {}. This is a performance cliff, not just a memory tradeoff: \
-         DfK::build re-reads the ENTIRE spilled tensor on every SCF iteration, so each \
-         iteration pays roughly (tensor size / disk bandwidth) in pure IO on top of its \
-         compute — at {:.2} GB and ~150 MB/s that is ~{:.0} min per iteration. Raise \
-         [memory] budget_gb / FERRIC_MEM_BUDGET_GB to keep it in core, or use a smaller \
-         auxiliary basis.",
+         {reader} roughly (tensor size / disk bandwidth) in pure IO on top of its compute — \
+         at {:.2} GB and ~150 MB/s that is ~{:.0} min per {unit}. Raise [memory] budget_gb / \
+         FERRIC_MEM_BUDGET_GB to keep it in core, or use a smaller auxiliary basis.",
         needed as f64 / 1e9,
         dir.display(),
         needed as f64 / 1e9,
@@ -764,13 +1072,38 @@ fn spill_warning_text(needed: u64, dir: &std::path::Path) -> String {
     )
 }
 
-/// Emit the spill warning at most once per process. Returns whether it fired
-/// (the return value is what makes the once-ness testable).
-fn warn_spill_once(needed: u64, dir: &std::path::Path) -> bool {
-    if SPILL_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+/// Emit the spill warning for a spill of `kind` at most once per process.
+/// Returns whether it fired (the return value is what makes the once-ness
+/// testable). An RI-K spill warns under its
+/// own latch, [`RI_K_SPILL_WARNED`], so a raw tensor that spilled first (RI-J's,
+/// or a post-SCF B tensor) cannot swallow the one warning that names
+/// [`exact_k_remedy`].
+fn warn_spill_once_for(needed: u64, dir: &std::path::Path, kind: SpillKind) -> bool {
+    warn_spill_once_with(needed, dir, kind, &SPILL_WARNED, &RI_K_SPILL_WARNED)
+}
+
+/// [`warn_spill_once_for`] against the given latches: `raw` for
+/// [`SpillKind::Raw`], `ri_k` for [`SpillKind::RiKDressed`]. Tests pass local
+/// latches, so a spill elsewhere in the process cannot flip them.
+fn warn_spill_once_with(
+    needed: u64,
+    dir: &std::path::Path,
+    kind: SpillKind,
+    raw: &std::sync::atomic::AtomicBool,
+    ri_k: &std::sync::atomic::AtomicBool,
+) -> bool {
+    let latch = match kind {
+        SpillKind::Raw => raw,
+        SpillKind::RiKDressed => ri_k,
+    };
+    if latch.swap(true, std::sync::atomic::Ordering::Relaxed) {
         return false;
     }
-    eprintln!("{}", spill_warning_text(needed, dir));
+    let mut text = spill_warning_text(needed, dir, kind);
+    if kind == SpillKind::RiKDressed {
+        text += &exact_k_remedy(needed);
+    }
+    eprintln!("{text}");
     true
 }
 
@@ -780,12 +1113,12 @@ fn warn_spill_once(needed: u64, dir: &std::path::Path) -> bool {
 /// Called ONLY from inside a spill branch — the in-core path must not stat
 /// anything (an unwritable `TMPDIR` has no bearing on a job that never touches
 /// disk, and `in_core_path_never_touches_the_spill_directory` pins that).
-fn preflight_spill(needed_bytes: usize) -> Result<(), FerricError> {
+fn preflight_spill(needed_bytes: usize, kind: SpillKind) -> Result<(), FerricError> {
     let dir = spill_dir();
     let needed = needed_bytes as u64;
-    warn_spill_once(needed, &dir);
+    warn_spill_once_for(needed, &dir, kind);
     match free_bytes_at(&dir) {
-        Some(free) => check_spill_disk(needed, free, &dir),
+        Some(free) => check_spill_disk_for(needed, free, &dir, kind),
         // Could not measure: proceed (the pre-existing behaviour) rather than
         // refuse a job on an unreadable statvfs. The warning above already told
         // the user a large write is starting.
@@ -912,11 +1245,20 @@ enum Backend {
         data: Array2<f64>,
         screen: std::sync::Arc<PairScreen>,
     },
+    /// RI-J only, opt-in (`dfj-f32`): the band resident as f32, one rounding of
+    /// each f64 integral ([`f32_store`]). `screen` None: the packed lower
+    /// triangle, `(band_naux, nao(nao+1)/2)`; `Some`: the kept pairs, columns in
+    /// [`PairScreen::cols`] order. Read through [`ThreeIndexSource::ri_j_f32`],
+    /// never streamed, unpacked or dressed.
+    InCoreF32 {
+        data: Array2<f32>,
+        screen: Option<std::sync::Arc<PairScreen>>,
+    },
     /// Rebuild each aux block on demand instead of storing the tensor.
     ///
-    /// The middle ground this type used to lack. There were only two modes --
-    /// whole tensor resident, or whole tensor on disk -- so a budget either
-    /// admitted an allocation up to 100% of itself or fell off the cliff
+    /// The middle ground between the two other modes -- whole tensor
+    /// resident, or whole tensor on disk -- without which a budget either
+    /// admits an allocation up to 100% of itself or falls off the cliff
     /// [`spill_warning_text`] describes: `DfK::build` re-reads the ENTIRE
     /// spilled tensor on every SCF iteration.
     ///
@@ -1018,8 +1360,8 @@ pub struct ThreeIndexSource {
 /// and the pool ADMITS-or-REFUSES it here. The DRESSED tensor differs: raw is
 /// held co-resident by design, so a pool refusal there is the expected outcome
 /// of a band that fits the budget once but not twice, and `build_dressed_band`
-/// spills instead. That moves no result, since every run it reroutes used to
-/// end in this error.
+/// spills instead. That moves no result, since every run it reroutes would
+/// otherwise end in this error.
 fn charge_three_index(
     label: &str,
     bytes: usize,
@@ -1194,8 +1536,7 @@ impl ThreeIndexSource {
             .saturating_mul(nao)
             .saturating_mul(8);
         let packed_bytes = band.saturating_mul(packed_pair_len(nao)).saturating_mul(8);
-        let tier =
-            jk_storage::memory_tier(nao, band, budget_bytes).unwrap_or(jk_storage::Tier::Spill);
+        let (tier, _) = planned_residency(nao, band, budget_bytes);
         if ooc_trace() {
             eprintln!(
                 "[OOC build] naux={naux} band=[{band_p0},{band_p1}) nao={nao} needed={:.2}GB packed={:.2}GB budget={:.2}GB -> {}",
@@ -1293,7 +1634,7 @@ impl ThreeIndexSource {
         // block to half the budget so that pair stays inside the ceiling
         // (budget-honest). The write thread does pure I/O — no rayon here.
         //
-        // Block content is byte-identical to the old serial loop: `eri3_block`
+        // Block content is byte-identical to a serial loop: `eri3_block`
         // is write-once per element (see threeindex.rs) and blocks are written
         // in the same p0-ascending order, so the on-disk file — and thus the
         // read-back path in `for_each_block` — is unchanged.
@@ -1308,7 +1649,7 @@ impl ThreeIndexSource {
         let spill_bytes = (band as u64)
             .saturating_mul(packed_pair_len(nao) as u64)
             .saturating_mul(8);
-        preflight_spill(spill_bytes as usize)?;
+        preflight_spill(spill_bytes as usize, SpillKind::Raw)?;
         let block_naux = spill_block_naux_for(budget_bytes, nao);
         let mut file =
             tempfile::tempfile().map_err(|e| FerricError::General(format!("tempfile: {e}")))?;
@@ -1517,12 +1858,17 @@ impl ThreeIndexSource {
         // is resident throughout (DF-J keeps it for the whole SCF), so a band
         // that fits the budget once can still not fit it twice. Asking only the
         // budget admitted those, built the whole tensor, and then died in the
-        // charge. Every run this reroutes used to die there, so no result moves;
+        // charge. Every run this reroutes would die there, so no result moves;
         // with no pool the reservation is inert and this is the budget test.
         let fast_path_fits = !raw.is_incore()
-            || fast_path_plan(budget_bytes, band, band.div_ceil(DRESS_ROW_BLOCK), nao)
-                .check()
-                .is_ok();
+            || fast_path_plan(
+                budget_bytes,
+                (band, naux),
+                band.div_ceil(DRESS_ROW_BLOCK),
+                nao,
+            )
+            .check()
+            .is_ok();
         let (in_core_charge, memory_refused) =
             admit_dressed_in_core(needed, budget_bytes, fast_path_fits);
         let in_core = in_core_charge.is_some();
@@ -1557,98 +1903,24 @@ impl ThreeIndexSource {
             // number would refuse spills that fit and overstate the IO time
             // in the warning by 2x.
             let spill_bytes = band.saturating_mul(packed_pair_len(nao)).saturating_mul(8);
-            preflight_spill(spill_bytes).map_err(|e| spill_refusal(e, memory_refused))?;
+            preflight_spill(spill_bytes, SpillKind::RiKDressed)
+                .map_err(|e| spill_refusal(e, memory_refused))?;
             Some(tempfile::tempfile().map_err(|e| FerricError::General(format!("tempfile: {e}")))?)
         };
-        // FAST PATH: raw and output both fully in core. Each output block is an
-        // independent linear combination over Q, so the blocks can be computed
-        // concurrently — but ONLY with the SAME boundaries the sequential loop
-        // below uses.
-        //
-        // Bit-identity depends on the block boundaries, not on execution order.
-        // Within a block, each output element accumulates over Q-blocks in
-        // ascending order; BLAS additionally chooses its internal k-blocking from
-        // the operand's row count, so re-chunking the output rows (e.g. into
-        // `nthreads` even pieces) changes the summation order and perturbs the
-        // result — measured 3.6e-15 elementwise, which moved the benzene/aTZ SCF
-        // energy by 2.9e-6 Ha and made it vary with RAYON_NUM_THREADS. Reusing
-        // the identical `block_naux` boundaries and identical per-block Q loop
-        // makes every output element see the exact same addition sequence, so
-        // this is bit-identical to the sequential path at any thread count
-        // (df_k.rs's `df_k_bit_identical_across_thread_counts` covers it).
-        //
-        // Why it matters: the dressing is ~107 GFLOP at benzene/aug-cc-pVTZ and
-        // ran entirely on ONE core (BLAS is pinned to 1 thread under rayon per
-        // the project convention), so DfK::new scaled only 1.35x across 12 cores.
+        // FAST PATH: raw and output both fully in core. The dressing is
+        // ~107 GFLOP at benzene/aug-cc-pVTZ and BLAS is pinned to one thread
+        // under rayon, so it runs tile-parallel over the pool
+        // ([`dress_band_in_core`]). Every GEMM column and Q boundary is a
+        // compile-time constant (`DRESS_COL_BLOCK`, `DRESS_K_BLOCK`), never
+        // `block_naux` (budget-derived) or the thread count: re-chunking
+        // the output rows by `nthreads` once moved the benzene/aTZ SCF energy
+        // by 2.9e-6 Ha and made it vary with RAYON_NUM_THREADS
+        // (`dressed_tensor_bitidentical_across_thread_counts` pins it). Peak
+        // residency is the one output band (the packed accumulator lives in
+        // its storage) plus a Q panel per worker, both charged above.
         if in_core && raw.is_incore() {
-            use rayon::prelude::*;
-            let raw_flat = raw.incore_flat().expect("is_incore checked");
-            let raw_p0 = raw.band().0;
             let arr = out_incore.as_mut().expect("in_core implies Some");
-            let q_edges = raw.block_edges();
-            // Output-block boundaries from a COMPILE-TIME CONSTANT, never from
-            // `block_naux` (budget-derived) or the thread count. This is what
-            // makes the result reproducible: BLAS picks its internal k-blocking
-            // from the operand's row count, so the boundaries fix the summation
-            // order, and holding them constant fixes the result for every thread
-            // count, memory budget, and execution order. Deriving them from
-            // `nthreads` was the bug that perturbed the benzene/aTZ SCF energy by
-            // 2.9e-6 Ha and made it vary with RAYON_NUM_THREADS.
-            // Memory accounting for this path. Historically NOTHING here was
-            // charged: the `in_core` decision above gates only `out_incore`
-            // (one `band·nao²·8` copy), yet this path used to `collect()` every
-            // output block into a `Vec<(usize, Array2)>` BEFORE scattering, so
-            // a full SECOND copy of the dressed band (another `band·nao²·8`)
-            // was co-resident with `out_incore` at the moment the collect
-            // finished. At benzene/aug-cc-pVTZ (naux=1512, nao=414) that is
-            // 2.1 GB charged as 1.05 GB — the classic under-count that OOMs.
-            // The per-worker `acc`/`contrib` scratch was unaccounted too.
-            //
-            // Two independent fixes, both applied:
-            //  1. The second copy is GONE, not merely charged for. Each block
-            //     now accumulates into its own destination rows of `arr`
-            //     directly via rayon's slice `par_chunks_mut`, so peak
-            //     residency is one copy of the band plus per-worker scratch.
-            //     This is a pure removal of a copy: the GEMM boundaries
-            //     (`DRESS_ROW_BLOCK`), the Q sweep, and the accumulation order
-            //     are byte-for-byte what they were, so the dressed tensor is
-            //     bit-identical (pinned by
-            //     `dressed_tensor_bitidentical_across_thread_counts`).
-            //  2. What genuinely remains resident is now DECLARED, so an
-            //     over-budget job fails fast with a breakdown instead of
-            //     walking into the allocation. `contrib` is the only real
-            //     per-worker term left (`acc` is gone with the copy).
-            //
-            // Note the asymmetry this repairs: the RAW spill path sizes blocks
-            // with `spill_block_naux_for` = `block_naux_for(budget/2, nao)`,
-            // HALVED because two blocks are live at once. This dressing path
-            // used the UN-halved `block_naux_for` while `accum` and `contrib`
-            // coexist on the sequential path below — see the guard there.
-            let mut out_edges: Vec<(usize, usize)> = Vec::new();
-            let mut l = 0usize;
-            while l < band {
-                let r = (l + DRESS_ROW_BLOCK).min(band);
-                out_edges.push((l, r));
-                l = r;
-            }
-            // Scatter-free: each block writes its OWN disjoint rows of `arr`.
-            // `arr` is a freshly-allocated contiguous `Array3`, so its backing
-            // slice is row-major and output row `l` occupies exactly
-            // `[l·nao², (l+1)·nao²)`. `par_chunks_mut(DRESS_ROW_BLOCK·nao²)`
-            // therefore yields precisely the `out_edges` blocks, in order, as
-            // disjoint mutable slices — the same partition the collect used,
-            // without ever materialising a second copy of the band.
-            let row_elems = nao * nao;
-            let arr_slice = arr.as_slice_mut().ok_or_else(|| {
-                FerricError::General("dress out: non-contiguous output band".into())
-            })?;
-            arr_slice
-                .par_chunks_mut(DRESS_ROW_BLOCK * row_elems)
-                .enumerate()
-                .try_for_each(|(bi, dst)| {
-                    let edge = out_edges[bi];
-                    dress_block_in_place(dst, edge, band_p0, &q_edges, (m, &raw_flat, raw_p0))
-                })?;
+            dress_band_in_core(raw, m, arr, band_p0)?;
             return Ok(Self {
                 naux,
                 nao,
@@ -1683,7 +1955,7 @@ impl ThreeIndexSource {
                      budget:\n{report}"
                 );
             }
-            dress_band_in_core_blocked(raw, m, arr, (band_p0, band_p1))?;
+            dress_band_in_core(raw, m, arr, band_p0)?;
         } else if let Some(f) = file.as_mut() {
             let overhead = dressing_overhead_bytes(
                 raw_resident.saturating_add(raw_stream),
@@ -1760,6 +2032,7 @@ impl ThreeIndexSource {
             Backend::InCore(a) => a.len().saturating_mul(8),
             Backend::InCorePacked { packed, .. } => packed.len().saturating_mul(8),
             Backend::InCorePairScreened { data, .. } => data.len().saturating_mul(8),
+            Backend::InCoreF32 { data, .. } => data.len().saturating_mul(4),
             Backend::DiskSpill { .. } | Backend::Recompute { .. } => 0,
         }
     }
@@ -1772,7 +2045,8 @@ impl ThreeIndexSource {
             Backend::Recompute { .. } => rows * (self.nao * self.nao + pair) * 8,
             Backend::InCore(_)
             | Backend::InCorePacked { .. }
-            | Backend::InCorePairScreened { .. } => 0,
+            | Backend::InCorePairScreened { .. }
+            | Backend::InCoreF32 { .. } => 0,
         }
     }
 
@@ -1786,40 +2060,55 @@ impl ThreeIndexSource {
         self.packed_stream_bytes(self.packed_stream_rows(df_chunk_width(self.nao)))
     }
 
-    /// Stream the tensor as unpacked `(q, nao²)` blocks of [`DRESS_K_BLOCK`] rows
-    /// on the grid the in-core fast path uses, whatever the backend. Holds one
-    /// unpacked block plus a short read-ahead, not this source's own full block.
-    fn for_each_dress_k_block(
+    /// Stream the tensor as PACKED `(q, pair)` blocks of [`DRESS_K_BLOCK`] rows
+    /// on the dressing's Q grid, whatever the backend: a dense in-core source
+    /// packs each block into one reused scratch block, the packed, spilled and
+    /// recomputed ones hand out their own rows (plus a short read-ahead).
+    fn for_each_dress_k_block_packed(
         &mut self,
         mut f: impl FnMut(usize, ndarray::ArrayView2<'_, f64>) -> Result<(), FerricError>,
     ) -> Result<(), FerricError> {
         let (nao, band) = (self.nao, self.band_naux());
+        let pair = packed_pair_len(nao);
         if let Some(flat) = self.incore_flat() {
+            use rayon::prelude::*;
+            let mut scratch = vec![0.0f64; DRESS_K_BLOCK.min(band) * pair];
             for q0 in (0..band).step_by(DRESS_K_BLOCK) {
-                let q1 = (q0 + DRESS_K_BLOCK).min(band);
-                f(q0, flat.slice(ndarray::s![q0..q1, ..]))?;
+                let b = DRESS_K_BLOCK.min(band - q0);
+                scratch[..b * pair]
+                    .par_chunks_mut(pair.max(1))
+                    .enumerate()
+                    .for_each(|(l, dst)| {
+                        let src = flat.row(q0 + l);
+                        let src = src.as_slice().expect("dense raw rows are contiguous");
+                        for mu in 0..nao {
+                            let s = packed_pair_len(mu);
+                            dst[s..=s + mu].copy_from_slice(&src[mu * nao..=mu * nao + mu]);
+                        }
+                    });
+                let blk = ndarray::ArrayView2::from_shape((b, pair), &scratch[..b * pair])
+                    .map_err(|e| FerricError::General(format!("raw pack: {e}")))?;
+                f(q0, blk)?;
             }
             return Ok(());
         }
-        let pair = packed_pair_len(nao);
-        let mut scratch = Array3::<f64>::zeros((DRESS_K_BLOCK.min(band.max(1)), nao, nao));
         self.for_each_packed_rows(DRESS_K_BLOCK, |blk| {
             let rows = blk.data.nrows();
-            let src = blk
-                .data
-                .as_slice()
-                .ok_or_else(|| FerricError::General("packed block: non-contiguous".into()))?;
             for l in (0..rows).step_by(DRESS_K_BLOCK) {
                 let b = DRESS_K_BLOCK.min(rows - l);
-                unpack_lower_triangle(&src[l * pair..(l + b) * pair], nao, b, &mut scratch);
-                let flat = scratch
-                    .slice(ndarray::s![0..b, .., ..])
-                    .into_shape_with_order((b, nao * nao))
-                    .map_err(|e| FerricError::General(format!("raw reshape: {e}")))?;
-                f(blk.p0 + l, flat)?;
+                f(blk.p0 + l, blk.data.slice(ndarray::s![l..l + b, ..]))?;
             }
             Ok(())
         })
+    }
+
+    /// True when the tensor is held in memory in any layout (dense, packed,
+    /// pair-screened or f32), i.e. neither spilled to disk nor recomputed.
+    pub fn is_resident(&self) -> bool {
+        !matches!(
+            self.backend,
+            Backend::DiskSpill { .. } | Backend::Recompute { .. }
+        )
     }
 
     /// True when the whole band is resident (no disk spill).
@@ -1859,6 +2148,68 @@ impl ThreeIndexSource {
         match &self.backend {
             Backend::InCorePairScreened { data, screen } => Some((data.view(), screen.as_ref())),
             _ => None,
+        }
+    }
+
+    /// Bytes of an f64 tensor held whole and unscreened in memory (the
+    /// unpacked or the packed in-core tier, i.e. every `(P|μν)` of the band
+    /// as `eri3_block` wrote it), or `None` for any other tier: spilled,
+    /// recomputed, pair-screened or f32. Only such a source can stand in for
+    /// a fresh `eri3_block` ([`Self::rows_f64`]).
+    pub fn resident_f64_bytes(&self) -> Option<usize> {
+        match &self.backend {
+            Backend::InCore(eri) => Some(eri.len() * 8),
+            Backend::InCorePacked { packed, .. } => Some(packed.len() * 8),
+            _ => None,
+        }
+    }
+
+    /// Bytes of an f64 tensor held in memory that a gradient can read: the
+    /// tiers of [`Self::resident_f64_bytes`] plus the pair-screened tier
+    /// ([`Self::pair_screened`]); `None` for spilled, recomputed and f32.
+    pub fn kept_f64_bytes(&self) -> Option<usize> {
+        match &self.backend {
+            Backend::InCorePairScreened { data, .. } => Some(data.len() * 8),
+            _ => self.resident_f64_bytes(),
+        }
+    }
+
+    /// The GLOBAL aux rows `[p0, p1)` as a `(p1 - p0, nao, nao)` view with the
+    /// values `eri3_block(op, obs, dfbs, p0, p1)` returns (the packed tier
+    /// stores the lower triangle of that exactly symmetric block, so
+    /// unpacking restores it bit for bit). The unpacked tier is viewed in
+    /// place; the packed tier is unpacked into `scratch` (resized to fit).
+    /// Errors unless [`Self::resident_f64_bytes`] is `Some` and the rows lie
+    /// in the band.
+    pub fn rows_f64<'a>(
+        &'a self,
+        p0: usize,
+        p1: usize,
+        scratch: &'a mut Array3<f64>,
+    ) -> Result<ArrayView3<'a, f64>, FerricError> {
+        if p0 > p1 || p0 < self.band_p0 || p1 > self.band_p1 {
+            return Err(FerricError::General(format!(
+                "rows_f64: rows [{p0}, {p1}) outside the band [{}, {})",
+                self.band_p0, self.band_p1
+            )));
+        }
+        let (l0, l1, nao) = (p0 - self.band_p0, p1 - self.band_p0, self.nao);
+        match &self.backend {
+            Backend::InCore(eri) => Ok(eri.slice(ndarray::s![l0..l1, .., ..])),
+            Backend::InCorePacked { packed, .. } => {
+                if scratch.dim() != (l1 - l0, nao, nao) {
+                    *scratch = Array3::zeros((l1 - l0, nao, nao));
+                }
+                let rows = packed.slice(ndarray::s![l0..l1, ..]);
+                let src = rows.as_slice().ok_or_else(|| {
+                    FerricError::General("rows_f64: packed rows are not contiguous".into())
+                })?;
+                unpack_lower_triangle(src, nao, l1 - l0, scratch);
+                Ok(scratch.view())
+            }
+            _ => Err(FerricError::General(
+                "rows_f64 needs the unpacked or packed f64 in-core tier".into(),
+            )),
         }
     }
 
@@ -1926,9 +2277,11 @@ impl ThreeIndexSource {
             _ => None,
         };
         match &mut self.backend {
-            Backend::InCore(_) | Backend::InCorePairScreened { .. } => Err(FerricError::General(
-                "packed streaming needs a packed, spilled or recompute source".into(),
-            )),
+            Backend::InCore(_) | Backend::InCorePairScreened { .. } | Backend::InCoreF32 { .. } => {
+                Err(FerricError::General(
+                    "packed streaming needs a packed, spilled or recompute source".into(),
+                ))
+            }
             Backend::InCorePacked { packed, .. } => stream_packed_whole(packed, band_p0, f),
             Backend::DiskSpill { file, .. } => {
                 stream_spill_packed(file, packed_pair_len(nao), (band, band_p0, rows), f)
@@ -2051,6 +2404,9 @@ impl ThreeIndexSource {
                 "a pair-screened source has no unpacked blocks: read it through pair_screened()"
                     .into(),
             )),
+            Backend::InCoreF32 { .. } => Err(FerricError::General(
+                "the f32 RI-J tier has no f64 blocks: read it through ri_j_f32()".into(),
+            )),
             Backend::InCorePacked { packed, scratch } => {
                 // The unpacked block is allocated on this first pass; charge it
                 // while the pass runs (soft: the packed tensor already holds the
@@ -2086,7 +2442,7 @@ impl ThreeIndexSource {
 fn streams_packed(backend: &Backend) -> bool {
     !matches!(
         backend,
-        Backend::InCore(_) | Backend::InCorePairScreened { .. }
+        Backend::InCore(_) | Backend::InCorePairScreened { .. } | Backend::InCoreF32 { .. }
     )
 }
 
@@ -2102,7 +2458,7 @@ fn drop_stream_block(backend: &mut Backend, nao: usize) {
         Backend::DiskSpill { scratch, .. } | Backend::Recompute { scratch, .. } => {
             *scratch = unallocated_block(nao);
         }
-        Backend::InCore(_) | Backend::InCorePairScreened { .. } => {}
+        Backend::InCore(_) | Backend::InCorePairScreened { .. } | Backend::InCoreF32 { .. } => {}
     }
 }
 
@@ -2196,20 +2552,14 @@ const DIRECT_ALIGN: usize = 4096;
 /// SATA SSD, buffered 64 MiB reads ran at 359 MB/s and direct ones at 515 MB/s,
 /// and the cgroup-charged cache never fills with spill pages.
 fn open_direct(file: &File, probe_len: usize) -> Option<File> {
-    use std::os::unix::fs::{FileExt, OpenOptionsExt};
-    let direct = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECT)
-        .open(format!("/proc/self/fd/{}", file.as_raw_fd()))
-        .ok()?;
+    let direct = spill_os::open_direct_handle(file)?;
     if probe_len == 0 {
         return None;
     }
     let mut raw = vec![0.0_f64; (DIRECT_ALIGN + DIRECT_ALIGN) / 8];
     let bytes: &mut [u8] = bytemuck::cast_slice_mut(&mut raw[..]);
     let s0 = bytes.as_ptr().align_offset(DIRECT_ALIGN);
-    direct
-        .read_at(&mut bytes[s0..s0 + DIRECT_ALIGN], 0)
+    spill_os::read_at(&direct, &mut bytes[s0..s0 + DIRECT_ALIGN], 0)
         .ok()
         .map(|_| direct)
 }
@@ -2231,13 +2581,12 @@ fn read_spill_block(
     pair: usize,
     (l0, b): (usize, usize),
 ) -> Result<SpillRead, FerricError> {
-    use std::os::unix::fs::FileExt;
     let err = |e: std::io::Error| FerricError::General(format!("spill read: {e}"));
     let off = l0 * pair * 8;
     let len = b * pair * 8;
     let Some(direct) = direct else {
         let mut buf = vec![0.0_f64; b * pair];
-        file.read_exact_at(bytemuck::cast_slice_mut(&mut buf[..]), off as u64)
+        spill_os::read_exact_at(file, bytemuck::cast_slice_mut(&mut buf[..]), off as u64)
             .map_err(err)?;
         return Ok(SpillRead { l0, buf, start: 0 });
     };
@@ -2250,9 +2599,12 @@ fn read_spill_block(
     let mut done = 0usize;
     while done < need {
         // A short read is legal at the end of the file; zero progress is not.
-        let got = direct
-            .read_at(&mut bytes[s0 + done..s0 + total], (off_a + done) as u64)
-            .map_err(err)?;
+        let got = spill_os::read_at(
+            direct,
+            &mut bytes[s0 + done..s0 + total],
+            (off_a + done) as u64,
+        )
+        .map_err(err)?;
         if got == 0 {
             return Err(FerricError::General(
                 "spill read: unexpected end of file".into(),
@@ -2280,26 +2632,20 @@ fn stream_spill_packed(
     f: impl FnMut(PackedBlock<'_>) -> Result<(), FerricError>,
 ) -> Result<(), FerricError> {
     let file: &File = file;
-    let fd = file.as_raw_fd();
     let direct = open_direct(file, band * pair);
     if direct.is_none() {
-        // SAFETY: fd is a valid open descriptor owned by `file`; advisory only.
-        unsafe {
-            libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL);
-        }
+        spill_os::fadvise(file, 0, 0, Advice::Sequential);
     }
     let read = |l0: usize, b: usize| {
         let got = read_spill_block(file, direct.as_ref(), pair, (l0, b));
         if direct.is_none() {
-            // SAFETY: as above; DONTNEED on a range already copied out.
-            unsafe {
-                libc::posix_fadvise(
-                    fd,
-                    (l0 * pair * 8) as libc::off_t,
-                    (b * pair * 8) as libc::off_t,
-                    libc::POSIX_FADV_DONTNEED,
-                );
-            }
+            // DONTNEED on a range already copied out (advisory).
+            spill_os::fadvise(
+                file,
+                (l0 * pair * 8) as u64,
+                (b * pair * 8) as u64,
+                Advice::DontNeed,
+            );
         }
         got
     };
@@ -2471,16 +2817,159 @@ mod tests {
         (Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap(),)
     }
 
+    /// The full-square dressing (`contrib = msub·raw; acc += contrib` over
+    /// the same row and Q blocks): the reference for the triangle dressing.
+    fn full_square_reference(raw: &ThreeIndexSource, m: &Array2<f64>) -> Array3<f64> {
+        let (naux, nao) = (raw.naux(), raw.nao());
+        let q_edges = raw.block_edges();
+        let raw_flat = raw.incore_flat().expect("in-core");
+        let raw_p0 = raw.band().0;
+        let mut expect = Array3::<f64>::zeros((naux, nao, nao));
+        let mut l = 0usize;
+        while l < naux {
+            let r = (l + DRESS_ROW_BLOCK).min(naux);
+            let b = r - l;
+            let mut acc = Array2::<f64>::zeros((b, nao * nao));
+            for &(q0, q1) in q_edges.iter() {
+                let mut qa = q0;
+                while qa < q1 {
+                    let qb = (qa + DRESS_K_BLOCK).min(q1);
+                    let msub = m.slice(ndarray::s![l..l + b, qa..qb]);
+                    let rblk = raw_flat.slice(ndarray::s![qa - raw_p0..qb - raw_p0, ..]);
+                    let contrib: Array2<f64> = msub.dot(&rblk);
+                    acc += &contrib;
+                    qa = qb;
+                }
+            }
+            expect
+                .slice_mut(ndarray::s![l..l + b, .., ..])
+                .into_shape_with_order((b, nao * nao))
+                .unwrap()
+                .assign(&acc);
+            l = r;
+        }
+        expect
+    }
+
+    /// The in-place expansion against an out-of-place unpack of a copy, on
+    /// every row count up to 40 and on `nao` 1 (packed = square, serial tail
+    /// only), 2, 3, 7 and 24 (waves): bitwise, since both only move values.
+    /// Catches: a wave whose destinations overlap an unmoved row's source (a
+    /// `lo` rounded down), rows moved in ascending order, a tail row expanded
+    /// from its own half-overwritten source, and a missing mirror.
+    #[test]
+    fn packed_rows_expand_in_place_to_the_squares_an_out_of_place_unpack_gives() {
+        for nao in [1usize, 2, 3, 7, 24] {
+            let (pair, sq) = (packed_pair_len(nao), nao * nao);
+            for rows in 0..=40usize {
+                let packed: Vec<f64> = (0..rows * pair)
+                    .map(|i| (i as f64 + 0.25) * if i % 3 == 0 { -1.0 } else { 1.0 })
+                    .collect();
+                let mut want = Array3::<f64>::zeros((rows, nao, nao));
+                unpack_lower_triangle(&packed, nao, rows, &mut want);
+                let mut buf = vec![f64::NAN; rows * sq];
+                buf[..rows * pair].copy_from_slice(&packed);
+                expand_packed_front_in_place(&mut buf, rows, nao);
+                let want = want.as_slice().unwrap();
+                let moved = (0..rows * sq)
+                    .filter(|&i| buf[i].to_bits() != want[i].to_bits())
+                    .count();
+                assert_eq!(moved, 0, "nao {nao}, rows {rows}: {moved} elements differ");
+            }
+        }
+    }
+
+    /// The triangle dressing against the full-square one it replaced, on odd and
+    /// even `nao` and on band sizes that leave a partial last row block, for both
+    /// raw constructors the SCF uses: the tensor is EXACTLY symmetric in μν, and
+    /// each element is within the summation bound of the reference. Both sum
+    /// the same Q terms in the same `DRESS_K_BLOCK` blocks, each block a dot of
+    /// depth ≤ `kb` and the blocks added in order, so each is within
+    /// `γ_{kb+nb}·S` of the exact value (Higham §3.1, `S = Σ_Q |m_PQ||raw_Q,μν|`,
+    /// `nb` blocks) and the two within `2·γ_{kb+nb}·S` of each other. Not
+    /// bitwise: OpenBLAS (ndarray's `blas` feature is on workspace-wide) forms a
+    /// GEMM's k-sum differently for different operand shapes, and the packed
+    /// tiles are not the full rows. Catches: a missing mirror, a tile or panel
+    /// of the wrong length or offset (the water cases span 2 and 4 column
+    /// blocks), a dropped Q block, and an upper triangle computed separately
+    /// (not mirrored).
+    #[test]
+    fn triangle_dressing_is_symmetric_and_within_the_bound_of_the_full_square_one() {
+        let water = "3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n";
+        let cases: [(&str, usize, &str); 6] = [
+            (water, 1, "cc-pvdz"),
+            (water, 1, "sto-3g"),
+            (water, 1, "aug-cc-pvdz"),
+            (water, 1, "def2-svp"),
+            ("1\nO\nO 0 0 0\n", 3, "cc-pvdz"),
+            ("1\nH\nH 0 0 0\n", 2, "cc-pvdz"),
+        ];
+        for (xyz, mult, ob) in cases {
+            let mol = Molecule::parse_xyz(xyz, 0, mult).unwrap();
+            let obs = PreparedBasis::new(&mol, &basis::bundled(ob).unwrap()).unwrap();
+            let dfbs =
+                PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+            let op = Operator::coulomb();
+            let (naux, nao) = (dfbs.nbasis(), obs.nbasis());
+            // A dense metric-like m with full-precision entries of both signs.
+            let m = Array2::<f64>::from_shape_fn((naux, naux), |(p, q)| {
+                let x = ((p * 31 + q * 17) % 101) as f64 / 101.0 - 0.5;
+                if p == q {
+                    1.0 + x
+                } else {
+                    0.03 * x / (1.0 + (p as f64 - q as f64).abs()).sqrt()
+                }
+            });
+            let budget = usize::MAX / 4;
+            for jk in [false, true] {
+                let mut raw = if jk {
+                    ThreeIndexSource::build_for_jk(op, &mol, &obs, &dfbs, budget, (0, naux), true)
+                        .unwrap()
+                } else {
+                    ThreeIndexSource::build(op, &obs, &dfbs, budget).unwrap()
+                };
+                let expect = full_square_reference(&raw, &m);
+                let dressed = ThreeIndexSource::build_dressed(&mut raw, &m, budget).unwrap();
+                let Backend::InCore(ref got) = dressed.backend else {
+                    panic!("expected the in-core fast path");
+                };
+                let raw_flat = raw.incore_flat().unwrap();
+                let s_abs = m.mapv(f64::abs).dot(&raw_flat.mapv(f64::abs));
+                let kb = DRESS_K_BLOCK.min(naux);
+                let nb = naux.div_ceil(DRESS_K_BLOCK);
+                let kk = (kb + nb) as f64 * f64::EPSILON / 2.0;
+                let eps = 2.0 * kk / (1.0 - kk);
+                let (mut worst, mut asym) = (0.0f64, 0usize);
+                for p in 0..naux {
+                    for i in 0..nao {
+                        for j in 0..nao {
+                            let (x, y) = (got[(p, i, j)], expect[(p, i, j)]);
+                            let bound = eps * s_abs[(p, i * nao + j)] + f64::MIN_POSITIVE;
+                            worst = worst.max((x - y).abs() / bound);
+                            if x.to_bits() != got[(p, j, i)].to_bits() {
+                                asym += 1;
+                            }
+                        }
+                    }
+                }
+                assert_eq!(asym, 0, "{ob} (nao {nao}, jk {jk}): not exactly symmetric");
+                assert!(
+                    worst <= 1.0,
+                    "{ob} (nao {nao}, naux {naux}, jk {jk}): |Δ|/bound = {worst:.3}"
+                );
+            }
+        }
+    }
+
     /// The dressed tensor must not depend on RAYON_NUM_THREADS.
     ///
-    /// `build_dressed_band`'s parallel fast path splits OUTPUT aux rows across
-    /// workers. BLAS chooses its internal k-blocking from the operand's row
-    /// count, so the row-block boundaries fix the floating-point summation
-    /// order — deriving them from the thread count (or from the budget-derived
-    /// `block_naux`) silently changes the result per machine. That regression
-    /// shifted the benzene/aug-cc-pVTZ SCF energy by 2.9e-6 Ha and only appeared
-    /// at RAYON=2 and 12. `DRESS_ROW_BLOCK` is a compile-time constant to
-    /// prevent it; this test pins that.
+    /// `build_dressed_band`'s parallel fast path splits the work across workers
+    /// (now by packed column tiles of the compile-time `DRESS_COL_BLOCK`). An
+    /// odd split of the OUTPUT aux rows changes OpenBLAS's accumulation, so
+    /// deriving row boundaries from the thread count (or from the
+    /// budget-derived `block_naux`) silently changes the result per machine.
+    /// That regression shifted the benzene/aug-cc-pVTZ SCF energy by 2.9e-6 Ha
+    /// and only appeared at RAYON=2 and 12; this test pins that it stays gone.
     #[test]
     fn dressed_tensor_bitidentical_across_thread_counts() {
         // Benzene/def2-SVP with the JK-fit aux: naux = 558, so DRESS_ROW_BLOCK
@@ -2742,6 +3231,7 @@ mod tests {
         );
     }
 
+    #[ignore = "tier slow (>=60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
     #[test]
     fn spilled_dressed_tensor_stays_within_a_few_ulp_of_in_core() {
         let mol = Molecule::load_xyz("../../testdata/molecules/benzene.xyz").unwrap();
@@ -2917,99 +3407,11 @@ mod tests {
         }
     }
 
-    /// REGRESSION (defect A): removing the second copy must not move a bit.
-    ///
-    /// `build_dressed_band`'s parallel fast path used to `collect()` every
-    /// output block into a `Vec<(usize, Array2)>` and then scatter, so at the
-    /// instant the collect finished a FULL SECOND COPY of the dressed band was
-    /// co-resident with `out_incore` — while the `in_core` gate above charged
-    /// for only ONE. It now accumulates straight into the destination rows via
-    /// `par_chunks_mut`.
-    ///
-    /// `dressed_tensor_bitidentical_across_thread_counts` proves the new path
-    /// agrees with ITSELF at every thread count; it cannot prove it agrees with
-    /// the code that was replaced. This does: the reference below reproduces
-    /// the OLD structure literally (a private zeroed `Array2` per block,
-    /// accumulated, then assigned into the output), so any change to the GEMM
-    /// boundaries, the Q sweep, or the accumulation order shows up as a
-    /// differing bit.
-    #[test]
-    fn dressed_fast_path_bitidentical_to_owned_buffer_reference() {
-        let (mol,) = water();
-        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
-        let dfbs =
-            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
-        let op = Operator::coulomb();
-        let naux = dfbs.nbasis();
-        let nao = obs.nbasis();
-        let mut m = Array2::<f64>::zeros((naux, naux));
-        for p in 0..naux {
-            for q in 0..naux {
-                m[(p, q)] =
-                    0.001 * (((p * 7 + q * 3) % 13) as f64) + if p == q { 1.0 } else { 0.0 };
-            }
-        }
-        let budget = usize::MAX / 4; // force the in-core fast path
-
-        // Live path.
-        let mut raw = ThreeIndexSource::build(op, &obs, &dfbs, budget).unwrap();
-        let dressed = ThreeIndexSource::build_dressed(&mut raw, &m, budget).unwrap();
-        let got = match dressed.backend {
-            Backend::InCore(ref a) => a.clone(),
-            _ => panic!("expected the in-core fast path"),
-        };
-
-        // Reference: the OLD collect-into-owned-buffer-then-scatter structure,
-        // written out by hand and run SERIALLY.
-        let raw_ref = ThreeIndexSource::build(op, &obs, &dfbs, budget).unwrap();
-        let q_edges = raw_ref.block_edges();
-        let raw_flat = raw_ref.incore_flat().expect("in-core");
-        let raw_p0 = raw_ref.band().0;
-        let mut expect = Array3::<f64>::zeros((naux, nao, nao));
-        let mut l = 0usize;
-        while l < naux {
-            let r = (l + DRESS_ROW_BLOCK).min(naux);
-            let b = r - l;
-            // A PRIVATE owned buffer, exactly as the removed code allocated.
-            let mut acc = Array2::<f64>::zeros((b, nao * nao));
-            for &(q0, q1) in q_edges.iter() {
-                let mut qa = q0;
-                while qa < q1 {
-                    let qb = (qa + DRESS_K_BLOCK).min(q1);
-                    let msub = m.slice(ndarray::s![l..l + b, qa..qb]);
-                    let rblk = raw_flat.slice(ndarray::s![qa - raw_p0..qb - raw_p0, ..]);
-                    let contrib: Array2<f64> = msub.dot(&rblk);
-                    acc += &contrib;
-                    qa = qb;
-                }
-            }
-            // ...then scattered into the output.
-            let mut dst = expect
-                .slice_mut(ndarray::s![l..l + b, .., ..])
-                .into_shape_with_order((b, nao * nao))
-                .unwrap();
-            dst.assign(&acc);
-            l = r;
-        }
-
-        assert_eq!(got.dim(), expect.dim());
-        let differing = got
-            .iter()
-            .zip(expect.iter())
-            .filter(|(x, y)| x.to_bits() != y.to_bits())
-            .count();
-        assert_eq!(
-            differing, 0,
-            "removing the redundant second copy changed {differing} elements — the \
-             scatter-free path must be a pure memory fix, never a numerical one"
-        );
-    }
-
     /// Defect A, the accounting half: the in-core dressing gate must refuse a
     /// band that does not fit AND name the term in the breakdown.
     ///
-    /// The old gate compared only `band·nao²·8` against the budget, so it was
-    /// impossible for it to fail here for the right reason. Both directions are
+    /// A gate comparing only `band·nao²·8` against the budget cannot
+    /// fail here for the right reason. Both directions are
     /// checked: a budget that genuinely cannot hold the band is refused, and an
     /// ample budget still runs (an over-estimating guard that refuses a job
     /// which would have fit is as much a defect as an under-estimate).
@@ -3036,7 +3438,7 @@ mod tests {
 
         // TIGHT-BUT-FAST-PATH: a budget that admits the band itself (so the
         // in-core fast path is entered) but cannot also hold the per-worker
-        // GEMM scratch the old gate ignored entirely.
+        // GEMM scratch that gate ignores entirely.
         let band_bytes = naux * nao * nao * 8;
         let mut raw2 = ThreeIndexSource::build(op, &obs, &dfbs, ample).unwrap();
         let dressed = ThreeIndexSource::build_dressed(&mut raw2, &m, band_bytes)
@@ -3144,12 +3546,12 @@ mod tests {
     // ------------------------------------------------------------------
     // Disk-spill preflight anchors.
     //
-    // The defect these pin: `build_band` used to choose in-core vs spill with a
+    // What these pin: `build_band` must not choose in-core vs spill with a
     // bare `if needed <= budget_bytes`, with NO disk-space check and NO warning.
     // A C48/def2-TZVP job writes ~185 GB and a C32/def2-QZVP job ~415 GB into
-    // `std::env::temp_dir()`; nothing looked at the free space, so the run
-    // filled the partition instead of refusing. `cosx_k::check_budget` refuses
-    // with a diagnosis in the same situation — the asymmetry WAS the bug.
+    // `std::env::temp_dir()`; without a free-space check the run
+    // fills the partition instead of refusing. `cosx_k::check_budget` refuses
+    // with a diagnosis in the same situation.
     // ------------------------------------------------------------------
 
     /// (a) REFUSAL FIRES. The spill preflight must return a typed error naming
@@ -3189,6 +3591,62 @@ mod tests {
         assert!(
             msg.contains("TMPDIR"),
             "must name the spill-dir override: {msg}"
+        );
+    }
+
+    /// The refusal names `df_k_aux = ""` with the band's size only for the
+    /// RI-K dressed spill; a raw spill (RI-J, a post-SCF B tensor) has no
+    /// RI-K to drop.
+    #[test]
+    fn spill_refusal_names_exact_k_only_for_the_ri_k_band() {
+        let dir = std::path::Path::new("/tmp");
+        let refuse = |kind| {
+            check_spill_disk_for(100_000_000_000, 1_000_000_000, dir, kind)
+                .expect_err("100 GB into 1 GB free must be refused")
+                .to_string()
+        };
+        assert_no_exact_k_remedy(&refuse(SpillKind::Raw));
+        assert_names_exact_k_remedy(&refuse(SpillKind::RiKDressed), "100.00 GB");
+        // jk_storage = "direct" recomputes the raw tensor only; the RI-K band
+        // spills regardless, so its refusal must not offer it.
+        assert!(refuse(SpillKind::Raw).contains("jk_storage = \"direct\""));
+        let rik = refuse(SpillKind::RiKDressed);
+        assert!(
+            !rik.contains("jk_storage"),
+            "RI-K refusal offered jk_storage: {rik}"
+        );
+    }
+
+    /// A raw spill must not offer `df_k_aux = ""`: the tensor may be RI-J's
+    /// or an RI-MP2/RPA/GW B tensor on an exact-SCF reference, where no RI-K
+    /// exists and the size would be the wrong tensor's.
+    ///
+    /// MUTATION: make `check_spill_disk_for` append the remedy for
+    /// `SpillKind::Raw` too (the pre-fix unconditional remedy) and
+    /// `spill_refusal_names_exact_k_only_for_the_ri_k_band` goes RED.
+    fn assert_no_exact_k_remedy(msg: &str) {
+        assert!(
+            !msg.contains("df_k_aux"),
+            "raw spill named the RI-K remedy: {msg}"
+        );
+        assert!(!msg.contains("RI-K"), "raw spill named RI-K: {msg}");
+    }
+
+    /// Both spill messages name `df_k_aux = ""` (exact K) as the memory
+    /// remedy for a density-fitted hybrid, with the RI-K tensor size it saves,
+    /// and say `k_builder` does nothing while RI-K is active: the knob a
+    /// reader reaches for first and the one that is inert here.
+    ///
+    /// MUTATION: drop `exact_k_remedy` from either message and this goes RED.
+    fn assert_names_exact_k_remedy(msg: &str, size: &str) {
+        assert!(msg.contains("df_k_aux = \"\""), "must name exact K: {msg}");
+        assert!(
+            msg.contains(&format!("RI-K's tensor (the {size} being spilled")),
+            "must name the RI-K tensor size it saves: {msg}"
+        );
+        assert!(
+            msg.contains("k_builder has no effect while RI-K is active"),
+            "must not point at k_builder as a lever: {msg}"
         );
     }
 
@@ -3245,12 +3703,12 @@ mod tests {
     /// `SPILL_WARNED` is the once-latch; this asserts the latch admits exactly
     /// one caller and that the line names the re-read cost.
     ///
-    /// MUTATION: remove the `SPILL_WARNED.swap` guard from `warn_spill_once` (or
+    /// MUTATION: remove the latch `swap` guard from `warn_spill_once_with` (or
     /// make it always return true) and this goes RED.
     #[test]
     fn spill_warning_is_emitted_once_and_names_the_per_iteration_reread() {
         let dir = std::path::Path::new("/tmp/ferric-spill-anchor");
-        let text = spill_warning_text(55_000_000_000, dir);
+        let text = spill_warning_text(55_000_000_000, dir, SpillKind::RiKDressed);
         assert!(
             text.starts_with("[ferric] warning:"),
             "must match ferric's warning convention: {text}"
@@ -3267,6 +3725,13 @@ mod tests {
             text.contains("every SCF iteration"),
             "the point of the warning is the per-iteration re-read cost: {text}"
         );
+        assert_no_exact_k_remedy(&text);
+        // A raw tensor may be a post-SCF B tensor, which DfK::build never reads.
+        let raw = spill_warning_text(55_000_000_000, dir, SpillKind::Raw);
+        assert!(
+            !raw.contains("DfK::build") && raw.contains("min per pass"),
+            "raw spill text must not claim the DF-K per-iteration re-read: {raw}"
+        );
 
         // The once-latch: a fresh latch admits exactly one caller.
         let latch = std::sync::atomic::AtomicBool::new(false);
@@ -3278,26 +3743,65 @@ mod tests {
         // claim — see `spill_warning_latch_is_consulted`.
     }
 
-    /// (d′) BEHAVIOURAL: the live `warn_spill_once` must consult the latch. Runs
+    /// (d′) BEHAVIOURAL: the live `warn_spill_once_for` must consult the latch. Runs
     /// the real function twice against a locally-reset latch and asserts the
     /// second call reports "already warned".
     ///
-    /// MUTATION: make `warn_spill_once` unconditional and this goes RED.
+    /// MUTATION: make `warn_spill_once_with` unconditional and this goes RED.
     #[test]
     fn spill_warning_latch_is_consulted() {
-        // Serialize against any other test that might trip the latch.
-        static GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _g = GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = SPILL_LATCH_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         SPILL_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
         assert!(
-            warn_spill_once(1_000, std::path::Path::new("/tmp")),
+            warn_spill_once_for(1_000, std::path::Path::new("/tmp"), SpillKind::Raw),
             "first call must warn"
         );
         assert!(
-            !warn_spill_once(1_000, std::path::Path::new("/tmp")),
+            !warn_spill_once_for(1_000, std::path::Path::new("/tmp"), SpillKind::Raw),
             "second call must be suppressed by the once-latch"
         );
         SPILL_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Serializes the tests that reset or set the process-wide spill latches.
+    static SPILL_LATCH_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A raw spill that warned first must not swallow the RI-K warning, the
+    /// only one naming the exact-K remedy: it has its own latch.
+    ///
+    /// The latches are test-local, so a concurrent spill in another test
+    /// cannot set them between the asserts.
+    ///
+    /// Mutation: route `SpillKind::RiKDressed` through the raw latch and the
+    /// first assert fails.
+    #[test]
+    fn ri_k_spill_warning_has_its_own_latch() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let dir = std::path::Path::new("/tmp");
+        let raw = AtomicBool::new(true);
+        let ri_k = AtomicBool::new(false);
+        assert!(warn_spill_once_with(
+            1_000,
+            dir,
+            SpillKind::RiKDressed,
+            &raw,
+            &ri_k
+        ));
+        assert!(!warn_spill_once_with(
+            1_000,
+            dir,
+            SpillKind::RiKDressed,
+            &raw,
+            &ri_k
+        ));
+        assert!(!warn_spill_once_with(
+            1_000,
+            dir,
+            SpillKind::Raw,
+            &raw,
+            &ri_k
+        ));
+        assert!(raw.load(Ordering::Relaxed) && ri_k.load(Ordering::Relaxed));
     }
 
     /// (b) IN-CORE IS UNTOUCHED. When the tensor fits the budget the new code
@@ -3382,9 +3886,9 @@ mod tests {
     /// for a path that does not exist.
     #[test]
     fn free_space_probe_reports_real_paths_and_declines_missing_ones() {
-        let free =
-            free_bytes_at(std::path::Path::new("/tmp")).expect("/tmp must report free space");
-        assert!(free > 0, "/tmp reported 0 bytes free");
+        let tmp = std::env::temp_dir();
+        let free = free_bytes_at(&tmp).expect("the temp dir must report free space");
+        assert!(free > 0, "{} reported 0 bytes free", tmp.display());
         assert_eq!(
             free_bytes_at(std::path::Path::new("/nonexistent-ferric-anchor-path")),
             None,

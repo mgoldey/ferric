@@ -16,9 +16,8 @@
 //! single `eps_mat` (naux²) that is built via `eps_mat += &chi_s` inside a
 //! loop over both spins — so a second, transient `chi_s` (naux²) is live at
 //! the moment of that `+=`. Net: two `(naux, nov_σ)` buffers and two naux²
-//! buffers per worker, not one of each. A comment at the call site used to
-//! claim "the per-worker frequency scratch is sized from one channel at a
-//! time" — that claim is false; see properties.rs's `map_init` seed.
+//! buffers per worker, not one of each. The claim "the per-worker frequency scratch is sized from one channel at a
+//! time" is false; see properties.rs's `map_init` seed.
 //!
 //! `molecular_dynamic_polarizability`'s open-shell branch has the identical
 //! shape (same `map_init` pattern, same `eps_mat += ...` accumulation) and,

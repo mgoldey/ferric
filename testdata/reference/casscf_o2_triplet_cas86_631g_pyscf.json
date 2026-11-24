@@ -1,0 +1,64 @@
+{
+ "system": "o2_triplet_cas86_631g",
+ "xyz": "2\noxygen triplet (r=1.208); multiplicity=3 set in TOML\nO      0.000000     0.000000     0.000000\nO      0.000000     0.000000     1.208000\n",
+ "xyz_source": "o2.xyz",
+ "basis": "6-31g",
+ "n_core": 4,
+ "n_active": 6,
+ "n_elec_active": [
+  5,
+  3
+ ],
+ "e_total": -149.63672985370798,
+ "grad_norm_pyscf": 6.739280787245705e-08,
+ "converged": true,
+ "natural_occupations": [
+  1.9600950720179573,
+  1.9600950719921035,
+  1.9550396430521522,
+  1.0393132200032864,
+  1.039313219972396,
+  0.04614377296210685
+ ],
+ "core_fock_eigenvalues": [
+  -20.714113110856886,
+  -20.713427734406277,
+  -1.5128570142231366,
+  -1.0894165122603228
+ ],
+ "virtual_fock_eigenvalues": [
+  0.9464901489239352,
+  1.0813583612570485,
+  1.081358361277391,
+  1.136894354801843,
+  1.1849037013434154,
+  1.1849037019161905,
+  1.248518747416433,
+  1.6935996810414027
+ ],
+ "s2": 2.0000000000000093,
+ "e_rhf_pyscf_same_integrals": -149.46137606698167,
+ "integral_fingerprint": {
+  "hcore_sum": -416.5720241240996,
+  "overlap_sum": 32.87311847663623,
+  "eri_norm": 19.524486085939003,
+  "e_nuc": 28.035878724238415
+ },
+ "settings": {
+  "start": "PySCF RHF on ferric AO integrals, init_guess=1e",
+  "rhf_conv_tol": 1e-12,
+  "rhf_conv_tol_grad": 1e-08,
+  "mc_conv_tol": 1e-12,
+  "mc_conv_tol_grad": 1e-06,
+  "mc_max_cycle_macro": 300,
+  "fcisolver": "direct_spin1",
+  "fcisolver_conv_tol": 1e-14,
+  "fock_for_eigenvalues": "mc.get_fock() (F^I + F^A) in mc.mo_coeff"
+ },
+ "provenance": {
+  "pyscf_version": "2.13.1",
+  "ferric_commit": "0ec644103b05774c19b4303ab6d200a60bbd9a6c",
+  "ferric_dirty": false,
+  "generator": "scripts/gen_casscf_refs.py"
+ }
+}

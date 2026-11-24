@@ -18,9 +18,8 @@
 //! with `ξ = 1.0694` the standard GEPOL point-charge self-energy constant
 //! (Cancès, Mennucci, Tomasi, J. Chem. Phys. 107, 3032 (1997)).
 //!
-//! `SdKind::GaussianSmeared` (PySCF `pcm.py::get_D_S`'s formulation, Li &
-//! Frisch/Scalmani, "Continuous Surface Charge Polarizable Continuum
-//! Models", J. Chem. Phys. 122, 194110 (2005)) instead treats each tessera as
+//! `SdKind::GaussianSmeared` (PySCF `pcm.py::get_D_S`'s formulation; the
+//! width table cites J. Chem. Phys. 122, 194110 (2005), Table II) instead treats each tessera as
 //! a Gaussian charge distribution of width `xi_k` set by the LOCAL Lebedev
 //! grid density (`xi_k = XI[ng] / (r_vdw_k * sqrt(w_k))`, `w_k` the tessera's
 //! unnormalized Lebedev weight, see [`crate::cavity::Tessera::charge_exp`]):
@@ -43,7 +42,7 @@
 //! reference — see that crate's module doc. This is the default here (see
 //! `SdKind::default`); `PointCharge` is kept only for the regression test
 //! that measures the isolated S/D formulation effect and to reproduce
-//! pre-2026-07-19 numbers.
+//! point-charge numbers.
 //!
 //! In both cases `D_ij` uses the normal at the *source* point `j` — the
 //! convention that makes `D` (not `Dᵀ`) the correct operator for "potential
@@ -69,6 +68,7 @@
 //! tessellation, S/D formulas, and linear-algebra plumbing below are an
 //! independent implementation.
 
+use ferric_core::special::erf;
 use ferric_core::FerricError;
 use ndarray::Array2;
 
@@ -78,32 +78,69 @@ use crate::cavity::Tessera;
 /// [`SdKind::PointCharge`].
 const XI_SELF: f64 = 1.0694;
 
-/// Per-Lebedev-order Gaussian-charge-width prefactor `XI[ng]` (Table II, Li &
-/// Frisch/Scalmani, J. Chem. Phys. 122, 194110 (2005), as used by PySCF's
-/// `pcm.py`). Only the six Lebedev orders `ferric_quadrature::lebedev` (and hence
-/// this crate's cavity construction) supports are tabulated — matches
-/// `ferric_scf::cosmo::gaussian_xi_table` exactly. Returns `Err` for any
-/// other order rather than silently guessing a value.
-pub(crate) fn gaussian_xi_table(lebedev_order: usize) -> Result<f64, FerricError> {
-    match lebedev_order {
-        6 => Ok(4.84566077868),
-        14 => Ok(4.86458714334),
-        26 => Ok(4.85478226219),
-        50 => Ok(4.89250673295),
-        110 => Ok(4.90101060987),
-        302 => Ok(4.90498088169),
-        _ => Err(FerricError::General(format!(
-            "gaussian_xi_table: lebedev_order {lebedev_order} not in the supported set \
-             {{6,14,26,50,110,302}}"
-        ))),
-    }
+/// Per-Lebedev-order Gaussian-charge-width prefactor `XI[ng]` (Table II,
+/// J. Chem. Phys. 122, 194110 (2005), as cited and used by PySCF's
+/// `pcm.py`; values copied from PySCF 2.13.1's `pyscf.solvent.pcm.XI`). The
+/// orders of [`crate::config::SUPPORTED_LEBEDEV_ORDERS`], the ones this
+/// crate's cavity construction accepts, are tabulated. Shared with
+/// `ferric_scf::cosmo`. Returns `Err` for any other order rather than
+/// silently guessing a value.
+pub fn gaussian_xi_table(lebedev_order: usize) -> Result<f64, FerricError> {
+    GAUSSIAN_XI
+        .iter()
+        .find(|(order, _)| *order == lebedev_order)
+        .map(|&(_, xi)| xi)
+        .ok_or_else(|| {
+            FerricError::General(format!(
+                "gaussian_xi_table: lebedev_order {lebedev_order} not in the supported set \
+                 {:?}",
+                crate::config::SUPPORTED_LEBEDEV_ORDERS
+            ))
+        })
 }
+
+/// `(order, XI[order])` rows of [`gaussian_xi_table`], ascending.
+const GAUSSIAN_XI: [(usize, f64); 29] = [
+    (6, 4.84566077868),
+    (14, 4.86458714334),
+    (26, 4.85478226219),
+    (38, 4.90105812685),
+    (50, 4.89250673295),
+    (86, 4.8974137258),
+    (110, 4.90101060987),
+    (146, 4.89825187392),
+    (170, 4.90685517725),
+    (194, 4.90337644248),
+    (302, 4.90498088169),
+    (350, 4.86879474832),
+    (434, 4.9056734908),
+    (590, 4.90624071359),
+    (770, 4.90656435779),
+    (974, 4.90685167998),
+    (1202, 4.90704098216),
+    (1454, 4.90721023869),
+    (1730, 4.90733270691),
+    (2030, 4.90744499142),
+    (2354, 4.90753082825),
+    (2702, 4.90760972766),
+    (3074, 4.90767282394),
+    (3470, 4.90773141371),
+    (3890, 4.90777965981),
+    (4334, 4.90782469526),
+    (4802, 4.90749125553),
+    (5294, 4.90762073452),
+    (5810, 4.90792902522),
+];
 
 /// Which S/D (boundary-element) formulation to use. See the module doc for
 /// the exact formulas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SdKind {
+    /// Each tessera is a bare point charge, with the GEPOL self-energy
+    /// constant `ξ = 1.0694` in the diagonal terms.
     PointCharge,
+    /// Each tessera is a Gaussian charge of width `charge_exp` (PySCF
+    /// `get_D_S`); `erf`-attenuated off-diagonal terms. The default.
     GaussianSmeared,
 }
 
@@ -111,13 +148,6 @@ impl Default for SdKind {
     fn default() -> Self {
         SdKind::GaussianSmeared
     }
-}
-
-// libm's `erf` (C99) is already transitively linked into every ferric binary
-// (libint2/OpenBLAS both pull in libm) — bind it directly rather than adding
-// a crate dependency, same convention as `ferric_scf::cosmo`.
-extern "C" {
-    fn erf(x: f64) -> f64;
 }
 
 /// Build the S (Coulomb) and D (normal-derivative Coulomb) matrices for a
@@ -185,7 +215,7 @@ pub fn build_s_d_kind(tess: &[Tessera], kind: SdKind) -> (Array2<f64>, Array2<f6
                     let xi_ij = xi_i * xi_j / (xi_i * xi_i + xi_j * xi_j).sqrt();
                     let xi_r = xi_ij * r;
                     // SAFETY: erf is the C standard math library function; xi_r is a finite f64.
-                    let s_ij = unsafe { erf(xi_r) } / r;
+                    let s_ij = erf(xi_r) / r;
                     s[(i, j)] = s_ij;
                     s[(j, i)] = s_ij; // S is symmetric.
 
@@ -261,6 +291,23 @@ mod tests {
     use ferric_core::mol::Molecule;
 
     #[test]
+    fn gaussian_xi_table_pins_li_frisch_values_and_rejects_others() {
+        let want = [
+            (6, 4.84566077868),
+            (14, 4.86458714334),
+            (26, 4.85478226219),
+            (50, 4.89250673295),
+            (110, 4.90101060987),
+            (302, 4.90498088169),
+        ];
+        for (order, xi) in want {
+            assert_eq!(gaussian_xi_table(order).unwrap(), xi, "order {order}");
+        }
+        assert!(gaussian_xi_table(100).is_err());
+        assert!(gaussian_xi_table(0).is_err());
+    }
+
+    #[test]
     fn s_matrix_is_symmetric() {
         let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
         let tess = build_cavity(&mol, &CavityConfig::default()).unwrap();
@@ -315,7 +362,7 @@ mod tests {
             let xi_j = tj.charge_exp;
             let xi_ij = xi_i * xi_j / (xi_i * xi_i + xi_j * xi_j).sqrt();
             // SAFETY: erf is the C standard math library function; argument is finite.
-            let expected = unsafe { erf(xi_ij * r) } / r;
+            let expected = erf(xi_ij * r) / r;
             assert!((s[(0, 1)] - expected).abs() < 1e-12);
             // NOTE: for THIS specific well-separated tessera pair,
             // xi_ij*r ~ 31 so erf(xi_ij*r) saturates to exactly 1.0 in double

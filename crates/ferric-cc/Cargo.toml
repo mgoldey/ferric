@@ -14,6 +14,7 @@ ferric-scf = { path = "../ferric-scf" }
 ferric-mp2 = { path = "../ferric-mp2" }
 ferric-tensors = { path = "../ferric-tensors" }
 ndarray = { workspace = true }
+ndarray-linalg = { workspace = true }
 rayon = { workspace = true }
 
 [features]
@@ -21,4 +22,6 @@ rayon = { workspace = true }
 gpu = ["ferric-core/gpu", "ferric-tensors/gpu"]
 
 [dev-dependencies]
+ferric-testkit = { path = "../ferric-testkit" }
+ferric-gw = { path = "../ferric-gw" }
 serde_json = { workspace = true }

@@ -3,6 +3,12 @@
 //! analytic KS Hessian and its pieces against finite differences of the
 //! production (moving-grid) gradient and `V_xc`.
 #![allow(dead_code)]
+// RI-J pinned to the f64 tensor (`ri_j_precision: Some(F64)` in every config
+// here): these tests validate f64 implementation code against finite
+// differences, another tier or f64 reference values at bars below the f32
+// default's effect (its energy shift is ~1e-6 Ha, and its energy surface jitters
+// by ~1e-7..1e-6 Ha between nearby geometries; site/src/methods/scf.md, "RI-J
+// tensor precision").
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -16,6 +22,8 @@ use ferric_scf::ks_gradient::{ks_gradient_closed_with_exchange_on_grids, KsGradG
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+#[allow(unused_imports)]
+pub use ferric_testkit::compare::max_abs;
 use ndarray::{Array2, Axis};
 
 pub const WATER: &str = "3\nH2O distorted off C2v\n\
@@ -28,6 +36,7 @@ pub fn grid_cfg() -> AtomicGridConfig {
         n_radial: 50,
         n_angular: 110,
         prune: None,
+        weight_cut: None,
     }
 }
 
@@ -46,16 +55,15 @@ pub fn water() -> Molecule {
 /// Production SCF / Hessian config: functional `xc`, exact J and K, the
 /// test grid.
 pub fn config(xc: &str) -> RhfConfig {
-    RhfConfig {
-        xc: Some(xc.into()),
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        dft_grid: Some(grid_cfg()),
-        max_iter: 200,
-        energy_conv: 1e-13,
-        density_conv: 1e-11,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_xc(xc)
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new())
+        .with_dft_grid(grid_cfg())
+        .with_max_iter(200)
+        .with_energy_conv(1e-13)
+        .with_density_conv(1e-11)
 }
 
 pub struct Pt {
@@ -102,10 +110,6 @@ pub fn rich(h: f64, mut f: impl FnMut(f64) -> Array2<f64>) -> Array2<f64> {
     let coarse = d(h);
     let fine = d(0.5 * h);
     (4.0 * fine - coarse) / 3.0
-}
-
-pub fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0f64, |m, x| m.max(x.abs()))
 }
 
 pub fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
@@ -230,8 +234,41 @@ pub const TOL_FOCK: f64 = 1e-10;
 /// A mutant must miss by at least this many bars.
 pub const MUTANT_FACTOR: f64 = 10.0;
 
+/// SCF convergence of every SCF behind a gradient difference: `cfg` tightened
+/// to `density_conv <= 1e-13`, `energy_conv <= 1e-14`.
+///
+/// WHY. At the production 1e-11 every displaced water SCF stops at the same
+/// iteration with the same unconverged residual (DIIS `err_max` 1.2e-12), and
+/// that shared residual cancels in the central differences. When ONE
+/// displaced SCF takes one more iteration (`err_max` 2e-14) the cancellation
+/// breaks, and the stencil's `4 / (3h)` = 2.7e3 turns about 1e-12 of gradient
+/// error into a Hessian miss of about 2e-9. Whether an SCF stops at
+/// iteration 12 or 13 is decided by bit-level differences in the build:
+/// MEASURED in an ubuntu-22.04 container (OpenBLAS 0.3.20, glibc 2.35, g++ 11,
+/// libxc 5.1.7, rustc 1.99.1, the CI stack) on an i7-6800K, LDA/6-31G/default
+/// grid, column H2.x, step +2.5e-4 Bohr takes 13 iterations where every other
+/// step takes 12. The miss is 2.306e-9 there (exactly the CI runners' number,
+/// so the cause is the software stack, not the runner CPU) and 8.4e-11 on the
+/// local ubuntu-24.04 stack. At 1e-13 the same column misses by 7.4e-11 in
+/// that container.
+pub fn fd_reference_config(cfg: &RhfConfig) -> RhfConfig {
+    cfg.clone()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_density_conv(cfg.density_conv.min(1e-13))
+        .with_energy_conv(cfg.energy_conv.min(1e-14))
+}
+
+/// Largest DIIS `err_max` an SCF behind the gradient difference may stop at.
+/// The Richardson stencil's largest coefficient is `4 / (3 H_FROZEN)` = 2.7e3,
+/// and the measured gradient error is about 0.7 `err_max` (2.3e-9 Hessian miss
+/// from a 1.2e-12 vs 2e-14 residual split), so 1e-13 bounds the reference's
+/// SCF noise at about 2e-10, a 10x margin under `TOL_HESS_FD`. Measured
+/// `err_max` at [`fd_reference_config`]: 1.4e-14 to 3.6e-14.
+pub const FD_SCF_ERR_MAX: f64 = 1e-13;
+
 /// Central difference of the production KS gradient (production SCF at every
-/// displaced geometry on the same grid).
+/// displaced geometry on the same grid). Every displaced SCF must stop with
+/// DIIS `err_max` below [`FD_SCF_ERR_MAX`]; pass a [`fd_reference_config`].
 pub fn fd_of_production_gradient(
     p: &Pt,
     basis_name: &str,
@@ -243,6 +280,17 @@ pub fn fd_of_production_gradient(
     for b in 0..n3 {
         let col = rich(H_FROZEN, |s| {
             let q = scf(&displaced(&p.mol, b, s), basis_name, cfg);
+            let err_max = q
+                .res
+                .convergence
+                .as_ref()
+                .expect("a converged SCF reports its convergence signals")
+                .err_max;
+            assert!(
+                err_max < FD_SCF_ERR_MAX,
+                "{basis_name} coordinate {b} step {s:+e}: SCF stopped at err_max {err_max:.2e} \
+                 (>= {FD_SCF_ERR_MAX:e}); the gradient difference would carry its residual"
+            );
             flat(
                 &ks_gradient_closed_with_exchange_on_grids(
                     &q.mol,
@@ -267,7 +315,9 @@ pub fn fd_of_production_gradient(
 /// Full Hessian vs FD of the production gradient (Richardson, h = 5e-4 and
 /// 2.5e-4), Ha/Bohr²: measured 7.9e-11 (LDA) and 4.8e-11 (PBE) at STO-3G on the
 /// 50x110 grid and 1.7e-10 (LDA, 6-31G, default 75x110 grid); the fixed-grid
-/// Hessian misses the same references by 2.4e-3, 9.7e-3 and 1.1e-3.
+/// Hessian misses the same references by 2.4e-3, 9.7e-3 and 1.1e-3. These
+/// hold only with every SCF at [`fd_reference_config`]: at the production
+/// 1e-11 the 6-31G case misses by 2.3e-9 on the ubuntu-22.04 stack.
 pub const TOL_HESS_FD: f64 = 2e-9;
 
 /// Moving and fixed-grid analytic Hessians vs FD of the production gradient
@@ -275,6 +325,7 @@ pub const TOL_HESS_FD: f64 = 2e-9;
 /// the moving one is below `tol` and the fixed one above `10 tol`.
 pub fn full_hessian_case(cfg: &RhfConfig, xc: &str, basis_name: &str, tol: f64) -> (f64, f64) {
     use ferric_scf::frequencies::{atom_masses, frequencies_from_cartesian_hessian};
+    let cfg = &fd_reference_config(cfg);
     let p = scf(&water(), basis_name, cfg);
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();

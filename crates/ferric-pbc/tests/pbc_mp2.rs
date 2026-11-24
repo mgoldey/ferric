@@ -349,10 +349,7 @@ fn molecular_ri_mp2_goes_through_the_shared_b_ov_kernel() {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            density_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_density_conv(1e-10),
     )
     .unwrap();
     assert!(rhf.converged);
@@ -451,6 +448,7 @@ fn triclinic_4h_sp_matches_pinned_pyscf_rmp2() {
 //     dense pure-AFT oracle, so the residual is finite-size only).
 // ===========================================================================
 
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn box_limit_shifted_is_a3_with_the_predicted_coefficient_unshifted_is_1_over_a() {
     let basis = pyscf_sto3g_h();
@@ -464,10 +462,7 @@ fn box_limit_shifted_is_a3_with_the_predicted_coefficient_unshifted_is_1_over_a(
         &prep_mol,
         op,
         &bounds,
-        &RhfConfig {
-            density_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_density_conv(1e-10),
     )
     .unwrap();
     assert!(mr.converged);

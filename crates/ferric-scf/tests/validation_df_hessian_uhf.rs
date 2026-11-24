@@ -74,6 +74,8 @@ use ferric_scf::hessian::{uhf_hessian, uhf_hessian_parts};
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
+use ferric_testkit::compare::max_abs_diff;
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -143,12 +145,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn vec_f64(v: &Value, ptr: &str, ctx: &str) -> Vec<f64> {
     v.pointer(ptr)
         .and_then(Value::as_array)
@@ -173,13 +169,6 @@ fn matrix(v: &Value, ptr: &str, ctx: &str) -> Array2<f64> {
         }
     }
     m
-}
-
-fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    assert_eq!(a.dim(), b.dim(), "Hessian shape");
-    a.iter()
-        .zip(b.iter())
-        .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()))
 }
 
 fn max_freq_diff(got: &[f64], want: &[f64]) -> f64 {
@@ -216,14 +205,15 @@ fn must_miss(ctx: &str, what: &str, got: &Array2<f64>, want: &Array2<f64>, bar: 
 }
 
 fn scf_config(df_j: &str, df_k: &str) -> RhfConfig {
-    RhfConfig {
-        max_iter: 500,
-        energy_conv: 1e-14,
-        density_conv: 1e-12,
-        df_j_aux: Some(df_j.to_string()),
-        df_k_aux: Some(df_k.to_string()),
-        ..Default::default()
-    }
+    RhfConfig::default()
+        // The PySCF references fit J in f64. The f32 RI-J default moves the
+        // energy by 1e-7..1e-6 Ha, above this test's bar.
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_max_iter(500)
+        .with_energy_conv(1e-14)
+        .with_density_conv(1e-12)
+        .with_df_j_aux(df_j.to_string())
+        .with_df_k_aux(df_k.to_string())
 }
 
 fn check_system(system: &str, basis_name: &str, mult: u64) {
@@ -249,7 +239,7 @@ fn check_system(system: &str, basis_name: &str, mult: u64) {
         .unwrap_or_else(|e| panic!("{}: {e:?}", xyz.display()));
 
     // --- harness like-for-like ---------------------------------------------
-    let enuc_ref = num(&r, "/nuclear_repulsion", &ctx);
+    let enuc_ref = num_ctx(&r, "/nuclear_repulsion", &ctx);
     assert!(
         (mol.nuclear_repulsion() - enuc_ref).abs() < TOL_ENUC,
         "{ctx}: nuclear repulsion - geometry/unit mismatch"
@@ -281,7 +271,7 @@ fn check_system(system: &str, basis_name: &str, mult: u64) {
             .is_some_and(|r| r.j_aux.is_some() && r.k_aux.is_some()),
         "{ctx}: no RI-J + RI-K route"
     );
-    let e_ref = num(&r, "/energy", &ctx);
+    let e_ref = num_ctx(&r, "/energy", &ctx);
     eprintln!("{ctx}: SCF energy diff {:.2e} Ha", uhf.energy - e_ref);
     assert!(
         (uhf.energy - e_ref).abs() < TOL_ENERGY,

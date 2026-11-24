@@ -114,9 +114,9 @@ fn water() -> Molecule {
 /// different task) — this helper documents and works around them so T9's own
 /// RI-MP2 correctness claims rest on a known-good RHF reference.
 fn df_rhf_config() -> RhfConfig {
-    RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
+    RhfConfig::default()
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit")
         // energy_conv is DELIBERATELY left at its 1e-3 default.
         //
         // This config used to force `energy_conv: 1e-10`, which made
@@ -136,10 +136,8 @@ fn df_rhf_config() -> RhfConfig {
         //
         // Tightening the real convergence signal is what `density_conv: 1e-8`
         // below already does; that one is the primary criterion and is kept.
-        density_conv: 1e-8,
-        use_sad_guess: false,
-        ..Default::default()
-    }
+        .with_density_conv(1e-8)
+        .with_guess(ferric_scf::options::Guess::Core)
 }
 
 /// Assert every rank agrees on `value` to <= tol. On a single rank

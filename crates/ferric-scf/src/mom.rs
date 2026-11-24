@@ -1,4 +1,6 @@
-//! Maximum-Overlap Method (MOM) for ROHF/ROKS orbital ordering.
+//! Maximum-Overlap Method (MOM) orbital ordering, used by the RHF, UHF and
+//! ROHF (and KS) drivers when `mom_after_iter` is set, and by UHF/UKS from
+//! the first iteration under [`MomReference::Initial`](crate::mom::MomReference::Initial).
 //!
 //! After diagonalizing the Fock matrix to get a new C, MOM picks the
 //! `n_closed` and `n_open` new MOs that have maximum *AO-overlap* with the
@@ -8,7 +10,111 @@
 //!
 //! Reference: Gilbert, Besley, Gill, JPC A 112, 13164, 2008.
 
+use ferric_core::FerricError;
 use ndarray::Array2;
+
+/// Which occupied set the Maximum-Overlap Method compares each new set of
+/// orbitals against ([`crate::rhf::RhfConfig::mom_reference`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MomReference {
+    /// The occupied set accepted at the previous iteration (Gilbert, Besley,
+    /// Gill 2008), from iteration `mom_after_iter + 1`; `mom_after_iter = 0`
+    /// turns MOM off.
+    #[default]
+    Previous,
+    /// The occupied orbitals the SCF starts from (the natural orbitals of a
+    /// starting density, caller-supplied MOs, or the configured guess), held
+    /// fixed for the whole SCF and applied from the first diagonalization:
+    /// initial MOM (Barca, Gilbert, Gill, JCTC 14, 1501 (2018)), the rule of
+    /// PySCF's `scf.addons.mom_occ`. Starting from a non-aufbau density (a
+    /// core hole), every iteration keeps the occupation that start picked.
+    /// UHF/UKS only; requires `mom_after_iter = 0`, since both would name
+    /// when MOM starts.
+    Initial,
+}
+
+impl MomReference {
+    /// Parse `"previous"` / `"initial"` (case-insensitive); anything else is
+    /// an error naming both.
+    pub fn parse_config_str(s: &str) -> Result<Self, FerricError> {
+        match s.to_ascii_lowercase().as_str() {
+            "previous" => Ok(Self::Previous),
+            "initial" => Ok(Self::Initial),
+            other => Err(FerricError::General(format!(
+                "mom_reference: unknown value {other:?} (expected \"previous\" or \"initial\")"
+            ))),
+        }
+    }
+}
+
+/// Why [`MomReference::Initial`] cannot be combined with the rest of the
+/// MOM / stability settings (see [`MomReference::check_initial`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MomInitialConflict {
+    /// `mom_after_iter > 0` also names when MOM starts (the value).
+    AfterIter(usize),
+    /// Stability descent would leave the held starting occupation.
+    StabilityDescent,
+}
+
+impl MomReference {
+    /// The one home of the `Initial` cross-field rule: initial MOM applies
+    /// from the first iteration and holds the starting occupation, so it is
+    /// refused next to `mom_after_iter > 0` (checked first) and next to
+    /// stability descent. Any other reference is always accepted.
+    ///
+    /// Each layer words the typed conflict for its own vocabulary: the
+    /// solver backstop (`check_reference`) names `RhfConfig` fields, the
+    /// Python `run_uhf` frontend names its kwargs.
+    pub fn check_initial(
+        self,
+        mom_after_iter: usize,
+        stability_descent: bool,
+    ) -> Result<(), MomInitialConflict> {
+        if self != Self::Initial {
+            return Ok(());
+        }
+        if mom_after_iter > 0 {
+            return Err(MomInitialConflict::AfterIter(mom_after_iter));
+        }
+        if stability_descent {
+            return Err(MomInitialConflict::StabilityDescent);
+        }
+        Ok(())
+    }
+}
+
+/// Refuse [`MomReference::Initial`] where `solver` does not implement it, and
+/// where [`MomReference::check_initial`] refuses it.
+pub(crate) fn check_reference(
+    config: &crate::rhf::RhfConfig,
+    solver: &str,
+    initial_supported: bool,
+) -> Result<(), FerricError> {
+    if config.mom_reference != MomReference::Initial {
+        return Ok(());
+    }
+    if !initial_supported {
+        return Err(FerricError::General(format!(
+            "{solver}: mom_reference = Initial is implemented for UHF/UKS only"
+        )));
+    }
+    config
+        .mom_reference
+        .check_initial(config.mom_after_iter, config.scf_stability_descent)
+        .map_err(|c| {
+            FerricError::General(match c {
+                MomInitialConflict::AfterIter(n) => format!(
+                    "{solver}: mom_reference = Initial applies MOM from the first iteration; \
+                     mom_after_iter = {n} also sets when MOM starts. Set mom_after_iter = 0"
+                ),
+                MomInitialConflict::StabilityDescent => format!(
+                    "{solver}: mom_reference = Initial holds the starting occupation, which \
+                     scf_stability_descent would leave for a lower state"
+                ),
+            })
+        })
+}
 
 /// Reorder columns of `c_new` so the leading `n_closed` columns have
 /// maximum overlap with the previous closed-MO set, and the next
@@ -179,5 +285,87 @@ mod tests {
         let c_new = array![[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0],];
         let (_, eps_out) = reorder_against_identity(&c_new);
         assert_eq!(eps_out, vec![EPS[1], EPS[0], EPS[2]]);
+    }
+
+    #[test]
+    fn mom_reference_parses_both_spellings_and_refuses_others() {
+        assert_eq!(
+            MomReference::parse_config_str("previous").unwrap(),
+            MomReference::Previous
+        );
+        assert_eq!(
+            MomReference::parse_config_str("Initial").unwrap(),
+            MomReference::Initial
+        );
+        assert!(MomReference::parse_config_str("start").is_err());
+        assert_eq!(MomReference::default(), MomReference::Previous);
+    }
+
+    #[test]
+    fn initial_reference_is_refused_where_it_is_not_honoured() {
+        let base = crate::rhf::RhfConfig {
+            mom_reference: MomReference::Initial,
+            ..Default::default()
+        };
+        assert!(base.mom_enabled());
+        assert!(check_reference(&base, "UHF", true).is_ok());
+        assert!(check_reference(&base, "RHF", false).is_err());
+        let armed = crate::rhf::RhfConfig {
+            mom_after_iter: 3,
+            ..base.clone()
+        };
+        assert!(check_reference(&armed, "UHF", true).is_err());
+        let descent = crate::rhf::RhfConfig {
+            scf_stability_descent: true,
+            ..base
+        };
+        assert!(check_reference(&descent, "UHF", true).is_err());
+        // The default (Previous) is never refused and leaves MOM off.
+        let plain = crate::rhf::RhfConfig::default();
+        assert!(!plain.mom_enabled());
+        assert!(check_reference(&plain, "RHF", false).is_ok());
+    }
+
+    #[test]
+    fn check_initial_types_each_conflict_after_iter_first() {
+        use MomInitialConflict::*;
+        let i = MomReference::Initial;
+        assert_eq!(i.check_initial(0, false), Ok(()));
+        assert_eq!(i.check_initial(3, false), Err(AfterIter(3)));
+        assert_eq!(i.check_initial(0, true), Err(StabilityDescent));
+        assert_eq!(i.check_initial(2, true), Err(AfterIter(2)));
+        for (n, d) in [(0, false), (3, false), (0, true), (2, true)] {
+            assert_eq!(MomReference::Previous.check_initial(n, d), Ok(()));
+        }
+    }
+
+    /// The solver backstop's text is pinned byte for byte.
+    #[test]
+    fn check_reference_messages_are_unchanged() {
+        let msg =
+            |c: crate::rhf::RhfConfig| check_reference(&c, "UHF", true).unwrap_err().to_string();
+        let base = crate::rhf::RhfConfig {
+            mom_reference: MomReference::Initial,
+            ..Default::default()
+        };
+        let armed = crate::rhf::RhfConfig {
+            mom_after_iter: 3,
+            scf_stability_descent: true,
+            ..base.clone()
+        };
+        let descent = crate::rhf::RhfConfig {
+            scf_stability_descent: true,
+            ..base.clone()
+        };
+        let want_after = "UHF: mom_reference = Initial applies MOM from the first iteration; \
+                          mom_after_iter = 3 also sets when MOM starts. Set mom_after_iter = 0";
+        let want_desc = "UHF: mom_reference = Initial holds the starting occupation, which \
+                         scf_stability_descent would leave for a lower state";
+        assert!(msg(armed).ends_with(want_after));
+        assert!(msg(descent).ends_with(want_desc));
+        assert!(check_reference(&base, "RHF", false)
+            .unwrap_err()
+            .to_string()
+            .ends_with("RHF: mom_reference = Initial is implemented for UHF/UKS only"));
     }
 }

@@ -33,10 +33,7 @@ fn probe_terfc_r0_scan_wide() {
         &obs,
         opc,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-9,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_energy_conv(1e-9),
     )
     .unwrap();
 
