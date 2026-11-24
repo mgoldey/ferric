@@ -202,6 +202,49 @@ impl ParallelContext {
     pub fn rayon_threads(&self) -> usize {
         threads_per_rank(local_ranks_per_node(), physical_cores())
     }
+
+    /// Run `f` inside a rayon pool sized for this rank (see
+    /// [`Self::rayon_threads`]), propagating a pool-build failure as
+    /// [`FerricError::Libint`]. MPI entry points run their whole body in it so
+    /// `np` ranks on one node do not each spawn a full-width pool.
+    pub fn with_rank_pool<F, R>(&self, f: F) -> Result<R, crate::FerricError>
+    where
+        F: FnOnce() -> R + Send,
+        R: Send,
+    {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(self.rayon_threads())
+            .build()
+            .map_err(|e| {
+                crate::FerricError::Libint(format!("rank-aware rayon pool build failed: {e}"))
+            })?;
+        Ok(pool.install(f))
+    }
+
+    /// All-reduce-sum `data` in place across the active MPI world. No-op when
+    /// there is no multi-rank world (or the `mpi` feature is off).
+    ///
+    /// The feature gate lives here, next to [`Self::world`], so a downstream
+    /// crate cannot compile the reduction out by leaving its own `mpi` feature
+    /// off. Every rank must pass the same length in the same element order:
+    /// callers with an `ndarray` hand over a STANDARD-layout slice
+    /// (`as_slice_mut().expect(..)`), never a memory-order one. Call it from a
+    /// serial reduction point only (see [`Self::world`]).
+    pub fn all_reduce_sum(&self, data: &mut [f64]) {
+        #[cfg(feature = "mpi")]
+        if let Some(world) = self.world() {
+            use mpi::traits::CommunicatorCollectives;
+            let mut global = vec![0.0_f64; data.len()];
+            world.all_reduce_into(
+                data,
+                global.as_mut_slice(),
+                mpi::collective::SystemOperation::sum(),
+            );
+            data.copy_from_slice(&global);
+        }
+        #[cfg(not(feature = "mpi"))]
+        let _ = data;
+    }
 }
 
 /// Threads each rank should take when `local_ranks` ranks share a node with
