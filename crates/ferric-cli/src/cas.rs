@@ -304,6 +304,9 @@ pub fn resolve_plan(cfg: &Config, text: &str) -> Result<Option<CasPlan>, String>
             integrals,
             optimizer,
             stability,
+            // The direct CASSCF J/K follow the reference SCF's contraction
+            // rotation.
+            gc_rotation: cfg.scf.gc_rotation_resolved()?,
             ..d
         },
         scf: ScfStart {

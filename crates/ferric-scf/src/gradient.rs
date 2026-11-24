@@ -120,9 +120,11 @@ pub(crate) fn screened_quartets_with(
 }
 
 /// The contraction rotation the four-centre derivative walk runs on
-/// (`direct_jk::gc_rotation`): the rotation of `bounds` (the SCF's request,
-/// then `FERRIC_GC_ROTATE`, then `auto`) when `op` is the operator of the
-/// bounds; `None` runs the unrotated walk. `T` is geometry-independent and
+/// (`direct_jk::gc_rotation`): the rotation of `bounds`
+/// ([`GcSlot::mode`](crate::direct_jk::gc_rotation::GcSlot::mode): the
+/// request an SCF recorded on them; unrotated for bounds no config recorded
+/// on) when `op` is the operator of the bounds; `None` runs the unrotated
+/// walk. `T` is geometry-independent and
 /// keeps every shell on its atom, so `Σ Γ[D] (μν|λσ)^x = Σ Γ[D'] (μ'ν'|λ'σ')^x`
 /// with `D' = Tᵀ D T`, for every two-particle density below (each is a sum of
 /// products of two matrices over the pairings `(μν)(λσ)` and `(μλ)(νσ)`).
@@ -134,8 +136,7 @@ pub(crate) fn gradient_rotation(
     if op != bounds.op || bounds.gc.is_inert() {
         return Ok(None);
     }
-    let mode = crate::direct_jk::GcRotate::resolve(bounds.gc.request())?;
-    bounds.gc.rotation(prep, bounds, mode)
+    bounds.gc.rotation(prep, bounds, bounds.gc.mode()?)
 }
 
 /// Shared driver for every 4-center 2e-derivative gradient contribution:

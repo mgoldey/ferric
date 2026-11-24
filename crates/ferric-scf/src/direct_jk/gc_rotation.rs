@@ -56,22 +56,44 @@
 //!   rotated shells contracted with the rotated densities give the same
 //!   gradient.
 //!
-//! The SCF drivers record their config's request on the bounds
-//! ([`GcSlot::set_request`]), so the builds that follow run the same
-//! rotation as the SCF. LinK, CFMM, the Hessian's second-derivative
-//! integrals and the periodic code run the unrotated basis.
+//! LinK, CFMM, the Hessian's second-derivative integrals and the periodic
+//! code run the unrotated basis.
 //!
-//! # The switch
+//! # The switch, and who follows it
 //!
-//! [`RhfConfig::gc_rotation`](crate::rhf::RhfConfig::gc_rotation) (typed,
-//! per job; `None` = not set), then `FERRIC_GC_ROTATE`, then the default
-//! `auto`: the repository's config > env > default order
-//! ([`GcRotate::resolve`]). Values: `auto` = both stages, `rot1` = stage 1
-//! only, `off` = the unrotated builder, bit for bit. Any other value of the
-//! variable is an error naming it. A basis with nothing to rotate (def2,
-//! Pople, STO-3G, pcseg) runs the unrotated builder bit for bit under every
-//! value. Both the config field and the parsed variable are in the
-//! checkpoint identity (`Route` class).
+//! The rule: **a build rotates only when a config asked for it.** A config
+//! is an [`RhfConfig`](crate::rhf::RhfConfig) (its `gc_rotation` field) or a
+//! CASSCF config's `gc_rotation` field (same type and meaning);
+//! its value resolves as `Some(mode)` = `mode`, `None` = `FERRIC_GC_ROTATE`,
+//! then the default `auto` (the repository's config > env > default order,
+//! [`GcRotate::resolve`]). Values: `auto` = both stages, `rot1` = stage 1
+//! only, `off` = the unrotated builder, bit for bit.
+//!
+//! * The SCF drivers record their config's value on the bounds
+//!   ([`GcSlot::set_request`]); every build on those bounds (or a clone of
+//!   them) then follows it: the SCF's own builders, the pooled Newton,
+//!   TRAH, stability and response builds, the gradient's derivative walk.
+//! * Bounds no SCF recorded on ([`SchwarzBounds::compute`] in a consumer
+//!   that builds its own, the Python `jk` / `grad_jk` / `FockResponse`
+//!   blocks) never rotate, whatever `FERRIC_GC_ROTATE` says: they are the
+//!   unrotated builds bit for bit. A consumer that builds its own bounds
+//!   for an SCF's geometry and wants the SCF's choice copies it
+//!   ([`GcSlot::copy_request_from`], or [`GcSlot::set_request`] with the
+//!   config's value): the KS Z-vector response (`zvector_ks`), the CASSCF
+//!   direct backend and the GW exact exchange do.
+//! * `FERRIC_GC_ROTATE` is read only where a config left the value unset,
+//!   never on unrecorded bounds.
+//!
+//! The recorded value is shared by every clone of the bounds, and the last
+//! writer wins (a second SCF on the same bounds re-records). A pooled build
+//! rotates only when its engine pool says what it computes
+//! ([`EnginePool::eri_key`]); a pool from `EnginePool::from_fn` has no key
+//! and runs unrotated. A basis with nothing to rotate (def2, Pople, STO-3G,
+//! pcseg) runs the unrotated builder bit for bit under every value. Both
+//! the config field and the parsed variable are in the checkpoint identity
+//! (`Route` class). The config spelling is strict (exactly `auto`, `rot1`
+//! or `off`); the variable, like the other `FERRIC_*` switches, ignores
+//! case and surrounding blanks.
 //!
 //! The design called the switch `column_rotation`; it is `gc_rotation` here
 //! because the periodic code already has a `sr_column_rotation` with
@@ -88,8 +110,8 @@ use ferric_integrals::engine_pool::EnginePool;
 use ndarray::Array2;
 use std::sync::Arc;
 
-/// Environment variable selecting the rotation when the config does not
-/// ([`GcRotate::resolve`]).
+/// Environment variable selecting the rotation where a config left it unset
+/// ([`GcRotate::resolve`]); never read for unrecorded bounds (module doc).
 pub const GC_ROTATE_ENV: &str = "FERRIC_GC_ROTATE";
 
 /// Which contraction rotation the direct four-centre J/K builder runs
@@ -107,11 +129,12 @@ pub enum GcRotate {
 }
 
 /// `FERRIC_GC_ROTATE`: `auto`, `rot1` or `off`, case-insensitive, blanks
-/// ignored; anything else is refused.
+/// ignored (the convention of the `FERRIC_*` switches); anything else is
+/// refused.
 static GC_ROTATE: ferric_core::config::ConfigVar<GcRotate> = ferric_core::config::ConfigVar {
     env_name: GC_ROTATE_ENV,
     default: GcRotate::Auto,
-    parse: GcRotate::parse_str,
+    parse: |s| GcRotate::parse_str(&s.trim().to_ascii_lowercase()),
     validate: ferric_core::config::accept_any,
 };
 
@@ -125,10 +148,11 @@ impl GcRotate {
         }
     }
 
-    /// Parse a spelling: `auto`, `rot1` or `off` (case-insensitive,
-    /// surrounding blanks ignored). Anything else is an error.
+    /// Strict parse of a config value (`[scf] gc_rotation`, the Python
+    /// `gc_rotation=` kwarg): exactly `auto`, `rot1` or `off`. Anything
+    /// else, other cases and padded values included, is an error.
     pub fn parse_str(s: &str) -> Result<Self, String> {
-        match s.trim().to_ascii_lowercase().as_str() {
+        match s {
             "auto" => Ok(Self::Auto),
             "rot1" => Ok(Self::Rot1),
             "off" => Ok(Self::Off),
@@ -178,8 +202,6 @@ pub struct RotatedJk {
     pub(crate) basis: RotatedBasis,
     pub(crate) bounds: SchwarzBounds,
     forward: AoTranspose,
-    /// Parent `(nbasis, nshells, op)`: the slot serves only that basis.
-    parent: (usize, usize, ferric_integrals::operator::Operator),
     /// Engines on the rotated shells for the pooled builders, keyed by
     /// `(operator, precision, rayon thread count)` of the pool the caller
     /// handed in.
@@ -227,7 +249,6 @@ impl RotatedJk {
             basis,
             bounds: rbounds,
             forward,
-            parent: (prep.nbasis(), prep.nshells(), bounds.op),
             pool: std::sync::Mutex::new(None),
             setup_seconds: t0.elapsed().as_secs_f64(),
         }))
@@ -264,18 +285,27 @@ impl RotatedJk {
         precision: f64,
     ) -> Result<Arc<EnginePool>, FerricError> {
         let key = (op, precision.to_bits(), rayon::current_num_threads());
-        let mut g = self
-            .pool
-            .lock()
-            .map_err(|_| FerricError::General("gc rotation: engine pool lock poisoned".into()))?;
+        let lock = || {
+            self.pool
+                .lock()
+                .map_err(|_| FerricError::General("gc rotation: engine pool lock poisoned".into()))
+        };
+        if let Some((k, p)) = lock()?.as_ref() {
+            if *k == key {
+                return Ok(p.clone());
+            }
+        }
+        // Built with the lock released (no lock is held across work that
+        // may run on rayon), then inserted unless another caller won.
+        let built = Arc::new(EnginePool::new(op, &self.basis.prep, precision)?);
+        let mut g = lock()?;
         if let Some((k, p)) = g.as_ref() {
             if *k == key {
                 return Ok(p.clone());
             }
         }
-        let p = Arc::new(EnginePool::new(op, &self.basis.prep, precision)?);
-        *g = Some((key, p.clone()));
-        Ok(p)
+        *g = Some((key, built.clone()));
+        Ok(built)
     }
 
     /// The `D'` and `X'` buffers of a rotated build (`count · n²` doubles),
@@ -293,31 +323,52 @@ impl RotatedJk {
 }
 
 /// The contraction rotation cache of one [`SchwarzBounds`] (its `gc`
-/// field): the rotation a solver asked for, and the rotated basis, bounds
+/// field): the rotation a config asked for, and the rotated basis, bounds
 /// and engines of each level, built at the first rotated build and shared
 /// by every later one on these bounds (clones of the bounds share it, as
-/// they share the in-core store). The SCF drivers record their
+/// they share the in-core store).
+///
+/// The request has three states: never recorded (fresh bounds: no build on
+/// them rotates, whatever `FERRIC_GC_ROTATE` says), recorded unset (a
+/// config left `gc_rotation` unset: `FERRIC_GC_ROTATE`, then `auto`) and
+/// recorded value. The SCF drivers record their
 /// [`RhfConfig::gc_rotation`](crate::rhf::RhfConfig::gc_rotation) here
-/// ([`GcSlot::set_request`]), so the Newton, stability and response builds
-/// that follow on the same bounds run the same rotation as the SCF.
+/// ([`GcSlot::set_request`]), so the Newton, stability, response and
+/// gradient builds that follow on the same bounds run the same rotation as
+/// the SCF. The record is shared by every clone of the bounds; the last
+/// writer wins.
 #[derive(Clone, Default)]
 pub struct GcSlot(Arc<GcSlotInner>);
+
+/// What a config recorded on a [`GcSlot`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Request {
+    /// No config recorded anything: the builds run unrotated.
+    #[default]
+    Unrecorded,
+    /// A config's `gc_rotation` (`None`: unset, the variable and the default
+    /// decide).
+    Recorded(Option<GcRotate>),
+}
+
+/// One cached level: the parent's `geometry_key` and the rotation (`None`:
+/// nothing rotates).
+type LevelEntry = (u64, Option<Arc<RotatedJk>>);
 
 #[derive(Default)]
 struct GcSlotInner {
     /// Bounds of a rotated basis: never rotate.
     inert: bool,
-    request: std::sync::RwLock<Option<GcRotate>>,
-    /// Per level (`[Ogc, Rot1]`): `None` = not detected yet, `Some(None)` =
-    /// nothing rotates.
-    levels: std::sync::Mutex<[Option<Option<Arc<RotatedJk>>>; 2]>,
+    request: std::sync::RwLock<Request>,
+    /// Per level (`[Ogc, Rot1]`): `None` = not detected yet.
+    levels: std::sync::Mutex<[Option<LevelEntry>; 2]>,
 }
 
 impl std::fmt::Debug for GcSlot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GcSlot")
             .field("inert", &self.0.inert)
-            .field("request", &self.request())
+            .field("request", &self.request_state())
             .finish_non_exhaustive()
     }
 }
@@ -335,23 +386,58 @@ impl GcSlot {
         self.0.inert
     }
 
-    /// The rotation requested for builds on these bounds (`None`: not set,
-    /// `FERRIC_GC_ROTATE` then `auto` decide).
-    pub fn request(&self) -> Option<GcRotate> {
-        self.0.request.read().ok().and_then(|g| *g)
+    fn request_state(&self) -> Request {
+        self.0.request.read().map(|g| *g).unwrap_or_default()
     }
 
-    /// Record the rotation a solver's config asks for (`None`: leave it to
-    /// `FERRIC_GC_ROTATE` and the default).
+    /// What a config recorded: `None` when nothing was (the builds on these
+    /// bounds run unrotated), `Some(value)` with the config's
+    /// `gc_rotation` otherwise.
+    pub fn recorded(&self) -> Option<Option<GcRotate>> {
+        match self.request_state() {
+            Request::Unrecorded => None,
+            Request::Recorded(v) => Some(v),
+        }
+    }
+
+    /// Record the value of a config's `gc_rotation` (`None`: unset, so
+    /// `FERRIC_GC_ROTATE` and then `auto` decide). Shared by every clone of
+    /// the bounds; the last writer wins.
     pub fn set_request(&self, mode: Option<GcRotate>) {
         if let Ok(mut g) = self.0.request.write() {
-            *g = mode;
+            *g = Request::Recorded(mode);
+        }
+    }
+
+    /// Copy `other`'s record (or its absence) onto these bounds: for a
+    /// consumer that builds its own bounds (another operator, say) for the
+    /// geometry of an SCF's bounds and should follow the SCF's choice.
+    pub fn copy_request_from(&self, other: &GcSlot) {
+        let r = other.request_state();
+        if let Ok(mut g) = self.0.request.write() {
+            *g = r;
+        }
+    }
+
+    /// The rotation the builds on these bounds run: `Off` for inert or
+    /// unrecorded bounds, else the recorded value resolved
+    /// ([`GcRotate::resolve`]). A malformed `FERRIC_GC_ROTATE` is an error
+    /// only where it is read.
+    pub fn mode(&self) -> Result<GcRotate, FerricError> {
+        if self.0.inert {
+            return Ok(GcRotate::Off);
+        }
+        match self.request_state() {
+            Request::Unrecorded => Ok(GcRotate::Off),
+            Request::Recorded(v) => GcRotate::resolve(v),
         }
     }
 
     /// The rotation of `prep` (the basis of `bounds`, whose slot this is)
     /// at `mode`, built on first use; `None` when `mode` is off, the slot is
-    /// inert, or nothing rotates.
+    /// inert, or nothing rotates. An error when the slot holds a rotation of
+    /// another geometry, basis or operator (bounds reused after the atoms
+    /// moved): a stale rotation never answers.
     pub(crate) fn rotation(
         &self,
         prep: &PreparedBasis,
@@ -368,43 +454,57 @@ impl GcSlot {
             RotationLevel::Ogc => 0,
             RotationLevel::Rot1 => 1,
         };
-        let mut g = self
-            .0
-            .levels
-            .lock()
-            .map_err(|_| FerricError::General("gc rotation: cache lock poisoned".into()))?;
-        let r = match &g[idx] {
-            Some(r) => r.clone(),
+        let key = crate::incore_jk::geometry_key(prep, bounds.op);
+        let lock = || {
+            self.0
+                .levels
+                .lock()
+                .map_err(|_| FerricError::General("gc rotation: cache lock poisoned".into()))
+        };
+        let check = |(k, r): LevelEntry| {
+            if k != key {
+                return Err(FerricError::General(
+                    "gc rotation: the bounds carry a rotation built for another geometry, \
+                     basis or operator; it is never reused (rebuild the bounds for this \
+                     geometry)"
+                        .into(),
+                ));
+            }
+            Ok(r)
+        };
+        if let Some(e) = lock()?[idx].clone() {
+            return check(e);
+        }
+        // Built with the lock released: the rotated Schwarz table runs on
+        // rayon, and a worker that steals another first use of this slot
+        // must not block on a lock its own thread holds. Two first uses may
+        // both build; the first to insert wins and both return its entry,
+        // so every caller shares one `Arc`.
+        let built = RotatedJk::new(prep, bounds, level)?.map(Arc::new);
+        let mut g = lock()?;
+        let entry = match &g[idx] {
+            Some(winner) => winner.clone(),
             None => {
-                let r = RotatedJk::new(prep, bounds, level)?.map(Arc::new);
-                if let Some(r) = r.as_ref().filter(|_| ferric_core::timing::enabled()) {
+                if let Some(r) = built.as_ref().filter(|_| ferric_core::timing::enabled()) {
                     eprintln!(
                         "[timing] direct-jk gc rotation ({mode:?}): {} columns rotated; setup \
                          (detection + rotated Schwarz bounds) {:.3} s, once per geometry",
                         r.basis.n_rotated_columns, r.setup_seconds
                     );
                 }
-                g[idx] = Some(r.clone());
-                r
+                g[idx] = Some((key, built));
+                g[idx].clone().expect("just inserted")
             }
         };
-        if let Some(r) = &r {
-            if r.parent != (prep.nbasis(), prep.nshells(), bounds.op) {
-                return Err(FerricError::General(
-                    "gc rotation: the bounds carry a rotation built for another basis or \
-                     operator (rebuild the bounds for this basis)"
-                        .into(),
-                ));
-            }
-        }
-        Ok(r)
+        drop(g);
+        check(entry)
     }
 
-    /// The rotation the pooled direct J/K builds on `bounds` run (the
-    /// recorded request, then `FERRIC_GC_ROTATE`, then `auto`), with an
-    /// engine pool on the rotated shells matching `pool` (same operator and
-    /// precision); `None` when the builds run unrotated, including for a
-    /// pool of unknown kind ([`EnginePool::eri_key`]).
+    /// The rotation the pooled direct J/K builds on `bounds` run
+    /// ([`GcSlot::mode`]), with an engine pool on the rotated shells
+    /// matching `pool` (same operator and precision); `None` when the
+    /// builds run unrotated, including for a pool of unknown kind
+    /// ([`EnginePool::eri_key`] `None`, a `from_fn` pool).
     pub(crate) fn for_pool(
         bounds: &SchwarzBounds,
         prep: &PreparedBasis,
@@ -423,10 +523,7 @@ impl GcSlot {
         op: ferric_integrals::operator::Operator,
         precision: f64,
     ) -> Result<Option<(Arc<RotatedJk>, Arc<EnginePool>)>, FerricError> {
-        if bounds.gc.0.inert {
-            return Ok(None);
-        }
-        let mode = GcRotate::resolve(bounds.gc.request())?;
+        let mode = bounds.gc.mode()?;
         let Some(r) = bounds.gc.rotation(prep, bounds, mode)? else {
             return Ok(None);
         };
@@ -436,8 +533,8 @@ impl GcSlot {
 }
 
 /// The rotation of a single-matrix direct builder (`DirectJ`, `DirectK`):
-/// the bounds' recorded request (then `FERRIC_GC_ROTATE`, then `auto`),
-/// resolved at the builder's first build and kept for its lifetime.
+/// the bounds' [`GcSlot::mode`], resolved at the builder's first build and
+/// kept for its lifetime.
 #[derive(Default)]
 pub(crate) struct BuilderGc(Option<Option<Arc<RotatedJk>>>);
 
@@ -451,12 +548,7 @@ impl BuilderGc {
         if let Some(r) = &self.0 {
             return Ok(r.clone());
         }
-        let r = if bounds.gc.is_inert() {
-            None
-        } else {
-            let mode = GcRotate::resolve(bounds.gc.request())?;
-            bounds.gc.rotation(prep, bounds, mode)?
-        };
+        let r = bounds.gc.rotation(prep, bounds, bounds.gc.mode()?)?;
         self.0 = Some(r.clone());
         Ok(r)
     }
@@ -465,31 +557,26 @@ impl BuilderGc {
 /// Rotation state of a builder: requested (resolved at the first direct
 /// build) or resolved.
 pub(super) enum GcState {
-    /// The config's request (`None`: not set, the bounds' recorded request,
-    /// then the variable or the default decides).
-    Pending(Option<GcRotate>),
+    /// `None`: no request of its own, the bounds' [`GcSlot::mode`] decides;
+    /// `Some(v)`: a config's `gc_rotation` value `v`
+    /// ([`GcRotate::resolve`]).
+    Pending(Option<Option<GcRotate>>),
     Resolved(Option<Arc<RotatedJk>>),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ferric_core::basis;
+    use ferric_core::mol::Molecule;
+    use ferric_integrals::operator::Operator;
 
     /// The rotation is built once per bounds: a second builder, a pooled
     /// build and a clone of the bounds all get the same cached basis, and
     /// the rotated bounds never rotate again.
     #[test]
     fn rotation_is_cached_per_bounds() {
-        use ferric_core::basis;
-        use ferric_core::mol::Molecule;
-        use ferric_integrals::operator::Operator;
-        let mol = Molecule::parse_xyz(
-            "3\nwater\nO 0 0 0.1\nH 0 0.76 -0.47\nH 0 -0.76 -0.47\n",
-            0,
-            1,
-        )
-        .unwrap();
-        let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let (mol, prep) = water(0.1);
         let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
         let a = bounds
             .gc
@@ -542,13 +629,101 @@ mod tests {
         assert!(bounds.gc.rotation(&other, &bounds, GcRotate::Auto).is_err());
     }
 
+    fn water(z: f64) -> (Molecule, PreparedBasis) {
+        let mol = Molecule::parse_xyz(
+            &format!("3\nwater\nO 0 0 {z}\nH 0 0.76 -0.47\nH 0 -0.76 -0.47\n"),
+            0,
+            1,
+        )
+        .unwrap();
+        let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        (mol, prep)
+    }
+
+    /// Bounds no config recorded on run unrotated (whatever the variable
+    /// says); a recorded value is what they run; a copy carries the record
+    /// or its absence; clones share it, last writer wins.
+    #[test]
+    fn request_has_three_states() {
+        let (_, prep) = water(0.1);
+        let b = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+        assert_eq!(b.gc.recorded(), None);
+        assert_eq!(b.gc.mode().unwrap(), GcRotate::Off);
+        let fresh = SchwarzBounds::compute(Operator::erf(0.3), &prep).unwrap();
+        fresh.gc.copy_request_from(&b.gc);
+        assert_eq!(fresh.gc.recorded(), None);
+        let clone = b.clone();
+        b.gc.set_request(Some(GcRotate::Rot1));
+        assert_eq!(clone.gc.recorded(), Some(Some(GcRotate::Rot1)));
+        assert_eq!(clone.gc.mode().unwrap(), GcRotate::Rot1);
+        clone.gc.set_request(Some(GcRotate::Off));
+        assert_eq!(b.gc.mode().unwrap(), GcRotate::Off);
+        b.gc.set_request(None);
+        assert_eq!(b.gc.recorded(), Some(None));
+        assert_eq!(b.gc.mode().unwrap(), GcRotate::env_setting().unwrap());
+        fresh.gc.copy_request_from(&b.gc);
+        assert_eq!(fresh.gc.recorded(), Some(None));
+        // The rotated bounds are Off whatever is recorded on them.
+        b.gc.set_request(Some(GcRotate::Auto));
+        let r = b.gc.rotation(&prep, &b, GcRotate::Auto).unwrap().unwrap();
+        r.bounds.gc.set_request(Some(GcRotate::Auto));
+        assert_eq!(r.bounds.gc.mode().unwrap(), GcRotate::Off);
+    }
+
+    /// Bounds reused after the atoms moved refuse their cached rotation
+    /// (the same basis and shell count, another geometry).
+    #[test]
+    fn rotation_of_another_geometry_is_refused() {
+        let (_, prep) = water(0.1);
+        let (_, moved) = water(0.15);
+        assert_eq!(prep.nbasis(), moved.nbasis());
+        let b = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+        assert!(b.gc.rotation(&prep, &b, GcRotate::Auto).unwrap().is_some());
+        let e = b.gc.rotation(&moved, &b, GcRotate::Auto).unwrap_err();
+        assert!(e.to_string().contains("another geometry"), "{e}");
+        // A level not built yet is built for the geometry it is asked for;
+        // the other geometry is then refused there too.
+        assert!(b.gc.rotation(&moved, &b, GcRotate::Rot1).unwrap().is_some());
+        assert!(b.gc.rotation(&prep, &b, GcRotate::Rot1).is_err());
+    }
+
+    /// Concurrent first uses from rayon workers (the rotated Schwarz table
+    /// is itself rayon work) neither deadlock nor build two cached
+    /// entries: every caller gets the same `Arc`, and so do concurrent
+    /// first engine-pool requests.
+    #[test]
+    fn concurrent_first_use_shares_one_entry() {
+        use rayon::prelude::*;
+        let (_, prep) = water(0.1);
+        let b = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        let rs: Vec<Arc<RotatedJk>> = pool.install(|| {
+            (0..8)
+                .into_par_iter()
+                .map(|_| b.gc.rotation(&prep, &b, GcRotate::Auto).unwrap().unwrap())
+                .collect()
+        });
+        assert!(rs.iter().all(|r| Arc::ptr_eq(r, &rs[0])));
+        let ps: Vec<Arc<EnginePool>> = pool.install(|| {
+            (0..8)
+                .into_par_iter()
+                .map(|_| rs[0].pool(Operator::coulomb(), 1e-14).unwrap())
+                .collect()
+        });
+        assert!(ps.iter().all(|p| Arc::ptr_eq(p, &ps[0])));
+    }
+
     #[test]
     fn parse_is_strict_and_canonical() {
         assert_eq!(GcRotate::parse_str("auto"), Ok(GcRotate::Auto));
-        assert_eq!(GcRotate::parse_str(" AUTO "), Ok(GcRotate::Auto));
-        assert_eq!(GcRotate::parse_str("Rot1"), Ok(GcRotate::Rot1));
+        assert_eq!(GcRotate::parse_str("rot1"), Ok(GcRotate::Rot1));
         assert_eq!(GcRotate::parse_str("off"), Ok(GcRotate::Off));
-        for bad in ["", "on", "no", "none", "0", "false", "of"] {
+        for bad in [
+            "", "on", "no", "none", "0", "false", "of", " auto ", "AUTO", "Rot1", "Off",
+        ] {
             assert!(GcRotate::parse_str(bad).is_err(), "{bad:?}");
         }
         for m in [GcRotate::Auto, GcRotate::Rot1, GcRotate::Off] {

@@ -582,8 +582,8 @@ pub(crate) fn parse_eri(s: Option<&str>) -> PyResult<ferric_scf::incore_jk::EriM
     })
 }
 
-/// Strict parse of a `gc_rotation` kwarg (`"auto"`, `"rot1"`, `"off"`,
-/// case-insensitive); `None` leaves `RhfConfig::gc_rotation` unset
+/// Strict parse of a `gc_rotation` kwarg (exactly `"auto"`, `"rot1"` or
+/// `"off"`, as `[scf] gc_rotation`); `None` leaves `RhfConfig::gc_rotation` unset
 /// (`FERRIC_GC_ROTATE`, then `"auto"`), the library default.
 pub(crate) fn parse_gc_rotation(
     s: Option<&str>,

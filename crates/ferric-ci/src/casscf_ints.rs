@@ -289,6 +289,7 @@ impl IntegralBackend {
         prep: &PreparedBasis,
         route: CasScfIntegrals,
         budget_bytes: usize,
+        gc_rotation: Option<ferric_scf::direct_jk::GcRotate>,
     ) -> Result<Self, FerricError> {
         route.validate()?;
         match route {
@@ -304,8 +305,12 @@ impl IntegralBackend {
             }),
             CasScfIntegrals::Direct { thresh } => {
                 let op = Operator::coulomb();
+                // The J/K builds follow the config's contraction rotation
+                // (`CasScfConfig::gc_rotation`, `direct_jk::gc_rotation`).
+                let bounds = SchwarzBounds::compute(op, prep)?;
+                bounds.gc.set_request(gc_rotation);
                 Ok(IntegralBackend::Direct {
-                    bounds: Box::new(SchwarzBounds::compute(op, prep)?),
+                    bounds: Box::new(bounds),
                     pool: Box::new(EnginePool::new(
                         op,
                         prep,

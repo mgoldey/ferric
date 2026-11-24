@@ -217,20 +217,23 @@ impl<'a> DirectJK<'a> {
         }
     }
 
-    /// Choose the internal contraction rotation instead of
-    /// `FERRIC_GC_ROTATE` ([`gc_rotation`]). It takes effect at the first
-    /// direct build; a builder that has built already keeps its choice.
+    /// Choose the internal contraction rotation ([`gc_rotation`]) instead
+    /// of following the bounds. It takes effect at the first direct build;
+    /// a builder that has built already keeps its choice.
     #[must_use]
     pub fn with_gc_rotation(self, mode: GcRotate) -> Self {
         self.with_gc_request(Some(mode))
     }
 
-    /// [`with_gc_rotation`](Self::with_gc_rotation) from a config field:
-    /// `None` leaves the choice to `FERRIC_GC_ROTATE` and the default.
+    /// [`with_gc_rotation`](Self::with_gc_rotation) from a config's
+    /// `gc_rotation` field (an SCF's): `None` = unset, `FERRIC_GC_ROTATE`
+    /// and then `auto` decide. A builder given neither follows its bounds
+    /// ([`gc_rotation::GcSlot::mode`]: unrotated unless a config recorded a
+    /// request on them).
     #[must_use]
     pub fn with_gc_request(mut self, mode: Option<GcRotate>) -> Self {
         if let GcState::Pending(_) = self.gc {
-            self.gc = GcState::Pending(mode);
+            self.gc = GcState::Pending(Some(mode));
         }
         self
     }
@@ -246,14 +249,17 @@ impl<'a> DirectJK<'a> {
         }
     }
 
-    /// Resolve a pending rotation request: the builder's own request, else
-    /// the one recorded on the bounds, else `FERRIC_GC_ROTATE`, else `auto`.
+    /// Resolve a pending rotation request: the builder's own (config)
+    /// request, else the bounds' [`gc_rotation::GcSlot::mode`].
     /// The rotated basis and bounds come from the bounds' cache (built at
     /// the first rotated build on these bounds, by whichever builder runs
     /// first).
     fn resolve_gc(&mut self) -> Result<(), FerricError> {
         if let GcState::Pending(request) = self.gc {
-            let mode = GcRotate::resolve(request.or(self.bounds.gc.request()))?;
+            let mode = match request {
+                Some(v) => GcRotate::resolve(v)?,
+                None => self.bounds.gc.mode()?,
+            };
             let r = self.bounds.gc.rotation(self.prep, self.bounds, mode)?;
             self.gc = GcState::Resolved(r);
         }
@@ -340,7 +346,7 @@ impl<'a> DirectJK<'a> {
     ) -> Result<usize, FerricError> {
         self.ctx.check_interrupted()?;
         if let Some(store) = crate::incore_jk::store_for(self.bounds, self.prep)? {
-            store.add_uhf(d_total, d_a, d_b, j, k_a, k_b);
+            store.add_uhf(d_total, d_a, d_b, j, k_a, k_b)?;
             return Ok(store.quartets());
         }
         self.resolve_gc()?;
@@ -408,7 +414,7 @@ impl<'a> DirectJK<'a> {
     ) -> Result<usize, FerricError> {
         self.ctx.check_interrupted()?;
         if let Some(store) = crate::incore_jk::store_for(self.bounds, self.prep)? {
-            store.add_jk(d, j, k);
+            store.add_jk(d, j, k)?;
             return Ok(store.quartets());
         }
         self.resolve_gc()?;

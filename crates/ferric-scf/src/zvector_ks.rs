@@ -313,10 +313,16 @@ struct ResponseFock<'a> {
 
 impl<'a> ResponseFock<'a> {
     /// `d_a`, `d_b`: the reference spin densities of the f_xc kernel (½D
-    /// each for a closed-shell reference).
+    /// each for a closed-shell reference). `scf_bounds`: the SCF's bounds;
+    /// the response J/K follow the contraction rotation recorded on them
+    /// (`direct_jk::gc_rotation`): the Coulomb builds run on them (their
+    /// cached rotation included) when they are plain Schwarz bounds of the
+    /// Coulomb operator, and every other operator's fresh bounds copy the
+    /// record.
     fn new(
         mol: &Molecule,
         prep: &'a PreparedBasis,
+        scf_bounds: &SchwarzBounds,
         config: &RhfConfig,
         xc: &str,
         d_a: &Array2<f64>,
@@ -327,10 +333,23 @@ impl<'a> ResponseFock<'a> {
         let k_mix = ferric_dft::libxc::k_mix_from_xc_def(&def);
         let precision = ferric_integrals::engine_pool::eri_precision();
         let coul_op = Operator::coulomb();
-        let coul = (
-            SchwarzBounds::compute(coul_op, prep)?,
-            EnginePool::new(coul_op, prep, precision)?,
-        );
+        // The SCF's bounds when they are the Schwarz bounds of the Coulomb
+        // operator `SchwarzBounds::compute` would give (so an unrotated run
+        // is the fresh-bounds build bit for bit), with the in-core slot
+        // detached: the response builds stay direct, as they always were.
+        let coul_bounds = if scf_bounds.op == coul_op
+            && scf_bounds.csb_m.is_none()
+            && scf_bounds.csam_x.is_none()
+        {
+            let mut b = scf_bounds.clone();
+            b.incore = Default::default();
+            b
+        } else {
+            let b = SchwarzBounds::compute(coul_op, prep)?;
+            b.gc.copy_request_from(&scf_bounds.gc);
+            b
+        };
+        let coul = (coul_bounds, EnginePool::new(coul_op, prep, precision)?);
         let mut exch = Vec::new();
         let k_coul = if k_mix.omega > 0.0 {
             for (op, c) in [
@@ -338,11 +357,9 @@ impl<'a> ResponseFock<'a> {
                 (Operator::erf(k_mix.omega), k_mix.lr),
             ] {
                 if c != 0.0 {
-                    exch.push((
-                        SchwarzBounds::compute(op, prep)?,
-                        EnginePool::new(op, prep, precision)?,
-                        c,
-                    ));
+                    let b = SchwarzBounds::compute(op, prep)?;
+                    b.gc.copy_request_from(&scf_bounds.gc);
+                    exch.push((b, EnginePool::new(op, prep, precision)?, c));
                 }
             }
             0.0
@@ -877,7 +894,7 @@ pub fn relaxation_gradient_closed(
     }
 
     let d_half = 0.5 * d;
-    let resp = ResponseFock::new(mol, prep, config, xc, &d_half, &d_half)?;
+    let resp = ResponseFock::new(mol, prep, bounds, config, xc, &d_half, &d_half)?;
     let cv = c.slice(s![.., nocc..]).to_owned();
     let co = c.slice(s![.., ..nocc]).to_owned();
     // H x = F_vv x − x F_oo + C_vᵀ δF[δD(x)] C_o.
@@ -1237,7 +1254,7 @@ pub fn relaxation_gradient_unrestricted(
     )?;
     let sb = SpinBlock::new("beta", c_b, f_b, d_b, nocc_b)?;
 
-    let resp = ResponseFock::new(mol, prep, config, xc, &result.density_alpha, d_b)?;
+    let resp = ResponseFock::new(mol, prep, bounds, config, xc, &result.density_alpha, d_b)?;
     // H (x_α, x_β): per spin F_vv x − x F_oo + C_vᵀ δF_σ[δD_α, δD_β] C_o.
     let hx = |x: &[Array2<f64>; 2]| -> Result<[Array2<f64>; 2], FerricError> {
         let (df_a, df_b) = resp.apply_spin(ctx, &sa.density(&x[0]), &sb.density(&x[1]))?;
@@ -1632,7 +1649,7 @@ pub fn relaxation_gradient_roks(
         diag,
     };
 
-    let resp = ResponseFock::new(mol, prep, config, xc, d_a, d_b)?;
+    let resp = ResponseFock::new(mol, prep, bounds, config, xc, d_a, d_b)?;
     let hx = |x: &Blocks3| -> Result<Blocks3, FerricError> {
         let (dd_a, dd_b) = rb.densities(x);
         let (df_a, df_b) = resp.apply_spin(ctx, &dd_a, &dd_b)?;
@@ -1899,6 +1916,7 @@ mod degenerate_somo_investigation {
     ) -> (Array2<f64>, Vec<f64>, Option<Vec<f64>>) {
         let ctx = ParallelContext::default();
         let xc = cfg.xc.as_deref().unwrap();
+        let bounds = SchwarzBounds::compute(Operator::coulomb(), prep).unwrap();
         let s_ao = ferric_integrals::oneelectron::overlap(prep);
         let gen = linear_axis(mol).map(|ax| axis_rotation_generator(mol, bs, ax).expect("G"));
         match r.spin {
@@ -1918,7 +1936,8 @@ mod degenerate_somo_investigation {
                     nb,
                 )
                 .unwrap();
-                let resp = ResponseFock::new(mol, prep, cfg, xc, &r.density_alpha, db).unwrap();
+                let resp =
+                    ResponseFock::new(mol, prep, &bounds, cfg, xc, &r.density_alpha, db).unwrap();
                 let shapes = [sa.gap.dim(), sb.gap.dim()];
                 let dim: usize = shapes.iter().map(|(a, b)| a * b).sum();
                 let mut h = Array2::<f64>::zeros((dim, dim));

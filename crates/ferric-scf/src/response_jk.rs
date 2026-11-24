@@ -214,7 +214,7 @@ impl<'a> ResponseJk<'a> {
         let (mut j, mut k) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
         match (&self.fitted, self.store()?) {
             (Some(f), _) => fitted_jk(f, d, &mut j, &mut k)?,
-            (None, Some(s)) => s.add_jk(d, &mut j, &mut k),
+            (None, Some(s)) => s.add_jk(d, &mut j, &mut k)?,
             (None, None) => {
                 crate::rhf::build_jk(self.ctx, self.prep, self.bounds, thresh, d, &mut j, &mut k)?;
             }
@@ -235,7 +235,7 @@ impl<'a> ResponseJk<'a> {
         let n = d.nrows();
         let (mut j, mut k) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
         if let (None, Some(s)) = (&self.fitted, self.store()?) {
-            s.add_jk(d, &mut j, &mut k);
+            s.add_jk(d, &mut j, &mut k)?;
             return Ok((j, k));
         }
         match (&self.fitted, pool) {

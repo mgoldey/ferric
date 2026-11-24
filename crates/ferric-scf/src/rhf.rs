@@ -4408,7 +4408,7 @@ pub fn build_jk(
     k: &mut Array2<f64>,
 ) -> Result<usize, FerricError> {
     if let Some(store) = crate::incore_jk::store_for(bounds, prep)? {
-        store.add_jk(d, j, k);
+        store.add_jk(d, j, k)?;
         return Ok(store.quartets());
     }
     let precision = ferric_integrals::engine_pool::eri_precision();
@@ -4474,7 +4474,7 @@ pub fn build_jk_with_pool(
 
     ctx.check_interrupted()?;
     if let Some(store) = crate::incore_jk::store_for(bounds, prep)? {
-        store.add_jk(d, j, k);
+        store.add_jk(d, j, k)?;
         return Ok(store.quartets());
     }
     if let Some(rot) = GcSlot::for_pool(bounds, prep, pool)? {
@@ -4736,7 +4736,7 @@ pub(crate) fn build_spin_jk_with_pool_homogeneous(
     };
     ctx.check_interrupted()?;
     if let Some(store) = crate::incore_jk::store_for(bounds, prep)? {
-        return Ok(store.spin_jk(d, exchange));
+        return store.spin_jk(d, exchange);
     }
     if let Some((rot, rpool)) = GcSlot::for_pool(bounds, prep, pool)? {
         // The rotated build of the same call (module `direct_jk::gc_rotation`).
@@ -4873,7 +4873,7 @@ pub(crate) fn build_multi_jk_with_pool_homogeneous(
         return Ok((Vec::new(), Vec::new()));
     }
     if let Some(store) = crate::incore_jk::store_for(bounds, prep)? {
-        return Ok(store.jk_multi(jd, kd));
+        return store.jk_multi(jd, kd);
     }
     if let Some((rot, rpool)) = GcSlot::for_pool(bounds, prep, pool)? {
         // The rotated build of the same call (module `direct_jk::gc_rotation`).
