@@ -122,6 +122,9 @@ pub static ERI_PRECISION_VAR: ferric_core::config::ConfigVar<f64> =
 /// the calling thread / non-rayon contexts at index `len-1`).
 pub struct EnginePool {
     engines: Vec<Mutex<Engine>>,
+    /// `(operator, precision)` of a pool of plain 2e engines
+    /// ([`EnginePool::new`]); `None` for [`EnginePool::from_fn`].
+    eri_key: Option<(Operator, f64)>,
 }
 
 impl std::fmt::Debug for EnginePool {
@@ -141,7 +144,10 @@ impl EnginePool {
         for _ in 0..n {
             engines.push(Mutex::new(Engine::new_2e(op, prep, precision)?));
         }
-        Ok(EnginePool { engines })
+        Ok(EnginePool {
+            engines,
+            eri_key: Some((op, precision)),
+        })
     }
 
     /// A pool of engines of ANY kind (3-centre, 2-centre, 1e, ...): `make` is
@@ -157,7 +163,19 @@ impl EnginePool {
         for _ in 0..n {
             engines.push(Mutex::new(make()?));
         }
-        Ok(EnginePool { engines })
+        Ok(EnginePool {
+            engines,
+            eri_key: None,
+        })
+    }
+
+    /// The operator and primitive precision of a pool of plain 2e engines
+    /// built by [`EnginePool::new`]; `None` for a pool built by
+    /// [`EnginePool::from_fn`] (any engine kind). Lets a caller that is
+    /// handed a pool build a matching one on another basis (the contraction
+    /// rotation of the direct J/K builds).
+    pub fn eri_key(&self) -> Option<(Operator, f64)> {
+        self.eri_key
     }
 
     /// Number of engines in the pool (`num_threads + 1` at construction).

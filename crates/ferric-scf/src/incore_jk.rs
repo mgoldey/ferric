@@ -164,9 +164,12 @@ fn row_start(r: usize) -> usize {
     r * (r + 1) / 2
 }
 
-/// The identity of the geometry and basis a store serves: atom positions and
-/// charges, the shell layout and exponents, and the operator.
-fn geometry_key(prep: &PreparedBasis, op: Operator) -> u64 {
+/// The identity of the geometry and basis a store (or a contraction
+/// rotation, `direct_jk::gc_rotation`) serves: atom positions and charges,
+/// the shell layout, every shell's angular momentum, spherical or Cartesian
+/// form, exponents and contraction coefficients, and the operator. Two
+/// bases that differ only in coefficients get different keys.
+pub(crate) fn geometry_key(prep: &PreparedBasis, op: Operator) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     prep.nbasis().hash(&mut h);
     for a in prep.atoms() {
@@ -178,8 +181,14 @@ fn geometry_key(prep: &PreparedBasis, op: Operator) -> u64 {
     prep.shell_to_atom().hash(&mut h);
     for sh in prep.located_shells() {
         sh.l.hash(&mut h);
+        sh.pure.hash(&mut h);
+        sh.exponents.len().hash(&mut h);
         for e in sh.exponents {
             e.to_bits().hash(&mut h);
+        }
+        sh.coefficients.len().hash(&mut h);
+        for c in sh.coefficients {
+            c.to_bits().hash(&mut h);
         }
     }
     format!("{op:?}").hash(&mut h);
@@ -196,6 +205,11 @@ pub struct IncoreEri {
     quartets: usize,
     build_seconds: f64,
     _charge: Reservation,
+    /// The contraction rotation the integrals were computed in
+    /// ([`crate::direct_jk::gc_rotation`]): the store holds the ERIs of the
+    /// rotated shells, and every J/K is `T X'[Tᵀ D T] Tᵀ`. `None`: the
+    /// basis's own shells.
+    rot: Option<Arc<crate::direct_jk::gc_rotation::RotatedJk>>,
 }
 
 impl std::fmt::Debug for IncoreEri {
@@ -293,7 +307,21 @@ impl IncoreEri {
         plan: &MemoryPlan,
         charge: Reservation,
     ) -> Result<Self, FerricError> {
+        Self::build_in(ctx, prep, None, op, plan, charge)
+    }
+
+    /// [`IncoreEri::build`] on the rotated shells of `rot` when given (the
+    /// store then serves `prep`, the parent basis, through the transforms).
+    fn build_in(
+        ctx: &ParallelContext,
+        parent: &PreparedBasis,
+        rot: Option<Arc<crate::direct_jk::gc_rotation::RotatedJk>>,
+        op: Operator,
+        plan: &MemoryPlan,
+        charge: Reservation,
+    ) -> Result<Self, FerricError> {
         let t0 = std::time::Instant::now();
+        let prep = rot.as_ref().map_or(parent, |r| &r.basis.prep);
         let n = prep.nbasis();
         let npair = n * (n + 1) / 2;
         let mut eri = plan.alloc_vec("in-core ERI (pq|rs)", row_start(npair))?;
@@ -372,10 +400,11 @@ impl IncoreEri {
             npair,
             eri,
             op,
-            key: geometry_key(prep, op),
+            key: geometry_key(parent, op),
             quartets: quartets.load(Ordering::SeqCst),
             build_seconds: t0.elapsed().as_secs_f64(),
             _charge: charge,
+            rot,
         })
     }
 
@@ -412,9 +441,22 @@ impl IncoreEri {
     /// A copy whose integrals are `|(pq|rs)|`. With absolute densities its
     /// J and K are `Σ |(pq|rs)| |D_rs|`-type sums, the scale of a
     /// floating-point rounding bound on the same contraction.
+    ///
+    /// An error for a rotated store: it holds `|(p'q'|r's')|` on the
+    /// rotated shells, and `J` and `K` of it go through the signed
+    /// transforms `T X' Tᵀ` and `Tᵀ D T`, so with absolute densities they
+    /// are neither `Σ |(pq|rs)| |D_rs|` nor a bound on it (an absolute
+    /// value does not commute with the transforms).
     #[doc(hidden)]
-    pub fn abs_copy(&self) -> Self {
-        IncoreEri {
+    pub fn abs_copy(&self) -> Result<Self, FerricError> {
+        if self.rot.is_some() {
+            return Err(FerricError::General(
+                "in-core ERI store: abs_copy of a contraction-rotated store is not a rounding \
+                 bound of the AO contraction (build the store with gc_rotation = off)"
+                    .into(),
+            ));
+        }
+        Ok(IncoreEri {
             n: self.n,
             npair: self.npair,
             eri: self.eri.iter().map(|v| v.abs()).collect(),
@@ -423,11 +465,58 @@ impl IncoreEri {
             quartets: self.quartets,
             build_seconds: 0.0,
             _charge: Reservation::inert("in-core ERI abs copy"),
+            rot: None,
+        })
+    }
+
+    /// Whether the store holds the ERIs of the contraction-rotated shells.
+    pub fn rotated(&self) -> bool {
+        self.rot.is_some()
+    }
+
+    /// Whether the store was built on exactly the rotation `rot` (`None`:
+    /// unrotated). The rotations are the bounds' cached ones, one per
+    /// level, so identity is pointer identity.
+    fn has_rotation(&self, rot: Option<&Arc<crate::direct_jk::gc_rotation::RotatedJk>>) -> bool {
+        match (&self.rot, rot) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
         }
     }
 
+    /// `f(ds)` on the stored shells: the densities forward-transformed and
+    /// the matrices back-transformed when the store is rotated. The
+    /// transformed densities and results (`2 · m · n²` doubles for `m`
+    /// densities) are charged to the memory pool while they live; a density
+    /// of the wrong size is an error.
+    fn in_store_basis(
+        &self,
+        ds: &[&Array2<f64>],
+        f: impl FnOnce(&[&Array2<f64>]) -> Vec<Array2<f64>>,
+    ) -> Result<Vec<Array2<f64>>, FerricError> {
+        let n = self.n;
+        if let Some(d) = ds.iter().find(|d| d.dim() != (n, n)) {
+            return Err(FerricError::General(format!(
+                "in-core ERI store: a {:?} density for a store of {n} functions",
+                d.dim()
+            )));
+        }
+        let Some(r) = &self.rot else {
+            return Ok(f(ds));
+        };
+        let _charge = r.charge(2 * ds.len())?;
+        let dr: Vec<Array2<f64>> = ds.iter().map(|d| r.forward(d)).collect();
+        let refs: Vec<&Array2<f64>> = dr.iter().collect();
+        f(&refs).iter().map(|x| r.back(x)).collect()
+    }
+
     /// `J[D_i]` for every density (symmetric `n × n` results).
-    pub fn coulomb(&self, ds: &[&Array2<f64>]) -> Vec<Array2<f64>> {
+    pub fn coulomb(&self, ds: &[&Array2<f64>]) -> Result<Vec<Array2<f64>>, FerricError> {
+        self.in_store_basis(ds, |ds| self.coulomb_stored(ds))
+    }
+
+    fn coulomb_stored(&self, ds: &[&Array2<f64>]) -> Vec<Array2<f64>> {
         let (n, np, m) = (self.n, self.npair, ds.len());
         if m == 0 {
             return Vec::new();
@@ -506,7 +595,11 @@ impl IncoreEri {
     /// GEMM: `A[t, b] = Σ_la X_l[a, b] D[l, a]` and
     /// `B[m', t] = Σ_la X_l[a, m'] D[a, l]`, less the `pair(a, b) =
     /// pair(m, l)` terms `B` must not count (`remove_diagonal_pair_terms`).
-    pub fn exchange(&self, ds: &[&Array2<f64>]) -> Vec<Array2<f64>> {
+    pub fn exchange(&self, ds: &[&Array2<f64>]) -> Result<Vec<Array2<f64>>, FerricError> {
+        self.in_store_basis(ds, |ds| self.exchange_stored(ds))
+    }
+
+    fn exchange_stored(&self, ds: &[&Array2<f64>]) -> Vec<Array2<f64>> {
         let (n, m) = (self.n, ds.len());
         if m == 0 {
             return Vec::new();
@@ -576,12 +669,13 @@ impl IncoreEri {
     }
 
     /// `J[jd_i]` and `K[kd_i]` in one call.
+    #[allow(clippy::type_complexity)]
     pub fn jk_multi(
         &self,
         jd: &[&Array2<f64>],
         kd: &[&Array2<f64>],
-    ) -> (Vec<Array2<f64>>, Vec<Array2<f64>>) {
-        (self.coulomb(jd), self.exchange(kd))
+    ) -> Result<(Vec<Array2<f64>>, Vec<Array2<f64>>), FerricError> {
+        Ok((self.coulomb(jd)?, self.exchange(kd)?))
     }
 
     /// `J[D_a + D_b]` and, when `exchange`, `[K[D_a], K[D_b]]`: the spin
@@ -590,20 +684,26 @@ impl IncoreEri {
         &self,
         d: [&Array2<f64>; 2],
         exchange: bool,
-    ) -> (Array2<f64>, Option<[Array2<f64>; 2]>) {
+    ) -> Result<(Array2<f64>, Option<[Array2<f64>; 2]>), FerricError> {
         let total = d[0] + d[1];
         let kd: &[&Array2<f64>] = if exchange { &d } else { &[] };
-        let (j, k) = self.jk_multi(&[&total], kd);
+        let (j, k) = self.jk_multi(&[&total], kd)?;
         let mut j = j.into_iter();
         let k = <[Array2<f64>; 2]>::try_from(k).ok();
-        (j.next().unwrap_or_default(), k)
+        Ok((j.next().unwrap_or_default(), k))
     }
 
     /// `j += J[d]`, `k += K[d]` (accumulating, as the direct builders do).
-    pub fn add_jk(&self, d: &Array2<f64>, j: &mut Array2<f64>, k: &mut Array2<f64>) {
-        let (jj, kk) = self.jk_multi(&[d], &[d]);
+    pub fn add_jk(
+        &self,
+        d: &Array2<f64>,
+        j: &mut Array2<f64>,
+        k: &mut Array2<f64>,
+    ) -> Result<(), FerricError> {
+        let (jj, kk) = self.jk_multi(&[d], &[d])?;
         *j += &jj[0];
         *k += &kk[0];
+        Ok(())
     }
 
     /// `j += J[d_total]`, `k_a += K[d_a]`, `k_b += K[d_b]`.
@@ -615,11 +715,12 @@ impl IncoreEri {
         j: &mut Array2<f64>,
         k_a: &mut Array2<f64>,
         k_b: &mut Array2<f64>,
-    ) {
-        let (jj, kk) = self.jk_multi(&[d_total], &[d_a, d_b]);
+    ) -> Result<(), FerricError> {
+        let (jj, kk) = self.jk_multi(&[d_total], &[d_a, d_b])?;
         *j += &jj[0];
         *k_a += &kk[0];
         *k_b += &kk[1];
+        Ok(())
     }
 }
 
@@ -814,8 +915,16 @@ pub fn attach_for_scf(
         config.eri_route.set(Some(route.clone()));
         route
     };
+    // The store holds the ERIs of the contraction-rotated shells when the
+    // SCF's direct builds would rotate (`direct_jk::gc_rotation`): about half
+    // the libint time on cc-pVXZ, J/K equal to the unrotated store's to
+    // rounding (no screening here). Resolved before any reuse: a store of
+    // another rotation (rotated under `off`, unrotated under `auto`, the
+    // other stage) is rebuilt, never served.
+    let gc_mode = crate::direct_jk::GcRotate::resolve(config.gc_rotation)?;
+    let rot = bounds.gc.rotation(prep, bounds, gc_mode)?;
     if let Some(s) = bounds.incore.get() {
-        if s.serves(prep, bounds.op) {
+        if s.serves(prep, bounds.op) && s.has_rotation(rot.as_ref()) {
             record(&s, false);
             return Ok(Some(s));
         }
@@ -841,8 +950,11 @@ pub fn attach_for_scf(
         (EriMode::Auto, Err(_)) => return clear(),
         (_, Err(e)) => return Err(e),
     };
-    let store = Arc::new(IncoreEri::build(ctx, prep, bounds.op, &plan, charge)?);
+    let store = Arc::new(IncoreEri::build_in(
+        ctx, prep, rot, bounds.op, &plan, charge,
+    )?);
     bounds.incore.set(Some(store.clone()));
+    let route_rotated = store.rotated();
     let route = record(&store, true);
     if config.verbose {
         eprintln!(
@@ -857,6 +969,8 @@ pub fn attach_for_scf(
             serde_json::json!({
                 "route": "incore",
                 "mode": mode.as_str(),
+                "gc_rotation": gc_mode.as_str(),
+                "rotated": route_rotated,
                 "nbasis": route.nbasis,
                 "bytes": route.bytes,
                 "quartets": route.quartets,

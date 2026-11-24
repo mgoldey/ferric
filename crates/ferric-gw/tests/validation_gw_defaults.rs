@@ -219,7 +219,7 @@ fn closed(system: &str, xc: Option<&str>, method: GwMethod) -> [[f64; 2]; 2] {
     assert!(scf.converged, "{}: SCF did not converge", sys.label);
     let vxc = xc.map(|x| {
         let g = KsGradGrids::from_config(&cfg);
-        vxc_diagonal_mo_on_grids(&sys.mol, &sys.obs_bs, x, &scf, &g.main, &g.nlc)
+        vxc_diagonal_mo_on_grids(&sys.mol, &sys.obs_bs, x, &scf, &g.main, &g.nlc, None)
             .unwrap_or_else(|e| panic!("{}: v_xc: {e:?}", sys.label))
             .0
     });
@@ -360,7 +360,7 @@ fn closed_window(system: &str, xc: &str) -> impl Fn(usize) -> Vec<f64> {
     .unwrap_or_else(|e| panic!("{}: SCF failed: {e:?}", sys.label));
     assert!(scf.converged, "{}: SCF did not converge", sys.label);
     let g = KsGradGrids::from_config(&cfg);
-    let vxc = vxc_diagonal_mo_on_grids(&sys.mol, &sys.obs_bs, xc, &scf, &g.main, &g.nlc)
+    let vxc = vxc_diagonal_mo_on_grids(&sys.mol, &sys.obs_bs, xc, &scf, &g.main, &g.nlc, None)
         .unwrap_or_else(|e| panic!("{}: v_xc: {e:?}", sys.label))
         .0;
     move |n_quad: usize| {
@@ -452,8 +452,9 @@ fn uks_frontier(system: &str) -> impl Fn(&PdepRpaConfig, &GwConfig) -> [[f64; 2]
         .unwrap_or_else(|e| panic!("{system}: UKS failed: {e:?}"));
     assert!(scf.converged, "{system}: UKS did not converge");
     let g = KsGradGrids::from_config(&cfg);
-    let (va, vb) = vxc_diagonal_mo_on_grids(&sys.mol, &sys.obs_bs, "pbe", &scf, &g.main, &g.nlc)
-        .unwrap_or_else(|e| panic!("{system}: v_xc: {e:?}"));
+    let (va, vb) =
+        vxc_diagonal_mo_on_grids(&sys.mol, &sys.obs_bs, "pbe", &scf, &g.main, &g.nlc, None)
+            .unwrap_or_else(|e| panic!("{system}: v_xc: {e:?}"));
     let ne = usize::try_from(sys.mol.nelec()).unwrap();
     let (na, nb) = (ne.div_ceil(2), ne / 2);
     let label = sys.label.clone();

@@ -802,6 +802,9 @@ fn solve_uhf_impl(
 ) -> Result<ScfResult, FerricError> {
     crate::mom::check_reference(config, "UHF", true)?;
     crate::incore_jk::begin_scf(bounds);
+    // The response, Newton and stability builds on these bounds follow the
+    // SCF's contraction rotation (`direct_jk::gc_rotation::GcSlot`).
+    bounds.gc.set_request(config.gc_rotation);
 
     // Split the injection: (S, h, V_nn) go to the shared env builder, the J/K
     // builders are driven in the iteration loop. All `None` on the molecular
@@ -3236,8 +3239,11 @@ fn uhf_guess_mos(
         return Ok(None);
     };
 
-    // Split the spin-summed guess density evenly and build F_α = F_β at it.
+    // Split the spin-summed guess density evenly and build F_α = F_β at it,
+    // with unrotated builds (`SchwarzBounds::unrotated`): the guess does not
+    // follow the SCF's contraction rotation.
     let d_spin = &d_total * 0.5;
+    let bounds = &bounds.unrotated();
     let mut j = Array2::<f64>::zeros((n, n));
     let mut k = Array2::<f64>::zeros((n, n));
     if let Err(e) = crate::rhf::build_jk(

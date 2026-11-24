@@ -804,6 +804,7 @@ fn vxc_diagonal_mo(
         scf,
         &AtomicGridConfig::default(),
         &AtomicGridConfig::default_nlc(),
+        None,
     )
 }
 
@@ -1587,6 +1588,7 @@ fn u_gw_at_uks(
         scf,
         &uks_grid(sys),
         &AtomicGridConfig::default_nlc(),
+        None,
     )
     .unwrap_or_else(|e| panic!("{}: vxc_diagonal_mo: {e:?}", sys.label));
     let res = run_u_gw(

@@ -35,6 +35,11 @@ pub struct ScfStart {
     pub energy_conv: Option<f64>,
     /// SCF density-change threshold.
     pub density_conv: Option<f64>,
+    /// `RhfConfig::gc_rotation` of the start (the direct J/K contraction
+    /// rotation, `ferric_scf::direct_jk::gc_rotation`); `None` = unset.
+    /// Pass the same value as `CasScfConfig::gc_rotation` so the CASSCF
+    /// direct builds follow the start.
+    pub gc_rotation: Option<ferric_scf::direct_jk::GcRotate>,
 }
 
 /// The exact-J/K Coulomb RHF of `sys` (its molecule with the basis set's
@@ -64,8 +69,9 @@ fn start_config(
         max_iter,
         energy_conv,
         density_conv,
+        gc_rotation,
     } = start;
-    ferric_scf::options::ScfOptions {
+    let mut cfg = ferric_scf::options::ScfOptions {
         max_iter,
         energy_conv,
         density_conv,
@@ -73,7 +79,9 @@ fn start_config(
         screening: Some(screening),
         ..Default::default()
     }
-    .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
+    .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)?;
+    cfg.gc_rotation = gc_rotation;
+    Ok(cfg)
 }
 
 /// The doubly occupied core count `(nelec − n_α − n_β) / 2` that the active
@@ -249,12 +257,14 @@ mod tests {
             cfg.energy_conv = start.energy_conv.unwrap_or(cfg.energy_conv);
             cfg.density_conv = start.density_conv.unwrap_or(cfg.density_conv);
             cfg.screening = screening;
+            cfg.gc_rotation = start.gc_rotation;
             cfg
         };
         let all = ScfStart {
             max_iter: Some(77),
             energy_conv: Some(1e-9),
             density_conv: Some(3e-8),
+            gc_rotation: Some(ferric_scf::direct_jk::GcRotate::Off),
         };
         for (start, budget, screening) in [
             (ScfStart::default(), None, ScreeningKind::default()),

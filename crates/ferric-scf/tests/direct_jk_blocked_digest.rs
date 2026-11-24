@@ -157,7 +157,7 @@ fn anchor_closed(label: &str, prep: &PreparedBasis, ds: &[Array2<f64>]) {
     let n = prep.nbasis();
     let (l_j, l_k) = bar_lengths(prep);
     let eri = store(prep);
-    let abs = eri.abs_copy();
+    let abs = eri.abs_copy().unwrap();
     let ctx = ParallelContext::default();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), prep).unwrap();
     // The bar is the rounding analysis of the walk on the basis the store
@@ -173,9 +173,9 @@ fn anchor_closed(label: &str, prep: &PreparedBasis, ds: &[Array2<f64>]) {
     for (i, d) in ds.iter().enumerate() {
         let (mut j, mut k) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
         djk.build(d, &mut j, &mut k).unwrap();
-        let (jr, kr) = eri.jk_multi(&[d], &[d]);
+        let (jr, kr) = eri.jk_multi(&[d], &[d]).unwrap();
         let da = d.mapv(f64::abs);
-        let (ja, ka) = abs.jk_multi(&[&da], &[&da]);
+        let (ja, ka) = abs.jk_multi(&[&da], &[&da]).unwrap();
         wj = wj.max(check_bar(
             &format!("{label} J[{i}]"),
             &j,
@@ -260,7 +260,7 @@ fn blocked_digest_matches_incore_on_open_shell_oh() {
     ];
     let (l_j, l_k) = bar_lengths(&prep);
     let eri = store(&prep);
-    let abs = eri.abs_copy();
+    let abs = eri.abs_copy().unwrap();
     // Fresh bounds: the SCF's bounds carry its in-core store, which
     // `build_uhf` would answer from instead of computing integrals.
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
@@ -282,12 +282,12 @@ fn blocked_digest_matches_incore_on_open_shell_oh() {
         );
         djk.build_uhf(&dt, da, db, &mut j, &mut ka, &mut kb)
             .unwrap();
-        let (jr, kr) = eri.spin_jk([da, db], true);
+        let (jr, kr) = eri.spin_jk([da, db], true).unwrap();
         let kr = kr.expect("exchange requested");
         let (aa, ab) = (da.mapv(f64::abs), db.mapv(f64::abs));
         let at = &aa + &ab;
-        let (ja, _) = abs.jk_multi(&[&at], &[]);
-        let (_, kabs) = abs.jk_multi(&[], &[&aa, &ab]);
+        let (ja, _) = abs.jk_multi(&[&at], &[]).unwrap();
+        let (_, kabs) = abs.jk_multi(&[], &[&aa, &ab]).unwrap();
         wj = wj.max(check_bar(&format!("OH J[{i}]"), &j, &jr, &ja[0], l_j));
         wk = wk.max(check_bar(
             &format!("OH Ka[{i}]"),

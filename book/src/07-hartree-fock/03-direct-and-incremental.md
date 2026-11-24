@@ -296,14 +296,34 @@ are serial; in the measured runs below they took under 2 ms per build on
 octane. A basis with nothing to
 rotate (def2, Pople, STO-3G, pcseg) never enters this path.
 
-The rotation covers the SCF direct J/K builds only: `solve_rhf` on the exact
-four-centre route (RHF and hybrid RKS), the combined open-shell build of
-`solve_uhf` and `solve_rohf` (and their Kohn–Sham hybrids with $\omega = 0$),
-and the exact builds of the DF-increments SCF. The in-core store, `DirectJ`,
-`DirectK`, LinK, CFMM, the response and Newton $J/K$ builders, the derivative
-integrals and the periodic code use the unrotated basis. `[scf] gc_rotation`
-(`RhfConfig::gc_rotation`) selects the rotation, then `FERRIC_GC_ROTATE` when
-the key is unset, then `auto`: `auto` runs both stages, `rot1` the first
+The rotated basis, its Schwarz table and its engines are built once per
+geometry and kept with the geometry's screening bounds
+(`ferric-scf/src/direct_jk/gc_rotation.rs::GcSlot`), so every four-centre
+build on that geometry shares them. The rotation covers the SCF builds:
+`solve_rhf` on the exact four-centre route (RHF and hybrid RKS), the
+combined open-shell build of `solve_uhf` and `solve_rohf` (and their
+Kohn–Sham hybrids with $\omega = 0$), the exact builds of the DF-increments
+SCF, the separate `DirectJ` and `DirectK` builders (the $J$ or $K$ half when
+the other half is fitted, LinK or COSX), and the in-core store, which then
+holds the integrals of the rotated shells. It also covers the builds that
+follow an SCF on the same geometry: the Newton and TRAH steps, the stability
+analyses, the CPHF of the Hessian and of the response properties, the
+Z-vector and the OO-MP2 $J/K$, all through `rhf::build_jk_with_pool` and its
+siblings. The SCF records its setting on the bounds, so these builds run the
+same rotation as the SCF. Three consumers that build their own bounds copy
+the setting over: the Kohn–Sham Z-vector response (`zvector_ks`), the
+direct CASSCF integrals (`CasScfConfig::gc_rotation`) and the exact exchange
+of the GW $V_{xc}$. Bounds that no SCF configured, such as those of the
+Python `jk`, `grad_jk` and `FockResponse` blocks, never rotate, and
+`FERRIC_GC_ROTATE` does not apply to them. The analytic gradient's four-centre derivative
+integrals are those of the rotated shells, contracted with the rotated
+densities: $T$ does not depend on the geometry and keeps every shell on its
+atom, so this is the same gradient. LinK, CFMM, the Hessian's
+second-derivative integrals and the periodic code use the unrotated basis.
+`[scf] gc_rotation`
+(`RhfConfig::gc_rotation`, spelled exactly) selects the rotation, then
+`FERRIC_GC_ROTATE` when the key is unset (case and blanks ignored), then
+`auto`: `auto` runs both stages, `rot1` the first
 stage only, and `off` the unrotated builder bit for bit; any other value is
 an error (`ferric-scf/src/direct_jk/gc_rotation.rs::GcRotate`).
 
@@ -330,6 +350,16 @@ gives the same energy bit for bit. In a measured run (not a test), dodecane / cc
 settings (incremental builds, 10 iterations) took 260 s of wall time and
 516 s of CPU time with `off`, and 128 s and 195 s with `auto`; def2-SVP took
 70 s and 141 s.
+
+A second set of measured runs (not tests) covers the builds that follow the
+SCF. Same settings, 2 rayon threads, load average about 2 (the runs' own two
+threads). Butane / cc-pVDZ (106 functions) with `check_stability = true`: the
+RHF internal and external Davidson solves made 435 pooled $J/K$ builds with
+`off` and 425 with `auto`, at a median 1.51 s and 0.73 s each, and the whole
+run took 685 s and 322 s. The rotated basis was set up once for the
+geometry, in 7 ms, and shared by the SCF and all the stability builds. In the
+same session the per-build SCF wall went from 5.49 s to 2.51 s on hexane and
+from 13.5 s to 5.6 s on octane.
 
 ## When the incremental build runs {#direct-and-incremental-incremental-build-runs}
 

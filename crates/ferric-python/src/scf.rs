@@ -582,6 +582,17 @@ pub(crate) fn parse_eri(s: Option<&str>) -> PyResult<ferric_scf::incore_jk::EriM
     })
 }
 
+/// Strict parse of a `gc_rotation` kwarg (exactly `"auto"`, `"rot1"` or
+/// `"off"`, as `[scf] gc_rotation`); `None` leaves `RhfConfig::gc_rotation` unset
+/// (`FERRIC_GC_ROTATE`, then `"auto"`), the library default.
+pub(crate) fn parse_gc_rotation(
+    s: Option<&str>,
+) -> PyResult<Option<ferric_scf::direct_jk::GcRotate>> {
+    s.map(ferric_scf::direct_jk::GcRotate::parse_str)
+        .transpose()
+        .map_err(|e| crate::errors::input_err(format!("gc_rotation: {e}")))
+}
+
 /// Strict parse of a `relativistic` kwarg (`"x2c1e"`); `None` is the
 /// nonrelativistic Hamiltonian.
 pub(crate) fn parse_relativistic(
@@ -607,6 +618,7 @@ pub(crate) fn parse_relativistic(
     fock_hook=None,
     guess_basis=None, guess_projection=None, ri_j_precision=None, dm0=None,
     with_gradient=false, eri=None, relativistic=None, fock_hook_grad=None,
+    gc_rotation=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_rhf(
@@ -652,6 +664,7 @@ pub(crate) fn run_rhf(
     eri: Option<&str>,
     relativistic: Option<&str>,
     fock_hook_grad: Option<&Bound<'_, PyAny>>,
+    gc_rotation: Option<&str>,
 ) -> PyResult<PyObject> {
     refuse_dm0_with_guess("run_rhf", dm0.is_some(), guess, guess_basis)?;
     let hook = parse_fock_hook("run_rhf", fock_hook, fock_hook_grad, with_gradient)?;
@@ -728,6 +741,7 @@ pub(crate) fn run_rhf(
     let mut config = options
         .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
         .py()?;
+    config.gc_rotation = parse_gc_rotation(gc_rotation)?;
     if with_gradient {
         config = scf_gradient_config("run_rhf", ScfGradientKind::Rhf, &config, fock_hook)?;
         if hook.as_ref().is_some_and(FockHook::lacks_grad) {
@@ -1507,6 +1521,7 @@ impl PyUhfResult {
     dm0=None, with_gradient=false, mom_reference=None, eri=None, relativistic=None,
     fock_hook_grad=None,
     soscf=None, smeared_charges=None, solvent=None, pcm_lebedev_order=None,
+    gc_rotation=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_uhf(
@@ -1548,6 +1563,7 @@ pub(crate) fn run_uhf(
     smeared_charges: Option<Vec<(f64, f64, f64, f64, f64)>>,
     solvent: Option<&Bound<'_, PyAny>>,
     pcm_lebedev_order: Option<usize>,
+    gc_rotation: Option<&str>,
 ) -> PyResult<PyUhfResult> {
     refuse_dm0_with_guess("run_uhf", dm0.is_some(), guess, guess_basis)?;
     let hook = parse_fock_hook("run_uhf", fock_hook, fock_hook_grad, with_gradient)?;
@@ -1614,9 +1630,10 @@ pub(crate) fn run_uhf(
         ..ScfKwargs::default()
     };
     let options = scf_options_from_kwargs(ScfEntryPoint::Uhf, kw)?;
-    let config: UhfConfig = options
+    let mut config: UhfConfig = options
         .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
         .py()?;
+    config.gc_rotation = parse_gc_rotation(gc_rotation)?;
     solve_open_shell_entry(
         py,
         blocks::OpenShell::Uhf,
@@ -1665,6 +1682,7 @@ pub(crate) fn run_uhf(
     with_gradient=false, eri=None, relativistic=None, fock_hook_grad=None,
     guess=None, soscf=None, smeared_charges=None, solvent=None, pcm_lebedev_order=None,
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
+    gc_rotation=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_rohf(
@@ -1703,6 +1721,7 @@ pub(crate) fn run_rohf(
     cosx_final_pass: Option<bool>,
     cosx_final_grid: Option<&Bound<'_, PyAny>>,
     cosx_overlap_fit: Option<bool>,
+    gc_rotation: Option<&str>,
 ) -> PyResult<PyUhfResult> {
     refuse_dm0_with_guess("run_rohf", dm0.is_some(), guess, guess_basis)?;
     let hook = parse_fock_hook("run_rohf", fock_hook, fock_hook_grad, with_gradient)?;
@@ -1760,9 +1779,10 @@ pub(crate) fn run_rohf(
         ..ScfKwargs::default()
     };
     let options = scf_options_from_kwargs(ScfEntryPoint::Rohf, kw)?;
-    let config: RohfConfig = options
+    let mut config: RohfConfig = options
         .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
         .py()?;
+    config.gc_rotation = parse_gc_rotation(gc_rotation)?;
     solve_open_shell_entry(
         py,
         blocks::OpenShell::Rohf,

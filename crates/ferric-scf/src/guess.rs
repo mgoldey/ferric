@@ -368,6 +368,11 @@ fn free_atom_density(
                 // `ri_j_precision = "f64"` SCF start elsewhere than the f64
                 // default it replaces.
                 ri_j_precision: Some(crate::df_j::RiJPrecision::F64),
+                // Any four-centre build of the guess solve (its own guess
+                // Fock, say) stays unrotated (`direct_jk::gc_rotation`), as
+                // the molecular guess Fock does (`SchwarzBounds::unrotated`):
+                // the guess is the same whatever the SCF's rotation.
+                gc_rotation: Some(crate::direct_jk::GcRotate::Off),
                 ..Default::default()
             };
             free_atom_dfk(|| solve_rhf(&ctx, &amol, &aprep, op, &abounds, &acfg))
@@ -389,6 +394,11 @@ fn free_atom_density(
                 // `ri_j_precision = "f64"` SCF start elsewhere than the f64
                 // default it replaces.
                 ri_j_precision: Some(crate::df_j::RiJPrecision::F64),
+                // Any four-centre build of the guess solve (its own guess
+                // Fock, say) stays unrotated (`direct_jk::gc_rotation`), as
+                // the molecular guess Fock does (`SchwarzBounds::unrotated`):
+                // the guess is the same whatever the SCF's rotation.
+                gc_rotation: Some(crate::direct_jk::GcRotate::Off),
                 ..Default::default()
             };
             // SPHERICALLY SYMMETRIZE the converged block before returning it.

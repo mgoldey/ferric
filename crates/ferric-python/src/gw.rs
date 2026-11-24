@@ -261,6 +261,7 @@ pub(crate) fn run_gw(
                 &scf,
                 &grids.main,
                 &grids.nlc,
+                cfg.gc_rotation,
             )
             .map_err(make_err)?
         };
@@ -560,6 +561,7 @@ pub(crate) fn run_u_gw(
                 &scf,
                 &grids.main,
                 &grids.nlc,
+                cfg.gc_rotation,
             )
             .map_err(make_err)?
         };

@@ -6343,6 +6343,11 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "trah_trigger"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "gc_rotation"
    }
   ],
   "run_double_hybrid": [
@@ -9236,6 +9241,11 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "fock_hook_grad"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "gc_rotation"
    }
   ],
   "run_rhf_gamma": [
@@ -9987,6 +9997,11 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "cosx_overlap_fit"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "gc_rotation"
    }
   ],
   "run_rohf_gamma": [
@@ -10358,6 +10373,11 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "fock_hook_grad"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "gc_rotation"
    }
   ],
   "run_roks_gamma": [
@@ -11440,6 +11460,11 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "pcm_lebedev_order"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "gc_rotation"
    }
   ],
   "run_uhf_gamma": [
@@ -11826,6 +11851,11 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "fock_hook_grad"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "gc_rotation"
    }
   ],
   "run_uks_gamma": [

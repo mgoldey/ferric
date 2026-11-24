@@ -5,7 +5,8 @@
 //! The run is the exact-J/K Coulomb RHF start with the library defaults, then
 //! the CAS step, so the CLI reads only `[cas]` (active space and orbital
 //! optimization), `[cas.ci]` (the CI eigensolver), `[scf]` `max_iter` /
-//! `energy_conv` / `density_conv`, `[memory]`, `[parallel]` and `[output]`.
+//! `energy_conv` / `density_conv` / `gc_rotation` (read by the RHF start and
+//! the direct CASSCF J/K alike), `[memory]`, `[parallel]` and `[output]`.
 //! [`resolve_plan`] refuses every other section and key at load time, so no
 //! key is read by one surface and ignored by the other.
 
@@ -113,7 +114,8 @@ pub(crate) const READ_SECTIONS: &[&str] = &[
 ];
 
 /// The `[scf]` keys a CAS run reads.
-pub(crate) const READ_SCF_KEYS: &[&str] = &["max_iter", "energy_conv", "density_conv"];
+pub(crate) const READ_SCF_KEYS: &[&str] =
+    &["max_iter", "energy_conv", "density_conv", "gc_rotation"];
 
 fn positive(name: &str, v: Option<f64>) -> Result<(), String> {
     match v {
@@ -304,12 +306,16 @@ pub fn resolve_plan(cfg: &Config, text: &str) -> Result<Option<CasPlan>, String>
             integrals,
             optimizer,
             stability,
+            // The direct CASSCF J/K follow the reference SCF's contraction
+            // rotation.
+            gc_rotation: cfg.scf.gc_rotation_resolved()?,
             ..d
         },
         scf: ScfStart {
             max_iter: scf_key("max_iter").then_some(cfg.scf.max_iter),
             energy_conv: scf_key("energy_conv").then_some(cfg.scf.energy_conv),
             density_conv: scf_key("density_conv").then_some(cfg.scf.density_conv),
+            gc_rotation: cfg.scf.gc_rotation_resolved()?,
         },
     }))
 }
@@ -407,6 +413,7 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) -> Result<(), CliError> {
                 "max_iter": plan.scf.max_iter,
                 "energy_conv": plan.scf.energy_conv,
                 "density_conv": plan.scf.density_conv,
+                "gc_rotation": plan.scf.gc_rotation.map(|g| g.as_str()),
                 "memory_budget_bytes": resolution.bytes,
                 "openblas_num_threads": std::env::var("OPENBLAS_NUM_THREADS").ok(),
                 "rayon_num_threads": rayon::current_num_threads(),
