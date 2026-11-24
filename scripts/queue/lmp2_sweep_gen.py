@@ -20,6 +20,7 @@ scratch budget is DirectConfig's default 2 GiB (bench pinned 1 GiB); the exact
 erfc reference is the CLI's att-rimp2 path (attenuated_ri_mp2), not
 ri_mp2(Operator::erfc) as in the bench.
 """
+
 import argparse
 import hashlib
 import json
@@ -73,7 +74,8 @@ def toml_text(cell, xyz):
     if op == "erfc":
         lines += [
             'att_operator = "erfc"',
-            "omega = %.12f   # Angstrom^-1 == %.1f Bohr^-1" % (ERFC_OMEGA_ANG, ERFC_OMEGA_BOHR),
+            "omega = %.12f   # Angstrom^-1 == %.1f Bohr^-1"
+            % (ERFC_OMEGA_ANG, ERFC_OMEGA_BOHR),
         ]
     if cell["kind"] == "local":
         lines += [
@@ -114,13 +116,23 @@ def build_order(cells, reps, seed):
         k = (r * len(base)) // reps
         seq = base[k:] + base[:k]
         for op in sorted({c["op"] for c in seq}):
-            pos = [i for i, c in enumerate(seq) if c["kind"] == "local" and c["eps"] == tight and c["op"] == op]
+            pos = [
+                i
+                for i, c in enumerate(seq)
+                if c["kind"] == "local" and c["eps"] == tight and c["op"] == op
+            ]
             ordered = sorted((seq[i] for i in pos), key=lambda c: c["n"])
             for i, c in zip(pos, ordered):
                 seq[i] = c
         if r == 0 and tight is not None:
-            n_min = min(c["n"] for c in seq if c["kind"] == "local" and c["eps"] == tight)
-            probes = [c for c in seq if c["kind"] == "local" and c["eps"] == tight and c["n"] == n_min]
+            n_min = min(
+                c["n"] for c in seq if c["kind"] == "local" and c["eps"] == tight
+            )
+            probes = [
+                c
+                for c in seq
+                if c["kind"] == "local" and c["eps"] == tight and c["n"] == n_min
+            ]
             seq = probes + [c for c in seq if c not in probes]
         order += [(r + 1, c) for c in seq]
     # never two reps of one cell adjacent (the rep boundary is the risk)
@@ -135,8 +147,15 @@ def cmd_plan(a):
     epss = [float(x) for x in a.eps.split(",")]
     ops = a.ops.split(",")
     ref_sizes = [int(x) for x in a.ref_sizes.split(",")] if a.ref_sizes else []
-    cells = [{"kind": "local", "n": n, "op": op, "eps": e} for n in sizes for op in ops for e in epss]
-    cells += [{"kind": "ref", "n": n, "op": op, "eps": None} for n in ref_sizes for op in ops]
+    cells = [
+        {"kind": "local", "n": n, "op": op, "eps": e}
+        for n in sizes
+        for op in ops
+        for e in epss
+    ]
+    cells += [
+        {"kind": "ref", "n": n, "op": op, "eps": None} for n in ref_sizes for op in ops
+    ]
     tdir = os.path.join(a.out, "tomls")
     os.makedirs(tdir, exist_ok=True)
     for c in cells:
@@ -150,10 +169,21 @@ def cmd_plan(a):
         for idx, (rep, c) in enumerate(order, 1):
             f.write(
                 "%d\t%d\t%s\t%s\t%d\t%s\t%s\t%s\n"
-                % (idx, rep, cell_id(c), c["kind"], c["n"], c["op"], "-" if c["eps"] is None else "%.0e" % c["eps"],
-                   os.path.join(tdir, cell_id(c) + ".toml"))
+                % (
+                    idx,
+                    rep,
+                    cell_id(c),
+                    c["kind"],
+                    c["n"],
+                    c["op"],
+                    "-" if c["eps"] is None else "%.0e" % c["eps"],
+                    os.path.join(tdir, cell_id(c) + ".toml"),
+                )
             )
-    print("plan: %d cells, %d runs -> %s" % (len(cells), len(order), os.path.join(a.out, "plan.tsv")))
+    print(
+        "plan: %d cells, %d runs -> %s"
+        % (len(cells), len(order), os.path.join(a.out, "plan.tsv"))
+    )
 
 
 # ------------------------------------------------------------------- sample
@@ -217,11 +247,22 @@ def predict(rows, op, n, eps, skip_gb, safety):
       occupied saturated) when the measured pair_fraction <= 0.5, QUADRATIC
       (pairs still growing with the chain) otherwise; times `safety`.
     Returns (decision, predicted_gb, basis_text)."""
-    same = [r for r in rows if r["cell"]["kind"] == "local" and r["cell"]["op"] == op
-            and r["cell"]["eps"] is not None and abs(r["cell"]["eps"] - eps) < 1e-15 and r["cell"]["n"] < n]
+    same = [
+        r
+        for r in rows
+        if r["cell"]["kind"] == "local"
+        and r["cell"]["op"] == op
+        and r["cell"]["eps"] is not None
+        and abs(r["cell"]["eps"] - eps) < 1e-15
+        and r["cell"]["n"] < n
+    ]
     killed = [r for r in same if r.get("status") == "killed_rss"]
     if killed:
-        return "SKIP", float("inf"), "watchdog killed %s at N=%d" % (op, killed[0]["cell"]["n"])
+        return (
+            "SKIP",
+            float("inf"),
+            "watchdog killed %s at N=%d" % (op, killed[0]["cell"]["n"]),
+        )
     ok = [r for r in same if r.get("status") == "ok" and r.get("peak_rss_bytes")]
     if not ok:
         return "SKIP", float("nan"), "no measured smaller N at this (op, eps)"
@@ -231,7 +272,13 @@ def predict(rows, op, n, eps, skip_gb, safety):
     pf = max((r.get("pair_fraction") or 0.0) for r in at)
     expo = 2 if pf > 0.5 else 1
     pred = rss * (n_occ_active(n) / n_occ_active(nm)) ** expo * safety / 1e9
-    basis = "N=%d peak %.2f GB, pair_fraction %.3f -> no^%d x %.2f safety" % (nm, rss / 1e9, pf, expo, safety)
+    basis = "N=%d peak %.2f GB, pair_fraction %.3f -> no^%d x %.2f safety" % (
+        nm,
+        rss / 1e9,
+        pf,
+        expo,
+        safety,
+    )
     return ("RUN" if pred <= skip_gb else "SKIP"), pred, basis
 
 
@@ -249,21 +296,48 @@ def parse_stdout(text):
     carries the certificate but NOT the stage timings, so those come from the
     printout's 't maps/eri3/metric/pairs/solve' line."""
     out = {}
-    m = re.search(r"t maps/eri3/metric/pairs/solve\s+%s/%s/%s/%s/%s s" % ((FLOAT,) * 5), text)
+    m = re.search(
+        r"t maps/eri3/metric/pairs/solve\s+%s/%s/%s/%s/%s s" % ((FLOAT,) * 5), text
+    )
     if m:
-        out["stages_stdout"] = dict(zip(["t_maps_s", "t_eri3_s", "t_metric_s", "t_pairs_s", "t_solve_s"],
-                                        map(float, m.groups())))
-    m = re.search(r"strips rows %s/(\d+) cols %s/(\d+)\s+eri3 %sM evald / %sM skipped" % (FLOAT, FLOAT, FLOAT, FLOAT), text)
+        out["stages_stdout"] = dict(
+            zip(
+                ["t_maps_s", "t_eri3_s", "t_metric_s", "t_pairs_s", "t_solve_s"],
+                map(float, m.groups()),
+            )
+        )
+    m = re.search(
+        r"strips rows %s/(\d+) cols %s/(\d+)\s+eri3 %sM evald / %sM skipped"
+        % (FLOAT, FLOAT, FLOAT, FLOAT),
+        text,
+    )
     if m:
         g = m.groups()
-        out["strips"] = {"rows_mean": float(g[0]), "rows_max": int(g[1]), "cols_mean": float(g[2]),
-                         "cols_max": int(g[3]), "eri3_mtriples_evald": float(g[4]), "eri3_mtriples_skipped": float(g[5])}
-    m = re.search(r"keep %s\s+pairs %s\s+gated (\d+)\s+dom\(mean/max\) %s/(\d+)\s+cand\(mean/max\) %s/(\d+)\s+cg (\d+)"
-                  % (FLOAT, FLOAT, FLOAT, FLOAT), text)
+        out["strips"] = {
+            "rows_mean": float(g[0]),
+            "rows_max": int(g[1]),
+            "cols_mean": float(g[2]),
+            "cols_max": int(g[3]),
+            "eri3_mtriples_evald": float(g[4]),
+            "eri3_mtriples_skipped": float(g[5]),
+        }
+    m = re.search(
+        r"keep %s\s+pairs %s\s+gated (\d+)\s+dom\(mean/max\) %s/(\d+)\s+cand\(mean/max\) %s/(\d+)\s+cg (\d+)"
+        % (FLOAT, FLOAT, FLOAT, FLOAT),
+        text,
+    )
     if m:
         g = m.groups()
-        out["counters"] = {"keep": float(g[0]), "pairs": float(g[1]), "gated": int(g[2]), "dom_mean": float(g[3]),
-                           "dom_max": int(g[4]), "cand_mean": float(g[5]), "cand_max": int(g[6]), "cg_iterations": int(g[7])}
+        out["counters"] = {
+            "keep": float(g[0]),
+            "pairs": float(g[1]),
+            "gated": int(g[2]),
+            "dom_mean": float(g[3]),
+            "dom_max": int(g[4]),
+            "cand_mean": float(g[5]),
+            "cand_max": int(g[6]),
+            "cg_iterations": int(g[7]),
+        }
     m = re.search(r"omega = %s Bohr\^-1" % FLOAT, text)
     if m:
         out["omega_bohr_printed"] = float(m.group(1))
@@ -276,7 +350,9 @@ def parse_stdout(text):
     m = re.search(r"PCG gather plan\s+= (.*)", text)
     if m:
         out["pcg_gather_plan_line"] = m.group(1).strip()
-    m = re.search(r"E_corr\(local MP2\)\s+= %s" % FLOAT, text) or re.search(r"MP2 corr\s+= %s" % FLOAT, text)
+    m = re.search(r"E_corr\(local MP2\)\s+= %s" % FLOAT, text) or re.search(
+        r"MP2 corr\s+= %s" % FLOAT, text
+    )
     if m:
         out["e_corr_stdout"] = float(m.group(1))
     return out
@@ -294,7 +370,11 @@ def parse_runlog(path):
             except ValueError:
                 continue
     out["runlog_present"] = True
-    scf_t = [r.get("t") for r in recs if r.get("record") in ("scf_iter", "ladder_rung") and r.get("t") is not None]
+    scf_t = [
+        r.get("t")
+        for r in recs
+        if r.get("record") in ("scf_iter", "ladder_rung") and r.get("t") is not None
+    ]
     res = [r for r in recs if r.get("record") == "result"]
     end = [r for r in recs if r.get("record") == "run_end"]
     start = [r for r in recs if r.get("record") == "run_start"]
@@ -304,7 +384,12 @@ def parse_runlog(path):
         cfg = start[0].get("config") or {}
         # threads/budget/J-K route exactly as the binary resolved them
         out["run_config"] = cfg
-        for k in ("rayon_num_threads", "openblas_num_threads", "memory_budget_bytes", "scf_jk"):
+        for k in (
+            "rayon_num_threads",
+            "openblas_num_threads",
+            "memory_budget_bytes",
+            "scf_jk",
+        ):
             if k in cfg:
                 out[k] = cfg[k]
     if scf_t:
@@ -319,7 +404,10 @@ def parse_runlog(path):
             out["t_post_scf_s"] = r["t"] - max(scf_t)
     if end:
         e = end[-1]
-        out["run_end"] = {k: e.get(k) for k in ("wall_s", "cpu_s", "peak_rss_bytes", "converged", "exit")}
+        out["run_end"] = {
+            k: e.get(k)
+            for k in ("wall_s", "cpu_s", "peak_rss_bytes", "converged", "exit")
+        }
         ex = e.get("extra") or {}
         out["run_end_extra"] = ex
     return out
@@ -329,10 +417,15 @@ def parse_time_v(path):
     out = {}
     if not path or not os.path.exists(path):
         return out
-    keys = {"User time (seconds)": "user_s", "System time (seconds)": "sys_s",
-            "Maximum resident set size (kbytes)": "max_rss_kb", "Exit status": "time_exit_status",
-            "Percent of CPU this job got": "pct_cpu", "Major (requiring I/O) page faults": "major_faults",
-            "Involuntary context switches": "invol_ctx_switches"}
+    keys = {
+        "User time (seconds)": "user_s",
+        "System time (seconds)": "sys_s",
+        "Maximum resident set size (kbytes)": "max_rss_kb",
+        "Exit status": "time_exit_status",
+        "Percent of CPU this job got": "pct_cpu",
+        "Major (requiring I/O) page faults": "major_faults",
+        "Involuntary context switches": "invol_ctx_switches",
+    }
     with open(path) as f:
         for line in f:
             line = line.strip()
@@ -353,7 +446,9 @@ def parse_time_v(path):
     return out
 
 
-def contention(before, after, wall, own_cpu_s, threads, load_excess_max, foreign_cores_max):
+def contention(
+    before, after, wall, own_cpu_s, threads, load_excess_max, foreign_cores_max
+):
     """Judge FOREIGN activity only (memory post-sample-load-gate-biases-
     timings-fast): raw load1 after a 6-thread run includes the run itself.
     Flags never discard a row."""
@@ -379,7 +474,10 @@ def contention(before, after, wall, own_cpu_s, threads, load_excess_max, foreign
     flags = []
     if c["load1_after_excess"] > load_excess_max:
         flags.append("load_excess")
-    if c.get("foreign_cores_avg") is not None and c["foreign_cores_avg"] > foreign_cores_max:
+    if (
+        c.get("foreign_cores_avg") is not None
+        and c["foreign_cores_avg"] > foreign_cores_max
+    ):
         flags.append("foreign_cpu")
     if (c["psi_some_avg10_after"] or 0.0) > 0.0:
         flags.append("mem_pressure_after")
@@ -411,9 +509,23 @@ def parse_version(path):
 
 
 def cmd_row(a):
-    cell = {"kind": a.kind, "n": a.n, "op": a.op, "eps": None if a.eps in ("-", "") else float(a.eps)}
-    row = {"schema": "lmp2_sweep/1", "run_idx": a.run_idx, "rep": a.rep, "cell_id": a.cell_id, "cell": cell,
-           "status": a.status, "exit_code": a.exit_code, "wall_s": a.wall, "started_at": a.started_at}
+    cell = {
+        "kind": a.kind,
+        "n": a.n,
+        "op": a.op,
+        "eps": None if a.eps in ("-", "") else float(a.eps),
+    }
+    row = {
+        "schema": "lmp2_sweep/1",
+        "run_idx": a.run_idx,
+        "rep": a.rep,
+        "cell_id": a.cell_id,
+        "cell": cell,
+        "status": a.status,
+        "exit_code": a.exit_code,
+        "wall_s": a.wall,
+        "started_at": a.started_at,
+    }
     if a.skip_reason:
         row["skip_reason"] = a.skip_reason
     if a.predicted_gb is not None:
@@ -457,7 +569,9 @@ def cmd_row(a):
             row["method_stage_sum_s"] = sum(row["stages_stdout"].values())
         row["t_post_scf_s"] = rl.get("t_post_scf_s")
         re_ = rl.get("run_end") or {}
-        row["peak_rss_bytes"] = re_.get("peak_rss_bytes") or (tv.get("max_rss_kb", 0) * 1024 or None)
+        row["peak_rss_bytes"] = re_.get("peak_rss_bytes") or (
+            tv.get("max_rss_kb", 0) * 1024 or None
+        )
         if a.watchdog_max_rss_kb:
             row["watchdog_max_rss_kb"] = a.watchdog_max_rss_kb
         own = None
@@ -465,7 +579,15 @@ def cmd_row(a):
             own = tv["user_s"] + tv["sys_s"]
         elif re_.get("cpu_s") is not None:
             own = re_["cpu_s"]
-        c, flags = contention(before, after, a.wall, own, a.threads, a.load_excess_max, a.foreign_cores_max)
+        c, flags = contention(
+            before,
+            after,
+            a.wall,
+            own,
+            a.threads,
+            a.load_excess_max,
+            a.foreign_cores_max,
+        )
         row["contention"] = c
         if a.gate_timeout:
             flags.append("gate_timeout")
@@ -481,7 +603,9 @@ def cmd_row(a):
         "hostname": socket.gethostname(),
         "kernel": os.uname().release,
         "binary": a.binary,
-        "binary_sha256": sha256(a.binary) if a.binary and os.path.exists(a.binary) else None,
+        "binary_sha256": sha256(a.binary)
+        if a.binary and os.path.exists(a.binary)
+        else None,
         "rss_kill_gb": a.rss_kill_gb,
         "cgroup_cap": None,
     }
@@ -490,7 +614,9 @@ def cmd_row(a):
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     sp = p.add_subparsers(dest="cmd", required=True)
     q = sp.add_parser("plan")
     q.add_argument("--out", required=True)
@@ -517,10 +643,33 @@ def main():
     q.add_argument("--safety", type=float, default=1.3)
     q.set_defaults(fn=cmd_predict)
     q = sp.add_parser("row")
-    for k in ("cell-id", "kind", "op", "eps", "status", "stdout", "stderr", "jsonl", "timefile", "before", "after",
-              "binary", "version-file", "skip-reason", "started-at"):
+    for k in (
+        "cell-id",
+        "kind",
+        "op",
+        "eps",
+        "status",
+        "stdout",
+        "stderr",
+        "jsonl",
+        "timefile",
+        "before",
+        "after",
+        "binary",
+        "version-file",
+        "skip-reason",
+        "started-at",
+    ):
         q.add_argument("--" + k, default=None)
-    for k in ("run-idx", "rep", "n", "exit-code", "watchdog-max-rss-kb", "threads", "gate-timeout"):
+    for k in (
+        "run-idx",
+        "rep",
+        "n",
+        "exit-code",
+        "watchdog-max-rss-kb",
+        "threads",
+        "gate-timeout",
+    ):
         q.add_argument("--" + k, type=int, default=0)
     for k in ("wall", "gate-waited", "predicted-gb", "rss-kill-gb"):
         q.add_argument("--" + k, type=float, default=None)
