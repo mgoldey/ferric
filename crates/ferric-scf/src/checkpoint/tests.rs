@@ -216,6 +216,7 @@ fn final_state(spin: Spin, nao: usize) -> FinalState {
         convergence: Some(report()),
         precision_summary: "f64".to_string(),
         precision_detail: format!("{:?}", PrecisionRecord::f64()),
+        precision_json: Some(PrecisionRecord::f64().to_json().to_string()),
         not_stored: Vec::new(),
     }
 }
@@ -279,6 +280,7 @@ fn same_final(a: &FinalState, b: &FinalState) -> bool {
         && same_report(&a.convergence, &b.convergence)
         && a.precision_summary == b.precision_summary
         && a.precision_detail == b.precision_detail
+        && a.precision_json == b.precision_json
         && a.not_stored == b.not_stored
 }
 

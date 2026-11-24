@@ -77,6 +77,7 @@ pub use identity::{
 
 use crate::result::{ConvergenceReport, DfJkRoute, ScfExit, ScfResult, Spin};
 use crate::rhf::RhfConfig;
+use ferric_core::gpu::provenance::PrecisionRecord;
 use ferric_core::FerricError;
 use ndarray::Array2;
 use std::path::Path;
@@ -253,6 +254,10 @@ pub struct FinalState {
     pub precision_summary: String,
     /// `{:?}` of the same record.
     pub precision_detail: String,
+    /// `PrecisionRecord::to_json` of the same record, from which
+    /// [`Checkpoint::restore`] rebuilds the typed record (checked against
+    /// `precision_detail`). `None` in files written before the field existed.
+    pub precision_json: Option<String>,
     /// Populated `ScfResult` fields this file does not store. `induced_dipoles`
     /// and `cosx_final` here make the state unusable under skip.
     pub not_stored: Vec<String>,
@@ -362,6 +367,7 @@ impl Checkpoint {
                 convergence: *convergence,
                 precision_summary: precision.summary(),
                 precision_detail: format!("{precision:?}"),
+                precision_json: Some(precision.to_json().to_string()),
                 not_stored,
             }),
             iteration: *iterations,
@@ -442,8 +448,9 @@ impl Checkpoint {
     ///
     /// Refused ([`CheckpointError::MidRun`] / [`CheckpointError::NotRestorable`]):
     /// a mid-run file, a state that carried `induced_dipoles` or `cosx_final`,
-    /// and a state whose precision record is not plain f64 (the file keeps that
-    /// record as text only, so the typed record cannot be rebuilt).
+    /// and a mixed-precision state whose typed record cannot be rebuilt from
+    /// [`FinalState::precision_json`] to the stored `precision_detail` (a file
+    /// from before that field existed, or a record this build cannot parse).
     pub fn restore(&self, config: &RhfConfig) -> Result<ScfResult, CheckpointError> {
         let state = self.final_state.as_ref().ok_or(CheckpointError::MidRun)?;
         let FinalState {
@@ -460,8 +467,9 @@ impl Checkpoint {
             iterations,
             computed_quartets,
             convergence,
-            precision_summary: _,
+            precision_summary,
             precision_detail,
+            precision_json,
             not_stored,
         } = state;
         let mut refused: Vec<String> = not_stored
@@ -469,13 +477,24 @@ impl Checkpoint {
             .filter(|name| matches!(name.as_str(), "induced_dipoles" | "cosx_final"))
             .cloned()
             .collect();
+        // The typed record, rebuilt from its JSON and accepted only when its
+        // `Debug` is the stored one; an f64 run needs no JSON (older files).
         let f64_record = ferric_core::gpu::provenance::PrecisionRecord::f64();
-        if *precision_detail != format!("{f64_record:?}") {
-            refused.push(format!("precision ({})", state.precision_summary));
+        let precision = if *precision_detail == format!("{f64_record:?}") {
+            Some(f64_record)
+        } else {
+            precision_json
+                .as_deref()
+                .and_then(|text| serde_json::from_str(text).ok())
+                .and_then(|json| PrecisionRecord::from_json(&json).ok())
+                .filter(|record| format!("{record:?}") == *precision_detail)
+        };
+        if precision.is_none() {
+            refused.push(format!("precision ({precision_summary})"));
         }
-        if !refused.is_empty() {
+        let Some(precision) = precision.filter(|_| refused.is_empty()) else {
             return Err(CheckpointError::NotRestorable(refused));
-        }
+        };
         let OrbitalState {
             spin,
             density_total,
@@ -513,7 +532,7 @@ impl Checkpoint {
             cosx_schedule: None,
             convergence: *convergence,
             guess_basis: None,
-            precision: f64_record,
+            precision,
             relativistic: config.relativistic,
         })
     }

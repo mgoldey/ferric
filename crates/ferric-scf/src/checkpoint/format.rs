@@ -161,6 +161,9 @@ struct FinalMeta {
     convergence: Option<ConvergenceMeta>,
     precision_summary: String,
     precision_detail: String,
+    /// Absent in checkpoints written before the field existed.
+    #[serde(default)]
+    precision_json: Option<String>,
     not_stored: Vec<String>,
 }
 
@@ -407,6 +410,7 @@ fn final_to_meta(state: &FinalState) -> FinalMeta {
         convergence: state.convergence.as_ref().map(convergence_to_meta),
         precision_summary: state.precision_summary.clone(),
         precision_detail: state.precision_detail.clone(),
+        precision_json: state.precision_json.clone(),
         not_stored: state.not_stored.clone(),
     }
 }
@@ -1004,6 +1008,7 @@ fn decode_final(
         convergence: meta.convergence.map(convergence_from_meta).transpose()?,
         precision_summary: meta.precision_summary,
         precision_detail: meta.precision_detail,
+        precision_json: meta.precision_json,
         not_stored: meta.not_stored,
     })
 }

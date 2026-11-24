@@ -169,10 +169,19 @@ fn save_then_read(tag: &str, mol: &str, kinds: [(&str, &str); 2]) {
             read.stderr
         );
         let end = read.run_end();
-        assert_eq!(end["scf_iterations"], 0, "{end}");
+        assert_eq!(end["extra"]["scf_iterations"], 0, "{end}");
         assert!(
-            end["scf_reference"]["file_iterations"].as_u64().unwrap() > 0,
+            end["extra"]["scf_reference"]["file_iterations"]
+                .as_u64()
+                .unwrap()
+                > 0,
             "{end}"
+        );
+        // The reference's precision record comes back with it.
+        assert_eq!(
+            end["extra"]["scf_precision"],
+            fresh.run_end()["extra"]["scf_precision"],
+            "{tag}: {kind}"
         );
         assert_eq!(
             end["energy"].as_f64().unwrap().to_bits(),
@@ -189,6 +198,13 @@ fn an_rhf_reference_saved_by_rimp2_gives_rimp2_and_ccsd_their_fresh_energies() {
         WATER,
         [("rimp2", "jk = \"exact\"\n"), ("ccsd", "")],
     );
+}
+
+/// The MP2 family's default reference fits J and K, with the RI-J tensor
+/// stored in f32: a mixed-precision record that the file restores too.
+#[test]
+fn a_mixed_precision_ri_jk_reference_gives_rimp2_and_scs_mp2_their_fresh_energies() {
+    save_then_read("rijk", WATER, [("rimp2", ""), ("scs-mp2", "")]);
 }
 
 #[test]
