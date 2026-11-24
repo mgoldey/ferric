@@ -30,13 +30,16 @@
 //! `RAYON_NUM_THREADS` explicitly when the node is not exclusively yours or
 //! the launcher is not recognised, so ranks x threads never exceeds the cores.
 //!
-//! One node with k cores:
+//! One node with k cores. `--bind-to none` is REQUIRED: Open MPI pins each
+//! rank to one core by default, and every thread of the rank's pool then
+//! shares that core (measured here: 6 threads ran at 199% CPU and the strip
+//! build took 5x longer).
 //!
 //! ```text
 //! # 1 rank x k threads (the serial path: the stripe is off at one rank)
-//! RAYON_NUM_THREADS=k OPENBLAS_NUM_THREADS=1 mpirun -np 1 $BIN
+//! RAYON_NUM_THREADS=k OPENBLAS_NUM_THREADS=1 mpirun --bind-to none -np 1 $BIN
 //! # n ranks x k/n threads
-//! RAYON_NUM_THREADS=$((k/n)) OPENBLAS_NUM_THREADS=1 mpirun -np n $BIN
+//! RAYON_NUM_THREADS=$((k/n)) OPENBLAS_NUM_THREADS=1 mpirun --bind-to none -np n $BIN
 //! ```
 //!
 //! Several nodes (one rank per node, k threads each; adapt the hostfile and

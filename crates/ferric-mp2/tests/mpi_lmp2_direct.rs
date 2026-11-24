@@ -10,7 +10,7 @@
 //! ```text
 //! OPENBLAS_NUM_THREADS=1 cargo test -p ferric-mp2 --features mpi \
 //!     --test mpi_lmp2_direct --no-run
-//! mpirun -np 2 <bin> --nocapture --test-threads=1
+//! mpirun --bind-to none -np 2 <bin> --nocapture --test-threads=1
 //! ```
 //!
 //! ferric never calls `MPI_Finalize`, so `mpirun` exits non-zero even when
@@ -22,7 +22,7 @@
 //!
 //! The ignored `..._memory_alkane` case prints each rank's strip bytes and
 //! peak resident set for the striped and the serial run. Give each rank its
-//! share of the cores, e.g. `RAYON_NUM_THREADS=3 mpirun -np 2 <bin>
+//! share of the cores, e.g. `RAYON_NUM_THREADS=3 mpirun --bind-to none -np 2 <bin>
 //! --ignored --nocapture --test-threads=1`; `FERRIC_MPI_LMP2_ALKANE` picks
 //! the chain length (default 20), `FERRIC_MPI_LMP2_SCRATCH_MIB` the stage-3
 //! slab budget (`DirectConfig::slab_budget_bytes`, MiB per node), and `FERRIC_MEM_TRACE=1` prints RSS per stage.
