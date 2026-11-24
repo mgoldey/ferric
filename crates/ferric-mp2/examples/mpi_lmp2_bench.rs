@@ -21,9 +21,11 @@
 //! runs: `AmplitudeLmp2Config::production` with `DirectConfig::production()`.
 //! Flags (all optional): `--xyz PATH --basis NAME --aux NAME --eps X
 //! --frozen-core N --aux-radius BOHR --virt-radius BOHR|none --ao-tail X
-//! --schwarz-skip X --batch-merge N --kappa X|none --slab-mib N --scratch-mib N`
-//! (the last two set `DirectConfig::slab_budget_bytes` and
-//! `scratch_budget_bytes` in MiB).
+//! --schwarz-skip X --batch-merge N --kappa X|none --slab-mib N --scratch-mib N
+//! --eri3-pass batches|aux-major --split-eri3-timers true|false`
+//! (`--slab-mib`/`--scratch-mib` set `DirectConfig::slab_budget_bytes` and
+//! `scratch_budget_bytes` in MiB; `--eri3-pass aux-major` needs
+//! `--batch-merge 1`).
 //!
 //! Each rank's pool has `RAYON_NUM_THREADS` threads if that is set, otherwise
 //! `ParallelContext::rayon_threads()` (physical cores per local rank). Set
@@ -85,7 +87,7 @@ use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config;
-use ferric_mp2::lmp2_direct::{amplitude_lmp2_direct, DirectConfig};
+use ferric_mp2::lmp2_direct::{amplitude_lmp2_direct, DirectConfig, Eri3Pass};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use serde_json::json;
@@ -144,6 +146,14 @@ fn parse_args() -> Args {
             "--kappa" => a.maps.virt_schwarz_kappa = parse_some(&flag, &v),
             "--slab-mib" => a.maps.slab_budget_bytes = parse_opt::<usize>(&flag, &v) << 20,
             "--scratch-mib" => a.maps.scratch_budget_bytes = parse_opt::<usize>(&flag, &v) << 20,
+            "--eri3-pass" => {
+                a.maps.eri3_pass = match v.as_str() {
+                    "batches" => Eri3Pass::Batches,
+                    "aux-major" => Eri3Pass::AuxMajor,
+                    _ => panic!("--eri3-pass: batches or aux-major, not {v:?}"),
+                }
+            }
+            "--split-eri3-timers" => a.maps.split_eri3_timers = parse_opt(&flag, &v),
             _ => panic!("unknown flag {flag} (see the module doc)"),
         }
     }
@@ -273,6 +283,23 @@ fn run(ctx: &ParallelContext, args: &Args) -> bool {
             "t_metric_s": st.t_metric_s,
             "t_pairs_s": st.t_pairs_s,
             "t_loc_s": st.t_loc_s,
+            "eri3_pass": format!("{:?}", maps.eri3_pass),
+            "batch_merge": maps.batch_merge,
+            "stage3_scratch_bytes": st.memory.stage3_scratch_bytes,
+            "n_batches": st.n_batches,
+            "n_eri3_slabs": st.n_eri3_slabs,
+            "n_eri3_shell_triples": st.n_eri3_shell_triples,
+            "n_eri3_skipped": st.n_eri3_skipped,
+            "n_eri3_integrals": st.n_eri3_integrals,
+            "n_eri3_null_blocks": st.n_eri3_null_blocks,
+            "eri3_slab_bytes_max": st.eri3_slab_bytes_max,
+            "batch_work_max_s": st.batch_work_max_s,
+            "batch_work_mean_s": st.batch_work_mean_s,
+            "transform_flops": st.transform_flops,
+            "aux_major_coeff_bytes": st.aux_major_coeff_bytes,
+            "aux_major_task_bytes_max": st.aux_major_task_bytes_max,
+            "aux_major_concurrency": st.aux_major_concurrency,
+            "aux_major_in_flight_peak": st.aux_major_in_flight_peak,
         },
         "stage": {
             "t_spaces_s": tm.t_spaces_s,
