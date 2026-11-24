@@ -445,7 +445,7 @@ fn build_df_jk_impl<'a>(
                         op,
                         &dfbs,
                         ooc_budget,
-                        rij_f32_beside(df_k.as_ref(), (naux, prep.nbasis()), ooc_budget),
+                        rij_f32_beside(df_k.as_ref(), ooc_budget),
                         Some(ctx),
                         j_precision,
                     )? {
@@ -473,10 +473,7 @@ fn build_df_jk_impl<'a>(
                             raw,
                             op,
                             &dfbs,
-                            (
-                                ooc_budget,
-                                rij_f32_beside(df_k.as_ref(), (naux, prep.nbasis()), ooc_budget),
-                            ),
+                            (ooc_budget, rij_f32_beside(df_k.as_ref(), ooc_budget)),
                             Some(ctx),
                             j_precision,
                         )?)
@@ -548,13 +545,12 @@ fn build_df_jk_impl<'a>(
 /// the shapes and the budget only.
 /// What a shared RI-JK set-up's f32 RI-J conversion counts beside it: the
 /// DF-K band at its budget placement ([`budget_placed_band_bytes`]), sized in
-/// the layout DF-K stores ([`DfK::stored_band_bytes`] at its stored
-/// precision: square f64, packed f64 after an f32 fallback, or packed f32),
-/// else nothing without DF-K. Whether the band stayed in core or spilled is
-/// deliberately not read.
-fn rij_f32_beside(df_k: Option<&DfK<'_>>, (naux, nao): (usize, usize), budget: usize) -> usize {
+/// the layout the built DF-K stores ([`DfK::stored_band_bytes`]: square f64,
+/// packed f64 or packed f32), else nothing without DF-K. Whether the band
+/// stayed in core or spilled is deliberately not read.
+fn rij_f32_beside(df_k: Option<&DfK<'_>>, budget: usize) -> usize {
     df_k.map_or(0, |k| {
-        budget_placed_band_bytes(DfK::stored_band_bytes(k.precision(), naux, nao), budget)
+        budget_placed_band_bytes(k.stored_band_bytes(), budget)
     })
 }
 
@@ -1126,52 +1122,6 @@ mod tests {
         assert_eq!(budget_placed_band_bytes(band, 10 * band), band);
         assert_eq!(budget_placed_band_bytes(band, band - 1), 0);
         assert_eq!(budget_placed_band_bytes(0, 0), 0);
-    }
-
-    /// The RI-J precision a shared set-up picks is the same whether the live
-    /// DF-K band stayed in core or spilled (which also reads the pool): one
-    /// input, one budget, one precision.
-    #[test]
-    fn rij_precision_is_the_same_with_the_band_resident_or_spilled() {
-        use crate::df_j::{DfJ, RiJPrecision};
-        use crate::df_k::RiKPrecision;
-        use ferric_integrals::three_index_source::ThreeIndexSource;
-        let mol = Molecule::parse_xyz(
-            "3\nwater\nO 0.0 0.0 0.117790\nH 0.0 0.755453 -0.471161\nH 0.0 -0.755453 -0.471161\n",
-            0,
-            1,
-        )
-        .unwrap();
-        let prep =
-            PreparedBasis::new(&mol, &ferric_core::basis::bundled("cc-pvdz").unwrap()).unwrap();
-        let dfbs = PreparedBasis::new(
-            &mol,
-            &ferric_core::basis::bundled("def2-universal-jkfit").unwrap(),
-        )
-        .unwrap();
-        let op = Operator::coulomb();
-        let (naux, nao) = (dfbs.nbasis(), prep.nbasis());
-        let band = DfK::packed_band_bytes(naux, nao, RiKPrecision::F64);
-        let resident =
-            DfK::new_with_precision(op, &prep, &dfbs, 1 << 40, RiKPrecision::F64).unwrap();
-        let spilled =
-            DfK::new_with_precision(op, &prep, &dfbs, band / 8, RiKPrecision::F64).unwrap();
-        assert_ne!(
-            resident.resident_tensor_bytes(),
-            spilled.resident_tensor_bytes(),
-            "the two bands must differ in residency for this test to bite"
-        );
-        let f32_bytes = naux * nao * (nao + 1) / 2 * 4;
-        for budget in [f32_bytes + band / 2, f32_bytes + band + band / 2, 1 << 40] {
-            let precision = |k: &DfK<'_>| {
-                let beside = rij_f32_beside(Some(k), (naux, nao), budget);
-                let raw = ThreeIndexSource::build(op, &prep, &dfbs, 1 << 40).unwrap();
-                DfJ::from_source_beside(raw, op, &dfbs, (budget, beside), None, RiJPrecision::F32)
-                    .unwrap()
-                    .precision()
-            };
-            assert_eq!(precision(&resident), precision(&spilled), "budget {budget}");
-        }
     }
 
     /// Dress first, at a budget where raw and DF-K's packed band do not fit

@@ -308,6 +308,9 @@ pub struct DfK<'a> {
     /// The storage precision the dressed tensor actually has (after any
     /// fallback): `F32` only for the packed f32 tier.
     precision: RiKPrecision,
+    /// The layout the dressed band was built in (square f64 when the packed
+    /// dressing was not taken, whatever the reason), resident or spilled.
+    layout: DressedLayout,
     /// Device-resident copy state (feature `gpu`); `Untried` until the first
     /// occupied-path build asks for it. See `crate::df_k_gpu`.
     #[cfg(feature = "gpu")]
@@ -821,8 +824,9 @@ impl<'a> DfK<'a> {
                  (a [gpu] mode that may build K on the device needs the f64 square tensor)"
             );
         }
-        let (dressed, stored) = match packed {
-            Some(p) => p,
+        let (dressed, stored, layout) = match packed {
+            Some((src, RiKPrecision::F32)) => (src, RiKPrecision::F32, DressedLayout::PackedF32),
+            Some((src, RiKPrecision::F64)) => (src, RiKPrecision::F64, DressedLayout::PackedF64),
             None => {
                 if requested == RiKPrecision::F32 && !device_may_take_k(nao) {
                     ferric_core::gpu::stats::note_mixed_fallback(
@@ -841,7 +845,7 @@ impl<'a> DfK<'a> {
                 } else {
                     ThreeIndexSource::build_dressed_band(raw, &v_inv_sqrt, budget_bytes, p0, p1)?
                 };
-                (d, RiKPrecision::F64)
+                (d, RiKPrecision::F64, DressedLayout::Square)
             }
         };
         // The caller owns `raw`; DfK retains only the dressed tensor. Dressing
@@ -856,6 +860,7 @@ impl<'a> DfK<'a> {
             ctx,
             budget_bytes,
             precision: stored,
+            layout,
             #[cfg(feature = "gpu")]
             device: crate::df_k_gpu::DeviceSlot::default(),
         })
@@ -886,23 +891,24 @@ impl<'a> DfK<'a> {
             && !square_forced()
     }
 
-    /// Nominal bytes of a `band`-row dressed band in the layout a DfK whose
-    /// stored precision is `stored` (its [`DfK::precision`], after any f32
-    /// fallback) keeps, whether or not it is resident: the square f64 tensor
-    /// when the device may take K or the square layout is forced, else the
-    /// packed f32 or f64 triangle. Unlike [`DfK::packed_band_bytes`] (0 for
-    /// the square layout, the room a raw placement reserves), this is the
-    /// band's own size in every layout.
-    pub fn stored_band_bytes(stored: RiKPrecision, band: usize, nao: usize) -> usize {
-        let layout = if device_may_take_k(nao) || (stored == RiKPrecision::F64 && square_forced()) {
-            DressedLayout::Square
-        } else {
-            match stored {
-                RiKPrecision::F32 => DressedLayout::PackedF32,
-                RiKPrecision::F64 => DressedLayout::PackedF64,
-            }
-        };
-        ThreeIndexSource::dressed_band_bytes(band, nao, layout)
+    /// The layout this DfK's dressed band was built in: packed f32, packed
+    /// f64 (after an f32 fallback too) or the square f64 tensor (a device
+    /// mode, the square hook, or a packed dressing that was not taken). A
+    /// property of the object, whether the band is resident or spilled.
+    pub fn stored_layout(&self) -> DressedLayout {
+        self.layout
+    }
+
+    /// Nominal bytes of this DfK's dressed band in its stored layout
+    /// ([`DfK::stored_layout`]), resident or not. Unlike
+    /// [`DfK::packed_band_bytes`] (0 for the square layout, the room a raw
+    /// placement reserves), this is the band's own size in every layout.
+    pub fn stored_band_bytes(&self) -> usize {
+        ThreeIndexSource::dressed_band_bytes(
+            self.dressed.band_naux(),
+            self.dressed.nao(),
+            self.layout,
+        )
     }
 
     /// The storage precision of the dressed tensor (after any fallback).
