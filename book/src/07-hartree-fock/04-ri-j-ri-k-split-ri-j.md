@@ -395,7 +395,7 @@ That depends on the integrals only, so it is deterministic too; a Coulomb
 so it is not expected to fire.
 
 Known limitation: nothing else about the values or the result decides the
-precision. An element below `f32::MIN_POSITIVE` ($\approx 1.2\times10^{-38}$)
+precision. An element of magnitude below `f32::MIN_POSITIVE` ($\approx 1.2\times10^{-38}$)
 is stored subnormal or as zero, an absolute error of at most $2^{-150}$ (the
 $\eta$ term of the `df_j.rs` bound), and the relative rounding $2^{-24}$ of
 every element is accepted whatever it does to the energy. No run-time check
