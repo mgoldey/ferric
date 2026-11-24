@@ -82,7 +82,7 @@ fn fixed_process() -> ProcessSettings {
         gpu_mode: "Off".to_string(),
         libint_version: "2.7.2".to_string(),
         cargo_features: "mpi=false gpu=false cfmm-incomplete=false".to_string(),
-        env: vec![None; 9],
+        env: vec![None; 10],
     }
 }
 
@@ -844,6 +844,9 @@ fn identity_table() -> Vec<(&'static str, FieldClass, Mutator)> {
         ("FERRIC_DFK_METRIC", Route, |s| {
             s.process.env[8] = Some("eigh".to_string());
         }),
+        ("FERRIC_GC_ROTATE", Route, |s| {
+            s.process.env[9] = Some("off".to_string());
+        }),
         ("use_sad_guess", StateSelecting, |s| {
             s.config.use_sad_guess = false;
         }),
@@ -964,6 +967,9 @@ fn identity_table() -> Vec<(&'static str, FieldClass, Mutator)> {
         }),
         ("eri", Route, |s| {
             s.config.eri = crate::incore_jk::EriMode::Direct;
+        }),
+        ("gc_rotation", Route, |s| {
+            s.config.gc_rotation = Some(crate::direct_jk::GcRotate::Off);
         }),
         ("relativistic", Method, |s| {
             s.config.relativistic = Some(crate::x2c::Relativistic::X2c1e);
@@ -1717,6 +1723,7 @@ fn each_process_setting_reaches_the_identity_from_the_environment() {
         ),
         ("FERRIC_DF_GUESS_TIGHT", "0", "FERRIC_DF_GUESS_TIGHT"),
         ("FERRIC_DFK_METRIC", "eigh", "FERRIC_DFK_METRIC"),
+        ("FERRIC_GC_ROTATE", "off", "FERRIC_GC_ROTATE"),
     ] {
         let changed = key(&[(variable, value)]);
         let moved: Vec<&str> = changed
@@ -1737,6 +1744,26 @@ fn each_process_setting_reaches_the_identity_from_the_environment() {
             "FERRIC_DFK_METRIC={value:?}"
         );
     }
+    // So is FERRIC_GC_ROTATE; `OFF` and `off` are one identity too, and a
+    // value that does not parse keeps its raw text (the SCF refuses it).
+    for value in ["auto", " AUTO ", "Auto"] {
+        assert_eq!(
+            key(&[("FERRIC_GC_ROTATE", value)]).fields,
+            base.fields,
+            "FERRIC_GC_ROTATE={value:?}"
+        );
+    }
+    assert_eq!(
+        key(&[("FERRIC_GC_ROTATE", "OFF")]).fields,
+        key(&[("FERRIC_GC_ROTATE", "off")]).fields
+    );
+    let raw = key(&[("FERRIC_GC_ROTATE", "none")]);
+    let gc = raw
+        .fields
+        .iter()
+        .find(|f| f.name == "FERRIC_GC_ROTATE")
+        .unwrap();
+    assert_eq!(gc.value, format!("{:?}", Some("none")));
     let field = |name: &str| base.fields.iter().find(|f| f.name == name).unwrap();
     assert_eq!(
         field("libint_version").value,
@@ -1989,6 +2016,7 @@ fn child(test: &str, envs: &[(&str, &str)]) -> Vec<String> {
     cmd.args(["--exact", test, "--nocapture", "--test-threads=1"]);
     // An inherited debug route switch would move the unset baseline.
     cmd.env_remove("FERRIC_DFK_METRIC");
+    cmd.env_remove("FERRIC_GC_ROTATE");
     for (k, v) in envs {
         cmd.env(k, v);
     }

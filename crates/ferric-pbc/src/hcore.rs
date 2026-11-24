@@ -1387,7 +1387,7 @@ fn periodic_hcore_impl(
                     rot.mutant,
                 )));
             }
-            let r = RotatedBasis::detect(cell, prep, rot, "periodic_hcore")?;
+            let r = crate::sr_rotation::detect(cell, prep, rot, "periodic_hcore")?;
             timings.set_counter(
                 "hcore SR rotated columns",
                 r.as_ref().map_or(0, |r| r.n_rotated_columns) as u64,

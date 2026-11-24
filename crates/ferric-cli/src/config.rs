@@ -3423,6 +3423,13 @@ pub struct ScfCfg {
     /// route is not exact four-centre J and K). RI-J/RI-K, LinK, COSX and
     /// range-separated routes are unaffected. Any other value is an error.
     pub eri: Option<String>,
+    /// Internal contraction rotation of generally contracted shells (cc-pVXZ)
+    /// in the direct four-centre J/K builder: `"auto"` (both stages),
+    /// `"rot1"` (diffuse projection only) or `"off"` (the unrotated builder,
+    /// bit for bit). Unset leaves it to `FERRIC_GC_ROTATE`, then `"auto"`.
+    /// Only the direct four-centre SCF builds read it; energies move at the
+    /// screening-noise level. Any other value is an error.
+    pub gc_rotation: Option<String>,
     /// Relativistic core Hamiltonian: `"x2c1e"` (spin-free X2C-1e, as PySCF
     /// `sfx2c1e()`), or unset for the nonrelativistic one. Energies only
     /// (`task = "energy"`), for the kinds in `X2C_KINDS`; all-electron bases
@@ -3700,6 +3707,7 @@ impl Default for ScfCfg {
             k_builder: None,
             screening: None,
             eri: None,
+            gc_rotation: None,
             relativistic: None,
             cosx_grid: None,
             cosx_final_pass: None,
@@ -3900,13 +3908,14 @@ impl OmittedJk {
 
 impl ScfCfg {
     /// The first `[scf]` key set that only the four-centre route reads
-    /// (`k_builder`, `eri`, `screening`, `df_increments`, `df_guess = true`,
+    /// (`k_builder`, `eri`, `gc_rotation`, `screening`, `df_increments`, `df_guess = true`,
     /// `df_guess_aux`): with one of them an omitted `jk` stays exact, so an
     /// input that worked on the four-centre default keeps working unchanged.
     fn exact_route_key(&self) -> Option<&'static str> {
         [
             ("k_builder", self.k_builder.is_some()),
             ("eri", self.eri.is_some()),
+            ("gc_rotation", self.gc_rotation.is_some()),
             ("screening", self.screening.is_some()),
             ("df_increments", self.df_increments),
             ("df_guess", self.df_guess == Some(true)),
@@ -4275,6 +4284,18 @@ impl ScfCfg {
             .transpose()
             .map_err(|e| format!("[scf] {e}"))
     }
+    /// `[scf] gc_rotation` parsed: `None` when omitted (the variable and the
+    /// default decide), an error naming the key for a value outside
+    /// auto | rot1 | off. The one resolver for load-time validation and the
+    /// lowering.
+    pub fn gc_rotation_resolved(&self) -> Result<Option<ferric_scf::direct_jk::GcRotate>, String> {
+        self.gc_rotation
+            .as_deref()
+            .map(ferric_scf::direct_jk::GcRotate::parse_str)
+            .transpose()
+            .map_err(|e| format!("[scf] gc_rotation: {e}"))
+    }
+
     /// Post-parse validation of the `[scf]` string knobs whose resolution is
     /// otherwise deferred to the point of use. Called from [`load_config`] so
     /// every entry point (CLI and `ferric-batch`) fails before any integral is
@@ -4287,6 +4308,7 @@ impl ScfCfg {
         self.use_density_guess()?;
         self.mom_reference_resolved()?;
         self.relativistic_resolved()?;
+        self.gc_rotation_resolved()?;
         if let Some(p) = self.eri_precision {
             (ferric_integrals::engine_pool::ERI_PRECISION_VAR.validate)(&p)
                 .map_err(|e| format!("[scf] eri_precision {p:e}: {e}"))?;

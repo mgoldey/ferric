@@ -7,6 +7,10 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::Array2;
 
+pub mod gc_rotation;
+pub use gc_rotation::{GcRotate, GC_ROTATE_ENV};
+use gc_rotation::{GcState, RotatedJk};
+
 /// `energy_conv` below this multiple of `integral_thresh` turns the
 /// closed-shell incremental Fock build off by default (#415). The measured dE
 /// noise of the incremental path is up to ~250x `integral_thresh` (table on
@@ -169,6 +173,9 @@ pub struct DirectJK<'a> {
     // libint2 engine construction is serialized behind a global ctor mutex,
     // so hoist the builder out of the SCF loop to pay it once, not per iteration.
     pool: Option<crate::engine_pool::EnginePool>,
+    /// The internal contraction rotation ([`gc_rotation`]): requested until
+    /// the first direct build, then resolved.
+    gc: gc_rotation::GcState,
 }
 
 impl<'a> std::fmt::Debug for DirectJK<'a> {
@@ -202,6 +209,66 @@ impl<'a> DirectJK<'a> {
             thresh,
             mem_budget,
             pool: None,
+            gc: GcState::Pending(None),
+        }
+    }
+
+    /// Choose the internal contraction rotation instead of
+    /// `FERRIC_GC_ROTATE` ([`gc_rotation`]). It takes effect at the first
+    /// direct build; a builder that has built already keeps its choice.
+    #[must_use]
+    pub fn with_gc_rotation(self, mode: GcRotate) -> Self {
+        self.with_gc_request(Some(mode))
+    }
+
+    /// [`with_gc_rotation`](Self::with_gc_rotation) from a config field:
+    /// `None` leaves the choice to `FERRIC_GC_ROTATE` and the default.
+    #[must_use]
+    pub fn with_gc_request(mut self, mode: Option<GcRotate>) -> Self {
+        if let GcState::Pending(_) = self.gc {
+            self.gc = GcState::Pending(mode);
+        }
+        self
+    }
+
+    /// Columns the contraction rotation rotated: `None` before the first
+    /// direct build (or while every build was served by the in-core store),
+    /// `Some(0)` when the builder runs unrotated (switch off, or nothing in
+    /// the basis to rotate).
+    pub fn gc_rotated_columns(&self) -> Option<usize> {
+        match &self.gc {
+            GcState::Pending(_) => None,
+            GcState::Resolved(r) => Some(r.as_ref().map_or(0, |r| r.basis.n_rotated_columns)),
+        }
+    }
+
+    /// Resolve a pending rotation request: detect, and build the rotated
+    /// bounds, once.
+    fn resolve_gc(&mut self) -> Result<(), FerricError> {
+        if let GcState::Pending(request) = self.gc {
+            let mode = GcRotate::resolve(request)?;
+            let r = RotatedJk::new(self.prep, self.bounds, mode)?;
+            if let Some(r) = r.as_ref().filter(|_| ferric_core::timing::enabled()) {
+                eprintln!(
+                    "[timing] direct-jk gc rotation ({mode:?}): {} columns rotated; setup \
+                     (detection + rotated Schwarz bounds) {:.3} s",
+                    r.basis.n_rotated_columns, r.setup_seconds
+                );
+            }
+            self.gc = GcState::Resolved(r.map(Box::new));
+        }
+        Ok(())
+    }
+
+    /// The unrotated walk over `self`'s own basis and bounds.
+    fn walk(&mut self) -> Walk<'_> {
+        Walk {
+            ctx: self.ctx,
+            prep: self.prep,
+            bounds: self.bounds,
+            thresh: self.thresh,
+            mem_budget: self.mem_budget,
+            pool: &mut self.pool,
         }
     }
 
@@ -237,6 +304,213 @@ impl<'a> DirectJK<'a> {
         self.build(delta_d, j, k)
     }
 
+    /// Open-shell combined build: ONE quartet pass producing `J[D_α+D_β]`,
+    /// `K[D_α]` and `K[D_β]`, ACCUMULATED onto the caller's three buffers.
+    ///
+    /// This replaces the previous open-shell three-pass Fock build
+    /// (`DirectJ(D_total)` + `DirectK(D_α)` + `DirectK(D_β)`), which evaluated
+    /// every surviving shell quartet THREE times and screened each pass on the
+    /// loose single global `max|D|` scalar. Here each quartet's integral is
+    /// computed once and scattered into all three matrices, under the tight
+    /// six-pairwise Häser-Ahlrichs shell screen the closed-shell path already
+    /// used.
+    ///
+    /// The screening key is `|D_α| + |D_β|` elementwise — the cheapest key that
+    /// is simultaneously an upper bound on all three contracted densities; see
+    /// `quartet_scatter::build_d_max_shell_spin_sum` (private — a code span,
+    /// not a doc link) for why the sum rather than the (tighter but unsound
+    /// for J) max.
+    ///
+    /// `d_total` is passed explicitly rather than formed here so the caller's
+    /// existing `&d_a + &d_b` temporary is reused, and so the INCREMENTAL path
+    /// can pass `ΔD_total` — which is *not* recoverable from the two spin
+    /// deltas without an extra allocation.
+    ///
+    /// Bit-identity across `RAYON_NUM_THREADS` holds by the same argument as
+    /// [`build`](Self::build): the pair list, group partition and fold order are
+    /// pure functions of the work list, never of the thread count.
+    pub fn build_uhf(
+        &mut self,
+        d_total: &Array2<f64>,
+        d_a: &Array2<f64>,
+        d_b: &Array2<f64>,
+        j: &mut Array2<f64>,
+        k_a: &mut Array2<f64>,
+        k_b: &mut Array2<f64>,
+    ) -> Result<usize, FerricError> {
+        self.ctx.check_interrupted()?;
+        if let Some(store) = crate::incore_jk::store_for(self.bounds, self.prep)? {
+            store.add_uhf(d_total, d_a, d_b, j, k_a, k_b);
+            return Ok(store.quartets());
+        }
+        self.resolve_gc()?;
+        if !self.rotated() {
+            return self.walk().build_uhf(d_total, d_a, d_b, j, k_a, k_b);
+        }
+        self.run_rotated(&[d_total, d_a, d_b], &mut [j, k_a, k_b], |mut w, d, x| {
+            let [jr, kar, kbr] = x else {
+                unreachable!("three outputs")
+            };
+            w.build_uhf(&d[0], &d[1], &d[2], jr, kar, kbr)
+        })
+    }
+
+    /// Incremental open-shell Fock build: given the per-spin density CHANGES
+    /// (`Δ_total = ΔD_α + ΔD_β`), ACCUMULATE the corresponding `ΔJ`/`ΔK_α`/`ΔK_β`
+    /// onto buffers that already hold the previous iteration's `J`/`K_α`/`K_β`.
+    /// The caller must NOT zero them first.
+    ///
+    /// Exact by linearity, exactly as in the closed-shell
+    /// [`build_incremental`](Self::build_incremental): J and K are linear in the
+    /// density, so `K(D_last) + K(ΔD) == K(D_new)` in infinite precision, and in
+    /// f64 the difference from a from-scratch rebuild is the reassociation floor
+    /// — bounded by the caller's periodic full rebuild.
+    ///
+    /// ## Screening key (the open-shell-specific decision)
+    ///
+    /// The screen runs on `|ΔD_α| + |ΔD_β|`, NOT on `|ΔD_total|`. The two spin
+    /// channels converge independently and routinely move in opposite
+    /// directions — a spin-flip rearrangement can leave `ΔD_total ≈ 0` while
+    /// `ΔD_α` and `ΔD_β` are both large. Screening on the total would then drop
+    /// quartets that carry a large, real contribution to `ΔK_α` and `ΔK_β`
+    /// individually, silently corrupting the spin Focks while the Coulomb term
+    /// looked fine. The spin sum bounds all three deltas (triangle inequality),
+    /// so it is safe for whichever channel is largest, and it costs nothing
+    /// extra: as SCF converges BOTH channels go to zero together and the screen
+    /// tightens just as hard as the closed-shell one.
+    pub fn build_uhf_incremental(
+        &mut self,
+        delta_total: &Array2<f64>,
+        delta_a: &Array2<f64>,
+        delta_b: &Array2<f64>,
+        j: &mut Array2<f64>,
+        k_a: &mut Array2<f64>,
+        k_b: &mut Array2<f64>,
+    ) -> Result<usize, FerricError> {
+        // `build_uhf` already ACCUMULATES onto the caller's buffers and screens
+        // on the spin sum of whatever densities it is handed, so passing the
+        // deltas (without the caller zeroing) IS the incremental update — the
+        // same relationship `build_incremental` has to `build`.
+        self.build_uhf(delta_total, delta_a, delta_b, j, k_a, k_b)
+    }
+
+    /// Build J and K matrices simultaneously from a single pass over shell quartets.
+    /// Returns the number of unique quartets computed.
+    ///
+    /// ACCUMULATES onto `j`/`k` (`*j += J(d)`, `*k += K(d)`) — callers doing a
+    /// full rebuild zero the buffers first; the incremental path
+    /// ([`build_incremental`](Self::build_incremental)) passes `ΔD` and does not.
+    pub fn build(
+        &mut self,
+        d: &Array2<f64>,
+        j: &mut Array2<f64>,
+        k: &mut Array2<f64>,
+    ) -> Result<usize, FerricError> {
+        self.ctx.check_interrupted()?;
+        if let Some(store) = crate::incore_jk::store_for(self.bounds, self.prep)? {
+            store.add_jk(d, j, k);
+            return Ok(store.quartets());
+        }
+        self.resolve_gc()?;
+        if !self.rotated() {
+            return self.walk().build(d, j, k);
+        }
+        self.run_rotated(&[d], &mut [j, k], |mut w, d, x| {
+            let [jr, kr] = x else {
+                unreachable!("two outputs")
+            };
+            w.build(&d[0], jr, kr)
+        })
+    }
+
+    /// Whether the resolved rotation is active.
+    fn rotated(&self) -> bool {
+        matches!(self.gc, GcState::Resolved(Some(_)))
+    }
+
+    /// A build on the rotated shells: `D' = Tᵀ D T` for each of `ds`, `run`
+    /// on fresh rotated outputs, then `out += T X' Tᵀ` in place for each of
+    /// `outs`. The `D'` and `X'` buffers (`(ds + outs) · n²` doubles) are
+    /// charged to the memory pool for the build.
+    fn run_rotated(
+        &mut self,
+        ds: &[&Array2<f64>],
+        outs: &mut [&mut Array2<f64>],
+        run: impl FnOnce(Walk<'_>, &[Array2<f64>], &mut [Array2<f64>]) -> Result<usize, FerricError>,
+    ) -> Result<usize, FerricError> {
+        let (ctx, thresh, mem_budget) = (self.ctx, self.thresh, self.mem_budget);
+        let GcState::Resolved(Some(r)) = &mut self.gc else {
+            unreachable!("run_rotated without a rotation");
+        };
+        let n = r.basis.nbasis();
+        let bytes = (ds.len() + outs.len()) * n * n * std::mem::size_of::<f64>();
+        let _charge = ferric_core::memory::pool::reserve_global(
+            &format!("direct J/K contraction-rotation buffers (n={n})"),
+            bytes,
+        )?;
+        let t0 = std::time::Instant::now();
+        let dr: Vec<Array2<f64>> = ds.iter().map(|d| r.forward(d)).collect();
+        let t_fwd = t0.elapsed().as_secs_f64();
+        let mut xr: Vec<Array2<f64>> = (0..outs.len()).map(|_| zeros(n)).collect();
+        let RotatedJk {
+            basis,
+            bounds,
+            pool,
+            ..
+        } = &mut **r;
+        let computed = run(
+            Walk {
+                ctx,
+                prep: &basis.prep,
+                bounds,
+                thresh,
+                mem_budget,
+                pool,
+            },
+            &dr,
+            &mut xr,
+        )?;
+        let t1 = std::time::Instant::now();
+        for (x, out) in xr.iter().zip(outs.iter_mut()) {
+            r.basis.back_transform_add(x, out)?;
+        }
+        report_gc_transforms(
+            t_fwd,
+            t1.elapsed().as_secs_f64(),
+            t0.elapsed().as_secs_f64(),
+        );
+        Ok(computed)
+    }
+}
+
+/// An `n × n` zero matrix.
+fn zeros(n: usize) -> Array2<f64> {
+    Array2::<f64>::zeros((n, n))
+}
+
+/// `FERRIC_TIMING` line of a rotated build: the forward and back transforms
+/// and the build's total wall (walk included).
+fn report_gc_transforms(forward: f64, back: f64, total: f64) {
+    if ferric_core::timing::enabled() {
+        eprintln!(
+            "[timing] direct-jk   gc rotation: forward {forward:.4} s + back {back:.4} s; \
+             rotated build total {total:.3} s"
+        );
+    }
+}
+
+/// One direct walk: a basis, its bounds and engine pool. [`DirectJK`] runs
+/// it on its own basis, or on the rotated basis of [`gc_rotation`].
+struct Walk<'w> {
+    ctx: &'w ParallelContext,
+    prep: &'w PreparedBasis,
+    bounds: &'w SchwarzBounds,
+    thresh: f64,
+    mem_budget: usize,
+    pool: &'w mut Option<crate::engine_pool::EnginePool>,
+}
+
+impl Walk<'_> {
     /// The screened canonical bra-pair work list for a given shell-blocked
     /// density-max table, plus the lazily-constructed engine pool.
     ///
@@ -274,7 +548,7 @@ impl<'a> DirectJK<'a> {
         // fold init below would fire once per work-chunk and storm the global
         // libint2 ctor mutex (catastrophic for heavy-element bases).
         if self.pool.is_none() {
-            self.pool = Some(crate::engine_pool::EnginePool::new(
+            *self.pool = Some(crate::engine_pool::EnginePool::new(
                 self.bounds.op,
                 self.prep,
                 ferric_integrals::engine_pool::eri_precision(),
@@ -283,32 +557,7 @@ impl<'a> DirectJK<'a> {
         Ok(shell_pairs)
     }
 
-    /// Open-shell combined build: ONE quartet pass producing `J[D_α+D_β]`,
-    /// `K[D_α]` and `K[D_β]`, ACCUMULATED onto the caller's three buffers.
-    ///
-    /// This replaces the previous open-shell three-pass Fock build
-    /// (`DirectJ(D_total)` + `DirectK(D_α)` + `DirectK(D_β)`), which evaluated
-    /// every surviving shell quartet THREE times and screened each pass on the
-    /// loose single global `max|D|` scalar. Here each quartet's integral is
-    /// computed once and scattered into all three matrices, under the tight
-    /// six-pairwise Häser-Ahlrichs shell screen the closed-shell path already
-    /// used.
-    ///
-    /// The screening key is `|D_α| + |D_β|` elementwise — the cheapest key that
-    /// is simultaneously an upper bound on all three contracted densities; see
-    /// `quartet_scatter::build_d_max_shell_spin_sum` (private — a code span,
-    /// not a doc link) for why the sum rather than the (tighter but unsound
-    /// for J) max.
-    ///
-    /// `d_total` is passed explicitly rather than formed here so the caller's
-    /// existing `&d_a + &d_b` temporary is reused, and so the INCREMENTAL path
-    /// can pass `ΔD_total` — which is *not* recoverable from the two spin
-    /// deltas without an extra allocation.
-    ///
-    /// Bit-identity across `RAYON_NUM_THREADS` holds by the same argument as
-    /// [`build`](Self::build): the pair list, group partition and fold order are
-    /// pure functions of the work list, never of the thread count.
-    pub fn build_uhf(
+    fn build_uhf(
         &mut self,
         d_total: &Array2<f64>,
         d_a: &Array2<f64>,
@@ -321,12 +570,6 @@ impl<'a> DirectJK<'a> {
             build_d_max_shell_spin_sum, scatter_bra_pair, DensityScreen, JkMode,
         };
         use std::sync::atomic::{AtomicUsize, Ordering};
-
-        self.ctx.check_interrupted()?;
-        if let Some(store) = crate::incore_jk::store_for(self.bounds, self.prep)? {
-            store.add_uhf(d_total, d_a, d_b, j, k_a, k_b);
-            return Ok(store.quartets());
-        }
 
         let dims = self.prep.shell_dims();
         let offs = self.prep.shell_offsets();
@@ -422,52 +665,8 @@ impl<'a> DirectJK<'a> {
         Ok(computed_quartets.load(Ordering::SeqCst))
     }
 
-    /// Incremental open-shell Fock build: given the per-spin density CHANGES
-    /// (`Δ_total = ΔD_α + ΔD_β`), ACCUMULATE the corresponding `ΔJ`/`ΔK_α`/`ΔK_β`
-    /// onto buffers that already hold the previous iteration's `J`/`K_α`/`K_β`.
-    /// The caller must NOT zero them first.
-    ///
-    /// Exact by linearity, exactly as in the closed-shell
-    /// [`build_incremental`](Self::build_incremental): J and K are linear in the
-    /// density, so `K(D_last) + K(ΔD) == K(D_new)` in infinite precision, and in
-    /// f64 the difference from a from-scratch rebuild is the reassociation floor
-    /// — bounded by the caller's periodic full rebuild.
-    ///
-    /// ## Screening key (the open-shell-specific decision)
-    ///
-    /// The screen runs on `|ΔD_α| + |ΔD_β|`, NOT on `|ΔD_total|`. The two spin
-    /// channels converge independently and routinely move in opposite
-    /// directions — a spin-flip rearrangement can leave `ΔD_total ≈ 0` while
-    /// `ΔD_α` and `ΔD_β` are both large. Screening on the total would then drop
-    /// quartets that carry a large, real contribution to `ΔK_α` and `ΔK_β`
-    /// individually, silently corrupting the spin Focks while the Coulomb term
-    /// looked fine. The spin sum bounds all three deltas (triangle inequality),
-    /// so it is safe for whichever channel is largest, and it costs nothing
-    /// extra: as SCF converges BOTH channels go to zero together and the screen
-    /// tightens just as hard as the closed-shell one.
-    pub fn build_uhf_incremental(
-        &mut self,
-        delta_total: &Array2<f64>,
-        delta_a: &Array2<f64>,
-        delta_b: &Array2<f64>,
-        j: &mut Array2<f64>,
-        k_a: &mut Array2<f64>,
-        k_b: &mut Array2<f64>,
-    ) -> Result<usize, FerricError> {
-        // `build_uhf` already ACCUMULATES onto the caller's buffers and screens
-        // on the spin sum of whatever densities it is handed, so passing the
-        // deltas (without the caller zeroing) IS the incremental update — the
-        // same relationship `build_incremental` has to `build`.
-        self.build_uhf(delta_total, delta_a, delta_b, j, k_a, k_b)
-    }
-
-    /// Build J and K matrices simultaneously from a single pass over shell quartets.
-    /// Returns the number of unique quartets computed.
-    ///
-    /// ACCUMULATES onto `j`/`k` (`*j += J(d)`, `*k += K(d)`) — callers doing a
-    /// full rebuild zero the buffers first; the incremental path
-    /// ([`build_incremental`](Self::build_incremental)) passes `ΔD` and does not.
-    pub fn build(
+    /// The closed-shell walk of [`DirectJK::build`].
+    fn build(
         &mut self,
         d: &Array2<f64>,
         j: &mut Array2<f64>,
@@ -476,11 +675,6 @@ impl<'a> DirectJK<'a> {
         use crate::quartet_scatter::{build_d_max_shell, DensityScreen};
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        self.ctx.check_interrupted()?;
-        if let Some(store) = crate::incore_jk::store_for(self.bounds, self.prep)? {
-            store.add_jk(d, j, k);
-            return Ok(store.quartets());
-        }
         let profile_t0 = ferric_core::timing::enabled().then(std::time::Instant::now);
 
         let computed_quartets = AtomicUsize::new(0);

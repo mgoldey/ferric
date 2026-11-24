@@ -262,8 +262,7 @@ and a basis set and builds that list as a libint2 handle. It
 4. records the shell dimensions and offsets: AO function $\mu$ of shell $s$ is
    `shell_offsets[s] + m`, and `nbasis` is their sum.
 
-Steps 3 and 4 are these lines, with the FFI shell record and the copies kept
-for it removed:
+Step 3 is these lines of `new`:
 
 <!-- excerpt: ferric-integrals/src/basis_bridge.rs::PreparedBasis::new -->
 ```rust
@@ -271,13 +270,21 @@ for (ai, atom) in mol.atoms.iter().enumerate() {          // atoms in input orde
     let tmpls = bs
         .for_element(atom.z)                              // real Z, also for ghosts
         .ok_or_else(|| bs.missing_element_error(atom.z))?;
-    for sh in tmpls {                                     // shells as in the basis set
-        // ...
-        shell_to_atom.push(ai);
-        shell_l.push(sh.l);
-        shell_pure.push(sh.pure);
-        // ...
-    }
+    located.extend(tmpls.iter().map(|sh| (ai, sh)));      // shells as in the basis set
+}
+```
+
+and step 4 is in the shared constructor it calls, with the FFI shell record
+and the copies kept for it removed:
+
+<!-- excerpt: ferric-integrals/src/basis_bridge.rs::PreparedBasis::from_located -->
+```rust
+for &(ai, sh) in located {
+    // ...
+    shell_to_atom.push(ai);
+    shell_l.push(sh.l);
+    shell_pure.push(sh.pure);
+    // ...
 }
 // ...
 let mut shell_offsets = vec![0usize; nshells + 1];
