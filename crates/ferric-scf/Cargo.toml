@@ -17,7 +17,9 @@ ferric-pcm = { path = "../ferric-pcm" }
 ferric-quadrature = { path = "../ferric-quadrature" }
 ndarray = { workspace = true }
 ndarray-linalg = { workspace = true }
-ndarray-npy = "0.9"
+# npz only: checkpoints are Stored-only (checkpoint/format.rs), so the default
+# compressed_npz (zip deflate + zopfli) is dead code in the wheel.
+ndarray-npy = { version = "0.9", default-features = false, features = ["npz"] }
 openblas-src = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }
@@ -56,6 +58,8 @@ test-seams = ["gpu", "ferric-core/test-seams", "ferric-dft/test-seams"]
 cfmm-incomplete = []
 
 [dev-dependencies]
+# The checkpoint tests write a deflated npz to prove it is refused.
+ndarray-npy = { version = "0.9", default-features = false, features = ["compressed_npz"] }
 ferric-testkit = { path = "../ferric-testkit" }
 ferric-dft = { path = "../ferric-dft" }
 serde = { workspace = true }

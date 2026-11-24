@@ -85,6 +85,31 @@ opt-level = 2
 [profile.dev.package."*"]
 opt-level = 2
 
+# The PyPI wheel (.github/workflows/wheels.yml: `maturin build --profile
+# wheel`). Release plus whole-program LTO in one codegen unit.
+[profile.wheel]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+
+# Cold code: input parsing, file export, the Python glue. Size over speed.
+[profile.wheel.package.ferric-cli]
+opt-level = "s"
+[profile.wheel.package.ferric-export]
+opt-level = "s"
+[profile.wheel.package.ferric-python]
+opt-level = "s"
+[profile.wheel.package.toml_edit]
+opt-level = "s"
+[profile.wheel.package.toml]
+opt-level = "s"
+[profile.wheel.package.serde_json]
+opt-level = "s"
+[profile.wheel.package.py_literal]
+opt-level = "s"
+[profile.wheel.package.pest]
+opt-level = "s"
+
 [workspace.dependencies]
 ndarray = "0.16"
 ndarray-linalg = { version = "0.17", features = ["openblas-system"] }

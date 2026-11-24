@@ -978,7 +978,13 @@ jobs:
           # `--strip` removes .symtab/.strtab from the extension (13.4 MB raw,
           # about 3 MB of the zipped wheel); only debuggers and symbolised Rust
           # backtraces read them. release-check fails a Linux PyPI wheel that still carries .symtab.
-          args: --release --strip --out dist --features abi3 -i python3.10
+          # `--profile wheel` (Cargo.toml) is release plus fat LTO in one
+          # codegen unit, with opt-level "s" for the cold crates (CLI, config
+          # parsing, export, the Python glue). Measured 2026-11-24 on the
+          # extension alone: 22.91 -> 20.82 MB deflated (-2.09 MB); octane
+          # cc-pVDZ direct RHF 21.9 -> 20.7 s and DF-MP2 14.6 -> 14.2 s, energies
+          # bitwise identical. Costs about 3 more minutes of build.
+          args: --profile wheel --strip --out dist --features abi3 -i python3.10
           # Runs BEFORE the build, INSIDE THE SAME SHELL SCRIPT that then
           # invokes `maturin build` (maturin-action concatenates
           # before-script-linux and the build command into one generated
@@ -1019,7 +1025,73 @@ jobs:
             export LD_LIBRARY_PATH="$LIBINT2_PREFIX/lib:$NATIVE_PREFIX/lib:$NATIVE_PREFIX/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
             export LIBRARY_PATH="$LIBINT2_PREFIX/lib:$NATIVE_PREFIX/lib:$NATIVE_PREFIX/lib64${LIBRARY_PATH:+:$LIBRARY_PATH}"
             export CPATH="$NATIVE_PREFIX/include${CPATH:+:$CPATH}"
+            # Strip the shared libraries the repair will copy into
+            # ferric.libs/ (OpenBLAS, libgfortran, libquadmath) BEFORE it
+            # copies and patches them: stripping after the repair's patchelf
+            # rewrite is the order patchelf warns against. --strip-unneeded
+            # keeps the dynamic symbol table, so linking and loading are
+            # unchanged. Both are throwaway copies (this job's native-deps
+            # download and the --rm container's /usr/lib64).
+            for lib in $(readlink -f "$NATIVE_PREFIX"/lib/libopenblas*.so* /usr/lib64/libgfortran.so.5 /usr/lib64/libquadmath.so.0 | sort -u); do
+              before=$(stat -c %s "$lib")
+              strip --strip-unneeded "$lib"
+              echo "strip --strip-unneeded $lib: $before -> $(stat -c %s "$lib") bytes"
+            done
 
+      # pypi only: rewrite every member at the strongest deflate there is
+      # (advzip -3, 7-Zip's encoder). Only the compressed streams change: each
+      # member's bytes, CRC and the RECORD hashes stay exactly what the build
+      # produced, which the check below proves before the wheel is used.
+      # Measured 2026-11-24: about 6% off the libint2 code and 2% off the Rust
+      # code, roughly 5 MB of the PyPI wheel; about 5 minutes on the runner.
+      - name: Repack the wheel at maximum deflate (pypi)
+        if: matrix.variant == 'pypi'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q >/dev/null
+          sudo apt-get install -y -q advancecomp >/dev/null
+          whl="$(ls dist/*.whl)"
+          before=$(stat -c %s "$whl")
+          python3 -I - "$whl" > members-before.txt << 'PY'
+          import sys, zipfile
+          for i in zipfile.ZipFile(sys.argv[1]).infolist():
+              print(i.filename, i.CRC, i.file_size, i.external_attr, i.date_time)
+          PY
+          advzip --recompress -3 "$whl"
+          python3 -I - "$whl" members-before.txt << 'PY'
+          import base64, csv, hashlib, io, sys, zipfile
+          whl, before = sys.argv[1], open(sys.argv[2]).read().splitlines()
+          z = zipfile.ZipFile(whl)
+          after = [f"{i.filename} {i.CRC} {i.file_size} {i.external_attr} {i.date_time}" for i in z.infolist()]
+          if after != before:
+              sys.exit("::error::advzip changed the wheel's member list, sizes, CRCs or attributes")
+          bad = z.testzip()
+          if bad:
+              sys.exit(f"::error::{bad} fails its CRC after the repack")
+          record = next(n for n in z.namelist() if n.endswith(".dist-info/RECORD"))
+          for path, digest, size in csv.reader(io.StringIO(z.read(record).decode())):
+              if not digest:
+                  continue
+              algo, want = digest.split("=", 1)
+              got = base64.urlsafe_b64encode(hashlib.new(algo, z.read(path)).digest()).rstrip(b"=").decode()
+              if got != want or int(size) != z.getinfo(path).file_size:
+                  sys.exit(f"::error::{path} no longer matches RECORD after the repack")
+          print("repacked wheel: members, CRCs and RECORD hashes unchanged")
+          PY
+          echo "repack: $before -> $(stat -c %s "$whl") bytes"
+
+      # Wheel-size note: what the PyPI wheel's bytes are (2026-11-24, 105.3 MB
+      # nightly before the profile/strip/repack work). ferric.abi3.so is
+      # about 92% of it: the static small libint2 (~181 MB raw, the second-
+      # derivative integral code) and static libxc dominate, then ~23 MB
+      # deflated of Rust, of which libint2's Yukawa/Slater Chebyshev table
+      # (TennoGmEval, 7.8 MB of doubles that do not compress) is the largest
+      # single object. OpenBLAS + libgfortran + libquadmath are ~7 MB. The
+      # bundled basis sets are 0.6 MB (crates/ferric-core/build.rs). Rust
+      # growth lands here at ~0.4 MB deflated per 1 MB raw; that is what
+      # pushed the 2026-11-22..24 nightlies over the cap (+3.2 MB raw). The
+      # levers already pulled: --strip, the small libint2 export, Cargo's
+      # `wheel` profile, stripping the vendored libraries, the advzip repack.
       - name: Wheel size / contents sanity check
         env:
           VARIANT: ${{ matrix.variant }}
@@ -1045,12 +1117,27 @@ jobs:
           fi
           for whl in dist/*.whl; do
             echo "--- $whl ---"
-            python3 -m zipfile -l "$whl" | grep -iE '\.so|openblas|libxc|libint' || true
+            # Top 15 members by compressed size, so growth can be attributed
+            # by diffing two runs' logs.
+            python3 -I - "$whl" << 'PY'
+          import sys, zipfile
+          infos = sorted(zipfile.ZipFile(sys.argv[1]).infolist(), key=lambda i: -i.compress_size)
+          print(f"{'compressed':>12} {'raw':>12}  member")
+          for i in infos[:15]:
+              print(f"{i.compress_size:>12} {i.file_size:>12}  {i.filename}")
+          rest = infos[15:]
+          print(f"{sum(i.compress_size for i in rest):>12} {sum(i.file_size for i in rest):>12}  ({len(rest)} more)")
+          PY
             size=$(stat -c %s "$whl")
             echo "size: $size bytes ($((size * 100 / limit))% of $where limit)"
             if [ "$size" -ge "$limit" ]; then
               echo "::error::$whl is $size bytes, over $where $limit-byte limit"
               exit 1
+            fi
+            # Warn from 95% of the cap (99,614,720 bytes for PyPI) so drift
+            # shows on the nightly's summary weeks before it fails a tag.
+            if [ "$((size * 100))" -ge "$((limit * 95))" ]; then
+              echo "::warning::$whl is $size bytes, $((size * 100 / limit))% of $where $limit-byte limit (warning from 95%); see the wheel-size note at this step"
             fi
             # Which libint2 is inside: the pypi wheel links the small one
             # statically, so NO bundled libint2; the largeam wheel must carry
