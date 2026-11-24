@@ -520,6 +520,49 @@ fn ogc_subset(
     Some((new_shells, new_rows))
 }
 
+/// The molecular path's conditioning gate: every group whose block of `T` has
+/// a 1-norm condition number above [`OGC_MAX_COND`] (stage 2 already refuses
+/// its own blocks, so this catches stage-1 blocks) is left unrotated; then
+/// `n_rotated` is recounted as the number of non-identity rows. Not applied
+/// on the periodic path ([`RotatedBasis::detect`]), whose stage-1 rotation
+/// stays bit for bit what it was.
+fn gate_conditioning(tmpls: &[Shell], tr: &mut TemplateRotation) {
+    let ident = |k: usize, row: &[(usize, f64)]| row.len() == 1 && row[0] == (k, 1.0);
+    for g in 0..tr.n_groups {
+        let members: Vec<usize> = (0..tmpls.len()).filter(|&k| tr.group_of[k] == g).collect();
+        if members.iter().all(|&k| ident(k, &tr.rows[k])) {
+            continue;
+        }
+        let ng = members.len();
+        let mut tg = vec![vec![0.0; ng]; ng];
+        let mut inside = true;
+        for (a, &k) in members.iter().enumerate() {
+            for &(m, t) in &tr.rows[k] {
+                match members.iter().position(|&x| x == m) {
+                    Some(b) => tg[a][b] = t,
+                    None => inside = false,
+                }
+            }
+        }
+        let ok = inside
+            && invert(&tg).is_some_and(|tinv| {
+                let norm1 = |m: &[Vec<f64>]| {
+                    (0..m.len())
+                        .map(|j| m.iter().map(|r| r[j].abs()).sum::<f64>())
+                        .fold(0.0f64, f64::max)
+                };
+                norm1(&tg) * norm1(&tinv) <= OGC_MAX_COND
+            });
+        if !ok {
+            for &k in &members {
+                tr.rows[k] = vec![(k, 1.0)];
+                tr.shells[k] = tmpls[k].clone();
+            }
+        }
+    }
+    tr.n_rotated = (0..tmpls.len()).filter(|&k| !ident(k, &tr.rows[k])).count();
+}
+
 /// Inverse of a small dense matrix by Gauss–Jordan elimination with partial
 /// pivoting; `None` if it is singular to working precision.
 fn invert(a: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
@@ -579,6 +622,8 @@ pub struct RotatedBasis {
     groups: Vec<Vec<usize>>,
     /// Whether every row of the group is the identity.
     identity: Vec<bool>,
+    /// AOs of each group, member by member.
+    group_ao: Vec<Vec<usize>>,
     /// Shell → (group, first AO of the shell inside the group's AO list).
     slot: Vec<(usize, usize)>,
     offs: Vec<usize>,
@@ -805,7 +850,8 @@ impl RotatedBasis {
             let idx = match hit {
                 Some(i) => i,
                 None => {
-                    let tr = rotate_templates(&tmpls, ColumnRotationMutant::Production, level);
+                    let mut tr = rotate_templates(&tmpls, ColumnRotationMutant::Production, level);
+                    gate_conditioning(&tmpls, &mut tr);
                     cache.push((tmpls, tr));
                     cache.len() - 1
                 }
@@ -895,6 +941,14 @@ impl RotatedBasis {
         Ok(Self {
             prep: rprep,
             rows,
+            group_ao: groups
+                .iter()
+                .map(|m| {
+                    m.iter()
+                        .flat_map(|&k| offs_all[k]..offs_all[k] + dims[k])
+                        .collect()
+                })
+                .collect(),
             groups,
             identity,
             slot,
@@ -930,14 +984,6 @@ impl RotatedBasis {
             }
         }
         t
-    }
-
-    /// AOs of group `g`, member by member.
-    fn group_aos(&self, g: usize) -> Vec<usize> {
-        self.groups[g]
-            .iter()
-            .flat_map(|&k| self.offs[k]..self.offs[k] + self.dims[k])
-            .collect()
     }
 
     /// In-place back-transform of a pair-row tensor from the rotated to the
@@ -990,12 +1036,12 @@ impl RotatedBasis {
         let mut scratch: Vec<f64> = Vec::new();
         let mut out = vec![0.0_f64; w];
         for g1 in 0..ng {
-            let f1 = self.group_aos(g1);
+            let f1 = &self.group_ao[g1];
             for g2 in if symmetric { g1 } else { 0 }..ng {
                 if self.identity[g1] && self.identity[g2] {
                     continue;
                 }
-                let f2 = self.group_aos(g2);
+                let f2 = &self.group_ao[g2];
                 let l2 = f2.len();
                 scratch.clear();
                 scratch.resize(f1.len() * l2 * w, 0.0);
@@ -1112,6 +1158,56 @@ impl RotatedBasis {
         })?;
         self.back_transform_pair_rows(data, 1)?;
         Ok(out)
+    }
+
+    /// `out += T X' Tᵀ` for an `(n, n)` rotated-basis matrix `x_rot`, in
+    /// place (no `n²` copy). When `x_rot` is exactly symmetric, each
+    /// unordered pair is formed once and added to both `(μ, ν)` and
+    /// `(ν, μ)`, so a symmetric input adds an exactly symmetric term; any
+    /// other input forms every ordered element from its own two rows. The
+    /// addend order is fixed ("row of μ, then row of ν") and the loop is
+    /// serial, so the result does not depend on the thread count. Production
+    /// rotation only (the mutation-test variants are not applied here).
+    pub fn back_transform_add(
+        &self,
+        x_rot: &Array2<f64>,
+        out: &mut Array2<f64>,
+    ) -> Result<(), FerricError> {
+        let n = self.nbasis;
+        if x_rot.dim() != (n, n) || out.dim() != (n, n) {
+            return Err(FerricError::General(format!(
+                "column rotation back-transform: {:?} into {:?}, expected {n} × {n}",
+                x_rot.dim(),
+                out.dim()
+            )));
+        }
+        let symmetric =
+            (0..n).all(|i| (0..i).all(|j| x_rot[(i, j)].to_bits() == x_rot[(j, i)].to_bits()));
+        let nsh = self.rows.len();
+        for k1 in 0..nsh {
+            for k2 in if symmetric { k1 } else { 0 }..nsh {
+                for i in 0..self.dims[k1] {
+                    for j in 0..self.dims[k2] {
+                        if symmetric && k1 == k2 && j < i {
+                            continue;
+                        }
+                        let mut v = 0.0;
+                        for &(m1, t1) in &self.rows[k1] {
+                            let a = self.offs[m1] + i;
+                            for &(m2, t2) in &self.rows[k2] {
+                                v += t1 * t2 * x_rot[(a, self.offs[m2] + j)];
+                            }
+                        }
+                        let (mu, nu) = (self.offs[k1] + i, self.offs[k2] + j);
+                        out[(mu, nu)] += v;
+                        if symmetric && mu != nu {
+                            out[(nu, mu)] += v;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// [`RotatedBasis::back_transform_rows`] of an `(n, n)` matrix that need

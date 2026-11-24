@@ -545,6 +545,13 @@ pub struct RhfConfig {
     /// from, for the certificate. Written by the solver.
     #[doc(hidden)]
     pub eri_route: crate::incore_jk::EriRouteRecord,
+    /// The internal contraction rotation of generally contracted shells
+    /// (cc-pVXZ) in the direct four-centre J/K builder
+    /// ([`crate::direct_jk::GcRotate`]; `crate::direct_jk::gc_rotation`).
+    /// `None` (the default) leaves it to `FERRIC_GC_ROTATE`, then `auto`.
+    /// Changes energies at the screening-noise level (~1e-11 Ha), not
+    /// bitwise; `Off` is the unrotated builder.
+    pub gc_rotation: Option<crate::direct_jk::GcRotate>,
     /// `[scf] relativistic`: the relativistic core Hamiltonian
     /// ([`crate::x2c::Relativistic`]), built once before the loop in place of
     /// `T + V` (see [`crate::x2c::reference_hcore`]). `None` (default) is the
@@ -624,6 +631,7 @@ impl Default for RhfConfig {
             raw_handoff: None,
             eri: crate::incore_jk::EriMode::Auto,
             eri_route: Default::default(),
+            gc_rotation: None,
             relativistic: None,
         }
     }
@@ -696,6 +704,13 @@ impl RhfConfig {
     // The `with_*` setters each write exactly one field (`with_stability`
     // the pair it names) and nothing else; `construction_oracle` checks that
     // one setter at a time.
+
+    /// Set [`gc_rotation`](Self::gc_rotation).
+    #[must_use]
+    pub fn with_gc_rotation(mut self, mode: crate::direct_jk::GcRotate) -> Self {
+        self.gc_rotation = Some(mode);
+        self
+    }
 
     /// Set the maximum number of SCF iterations.
     #[must_use]

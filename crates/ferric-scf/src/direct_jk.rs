@@ -209,7 +209,7 @@ impl<'a> DirectJK<'a> {
             thresh,
             mem_budget,
             pool: None,
-            gc: GcState::Pending(GcRotate::from_env()),
+            gc: GcState::Pending(None),
         }
     }
 
@@ -217,7 +217,14 @@ impl<'a> DirectJK<'a> {
     /// `FERRIC_GC_ROTATE` ([`gc_rotation`]). It takes effect at the first
     /// direct build; a builder that has built already keeps its choice.
     #[must_use]
-    pub fn with_gc_rotation(mut self, mode: GcRotate) -> Self {
+    pub fn with_gc_rotation(self, mode: GcRotate) -> Self {
+        self.with_gc_request(Some(mode))
+    }
+
+    /// [`with_gc_rotation`](Self::with_gc_rotation) from a config field:
+    /// `None` leaves the choice to `FERRIC_GC_ROTATE` and the default.
+    #[must_use]
+    pub fn with_gc_request(mut self, mode: Option<GcRotate>) -> Self {
         if let GcState::Pending(_) = self.gc {
             self.gc = GcState::Pending(mode);
         }
@@ -238,7 +245,8 @@ impl<'a> DirectJK<'a> {
     /// Resolve a pending rotation request: detect, and build the rotated
     /// bounds, once.
     fn resolve_gc(&mut self) -> Result<(), FerricError> {
-        if let GcState::Pending(mode) = self.gc {
+        if let GcState::Pending(request) = self.gc {
+            let mode = GcRotate::resolve(request)?;
             let r = RotatedJk::new(self.prep, self.bounds, mode)?;
             if let Some(r) = r.as_ref().filter(|_| ferric_core::timing::enabled()) {
                 eprintln!(
@@ -336,40 +344,15 @@ impl<'a> DirectJK<'a> {
             return Ok(store.quartets());
         }
         self.resolve_gc()?;
-        let (ctx, thresh, mem_budget) = (self.ctx, self.thresh, self.mem_budget);
-        let GcState::Resolved(Some(r)) = &mut self.gc else {
+        if !self.rotated() {
             return self.walk().build_uhf(d_total, d_a, d_b, j, k_a, k_b);
-        };
-        let t0 = std::time::Instant::now();
-        let (dt, da, db) = (r.forward(d_total), r.forward(d_a), r.forward(d_b));
-        let t_fwd = t0.elapsed().as_secs_f64();
-        let n = r.basis.nbasis();
-        let (mut jr, mut kar, mut kbr) = (zeros(n), zeros(n), zeros(n));
-        let RotatedJk {
-            basis,
-            bounds,
-            pool,
-            ..
-        } = &mut **r;
-        let computed = Walk {
-            ctx,
-            prep: &basis.prep,
-            bounds,
-            thresh,
-            mem_budget,
-            pool,
         }
-        .build_uhf(&dt, &da, &db, &mut jr, &mut kar, &mut kbr)?;
-        let t1 = std::time::Instant::now();
-        r.add_back(&jr, j)?;
-        r.add_back(&kar, k_a)?;
-        r.add_back(&kbr, k_b)?;
-        report_gc_transforms(
-            t_fwd,
-            t1.elapsed().as_secs_f64(),
-            t0.elapsed().as_secs_f64(),
-        );
-        Ok(computed)
+        self.run_rotated(&[d_total, d_a, d_b], &mut [j, k_a, k_b], |mut w, d, x| {
+            let [jr, kar, kbr] = x else {
+                unreachable!("three outputs")
+            };
+            w.build_uhf(&d[0], &d[1], &d[2], jr, kar, kbr)
+        })
     }
 
     /// Incremental open-shell Fock build: given the per-spin density CHANGES
@@ -429,33 +412,68 @@ impl<'a> DirectJK<'a> {
             return Ok(store.quartets());
         }
         self.resolve_gc()?;
+        if !self.rotated() {
+            return self.walk().build(d, j, k);
+        }
+        self.run_rotated(&[d], &mut [j, k], |mut w, d, x| {
+            let [jr, kr] = x else {
+                unreachable!("two outputs")
+            };
+            w.build(&d[0], jr, kr)
+        })
+    }
+
+    /// Whether the resolved rotation is active.
+    fn rotated(&self) -> bool {
+        matches!(self.gc, GcState::Resolved(Some(_)))
+    }
+
+    /// A build on the rotated shells: `D' = Tᵀ D T` for each of `ds`, `run`
+    /// on fresh rotated outputs, then `out += T X' Tᵀ` in place for each of
+    /// `outs`. The `D'` and `X'` buffers (`(ds + outs) · n²` doubles) are
+    /// charged to the memory pool for the build.
+    fn run_rotated(
+        &mut self,
+        ds: &[&Array2<f64>],
+        outs: &mut [&mut Array2<f64>],
+        run: impl FnOnce(Walk<'_>, &[Array2<f64>], &mut [Array2<f64>]) -> Result<usize, FerricError>,
+    ) -> Result<usize, FerricError> {
         let (ctx, thresh, mem_budget) = (self.ctx, self.thresh, self.mem_budget);
         let GcState::Resolved(Some(r)) = &mut self.gc else {
-            return self.walk().build(d, j, k);
+            unreachable!("run_rotated without a rotation");
         };
-        let t0 = std::time::Instant::now();
-        let dr = r.forward(d);
-        let t_fwd = t0.elapsed().as_secs_f64();
         let n = r.basis.nbasis();
-        let (mut jr, mut kr) = (zeros(n), zeros(n));
+        let bytes = (ds.len() + outs.len()) * n * n * std::mem::size_of::<f64>();
+        let _charge = ferric_core::memory::pool::reserve_global(
+            &format!("direct J/K contraction-rotation buffers (n={n})"),
+            bytes,
+        )?;
+        let t0 = std::time::Instant::now();
+        let dr: Vec<Array2<f64>> = ds.iter().map(|d| r.forward(d)).collect();
+        let t_fwd = t0.elapsed().as_secs_f64();
+        let mut xr: Vec<Array2<f64>> = (0..outs.len()).map(|_| zeros(n)).collect();
         let RotatedJk {
             basis,
             bounds,
             pool,
             ..
         } = &mut **r;
-        let computed = Walk {
-            ctx,
-            prep: &basis.prep,
-            bounds,
-            thresh,
-            mem_budget,
-            pool,
-        }
-        .build(&dr, &mut jr, &mut kr)?;
+        let computed = run(
+            Walk {
+                ctx,
+                prep: &basis.prep,
+                bounds,
+                thresh,
+                mem_budget,
+                pool,
+            },
+            &dr,
+            &mut xr,
+        )?;
         let t1 = std::time::Instant::now();
-        r.add_back(&jr, j)?;
-        r.add_back(&kr, k)?;
+        for (x, out) in xr.iter().zip(outs.iter_mut()) {
+            r.basis.back_transform_add(x, out)?;
+        }
         report_gc_transforms(
             t_fwd,
             t1.elapsed().as_secs_f64(),

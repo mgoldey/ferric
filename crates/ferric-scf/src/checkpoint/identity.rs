@@ -324,6 +324,7 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         integral_thresh,
         screening,
         eri,
+        gc_rotation,
         // Which converged state the iteration lands in: see `StateSelecting`. Only
         // `use_sad_guess` and `trah_trigger` have a measured difference. The rest
         // are here because nothing shows them to be path-only.
@@ -415,6 +416,9 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         // In-core and direct J/K differ in the last bits (summation order and
         // the screening the direct builder applies).
         ("eri", format!("{eri:?}")),
+        // The direct J/K builder's contraction rotation moves cc-pVXZ
+        // energies by up to ~1e-11 Ha (screening noise; `tests/gc_rotation.rs`).
+        ("gc_rotation", format!("{gc_rotation:?}")),
     ];
     let state_selecting = [
         ("use_sad_guess", format!("{use_sad_guess:?}")),
@@ -470,8 +474,8 @@ const ENV_SWITCHES: [(&str, FieldClass); 10] = [
     ("FERRIC_TERF_TABLE_DIR", FieldClass::Route),
     ("FERRIC_DF_GUESS_TIGHT", FieldClass::StateSelecting),
     ("FERRIC_DFK_METRIC", FieldClass::Route),
-    // The direct J/K builder's contraction rotation moves cc-pVXZ energies by
-    // up to ~1e-12 Ha (`tests/gc_rotation.rs`).
+    // Recorded parsed (see `env_switch_value`); the config field
+    // `gc_rotation`, when set, wins over it.
     ("FERRIC_GC_ROTATE", FieldClass::Route),
 ];
 
@@ -482,6 +486,11 @@ const ENV_SWITCHES: [(&str, FieldClass); 10] = [
 fn env_switch_value(name: &str) -> Option<String> {
     if name == "FERRIC_DFK_METRIC" {
         if let Ok(setting) = crate::df_k::dfk_metric_setting() {
+            return Some(setting.as_str().to_string());
+        }
+    }
+    if name == crate::direct_jk::GC_ROTATE_ENV {
+        if let Ok(setting) = crate::direct_jk::GcRotate::env_setting() {
             return Some(setting.as_str().to_string());
         }
     }

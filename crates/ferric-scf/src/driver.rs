@@ -702,8 +702,10 @@ impl<'a> OpenShellJk<'a> {
             (combined_direct_jk, omega),
         )?;
         let thresh = config.integral_thresh;
-        let direct_jk = combined_direct_jk
-            .then(|| crate::direct_jk::DirectJK::new(ctx, prep, bounds, thresh, ooc_budget));
+        let direct_jk = combined_direct_jk.then(|| {
+            crate::direct_jk::DirectJK::new(ctx, prep, bounds, thresh, ooc_budget)
+                .with_gc_request(config.gc_rotation)
+        });
         // No molecular direct builders on the injected path (J/K come from
         // `inj_jk`).
         let direct_j = (df_j.is_none() && !combined_direct_jk && !injected)

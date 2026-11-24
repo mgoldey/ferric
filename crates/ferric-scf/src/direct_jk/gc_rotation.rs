@@ -38,11 +38,20 @@
 //!
 //! # The switch
 //!
-//! `FERRIC_GC_ROTATE` ([`GcRotate::from_env`]): unset or `auto` = both
-//! stages, `rot1` = stage 1 only, `off` / `0` / `false` = the unrotated
-//! builder, bit for bit. A basis with nothing to rotate (def2, Pople,
-//! STO-3G, pcseg) runs the unrotated builder bit for bit under every value.
-//! The variable is in the checkpoint identity (`Route` class).
+//! [`RhfConfig::gc_rotation`](crate::rhf::RhfConfig::gc_rotation) (typed,
+//! per job; `None` = not set), then `FERRIC_GC_ROTATE`, then the default
+//! `auto`: the repository's config > env > default order
+//! ([`GcRotate::resolve`]). Values: `auto` = both stages, `rot1` = stage 1
+//! only, `off` = the unrotated builder, bit for bit. Any other value of the
+//! variable is an error naming it. A basis with nothing to rotate (def2,
+//! Pople, STO-3G, pcseg) runs the unrotated builder bit for bit under every
+//! value. Both the config field and the parsed variable are in the
+//! checkpoint identity (`Route` class).
+//!
+//! The design called the switch `column_rotation`; it is `gc_rotation` here
+//! because the periodic code already has a `sr_column_rotation` with
+//! different semantics (stage 1 only, explicit `On` refused where not
+//! implemented).
 
 use crate::screening::{SchwarzBounds, ScreeningKind};
 use ferric_core::FerricError;
@@ -53,7 +62,8 @@ use ferric_integrals::contraction_rotation::{
 use ferric_integrals::engine_pool::EnginePool;
 use ndarray::Array2;
 
-/// Environment variable selecting the rotation ([`GcRotate::from_env`]).
+/// Environment variable selecting the rotation when the config does not
+/// ([`GcRotate::resolve`]).
 pub const GC_ROTATE_ENV: &str = "FERRIC_GC_ROTATE";
 
 /// Which contraction rotation the direct four-centre J/K builder runs
@@ -70,21 +80,51 @@ pub enum GcRotate {
     Off,
 }
 
+/// `FERRIC_GC_ROTATE`: `auto`, `rot1` or `off`, case-insensitive, blanks
+/// ignored; anything else is refused.
+static GC_ROTATE: ferric_core::config::ConfigVar<GcRotate> = ferric_core::config::ConfigVar {
+    env_name: GC_ROTATE_ENV,
+    default: GcRotate::Auto,
+    parse: GcRotate::parse_str,
+    validate: ferric_core::config::accept_any,
+};
+
 impl GcRotate {
-    /// `FERRIC_GC_ROTATE`: `off`, `0` or `false` (any case) → [`GcRotate::Off`];
-    /// `rot1` → [`GcRotate::Rot1`]; unset or any other value (`auto`, `on`)
-    /// → [`GcRotate::Auto`]. Same convention as `FERRIC_SCF_INCREMENTAL`.
-    pub fn from_env() -> Self {
-        Self::parse(std::env::var(GC_ROTATE_ENV).ok().as_deref())
+    /// The canonical spelling (`auto` / `rot1` / `off`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Rot1 => "rot1",
+            Self::Off => "off",
+        }
     }
 
-    /// The value of [`GcRotate::from_env`] for a variable value.
-    pub fn parse(value: Option<&str>) -> Self {
-        match value.map(str::to_ascii_lowercase).as_deref() {
-            Some("off") | Some("0") | Some("false") => Self::Off,
-            Some("rot1") => Self::Rot1,
-            _ => Self::Auto,
+    /// Parse a spelling: `auto`, `rot1` or `off` (case-insensitive,
+    /// surrounding blanks ignored). Anything else is an error.
+    pub fn parse_str(s: &str) -> Result<Self, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "rot1" => Ok(Self::Rot1),
+            "off" => Ok(Self::Off),
+            _ => Err(format!(
+                "invalid value {s:?}: expected \"auto\", \"rot1\" or \"off\" (unset means \"auto\")"
+            )),
         }
+    }
+
+    /// The rotation a builder runs: `explicit` (the config) if set, else
+    /// `FERRIC_GC_ROTATE`, else [`GcRotate::Auto`]. A malformed variable is
+    /// an error naming it.
+    pub fn resolve(explicit: Option<GcRotate>) -> Result<Self, FerricError> {
+        GC_ROTATE
+            .resolve(explicit, ferric_core::config::env_lookup)
+            .map(|r| r.value)
+            .map_err(|e| FerricError::General(format!("{GC_ROTATE_ENV}: {e}")))
+    }
+
+    /// The parsed `FERRIC_GC_ROTATE` of this process (unset = `auto`).
+    pub fn env_setting() -> Result<Self, FerricError> {
+        Self::resolve(None)
     }
 
     fn level(self) -> Option<RotationLevel> {
@@ -93,6 +133,12 @@ impl GcRotate {
             Self::Rot1 => Some(RotationLevel::Rot1),
             Self::Off => None,
         }
+    }
+}
+
+impl std::fmt::Display for GcRotate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -145,23 +191,14 @@ impl RotatedJk {
     pub(super) fn forward(&self, d: &Array2<f64>) -> Array2<f64> {
         self.forward.matrix(d)
     }
-
-    /// `out += T X' Tᵀ`.
-    pub(super) fn add_back(
-        &self,
-        x_rot: &Array2<f64>,
-        out: &mut Array2<f64>,
-    ) -> Result<(), FerricError> {
-        let x = self.basis.back_transform_general(x_rot)?;
-        *out += &x;
-        Ok(())
-    }
 }
 
 /// Rotation state of a builder: requested (resolved at the first direct
 /// build) or resolved.
 pub(super) enum GcState {
-    Pending(GcRotate),
+    /// The config's request (`None`: not set, the variable or the default
+    /// decides).
+    Pending(Option<GcRotate>),
     Resolved(Option<Box<RotatedJk>>),
 }
 
@@ -170,13 +207,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_follows_the_switch_convention() {
-        assert_eq!(GcRotate::parse(None), GcRotate::Auto);
-        assert_eq!(GcRotate::parse(Some("auto")), GcRotate::Auto);
-        assert_eq!(GcRotate::parse(Some("on")), GcRotate::Auto);
-        assert_eq!(GcRotate::parse(Some("rot1")), GcRotate::Rot1);
-        for off in ["off", "OFF", "0", "false", "False"] {
-            assert_eq!(GcRotate::parse(Some(off)), GcRotate::Off, "{off}");
+    fn parse_is_strict_and_canonical() {
+        assert_eq!(GcRotate::parse_str("auto"), Ok(GcRotate::Auto));
+        assert_eq!(GcRotate::parse_str(" AUTO "), Ok(GcRotate::Auto));
+        assert_eq!(GcRotate::parse_str("Rot1"), Ok(GcRotate::Rot1));
+        assert_eq!(GcRotate::parse_str("off"), Ok(GcRotate::Off));
+        for bad in ["", "on", "no", "none", "0", "false", "of"] {
+            assert!(GcRotate::parse_str(bad).is_err(), "{bad:?}");
         }
+        for m in [GcRotate::Auto, GcRotate::Rot1, GcRotate::Off] {
+            assert_eq!(GcRotate::parse_str(m.as_str()), Ok(m));
+        }
+        // An explicit (config) value wins over the variable.
+        assert_eq!(
+            GcRotate::resolve(Some(GcRotate::Rot1)).unwrap(),
+            GcRotate::Rot1
+        );
     }
 }

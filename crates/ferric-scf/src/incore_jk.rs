@@ -757,6 +757,7 @@ pub fn direct_builder_for_scf<'a>(
     )?;
     Ok(direct_route.then(|| {
         crate::direct_jk::DirectJK::new(ctx, prep, bounds, config.integral_thresh, budget_bytes)
+            .with_gc_request(config.gc_rotation)
     }))
 }
 

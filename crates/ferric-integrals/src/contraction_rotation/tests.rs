@@ -237,11 +237,79 @@ fn detect_prepared_matches_detect() {
             .unwrap();
         assert_eq!(a.rows, b.rows);
         assert_eq!(a.groups, b.groups);
-        assert_eq!(a.n_rotated_columns, b.n_rotated_columns);
+        // The molecular path counts non-identity rows; stage 1 alone counts
+        // the same columns on both paths.
+        if level == RotationLevel::Rot1 {
+            assert_eq!(a.n_rotated_columns, b.n_rotated_columns);
+        }
         let (la, lb) = (a.prep.located_shells(), b.prep.located_shells());
         for (x, y) in la.iter().zip(&lb) {
             assert_eq!(x.exponents, y.exponents);
             assert_eq!(x.coefficients, y.coefficients);
         }
     }
+}
+
+/// The in-place `out += T X' Tᵀ` equals the dense product, for a symmetric
+/// input (then exactly symmetric) and a non-symmetric one, on top of a
+/// non-zero `out`.
+#[test]
+fn back_transform_add_matches_dense_t() {
+    let mol = ethylene();
+    let bs = basis::bundled("cc-pvdz").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let rb = RotatedBasis::detect_prepared(&prep, RotationLevel::Ogc)
+        .unwrap()
+        .unwrap();
+    let t = rb.dense_t();
+    let n = t.nrows();
+    let x = Array2::from_shape_fn((n, n), |(i, j)| ((i * 7 + j * 3) % 13) as f64 * 0.1 - 0.4);
+    let sym = 0.5 * (&x + &x.t());
+    let base = Array2::from_shape_fn((n, n), |(i, j)| (i + 2 * j) as f64 * 1e-3);
+    let base = 0.5 * (&base + &base.t());
+    for (input, symmetric) in [(&sym, true), (&x, false)] {
+        let mut out = base.clone();
+        rb.back_transform_add(input, &mut out).unwrap();
+        let dense = &base + &t.dot(input).dot(&t.t());
+        let err = (&out - &dense).iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        assert!(err < 1e-14, "symmetric {symmetric}: {err:e}");
+        if symmetric {
+            assert!(out
+                .iter()
+                .zip(out.t().iter())
+                .all(|(a, b)| a.to_bits() == b.to_bits()));
+        }
+    }
+}
+
+/// The molecular path's conditioning gate: a group whose stage-1 block is
+/// worse conditioned than `OGC_MAX_COND` stays unrotated (the periodic path
+/// keeps it).
+#[test]
+fn ill_conditioned_stage_one_group_is_left_unrotated() {
+    // The single column's primitive carries almost all of the long column's
+    // weight, so T_kk is tiny (but above the stage-1 guard) and κ(T) ≫ 100.
+    let e = [10.0, 1.0, 0.1];
+    let tmpls = vec![sh(0, &e, &[0.01, 0.01, 1.0]), sh(0, &e, &[0.0, 0.0, 1.0])];
+    let mut tr = rotate_templates(
+        &tmpls,
+        ColumnRotationMutant::Production,
+        RotationLevel::Rot1,
+    );
+    assert_eq!(tr.n_rotated, 1, "stage 1 rotates it");
+    gate_conditioning(&tmpls, &mut tr);
+    assert_eq!(tr.n_rotated, 0);
+    assert!(tr
+        .rows
+        .iter()
+        .enumerate()
+        .all(|(k, r)| r == &vec![(k, 1.0)]));
+    assert_eq!(tr.shells, tmpls);
+    // A well-conditioned group passes the gate unchanged.
+    let good = vec![sh(0, &e, &[0.3, 0.6, 0.2]), sh(0, &e, &[0.0, 0.0, 1.0])];
+    let mut tg = rotate_templates(&good, ColumnRotationMutant::Production, RotationLevel::Rot1);
+    let before = tg.rows.clone();
+    gate_conditioning(&good, &mut tg);
+    assert_eq!(tg.rows, before);
+    assert_eq!(tg.n_rotated, 1);
 }
