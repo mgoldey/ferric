@@ -768,12 +768,13 @@ pub fn build_atomic_grid_with_response_pruned(
     // ~2·natoms heap allocations and a full natoms² `dw` per point, measured at
     // ~1 s of a 1.8 s XC gradient on sulfamethoxazole (28 atoms). On top of that,
     // `home_weight_grad` skips the cells that are exactly zero at the point (no
-    // bits change; see its doc) and keeps no natoms² derivative matrix: measured
-    // 4.5x faster on the C32H66 production grid, 2.4x on a 108-atom water cluster
+    // bits change; see its doc) and keeps no natoms² derivative matrix. The kernel
+    // alone (one thread, not this whole stage or the gradient) measured 4.5x
+    // faster on the C32H66 production grid and 2.4x on a 108-atom water cluster
     // (`time_screened_home_weight_grad`).
     //
     // `None` = dropped by the weight cutoff (never, when `cut` is `None`).
-    let table = BeckeTable::new(mol);
+    let table = BeckeTable::new_for_grad(mol);
     let build_point = |sc: &mut (BeckeScratch, BeckeGradScratch, Vec<[f64; 3]>),
                        &(a_idx, xyz, scale): &(usize, [f64; 3], f64)|
      -> Option<(GridPoint, Vec<[f64; 3]>)> {
