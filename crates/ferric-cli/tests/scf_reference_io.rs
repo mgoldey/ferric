@@ -12,7 +12,7 @@
 //! build; `a_read_without_the_override_needs_a_provably_identical_build` pins
 //! that gate on its own.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[path = "support/cli_bin.rs"]
@@ -115,11 +115,11 @@ fn input(mol: &str, basis: &str, kind: &str, scf: &str) -> String {
     format!("{mol}[basis]\nname = \"{basis}\"\n[method]\nkind = \"{kind}\"\n{MP2}[scf]\n{scf}")
 }
 
-fn path_key(key: &str, file: &PathBuf) -> String {
+fn path_key(key: &str, file: &Path) -> String {
     format!("{key} = {:?}\n", file.display().to_string())
 }
 
-fn read_key(file: &PathBuf) -> String {
+fn read_key(file: &Path) -> String {
     format!(
         "{}read_reference_other_build = true\n",
         path_key("read_reference", file)
