@@ -908,6 +908,7 @@ fn bench_direct_alkane_series() {
         virt_schwarz_kappa: None,
         split_eri3_timers: bench_split_eri3(bench_env("FERRIC_LMP2_BENCH_SPLIT_ERI3").as_deref()),
         eri3_pass,
+        mpi: None,
     };
     println!(
         "sys        op     eps    E_corr        dE_vs_can  keep    npair/gated dom(mn/mx) \
