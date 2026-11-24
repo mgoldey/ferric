@@ -2574,13 +2574,11 @@ pub fn amplitude_lmp2_with_virtuals(
     let t0 = std::time::Instant::now();
     let (mut r, t) = solve_count_keep(
         &rg,
-        f_oo,
-        &lb.f_vv,
+        (f_oo, &lb.f_vv),
         rhf.energy,
         cfg,
         vvhv,
-        no,
-        nv,
+        (no, nv),
         "lmp2_amplitude",
     )?;
     let t_solve_s = t0.elapsed().as_secs_f64();
@@ -2616,21 +2614,18 @@ pub(crate) fn solve_and_count(
     nv: usize,
     who: &str,
 ) -> Result<AmplitudeLmp2Result, FerricError> {
-    solve_count_keep(rg, f_oo, f_vv, e_scf, cfg, vvhv, no, nv, who).map(|(r, _)| r)
+    solve_count_keep(rg, (f_oo, f_vv), e_scf, cfg, vvhv, (no, nv), who).map(|(r, _)| r)
 }
 
 /// [`solve_and_count`] that also returns the masked amplitudes `t_P`, one
 /// block per pair of `rg` (the mask certificate reads them).
-#[allow(clippy::too_many_arguments)]
 fn solve_count_keep(
     rg: &Ragged,
-    f_oo: &Array2<f64>,
-    f_vv: &Array2<f64>,
+    (f_oo, f_vv): (&Array2<f64>, &Array2<f64>),
     e_scf: f64,
     cfg: &AmplitudeLmp2Config,
     vvhv: &VvHv,
-    no: usize,
-    nv: usize,
+    (no, nv): (usize, usize),
     who: &str,
 ) -> Result<(AmplitudeLmp2Result, Vec<Array2<f64>>), FerricError> {
     validate_fvv_sparse_rho(cfg.fvv_sparse_rho)?;
