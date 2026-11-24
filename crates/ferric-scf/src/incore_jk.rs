@@ -196,6 +196,11 @@ pub struct IncoreEri {
     quartets: usize,
     build_seconds: f64,
     _charge: Reservation,
+    /// The contraction rotation the integrals were computed in
+    /// ([`crate::direct_jk::gc_rotation`]): the store holds the ERIs of the
+    /// rotated shells, and every J/K is `T X'[Tᵀ D T] Tᵀ`. `None`: the
+    /// basis's own shells.
+    rot: Option<Arc<crate::direct_jk::gc_rotation::RotatedJk>>,
 }
 
 impl std::fmt::Debug for IncoreEri {
@@ -293,7 +298,21 @@ impl IncoreEri {
         plan: &MemoryPlan,
         charge: Reservation,
     ) -> Result<Self, FerricError> {
+        Self::build_in(ctx, prep, None, op, plan, charge)
+    }
+
+    /// [`IncoreEri::build`] on the rotated shells of `rot` when given (the
+    /// store then serves `prep`, the parent basis, through the transforms).
+    fn build_in(
+        ctx: &ParallelContext,
+        parent: &PreparedBasis,
+        rot: Option<Arc<crate::direct_jk::gc_rotation::RotatedJk>>,
+        op: Operator,
+        plan: &MemoryPlan,
+        charge: Reservation,
+    ) -> Result<Self, FerricError> {
         let t0 = std::time::Instant::now();
+        let prep = rot.as_ref().map_or(parent, |r| &r.basis.prep);
         let n = prep.nbasis();
         let npair = n * (n + 1) / 2;
         let mut eri = plan.alloc_vec("in-core ERI (pq|rs)", row_start(npair))?;
@@ -372,10 +391,11 @@ impl IncoreEri {
             npair,
             eri,
             op,
-            key: geometry_key(prep, op),
+            key: geometry_key(parent, op),
             quartets: quartets.load(Ordering::SeqCst),
             build_seconds: t0.elapsed().as_secs_f64(),
             _charge: charge,
+            rot,
         })
     }
 
@@ -423,11 +443,42 @@ impl IncoreEri {
             quartets: self.quartets,
             build_seconds: 0.0,
             _charge: Reservation::inert("in-core ERI abs copy"),
+            rot: self.rot.clone(),
         }
+    }
+
+    /// Whether the store holds the ERIs of the contraction-rotated shells.
+    pub fn rotated(&self) -> bool {
+        self.rot.is_some()
+    }
+
+    /// `f(ds)` on the stored shells: the densities forward-transformed and
+    /// the matrices back-transformed when the store is rotated.
+    fn in_store_basis(
+        &self,
+        ds: &[&Array2<f64>],
+        f: impl FnOnce(&[&Array2<f64>]) -> Vec<Array2<f64>>,
+    ) -> Vec<Array2<f64>> {
+        let Some(r) = &self.rot else {
+            return f(ds);
+        };
+        let dr: Vec<Array2<f64>> = ds.iter().map(|d| r.forward(d)).collect();
+        let refs: Vec<&Array2<f64>> = dr.iter().collect();
+        f(&refs)
+            .iter()
+            .map(|x| {
+                r.back(x)
+                    .expect("a store's own n × n matrices match its rotation")
+            })
+            .collect()
     }
 
     /// `J[D_i]` for every density (symmetric `n × n` results).
     pub fn coulomb(&self, ds: &[&Array2<f64>]) -> Vec<Array2<f64>> {
+        self.in_store_basis(ds, |ds| self.coulomb_stored(ds))
+    }
+
+    fn coulomb_stored(&self, ds: &[&Array2<f64>]) -> Vec<Array2<f64>> {
         let (n, np, m) = (self.n, self.npair, ds.len());
         if m == 0 {
             return Vec::new();
@@ -507,6 +558,10 @@ impl IncoreEri {
     /// `B[m', t] = Σ_la X_l[a, m'] D[a, l]`, less the `pair(a, b) =
     /// pair(m, l)` terms `B` must not count (`remove_diagonal_pair_terms`).
     pub fn exchange(&self, ds: &[&Array2<f64>]) -> Vec<Array2<f64>> {
+        self.in_store_basis(ds, |ds| self.exchange_stored(ds))
+    }
+
+    fn exchange_stored(&self, ds: &[&Array2<f64>]) -> Vec<Array2<f64>> {
         let (n, m) = (self.n, ds.len());
         if m == 0 {
             return Vec::new();
@@ -841,7 +896,15 @@ pub fn attach_for_scf(
         (EriMode::Auto, Err(_)) => return clear(),
         (_, Err(e)) => return Err(e),
     };
-    let store = Arc::new(IncoreEri::build(ctx, prep, bounds.op, &plan, charge)?);
+    // The store holds the ERIs of the contraction-rotated shells when the
+    // SCF's direct builds would rotate (`direct_jk::gc_rotation`): about half
+    // the libint time on cc-pVXZ, J/K equal to the unrotated store's to
+    // rounding (no screening here).
+    let mode = crate::direct_jk::GcRotate::resolve(config.gc_rotation)?;
+    let rot = bounds.gc.rotation(prep, bounds, mode)?;
+    let store = Arc::new(IncoreEri::build_in(
+        ctx, prep, rot, bounds.op, &plan, charge,
+    )?);
     bounds.incore.set(Some(store.clone()));
     let route = record(&store, true);
     if config.verbose {

@@ -87,6 +87,12 @@ fn direct_jk(prep: &PreparedBasis, d: &Array2<f64>) -> (Array2<f64>, Array2<f64>
     let ctx = ParallelContext::default();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), prep).unwrap();
     assert!(bounds.incore.get().is_none());
+    // The rounding bar is that of the store's own (unrotated) integrals
+    // against the unrotated walk: pin the walk, as the contraction rotation
+    // (`direct_jk::gc_rotation`) would reassociate it on cc-pVDZ.
+    bounds
+        .gc
+        .set_request(Some(ferric_scf::direct_jk::GcRotate::Off));
     let n = d.nrows();
     let (mut j, mut k) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
     ferric_scf::rhf::build_jk(&ctx, prep, &bounds, 0.0, d, &mut j, &mut k).unwrap();

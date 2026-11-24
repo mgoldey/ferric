@@ -802,6 +802,9 @@ fn solve_uhf_impl(
 ) -> Result<ScfResult, FerricError> {
     crate::mom::check_reference(config, "UHF", true)?;
     crate::incore_jk::begin_scf(bounds);
+    // The response, Newton and stability builds on these bounds follow the
+    // SCF's contraction rotation (`direct_jk::gc_rotation::GcSlot`).
+    bounds.gc.set_request(config.gc_rotation);
 
     // Split the injection: (S, h, V_nn) go to the shared env builder, the J/K
     // builders are driven in the iteration loop. All `None` on the molecular

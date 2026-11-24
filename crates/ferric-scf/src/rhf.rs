@@ -5,6 +5,7 @@
 
 use crate::diis::DiisDriver;
 use crate::direct_j::DirectJ;
+use crate::direct_jk::gc_rotation::GcSlot;
 use crate::direct_jk::DirectJK;
 use crate::direct_k::DirectK;
 use crate::fock::{JBuilder, KBuilder};
@@ -546,8 +547,10 @@ pub struct RhfConfig {
     #[doc(hidden)]
     pub eri_route: crate::incore_jk::EriRouteRecord,
     /// The internal contraction rotation of generally contracted shells
-    /// (cc-pVXZ) in the direct four-centre J/K builder
-    /// ([`crate::direct_jk::GcRotate`]; `crate::direct_jk::gc_rotation`).
+    /// (cc-pVXZ) in the exact four-centre J/K builds
+    /// ([`crate::direct_jk::GcRotate`]; `crate::direct_jk::gc_rotation`):
+    /// the SCF's, and, through the request the SCF records on its bounds,
+    /// the Newton, stability, response and gradient builds that follow.
     /// `None` (the default) leaves it to `FERRIC_GC_ROTATE`, then `auto`.
     /// Changes energies at the screening-noise level (~1e-11 Ha), not
     /// bitwise; `Off` is the unrotated builder.
@@ -2310,6 +2313,9 @@ fn solve_rhf_impl(
     require_closed_shell(mol)?;
     crate::mom::check_reference(config, "RHF", false)?;
     crate::incore_jk::begin_scf(bounds);
+    // The response, Newton and stability builds on these bounds follow the
+    // SCF's contraction rotation (`direct_jk::gc_rotation::GcSlot`).
+    bounds.gc.set_request(config.gc_rotation);
     // Split the injection: (S, h, V_nn) go to the shared env builder, the J/K
     // builders are driven in the iteration loop. All `None` on the molecular
     // path.
@@ -4405,11 +4411,21 @@ pub fn build_jk(
         store.add_jk(d, j, k);
         return Ok(store.quartets());
     }
-    let pool = crate::engine_pool::EnginePool::new(
-        bounds.op,
-        prep,
-        ferric_integrals::engine_pool::eri_precision(),
-    )?;
+    let precision = ferric_integrals::engine_pool::eri_precision();
+    // On a rotated basis the engines are the cached rotated ones; no pool on
+    // the parent shells is built.
+    if let Some(rot) = GcSlot::for_engines(bounds, prep, bounds.op, precision)? {
+        return rotated_jk(
+            ctx,
+            thresh,
+            d,
+            j,
+            k,
+            rot,
+            crate::reduce::default_band_bytes(),
+        );
+    }
+    let pool = crate::engine_pool::EnginePool::new(bounds.op, prep, precision)?;
     build_jk_with_pool(
         ctx,
         prep,
@@ -4461,6 +4477,12 @@ pub fn build_jk_with_pool(
         store.add_jk(d, j, k);
         return Ok(store.quartets());
     }
+    if let Some(rot) = GcSlot::for_pool(bounds, prep, pool)? {
+        return rotated_jk(ctx, thresh, d, j, k, rot, band_bytes);
+    }
+    // The rotated build's inner walk is reported by `rotated_jk`.
+    let t0 =
+        (ferric_core::timing::enabled() && !bounds.gc.is_inert()).then(std::time::Instant::now);
 
     let nsh = prep.nshells();
     let nbf = prep.nbasis();
@@ -4565,7 +4587,64 @@ pub fn build_jk_with_pool(
     *j += &total_j;
     *k += &total_k;
 
-    Ok(computed_quartets.load(Ordering::SeqCst))
+    let computed = computed_quartets.load(Ordering::SeqCst);
+    if let Some(t0) = t0 {
+        report_pooled_jk(false, t0.elapsed().as_secs_f64(), computed);
+    }
+    Ok(computed)
+}
+
+/// `FERRIC_TIMING` line of one pooled J/K build ([`build_jk_with_pool`]):
+/// the response, Newton and stability builds.
+fn report_pooled_jk(rotated: bool, wall: f64, quartets: usize) {
+    if !ferric_core::timing::enabled() {
+        return;
+    }
+    let what = if rotated {
+        "rotated (gc rotation)"
+    } else {
+        "unrotated"
+    };
+    eprintln!("[timing] pooled-jk build ({what}): wall {wall:.3} s, {quartets} quartets");
+}
+
+/// A pooled J/K build on the rotated shells of `rot`
+/// ([`crate::direct_jk::gc_rotation`]): `D' = Tᵀ D T`, the unrotated walk
+/// on the rotated basis, bounds and engines, then `j += T J' Tᵀ`,
+/// `k += T K' Tᵀ`. Exact for any `D`; the transforms are serial, so the
+/// result does not depend on the thread count.
+fn rotated_jk(
+    ctx: &ParallelContext,
+    thresh: f64,
+    d: &Array2<f64>,
+    j: &mut Array2<f64>,
+    k: &mut Array2<f64>,
+    (rot, pool): (
+        std::sync::Arc<crate::direct_jk::gc_rotation::RotatedJk>,
+        std::sync::Arc<crate::engine_pool::EnginePool>,
+    ),
+    band_bytes: usize,
+) -> Result<usize, FerricError> {
+    let t0 = std::time::Instant::now();
+    let _charge = rot.charge(3)?;
+    let dr = rot.forward(d);
+    let n = dr.nrows();
+    let (mut jr, mut kr) = (Array2::<f64>::zeros((n, n)), Array2::<f64>::zeros((n, n)));
+    let computed = build_jk_with_pool(
+        ctx,
+        &rot.basis.prep,
+        &rot.bounds,
+        thresh,
+        &dr,
+        &mut jr,
+        &mut kr,
+        &pool,
+        band_bytes,
+    )?;
+    rot.back_add(&jr, j)?;
+    rot.back_add(&kr, k)?;
+    report_pooled_jk(true, t0.elapsed().as_secs_f64(), computed);
+    Ok(computed)
 }
 
 /// The power of two `2^e` that brings `max_abs` into `(½, 1]`, as
@@ -4658,6 +4737,26 @@ pub(crate) fn build_spin_jk_with_pool_homogeneous(
     ctx.check_interrupted()?;
     if let Some(store) = crate::incore_jk::store_for(bounds, prep)? {
         return Ok(store.spin_jk(d, exchange));
+    }
+    if let Some((rot, rpool)) = GcSlot::for_pool(bounds, prep, pool)? {
+        // The rotated build of the same call (module `direct_jk::gc_rotation`).
+        let _charge = rot.charge(6)?;
+        let (da, db) = (rot.forward(d[0]), rot.forward(d[1]));
+        let (jr, kr) = build_spin_jk_with_pool_homogeneous(
+            ctx,
+            &rot.basis.prep,
+            &rot.bounds,
+            thresh,
+            [&da, &db],
+            exchange,
+            &rpool,
+            band_bytes,
+        )?;
+        let k = match kr {
+            Some([ka, kb]) => Some([rot.back(&ka)?, rot.back(&kb)?]),
+            None => None,
+        };
+        return Ok((rot.back(&jr)?, k));
     }
     let nbf = prep.nbasis();
     let zero = || Array2::<f64>::zeros((nbf, nbf));
@@ -4775,6 +4874,26 @@ pub(crate) fn build_multi_jk_with_pool_homogeneous(
     }
     if let Some(store) = crate::incore_jk::store_for(bounds, prep)? {
         return Ok(store.jk_multi(jd, kd));
+    }
+    if let Some((rot, rpool)) = GcSlot::for_pool(bounds, prep, pool)? {
+        // The rotated build of the same call (module `direct_jk::gc_rotation`).
+        let _charge = rot.charge(2 * (jd.len() + kd.len()))?;
+        let jr: Vec<Array2<f64>> = jd.iter().map(|d| rot.forward(d)).collect();
+        let kr: Vec<Array2<f64>> = kd.iter().map(|d| rot.forward(d)).collect();
+        let (js, ks) = build_multi_jk_with_pool_homogeneous(
+            ctx,
+            &rot.basis.prep,
+            &rot.bounds,
+            thresh,
+            &jr.iter().collect::<Vec<_>>(),
+            &kr.iter().collect::<Vec<_>>(),
+            &rpool,
+            band_bytes,
+        )?;
+        let back = |xs: Vec<Array2<f64>>| -> Result<Vec<Array2<f64>>, FerricError> {
+            xs.iter().map(|x| rot.back(x)).collect()
+        };
+        return Ok((back(js)?, back(ks)?));
     }
     let nbf = prep.nbasis();
     // Each density scaled into max|D| ∈ (½, 1], stacked (nbf, nbf, m).

@@ -174,8 +174,11 @@ pub struct DirectJK<'a> {
     // so hoist the builder out of the SCF loop to pay it once, not per iteration.
     pool: Option<crate::engine_pool::EnginePool>,
     /// The internal contraction rotation ([`gc_rotation`]): requested until
-    /// the first direct build, then resolved.
+    /// the first direct build, then resolved (the rotated basis and bounds
+    /// live in `bounds.gc`, shared with every later build on these bounds).
     gc: gc_rotation::GcState,
+    /// Engines on the rotated shells, owned like `pool`.
+    rot_pool: Option<crate::engine_pool::EnginePool>,
 }
 
 impl<'a> std::fmt::Debug for DirectJK<'a> {
@@ -210,6 +213,7 @@ impl<'a> DirectJK<'a> {
             mem_budget,
             pool: None,
             gc: GcState::Pending(None),
+            rot_pool: None,
         }
     }
 
@@ -242,20 +246,16 @@ impl<'a> DirectJK<'a> {
         }
     }
 
-    /// Resolve a pending rotation request: detect, and build the rotated
-    /// bounds, once.
+    /// Resolve a pending rotation request: the builder's own request, else
+    /// the one recorded on the bounds, else `FERRIC_GC_ROTATE`, else `auto`.
+    /// The rotated basis and bounds come from the bounds' cache (built at
+    /// the first rotated build on these bounds, by whichever builder runs
+    /// first).
     fn resolve_gc(&mut self) -> Result<(), FerricError> {
         if let GcState::Pending(request) = self.gc {
-            let mode = GcRotate::resolve(request)?;
-            let r = RotatedJk::new(self.prep, self.bounds, mode)?;
-            if let Some(r) = r.as_ref().filter(|_| ferric_core::timing::enabled()) {
-                eprintln!(
-                    "[timing] direct-jk gc rotation ({mode:?}): {} columns rotated; setup \
-                     (detection + rotated Schwarz bounds) {:.3} s",
-                    r.basis.n_rotated_columns, r.setup_seconds
-                );
-            }
-            self.gc = GcState::Resolved(r.map(Box::new));
+            let mode = GcRotate::resolve(request.or(self.bounds.gc.request()))?;
+            let r = self.bounds.gc.rotation(self.prep, self.bounds, mode)?;
+            self.gc = GcState::Resolved(r);
         }
         Ok(())
     }
@@ -439,40 +439,31 @@ impl<'a> DirectJK<'a> {
         run: impl FnOnce(Walk<'_>, &[Array2<f64>], &mut [Array2<f64>]) -> Result<usize, FerricError>,
     ) -> Result<usize, FerricError> {
         let (ctx, thresh, mem_budget) = (self.ctx, self.thresh, self.mem_budget);
-        let GcState::Resolved(Some(r)) = &mut self.gc else {
+        let GcState::Resolved(Some(r)) = &self.gc else {
             unreachable!("run_rotated without a rotation");
         };
+        let r: &RotatedJk = r;
         let n = r.basis.nbasis();
-        let bytes = (ds.len() + outs.len()) * n * n * std::mem::size_of::<f64>();
-        let _charge = ferric_core::memory::pool::reserve_global(
-            &format!("direct J/K contraction-rotation buffers (n={n})"),
-            bytes,
-        )?;
+        let _charge = r.charge(ds.len() + outs.len())?;
         let t0 = std::time::Instant::now();
         let dr: Vec<Array2<f64>> = ds.iter().map(|d| r.forward(d)).collect();
         let t_fwd = t0.elapsed().as_secs_f64();
         let mut xr: Vec<Array2<f64>> = (0..outs.len()).map(|_| zeros(n)).collect();
-        let RotatedJk {
-            basis,
-            bounds,
-            pool,
-            ..
-        } = &mut **r;
         let computed = run(
             Walk {
                 ctx,
-                prep: &basis.prep,
-                bounds,
+                prep: &r.basis.prep,
+                bounds: &r.bounds,
                 thresh,
                 mem_budget,
-                pool,
+                pool: &mut self.rot_pool,
             },
             &dr,
             &mut xr,
         )?;
         let t1 = std::time::Instant::now();
         for (x, out) in xr.iter().zip(outs.iter_mut()) {
-            r.basis.back_transform_add(x, out)?;
+            r.back_add(x, out)?;
         }
         report_gc_transforms(
             t_fwd,

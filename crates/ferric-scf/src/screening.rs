@@ -83,6 +83,13 @@ pub struct SchwarzBounds {
     /// direct J/K builder handed these bounds. Empty by default (and after an
     /// SCF that took the direct route), which is the integral-direct path.
     pub incore: crate::incore_jk::IncoreSlot,
+    /// The contraction rotation of generally contracted shells for the
+    /// direct J/K builds on these bounds
+    /// ([`crate::direct_jk::gc_rotation::GcSlot`]): the solver's request and
+    /// the rotated basis, bounds and engines, built once per geometry and
+    /// shared by the SCF and the response builds that follow. Empty by
+    /// default; clones share it, as they share `incore`.
+    pub gc: crate::direct_jk::gc_rotation::GcSlot,
 }
 
 impl SchwarzBounds {
@@ -109,6 +116,7 @@ impl SchwarzBounds {
             csb_m: None,
             csam_x: None,
             incore: Default::default(),
+            gc: Default::default(),
         })
     }
 
