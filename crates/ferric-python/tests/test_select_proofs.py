@@ -11,6 +11,7 @@ this file with ``--noconftest`` (conftest.EXTENSION_FREE lists it too).
 
 import copy
 import importlib.util
+import json
 import re
 import subprocess
 import sys
@@ -150,6 +151,23 @@ def test_the_real_case_list_is_read():
     assert str(sp.selection_for([f"scripts/{slow[0]}"])) == "none"
     assert str(sp.selection_for(["scripts/omega_ri_sympy.py"])) == "omega_ri_sympy.py"
     assert str(sp.selection_for(["book/src/appendix-b-functions.md"])) == "none"
+
+
+def test_an_edit_to_a_real_registry_entry_selects_its_scripts():
+    # The real registry's entries carry fields beyond the made-up ones above
+    # (entry_points); an ordinary edit must still not read as a shape change.
+    real = json.loads((REPO / sp.REGISTRY).read_text(encoding="utf-8"))
+    cases = sp.read_cases((REPO / sp.RUNNER).read_text(encoding="utf-8"))
+    mid, entry = next(
+        (k, e)
+        for k, e in real["methods"].items()
+        if e["scripts"] and all(Path(x).name in cases for x in e["scripts"])
+    )
+    new = copy.deepcopy(real)
+    new["methods"][mid]["book"] = entry["book"] + entry["book"][:1]
+    sel = sp.select([sp.REGISTRY], cases, {}, real, new)
+    assert sel.mode == "some"
+    assert sel.scripts == sorted(Path(x).name for x in entry["scripts"])
 
 
 def test_every_proof_that_reads_a_file_names_it():

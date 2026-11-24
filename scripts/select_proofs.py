@@ -55,9 +55,6 @@ ALL_PATTERNS = (
 # Prose: the book and the generated per-crate indexes. No proof reads them.
 PROSE_PATTERNS = ("book/*", "crates/*/theory.md")
 
-# The fields a registry entry may hold today. A new field is a schema change.
-ENTRY_FIELDS = {"book", "scripts", "reason"}
-
 
 class Selection:
     """``mode`` is ``all``, ``none`` or ``some``; ``scripts`` is set for ``some``."""
@@ -105,7 +102,8 @@ def _mentions(source, name):
 
 def registry_scripts(old, new, cases):
     """The ``CASES`` scripts of every registry entry that changed, or None when
-    the registry's shape changed (or either side is missing)."""
+    the registry's shape changed (top-level keys, or the field names used in
+    ``methods`` or ``gaps``) or either side is missing."""
     if not isinstance(old, dict) or not isinstance(new, dict):
         return None
     if set(old) != set(new):
@@ -115,12 +113,14 @@ def registry_scripts(old, new, cases):
         a, b = old.get(section), new.get(section)
         if not isinstance(a, dict) or not isinstance(b, dict):
             return None
+        if not all(isinstance(e, dict) for e in [*a.values(), *b.values()]):
+            return None
+        # A field name that appears or disappears across the section is a
+        # schema change.
+        if set().union(*a.values()) != set().union(*b.values()):
+            return None
         for mid in set(a) | set(b):
             ea, eb = a.get(mid, {}), b.get(mid, {})
-            if not isinstance(ea, dict) or not isinstance(eb, dict):
-                return None
-            if not set(ea) | set(eb) <= ENTRY_FIELDS:
-                return None
             if ea == eb:
                 continue
             scripts = [ea.get("scripts", []), eb.get("scripts", [])]
