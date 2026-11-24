@@ -338,13 +338,21 @@ pub struct DirectStats {
     /// The integral-free memory pre-flight of this assembly (see
     /// [`DirectMemoryEstimate`]).
     pub memory: DirectMemoryEstimate,
-    /// Stage-5 domain groups run at once: the worker count, or fewer when
-    /// the budget cannot hold that many groups' scratch beside the resident
-    /// set (0 before stage 5).
+    /// Stage-5 domain groups allowed in flight at once: the worker count when
+    /// ungated (whatever the number of groups), else the widest cap
+    /// `min(len, workers)` of the budget-sized waves (see `plan_group_wave`),
+    /// so a gated run with one group reports 1. With more than one group, 1
+    /// means the budget serialised stage 5. 0 before stage 5.
     pub group_concurrency: usize,
-    /// The largest per-group scratch bound the concurrency is sized with
+    /// The largest per-group scratch bound the waves are sized with
     /// (`group_scratch_bound`; ≥ the measured `group_scratch_bytes_max`).
     pub group_scratch_bound_bytes: usize,
+    /// Stage-5 groups measured in flight at once (peak); 0 before stage 5.
+    pub group_in_flight_peak: usize,
+    /// Stage-5 waves: 1 when ungated or when every group fits one wave (a
+    /// single group included), more when the budget split the groups; 0
+    /// before stage 5.
+    pub n_group_waves: usize,
 }
 
 /// Byte accounting of the direct LMP2 path, computed from the locality maps
@@ -2534,15 +2542,26 @@ fn pair_candidates(
         .collect()
 }
 
-/// Upper bound on one domain group's scratch in [`fit_domain_group`]:
-/// `V_DD` and its Cholesky factor (`2d²`), one whitened `W_k` per distinct
-/// occupied over its candidate union (`Σ_k d·|C_k|`), and the widest pair's
-/// two column selections, `J_ij` and its transpose (`2·d·n + 2·n²`).
-/// With the Fock-propagated screen on (`screen_on`), the widest pair's
-/// gate scratch in [`crate::ragged::pair_blocks_screened`] is added:
-/// `F'`, `t⁰`, `F't⁰`, the `t⁰F'` temporary, the gate and its transpose,
-/// [`FOCK_SCREEN_SCRATCH_MATRICES`]` · n²` (all six counted, although at
-/// most four are live at once). Off, the bound is unchanged.
+/// Upper bound on one domain group's scratch in [`fit_domain_group`],
+/// counted from its allocations. Held for the whole group: `V_DD` and its
+/// Cholesky factor (`2d²`) and one whitened `W_k` per distinct occupied over
+/// its candidate union (`Σ_k d·|C_k|`). On top of that, the larger of the
+/// two phases' transients:
+///
+/// - whitening occupied `k` ([`whiten`]): the gathered strip `A_k` and the
+///   transposed right-hand side LAPACK's row-major wrapper copies
+///   (`2·d·|C_k|`; the owned copy it solves into IS `W_k`), plus the
+///   transposed `L` it copies per call (`d²`);
+/// - the pair fits: the widest pair's two column selections, `J_ij` and its
+///   transpose (`2·d·n + 2·n²`), and with the Fock-propagated screen on
+///   (`screen_on`) the gate scratch of
+///   [`crate::ragged::pair_blocks_screened`] (`F'`, `t⁰`, `F't⁰`, the `t⁰F'`
+///   temporary, the gate and its transpose,
+///   [`FOCK_SCREEN_SCRATCH_MATRICES`]` · n²`, all six counted although at
+///   most four are live at once).
+///
+/// The pair blocks a group builds are not scratch: they are bounded by
+/// [`group_block_bound`] and charged at their exact bytes once built.
 fn group_scratch_bound(
     dfbs: &PreparedBasis,
     dsh: &[usize],
@@ -2559,7 +2578,7 @@ fn group_scratch_bound(
         .max()
         .unwrap_or(0);
     let mut want: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
-    for &px in pxs {
+    for &px in pxs.iter().filter(|&&px| !pair_cands[px].is_empty()) {
         let (i, j) = unique[px];
         for k in [i, j] {
             want.entry(k)
@@ -2568,12 +2587,89 @@ fn group_scratch_bound(
         }
     }
     let w: usize = want.values().map(|c| d * c.len()).sum();
+    let c_max = want.values().map(BTreeSet::len).max().unwrap_or(0);
+    let whiten = d * d + 2 * d * c_max;
     let screen = if screen_on {
         FOCK_SCREEN_SCRATCH_MATRICES * n_max * n_max
     } else {
         0
     };
-    8 * (2 * d * d + w + 2 * d * n_max + 2 * n_max * n_max + screen)
+    let fits = 2 * d * n_max + 2 * n_max * n_max + screen;
+    8 * (2 * d * d + w + whiten.max(fits))
+}
+
+/// Upper bound on the pair blocks one domain group builds: each pair's
+/// block (and its mirror when `i ≠ j`) at the full candidate width
+/// `n = |C_ij|`, [`block_bytes`] each — the Eq-8 mask only drops rows and
+/// columns, so the built blocks are never larger.
+fn group_block_bound(
+    pxs: &[usize],
+    unique: &[(usize, usize)],
+    pair_cands: &[Vec<usize>],
+    nv: usize,
+) -> usize {
+    pxs.iter()
+        .map(|&px| {
+            let n = pair_cands[px].len();
+            let (i, j) = unique[px];
+            match n {
+                0 => 0,
+                _ if i == j => block_bytes(n, n, nv),
+                _ => 2 * block_bytes(n, n, nv),
+            }
+        })
+        .sum()
+}
+
+/// One stage-5 wave: groups `start..end` of the group list, run together
+/// with at most `workers` of them in flight, and the scratch reserved for
+/// them (`min(len, workers)` × the wave's largest group scratch).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GroupWave {
+    end: usize,
+    scratch: usize,
+    /// The wave stopped because the next group did not fit, not because the
+    /// list ran out.
+    budget_limited: bool,
+}
+
+/// The next wave from `start`: as many groups as fit in `avail` bytes,
+/// charging each group's block bound (`blocks[g]`) — its blocks stay
+/// resident — and `min(len, workers)` copies of the wave's largest scratch
+/// bound (`scratch[g]`), since any `workers` of the wave's groups can run at
+/// once. Always at least one group, so the schedule makes progress; a lone
+/// group that does not fit is left to the charge-as-built gate, which
+/// refuses it on its exact bytes.
+fn plan_group_wave(
+    start: usize,
+    scratch: &[usize],
+    blocks: &[usize],
+    workers: usize,
+    avail: usize,
+) -> GroupWave {
+    let workers = workers.max(1);
+    let need = |len: usize, s_max: usize, b_sum: usize| {
+        b_sum.saturating_add(len.min(workers).saturating_mul(s_max))
+    };
+    let (mut s_max, mut b_sum) = (scratch[start], blocks[start]);
+    let mut end = start + 1;
+    while end < scratch.len() {
+        let (s, b) = (s_max.max(scratch[end]), b_sum.saturating_add(blocks[end]));
+        if need(end + 1 - start, s, b) > avail {
+            return GroupWave {
+                end,
+                scratch: (end - start).min(workers).saturating_mul(s_max),
+                budget_limited: true,
+            };
+        }
+        (s_max, b_sum) = (s, b);
+        end += 1;
+    }
+    GroupWave {
+        end,
+        scratch: (end - start).min(workers).saturating_mul(s_max),
+        budget_limited: false,
+    }
 }
 
 /// Candidate-square matrices the Fock-propagated gate holds per pair
@@ -2584,12 +2680,15 @@ const FOCK_SCREEN_SCRATCH_MATRICES: usize = 6;
 /// EXACT bytes (pair block + PCG vectors) the moment they exist, so at ε > 0,
 /// where the pre-flight is only a bound, the assembly stops at the first
 /// group that takes the stage-5 resident set (strips + metric + own-domain
-/// `W` + blocks so far) or the solve's (blocks + PCG vectors) over the
-/// budget. Groups not yet started are skipped once it trips.
+/// `W` + the running wave's group scratch + blocks so far) or the solve's
+/// (blocks + PCG vectors) over the budget. Groups not yet started are
+/// skipped once it trips.
 struct BlockCharge {
     budget_bytes: usize,
     base_bytes: usize,
     est: DirectMemoryEstimate,
+    /// The running wave's reserved group scratch ([`GroupWave::scratch`]).
+    scratch: AtomicUsize,
     ragged: AtomicUsize,
     vectors: AtomicUsize,
     tripped: Mutex<Option<String>>,
@@ -2612,7 +2711,8 @@ impl BlockCharge {
         let r_tot = self.ragged.fetch_add(r, Ordering::Relaxed) + r;
         let v_tot = self.vectors.fetch_add(v, Ordering::Relaxed) + v;
         let solve = r_tot + crate::ragged::PCG_RESIDENT_VECTORS * v_tot;
-        let held = (self.base_bytes + r_tot).max(solve);
+        let base = self.base_bytes + self.scratch.load(Ordering::Relaxed);
+        let held = (base + r_tot).max(solve);
         if held <= self.budget_bytes {
             return;
         }
@@ -2622,8 +2722,9 @@ impl BlockCharge {
                 format!(
                     "lmp2_direct: refused during the pair fits: the blocks built so far already \
                      need {:.2} GB (pair blocks {:.2} GB + {} PCG amplitude vectors {:.2} GB; \
-                     strips + metric {:.2} GB), over the memory budget of {:.2} GB; the whole \
-                     system needs at most {:.2} GB (candidate-domain bound). The pair blocks \
+                     strips + metric + group scratch {:.2} GB), over the memory budget of \
+                     {:.2} GB; the whole system needs at most {:.2} GB (candidate-domain \
+                     bound). The pair blocks \
                      and PCG vectors stay resident for the whole solve and are not blocked. \
                      Raise [memory] budget_gb / FERRIC_MEM_BUDGET_GB, or shrink the pair \
                      blocks: a larger [local] eps, a smaller virt_radius, or the pair gate \
@@ -2632,7 +2733,7 @@ impl BlockCharge {
                     gb(r_tot),
                     crate::ragged::PCG_RESIDENT_VECTORS,
                     gb(crate::ragged::PCG_RESIDENT_VECTORS * v_tot),
-                    gb(self.base_bytes),
+                    gb(base),
                     gb(self.budget_bytes),
                     gb(self.est.resident_peak()),
                 )
@@ -2762,36 +2863,31 @@ fn fit_pairs(
     // The screen is inert at ε = 0 (`pair_blocks_screened` skips it there).
     let screen_on = fock_screen.is_some() && eps > 0.0;
     let workers = rayon::current_num_threads().max(1);
-    let g_max = group_list
+    let scratch: Vec<usize> = group_list
         .iter()
         .map(|(dsh, pxs)| group_scratch_bound(dfbs, dsh, pxs, &unique, &pair_cands, screen_on))
-        .max()
-        .unwrap_or(0);
-    // Groups in flight at once: each holds one group's scratch, so a budget
-    // that cannot hold `workers` of them beside the resident set runs fewer.
-    // Groups are independent, so this changes the schedule, never a block.
-    let concurrent = match gate {
-        None => workers,
-        Some(g) => (g
-            .budget_bytes
-            .saturating_sub(base_bytes + stats.memory.pair_block_bytes)
-            / g_max.max(1))
-        .clamp(1, workers),
-    };
-    stats.group_concurrency = concurrent;
-    stats.group_scratch_bound_bytes = g_max;
+        .collect();
+    let blocks: Vec<usize> = group_list
+        .iter()
+        .map(|(_, pxs)| group_block_bound(pxs, &unique, &pair_cands, nv))
+        .collect();
+    stats.group_scratch_bound_bytes = scratch.iter().copied().max().unwrap_or(0);
     let charge = gate.map(|g| BlockCharge {
         budget_bytes: g.budget_bytes,
-        base_bytes: base_bytes + concurrent * g_max,
+        base_bytes,
         est: stats.memory,
+        scratch: AtomicUsize::new(0),
         ragged: AtomicUsize::new(0),
         vectors: AtomicUsize::new(0),
         tripped: Mutex::new(None),
     });
+    let (in_flight, in_flight_peak) = (AtomicUsize::new(0), AtomicUsize::new(0));
     let run_group = |(dsh, pxs): &(Vec<usize>, Vec<usize>)| -> GroupResult {
         if charge.as_ref().is_some_and(BlockCharge::is_tripped) {
             return Ok((Vec::new(), GroupCounts::default()));
         }
+        let now = in_flight.fetch_add(1, Ordering::Relaxed) + 1;
+        in_flight_peak.fetch_max(now, Ordering::Relaxed);
         let out = match path {
             FitPath::Cholesky => fit_domain_group(&ctx, dsh, pxs),
             #[cfg(test)]
@@ -2801,21 +2897,57 @@ fn fit_pairs(
                 inverse_oracle::fit_domain_group_inverse_oracle(&ctx, dsh, pxs)
                     .map(|s| (s, GroupCounts::default()))
             }
-        }?;
+        };
+        in_flight.fetch_sub(1, Ordering::Relaxed);
+        let out = out?;
         if let Some(c) = &charge {
             c.charge(&out.0);
         }
         Ok(out)
     };
-    let group_out: Vec<GroupResult> = if concurrent >= workers {
-        group_list.par_iter().map(&run_group).collect()
-    } else {
-        let mut out = Vec::with_capacity(group_list.len());
-        for chunk in group_list.chunks(concurrent) {
-            out.extend(chunk.par_iter().map(&run_group).collect::<Vec<_>>());
+    // Groups run in waves sized against what the budget has left beside the
+    // resident set and the blocks built so far (exact bytes), charging the
+    // wave's own blocks at their candidate bound and `min(len, workers)`
+    // copies of its largest group scratch. The whole system's candidate
+    // bound is never reserved up front: it is loose at ε > 0 (the mask drops
+    // rows and columns), and reserving it serialised runs whose blocks fit.
+    // Groups are independent and write their own slots, so the schedule
+    // changes the order of work, never a block.
+    let (group_out, concurrent, n_waves) = match &charge {
+        None => (group_list.par_iter().map(&run_group).collect(), workers, 1),
+        Some(c) => {
+            let mut out: Vec<GroupResult> = Vec::with_capacity(group_list.len());
+            let (mut start, mut concurrent, mut n_waves) = (0usize, 0usize, 0usize);
+            let mut limited = false;
+            while start < group_list.len() && !c.is_tripped() {
+                let held = base_bytes + c.ragged.load(Ordering::Relaxed);
+                let avail = c.budget_bytes.saturating_sub(held);
+                let wave = plan_group_wave(start, &scratch, &blocks, workers, avail);
+                // the widest wave the budget let run
+                concurrent = concurrent.max((wave.end - start).min(workers));
+                limited |= wave.budget_limited;
+                c.scratch.store(wave.scratch, Ordering::Relaxed);
+                let wave_groups = &group_list[start..wave.end];
+                out.extend(wave_groups.par_iter().map(&run_group).collect::<Vec<_>>());
+                n_waves += 1;
+                start = wave.end;
+            }
+            if limited && concurrent == 1 && workers > 1 {
+                ferric_core::memory::warn_width_collapsed(
+                    "LMP2 pair-fit groups",
+                    1,
+                    workers,
+                    c.budget_bytes.saturating_sub(base_bytes),
+                    "stage-5 domain groups ran one at a time beside the pair blocks (same \
+                     blocks, serial)",
+                );
+            }
+            (out, concurrent, n_waves)
         }
-        out
     };
+    stats.group_concurrency = concurrent;
+    stats.n_group_waves = n_waves;
+    stats.group_in_flight_peak = in_flight_peak.into_inner();
     if let Some(msg) = charge.and_then(|c| c.tripped.into_inner().ok().flatten()) {
         return Err(FerricError::MemoryExhausted(msg));
     }
@@ -2826,6 +2958,7 @@ fn fit_pairs(
         &[
             ("ragged", ragged.heap_bytes()),
             ("group_scratch_max", stats.group_scratch_bytes_max),
+            ("group_scratch_bound", stats.group_scratch_bound_bytes),
             ("own_w_held", stats.own_w_bytes_held),
         ],
     );
@@ -4998,14 +5131,96 @@ mod memory_gate_tests {
         );
         let (r1, s1) = run(&c, 1e-3, truth, &maps()).unwrap();
         assert_eq!(r1.e_corr.to_bits(), r0.e_corr.to_bits());
-        // The bound left no room for two groups' scratch: stage 5 ran them
-        // one at a time, with the same blocks.
+        // The candidate bound does not fit beside two groups' scratch: stage
+        // 5 ran in budget-sized waves, with the same blocks.
         assert_eq!(st.group_concurrency, 2);
-        assert_eq!(s1.group_concurrency, 1, "group blocking never engaged");
+        assert_eq!(st.n_group_waves, 1);
+        assert!(
+            s1.n_group_waves >= 2,
+            "group blocking never engaged: {s1:?}"
+        );
         let solve_only = r0.solve_resident_bytes;
         let tight = base.max(solve_only / 2);
         let msg = exhausted(run(&c, 1e-3, tight, &maps()));
         assert!(msg.contains("during the pair fits"), "{msg}");
+    }
+
+    /// A wave takes groups while their block bounds plus `min(len, workers)`
+    /// copies of the largest scratch fit, always at least one group, and says
+    /// whether the budget (not the list's end) stopped it.
+    #[test]
+    fn plan_group_wave_packs_groups_into_the_budget() {
+        let scratch = [10, 30, 20, 10];
+        let blocks = [100, 100, 100, 100];
+        // everything: 400 + 2·30
+        let all = plan_group_wave(0, &scratch, &blocks, 2, 460);
+        assert_eq!(
+            all,
+            GroupWave {
+                end: 4,
+                scratch: 60,
+                budget_limited: false
+            }
+        );
+        // two groups: 200 + 2·30 = 260 fits, three (300 + 60) does not
+        let two = plan_group_wave(0, &scratch, &blocks, 2, 300);
+        assert_eq!(
+            two,
+            GroupWave {
+                end: 2,
+                scratch: 60,
+                budget_limited: true
+            }
+        );
+        // nothing fits: still one group, its own scratch reserved
+        let one = plan_group_wave(1, &scratch, &blocks, 4, 0);
+        assert_eq!(
+            one,
+            GroupWave {
+                end: 2,
+                scratch: 30,
+                budget_limited: true
+            }
+        );
+        // the last group alone
+        let last = plan_group_wave(3, &scratch, &blocks, 4, 0);
+        assert_eq!(
+            last,
+            GroupWave {
+                end: 4,
+                scratch: 10,
+                budget_limited: false
+            }
+        );
+    }
+
+    /// ε > 0 with the budget at the strips + metric + candidate bound of the
+    /// pair blocks + one group's scratch bound. The previous schedule
+    /// reserved the whole candidate bound up front, which leaves room for one
+    /// group's scratch and ran stage 5 one group at a time (the C32 audit: a
+    /// 13.2 GB bound under the default budget). The waves reserve only their
+    /// own groups' block bounds beside the blocks actually built, so both
+    /// workers run groups, with the same blocks.
+    #[test]
+    fn finite_eps_groups_run_concurrently_under_the_candidate_bound() {
+        let c = case(6);
+        let (r0, st) = run(&c, 1e-3, AMPLE, &maps()).unwrap();
+        assert_eq!(st.group_concurrency, 2);
+        assert_eq!(st.n_group_waves, 1);
+        let est = st.memory;
+        assert!(!est.exact);
+        let base = est.strips_bytes + est.metric_bytes + st.own_w_bytes_held;
+        let g = st.group_scratch_bound_bytes;
+        let budget = base + est.pair_block_bytes + g;
+        // what a schedule that reserves the whole bound would have left
+        assert!(budget - base - est.pair_block_bytes < 2 * g);
+        let (r1, s1) = run(&c, 1e-3, budget, &maps()).unwrap();
+        assert_eq!(r1.e_corr.to_bits(), r0.e_corr.to_bits());
+        // The bound does not fit beside the scratch, so the schedule ran in
+        // waves, and none of them was cut to one group.
+        assert!(s1.n_group_waves >= 2, "{s1:?}");
+        assert_eq!(s1.group_concurrency, 2, "{s1:?}");
+        assert!((1..=2).contains(&s1.group_in_flight_peak), "{s1:?}");
     }
 
     /// The stage-3 slab blocking: a one-byte scratch cap (one aux shell per

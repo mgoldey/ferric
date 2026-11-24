@@ -689,12 +689,24 @@ Points about the screen:
 - **Memory.** On the integral-direct path the gate holds six
   candidate-square matrices per pair ($F'$, $t^0$, $F't^0$, the $t^0F'$
   temporary, the gate and its transpose; at most four are live at once). The
-  per-group scratch bound that sizes the group concurrency against the
-  memory budget counts all six when the screen is on
+  per-group scratch bound that sizes the stage-5 waves against the memory
+  budget counts all six when the screen is on
   (`ferric-mp2/src/lmp2_direct.rs::group_scratch_bound`). The kept blocks
   stay inside the candidate square, so the candidate-domain bound of the
   pre-flight still holds, and the charge-as-built gate charges them at their
   exact size.
+- **Scheduling under a budget.** The domain groups run in waves
+  (`ferric-mp2/src/lmp2_direct.rs::plan_group_wave`). A wave takes groups
+  while the blocks already built (exact bytes), the wave's own block bounds
+  and `min(len, workers)` copies of its largest group scratch fit the
+  budget beside the strips and metric. The candidate bound of the whole
+  system is not reserved up front: at $\varepsilon > 0$ it is loose (4–6×
+  the built blocks on C12–C16 6-31G at $\varepsilon$ = 1e-4), and reserving it
+  ran C32 one group at a time under the default budget. The group scratch
+  bound counts the whitening transients too: the gathered strip, the
+  transposed copies LAPACK's row-major wrapper makes of it and of the
+  Cholesky factor ($d^2 + 2 d |C_k|$). Groups write their own slots, so the
+  schedule changes no block.
 
 > **Verified equation @eq:lmp2-fock-screen-schur** · the masked error is the Schur norm of the dropped exact amplitudes
 >

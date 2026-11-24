@@ -499,7 +499,7 @@ pub fn pair_blocks_with_gate(
     fv: &[f64],
     eps: f64,
 ) -> Vec<PairBlock> {
-    let mut out = Vec::with_capacity(2);
+    let mut out = Vec::with_capacity(if i == j { 1 } else { 2 });
     let gate_ij = gate.unwrap_or(g);
     if let Some(pb) =
         pair_block_from_g_cand_gated(i, j, g, gate_ij, cand, nv_full, f_vv, fo, fv, eps)

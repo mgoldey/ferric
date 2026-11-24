@@ -275,6 +275,10 @@ fn rimp2_gradient_from_intermediates_timed(
         bounds,
         rhf,
         &inter,
+        // `inter` is the energy step's on `op` (`rimp2_gradient_intermediates_timed`).
+        Some(crate::oo_rimp2::MetricFactor::of_ov_intermediates(
+            op, &inter,
+        )),
         budget_bytes,
         ext,
         controls,
@@ -310,6 +314,7 @@ pub fn relaxed_ri_gradient(
         bounds,
         rhf,
         inter,
+        None,
         budget_bytes,
         None,
         ZvectorControls::DEFAULT,
@@ -318,6 +323,8 @@ pub fn relaxed_ri_gradient(
 }
 
 /// The shared tail of the RI-MP2 and [`relaxed_ri_gradient`] paths.
+/// `metric` is `inter`'s `V^{-1/2}` when it is the factor of `op` on `dfbs`
+/// (see [`crate::zvector::lagrangian_imat_timed`]).
 #[allow(clippy::too_many_arguments)]
 fn relaxed_gradient_from_intermediates(
     mol: &Molecule,
@@ -327,6 +334,7 @@ fn relaxed_gradient_from_intermediates(
     bounds: &SchwarzBounds,
     rhf: &ScfResult,
     inter: &crate::rimp2::Mp2Intermediates,
+    metric: Option<crate::oo_rimp2::MetricFactor<'_>>,
     budget_bytes: usize,
     ext: Option<&ExternalPotential>,
     controls: ZvectorControls,
@@ -336,8 +344,19 @@ fn relaxed_gradient_from_intermediates(
     let jk = acc.time("J/K route setup", || {
         ResponseJk::for_scf(&ctx, mol, obs, bounds, rhf)
     })?;
-    let zv = solve_zvector_timed(obs, dfbs, op, &jk, rhf, inter, budget_bytes, controls, acc)?
-        .require_converged()?;
+    let zv = solve_zvector_timed(
+        obs,
+        dfbs,
+        op,
+        &jk,
+        rhf,
+        inter,
+        metric,
+        budget_bytes,
+        controls,
+        acc,
+    )?
+    .require_converged()?;
     // `op` is the CORRELATION operator (the (P|ia) integrals and the RI
     // metric, so `b_full` in the Z-vector and the 3c/2c response); the
     // reference's own two-electron derivative runs on the operator its
@@ -1293,7 +1312,18 @@ pub(crate) fn rimp2_terms_gradient_timed(
         acc.time("intermediates: spin scaling", || {
             inter.apply_spin_scaling(term.scaling)
         })?;
-        let imat = crate::zvector::lagrangian_imat_timed(obs, dfbs, term.op, rhf, &inter, acc)?;
+        // `inter` is the energy step's, on `term.op`: its V^-1/2 is b_full's.
+        let imat = crate::zvector::lagrangian_imat_timed(
+            obs,
+            dfbs,
+            term.op,
+            rhf,
+            &inter,
+            Some(crate::oo_rimp2::MetricFactor::of_ov_intermediates(
+                term.op, &inter,
+            )),
+            acc,
+        )?;
         let g_ri = integral_response_gradient_3c2c_timed(
             mol,
             obs,
@@ -1423,6 +1453,68 @@ mod tests {
                 op.kind
             );
         }
+    }
+
+    /// The Z-vector's `b_full` on the energy step's `V^{-1/2}` (attenuated
+    /// operator too) is the `b_full` that rebuilds the metric and its
+    /// factor, bit for bit, so the gradient that reuses it is unchanged.
+    #[test]
+    fn b_full_on_the_energy_steps_metric_is_bitwise_the_rebuilt_one() {
+        let mol = Molecule::parse_xyz(
+            "3\nwater\nO 0.02 -0.01 0.117790\nH 0.0 0.785453 -0.451161\nH 0.03 -0.735453 -0.491161\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let obs_bs = basis::bundled("cc-pvdz").unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let cfg = RiMp2Config {
+            frozen_core: 1,
+            ..Default::default()
+        };
+        let (rhf, obs, dfbs, _) = solve_rhf_reference(
+            &mol,
+            &obs_bs,
+            &aux_bs,
+            Operator::coulomb(),
+            &cfg,
+            None,
+            &exact_scf_jk(),
+            &mut ScfWarmStart::new(false),
+        )
+        .unwrap();
+        for op in [Operator::coulomb(), Operator::erfc(0.33)] {
+            let inter =
+                compute_mp2_intermediates_ov_only(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
+            let c = rhf.mos_r();
+            let rebuilt = crate::oo_rimp2::compute_b_full_mo(&obs, &dfbs, op, c).unwrap();
+            let factor = crate::oo_rimp2::MetricFactor::of_ov_intermediates(op, &inter);
+            let reused =
+                crate::oo_rimp2::compute_b_full_mo_with_metric(&obs, &dfbs, op, factor, c).unwrap();
+            assert_eq!(rebuilt.dim(), reused.dim());
+            assert!(
+                rebuilt
+                    .iter()
+                    .zip(reused.iter())
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "{:?}: b_full differs",
+                op.kind
+            );
+        }
+        // A factor of another operator is refused, not used.
+        let inter =
+            compute_mp2_intermediates_ov_only(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &cfg)
+                .unwrap();
+        let coulomb =
+            crate::oo_rimp2::MetricFactor::of_ov_intermediates(Operator::coulomb(), &inter);
+        let err = crate::oo_rimp2::compute_b_full_mo_with_metric(
+            &obs,
+            &dfbs,
+            Operator::erfc(0.33),
+            coulomb,
+            rhf.mos_r(),
+        );
+        assert!(err.is_err());
     }
 
     #[test]

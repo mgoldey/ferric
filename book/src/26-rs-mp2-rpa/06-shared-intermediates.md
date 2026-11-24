@@ -90,14 +90,48 @@ formulations, since they share one shape.
 With terf, `ferric-rpa/src/budget.rs::with_signed_lr` adds the held Coulomb tensor to $P$
 (and re-plans the AO tier at the smaller budget left), and charges the
 signed log-determinant's per-worker scratch, a $2N_{\mathrm{aux}}$-row panel
-and a $(2N_{\mathrm{aux}})^2$ matrix, in place of the frequency scratch
-when it is larger. `scan_peak_bytes` does not know the attenuator and
-leaves both out; `scan_charge_for` and the driver include them.
+and a $(2N_{\mathrm{aux}})^2$ matrix, as its own phase: it forms no static
+eigenbasis, so the eigensolve planes are not beside it. `scan_peak_bytes`
+does not know the attenuator and leaves both out; `scan_charge_for` and the
+driver include them.
+
+Under a set budget (a config field, a kwarg or `FERRIC_MEM_BUDGET_GB`; an
+auto-detected one leaves the loops at full width) the frequency panel is
+sized against what the budget leaves beside the planes resident through the
+dRPA, not against the whole budget
+(`ferric-rpa/src/budget.rs::panel_budget_beside`, which hands the loop an
+allowance for its per-worker scratch alone): $P$, the held Coulomb tensor
+with terf, and the eigensolve planes for the eigenbasis loop; $P$ and the
+held tensor for the signed loop. Sizing it against the whole budget put a
+panelled run's charge at the budget plus those planes, so every run that
+needed a narrower panel was refused. The driver hands each loop the
+allowance it charged. When the planes alone reach the budget the driver
+refuses before any allocation and names them (`check_scan_resident`).
+
+With an open-shell reference the signed loop is sized the same way, beside
+both spins' planes. The open-shell eigenbasis frequency loop is not
+panelled (`eval_eigenvalues_at_frequencies_unrestricted` runs at full
+width), so the pre-flight charges it at full width; panelling that loop is
+a follow-up. The scan's dRPA calls run with `need_inv_dielectric_freq` and
+`run_diagnostics` off: both are side outputs the scan never reports.
+
+Known gaps, recorded as follow-ups: the per-frequency `eigvalsh_dc` copy and
+workspace (about $m^2$ per worker) of the dense and Laplace eigenvalue loops
+is not in the frequency scratch charge; and the full-basis RI-dRPA
+diagnostic (`diagnostics::ri_drpa_energy`, `run_diagnostics = true` on the
+PDEP-RPA, energy-route and MPI drivers) sizes its workers against the whole
+resolved budget, not what the run's resident planes leave. On the RI-J side,
+the f32 conversion of a raw tensor that is not held counts no stream
+buffers: the spill read-ahead or recompute block of `for_each_packed_block`
+is soft-charged and sized by the source's own block, and an upper bound
+independent of the source would decline f32 on the dress-first route.
 
 | Test | What it pins |
 |---|---|
 | `preflight_estimate_is_independent_of_the_number_of_points` (`crates/ferric-rpa/tests/rs_mp2_rpa_scan.rs`) | (@eq:shared-intermediates-1) at 1, 5 and 50 points; the estimate covers the build and dRPA phases and is tensor-sized |
 | `the_charge_follows_the_tier_the_build_takes` (`crates/ferric-rpa/tests/rs_mp2_rpa_spill_tier.rs`) | in core, packed and spill are each reachable on the water dimer, each charge fits its budget, the build takes the planned tier, and the run is admitted |
+| `panel_is_sized_beside_the_resident_planes`, `resident_planes_over_budget_refuse_clearly`, `an_environment_budget_sizes_the_panel`, `open_shell_charge_is_full_width_and_signed_panel_is_sized_beside` (`crates/ferric-rpa/src/rs_mp2_rpa.rs`) | a budget the whole-budget panel overshoots fits with the panel sized beside the planes (erf and terf); an ample budget keeps the full width and the same charge; planes at or over the budget refuse with the parts named (the held terf tensor included); an environment budget narrows the panel and an auto-detected one does not; the open-shell charge is full width and its signed panel fits its allowance |
+| `rs_mp2_rpa_energies_do_not_depend_on_the_budget` (`crates/ferric-rpa/tests/rs_mp2_rpa_budget_independence.rs`) | on one reference, every energy of both formulations at budgets down to the smallest admitted one (narrowed panel, packed or spilled AO tier) agrees with the ample run to $10^{-10}$ Ha |
 | `ample_budget_is_bitwise_the_in_core_path` (same file) | at an ample budget both formulations equal the public pieces called at the full budget, bit for bit |
 | `packed_and_spilled_match_in_core_within_the_reduction_order_bar` (same file) | both formulations at two $\omega$ agree with the in-core run within a bar derived from the summation order of the $\tilde{\mathbf B}$ stream |
 

@@ -399,11 +399,49 @@ fn f32_rounding() -> F32Rounding {
     }
 }
 
+thread_local! {
+    /// Why the RI-J builders on this thread were asked for their precision,
+    /// while a caller that knows it builds them ([`with_request_source`]).
+    static REQUEST_SOURCE: std::cell::Cell<Option<RiJPrecisionSource>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Run `f` (which builds RI-J tensors) with the source of their requested
+/// precision recorded, so a declined f32 request says whether it was the
+/// default. Restores the previous record on return.
+pub(crate) fn with_request_source<T>(source: RiJPrecisionSource, f: impl FnOnce() -> T) -> T {
+    let prev = REQUEST_SOURCE.with(|c| c.replace(Some(source)));
+    let out = f();
+    REQUEST_SOURCE.with(|c| c.set(prev));
+    out
+}
+
 /// An f32 request that could not be honoured: say so once per builder and
 /// count it in the precision provenance (`f32_range` for a value beyond the
 /// f32 range, `cpu_f64` otherwise).
+///
+/// A tensor declined because it does not fit is a budget decision that
+/// changes the energy (by the f32 storage error, ~1e-7–1e-5 Ha on small
+/// molecules), so the notice says so and how to make the result
+/// budget-independent.
 fn note_f32_declined(why: &F32Declined) {
-    eprintln!("[ferric] RI-J: ri_j_precision = \"f32\" but the tensor stays f64 ({why})");
+    // Says whether the user asked for f32 or it is the default they never set.
+    let requested = match REQUEST_SOURCE.with(std::cell::Cell::get) {
+        Some(RiJPrecisionSource::Explicit) | None => "",
+        Some(_) => " (default)",
+    };
+    let budget_note = match why {
+        F32Declined::DoesNotFit { .. } => {
+            "; the energy therefore follows the memory budget (it differs from an f32 run by \
+             the f32 storage error): set ri_j_precision = \"f64\" for results that do not \
+             depend on the budget"
+        }
+        _ => "",
+    };
+    eprintln!(
+        "[ferric] RI-J: ri_j_precision = \"f32\"{requested} but the tensor stays f64 \
+         ({why}){budget_note}"
+    );
     let reason = match why {
         F32Declined::OutOfRange { .. } => MixedFallback::F32Range,
         _ => MixedFallback::CpuF64,
@@ -743,8 +781,24 @@ impl<'a> DfJ<'a> {
         ctx: Option<&'a ParallelContext>,
         precision: RiJPrecision,
     ) -> Result<Self, FerricError> {
+        Self::from_source_beside(source, op, dfbs, (budget_bytes, 0), ctx, precision)
+    }
+
+    /// [`DfJ::from_source`] when the caller already holds `beside_bytes`
+    /// (the dressed DF-K band of a shared RI-JK set-up): an f32 conversion
+    /// must fit the budget left beside them, so the stored precision depends
+    /// on the budget and the shapes only, never on the pool's state.
+    pub(crate) fn from_source_beside(
+        source: ThreeIndexSource,
+        op: Operator,
+        dfbs: &PreparedBasis,
+        (budget_bytes, beside_bytes): (usize, usize),
+        ctx: Option<&'a ParallelContext>,
+        precision: RiJPrecision,
+    ) -> Result<Self, FerricError> {
         let source = if dfj_f32_wanted(precision) {
-            let (s, declined) = source.into_ri_j_f32(budget_bytes, f32_rounding())?;
+            let (s, declined) =
+                source.into_ri_j_f32_beside((budget_bytes, beside_bytes), f32_rounding())?;
             if let Some(why) = declined {
                 note_f32_declined(&why);
             }
@@ -782,8 +836,8 @@ impl<'a> DfJ<'a> {
         // The fit is checked against what is left beside the resident band:
         // without a global pool nothing else would stop both being held over
         // budget. The constructed DfJ keeps the full budget for its own blocking.
-        let room = budget_bytes.saturating_sub(beside_bytes);
-        let (source, declined) = source.into_ri_j_f32(room, f32_rounding())?;
+        let (source, declined) =
+            source.into_ri_j_f32_beside((budget_bytes, beside_bytes), f32_rounding())?;
         if declined.is_some() {
             return Ok(Err(source));
         }
