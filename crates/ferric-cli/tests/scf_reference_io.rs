@@ -30,7 +30,9 @@ fn workspace_root() -> PathBuf {
 fn scratch() -> PathBuf {
     let dir = workspace_root()
         .join("target")
-        .join("scf_reference_io_test");
+        // One directory per test-binary process, so two concurrent runs in
+        // one checkout never share checkpoints or logs.
+        .join(format!("scf_reference_io_test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create the scratch dir");
     dir
 }
@@ -109,8 +111,16 @@ fn refused(tag: &str, body: &str) -> String {
 
 const WATER: &str = "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n";
 const OH: &str = "[molecule]\nxyz = \"testdata/molecules/oh.xyz\"\nmultiplicity = 2\n";
-/// HI: iodine carries the def2 ECP.
-const HI: &str = "[molecule]\nxyz = \"target/scf_reference_io_test/hi.xyz\"\n";
+/// HI: iodine carries the def2 ECP. The geometry file lives in this
+/// process's scratch directory.
+fn hi_molecule() -> String {
+    let xyz = scratch().join("hi.xyz");
+    std::fs::write(&xyz, "2\n\nH 0 0 0\nI 0 0 1.609\n").unwrap();
+    format!(
+        "[molecule]\nxyz = {:?}\n",
+        xyz.to_str().expect("utf-8 path")
+    )
+}
 
 /// The correlation aux matching the orbital basis family.
 fn aux_for(basis: &str) -> &'static str {
@@ -487,10 +497,9 @@ fn a_kohn_sham_reference_gives_pdep_rpa_its_fresh_energy() {
 /// An ECP reference: HI / def2-SVP, iodine's core replaced by its ECP.
 #[test]
 fn an_ecp_reference_gives_rimp2_and_mp3_their_fresh_energies() {
-    std::fs::write(scratch().join("hi.xyz"), "2\n\nH 0 0 0\nI 0 0 1.609\n").unwrap();
     save_then_read_in(
         "ecp",
-        HI,
+        &hi_molecule(),
         "def2-svp",
         [("rimp2", "jk = \"exact\"\n"), ("mp3", "")],
     );
