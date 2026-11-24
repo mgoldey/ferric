@@ -264,6 +264,23 @@ Conventions the checker enforces:
 CI is `.github/workflows/book.yml`. Not yet implemented: the box links to source lines in the HTML,
 the quoted-number check (rule 5) and the `check_doc_style.py` report.
 
+On a pull request the job runs only the proofs the change can affect. `scripts/select_proofs.py`
+reads the changed files and prints `all`, `none` or a list of proof scripts, and the runner
+reads that list from `FERRIC_PROOF_SCRIPTS`:
+
+- `all` when a runner (`test_derivation_*.py`, `test_book_build.py`), `book_build.py`, the
+  selector, `book.yml`, the registry's shape, or any other file under `scripts/` or
+  `testdata/derivations/` changed, or when the selector cannot tell.
+- The changed proof scripts, plus the scripts of each registry entry that changed, plus each
+  script that names a changed file it reads (a Rust source or a reference JSON).
+- `none` for book prose and `crates/*/theory.md`. The step then logs "no proof inputs changed".
+
+The registry test, the checker's tests and the selector's tests run every time; together they take
+about 15 s. The nightly schedule (07:23 UTC), tag pushes and `workflow_dispatch` run every proof.
+"Every proof" means the runner's fast tier. The `validation` tier is deselected by `addopts` in
+`pyproject.toml`, as it was before. To run one script's proofs locally:
+`FERRIC_PROOF_SCRIPTS=omega_ri_sympy.py python3 -m pytest --noconftest crates/ferric-python/tests/test_derivation_scripts.py`.
+
 Appendices live beside `SUMMARY.md` as `book/src/appendix-X-name.md`. A (verified equations and
 proof scripts), B (functions cited) and C (validation grades) are generated and committed; D is
 written by hand. Each carries a `<!-- status: ... -->` header and a labelled title
