@@ -5563,6 +5563,13 @@ impl Config {
                  ...) only, not kind = \"{kind}\": {why}"
             ));
         }
+        if s.read_reference.is_some() && kind == "pdep-rpa" && self.molecule.multiplicity > 1 {
+            return Err(
+                "[scf] read_reference is not supported by open-shell pdep-rpa: its arm \
+                 solves its own UHF reference, so the file would be read and then not used"
+                    .to_string(),
+            );
+        }
         if s.read_reference.is_some() && (s.check_stability || s.stability_descent) {
             return Err(
                 "[scf] read_reference cannot be combined with check_stability: \

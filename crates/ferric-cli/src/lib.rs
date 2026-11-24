@@ -2271,15 +2271,6 @@ fn log_jk_path(scf: &RhfConfig, open_shell: bool) {
     );
 }
 
-/// The UHF reference for an open-shell correlated kind: one that
-/// `Config::validate_multiplicity` admitted (rimp2, oo-rimp2, pdep-rpa, gw,
-/// mp2-v, all task = "energy").
-///
-/// pdep-rpa/gw/mp2-v keep the MOM-from-iteration-5 UHF they have always been
-/// given here (pdep-rpa and gw re-solve their own UHF inside their arms;
-/// mp2-v consumes this one, dispatching on `result.spin`). rimp2/oo-rimp2
-/// get the plain UHF that `kind = "uhf"` runs with the same `[scf]` keys, so
-/// the reference energy an open-shell RI-MP2 run prints IS the `uhf` energy.
 /// How the shared reference SCF of `try_run` is converged: one place decides,
 /// so the solve and the `[scf] save_reference`/`read_reference` identity
 /// cannot disagree about it.
@@ -2380,6 +2371,15 @@ fn open_shell_reference_config(method: &str, rhf_config: &RhfConfig) -> RhfConfi
     uhf_cfg
 }
 
+/// The UHF reference for an open-shell correlated kind: one that
+/// `Config::validate_multiplicity` admitted (rimp2, oo-rimp2, pdep-rpa, gw,
+/// mp2-v, all task = "energy").
+///
+/// pdep-rpa/gw/mp2-v keep the MOM-from-iteration-5 UHF they have always been
+/// given here (pdep-rpa and gw re-solve their own UHF inside their arms;
+/// mp2-v consumes this one, dispatching on `result.spin`). rimp2/oo-rimp2
+/// get the plain UHF that `kind = "uhf"` runs with the same `[scf]` keys, so
+/// the reference energy an open-shell RI-MP2 run prints IS the `uhf` energy.
 fn solve_open_shell_reference(
     method: &str,
     cfg: &Config,

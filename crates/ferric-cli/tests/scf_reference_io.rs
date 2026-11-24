@@ -350,6 +350,11 @@ fn the_keys_are_refused_where_no_shared_reference_is_solved() {
             "read only with",
         ),
         (
+            "open_shell_pdep_rpa",
+            input(OH, "sto-3g", "pdep-rpa", &read_key(&file)),
+            "open-shell pdep-rpa",
+        ),
+        (
             "stability",
             input(
                 WATER,

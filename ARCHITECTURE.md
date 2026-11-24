@@ -874,7 +874,11 @@ Done:
    build needs `read_reference_other_build = true`. Refused at load time:
    the SCF kinds (their ladder / UHF / ROHF route is not the correlated
    one), the double hybrids, CAS, OP-MP3, other tasks, `[cell]`, both
-   keys at once, and `read_reference` with `check_stability`. Tests:
+   keys at once, `read_reference` with `check_stability`, and
+   `read_reference` on open-shell `pdep-rpa` (its arm re-solves the same
+   UHF + MOM reference instead of using the shared one: a duplicate SCF
+   on every open-shell PDEP-RPA run, left as a follow-up because removing
+   it needs its own bitwise check). Tests:
    `ferric-cli/tests/scf_reference_io.rs`, `checkpoint::tests::restore_*`.
    Follow-ups: no Python keyword (the Python drivers solve their own
    reference and take no result object); no file guess (a mismatched file
