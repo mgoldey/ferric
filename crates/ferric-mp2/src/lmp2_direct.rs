@@ -48,7 +48,7 @@
 //! DIAMETER. These predictions differ, so the sweep can distinguish them.
 
 use ferric_scf::PreparedAux;
-use ndarray::{Array1, Array2, Array3, ArrayView2, Axis};
+use ndarray::{Array2, Array3, ArrayView2, Axis};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -1262,27 +1262,24 @@ impl BatchAxes {
 }
 
 /// Per-occupied support-masked coefficients on the batch's compact axes:
-/// the occupied column on `s`, and the (nnf, |virt_ext_i|) virtual block.
+/// the occupied columns as the rows of one `(|is|, nsf)` matrix, and each
+/// occupied's (nnf, |virt_ext_i|) virtual block.
 fn batch_coefficients(
     ctx: &BatchCtx<'_>,
     ax: &BatchAxes,
     is: &[usize],
-) -> (Vec<Array1<f64>>, Vec<Array2<f64>>) {
+) -> (Array2<f64>, Vec<Array2<f64>>) {
     let dims_obs = ctx.obs.shell_dims();
     let offs_obs = ctx.obs.shell_offsets();
-    let c_occ: Vec<Array1<f64>> = is
-        .iter()
-        .map(|&i| {
-            let mut c = Array1::<f64>::zeros(ax.nsf);
-            for &sh in &ctx.occ_supp[i] {
-                for f in 0..dims_obs[sh] {
-                    let g = offs_obs[sh] + f;
-                    c[ax.s_pos[g]] = ctx.spaces.c_locc[(g, i)];
-                }
+    let mut c_occ = Array2::<f64>::zeros((is.len(), ax.nsf));
+    for (k, &i) in is.iter().enumerate() {
+        for &sh in &ctx.occ_supp[i] {
+            for f in 0..dims_obs[sh] {
+                let g = offs_obs[sh] + f;
+                c_occ[(k, ax.s_pos[g])] = ctx.spaces.c_locc[(g, i)];
             }
-            c
-        })
-        .collect();
+        }
+    }
     let c_virt: Vec<Array2<f64>> = is
         .iter()
         .map(|&i| {
@@ -1492,38 +1489,63 @@ type FillFn = fn(
 ) -> (u64, u64);
 
 /// Half-transform one slab's rows into each batch occupied's strip:
-/// row P of strip i is `c_occ_iᵀ · T_P · C_virt_i`.
-#[allow(clippy::too_many_arguments)]
+/// row P of strip i is `c_occ_iᵀ · T_P · C_virt_i`. Two BLAS3 steps: per aux
+/// function one GEMM over every batch occupied, `H_P = C_occ · T_P`
+/// ((|is|, nsf)·(nsf, nnf)), so each `T_P` is read once rather than once per
+/// occupied; then per occupied one GEMM of the `H` rows it needs with its
+/// virtual block. An `H` row an occupied does not need
+/// (its aux shell is outside that occupied's `aux_ext`) is computed and
+/// dropped: cheaper than the per-occupied GEMVs it replaces.
 fn transform_slab(
     ctx: &BatchCtx<'_>,
     is: &[usize],
     strips: &mut [Strip],
-    c_occ: &[Array1<f64>],
-    c_virt: &[Array2<f64>],
+    (c_occ, c_virt): (&Array2<f64>, &[Array2<f64>]),
     p_local: &[usize],
     t_slab: &Array3<f64>,
 ) {
+    let h = occ_half_transform(c_occ, t_slab);
+    for (k, &i) in is.iter().enumerate() {
+        let (pls, gps) = slab_rows(ctx, i, p_local);
+        if pls.is_empty() {
+            continue;
+        }
+        let g = h.index_axis(Axis(1), k).select(Axis(0), &pls);
+        assign_strip_rows(&mut strips[k], &gps, &g.dot(&c_virt[k]));
+    }
+}
+
+/// `H[(pl, k, n)] = Σ_s c_occ[(k, s)] · t_slab[(pl, s, n)]`: one GEMM per aux
+/// function, so each `H_P` is a contiguous `(|is|, nnf)` block.
+fn occ_half_transform(c_occ: &Array2<f64>, t_slab: &Array3<f64>) -> Array3<f64> {
+    let (nps, _, nnf) = t_slab.dim();
+    let mut h = Array3::<f64>::zeros((nps, c_occ.nrows(), nnf));
+    for (t_p, mut h_p) in t_slab.outer_iter().zip(h.outer_iter_mut()) {
+        ndarray::linalg::general_mat_mul(1.0, c_occ, &t_p, 0.0, &mut h_p);
+    }
+    h
+}
+
+/// Occupied `i`'s aux functions present in this slab: their slab positions and
+/// global ids, in `aux_ext[i]` order.
+fn slab_rows(ctx: &BatchCtx<'_>, i: usize, p_local: &[usize]) -> (Vec<usize>, Vec<usize>) {
     let dims_df = ctx.dfbs.shell_dims();
     let offs_df = ctx.dfbs.shell_offsets();
-    for (k, &i) in is.iter().enumerate() {
-        let strip = &mut strips[k];
-        let ci = &c_occ[k];
-        let cv = &c_virt[k];
-        for &sp in &ctx.aux_ext[i] {
-            let p0 = offs_df[sp];
-            if p_local[p0] == usize::MAX {
-                continue; // shell not in this slab
-            }
-            for f in 0..dims_df[sp] {
-                let gp = p0 + f;
-                let pl = p_local[gp];
-                let tv = t_slab.index_axis(Axis(0), pl);
-                let t1 = ci.dot(&tv); // (nnf)
-                let row = t1.dot(cv); // (ncols_i)
-                let r = strip.row_pos[gp];
-                strip.b.row_mut(r).assign(&row);
-            }
-        }
+    let gps: Vec<usize> = ctx.aux_ext[i]
+        .iter()
+        .filter(|&&sp| p_local[offs_df[sp]] != usize::MAX) // shell in this slab
+        .flat_map(|&sp| offs_df[sp]..offs_df[sp] + dims_df[sp])
+        .collect();
+    let pls = gps.iter().map(|&gp| p_local[gp]).collect();
+    (pls, gps)
+}
+
+/// Store half-transformed rows in a strip: `rows` row `j` is the strip row of
+/// global aux function `gps[j]`.
+fn assign_strip_rows(strip: &mut Strip, gps: &[usize], rows: &Array2<f64>) {
+    for (row, &gp) in rows.outer_iter().zip(gps) {
+        let r = strip.row_pos[gp];
+        strip.b.row_mut(r).assign(&row);
     }
 }
 
@@ -1620,7 +1642,7 @@ fn eval_batch(ctx: &BatchCtx<'_>, is: &[usize], fill: FillFn) -> BatchOut {
         n_skipped += ns;
         tm.n_slabs += 1;
         let tt = Instant::now();
-        transform_slab(ctx, is, &mut strips, &c_occ, &c_virt, &p_local, &t_slab);
+        transform_slab(ctx, is, &mut strips, (&c_occ, &c_virt), &p_local, &t_slab);
         tm.transform_s += tt.elapsed().as_secs_f64();
         slab_start = end;
     }
@@ -1883,6 +1905,7 @@ fn transform_aux_slab(
     let t = ArrayView2::from_shape((ax.nsf, np * ax.nnf), &w.slab[..ax.nsf * np * ax.nnf])
         .expect("aux slab shape");
     let h = c_occ.dot(&t);
+    let gps: Vec<usize> = (off_p..off_p + np).collect();
     for (k, &i) in is.iter().enumerate() {
         let o = &own[i];
         let mut g_block = Array2::<f64>::zeros((np, o.n_funcs.len()));
@@ -1898,10 +1921,7 @@ fn transform_aux_slab(
         }
         let rows = g_block.dot(&o.c_virt);
         let mut strip = strips[i].lock().expect("strip lock");
-        for p in 0..np {
-            let r = strip.row_pos[off_p + p];
-            strip.b.row_mut(r).assign(&rows.row(p));
-        }
+        assign_strip_rows(&mut strip, &gps, &rows);
     }
     tm.transform_flops += 2.0 * (is.len() * ax.nsf * np * ax.nnf) as f64
         + is.iter()
@@ -2528,9 +2548,9 @@ fn strips_and_metric(
     let mut scratch_budget_bytes = dcfg.scratch_budget_bytes;
     if let Some(g) = gate {
         // Stage 3 holds the strips beside the slab scratch: the scratch gets
-        // what the budget leaves. Strips are bitwise independent of the slab
-        // partition (each aux row is transformed on its own), so this only
-        // changes how many slabs run.
+        // what the budget leaves. Strips depend on the slab partition only at
+        // round-off (the per-occupied virtual GEMM's row count follows the
+        // slab), so this only changes how many slabs run.
         scratch_budget_bytes =
             stage3_scratch(scratch_budget_bytes, g.budget_bytes, est.strips_bytes);
     }
