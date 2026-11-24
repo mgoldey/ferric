@@ -188,6 +188,11 @@ impl Ctx {
     fn exact_k(&self) -> bool {
         !self.own_start() && !self.fitted_jk() && !self.ri_default() && !self.double_hybrid()
     }
+    /// The run's reference is the shared correlated one, which
+    /// `[scf] save_reference` / `read_reference` checkpoint.
+    fn reference_io(&self) -> bool {
+        self.energy() && !self.own_start() && !self.scf_kind() && !self.double_hybrid()
+    }
     /// The closed-shell, non-laddered SCF path that runs the DF-guess
     /// pre-stage.
     fn df_guess_path(&self) -> bool {
@@ -302,6 +307,9 @@ fn keys() -> Vec<Key> {
         key!("scf", "stability_descent", "follow a downhill mode at a saddle and re-converge", |c| if c.is(&["rhf", "uhf", "ksdft"]) && c.energy() { n("false") } else { Off("rhf, uhf and ksdft energies only") }),
         key!("scf", "symmetry", "point-group-blocked closed-shell RHF/RKS", |c| if c.is(&["rhf", "ksdft"]) && c.energy() && c.mult == 1 { n("false") } else { Off("closed-shell rhf/ksdft energies only") }),
         key!("scf", "irrep_nelec", "electrons per irrep", |_| Off("only with symmetry = true")),
+        key!("scf", "save_reference", "write the converged reference SCF to this file", |c| if c.reference_io() { Unset("no file is written") } else { Off("correlated kinds with task = \"energy\" only") }),
+        key!("scf", "read_reference", "read the reference SCF from a save_reference file instead of solving it", |c| if c.reference_io() { Unset("the reference SCF is solved") } else { Off("correlated kinds with task = \"energy\" only") }),
+        key!("scf", "read_reference_other_build", "accept a read_reference file written by another build", |_| Off("only with read_reference")),
         key!("scf", "ladder", "[[scf.ladder]] convergence-ladder rungs", |c| if c.is(&["rhf", "ksdft"]) { Unset("the built-in ladder; [[scf.ladder]] rungs replace it") } else { Off("rhf and ksdft only") }),
         // ---- [dft]
         key!("dft", "functional", "XC functional name (LDA, PBE, B3LYP, ...) or libxc name", |c| {

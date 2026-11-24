@@ -500,6 +500,77 @@ fn from_result_records_what_it_could_not_store() {
     );
 }
 
+fn result_bits(r: &crate::result::ScfResult) -> Vec<u64> {
+    let mut out = vec![r.energy.to_bits()];
+    let arrays = [
+        Some(&r.density_total),
+        Some(&r.density_alpha),
+        r.density_beta.as_ref(),
+        Some(&r.mos_alpha),
+        r.mos_beta.as_ref(),
+        Some(&r.fock_alpha),
+        r.fock_beta.as_ref(),
+        r.rohf_spin_focks.as_ref().map(|f| &f.0),
+        r.rohf_spin_focks.as_ref().map(|f| &f.1),
+    ];
+    for a in arrays.into_iter().flatten() {
+        out.push(u64::from(a.is_standard_layout()));
+        out.extend(a.iter().map(|v| v.to_bits()));
+    }
+    out.extend(r.eps_alpha.iter().map(|v| v.to_bits()));
+    out.extend(r.eps_beta.iter().flatten().map(|v| v.to_bits()));
+    out
+}
+
+#[test]
+fn restore_gives_back_the_stored_result_bit_for_bit() {
+    for spin in ALL_SPINS {
+        let mut result = scf_result(spin);
+        result.xc = Some("PBE".to_string());
+        let identity = Scenario::water(spin).identity();
+        let ck = Checkpoint::from_result(&result, -122.5, 9.25, identity, clean_build()).unwrap();
+        let config = RhfConfig::default().with_xc("PBE");
+        let back = round_trip(&ck).restore(&config).unwrap();
+        assert_eq!(result_bits(&back), result_bits(&result), "{spin:?}");
+        assert_eq!(back.spin, result.spin);
+        assert_eq!(back.df_jk, result.df_jk);
+        assert_eq!(back.exit, result.exit);
+        assert_eq!(back.converged, result.converged);
+        assert_eq!(back.iterations, result.iterations);
+        assert_eq!(back.computed_quartets, result.computed_quartets);
+        assert_eq!(back.convergence, result.convergence);
+        assert_eq!(back.xc.as_deref(), Some("PBE"));
+        assert_eq!(back.precision, PrecisionRecord::f64());
+        assert!(back.stability.is_none() && back.guess_basis.is_none());
+    }
+}
+
+#[test]
+fn restore_refuses_a_mid_run_file_and_what_it_cannot_rebuild() {
+    let config = RhfConfig::default();
+    let identity = Scenario::water(Spin::Restricted).identity();
+    let mid = Checkpoint::mid_run(
+        orbitals(Spin::Restricted, 7),
+        3,
+        identity.clone(),
+        clean_build(),
+    )
+    .unwrap();
+    assert_eq!(mid.restore(&config).unwrap_err(), CheckpointError::MidRun);
+
+    let mut ck = final_ck(Spin::Restricted);
+    ck.final_state.as_mut().unwrap().not_stored = vec!["cosx_final".to_string()];
+    let e = ck.restore(&config).unwrap_err();
+    assert_eq!(e, CheckpointError::NotRestorable(vec!["cosx_final".into()]));
+
+    let mut ck = final_ck(Spin::Restricted);
+    let state = ck.final_state.as_mut().unwrap();
+    state.precision_summary = "mixed (dfk: 3)".to_string();
+    state.precision_detail = "PrecisionRecord { mixed }".to_string();
+    let e = ck.restore(&config).unwrap_err().to_string();
+    assert!(e.contains("precision (mixed (dfk: 3))"), "{e}");
+}
+
 // --------------------------------------------------------- unusable files
 
 fn is_format(e: &CheckpointError) -> bool {

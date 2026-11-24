@@ -127,6 +127,12 @@ For a post-SCF method the `energy` is the SCF reference, not the method's
 total. `extra.energy_is` says which. Per-iteration records for MP2/RPA/CC/GW
 are not implemented yet.
 
+With `[scf] read_reference`, `extra.scf_iterations` is 0 (the iterations this
+run took) and `extra.scf_reference` records the file: `read`, `checksum`,
+`file_iterations`, `file_build` and `build_override_used`. A run with
+`save_reference` writes a `scf_reference_saved` record with the path and
+checksum.
+
 `run_end.extra.certificate` holds the validation certificate. Its measured
 error and envelope warnings depend on the run's settings; see
 [Certificates](../reference/validation.md#certificates).

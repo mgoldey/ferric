@@ -19,6 +19,7 @@ mod md;
 mod opmp3;
 mod periodic;
 mod polarization;
+mod reference_io;
 mod thermo_ir;
 
 use crate::error::CliError;
@@ -1245,7 +1246,44 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
     // level shift and J/K route are what the certificate must report);
     // `None` off the ladder, where `rhf_config` is the config that ran.
     let mut rung_config: Option<RhfConfig> = None;
-    let result = if method == "rhf" || method == "ksdft" {
+    let route = ReferenceRoute::of(method, mol.multiplicity, &cfg, scf_jk_fitted);
+    // `[scf] save_reference` / `read_reference`: the identity of the reference
+    // this run would solve, built only when either key is set.
+    let reference_keys = cfg.scf.save_reference.is_some() || cfg.scf.read_reference.is_some();
+    let open_shell_config =
+        reference_keys.then(|| open_shell_reference_config(method, &rhf_config));
+    let reference_plan = if reference_keys {
+        let plan = route
+            .plan(
+                &cfg,
+                &rhf_config,
+                open_shell_config.as_ref().unwrap_or(&rhf_config),
+                df_guess_aux.as_deref(),
+                df_increments_aux.as_deref(),
+            )
+            .map_err(CliError::msg)?;
+        let identity = reference_io::identity(&sys, &plan)?;
+        Some((plan, identity))
+    } else {
+        None
+    };
+    if let Some(path) = cfg.scf.save_reference.as_deref() {
+        reference_io::check_save_path(path)?;
+    }
+    let mut reference_read: Option<serde_json::Value> = None;
+    let result = if let (Some(path), Some((plan, identity))) =
+        (cfg.scf.read_reference.as_deref(), reference_plan.as_ref())
+    {
+        let read = reference_io::read(
+            path,
+            &sys,
+            identity,
+            plan,
+            cfg.scf.read_reference_other_build,
+        )?;
+        reference_read = Some(read.record);
+        read.result
+    } else if route == ReferenceRoute::Ladder {
         // `[scf] df_guess` is not (yet) composed with the multi-rung
         // convergence ladder — the ladder's own escalation (level shift /
         // ADIIS / smearing) is a different mechanism aimed at hard-to-
@@ -1284,7 +1322,7 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
         }
         rung_config = ladder.get(lr.rung_reached).map(|r| r.config.clone());
         lr.result
-    } else if mol.multiplicity > 1 {
+    } else if matches!(route, ReferenceRoute::OpenShell | ReferenceRoute::GwOpenShell) {
         // An open-shell molecule reaching here passed
         // `Config::validate_multiplicity`, so its kind has an open-shell
         // route (rimp2/oo-rimp2/pdep-rpa/gw/mp2-v/tda/tddft on task = "energy"); each
@@ -1292,14 +1330,14 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
         // GW picks its own reference (`[gw] reference = "uhf" | "rohf"`); it
         // is solved once here and `run_gw` reuses it, so a UHF failure can
         // never end a run that asked for ROHF.
-        if method == "gw" {
+        if route == ReferenceRoute::GwOpenShell {
             gw_open_shell_reference(&cfg, &sys, &rhf_config)
                 .map(|(r, _)| r)
                 .map_err(CliError::msg)?
         } else {
             solve_open_shell_reference(method, &cfg, &sys, &rhf_config)?
         }
-    } else if cfg.scf.df_guess_enabled() && !scf_jk_fitted {
+    } else if route == ReferenceRoute::DfGuess {
         // Opt-in DF-guess two-stage SCF (see
         // `ferric_scf::ladder::solve_rhf_with_df_guess`). Closed-shell only:
         // open-shell (UHF/ROHF) df_guess is not implemented, and open-shell
@@ -1322,7 +1360,7 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
         print_df_guess_outcome(&dfg, df_guess_aux.as_deref(), jk_route.mode);
         let _ = dfg.df_energy; // diagnostic only; the exact-stage result is authoritative
         dfg.result
-    } else if cfg.scf.df_increments {
+    } else if route == ReferenceRoute::DfIncrements {
         // Opt-in DF-corrected incremental Fock SCF (see
         // `ferric_scf::df_increments::solve_rhf_with_df_increments`).
         // Closed-shell only, for the same reason `df_guess` is above.
@@ -1358,6 +1396,11 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
     } else {
         solve_rhf(ctx, mol, prep, op, bounds, &rhf_config)?
     };
+    // Written before the correlated stage, so a failure there keeps it.
+    if let (Some(path), Some((_, identity))) = (cfg.scf.save_reference.as_deref(), reference_plan)
+    {
+        reference_io::save(path, &sys, identity, &result)?;
+    }
 
     // Same-basis Hirshfeld proatom: neutral free-atom SCF densities in the
     // molecule's OWN basis and SCF settings, built lazily per call. Shared by
@@ -1502,7 +1545,8 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
             // "ksdft" there).
             "method": cfg.method.kind,
             "task": task,
-            "scf_iterations": scf_iterations,
+            // Iterations THIS run took: none when the reference was read.
+            "scf_iterations": if reference_read.is_some() { 0 } else { scf_iterations },
             "energy_is": if method == "rhf" || method == "uhf" || method == "rohf" || method == "ksdft" {
                 "total"
             } else {
@@ -1532,6 +1576,9 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
         extra["precision"] = run_precision_json(&run_probe);
         extra["scf_precision"] = scf_precision;
         add_scf_certificate(&mut extra, method, &scf_cert);
+        if let Some(record) = reference_read {
+            extra["scf_reference"] = record;
+        }
         rl.run_end(energy, scf_converged, &format!("{scf_exit:?}"), extra);
     }
     Ok(())
@@ -2231,6 +2278,103 @@ fn log_jk_path(scf: &RhfConfig, open_shell: bool) {
 /// mp2-v consumes this one, dispatching on `result.spin`). rimp2/oo-rimp2
 /// get the plain UHF that `kind = "uhf"` runs with the same `[scf]` keys, so
 /// the reference energy an open-shell RI-MP2 run prints IS the `uhf` energy.
+/// How the shared reference SCF of `try_run` is converged: one place decides,
+/// so the solve and the `[scf] save_reference`/`read_reference` identity
+/// cannot disagree about it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReferenceRoute {
+    /// `rhf`/`ksdft`: the convergence ladder.
+    Ladder,
+    /// Open-shell `gw`: UHF or ROHF per `[gw] reference`.
+    GwOpenShell,
+    /// Any other open-shell kind: `solve_uhf`.
+    OpenShell,
+    /// Closed shell, `[scf] df_guess` on and J/K not already fitted.
+    DfGuess,
+    /// Closed shell, `[scf] df_increments`.
+    DfIncrements,
+    /// Closed shell: plain `solve_rhf`.
+    Plain,
+}
+
+impl ReferenceRoute {
+    fn of(method: &str, multiplicity: usize, cfg: &Config, scf_jk_fitted: bool) -> Self {
+        if method == "rhf" || method == "ksdft" {
+            Self::Ladder
+        } else if multiplicity > 1 {
+            if method == "gw" {
+                Self::GwOpenShell
+            } else {
+                Self::OpenShell
+            }
+        } else if cfg.scf.df_guess_enabled() && !scf_jk_fitted {
+            Self::DfGuess
+        } else if cfg.scf.df_increments {
+            Self::DfIncrements
+        } else {
+            Self::Plain
+        }
+    }
+
+    /// What decides the reference on this route besides the molecule and
+    /// basis. `open_shell` is [`open_shell_reference_config`]'s copy.
+    fn plan<'a>(
+        self,
+        cfg: &Config,
+        rhf_config: &'a RhfConfig,
+        open_shell: &'a RhfConfig,
+        df_guess_aux: Option<&str>,
+        df_increments_aux: Option<&str>,
+    ) -> Result<reference_io::ReferencePlan<'a>, String> {
+        use ferric_scf::result::Spin;
+        let aux = |a: Option<&str>| a.unwrap_or(ferric_scf::ladder::DF_GUESS_DEFAULT_AUX).to_string();
+        let plan = |spin, config, route: String| reference_io::ReferencePlan {
+            spin,
+            config,
+            route,
+        };
+        Ok(match self {
+            // `Config::validate_reference_io` refuses the SCF kinds first.
+            Self::Ladder => {
+                return Err("[scf] save_reference / read_reference: the rhf/ksdft \
+                            convergence ladder is not checkpointed"
+                    .to_string())
+            }
+            Self::GwOpenShell => {
+                let label = gw_open_shell_reference_label(cfg)?;
+                let spin = match cfg.gw.parse_reference()? {
+                    config::GwReference::Uhf => Spin::Unrestricted,
+                    config::GwReference::Rohf => Spin::RestrictedOpen,
+                };
+                plan(spin, open_shell, format!("gw {label}"))
+            }
+            Self::OpenShell => plan(Spin::Unrestricted, open_shell, "solve_uhf".to_string()),
+            Self::DfGuess => plan(
+                Spin::Restricted,
+                rhf_config,
+                format!("df_guess aux={}", aux(df_guess_aux)),
+            ),
+            Self::DfIncrements => plan(
+                Spin::Restricted,
+                rhf_config,
+                format!("df_increments aux={}", aux(df_increments_aux)),
+            ),
+            Self::Plain => plan(Spin::Restricted, rhf_config, "solve_rhf".to_string()),
+        })
+    }
+}
+
+/// The configuration an open-shell reference is solved with: the run's, with
+/// maximum-overlap pinning after 5 DIIS iterations for `pdep-rpa`, `gw` and
+/// `mp2-v` (it prevents orbital reordering on open-shell atoms).
+fn open_shell_reference_config(method: &str, rhf_config: &RhfConfig) -> RhfConfig {
+    let mut uhf_cfg = rhf_config.clone();
+    if matches!(method, "pdep-rpa" | "gw" | "mp2-v") {
+        uhf_cfg.mom_after_iter = 5;
+    }
+    uhf_cfg
+}
+
 fn solve_open_shell_reference(
     method: &str,
     cfg: &Config,
@@ -2248,10 +2392,7 @@ fn solve_open_shell_reference(
              open-shell (UHF) reference of method.kind = \"{method}\""
         );
     }
-    let mut uhf_cfg = rhf_config.clone();
-    if matches!(method, "pdep-rpa" | "gw" | "mp2-v") {
-        uhf_cfg.mom_after_iter = 5;
-    }
+    let uhf_cfg = open_shell_reference_config(method, rhf_config);
     log_jk_path(&uhf_cfg, true);
     solve_uhf(ctx, mol, prep, bounds, &uhf_cfg).map_err(|e| {
         CliError::msg(format!(
@@ -5866,9 +6007,7 @@ fn gw_open_shell_reference(
 ) -> Result<(ferric_scf::result::ScfResult, &'static str), String> {
     let (ctx, mol, prep, op, bounds) = (sys.ctx(), sys.mol(), sys.basis(), sys.op(), sys.bounds());
     let label = gw_open_shell_reference_label(cfg)?;
-    let mut scf_cfg = rhf_config.clone();
-    // MOM after 5 DIIS iters prevents orbital reordering on open-shell atoms.
-    scf_cfg.mom_after_iter = 5;
+    let scf_cfg = open_shell_reference_config("gw", rhf_config);
     let result = match cfg.gw.parse_reference()? {
         config::GwReference::Uhf => solve_uhf(ctx, mol, prep, bounds, &scf_cfg),
         config::GwReference::Rohf => solve_rohf(ctx, mol, prep, op, bounds, &scf_cfg),

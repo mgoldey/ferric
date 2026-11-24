@@ -1071,6 +1071,45 @@ gates on the density RMS change instead.
 can drive the overlap matrix near-singular; the canonical-orthogonalization
 threshold is tunable via `FERRIC_LINDEP_THRESH`.
 
+### Reusing a reference SCF
+
+The reference SCF is often half the cost of a correlated run or more. To
+run several correlated methods on one reference, save it from the first run
+and read it in the next:
+
+```toml
+# run 1: kind = "rimp2"
+[scf]
+save_reference = "water-ref.npz"
+```
+
+```toml
+# run 2: kind = "ccsd", same molecule, basis and [scf] settings
+[scf]
+read_reference = "water-ref.npz"
+```
+
+The second run solves no SCF (`[ferric] SCF reference read from ...; no SCF
+iterations run`; the run log's `run_end` has `scf_iterations = 0` and a
+`scf_reference` entry with the file's checksum and iteration count). Its
+correlated energy is bitwise the one a fresh run gives, because the file is
+read only when it is the reference this run would converge to: every field of
+the checkpoint identity must match, and so must the route that converges it.
+Anything else is refused with the differing fields named; the file is never
+used as a guess instead. Two things look like the same reference and are not:
+the `rhf`/`ksdft` kinds converge through the convergence ladder and the
+correlated kinds do not (so those kinds refuse the keys), and the closed-shell
+correlated kinds run a DF-guess pre-stage by default, so `df_guess = false` is
+a different reference. A file converged tighter than the run asks is accepted.
+Only a file from the same clean build is accepted unless
+`read_reference_other_build = true`. Density-fitting tensors and other
+integrals are rebuilt by the correlated stage, as in a fresh run. The keys are
+CLI only; the Python drivers solve their own reference. Keys and refusals:
+[`[scf]`](../reference/input.md#scf).
+
+Measured on benzene / cc-pVDZ (228 functions), `kind = "rimp2"`, 4 threads
+(2026-11-24): MEASUREMENT_PLACEHOLDER
+
 ### Secondary-basis guess (Q-Chem `BASIS2`)
 
 `[scf] guess_basis = "6-31g"` (Python `guess_basis="6-31g"` on `run_rhf`,

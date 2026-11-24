@@ -3668,6 +3668,22 @@ pub struct ScfCfg {
     /// `symmetry = true`): pins the occupation instead of aufbau across
     /// irreps. Listed counts must be even; unlisted irreps follow aufbau.
     pub irrep_nelec: Option<std::collections::BTreeMap<String, usize>>,
+    /// Write the converged reference SCF of a correlated kind to this path
+    /// (`ferric_scf::checkpoint` NPZ), before the correlated stage runs, so
+    /// a later run can read it with `read_reference`. Scope and refusals:
+    /// [`Config::validate_reference_io`].
+    pub save_reference: Option<String>,
+    /// Read the reference SCF from a `save_reference` file instead of
+    /// solving it: no SCF iteration runs. The file must be the calculation
+    /// this run would solve (molecule, basis, spin, every setting that moves
+    /// the SCF's numbers, the route that converges it, this build); anything
+    /// else is an error, never a fallback to a fresh SCF.
+    pub read_reference: Option<String>,
+    /// Accept a `read_reference` file written by another build, or by a
+    /// build not provably the same (dirty tree, unknown commit). Default
+    /// `false`; the run prints and logs that the override was used.
+    #[serde(default)]
+    pub read_reference_other_build: bool,
 }
 
 impl Default for ScfCfg {
@@ -3727,6 +3743,9 @@ impl Default for ScfCfg {
             stability_descent: false,
             symmetry: false,
             irrep_nelec: None,
+            save_reference: None,
+            read_reference: None,
+            read_reference_other_build: false,
         }
     }
 }
@@ -5469,6 +5488,86 @@ impl Config {
         Ok(())
     }
 
+    /// `[scf] save_reference` / `read_reference` / `read_reference_other_build`:
+    /// only the runs whose reference SCF is the shared one in `try_run` (the
+    /// correlated kinds, `task = "energy"`) save or read it. Everything else
+    /// solves its SCF elsewhere (its own driver, a convergence ladder, one SCF
+    /// per geometry), so the key would be silently ignored there.
+    pub fn validate_reference_io(&self) -> Result<(), String> {
+        let s = &self.scf;
+        let keys = s.save_reference.is_some() || s.read_reference.is_some();
+        if !keys {
+            if s.read_reference_other_build {
+                return Err("[scf] read_reference_other_build is read only with \
+                            read_reference; it would be silently ignored"
+                    .to_string());
+            }
+            return Ok(());
+        }
+        let key = if s.read_reference.is_some() {
+            "read_reference"
+        } else {
+            "save_reference"
+        };
+        if s.save_reference.is_some() && s.read_reference.is_some() {
+            return Err("[scf] save_reference and read_reference cannot both be set: \
+                        a read reference is already on disk"
+                .to_string());
+        }
+        if s.read_reference_other_build && s.read_reference.is_none() {
+            return Err("[scf] read_reference_other_build is read only with \
+                        read_reference; it would be silently ignored"
+                .to_string());
+        }
+        for (name, path) in [
+            ("save_reference", s.save_reference.as_deref()),
+            ("read_reference", s.read_reference.as_deref()),
+        ] {
+            if path.is_some_and(|p| p.trim().is_empty()) {
+                return Err(format!("[scf] {name} must be a file path, got an empty string"));
+            }
+        }
+        let task = self.method.task.as_str();
+        if task != "energy" {
+            return Err(format!(
+                "[scf] {key} is supported for task = \"energy\" only (got \"{task}\"): \
+                 an optimization or a Hessian solves a new SCF at every geometry"
+            ));
+        }
+        if self.periodic.is_some() || self.cell.is_some() {
+            return Err(format!(
+                "[scf] {key} is not supported with [cell]: the periodic SCF is not checkpointed"
+            ));
+        }
+        let kind = self.dispatch_kind(self.molecule.multiplicity);
+        let why = match kind {
+            "rhf" | "ksdft" | "uhf" | "rohf" => Some(
+                "an SCF kind converges through its own route (the rhf/ksdft convergence \
+                 ladder, or the UHF/ROHF driver), which the correlated kinds do not take, \
+                 so its reference would be refused by every correlated run; save the \
+                 reference from the first correlated run instead",
+            ),
+            "wb97x-l-v" | "b2plyp" | "dsd-pbep86" => {
+                Some("a double hybrid converges its own Kohn-Sham reference")
+            }
+            "casscf" | "nevpt2" | "opmp3" => Some("this kind runs its own reference SCF"),
+            _ => None,
+        };
+        if let Some(why) = why {
+            return Err(format!(
+                "[scf] {key} is supported by the correlated kinds (rimp2, ccsd, drpa, gw, \
+                 ...) only, not kind = \"{kind}\": {why}"
+            ));
+        }
+        if s.read_reference.is_some() && (s.check_stability || s.stability_descent) {
+            return Err("[scf] read_reference cannot be combined with check_stability: \
+                        the stability analysis is not stored with the reference, so this \
+                        run would report it as not run"
+                .to_string());
+        }
+        Ok(())
+    }
+
     pub fn validate_cli_wired_keys(&self) -> Result<(), String> {
         let kind = self.method.kind.as_str();
         let task = self.method.task.as_str();
@@ -5493,6 +5592,7 @@ impl Config {
         self.validate_symmetry_keys()?;
 
         self.validate_stability_descent(kind, task)?;
+        self.validate_reference_io()?;
 
         if self.mp2.sets_oo_keys() {
             if kind != "oo-rimp2" {

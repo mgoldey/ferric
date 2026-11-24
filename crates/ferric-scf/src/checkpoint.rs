@@ -1,8 +1,11 @@
 //! SCF orbital checkpoint: file format, atomic IO, identity checks.
 //!
-//! NO SOLVER READS OR WRITES THIS YET. It is the first of the five steps in the
-//! checkpoint design, and it exists so that the later steps have one reviewed
-//! answer to "is this file the calculation I am about to trust?".
+//! No solver reads or writes this. The CLI's `[scf] save_reference` writes a
+//! final file after the reference SCF of a correlated kind, and its
+//! `read_reference` checks one under [`ReadMode::Skip`] and restores it with
+//! [`Checkpoint::restore`] in place of that SCF. Nothing reads a file as a
+//! guess yet. This module is the one reviewed answer to "is this file the
+//! calculation I am about to trust?".
 //!
 //! # File
 //!
@@ -73,6 +76,7 @@ pub use identity::{
 };
 
 use crate::result::{ConvergenceReport, DfJkRoute, ScfExit, ScfResult, Spin};
+use crate::rhf::RhfConfig;
 use ferric_core::FerricError;
 use ndarray::Array2;
 use std::path::Path;
@@ -423,5 +427,94 @@ impl Checkpoint {
         mode: ReadMode,
     ) -> Result<ReadVerdict, CheckpointError> {
         identity::check(self, current, current_build, mode)
+    }
+
+    /// The `ScfResult` a final file stores, in place of a solve with `config`.
+    ///
+    /// Call it only after [`Checkpoint::check`] accepted the file under
+    /// [`ReadMode::Skip`] for an identity built from the same `config`: this
+    /// re-checks only what `check` does not see. Every stored array comes back
+    /// bit for bit and in its stored memory order. `xc` and `relativistic`
+    /// are stamped from `config`, as the solvers stamp them (the identity's
+    /// `xc` and `relativistic` fields matched). The diagnostics the file does
+    /// not store (`stability`, `stability_external`, `cosx_schedule`,
+    /// `guess_basis`) come back `None`, which reads "not run".
+    ///
+    /// Refused ([`CheckpointError::MidRun`] / [`CheckpointError::NotRestorable`]):
+    /// a mid-run file, a state that carried `induced_dipoles` or `cosx_final`,
+    /// and a state whose precision record is not plain f64 (the file keeps that
+    /// record as text only, so the typed record cannot be rebuilt).
+    pub fn restore(&self, config: &RhfConfig) -> Result<ScfResult, CheckpointError> {
+        let state = self.final_state.as_ref().ok_or(CheckpointError::MidRun)?;
+        let FinalState {
+            energy,
+            // Checked by the caller against freshly computed integrals.
+            one_electron_energy: _,
+            nuclear_repulsion: _,
+            fock_alpha,
+            fock_beta,
+            rohf_spin_focks,
+            df_jk,
+            exit,
+            converged,
+            iterations,
+            computed_quartets,
+            convergence,
+            precision_summary: _,
+            precision_detail,
+            not_stored,
+        } = state;
+        let mut refused: Vec<String> = not_stored
+            .iter()
+            .filter(|name| matches!(name.as_str(), "induced_dipoles" | "cosx_final"))
+            .cloned()
+            .collect();
+        let f64_record = ferric_core::gpu::provenance::PrecisionRecord::f64();
+        if *precision_detail != format!("{f64_record:?}") {
+            refused.push(format!("precision ({})", state.precision_summary));
+        }
+        if !refused.is_empty() {
+            return Err(CheckpointError::NotRestorable(refused));
+        }
+        let OrbitalState {
+            spin,
+            density_total,
+            density_alpha,
+            density_beta,
+            mos_alpha,
+            mos_beta,
+            eps_alpha,
+            eps_beta,
+        } = &self.orbitals;
+        // A struct literal, so a new ScfResult field must be decided here.
+        Ok(ScfResult {
+            spin: *spin,
+            energy: *energy,
+            density_total: density_total.clone(),
+            density_alpha: density_alpha.clone(),
+            density_beta: density_beta.clone(),
+            mos_alpha: mos_alpha.clone(),
+            mos_beta: mos_beta.clone(),
+            eps_alpha: eps_alpha.clone(),
+            eps_beta: eps_beta.clone(),
+            fock_alpha: fock_alpha.clone(),
+            fock_beta: fock_beta.clone(),
+            converged: *converged,
+            exit: *exit,
+            iterations: *iterations,
+            computed_quartets: *computed_quartets,
+            induced_dipoles: None,
+            stability: None,
+            stability_external: None,
+            df_jk: df_jk.clone(),
+            xc: crate::result::xc_record(config.xc.as_deref(), false),
+            rohf_spin_focks: rohf_spin_focks.clone(),
+            cosx_final: None,
+            cosx_schedule: None,
+            convergence: *convergence,
+            guess_basis: None,
+            precision: f64_record,
+            relativistic: config.relativistic,
+        })
     }
 }
