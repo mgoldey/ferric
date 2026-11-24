@@ -548,6 +548,19 @@ fn restore_gives_back_the_stored_result_bit_for_bit() {
 }
 
 #[test]
+fn an_f64_state_without_precision_json_restores_and_a_mixed_one_does_not() {
+    let mut ck = final_ck(Spin::Restricted);
+    ck.final_state.as_mut().unwrap().precision_json = None;
+    let r = ck.restore(&RhfConfig::default()).unwrap();
+    assert_eq!(r.precision, PrecisionRecord::f64());
+    let state = ck.final_state.as_mut().unwrap();
+    state.precision_summary = "mixed (dfj-f32 mixed on cpu: 2 mixed call(s))".to_string();
+    state.precision_detail = "PrecisionRecord { precision: Mixed, kernels: [..] }".to_string();
+    let e = ck.restore(&RhfConfig::default()).unwrap_err().to_string();
+    assert!(e.contains("precision (mixed (dfj-f32"), "{e}");
+}
+
+#[test]
 fn restore_refuses_a_mid_run_file_and_what_it_cannot_rebuild() {
     let config = RhfConfig::default();
     let identity = Scenario::water(Spin::Restricted).identity();
@@ -567,6 +580,7 @@ fn restore_refuses_a_mid_run_file_and_what_it_cannot_rebuild() {
 
     let mut ck = final_ck(Spin::Restricted);
     let state = ck.final_state.as_mut().unwrap();
+    // The JSON (an f64 record) does not rebuild the stored `Debug`: refused.
     state.precision_summary = "mixed (dfk: 3)".to_string();
     state.precision_detail = "PrecisionRecord { mixed }".to_string();
     let e = ck.restore(&config).unwrap_err().to_string();
@@ -2378,6 +2392,11 @@ fn golden_ck() -> Checkpoint {
     // The v1 file predates `one_step_energy_drop`; it must read back as None.
     if let Some(rep) = ck.final_state.as_mut().and_then(|f| f.convergence.as_mut()) {
         rep.one_step_energy_drop = None;
+    }
+    // ... and `precision_json`, which reads back as None (an f64 record
+    // restores without it).
+    if let Some(state) = ck.final_state.as_mut() {
+        state.precision_json = None;
     }
     ck
 }

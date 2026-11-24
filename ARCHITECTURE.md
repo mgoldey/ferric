@@ -857,8 +857,11 @@ Done:
    file before the correlated stage; `read_reference = "path"` reads one
    under `ReadMode::Skip` and restores it (`Checkpoint::restore`, new: the
    stored arrays bit for bit, `xc`/`relativistic` stamped from the config,
-   the unstored diagnostics `None`; refuses a mixed-precision record, a
-   COSX final pass or induced dipoles) in place of the solve, so no SCF
+   the unstored diagnostics `None`; the typed precision record rebuilt
+   from a new optional `precision_json` meta field by the new
+   `PrecisionRecord::from_json` and accepted only when its `Debug` is the
+   stored `precision_detail`, so a mixed RI-J f32 reference restores; a
+   COSX final pass or induced dipoles are refused) in place of the solve, so no SCF
    iteration runs and the correlated energy is bitwise a fresh run's.
    The identity is the library's `ScfIdentity::new` on the configuration
    the solver receives, plus two CLI fields pushed onto `fields`

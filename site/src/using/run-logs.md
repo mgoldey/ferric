@@ -129,7 +129,9 @@ are not implemented yet.
 
 With `[scf] read_reference`, `extra.scf_iterations` is 0 (the iterations this
 run took) and `extra.scf_reference` records the file: `read`, `checksum`,
-`file_iterations`, `file_build` and `build_override_used`. A run with
+`file_iterations`, `file_build` and `build_override_used`; `extra.scf_precision`
+is the read reference's record (as the run that solved it wrote it), while
+`extra.precision` covers only the kernels this run ran. A run with
 `save_reference` writes a `scf_reference_saved` record with the path and
 checksum.
 

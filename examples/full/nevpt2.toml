@@ -84,6 +84,9 @@ density_conv = 1e-6  # density-change threshold, the convergence signal
 # stability_descent: follow a downhill mode at a saddle and re-converge; not read here: not read: this kind runs its own reference SCF, which reads only max_iter, energy_conv and density_conv
 # symmetry: point-group-blocked closed-shell RHF/RKS; not read here: not read: this kind runs its own reference SCF, which reads only max_iter, energy_conv and density_conv
 # irrep_nelec: electrons per irrep; not read here: not read: this kind runs its own reference SCF, which reads only max_iter, energy_conv and density_conv
+# save_reference: write the converged reference SCF to this file; not read here: not read: this kind runs its own reference SCF, which reads only max_iter, energy_conv and density_conv
+# read_reference: read the reference SCF from a save_reference file instead of solving it; not read here: not read: this kind runs its own reference SCF, which reads only max_iter, energy_conv and density_conv
+# read_reference_other_build: accept a read_reference file written by another build; not read here: not read: this kind runs its own reference SCF, which reads only max_iter, energy_conv and density_conv
 # ladder: [[scf.ladder]] convergence-ladder rungs; not read here: not read: this kind runs its own reference SCF, which reads only max_iter, energy_conv and density_conv
 
 [cas]
