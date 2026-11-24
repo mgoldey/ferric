@@ -1099,3 +1099,51 @@ fn incore_store_reuse_follows_the_requested_rotation() {
         "rot1 served auto's store"
     );
 }
+
+/// The whole rotated SCF is thread-count independent: RHF on the in-core
+/// store (rotated ERIs, transforms in `coulomb` / `exchange`) and on the
+/// direct route (rotated `DirectJK`, incremental builds), and a UHF on the
+/// direct route, give the same energy and density bits on 1, 2 and 4
+/// threads.
+#[test]
+fn rotated_scf_is_bitwise_across_thread_counts() {
+    let run = |threads: usize, stem: &str, mult: usize, eri: EriMode| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap()
+            .install(|| {
+                let ctx = ParallelContext::default();
+                let mol = load(stem, mult);
+                let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+                let op = Operator::coulomb();
+                let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+                let mut c = RhfConfig::default().with_gc_rotation(GcRotate::Auto);
+                c.eri = eri;
+                let r = if mult == 1 {
+                    solve_rhf(&ctx, &mol, &prep, op, &bounds, &c)
+                } else {
+                    solve_uhf(&ctx, &mol, &prep, &bounds, &c)
+                }
+                .unwrap();
+                assert!(r.converged);
+                (r.energy, r.density_alpha.clone())
+            })
+    };
+    for (label, stem, mult, eri) in [
+        ("water RHF in-core", "water", 1, EriMode::Incore),
+        ("water RHF direct", "water", 1, EriMode::Direct),
+        ("OH UHF direct", "oh", 2, EriMode::Direct),
+    ] {
+        let (e1, d1) = run(1, stem, mult, eri);
+        for threads in [2, 4] {
+            let (e, d) = run(threads, stem, mult, eri);
+            assert_eq!(
+                e.to_bits(),
+                e1.to_bits(),
+                "{label}: {threads} threads energy"
+            );
+            assert!(bits_equal(&d, &d1), "{label}: {threads} threads density");
+        }
+    }
+}

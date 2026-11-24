@@ -432,6 +432,17 @@ impl std::fmt::Debug for GcSlot {
 }
 
 impl GcSlot {
+    /// A slot for the same geometry with nothing recorded and nothing
+    /// cached: builds on bounds carrying it run unrotated
+    /// ([`SchwarzBounds::unrotated`]).
+    pub(crate) fn detached(&self) -> GcSlot {
+        GcSlot(Arc::new(GcSlotInner {
+            inert: self.0.inert,
+            owner: self.0.owner,
+            ..Default::default()
+        }))
+    }
+
     /// The slot of bounds computed for the geometry `key`
     /// (`incore_jk::geometry_key`).
     pub(crate) fn owned_by(key: u64) -> Self {

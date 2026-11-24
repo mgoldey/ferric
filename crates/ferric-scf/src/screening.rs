@@ -93,6 +93,18 @@ pub struct SchwarzBounds {
 }
 
 impl SchwarzBounds {
+    /// A copy whose builds run unrotated (`direct_jk::gc_rotation`): the
+    /// same tables and in-core slot, a detached contraction-rotation slot
+    /// (nothing recorded). For the open-shell guess Fock builds, which are a
+    /// starting point, not part of the SCF's J/K route: they stay the
+    /// unrotated builds of every SCF route (a fitted SCF has no four-centre
+    /// route to follow), so the guess is the same whatever the SCF runs.
+    pub(crate) fn unrotated(&self) -> Self {
+        let mut b = self.clone();
+        b.gc = self.gc.detached();
+        b
+    }
+
     /// Compute Schwarz screening bounds for all shell pairs.
     ///
     /// Always leaves BOTH `csb_m` and `csam_x` as `None`, i.e. plain Schwarz.

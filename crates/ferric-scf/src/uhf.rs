@@ -3239,8 +3239,11 @@ fn uhf_guess_mos(
         return Ok(None);
     };
 
-    // Split the spin-summed guess density evenly and build F_α = F_β at it.
+    // Split the spin-summed guess density evenly and build F_α = F_β at it,
+    // with unrotated builds (`SchwarzBounds::unrotated`): the guess does not
+    // follow the SCF's contraction rotation.
     let d_spin = &d_total * 0.5;
+    let bounds = &bounds.unrotated();
     let mut j = Array2::<f64>::zeros((n, n));
     let mut k = Array2::<f64>::zeros((n, n));
     if let Err(e) = crate::rhf::build_jk(
