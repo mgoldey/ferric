@@ -207,3 +207,31 @@ def test_cli_writes_github_output(tmp_path):
     )
     assert r.stdout.strip() == "omega_ri_sympy.py"
     assert out.read_text() == "mode=some\nscripts=omega_ri_sympy.py\n"
+
+
+def test_cli_lists_the_slow_tier(tmp_path):
+    out = tmp_path / "out"
+    r = subprocess.run(
+        [sys.executable, str(SCRIPT), "--slow", "--github-output", str(out)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    slow = sp.read_slow((REPO / sp.RUNNER).read_text(encoding="utf-8"))
+    assert slow and json.loads(r.stdout) == slow
+    assert out.read_text() == f"slow={json.dumps(slow)}\n"
+
+
+def test_the_slow_tier_runs_nightly_and_on_dispatch_only():
+    # No other workflow runs the runner's validation tier (ci.yml's
+    # validation pytest ignores the runner), so book.yml's slow-proofs jobs
+    # are its only coverage.
+    wf = (REPO / ".github/workflows/book.yml").read_text(encoding="utf-8")
+    job = wf[wf.index("\n  slow-proofs-list:") : wf.index("\n  pdf:")]
+    assert (
+        "if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"
+        in job
+    )
+    assert "select_proofs.py --slow" in job
+    assert "fromJSON(needs.slow-proofs-list.outputs.slow)" in job
+    assert "-m validation" in job and "FERRIC_PROOF_SCRIPTS:" in job

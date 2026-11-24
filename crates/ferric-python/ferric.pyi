@@ -5561,6 +5561,9 @@ def run_rimp2(
     with_gradient: bool = False,
     scf_eri: Literal["auto", "direct", "incore"] | None = None,
     lambda_boys: float | None = None,
+    save_reference: str | None = None,
+    read_reference: str | None = None,
+    read_reference_other_build: bool = False,
 ) -> RiMp2Result:
     """Resolution-of-identity (density-fitted) MP2. Exact by default.
     with_gradient=True adds the analytic gradient of total_energy
@@ -5632,6 +5635,20 @@ def run_rimp2(
     cannot count valence virtuals on ECP atoms.
     `frozen_core` counts orbitals of the valence occupied space, after the ECP has
     removed its core.
+    ``save_reference="ref.npz"`` writes the converged reference SCF to that
+    file (the CLI's ``[scf] save_reference`` checkpoint); ``read_reference``
+    reads one instead of solving it, so no SCF iteration runs and the
+    correlated stage gets the stored orbitals bit for bit (its energy is the
+    saving call's reference's, equal to a fresh call's at the same
+    thresholds, thread count, ERI route and build). ``run_rimp2``,
+    ``run_ccsd`` and ``run_ccsd_t`` share the files: a reference saved by
+    ``run_rimp2(scf_jk="exact")`` is read by ``run_ccsd``. A file is read
+    only when it is the reference this call would solve (molecule, basis,
+    spin, every SCF setting that moves its numbers, this build unless
+    ``read_reference_other_build=True``); anything else, a missing or
+    corrupted file included, raises ``InputError`` naming why, never a fresh
+    SCF. CLI and Python files are not interchangeable. Exact energy only:
+    with ``local=`` or ``with_gradient=True`` the two keys raise ValueError.
     """
     ...
 
@@ -6634,6 +6651,9 @@ def run_ccsd(
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
+    save_reference: str | None = None,
+    read_reference: str | None = None,
+    read_reference_other_build: bool = False,
 ) -> CcResult:
     """Coupled-cluster singles and doubles (CCSD).
 
@@ -6656,6 +6676,19 @@ def run_ccsd(
     the one `run_rhf` (`run_uhf` for an open-shell molecule) solves.
     `frozen_core` counts orbitals of the valence occupied space, after the ECP has
     removed its core.
+    ``save_reference="ref.npz"`` writes the converged reference SCF to that
+    file (the CLI's ``[scf] save_reference`` checkpoint); ``read_reference``
+    reads one instead of solving it, so no SCF iteration runs and the
+    correlated stage gets the stored orbitals bit for bit (its energy is the
+    saving call's reference's, equal to a fresh call's at the same
+    thresholds, thread count, ERI route and build). ``run_rimp2``,
+    ``run_ccsd`` and ``run_ccsd_t`` share the files: a reference saved by
+    ``run_rimp2(scf_jk="exact")`` is read by ``run_ccsd``. A file is read
+    only when it is the reference this call would solve (molecule, basis,
+    spin, every SCF setting that moves its numbers, this build unless
+    ``read_reference_other_build=True``); anything else, a missing or
+    corrupted file included, raises ``InputError`` naming why, never a fresh
+    SCF. CLI and Python files are not interchangeable.
     """
     ...
 
@@ -6704,6 +6737,9 @@ def run_ccsd_t(
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
+    save_reference: str | None = None,
+    read_reference: str | None = None,
+    read_reference_other_build: bool = False,
 ) -> CcResult:
     """CCSD(T): CCSD plus perturbative triples correction.
 
@@ -6725,6 +6761,19 @@ def run_ccsd_t(
     the one `run_rhf` (`run_uhf` for an open-shell molecule) solves.
     `frozen_core` counts orbitals of the valence occupied space, after the ECP has
     removed its core.
+    ``save_reference="ref.npz"`` writes the converged reference SCF to that
+    file (the CLI's ``[scf] save_reference`` checkpoint); ``read_reference``
+    reads one instead of solving it, so no SCF iteration runs and the
+    correlated stage gets the stored orbitals bit for bit (its energy is the
+    saving call's reference's, equal to a fresh call's at the same
+    thresholds, thread count, ERI route and build). ``run_rimp2``,
+    ``run_ccsd`` and ``run_ccsd_t`` share the files: a reference saved by
+    ``run_rimp2(scf_jk="exact")`` is read by ``run_ccsd``. A file is read
+    only when it is the reference this call would solve (molecule, basis,
+    spin, every SCF setting that moves its numbers, this build unless
+    ``read_reference_other_build=True``); anything else, a missing or
+    corrupted file included, raises ``InputError`` naming why, never a fresh
+    SCF. CLI and Python files are not interchangeable.
     """
     ...
 

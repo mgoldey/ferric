@@ -5589,13 +5589,6 @@ impl Config {
                  ...) only, not kind = \"{kind}\": {why}"
             ));
         }
-        if s.read_reference.is_some() && kind == "pdep-rpa" && self.molecule.multiplicity > 1 {
-            return Err(
-                "[scf] read_reference is not supported by open-shell pdep-rpa: its arm \
-                 solves its own UHF reference, so the file would be read and then not used"
-                    .to_string(),
-            );
-        }
         if s.read_reference.is_some() {
             for (set, name) in [
                 (s.check_stability, "check_stability"),
@@ -13868,15 +13861,13 @@ mod cli_wired_keys_tests {
         ] {
             let save = cfg(kind, "energy", mult, "[scf]\nsave_reference = \"r.npz\"\n");
             reference(&save).unwrap_or_else(|e| panic!("{kind} save: {e}"));
-            if !(kind == "pdep-rpa" && mult > 1) {
-                let read = cfg(
-                    kind,
-                    "energy",
-                    mult,
-                    "[scf]\nread_reference = \"r.npz\"\nread_reference_other_build = true\n",
-                );
-                reference(&read).unwrap_or_else(|e| panic!("{kind} read: {e}"));
-            }
+            let read = cfg(
+                kind,
+                "energy",
+                mult,
+                "[scf]\nread_reference = \"r.npz\"\nread_reference_other_build = true\n",
+            );
+            reference(&read).unwrap_or_else(|e| panic!("{kind} read: {e}"));
         }
         // Neither key: nothing to check.
         reference(&cfg("rhf", "optimize", 1, "")).unwrap();
@@ -13899,7 +13890,6 @@ mod cli_wired_keys_tests {
             ("opmp3", "energy", 1, read, "its own reference SCF"),
             ("rimp2", "optimize", 1, save, "task = \"energy\" only"),
             ("rimp2", "frequencies", 1, read, "task = \"energy\" only"),
-            ("pdep-rpa", "energy", 2, read, "open-shell pdep-rpa"),
             (
                 "rimp2",
                 "energy",

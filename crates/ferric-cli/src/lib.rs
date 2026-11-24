@@ -19,7 +19,7 @@ mod md;
 mod opmp3;
 mod periodic;
 mod polarization;
-mod reference_io;
+pub mod reference_io;
 mod thermo_ir;
 
 use crate::error::CliError;
@@ -1269,7 +1269,7 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
         None
     };
     if let Some(path) = cfg.scf.save_reference.as_deref() {
-        reference_io::check_save_path(path)?;
+        reference_io::check_save_path(reference_io::Surface::Cli, path)?;
     }
     if let Some((plan, _)) = reference_plan.as_ref() {
         let key = if cfg.scf.read_reference.is_some() {
@@ -1277,7 +1277,12 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
         } else {
             "save_reference"
         };
-        reference_io::refuse_unstorable(key, plan.config, jk_route.k_builder)?;
+        reference_io::refuse_unstorable(
+            reference_io::Surface::Cli,
+            key,
+            plan.config,
+            jk_route.k_builder,
+        )?;
     }
     let mut reference_read: Option<(serde_json::Value, String)> = None;
     let result = if let (Some(path), Some((plan, identity))) =
@@ -1412,7 +1417,7 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
     if let (Some(path), Some((plan, identity))) =
         (cfg.scf.save_reference.as_deref(), reference_plan)
     {
-        reference_io::save(path, &sys, identity, plan.config, &result)?;
+        reference_io::save(path, &sys, identity, &plan, &result)?;
     }
 
     // Same-basis Hirshfeld proatom: neutral free-atom SCF densities in the
@@ -2345,6 +2350,7 @@ impl ReferenceRoute {
             spin,
             config,
             route,
+            surface: reference_io::Surface::Cli,
         };
         Ok(match self {
             // `Config::validate_reference_io` refuses the SCF kinds first.
@@ -2393,8 +2399,8 @@ fn open_shell_reference_config(method: &str, rhf_config: &RhfConfig) -> RhfConfi
 /// mp2-v, all task = "energy").
 ///
 /// pdep-rpa/mp2-v keep the MOM-from-iteration-5 UHF they have always been
-/// given here (pdep-rpa re-solves the same UHF inside its arm; mp2-v consumes
-/// this one, dispatching on `result.spin`). gw does not come here: its
+/// given here (both consume this one: `run_pdep_rpa_arm` hands it to the
+/// unrestricted PDEP-RPA, mp2-v dispatches on `result.spin`). gw does not come here: its
 /// UHF/ROHF is `gw_open_shell_reference`, which `run_gw` reuses. rimp2/oo-rimp2
 /// get the plain UHF that `kind = "uhf"` runs with the same `[scf]` keys, so
 /// the reference energy an open-shell RI-MP2 run prints IS the `uhf` energy.
@@ -5731,7 +5737,7 @@ fn run_pdep_rpa_arm(
     proatom: &dyn Fn(i32, i32) -> Option<ferric_rpa::properties::RadialProatom>,
     scf_cert: &Certificate,
 ) -> Result<(), CliError> {
-    let (ctx, mol, prep, bounds) = (sys.ctx(), sys.mol(), sys.basis(), sys.bounds());
+    let (mol, prep) = (sys.mol(), sys.basis());
     let aux_name = cfg
         .rpa
         .auxbasis
@@ -5775,31 +5781,18 @@ fn run_pdep_rpa_arm(
         need_eigenvalues_freq: false,
         verbose: cfg.scf.verbose,
     };
-    // For open-shell molecules (multiplicity > 1) re-run with UHF + MOM so
-    // the reference is converged, then dispatch to the unrestricted RPA.
-    // Shadow `result` so the rest of the arm (NPZ export, properties) uses
-    // the correct SCF density.
-    let (rpa_result, ref_label, result, reference) = if mol.multiplicity > 1 {
-        let mut uhf_cfg = rhf_config.clone();
-        // MOM after 5 DIIS iters prevents orbital reordering on open-shell atoms.
-        uhf_cfg.mom_after_iter = 5;
-        let uhf_result = solve_uhf(ctx, mol, prep, bounds, &uhf_cfg)
-            .map_err(|e| CliError::verbatim(format!("error (UHF): {e}")))?;
+    // For open-shell molecules (multiplicity > 1) `result` is the shared
+    // UHF + MOM reference (`solve_open_shell_reference`, or the
+    // `read_reference` file): dispatch to the unrestricted RPA on it.
+    let (rpa_result, ref_label) = if mol.multiplicity > 1 {
         let rr = ferric_rpa::run_u_pdep_rpa_fitted_on(
             &dfbs,
-            &uhf_result,
+            &result,
             &rpa_cfg,
             &cfg.ri_fit().map_err(CliError::msg)?,
         )
         .map_err(|e| CliError::verbatim(format!("error (U-PDEP-RPA): {e}")))?;
-        let reference = ferric_scf::certificate::with_scf_envelope(
-            scf_certificate_stamped(mol, &uhf_result, &uhf_cfg, None),
-            mol,
-            &uhf_result,
-            &uhf_cfg,
-            bs,
-        );
-        (rr, "UHF", uhf_result, reference)
+        (rr, "UHF")
     } else {
         // The cube and NPZ exports read the static eigenpotentials; an
         // energy-only run lets the library skip the eigensolve when
@@ -5813,7 +5806,7 @@ fn run_pdep_rpa_arm(
         } else {
             ferric_rpa::run_pdep_rpa_energy_on(&dfbs, &result, &rpa_cfg)
         }?;
-        (rr, "RHF", result, scf_cert.clone())
+        (rr, "RHF")
     };
     if !rpa_result.eigensolver_converged {
         eprintln!(
@@ -5845,7 +5838,7 @@ fn run_pdep_rpa_arm(
         println!("RI-dRPA check:         {:>20.10} Hartree", e_diag);
     }
     let rpa_cert = ferric_mp2::certificate::with_anchor_envelope(
-        ferric_rpa::certificate::pdep_rpa_certificate(&reference, aux_name, &rpa_cfg, &rpa_result),
+        ferric_rpa::certificate::pdep_rpa_certificate(scf_cert, aux_name, &rpa_cfg, &rpa_result),
         "PDEP-RPA",
         mol,
         bs,

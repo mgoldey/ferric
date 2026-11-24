@@ -1,4 +1,5 @@
-//! `[scf] save_reference` / `read_reference`: the reference SCF of a
+//! `[scf] save_reference` / `read_reference` (and the same keywords on the
+//! Python correlated drivers, `Surface::Python`): the reference SCF of a
 //! correlated kind, written once it converges and read back in place of the
 //! solve by a later run (RI-MP2 now, CCSD on the same reference next).
 //!
@@ -15,6 +16,11 @@
 //! ([`ReferencePlan::route`]: plain `solve_rhf`, the DF-guess or
 //! DF-increments two-stage SCF and its aux, the UHF driver, GW's UHF/ROHF)
 //! and the MPI rank count.
+//!
+//! The Python bindings call the same functions (`save_reference=` /
+//! `read_reference=` on `run_rimp2`, `run_ccsd`, `run_ccsd_t`) with their own
+//! route names, so a Python file is never read as a CLI one or the reverse;
+//! [`Surface`] picks how a message names the keys.
 
 use crate::error::CliError;
 use ferric_scf::checkpoint::{
@@ -25,9 +31,36 @@ use ferric_scf::rhf::RhfConfig;
 use ferric_scf::PreparedSystem;
 use std::path::Path;
 
+/// Who names the keys: the CLI's `[scf]` table or a Python keyword.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Surface {
+    /// `[scf] save_reference = "..."`.
+    Cli,
+    /// `save_reference="..."` on a Python entry point.
+    Python,
+}
+
+impl Surface {
+    /// The key as the user wrote it, for a message.
+    fn key(self, name: &str) -> String {
+        match self {
+            Surface::Cli => format!("[scf] {name}"),
+            Surface::Python => name.to_string(),
+        }
+    }
+
+    /// The setting that turns `name` on, for a hint.
+    fn set_true(self, name: &str) -> String {
+        match self {
+            Surface::Cli => format!("set [scf] {name} = true"),
+            Surface::Python => format!("pass {name}=True"),
+        }
+    }
+}
+
 /// How this run would solve its reference: the spin treatment, the
 /// configuration the solver receives, and the route that converges it.
-pub(crate) struct ReferencePlan<'a> {
+pub struct ReferencePlan<'a> {
     /// The reference's spin treatment.
     pub spin: Spin,
     /// The configuration handed to the solver (the open-shell routes change
@@ -36,6 +69,8 @@ pub(crate) struct ReferencePlan<'a> {
     /// Which driver converges it, with what the driver reads besides
     /// `config` (the DF-guess aux, for example). Compared as text.
     pub route: String,
+    /// How messages name the keys.
+    pub surface: Surface,
 }
 
 /// Identity field names the CLI adds to the library's.
@@ -43,10 +78,7 @@ const ROUTE_FIELD: &str = "cli_reference_route";
 const RANKS_FIELD: &str = "mpi_ranks";
 
 /// The identity of the reference this run would solve.
-pub(crate) fn identity(
-    sys: &PreparedSystem,
-    plan: &ReferencePlan<'_>,
-) -> Result<ScfIdentity, CliError> {
+pub fn identity(sys: &PreparedSystem, plan: &ReferencePlan<'_>) -> Result<ScfIdentity, CliError> {
     let mut id = ScfIdentity::new(
         sys.mol(),
         sys.basis_set(),
@@ -54,7 +86,7 @@ pub(crate) fn identity(
         &sys.op(),
         plan.config,
     )
-    .map_err(|e| CliError::msg(format!("[scf] reference identity: {e}")))?;
+    .map_err(|e| CliError::msg(format!("{}: {e}", plan.surface.key("reference identity"))))?;
     for (name, value) in [
         (ROUTE_FIELD, plan.route.clone()),
         (RANKS_FIELD, sys.ctx().size.to_string()),
@@ -91,8 +123,9 @@ fn energy_pieces(sys: &PreparedSystem, density_total: &ndarray::Array2<f64>) -> 
 /// that exists, not a directory or a symlink (the atomic write refuses a
 /// symlink only after the SCF), so a typo costs nothing rather than the whole
 /// SCF.
-pub(crate) fn check_save_path(path: &str) -> Result<(), CliError> {
-    let fail = |why: String| CliError::msg(format!("[scf] save_reference {path:?}: {why}"));
+pub fn check_save_path(surface: Surface, path: &str) -> Result<(), CliError> {
+    let key = surface.key("save_reference");
+    let fail = |why: String| CliError::msg(format!("{key} {path:?}: {why}"));
     let p = Path::new(path);
     if let Ok(meta) = std::fs::symlink_metadata(p) {
         if meta.file_type().is_symlink() {
@@ -117,24 +150,29 @@ pub(crate) fn check_save_path(path: &str) -> Result<(), CliError> {
 /// properties of the solve itself: the COSX final-grid pass (its energy is
 /// not the stored Fock's) and polarizable embedding (its induced dipoles are
 /// not stored).
-pub(crate) fn refuse_unstorable(
+pub fn refuse_unstorable(
+    surface: Surface,
     key: &str,
     config: &RhfConfig,
     k_builder: Option<ferric_scf::options::KBuilderKind>,
 ) -> Result<(), CliError> {
+    let key = surface.key(key);
     if k_builder == Some(ferric_scf::options::KBuilderKind::Cosx)
         && config.cosx.final_grid.is_some()
     {
+        let instead = match surface {
+            Surface::Cli => "Set [scf] cosx_final_pass = false, or use another exchange route",
+            Surface::Python => "Use another k_builder",
+        };
         return Err(CliError::msg(format!(
-            "[scf] {key} cannot be used with the COSX final-grid pass (on by default with \
+            "{key} cannot be used with the COSX final-grid pass (on by default with \
              COSX exchange): the reference's energy comes from a one-shot pass on another \
-             grid that the file does not store. Set [scf] cosx_final_pass = false, or use \
-             another exchange route"
+             grid that the file does not store. {instead}"
         )));
     }
     if config.polarizable.is_some() {
         return Err(CliError::msg(format!(
-            "[scf] {key} cannot be used with polarizable embedding ([qmmm] \
+            "{key} cannot be used with polarizable embedding ([qmmm] \
              polarizabilities_angstrom3): the converged induced dipoles are not stored"
         )));
     }
@@ -145,19 +183,20 @@ pub(crate) fn refuse_unstorable(
 /// written (no read could use it), with a warning; the run goes on. Under MPI
 /// only the root rank writes. `config` is the one the solver received: the
 /// in-core ERI route it recorded is stored with the file.
-pub(crate) fn save(
+pub fn save(
     path: &str,
     sys: &PreparedSystem,
     identity: ScfIdentity,
-    config: &RhfConfig,
+    plan: &ReferencePlan<'_>,
     result: &ScfResult,
 ) -> Result<(), CliError> {
+    let (key, config) = (plan.surface.key("save_reference"), plan.config);
     if !sys.ctx().is_root() {
         return Ok(());
     }
     if !result.converged {
         eprintln!(
-            "warning: [scf] save_reference {path:?} not written: the reference SCF did not \
+            "warning: {key} {path:?} not written: the reference SCF did not \
              converge (exit {:?}), and a read accepts only a converged reference",
             result.exit
         );
@@ -171,7 +210,7 @@ pub(crate) fn save(
             }
             ck.write(Path::new(path))
         })
-        .map_err(|e| CliError::msg(format!("[scf] save_reference {path:?}: {e}")))?;
+        .map_err(|e| CliError::msg(format!("{key} {path:?}: {e}")))?;
     eprintln!("[ferric] SCF reference saved to {path} (checksum {checksum:016x})");
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.note(
@@ -184,7 +223,7 @@ pub(crate) fn save(
 
 /// A reference read from a file, and what the run log and certificate record
 /// about it.
-pub(crate) struct ReadReference {
+pub struct ReadReference {
     pub result: ScfResult,
     /// The run log's `scf_reference` entry of the `run_end` record.
     pub record: serde_json::Value,
@@ -193,14 +232,16 @@ pub(crate) struct ReadReference {
 }
 
 /// Read `path` in place of the SCF this run would solve under `plan`.
-pub(crate) fn read(
+pub fn read(
     path: &str,
     sys: &PreparedSystem,
     current: &ScfIdentity,
     plan: &ReferencePlan<'_>,
     allow_other_build: bool,
 ) -> Result<ReadReference, CliError> {
-    let fail = |e: String| CliError::msg(format!("[scf] read_reference {path:?}: {e}"));
+    let surface = plan.surface;
+    let key = surface.key("read_reference");
+    let fail = |e: String| CliError::msg(format!("{key} {path:?}: {e}"));
     let ck = Checkpoint::read(Path::new(path)).map_err(|e| fail(e.to_string()))?;
     let verdict = ck
         .check(
@@ -213,11 +254,15 @@ pub(crate) fn read(
                 ferric_scf::checkpoint::CheckpointError::Identity(_) => {
                     "; this run would solve a different reference, so remove read_reference \
                      to solve it, or save one with these settings"
+                        .to_string()
                 }
                 ferric_scf::checkpoint::CheckpointError::OtherBuild { .. } => {
-                    "; set [scf] read_reference_other_build = true to accept it"
+                    format!(
+                        "; {} to accept it",
+                        surface.set_true("read_reference_other_build")
+                    )
                 }
-                _ => "",
+                _ => String::new(),
             };
             fail(format!("{e}{hint}"))
         })?;
@@ -256,7 +301,7 @@ pub(crate) fn read(
     }
     if verdict.build_override_used {
         eprintln!(
-            "warning: [scf] read_reference: the file was written by build {}, this is {}; \
+            "warning: {key}: the file was written by build {}, this is {}; \
              accepted on read_reference_other_build",
             verdict.file_build,
             build_stamp()

@@ -1,6 +1,7 @@
 //! Coupled-cluster bindings: moved verbatim from `lib.rs`.
 
 use super::*;
+use crate::reference_file::{solve_reference, with_read_route, DriverError, ReferenceFile};
 
 // ── CC (stub) ──
 
@@ -58,12 +59,15 @@ fn run_u_ccsd_inner(
     (scf_config, k_builder): (&RhfConfig, Option<&str>),
     cfg: &CcConfig,
     level: CcLevel,
-) -> Result<PyCcResult, ferric_core::FerricError> {
+    reference_file: Option<&ReferenceFile>,
+) -> Result<PyCcResult, DriverError> {
     let sys = PreparedSystem::new(mol, basis)?;
     let dfbs = sys.prepare_aux(aux)?;
     let scf_config = &with_k_builder(scf_config, k_builder)?;
     let mol = sys.mol();
-    let uhf = sys.solve_uhf(scf_config)?.into_converged()?;
+    let (uhf, read_from) = solve_reference(reference_file, &sys, scf_config, || {
+        sys.solve_uhf(scf_config)?.into_converged()
+    })?;
     let cc = ferric_cc::u_ccsd::u_ccsd_on(&dfbs, &uhf, cfg)?;
     let mut comps = std::collections::HashMap::from([
         ("e_aa".to_string(), cc.e_aa),
@@ -82,7 +86,10 @@ fn run_u_ccsd_inner(
     } else {
         None
     };
-    let reference = reference_certificate(mol, &uhf, scf_config, basis);
+    let reference = with_read_route(
+        reference_certificate(mol, &uhf, scf_config, basis),
+        read_from,
+    );
     Ok(PyCcResult {
         correlation_energy: cc.correlation_energy,
         t_correction,
@@ -237,6 +244,7 @@ struct CcsdArgs<'a> {
     memory_budget_gb: Option<f64>,
     ladder: &'a str,
     conv: ScfConv,
+    reference_file: Option<ReferenceFile>,
 }
 
 /// `run_ccsd` / `run_ccsd_t`: UCCSD(/T) for an open-shell molecule, else the
@@ -251,6 +259,7 @@ fn run_ccsd_level(py: Python<'_>, a: CcsdArgs<'_>, level: CcLevel) -> PyResult<P
     // basis are prepared: where the SCF refused an unknown spelling.
     let rhf_config = rhf_config_conv(None, budget_bytes_from_gb(a.memory_budget_gb), a.conv)?;
     let k_builder = a.k_builder;
+    let reference_file = a.reference_file.as_ref();
     if raw_mol.multiplicity > 1 {
         return py
             .allow_threads(|| {
@@ -261,9 +270,10 @@ fn run_ccsd_level(py: Python<'_>, a: CcsdArgs<'_>, level: CcLevel) -> PyResult<P
                     (&rhf_config, k_builder),
                     &cfg,
                     level,
+                    reference_file,
                 )
             })
-            .map_err(make_err);
+            .map_err(PyErr::from);
     }
     // Release the GIL for the SCF + CCSD (+ (T)) compute. All captured values
     // are owned clones/locals built above, so nothing Python-borrowed crosses
@@ -284,18 +294,23 @@ fn run_ccsd_level(py: Python<'_>, a: CcsdArgs<'_>, level: CcLevel) -> PyResult<P
     // agree to 1.9e-16 when fed identical amplitudes, and to 7.8e-10..6.9e-7
     // against PySCF's `ccsd_t()` — inside the ~5e-6 Ha RI floor.
     let (r, t_correction, certificate_data) = py
-        .allow_threads(|| -> Result<_, ferric_core::FerricError> {
+        .allow_threads(|| -> Result<_, DriverError> {
             let sys = PreparedSystem::new(raw_mol, &ebasis)?;
             let aux = sys.prepare_aux(&eaux)?;
             let rhf_config = with_k_builder(&rhf_config, k_builder)?;
-            let rhf = sys.solve_rhf(&rhf_config)?.into_converged()?;
+            let (rhf, read_from) = solve_reference(reference_file, &sys, &rhf_config, || {
+                sys.solve_rhf(&rhf_config)?.into_converged()
+            })?;
             let mol = sys.mol();
             let r = ccsd_closed_shell_on(&aux, &rhf, &cfg)?;
             let e_t = match level {
                 CcLevel::Ccsd => None,
                 CcLevel::CcsdT => Some(ccsd_t_closed_shell_on(&aux, &rhf, &r, &cfg)?),
             };
-            let reference = reference_certificate(mol, &rhf, &rhf_config, &ebasis);
+            let reference = with_read_route(
+                reference_certificate(mol, &rhf, &rhf_config, &ebasis),
+                read_from,
+            );
             let certificate = ferric_cc::certificate::cc_certificate(
                 level.kind(),
                 &reference,
@@ -316,7 +331,7 @@ fn run_ccsd_level(py: Python<'_>, a: CcsdArgs<'_>, level: CcLevel) -> PyResult<P
             };
             Ok((r, e_t, certificate_data))
         })
-        .map_err(make_err)?;
+        .map_err(PyErr::from)?;
     let (ladder_route, ladder_block) = py_ladder_route(&r);
     Ok(PyCcResult {
         correlation_energy: r.correlation_energy,
@@ -335,8 +350,12 @@ fn run_ccsd_level(py: Python<'_>, a: CcsdArgs<'_>, level: CcLevel) -> PyResult<P
 /// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
 /// `run_rhf` (`run_uhf` for an open-shell molecule) solves.
 /// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
+///
+/// `save_reference` / `read_reference` / `read_reference_other_build`: write the
+/// converged reference SCF to a file, or read one in place of the solve
+/// (`crate::reference_file`; the files `run_rimp2` writes and reads too).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto", scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto", scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, save_reference=None, read_reference=None, read_reference_other_build=false))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_ccsd(
     py: Python<'_>,
@@ -350,8 +369,17 @@ pub(crate) fn run_ccsd(
     scf_max_iter: Option<usize>,
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
+    save_reference: Option<String>,
+    read_reference: Option<String>,
+    read_reference_other_build: bool,
 ) -> PyResult<PyCcResult> {
     let conv = ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv);
+    let reference_file = ReferenceFile::new(
+        "run_ccsd",
+        save_reference,
+        read_reference,
+        read_reference_other_build,
+    )?;
     let args = CcsdArgs {
         mol,
         basis_set,
@@ -361,6 +389,7 @@ pub(crate) fn run_ccsd(
         memory_budget_gb,
         ladder,
         conv,
+        reference_file,
     };
     run_ccsd_level(py, args, CcLevel::Ccsd)
 }
@@ -371,8 +400,12 @@ pub(crate) fn run_ccsd(
 /// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
 /// `run_rhf` (`run_uhf` for an open-shell molecule) solves.
 /// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
+///
+/// `save_reference` / `read_reference` / `read_reference_other_build`: write the
+/// converged reference SCF to a file, or read one in place of the solve
+/// (`crate::reference_file`; the files `run_rimp2` writes and reads too).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto", scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto", scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, save_reference=None, read_reference=None, read_reference_other_build=false))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_ccsd_t(
     py: Python<'_>,
@@ -386,8 +419,17 @@ pub(crate) fn run_ccsd_t(
     scf_max_iter: Option<usize>,
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
+    save_reference: Option<String>,
+    read_reference: Option<String>,
+    read_reference_other_build: bool,
 ) -> PyResult<PyCcResult> {
     let conv = ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv);
+    let reference_file = ReferenceFile::new(
+        "run_ccsd_t",
+        save_reference,
+        read_reference,
+        read_reference_other_build,
+    )?;
     let args = CcsdArgs {
         mol,
         basis_set,
@@ -397,6 +439,7 @@ pub(crate) fn run_ccsd_t(
         memory_budget_gb,
         ladder,
         conv,
+        reference_file,
     };
     run_ccsd_level(py, args, CcLevel::CcsdT)
 }
