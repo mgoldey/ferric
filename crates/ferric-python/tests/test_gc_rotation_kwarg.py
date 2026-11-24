@@ -5,7 +5,8 @@ internal contraction rotation of generally contracted bases in the exact
 four-centre J/K builds. ``"off"`` is the unrotated build, ``"auto"`` /
 ``"rot1"`` agree with it to the screening noise (the Rust tests in
 ``crates/ferric-scf/tests/gc_rotation.rs`` hold the J/K-level bars), a basis
-with nothing to rotate is unchanged bit for bit, and any other value raises.
+with nothing to rotate is unchanged bit for bit, and any other value (other
+cases and padded spellings included) raises.
 """
 
 from __future__ import annotations
@@ -47,8 +48,10 @@ def test_gc_rotation_values_agree_and_bad_value_raises(name):
     }
     assert abs(e["auto"] - e["off"]) <= 1e-10, e
     assert abs(e["rot1"] - e["off"]) <= 1e-10, e
-    with pytest.raises(ValueError, match="gc_rotation"):
-        run(mol, bs, gc_rotation="on", **extra, **EXACT, **TIGHT)
+    # The spelling is exact, as for [scf] gc_rotation.
+    for bad in ("on", "OFF", "Auto", " auto"):
+        with pytest.raises(ValueError, match="gc_rotation"):
+            run(mol, bs, gc_rotation=bad, **extra, **EXACT, **TIGHT)
 
 
 @pytest.mark.parametrize("name", ["rhf", "uhf"])

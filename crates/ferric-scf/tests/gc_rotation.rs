@@ -5,7 +5,16 @@
 //!   J and K, closed and open shell, full and incremental, Schwarz and CSB
 //!   screening: max |Δ| ≤ 1e-11 at the production `integral_thresh` (1e-12).
 //!   SCF energies (RHF, UHF and ROHF, cc-pVDZ / cc-pVTZ / aug-cc-pVDZ, d and f
-//!   shells) within 1e-10 Ha.
+//!   shells; TRAH and Newton forced on) within 1e-11 Ha (measured at most
+//!   1.2e-12, butane at default convergence). Through the entry points that
+//!   follow the SCF's bounds: RHF, UHF, ROHF, RKS and UKS (PBE0) analytic
+//!   gradients within 1e-10 Eh/bohr (measured at most 1.1e-11), the RHF
+//!   Hessian (its CPHF) within 1e-9, stability eigenvalues within 1e-11, the
+//!   KS Z-vector (see `off_config_reaches_the_consumers_bitwise`).
+//! * The rule of who rotates: config `off` recorded on the bounds is
+//!   bitwise the consumers on fresh bounds (`main`) and bitwise an unset
+//!   config under `FERRIC_GC_ROTATE=off` (a child process with the variable
+//!   set).
 //!   The cases include a transition metal (Cu, cc-pVDZ), ECP bases
 //!   (cc-pVDZ-PP on Cu and Ag), a ghost atom, a mixed per-atom basis and a
 //!   Cartesian generally contracted basis.
@@ -18,7 +27,8 @@
 //!   gives J and K as exactly symmetric as the unrotated builder's.
 //!
 //! The SCF tests choose the rotation through `RhfConfig::gc_rotation`, never
-//! by setting `FERRIC_GC_ROTATE`, so no test mutates the environment.
+//! by setting `FERRIC_GC_ROTATE`, so no test mutates its own environment
+//! (the variable is set only on child processes).
 
 use ferric_core::basis;
 use ferric_core::basis::BasisSet;
@@ -37,7 +47,9 @@ use ndarray::Array2;
 
 const THRESH: f64 = 1e-12;
 const JK_TOL: f64 = 1e-11;
-const E_TOL: f64 = 1e-10;
+const E_TOL: f64 = 1e-11;
+/// Analytic gradients, rotated against unrotated (Eh/bohr).
+const GRAD_TOL: f64 = 1e-10;
 
 fn load(stem: &str, multiplicity: usize) -> Molecule {
     let text = std::fs::read_to_string(format!("../../testdata/molecules/{stem}.xyz"))
@@ -690,9 +702,11 @@ fn stability_eigenvalues_rotated_match_unrotated() {
         let (i0, x0) = lowest(&mol, uhf, GcRotate::Off);
         let (i1, x1) = lowest(&mol, uhf, GcRotate::Auto);
         eprintln!("{label}: internal {i1:.12} vs off {i0:.12}; external {x1:?} vs {x0:?}");
-        assert!((i1 - i0).abs() <= 1e-8, "{label} internal: {i1} vs {i0}");
+        // Measured: equal to 12 printed digits (internal), 4e-15
+        // (external).
+        assert!((i1 - i0).abs() <= 1e-11, "{label} internal: {i1} vs {i0}");
         if let (Some(a), Some(b)) = (x0, x1) {
-            assert!((a - b).abs() <= 1e-8, "{label} external: {a} vs {b}");
+            assert!((a - b).abs() <= 1e-11, "{label} external: {a} vs {b}");
         }
         assert_eq!(x0.is_some(), x1.is_some());
     }
@@ -700,7 +714,7 @@ fn stability_eigenvalues_rotated_match_unrotated() {
 
 /// The analytic gradient's four-centre derivative walk runs on the rotated
 /// shells with the rotated densities; RHF and UHF gradients agree with the
-/// unrotated ones to 1e-9 Eh/bohr.
+/// unrotated ones to `GRAD_TOL`.
 #[test]
 fn gradient_rotated_matches_unrotated() {
     use ferric_scf::gradient::{rhf_gradient, uhf_gradient};
@@ -732,10 +746,319 @@ fn gradient_rotated_matches_unrotated() {
         let g1 = grad(stem, mult, name, GcRotate::Auto);
         let e = max_abs(&g1, &g0);
         eprintln!("{stem}/{name} gradient: max|dG| {e:.2e} Eh/bohr");
-        assert!(e <= 1e-9, "{stem}/{name}: {e:e}");
+        assert!(e <= GRAD_TOL, "{stem}/{name}: {e:e}");
         assert!(
             !bits_equal(&g1, &g0),
             "{stem}/{name}: the gradient did not rotate"
         );
+    }
+}
+
+/// Rounding-level anchor of the rotated in-core store: at threshold 0 its
+/// J and K equal `T X' Tᵀ`, with `X'` the same contraction on an unrotated
+/// store of the rotated basis at the densely formed `D' = Tᵀ D T`, to
+/// `16 u ‖T‖∞² max|X|` (only the two small transforms reassociate). The
+/// rotated store is not a valid `abs_copy` source (refused).
+#[test]
+fn rotated_incore_store_matches_dense_t_at_threshold_zero() {
+    use ferric_scf::incore_jk::{attach_for_scf, IncoreEri};
+    let ctx = ParallelContext::default();
+    for (label, mol, name) in [
+        ("water/cc-pvtz", load("water", 1), "cc-pvtz"),
+        ("c2h4/cc-pvdz", load("c2h4", 1), "cc-pvdz"),
+    ] {
+        let prep = PreparedBasis::new(&mol, &basis::bundled(name).unwrap()).unwrap();
+        let n = prep.nbasis();
+        let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+        let mut config = RhfConfig::default().with_gc_rotation(GcRotate::Auto);
+        config.eri = EriMode::Incore;
+        let store = attach_for_scf(&ctx, &prep, &bounds, &config, usize::MAX / 4, (true, 0.0))
+            .unwrap()
+            .expect("eri = incore attaches a store");
+        assert!(store.rotated(), "{label}: the store did not rotate");
+        assert!(
+            store.abs_copy().is_err(),
+            "{label}: abs_copy of a rotated store"
+        );
+        let rb = RotatedBasis::detect_prepared(&prep, RotationLevel::Ogc)
+            .unwrap()
+            .unwrap();
+        let t = rb.dense_t();
+        let tn2 = norm_inf(&t).powi(2);
+        let plan = IncoreEri::plan(&rb.prep, usize::MAX / 4).unwrap();
+        let charge = plan.commit().unwrap();
+        let inner = IncoreEri::build(&ctx, &rb.prep, Operator::coulomb(), &plan, charge).unwrap();
+        assert!(!inner.rotated());
+        for (seed, sym) in [(0, true), (5, false)] {
+            let mut d = density(n, seed);
+            if !sym {
+                d[(0, n - 1)] += 0.3;
+            }
+            let (j, k) = store.jk_multi(&[&d], &[&d]).unwrap();
+            let dp = t.t().dot(&d).dot(&t);
+            let (jp, kp) = inner.jk_multi(&[&dp], &[&dp]).unwrap();
+            for (what, x, xp) in [("J", &j[0], &jp[0]), ("K", &k[0], &kp[0])] {
+                let dense = t.dot(xp).dot(&t.t());
+                let scale = dense.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+                let bar = 16.0 * f64::EPSILON / 2.0 * tn2 * scale;
+                let e = max_abs(x, &dense);
+                eprintln!(
+                    "{label} in-core sym {sym} {what}: max|store - T X' Tᵀ| {e:.2e} (bar {bar:.2e})"
+                );
+                assert!(e <= bar, "{label} {what}: {e:e} above {bar:e}");
+                assert!(
+                    bar < 1e-12,
+                    "{label}: the bar {bar:e} cannot see a 1e-12 defect"
+                );
+            }
+        }
+        // A density of the wrong size is an error, not a panic.
+        assert!(store
+            .jk_multi(&[&Array2::zeros((n + 1, n + 1))], &[])
+            .is_err());
+    }
+}
+
+fn hash_bits<'a>(arrays: impl IntoIterator<Item = &'a Array2<f64>>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for a in arrays {
+        a.dim().hash(&mut h);
+        for v in a.iter() {
+            v.to_bits().hash(&mut h);
+        }
+    }
+    h.finish()
+}
+
+/// Set in the environment of the child runs.
+const CHILD: &str = "FERRIC_TEST_GC_ROTATION_CHILD";
+
+/// Water / cc-pVDZ, closed-shell PBE0 on the direct route, SCF converged
+/// unrotated (so every run starts from the same bits); then, on bounds that
+/// carry `request` (`None`: fresh bounds, nothing recorded — the consumers
+/// of `main`, where only the SCF's `DirectJK` rotated), the consumers that
+/// follow the bounds: the analytic KS gradient, the KS Z-vector relaxation
+/// gradient (`zvector_ks::ResponseFock`: Coulomb and exchange response
+/// J/K, the Hessian products) and a pooled `build_jk`.
+fn consumers(request: Option<Option<GcRotate>>) -> Vec<Array2<f64>> {
+    use ferric_scf::ks_gradient::ks_gradient_closed;
+    use ferric_scf::zvector_ks::relaxation_gradient_closed;
+    let ctx = ParallelContext::default();
+    let mol = load("water", 1);
+    let bs = basis::bundled("cc-pvdz").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let op = Operator::coulomb();
+    let scf_bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_gc_rotation(GcRotate::Off);
+    cfg.xc = Some("PBE0".into());
+    // Four-centre J and K (a functional defaults to RI-JK).
+    cfg.df_j_aux = Some(String::new());
+    cfg.df_k_aux = Some(String::new());
+    cfg.eri = EriMode::Direct;
+    let res = solve_rhf(&ctx, &mol, &prep, op, &scf_bounds, &cfg).unwrap();
+    assert!(res.converged);
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    if let Some(r) = request {
+        bounds.gc.set_request(r);
+    }
+    let n = prep.nbasis();
+    let g = ks_gradient_closed(&mol, &prep, &bs, op, &bounds, "PBE0", &res, None).unwrap();
+    let v = density(n, 3);
+    let z =
+        relaxation_gradient_closed(&ctx, &mol, &prep, &bs, op, &bounds, &cfg, &res, &v).unwrap();
+    let d = density(n, 2);
+    let (mut j, mut k) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
+    ferric_scf::rhf::build_jk(&ctx, &prep, &bounds, THRESH, &d, &mut j, &mut k).unwrap();
+    vec![g, z.gradient, z.z, j, k]
+}
+
+/// The blocker of the review: `gc_rotation = "off"` reaches the consumers.
+/// Config `Off` recorded on the bounds is bitwise the consumers on fresh
+/// bounds (`main`), and bitwise an unset config under
+/// `FERRIC_GC_ROTATE=off` (a child process of this binary with the
+/// variable set; no test mutates its own environment). `Auto` rotates
+/// them (bits differ) and agrees: the KS gradient and the pooled J, K
+/// within `GRAD_TOL`, `Z` within 1e-12 and the Z-vector gradient within
+/// 1e-9 (measured differences printed).
+#[test]
+fn off_config_reaches_the_consumers_bitwise() {
+    let off = consumers(Some(Some(GcRotate::Off)));
+    let fresh = consumers(None);
+    let names = ["KS gradient", "Z-vector gradient", "Z", "J", "K"];
+    for ((what, a), b) in names.iter().zip(&off).zip(&fresh) {
+        assert!(
+            bits_equal(a, b),
+            "{what}: off is not the fresh-bounds build"
+        );
+    }
+    let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+    cmd.args(["child_prints_unset_config_bits", "--exact", "--nocapture"])
+        .env(CHILD, "1")
+        .env("FERRIC_GC_ROTATE", "off");
+    let out = cmd.output().expect("spawn the child");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "child failed: {stdout}");
+    let child = stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("GC_BITS "))
+        .unwrap_or_else(|| panic!("no GC_BITS line: {stdout}"));
+    assert_eq!(
+        u64::from_str_radix(child.trim(), 16).unwrap(),
+        hash_bits(&off),
+        "config off is not the unset config under FERRIC_GC_ROTATE=off"
+    );
+    let auto = consumers(Some(Some(GcRotate::Auto)));
+    for ((what, a), b) in names.iter().zip(&auto).zip(&off) {
+        let e = max_abs(a, b);
+        eprintln!("water/cc-pvdz PBE0 {what}: auto vs off max|d| {e:.2e}");
+        assert!(!bits_equal(a, b), "{what}: auto did not rotate");
+        // Measured: KS gradient 8.8e-13, Z-vector gradient 3.0e-10 (of a
+        // gradient of order 1 for this arbitrary `V`), Z 4.9e-14, J and K
+        // a few 1e-15.
+        let bar = match *what {
+            "Z-vector gradient" => 1e-9,
+            "Z" => 1e-12,
+            _ => GRAD_TOL,
+        };
+        assert!(e <= bar, "{what}: {e:e} above {bar:e}");
+    }
+}
+
+/// Child entry point of `off_config_reaches_the_consumers_bitwise`: the
+/// consumers on bounds that recorded an unset config, their bits printed.
+/// A no-op outside the child.
+#[test]
+fn child_prints_unset_config_bits() {
+    if std::env::var_os(CHILD).is_none() {
+        return;
+    }
+    println!("GC_BITS {:016x}", hash_bits(&consumers(Some(None))));
+}
+
+/// The KS gradients through their entry points (RKS and UKS with a hybrid,
+/// so the scaled-K derivative wrappers run) and the ROHF gradient, on the
+/// SCF's bounds: rotated against unrotated within 1e-10 Eh/bohr.
+#[test]
+fn ks_and_rohf_gradients_rotated_match_unrotated() {
+    use ferric_scf::gradient::rohf_gradient;
+    use ferric_scf::ks_gradient::{ks_gradient_closed, ks_gradient_uks};
+    let ctx = ParallelContext::default();
+    let run = |stem: &str, mult: usize, xc: Option<&str>, mode: GcRotate| {
+        let mol = load(stem, mult);
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let mut c = RhfConfig::default()
+            .with_energy_conv(1e-11)
+            .with_density_conv(1e-9)
+            .with_gc_rotation(mode);
+        c.xc = xc.map(Into::into);
+        // Four-centre J and K (a functional defaults to RI-JK).
+        c.df_j_aux = Some(String::new());
+        c.df_k_aux = Some(String::new());
+        c.eri = EriMode::Direct;
+        match (mult, xc) {
+            (1, Some(x)) => {
+                let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &c).unwrap();
+                assert!(r.converged);
+                ks_gradient_closed(&mol, &prep, &bs, op, &bounds, x, &r, None).unwrap()
+            }
+            (_, Some(x)) => {
+                let r = solve_uhf(&ctx, &mol, &prep, &bounds, &c).unwrap();
+                assert!(r.converged);
+                ks_gradient_uks(&mol, &prep, &bs, op, &bounds, x, &r, None).unwrap()
+            }
+            (_, None) => {
+                let r = solve_rohf(&ctx, &mol, &prep, op, &bounds, &c).unwrap();
+                assert!(r.converged);
+                rohf_gradient(&mol, &prep, op, &bounds, &r, None).unwrap()
+            }
+        }
+    };
+    for (label, stem, mult, xc) in [
+        ("water RKS PBE0", "water", 1, Some("PBE0")),
+        ("OH UKS PBE0", "oh", 2, Some("PBE0")),
+        ("NH2 ROHF", "nh2", 2, None),
+    ] {
+        let g0 = run(stem, mult, xc, GcRotate::Off);
+        let g1 = run(stem, mult, xc, GcRotate::Auto);
+        let e = max_abs(&g1, &g0);
+        eprintln!("{label} gradient: max|dG| {e:.2e} Eh/bohr");
+        assert!(e <= GRAD_TOL, "{label}: {e:e}");
+        assert!(
+            !bits_equal(&g1, &g0),
+            "{label}: the gradient did not rotate"
+        );
+    }
+}
+
+/// A CPHF consumer: the analytic RHF Hessian (its CPHF runs the
+/// multi-density homogeneous pooled build on the SCF's bounds; the
+/// second-derivative integrals stay unrotated). Rotated against unrotated
+/// within 1e-9 Eh/bohr² (printed).
+#[test]
+fn hessian_cphf_rotated_matches_unrotated() {
+    use ferric_scf::hessian::rhf_hessian;
+    let ctx = ParallelContext::default();
+    let mol = load("water", 1);
+    let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+    let op = Operator::coulomb();
+    let run = |mode: GcRotate| {
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let mut c = RhfConfig::default()
+            .with_energy_conv(1e-11)
+            .with_density_conv(1e-9)
+            .with_gc_rotation(mode);
+        c.eri = EriMode::Direct;
+        let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &c).unwrap();
+        assert!(r.converged);
+        rhf_hessian(&ctx, &mol, &prep, op, &bounds, &r, &c).unwrap()
+    };
+    let h0 = run(GcRotate::Off);
+    let h1 = run(GcRotate::Auto);
+    let e = max_abs(&h1, &h0);
+    eprintln!("water/cc-pvdz RHF Hessian: max|dH| {e:.2e} Eh/bohr^2");
+    assert!(e <= 1e-9, "{e:e}");
+    assert!(!bits_equal(&h1, &h0), "the Hessian did not rotate");
+}
+
+/// Forced second-order SCF: TRAH from the first iterations (RHF) and the
+/// PCG Newton step (UHF) run their J/K on the rotated shells; energies
+/// within `E_TOL` of the unrotated runs.
+#[test]
+fn second_order_scf_rotated_matches_unrotated() {
+    let ctx = ParallelContext::default();
+    let run = |stem: &str, mult: usize, mode: GcRotate| {
+        let mol = load(stem, mult);
+        let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let mut c = RhfConfig::default()
+            .with_energy_conv(1e-11)
+            .with_density_conv(1e-9)
+            .with_gc_rotation(mode);
+        c.eri = EriMode::Direct;
+        let r = if mult == 1 {
+            c.trah_trigger = Some(1.0);
+            solve_rhf(&ctx, &mol, &prep, op, &bounds, &c)
+        } else {
+            c.newton_trigger = 1.0;
+            solve_uhf(&ctx, &mol, &prep, &bounds, &c)
+        }
+        .unwrap();
+        assert!(r.converged);
+        (r.energy, r.iterations)
+    };
+    for (label, stem, mult) in [("water RHF TRAH", "water", 1), ("OH UHF Newton", "oh", 2)] {
+        let (e0, i0) = run(stem, mult, GcRotate::Off);
+        let (e1, i1) = run(stem, mult, GcRotate::Auto);
+        let de = (e1 - e0).abs();
+        eprintln!("{label}: |dE| {de:.2e}, iterations {i1} vs {i0}");
+        assert!(de <= E_TOL, "{label}: |dE| = {de:e}");
     }
 }

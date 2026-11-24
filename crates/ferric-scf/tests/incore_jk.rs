@@ -87,12 +87,8 @@ fn direct_jk(prep: &PreparedBasis, d: &Array2<f64>) -> (Array2<f64>, Array2<f64>
     let ctx = ParallelContext::default();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), prep).unwrap();
     assert!(bounds.incore.get().is_none());
-    // The rounding bar is that of the store's own (unrotated) integrals
-    // against the unrotated walk: pin the walk, as the contraction rotation
-    // (`direct_jk::gc_rotation`) would reassociate it on cc-pVDZ.
-    bounds
-        .gc
-        .set_request(Some(ferric_scf::direct_jk::GcRotate::Off));
+    // Fresh bounds: no SCF recorded a contraction rotation on them, so the
+    // walk is the unrotated one the rounding bar is about.
     let n = d.nrows();
     let (mut j, mut k) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
     ferric_scf::rhf::build_jk(&ctx, prep, &bounds, 0.0, d, &mut j, &mut k).unwrap();
@@ -127,11 +123,11 @@ fn anchor(label: &str, prep: &PreparedBasis, eri: &IncoreEri, ds: &[Array2<f64>]
     let l = n * n + nsh2 + 1;
     let l_k = 7 * n * n + nsh2 + 3 * n + 6;
     let refs: Vec<&Array2<f64>> = ds.iter().collect();
-    let (js, ks) = eri.jk_multi(&refs, &refs);
-    let abs = eri.abs_copy();
+    let (js, ks) = eri.jk_multi(&refs, &refs).unwrap();
+    let abs = eri.abs_copy().unwrap();
     let dabs: Vec<Array2<f64>> = ds.iter().map(|d| d.mapv(f64::abs)).collect();
     let dabs_refs: Vec<&Array2<f64>> = dabs.iter().collect();
-    let (ja, ka) = abs.jk_multi(&dabs_refs, &dabs_refs);
+    let (ja, ka) = abs.jk_multi(&dabs_refs, &dabs_refs).unwrap();
     let (mut wj, mut wk) = (0.0f64, 0.0f64);
     for (i, d) in ds.iter().enumerate() {
         let (jd, kd) = direct_jk(prep, d);
@@ -198,14 +194,14 @@ fn incore_matches_direct_on_a_40_density_block() {
     // contraction takes OpenBLAS's GEMV path, whose summation order differs
     // from the many-column GEMM's in the last bits).
     let refs: Vec<&Array2<f64>> = ds.iter().collect();
-    let (jb, kb) = eri.jk_multi(&refs, &refs);
-    let abs = eri.abs_copy();
+    let (jb, kb) = eri.jk_multi(&refs, &refs).unwrap();
+    let abs = eri.abs_copy().unwrap();
     let l_k = 7 * n * n + prep.nshells() * prep.nshells() + 3 * n + 6;
     for (i, d) in ds.iter().enumerate() {
-        let (j1, k1) = eri.jk_multi(&[d], &[d]);
+        let (j1, k1) = eri.jk_multi(&[d], &[d]).unwrap();
         assert_eq!(bits(&j1[0]), bits(&jb[i]), "J[{i}] block vs single");
         let da = d.mapv(f64::abs);
-        let ka = abs.exchange(&[&da]);
+        let ka = abs.exchange(&[&da]).unwrap();
         check_bar(
             &format!("K[{i}] block vs single"),
             &k1[0],
@@ -246,7 +242,7 @@ fn incore_bits_do_not_depend_on_the_thread_count() {
             .unwrap()
             .install(|| {
                 let eri = store(&prep);
-                let (j, k) = eri.jk_multi(&refs, &refs);
+                let (j, k) = eri.jk_multi(&refs, &refs).unwrap();
                 let mut out: Vec<u64> = j.iter().flat_map(bits).collect();
                 out.extend(k.iter().flat_map(bits));
                 out
