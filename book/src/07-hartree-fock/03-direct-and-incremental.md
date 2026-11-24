@@ -345,6 +345,16 @@ settings (incremental builds, 10 iterations) took 260 s of wall time and
 516 s of CPU time with `off`, and 128 s and 195 s with `auto`; def2-SVP took
 70 s and 141 s.
 
+A second set of measured runs (not tests) covers the builds that follow the
+SCF. Same settings, 2 rayon threads, load average about 2 (the runs' own two
+threads). Butane / cc-pVDZ (106 functions) with `check_stability = true`: the
+RHF internal and external Davidson solves made 435 pooled $J/K$ builds with
+`off` and 425 with `auto`, at a median 1.51 s and 0.73 s each, and the whole
+run took 685 s and 322 s. The rotated basis was set up once for the
+geometry, in 7 ms, and shared by the SCF and all the stability builds. In the
+same session the per-build SCF wall went from 5.49 s to 2.51 s on hexane and
+from 13.5 s to 5.6 s on octane.
+
 ## When the incremental build runs {#direct-and-incremental-incremental-build-runs}
 
 The incremental build is closed-shell, direct-only and conditional:
