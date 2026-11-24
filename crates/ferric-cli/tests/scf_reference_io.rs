@@ -261,6 +261,15 @@ fn a_uhf_reference_saved_by_rimp2_gives_rimp2_and_oo_rimp2_their_fresh_energies(
     save_then_read("uhf", OH, [("rimp2", ""), ("oo-rimp2", "")]);
 }
 
+/// Open-shell PDEP-RPA consumes the shared UHF + MOM reference (its arm
+/// solved a second, identical one before), so it reads a file it saved and
+/// gets the fresh energy.
+#[test]
+fn a_uhf_reference_saved_by_pdep_rpa_gives_pdep_rpa_its_fresh_energy() {
+    let rpa = "[rpa]\nauxbasis = \"cc-pvdz-ri\"\n";
+    save_then_read("uhf_pdep", OH, [("pdep-rpa", rpa), ("pdep-rpa", rpa)]);
+}
+
 fn saved_water(tag: &str) -> PathBuf {
     let file = scratch().join(format!("{tag}.npz"));
     let _ = std::fs::remove_file(&file);
@@ -436,11 +445,6 @@ fn the_keys_are_refused_where_no_shared_reference_is_solved() {
                 &format!("stability_descent = true\n{}", read_key(&file)),
             ),
             "stability_descent",
-        ),
-        (
-            "open_shell_pdep_rpa",
-            input(OH, "sto-3g", "pdep-rpa", &read_key(&file)),
-            "open-shell pdep-rpa",
         ),
         (
             "stability",

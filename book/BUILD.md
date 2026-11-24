@@ -133,11 +133,13 @@ A red proof stops the job at step 2, before the book is built. A box whose
 script is not in the runner's case list fails at step 3.
 
 **Slow proofs.** The runner marks scripts with a runtime budget at or
-above its slow threshold (600 s on `docs/derivations-backfill`) as
-`validation`, the weekly tier. Pull requests run the fast tier. The job that
-publishes the book runs every proof, fast and slow, in the same job before it
-deploys. Publishing therefore never rests on a weekly result from another
-commit.
+above its slow threshold (`SLOW_S`, 600 s) as `validation`. Pull requests and
+tag pushes run the fast tier only. The nightly schedule and
+`workflow_dispatch` also run the slow tier, in the `slow-proofs` job: one job
+per slow script (`scripts/select_proofs.py --slow` lists them), each running
+the script and its mutations with `pytest -m validation`. No other workflow
+runs the slow tier, so a slow proof that breaks is caught by the next nightly
+run, not by the pull request.
 
 **PDF.** A separate job on release tags runs steps 1 to 3, then pandoc. It
 refuses boxes marked `runner_state=pending-merge` and enforces the ceiling on
@@ -276,10 +278,14 @@ reads that list from `FERRIC_PROOF_SCRIPTS`:
 - `none` for book prose and `crates/*/theory.md`. The step then logs "no proof inputs changed".
 
 The registry test, the checker's tests and the selector's tests run every time; together they take
-about 15 s. The nightly schedule (07:23 UTC), tag pushes and `workflow_dispatch` run every proof.
-"Every proof" means the runner's fast tier. The `validation` tier is deselected by `addopts` in
-`pyproject.toml`, as it was before. To run one script's proofs locally:
-`FERRIC_PROOF_SCRIPTS=omega_ri_sympy.py python3 -m pytest --noconftest crates/ferric-python/tests/test_derivation_scripts.py`.
+about 15 s. The nightly schedule (07:23 UTC), tag pushes and `workflow_dispatch` run every proof
+of the runner's fast tier in the `html` job. The `validation` (slow) tier is deselected there by
+`addopts` in `pyproject.toml`. The nightly schedule and `workflow_dispatch` run it in the separate
+`slow-proofs` job, one matrix job per slow script, so the longest script sets the wall time
+(`uks_xc_hessian_sympy.py`: the script and two mutations at a 1800 s budget, about 90 min; the
+job's timeout is 240 min). Pull requests and tags never run it. To run one script's proofs locally:
+`FERRIC_PROOF_SCRIPTS=omega_ri_sympy.py python3 -m pytest --noconftest crates/ferric-python/tests/test_derivation_scripts.py`
+(add `-m validation` for a slow-tier script).
 
 Appendices live beside `SUMMARY.md` as `book/src/appendix-X-name.md`. A (verified equations and
 proof scripts), B (functions cited) and C (validation grades) are generated and committed; D is

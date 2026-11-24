@@ -1,6 +1,7 @@
 //! MP2-family bindings: moved verbatim from `lib.rs`.
 
 use super::*;
+use crate::reference_file::{solve_reference, with_read_route, DriverError, ReferenceFile};
 
 // ── RI-MP2 ──
 
@@ -267,11 +268,14 @@ pub(crate) fn rimp2_energies(
     rhf_config: &RhfConfig,
     mp2_config: &RiMp2Config,
     with_gradient: bool,
-) -> Result<Rimp2Energies, ferric_core::FerricError> {
+    reference_file: Option<&ReferenceFile>,
+) -> Result<Rimp2Energies, DriverError> {
     let sys = PreparedSystem::new(mol, basis_set)?;
     let dfbs = sys.prepare_aux(auxbasis)?;
     let (mol, op) = (sys.mol(), sys.op());
-    let scf = sys.solve_reference(rhf_config)?;
+    let (scf, read_from) = solve_reference(reference_file, &sys, rhf_config, || {
+        sys.solve_reference(rhf_config)
+    })?;
     let (mp2_corr, total_energy, precision) = if scf.spin == ferric_scf::Spin::Unrestricted {
         let u = ferric_mp2::u_rimp2::u_ri_mp2_on(&dfbs, &scf, mp2_config)?;
         (u.mp2_corr, u.total_energy, u.precision)
@@ -290,7 +294,10 @@ pub(crate) fn rimp2_energies(
             )
         })
         .transpose()?;
-    let reference = reference_certificate(mol, &scf, rhf_config, basis_set);
+    let reference = with_read_route(
+        reference_certificate(mol, &scf, rhf_config, basis_set),
+        read_from,
+    );
     let certificate = ferric_mp2::certificate::with_rimp2_envelope(
         ferric_mp2::certificate::rimp2_certificate(
             &reference,
@@ -462,8 +469,13 @@ pub(crate) fn local_correlation_operator(
 /// `local="amplitude-threshold"` refuses an ECP basis set: its localized virtual space cannot count
 /// valence virtuals on ECP atoms.
 /// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
+///
+/// `save_reference` / `read_reference` / `read_reference_other_build` (exact
+/// energy only): write the converged reference SCF to a file, or read one in
+/// place of the solve (`crate::reference_file`; shared with `run_ccsd` and
+/// `run_ccsd_t`).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None, fock_screen=None, att_operator=None, omega=None, att_r0=None, att_omega=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, virtual_space=None, virtual_tau=None, virtual_tau_loose=None, virtual_solve_radius=None, virtual_boys_tau=None, with_gradient=false, scf_eri=None, lambda_boys=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None, fock_screen=None, att_operator=None, omega=None, att_r0=None, att_omega=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, virtual_space=None, virtual_tau=None, virtual_tau_loose=None, virtual_solve_radius=None, virtual_boys_tau=None, with_gradient=false, scf_eri=None, lambda_boys=None, save_reference=None, read_reference=None, read_reference_other_build=false))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_rimp2(
     py: Python<'_>,
@@ -504,7 +516,16 @@ pub(crate) fn run_rimp2(
     with_gradient: bool,
     scf_eri: Option<&str>,
     lambda_boys: Option<f64>,
+    save_reference: Option<String>,
+    read_reference: Option<String>,
+    read_reference_other_build: bool,
 ) -> PyResult<PyRiMp2Result> {
+    let reference_file = ReferenceFile::new(
+        "run_rimp2",
+        save_reference,
+        read_reference,
+        read_reference_other_build,
+    )?;
     let (att_keys, sets_att) = att_keys_from_kwargs(att_operator, omega, att_r0, att_omega);
     let (mut rhf_config, jk) = mp2_exact_default_config(
         "run_rimp2",
@@ -549,6 +570,12 @@ pub(crate) fn run_rimp2(
             &jk,
         )?;
     }
+    if reference_file.is_some() && (model.is_some() || with_gradient) {
+        return Err(crate::errors::input_err(
+            "run_rimp2: save_reference / read_reference are supported by the exact energy \
+             only, not with local= or with_gradient=True",
+        ));
+    }
     if let Some(model) = model {
         return run_rimp2_local(
             py,
@@ -576,6 +603,7 @@ pub(crate) fn run_rimp2(
         kappa,
         (rhf_config, jk),
         with_gradient,
+        reference_file,
     )
 }
 
@@ -641,6 +669,7 @@ pub(crate) fn run_rimp2_exact(
     kappa: Option<f64>,
     (rhf_config, jk): (RhfConfig, ferric_scf::scf_jk::ScfJk),
     with_gradient: bool,
+    reference_file: Option<ReferenceFile>,
 ) -> PyResult<PyRiMp2Result> {
     let raw_mol = mol.inner.clone();
     let ebasis = basis_set.inner.clone();
@@ -680,9 +709,10 @@ pub(crate) fn run_rimp2_exact(
                 &rhf_config,
                 &mp2_config,
                 with_gradient,
+                reference_file.as_ref(),
             )
         })
-        .map_err(make_err)?;
+        .map_err(PyErr::from)?;
     Ok(PyRiMp2Result {
         total_energy: r.total_energy,
         rhf_energy: r.scf_energy,

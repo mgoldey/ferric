@@ -10,7 +10,8 @@ must occur exactly once in the source, so a renamed line cannot turn a mutation
 into a silent no-op. Each script's header lists the same mutations.
 
 Scripts with a runtime budget of ``SLOW_S`` seconds or more are marked
-``validation`` (the weekly tier, ``pytest -m validation``).
+``validation`` (``pytest -m validation``); book.yml's ``slow-proofs`` job runs
+them nightly and on workflow_dispatch, one job per script.
 
 The registry (``testdata/derivations/registry.json``,
 ``test_derivation_registry.py``) counts a script as run when its file name
@@ -2623,7 +2624,8 @@ def _crashed(stderr):
 
 
 # Proofs whose own runtime budget is SLOW_S or more (the exact-derivative XC
-# Hessian and V_xc models, minutes each) run in the weekly validation tier.
+# Hessian and V_xc models, minutes each) are the validation tier: book.yml's
+# nightly slow-proofs job, not the pull-request run.
 SLOW_S = 600
 
 

@@ -5905,6 +5905,21 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "scf_density_conv"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "save_reference"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "read_reference"
+   },
+   {
+    "default": "False",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "read_reference_other_build"
    }
   ],
   "run_ccsd_t": [
@@ -5954,6 +5969,21 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "scf_density_conv"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "save_reference"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "read_reference"
+   },
+   {
+    "default": "False",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "read_reference_other_build"
    }
   ],
   "run_cdft": [
@@ -9557,6 +9587,21 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "lambda_boys"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "save_reference"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "read_reference"
+   },
+   {
+    "default": "False",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "read_reference_other_build"
    }
   ],
   "run_rks_gamma": [
