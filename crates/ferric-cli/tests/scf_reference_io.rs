@@ -28,7 +28,9 @@ fn workspace_root() -> PathBuf {
 }
 
 fn scratch() -> PathBuf {
-    let dir = workspace_root().join("target").join("scf_reference_io_test");
+    let dir = workspace_root()
+        .join("target")
+        .join("scf_reference_io_test");
     std::fs::create_dir_all(&dir).expect("create the scratch dir");
     dir
 }
@@ -110,9 +112,7 @@ const OH: &str = "[molecule]\nxyz = \"testdata/molecules/oh.xyz\"\nmultiplicity 
 const MP2: &str = "[mp2]\nauxbasis = \"cc-pvdz-ri\"\n";
 
 fn input(mol: &str, basis: &str, kind: &str, scf: &str) -> String {
-    format!(
-        "{mol}[basis]\nname = \"{basis}\"\n[method]\nkind = \"{kind}\"\n{MP2}[scf]\n{scf}"
-    )
+    format!("{mol}[basis]\nname = \"{basis}\"\n[method]\nkind = \"{kind}\"\n{MP2}[scf]\n{scf}")
 }
 
 fn path_key(key: &str, file: &PathBuf) -> String {
@@ -151,7 +151,10 @@ fn save_then_read(tag: &str, mol: &str, kinds: [(&str, &str); 2]) {
     );
     assert!(file.is_file(), "no file at {}", file.display());
     for (kind, scf) in kinds {
-        let fresh = ok(&format!("{tag}_{kind}_fresh"), &input(mol, "6-31g", kind, scf));
+        let fresh = ok(
+            &format!("{tag}_{kind}_fresh"),
+            &input(mol, "6-31g", kind, scf),
+        );
         let read = ok(
             &format!("{tag}_{kind}_read"),
             &input(mol, "6-31g", kind, &format!("{scf}{}", read_key(&file))),
@@ -193,11 +196,7 @@ fn save_then_read(tag: &str, mol: &str, kinds: [(&str, &str); 2]) {
 
 #[test]
 fn an_rhf_reference_saved_by_rimp2_gives_rimp2_and_ccsd_their_fresh_energies() {
-    save_then_read(
-        "rhf",
-        WATER,
-        [("rimp2", "jk = \"exact\"\n"), ("ccsd", "")],
-    );
+    save_then_read("rhf", WATER, [("rimp2", "jk = \"exact\"\n"), ("ccsd", "")]);
 }
 
 /// The MP2 family's default reference fits J and K, with the RI-J tensor
@@ -230,7 +229,9 @@ fn a_reference_for_another_basis_geometry_or_route_is_refused() {
         &input(WATER, "6-31g", "rimp2", &read_key(&file)),
     );
     assert!(
-        e.contains("read_reference") && e.contains("different calculation") && e.contains("basis[Z="),
+        e.contains("read_reference")
+            && e.contains("different calculation")
+            && e.contains("basis[Z="),
         "{e}"
     );
     let moved = scratch().join("water_moved.xyz");
@@ -308,7 +309,11 @@ fn a_read_without_the_override_needs_a_provably_identical_build() {
         assert!(r.ok, "{}", r.stderr);
     } else {
         assert!(!r.ok);
-        assert!(r.stderr.contains("read_reference_other_build"), "{}", r.stderr);
+        assert!(
+            r.stderr.contains("read_reference_other_build"),
+            "{}",
+            r.stderr
+        );
     }
 }
 
@@ -361,7 +366,12 @@ fn the_keys_are_refused_where_no_shared_reference_is_solved() {
     let missing_dir = scratch().join("no_such_dir").join("ref.npz");
     let e = refused(
         "refuse_save_dir",
-        &input(WATER, "sto-3g", "rimp2", &path_key("save_reference", &missing_dir)),
+        &input(
+            WATER,
+            "sto-3g",
+            "rimp2",
+            &path_key("save_reference", &missing_dir),
+        ),
     );
     assert!(e.contains("does not exist"), "{e}");
 }

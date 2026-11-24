@@ -1322,7 +1322,10 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
         }
         rung_config = ladder.get(lr.rung_reached).map(|r| r.config.clone());
         lr.result
-    } else if matches!(route, ReferenceRoute::OpenShell | ReferenceRoute::GwOpenShell) {
+    } else if matches!(
+        route,
+        ReferenceRoute::OpenShell | ReferenceRoute::GwOpenShell
+    ) {
         // An open-shell molecule reaching here passed
         // `Config::validate_multiplicity`, so its kind has an open-shell
         // route (rimp2/oo-rimp2/pdep-rpa/gw/mp2-v/tda/tddft on task = "energy"); each
@@ -1397,8 +1400,7 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
         solve_rhf(ctx, mol, prep, op, bounds, &rhf_config)?
     };
     // Written before the correlated stage, so a failure there keeps it.
-    if let (Some(path), Some((_, identity))) = (cfg.scf.save_reference.as_deref(), reference_plan)
-    {
+    if let (Some(path), Some((_, identity))) = (cfg.scf.save_reference.as_deref(), reference_plan) {
         reference_io::save(path, &sys, identity, &result)?;
     }
 
@@ -2327,7 +2329,10 @@ impl ReferenceRoute {
         df_increments_aux: Option<&str>,
     ) -> Result<reference_io::ReferencePlan<'a>, String> {
         use ferric_scf::result::Spin;
-        let aux = |a: Option<&str>| a.unwrap_or(ferric_scf::ladder::DF_GUESS_DEFAULT_AUX).to_string();
+        let aux = |a: Option<&str>| {
+            a.unwrap_or(ferric_scf::ladder::DF_GUESS_DEFAULT_AUX)
+                .to_string()
+        };
         let plan = |spin, config, route: String| reference_io::ReferencePlan {
             spin,
             config,

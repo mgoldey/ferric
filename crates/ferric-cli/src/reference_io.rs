@@ -47,8 +47,14 @@ pub(crate) fn identity(
     sys: &PreparedSystem,
     plan: &ReferencePlan<'_>,
 ) -> Result<ScfIdentity, CliError> {
-    let mut id = ScfIdentity::new(sys.mol(), sys.basis_set(), plan.spin, &sys.op(), plan.config)
-        .map_err(|e| CliError::msg(format!("[scf] reference identity: {e}")))?;
+    let mut id = ScfIdentity::new(
+        sys.mol(),
+        sys.basis_set(),
+        plan.spin,
+        &sys.op(),
+        plan.config,
+    )
+    .map_err(|e| CliError::msg(format!("[scf] reference identity: {e}")))?;
     for (name, value) in [
         (ROUTE_FIELD, plan.route.clone()),
         (RANKS_FIELD, sys.ctx().size.to_string()),
@@ -145,7 +151,11 @@ pub(crate) fn read(
     let fail = |e: String| CliError::msg(format!("[scf] read_reference {path:?}: {e}"));
     let ck = Checkpoint::read(Path::new(path)).map_err(|e| fail(e.to_string()))?;
     let verdict = ck
-        .check(current, &build_stamp(), ReadMode::Skip { allow_other_build })
+        .check(
+            current,
+            &build_stamp(),
+            ReadMode::Skip { allow_other_build },
+        )
         .map_err(|e| {
             let hint = match e {
                 ferric_scf::checkpoint::CheckpointError::Identity(_) => {

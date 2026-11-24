@@ -220,7 +220,9 @@ fn json_object<'a>(
     value: &'a serde_json::Value,
     keys: &[&str],
 ) -> Result<&'a serde_json::Map<String, serde_json::Value>, String> {
-    let obj = value.as_object().ok_or_else(|| format!("not an object: {value}"))?;
+    let obj = value
+        .as_object()
+        .ok_or_else(|| format!("not an object: {value}"))?;
     let mut found: Vec<&str> = obj.keys().map(String::as_str).collect();
     let mut want = keys.to_vec();
     found.sort_unstable();
@@ -239,7 +241,9 @@ fn json_precision(value: &serde_json::Value) -> Result<Precision, String> {
 }
 
 fn json_u64(value: &serde_json::Value) -> Result<u64, String> {
-    value.as_u64().ok_or_else(|| format!("not a count: {value}"))
+    value
+        .as_u64()
+        .ok_or_else(|| format!("not a count: {value}"))
 }
 
 impl KernelRecord {
@@ -266,8 +270,8 @@ impl KernelRecord {
             serde_json::Value::String(s) if s == "cpu" => Some(KernelDevice::Cpu),
             d => {
                 let g = json_object(d, &["ordinal", "name", "cc"])?;
-                let ordinal = usize::try_from(json_u64(&g["ordinal"])?)
-                    .map_err(|e| e.to_string())?;
+                let ordinal =
+                    usize::try_from(json_u64(&g["ordinal"])?).map_err(|e| e.to_string())?;
                 let name = g["name"].as_str().ok_or("device name")?.to_string();
                 let (major, minor) = g["cc"]
                     .as_str()
@@ -301,8 +305,7 @@ impl KernelRecord {
         };
         let bound = json_object(&obj["error_bound"], &["kind", "why"])?;
         let why = no_bound_reason(kernel);
-        if bound["kind"].as_str() != Some("none_computed") || bound["why"].as_str() != Some(why)
-        {
+        if bound["kind"].as_str() != Some("none_computed") || bound["why"].as_str() != Some(why) {
             return Err(format!("error_bound {}", obj["error_bound"]));
         }
         Ok(KernelRecord {

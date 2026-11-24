@@ -5510,9 +5510,11 @@ impl Config {
             "save_reference"
         };
         if s.save_reference.is_some() && s.read_reference.is_some() {
-            return Err("[scf] save_reference and read_reference cannot both be set: \
+            return Err(
+                "[scf] save_reference and read_reference cannot both be set: \
                         a read reference is already on disk"
-                .to_string());
+                    .to_string(),
+            );
         }
         if s.read_reference_other_build && s.read_reference.is_none() {
             return Err("[scf] read_reference_other_build is read only with \
@@ -5524,7 +5526,9 @@ impl Config {
             ("read_reference", s.read_reference.as_deref()),
         ] {
             if path.is_some_and(|p| p.trim().is_empty()) {
-                return Err(format!("[scf] {name} must be a file path, got an empty string"));
+                return Err(format!(
+                    "[scf] {name} must be a file path, got an empty string"
+                ));
             }
         }
         let task = self.method.task.as_str();
@@ -5560,10 +5564,12 @@ impl Config {
             ));
         }
         if s.read_reference.is_some() && (s.check_stability || s.stability_descent) {
-            return Err("[scf] read_reference cannot be combined with check_stability: \
+            return Err(
+                "[scf] read_reference cannot be combined with check_stability: \
                         the stability analysis is not stored with the reference, so this \
                         run would report it as not run"
-                .to_string());
+                    .to_string(),
+            );
         }
         Ok(())
     }
