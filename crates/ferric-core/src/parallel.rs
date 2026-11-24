@@ -205,7 +205,7 @@ impl ParallelContext {
 
     /// Run `f` inside a rayon pool sized for this rank (see
     /// [`Self::rayon_threads`]), propagating a pool-build failure as
-    /// [`FerricError::Libint`]. MPI entry points run their whole body in it so
+    /// [`crate::FerricError::Libint`]. MPI entry points run their whole body in it so
     /// `np` ranks on one node do not each spawn a full-width pool.
     pub fn with_rank_pool<F, R>(&self, f: F) -> Result<R, crate::FerricError>
     where
@@ -224,12 +224,12 @@ impl ParallelContext {
     /// All-reduce-sum `data` in place across the active MPI world. No-op when
     /// there is no multi-rank world (or the `mpi` feature is off).
     ///
-    /// The feature gate lives here, next to [`Self::world`], so a downstream
+    /// The feature gate lives here, next to `world()`, so a downstream
     /// crate cannot compile the reduction out by leaving its own `mpi` feature
     /// off. Every rank must pass the same length in the same element order:
     /// callers with an `ndarray` hand over a STANDARD-layout slice
     /// (`as_slice_mut().expect(..)`), never a memory-order one. Call it from a
-    /// serial reduction point only (see [`Self::world`]).
+    /// serial reduction point only (see `world()`).
     pub fn all_reduce_sum(&self, data: &mut [f64]) {
         #[cfg(feature = "mpi")]
         if let Some(world) = self.world() {
