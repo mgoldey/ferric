@@ -282,6 +282,9 @@ pub struct DirectStats {
     pub t_eri3_setup_s: f64,
     /// Integral slabs filled, over all batches.
     pub n_eri3_slabs: usize,
+    /// Largest single stage-3 slab, bytes (batch pass; 0 on the aux-major
+    /// pass). Up to one such slab per batch worker is resident at once.
+    pub eri3_slab_bytes_max: usize,
     /// Half-transform floating-point operations actually done
     /// (`Σ_i Σ_{P∈slab} 2·nsf·nnf + 2·nnf·|V_i|`, batch-union axes), and what
     /// the same contraction would cost restricted to i's OWN occupied and
@@ -557,6 +560,8 @@ struct BatchTimers {
     transform_flops_own_support: f64,
     n_integrals: u64,
     n_null_blocks: u64,
+    /// Largest slab (`8·nps·nsf·nnf`) this worker allocated.
+    slab_bytes_max: usize,
 }
 
 /// One batch's output: its strips, evaluated/skipped triple counts and
@@ -598,7 +603,7 @@ fn sorted_union(lists: impl IntoIterator<Item = impl IntoIterator<Item = usize>>
 
 /// `FERRIC_MEM_TRACE` line at a stage boundary: current and peak RSS beside
 /// the byte counts this module accounts for there. Informational only.
-fn mem_trace(stage: &str, fields: &[(&str, usize)]) {
+pub(crate) fn mem_trace(stage: &str, fields: &[(&str, usize)]) {
     if !ferric_core::memory::trace_enabled() {
         return;
     }
@@ -1600,6 +1605,7 @@ fn eval_batch(ctx: &BatchCtx<'_>, is: &[usize], fill: FillFn) -> BatchOut {
             }
         }
         let mut t_slab = Array3::<f64>::zeros((nps, ax.nsf, ax.nnf));
+        tm.slab_bytes_max = tm.slab_bytes_max.max(8 * t_slab.len());
         let (nt, ns) = fill(
             ctx,
             &ax,
@@ -2460,6 +2466,18 @@ fn assemble_gated(
         fock_screen,
     };
     let (slots, _) = fit_pair_slots(input, &mut stats)?;
+    mem_trace(
+        "fits",
+        &[(
+            "own_blocks",
+            slots
+                .iter()
+                .flatten()
+                .flatten()
+                .map(PairBlock::heap_bytes)
+                .sum(),
+        )],
+    );
     // The fits were the last readers of the strips and the metric: drop them
     // before the ranks exchange blocks, so a rank never holds its strips
     // beside the whole ragged system.
@@ -2595,6 +2613,15 @@ fn strips_and_metric(
     let needed = stripe.as_ref().map(|s| s.needed.as_slice());
     let strips = collect_strips(no, batch_out, dcfg.split_eri3_timers, needed, stats)?;
     stats.t_eri3_s = t0.elapsed().as_secs_f64();
+    mem_trace(
+        "stage3",
+        &[
+            ("strips", stats.strip_bytes_total),
+            ("scratch_cap", dcfg.scratch_budget_bytes),
+            ("slab_max", stats.eri3_slab_bytes_max),
+            ("workers_x_slab_max", n_workers * stats.eri3_slab_bytes_max),
+        ],
+    );
 
     let t0 = Instant::now();
     stats.n_metric_shell_pairs = need.len();
@@ -2648,6 +2675,7 @@ fn collect_strips(
         stats.transform_flops_own_support += tm.transform_flops_own_support;
         stats.n_eri3_integrals += tm.n_integrals;
         stats.n_eri3_null_blocks += tm.n_null_blocks;
+        stats.eri3_slab_bytes_max = stats.eri3_slab_bytes_max.max(tm.slab_bytes_max);
         stats.batch_work_max_s = stats.batch_work_max_s.max(tm.total_s);
         stats.batch_work_mean_s += tm.total_s;
         for (i, st) in batch_strips {
@@ -3925,8 +3953,10 @@ pub fn amplitude_lmp2_direct(
     dcfg: &DirectConfig,
 ) -> Result<(AmplitudeLmp2Result, DirectStats), FerricError> {
     crate::lmp2_amplitude::require_hf_reference(rhf, "lmp2_direct")?;
+    mem_trace("entry", &[]);
     let (vvhv, t_spaces_s, report) =
         checked_vvhv_with(mol, obs, obs_bs, rhf, "lmp2_direct", &cfg.virtual_space)?;
+    mem_trace("vvhv", &[]);
     let (mut r, st) =
         amplitude_lmp2_direct_with_virtuals(mol, obs, dfbs, op, rhf, cfg, dcfg, &vvhv)?;
     r.timings.t_spaces_s = t_spaces_s;
@@ -3952,6 +3982,7 @@ pub fn amplitude_lmp2_direct_with_virtuals(
     let t0 = Instant::now();
     let spaces = localized_spaces_lambda(mol, obs, rhf, cfg.frozen_core, vvhv, cfg.lambda_boys)?;
     let t_loc_s = t0.elapsed().as_secs_f64();
+    mem_trace("localized", &[]);
     let (no, nv) = (spaces.no, spaces.nv);
     let budget_bytes = crate::rimp2::eri3_budget_bytes(cfg.eri3_budget_bytes);
     let (rg, n_pairs_gated, mut dstats) = assemble_gated(

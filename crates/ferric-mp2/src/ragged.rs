@@ -931,6 +931,10 @@ where
         };
     };
     let plan = SolvePlan::with_fvv_threshold(rg, f_oo, fvv_rho_star);
+    crate::lmp2_direct::mem_trace(
+        "solve-plan",
+        &[("plan", plan_bytes), ("resident", resident_bytes)],
+    );
     let solve = pcg_steered(
         rg,
         rhs,

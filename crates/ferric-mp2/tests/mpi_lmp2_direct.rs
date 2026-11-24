@@ -24,7 +24,8 @@
 //! peak resident set for the striped and the serial run. Give each rank its
 //! share of the cores, e.g. `RAYON_NUM_THREADS=3 mpirun -np 2 <bin>
 //! --ignored --nocapture --test-threads=1`; `FERRIC_MPI_LMP2_ALKANE` picks
-//! the chain length (default 20).
+//! the chain length (default 20), `FERRIC_MPI_LMP2_SCRATCH_MIB` the stage-3
+//! slab scratch cap, and `FERRIC_MEM_TRACE=1` prints RSS per stage.
 
 #![cfg(feature = "mpi")]
 
@@ -38,14 +39,25 @@ use ferric_mp2::lmp2_direct::{amplitude_lmp2_direct, DirectConfig};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 
-/// Peak resident set of this process since the last [`reset_hwm`], bytes.
-fn vm_hwm() -> usize {
+/// A `/proc/self/status` field in bytes.
+fn status_bytes(field: &str) -> usize {
     let status = std::fs::read_to_string("/proc/self/status").expect("/proc/self/status");
-    ferric_core::memory::sys::parse_status_kb_field(&status, "VmHWM").expect("VmHWM")
+    ferric_core::memory::sys::parse_status_kb_field(&status, field).expect(field)
 }
 
-fn reset_hwm() {
+/// Peak resident set of this process since the last [`reset_hwm`], bytes.
+fn vm_hwm() -> usize {
+    status_bytes("VmHWM")
+}
+
+/// Resets the high-water mark to the current resident set and returns it.
+/// The two runs share a process, so the second starts on whatever the
+/// allocator kept from the first (measured: ~1.7 GB after a one-rank run
+/// whose solve built the gather plan); its peak is only comparable as a
+/// rise above this start.
+fn reset_hwm() -> usize {
     std::fs::write("/proc/self/clear_refs", "5").expect("clear_refs");
+    status_bytes("VmRSS")
 }
 
 /// What one rank saw: the two runs' counters and peak resident sets.
@@ -59,6 +71,22 @@ struct Case {
     strips_striped: usize,
     hwm_serial: usize,
     hwm_striped: usize,
+    /// Resident set when each run started (the high-water mark's reset).
+    start_serial: usize,
+    start_striped: usize,
+}
+
+/// [`DirectConfig::production`], with the stage-3 slab scratch cap taken from
+/// `FERRIC_MPI_LMP2_SCRATCH_MIB` when it is set (a measurement knob).
+fn production_maps() -> DirectConfig {
+    let base = DirectConfig::production();
+    match std::env::var("FERRIC_MPI_LMP2_SCRATCH_MIB") {
+        Ok(v) => DirectConfig {
+            scratch_budget_bytes: v.parse::<usize>().expect("scratch MiB") << 20,
+            ..base
+        },
+        Err(_) => base,
+    }
 }
 
 /// `alkane_<n>` / 6-31G / cc-pVDZ-RI at eps = 1e-4 with the production maps,
@@ -87,14 +115,14 @@ fn run_alkane(n: usize) -> Case {
     };
     let striped_maps = DirectConfig {
         mpi: Some(ctx),
-        ..DirectConfig::production()
+        ..production_maps()
     };
-    reset_hwm();
+    let start_striped = reset_hwm();
     let (striped, st_striped) =
         amplitude_lmp2_direct(&mol, &obs, &obs_bs, &dfbs, op, &rhf, &cfg, &striped_maps).unwrap();
     let hwm_striped = vm_hwm();
-    reset_hwm();
-    let serial_maps = DirectConfig::production();
+    let start_serial = reset_hwm();
+    let serial_maps = production_maps();
     let (serial, st_serial) =
         amplitude_lmp2_direct(&mol, &obs, &obs_bs, &dfbs, op, &rhf, &cfg, &serial_maps).unwrap();
     let hwm_serial = vm_hwm();
@@ -108,11 +136,14 @@ fn run_alkane(n: usize) -> Case {
         strips_striped: st_striped.strip_bytes_total,
         hwm_serial,
         hwm_striped,
+        start_serial,
+        start_striped,
     };
     let mb = |b: usize| b as f64 / (1 << 20) as f64;
     eprintln!(
         "[alkane_{n}] rank {}/{}: e_corr serial {:.15} striped {:.15} diff {:.3e} | groups \
-         {}/{} | strips {:.1}/{:.1} MiB | peak RSS {:.0}/{:.0} MiB (striped/serial)",
+         {}/{} | strips {:.1}/{:.1} MiB | peak RSS {:.0}/{:.0} MiB, rise above start \
+         {:.0}/{:.0} MiB (striped/serial)",
         ctx.rank,
         ctx.size,
         case.e_serial,
@@ -124,6 +155,8 @@ fn run_alkane(n: usize) -> Case {
         mb(case.strips_serial),
         mb(case.hwm_striped),
         mb(case.hwm_serial),
+        mb(case.hwm_striped - case.start_striped),
+        mb(case.hwm_serial - case.start_serial),
     );
     case
 }
