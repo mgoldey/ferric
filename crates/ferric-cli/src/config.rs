@@ -4284,6 +4284,18 @@ impl ScfCfg {
             .transpose()
             .map_err(|e| format!("[scf] {e}"))
     }
+    /// `[scf] gc_rotation` parsed: `None` when omitted (the variable and the
+    /// default decide), an error naming the key for a value outside
+    /// auto | rot1 | off. The one resolver for load-time validation and the
+    /// lowering.
+    pub fn gc_rotation_resolved(&self) -> Result<Option<ferric_scf::direct_jk::GcRotate>, String> {
+        self.gc_rotation
+            .as_deref()
+            .map(ferric_scf::direct_jk::GcRotate::parse_str)
+            .transpose()
+            .map_err(|e| format!("[scf] gc_rotation: {e}"))
+    }
+
     /// Post-parse validation of the `[scf]` string knobs whose resolution is
     /// otherwise deferred to the point of use. Called from [`load_config`] so
     /// every entry point (CLI and `ferric-batch`) fails before any integral is
@@ -4296,6 +4308,7 @@ impl ScfCfg {
         self.use_density_guess()?;
         self.mom_reference_resolved()?;
         self.relativistic_resolved()?;
+        self.gc_rotation_resolved()?;
         if let Some(p) = self.eri_precision {
             (ferric_integrals::engine_pool::ERI_PRECISION_VAR.validate)(&p)
                 .map_err(|e| format!("[scf] eri_precision {p:e}: {e}"))?;

@@ -627,12 +627,7 @@ fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig
     // defaults here.
     config.cosmo = cfg.cosmo.clone();
     config.polarizable = polarizable;
-    config.gc_rotation = s
-        .gc_rotation
-        .as_deref()
-        .map(ferric_scf::direct_jk::GcRotate::parse_str)
-        .transpose()
-        .map_err(|e| CliError::msg(format!("[scf] gc_rotation: {e}")))?;
+    config.gc_rotation = s.gc_rotation_resolved().map_err(CliError::msg)?;
     Ok(config)
 }
 
@@ -9346,6 +9341,13 @@ mod scf_config_lowering_tests {
             .unwrap()
             .unwrap_err();
         assert!(e.to_string().contains("[scf] gc_rotation"), "{e}");
+        // ... and at load time, by the `[scf]` validation `load_config` runs.
+        let e = cfg.scf.validate().unwrap_err();
+        assert!(e.contains("[scf] gc_rotation"), "{e}");
+        assert!(parse(&header("rhf", "[scf]\ngc_rotation = \"rot1\"\n"))
+            .scf
+            .validate()
+            .is_ok());
     }
 
     /// The task / `[gpu]` combinations that change the CLI policy: the RI-J

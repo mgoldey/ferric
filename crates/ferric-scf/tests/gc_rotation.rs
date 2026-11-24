@@ -57,7 +57,13 @@ fn density(n: usize, seed: usize) -> Array2<f64> {
 }
 
 fn max_abs(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    (a - b).iter().fold(0.0f64, |m, x| m.max(x.abs()))
+    // NaN-safe: `f64::max` would skip a NaN difference and pass any bar.
+    assert_eq!(a.dim(), b.dim());
+    a.iter().zip(b.iter()).fold(0.0f64, |m, (x, y)| {
+        let d = (x - y).abs();
+        assert!(d.is_finite(), "non-finite difference: {x} vs {y}");
+        m.max(d)
+    })
 }
 
 fn bits_equal(a: &Array2<f64>, b: &Array2<f64>) -> bool {
@@ -284,6 +290,10 @@ fn rotated_transforms_match_dense_t_at_threshold_zero() {
             walk.build(&dp, &mut jp, &mut kp).unwrap();
             for (what, x, xp) in [("J", &j, &jp), ("K", &k, &kp)] {
                 let dense = t.dot(xp).dot(&t.t());
+                assert!(
+                    dense.iter().all(|v| v.is_finite()),
+                    "{label} {what}: non-finite"
+                );
                 let scale = dense.iter().fold(0.0f64, |m, v| m.max(v.abs()));
                 let bar = 16.0 * f64::EPSILON / 2.0 * tn2 * scale;
                 let e = max_abs(x, &dense);

@@ -1152,12 +1152,25 @@ impl RotatedBasis {
     /// [`RotatedBasis::back_transform_pair_rows`] of an exactly symmetric
     /// `(n, n)` matrix (`V_SR`): `T V' Tᵀ`, exactly symmetric.
     pub fn back_transform_matrix(&self, v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
+        self.check_square(v)?;
         let mut out = v.as_standard_layout().into_owned();
         let data = out.as_slice_mut().ok_or_else(|| {
             FerricError::General("column rotation back-transform: matrix not contiguous".into())
         })?;
         self.back_transform_pair_rows(data, 1)?;
         Ok(out)
+    }
+
+    /// An error unless `x` is `nbasis × nbasis`.
+    fn check_square(&self, x: &Array2<f64>) -> Result<(), FerricError> {
+        let n = self.nbasis;
+        if x.dim() != (n, n) {
+            return Err(FerricError::General(format!(
+                "column rotation back-transform: a {:?} matrix, expected {n} × {n}",
+                x.dim()
+            )));
+        }
+        Ok(())
     }
 
     /// `out += T X' Tᵀ` for an `(n, n)` rotated-basis matrix `x_rot`, in
@@ -1213,6 +1226,7 @@ impl RotatedBasis {
     /// [`RotatedBasis::back_transform_rows`] of an `(n, n)` matrix that need
     /// not be symmetric: `T X' Tᵀ`.
     pub fn back_transform_general(&self, x: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
+        self.check_square(x)?;
         let mut out = x.as_standard_layout().into_owned();
         let data = out.as_slice_mut().ok_or_else(|| {
             FerricError::General("column rotation back-transform: matrix not contiguous".into())

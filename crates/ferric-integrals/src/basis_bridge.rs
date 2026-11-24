@@ -200,6 +200,26 @@ impl PreparedBasis {
         let mut shell_pure = Vec::new();
         let mut keep_exps = Vec::new();
         let mut keep_coefs = Vec::new();
+        // The shim reads `nprim` values from both arrays and indexes the atom
+        // list: refuse a shell that would make it read out of bounds.
+        for (s, &(ai, sh)) in located.iter().enumerate() {
+            if sh.exponents.len() != sh.coefficients.len() {
+                return Err(FerricError::Basis(format!(
+                    "basis {:?}: shell {s} (l = {}) has {} exponents but {} coefficients",
+                    bs.name,
+                    sh.l,
+                    sh.exponents.len(),
+                    sh.coefficients.len()
+                )));
+            }
+            if ai >= c_atoms.len() {
+                return Err(FerricError::Basis(format!(
+                    "basis {:?}: shell {s} is on atom {ai}, but there are {} atoms",
+                    bs.name,
+                    c_atoms.len()
+                )));
+            }
+        }
         for &(ai, sh) in located {
             let exps: Vec<f64> = sh.exponents.clone();
             let coefs: Vec<f64> = sh.coefficients.clone();
@@ -382,6 +402,35 @@ mod tests {
     use super::*;
     use ferric_core::basis;
     use ferric_core::mol::Molecule;
+
+    /// A shell whose exponent and coefficient lists differ in length is
+    /// refused with a typed error before anything reaches the shim, through
+    /// `new` and through `with_contractions`.
+    #[test]
+    fn mismatched_primitive_arrays_are_refused() {
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let mut bad = basis::bundled("sto-3g").unwrap();
+        bad.shells.get_mut(&1).unwrap()[0].coefficients.pop();
+        let e = PreparedBasis::new(&mol, &bad).unwrap_err();
+        assert!(matches!(e, FerricError::Basis(_)), "{e}");
+        assert!(e.to_string().contains("exponents but"), "{e}");
+
+        let prep = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+        let mut shells: Vec<ferric_core::basis::Shell> = prep
+            .located_shells()
+            .iter()
+            .map(|p| ferric_core::basis::Shell {
+                l: p.l,
+                pure: p.pure,
+                exponents: p.exponents.to_vec(),
+                coefficients: p.coefficients.to_vec(),
+            })
+            .collect();
+        assert!(prep.with_contractions(&shells, "copy").is_ok());
+        shells[2].exponents.push(0.5);
+        let e = prep.with_contractions(&shells, "bad").unwrap_err();
+        assert!(e.to_string().contains("shell 2"), "{e}");
+    }
 
     #[test]
     fn test_prepared_basis_h2o_sto3g() {

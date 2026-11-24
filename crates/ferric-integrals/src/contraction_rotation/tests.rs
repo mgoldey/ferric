@@ -1,6 +1,21 @@
 use super::*;
 use ferric_core::basis;
 
+/// `max(m, d)`, panicking on a non-finite `d` (a NaN would otherwise be
+/// skipped by `f64::max` and pass any bar).
+fn finite_max(m: f64, d: f64) -> f64 {
+    assert!(d.is_finite(), "non-finite difference {d}");
+    m.max(d)
+}
+
+/// `max |a − b|` over elements (NaN-safe, [`finite_max`]).
+fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
+    assert_eq!(a.dim(), b.dim());
+    a.iter()
+        .zip(b.iter())
+        .fold(0.0f64, |m, (x, y)| finite_max(m, (x - y).abs()))
+}
+
 /// A Cartesian (non-pure) shell of angular momentum `l` with the given
 /// exponents `e` and coefficients `c`.
 fn sh(l: i32, e: &[f64], c: &[f64]) -> Shell {
@@ -90,7 +105,7 @@ fn reconstruction_error(tmpls: &[Shell], tr: &TemplateRotation) -> f64 {
             }
         }
         for (p, g) in got.iter().enumerate() {
-            worst = worst.max((g - parent.coefficients[p] / nk).abs());
+            worst = finite_max(worst, (g - parent.coefficients[p] / nk).abs());
         }
     }
     worst
@@ -172,7 +187,7 @@ fn rotated_basis_is_invertible_and_reproduces_the_overlap() {
                 for j in 0..n {
                     let v: f64 = (0..n).map(|k| rows[i][k] * tinv[k][j]).sum();
                     let target = if i == j { 1.0 } else { 0.0 };
-                    worst_id = worst_id.max((v - target).abs());
+                    worst_id = finite_max(worst_id, (v - target).abs());
                 }
             }
             assert!(
@@ -183,9 +198,9 @@ fn rotated_basis_is_invertible_and_reproduces_the_overlap() {
             let back = rb.back_transform_general(&s_rot).unwrap();
             let sym = rb.back_transform_matrix(&s_rot).unwrap();
             let dense = t.dot(&s_rot).dot(&t.t());
-            let err = (&back - &s).iter().fold(0.0f64, |m, x| m.max(x.abs()));
-            let err_sym = (&sym - &s).iter().fold(0.0f64, |m, x| m.max(x.abs()));
-            let err_dense = (&dense - &back).iter().fold(0.0f64, |m, x| m.max(x.abs()));
+            let err = max_abs_diff(&back, &s);
+            let err_sym = max_abs_diff(&sym, &s);
+            let err_dense = max_abs_diff(&dense, &back);
             assert!(err < 1e-13, "{name} {level:?}: |T S' Tᵀ − S| = {err:e}");
             assert!(
                 err_sym < 1e-13,
@@ -195,9 +210,7 @@ fn rotated_basis_is_invertible_and_reproduces_the_overlap() {
             // The forward transform is the transpose map: Tᵀ X T.
             let fwd = rb.ao_transpose(DerivRotMutant::None).matrix(&s);
             let fwd_dense = t.t().dot(&s).dot(&t);
-            let err_fwd = (&fwd - &fwd_dense)
-                .iter()
-                .fold(0.0f64, |m, x| m.max(x.abs()));
+            let err_fwd = max_abs_diff(&fwd, &fwd_dense);
             assert!(err_fwd < 1e-14, "{name} {level:?}: forward {err_fwd:e}");
         }
     }
@@ -271,7 +284,7 @@ fn back_transform_add_matches_dense_t() {
         let mut out = base.clone();
         rb.back_transform_add(input, &mut out).unwrap();
         let dense = &base + &t.dot(input).dot(&t.t());
-        let err = (&out - &dense).iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        let err = max_abs_diff(&out, &dense);
         assert!(err < 1e-14, "symmetric {symmetric}: {err:e}");
         if symmetric {
             assert!(out
