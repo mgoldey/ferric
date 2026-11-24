@@ -82,7 +82,7 @@ fn fixed_process() -> ProcessSettings {
         gpu_mode: "Off".to_string(),
         libint_version: "2.7.2".to_string(),
         cargo_features: "mpi=false gpu=false cfmm-incomplete=false".to_string(),
-        env: vec![None; 9],
+        env: vec![None; 10],
     }
 }
 
@@ -841,8 +841,11 @@ fn identity_table() -> Vec<(&'static str, FieldClass, Mutator)> {
         ("FERRIC_DF_GUESS_TIGHT", StateSelecting, |s| {
             s.process.env[7] = Some("0".to_string());
         }),
+        ("FERRIC_DFK_METRIC", Route, |s| {
+            s.process.env[8] = Some("eigh".to_string());
+        }),
         ("FERRIC_GC_ROTATE", Route, |s| {
-            s.process.env[8] = Some("off".to_string());
+            s.process.env[9] = Some("off".to_string());
         }),
         ("use_sad_guess", StateSelecting, |s| {
             s.config.use_sad_guess = false;
@@ -1716,6 +1719,7 @@ fn each_process_setting_reaches_the_identity_from_the_environment() {
             "FERRIC_TERF_TABLE_DIR",
         ),
         ("FERRIC_DF_GUESS_TIGHT", "0", "FERRIC_DF_GUESS_TIGHT"),
+        ("FERRIC_DFK_METRIC", "eigh", "FERRIC_DFK_METRIC"),
         ("FERRIC_GC_ROTATE", "off", "FERRIC_GC_ROTATE"),
     ] {
         let changed = key(&[(variable, value)]);
@@ -1727,6 +1731,15 @@ fn each_process_setting_reaches_the_identity_from_the_environment() {
             .map(|(a, _)| a.name.as_str())
             .collect();
         assert_eq!(moved, [name], "{variable}={value}");
+    }
+    // FERRIC_DFK_METRIC is recorded parsed: unset, `auto` and ` AUTO ` are one
+    // identity.
+    for value in ["auto", " AUTO "] {
+        assert_eq!(
+            key(&[("FERRIC_DFK_METRIC", value)]).fields,
+            base.fields,
+            "FERRIC_DFK_METRIC={value:?}"
+        );
     }
     let field = |name: &str| base.fields.iter().find(|f| f.name == name).unwrap();
     assert_eq!(
@@ -1978,6 +1991,9 @@ const CHILD_ENV: &str = "FERRIC_CKPT_TEST_CHILD";
 fn child(test: &str, envs: &[(&str, &str)]) -> Vec<String> {
     let mut cmd = Command::new(std::env::current_exe().unwrap());
     cmd.args(["--exact", test, "--nocapture", "--test-threads=1"]);
+    // An inherited debug route switch would move the unset baseline.
+    cmd.env_remove("FERRIC_DFK_METRIC");
+    cmd.env_remove("FERRIC_GC_ROTATE");
     for (k, v) in envs {
         cmd.env(k, v);
     }

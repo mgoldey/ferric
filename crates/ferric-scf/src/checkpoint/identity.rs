@@ -460,7 +460,7 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
 ///
 /// Left out on purpose: thread counts and memory budgets (unchecked by design),
 /// trace toggles, MPI band sizes, and `FERRIC_TEST_*`.
-const ENV_SWITCHES: [(&str, FieldClass); 9] = [
+const ENV_SWITCHES: [(&str, FieldClass); 10] = [
     ("FERRIC_SCF_INCREMENTAL", FieldClass::Route),
     ("FERRIC_SCF_UHF_INCREMENTAL", FieldClass::Route),
     ("FERRIC_SCF_COMBINED_JK", FieldClass::Route),
@@ -469,10 +469,24 @@ const ENV_SWITCHES: [(&str, FieldClass); 9] = [
     ("FERRIC_JK_STORAGE", FieldClass::Route),
     ("FERRIC_TERF_TABLE_DIR", FieldClass::Route),
     ("FERRIC_DF_GUESS_TIGHT", FieldClass::StateSelecting),
+    ("FERRIC_DFK_METRIC", FieldClass::Route),
     // The direct J/K builder's contraction rotation moves cc-pVXZ energies by
     // up to ~1e-12 Ha (`tests/gc_rotation.rs`).
     ("FERRIC_GC_ROTATE", FieldClass::Route),
 ];
+
+/// The recorded value of one [`ENV_SWITCHES`] entry: the raw text, except
+/// for a switch with a parsed form, which records that (so `FERRIC_DFK_METRIC`
+/// unset, `auto` and ` AUTO ` are one identity). A value that does not parse
+/// keeps its raw text; the SCF itself refuses it.
+fn env_switch_value(name: &str) -> Option<String> {
+    if name == "FERRIC_DFK_METRIC" {
+        if let Ok(setting) = crate::df_k::dfk_metric_setting() {
+            return Some(setting.as_str().to_string());
+        }
+    }
+    std::env::var(name).ok()
+}
 
 /// Process-wide state that changes an SCF's numbers and is not in `RhfConfig`. An
 /// exact commit match does not cover it: these are runtime settings, the libint
@@ -526,7 +540,7 @@ impl ProcessSettings {
             ),
             env: ENV_SWITCHES
                 .iter()
-                .map(|(name, _)| std::env::var(name).ok())
+                .map(|(name, _)| env_switch_value(name))
                 .collect(),
         })
     }

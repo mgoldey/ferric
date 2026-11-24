@@ -370,7 +370,7 @@ fn free_atom_density(
                 ri_j_precision: Some(crate::df_j::RiJPrecision::F64),
                 ..Default::default()
             };
-            solve_rhf(&ctx, &amol, &aprep, op, &abounds, &acfg)
+            free_atom_dfk(|| solve_rhf(&ctx, &amol, &aprep, op, &abounds, &acfg))
                 .map(|r| r.density_total().to_owned())
         } else {
             // Open-shell atom: use UHF + MOM to pin the occupation. density_conv
@@ -417,7 +417,7 @@ fn free_atom_density(
             // Measured: drift went from 8.460e-2 to 2.851e-1, i.e. WORSE.
             // Symmetrizing the AO block directly avoids the eigenvalues
             // entirely.
-            solve_uhf(&ctx, &amol, &aprep, &abounds, &acfg)
+            free_atom_dfk(|| solve_uhf(&ctx, &amol, &aprep, &abounds, &acfg))
                 .map(|r| spherically_symmetrize_atomic_block(r.density_total(), &aprep))
         }
     })
@@ -1051,6 +1051,22 @@ pub fn minao_projection_guess(
 /// Free-atom SCFs are tiny (~10-30 basis functions) but the global rayon pool's
 /// work-stealing overhead makes them 18× slower than single-threaded execution.
 /// This matches the `run_serial` pattern in ferric-cli/src/lib.rs.
+/// Run a free-atom solve with its RI-K on the eigendecomposition route.
+///
+/// The free-atom densities steer which state a molecular SCF reaches when that
+/// state lies on a nearly flat manifold: a degenerate open shell (OH's π hole)
+/// can sit at any angle about the bond axis, and only the integration grid's
+/// anisotropy (about 2e-6 Ha for OH/cc-pVDZ B3LYP) tells the angles apart, far
+/// below what the SCF's convergence tests resolve. MEASURED, OH/cc-pVDZ B3LYP
+/// ROKS: with the free-atom DF-K on the Cholesky route the DIIS run stopped
+/// with the hole at 45° (-75.7305243278 Ha) and the Newton run at 35°
+/// (-75.7305254206), where the eigh route gave 20° for both
+/// (-75.7305261021). The atom's metric is tiny (cost nil), so its guess
+/// ingredient keeps the bits it had before the Cholesky route existed.
+fn free_atom_dfk<R>(f: impl FnOnce() -> R) -> R {
+    crate::df_k::with_dfk_metric(crate::df_k::DfkMetricSetting::Eigh, f)
+}
+
 fn run_serial_pool<F, R>(f: F) -> R
 where
     F: FnOnce() -> R + Send,
