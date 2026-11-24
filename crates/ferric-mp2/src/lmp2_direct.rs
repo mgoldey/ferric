@@ -5126,6 +5126,43 @@ mod stage_c_tests {
         assert!(ea.0 < -0.1, "a real correlation energy, got {}", ea.0);
     }
 
+    /// The planned counterpart: with an ample budget a share owning every
+    /// block builds the plan (of the same size) and solves bit for bit as
+    /// the plain system, Hylleraas energy and true residual included.
+    #[test]
+    fn a_share_owning_every_block_is_the_plain_planned_solve() {
+        use crate::lmp2_amplitude::hylleraas_energy_and_residual;
+        use crate::ragged::{solve_ragged_budgeted_with, MatvecPath, RaggedShare};
+        use ferric_core::parallel::ParallelContext;
+        let su = setup("alkane_4.xyz", 4);
+        let eps = 1e-4;
+        let pre = pre_of(&su, Operator::coulomb(), eps, 0.7);
+        let dcfg = production_maps(None);
+        let (plain, _) = fit(&su, &pre, eps, &dcfg, FitPath::Cholesky);
+        let mut shared = plain.clone();
+        shared.share = Some(RaggedShare {
+            ctx: ParallelContext::for_rank(0, 1),
+            owned: vec![true; shared.pairs.len()],
+        });
+        let f_oo = &su.spaces.f_oo;
+        let a = solve_ragged_budgeted_with(&plain, f_oo, 1e-9, 200, usize::MAX, 0.0);
+        let b = solve_ragged_budgeted_with(&shared, f_oo, 1e-9, 200, usize::MAX, 0.0);
+        assert_eq!(a.decision.path, MatvecPath::Planned);
+        assert_eq!(b.decision.path, MatvecPath::Planned);
+        assert_eq!(a.decision.plan_bytes, b.decision.plan_bytes);
+        assert!(a.solve.converged && a.solve.iterations > 3);
+        assert_eq!(a.solve.iterations, b.solve.iterations);
+        assert_eq!(a.solve.relres.to_bits(), b.solve.relres.to_bits());
+        for (x, y) in a.solve.t.iter().zip(&b.solve.t) {
+            assert!(x.iter().zip(y).all(|(u, v)| u.to_bits() == v.to_bits()));
+        }
+        let ea = hylleraas_energy_and_residual(&plain, f_oo, a.plan(), &a.solve.t).unwrap();
+        let eb = hylleraas_energy_and_residual(&shared, f_oo, b.plan(), &b.solve.t).unwrap();
+        assert_eq!(ea.0.to_bits(), eb.0.to_bits());
+        assert_eq!(ea.1.to_bits(), eb.1.to_bits());
+        assert!(ea.0 < -0.1, "a real correlation energy, got {}", ea.0);
+    }
+
     /// A chain of `no` occupieds one Bohr apart whose aux domain is the
     /// `2·reach + 1` shells around it (one function per shell), every pair
     /// kept: the integral-free inputs of [`rank_stripe`].

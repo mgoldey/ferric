@@ -140,6 +140,19 @@ fn run_alkane(n: usize) -> Case {
         start_striped,
     };
     let mb = |b: usize| b as f64 / (1 << 20) as f64;
+    for (label, r) in [("striped", &striped), ("serial", &serial)] {
+        eprintln!(
+            "[alkane_{n}] rank {}/{} {label} solve: {} matvec, {} iters, {:.3} s, plan {:.1} MiB, \
+             resident {:.1} MiB",
+            ctx.rank,
+            ctx.size,
+            r.matvec_path.as_str(),
+            r.cg_iterations,
+            r.timings.t_solve_s,
+            mb(r.solve_plan_bytes),
+            mb(r.solve_resident_bytes),
+        );
+    }
     eprintln!(
         "[alkane_{n}] rank {}/{}: e_corr serial {:.15} striped {:.15} diff {:.3e} | groups \
          {}/{} | strips {:.1}/{:.1} MiB | peak RSS {:.0}/{:.0} MiB, rise above start \

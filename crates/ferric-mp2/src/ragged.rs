@@ -5,6 +5,7 @@
 //! solver are documented there and in wiki/amplitude-threshold-lmp2.md.
 
 use ndarray::Array2;
+use rayon::prelude::*;
 use std::collections::HashMap;
 
 /// One pair's ragged domain block: indices, sparsity pattern, and local integrals.
@@ -55,8 +56,9 @@ pub struct Ragged {
 /// `j_blk` and `denom` are empty. The PCG ([`solve_ragged_budgeted_steered`]
 /// and its callers) then keeps its vectors over the owned blocks only,
 /// exchanges the search direction each iteration, and sums its dot products
-/// over the ranks. Only the indexed matvec reads a share
-/// ([`matvec_planned`] refuses one).
+/// over the ranks. Both matvecs compute the owned output blocks only and read
+/// any block of the (whole) search direction; a [`SolvePlan`] built on a
+/// shared system holds the gathers of the owned output blocks only.
 #[derive(Debug, Clone)]
 pub struct RaggedShare {
     /// The MPI context the ranks reduce over.
@@ -890,27 +892,17 @@ where
     S: FnMut(f64) -> Option<f64>,
 {
     let resident_bytes = solve_resident_bytes(rg, max_iter);
-    // A system split over ranks runs the indexed matvec: the gather plan is
-    // built over every block and would need them all here.
-    let plan_bytes = match rg.share {
-        None => SolvePlan::bytes_for_with_threshold(rg, f_oo, fvv_rho_star),
-        Some(_) => 0,
-    };
-    let admitted = match rg.share {
-        None => admit_plan(plan_bytes, resident_bytes, budget_bytes),
-        Some(_) => None,
-    };
-    let Some(charge) = admitted else {
-        if rg.share.is_none() {
-            eprintln!(
-                "  ragged PCG: gather plan ({:.3} GB) + resident solve ({:.3} GB) over the \
-                 memory budget ({:.3} GB) or the pool; using the plan-free indexed matvec \
-                 (same result, slower)",
-                plan_bytes as f64 / 1e9,
-                resident_bytes as f64 / 1e9,
-                budget_bytes as f64 / 1e9
-            );
-        }
+    // Under a share both sizes cover this rank's owned blocks.
+    let plan_bytes = SolvePlan::bytes_for_with_threshold(rg, f_oo, fvv_rho_star);
+    let Some(charge) = admit_plan(plan_bytes, resident_bytes, budget_bytes) else {
+        eprintln!(
+            "  ragged PCG: gather plan ({:.3} GB) + resident solve ({:.3} GB) over the \
+             memory budget ({:.3} GB) or the pool; using the plan-free indexed matvec \
+             (same result, slower)",
+            plan_bytes as f64 / 1e9,
+            resident_bytes as f64 / 1e9,
+            budget_bytes as f64 / 1e9
+        );
         let solve = pcg_steered(
             rg,
             rhs,
@@ -1290,18 +1282,36 @@ fn flat_u32(k: usize) -> u32 {
 /// skips them; the edge order is by_j then by_i, as there.
 ///
 /// It also fixes each block's Fvv product mode ([`SolvePlan::with_fvv_threshold`]).
+///
+/// Under a [`RaggedShare`] the plan covers this rank's owned OUTPUT blocks
+/// only: a block it does not own gets no edges and no Fvv list. An owned
+/// block's edges still point at any source block, owned or not (the search
+/// direction is whole on every rank), and are the same edges the plan of the
+/// unshared system gives that block.
 #[derive(Debug, Clone)]
 pub struct SolvePlan {
     edges: Vec<Vec<PlanEdge>>,
     /// Per block: `None` → the two dense Fvv GEMMs; `Some(nz)` → the sparse
     /// scatter over the block's retained `(row, col)` elements.
     fvv_sparse: Vec<Option<Vec<(u32, u32)>>>,
+    /// Owned blocks of the system the plan was built on ([`n_owned`]).
+    n_owned: usize,
 }
 
-/// The Fock-coupled source pairs of output pair `pb` in [`matvec_indexed`]'s
+/// Blocks this rank owns (every block without a share).
+fn n_owned(rg: &Ragged) -> usize {
+    (0..rg.pairs.len()).filter(|&p| rg.owns(p)).count()
+}
+
+/// The Fock-coupled source pairs of output pair `p` in [`matvec_indexed`]'s
 /// order (by_j then by_i), zero couplings dropped: `(q, f_oo coefficient)`.
-fn plan_partners(rg: &Ragged, f_oo: &Array2<f64>, pb: &PairBlock) -> Vec<(usize, f64)> {
+/// None for a block this rank does not own (the plan's ownership filter).
+fn plan_partners(rg: &Ragged, f_oo: &Array2<f64>, p: usize) -> Vec<(usize, f64)> {
     let mut out = Vec::new();
+    if !rg.owns(p) {
+        return out;
+    }
+    let pb = &rg.pairs[p];
     for &q in &rg.by_j[&pb.j] {
         let f = f_oo[(pb.i, rg.pairs[q].i)];
         if f != 0.0 {
@@ -1333,12 +1343,14 @@ fn edge_len(dst: &PairBlock, src: &PairBlock) -> usize {
     rows * cols
 }
 
-/// `Some(kept)` when block `pb` takes the sparse Fvv product at threshold
-/// `rho_star` (retained density `kept / (|Da|·|Db|)` strictly below it).
-fn fvv_sparse_kept(pb: &PairBlock, rho_star: f64) -> Option<usize> {
-    let kept = pb.pat.iter().filter(|&&x| x).count();
-    let rho = kept as f64 / pb.pat.len().max(1) as f64;
-    (rho < rho_star).then_some(kept)
+/// `Some(kept)` when block `p` takes the sparse Fvv product at threshold
+/// `rho_star` (retained density `kept / (|Da|·|Db|)` strictly below it);
+/// `None` for a block this rank does not own.
+fn fvv_sparse_kept(rg: &Ragged, p: usize, rho_star: f64) -> Option<usize> {
+    let pat = &rg.pairs[p].pat;
+    let kept = pat.iter().filter(|&&x| x).count();
+    let rho = kept as f64 / pat.len().max(1) as f64;
+    (rg.owns(p) && rho < rho_star).then_some(kept)
 }
 
 impl SolvePlan {
@@ -1356,20 +1368,22 @@ impl SolvePlan {
     /// vector exactly, so this is its allocation, not a bound (pinned by
     /// `tests/solve_plan_budget.rs` against a counting allocator). With the
     /// pair gate off it grows like `no³ · overlap`; [`matvec_indexed`] needs
-    /// none of it.
+    /// none of it. Under a [`RaggedShare`] the edges and Fvv lists are those
+    /// of the owned blocks only; the per-pair headers cover every block.
     pub fn bytes_for_with_threshold(rg: &Ragged, f_oo: &Array2<f64>, rho_star: f64) -> usize {
         let idx = std::mem::size_of::<(u32, u32)>();
         let edge = std::mem::size_of::<PlanEdge>();
         let outer = std::mem::size_of::<Vec<PlanEdge>>();
         let slot = std::mem::size_of::<Option<Vec<(u32, u32)>>>();
         rg.pairs
-            .iter()
-            .map(|pb| {
-                let sparse = fvv_sparse_kept(pb, rho_star).map_or(0, |kept| idx * kept);
+            .par_iter()
+            .enumerate()
+            .map(|(p, pb)| {
+                let sparse = fvv_sparse_kept(rg, p, rho_star).map_or(0, |kept| idx * kept);
                 outer
                     + slot
                     + sparse
-                    + plan_partners(rg, f_oo, pb)
+                    + plan_partners(rg, f_oo, p)
                         .iter()
                         .map(|&(q, _)| edge + idx * edge_len(pb, &rg.pairs[q]))
                         .sum::<usize>()
@@ -1393,9 +1407,10 @@ impl SolvePlan {
     pub fn with_fvv_threshold(rg: &Ragged, f_oo: &Array2<f64>, rho_star: f64) -> Self {
         let fvv_sparse = rg
             .pairs
-            .iter()
-            .map(|pb| {
-                fvv_sparse_kept(pb, rho_star).map(|kept| {
+            .par_iter()
+            .enumerate()
+            .map(|(p, pb)| {
+                fvv_sparse_kept(rg, p, rho_star).map(|kept| {
                     let nb = pb.db.len();
                     let mut nz = Vec::with_capacity(kept);
                     for (k, _) in pb.pat.iter().enumerate().filter(|(_, &x)| x) {
@@ -1408,6 +1423,7 @@ impl SolvePlan {
         Self {
             edges: Self::build_edges(rg, f_oo),
             fvv_sparse,
+            n_owned: n_owned(rg),
         }
     }
 
@@ -1438,9 +1454,10 @@ impl SolvePlan {
             PlanEdge { q, coeff: -f, idx }
         };
         rg.pairs
-            .iter()
-            .map(|pb| {
-                plan_partners(rg, f_oo, pb)
+            .par_iter()
+            .enumerate()
+            .map(|(p, pb)| {
+                plan_partners(rg, f_oo, p)
                     .iter()
                     .map(|&(q, f)| edge(pb, q, f))
                     .collect()
@@ -1455,6 +1472,11 @@ impl SolvePlan {
 /// same pattern projection — so with every block dense ([`SolvePlan::new`])
 /// the result is bitwise [`matvec_indexed`]'s. A block the plan put on the
 /// sparse Fvv product agrees with it to rounding (`t` pattern-projected).
+///
+/// Under a [`RaggedShare`] it computes the owned output blocks (reading any
+/// block of `t`, which must be whole) and leaves the others empty, as
+/// [`matvec_indexed_into`] does. `plan` must have been built on `rg` with
+/// the same share.
 pub fn matvec_planned(
     rg: &Ragged,
     plan: &SolvePlan,
@@ -1464,14 +1486,18 @@ pub fn matvec_planned(
 ) {
     use rayon::prelude::*;
     assert!(
-        rg.share.is_none(),
-        "matvec_planned: the gather plan covers every block; a system split over ranks runs \
-         the indexed matvec"
+        plan.edges.len() == rg.pairs.len() && plan.n_owned == n_owned(rg),
+        "matvec_planned: the plan was built on another system or another share"
     );
     let fl: u64 = out
         .par_iter_mut()
         .enumerate()
         .map(|(p_idx, slot)| {
+            if !rg.owns(p_idx) {
+                // another rank's output block
+                *slot = Array2::zeros((0, 0));
+                return 0;
+            }
             let pb = &rg.pairs[p_idx];
             let (na, nb) = (pb.da.len(), pb.db.len());
             let (mut r, mut fl) = match &plan.fvv_sparse[p_idx] {
