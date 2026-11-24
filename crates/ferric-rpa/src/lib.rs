@@ -453,16 +453,31 @@ pub(crate) fn closed_shell_charge(
     // Charge the per-worker scratch at the width the frequency loop will
     // allocate: `quad_panel_width` narrows it under an explicit budget (an
     // unbudgeted run keeps the full width, which the loop then allocates).
-    let panel_width = energy::quad_panel_width(
-        n_keep,
-        nocc.saturating_mul(nvir),
-        n_workers,
-        config.memory_budget_bytes,
-    );
-    Ok((
-        shape,
-        budget::closed_shell_run_charge(shape, planes, panel_width),
-    ))
+    // The Laplace-chi0 loop is never panelled: full width.
+    let nov = nocc.saturating_mul(nvir);
+    let panel_width = if frequency_loop_is_panelled(config) {
+        energy::quad_panel_width(n_keep, nov, n_workers, config.memory_budget_bytes)
+    } else {
+        nov.max(1)
+    };
+    let mut charge = budget::closed_shell_run_charge(shape, planes, panel_width);
+    if !frequency_loop_is_panelled(config) {
+        // The Laplace kernel's own copies of the projection.
+        let extra = budget::laplace_kernel_extra_bytes(shape);
+        charge.soft = charge.soft.saturating_add(extra);
+        charge.total = charge.total.saturating_add(extra);
+    }
+    Ok((shape, charge))
+}
+
+/// Whether the closed-shell frequency loop of `config` honours a panel
+/// allowance. The dense-chi0 loops do; the Laplace-chi0 eigenvalue loop
+/// (`energy::eval_eigenvalues_at_frequencies_laplace`) holds a full-width
+/// `(m, nov)` scratch and an `(m, m)` matrix per worker whatever the budget,
+/// plus its kernel's own copies ([`budget::laplace_kernel_extra_bytes`]), so a
+/// pre-flight must charge it at full width with those added.
+pub(crate) fn frequency_loop_is_panelled(config: &PdepRpaConfig) -> bool {
+    matches!(config.chi0_backend, Chi0Backend::Dense)
 }
 
 /// Pre-flight peak-memory gate shared by [`run_pdep_rpa`] and
@@ -565,16 +580,41 @@ pub(crate) fn preflight_check_closed_shell(
 /// subspace. Floored at a small multiple so Davidson always has room to build a
 /// meaningful subspace — a cap of 1 or 2 would converge nothing.
 ///
-/// Shrinking the subspace does NOT change the converged eigenvalues (Davidson
-/// restarts from the current Ritz vectors when the basis fills), only the
-/// iteration count. That is the important difference from the MO-stream chunk,
-/// which k-blocks an accumulation and therefore does shift results.
+/// Shrinking the subspace changes the converged eigenpairs only within
+/// `eigensolver_conv_thresh` (Davidson restarts from the current Ritz vectors
+/// when the basis fills, so the iterates, not the convergence criterion,
+/// depend on the cap); mostly it changes the iteration count. That is the
+/// difference from the MO-stream chunk, which k-blocks an accumulation.
+/// Pure: the Davidson arms report a cap at its floor
+/// ([`warn_if_davidson_collapsed`]).
 fn davidson_default_max_vecs(naux: usize, budget_bytes: usize) -> usize {
-    const MIN_VECS: usize = 8;
     let per_vec_bytes = naux.max(1).saturating_mul(8).saturating_mul(4);
     let share = budget_bytes / 4;
-    let derived = (share / per_vec_bytes.max(1)).max(MIN_VECS);
+    let derived = (share / per_vec_bytes.max(1)).max(DAVIDSON_MIN_VECS);
     derived.min(3 * naux.max(1))
+}
+
+/// The floor of [`davidson_default_max_vecs`].
+const DAVIDSON_MIN_VECS: usize = 8;
+
+/// Called by a Davidson eigensolve that runs with the budget-derived cap
+/// `max_vecs` (not a user's `eigensolver_max_vecs`): warns when the budget
+/// forced the floor.
+fn warn_if_davidson_collapsed(config: &PdepRpaConfig, naux: usize, max_vecs: usize) {
+    if config.eigensolver_max_vecs == 0
+        && max_vecs == DAVIDSON_MIN_VECS
+        && 3 * naux > DAVIDSON_MIN_VECS
+    {
+        ferric_core::memory::warn_width_collapsed(
+            "PDEP Davidson subspace",
+            max_vecs,
+            3 * naux,
+            ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes),
+            "the Davidson subspace restarts at its minimum size; the eigenpairs still \
+             converge to eigensolver_conv_thresh, but can move within that threshold \
+             with the budget (set eigensolver_max_vecs to fix the subspace)",
+        );
+    }
 }
 
 /// Top-level PDEP-RPA energy calculation.
@@ -867,6 +907,7 @@ pub(crate) fn run_pdep_rpa_eigensolve(
     let davidson_result = match (config.eigensolver, screened_bov_opt.as_ref()) {
         // --- Sparse Boys-screened path ---
         (Eigensolver::Davidson, Some(sb)) => {
+            warn_if_davidson_collapsed(config, naux, max_vecs);
             // Seed: localized-occupied → aux projection. Columns of the per-
             // orbital tile summed over virtuals and scattered back to full
             // naux via p_lists, then QR-orthonormalized. This is the "Boys
@@ -922,6 +963,7 @@ pub(crate) fn run_pdep_rpa_eigensolve(
         }
         // --- Dense legacy path ---
         (Eigensolver::Davidson, None) => {
+            warn_if_davidson_collapsed(config, naux, max_vecs);
             if use_atom_seed {
                 let seed = build_atom_seed(dfbs)?;
                 let laplace_q = laplace_for_davidson.as_ref();
@@ -1086,6 +1128,31 @@ pub fn run_pdep_rpa_from_intermediates(
     rhf: &ScfResult,
     config: &PdepRpaConfig,
 ) -> Result<PdepRpaResult, FerricError> {
+    run_pdep_rpa_from_intermediates_panelled(
+        inter,
+        mol,
+        obs,
+        dfbs,
+        op,
+        rhf,
+        (config, config.memory_budget_bytes.into()),
+    )
+}
+
+/// [`run_pdep_rpa_from_intermediates`] with the frequency loop's panel sized
+/// by `freq` instead of `config.memory_budget_bytes`. A caller that holds
+/// planes beside the dRPA (the rs-mp2-rpa scan) passes what the budget leaves
+/// after them ([`budget::panel_budget_beside`]); everything else (the
+/// eigensolve, the stage-seam check) still reads `config`.
+pub(crate) fn run_pdep_rpa_from_intermediates_panelled(
+    inter: &ferric_mp2::rimp2::RpaIntermediates,
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    (config, freq): (&PdepRpaConfig, energy::PanelAllowance),
+) -> Result<PdepRpaResult, FerricError> {
     let b_ov = &inter.b_ov;
     let nocc = inter.nocc;
     let nvir = inter.nvir;
@@ -1120,13 +1187,12 @@ pub fn run_pdep_rpa_from_intermediates(
         && !config.need_inv_dielectric_freq
         && stage.laplace_chi0_quad.is_none();
     let trace_log_summands = if logdet_ok {
-        Some(energy::eval_trace_log_summands_budgeted(
+        Some(energy::eval_trace_log_summands_panelled(
             &eigenvectors,
             b_ov,
-            &eps_occ,
-            &eps_vir,
+            (&eps_occ, &eps_vir),
             &quad_freqs,
-            config.memory_budget_bytes,
+            freq,
         )?)
     } else {
         None
@@ -1138,14 +1204,15 @@ pub fn run_pdep_rpa_from_intermediates(
         Array2::<f64>::zeros((0, 0))
     } else {
         match stage.laplace_chi0_quad.as_ref() {
-            None => energy::eval_eigenvalues_at_frequencies_budgeted(
+            None => energy::eval_eigenvalues_panelled(
                 &eigenvectors,
                 b_ov,
-                &eps_occ,
-                &eps_vir,
+                (&eps_occ, &eps_vir),
                 &quad_freqs,
-                config.memory_budget_bytes,
+                freq,
             )?,
+            // Not panelled: the pre-flights charge this loop at full width
+            // (`frequency_loop_is_panelled`), so `freq` does not apply.
             Some(q) => energy::eval_eigenvalues_at_frequencies_laplace(
                 &eigenvectors,
                 b_ov,
@@ -2010,6 +2077,7 @@ fn u_pdep_rpa_core(
             }
         }
         (Eigensolver::Davidson, lap_opt) => {
+            warn_if_davidson_collapsed(config, naux, max_vecs);
             let lap = lap_opt;
             davidson::run_davidson_static(
                 naux,

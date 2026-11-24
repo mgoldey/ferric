@@ -56,7 +56,7 @@ use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_scf::direct_jk::DirectJK;
+use ferric_scf::direct_jk::{DirectJK, GcRotate};
 use ferric_scf::incore_jk::IncoreEri;
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
@@ -160,7 +160,11 @@ fn anchor_closed(label: &str, prep: &PreparedBasis, ds: &[Array2<f64>]) {
     let abs = eri.abs_copy();
     let ctx = ParallelContext::default();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), prep).unwrap();
-    let mut djk = DirectJK::new(&ctx, prep, &bounds, 0.0, usize::MAX / 4);
+    // The bar is the rounding analysis of the walk on the basis the store
+    // holds, so the walk runs on it: no internal contraction rotation (that
+    // route is checked against this one in `tests/gc_rotation.rs`).
+    let mut djk =
+        DirectJK::new(&ctx, prep, &bounds, 0.0, usize::MAX / 4).with_gc_rotation(GcRotate::Off);
     assert!(
         djk.incremental_pays(),
         "the builder must be on the direct route"
@@ -260,7 +264,9 @@ fn blocked_digest_matches_incore_on_open_shell_oh() {
     // Fresh bounds: the SCF's bounds carry its in-core store, which
     // `build_uhf` would answer from instead of computing integrals.
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
-    let mut djk = DirectJK::new(&ctx, &prep, &bounds, 0.0, usize::MAX / 4);
+    // Unrotated walk, as in `anchor_closed`.
+    let mut djk =
+        DirectJK::new(&ctx, &prep, &bounds, 0.0, usize::MAX / 4).with_gc_rotation(GcRotate::Off);
     assert!(
         djk.incremental_pays(),
         "the builder must be on the direct route"

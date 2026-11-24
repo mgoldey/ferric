@@ -302,17 +302,19 @@ pub(crate) fn build_df_jk<'a>(
     k_precision: crate::df_k::RiKPrecision,
 ) -> Result<(Option<RiJ<'a>>, Option<DfK<'a>>), FerricError> {
     let j_precision = resolved.precision;
-    let mut out = build_df_jk_impl(
-        ctx,
-        mol,
-        op,
-        prep,
-        (j_aux, k_aux),
-        ooc_budget,
-        (j_pair_thresh, resolved.site),
-        j_precision,
-        k_precision,
-    )?;
+    let mut out = crate::df_j::with_request_source(resolved.source, || {
+        build_df_jk_impl(
+            ctx,
+            mol,
+            op,
+            prep,
+            (j_aux, k_aux),
+            ooc_budget,
+            (j_pair_thresh, resolved.site),
+            j_precision,
+            k_precision,
+        )
+    })?;
     // Every stored route (including a tensor shared with DF-K) gates its
     // device build on the SCF's site.
     if let Some(j) = out.0.as_mut().and_then(RiJ::as_stored_mut) {
@@ -443,7 +445,7 @@ fn build_df_jk_impl<'a>(
                         op,
                         &dfbs,
                         ooc_budget,
-                        df_k.as_ref().map_or(0, DfK::resident_tensor_bytes),
+                        rij_f32_beside(df_k.as_ref(), ooc_budget),
                         Some(ctx),
                         j_precision,
                     )? {
@@ -467,11 +469,11 @@ fn build_df_jk_impl<'a>(
                             j_pair_thresh,
                         )?))
                     } else {
-                        RiJ::Stored(DfJ::from_source(
+                        RiJ::Stored(DfJ::from_source_beside(
                             raw,
                             op,
                             &dfbs,
-                            ooc_budget,
+                            (ooc_budget, rij_f32_beside(df_k.as_ref(), ooc_budget)),
                             Some(ctx),
                             j_precision,
                         )?)
@@ -533,6 +535,34 @@ fn build_df_jk_impl<'a>(
     };
     yield_device_to_k(&mut df_j, &df_k);
     Ok((df_j, df_k))
+}
+
+/// What a shared RI-JK set-up's f32 RI-J conversion counts beside it: the
+/// DF-K band at its budget placement ([`budget_placed_band_bytes`]), sized in
+/// the layout the request and the inputs determine
+/// ([`DfK::nominal_band_bytes`]: square f64 only when forced, else packed at
+/// the request or packed f64 after an out-of-range fallback), else nothing
+/// without DF-K. The RI-J precision must depend on the budget only, so neither
+/// whether the band stayed in core nor the square fallback the pool can force
+/// is read. When the pool did force the square layout, the band held beside
+/// the conversion exceeds what was counted by at most the square minus the
+/// packed size; like the soft f32 pool charge (`f32_store::charge_f32`), that
+/// overrun is accepted for a deterministic precision.
+fn rij_f32_beside(df_k: Option<&DfK<'_>>, budget: usize) -> usize {
+    df_k.map_or(0, |k| {
+        budget_placed_band_bytes(k.nominal_band_bytes(), budget)
+    })
+}
+
+/// A band of `band_bytes` counted at its budget placement: all of it when the
+/// budget alone holds it, else 0 (spilled). Never the live
+/// `DfK::resident_tensor_bytes`, which also reads the pool.
+fn budget_placed_band_bytes(band_bytes: usize, budget: usize) -> usize {
+    if band_bytes <= budget {
+        band_bytes
+    } else {
+        0
+    }
 }
 
 /// Dress-first RI-JK ([`ThreeIndexSource::dress_first_wanted`]) for a shared
@@ -1083,6 +1113,19 @@ pub(crate) fn subtract_rsh_exchange(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The band an f32 RI-J conversion counts beside it is placed by the
+    /// budget alone: the same figure whether the live DF-K band stayed in core
+    /// or was spilled (the live residency is not an input), the band when the
+    /// budget holds it, else nothing.
+    #[test]
+    fn f32_conversion_counts_the_band_at_its_budget_placement() {
+        let band = 1_000_000;
+        assert_eq!(budget_placed_band_bytes(band, band), band);
+        assert_eq!(budget_placed_band_bytes(band, 10 * band), band);
+        assert_eq!(budget_placed_band_bytes(band, band - 1), 0);
+        assert_eq!(budget_placed_band_bytes(0, 0), 0);
+    }
 
     /// Dress first, at a budget where raw and DF-K's packed band do not fit
     /// together but the band and the dressing's stream do: DF-K holds just the

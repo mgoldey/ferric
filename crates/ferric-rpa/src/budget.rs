@@ -484,6 +484,39 @@ pub fn closed_shell_run_charge(
     }
 }
 
+/// What the Laplace-chi0 dielectric kernel
+/// (`crate::laplace_chi0::dielectric_matrix_laplace_into`) allocates per
+/// active frequency worker beyond the full-width loop scratch
+/// ([`quad_scratch_bytes_at_width`] at `nov`): the larger of its two branches.
+/// The Laplace branch keeps a copy of the unscaled projection (`m·nov`); the
+/// high-frequency dense fallback (`sternheimer::dielectric_matrix`) builds the
+/// projection and its scaled copy (`2 m·nov`) and a fresh `m²` matrix. Both
+/// are charged with `m = naux`, as the loop scratch is.
+pub fn laplace_kernel_extra_bytes(shape: PeakEstimateShape) -> usize {
+    let m = shape.naux.max(shape.n_keep.min(shape.naux));
+    let nov = shape.nocc.saturating_mul(shape.nvir);
+    m.saturating_mul(nov)
+        .saturating_mul(2)
+        .saturating_add(m.saturating_mul(m))
+        .saturating_mul(F64_BYTES)
+        .saturating_mul(shape.n_workers.max(1))
+}
+
+/// [`ScanCharge`] with `extra` bytes more in the dRPA phase's per-worker
+/// scratch (`drpa_soft` and the total).
+pub fn with_drpa_scratch(base: ScanCharge, extra: usize) -> ScanCharge {
+    let drpa_soft = base.drpa_soft.saturating_add(extra);
+    let build = base.ao_resident.saturating_add(base.stream_scratch);
+    let drpa = base.drpa_hard.saturating_add(drpa_soft);
+    ScanCharge {
+        total: base
+            .persistent
+            .saturating_add(build.max(base.spin_scratch).max(drpa)),
+        drpa_soft,
+        ..base
+    }
+}
+
 /// Planes the rs-mp2-rpa scan holds for its whole run: the metric buffers
 /// (`3 naux²`, as in [`estimate_peak_bytes`]) and one `b_ov` (`naux·nov`).
 /// The driver keeps one `RpaIntermediates` at a time, so one `b_ov`.
@@ -638,6 +671,97 @@ pub fn scan_charge_unrestricted(
     }
 }
 
+/// Bytes a closed-shell rs-mp2-rpa scan holds through its eigenbasis dRPA
+/// phase besides the frequency scratch: the persistent planes
+/// ([`scan_persistent_bytes`]), the Coulomb `b_ov` a terf scan keeps
+/// (`held_b_ov_bytes`, 0 otherwise) and the static eigensolve planes
+/// ([`static_eigensolve_bytes`]).
+pub fn scan_dielectric_resident_bytes(shape: PeakEstimateShape, held_b_ov_bytes: usize) -> usize {
+    scan_persistent_bytes(shape)
+        .saturating_add(held_b_ov_bytes)
+        .saturating_add(static_eigensolve_bytes(shape))
+}
+
+/// What a frequency loop's per-worker scratch may use: what `budget` leaves
+/// beside the `resident` planes (everything the caller charges besides that
+/// scratch, a projection the loop holds included), so that
+/// `resident + scratch ≤ budget`. `None` (no set budget) runs the loop at full
+/// width. A `resident` at or over the budget is
+/// [`PanelAllowance::NoRoom`](crate::energy::PanelAllowance::NoRoom): the
+/// narrowest panel, which a pre-flight charges and the rs-mp2-rpa driver
+/// refuses before any loop runs ([`check_scan_resident`]).
+///
+/// Sizing the panel against the whole budget and then adding the resident
+/// planes on top put every panelled run's demand at `budget + resident`, so
+/// the ceiling check refused runs the narrower panel would have fitted.
+pub fn panel_budget_beside(
+    budget: Option<usize>,
+    resident: usize,
+) -> crate::energy::PanelAllowance {
+    use crate::energy::PanelAllowance;
+    match budget {
+        None => PanelAllowance::Unbudgeted,
+        Some(b) if resident >= b => PanelAllowance::NoRoom,
+        Some(b) => PanelAllowance::Scratch(b - resident),
+    }
+}
+
+/// The planes a closed-shell or open-shell scan holds through its dRPA phase,
+/// for [`check_scan_resident`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScanResident {
+    /// Aux metric + the current operator's `b_ov` (per spin).
+    pub persistent: usize,
+    /// The Coulomb `b_ov` a terf scan keeps for every point (0 otherwise).
+    pub held_coulomb: usize,
+    /// The static eigensolve planes.
+    pub eigensolve: usize,
+}
+
+/// The refusal when the planes a scan holds through its dRPA phase
+/// ([`ScanResident`]) leave nothing of `budget_bytes` for a frequency panel.
+pub fn check_scan_resident(
+    label: &str,
+    planes: ScanResident,
+    budget_bytes: usize,
+) -> Result<(), ferric_core::error::FerricError> {
+    let ScanResident {
+        persistent,
+        held_coulomb,
+        eigensolve,
+    } = planes;
+    let kept = persistent.saturating_add(held_coulomb);
+    let resident = kept.saturating_add(eigensolve);
+    if resident < budget_bytes {
+        return Ok(());
+    }
+    let gb = |b: usize| b as f64 / 1e9;
+    let what = if kept >= budget_bytes {
+        "the persistent planes alone"
+    } else {
+        "the persistent planes and the dRPA eigensolve planes"
+    };
+    let held = if held_coulomb > 0 {
+        format!(
+            " + the Coulomb b_ov a terf scan holds for every point {:.3} GB",
+            gb(held_coulomb)
+        )
+    } else {
+        String::new()
+    };
+    Err(ferric_core::error::FerricError::MemoryExhausted(format!(
+        "{label}: {what} exceed the memory budget: persistent planes (aux metric + b_ov) \
+         {:.3} GB{held} + static eigensolve planes {:.3} GB = {:.3} GB against a budget of \
+         {:.3} GB, which leaves no room for the frequency panel (it is sized against the \
+         budget minus these planes). Raise [memory] budget_gb / FERRIC_MEM_BUDGET_GB, or \
+         shrink the auxiliary basis or the active space (frozen_core)",
+        gb(persistent),
+        gb(eigensolve),
+        gb(resident),
+        gb(budget_bytes),
+    )))
+}
+
 /// The per-worker scratch of the signed log-det dRPA
 /// (`crate::energy::eval_signed_trace_log_summands`) at panel width `width`:
 /// a `2 naux × width` panel and the `(2 naux)²` dielectric.
@@ -656,8 +780,12 @@ pub fn signed_quad_scratch_bytes(naux: usize, width: usize, n_workers: usize) ->
 /// for the whole scan and joins the persistent planes, which shrinks the
 /// budget left for the AO tensor, so its tier is re-planned. The long-range
 /// dRPA runs the signed log-det, whose scratch (`signed_drpa_bytes`, from
-/// [`signed_quad_scratch_bytes`]) replaces the frequency scratch when larger.
-/// The terf three-index build itself is gone, so no phase is added.
+/// [`signed_quad_scratch_bytes`]) is its own phase: it forms no static
+/// eigenbasis, so the eigensolve planes are not live beside it, and the dRPA
+/// phase is the larger of `drpa_hard + drpa_soft` and the signed scratch.
+/// `drpa_soft` becomes the larger of the two scratches (the pool's soft
+/// reservation around either loop). The terf three-index build itself is
+/// gone, so no phase is added.
 pub fn with_signed_lr(
     base: ScanCharge,
     (nao, naux): (usize, usize),
@@ -673,7 +801,10 @@ pub fn with_signed_lr(
         ferric_integrals::three_index_source::planned_residency(nao, naux, ao_budget);
     let drpa_soft = base.drpa_soft.max(signed_drpa_bytes);
     let build = ao_resident.saturating_add(base.stream_scratch);
-    let drpa = base.drpa_hard.saturating_add(drpa_soft);
+    let drpa = base
+        .drpa_hard
+        .saturating_add(base.drpa_soft)
+        .max(signed_drpa_bytes);
     ScanCharge {
         total: persistent.saturating_add(build.max(base.spin_scratch).max(drpa)),
         persistent,

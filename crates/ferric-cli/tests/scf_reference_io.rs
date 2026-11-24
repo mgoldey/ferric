@@ -651,3 +651,47 @@ fn a_reference_the_file_cannot_store_is_refused_before_the_scf() {
     );
     assert!(file.is_file());
 }
+
+/// The direct J/K contraction rotation (`[scf] gc_rotation`, `FERRIC_GC_ROTATE`)
+/// moves the reference's last digits, so a cc-pVDZ reference saved with it
+/// off is refused by a run that would rotate.
+#[test]
+fn a_reference_saved_with_another_contraction_rotation_is_refused() {
+    let file = scratch().join("gc_rotation.npz");
+    let _ = std::fs::remove_file(&file);
+    ok(
+        "gc_off_save",
+        &input(
+            WATER,
+            "cc-pvdz",
+            "ccsd",
+            &format!(
+                "gc_rotation = \"off\"\n{}",
+                path_key("save_reference", &file)
+            ),
+        ),
+    );
+    let e = refused(
+        "gc_auto_read",
+        &input(
+            WATER,
+            "cc-pvdz",
+            "ccsd",
+            &format!("gc_rotation = \"auto\"\n{}", read_key(&file)),
+        ),
+    );
+    assert!(
+        e.contains("different calculation") && e.contains("gc_rotation"),
+        "{e}"
+    );
+    // The same setting reads.
+    ok(
+        "gc_off_read",
+        &input(
+            WATER,
+            "cc-pvdz",
+            "ccsd",
+            &format!("gc_rotation = \"off\"\n{}", read_key(&file)),
+        ),
+    );
+}

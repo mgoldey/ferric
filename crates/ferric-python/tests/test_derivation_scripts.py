@@ -15,6 +15,11 @@ Scripts with a runtime budget of ``SLOW_S`` seconds or more are marked
 The registry (``testdata/derivations/registry.json``,
 ``test_derivation_registry.py``) counts a script as run when its file name
 appears in a test here.
+
+``FERRIC_PROOF_SCRIPTS`` (space-separated script names) restricts both tests to
+those scripts; book.yml sets it on a pull request from
+``scripts/select_proofs.py``. Unset, every case runs. A name that is not in
+``CASES``, or an empty value, is a collection error, never an empty run.
 """
 
 import os
@@ -2627,8 +2632,27 @@ def _tier(budget, *values, id):
     return pytest.param(*values, marks=marks, id=id)
 
 
+def _selected():
+    """The scripts named by FERRIC_PROOF_SCRIPTS, or every case when unset."""
+    names = {c[0] for c in CASES}
+    only = os.environ.get("FERRIC_PROOF_SCRIPTS")
+    if only is None:
+        return names
+    picked = set(only.split())
+    if not picked or picked - names:
+        raise ValueError(
+            f"FERRIC_PROOF_SCRIPTS={only!r}: empty, or names scripts not in "
+            f"CASES: {sorted(picked - names)}"
+        )
+    return picked
+
+
+SELECTED = _selected()
+
+
 @pytest.mark.parametrize(
-    ("script", "timeout"), [_tier(c[1], c[0], c[1], id=c[0]) for c in CASES]
+    ("script", "timeout"),
+    [_tier(c[1], c[0], c[1], id=c[0]) for c in CASES if c[0] in SELECTED],
 )
 def test_script_holds(script, timeout):
     r = _run(SCRIPTS / script, timeout)
@@ -2644,7 +2668,11 @@ MUTATIONS = [
 
 @pytest.mark.parametrize(
     ("script", "timeout", "old", "new", "marker"),
-    [_tier(m[1], *m, id=f"{m[0]}:{i}") for i, m in enumerate(MUTATIONS)],
+    [
+        _tier(m[1], *m, id=f"{m[0]}:{i}")
+        for i, m in enumerate(MUTATIONS)
+        if m[0] in SELECTED
+    ],
 )
 def test_mutation_turns_the_script_red(tmp_path, script, timeout, old, new, marker):
     src = (SCRIPTS / script).read_text()

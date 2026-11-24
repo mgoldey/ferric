@@ -264,7 +264,17 @@ wall-clock seconds `{"t_spaces_s", "t_assembly_s", "t_solve_s",
 `aux_major_in_flight_peak`, `aux_major_coeff_bytes`, `n_batches`, `batch_work_max_s`,
 `batch_work_mean_s`, `t_metric_s`, `t_pairs_s`, `n_pair_groups`,
 `n_distinct_occ_per_group`, `n_trsm`, `n_w_reused`, `own_w_bytes`,
-`own_w_bytes_held`, `group_scratch_bytes_max`, `t_loc_s`). The
+`own_w_bytes_held`, `group_scratch_bytes_max`, `t_loc_s`, and the
+pre-flight and stage-5 schedule: `memory_strips_bytes`,
+`memory_metric_bytes`, `memory_stage3_scratch_bytes`,
+`memory_pair_block_bytes`, `memory_pcg_vector_bytes`,
+`memory_resident_peak_bytes`, `memory_exact` (a boolean: the pair-block and
+PCG figures are exact at `eps = 0` and candidate bounds otherwise),
+`group_concurrency` (the most domain groups a budget-sized wave let run at
+once; 1 with several groups means the budget serialised the pair fits),
+`group_scratch_bound_bytes`, `group_in_flight_peak` (groups measured in
+flight at once) and `n_group_waves` (waves the budget split the groups
+into; 1 when they all fit at once)). The
 `*_thread_s` fields are summed over batch workers (thread-seconds), the
 eval/scatter split is `null` unless it was measured, and `t_reference_s` is
 `0` when the opt-in reference was off. `t_loc_s` is counted inside

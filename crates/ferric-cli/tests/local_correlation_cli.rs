@@ -314,6 +314,8 @@ const DIRECT_KEYS: &[&str] = &[
     "own_w_bytes_held",
     "group_scratch_bytes_max",
     "group_scratch_bound_bytes",
+    "group_in_flight_peak",
+    "n_group_waves",
     "group_concurrency",
     "memory_exact",
     "memory_metric_bytes",

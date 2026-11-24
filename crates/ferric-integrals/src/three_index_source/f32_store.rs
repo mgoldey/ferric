@@ -34,9 +34,8 @@
 //! build's own block is, and the fit check leaves the same 64-row headroom for
 //! it that `packed_in_core_fits` leaves.
 use super::{
-    charge_three_index, jk_storage, pack_lower_triangle, packed_pair_len, pair_screen, Backend,
-    JkStorage, Operator, PairScreen, PreparedBasis, ThreeIndexSource, PACKED_MIN_SCRATCH_ROWS,
-    PACKED_SCRATCH_CAP_BYTES,
+    jk_storage, pack_lower_triangle, packed_pair_len, pair_screen, Backend, JkStorage, Operator,
+    PairScreen, PreparedBasis, ThreeIndexSource, PACKED_MIN_SCRATCH_ROWS, PACKED_SCRATCH_CAP_BYTES,
 };
 use ferric_core::FerricError;
 use ndarray::{Array2, ArrayView2};
@@ -85,12 +84,10 @@ impl F32Rounding {
 pub enum F32Declined {
     /// `[scf] jk_storage` is `disk` or `direct`.
     Policy(JkStorage),
-    /// The f32 tensor plus its build block does not fit the budget or the pool.
-    DoesNotFit {
-        need: usize,
-        budget: usize,
-        pool_free: Option<usize>,
-    },
+    /// The f32 tensor plus its build block does not fit the budget. The
+    /// decision reads the budget only, never the shared pool's free bytes, so
+    /// one input under one budget always gets one precision.
+    DoesNotFit { need: usize, budget: usize },
     /// A finite integral beyond `f32::MAX` (global aux row, stored column).
     OutOfRange { row: usize, col: usize, value: f64 },
 }
@@ -101,22 +98,12 @@ impl std::fmt::Display for F32Declined {
             F32Declined::Policy(p) => {
                 write!(f, "jk_storage = \"{p}\" keeps the tensor out of core")
             }
-            F32Declined::DoesNotFit {
-                need,
-                budget,
-                pool_free,
-            } => {
-                write!(
-                    f,
-                    "the f32 tensor needs {:.3} GB with its build block, the budget is {:.3} GB",
-                    *need as f64 / 1e9,
-                    *budget as f64 / 1e9
-                )?;
-                if let Some(p) = pool_free {
-                    write!(f, " and the pool has {:.3} GB free", *p as f64 / 1e9)?;
-                }
-                Ok(())
-            }
+            F32Declined::DoesNotFit { need, budget } => write!(
+                f,
+                "the f32 tensor needs {:.3} GB with its build block, the budget is {:.3} GB",
+                *need as f64 / 1e9,
+                *budget as f64 / 1e9
+            ),
             F32Declined::OutOfRange { row, col, value } => {
                 write!(f, "B[{row}, {col}] = {value:e} is beyond the f32 range")
             }
@@ -162,28 +149,38 @@ fn round_rows(
         })
 }
 
-/// Bytes the shared pool has free, `None` when no pool is installed.
-fn pool_free() -> Option<usize> {
-    ferric_core::memory::pool::global_available_bytes()
-}
-
 /// Does `tensor` bytes plus `min(64, rows)` rows of `scratch_row` f64 bytes
-/// (capped like the packed tier's headroom) fit the budget and the pool?
+/// (capped like the packed tier's headroom) fit the budget? The budget only:
+/// the pool's free bytes would make the stored precision depend on what else
+/// happens to be reserved.
 fn f32_fits(tensor: usize, rows: usize, scratch_row: usize, budget: usize) -> F32Outcome<()> {
     let head = scratch_row
         .saturating_mul(PACKED_MIN_SCRATCH_ROWS.min(rows.max(1)))
         .min(PACKED_SCRATCH_CAP_BYTES);
     let need = tensor.saturating_add(head);
-    let free = pool_free();
-    if need <= budget && need <= free.unwrap_or(usize::MAX) {
+    if need <= budget {
         Ok(())
     } else {
-        Err(F32Declined::DoesNotFit {
-            need,
-            budget,
-            pool_free: free,
-        })
+        Err(F32Declined::DoesNotFit { need, budget })
     }
+}
+
+/// The pool charge of an f32 RI-J tensor the budget admitted. Soft: when the
+/// pool cannot take it beside what is already reserved (soft-charged spill
+/// scratch, a transient f64 copy), nothing is recorded and the tensor is built
+/// anyway, exactly as the spill planes of `charge_three_index_soft`. The
+/// precision is then fixed by the budget alone; the budget check already
+/// covers the tensor (and, for a conversion, the f64 tensor beside it), so the
+/// most the pool can be overrun by is soft-charged scratch it never held.
+/// Declining to f64 here made the stored precision, and the energy, depend on
+/// what else happened to be reserved. The DF-K band the shared RI-JK caller
+/// counts beside a conversion is likewise its budget-determined layout
+/// (`DfK::nominal_band_bytes` in ferric-scf): when the pool forced DF-K into
+/// the square layout instead, the band held is larger than counted by at most
+/// the square minus the packed band size.
+fn charge_f32(label: &str, bytes: usize) -> ferric_core::memory::pool::Reservation {
+    ferric_core::memory::pool::try_reserve_global(label, bytes)
+        .unwrap_or_else(|| ferric_core::memory::pool::Reservation::inert(label))
 }
 
 /// Rows per f64 build block: the budget left after the f32 tensor, capped at
@@ -296,7 +293,8 @@ impl ThreeIndexSource {
     /// rounding that tier's tensor.
     ///
     /// `Ok(Err(why))` when not taken: a `disk`/`direct` policy, a tensor that
-    /// does not fit the budget or the pool, or a value beyond `f32::MAX`.
+    /// does not fit the budget, or a value beyond `f32::MAX`. The pool's free
+    /// bytes never decide it (`charge_f32`).
     pub fn build_ri_j_f32(
         op: Operator,
         obs: &PreparedBasis,
@@ -334,7 +332,7 @@ impl ThreeIndexSource {
         } else {
             "DF 3-index (P|mn) in-core packed, f32"
         };
-        let _charge = charge_three_index(label, bytes)?;
+        let _charge = charge_f32(label, bytes);
         let step = block_rows(bytes, scratch_row, budget_bytes).min(rows.max(1));
         if super::ooc_trace() {
             eprintln!(
@@ -377,14 +375,74 @@ impl ThreeIndexSource {
     /// f32 source is returned as it is.
     ///
     /// Used where the raw tensor was built in f64 for another consumer first
-    /// (the shared RI-JK path, where DF-K dresses it). The f32 charge is taken
-    /// with `try_reserve` while the f64 tensor still holds its own, so a pool
-    /// that cannot hold both at once declines. Returns the source (the f32 one,
-    /// or this one unchanged) and, when it was not converted, why. On success
-    /// the f64 tensor and its charge are dropped.
+    /// (the shared RI-JK path, where DF-K dresses it). Whether it converts is
+    /// decided by the budget alone (the f32 tensor plus this f64 tensor's
+    /// resident bytes; the caller passes the budget left beside anything else
+    /// it holds, such as the dressed DF-K band); the f32 pool charge is then
+    /// soft (see `charge_f32`), so the pool's state never changes the
+    /// precision. Returns the source (the f32 one, or this one unchanged) and, when
+    /// it was not converted, why. On success the f64 tensor and its charge are
+    /// dropped.
     pub fn into_ri_j_f32(
-        mut self,
+        self,
         budget_bytes: usize,
+        rounding: F32Rounding,
+    ) -> Result<(Self, Option<F32Declined>), FerricError> {
+        self.into_ri_j_f32_beside((budget_bytes, 0), rounding)
+    }
+
+    /// The f64 bytes a raw tensor of this shape holds in core when placed by
+    /// the budget alone, `beside_bytes` held next to it (the placement of
+    /// `build_for_jk_beside` and `dress_first_wanted` without their pool
+    /// checks): unpacked when it and the band beside it fit, else packed when
+    /// that fits beside the band, else none (dress-first, spilled or
+    /// recomputed). The pool can only push the real placement down this
+    /// list, so this bounds the resident tensor and depends on the shapes and
+    /// the budget only. A pair-screened tensor counts its own bytes.
+    fn budget_placed_f64_bytes(&self, budget_bytes: usize, beside_bytes: usize) -> usize {
+        if let Some(bytes) = match &self.backend {
+            Backend::InCorePairScreened { data, .. } => Some(data.len().saturating_mul(8)),
+            Backend::InCoreF32 { .. } => Some(0),
+            _ => None,
+        } {
+            return bytes;
+        }
+        let (rows, nao) = (self.band_naux(), self.nao);
+        let full = rows
+            .saturating_mul(nao)
+            .saturating_mul(nao)
+            .saturating_mul(8);
+        let packed = rows.saturating_mul(packed_pair_len(nao)).saturating_mul(8);
+        let head = nao
+            .saturating_mul(nao)
+            .saturating_mul(8)
+            .saturating_mul(PACKED_MIN_SCRATCH_ROWS)
+            .min(PACKED_SCRATCH_CAP_BYTES);
+        if full.saturating_add(beside_bytes) <= budget_bytes {
+            full
+        } else if packed.saturating_add(head) <= budget_bytes
+            // a raw tensor that does not fit beside the dressed band is not
+            // held (dress-first, or spilled)
+            && (beside_bytes == 0 || packed.saturating_add(beside_bytes) <= budget_bytes)
+        {
+            packed
+        } else {
+            // Not held. The buffers a conversion streams it through are
+            // soft-charged by `for_each_packed_block` and sized by the
+            // source's own block, so they are not counted here (a follow-up).
+            0
+        }
+    }
+
+    /// [`Self::into_ri_j_f32`] with `beside_bytes` already held next to the
+    /// tensor (the dressed DF-K band of a shared RI-JK set-up). The decision
+    /// counts the f32 tensor, the f64 tensor at its budget-only placement
+    /// (`budget_placed_f64_bytes`) and the bytes beside, against
+    /// `budget_bytes`: the shapes and the budget decide the precision, never
+    /// the pool's state or the tier the pool pushed this tensor to.
+    pub fn into_ri_j_f32_beside(
+        mut self,
+        (budget_bytes, beside_bytes): (usize, usize),
         rounding: F32Rounding,
     ) -> Result<(Self, Option<F32Declined>), FerricError> {
         if matches!(self.backend, Backend::InCoreF32 { .. }) {
@@ -406,13 +464,16 @@ impl ThreeIndexSource {
         };
         let cols = screen.as_ref().map_or(packed_pair_len(nao), |s| s.ncols());
         let bytes = Self::ri_j_f32_bytes(rows, cols);
-        let free = pool_free();
-        let declined = F32Declined::DoesNotFit {
-            need: bytes,
-            budget: budget_bytes,
-            pool_free: free,
-        };
-        if bytes > budget_bytes {
+        // The conversion holds this f64 tensor beside the new f32 one until it
+        // returns, so both count, at the placement the budget alone gives.
+        let need = bytes
+            .saturating_add(self.budget_placed_f64_bytes(budget_bytes, beside_bytes))
+            .saturating_add(beside_bytes);
+        if need > budget_bytes {
+            let declined = F32Declined::DoesNotFit {
+                need,
+                budget: budget_bytes,
+            };
             return Ok((self, Some(declined)));
         }
         let label = if screen.is_some() {
@@ -420,9 +481,7 @@ impl ThreeIndexSource {
         } else {
             "DF 3-index (P|mn) in-core packed, f32"
         };
-        let Some(charge) = ferric_core::memory::pool::try_reserve_global(label, bytes) else {
-            return Ok((self, Some(declined)));
-        };
+        let charge = charge_f32(label, bytes);
         enum Kind {
             InMemory,
             Stream,
@@ -571,6 +630,50 @@ impl ThreeIndexSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The f32/f64 choice of a conversion reads the shapes, the budget and the
+    /// figure beside it, never the tier the raw tensor happens to be in (which
+    /// also reads the pool): an in-core and a spilled raw tensor of one shape
+    /// get the same decision at every budget, with and without a band beside.
+    #[test]
+    fn conversion_decision_does_not_depend_on_the_raw_tier() {
+        use ferric_core::{basis, mol::Molecule};
+        let mol =
+            Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let (naux, nao) = (dfbs.nbasis(), obs.nbasis());
+        let full = naux * nao * nao * 8;
+        let resident = || ThreeIndexSource::build(op, &obs, &dfbs, 1 << 40).unwrap();
+        let spilled = || ThreeIndexSource::build(op, &obs, &dfbs, full / 8).unwrap();
+        assert!(resident().is_resident());
+        assert!(!spilled().is_resident());
+        let f32_bytes = ThreeIndexSource::ri_j_f32_bytes(naux, packed_pair_len(nao));
+        let band = full / 3;
+        for beside in [0, band] {
+            for budget in [
+                f32_bytes,
+                f32_bytes + full / 2,
+                f32_bytes + full + beside,
+                2 * full + beside,
+                1 << 40,
+            ] {
+                let decide = |src: ThreeIndexSource| {
+                    src.into_ri_j_f32_beside((budget, beside), F32Rounding::Nearest)
+                        .unwrap()
+                        .1
+                        .is_some()
+                };
+                assert_eq!(
+                    decide(resident()),
+                    decide(spilled()),
+                    "budget {budget}, beside {beside}"
+                );
+            }
+        }
+    }
 
     /// Catches: a toward-zero mutant that rounds the wrong way for negative
     /// values, and a nearest mode that is not `as f32`.

@@ -628,6 +628,7 @@ fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig
     // defaults here.
     config.cosmo = cfg.cosmo.clone();
     config.polarizable = polarizable;
+    config.gc_rotation = s.gc_rotation_resolved().map_err(CliError::msg)?;
     Ok(config)
 }
 
@@ -2633,6 +2634,8 @@ fn lmp2_timings_json(
             memory,
             group_concurrency,
             group_scratch_bound_bytes,
+            group_in_flight_peak,
+            n_group_waves,
         } = d;
         let mut out = serde_json::json!({
             "strip_rows_mean": strip_rows_mean,
@@ -2680,6 +2683,8 @@ fn lmp2_timings_json(
         let gate = serde_json::json!({
             "group_concurrency": group_concurrency,
             "group_scratch_bound_bytes": group_scratch_bound_bytes,
+            "group_in_flight_peak": group_in_flight_peak,
+            "n_group_waves": n_group_waves,
             "memory_strips_bytes": memory.strips_bytes,
             "memory_metric_bytes": memory.metric_bytes,
             "memory_stage3_scratch_bytes": memory.stage3_scratch_bytes,
@@ -8800,6 +8805,8 @@ mod local_printout_tests {
             },
             group_concurrency: 55,
             group_scratch_bound_bytes: 56,
+            group_in_flight_peak: 57,
+            n_group_waves: 58,
         };
         let stage: &[(&str, f64)] = &[
             ("t_spaces_s", 1.5),
@@ -8849,6 +8856,8 @@ mod local_printout_tests {
             ("t_loc_s", 31.5),
             ("group_concurrency", 55.0),
             ("group_scratch_bound_bytes", 56.0),
+            ("group_in_flight_peak", 57.0),
+            ("n_group_waves", 58.0),
             ("memory_strips_bytes", 50.0),
             ("memory_metric_bytes", 51.0),
             ("memory_stage3_scratch_bytes", 52.0),
@@ -9466,6 +9475,40 @@ mod scf_config_lowering_tests {
         a.guess_basis = None;
         b.guess_basis = None;
         assert_eq!(format!("{a:#?}"), format!("{b:#?}"), "{msg}");
+    }
+
+    /// `[scf] gc_rotation` reaches `RhfConfig::gc_rotation`; unset leaves it
+    /// `None`; a value outside auto | rot1 | off is refused by key name.
+    #[test]
+    fn gc_rotation_key_reaches_the_config() {
+        use ferric_scf::direct_jk::GcRotate;
+        for (value, want) in [
+            ("auto", GcRotate::Auto),
+            ("ROT1", GcRotate::Rot1),
+            ("off", GcRotate::Off),
+        ] {
+            let cfg = parse(&header(
+                "rhf",
+                &format!("[scf]\ngc_rotation = \"{value}\"\n"),
+            ));
+            let c = new_lowering(&cfg, "energy", false, None).unwrap().unwrap();
+            assert_eq!(c.gc_rotation, Some(want), "{value}");
+        }
+        let cfg = parse(&header("rhf", ""));
+        let c = new_lowering(&cfg, "energy", false, None).unwrap().unwrap();
+        assert_eq!(c.gc_rotation, None);
+        let cfg = parse(&header("rhf", "[scf]\ngc_rotation = \"none\"\n"));
+        let e = new_lowering(&cfg, "energy", false, None)
+            .unwrap()
+            .unwrap_err();
+        assert!(e.to_string().contains("[scf] gc_rotation"), "{e}");
+        // ... and at load time, by the `[scf]` validation `load_config` runs.
+        let e = cfg.scf.validate().unwrap_err();
+        assert!(e.contains("[scf] gc_rotation"), "{e}");
+        assert!(parse(&header("rhf", "[scf]\ngc_rotation = \"rot1\"\n"))
+            .scf
+            .validate()
+            .is_ok());
     }
 
     /// The task / `[gpu]` combinations that change the CLI policy: the RI-J
