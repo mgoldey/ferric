@@ -3427,8 +3427,10 @@ pub struct ScfCfg {
     /// in the direct four-centre J/K builder: `"auto"` (both stages),
     /// `"rot1"` (diffuse projection only) or `"off"` (the unrotated builder,
     /// bit for bit). Unset leaves it to `FERRIC_GC_ROTATE`, then `"auto"`.
-    /// Only the direct four-centre SCF builds read it; energies move at the
-    /// screening-noise level. Any other value is an error.
+    /// The exact four-centre builds read it (the SCF's direct builders and
+    /// in-core store, the Newton/stability/response J/K and the gradient's
+    /// four-centre derivative integrals on the same geometry); energies
+    /// move at the screening-noise level. Any other value is an error.
     pub gc_rotation: Option<String>,
     /// Relativistic core Hamiltonian: `"x2c1e"` (spin-free X2C-1e, as PySCF
     /// `sfx2c1e()`), or unset for the nonrelativistic one. Energies only

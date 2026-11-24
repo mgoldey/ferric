@@ -900,6 +900,36 @@ Done:
    to seed the SCF); the SCF kinds could save once the ladder's final
    rung is part of the identity.
 
+-  Contraction rotation of generally contracted bases (cc-pVXZ; perf5).
+   Phase 1 (#709): `ferric-integrals/src/contraction_rotation.rs`
+   (`RotatedBasis`: diffuse projection, then one optimized-general-
+   contraction elimination, `T` block diagonal per atom/l/exponent list)
+   and the rotated walk of `DirectJK` (`direct_jk/gc_rotation.rs`), switch
+   `RhfConfig::gc_rotation` / `[scf] gc_rotation` / `FERRIC_GC_ROTATE`
+   (`auto` | `rot1` | `off`; `off` and segmented bases bit for bit).
+   Phase 2: the rotated basis, its bounds and engines are cached on the
+   geometry's `SchwarzBounds` (`GcSlot`, field `gc`; clones share it, like
+   `incore`), built once per geometry instead of once per builder, and the
+   SCF drivers record their request there (`GcSlot::set_request`, next to
+   `incore_jk::begin_scf`) so later builds on the same bounds follow the
+   SCF. Rotated consumers added: `DirectJ`, `DirectK`, the in-core store
+   (`IncoreEri` holds the rotated ERIs and transforms in `coulomb` /
+   `exchange`), `rhf::build_jk`, `build_jk_with_pool` and its homogeneous,
+   spin and multi siblings (Newton, TRAH, stability, CPHF/CPKS, Z-vector,
+   OO-MP2, CASSCF J/K), and the gradient's four-centre derivative walk
+   (`gradient::gradient_rotation`: the walk on the rotated shells with
+   `D' = Tᵀ D T`, for every `twoelectron_*_gradient` wrapper whose operator
+   is the bounds'). A pooled build rotates only for a pool from
+   `EnginePool::new` (new `EnginePool::eri_key`), matching its operator
+   and precision. Python: `gc_rotation=` on `run_rhf`, `run_uhf`,
+   `run_rohf`, `run_dft`, `run_uks`, `run_roks` (not `run_ksdft`, frozen).
+   Tests: `ferric-scf/tests/gc_rotation.rs`. Follow-ups: LinK (its generic
+   `Bound` and pair tables would need a rotated twin), CFMM near field, the
+   Hessian's second-derivative integrals (`hessian.rs` skeleton and Fock
+   derivative walks), the Python `scf_*` keyword on the geometry and
+   correlated drivers, and phase 3 of the design (a shared-primitive
+   kernel or libcint for the remaining ~1.9x to def2-SVP).
+
 Next, each as its own PR following the patterns above:
 
 8d. (rest) What 8c and the first part of 8d left loose: (b) the ferric-scf
