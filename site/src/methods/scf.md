@@ -1133,9 +1133,20 @@ reference. A reference with a COSX final-grid pass or polarizable embedding is
 refused before the SCF, by both keys: the file stores neither. Only a file
 from the same clean build is accepted unless `read_reference_other_build =
 true`. Density-fitting tensors and other integrals are rebuilt by the
-correlated stage, as in a fresh run. The keys are CLI only; the Python
-drivers solve their own reference. Keys and refusals:
+correlated stage, as in a fresh run. Keys and refusals:
 [`[scf]`](../reference/input.md#scf).
+
+In Python, `run_rimp2` (exact energy), `run_ccsd` and `run_ccsd_t` take the
+same three keys as keywords and share their files:
+
+```python
+ferric.run_rimp2(mol, obs, aux, save_reference="water-ref.npz")
+ferric.run_ccsd(mol, obs, aux, read_reference="water-ref.npz")
+```
+
+The rules are the CLI's; a refusal raises `ferric.InputError` (a
+`ValueError`). A Python file and a CLI file name different solve routes, so
+neither reads the other.
 
 Measured on sulfamethoxazole / cc-pVDZ (28 atoms, 297 functions),
 `kind = "rimp2"` with its defaults (RI-JK reference, 15 SCF iterations), on

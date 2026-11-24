@@ -19,7 +19,7 @@ mod md;
 mod opmp3;
 mod periodic;
 mod polarization;
-mod reference_io;
+pub mod reference_io;
 mod thermo_ir;
 
 use crate::error::CliError;
@@ -1269,7 +1269,7 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
         None
     };
     if let Some(path) = cfg.scf.save_reference.as_deref() {
-        reference_io::check_save_path(path)?;
+        reference_io::check_save_path(reference_io::Surface::Cli, path)?;
     }
     if let Some((plan, _)) = reference_plan.as_ref() {
         let key = if cfg.scf.read_reference.is_some() {
@@ -1277,7 +1277,12 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
         } else {
             "save_reference"
         };
-        reference_io::refuse_unstorable(key, plan.config, jk_route.k_builder)?;
+        reference_io::refuse_unstorable(
+            reference_io::Surface::Cli,
+            key,
+            plan.config,
+            jk_route.k_builder,
+        )?;
     }
     let mut reference_read: Option<(serde_json::Value, String)> = None;
     let result = if let (Some(path), Some((plan, identity))) =
@@ -1412,7 +1417,7 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
     if let (Some(path), Some((plan, identity))) =
         (cfg.scf.save_reference.as_deref(), reference_plan)
     {
-        reference_io::save(path, &sys, identity, plan.config, &result)?;
+        reference_io::save(path, &sys, identity, &plan, &result)?;
     }
 
     // Same-basis Hirshfeld proatom: neutral free-atom SCF densities in the
@@ -2345,6 +2350,7 @@ impl ReferenceRoute {
             spin,
             config,
             route,
+            surface: reference_io::Surface::Cli,
         };
         Ok(match self {
             // `Config::validate_reference_io` refuses the SCF kinds first.

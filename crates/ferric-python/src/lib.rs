@@ -89,6 +89,7 @@ mod pbc;
 mod pdep_properties;
 mod properties;
 mod qmmm;
+mod reference_file;
 mod response_modes;
 mod rpa;
 mod scf;

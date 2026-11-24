@@ -896,11 +896,19 @@ Done:
    stores neither), and a save path that is a directory, a symlink or in
    a missing directory. Tests: `ferric-cli/tests/scf_reference_io.rs`,
    `cli_wired_keys_tests::reference_keys_*`, `checkpoint::tests::into_result_*`,
-   `provenance::tests::from_json_inverts_to_json`. Follow-ups: no Python
-   keyword (the Python drivers solve their own reference and take no
-   result object); no file guess (a mismatched file is refused, not used
-   to seed the SCF); the SCF kinds could save once the ladder's final
-   rung is part of the identity.
+   `provenance::tests::from_json_inverts_to_json`. Python: the drivers
+   solve their own reference and take no result object, so the same keys
+   are keywords (`save_reference=`, `read_reference=`,
+   `read_reference_other_build=`) on `run_rimp2` (exact energy only),
+   `run_ccsd` and `run_ccsd_t`, through `ferric_cli::reference_io` (now
+   public, with a `Surface` that names the keys per front end) in
+   `ferric-python/src/reference_file.rs`; the route field names the Python
+   solve (`python solve_rhf` / `python solve_uhf`), so CLI and Python files
+   are never read as each other, and a refusal is an `InputError`
+   (`tests/test_reference_file.py`). Follow-ups: the other Python
+   correlated drivers (each solves its reference its own way); no file
+   guess (a mismatched file is refused, not used to seed the SCF); the SCF
+   kinds could save once the ladder's final rung is part of the identity.
 
 Next, each as its own PR following the patterns above:
 
