@@ -261,11 +261,11 @@ fn a_uhf_reference_saved_by_rimp2_gives_rimp2_and_oo_rimp2_their_fresh_energies(
     save_then_read("uhf", OH, [("rimp2", ""), ("oo-rimp2", "")]);
 }
 
-/// Open-shell PDEP-RPA consumes the shared UHF + MOM reference, so a file
-/// saved by it gives it (and open-shell RI-MP2 on the same UHF + MOM route)
-/// the fresh energy.
+/// Open-shell PDEP-RPA consumes the shared UHF + MOM reference (its arm
+/// solved a second, identical one before), so it reads a file it saved and
+/// gets the fresh energy.
 #[test]
-fn a_uhf_reference_saved_by_pdep_rpa_gives_pdep_rpa_and_mp2_v_their_fresh_energies() {
+fn a_uhf_reference_saved_by_pdep_rpa_gives_pdep_rpa_its_fresh_energy() {
     let rpa = "[rpa]\nauxbasis = \"cc-pvdz-ri\"\n";
     save_then_read("uhf_pdep", OH, [("pdep-rpa", rpa), ("pdep-rpa", rpa)]);
 }
