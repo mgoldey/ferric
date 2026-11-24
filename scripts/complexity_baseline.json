@@ -7001,7 +7001,7 @@
   },
   "crates/ferric-cli/src/error.rs::impl:CliError::eprint": {
     "cc": 1.0,
-    "mi": 133.00654690726324
+    "mi": 117.5188874649111
   },
   "crates/ferric-cli/src/error.rs::impl:CliError::exit_code": {
     "cc": 3.0,
@@ -22400,8 +22400,8 @@
     "mi": 122.41184676417797
   },
   "crates/ferric-gw/src/mo_b.rs::blocked_build_matches_incore": {
-    "cc": 5.0,
-    "mi": 64.30653791162021
+    "cc": 7.0,
+    "mi": 50.46502566394216
   },
   "crates/ferric-gw/src/mo_b.rs::blocked_build_matches_incore::<anonymous>": {
     "cc": 1.0,
@@ -22409,7 +22409,7 @@
   },
   "crates/ferric-gw/src/mo_b.rs::blocked_build_matches_incore::<anonymous>#1": {
     "cc": 1.0,
-    "mi": 157.8484854211024
+    "mi": 121.76114734976207
   },
   "crates/ferric-gw/src/mo_b.rs::build_full_b": {
     "cc": 2.0,
@@ -26628,8 +26628,8 @@
     "mi": 124.62181661087621
   },
   "crates/ferric-integrals/src/three_index_source.rs::dress_tile": {
-    "cc": 1.0,
-    "mi": 111.81587797902117
+    "cc": 3.0,
+    "mi": 88.72062976573488
   },
   "crates/ferric-integrals/src/three_index_source.rs::dressed_bands_reassemble_to_full_dressed_tensor": {
     "cc": 8.0,
@@ -51280,8 +51280,8 @@
     "mi": 125.53275533735598
   },
   "crates/ferric-python/src/lib.rs::ferric": {
-    "cc": 196.0,
-    "mi": -0.2760123646229715
+    "cc": 207.0,
+    "mi": -6.08499714007165
   },
   "crates/ferric-python/src/lib.rs::ferric::<anonymous>": {
     "cc": 1.0,
@@ -53057,7 +53057,7 @@
   },
   "crates/ferric-python/src/lib.rs::rhf_config_budgeted": {
     "cc": 2.0,
-    "mi": 113.00700332101948
+    "mi": 103.25398053228446
   },
   "crates/ferric-python/src/lib.rs::rhf_config_budgeted::<anonymous>": {
     "cc": 1.0,
@@ -54281,7 +54281,7 @@
   },
   "crates/ferric-python/src/pbc.rs::pbc_setup::<anonymous>": {
     "cc": 1.0,
-    "mi": 121.38130881198182
+    "mi": 112.77762172511585
   },
   "crates/ferric-python/src/pbc.rs::periodic_grid": {
     "cc": 5.0,

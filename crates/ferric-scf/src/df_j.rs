@@ -1443,40 +1443,16 @@ impl DfJ<'_> {
     /// MPI: sum the per-rank partial `d_P` (disjoint bands, zero elsewhere) so
     /// every rank holds the FULL `d_P` before the global V^{-1} coupling.
     fn reduce_d_p(&self, d_p: &mut Array1<f64>) {
-        #[cfg(feature = "mpi")]
         if let Some(ctx) = self.ctx {
-            use mpi::traits::CommunicatorCollectives;
-            if let Some(world) = ctx.world() {
-                let mut d_p_global = Array1::<f64>::zeros(d_p.len());
-                world.all_reduce_into(
-                    d_p.as_slice().unwrap(),
-                    d_p_global.as_slice_mut().unwrap(),
-                    mpi::collective::SystemOperation::sum(),
-                );
-                *d_p = d_p_global;
-            }
+            ctx.all_reduce_sum_array(d_p);
         }
-        #[cfg(not(feature = "mpi"))]
-        let _ = d_p;
     }
 
     /// MPI: sum the per-rank partial J matrices into the full J on every rank.
     fn reduce_j(&self, j: &mut Array2<f64>) {
-        #[cfg(feature = "mpi")]
         if let Some(ctx) = self.ctx {
-            use mpi::traits::CommunicatorCollectives;
-            if let Some(world) = ctx.world() {
-                let mut j_global = Array2::<f64>::zeros(j.dim());
-                world.all_reduce_into(
-                    j.as_slice().unwrap(),
-                    j_global.as_slice_mut().unwrap(),
-                    mpi::collective::SystemOperation::sum(),
-                );
-                *j = j_global;
-            }
+            ctx.all_reduce_sum_array(j);
         }
-        #[cfg(not(feature = "mpi"))]
-        let _ = j;
     }
 }
 

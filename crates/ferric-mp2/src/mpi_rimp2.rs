@@ -151,7 +151,6 @@ mod inner {
     use ferric_integrals::three_index_source::ThreeIndexSource;
     use ferric_integrals::threeindex::coulomb_metric_2c;
     use ferric_scf::ScfResult;
-    use ndarray::Array2;
 
     /// Result of an MPI-distributed RI-MP2 run. Every rank returns the same
     /// (post-Allreduce) totals.
@@ -202,12 +201,7 @@ mod inner {
         // thread outside a worker is the bug just fixed in ferric-cc. BLAS
         // stays at the process-wide pin of 1 (`init_threading`), which is
         // exactly right inside a rayon region.
-        let threads = ctx.rayon_threads();
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build()
-            .map_err(|e| FerricError::Libint(format!("rank-aware rayon pool build failed: {e}")))?;
-        pool.install(|| run_mpi_ri_mp2_inner(ctx, mol, obs, dfbs, op, rhf, config))
+        ctx.with_rank_pool(|| run_mpi_ri_mp2_inner(ctx, mol, obs, dfbs, op, rhf, config))?
     }
 
     fn run_mpi_ri_mp2_inner(
@@ -255,7 +249,6 @@ mod inner {
         let b_band = eri3_mo_block_dressed_band(&mut raw, &v_inv_sqrt, &c_occ, &c_vir, p0, p1)?;
         drop(raw);
 
-        let world = ctx.world();
         let size = ctx.size.max(1);
         let rank = ctx.rank;
 
@@ -283,16 +276,9 @@ mod inner {
             let b_i_band = b_band.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]);
             let mut g_i = b_i_band.t().dot(&b_band); // partial sum over this rank's P band
 
-            if let Some(world) = &world {
-                use mpi::traits::CommunicatorCollectives;
-                let mut g_i_global = Array2::<f64>::zeros(g_i.dim());
-                world.all_reduce_into(
-                    g_i.as_slice().unwrap(),
-                    g_i_global.as_slice_mut().unwrap(),
-                    mpi::collective::SystemOperation::sum(),
-                );
-                g_i = g_i_global;
-            }
+            // A `dot` result can come back column-major (e.g. a one-row band
+            // on this rank only); the array reduction sums in logical order.
+            ctx.all_reduce_sum_array(&mut g_i);
 
             // Round-robin: only the owning rank spends FLOPs squaring this i's
             // (now-complete) g_i into the energy sum. Every rank still paid
@@ -317,19 +303,10 @@ mod inner {
         }
 
         // Final scalar reduction: sum each rank's round-robin energy share.
-        if let Some(world) = &world {
-            use mpi::traits::CommunicatorCollectives;
-            let mut totals = [e_os, e_ss];
-            let mut totals_global = [0.0_f64; 2];
-            world.all_reduce_into(
-                &totals[..],
-                &mut totals_global[..],
-                mpi::collective::SystemOperation::sum(),
-            );
-            totals = totals_global;
-            e_os = totals[0];
-            e_ss = totals[1];
-        }
+        let mut totals = [e_os, e_ss];
+        ctx.all_reduce_sum(&mut totals);
+        e_os = totals[0];
+        e_ss = totals[1];
 
         let mp2_corr = e_os + e_ss;
         Ok(MpiMp2Result {
