@@ -464,7 +464,7 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
 ///
 /// Left out on purpose: thread counts and memory budgets (unchecked by design),
 /// trace toggles, MPI band sizes, and `FERRIC_TEST_*`.
-const ENV_SWITCHES: [(&str, FieldClass); 10] = [
+const ENV_SWITCHES: [(&str, FieldClass); 11] = [
     ("FERRIC_SCF_INCREMENTAL", FieldClass::Route),
     ("FERRIC_SCF_UHF_INCREMENTAL", FieldClass::Route),
     ("FERRIC_SCF_COMBINED_JK", FieldClass::Route),
@@ -477,6 +477,9 @@ const ENV_SWITCHES: [(&str, FieldClass); 10] = [
     // Recorded parsed (see `env_switch_value`); the config field
     // `gc_rotation`, when set, wins over it.
     ("FERRIC_GC_ROTATE", FieldClass::Route),
+    // The k-panel width of the mixed-precision GEMM: it moves the last digits
+    // of a mixed result (`ferric_core::gpu::precision`).
+    ("FERRIC_GPU_MIXED_K_PANEL", FieldClass::Route),
 ];
 
 /// The recorded value of one [`ENV_SWITCHES`] entry: the raw text, except

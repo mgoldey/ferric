@@ -1088,6 +1088,62 @@ gates on the density RMS change instead.
 can drive the overlap matrix near-singular; the canonical-orthogonalization
 threshold is tunable via `FERRIC_LINDEP_THRESH`.
 
+### Reusing a reference SCF
+
+The reference SCF is often half the cost of a correlated run or more. To
+run several correlated methods on one reference, save it from the first run
+and read it in the next:
+
+```toml
+# run 1: kind = "rimp2"
+[scf]
+save_reference = "water-ref.npz"
+```
+
+```toml
+# run 2: kind = "ccsd", same molecule, basis and [scf] settings
+[scf]
+read_reference = "water-ref.npz"
+```
+
+The second run solves no SCF (`[ferric] SCF reference read from ...; no SCF
+iterations run`; the run log's `run_end` has `scf_iterations = 0` and a
+`scf_reference` entry with the file's checksum, iteration count, convergence
+thresholds and the saving run's thread count, and the certificate gains the
+route `scf reference: read from <file> (checksum ...)`). The correlated stage
+gets the saved orbitals, orbital energies, densities and Fock matrices bit for
+bit, so its energy is bitwise the one the saving run's reference gives. That
+equals a fresh run's energy only when the fresh run would converge to the same
+bits: the same convergence thresholds, thread count, in-core or direct ERI
+route (`eri = "auto"` picks it from the memory budget), BLAS kernel and build.
+The file is read only when it is the reference this run would solve: every
+field of the checkpoint identity must match, and so must the route that
+converges it. Anything else is refused with the differing fields named; the
+file is never used as a guess instead. A file converged tighter than the run
+asks is accepted (the run prints that it was), and then the results are those
+of the tighter reference: on water / `rimp2`, 8.4e-10 Ha from a fresh run at
+the default thresholds. Three things look like the same reference and are
+not: the `rhf`/`ksdft` kinds converge through the convergence ladder and the
+correlated kinds do not (so those kinds refuse the keys); the closed-shell
+MP2-family kinds default to an RI-JK reference (`[scf] jk`) where `ccsd` and
+the other kinds solve with exact J/K after a DF-guess pre-stage, so save from
+`rimp2` with `jk = "exact"` to reuse the reference in `ccsd`; and
+`df_guess = false` or `df_increments = true` is another route to another
+reference. A reference with a COSX final-grid pass or polarizable embedding is
+refused before the SCF, by both keys: the file stores neither. Only a file
+from the same clean build is accepted unless `read_reference_other_build =
+true`. Density-fitting tensors and other integrals are rebuilt by the
+correlated stage, as in a fresh run. The keys are CLI only; the Python
+drivers solve their own reference. Keys and refusals:
+[`[scf]`](../reference/input.md#scf).
+
+Measured on sulfamethoxazole / cc-pVDZ (28 atoms, 297 functions),
+`kind = "rimp2"` with its defaults (RI-JK reference, 15 SCF iterations), on
+4 cores shared with other jobs (load 2.3 to 3) and an `opt-level = 2`
+build (2026-11-24): a fresh run took 17.3 s and 18.3 s, the run that saved
+the reference 18.9 s (the file is 2.8 MB), and a run reading it 5.3 s and
+5.9 s, with the same RI-MP2 energy to the last bit.
+
 ### Secondary-basis guess (Q-Chem `BASIS2`)
 
 `[scf] guess_basis = "6-31g"` (Python `guess_basis="6-31g"` on `run_rhf`,

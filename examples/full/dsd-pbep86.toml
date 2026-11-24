@@ -82,6 +82,9 @@ verbose = false          # one line per SCF iteration
 # stability_descent: follow a downhill mode at a saddle and re-converge; not read here: rhf, uhf and ksdft energies only
 # symmetry: point-group-blocked closed-shell RHF/RKS; not read here: closed-shell rhf/ksdft energies only
 # irrep_nelec: electrons per irrep; not read here: only with symmetry = true
+# save_reference: write the converged reference SCF to this file; not read here: correlated kinds with task = "energy" only
+# read_reference: read the reference SCF from a save_reference file instead of solving it; not read here: correlated kinds with task = "energy" only
+# read_reference_other_build: accept a read_reference file written by another build; not read here: only with read_reference
 # ladder: [[scf.ladder]] convergence-ladder rungs; not read here: rhf and ksdft only
 
 [dft]
