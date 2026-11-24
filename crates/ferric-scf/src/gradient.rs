@@ -119,6 +119,25 @@ pub(crate) fn screened_quartets_with(
     quads
 }
 
+/// The contraction rotation the four-centre derivative walk runs on
+/// (`direct_jk::gc_rotation`): the rotation of `bounds` (the SCF's request,
+/// then `FERRIC_GC_ROTATE`, then `auto`) when `op` is the operator of the
+/// bounds; `None` runs the unrotated walk. `T` is geometry-independent and
+/// keeps every shell on its atom, so `Σ Γ[D] (μν|λσ)^x = Σ Γ[D'] (μ'ν'|λ'σ')^x`
+/// with `D' = Tᵀ D T`, for every two-particle density below (each is a sum of
+/// products of two matrices over the pairings `(μν)(λσ)` and `(μλ)(νσ)`).
+pub(crate) fn gradient_rotation(
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+) -> Result<Option<std::sync::Arc<crate::direct_jk::gc_rotation::RotatedJk>>, FerricError> {
+    if op != bounds.op || bounds.gc.is_inert() {
+        return Ok(None);
+    }
+    let mode = crate::direct_jk::GcRotate::resolve(bounds.gc.request())?;
+    bounds.gc.rotation(prep, bounds, mode)
+}
+
 /// Shared driver for every 4-center 2e-derivative gradient contribution:
 /// `grad[atom,coord] += Σ_quartets Σ_perms Γ(μ,ν,λ,σ) · d(μν|λσ)/dR`.
 ///
@@ -713,6 +732,9 @@ pub fn twoelectron_j_gradient(
     bounds: &SchwarzBounds,
     d: &Array2<f64>,
 ) -> Result<Array2<f64>, FerricError> {
+    if let Some(r) = crate::gradient::gradient_rotation(prep, op, bounds)? {
+        return twoelectron_j_gradient(&r.basis.prep, op, &r.bounds, &r.forward(d));
+    }
     let max_d = d.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
     par_twoelectron_gradient(prep, op, bounds, max_d, |mu, nu, la, sg| {
         0.5 * d[(mu, nu)] * d[(la, sg)]
@@ -730,6 +752,15 @@ pub fn twoelectron_j_gradient_with_response(
     d: &Array2<f64>,
     z: &Array2<f64>,
 ) -> Result<Array2<f64>, FerricError> {
+    if let Some(r) = crate::gradient::gradient_rotation(prep, op, bounds)? {
+        return twoelectron_j_gradient_with_response(
+            &r.basis.prep,
+            op,
+            &r.bounds,
+            &r.forward(d),
+            &r.forward(z),
+        );
+    }
     let md = d.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
     let mz = z.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
     // Γ is bounded by |D|(|D| + 2|Z|) <= (max|D| + max|Z|)²: screen on that.
@@ -1807,6 +1838,9 @@ pub fn twoelectron_gradient(
     bounds: &SchwarzBounds,
     d: &Array2<f64>,
 ) -> Result<Array2<f64>, FerricError> {
+    if let Some(r) = crate::gradient::gradient_rotation(prep, op, bounds)? {
+        return twoelectron_gradient(&r.basis.prep, op, &r.bounds, &r.forward(d));
+    }
     // The 2e gradient contribution from each integral (μν|λσ) is:
     //   Γ_μνλσ * d(μν|λσ)/dR
     // where Γ_μνλσ = 0.5*D_μν*D_λσ - 0.25*D_μλ*D_νσ.
@@ -1837,6 +1871,15 @@ pub fn twoelectron_gradient_bilinear(
     d1: &Array2<f64>,
     d2: &Array2<f64>,
 ) -> Result<Array2<f64>, FerricError> {
+    if let Some(r) = crate::gradient::gradient_rotation(prep, op, bounds)? {
+        return twoelectron_gradient_bilinear(
+            &r.basis.prep,
+            op,
+            &r.bounds,
+            &r.forward(d1),
+            &r.forward(d2),
+        );
+    }
     let m1 = d1.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
     let m2 = d2.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
     // Screening bound: the bilinear Γ magnitude scales with max|D1|·max|D2|; use
@@ -1873,6 +1916,15 @@ pub fn twoelectron_gradient_bilinear_uhf(
     x: (&Array2<f64>, &Array2<f64>),
     y: (&Array2<f64>, &Array2<f64>),
 ) -> Result<Array2<f64>, FerricError> {
+    if let Some(r) = crate::gradient::gradient_rotation(prep, op, bounds)? {
+        return twoelectron_gradient_bilinear_uhf(
+            &r.basis.prep,
+            op,
+            &r.bounds,
+            (&r.forward(x.0), &r.forward(x.1)),
+            (&r.forward(y.0), &r.forward(y.1)),
+        );
+    }
     let (xa, xb) = x;
     let (ya, yb) = y;
     let xt = xa + xb;
@@ -2422,6 +2474,16 @@ pub fn twoelectron_gradient_uhf(
     d_alpha: &Array2<f64>,
     d_beta: &Array2<f64>,
 ) -> Result<Array2<f64>, FerricError> {
+    if let Some(r) = crate::gradient::gradient_rotation(prep, op, bounds)? {
+        return twoelectron_gradient_uhf(
+            &r.basis.prep,
+            op,
+            &r.bounds,
+            &r.forward(d_total),
+            &r.forward(d_alpha),
+            &r.forward(d_beta),
+        );
+    }
     let max_d = d_total.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
     par_twoelectron_gradient(prep, op, bounds, max_d, |mu, nu, la, sg| {
         gamma_uhf(d_total, d_alpha, d_beta, mu, nu, la, sg)

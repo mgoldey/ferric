@@ -576,6 +576,9 @@ pub fn twoelectron_k_gradient(
     d: &Array2<f64>,
     c_k: f64,
 ) -> Result<Array2<f64>, FerricError> {
+    if let Some(r) = crate::gradient::gradient_rotation(prep, op, bounds)? {
+        return twoelectron_k_gradient(&r.basis.prep, op, &r.bounds, &r.forward(d), c_k);
+    }
     let max_d = d.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
     crate::gradient::par_twoelectron_gradient(prep, op, bounds, max_d, |mu, nu, la, sg| {
         -0.25 * c_k * d[(mu, la)] * d[(nu, sg)]
@@ -592,6 +595,9 @@ pub fn twoelectron_gradient_scaled_k(
     d: &Array2<f64>,
     c_k: f64,
 ) -> Result<Array2<f64>, FerricError> {
+    if let Some(r) = crate::gradient::gradient_rotation(prep, op, bounds)? {
+        return twoelectron_gradient_scaled_k(&r.basis.prep, op, &r.bounds, &r.forward(d), c_k);
+    }
     let max_d = d.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
     crate::gradient::par_twoelectron_gradient(prep, op, bounds, max_d, |mu, nu, la, sg| {
         0.5 * d[(mu, nu)] * d[(la, sg)] - 0.25 * c_k * d[(mu, la)] * d[(nu, sg)]
@@ -611,6 +617,17 @@ pub fn twoelectron_gradient_uhf_scaled_k(
     d_beta: &Array2<f64>,
     c_k: f64,
 ) -> Result<Array2<f64>, FerricError> {
+    if let Some(r) = crate::gradient::gradient_rotation(prep, op, bounds)? {
+        return twoelectron_gradient_uhf_scaled_k(
+            &r.basis.prep,
+            op,
+            &r.bounds,
+            &r.forward(d_total),
+            &r.forward(d_alpha),
+            &r.forward(d_beta),
+            c_k,
+        );
+    }
     let max_d = d_total.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
     crate::gradient::par_twoelectron_gradient(prep, op, bounds, max_d, |mu, nu, la, sg| {
         0.5 * d_total[(mu, nu)] * d_total[(la, sg)]
@@ -631,6 +648,16 @@ pub fn twoelectron_k_gradient_uhf(
     d_beta: &Array2<f64>,
     c_k: f64,
 ) -> Result<Array2<f64>, FerricError> {
+    if let Some(r) = crate::gradient::gradient_rotation(prep, op, bounds)? {
+        return twoelectron_k_gradient_uhf(
+            &r.basis.prep,
+            op,
+            &r.bounds,
+            &r.forward(d_alpha),
+            &r.forward(d_beta),
+            c_k,
+        );
+    }
     let d_total: Array2<f64> = d_alpha + d_beta;
     let max_d = d_total.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
     crate::gradient::par_twoelectron_gradient(prep, op, bounds, max_d, |mu, nu, la, sg| {
