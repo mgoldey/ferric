@@ -2476,6 +2476,8 @@ fn lmp2_timings_json(
             memory,
             group_concurrency,
             group_scratch_bound_bytes,
+            group_in_flight_peak,
+            n_group_waves,
         } = d;
         let mut out = serde_json::json!({
             "strip_rows_mean": strip_rows_mean,
@@ -2523,6 +2525,8 @@ fn lmp2_timings_json(
         let gate = serde_json::json!({
             "group_concurrency": group_concurrency,
             "group_scratch_bound_bytes": group_scratch_bound_bytes,
+            "group_in_flight_peak": group_in_flight_peak,
+            "n_group_waves": n_group_waves,
             "memory_strips_bytes": memory.strips_bytes,
             "memory_metric_bytes": memory.metric_bytes,
             "memory_stage3_scratch_bytes": memory.stage3_scratch_bytes,
@@ -8645,6 +8649,8 @@ mod local_printout_tests {
             },
             group_concurrency: 55,
             group_scratch_bound_bytes: 56,
+            group_in_flight_peak: 57,
+            n_group_waves: 58,
         };
         let stage: &[(&str, f64)] = &[
             ("t_spaces_s", 1.5),
@@ -8694,6 +8700,8 @@ mod local_printout_tests {
             ("t_loc_s", 31.5),
             ("group_concurrency", 55.0),
             ("group_scratch_bound_bytes", 56.0),
+            ("group_in_flight_peak", 57.0),
+            ("n_group_waves", 58.0),
             ("memory_strips_bytes", 50.0),
             ("memory_metric_bytes", 51.0),
             ("memory_stage3_scratch_bytes", 52.0),
