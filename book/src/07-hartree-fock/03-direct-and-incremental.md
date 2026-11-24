@@ -283,7 +283,8 @@ general contraction of Hashimoto, Hirao and Tatewaki (Chem. Phys. Lett.
 s 3, 1. Write the parent functions as $\chi = T\chi'$. $T$ is block
 diagonal, the identity outside the rotated groups, with a condition number of
 1.8 for carbon s. A group whose block would exceed 100 keeps the first stage
-only. Then, for any density,
+only, and a group whose first-stage block already exceeds 100 is not rotated.
+Then, for any density,
 
 $$ D' = T^{\mathsf T} D\,T, \qquad J[D] = T\,J'[D']\,T^{\mathsf T}, \qquad K[D] = T\,K'[D']\,T^{\mathsf T}, $$
 
@@ -291,7 +292,8 @@ where $J'$, $K'$ are the direct builds on the rotated shells. The Schwarz
 table, the CSB or CSAM table when one is selected, the density screen, the
 engines and their shell-pair cache all belong to the rotated shells. The
 incremental build applies the same formula to $\Delta D$. The two transforms
-are serial and cost under 2 ms per build on octane. A basis with nothing to
+are serial; in the measured runs below they took under 2 ms per build on
+octane. A basis with nothing to
 rotate (def2, Pople, STO-3G, pcseg) never enters this path.
 
 The rotation covers the SCF direct J/K builds only: `solve_rhf` on the exact
@@ -299,12 +301,14 @@ four-centre route (RHF and hybrid RKS), the combined open-shell build of
 `solve_uhf` and `solve_rohf` (and their Kohn–Sham hybrids with $\omega = 0$),
 and the exact builds of the DF-increments SCF. The in-core store, `DirectJ`,
 `DirectK`, LinK, CFMM, the response and Newton $J/K$ builders, the derivative
-integrals and the periodic code use the unrotated basis. `FERRIC_GC_ROTATE`
-selects the rotation: unset or `auto` runs both stages, `rot1` the first
-stage only, and `off` the unrotated builder bit for bit
-(`ferric-scf/src/direct_jk/gc_rotation.rs::GcRotate`).
+integrals and the periodic code use the unrotated basis. `[scf] gc_rotation`
+(`RhfConfig::gc_rotation`) selects the rotation, then `FERRIC_GC_ROTATE` when
+the key is unset, then `auto`: `auto` runs both stages, `rot1` the first
+stage only, and `off` the unrotated builder bit for bit; any other value is
+an error (`ferric-scf/src/direct_jk/gc_rotation.rs::GcRotate`).
 
-Measured with `FERRIC_TIMING=1`, `[scf] eri = "direct"`, `energy_conv`
+The timings below are measured runs, not tests. They used `FERRIC_TIMING=1`,
+`[scf] eri = "direct"`, `energy_conv`
 1e-10 and `density_conv` 1e-8 (every build full), 4 rayon threads, on a box
 shared with three other agents' builds (load average 7 to 8 on 4 cores).
 Wall times varied by a factor of 3 between repeats, so the process CPU time
@@ -322,7 +326,7 @@ disturbed by the other jobs: 2.2 to 2.4 times faster per build, and 2.6 to
 2.8 times less libint time. Stage 1 alone (`rot1`) on octane took 6.9 s
 per build and 140 s of CPU time, against 6.8 s and 122 s for both stages.
 def2-SVP has nothing to rotate, so `auto` runs the same code as `off` and
-gives the same energy bit for bit. Dodecane / cc-pVDZ at the default SCF
+gives the same energy bit for bit. In a measured run (not a test), dodecane / cc-pVDZ at the default SCF
 settings (incremental builds, 10 iterations) took 260 s of wall time and
 516 s of CPU time with `off`, and 128 s and 195 s with `auto`; def2-SVP took
 70 s and 141 s.
@@ -365,12 +369,15 @@ screened increments from accumulating without bound (the error expression in
 The contraction rotation of @sec:direct-and-incremental-general-contraction
 changes the bits too: the rotated shells have their own Schwarz table, so the
 screen keeps a slightly different quartet set, and the transforms reassociate
-the sums. Against the unrotated builder, $J$ and $K$ at a fixed density
-differ by at most 2.1e-12 (CH3OH / cc-pVTZ) and converged energies by at
-most 1.2e-12 Ha on the test set, and 8.3e-12 Ha on octane / cc-pVDZ
-(`crates/ferric-scf/tests/gc_rotation.rs`). The rotated builder is bitwise
-identical across thread counts, and `FERRIC_GC_ROTATE=off` reproduces the
-unrotated builder bit for bit.
+the sums. In `crates/ferric-scf/tests/gc_rotation.rs`, $J$ and $K$ at a
+fixed density differ from the unrotated builder's by at most 4.9e-12 (water
+with a ghost neon in cc-pVDZ; the set includes Cu, ECP, mixed and Cartesian
+bases) and converged energies by at most 1.2e-12 Ha. At threshold 0 the
+rotated build equals the dense $T J' T^{\mathsf T}$ to rounding. Energy
+differences grow with the number of screened quartets: the measured octane /
+cc-pVDZ run below moved by 8.3e-12 Ha. The rotated builder is bitwise
+identical across thread counts, and `off` reproduces the unrotated builder
+bit for bit.
 
 ## Numerical anchors {#direct-and-incremental-numerical-anchors}
 
@@ -392,7 +399,7 @@ the in-core store off, on water, methane and hexane in cc-pVDZ
 | `[scf] screening = "csb"` | the tighter rigorous bound $\min(Q_{12}Q_{34}, M_{13}M_{24}, M_{14}M_{23})$ |
 | `[scf] screening = "csam"` | the Schwarz product times $\max(X_{13}X_{24}, X_{14}X_{23})^{1/2}$; an estimate, not a bound |
 | `[scf] eri = "incore"` / `"auto"` | stores the integrals once and builds $J$, $K$ by matrix products (`crates/ferric-scf/src/incore_jk.rs`) |
-| `FERRIC_GC_ROTATE` = `auto` (default) / `rot1` / `off` | the internal contraction rotation of generally contracted bases (@sec:direct-and-incremental-general-contraction); `off` is the unrotated builder |
+| `[scf] gc_rotation` (or `FERRIC_GC_ROTATE`) = `auto` (default) / `rot1` / `off` | the internal contraction rotation of generally contracted bases (@sec:direct-and-incremental-general-contraction); `off` is the unrotated builder |
 
 ## Sources
 

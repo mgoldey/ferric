@@ -58,6 +58,7 @@ density_conv = 1e-6  # density-change threshold, the convergence signal
 # k_builder: exchange builder: direct | link | cosx; not read here: not read: this kind runs its own reference SCF, which reads only max_iter, energy_conv and density_conv
 # screening: four-centre screening: schwarz | csb | csam; not read here: not read: this kind runs its own reference SCF, which reads only max_iter, energy_conv and density_conv
 # eri: four-centre J/K build: auto | direct | incore; not read here: not read: this kind runs its own reference SCF, which reads only max_iter, energy_conv and density_conv
+# gc_rotation: direct J/K contraction rotation: auto | rot1 | off (unset: FERRIC_GC_ROTATE, then auto); not read here: not read: this kind runs its own reference SCF, which reads only max_iter, energy_conv and density_conv
 # relativistic: x2c1e: spin-free X2C-1e core Hamiltonian (energy only); not read here: not read: this kind runs its own reference SCF, which reads only max_iter, energy_conv and density_conv
 # cosx_grid: COSX SCF grid; not read here: not read: this kind runs its own reference SCF, which reads only max_iter, energy_conv and density_conv
 # cosx_final_pass: COSX final pass on a larger grid; not read here: not read: this kind runs its own reference SCF, which reads only max_iter, energy_conv and density_conv

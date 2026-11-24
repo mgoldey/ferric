@@ -265,6 +265,7 @@ fn keys() -> Vec<Key> {
         key!("scf", "k_builder", "exchange builder: direct | link | cosx", |c| if c.exact_k() { s("direct") } else { Off(FOUR_CENTRE) }),
         key!("scf", "screening", "four-centre screening: schwarz | csb | csam", |c| if c.exact_k() { s("schwarz") } else { Off(FOUR_CENTRE) }),
         key!("scf", "eri", "four-centre J/K build: auto | direct | incore", |c| if c.exact_k() { s("auto") } else { Off(FOUR_CENTRE) }),
+        key!("scf", "gc_rotation", "direct J/K contraction rotation: auto | rot1 | off (unset: FERRIC_GC_ROTATE, then auto)", |c| if c.exact_k() { Unset("FERRIC_GC_ROTATE, then auto") } else { Off(FOUR_CENTRE) }),
         key!("scf", "relativistic", "x2c1e: spin-free X2C-1e core Hamiltonian (energy only)", |c| {
             if c.energy() && X2C_KINDS.contains(&c.kind.as_str()) { Unset("nonrelativistic") } else { Off("energies of the X2C kinds only") }
         }),

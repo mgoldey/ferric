@@ -627,6 +627,12 @@ fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig
     // defaults here.
     config.cosmo = cfg.cosmo.clone();
     config.polarizable = polarizable;
+    config.gc_rotation = s
+        .gc_rotation
+        .as_deref()
+        .map(ferric_scf::direct_jk::GcRotate::parse_str)
+        .transpose()
+        .map_err(|e| CliError::msg(format!("[scf] gc_rotation: {e}")))?;
     Ok(config)
 }
 
@@ -9305,6 +9311,33 @@ mod scf_config_lowering_tests {
         a.guess_basis = None;
         b.guess_basis = None;
         assert_eq!(format!("{a:#?}"), format!("{b:#?}"), "{msg}");
+    }
+
+    /// `[scf] gc_rotation` reaches `RhfConfig::gc_rotation`; unset leaves it
+    /// `None`; a value outside auto | rot1 | off is refused by key name.
+    #[test]
+    fn gc_rotation_key_reaches_the_config() {
+        use ferric_scf::direct_jk::GcRotate;
+        for (value, want) in [
+            ("auto", GcRotate::Auto),
+            ("ROT1", GcRotate::Rot1),
+            ("off", GcRotate::Off),
+        ] {
+            let cfg = parse(&header(
+                "rhf",
+                &format!("[scf]\ngc_rotation = \"{value}\"\n"),
+            ));
+            let c = new_lowering(&cfg, "energy", false, None).unwrap().unwrap();
+            assert_eq!(c.gc_rotation, Some(want), "{value}");
+        }
+        let cfg = parse(&header("rhf", ""));
+        let c = new_lowering(&cfg, "energy", false, None).unwrap().unwrap();
+        assert_eq!(c.gc_rotation, None);
+        let cfg = parse(&header("rhf", "[scf]\ngc_rotation = \"none\"\n"));
+        let e = new_lowering(&cfg, "energy", false, None)
+            .unwrap()
+            .unwrap_err();
+        assert!(e.to_string().contains("[scf] gc_rotation"), "{e}");
     }
 
     /// The task / `[gpu]` combinations that change the CLI policy: the RI-J
