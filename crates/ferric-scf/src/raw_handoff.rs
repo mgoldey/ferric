@@ -639,6 +639,13 @@ pub(crate) fn with_metric_capture<T>(config: &RhfConfig, f: impl FnOnce() -> T) 
     f()
 }
 
+/// Is a hand-off capturing DF-K metric decompositions on this thread
+/// ([`with_metric_capture`] with a hand-off installed)? DF-K then factors its
+/// metric by `eigh` (whose result the gradient reuses) rather than Cholesky.
+pub(crate) fn metric_capture_active() -> bool {
+    CAPTURE.with(|c| c.borrow().is_some())
+}
+
 /// Called by DF-K with the `eigh(V) = (lam, u)` it used for `V^{-1/2}`
 /// (`v` the `op` metric of `dfbs`): kept in the capturing hand-off when one is
 /// installed (`with_metric_capture`) and the memory pool has the bytes free
