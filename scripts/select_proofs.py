@@ -21,12 +21,17 @@ Scripts in the runner's slow tier (budget ``SLOW_S`` or more, marked
 ``validation``) are dropped from a list: the book job deselects that tier on
 every event (pyproject.toml ``addopts``), so selecting one would collect
 nothing. The nightly schedule, tag pushes and workflow_dispatch never call
-this; they run every fast-tier case. Standard library only: the book job runs with ``--noconftest``
+this for a selection; they run every fast-tier case. The nightly schedule and
+workflow_dispatch also run the slow tier, one job per script, from the list
+``--slow`` prints. Standard library only: the book job runs with ``--noconftest``
 and installs nothing for it.
 
 Usage: ``python3 scripts/select_proofs.py --base origin/main
 [--github-output "$GITHUB_OUTPUT"]``, or ``--files LIST`` (one path per line,
 ``-`` for stdin) to classify a list without git. The reasons go to stderr.
+``--slow [--github-output ...]`` prints the slow-tier scripts as a JSON list
+(``slow=<list>`` in the output file), for the slow-proof job's matrix; a case
+list it cannot read is an error, never an empty list.
 """
 
 import argparse
@@ -231,10 +236,21 @@ def main(argv=None):
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--base", help="git ref to diff against (base...HEAD)")
     src.add_argument("--files", help="file with one changed path per line, - for stdin")
+    src.add_argument(
+        "--slow", action="store_true", help="list the slow-tier scripts as JSON"
+    )
     ap.add_argument(
-        "--github-output", help="append mode=... and scripts=... to this file"
+        "--github-output",
+        help="append mode=... and scripts=... (with --slow: slow=...) to this file",
     )
     args = ap.parse_args(argv)
+    if args.slow:
+        slow = json.dumps(read_slow((ROOT / RUNNER).read_text(encoding="utf-8")))
+        print(slow)
+        if args.github_output:
+            with open(args.github_output, "a", encoding="utf-8") as out:
+                out.write(f"slow={slow}\n")
+        return 0
     if args.base:
         sel = selection_from_git(args.base)
     else:

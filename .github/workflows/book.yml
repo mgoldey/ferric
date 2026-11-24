@@ -15,9 +15,13 @@ name: book
 # none for book prose and crates/*/theory.md. The registry test, the checker's
 # tests and the selector's tests run every time (about 15 s).
 #
-# "Every proof" is the runner's fast tier, on every event: pyproject.toml's
-# addopts deselects the validation tier (scripts with a budget of SLOW_S or
-# more, minutes each), and the selector never lists those scripts.
+# "Every proof" in the html job is the runner's fast tier, on every event:
+# pyproject.toml's addopts deselects the validation tier (scripts with a budget
+# of SLOW_S or more, minutes each), and the selector never lists those scripts.
+# Nightly and on workflow_dispatch, the slow-proofs job runs that tier (no
+# other workflow does: ci.yml's validation pytest ignores the proof runner),
+# one job per script, so the longest (about 90 min at its budget) sets the
+# wall time instead of the sum. Pull requests and tags never run it.
 #
 # Builds no Rust. The proof runners import only pytest, sympy and the standard
 # library, so they run with --noconftest (conftest.py would skip every file when
@@ -170,6 +174,76 @@ jobs:
         with:
           name: book-html
           path: book/out/html
+
+  slow-proofs-list:
+    name: book (slow proof list)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      slow: ${{ steps.list.outputs.slow }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: List the slow-tier proofs
+        id: list
+        run: |
+          python3 scripts/select_proofs.py --slow --github-output "$GITHUB_OUTPUT"
+          # An empty tier would give the matrix nothing to run: say so and fail,
+          # so a runner change that drops the tier is noticed, not a green no-op.
+          grep -q '^slow=\[\]$' "$GITHUB_OUTPUT" && { echo "no slow-tier proofs"; exit 1; } || true
+
+  slow-proofs:
+    name: book (slow proofs, ${{ matrix.script }})
+    needs: slow-proofs-list
+    runs-on: ubuntu-22.04
+    # Per script: the script and each of its mutations, run one after another
+    # at the script's budget (uks_xc_hessian_sympy.py: 3 x 1800 s = 90 min;
+    # each subprocess may take 4x its budget before the runner's own timeout).
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        script: ${{ fromJSON(needs.slow-proofs-list.outputs.slow) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install proof dependencies
+        run: python3 -m pip install pytest sympy numpy scipy mpmath
+
+      - name: Run the slow proof and its mutations (none skipped)
+        env:
+          FERRIC_PROOF_SCRIPTS: ${{ matrix.script }}
+        run: |
+          python3 -c "import sympy, numpy, scipy, mpmath"
+          # -m validation overrides addopts' "not validation": only this
+          # script's slow-tier cases are collected.
+          python3 -m pytest --noconftest -p no:cacheprovider -rs -m validation \
+            --junitxml="$RUNNER_TEMP/slow.xml" \
+            crates/ferric-python/tests/test_derivation_scripts.py
+          python3 - "$RUNNER_TEMP/slow.xml" "$FERRIC_PROOF_SCRIPTS" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          root = ET.parse(sys.argv[1]).getroot()
+          suite = root if root.tag == "testsuite" else root.find("testsuite")
+          tests, skipped = int(suite.get("tests")), int(suite.get("skipped"))
+          ran = {
+              c.get("name", "")[len("test_script_holds[") : -1]
+              for c in suite.iter("testcase")
+              if c.get("name", "").startswith("test_script_holds[")
+          }
+          print(f"tests: {tests}, skipped: {skipped}, script runs: {sorted(ran)}")
+          if tests < 2 or skipped:
+              sys.exit("the script and at least one mutation must run, none skipped")
+          if ran != {sys.argv[2]}:
+              sys.exit(f"expected {sys.argv[2]}, ran {sorted(ran)}")
+          PY
 
   pdf:
     name: book (PDF, release tags)
