@@ -1390,14 +1390,14 @@ impl DfJ<'_> {
     /// every rank holds the FULL `d_P` before the global V^{-1} coupling.
     fn reduce_d_p(&self, d_p: &mut Array1<f64>) {
         if let Some(ctx) = self.ctx {
-            ctx.all_reduce_sum(d_p.as_slice_mut().expect("d_P is contiguous"));
+            ctx.all_reduce_sum_array(d_p);
         }
     }
 
     /// MPI: sum the per-rank partial J matrices into the full J on every rank.
     fn reduce_j(&self, j: &mut Array2<f64>) {
         if let Some(ctx) = self.ctx {
-            ctx.all_reduce_sum(j.as_slice_mut().expect("J is standard layout"));
+            ctx.all_reduce_sum_array(j);
         }
     }
 }

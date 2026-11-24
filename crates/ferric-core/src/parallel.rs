@@ -226,10 +226,10 @@ impl ParallelContext {
     ///
     /// The feature gate lives here, next to `world()`, so a downstream
     /// crate cannot compile the reduction out by leaving its own `mpi` feature
-    /// off. Every rank must pass the same length in the same element order:
-    /// callers with an `ndarray` hand over a STANDARD-layout slice
-    /// (`as_slice_mut().expect(..)`), never a memory-order one. Call it from a
-    /// serial reduction point only (see `world()`).
+    /// off. Every rank must pass the same length in the same element order;
+    /// an `ndarray` goes through [`Self::all_reduce_sum_array`], which takes
+    /// care of the layout. Call it from a serial reduction point only (see
+    /// `world()`).
     pub fn all_reduce_sum(&self, data: &mut [f64]) {
         #[cfg(feature = "mpi")]
         if let Some(world) = self.world() {
@@ -244,6 +244,43 @@ impl ParallelContext {
         }
         #[cfg(not(feature = "mpi"))]
         let _ = data;
+    }
+
+    /// Whether [`Self::all_reduce_sum`] reduces anything: true only with the
+    /// `mpi` feature and a multi-rank world behind this context.
+    pub fn reduces(&self) -> bool {
+        #[cfg(feature = "mpi")]
+        {
+            self.world().is_some()
+        }
+        #[cfg(not(feature = "mpi"))]
+        {
+            false
+        }
+    }
+
+    /// [`Self::all_reduce_sum`] over an array in LOGICAL (row-major) element
+    /// order, whatever its memory layout: a standard-layout array is reduced
+    /// in place, any other through a standard-layout copy. With nothing to
+    /// reduce ([`Self::reduces`] false) the array is not touched, so no
+    /// layout can make this fail.
+    pub fn all_reduce_sum_array<S, D>(&self, a: &mut ndarray::ArrayBase<S, D>)
+    where
+        S: ndarray::DataMut<Elem = f64>,
+        D: ndarray::Dimension,
+    {
+        if !self.reduces() {
+            return;
+        }
+        if let Some(data) = a.as_slice_mut() {
+            self.all_reduce_sum(data);
+            return;
+        }
+        let mut flat: Vec<f64> = a.iter().copied().collect();
+        self.all_reduce_sum(&mut flat);
+        for (v, x) in a.iter_mut().zip(flat) {
+            *v = x;
+        }
     }
 }
 
@@ -468,6 +505,26 @@ mod tests {
     use super::{
         local_ranks_per_node_with, physical_cores, physical_cores_from_sysfs, threads_per_rank,
     };
+
+    /// With nothing to reduce, the array reduction leaves any layout alone:
+    /// a column-major matrix and a strided view come back bit for bit.
+    #[test]
+    fn an_inactive_array_reduction_touches_no_layout() {
+        use super::ParallelContext;
+        let ctx = ParallelContext::for_rank(0, 1);
+        assert!(!ctx.reduces());
+        let mut col_major =
+            ndarray::Array2::from_shape_fn((3, 2), |(r, c)| 1.0 + (2 * r + c) as f64)
+                .reversed_axes();
+        assert!(!col_major.is_standard_layout());
+        let want = col_major.clone();
+        ctx.all_reduce_sum_array(&mut col_major);
+        assert_eq!(col_major, want);
+        let mut base = ndarray::Array1::from_iter((0..8).map(f64::from));
+        let want = base.clone();
+        ctx.all_reduce_sum_array(&mut base.slice_mut(ndarray::s![..;2]));
+        assert_eq!(base, want);
+    }
 
     #[test]
     fn aux_band_single_rank_is_full_range() {

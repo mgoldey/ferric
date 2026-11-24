@@ -277,11 +277,8 @@ mod inner {
             let mut g_i = b_i_band.t().dot(&b_band); // partial sum over this rank's P band
 
             // A `dot` result can come back column-major (e.g. a one-row band
-            // on this rank only), and ranks must reduce the same element order.
-            if !g_i.is_standard_layout() {
-                g_i = g_i.as_standard_layout().into_owned();
-            }
-            ctx.all_reduce_sum(g_i.as_slice_mut().expect("g_i is standard layout"));
+            // on this rank only); the array reduction sums in logical order.
+            ctx.all_reduce_sum_array(&mut g_i);
 
             // Round-robin: only the owning rank spends FLOPs squaring this i's
             // (now-complete) g_i into the energy sum. Every rank still paid
