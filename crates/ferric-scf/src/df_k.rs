@@ -1521,7 +1521,7 @@ impl DfK<'_> {
     /// single-rank context.
     fn reduce_k_across_ranks(&self, k: &mut Array2<f64>) {
         if let Some(ctx) = self.ctx {
-            ctx.all_reduce_sum(k.as_slice_mut().expect("K is standard layout"));
+            ctx.all_reduce_sum_array(k);
         }
     }
 }

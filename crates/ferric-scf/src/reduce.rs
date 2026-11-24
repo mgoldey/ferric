@@ -618,7 +618,7 @@ pub fn reduce_partial_across_ranks(
     ctx: &ferric_core::parallel::ParallelContext,
     partial: &mut Array2<f64>,
 ) {
-    ctx.all_reduce_sum(partial.as_slice_mut().expect("partial is standard layout"));
+    ctx.all_reduce_sum_array(partial);
 }
 
 #[cfg(test)]
