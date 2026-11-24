@@ -64,6 +64,7 @@ check_stability = false                # diagnostic orbital-Hessian check of the
 # k_builder: exchange builder: direct | link | cosx; not read here: only on a four-centre exchange route; this run fits K
 # screening: four-centre screening: schwarz | csb | csam; not read here: only on a four-centre exchange route; this run fits K
 # eri: four-centre J/K build: auto | direct | incore; not read here: only on a four-centre exchange route; this run fits K
+# gc_rotation: direct J/K contraction rotation: auto | rot1 | off (unset: FERRIC_GC_ROTATE, then auto); not read here: only on a four-centre exchange route; this run fits K
 # relativistic: x2c1e: spin-free X2C-1e core Hamiltonian (energy only); not read here: energies of the X2C kinds only
 # cosx_grid: COSX SCF grid; not read here: only with k_builder = "cosx" or jk = "rijcosx"
 # cosx_final_pass: COSX final pass on a larger grid; not read here: only with k_builder = "cosx" or jk = "rijcosx"
@@ -81,6 +82,9 @@ check_stability = false                # diagnostic orbital-Hessian check of the
 # stability_descent: follow a downhill mode at a saddle and re-converge; not read here: rhf, uhf and ksdft energies only
 # symmetry: point-group-blocked closed-shell RHF/RKS; not read here: closed-shell rhf/ksdft energies only
 # irrep_nelec: electrons per irrep; not read here: only with symmetry = true
+# save_reference: write the converged reference SCF to this file; unset by default: no file is written
+# read_reference: read the reference SCF from a save_reference file instead of solving it; unset by default: the reference SCF is solved
+# read_reference_other_build: accept a read_reference file written by another build; not read here: only with read_reference
 # ladder: [[scf.ladder]] convergence-ladder rungs; not read here: rhf and ksdft only
 
 [ri]

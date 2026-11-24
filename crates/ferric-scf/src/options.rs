@@ -1782,6 +1782,7 @@ mod tests {
             screening: _,                 // lowered
             raw_handoff: _,               // default
             eri: _,                       // lowered
+            gc_rotation: _,               // default (not an entry-point knob)
             eri_route: _,                 // default (solver output)
             relativistic: _,              // lowered
         } = RhfConfig::default();

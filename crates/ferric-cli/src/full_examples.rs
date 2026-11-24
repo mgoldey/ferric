@@ -188,6 +188,11 @@ impl Ctx {
     fn exact_k(&self) -> bool {
         !self.own_start() && !self.fitted_jk() && !self.ri_default() && !self.double_hybrid()
     }
+    /// The run's reference is the shared correlated one, which
+    /// `[scf] save_reference` / `read_reference` checkpoint.
+    fn reference_io(&self) -> bool {
+        self.energy() && !self.own_start() && !self.scf_kind() && !self.double_hybrid()
+    }
     /// The closed-shell, non-laddered SCF path that runs the DF-guess
     /// pre-stage.
     fn df_guess_path(&self) -> bool {
@@ -218,7 +223,7 @@ macro_rules! key {
     };
 }
 
-const OWN_START: &str = "not read: this kind runs its own reference SCF, which reads only \
+const OWN_START: &str = "refused: this kind runs its own reference SCF, which reads only \
                          max_iter, energy_conv and density_conv";
 const COSX: &str = "only with k_builder = \"cosx\" or jk = \"rijcosx\"";
 const FOUR_CENTRE: &str = "only on a four-centre exchange route; this run fits K";
@@ -265,6 +270,7 @@ fn keys() -> Vec<Key> {
         key!("scf", "k_builder", "exchange builder: direct | link | cosx", |c| if c.exact_k() { s("direct") } else { Off(FOUR_CENTRE) }),
         key!("scf", "screening", "four-centre screening: schwarz | csb | csam", |c| if c.exact_k() { s("schwarz") } else { Off(FOUR_CENTRE) }),
         key!("scf", "eri", "four-centre J/K build: auto | direct | incore", |c| if c.exact_k() { s("auto") } else { Off(FOUR_CENTRE) }),
+        key!("scf", "gc_rotation", "direct J/K contraction rotation: auto | rot1 | off (unset: FERRIC_GC_ROTATE, then auto)", |c| if c.exact_k() { Unset("FERRIC_GC_ROTATE, then auto") } else { Off(FOUR_CENTRE) }),
         key!("scf", "relativistic", "x2c1e: spin-free X2C-1e core Hamiltonian (energy only)", |c| {
             if c.energy() && X2C_KINDS.contains(&c.kind.as_str()) { Unset("nonrelativistic") } else { Off("energies of the X2C kinds only") }
         }),
@@ -302,6 +308,9 @@ fn keys() -> Vec<Key> {
         key!("scf", "stability_descent", "follow a downhill mode at a saddle and re-converge", |c| if c.is(&["rhf", "uhf", "ksdft"]) && c.energy() { n("false") } else { Off("rhf, uhf and ksdft energies only") }),
         key!("scf", "symmetry", "point-group-blocked closed-shell RHF/RKS", |c| if c.is(&["rhf", "ksdft"]) && c.energy() && c.mult == 1 { n("false") } else { Off("closed-shell rhf/ksdft energies only") }),
         key!("scf", "irrep_nelec", "electrons per irrep", |_| Off("only with symmetry = true")),
+        key!("scf", "save_reference", "write the converged reference SCF to this file", |c| if c.reference_io() { Unset("no file is written") } else { Off("correlated kinds with task = \"energy\" only") }),
+        key!("scf", "read_reference", "read the reference SCF from a save_reference file instead of solving it", |c| if c.reference_io() { Unset("the reference SCF is solved") } else { Off("correlated kinds with task = \"energy\" only") }),
+        key!("scf", "read_reference_other_build", "accept a read_reference file written by another build", |_| Off("only with read_reference")),
         key!("scf", "ladder", "[[scf.ladder]] convergence-ladder rungs", |c| if c.is(&["rhf", "ksdft"]) { Unset("the built-in ladder; [[scf.ladder]] rungs replace it") } else { Off("rhf and ksdft only") }),
         // ---- [dft]
         key!("dft", "functional", "XC functional name (LDA, PBE, B3LYP, ...) or libxc name", |c| {

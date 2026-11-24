@@ -1,14 +1,29 @@
 name: book
 
-# The ferric book (book/). On pull requests: run every derivation proof, check
-# the book against the code, build the HTML with mdBook. On v* tags: the same
-# checks in --release mode, then a PDF through pandoc and LaTeX. The PDF job also
-# runs from workflow_dispatch, so it can be tried before a tag.
+# The ferric book (book/). On pull requests: run the derivation proofs the
+# change can affect, check the book against the code, build the HTML with
+# mdBook. Nightly (schedule) and on workflow_dispatch: every proof and the same
+# checks. On v* tags: every proof and the checks in --release mode, then a PDF
+# through pandoc and LaTeX. The PDF job also runs from workflow_dispatch, so it
+# can be tried before a tag; it never runs on the schedule.
+#
+# Proof selection on a pull request (scripts/select_proofs.py, tested by
+# test_select_proofs.py): every proof when the runners, the book checker, the
+# selector, this file, the registry's shape or any other file under scripts/
+# changed; only the changed proof scripts (plus the scripts of changed registry
+# entries, plus the scripts that read a changed file) when only those changed;
+# none for book prose and crates/*/theory.md. The registry test, the checker's
+# tests and the selector's tests run every time (about 15 s).
+#
+# "Every proof" is the runner's fast tier, on every event: pyproject.toml's
+# addopts deselects the validation tier (scripts with a budget of SLOW_S or
+# more, minutes each), and the selector never lists those scripts.
 #
 # Builds no Rust. The proof runners import only pytest, sympy and the standard
 # library, so they run with --noconftest (conftest.py would skip every file when
 # the ferric extension is missing). A skipped test, a missing sympy or zero
-# collected tests is a red job, never a green one.
+# collected tests is a red job, never a green one; an empty selection runs no
+# proof by design and says so in the log.
 on:
   pull_request:
     branches: [main]
@@ -18,12 +33,19 @@ on:
       - 'scripts/*_sympy.py'
       - 'scripts/mp2_variant_identities.py'
       - 'scripts/book_build.py'
+      - 'scripts/select_proofs.py'
       - 'testdata/derivations/registry.json'
       - 'crates/ferric-python/tests/test_derivation_*.py'
       - 'crates/ferric-python/tests/test_book_build.py'
+      - 'crates/ferric-python/tests/test_select_proofs.py'
       - '.github/workflows/book.yml'
   push:
     tags: ['v*']
+  schedule:
+    # 07:23 UTC daily: the full proof set, so a selection that missed a
+    # dependency is caught within a day. Off the hour, and a different hour
+    # from ci.yml (04:17) and wheels.yml (10:53), as those nightlies do.
+    - cron: '23 7 * * *'
   workflow_dispatch:
     inputs:
       label:
@@ -34,8 +56,10 @@ on:
 permissions:
   contents: read
 
+# A scheduled run is alone in its group (run_id), so a dispatch on main never
+# cancels it, nor it a dispatch.
 concurrency:
-  group: book-${{ github.event.pull_request.number || github.ref }}
+  group: book-${{ github.event.pull_request.number || (github.event_name == 'schedule' && github.run_id) || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -45,7 +69,8 @@ jobs:
   html:
     name: book (proofs, check, mdbook)
     runs-on: ubuntu-22.04
-    timeout-minutes: 45
+    # 75: the full proof set takes about 26 min, and up to 43+ on slow runners.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -65,23 +90,64 @@ jobs:
           curl -sSL "$tar_url" | tar -xz -C "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      - name: Run the proofs (fast and slow tiers, none skipped)
+      - name: Select the proofs
+        id: select
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            python3 scripts/select_proofs.py --base "origin/$BASE_REF" \
+              --github-output "$GITHUB_OUTPUT"
+          else
+            echo "$EVENT run: every proof"
+            printf 'mode=all\nscripts=\n' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run the proofs (selected on pull requests, none skipped)
+        env:
+          MODE: ${{ steps.select.outputs.mode }}
+          SCRIPTS: ${{ steps.select.outputs.scripts }}
         run: |
           python3 -c "import sympy, numpy, scipy, mpmath"
+          tests=(crates/ferric-python/tests/test_derivation_registry.py
+                 crates/ferric-python/tests/test_book_build.py
+                 crates/ferric-python/tests/test_select_proofs.py)
+          case "$MODE" in
+            all) tests+=(crates/ferric-python/tests/test_derivation_scripts.py) ;;
+            some)
+              export FERRIC_PROOF_SCRIPTS="$SCRIPTS"
+              echo "proofs selected: $SCRIPTS"
+              tests+=(crates/ferric-python/tests/test_derivation_scripts.py) ;;
+            none)
+              echo "no proof inputs changed: test_derivation_scripts.py not run;" \
+                "the registry, book-checker and selector tests still run" ;;
+            *) echo "unknown proof selection mode '$MODE'"; exit 1 ;;
+          esac
           python3 -m pytest --noconftest -p no:cacheprovider -rs \
-            --junitxml="$RUNNER_TEMP/proofs.xml" \
-            crates/ferric-python/tests/test_derivation_scripts.py \
-            crates/ferric-python/tests/test_derivation_registry.py \
-            crates/ferric-python/tests/test_book_build.py
-          python3 - "$RUNNER_TEMP/proofs.xml" <<'PY'
+            --junitxml="$RUNNER_TEMP/proofs.xml" "${tests[@]}"
+          python3 - "$RUNNER_TEMP/proofs.xml" "$MODE" "$SCRIPTS" <<'PY'
           import sys
           import xml.etree.ElementTree as ET
           root = ET.parse(sys.argv[1]).getroot()
           suite = root if root.tag == "testsuite" else root.find("testsuite")
           tests, skipped = int(suite.get("tests")), int(suite.get("skipped"))
-          print(f"proof tests: {tests}, skipped: {skipped}")
+          mode, scripts = sys.argv[2], set(sys.argv[3].split())
+          ran = set()
+          proofs = 0
+          for case in suite.iter("testcase"):
+              if case.get("classname", "").endswith("test_derivation_scripts"):
+                  proofs += 1
+                  name = case.get("name", "")
+                  if name.startswith("test_script_holds["):
+                      ran.add(name[len("test_script_holds[") : -1])
+          print(f"tests: {tests}, skipped: {skipped}, proof tests: {proofs} ({mode})")
           if tests == 0 or skipped:
-              sys.exit("proofs were skipped or not collected; a missing dependency is a failure")
+              sys.exit("tests were skipped or not collected; a missing dependency is a failure")
+          if mode != "none" and proofs == 0:
+              sys.exit("proofs were selected but none was collected")
+          if mode == "some" and ran != scripts:
+              sys.exit(f"selected {sorted(scripts)} but ran {sorted(ran)}")
           PY
 
       - name: Check the book against the code
@@ -107,6 +173,7 @@ jobs:
 
   pdf:
     name: book (PDF, release tags)
+    # Tags and dispatch only; the nightly schedule builds no PDF.
     if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
     needs: html
     runs-on: ubuntu-22.04
