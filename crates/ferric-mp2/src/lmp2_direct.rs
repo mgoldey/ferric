@@ -2241,6 +2241,47 @@ fn integral_batches(
         .collect()
 }
 
+/// The rank stripe (`None` without [`DirectConfig::mpi`] or on one rank) and
+/// each occupied's partners: every surviving partner, or under a stripe the
+/// ones it shares one of this rank's pairs with ([`rank_stripe`]), so its
+/// strip covers those pairs only.
+fn stripe_and_partners(
+    dcfg: &DirectConfig,
+    keep: &[bool],
+    aux_dom: &[Vec<usize>],
+    virt_dom: &[Vec<usize>],
+    occ_xyz: &[[f64; 3]],
+    dfbs: &PreparedBasis,
+) -> (Option<RankStripe>, Vec<Vec<usize>>) {
+    let no = occ_xyz.len();
+    match dcfg.mpi.filter(|c| c.size > 1) {
+        None => (
+            None,
+            (0..no)
+                .map(|i| (0..no).filter(|&j| keep[i * no + j]).collect())
+                .collect(),
+        ),
+        Some(c) => {
+            let (s, p) = rank_stripe(c, keep, aux_dom, virt_dom, occ_xyz, dfbs.shell_dims());
+            (Some(s), p)
+        }
+    }
+}
+
+/// `batches` without the occupieds a rank stripe leaves to other ranks.
+fn own_batches(
+    mut batches: Vec<(usize, Vec<usize>)>,
+    stripe: Option<&RankStripe>,
+) -> Vec<(usize, Vec<usize>)> {
+    if let Some(s) = stripe {
+        batches.retain_mut(|(_, is)| {
+            is.retain(|&i| s.needed[i]);
+            !is.is_empty()
+        });
+    }
+    batches
+}
+
 fn build_locality_maps(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -2285,22 +2326,7 @@ fn build_locality_maps(
     let virt_supp = (0..nv)
         .map(|a| supp_shells(obs, spaces.c_vloc.column(a), dcfg.ao_tail))
         .collect();
-    // Under a rank stripe an occupied's partners are the ones it shares one
-    // of this rank's pairs with, so its strip covers those pairs only.
-    let (stripe, partners): (Option<RankStripe>, Vec<Vec<usize>>) =
-        match dcfg.mpi.filter(|c| c.size > 1) {
-            None => (
-                None,
-                (0..no)
-                    .map(|i| (0..no).filter(|&j| keep[i * no + j]).collect())
-                    .collect(),
-            ),
-            Some(c) => {
-                let (s, p) =
-                    rank_stripe(c, &keep, &aux_dom, &virt_dom, &occ_xyz, dfbs.shell_dims());
-                (Some(s), p)
-            }
-        };
+    let (stripe, partners) = stripe_and_partners(dcfg, &keep, &aux_dom, &virt_dom, &occ_xyz, dfbs);
     // extended per-occupied unions over surviving partners (pair sets are
     // D_ij = D_i ∪ D_j and C_ij = V_i ∪ V_j, both ⊆ the extended sets)
     let aux_ext = (0..no)
@@ -2309,13 +2335,10 @@ fn build_locality_maps(
     let virt_ext = (0..no)
         .map(|i| sorted_union(partners[i].iter().map(|&j| virt_dom[j].iter().copied())))
         .collect();
-    let mut batches = integral_batches(&atom_xyz, &occ_xyz, dcfg.batch_merge);
-    if let Some(s) = &stripe {
-        batches.retain_mut(|(_, is)| {
-            is.retain(|&i| s.needed[i]);
-            !is.is_empty()
-        });
-    }
+    let batches = own_batches(
+        integral_batches(&atom_xyz, &occ_xyz, dcfg.batch_merge),
+        stripe.as_ref(),
+    );
     LocalityMaps {
         keep,
         n_gated,
@@ -2634,17 +2657,7 @@ fn collect_strips(
     if stats.n_batches > 0 {
         stats.batch_work_mean_s /= stats.n_batches as f64;
     }
-    let strips: Vec<Strip> = strips
-        .into_iter()
-        .enumerate()
-        .map(|(i, s)| match s {
-            Some(s) => Ok(s),
-            None if needed.is_some_and(|n| !n[i]) => Ok(Strip::absent()),
-            None => Err(FerricError::General(format!(
-                "lmp2_direct: no strip built for i={i}"
-            ))),
-        })
-        .collect::<Result<_, _>>()?;
+    let strips = fill_absent_strips(strips, needed)?;
     let n_built = needed.map_or(no, |n| n.iter().filter(|&&b| b).count());
     for st in &strips {
         stats.strip_rows_mean += st.rows.len() as f64;
@@ -2658,6 +2671,25 @@ fn collect_strips(
         stats.strip_cols_mean /= n_built as f64;
     }
     Ok(strips)
+}
+
+/// One strip per occupied: the built one, [`Strip::absent`] for an occupied
+/// the rank stripe leaves to other ranks, an error for any other gap.
+fn fill_absent_strips(
+    strips: Vec<Option<Strip>>,
+    needed: Option<&[bool]>,
+) -> Result<Vec<Strip>, FerricError> {
+    strips
+        .into_iter()
+        .enumerate()
+        .map(|(i, s)| match s {
+            Some(s) => Ok(s),
+            None if needed.is_some_and(|n| !n[i]) => Ok(Strip::absent()),
+            None => Err(FerricError::General(format!(
+                "lmp2_direct: no strip built for i={i}"
+            ))),
+        })
+        .collect()
 }
 
 /// Everything stage 5 reads: what [`fit_pairs`] is called with, bundled for
@@ -3202,12 +3234,13 @@ fn fit_pair_slots(
     Ok((slots, base_bytes))
 }
 
-/// Stage 5 after the fits: under a rank stripe the ranks exchange their
-/// blocks, then the slots become the ragged system (the full one on every
-/// rank). `beside_bytes` is what is still resident beside this rank's own
+/// Stage 5 after the fits: the slots become the ragged system. Under a rank
+/// stripe the ranks first exchange block skeletons (index lists and masks),
+/// and the system comes back as this rank's share
+/// ([`crate::ragged::RaggedShare`]): its own blocks whole, the others
+/// hollow. `beside_bytes` is what is still resident beside this rank's own
 /// blocks; with a gate, the exchange buffer must fit in what the budget has
-/// left (the gathered blocks themselves are the system the solve gate
-/// already admitted).
+/// left.
 fn gather_ragged(
     mut slots: Vec<crate::ragged_transport::Slot>,
     stripe: Option<ferric_core::parallel::ParallelContext>,
@@ -3216,6 +3249,7 @@ fn gather_ragged(
     t0: Instant,
     stats: &mut DirectStats,
 ) -> Result<Ragged, FerricError> {
+    let owned_slots: Vec<bool> = slots.iter().map(Option::is_some).collect();
     if let Some(c) = stripe {
         let avail = gate.map(|g| {
             let own: usize = slots
@@ -3228,7 +3262,7 @@ fn gather_ragged(
         });
         crate::ragged_transport::gather_slots(&c, &mut slots, avail)?;
     }
-    let ragged = ragged_from_slots(slots)?;
+    let ragged = ragged_from_slots(slots, stripe.map(|c| (c, owned_slots.as_slice())))?;
     stats.t_pairs_s = t0.elapsed().as_secs_f64();
     mem_trace(
         "pairs",
@@ -3335,19 +3369,29 @@ fn slots_from_groups(
 }
 
 /// The ragged system of fully filled slots, in slot order. An empty slot is
-/// an error: a grouping bug, or a striped run whose blocks were not gathered
-/// (a rank-pinned context with no MPI world behind it).
-fn ragged_from_slots(slots: Vec<crate::ragged_transport::Slot>) -> Result<Ragged, FerricError> {
+/// an error: a grouping bug, or a striped run whose skeletons were not
+/// gathered (a rank-pinned context with no MPI world behind it). `share`
+/// names the MPI context and the slots this rank fitted; the system is then
+/// that rank's share.
+fn ragged_from_slots(
+    slots: Vec<crate::ragged_transport::Slot>,
+    share: Option<(ferric_core::parallel::ParallelContext, &[bool])>,
+) -> Result<Ragged, FerricError> {
     let mut pairs: Vec<PairBlock> = Vec::new();
+    let mut owned: Vec<bool> = Vec::new();
     for (px, s) in slots.into_iter().enumerate() {
-        pairs.extend(s.ok_or_else(|| {
+        let blocks = s.ok_or_else(|| {
             FerricError::General(format!(
                 "lmp2_direct: pair slot {px} never filled (grouping bug, or a rank stripe \
                  without an MPI world to gather over)"
             ))
-        })?);
+        })?;
+        owned.resize(owned.len() + blocks.len(), share.is_none_or(|(_, o)| o[px]));
+        pairs.extend(blocks);
     }
-    Ok(Ragged::from_pairs(pairs))
+    let mut ragged = Ragged::from_pairs(pairs);
+    ragged.share = share.map(|(ctx, _)| crate::ragged::RaggedShare { ctx, owned });
+    Ok(ragged)
 }
 
 /// Compact whitened occ-occ Gram `(ik|jl)` for the LinLCCD hh ladder —
@@ -4992,6 +5036,43 @@ mod stage_c_tests {
         )
         .unwrap_err();
         assert!(format!("{err}").contains("never filled"), "{err}");
+    }
+
+    /// The trivial limit of the split solve: a share that owns every block
+    /// (one rank, no MPI world) runs the same PCG as no share at all, so the
+    /// amplitudes, the energy and the true residual are bit for bit the
+    /// plain indexed solve's.
+    #[test]
+    fn a_share_owning_every_block_is_the_plain_solve() {
+        use crate::lmp2_amplitude::hylleraas_energy_and_residual;
+        use crate::ragged::{solve_ragged_budgeted_with, MatvecPath, RaggedShare};
+        use ferric_core::parallel::ParallelContext;
+        let su = setup("alkane_4.xyz", 4);
+        let eps = 1e-4;
+        let pre = pre_of(&su, Operator::coulomb(), eps, 0.7);
+        let dcfg = production_maps(None);
+        let (plain, _) = fit(&su, &pre, eps, &dcfg, FitPath::Cholesky);
+        let mut shared = plain.clone();
+        shared.share = Some(RaggedShare {
+            ctx: ParallelContext::for_rank(0, 1),
+            owned: vec![true; shared.pairs.len()],
+        });
+        let f_oo = &su.spaces.f_oo;
+        // budget 0: no gather plan, so both run the indexed matvec
+        let a = solve_ragged_budgeted_with(&plain, f_oo, 1e-9, 200, 0, 0.0);
+        let b = solve_ragged_budgeted_with(&shared, f_oo, 1e-9, 200, 0, 0.0);
+        assert_eq!(a.decision.path, MatvecPath::Indexed);
+        assert_eq!(b.decision.path, MatvecPath::Indexed);
+        assert!(a.solve.converged && a.solve.iterations > 3);
+        assert_eq!(a.solve.iterations, b.solve.iterations);
+        for (x, y) in a.solve.t.iter().zip(&b.solve.t) {
+            assert_eq!(x, y);
+        }
+        let ea = hylleraas_energy_and_residual(&plain, f_oo, None, &a.solve.t).unwrap();
+        let eb = hylleraas_energy_and_residual(&shared, f_oo, None, &b.solve.t).unwrap();
+        assert_eq!(ea.0.to_bits(), eb.0.to_bits());
+        assert_eq!(ea.1.to_bits(), eb.1.to_bits());
+        assert!(ea.0 < -0.1, "a real correlation energy, got {}", ea.0);
     }
 
     /// A chain of `no` occupieds one Bohr apart whose aux domain is the

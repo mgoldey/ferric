@@ -1,5 +1,6 @@
-//! MPI rank stripe of the integral-direct LMP2 assembly (strips, metric and
-//! pair fits; `DirectConfig::mpi`), checked under a real `mpirun`.
+//! MPI rank stripe of the integral-direct LMP2 (`DirectConfig::mpi`: strips,
+//! metric, pair fits, and the PCG solve over each rank's own pair blocks),
+//! checked under a real `mpirun`.
 //!
 //! Each rank runs the serial driver and the striped driver in the same
 //! process and compares them, then the ranks compare with each other. The

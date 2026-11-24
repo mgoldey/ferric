@@ -1,14 +1,21 @@
-//! Moving ragged pair blocks between MPI ranks.
+//! Moving the ragged pair system between MPI ranks.
 //!
-//! The integral-direct LMP2 pair fits stripe their domain groups across
-//! ranks ([`crate::lmp2_direct::DirectConfig::mpi`]), so after the fits each
-//! rank holds the blocks of its own pair slots only. The solve needs every
-//! block, because the occupied Fock couples pairs. This module carries the
-//! blocks across with two sum-reductions:
+//! The integral-direct LMP2 assembly stripes its domain groups across ranks
+//! ([`crate::lmp2_direct::DirectConfig::mpi`]), so after the fits each rank
+//! holds the blocks of its own pair slots only, and it keeps solving for
+//! those only ([`crate::ragged::RaggedShare`]). Two things still cross:
 //!
-//! 1. a per-slot length table (each slot has exactly one owner, the other
-//!    ranks contribute zero), and
-//! 2. one flat `f64` buffer each rank fills at its own slots' offsets.
+//! - **Skeletons, once.** The occupied Fock couples a rank's blocks to every
+//!   other pair's amplitudes, so the matvec needs each remote block's index
+//!   lists (to place its amplitudes) and the counters need its mask. A
+//!   skeleton is a block without its four `f64` arrays; the receiver holds
+//!   it as a hollow [`PairBlock`] (empty `fvv_aa`, `fvv_bb`, `j_blk`,
+//!   `denom`). [`gather_slots`] carries them with two sum-reductions: a
+//!   per-slot length table (each slot has one owner, the others add zero),
+//!   then flat `f64` buffers each rank fills at its own slots' offsets.
+//! - **Amplitude-shaped vectors, every PCG iteration.**
+//!   [`exchange_blocks`] fills the blocks a rank does not own from their
+//!   owners.
 //!
 //! A [`PairBlock`] is ragged and its shape at `eps > 0` comes out of the fit,
 //! which is why the lengths travel first. Indices and the mask ride as `f64`
@@ -49,8 +56,8 @@ fn position_map(dom: &[usize], n: usize) -> Option<Vec<usize>> {
 
 fn block_len(pb: &PairBlock) -> usize {
     let (na, nb) = (pb.da.len(), pb.db.len());
-    // da, db, then pat, j_blk, denom (na·nb each) and the two Fock squares.
-    BLOCK_HEADER + na + nb + 3 * na * nb + na * na + nb * nb
+    // da, db, then the mask
+    BLOCK_HEADER + na + nb + na * nb
 }
 
 /// Encoded length of a slot: one count element plus its blocks.
@@ -64,15 +71,11 @@ fn encode_block(pb: &PairBlock, out: &mut Vec<f64>) -> Result<(), FerricError> {
     // `position_map` gives.
     let shapes_ok = position_map(&pb.da, pb.pos_da.len()).as_ref() == Some(&pb.pos_da)
         && position_map(&pb.db, pb.pos_db.len()).as_ref() == Some(&pb.pos_db)
-        && pb.pat.len() == na * nb
-        && pb.fvv_aa.dim() == (na, na)
-        && pb.fvv_bb.dim() == (nb, nb)
-        && pb.j_blk.dim() == (na, nb)
-        && pb.denom.dim() == (na, nb);
+        && pb.pat.len() == na * nb;
     if !shapes_ok {
         return Err(FerricError::General(format!(
-            "ragged_transport: pair ({}, {}) has block shapes or position maps this \
-             transport cannot rebuild",
+            "ragged_transport: pair ({}, {}) has a mask or position maps this transport \
+             cannot rebuild",
             pb.i, pb.j
         )));
     }
@@ -81,10 +84,6 @@ fn encode_block(pb: &PairBlock, out: &mut Vec<f64>) -> Result<(), FerricError> {
         out.extend(idx.iter().map(|&v| v as f64));
     }
     out.extend(pb.pat.iter().map(|&b| f64::from(u8::from(b))));
-    // `iter()` walks in logical (row-major) order whatever the layout.
-    for arr in [&pb.fvv_aa, &pb.fvv_bb, &pb.j_blk, &pb.denom] {
-        out.extend(arr.iter().copied());
-    }
     Ok(())
 }
 
@@ -115,11 +114,6 @@ impl<'a> Reader<'a> {
     fn indices(&mut self, n: usize) -> Result<Vec<usize>, FerricError> {
         self.take(n)?.iter().map(|&v| to_index(v)).collect()
     }
-
-    fn matrix(&mut self, rows: usize, cols: usize) -> Result<Array2<f64>, FerricError> {
-        Array2::from_shape_vec((rows, cols), self.take(rows * cols)?.to_vec())
-            .map_err(|e| FerricError::General(format!("ragged_transport: {e}")))
-    }
 }
 
 /// An index that travelled as `f64`. Anything but a non-negative integer
@@ -146,20 +140,17 @@ fn decode_block(r: &mut Reader<'_>) -> Result<PairBlock, FerricError> {
     let pos_da = position_map(&da, npa).ok_or_else(out_of_range)?;
     let pos_db = position_map(&db, npb).ok_or_else(out_of_range)?;
     let pat = r.take(na * nb)?.iter().map(|&v| v != 0.0).collect();
-    let fvv_aa = r.matrix(na, na)?;
-    let fvv_bb = r.matrix(nb, nb)?;
-    let j_blk = r.matrix(na, nb)?;
-    let denom = r.matrix(na, nb)?;
+    let hollow = || Array2::zeros((0, 0));
     Ok(PairBlock {
         i,
         j,
         da,
         db,
         pat,
-        fvv_aa,
-        fvv_bb,
-        j_blk,
-        denom,
+        fvv_aa: hollow(),
+        fvv_bb: hollow(),
+        j_blk: hollow(),
+        denom: hollow(),
         pos_da,
         pos_db,
     })
@@ -316,6 +307,67 @@ pub(crate) fn gather_slots(
     Ok(())
 }
 
+/// End of the window of consecutive blocks starting at `start`: the longest
+/// run within [`REDUCE_CHUNK`] elements (at least one block).
+fn block_window_end(blocks: &[Array2<f64>], start: usize) -> usize {
+    let (mut end, mut len) = (start, 0usize);
+    while end < blocks.len() {
+        let add = blocks[end].len();
+        if end > start && len + add > REDUCE_CHUNK {
+            break;
+        }
+        len += add;
+        end += 1;
+    }
+    end
+}
+
+/// One window's flat buffer: the owned blocks' elements (logical order) at
+/// their offsets, zeros for the others.
+fn pack_blocks(blocks: &[Array2<f64>], owned: &[bool]) -> Vec<f64> {
+    let mut buf = Vec::with_capacity(blocks.iter().map(Array2::len).sum());
+    for (b, &own) in blocks.iter().zip(owned) {
+        if own {
+            buf.extend(b.iter().copied());
+        } else {
+            buf.resize(buf.len() + b.len(), 0.0);
+        }
+    }
+    buf
+}
+
+/// Write the reduced window back into the blocks this rank does not own.
+fn unpack_blocks(blocks: &mut [Array2<f64>], owned: &[bool], buf: &[f64]) {
+    let mut at = 0usize;
+    for (b, &own) in blocks.iter_mut().zip(owned) {
+        let n = b.len();
+        if !own {
+            for (v, &x) in b.iter_mut().zip(&buf[at..at + n]) {
+                *v = x;
+            }
+        }
+        at += n;
+    }
+}
+
+/// Fill every block of `blocks` this rank does not own with its owner's
+/// values, one window of blocks at a time. Every rank passes the same block
+/// shapes, each block has one owner, and a rank's non-owned blocks may hold
+/// anything on entry. Call from the rank's serial point; on a context with
+/// no MPI world the non-owned blocks come back zero.
+pub(crate) fn exchange_blocks(ctx: &ParallelContext, blocks: &mut [Array2<f64>], owned: &[bool]) {
+    let mut start = 0usize;
+    while start < blocks.len() {
+        let end = block_window_end(blocks, start);
+        let mut buf = pack_blocks(&blocks[start..end], &owned[start..end]);
+        for chunk in buf.chunks_mut(REDUCE_CHUNK) {
+            ctx.all_reduce_sum(chunk);
+        }
+        unpack_blocks(&mut blocks[start..end], &owned[start..end], &buf);
+        start = end;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,8 +461,10 @@ mod tests {
         }
     }
 
+    /// A skeleton keeps the pair, both index lists, the rebuilt position
+    /// maps and the mask, and arrives hollow.
     #[test]
-    fn a_decoded_block_keeps_every_field() {
+    fn a_decoded_block_keeps_its_indices_and_mask_and_is_hollow() {
         let pb = block(4, 9, 3, 2, 0.75);
         let slots = vec![Some(vec![pb.clone()])];
         let lens = slot_lengths(&slots);
@@ -424,11 +478,67 @@ mod tests {
         assert_eq!(got.pos_da, pb.pos_da);
         assert_eq!(got.pos_db, pb.pos_db);
         assert_eq!(got.pat, pb.pat);
-        assert_eq!(got.fvv_aa, pb.fvv_aa);
-        assert_eq!(got.fvv_bb, pb.fvv_bb);
-        assert_eq!(got.j_blk, pb.j_blk);
-        assert_eq!(got.denom, pb.denom);
-        assert!(got.j_blk.is_standard_layout());
+        for arr in [&got.fvv_aa, &got.fvv_bb, &got.j_blk, &got.denom] {
+            assert_eq!(arr.dim(), (0, 0));
+        }
+        assert!(!pb.j_blk.is_empty(), "the sender's block was not hollow");
+    }
+
+    /// Two simulated ranks exchange an amplitude-shaped vector: each ends up
+    /// with its own blocks untouched and the other's blocks bit for bit,
+    /// whatever its non-owned blocks held before and whatever their layout.
+    #[test]
+    fn exchanged_blocks_are_the_owners_values() {
+        let shapes = [(2usize, 3usize), (1, 1), (4, 2), (3, 3)];
+        let truth: Vec<Array2<f64>> = shapes
+            .iter()
+            .enumerate()
+            .map(|(k, &(r, c))| {
+                Array2::from_shape_fn((r, c), |(a, b)| 1.0 + k as f64 + 0.25 * (a * c + b) as f64)
+            })
+            .collect();
+        let owned = [
+            vec![true, false, true, false],
+            vec![false, true, false, true],
+        ];
+        let mut ranks: Vec<Vec<Array2<f64>>> = owned
+            .iter()
+            .map(|own| {
+                truth
+                    .iter()
+                    .zip(own)
+                    .map(|(b, &o)| {
+                        if o {
+                            b.clone()
+                        } else {
+                            // stale values, column-major
+                            Array2::from_elem((b.ncols(), b.nrows()), -7.0).reversed_axes()
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let bufs: Vec<Vec<f64>> = ranks
+            .iter()
+            .zip(&owned)
+            .map(|(b, o)| pack_blocks(b, o))
+            .collect();
+        let buf = summed(&bufs);
+        for (blocks, own) in ranks.iter_mut().zip(&owned) {
+            unpack_blocks(blocks, own, &buf);
+            for (got, want) in blocks.iter().zip(&truth) {
+                assert_eq!(got, want);
+            }
+        }
+        // the windows cover every block once
+        let (mut start, mut n) = (0usize, 0usize);
+        while start < truth.len() {
+            let end = block_window_end(&truth, start);
+            assert!(end > start);
+            n += end - start;
+            start = end;
+        }
+        assert_eq!(n, truth.len());
     }
 
     /// A slot no rank fitted stays empty for the caller to report.

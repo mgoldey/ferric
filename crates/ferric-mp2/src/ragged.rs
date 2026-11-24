@@ -43,6 +43,26 @@ pub struct Ragged {
     pub by_i: HashMap<usize, Vec<usize>>,
     /// Pairs that share occupied index j → indices into `pairs`.
     pub by_j: HashMap<usize, Vec<usize>>,
+    /// `Some` when the system is split over MPI ranks. `None` is the whole
+    /// system on this process.
+    pub share: Option<RaggedShare>,
+}
+
+/// One rank's share of a ragged system split over MPI ranks.
+///
+/// Every rank lists every block, so the index maps and the masks are whole,
+/// but a block this rank does not own is hollow: its `fvv_aa`, `fvv_bb`,
+/// `j_blk` and `denom` are empty. The PCG ([`solve_ragged_budgeted_steered`]
+/// and its callers) then keeps its vectors over the owned blocks only,
+/// exchanges the search direction each iteration, and sums its dot products
+/// over the ranks. Only the indexed matvec reads a share
+/// ([`matvec_planned`] refuses one).
+#[derive(Debug, Clone)]
+pub struct RaggedShare {
+    /// The MPI context the ranks reduce over.
+    pub ctx: ferric_core::parallel::ParallelContext,
+    /// Per block of `pairs`: this rank holds its integrals and solves for it.
+    pub owned: Vec<bool>,
 }
 
 impl PairBlock {
@@ -70,7 +90,77 @@ impl Ragged {
             by_i.entry(pb.i).or_default().push(p);
             by_j.entry(pb.j).or_default().push(p);
         }
-        Ragged { pairs, by_i, by_j }
+        Ragged {
+            pairs,
+            by_i,
+            by_j,
+            share: None,
+        }
+    }
+
+    /// Whether this rank holds block `p`'s integrals (always, without a
+    /// share).
+    pub fn owns(&self, p: usize) -> bool {
+        self.share.as_ref().is_none_or(|s| s.owned[p])
+    }
+
+    /// A sum this rank took over its owned blocks, summed over the ranks
+    /// (itself without a share). Call from the rank's serial point.
+    pub fn sum_over_ranks(&self, local: f64) -> f64 {
+        match &self.share {
+            None => local,
+            Some(s) => {
+                let mut v = [local];
+                s.ctx.all_reduce_sum(&mut v);
+                v[0]
+            }
+        }
+    }
+
+    /// [`dot_blocks`] over the whole system: over the owned blocks, summed
+    /// over the ranks.
+    pub fn dot(&self, x: &[Array2<f64>], y: &[Array2<f64>]) -> f64 {
+        match &self.share {
+            None => dot_blocks(x, y),
+            Some(s) => {
+                let local = x
+                    .iter()
+                    .zip(y)
+                    .zip(&s.owned)
+                    .filter(|(_, &own)| own)
+                    .map(|((a, b), _)| (a * b).sum())
+                    .sum();
+                self.sum_over_ranks(local)
+            }
+        }
+    }
+
+    /// A zero amplitude vector over the owned blocks (hollow elsewhere).
+    fn owned_zeros(&self) -> Vec<Array2<f64>> {
+        self.pairs
+            .iter()
+            .enumerate()
+            .map(|(p, pb)| {
+                if self.owns(p) {
+                    Array2::zeros((pb.da.len(), pb.db.len()))
+                } else {
+                    Array2::zeros((0, 0))
+                }
+            })
+            .collect()
+    }
+
+    /// Make `v` whole on this rank: give every block it does not own its
+    /// full shape and fill it with its owner's values. Nothing without a
+    /// share.
+    fn spread(&self, v: &mut [Array2<f64>]) {
+        let Some(s) = &self.share else { return };
+        for ((b, pb), &own) in v.iter_mut().zip(&self.pairs).zip(&s.owned) {
+            if !own && b.dim() != (pb.da.len(), pb.db.len()) {
+                *b = Array2::zeros((pb.da.len(), pb.db.len()));
+            }
+        }
+        crate::ragged_transport::exchange_blocks(&s.ctx, v, &s.owned);
     }
 
     /// Heap bytes the ragged system holds: every block's storage, the
@@ -111,10 +201,30 @@ pub const PCG_RESIDENT_VECTORS: usize = 5;
 /// vectors, and the CG coefficient trace (two f64 per iteration, at most
 /// `max_iter`). Per-task matvec temporaries (one block per rayon worker)
 /// are not counted.
+///
+/// Under a [`RaggedShare`] the vectors cover the owned blocks, and two of
+/// them (the search direction during the solve, the amplitudes at its end)
+/// also the blocks of the other ranks.
 pub fn solve_resident_bytes(rg: &Ragged, max_iter: usize) -> usize {
-    rg.heap_bytes()
-        + PCG_RESIDENT_VECTORS * amplitude_vector_bytes(rg)
-        + 2 * std::mem::size_of::<f64>() * max_iter
+    rg.heap_bytes() + pcg_vector_bytes(rg) + 2 * std::mem::size_of::<f64>() * max_iter
+}
+
+/// Bytes of the PCG iteration vectors: [`PCG_RESIDENT_VECTORS`] whole ones,
+/// or under a [`RaggedShare`] that many over the owned blocks plus two over
+/// the other ranks' blocks.
+fn pcg_vector_bytes(rg: &Ragged) -> usize {
+    let whole = amplitude_vector_bytes(rg);
+    let Some(s) = &rg.share else {
+        return PCG_RESIDENT_VECTORS * whole;
+    };
+    let own: usize = rg
+        .pairs
+        .iter()
+        .zip(&s.owned)
+        .filter(|(_, &o)| o)
+        .map(|(pb, _)| pb.da.len() * pb.db.len() * std::mem::size_of::<f64>())
+        .sum();
+    PCG_RESIDENT_VECTORS * own + 2 * whole.saturating_sub(own)
 }
 
 /// THE admission gate for the gather plan: the plan is built only when it
@@ -779,17 +889,28 @@ fn budgeted_steered_rhs<S>(
 where
     S: FnMut(f64) -> Option<f64>,
 {
-    let plan_bytes = SolvePlan::bytes_for_with_threshold(rg, f_oo, fvv_rho_star);
     let resident_bytes = solve_resident_bytes(rg, max_iter);
-    let Some(charge) = admit_plan(plan_bytes, resident_bytes, budget_bytes) else {
-        eprintln!(
-            "  ragged PCG: gather plan ({:.3} GB) + resident solve ({:.3} GB) over the memory \
-             budget ({:.3} GB) or the pool; using the plan-free indexed matvec (same result, \
-             slower)",
-            plan_bytes as f64 / 1e9,
-            resident_bytes as f64 / 1e9,
-            budget_bytes as f64 / 1e9
-        );
+    // A system split over ranks runs the indexed matvec: the gather plan is
+    // built over every block and would need them all here.
+    let plan_bytes = match rg.share {
+        None => SolvePlan::bytes_for_with_threshold(rg, f_oo, fvv_rho_star),
+        Some(_) => 0,
+    };
+    let admitted = match rg.share {
+        None => admit_plan(plan_bytes, resident_bytes, budget_bytes),
+        Some(_) => None,
+    };
+    let Some(charge) = admitted else {
+        if rg.share.is_none() {
+            eprintln!(
+                "  ragged PCG: gather plan ({:.3} GB) + resident solve ({:.3} GB) over the \
+                 memory budget ({:.3} GB) or the pool; using the plan-free indexed matvec \
+                 (same result, slower)",
+                plan_bytes as f64 / 1e9,
+                resident_bytes as f64 / 1e9,
+                budget_bytes as f64 / 1e9
+            );
+        }
         let solve = pcg_steered(
             rg,
             rhs,
@@ -967,18 +1088,17 @@ where
     S: FnMut(f64) -> Option<f64>,
 {
     use ndarray::Zip;
-    let zeros: Vec<Array2<f64>> = rg
-        .pairs
-        .iter()
-        .map(|pb| Array2::<f64>::zeros((pb.da.len(), pb.db.len())))
-        .collect();
+    let zeros = rg.owned_zeros();
     assert_eq!(
         rhs.len(),
         rg.pairs.len(),
         "ragged PCG: one rhs block per pair"
     );
     let mut r = rhs;
-    for (b, pb) in r.iter_mut().zip(&rg.pairs) {
+    for (p, (b, pb)) in r.iter_mut().zip(&rg.pairs).enumerate() {
+        if !rg.owns(p) {
+            continue;
+        }
         assert_eq!(
             b.dim(),
             (pb.da.len(), pb.db.len()),
@@ -986,11 +1106,13 @@ where
         );
         apply_pattern(b, &pb.pat, pb.db.len());
     }
-    let bnorm = dot_blocks(&r, &r).sqrt();
+    let bnorm = rg.dot(&r, &r).sqrt();
     let mut trace = CgTrace::default();
     if bnorm == 0.0 {
+        let mut t = zeros;
+        rg.spread(&mut t);
         return RaggedSolve {
-            t: zeros,
+            t,
             iterations: 0,
             relres: 0.0,
             converged: true,
@@ -1010,9 +1132,12 @@ where
     let mut t = zeros.clone();
     let mut z = zeros.clone();
     precond_into(&r, &mut z);
+    // Under a share `p` is the one vector every rank holds whole: the
+    // matvec reads the other ranks' blocks of it.
     let mut p = z.clone();
+    rg.spread(&mut p);
     let mut ap = zeros;
-    let mut rz = dot_blocks(&r, &z);
+    let mut rz = rg.dot(&r, &z);
     let (mut it, mut relres) = (0, 1.0);
     let mut target = rtol;
     let converged = loop {
@@ -1020,25 +1145,28 @@ where
         while it < max_iter {
             if it > 0 {
                 precond_into(&r, &mut z);
-                let rz_new = dot_blocks(&r, &z);
+                let rz_new = rg.dot(&r, &z);
                 let beta = rz_new / rz;
                 trace.betas.push(beta);
-                for (pk, zk) in p.iter_mut().zip(&z) {
-                    Zip::from(pk)
-                        .and(zk)
-                        .for_each(|pv, &zv| *pv = zv + beta * *pv);
+                for (k, (pk, zk)) in p.iter_mut().zip(&z).enumerate() {
+                    if rg.owns(k) {
+                        Zip::from(pk)
+                            .and(zk)
+                            .for_each(|pv, &zv| *pv = zv + beta * *pv);
+                    }
                 }
+                rg.spread(&mut p);
                 rz = rz_new;
             }
             it += 1;
             matvec_into(&p, &mut ap, &mut flops_total);
-            let alpha = rz / dot_blocks(&p, &ap);
+            let alpha = rz / rg.dot(&p, &ap);
             trace.alphas.push(alpha);
-            for k in 0..p.len() {
+            for k in (0..p.len()).filter(|&k| rg.owns(k)) {
                 t[k].scaled_add(alpha, &p[k]);
                 r[k].scaled_add(-alpha, &ap[k]);
             }
-            relres = dot_blocks(&r, &r).sqrt() / bnorm;
+            relres = rg.dot(&r, &r).sqrt() / bnorm;
             if relres < target {
                 reached = true;
                 break;
@@ -1053,6 +1181,9 @@ where
         }
     };
     let flops_per_mv = if it > 0 { flops_total / it as u64 } else { 0 };
+    // The energy's matvec reads every block of the amplitudes.
+    drop((r, z, ap, p));
+    rg.spread(&mut t);
     RaggedSolve {
         t,
         iterations: it,
@@ -1100,6 +1231,11 @@ pub fn matvec_indexed_into(
         .zip(rg.pairs.par_iter())
         .enumerate()
         .map(|(p_idx, (slot, pb))| {
+            if !rg.owns(p_idx) {
+                // another rank's output block
+                *slot = Array2::zeros((0, 0));
+                return 0;
+            }
             let (na, nb) = (pb.da.len(), pb.db.len());
             let mut fl = (na * na * nb + na * nb * nb) as u64;
             let mut r = pb.fvv_aa.dot(&t[p_idx]);
@@ -1323,6 +1459,11 @@ pub fn matvec_planned(
     flops: &mut u64,
 ) {
     use rayon::prelude::*;
+    assert!(
+        rg.share.is_none(),
+        "matvec_planned: the gather plan covers every block; a system split over ranks runs \
+         the indexed matvec"
+    );
     let fl: u64 = out
         .par_iter_mut()
         .enumerate()
@@ -1765,6 +1906,7 @@ mod tests {
             pairs: vec![pb],
             by_i: HashMap::from([(0, vec![0])]),
             by_j: HashMap::from([(0, vec![0])]),
+            share: None,
         }
     }
 
@@ -1865,6 +2007,7 @@ mod tests {
             pairs: vec![pb],
             by_i: HashMap::from([(0, vec![0])]),
             by_j: HashMap::from([(1, vec![0])]),
+            share: None,
         };
         assert!(check_swap_closed(&rg(pb.clone())).is_ok());
         let off = (0..n * n)
@@ -2214,6 +2357,7 @@ mod tests {
             pairs: some,
             by_i: HashMap::from([(0, vec![0]), (1, vec![1])]),
             by_j: HashMap::from([(1, vec![0]), (0, vec![1])]),
+            share: None,
         };
         check_swap_closed(&rg).unwrap();
         // vacuous κ: every element with a nonzero dressed integral is kept
