@@ -21,7 +21,9 @@
 //! runs: `AmplitudeLmp2Config::production` with `DirectConfig::production()`.
 //! Flags (all optional): `--xyz PATH --basis NAME --aux NAME --eps X
 //! --frozen-core N --aux-radius BOHR --virt-radius BOHR|none --ao-tail X
-//! --schwarz-skip X --batch-merge N --kappa X|none`.
+//! --schwarz-skip X --batch-merge N --kappa X|none --slab-mib N --scratch-mib N`
+//! (the last two set `DirectConfig::slab_budget_bytes` and
+//! `scratch_budget_bytes` in MiB).
 //!
 //! Each rank's pool has `RAYON_NUM_THREADS` threads if that is set, otherwise
 //! `ParallelContext::rayon_threads()` (physical cores per local rank). Set
@@ -58,7 +60,11 @@
 //! LMP2 call), the `DirectStats` stage timers (`t_maps_s`, `t_eri3_s` with its
 //! thread-second parts, `t_metric_s`, `t_pairs_s`, `t_loc_s`), the
 //! `StageTimings` (`t_spaces_s`, `t_loc_s`, `t_assembly_s`, `t_solve_s`),
-//! `n_pair_groups` and `strip_bytes_total` on this rank, CG iterations, and
+//! the stage-3 slab count, largest slab and slab cap (`n_eri3_slabs`,
+//! `eri3_slab_bytes_max`, `stage3_scratch_bytes`),
+//! `n_pair_groups`, the stage-5 group schedule (`group_concurrency`,
+//! `group_in_flight_peak`, `n_group_waves`), the resolved memory budget
+//! (`memory_budget_bytes`) and `strip_bytes_total` on this rank, CG iterations, and
 //! peak RSS in bytes (`VmHWM`, reset just before the call). Rank 0 also prints
 //! a summary: slowest rank's wall, per-stage sums over ranks, and the
 //! cross-rank energy spread.
@@ -133,6 +139,8 @@ fn parse_args() -> Args {
             "--schwarz-skip" => a.maps.schwarz_skip = parse_opt(&flag, &v),
             "--batch-merge" => a.maps.batch_merge = parse_opt(&flag, &v),
             "--kappa" => a.maps.virt_schwarz_kappa = parse_some(&flag, &v),
+            "--slab-mib" => a.maps.slab_budget_bytes = parse_opt::<usize>(&flag, &v) << 20,
+            "--scratch-mib" => a.maps.scratch_budget_bytes = parse_opt::<usize>(&flag, &v) << 20,
             _ => panic!("unknown flag {flag} (see the module doc)"),
         }
     }
@@ -225,6 +233,9 @@ fn run(ctx: &ParallelContext, args: &Args) -> bool {
         );
     }
 
+    // The budget the call resolves (auto: a fraction of available RAM),
+    // read just before it.
+    let budget = ferric_mp2::rimp2::eri3_budget_bytes(cfg.eri3_budget_bytes);
     reset_hwm();
     let t0 = Instant::now();
     let (res, st) =
@@ -249,6 +260,9 @@ fn run(ctx: &ParallelContext, args: &Args) -> bool {
             "t_maps_s": st.t_maps_s,
             "t_eri3_s": st.t_eri3_s,
             "t_eri3_setup_s": st.t_eri3_setup_s,
+            "n_eri3_slabs": st.n_eri3_slabs,
+            "eri3_slab_bytes_max": st.eri3_slab_bytes_max,
+            "stage3_scratch_bytes": st.memory.stage3_scratch_bytes,
             "t_eri3_fill_thread_s": st.t_eri3_fill_thread_s,
             "t_eri3_transform_thread_s": st.t_eri3_transform_thread_s,
             "t_eri3_eval_thread_s": st.t_eri3_eval_thread_s,
@@ -264,6 +278,10 @@ fn run(ctx: &ParallelContext, args: &Args) -> bool {
             "t_solve_s": tm.t_solve_s,
         },
         "n_pair_groups": st.n_pair_groups,
+        "group_concurrency": st.group_concurrency,
+        "group_in_flight_peak": st.group_in_flight_peak,
+        "n_group_waves": st.n_group_waves,
+        "memory_budget_bytes": budget,
         "strip_bytes_total": st.strip_bytes_total,
         "cg_iterations": res.cg_iterations,
         "peak_rss_bytes": hwm,

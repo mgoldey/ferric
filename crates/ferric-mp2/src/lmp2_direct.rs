@@ -89,6 +89,15 @@ pub const DIRECT_DEFAULT_AO_TAIL: f64 = 1e-4;
 pub const DIRECT_DEFAULT_SCHWARZ_SKIP: f64 = 1e-5;
 /// Production default of [`DirectConfig::batch_merge`].
 pub const DIRECT_DEFAULT_BATCH_MERGE: usize = 4;
+/// Default of [`DirectConfig::scratch_budget_bytes`]: 2 GiB.
+pub const DIRECT_DEFAULT_SCRATCH_BUDGET_BYTES: usize = 2usize << 30;
+/// Default of [`DirectConfig::slab_budget_bytes`]: 64 MiB per node. Measured
+/// (release, 1 rank x 6 threads unbound, 6-31G / cc-pVDZ-RI, eps 1e-4,
+/// production maps, two runs at the deciding caps): the alkane_20 stage-3
+/// wall did not depend on the cap (4.9-5.9 s from 1 MiB to 2 GiB, 4.9/5.3 s
+/// at 64 MiB, 5.6/5.9 s at 2 GiB), while the stage-3 peak resident set fell
+/// from 2.3 GB at 2 GiB to 0.35 GB at 64 MiB.
+pub const DIRECT_DEFAULT_SLAB_BUDGET_BYTES: usize = 64usize << 20;
 
 /// Locality knobs of the integral-direct path. Every knob has a trivial
 /// limit in which it is a no-op (the exactness-anchor configuration).
@@ -123,12 +132,26 @@ pub struct DirectConfig {
     /// float-reassociation floor (anchored ≤1e-10), not bit-identically —
     /// the per-occupied transform runs over the larger batch union.
     pub batch_merge: usize,
-    /// GLOBAL integral-slab scratch cap (bytes), shared across all
-    /// concurrently-running batch workers — each worker slabs under
-    /// budget/n_workers, so the co-resident scratch never exceeds this
-    /// (the ferric-batch N×-overcommit lesson: a per-worker budget is a
-    /// budget on nothing).
+    /// GLOBAL scratch cap (bytes) of the stage-3 aux-major pass (it sizes the
+    /// tasks in flight), the κ screen's own-domain `W` store (kept only when
+    /// it fits), and the per-group scratch of the fitted-pair assembly. Every
+    /// user splits it over its concurrent workers, so the co-resident scratch
+    /// never exceeds it (the ferric-batch N×-overcommit lesson: a per-worker
+    /// budget is a budget on nothing). It also bounds
+    /// [`Self::slab_budget_bytes`] from above.
     pub scratch_budget_bytes: usize,
+    /// Integral-slab scratch cap (bytes) of the stage-3 batch pass
+    /// ([`Eri3Pass::Batches`]), per node and shared across the batch workers:
+    /// each worker slabs under `cap / n_workers`. Under a rank stripe
+    /// ([`Self::mpi`]) each rank takes `1 / (ranks on this node)` of it, so
+    /// the node's slabs do not multiply by the rank count (see
+    /// [`batch_slab_cap`]). It is further capped by
+    /// [`Self::scratch_budget_bytes`] and by what the memory budget leaves
+    /// beside the strips. It changes how many slabs a batch is cut into, and
+    /// the strips only at round-off (the virtual GEMM's row count follows the
+    /// slab). Default
+    /// [`DIRECT_DEFAULT_SLAB_BUDGET_BYTES`].
+    pub slab_budget_bytes: usize,
     /// ε-linked Schwarz virtual-candidate screen (prototype-validated GO,
     /// WIKI-APPEND-eps-linked-maps.md): with `Some(kappa)` and ε > 0, the
     /// pair candidate set C_ij = V_i ∪ V_j keeps virtual `a` iff
@@ -217,7 +240,8 @@ impl Default for DirectConfig {
             ao_tail: 0.0,
             schwarz_skip: 0.0,
             batch_merge: 1,
-            scratch_budget_bytes: 2usize << 30,
+            scratch_budget_bytes: DIRECT_DEFAULT_SCRATCH_BUDGET_BYTES,
+            slab_budget_bytes: DIRECT_DEFAULT_SLAB_BUDGET_BYTES,
             virt_schwarz_kappa: None,
             split_eri3_timers: false,
             eri3_pass: Eri3Pass::Batches,
@@ -405,8 +429,10 @@ pub struct DirectMemoryEstimate {
     pub strips_bytes: usize,
     /// Domain-restricted 2-center metric blocks.
     pub metric_bytes: usize,
-    /// Stage-3 integral-slab scratch cap actually used (the configured
-    /// `scratch_budget_bytes`, lowered to what the budget leaves beside `S`).
+    /// Stage-3 scratch cap actually used by this process: on the batch pass
+    /// the slab cap ([`DirectConfig::slab_budget_bytes`] over the ranks on
+    /// the node), on the aux-major pass `scratch_budget_bytes`; either one
+    /// lowered to what the budget leaves beside `S`.
     pub stage3_scratch_bytes: usize,
     /// The ragged pair system, `R`.
     pub pair_block_bytes: usize,
@@ -471,6 +497,42 @@ struct SolveGate {
 /// one aux shell at a time).
 fn stage3_scratch(configured: usize, budget: usize, strips: usize) -> usize {
     configured.min(budget.saturating_sub(strips).max(1))
+}
+
+/// Ranks of a `world`-rank stripe that share this node, given the launcher's
+/// node-local rank count (`None`: no recognised launcher variable). An
+/// unrecognised launcher counts every rank as local: that over-divides the
+/// slab budget on a multi-node run (more, smaller slabs) rather than
+/// over-committing the node.
+fn ranks_sharing_node(world: usize, launcher_local: Option<usize>) -> usize {
+    if world <= 1 {
+        return 1;
+    }
+    launcher_local.map_or(world, |l| l.clamp(1, world))
+}
+
+/// The launcher's node-local rank count, `None` when no variable that
+/// [`ferric_core::parallel::local_ranks_per_node_with`] reads is set (its own
+/// fallback of 1 would otherwise be indistinguishable from one rank per node).
+fn launcher_local_ranks() -> Option<usize> {
+    let seen = std::cell::Cell::new(false);
+    let n = ferric_core::parallel::local_ranks_per_node_with(|k| {
+        let v = std::env::var(k).ok();
+        seen.set(seen.get() || v.is_some());
+        v
+    });
+    seen.get().then_some(n)
+}
+
+/// This process's batch-pass slab cap: [`DirectConfig::slab_budget_bytes`]
+/// over the ranks sharing the node (1 without a multi-rank stripe), never
+/// above `scratch` (the stage-3 scratch after the memory gate), at least one
+/// byte (one aux shell per slab).
+fn batch_slab_cap(dcfg: &DirectConfig, scratch: usize) -> usize {
+    let ranks = dcfg
+        .mpi
+        .map_or(1, |c| ranks_sharing_node(c.size, launcher_local_ranks()));
+    (dcfg.slab_budget_bytes / ranks).min(scratch).max(1)
 }
 
 /// The typed refusal: names the estimate, the budget and the knobs.
@@ -1201,7 +1263,8 @@ struct BatchCtx<'a> {
     /// triple cut is on.
     qpair: Option<&'a (Array2<f64>, Vec<f64>)>,
     schwarz_skip: f64,
-    /// Per-worker share of the GLOBAL scratch budget, bytes.
+    /// Per-worker share of the process's batch-pass slab cap
+    /// ([`batch_slab_cap`]), bytes.
     worker_budget: usize,
     /// [`DirectConfig::split_eri3_timers`].
     split_timers: bool,
@@ -2554,7 +2617,11 @@ fn strips_and_metric(
         scratch_budget_bytes =
             stage3_scratch(scratch_budget_bytes, g.budget_bytes, est.strips_bytes);
     }
-    est.stage3_scratch_bytes = scratch_budget_bytes;
+    let slab_cap = batch_slab_cap(dcfg, scratch_budget_bytes);
+    est.stage3_scratch_bytes = match dcfg.eri3_pass {
+        Eri3Pass::Batches => slab_cap,
+        Eri3Pass::AuxMajor => scratch_budget_bytes,
+    };
     stats.memory = est;
     mem_trace(
         "preflight",
@@ -2620,7 +2687,7 @@ fn strips_and_metric(
         virt_supp: &virt_supp,
         qpair: qpair.as_ref(),
         schwarz_skip: dcfg.schwarz_skip,
-        worker_budget: dcfg.scratch_budget_bytes / n_workers,
+        worker_budget: slab_cap / n_workers,
         split_timers: dcfg.split_eri3_timers,
     };
     let batch_out: Vec<BatchOut> = match dcfg.eri3_pass {
@@ -2637,7 +2704,7 @@ fn strips_and_metric(
         "stage3",
         &[
             ("strips", stats.strip_bytes_total),
-            ("scratch_cap", dcfg.scratch_budget_bytes),
+            ("scratch_cap", stats.memory.stage3_scratch_bytes),
             ("slab_max", stats.eri3_slab_bytes_max),
             ("workers_x_slab_max", n_workers * stats.eri3_slab_bytes_max),
         ],
@@ -4346,6 +4413,96 @@ mod stage_b_tests {
             assert_eq!(st.aux_major_concurrency, want);
             assert_eq!(strip_rel_diff(&base, &s), 0.0, "t={threads} b={budget}");
         }
+    }
+
+    /// The batch pass's strips do not depend on the slab cap beyond rounding:
+    /// an ample cap (one slab per batch), the production default, a cap a few
+    /// slabs wide and a one-byte cap (one aux shell per slab) give the same
+    /// strips, through strictly more slabs as the cap shrinks. Not bitwise:
+    /// the virtual GEMM's row count follows the slab, so BLAS blocks the
+    /// k-sums differently (measured here: at most a few 1e-16 relative,
+    /// printed below); 1e-13 is the aux-major-vs-batches bar of
+    /// `aux_major_strips_match_batches`, and a misplaced row or a lost slab
+    /// is O(1). The scratch cap bounds the slab cap from above, so a
+    /// one-byte scratch cap is a one-byte slab cap too.
+    #[test]
+    fn batch_strips_ignore_the_slab_cap() {
+        let c = aux_case(4);
+        let op = Operator::coulomb();
+        let run = |slab: usize, scratch: usize| {
+            let dcfg = DirectConfig {
+                slab_budget_bytes: slab,
+                scratch_budget_bytes: scratch,
+                ..production(Eri3Pass::Batches, 4)
+            };
+            aux_strips(&c, op, 0.7, &dcfg)
+        };
+        let ample = 1usize << 40;
+        let (base, s_ample) = run(ample, ample);
+        assert_eq!(s_ample.n_eri3_slabs, s_ample.n_batches);
+        let workers = rayon::current_num_threads().min(s_ample.n_batches).max(1);
+        let few = workers * s_ample.eri3_slab_bytes_max / 3;
+        let mut prev = s_ample.n_eri3_slabs;
+        for (slab, scratch) in [
+            (DIRECT_DEFAULT_SLAB_BUDGET_BYTES, ample),
+            (few, ample),
+            (1, ample),
+            (ample, 1),
+        ] {
+            let (s, st) = run(slab, scratch);
+            let rel = strip_rel_diff(&base, &s);
+            eprintln!(
+                "slab {slab} scratch {scratch}: {} slabs, rel {rel:.2e}",
+                st.n_eri3_slabs
+            );
+            assert!(rel <= 1e-13, "slab {slab} scratch {scratch}: rel {rel:e}");
+            assert!(
+                st.n_eri3_slabs >= prev,
+                "slab {slab}: {} slabs",
+                st.n_eri3_slabs
+            );
+            if slab == few || slab == 1 {
+                assert!(
+                    st.n_eri3_slabs > prev,
+                    "slab {slab}: blocking never engaged"
+                );
+            }
+            prev = st.n_eri3_slabs;
+        }
+    }
+
+    /// The node's slab budget is split over the ranks sharing the node: the
+    /// launcher's local count when it sets one, every rank otherwise.
+    #[test]
+    fn slab_budget_splits_over_ranks_on_the_node() {
+        assert_eq!(ranks_sharing_node(1, None), 1);
+        assert_eq!(ranks_sharing_node(1, Some(4)), 1);
+        assert_eq!(ranks_sharing_node(4, None), 4);
+        assert_eq!(ranks_sharing_node(4, Some(2)), 2);
+        assert_eq!(ranks_sharing_node(4, Some(8)), 4);
+        assert_eq!(ranks_sharing_node(4, Some(0)), 1);
+        let dcfg = |size: usize| DirectConfig {
+            slab_budget_bytes: 1200,
+            mpi: Some(ParallelContext::for_rank(0, size)),
+            ..DirectConfig::default()
+        };
+        // one rank, or no context: the whole budget, capped by the scratch
+        assert_eq!(batch_slab_cap(&dcfg(1), usize::MAX), 1200);
+        assert_eq!(
+            batch_slab_cap(
+                &DirectConfig {
+                    mpi: None,
+                    ..dcfg(1)
+                },
+                500
+            ),
+            500
+        );
+        let local = launcher_local_ranks();
+        assert_eq!(
+            batch_slab_cap(&dcfg(3), usize::MAX),
+            1200 / ranks_sharing_node(3, local)
+        );
     }
 
     /// The budget limits the tasks really in flight, not just the number the

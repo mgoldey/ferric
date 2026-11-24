@@ -411,11 +411,20 @@ amount per CH$_2$ is constant.
   columns (`strip_rows_mean`, `strip_cols_max`). The strip sizes are the
   locality claim, so the code reports them rather than leaving them to be
   inferred.
-- The stage-3 integral-slab scratch has one global cap
-  (`DirectConfig::scratch_budget_bytes`, 2 GiB by default), shared by the
-  batch workers. Each worker slabs under the budget divided by the number
-  of workers, so the co-resident scratch never exceeds the cap. A
-  per-worker budget would not bound the total.
+- The stage-3 integral slabs of the batch pass have one cap per node
+  (`DirectConfig::slab_budget_bytes`, 64 MiB by default), shared by the
+  batch workers. Each worker slabs under the cap divided by the number of
+  workers, so the co-resident slabs never exceed it; a per-worker budget
+  would not bound the total. Under an MPI stripe each rank takes the cap
+  divided by the ranks on its node (all ranks when the launcher does not
+  say), so the node's slabs do not grow with the rank count. The slab size
+  changes the strips only at round-off. Smaller slabs cost no time: at
+  C20 (6-31G, 6 threads) stage 3 took 4.9–5.9 s at every cap from 1 MiB to 2 GiB, while its
+  resident set fell from 2.3 GB at 2 GiB to 0.35 GB at 64 MiB.
+- `DirectConfig::scratch_budget_bytes` (2 GiB by default) is the cap of the
+  other stage-3 and stage-5 scratch: the aux-major pass, the κ screen's
+  own-domain store and the fitted pair assembly. It also bounds the slab
+  cap from above.
 - The opt-in exact reference still forms the global tensor. Only the
   reference makes a run not reduced-cost.
 

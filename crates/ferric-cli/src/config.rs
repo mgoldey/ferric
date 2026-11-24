@@ -7178,6 +7178,7 @@ mod compat_guard_tests {
                 d.batch_merge,
                 d.virt_schwarz_kappa,
                 d.scratch_budget_bytes,
+                d.slab_budget_bytes,
                 d.eri3_pass,
             ),
             (
@@ -7188,6 +7189,7 @@ mod compat_guard_tests {
                 p.batch_merge,
                 p.virt_schwarz_kappa,
                 p.scratch_budget_bytes,
+                p.slab_budget_bytes,
                 p.eri3_pass,
             )
         );
