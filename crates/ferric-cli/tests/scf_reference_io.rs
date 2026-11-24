@@ -396,7 +396,17 @@ fn the_keys_are_refused_where_no_shared_reference_is_solved() {
         ("uhf", bare_oh("uhf", &read_key(&file)), "kind = \"uhf\""),
         ("rohf", bare_oh("rohf", &save), "kind = \"rohf\""),
         ("double_hybrid", bare("b2plyp", &save), "save_reference"),
-        ("casscf", bare("casscf", &read_key(&file)), "read_reference"),
+        (
+            "casscf",
+            bare(
+                "casscf",
+                &format!(
+                    "{}[cas]\nn_active = 2\nn_elec_active = [1, 1]\n",
+                    read_key(&file)
+                ),
+            ),
+            "read_reference",
+        ),
         (
             "cell",
             format!(
@@ -610,6 +620,22 @@ fn a_reference_the_file_cannot_store_is_refused_before_the_scf() {
         assert!(e.contains("COSX final-grid pass"), "{e}");
         assert!(!file.exists(), "no file is written");
     }
+    // Polarizable embedding: today the QM/MM validator already refuses it
+    // on every kind these keys admit; `refuse_unstorable` holds if it widens.
+    let thole = "[qmmm]\npqr = \"testdata/molecules/water_thole_sites.pqr\"\n\
+                 qm_indices = [0, 1, 2]\npolarizabilities_angstrom3 = [0.0, 0.0, 0.0, \
+                 0.0740923557432, 0.0740923557432, 0.163003182635]\nthole_a = 2.1304\n";
+    let e = refused(
+        "polarizable_save",
+        &input(
+            WATER,
+            "sto-3g",
+            "rimp2",
+            &format!("{}{thole}", path_key("save_reference", &file)),
+        ),
+    );
+    assert!(e.contains("polarizable"), "{e}");
+    assert!(!file.exists(), "no file is written");
     // Without the final pass, COSX exchange is storable.
     ok(
         "cosx_no_final_save",

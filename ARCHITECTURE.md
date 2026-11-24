@@ -854,36 +854,51 @@ Done:
 -  Reference SCF reuse across runs (profiling-audit lead 4): CLI
    `[scf] save_reference = "path"` writes the converged reference SCF of a
    correlated kind (`task = "energy"`) as a `ferric_scf::checkpoint` final
-   file before the correlated stage; `read_reference = "path"` reads one
-   under `ReadMode::Skip` and restores it (`Checkpoint::restore`, new: the
-   stored arrays bit for bit, `xc`/`relativistic` stamped from the config,
-   the unstored diagnostics `None`; the typed precision record rebuilt
-   from a new optional `precision_json` meta field by the new
-   `PrecisionRecord::from_json` and accepted only when its `Debug` is the
-   stored `precision_detail`, so a mixed RI-J f32 reference restores; a
-   COSX final pass or induced dipoles are refused) in place of the solve, so no SCF
-   iteration runs and the correlated energy is bitwise a fresh run's.
-   The identity is the library's `ScfIdentity::new` on the configuration
-   the solver receives, plus two CLI fields pushed onto `fields`
+   file before the correlated stage (root rank only under MPI);
+   `read_reference = "path"` reads one under `ReadMode::Skip` and turns it
+   into the result (`Checkpoint::into_result`, new and consuming: the
+   stored arrays move out bit for bit, `xc`/`relativistic` are stamped
+   from the config, the stored in-core ERI route is recorded back on
+   `config.eri_route` so the certificate keeps its `eri` route, and the
+   unstored diagnostics are `None`) in place of the solve, so no SCF
+   iteration runs. The correlated energy is bitwise the one the saving
+   run's reference gives; it equals a fresh run's only at the same
+   thresholds, thread count, ERI route and build (a file converged
+   tighter than asked is accepted and the run says so). Optional meta
+   fields added within format v1 (an older build refuses a newer file on
+   the unknown key): `precision_json` (the typed precision record,
+   rebuilt by the new `PrecisionRecord::from_json` and accepted only when
+   its `Debug` is the stored `precision_detail`, so a mixed RI-J f32
+   reference restores), `eri_route` and `writer_threads`. The identity is
+   the library's `ScfIdentity::new` on the configuration the solver
+   receives, plus two CLI fields pushed onto `fields`
    (`cli_reference_route`: plain / DF-guess + aux / DF-increments + aux /
-   UHF / GW UHF-ROHF, and `mpi_ranks`); `identity.rs` is unchanged. One
-   `ReferenceRoute` in `ferric-cli/src/lib.rs` decides both the solve and
-   that field. A mismatch is an error naming the fields, never a fallback
-   (as a guess or a fresh SCF); the stored `Tr[Dh]` and `Vnn` are
-   rechecked bitwise against this run's integrals. A dirty or unknown
-   build needs `read_reference_other_build = true`. Refused at load time:
-   the SCF kinds (their ladder / UHF / ROHF route is not the correlated
-   one), the double hybrids, CAS, OP-MP3, other tasks, `[cell]`, both
-   keys at once, `read_reference` with `check_stability`, and
+   UHF / GW UHF-ROHF, and `mpi_ranks`); `identity.rs` only gains
+   `FERRIC_GPU_MIXED_K_PANEL` in `ENV_SWITCHES` (it moves the last digits
+   of a mixed result). One `ReferenceRoute` in `ferric-cli/src/lib.rs`
+   decides both the solve and that field. A mismatch is an error naming
+   the fields, never a fallback (as a guess or a fresh SCF); the stored
+   `Tr[Dh]` and `Vnn` are rechecked bitwise against this run's integrals.
+   A read run's certificate gains the route `scf reference: read from
+   <file> (checksum ...)` and its run log records the file's thresholds
+   and writer thread count. A dirty or unknown build needs
+   `read_reference_other_build = true`. Refused at load time: the SCF
+   kinds (their ladder / UHF / ROHF route is not the correlated one), the
+   double hybrids, CAS, OP-MP3, other tasks, `[cell]`, both keys at once,
+   `read_reference` with `check_stability` / `stability_descent`, and
    `read_reference` on open-shell `pdep-rpa` (its arm re-solves the same
    UHF + MOM reference instead of using the shared one: a duplicate SCF
    on every open-shell PDEP-RPA run, left as a follow-up because removing
-   it needs its own bitwise check). Tests:
-   `ferric-cli/tests/scf_reference_io.rs`, `checkpoint::tests::restore_*`.
-   Follow-ups: no Python keyword (the Python drivers solve their own
-   reference and take no result object); no file guess (a mismatched file
-   is refused, not used to seed the SCF); the SCF kinds could save once
-   the ladder's final rung is part of the identity.
+   it needs its own bitwise check). Refused before the SCF: a reference
+   with the COSX final-grid pass or polarizable embedding (the file
+   stores neither), and a save path that is a directory, a symlink or in
+   a missing directory. Tests: `ferric-cli/tests/scf_reference_io.rs`,
+   `cli_wired_keys_tests::reference_keys_*`, `checkpoint::tests::into_result_*`,
+   `provenance::tests::from_json_inverts_to_json`. Follow-ups: no Python
+   keyword (the Python drivers solve their own reference and take no
+   result object); no file guess (a mismatched file is refused, not used
+   to seed the SCF); the SCF kinds could save once the ladder's final
+   rung is part of the identity.
 
 Next, each as its own PR following the patterns above:
 
