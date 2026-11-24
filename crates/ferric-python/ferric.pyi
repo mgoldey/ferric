@@ -4387,9 +4387,11 @@ def run_rhf(
     gc_rotation="auto" | "rot1" | "off" (default None: FERRIC_GC_ROTATE, then
     "auto"; the CLI's [scf] gc_rotation) chooses the internal contraction
     rotation of generally contracted bases (cc-pVXZ, ANO) in the exact
-    four-centre J/K builds: the SCF, its in-core ERI store, and the Newton,
-    stability and response builds on the same geometry. "auto" runs both
-    stages, "rot1" the first only, "off" the unrotated builds bit for bit.
+    four-centre J/K builds: the SCF, its in-core ERI store, the Newton,
+    stability and response builds on the same geometry, and with
+    with_gradient=True the gradient's four-centre derivative integrals.
+    "auto" runs both stages, "rot1" the first only, "off" the unrotated
+    builds bit for bit; the spelling is exact (lowercase).
     It changes energies at the screening-noise level (~1e-11 Ha), never the
     AO basis; a basis with nothing to rotate (def2, Pople, STO-3G) is
     unaffected. Same kwarg on run_uhf, run_rohf, run_dft, run_uks and

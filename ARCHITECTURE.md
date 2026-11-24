@@ -909,26 +909,53 @@ Done:
    (`auto` | `rot1` | `off`; `off` and segmented bases bit for bit).
    Phase 2: the rotated basis, its bounds and engines are cached on the
    geometry's `SchwarzBounds` (`GcSlot`, field `gc`; clones share it, like
-   `incore`), built once per geometry instead of once per builder, and the
-   SCF drivers record their request there (`GcSlot::set_request`, next to
-   `incore_jk::begin_scf`) so later builds on the same bounds follow the
-   SCF. Rotated consumers added: `DirectJ`, `DirectK`, the in-core store
-   (`IncoreEri` holds the rotated ERIs and transforms in `coulomb` /
-   `exchange`), `rhf::build_jk`, `build_jk_with_pool` and its homogeneous,
-   spin and multi siblings (Newton, TRAH, stability, CPHF/CPKS, Z-vector,
-   OO-MP2, CASSCF J/K), and the gradient's four-centre derivative walk
-   (`gradient::gradient_rotation`: the walk on the rotated shells with
-   `D' = Tᵀ D T`, for every `twoelectron_*_gradient` wrapper whose operator
-   is the bounds'). A pooled build rotates only for a pool from
-   `EnginePool::new` (new `EnginePool::eri_key`), matching its operator
-   and precision. Python: `gc_rotation=` on `run_rhf`, `run_uhf`,
-   `run_rohf`, `run_dft`, `run_uks`, `run_roks` (not `run_ksdft`, frozen).
-   Tests: `ferric-scf/tests/gc_rotation.rs`. Follow-ups: LinK (its generic
-   `Bound` and pair tables would need a rotated twin), CFMM near field, the
-   Hessian's second-derivative integrals (`hessian.rs` skeleton and Fock
-   derivative walks), the Python `scf_*` keyword on the geometry and
-   correlated drivers, and phase 3 of the design (a shared-primitive
-   kernel or libcint for the remaining ~1.9x to def2-SVP).
+   `incore`), built once per geometry instead of once per builder (the
+   entry is keyed by `incore_jk::geometry_key`: bounds reused after the
+   atoms moved refuse it), and built with no lock held (the rotated
+   Schwarz table is rayon work; concurrent first uses keep the first
+   insert). The rule for who rotates: a build rotates only where a config
+   asked. `GcSlot` has three states: never recorded (fresh bounds: no
+   build rotates, `FERRIC_GC_ROTATE` is not read), recorded unset (a
+   config left `gc_rotation` unset: the variable, then `auto`) and
+   recorded value; the record is shared by clones, last writer wins. The
+   SCF drivers record their `RhfConfig::gc_rotation` (`GcSlot::set_request`,
+   next to `incore_jk::begin_scf`), and every build on those bounds
+   follows it: the SCF's `DirectJK`, `DirectJ`, `DirectK` and in-core
+   store (`IncoreEri` holds the rotated ERIs and transforms in `coulomb` /
+   `exchange`), the pooled `rhf::build_jk`, `build_jk_with_pool` and its
+   homogeneous, spin and multi siblings when they run on the SCF's bounds
+   (Newton, TRAH, stability, the Hessian's and properties' CPHF/CPKS, the
+   RI-MP2 Z-vector through `ResponseJk::for_scf`, OO-MP2), and the
+   gradient's four-centre derivative walk (`gradient::gradient_rotation`:
+   the walk on the rotated shells with `D' = Tᵀ D T`, for every
+   `twoelectron_*_gradient` wrapper whose operator is the bounds'). Three
+   consumers that build their own bounds carry the request over: the KS
+   Z-vector (`zvector_ks::ResponseFock` runs its Coulomb builds on the
+   SCF's bounds, with the in-core slot detached, when they are plain
+   Coulomb Schwarz bounds, and copies the record onto every other
+   operator's bounds, `GcSlot::copy_request_from`), the CASSCF direct
+   backend (`CasScfConfig::gc_rotation`, the CLI passes `[scf]
+   gc_rotation`) and the GW exact exchange (`vxc_diagonal_mo_on_grids`'s
+   `gc_rotation`). Everything else that computes its own bounds (the
+   Python `jk` / `grad_jk` / `FockResponse` blocks, any other fresh-bounds
+   consumer) runs unrotated, bit for bit as before. A pooled build rotates
+   only for a pool from `EnginePool::new` (`EnginePool::eri_key`), matching
+   its operator and precision; `from_fn` pools run unrotated. Python:
+   `gc_rotation=` on `run_rhf`, `run_uhf`, `run_rohf`, `run_dft`,
+   `run_uks`, `run_roks` (not `run_ksdft`, frozen); the config spelling is
+   strict (`auto` | `rot1` | `off`), the variable ignores case and blanks.
+   Tests: `ferric-scf/tests/gc_rotation.rs`,
+   `ferric-ci/tests/casscf_direct_gc_rotation.rs`,
+   `ferric-mp2/tests/rimp2_gradient_gc_rotation.rs`. Follow-ups: LinK (its
+   generic `Bound` and pair tables would need a rotated twin), CFMM near
+   field, the Hessian's second-derivative integrals (`hessian.rs` skeleton
+   and Fock derivative walks), the Python `scf_*` keyword on the geometry
+   and correlated drivers (and a `gc_rotation` on the Python CASSCF
+   entries), the engine pool a pooled caller hands in is unused when the
+   build rotates (the rotated engines come from the cache), the rotated
+   engine pool is a one-slot cache (keyed by operator, precision and
+   thread count), and phase 3 of the design (a shared-primitive kernel or
+   libcint for the remaining ~1.9x to def2-SVP).
 
 Next, each as its own PR following the patterns above:
 

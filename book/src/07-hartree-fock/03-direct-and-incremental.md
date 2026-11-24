@@ -310,14 +310,20 @@ follow an SCF on the same geometry: the Newton and TRAH steps, the stability
 analyses, the CPHF of the Hessian and of the response properties, the
 Z-vector and the OO-MP2 $J/K$, all through `rhf::build_jk_with_pool` and its
 siblings. The SCF records its setting on the bounds, so these builds run the
-same rotation as the SCF. The analytic gradient's four-centre derivative
+same rotation as the SCF. Three consumers that build their own bounds copy
+the setting over: the Kohn–Sham Z-vector response (`zvector_ks`), the
+direct CASSCF integrals (`CasScfConfig::gc_rotation`) and the exact exchange
+of the GW $V_{xc}$. Bounds that no SCF configured, such as those of the
+Python `jk`, `grad_jk` and `FockResponse` blocks, never rotate, and
+`FERRIC_GC_ROTATE` does not apply to them. The analytic gradient's four-centre derivative
 integrals are those of the rotated shells, contracted with the rotated
 densities: $T$ does not depend on the geometry and keeps every shell on its
 atom, so this is the same gradient. LinK, CFMM, the Hessian's
 second-derivative integrals and the periodic code use the unrotated basis.
 `[scf] gc_rotation`
-(`RhfConfig::gc_rotation`) selects the rotation, then `FERRIC_GC_ROTATE` when
-the key is unset, then `auto`: `auto` runs both stages, `rot1` the first
+(`RhfConfig::gc_rotation`, spelled exactly) selects the rotation, then
+`FERRIC_GC_ROTATE` when the key is unset (case and blanks ignored), then
+`auto`: `auto` runs both stages, `rot1` the first
 stage only, and `off` the unrotated builder bit for bit; any other value is
 an error (`ferric-scf/src/direct_jk/gc_rotation.rs::GcRotate`).
 
