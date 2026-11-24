@@ -114,6 +114,7 @@ scheme = "none"  # none | amplitude-threshold
 # virtual_solve_radius: not read here: only with virtual_space = "local"
 # virtual_boys_tau: not read here: only with virtual_space = "local"
 # lambda_boys: not read here: only with scheme = "amplitude-threshold" (rimp2, att-rimp2, opmp3)
+# mask_certificate: not read here: only with scheme = "amplitude-threshold" in core (rimp2, att-rimp2)
 
 [memory]
 # budget_gb: memory budget, GB; unset by default: FERRIC_MEM_BUDGET_GB, else 0.8 x available RAM; machine-dependent, so not written

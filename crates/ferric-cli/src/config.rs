@@ -1571,6 +1571,11 @@ pub struct LocalCfg {
     /// occupied localization (finite, >= 0). Default
     /// [`ferric_mp2::boys::LAMBDA_BOYS_DEFAULT`]; 0 = plain Boys.
     pub lambda_boys: Option<f64>,
+    /// `kind = "rimp2"` / `"att-rimp2"` in-core only: compute the Hylleraas
+    /// mask certificate (`ferric_mp2::lmp2_mask_certificate`), a rigorous
+    /// interval on the amplitude-mask error for the integrals solved.
+    /// Default false; an error with `integral_direct = true`.
+    pub mask_certificate: Option<bool>,
 }
 
 /// The integral-direct locality knobs of a local MP2 run, with their
@@ -1642,6 +1647,9 @@ pub struct LocalModel {
     /// `None` with `fock_screen = false` (local MP2 only; the dRPA and
     /// LinLCCD paths refuse the key and run the plain mask).
     pub fock_screen: Option<f64>,
+    /// `[local] mask_certificate`: compute the Hylleraas mask certificate
+    /// (in-core local MP2 only). Default false.
+    pub mask_certificate: bool,
 }
 
 impl LocalModel {
@@ -1683,6 +1691,7 @@ impl LocalModel {
     ) {
         let lcfg = ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config {
             compute_reference: self.reference,
+            mask_certificate: self.mask_certificate,
             pair_gate_cal: self.direct.as_ref().and_then(|d| d.gate_cal),
             ..self.amplitude_config(frozen_core, eri3_budget_bytes)
         };
@@ -1793,6 +1802,7 @@ impl LocalCfg {
                 ("virtual_solve_radius", self.virtual_solve_radius.is_some()),
                 ("virtual_boys_tau", self.virtual_boys_tau.is_some()),
                 ("lambda_boys", self.lambda_boys.is_some()),
+                ("mask_certificate", self.mask_certificate.is_some()),
             ]
             .into_iter()
             .filter_map(|(k, set)| set.then_some(k))
@@ -1803,12 +1813,8 @@ impl LocalCfg {
                      silently ignore {}; set scheme = \"amplitude-threshold\" to run the local \
                      approximation, or remove {}",
                     stray.join(", "),
-                    if stray.len() == 1 { "it" } else { "them" },
-                    if stray.len() == 1 {
-                        "the key"
-                    } else {
-                        "the keys"
-                    },
+                    one_or_many(stray.len(), "it", "them"),
+                    one_or_many(stray.len(), "the key", "the keys"),
                 ));
             }
             return Ok(None);
@@ -1921,6 +1927,7 @@ impl LocalCfg {
         ferric_mp2::boys::check_lambda_boys(lambda_boys).map_err(|e| format!("[local] {e}"))?;
         let fock_on = self.fock_screen.unwrap_or(true);
         refuse_kappa_under_fock_screen(fock_on, direct.as_ref())?;
+        let mask_certificate = mask_certificate_in_core(self.mask_certificate, direct.as_ref())?;
         Ok(Some(LocalModel {
             eps,
             is_sweep,
@@ -1929,8 +1936,37 @@ impl LocalCfg {
             virtual_space,
             lambda_boys,
             fock_screen: fock_on.then_some(ferric_mp2::lmp2_amplitude::FOCK_SCREEN_KAPPA_DEFAULT),
+            mask_certificate,
         }))
     }
+}
+
+/// `one` for a count of 1, else `many` (error-message grammar).
+fn one_or_many(n: usize, one: &'static str, many: &'static str) -> &'static str {
+    if n == 1 {
+        one
+    } else {
+        many
+    }
+}
+
+/// `[local] mask_certificate` (default false), refused with
+/// `integral_direct = true`: the certificate needs the global 3-index tensor
+/// that path never forms, and it does not bound the error of its maps.
+fn mask_certificate_in_core(
+    requested: Option<bool>,
+    direct: Option<&LocalDirectKnobs>,
+) -> Result<bool, String> {
+    let on = requested.unwrap_or(false);
+    if on && direct.is_some() {
+        return Err(
+            "[local] mask_certificate is available on the in-core local MP2 only: it \
+             needs the global 3-index tensor that integral_direct = true never forms, and \
+             it would not bound the error of the integral-direct locality maps"
+                .to_string(),
+        );
+    }
+    Ok(on)
 }
 
 /// `[cc]` — closed-shell CCSD knobs, read by `method.kind = "ccsd"` and
@@ -5262,11 +5298,17 @@ impl Config {
         if kind != "rimp2" && kind != "att-rimp2" {
             if let Some(l) = self.local.as_ref() {
                 // (key set?, key, what it selects, what the other kinds do instead)
-                let mp2_only: [(bool, &str, &str, &str); 4] = [
+                let mp2_only: [(bool, &str, &str, &str); 5] = [
                     (
                         l.integral_direct.is_some(),
                         "integral_direct",
                         "is the integral-direct local MP2",
+                        "",
+                    ),
+                    (
+                        l.mask_certificate.is_some(),
+                        "mask_certificate",
+                        "is the Hylleraas mask certificate of the local MP2",
                         "",
                     ),
                     (
@@ -5289,7 +5331,7 @@ impl Config {
                     ),
                 ];
                 if let Some((_, key, what, instead)) = mp2_only.iter().find(|r| r.0) {
-                    let kinds = if *key == "integral_direct" {
+                    let kinds = if *key == "integral_direct" || *key == "mask_certificate" {
                         "\"rimp2\" or \"att-rimp2\""
                     } else {
                         "\"rimp2\", \"att-rimp2\" or \"opmp3\""

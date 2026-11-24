@@ -5564,6 +5564,7 @@ def run_rimp2(
     save_reference: str | None = None,
     read_reference: str | None = None,
     read_reference_other_build: bool = False,
+    mask_certificate: bool | None = None,
 ) -> RiMp2Result:
     """Resolution-of-identity (density-fitted) MP2. Exact by default.
     with_gradient=True adds the analytic gradient of total_energy
@@ -5620,6 +5621,17 @@ def run_rimp2(
     Boys. It does not change the eps=0 energy. A ValueError on the exact
     method. `result.local["lambda_boys"]`, `["lambda_boys_sweeps"]`,
     `["lambda_boys_max_grad"]` and `["lambda_boys_t_s"]` record it.
+
+    Local in-core runs only: `mask_certificate=True` also computes the
+    Hylleraas mask certificate, `result.local["mask_certificate"]` (None
+    otherwise): rigorous `lower_bound` and `upper_bound` on the error the
+    amplitude mask makes, the point estimate `error_estimate` (not a bound),
+    the certified interval `e_corr_interval_lo` / `e_corr_interval_hi` on the
+    unmasked correlation energy, `e_corr_corrected` (e_corr minus the
+    estimate), the near-set counters and its cost `t_s`. It bounds the mask
+    error for the RI integrals solved (so the interval is on the canonical
+    RI-MP2 energy), not the RI error. A ValueError with
+    `integral_direct=True` and on the exact method.
 
     `scf_jk` sets how the reference SCF builds J/K: "exact" (default,
     four-centre), "rijk" (RI-J + RI-K) or "rijcosx" (RI-J + COSX K), fitted on

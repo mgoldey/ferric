@@ -20,6 +20,7 @@ and every local run prints its truncation.
 | @sec:pno-dlpno | Pair natural orbitals and DLPNO-MP2 | none (library only) | ready |
 | @sec:local-opmp3 | Amplitude-threshold local OP-MP3 | `local-opmp3` | ready |
 | @sec:amplitude-lmp2-combined-truncation | Combining the screen, the embedding and λ-Boys orbitals | `local-mp2` | ready |
+| @sec:lmp2-mask-certificate | The mask certificate | `local-mp2` | edit |
 
 Sections @sec:amplitude-lmp2 and @sec:integral-direct are the production local method
 (`[local] scheme = "amplitude-threshold"`). It keeps an amplitude when the
@@ -36,6 +37,9 @@ reports their recoveries side by side and never ranks them. Section
 @sec:amplitude-lmp2-combined-truncation proves what the Fock-propagated
 screen, a block embedding and λ-Boys orbitals would each do to the energy
 error of a combined scheme that no production code implements.
+
+Section @sec:lmp2-mask-certificate bounds, for one run, the energy the
+amplitude mask of 13.1 loses, from the residual of the masked solve.
 
 Every truncation in this chapter has a trivial limit in which it removes
 nothing, and there the method reproduces the exact canonical energy of the

@@ -173,6 +173,18 @@ pub struct AmplitudeLmp2Config {
     /// with [`AmplitudeLmp2Config::plain_boys`] (`0.0`). Invisible at ε = 0 (the energy is invariant under
     /// occupied rotations); at finite ε it changes the mask.
     pub lambda_boys: f64,
+    /// Compute the Hylleraas mask certificate
+    /// ([`crate::lmp2_mask_certificate`]) after the solve: a rigorous interval
+    /// on the error of the amplitude mask for the integrals solved. In-core
+    /// global-metric path only (`fit_radius_bohr` and `aux_tail_frac` unset);
+    /// the integral-direct driver refuses it. Default false.
+    pub mask_certificate: bool,
+    /// Near-set threshold τ of the mask certificate (library only; the CLI
+    /// and Python use the default). `None` (default) is τ = `eps`. The
+    /// bounds are rigorous for every τ ≥ 0: a larger τ moves dropped
+    /// amplitudes from the near set into the far term (cheaper, looser);
+    /// `f64::INFINITY` leaves the near set empty and the far term alone.
+    pub mask_certificate_tau: Option<f64>,
 }
 
 /// κ of the Fock-propagated screen ([`AmplitudeLmp2Config::fock_screen`])
@@ -203,6 +215,8 @@ impl Default for AmplitudeLmp2Config {
             virtual_space: crate::vvhv_local::VirtualSpace::Dense,
             fock_screen: None,
             lambda_boys: crate::boys::LAMBDA_BOYS_DEFAULT,
+            mask_certificate: false,
+            mask_certificate_tau: None,
         }
     }
 }
@@ -317,6 +331,9 @@ pub struct AmplitudeLmp2Result {
     pub virtual_space: crate::vvhv_local::VirtualSpaceReport,
     /// The occupied localization: λ, sweeps, final gradient, wall time.
     pub lambda_boys: crate::boys::LambdaBoysReport,
+    /// The Hylleraas mask certificate, when
+    /// [`AmplitudeLmp2Config::mask_certificate`] was set.
+    pub mask_certificate: Option<crate::lmp2_mask_certificate::MaskCertificate>,
 }
 
 /// Where a solve's PCG tolerance came from.
@@ -1091,6 +1108,7 @@ pub fn amplitude_lmp2(
     cfg: &AmplitudeLmp2Config,
 ) -> Result<AmplitudeLmp2Result, FerricError> {
     require_hf_reference(rhf, "lmp2_amplitude")?;
+    refuse_certificate_with_local_fit(cfg)?;
     let (vvhv, t_spaces_s, report) =
         checked_vvhv_with(mol, obs, obs_bs, rhf, "lmp2_amplitude", &cfg.virtual_space)?;
     let mut r = amplitude_lmp2_with_virtuals(mol, obs, dfbs, op, rhf, cfg, &vvhv)?;
@@ -2240,10 +2258,7 @@ pub fn assemble_ragged_direct_aux(
     let fo: Vec<f64> = (0..no).map(|i| f_oo[(i, i)]).collect();
     let fv: Vec<f64> = (0..nv).map(|a| f_vv[(a, a)]).collect();
     let (btilde, aux_xyz) = match fit_radius_bohr {
-        None => {
-            let vis = metric_inverse_sqrt(&lb.v2c, op)?;
-            (Some(vis.dot(&lb.b_flat)), None)
-        }
+        None => (Some(whitened_b(lb, op)?), None),
         Some(_) => {
             let aux_atom = ao_to_atom(dfbs);
             let naux = lb.b_flat.nrows();
@@ -2435,6 +2450,60 @@ pub fn assemble_ragged_direct_aux(
     ))
 }
 
+/// The whitened global RI factor `B̃ = V^{-1/2} B` (naux × no·nv), so that
+/// `(ia|jb) = B̃_iaᵀ B̃_jb` with the global same-kernel metric.
+fn whitened_b(lb: &LocalizedBasis, op: Operator) -> Result<Array2<f64>, FerricError> {
+    Ok(metric_inverse_sqrt(&lb.v2c, op)?.dot(&lb.b_flat))
+}
+
+/// The Hylleraas mask certificate of the in-core solve when
+/// [`AmplitudeLmp2Config::mask_certificate`] is set (τ =
+/// `mask_certificate_tau`, default `eps`; node from
+/// [`operator_lambda_min_lower_bound`]), else `None`.
+fn mask_certificate_if_requested(
+    cfg: &AmplitudeLmp2Config,
+    lb: &LocalizedBasis,
+    rg: &Ragged,
+    t: &[Array2<f64>],
+    op: Operator,
+    e_corr: f64,
+) -> Result<Option<crate::lmp2_mask_certificate::MaskCertificate>, FerricError> {
+    if !cfg.mask_certificate {
+        return Ok(None);
+    }
+    let btilde = whitened_b(lb, op)?;
+    crate::lmp2_mask_certificate::mask_certificate(
+        &crate::lmp2_mask_certificate::MaskCertificateInputs {
+            rg,
+            t,
+            f_oo: &lb.f_oo,
+            f_vv: &lb.f_vv,
+            btilde: &btilde,
+            tau: cfg.mask_certificate_tau.unwrap_or(cfg.eps),
+            lambda_min: operator_lambda_min_lower_bound(&lb.f_oo, &lb.f_vv)?,
+            e_corr,
+        },
+    )
+    .map(Some)
+}
+
+/// The mask certificate needs `g = B̃ᵀB̃` on the whole amplitude space, the
+/// integrals the solve used on the kept set; the pair-local fit and the aux
+/// truncation change `g` pair by pair, so they are refused.
+pub(crate) fn refuse_certificate_with_local_fit(
+    cfg: &AmplitudeLmp2Config,
+) -> Result<(), FerricError> {
+    if cfg.mask_certificate && (cfg.fit_radius_bohr.is_some() || cfg.aux_tail_frac.is_some()) {
+        return Err(FerricError::General(
+            "lmp2_amplitude: mask_certificate needs the global-metric RI integrals \
+             (fit_radius_bohr and aux_tail_frac unset): the pair-local fit changes the \
+             integrals pair by pair, and the certificate would not bound that error"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Same as [`amplitude_lmp2`], with a caller-supplied virtual space — the
 /// mutation-test entry point (a deliberately broken space must fail the
 /// ε=0 anchor).
@@ -2448,6 +2517,7 @@ pub fn amplitude_lmp2_with_virtuals(
     vvhv: &VvHv,
 ) -> Result<AmplitudeLmp2Result, FerricError> {
     require_hf_reference(rhf, "lmp2_amplitude")?;
+    refuse_certificate_with_local_fit(cfg)?;
     if trace::trace_enabled() {
         eprintln!(
             "[ferric-mem] lmp2-amplitude entry rss={}",
@@ -2502,17 +2572,18 @@ pub fn amplitude_lmp2_with_virtuals(
 
     // ---- ragged solve ----
     let t0 = std::time::Instant::now();
-    let mut r = solve_and_count(
+    let (mut r, t) = solve_count_keep(
         &rg,
-        f_oo,
-        &lb.f_vv,
+        (f_oo, &lb.f_vv),
         rhf.energy,
         cfg,
         vvhv,
-        no,
-        nv,
+        (no, nv),
         "lmp2_amplitude",
     )?;
+    let t_solve_s = t0.elapsed().as_secs_f64();
+    r.mask_certificate = mask_certificate_if_requested(cfg, &lb, &rg, &t, op, r.e_corr)?;
+    drop(t);
     r.e_corr_canonical_ri = e_ref;
     r.n_pairs_gated = n_pairs_gated;
     r.aux_dom_mean = aux_dom_mean;
@@ -2522,7 +2593,7 @@ pub fn amplitude_lmp2_with_virtuals(
         t_spaces_s: 0.0,
         t_loc_s: lb.t_loc_s,
         t_assembly_s,
-        t_solve_s: t0.elapsed().as_secs_f64(),
+        t_solve_s,
         t_reference_s,
     };
     Ok(r)
@@ -2543,6 +2614,20 @@ pub(crate) fn solve_and_count(
     nv: usize,
     who: &str,
 ) -> Result<AmplitudeLmp2Result, FerricError> {
+    solve_count_keep(rg, (f_oo, f_vv), e_scf, cfg, vvhv, (no, nv), who).map(|(r, _)| r)
+}
+
+/// [`solve_and_count`] that also returns the masked amplitudes `t_P`, one
+/// block per pair of `rg` (the mask certificate reads them).
+fn solve_count_keep(
+    rg: &Ragged,
+    (f_oo, f_vv): (&Array2<f64>, &Array2<f64>),
+    e_scf: f64,
+    cfg: &AmplitudeLmp2Config,
+    vvhv: &VvHv,
+    (no, nv): (usize, usize),
+    who: &str,
+) -> Result<(AmplitudeLmp2Result, Vec<Array2<f64>>), FerricError> {
     validate_fvv_sparse_rho(cfg.fvv_sparse_rho)?;
     // fail fast, before the solve (hylleraas_energy checks it again)
     check_swap_closed(rg).map_err(|e| {
@@ -2583,7 +2668,7 @@ pub(crate) fn solve_and_count(
         );
     }
     let c = RaggedCounters::new(rg, no, nv);
-    Ok(AmplitudeLmp2Result {
+    let res = AmplitudeLmp2Result {
         e_corr,
         e_total: e_scf + e_corr,
         e_corr_canonical_ri: f64::NAN,
@@ -2615,7 +2700,9 @@ pub(crate) fn solve_and_count(
         timings: StageTimings::default(),
         virtual_space: crate::vvhv_local::VirtualSpaceReport::CallerSupplied,
         lambda_boys: crate::boys::LambdaBoysReport::default(),
-    })
+        mask_certificate: None,
+    };
+    Ok((res, b.solve.t))
 }
 
 #[cfg(test)]

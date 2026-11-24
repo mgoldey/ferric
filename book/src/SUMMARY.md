@@ -87,6 +87,7 @@
   - [13.3 Pair natural orbitals and DLPNO-MP2](13-local-mp2/03-pno-dlpno.md)
   - [13.4 Amplitude-threshold local OP-MP3](13-local-mp2/04-local-opmp3.md)
   - [13.5 Combining the screen, the embedding and λ-Boys orbitals](13-local-mp2/05-combined-truncation.md)
+  - [13.6 The mask certificate](13-local-mp2/06-mask-certificate.md)
 - [14. SCF gradients, Hessians and geometry](14-derivatives/index.md)
   - [14.1 Hartree–Fock nuclear gradient](14-derivatives/01-hf-gradient.md)
   - [14.2 Gradients of density-fitted J and K](14-derivatives/02-df-jk-gradient.md)

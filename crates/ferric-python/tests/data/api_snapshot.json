@@ -9612,6 +9612,11 @@
     "default": "False",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "read_reference_other_build"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "mask_certificate"
    }
   ],
   "run_rks_gamma": [

@@ -223,6 +223,7 @@ Code references are `crate/src/file.rs::item` under `crates/`.
 | `pno-dlpno` | Pair natural orbitals and DLPNO-MP2 | W §10 | `ferric-mp2/src/dlpno_mp2.rs::dlpno_mp2_from_b_ov`, `ferric-mp2/src/local_pno.rs::build_pno_transforms` | ready |
 | `local-opmp3` | Amplitude-threshold local OP-MP3 | S `local_opmp3_sympy.py`; P `prototypes/local_opmp3_proto.py`; R local-opmp3 | `ferric-mp2/src/opmp3.rs::{pade_trace,ssd_opmp3}`, `ferric-mp2/src/ragged.rs::solve_ragged` | ready |
 | `amplitude-lmp2-combined-truncation` | Combining the screen, the embedding and λ-Boys orbitals | S `lmp2_combined_sympy.py`; R local-mp2 | `ferric-mp2/src/ragged.rs::{pair_blocks_screened,fock_dressed_gate}` | ready |
+| `lmp2-mask-certificate` | The mask certificate | S `lmp2_mask_certificate_sympy.py`; R local-mp2 | `ferric-mp2/src/lmp2_mask_certificate.rs::{mask_certificate,radau_one_step}` | edit |
 
 ### Part VI. Derivatives
 
@@ -453,7 +454,7 @@ registry row and are the largest block of `gap` sections.
 | II. Integrals, screening and density fitting | 1 | 15 | 1 | 1 | 18 |
 | III. Self-consistent field | 8 | 3 | 0 | 0 | 11 |
 | IV. Density functional theory | 7 | 0 | 0 | 0 | 7 |
-| V. The MP2 family | 20 | 3 | 1 | 6 | 30 |
+| V. The MP2 family | 20 | 4 | 1 | 6 | 31 |
 | VI. Derivatives | 12 | 3 | 0 | 0 | 15 |
 | VII. Coupled cluster | 7 | 1 | 0 | 0 | 8 |
 | VIII. Multireference | 6 | 0 | 0 | 0 | 6 |
@@ -466,9 +467,9 @@ registry row and are the largest block of `gap` sections.
 | XV. Interfaces | 1 | 5 | 1 | 0 | 7 |
 | XVI. Dynamics | 0 | 1 | 0 | 0 | 1 |
 | Appendices | 3 | 0 | 1 | 0 | 4 |
-| **Total** | **101** | **51** | **8** | **8** | **168** |
+| **Total** | **101** | **52** | **8** | **8** | **169** |
 
-168 sections: 60% `ready`, 30% `edit`, 5% `gap` and 5% `verify`.
+169 sections: 60% `ready`, 31% `edit`, 5% `gap` and 5% `verify`.
 <!-- status-table:end -->
 
 ## 5. Gaps, ranked by how much rests on them

@@ -2764,6 +2764,41 @@ fn print_lmp2_certificate(cert: &ferric_mp2::lmp2_certificate::Lmp2Certificate) 
     for w in &cert.solver_warnings {
         println!("  PCG solver warning: {w}");
     }
+    if let Some(m) = &cert.mask_certificate {
+        for line in mask_certificate_lines(m) {
+            println!("{line}");
+        }
+    }
+}
+
+/// The printout lines of a Hylleraas mask certificate: the bounds, the
+/// certified interval, the corrected energy, the near set and the cost, and
+/// what the interval does and does not cover.
+fn mask_certificate_lines(m: &ferric_mp2::lmp2_mask_certificate::MaskCertificate) -> Vec<String> {
+    vec![
+        format!(
+            "  mask certificate      = error in [{:.3e}, {:.3e}] Ha (rigorous), estimate {:.3e} Ha",
+            m.lower_bound, m.upper_bound, m.error_estimate
+        ),
+        format!(
+            "  certified E_corr*     = [{:.10}, {:.10}] Ha; E_corr - estimate = {:.10} Ha",
+            m.e_corr_interval[0], m.e_corr_interval[1], m.e_corr_corrected
+        ),
+        format!(
+            "  certificate cost      = {:.3} s; near set {} of {} dropped ({} kept); \
+             near/far bound {:.2e}/{:.2e} Ha",
+            m.t_s,
+            m.n_near,
+            m.n_near + m.n_far,
+            m.n_kept,
+            m.near_upper,
+            m.far_upper
+        ),
+        format!(
+            "  certificate bounds    = {}",
+            ferric_mp2::lmp2_mask_certificate::SCOPE
+        ),
+    ]
 }
 
 /// `method.kind = "rimp2"` with `[local] scheme = "amplitude-threshold"`:
@@ -8933,6 +8968,7 @@ mod local_printout_tests {
             eps_trust: "measured ...".into(),
             warnings: vec!["w1".into(), "w2".into()],
             solver_warnings: vec!["s1".into()],
+            mask_certificate: None,
         };
         let local = LocalPrint {
             eps: 1e-4,
@@ -8957,7 +8993,7 @@ mod local_printout_tests {
             }
         }
         let fields = cert.fields();
-        assert_eq!(fields.len(), 29);
+        assert_eq!(fields.len(), 30);
         for (k, v) in &fields {
             assert!(same(&back[*k], v), "field {k}: {} vs {v:?}", back[*k]);
         }

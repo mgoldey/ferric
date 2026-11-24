@@ -366,6 +366,7 @@ scheme, `eps` and kept fraction. See
 | `virtual_solve_radius` | float | `30.0` | Bohr, > 0 | `virtual_space = "local"` only. Neighbourhood radius of the domain-local projected-minimal solves; a radius larger than the molecule is one global solve. |
 | `virtual_boys_tau` | float | `1e-8` | ≥ 0 | `virtual_space = "local"` only. Boys pair screen; `0` rotates every pair. |
 | `lambda_boys` | float | `10.0` | Bohr²/Ha², finite, ≥ 0 | `rimp2` / `att-rimp2` / `opmp3` only (an error on `drpa` / `linlccd`, which localize with plain Boys). Weight λ of Σᵢ Fᵢᵢ² in the λ-Boys occupied localization, started from the converged Boys orbitals; `0` is plain Boys. The ε = 0 energy does not depend on it. The printout's `occupied localization` line and the run log's `local.lambda_boys*` fields record it. |
+| `mask_certificate` | bool | `false` | | `rimp2` / `att-rimp2` in core only (an error with `integral_direct = true` and on any other kind). Also compute the Hylleraas mask certificate: a rigorous lower and upper bound on the error the amplitude mask makes, a point estimate of it, and the corrected energy. It bounds the mask error for the RI integrals the run solves, so its interval is on the canonical RI-MP2 energy, not on the exact-integral MP2 energy. Printed as `mask certificate` lines and logged as `local.mask_certificate`. See [the mask certificate](../methods/mp2.md#the-mask-certificate). |
 
 ## `[rpa]`
 

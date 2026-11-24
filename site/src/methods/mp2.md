@@ -587,6 +587,41 @@ At `1e-5` the cut skips 55% of the shell triples at C12 and 67% at C16 (51% and 
 (`gate_cal = 0.7`) leaves the C12 result unchanged. At `1e-6` the energy changes by
 1e-10 (C12 linked) to 1.8e-9 (C16 NCP).
 
+### The mask certificate
+
+`[local] mask_certificate = true` (Python `mask_certificate=True`) computes
+an error certificate for the amplitude mask after the in-core local solve.
+The run prints it and logs it as `local.mask_certificate`:
+
+| Field | Meaning |
+|---|---|
+| `lower_bound`, `upper_bound` | rigorous bounds on the mask error `E_P - E*` (Ha, both ≥ 0) |
+| `error_estimate` | point estimate of the same error (not a bound) |
+| `e_corr_interval_lo`, `e_corr_interval_hi` | the certified interval on `E*` |
+| `e_corr_corrected` | `e_corr - error_estimate` |
+| `n_kept`, `n_near`, `n_far` | kept amplitudes, and the dropped ones split at `tau = eps` |
+| `t_s` | the certificate's own cost (s) |
+
+**What it bounds.** `E*` is the energy of the unmasked solve on the same
+integrals: on the in-core path, the canonical RI-MP2 correlation energy.
+The upper bound also covers the PCG solver's error. **It does not see the
+RI fit error** against exact four-index integrals, and it is not available
+on the integral-direct path (`integral_direct = true` is refused), whose
+locality maps change the integrals themselves. The domain-fit options
+(`fit_radius_bohr`, `aux_tail_frac`) are refused for the same reason.
+
+Measured on butane and benzene, 6-31G with cc-pVDZ-RI, frozen core
+(`crates/ferric-mp2/tests/lmp2_mask_certificate.rs`, 2026-11-19): on the
+plain integral mask the estimate is 0.91–0.96 of the true error and the
+upper bound 1.09–1.92 of it. With the Fock screen (the default) the
+remaining error is smaller and less concentrated near the threshold, so the
+estimate drops to 0.19–0.65 of the error and the upper bound rises to 4–8×.
+The certificate costs about 0.1 s on these molecules. On octane and
+naphthalene (ε = 1e-3 to 1e-7) every bound encloses the error, the upper
+bound is 1.25–9.3× the error, and the certificate costs 0.45–1.5× the
+masked solve: plan for it to roughly double the solve time. The derivation
+and the full tables are in the theory book (§lmp2-mask-certificate).
+
 ### Local VV-HV build
 
 Both local MP2 paths build the VV-HV localized virtuals the same way by
