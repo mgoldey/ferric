@@ -150,6 +150,18 @@ pub struct DirectConfig {
     pub split_eri3_timers: bool,
     /// How stage 3 walks the (P|μν) triples. See [`Eri3Pass`].
     pub eri3_pass: Eri3Pass,
+    /// MPI context to stripe the stage-5 pair fits over. `None`, or a
+    /// one-rank context, is the serial path exactly. With `size > 1`, rank
+    /// `r` fits the domain groups `g % size == r` and the ranks then exchange
+    /// their pair blocks (the `ragged_transport` module), so every rank returns
+    /// the full ragged system and runs the same solve.
+    ///
+    /// Version 1: only the pair fits are distributed. Every rank still builds
+    /// all strips and ends up holding all pair blocks, so memory per rank
+    /// does not shrink with the rank count. Counters summed over groups
+    /// (`n_trsm`, `n_w_reused`, the group scratch maximum) describe this
+    /// rank's groups only.
+    pub mpi: Option<ferric_core::parallel::ParallelContext>,
 }
 
 impl DirectConfig {
@@ -201,6 +213,7 @@ impl Default for DirectConfig {
             virt_schwarz_kappa: None,
             split_eri3_timers: false,
             eri3_pass: Eri3Pass::Batches,
+            mpi: None,
         }
     }
 }
@@ -2434,6 +2447,21 @@ fn collect_strips(
     Ok(strips)
 }
 
+/// Everything stage 5 reads: what [`fit_pairs`] is called with, bundled for
+/// [`fit_pair_slots`].
+#[derive(Clone, Copy)]
+struct PairFitInput<'a> {
+    pre: &'a StripsAndMetric,
+    dfbs: &'a PreparedBasis,
+    spaces: &'a LocalizedSpaces,
+    eps: f64,
+    scale: f64,
+    dcfg: &'a DirectConfig,
+    path: FitPath,
+    gate: Option<SolveGate>,
+    fock_screen: Option<f64>,
+}
+
 /// Which stage-5 fit runs: the production Cholesky/triangular-solve path,
 /// or (tests only) the frozen pre-Stage-C explicit-inverse oracle.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -2750,22 +2778,26 @@ impl BlockCharge {
 /// group ([`fit_domain_group`]); per-group work is held per worker and
 /// dropped after its group. Results are written back into original-pair
 /// order slots, so the assembled pair order is the ungrouped loop's.
-#[allow(clippy::too_many_arguments)]
-fn fit_pairs(
-    pre: &StripsAndMetric,
-    dfbs: &PreparedBasis,
-    spaces: &LocalizedSpaces,
-    eps: f64,
-    scale: f64,
-    dcfg: &DirectConfig,
-    path: FitPath,
-    gate: Option<SolveGate>,
-    fock_screen: Option<f64>,
+///
+/// Returns the per-pair slots THIS rank fitted (all of them without a rank
+/// stripe) and the resident bytes they sit beside (strips, metric, held `W`).
+fn fit_pair_slots(
+    input: PairFitInput<'_>,
     stats: &mut DirectStats,
-) -> Result<Ragged, FerricError> {
+) -> Result<(Vec<crate::ragged_transport::Slot>, usize), FerricError> {
     use rayon::prelude::*;
+    let PairFitInput {
+        pre,
+        dfbs,
+        spaces,
+        eps,
+        scale,
+        dcfg,
+        path,
+        gate,
+        fock_screen,
+    } = input;
     let (no, nv) = (spaces.no, spaces.nv);
-    let t0 = Instant::now();
     let fo: Vec<f64> = (0..no).map(|i| spaces.f_oo[(i, i)]).collect();
     let fv: Vec<f64> = (0..nv).map(|a| spaces.f_vv[(a, a)]).collect();
     let unique: Vec<(usize, usize)> = (0..no)
@@ -2835,7 +2867,8 @@ fn fit_pairs(
         .flatten()
         .map(|g| 8 * g.w.len())
         .sum();
-    let group_list = group_by_domain(pair_dom);
+    let stripe = dcfg.mpi.filter(|c| c.size > 1);
+    let group_list = stripe_groups(group_by_domain(pair_dom), stripe.as_ref());
     let ctx = PairFitCtx {
         unique: &unique,
         pair_cands: &pair_cands,
@@ -2951,7 +2984,56 @@ fn fit_pairs(
     if let Some(msg) = charge.and_then(|c| c.tripped.into_inner().ok().flatten()) {
         return Err(FerricError::MemoryExhausted(msg));
     }
-    let ragged = ragged_from_groups(unique.len(), group_out, stats)?;
+    let slots = slots_from_groups(unique.len(), group_out, stats)?;
+    Ok((slots, base_bytes))
+}
+
+/// Stage 5: fit every surviving pair's block and return the ragged system.
+/// With a rank stripe ([`DirectConfig::mpi`]) this rank fits its own domain
+/// groups and the ranks then exchange blocks, so the result is the full
+/// system on every rank.
+#[allow(clippy::too_many_arguments)]
+fn fit_pairs(
+    pre: &StripsAndMetric,
+    dfbs: &PreparedBasis,
+    spaces: &LocalizedSpaces,
+    eps: f64,
+    scale: f64,
+    dcfg: &DirectConfig,
+    path: FitPath,
+    gate: Option<SolveGate>,
+    fock_screen: Option<f64>,
+    stats: &mut DirectStats,
+) -> Result<Ragged, FerricError> {
+    let t0 = Instant::now();
+    let input = PairFitInput {
+        pre,
+        dfbs,
+        spaces,
+        eps,
+        scale,
+        dcfg,
+        path,
+        gate,
+        fock_screen,
+    };
+    let (mut slots, base_bytes) = fit_pair_slots(input, stats)?;
+    if let Some(c) = dcfg.mpi.filter(|c| c.size > 1) {
+        // What the budget has left beside the strips, the metric and this
+        // rank's own blocks; the gathered blocks themselves are the ragged
+        // system the solve gate already admitted.
+        let avail = gate.map(|g| {
+            let own: usize = slots
+                .iter()
+                .flatten()
+                .flatten()
+                .map(PairBlock::heap_bytes)
+                .sum();
+            g.budget_bytes.saturating_sub(base_bytes + own)
+        });
+        crate::ragged_transport::gather_slots(&c, &mut slots, avail)?;
+    }
+    let ragged = ragged_from_slots(slots)?;
     stats.t_pairs_s = t0.elapsed().as_secs_f64();
     mem_trace(
         "pairs",
@@ -2979,14 +3061,36 @@ fn group_by_domain(pair_dom: Vec<Vec<usize>>) -> Vec<(Vec<usize>, Vec<usize>)> {
 
 /// Group outputs → the ragged pair list in original-pair order (an unfilled
 /// slot is a grouping bug), summing the per-group counters into `stats`.
-fn ragged_from_groups(
+/// The domain groups rank `stripe.rank` fits: every group without a stripe,
+/// else the groups `g % size == rank` of the list (which is sorted by first
+/// pair, the same on every rank). The ranks' shares are disjoint and cover
+/// the list.
+fn stripe_groups(
+    group_list: Vec<(Vec<usize>, Vec<usize>)>,
+    stripe: Option<&ferric_core::parallel::ParallelContext>,
+) -> Vec<(Vec<usize>, Vec<usize>)> {
+    match stripe {
+        None => group_list,
+        Some(c) => group_list
+            .into_iter()
+            .enumerate()
+            .filter(|(g, _)| g % c.size == c.rank)
+            .map(|(_, grp)| grp)
+            .collect(),
+    }
+}
+
+/// Per-unique-pair slots filled from the groups this rank fitted, with the
+/// group counters summed into `stats`. A slot of a group another rank owns
+/// stays `None`.
+fn slots_from_groups(
     n_unique: usize,
     group_out: Vec<Result<(SlotOut, GroupCounts), FerricError>>,
     stats: &mut DirectStats,
-) -> Result<Ragged, FerricError> {
+) -> Result<Vec<crate::ragged_transport::Slot>, FerricError> {
     stats.n_pair_groups = group_out.len();
     let mut n_occ = 0usize;
-    let mut slots: Vec<Option<Vec<PairBlock>>> = (0..n_unique).map(|_| None).collect();
+    let mut slots: Vec<crate::ragged_transport::Slot> = (0..n_unique).map(|_| None).collect();
     for r in group_out {
         let (slot_out, counts) = r?;
         n_occ += counts.n_occ;
@@ -3000,11 +3104,19 @@ fn ragged_from_groups(
     if stats.n_pair_groups > 0 {
         stats.n_distinct_occ_per_group = n_occ as f64 / stats.n_pair_groups as f64;
     }
+    Ok(slots)
+}
+
+/// The ragged system of fully filled slots, in slot order. An empty slot is
+/// an error: a grouping bug, or a striped run whose blocks were not gathered
+/// (a rank-pinned context with no MPI world behind it).
+fn ragged_from_slots(slots: Vec<crate::ragged_transport::Slot>) -> Result<Ragged, FerricError> {
     let mut pairs: Vec<PairBlock> = Vec::new();
     for (px, s) in slots.into_iter().enumerate() {
         pairs.extend(s.ok_or_else(|| {
             FerricError::General(format!(
-                "lmp2_direct: pair slot {px} never filled (grouping bug)"
+                "lmp2_direct: pair slot {px} never filled (grouping bug, or a rank stripe \
+                 without an MPI world to gather over)"
             ))
         })?);
     }
@@ -4480,6 +4592,119 @@ mod stage_c_tests {
         )
         .unwrap();
         (r, st)
+    }
+
+    /// Every field of a block as bits, for bitwise comparison.
+    fn block_bits(pb: &PairBlock) -> (Vec<usize>, Vec<bool>, Vec<u64>) {
+        let idx = [&[pb.i, pb.j][..], &pb.da, &pb.db, &pb.pos_da, &pb.pos_db].concat();
+        let vals = [&pb.fvv_aa, &pb.fvv_bb, &pb.j_blk, &pb.denom]
+            .iter()
+            .flat_map(|a| a.iter().map(|v| v.to_bits()))
+            .collect();
+        (idx, pb.pat.clone(), vals)
+    }
+
+    /// The slots one simulated rank fits (no gather: a rank-pinned context
+    /// has no MPI world).
+    fn rank_slots(
+        su: &Setup,
+        pre: &StripsAndMetric,
+        eps: f64,
+        dcfg: &DirectConfig,
+    ) -> Vec<crate::ragged_transport::Slot> {
+        let mut st = DirectStats::default();
+        let input = PairFitInput {
+            pre,
+            dfbs: &su.dfbs,
+            spaces: &su.spaces,
+            eps,
+            scale: 1.0,
+            dcfg,
+            path: FitPath::Cholesky,
+            gate: None,
+            fock_screen: None,
+        };
+        fit_pair_slots(input, &mut st).unwrap().0
+    }
+
+    /// The MPI rank stripe partitions the pair fits. For 1, 2, 3 and 5
+    /// simulated ranks: every slot is fitted by exactly one rank, and the
+    /// union of the ranks' slots is the serial ragged system bit for bit.
+    /// One rank is the serial path itself.
+    #[test]
+    fn rank_stripes_union_to_the_serial_blocks() {
+        use ferric_core::parallel::ParallelContext;
+        // octane: long enough that the pair domains differ, so there are
+        // several domain groups to stripe (butane has one).
+        let su = setup("alkane_8.xyz", 8);
+        let eps = 1e-4;
+        let pre = pre_of(&su, Operator::coulomb(), eps, 0.7);
+        let dcfg = production_maps(None);
+        let (serial, st) = fit(&su, &pre, eps, &dcfg, FitPath::Cholesky);
+        let serial_bits: Vec<_> = serial.pairs.iter().map(block_bits).collect();
+        assert!(
+            st.n_pair_groups >= 5,
+            "need >= 5 groups, got {}",
+            st.n_pair_groups
+        );
+        for size in [1usize, 2, 3, 5] {
+            let per_rank: Vec<_> = (0..size)
+                .map(|rank| {
+                    let striped = DirectConfig {
+                        mpi: Some(ParallelContext::for_rank(rank, size)),
+                        ..dcfg.clone()
+                    };
+                    rank_slots(&su, &pre, eps, &striped)
+                })
+                .collect();
+            let n_slots = per_rank[0].len();
+            let mut union: Vec<PairBlock> = Vec::new();
+            for px in 0..n_slots {
+                let owners: Vec<usize> = (0..size).filter(|&r| per_rank[r][px].is_some()).collect();
+                assert_eq!(owners.len(), 1, "size {size}: slot {px} owners {owners:?}");
+                union.extend(per_rank[owners[0]][px].clone().unwrap());
+            }
+            let union_bits: Vec<_> = union.iter().map(block_bits).collect();
+            assert_eq!(union_bits, serial_bits, "size {size}");
+            // every rank did some of the work, and none did all of it
+            for (rank, s) in per_rank.iter().enumerate() {
+                let n = s.iter().flatten().count();
+                assert!(n > 0, "size {size}: rank {rank} fitted nothing");
+                assert!(
+                    size == 1 || n < n_slots,
+                    "size {size}: rank {rank} fitted everything"
+                );
+            }
+        }
+    }
+
+    /// A rank-pinned context has no MPI world to gather over, so the full
+    /// driver must refuse rather than return a partial ragged system.
+    #[test]
+    fn a_stripe_without_a_world_is_refused() {
+        use ferric_core::parallel::ParallelContext;
+        let su = setup("alkane_8.xyz", 8);
+        let eps = 1e-4;
+        let pre = pre_of(&su, Operator::coulomb(), eps, 0.7);
+        let striped = DirectConfig {
+            mpi: Some(ParallelContext::for_rank(0, 2)),
+            ..production_maps(None)
+        };
+        let mut st = DirectStats::default();
+        let err = fit_pairs(
+            &pre,
+            &su.dfbs,
+            &su.spaces,
+            eps,
+            1.0,
+            &striped,
+            FitPath::Cholesky,
+            None,
+            None,
+            &mut st,
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("never filled"), "{err}");
     }
 
     /// The surviving pairs (i ≤ j) in stage-5 order and their domains D_ij.

@@ -93,6 +93,7 @@ pub mod pair_domains;
 pub mod pair_energy_screen;
 /// Ragged per-pair domain-block storage for local correlation.
 pub mod ragged;
+mod ragged_transport;
 /// Resolution-of-identity MP2 (density-fitted) using 3-center integrals.
 pub mod rimp2;
 #[cfg(feature = "gpu")]
