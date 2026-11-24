@@ -20,6 +20,7 @@ use ferric_rpa::{run_pdep_rpa, PdepRpaConfig};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 
+#[allow(clippy::too_many_arguments)]
 fn time_solver(
     mol: &Molecule,
     obs: &PreparedBasis,

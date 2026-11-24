@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Proofs: ferric-tddft's spin-adapted response matrices, Casida reduction and oscillator strengths.
 
-Derivation: (`book/src/20-tddft/01-response.md#response-matrices`, `book/src/20-tddft/02-oscillator-strengths.md#oscillator-strengths-length-gauge-formula`, 8-11). The code
+Derivation: (`book/src/19-tddft/01-response.md#response-matrices`, `book/src/19-tddft/02-oscillator-strengths.md#oscillator-strengths-length-gauge-formula`, 8-11). The code
 transcribed here (index ia = i * nvir + a, chemist integrals, real orbitals):
 
   * tddft.rs build_a_matrix / build_b_matrix with coulomb_factor (c_J = 2
@@ -27,11 +27,12 @@ Checked:
   A2  (symbolic) for a spin-symmetric e(rho_a, rho_b), 2 d^2/drho^2 of
       e(rho/2, rho/2) = f_aa + f_ab: the singlet kernel is twice the
       unpolarized second derivative (PySCF get_ab's factor 2 on frr).
+      Negative control: without the factor 2 the identity fails.
   A3  (symbolic, scalar case) the eigenvalues of [[a, b], [-b, -a]] are
       +-sqrt((a-b)(a+b)), and X+Y = W^{-1/2} sqrt(a-b) z with unit z gives
       X^2 - Y^2 = 1.
   A4  (symbolic) the range-separated exchange c_sr erfc + c_lr erf =
-      c_sr * 1 + (c_lr - c_sr) erf (`book/src/20-tddft/04-rsh.md#rsh-split`).
+      c_sr * 1 + (c_lr - c_sr) erf (`book/src/19-tddft/04-rsh.md#rsh-split`).
   B   Numerical, random closed-shell model (2 occ, 3 vir, RI tensors for
       Coulomb and erf, a random grid kernel f_aa, f_ab):
       B1  the spin-orbital A and B built directly from the textbook
@@ -56,7 +57,7 @@ Checked:
           body term making both Fock matrices diagonal) equals A elementwise;
           for C_a = C_b the unrestricted roots are the restricted singlet union
           triplet and the transition moment reduces to the sqrt2 form.
-  D   <S^2> of an unrestricted root (`book/src/20-tddft/06-unrestricted.md#unrestricted-each-root`), against an
+  D   <S^2> of an unrestricted root (`book/src/19-tddft/06-unrestricted.md#unrestricted-each-root`), against an
       independent Fock-space construction <Psi|S^2|Psi> = M^2 + M +
       |S_+ Psi|^2 with S_+ = sum O_pq a+_{p alpha} a_{q beta} and Jordan-Wigner
       signs, 4 spatial orbitals per spin, (n_alpha, n_beta) = (2,1), (3,1),
@@ -67,6 +68,25 @@ Checked:
       D3  O = 1: X_a = X_b gives 0, X_a = -X_b gives 2 (claim s2).
       D4  casida_x = the X block of the eigenvector of [[A, B], [-B, -A]]
           normalized to X.X - Y.Y = 1 (claim casidax).
+  E   Davidson solvers and the triplet kernel coefficients:
+      E1  davidson.rs::diagonal_correction (`book/src/19-tddft/01-response.md`,
+          eq:response-4): Olsen's t = P r - eps P x with
+          eps = x^T P r / x^T P x has x^T t = 0 (symbolic, and on the port
+          for Ritz pairs of a random 40x40 A); the plain P r does not
+          (claim olsen).
+      E2  davidson.rs::casida_ritz (eq:response-5): on a 7-vector subspace of
+          a random Casida problem, u = L z / sqrt(Omega), v = M_+ u / Omega
+          satisfy M_+ u = Omega v, M_- v = Omega u and u^T v = 1; with V the
+          full space, Omega are the positive roots of [[A, B], [-B, -A]]
+          and u = X+Y of solve_casida (claim casidaritz).
+      E3  fxc.rs::spin_coefficients(triplet = true)
+          (`book/src/19-tddft/05-triplets.md`): for a generic symmetric
+          libxc Hessian H and the perturbation drho_b = -drho_a,
+          grad drho_b = -grad drho_a, dtau_b = -dtau_a at a restricted
+          point, the libxc variables move by (r, -r, 2 gamma, 0, -2 gamma,
+          t, -t) and the linearized alpha potential (u, w, t) equals the
+          code's coefficients (symbolic); the same coefficients do not
+          linearize the singlet (claim tripletlin).
   C   PySCF, run only with DERIV_CROSSCHECK=1 (skipped with a message when
       it is not importable): H2O/STO-3G
       RHF TDA and TDHF singlets and triplets, and H2O+/STO-3G UHF TDA and
@@ -84,6 +104,10 @@ Mutations (the runner substitutes the code line once; each exits 1):
   SpinOverlap::excited drops the 2 on the cross-spin term -> D2 fails
   SpinOverlap::reference drops the occupied-occupied overlap term -> D1 fails
   casida_x uses (X+Y) - (A+B)(X+Y)/W (the Y block) -> D4 fails
+  the singlet kernel normalization 2 d2e -> 1 d2e -> A2 fails
+  diagonal_correction returns the plain P r -> E1 fails
+  casida_ritz scales u by 1/Omega instead of Omega^-1/2 -> E2 fails
+  spin_coefficients(triplet) uses 2 v_saa + v_sab for grad drho_a -> E3 fails
 
 Run: python3 scripts/tddft_response_sympy.py
 """
@@ -225,6 +249,59 @@ def u_transition(r_ov_spins, w, amps, da):
 # ================================================================ A: symbolic
 
 
+PRECOND_FLOOR = 1e-8
+
+
+def inverse_shifted_diag(theta, diag):
+    """davidson.rs: 1/(theta - D), |theta - D| floored at PRECOND_FLOOR."""
+    den = theta - diag
+    return 1.0 / np.where(
+        np.abs(den) < PRECOND_FLOOR, np.copysign(PRECOND_FLOOR, den), den
+    )
+
+
+def diagonal_correction(r, x, theta, diag):
+    """davidson.rs::diagonal_correction: Olsen's t = P r - eps P x."""
+    p = inverse_shifted_diag(theta, diag)
+    pr = p * r
+    px = p * x
+    den = x @ px
+    if np.isfinite(den) and den != 0.0:
+        eps = (x @ pr) / den
+        if np.isfinite(eps):
+            return pr - eps * px
+    return pr
+
+
+def casida_ritz(mp_, mm):
+    """davidson.rs::casida_ritz: L = M_-^1/2, L M_+ L z = Omega^2 z,
+    u = L z / sqrt(Omega), v = M_+ u / Omega."""
+    lam, w = np.linalg.eigh(mm)
+    l_half = (w * np.sqrt(lam)) @ w.T
+    om2, z = np.linalg.eigh(l_half @ mp_ @ l_half)
+    om = np.sqrt(om2)
+    u = l_half @ z / np.sqrt(om)
+    v = mp_ @ u / om
+    return om, u, v
+
+
+def triplet_coefficients(h, vs, wt):
+    """fxc.rs::spin_coefficients(triplet = true): (u, w_g, t) rows and the
+    grad(drho_a) coefficient. h indexed (RA, RB, SAA, SAB, SBB, TA, TB)."""
+    ra_, rb_, saa_, sab_, sbb_, ta_, tb_ = range(7)
+
+    def row(i):
+        return [
+            wt * (h[i, ra_] - h[i, rb_]),
+            wt * (2 * (h[i, saa_] - h[i, sbb_])),
+            wt * (h[i, ta_] - h[i, tb_]),
+        ]
+
+    ra, saa, sab, ta = row(ra_), row(saa_), row(sab_), row(ta_)
+    sg = [2 * saa[k] + sab[k] for k in range(3)]
+    return ra, sg, ta, wt * (2 * vs[0] - vs[1])
+
+
 def part_a():
     dlt, jj, kx, kb, faa, fab, c = sp.symbols("Delta J K_A K_B f_aa f_ab c")
     a_aa, a_ab = dlt + jj - c * kx + faa, jj + fab
@@ -258,6 +335,11 @@ def part_a():
     check(
         "A2 2 d2e(rho/2, rho/2)/drho2 = f_aa + f_ab (singlet kernel normalization) (claim A2)",
         sp.expand(lhs - rhs) == 0,
+    )
+    one = 1 * sp.diff(e_unpol, rho, 2)
+    check(
+        "A2 negative control: d2e(rho/2, rho/2)/drho2 without the factor 2 is not f_aa + f_ab",
+        sp.expand(one - rhs) != 0,
     )
 
     a, b, lam, z = sp.symbols("a b lambda z", positive=True)
@@ -1052,11 +1134,153 @@ def part_d():
     )
 
 
+def part_e():
+    """Davidson identities (01-response.md, response-4 and response-5) and the
+    triplet linearization of fxc.rs::spin_coefficients (05-triplets.md)."""
+    rng = np.random.default_rng(20261119)
+    # E1 Olsen: x^T t = 0 (symbolic and on the port); plain P r is not.
+    xs = sp.Matrix(sp.symbols("x0:3"))
+    rs = sp.Matrix(sp.symbols("r0:3"))
+    ps = sp.diag(*sp.symbols("p0:3"))
+    eps_s = (xs.T * ps * rs)[0] / (xs.T * ps * xs)[0]
+    t_s = ps * rs - eps_s * ps * xs
+    check(
+        "E1 Olsen correction: x^T (P r - eps P x) = 0 for eps = x^T P r / x^T P x (claim olsen)",
+        sp.simplify((xs.T * t_s)[0]) == 0,
+    )
+    dim = 40
+    diag = np.sort(rng.uniform(0.3, 2.0, dim))
+    a = np.diag(diag) + 0.05 * (lambda g: g + g.T)(rng.standard_normal((dim, dim)))
+    v, _ = np.linalg.qr(rng.standard_normal((dim, 6)))
+    th, y = np.linalg.eigh(v.T @ a @ v)
+    worst, plain = 0.0, 0.0
+    for k in range(3):
+        x = v @ y[:, k]
+        r = a @ x - th[k] * x
+        t = diagonal_correction(r, x, th[k], diag)
+        worst = max(worst, abs(x @ t) / np.linalg.norm(t))
+        plain = max(plain, abs(x @ (inverse_shifted_diag(th[k], diag) * r)))
+    check(
+        "E1 diagonal_correction port: |x^T t| / |t| < 1e-13 (claim olsen)",
+        worst < 1e-13,
+        f"{worst:.1e}",
+    )
+    check(
+        "E1 negative control: the plain P r has a component along x",
+        plain > 1e-3,
+        f"{plain:.1e}",
+    )
+
+    # E2 Casida subspace: Galerkin equations and u^T v = 1; full space = dense.
+    om_s, z1, z2 = sp.symbols("Omega z1 z2", positive=True)
+    l11, l12, l22, m11, m12, m22 = sp.symbols("l11 l12 l22 m11 m12 m22", real=True)
+    lm = sp.Matrix([[l11, l12], [l12, l22]])
+    mpm = sp.Matrix([[m11, m12], [m12, m22]])
+    zv = sp.Matrix([z1, z2])
+    u_s = lm * zv / sp.sqrt(om_s)
+    v_s = mpm * u_s / om_s
+    utv = (u_s.T * v_s)[0]
+    check(
+        "E2 u^T v = z^T L M_+ L z / Omega^2 (symbolic) (claim casidaritz)",
+        sp.simplify(utv - (zv.T * lm * mpm * lm * zv)[0] / om_s**2) == 0,
+    )
+    nocc, nvir = 3, 4
+    d = nocc * nvir
+    dl = rng.uniform(0.4, 1.6, d)
+    k1 = 0.08 * rng.standard_normal((d, d))
+    k2 = 0.05 * rng.standard_normal((d, d))
+    apb = np.diag(dl) + k1 @ k1.T + k2 + k2.T
+    amb = np.diag(dl) + k1 @ k1.T - (k2 + k2.T) * 0.3
+    amat, bmat = 0.5 * (apb + amb), 0.5 * (apb - amb)
+    vv, _ = np.linalg.qr(rng.standard_normal((d, 7)))
+    om, u, v = casida_ritz(vv.T @ apb @ vv, vv.T @ amb @ vv)
+    mp_, mm = vv.T @ apb @ vv, vv.T @ amb @ vv
+    gal = max(
+        maxabs(mp_ @ u - v * om),
+        maxabs(mm @ v - u * om),
+        maxabs(np.einsum("kn,kn->n", u, v) - 1.0),
+    )
+    check(
+        "E2 casida_ritz port: M_+ u = Omega v, M_- v = Omega u, u^T v = 1 (claim casidaritz)",
+        gal < 1e-12,
+        f"{gal:.1e}",
+    )
+    om_f, u_f, v_f = casida_ritz(apb, amb)
+    w_ref, xpy_ref = solve_casida(amat, bmat)
+    full = np.concatenate(
+        [np.concatenate([amat, bmat], 1), np.concatenate([-bmat, -amat], 1)]
+    )
+    ev = np.sort(np.linalg.eigvals(full).real)
+    d1 = max(maxabs(om_f - ev[d:]), maxabs(om_f - w_ref))
+    d2 = maxabs(np.abs(u_f) - np.abs(xpy_ref))
+    check(
+        "E2 full subspace: Omega = positive roots of [[A,B],[-B,-A]], u = X+Y (claim casidaritz)",
+        d1 < 1e-12 and d2 < 1e-10,
+        f"{d1:.1e}, {d2:.1e}",
+    )
+
+    # E3 triplet linearization of the libxc variables (05-triplets.md).
+    rho1, tau1 = sp.symbols("rho_1 tau_1", real=True)
+    g = sp.Matrix(sp.symbols("g0:3", real=True))
+    dg = sp.Matrix(sp.symbols("dg0:3", real=True))
+    ep = sp.symbols("varepsilon", real=True)
+    hs = sp.Matrix(7, 7, lambda i, j: sp.Symbol(f"H{min(i, j)}{max(i, j)}"))
+    vsig = sp.symbols("vs_aa vs_ab vs_bb", real=True)
+    for s_ in (1, -1):
+        ga, gb = g + ep * dg, g + s_ * ep * dg
+        xvec = sp.Matrix(
+            [
+                ep * rho1,
+                s_ * ep * rho1,
+                ga.dot(ga),
+                ga.dot(gb),
+                gb.dot(gb),
+                ep * tau1,
+                s_ * ep * tau1,
+            ]
+        )
+        dx = sp.diff(xvec, ep).subs(ep, 0)
+        dv = hs * dx  # libxc second derivatives times the variable change
+        # alpha potential: u = v_rho_a, w = 2 v_saa grad rho_a + v_sab grad rho_b, t = v_tau_a
+        v_saa, v_sab = vsig[0] + ep * dv[2], vsig[1] + ep * dv[3]
+        w_alpha = 2 * v_saa * ga + v_sab * gb
+        dw = sp.diff(w_alpha, ep).subs(ep, 0)
+        gam = g.dot(dg)
+        if s_ == -1:
+            ra, sgr, ta, cgrad = triplet_coefficients(hs, vsig, 1)
+            vec = sp.Matrix([rho1, gam, tau1])
+            pred_u = sp.Matrix([ra]).dot(vec)
+            pred_w = sp.Matrix([sgr]).dot(vec) * g + cgrad * dg
+            pred_t = sp.Matrix([ta]).dot(vec)
+            ok = (
+                sp.expand(dv[0] - pred_u) == 0
+                and sp.expand(dv[5] - pred_t) == 0
+                and sp.expand(dw - pred_w) == sp.zeros(3, 1)
+            )
+            check(
+                "E3 spin_coefficients(triplet): dx = (r, -r, 2g, 0, -2g, t, -t) and the alpha (u, w, t) (claim tripletlin)",
+                ok,
+            )
+            ok_dx = sp.expand(
+                dx - sp.Matrix([rho1, -rho1, 2 * gam, 0, -2 * gam, tau1, -tau1])
+            ) == sp.zeros(7, 1)
+            check("E3 triplet dx of the libxc variables (claim tripletlin)", ok_dx)
+        else:
+            ra, sgr, ta, cgrad = triplet_coefficients(hs, vsig, 1)
+            vec = sp.Matrix([rho1, gam, tau1])
+            pred_w = sp.Matrix([sgr]).dot(vec) * g + cgrad * dg
+            check(
+                "E3 negative control: the triplet coefficients do not linearize the singlet",
+                sp.expand(dw - pred_w) != sp.zeros(3, 1),
+            )
+
+
 def main():
     part_a()
     part_b()
     part_c()
     part_d()
+    part_e()
     print(f"{len(FAILS)} failed: {FAILS}" if FAILS else "all identities hold")
     return 1 if FAILS else 0
 

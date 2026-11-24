@@ -115,7 +115,7 @@ test use the unshifted $F$.
 
 The box proves the block structure and the unchanged density. The
 first-order step and the one-rotation model above are a perturbation
-argument, checked numerically for this section and not part of the proof.
+argument that no claim covers.
 
 The same water / cc-pVDZ SCF with three shifts, from the `589b50832` build,
 lands on the same energy to every printed digit; only the iteration count
@@ -161,21 +161,48 @@ otherwise.
 | `xc_is_metagga` | a meta-GGA functional (SCAN, r2SCAN, TPSS, ...) |
 | `0.5` | the automatic shift for meta-GGAs, whose $\tau$ term makes plain DIIS limit-cycle |
 
-That shift $\mu$ is then ramped by the current error, differently per solver:
+That shift $\mu$ is then ramped by the current error. There are two ramps,
+each one function in `ferric-scf/src/driver.rs`:
 
-| Solver | $\mu_{\rm eff}$ |
-|---|---|
-| RHF | $\mu\min(\max\lvert e\rvert/0.1,\ 1)$ |
-| UHF, ROHF | $\mu\max\lvert e\rvert/(\max\lvert e\rvert + 10^{-3})$ |
+| Solvers | Function | $\mu_{\rm eff}$ |
+|---|---|---|
+| RHF, RKS | `closed_shell_level_shift_ramp` | $\mu\min(\max\lvert e\rvert/0.1,\ 1)$ |
+| UHF, UKS, ROHF, ROKS, periodic Gamma and k-point ROKS | `open_shell_level_shift_ramp` | $\mu\max\lvert e\rvert/(\max\lvert e\rvert + 10^{-3})$ |
 
-Both ramps go to zero with the error, so the last iterations run unshifted
-and take full steps. In RHF the shift is added inside `diis_step` in
+<!-- excerpt: ferric-scf/src/driver.rs::open_shell_level_shift_ramp -->
+```rust
+shift * err_max / (err_max + OPEN_SHELL_RAMP_ERR)
+```
+
+Both go to zero with the error, so the last iterations run unshifted and
+take full steps, and the converged energy does not depend on either. They
+differ in the tail: the linear ramp is down to 10% of the shift at
+$\max\lvert e\rvert = 10^{-2}$, the rational one is still at 91%. Each was
+measured in the other's place, with the energies equal to $10^{-10}$ Ha in
+every case:
+
+| System | Linear | Rational |
+|---|---|---|
+| water RHF/cc-pVDZ, $\mu = 2.0$ (the example above) | 11 | 16 |
+| water RKS/SCAN, CH4 RKS/r2SCAN (automatic shift); COSe RHF, $\mu = 0.5$ | 10, 9; 16 | 11, 11; 17 |
+| 17 molecular open-shell SCFs (NH2, CH3, OH, O2; UHF, UKS, ROHF, ROKS) | 0 to 7 fewer | the reference |
+| Gamma ROKS PBE0, tri 4H triplet, six perturbed starts (`ferric-pbc/tests/pbc_rohf.rs`) | 1005 in total; 314 and 229 on two starts | 1145 in total; 177 and 172 on those |
+| k-point ROKS PBE0, the same cell (`ferric-pbc/tests/pbc_kroks.rs`) | not converged in 200, $\max\lvert e\rvert$ parked at $7\times10^{-3}$ | 34 |
+
+The closed-shell ramp is never slower on the closed shells measured. The
+open-shell family includes the ROKS cell whose minimum repels the unshifted
+Roothaan map, and there the shift has to survive into the tail: at
+$\max\lvert e\rvert = 7\times10^{-3}$ the linear ramp keeps 7% of it and the
+rational one 87%.
+
+In RHF the shift is added inside `diis_step` in
 `crates/ferric-scf/src/rhf.rs`; here it is with only a test probe removed:
 
 ```rust
 if inp.effective_level_shift > 0.0 {
     if let Some(c_p) = self.c_prev.as_ref() {                   // previous orbitals C
-        let shift_ramp = inp.effective_level_shift * (err_max / 0.1).min(1.0); // mu_eff
+        let shift_ramp =
+            crate::driver::closed_shell_level_shift_ramp(inp.effective_level_shift, err_max); // mu_eff
         if shift_ramp > 0.0 {
             let shift_term = with_blas_threads(opt_in_blas_threads(), || {
                 let c_vir = c_p.slice(ndarray::s![.., nocc..]); // C_v
@@ -220,8 +247,8 @@ orbital is normalized, so $0 \le p_j \le 1$. Summed over all $j$ the scores
 give $n_o$: the new orbitals are a complete orthonormal set, so each old
 occupied orbital contributes $\sum_jO_{ij}^2 = 1$. The $n_o$ highest scores
 are occupied, ties going to the lower index. For ROHF the open shell is then
-chosen the same way from the remaining orbitals. The closed-set scores, from `mom_order`, which
-`ferric-scf/src/mom.rs::mom_reorder` calls:
+chosen the same way from the remaining orbitals. The closed-set scores come
+from `mom_order`, which `ferric-scf/src/mom.rs::mom_reorder` calls:
 
 ```rust
 let o_closed = c_prev_closed.t().dot(s).dot(c_new);      // O = C_o^old^T S C
@@ -234,13 +261,14 @@ let o_closed = c_prev_closed.t().dot(s).dot(c_new);      // O = C_o^old^T S C
 ```
 
 The scores are then sorted in descending order with a stable sort, so the
-virtuals keep their energy order. The reference is the previous iteration's
-orbitals or, for UHF, optionally the initial guess
-(`mom_reference = "initial"`). MOM starts after iteration `mom_after_iter`.
-MOM pins whatever basin the SCF holds when it is armed: it stops the
-occupied set flipping, and it does not steer toward the ground state. That
-is why it changes the converged answer, and why it is armed only after DIIS
-has settled.
+virtuals keep their energy order. MOM pins whatever basin the SCF holds when
+it is armed: it stops the occupied set flipping, and it does not steer
+toward the ground state. That is why it changes the converged answer. With
+the previous iteration's orbitals as reference (the default) it is armed
+after `mom_after_iter` SCF iterations, once DIIS has settled. With
+`mom_reference = "initial"` (UHF and UKS; requires `mom_after_iter = 0`) it
+holds the guess occupation from the first iteration, which is how an excited
+configuration is targeted.
 
 ### Fermi smearing
 
@@ -293,6 +321,7 @@ and every orbital above gets $f_p \to 0$, which is aufbau.
 > | | |
 > |---|---|
 > | Proof | `scripts/scf_diis_sympy.py`, claim F1 |
+> | Negative control | the bisection branch reversed (raise the lower bound when the count is too high) must fail F1 |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-scf/src/smearing.rs::{fermi_dirac,solve_fermi_level}` |
 >
@@ -304,7 +333,10 @@ The code computes the entropy
 $S = -2\sum_p[f_p\ln f_p + (1-f_p)\ln(1-f_p)]$, but the returned energy of a
 smeared run is $E[D]$ at the fractional density, not the Mermin free energy
 $E - \sigma S$; the entropy is reported only in the trace output. A smeared
-energy is therefore not variational in the occupations. In Python, a
+energy is therefore not variational in the occupations. The Fermi–Dirac
+occupations make the free energy $E - \sigma S$ stationary with respect to the
+occupations (Mermin), not $E$ itself, so two smeared energies at different
+$\sigma$ cannot be compared without the $-\sigma S$ term. In Python, a
 gradient run with `smearing_sigma` is a `ValueError` before the SCF
 (`crates/ferric-python/ferric.pyi`). The stability descent of section @sec:stability
 skips a smeared run, because its integer-occupation Hessian does not
@@ -315,16 +347,12 @@ an open-shell run (`Config::validate_open_shell_scf_keys` in
 `crates/ferric-cli/src/config.rs`), and the Python open-shell entry points
 do not take them.
 
-## Doc fixes needed {#level-shift-mom-smearing-doc-fixes-needed}
-
-| Text | Code |
-|---|---|
-| the `mom_after_iter` doc counts DIIS iterations | the code counts SCF iterations: the `iter > config.mom_after_iter` test in `solve_rhf` |
-| the ramp docs state one formula for all solvers | the two formulas of the ramp table above |
-
 ## Sources
 
 | Source | Used for |
 |---|---|
 | `scripts/scf_diis_sympy.py` | verified equations @eq:scf-level-shift and @eq:scf-fermi-level |
 | `crates/ferric-scf/src/mom.rs`, `crates/ferric-scf/src/smearing.rs` | MOM and the Fermi level |
+| V. R. Saunders and I. H. Hillier, Int. J. Quantum Chem. 7, 699 (1973) | the level shift |
+| A. T. B. Gilbert, N. A. Besley and P. M. W. Gill, J. Phys. Chem. A 112, 13164 (2008) | MOM |
+| N. D. Mermin, Phys. Rev. 137, A1441 (1965); A. D. Rabuck and G. E. Scuseria, J. Chem. Phys. 110, 695 (1999) | the free energy and Fermi smearing in SCF |

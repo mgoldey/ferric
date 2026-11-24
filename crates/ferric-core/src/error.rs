@@ -58,12 +58,109 @@ pub enum FerricError {
     },
 }
 
+/// What kind of failure a [`FerricError`] is, for a front end that has to
+/// pick a class (the Python bindings' exception hierarchy). The match in
+/// [`FerricError::category`] is exhaustive, so a new variant cannot be added
+/// without deciding its category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorCategory {
+    /// An iterative procedure did not converge.
+    Convergence,
+    /// A dense linear-algebra call failed.
+    Numerical,
+    /// A memory budget or pool cannot cover a request.
+    Memory,
+    /// A valid request for something the method does not implement.
+    Unsupported,
+    /// A basis set or ECP could not be loaded or does not cover the molecule.
+    Basis,
+    /// Anything else (untyped text, I/O, parsing, the integral engine).
+    Other,
+}
+
 impl FerricError {
+    /// The [`ErrorCategory`] of this error. Exhaustive on purpose.
+    pub fn category(&self) -> ErrorCategory {
+        match self {
+            FerricError::ScfConvergence { .. } | FerricError::Convergence(_) => {
+                ErrorCategory::Convergence
+            }
+            FerricError::Lapack(_) => ErrorCategory::Numerical,
+            FerricError::MemoryExhausted(_) => ErrorCategory::Memory,
+            FerricError::Unsupported { .. } => ErrorCategory::Unsupported,
+            FerricError::Basis(_) => ErrorCategory::Basis,
+            FerricError::Io(_)
+            | FerricError::XyzParse(_)
+            | FerricError::Libint(_)
+            | FerricError::General(_) => ErrorCategory::Other,
+        }
+    }
+
+    /// One value of every variant, for tests that must cover them all. The
+    /// array length is not tied to the enum, but [`FerricError::category`]'s
+    /// exhaustive match forces a decision for a new variant, and the unit
+    /// test below checks every category here is reached.
+    pub fn samples(msg: &str) -> Vec<(&'static str, FerricError)> {
+        vec![
+            (
+                "io",
+                FerricError::Io(std::io::Error::other(msg.to_string())),
+            ),
+            ("xyz_parse", FerricError::XyzParse(msg.into())),
+            ("basis", FerricError::Basis(msg.into())),
+            ("libint", FerricError::Libint(msg.into())),
+            (
+                "scf_convergence",
+                FerricError::ScfConvergence {
+                    iterations: 7,
+                    last_energy: -1.5,
+                },
+            ),
+            ("lapack", FerricError::Lapack(msg.into())),
+            ("convergence", FerricError::Convergence(msg.into())),
+            ("general", FerricError::General(msg.into())),
+            ("memory_exhausted", FerricError::MemoryExhausted(msg.into())),
+            ("unsupported", FerricError::unsupported("a feature", msg)),
+        ]
+    }
+
     /// Build a [`FerricError::Unsupported`].
     pub fn unsupported(feature: impl Into<String>, reason: impl Into<String>) -> Self {
         FerricError::Unsupported {
             feature: feature.into(),
             reason: reason.into(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Adding a variant fails `category`'s exhaustive match; this checks the
+    /// sample list (which the Python mapping test iterates) keeps up and
+    /// reaches every category.
+    #[test]
+    fn samples_cover_every_variant_and_category() {
+        let samples = FerricError::samples("x");
+        let mut seen = std::collections::HashSet::new();
+        for (name, e) in &samples {
+            seen.insert(format!("{:?}", e.category()));
+            let variant = format!("{e:?}");
+            assert!(!name.is_empty() && !variant.is_empty());
+        }
+        // One sample per variant: update with the enum (its `category` match
+        // will not compile until the new variant has a category).
+        assert_eq!(samples.len(), 10);
+        for c in [
+            "Convergence",
+            "Numerical",
+            "Memory",
+            "Unsupported",
+            "Basis",
+            "Other",
+        ] {
+            assert!(seen.contains(c), "no sample reaches {c}");
         }
     }
 }

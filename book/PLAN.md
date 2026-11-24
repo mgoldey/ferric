@@ -133,6 +133,7 @@ Code references are `crate/src/file.rs::item` under `crates/`.
 | `three-index-sources` | Three-index sources: in core, packed, spilled, recomputed | none; `site/src/reference/input.md` (`jk_storage`) | `ferric-integrals/src/three_index_source.rs::{ThreeIndexSource,build_band_screened,build_dressed,for_each_block}` | edit |
 | `robust-fit` | Mixed metrics and robust (Dunlap) fitting | none | `ferric-mp2/src/rimp2.rs::{ri_mp2_robust_attenuated_metric,robust_fit_coulomb_parts}` | ready |
 | `cabs` | Complementary auxiliary basis (CABS) | S `mp2_variant_identities.py` claim 7 | `ferric-mp2/src/f12.rs::build_cabs`, `ferric-integrals/src/cabs.rs::cross_overlap` | edit |
+| `omega-ri-fit` | The omega-RI fit: an attenuated metric | S `omega_ri_sympy.py` claims 1, 4, 5 | `ferric-mp2/src/omega_ri.rs::{fit_dressing,omega_ri_dressing_from_metrics}` | verify |
 
 ### Part III. Self-consistent field
 
@@ -155,6 +156,7 @@ Code references are `crate/src/file.rs::item` under `crates/`.
 | `level-shift-mom-smearing` | Level shift, MOM and smearing | none | `ferric-scf/src/mom.rs::mom_reorder`, `ferric-scf/src/smearing.rs::{fermi_dirac,solve_fermi_level}` | ready |
 | `second-order` | Second-order steps: Newton, augmented Hessian, trust region | none | `ferric-scf/src/rhf_newton.rs::{rhf_newton_step,hessian_matvec}`, `ferric-scf/src/uhf_newton.rs::uhf_newton_step`, `ferric-scf/src/rohf_newton.rs::rohf_newton_step`, `ferric-scf/src/rohf_ah.rs::rohf_ah_step`, `ferric-scf/src/trah.rs::{solve_trust_region,rhf_trah_step}`, `ferric-scf/src/cayley.rs::cayley_unitary` | ready |
 | `stability` | Stability analysis | none | `ferric-scf/src/stability.rs::{rhf_internal_stability,rhf_external_stability,uhf_internal_stability}` | ready |
+| `scf-exits` | Exits, the ladder and opt-in solvers | none | `ferric-scf/src/rhf.rs::{scf_converged,veto_stalled_energy_diis,stall_detected}`, `ferric-scf/src/ladder.rs::{solve_rhf_ladder,default_ladder_from,ksdft_ladder}`, `ferric-scf/src/symmetric.rs::solve_rhf_symmetric` | edit |
 
 ### Part IV. Density functional theory
 
@@ -210,15 +212,17 @@ Code references are `crate/src/file.rs::item` under `crates/`.
 | `unrestricted-oo-rimp2` | Unrestricted OO-RI-MP2 | R u-oo-rimp2 *gap* | `ferric-mp2/src/u_oo_rimp2.rs::u_oo_ri_mp2`, `ferric-mp2/src/u_rimp2.rs::compute_u_mp2_orbital_gradient` | verify |
 | `laplace-mp2` | Laplace-transform MP2 and SOS-MP2 | S `mp2_variant_identities.py` claim 3; R laplace-mp2, laplace-sos-mp2; W §11 | `ferric-mp2/src/laplace.rs::{laplace_ri_mp2,laplace_sos_mp2,build_pseudo_density_occ,build_pseudo_density_vir}`, `ferric-quadrature/src/minimax.rs::select_minimax_points` | ready |
 | `local-laplace-sos` | Local Laplace SOS-MP2 | M mp2 "Laplace formulations" | `ferric-mp2/src/laplace_local.rs::sos_local_energy`, `ferric-mp2/src/boys.rs::boys_localize` | gap |
+| `omega-ri-cdd-mp2` | omega-RI-CDD-MP2 | S `omega_ri_sympy.py` claim 6 | `ferric-mp2/src/omega_ri_cdd.rs::{omega_ri_cdd_mp2,cdd_factors}` | verify |
 
 **Local MP2** (chapter `local-mp2`)
 
 | Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| `amplitude-lmp2` | Amplitude-threshold local MP2 | S `lmp2_hylleraas_vs_wshg23_sympy.py`; W §14; R local-mp2 *gap* | `ferric-mp2/src/lmp2_amplitude.rs::{amplitude_lmp2,build_vvhv,hylleraas_energy}`, `ferric-mp2/src/ragged.rs::solve_ragged` | ready |
+| `amplitude-lmp2` | Amplitude-threshold local MP2 | S `lmp2_hylleraas_vs_wshg23_sympy.py`; W §14; R local-mp2 | `ferric-mp2/src/lmp2_amplitude.rs::{amplitude_lmp2,build_vvhv,hylleraas_energy}`, `ferric-mp2/src/ragged.rs::solve_ragged` | ready |
 | `integral-direct` | The integral-direct path | M mp2 "Exact and local MP2" | `ferric-mp2/src/lmp2_direct.rs::amplitude_lmp2_direct` | ready |
 | `pno-dlpno` | Pair natural orbitals and DLPNO-MP2 | W §10 | `ferric-mp2/src/dlpno_mp2.rs::dlpno_mp2_from_b_ov`, `ferric-mp2/src/local_pno.rs::build_pno_transforms` | ready |
 | `local-opmp3` | Amplitude-threshold local OP-MP3 | S `local_opmp3_sympy.py`; P `prototypes/local_opmp3_proto.py`; R local-opmp3 | `ferric-mp2/src/opmp3.rs::{pade_trace,ssd_opmp3}`, `ferric-mp2/src/ragged.rs::solve_ragged` | ready |
+| `amplitude-lmp2-combined-truncation` | Combining the screen, the embedding and λ-Boys orbitals | S `lmp2_combined_sympy.py`; R local-mp2 | `ferric-mp2/src/ragged.rs::{pair_blocks_screened,fock_dressed_gate}` | ready |
 | `lmp2-mask-certificate` | The mask certificate | S `lmp2_mask_certificate_sympy.py`; R local-mp2 | `ferric-mp2/src/lmp2_mask_certificate.rs::{mask_certificate,radau_one_step}` | edit |
 
 ### Part VI. Derivatives
@@ -358,7 +362,7 @@ Code references are `crate/src/file.rs::item` under `crates/`.
 | `rsgdf` | Range-separated Gaussian density fitting for J and K | none; R pbc-hf *gap* | `ferric-pbc/src/rsgdf.rs::{j_builder,k_builder}` | ready |
 | `kpoint-scf` | k-point Hartree–Fock and Kohn–Sham | none; R pbc-hf *gap*, pbc-ks *gap* | `ferric-pbc/src/kpts.rs::monkhorst_pack`, `ferric-pbc/src/kscf.rs::solve_krhf`, `ferric-pbc/src/kuscf.rs::solve_kuhf`, `ferric-pbc/src/kdft.rs::solve_krks` | edit |
 | `forces` | Forces | R pbc-ks *gap* | `ferric-pbc/src/grad.rs::gamma_rhf_gradient`, `ferric-pbc/src/kgrad.rs::kpoint_rhf_gradient` | edit |
-| `stress` | Stress | S `pbc_ewald_pairft_stress_sympy.py` | `ferric-pbc/src/stress.rs::gamma_rhf_stress`, `ferric-pbc/src/ewald.rs::ewald_nuclear_strain`, `ferric-pbc/src/pair_ft.rs::pair_ft_strain_chunked` | ready |
+| `stress` | Stress | S `pbc_ewald_pairft_stress_sympy.py` | `ferric-pbc/src/stress.rs::gamma_rhf_stress`, `ferric-pbc/src/ewald.rs::ewald_nuclear_strain`, `ferric-pbc/src/pair_ft.rs::pair_ft_strain_chunked` | edit |
 | `mp2-drpa` | Periodic MP2 and dRPA | none; R pbc-mp2 *gap*, pbc-drpa *gap* | `ferric-pbc/src/mp2.rs::gamma_mp2`, `ferric-pbc/src/drpa.rs::gamma_drpa`, `ferric-pbc/src/kcorr.rs::{kpoint_mp2,kpoint_drpa}` | ready |
 
 ### Part XIII. Dispersion
@@ -447,25 +451,25 @@ registry row and are the largest block of `gap` sections.
 |---|---|---|---|---|---|
 | 0. Front matter | 1 | 1 | 0 | 0 | 2 |
 | I. Foundations | 0 | 7 | 0 | 0 | 7 |
-| II. Integrals, screening and density fitting | 1 | 15 | 1 | 0 | 17 |
-| III. Self-consistent field | 8 | 2 | 0 | 0 | 10 |
+| II. Integrals, screening and density fitting | 1 | 15 | 1 | 1 | 18 |
+| III. Self-consistent field | 8 | 3 | 0 | 0 | 11 |
 | IV. Density functional theory | 7 | 0 | 0 | 0 | 7 |
-| V. The MP2 family | 19 | 4 | 1 | 5 | 29 |
+| V. The MP2 family | 20 | 4 | 1 | 6 | 31 |
 | VI. Derivatives | 12 | 3 | 0 | 0 | 15 |
 | VII. Coupled cluster | 7 | 1 | 0 | 0 | 8 |
 | VIII. Multireference | 6 | 0 | 0 | 0 | 6 |
 | IX. RPA, PDEP and GW | 14 | 0 | 0 | 1 | 15 |
 | X. Response and excited states | 7 | 2 | 0 | 0 | 9 |
 | XI. Environment | 5 | 4 | 0 | 0 | 9 |
-| XII. Periodic systems | 7 | 2 | 0 | 0 | 9 |
+| XII. Periodic systems | 6 | 3 | 0 | 0 | 9 |
 | XIII. Dispersion | 2 | 1 | 0 | 0 | 3 |
 | XIV. Capstone | 1 | 2 | 4 | 0 | 7 |
 | XV. Interfaces | 1 | 5 | 1 | 0 | 7 |
 | XVI. Dynamics | 0 | 1 | 0 | 0 | 1 |
 | Appendices | 3 | 0 | 1 | 0 | 4 |
-| **Total** | **101** | **50** | **8** | **6** | **165** |
+| **Total** | **101** | **52** | **8** | **8** | **169** |
 
-165 sections: 61% `ready`, 30% `edit`, 5% `gap` and 4% `verify`.
+169 sections: 60% `ready`, 31% `edit`, 5% `gap` and 5% `verify`.
 <!-- status-table:end -->
 
 ## 5. Gaps, ranked by how much rests on them

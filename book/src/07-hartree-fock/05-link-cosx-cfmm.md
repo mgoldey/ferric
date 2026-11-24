@@ -60,7 +60,10 @@ $Q_{s_3s_4} \le q_{s_3}$ by the definition of $q$,
 $$ Q_{s_1s_2}Q_{s_3s_4}D^{\rm blk}_{23} \le q_{s_2}\,q_{s_3}\,D^{\rm blk}_{23} . $$
 
 So a quartet survives on that pairing only if $s_3 \in \mathrm{dp}(s_2)$. The
-same holds for the other three pairings. The lists are necessary conditions of
+same holds for the other three pairings. For the two pairings with $s_4$
+($D^{\rm blk}_{14}$, $D^{\rm blk}_{24}$), the ket $(s_3, s_4)$ is reached
+with $s_4$ as the third shell and $s_3 \in \mathrm{sp}(s_4)$, and the
+canonicalization then orders it. The lists are necessary conditions of
 this test when the bound factorizes as $Q_{12}Q_{34}$ (Schwarz), so LinK is
 direct $K$ to the threshold. The skip rule is exact; the asymptotic count of
 surviving quartets is a property of the density, not of the code. For a
@@ -99,14 +102,14 @@ Put the grid on electron 1, with points $\mathbf r_g$ and weights $w_g$:
 
 $$ K_{\mu\nu} = \sum_{\lambda\sigma}D_{\lambda\sigma}\int\!\!\int\frac{\chi_\mu(\mathbf r_1)\chi_\sigma(\mathbf r_1)\,\chi_\nu(\mathbf r_2)\chi_\lambda(\mathbf r_2)}{r_{12}} \approx \sum_gX_{\mu g}\,G_{\nu g}, $$
 
-$$ X_{\mu g} = \sqrt{w_g}\,\chi_\mu(\mathbf r_g), \quad F_{\lambda g} = \sum_\sigma D_{\lambda\sigma}X_{\sigma g}, \quad A_{\nu\lambda}(g) = \int\frac{\chi_\nu\chi_\lambda}{|\mathbf r - \mathbf r_g|}\,d\mathbf r, \quad G_{\nu g} = \sum_\lambda A_{\nu\lambda}(g)F_{\lambda g} . $$
+$$ X_{\mu g} = \sqrt{w_g}\,\chi_\mu(\mathbf r_g), \quad \Phi_{\lambda g} = \sum_\sigma D_{\lambda\sigma}X_{\sigma g}, \quad A_{\nu\lambda}(g) = \int\frac{\chi_\nu\chi_\lambda}{|\mathbf r - \mathbf r_g|}\,d\mathbf r, \quad G_{\nu g} = \sum_\lambda A_{\nu\lambda}(g)\Phi_{\lambda g} . $$
 
-Read it right to left. $F_{\lambda g}$ contracts the density with the
+Read it right to left. $\Phi_{\lambda g}$ (`F` in the code) contracts the density with the
 electron-1 function $\chi_\sigma$ at the point. $A(g)$ is the potential at
 $\mathbf r_g$ of the electron-2 product $\chi_\nu\chi_\lambda$, a
 three-centre one-electron integral (section @sec:md-three-center). $G$ applies that potential,
 and the outer sum over points finishes the electron-1 integral. The weight is
-split as $\sqrt{w_g}$ on each side because $F$ contains one factor of $X$.
+split as $\sqrt{w_g}$ on each side because $\Phi$ contains one factor of $X$.
 
 $A(g)$ comes from the McMurchie–Davidson kernel (`cosx_backend = "md3c1e"`)
 and is never assembled as a matrix: each shell pair's block is added into
@@ -115,7 +118,7 @@ $K = \tfrac12(\tilde K + \tilde K^{\mathsf T})$ with $\tilde K = XG^{\mathsf T}$
 
 **The overlap fit.** The grid makes an error even in the simplest case. Let
 the potential be constant over the molecule, $A_{\nu\lambda}(g) = cS_{\nu\lambda}$.
-Then $G = cSF = cSDX$, and
+Then $G = cS\Phi = cSDX$, and
 
 $$ \tilde K = XG^{\mathsf T} = c\,XX^{\mathsf T}DS = c\,S_{\rm num}DS, \qquad S_{\rm num} = XX^{\mathsf T}, $$
 
@@ -124,13 +127,41 @@ answer is $cSDS$, so the plain result carries the grid's overlap error. The
 overlap fit (`cosx_overlap_fit`, default on) replaces the left factor by its
 projection that makes the numerical overlap exact,
 
-$$ K = \tfrac12\big(Q\tilde K + (Q\tilde K)^{\mathsf T}\big), \qquad Q = S\,S_{\rm num}^{-1}, $$
+$$ K = \tfrac12\big(P_{\rm fit}\tilde K + (P_{\rm fit}\tilde K)^{\mathsf T}\big), \qquad P_{\rm fit} = S\,S_{\rm num}^{-1}, $$
 
 computed with a Cholesky factor of $S_{\rm num}$ (built once per geometry).
-For the constant potential $Q\tilde K = SS_{\rm num}^{-1}cS_{\rm num}DS = cSDS$,
+For the constant potential $P_{\rm fit}\tilde K = SS_{\rm num}^{-1}cS_{\rm num}DS = cSDS$,
 exact on any grid: the fit removes the error of the grid's overlap. As the
-grid becomes exact $S_{\rm num}\to S$, $Q \to 1$, and both forms tend to the
-exact $K$.
+grid becomes exact $S_{\rm num}\to S$, $P_{\rm fit} \to 1$, and both forms
+tend to the exact $K$.
+
+**The fit is not variational.** Section @sec:energy-functionals gets
+$F = \partial E/\partial D$ from the trace symmetry
+$\operatorname{tr}[A\,K[B]] = \operatorname{tr}[B\,K[A]]$. The plain COSX
+form keeps it: for symmetric $A$, $B$ and symmetric $A(g)$,
+$\operatorname{tr}[B\,\tilde K[A]] = \sum_g x_g^{\mathsf T}BA(g)Ax_g$ with
+$x_g$ the column $g$ of $X$, and the transpose of that scalar is the same
+expression with $A$ and $B$ exchanged. The fitted form multiplies $\tilde K$
+by $P_{\rm fit}$ on one side before it symmetrizes, and the symmetry is lost:
+$\operatorname{tr}[A\,K[B]] \ne \operatorname{tr}[B\,K[A]]$, so
+$-\tfrac12 K[D]$ in the Fock matrix is not the density derivative of the
+reported exchange energy $-\tfrac14\operatorname{tr}[D\,K[D]]$. The SCF
+still converges to $FDS = SDF$, but that point is not a stationary point of
+the energy it reports. Claim C3 of `scripts/scf_jk_builders_sympy.py` shows
+both statements on a random model: the pairing asymmetry is $4\times10^{-1}$
+relative for the fitted form and $4\times10^{-16}$ for the plain one, and a
+central difference of the fitted energy misses the Fock term by
+$9\times10^{-2}$ relative.
+
+The code accounts for this in the nuclear gradient, not in the SCF. With the
+fit on, `ferric-scf/src/gradient.rs::rhf_gradient_cosx` and
+`uhf_gradient_cosx` add an orbital-response (Z-vector) term from
+`ferric-scf/src/cosx_gradient.rs::fitted_exchange_response` (chapter
+@sec:derivatives). The ROHF and ROKS gradients refuse the fit
+(`check_cosx_restricted_open_fit`), as do Kohn–Sham gradients with a
+functional (`check_fitted_ks_supported`): both would need a response term
+ferric does not implement, and `cosx_overlap_fit = false` is the exact
+alternative there.
 
 > **Verified equation {#eq:scf-cosx-overlap-fit}** · the COSX overlap fit
 >
@@ -151,8 +182,8 @@ exact $K$.
 
 **Screening.** A shell pair is dropped for a sub-batch of points when
 $\mathrm{est}\cdot\max(f_{s_1}, f_{s_2}) < \tau_{\rm COSX}$. Here est is an
-upper bound on $\max_g|A^{(g)}|$ over the region (the minimum of a sphere and
-a box bound, both never below the true value), and $f_s = \max|F_{\mu g}|$
+upper bound on $\max_g|A(g)|$ over the region (the minimum of a sphere and
+a box bound, both never below the true value), and $f_s = \max|\Phi_{\mu g}|$
 over the shell and the points. Each dropped pair perturbs an element of $G$ by
 at most $\tau_{\rm COSX}$ per component it contributes, so the bound on one
 element is the sum over the dropped partners. $\tau_{\rm COSX} = 0$ is bitwise
@@ -192,8 +223,8 @@ let qk = s_ao.dot(&z);
 |---|---|
 | `z` | $S_{\rm num}^{-1}\tilde K$, from `fac.l` and `fac.lt` |
 | `s_ao` | the analytic overlap $S$ |
-| `qk` | $Q\tilde K = SS_{\rm num}^{-1}\tilde K$ |
-| `k` | $\tfrac12(Q\tilde K + (Q\tilde K)^{\mathsf T})$ |
+| `qk` | $P_{\rm fit}\tilde K = SS_{\rm num}^{-1}\tilde K$ |
+| `k` | $\tfrac12(P_{\rm fit}\tilde K + (P_{\rm fit}\tilde K)^{\mathsf T})$ |
 
 The two triangular solves apply $S_{\rm num}^{-1}$ without forming it.
 
@@ -226,12 +257,14 @@ $J(\mathbf r) \approx \sum_{l,m} M_{lm}\,Y_{lm}(\theta,\phi)/r^{l+1}$.
 Cartesian multipoles (below). The two carry the same terms order by order,
 because the degree-$n$ part of the Taylor expansion of
 $1/\lvert\mathbf R-\mathbf r'\rvert$ in $\mathbf r'$ is
-$r'^{\,n}P_n(\cos\gamma)/R^{n+1}$, the $l=n$ spherical term. A hierarchical FMM (M2M/L2L translations) uses that to make the far-field
-Coulomb build $O(N)$. ferric's module is behind the off-by-default
+$r'^{\,n}P_n(\cos\gamma)/R^{n+1}$, the $l=n$ spherical term. A
+hierarchical FMM translates these expansions between the levels of a box
+tree (M2M and L2L translations) to make the far-field Coulomb build $O(N)$. ferric's module is behind the off-by-default
 `cfmm-incomplete` feature: its far field is a flat leaf-to-leaf M2L with no
 M2M/L2L pass, so it does not have that asymptotic scaling, and it is slower
-than `DirectJ`. It reproduces the direct $J$ to about $10^{-14}$ in the
-all-near-field limit.
+than `DirectJ`. In the all-near-field limit it reproduces the direct $J$ to
+about $10^{-14}$ (the measurement recorded in the `cfmm.rs` module doc; the
+test below asserts $10^{-10}$).
 
 **Shell pairs.** Every ordered shell pair $(s_1, s_2)$ is placed at the
 weighted centre of its primitive products, $\sum w\,\mathbf P/\sum w$ with
@@ -270,7 +303,7 @@ is no M2M or L2L pass and the far-field work is $O(n_{\mathrm{leaf}}^2)$.
 **Exact limit.** Each pair sits in exactly one leaf, so with every leaf pair
 treated as near (`force_all_near_field`) every quartet is counted once and $J$
 is the exact Coulomb matrix (`cfmm_matches_direct_j_in_the_trivial_limit`,
-$10^{-10}$). With the far field engaged the error falls with $l_{\max}$
+which asserts agreement to $10^{-10}$). With the far field engaged the error falls with $l_{\max}$
 (`cfmm_far_field_engaged_matches_direct_j_on_alkane10`). `CfmmConfig::thresh`
 is not read by the code: the near field is unscreened.
 
@@ -300,7 +333,7 @@ and one far-field test, and no production caller.
 | Check | Reference | Agreement | Test |
 |---|---|---|---|
 | LinK SCF energy, butane / def2-SVP | direct $K$ | 9e-12 Ha | `crates/ferric-scf/tests/link_scf_anchor.rs` |
-| COSX, dense-grid limit, water / cc-pVDZ | direct $K$ | 3.3e-7 | `crates/ferric-scf/tests/cosx_k_anchors.rs` |
+| COSX, dense-grid limit, water / cc-pVDZ | direct $K$ | 3.3e-7 Ha, largest element of $\lvert K_{\rm COSX} - K\rvert$ | `crates/ferric-scf/tests/cosx_k_anchors.rs` |
 
 <!-- figures: site/src/reference/validation.md "COSX exchange, dense-grid limit"; site/src/methods/scf.md "Choosing how exchange is built" -->
 
@@ -329,22 +362,19 @@ same page records the LinK timings as being re-measured.
 | `cosx_final_pass`, `cosx_final_grid` | one non-self-consistent energy correction on a larger grid |
 | `cosx_overlap_fit` | the $S S_{\rm num}^{-1}$ fit, on by default |
 
-## Doc fixes needed {#link-cosx-cfmm-doc-fixes-needed}
-
-| Text | Code |
-|---|---|
-| `LinkK` struct doc: ket shells are the "intersection" of the two lists | the third shell runs over the union $\mathrm{dp}(i) \cup \mathrm{dp}(j)$ |
-| the COSX pair-screen doc bounds each element's error by the threshold | the bound is the sum over the dropped partners |
-| `CfmmConfig::thresh` documented as a near-field screen | the field is never read |
-| the CFMM separation criterion in its docs | the code adds both extents and $w_s h$ (excerpt above) |
-
 ## Sources
 
 | Source | Used for |
 |---|---|
-| `scripts/scf_jk_builders_sympy.py` | verified equation @eq:scf-cosx-overlap-fit |
+| `scripts/scf_jk_builders_sympy.py` | verified equation @eq:scf-cosx-overlap-fit; claim C3 (the fit is not variational) |
+| C. Ochsenfeld, C. A. White and M. Head-Gordon, J. Chem. Phys. 109, 1663 (1998) | LinK |
+| F. Neese, F. Wennmohs, A. Hansen and U. Becker, Chem. Phys. 356, 98 (2009); R. Izsák and F. Neese, J. Chem. Phys. 135, 144105 (2011) | COSX and its overlap fit |
+| C. A. White and M. Head-Gordon, J. Chem. Phys. 101, 6593 (1994) | the multipole method behind CFMM |
 | `site/src/methods/scf.md`, "Choosing how exchange is built" | the measured errors and times |
 | `site/src/reference/validation.md` | the COSX anchor |
 
 The plain-form step $\tilde K = cS_{\rm num}DS$ and the pairing inequality of
 the LinK lists are written out here from the cited claims and definitions.
+The test `cosx_matches_direct_k_in_the_dense_grid_limit` asserts that the
+error falls monotonically over five grids and ends below $10^{-7}$ (plain) and
+$10^{-8}$ (fitted) at (99,590).

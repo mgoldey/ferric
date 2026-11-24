@@ -243,11 +243,7 @@ pub fn total_u_scs_mp2_2terfc_gradient_on(
     scf_jk: &ScfJk,
     warm: &mut ScfWarmStart,
 ) -> Result<(f64, Array2<f64>), FerricError> {
-    let scf_base = RhfConfig {
-        density_conv: 1e-9,
-        external_potential: ext.cloned(),
-        ..Default::default()
-    };
+    let scf_base = RhfConfig::gradient_reference(ext.cloned());
     total_u_scs_mp2_2terfc_gradient_with(
         mol, obs_basis, aux_basis, config, ext, scf_jk, warm, scf_base,
     )
@@ -336,6 +332,7 @@ mod tests {
     use ferric_scf::rhf::solve_rhf;
     use ferric_scf::scf_jk::ScfJkMode;
     use ferric_scf::Spin;
+    use ferric_testkit::compare::{max_abs, max_abs_diff};
     use std::path::Path;
 
     const WATER: &str = "3\nwater, off C2v\nO 0.02 -0.01 0.117790\nH 0.0 0.785453 -0.451161\nH 0.03 -0.735453 -0.491161\n";
@@ -373,26 +370,15 @@ mod tests {
         });
     }
 
-    fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-        (a - b).iter().fold(0.0f64, |m, v| m.max(v.abs()))
-    }
-
-    fn max_abs(a: &Array2<f64>) -> f64 {
-        a.iter().fold(0.0f64, |m, v| m.max(v.abs()))
-    }
-
     fn scf_cfg(fit: bool) -> RhfConfig {
-        let mut cfg = RhfConfig {
-            density_conv: 1e-11,
-            max_iter: 300,
-            ..Default::default()
-        }
-        .for_geometry_task();
+        let mut cfg = RhfConfig::default()
+            .with_density_conv(1e-11)
+            .with_max_iter(300)
+            .for_geometry_task();
         if fit {
             ScfJk {
                 mode: ScfJkMode::RiJk,
                 aux: Some("def2-universal-jkfit".to_string()),
-                k_builder: None,
             }
             .apply(&mut cfg);
         }

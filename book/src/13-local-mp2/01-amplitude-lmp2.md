@@ -16,24 +16,29 @@ too. In a long molecule most $(i,a)$ combinations are far apart, and most
 amplitudes are negligible.
 
 The amplitude-threshold scheme of Wang, Aldossary, Shi, Liu, Li and
-Head-Gordon (J. Chem. Theory Comput. 19, 7577, 2023) acts on this directly.
+Head-Gordon (J. Chem. Theory Comput. 19, 7577, 2023; WSHG23 below) acts on
+this directly.
 It keeps an amplitude only when the integral that drives it exceeds one
 threshold $\varepsilon$, and solves the MP2 equations for the kept set only.
 Three facts frame the rest of the section:
 
 - $\varepsilon = 0$ keeps everything and gives canonical RI-MP2 exactly.
-- The energy error has one sign: the truncated energy is never below the
-  canonical one (§@sec:amplitude-lmp2-amplitude-equations-energy shows why).
+- On the in-core global-fit path the energy error has one sign: the
+  truncated energy is never below the canonical one
+  (§@sec:amplitude-lmp2-amplitude-equations-energy shows why). The value
+  options of section @sec:amplitude-lmp2-options-change-equation and the
+  maps of section @sec:integral-direct change the integrals themselves and
+  can make it negative.
 - `eps` has no default. It is part of the model, like the basis set.
 
 Notation:
 
 | Symbol | Meaning | In the code |
 |---|---|---|
-| $i, j, k$ | active occupied orbitals, Boys-localized | `no` of them; `LocalizedSpaces::c_locc` |
-| $a, b$ | virtual orbitals of the VV-HV localized space | `nv` of them; `VvHv::c_vloc` |
-| $t_{ij}^{ab}$ | first-order amplitudes | one `Array2` block per ordered pair, `PairBlock` |
-| $J_{ia,jb}$ | $(ia\vert jb)$ in the localized basis | `PairBlock::j_blk` |
+| $i, j, k$ | active occupied orbitals, λ-Boys-localized (plain Boys at λ = 0) | `no` of them; field `c_locc` of `ferric-mp2/src/lmp2_amplitude.rs::LocalizedSpaces` |
+| $a, b$ | virtual orbitals of the VV-HV localized space | `nv` of them; field `c_vloc` of `ferric-mp2/src/lmp2_amplitude.rs::VvHv` |
+| $t_{ij}^{ab}$ | first-order amplitudes | one `Array2` block per ordered pair, `ferric-mp2/src/ragged.rs::PairBlock` |
+| $J_{ia,jb}$ | $(ia\vert jb)$ in the localized basis | field `j_blk` of `PairBlock` |
 | $f_{ik}$, $F_{ab}$ | occupied and virtual blocks of the Fock matrix in the localized bases; **not diagonal** | `f_oo`, `f_vv` |
 | $\Delta_{ij}^{ab}$ | $F_{aa}+F_{bb}-f_{ii}-f_{jj}$, positive | `PairBlock::denom` |
 | $\varepsilon$ | the threshold | `AmplitudeLmp2Config::eps` |
@@ -43,7 +48,9 @@ Entry points:
   `ferric-mp2/src/lmp2_amplitude.rs::amplitude_lmp2_with_virtuals` when you
   supply your own virtual space.
 - CLI: `method.kind = "rimp2"` with `[local] scheme = "amplitude-threshold"`
-  and `eps = ...` (`examples/water-rimp2-local.toml`).
+  and `eps = ...` (`examples/water-rimp2-local.toml`). `method.kind =
+  "att-rimp2"` takes the same `[local]` section with the erfc or terfc
+  operator (section @sec:amplitude-lmp2-attenuated).
 - Python: `run_rimp2(..., local="amplitude-threshold", eps=...)`.
 
 The method is closed shell and computes energies only.
@@ -75,28 +82,47 @@ multiplies each amplitude by
 $F_{aa} + F_{bb} - f_{ii} - f_{jj} = \Delta_{ij}^{ab}$, and $R = 0$ gives back
 $t = -J/\Delta$ and the energy of equation (@eq:closed-shell-ri-mp2-3).
 
-The code applies $\mathcal A$ without ever forming it. This is the body of
-`ferric-mp2/src/ragged.rs::matvec_indexed`, run in parallel over output
-pairs; only the flop counter has been removed:
+The code applies $\mathcal A$ without ever forming it.
+`ferric-mp2/src/ragged.rs::matvec_indexed_into` runs a closure in parallel
+over output pairs $p = (i,j)$. The closure body, copied unchanged,
+with the flop-count setup before it and the write into the output slot
+after it removed:
 
+<!-- excerpt: ferric-mp2/src/ragged.rs::matvec_indexed_into -->
 ```rust
-let mut r = pb.fvv_aa.dot(&t[p_idx]);        // F t_ij     (particle a)
-r += &t[p_idx].dot(&pb.fvv_bb);              //   + t_ij F (particle b)
-for &q in &rg.by_j[&pb.j] {                  // pairs (k, j): same j
-    let f = f_oo[(pb.i, rg.pairs[q].i)];     //   f_ik
-    if f == 0.0 { continue; }
-    gather_into(&mut r, &rg.pairs[q], pb, -f, &t[q], ..);   // - f_ik t_kj
+let mut r = pb.fvv_aa.dot(&t[p_idx]);
+r += &t[p_idx].dot(&pb.fvv_bb);
+for &q in &rg.by_j[&pb.j] {
+    let qb = &rg.pairs[q];
+    let f = f_oo[(pb.i, qb.i)];
+    if f == 0.0 {
+        continue;
+    }
+    gather_into(&mut r, qb, pb, -f, &t[q], &mut fl);
 }
-for &q in &rg.by_i[&pb.i] {                  // pairs (i, k): same i
-    let f = f_oo[(rg.pairs[q].j, pb.j)];     //   f_kj
-    if f == 0.0 { continue; }
-    gather_into(&mut r, &rg.pairs[q], pb, -f, &t[q], ..);   // - f_kj t_ik
+for &q in &rg.by_i[&pb.i] {
+    let qb = &rg.pairs[q];
+    let f = f_oo[(qb.j, pb.j)];
+    if f == 0.0 {
+        continue;
+    }
+    gather_into(&mut r, qb, pb, -f, &t[q], &mut fl);
 }
-apply_pattern(&mut r, &pb.pat, nb);          // zero the dropped amplitudes
+apply_pattern(&mut r, &pb.pat, nb);
 ```
 
-The four lines of (@eq:amplitude-lmp2-1) map onto these lines one for one. Two details are
-not in the equation:
+| Code | Equation |
+|---|---|
+| `pb.fvv_aa.dot(&t[p_idx])` | $F\,t_{ij}$, the particle $a$ |
+| `t[p_idx].dot(&pb.fvv_bb)` | $t_{ij}\,F$, the particle $b$ |
+| the loop over `rg.by_j[&pb.j]`, `f_oo[(pb.i, qb.i)]` | $-\sum_k f_{ik}\,t_{kj}$: pairs $(k,j)$ with the same $j$ |
+| the loop over `rg.by_i[&pb.i]`, `f_oo[(qb.j, pb.j)]` | $-\sum_k f_{kj}\,t_{ik}$: pairs $(i,k)$ with the same $i$ |
+| `apply_pattern` | zero the dropped amplitudes |
+| `fl` | the flop counter |
+
+The four lines of (@eq:amplitude-lmp2-1) map onto these lines one for one.
+`ferric-mp2/src/ragged.rs::matvec_indexed` is a wrapper that returns the
+blocks as a new vector. Two details are not in the equation:
 
 - **Pair blocks have different shapes.** Pair $(i,j)$ only stores the
   virtuals in its own domain, `da` × `db`. `gather_into` moves amplitudes
@@ -137,11 +163,14 @@ $$ E_H(t^*+d) = E^* + \langle (2-\mathcal S)\,d,\; \mathcal A\,d\rangle . $$
 
 The error is quadratic in $d$. An amplitude error of order $\delta$ gives
 an $E_H$ error of order $\delta^2$ and an $E_{\mathrm{lin}}$ error of order
-$\delta$. That is why the code reports $E_H$. It keeps $E_{\mathrm{lin}}$ as an independent check of the
-same solution.
+$\delta$. That is why the molecular drivers report $E_H$. They keep
+$E_{\mathrm{lin}}$ as an independent check of the same solution. The
+Γ-point driver of chapter @sec:periodic reports $E_{\mathrm{lin}}$
+(`ferric-pbc/src/lmp2.rs`).
 
 The same expansion gives the sign of the truncation error. $(2-\mathcal S)\mathcal A$
-is positive definite, so $E_H$ is a convex quadratic whose minimum over all
+is positive definite: both factors are symmetric positive definite and they
+commute. So $E_H$ is a convex quadratic whose minimum over all
 amplitudes is the canonical energy $E^*$. Truncation minimizes $E_H$ over a
 subset of the amplitudes, and a minimum over fewer variables cannot be
 lower. So $E_{\varepsilon} \ge E^*$ for every $\varepsilon$.
@@ -209,7 +238,10 @@ There are three steps from the identity to the bound:
    the $\epsilon$ taken from diagonalizing `f_vv` and `f_oo`. The smallest is
    $2(\epsilon_{\mathrm{LUMO}} - \epsilon_{\mathrm{HOMO}})$. Projecting onto
    the kept amplitudes compresses the operator, and by Cauchy interlacing a
-   compression's smallest eigenvalue can only be larger.
+   compression's smallest eigenvalue can only be larger. Step 1 needs
+   $2-\mathcal S$ to commute with that projection, which is the swap
+   closure of the kept set (section
+   @sec:amplitude-lmp2-amplitude-equations-energy).
 
 The bound needs only the orbital gap, which is cheap and guaranteed. The CG
 iteration also produces Lanczos estimates of $\lambda_{\min}$ for free, but
@@ -364,6 +396,40 @@ the compactness of the pair domains depends on it. The anchor test of
 @sec:amplitude-lmp2-numerical-anchors checks the spanning: dropping one hard virtual breaks the
 $\varepsilon = 0$ agreement (`mutated_virtual_space_fails_the_anchor`).
 
+**The opt-in local build.** `ferric-mp2/src/lmp2_amplitude.rs::build_vvhv`
+is $O(N^3)$: a global solve for $T$, a dense occupied projector, global
+eigensolves and an all-pairs Boys sweep. `[local] virtual_space = "local"`
+(Python `virtual_space="local"`; kinds `rimp2`, `att-rimp2` and `opmp3`)
+selects `ferric-mp2/src/vvhv_local.rs::VirtualSpace`'s `Local` build, which
+keeps the same steps and replaces each dense global product by an
+atom-group block-sparse one. Four thresholds control it:
+
+| Key | Default | Trivial limit | Steps it truncates |
+|---|---|---|---|
+| `virtual_tau` | $10^{-9}$ | 0 | span-critical blocks: the occupied projector, the Newton–Schulz Löwdin steps, the final guard |
+| `virtual_tau_loose` | $10^{-6}$ | 0 | basis-choice blocks: the projected minimal functions, the valence projector, the pivot Gram and Cholesky rows |
+| `virtual_solve_radius` | 30 Bohr | larger than the molecule (one global solve) | the domain-local solves for $T$ |
+| `virtual_boys_tau` | $10^{-8}$ | 0 | Boys rotations of pairs whose dipole coupling is below the threshold times their distance |
+
+With every threshold at its trivial limit and the dense build's valence
+starting basis (`ferric-mp2/src/vvhv_local.rs::LocalVvhvConfig`, `trivial`),
+the local build reproduces the dense one: the same hard-virtual pivots,
+hard columns and valence span to $10^{-10}$, and the energy to $10^{-10}$
+Ha at $\varepsilon = 0$ and $10^{-4}$ on water, n-butane and n-octane
+(`ferric-mp2/src/vvhv_local_anchor.rs::local_vvhv_trivial_limit_reproduces_build_vvhv_columns_and_energies`,
+with one mutation test per sparse stage in the same file). The CLI and
+Python start Boys from the build's own valence block. It reaches the same
+Boys maximum, but its columns differ from the dense build's by up to
+$7\times10^{-10}$, the imprint of the Boys stopping tolerance, and the
+energy moves by about $10^{-13}$ Ha. The basis-choice thresholds only
+rotate the virtual basis, so they leave the $\varepsilon = 0$ energy
+unchanged and move finite-$\varepsilon$ energies through $J$ and the kept
+set, as λ does for the occupieds. The dense build stays the default: on
+n-alkanes the span-critical intermediates reach 62 to 95 Bohr at
+$\tau \approx 10^{-9}$, so the sparse products drop nothing below about
+C60 (module documentation of `crates/ferric-mp2/src/vvhv_local.rs`; 6-31G,
+provisional).
+
 ### Step 3: localized occupieds and their sizes
 
 `localized_spaces_lambda` localizes the active occupied orbitals by
@@ -372,8 +438,8 @@ for each, its centroid $\langle\mathbf r\rangle_i$ and spread
 $\sigma_i = \sqrt{\langle r^2\rangle_i - \lvert\langle\mathbf r\rangle_i\rvert^2}$.
 It also forms the two Fock blocks of @sec:amplitude-lmp2-amplitude-equations-energy, $f = C_{\mathrm{locc}}^{\mathsf T}FC_{\mathrm{locc}}$
 and $F = C_{\mathrm{vloc}}^{\mathsf T}FC_{\mathrm{vloc}}$, and the dipole
-centroids of the virtuals, which only the integral-direct path of 13.2
-uses. No RI work happens here.
+centroids of the virtuals, which only the integral-direct path of section
+@sec:integral-direct uses. No RI work happens here.
 
 ### Step 5: skipping whole pairs before any integral
 
@@ -387,10 +453,14 @@ $$ \mathrm{cal}\,\frac{(\sigma_i\sigma_j)^3}{R_{ij}^6} < 10^{-2}\,\varepsilon , 
 
 with $R_{ij}$ the distance between Boys centroids. The code guards the
 denominator as $\max(R_{ij}^6, 10^{-12})$. The constant `cal` is
-`pair_gate_cal`. The calibrated values from the alkane series are about
-0.7 for the Coulomb operator and about 0.02 for erfc at $\omega = 1$.
+`pair_gate_cal`. Its calibrated values are about 0.7 for the Coulomb
+operator and about 0.02 for erfc at $\omega = 1$ Bohr$^{-1}$ (1.89
+Å$^{-1}$ in the CLI and Python units). They are the 95th percentile of the
+exact-to-estimated pair-energy ratio on n-octane and n-decane in 6-31G,
+measured 2026-08-14; one backbone family, so provisional, and the gate is
+off by default.
 
-This is the body of `ferric-mp2/src/lmp2_amplitude.rs::pair_gate_keep_with`,
+The body of `ferric-mp2/src/lmp2_amplitude.rs::pair_gate_keep_with`,
 with the declarations and the gated-pair counter removed:
 
 ```rust
@@ -452,7 +522,8 @@ exchanged. The pair's integrals are then formed over the candidate square
 only. The screen runs only on the global-fit path with $\varepsilon > 0$;
 the domain-local fit (`fit_radius_bohr`, section @sec:integral-direct) forms every column.
 
-**The Eq-8 mask.** Element $(a,b)$ of pair $(i,j)$ is kept when
+**The Eq-8 mask.** The rest of the chapter calls the retention rule of
+Eq. 8 of WSHG23 the "Eq-8 mask". Element $(a,b)$ of pair $(i,j)$ is kept when
 $\lvert J_{ia,jb}\rvert > \varepsilon$ or $\lvert J_{ib,ja}\rvert > \varepsilon$,
 or when $\varepsilon = 0$. The second integral is the exchange partner of
 the first, the one the same-spin energy pairs it with. Testing both makes
@@ -515,17 +586,24 @@ The Eq-8 mask looks at one number per amplitude, its own integral. In a
 localized basis that is not enough. The off-diagonal Fock elements pass
 amplitude from kept elements to dropped ones, so an element whose integral
 is zero, by symmetry for instance, can still carry a sizeable exact
-amplitude. Eq 8 cannot keep such an element at any $\varepsilon > 0$, and
+amplitude. The Eq-8 mask cannot keep such an element at any $\varepsilon > 0$, and
 the truncation error then stops falling with $\varepsilon$.
 
 **The error of a fixed pattern.** Split the amplitudes of (@eq:amplitude-lmp2-1)
 into the kept block $K$, the Eq-8 pattern, and the dropped block $D$. The
-masked solve is $t_K = -\mathcal A_{KK}^{-1}J_K$, $t_D = 0$. For the
-Hylleraas form with the exchange weighting absorbed,
+masked solve is $t_K = -\mathcal A_{KK}^{-1}J_K$, $t_D = 0$. Write the
+exchange weight $\mathcal W = 2-\mathcal S$ into the inner product,
+$\langle x, y\rangle_{\mathcal W} = \langle\mathcal Wx, y\rangle$, so that
+$E_H(t) = \langle t, 2J + \mathcal At\rangle_{\mathcal W}$. On a
+swap-closed pattern $\mathcal W$ is block diagonal and commutes with every
+block of $\mathcal A$, so it factors out of the block elimination, and in
+that inner product
 
 $$ E_{\mathrm{mask}} - E^{*} = t^{*\mathsf T}_D\big(\mathcal A_{DD} - \mathcal A_{DK}\mathcal A_{KK}^{-1}\mathcal A_{KD}\big)t^{*}_D \;\ge 0 . \label{eq:lmp2-fock-screen-schur} $$
 
-The error is the Schur norm of the dropped exact amplitudes. It is set by
+The error is the Schur norm of the dropped exact amplitudes. Section
+@sec:amplitude-lmp2-combined-p1 writes the same identity with the weight
+explicit, as $t^{*\mathsf T}_D\mathcal W_D\Sigma\,t^*_D$. It is set by
 those amplitudes, not by their integrals and not by their own energy
 $\langle t^*_D, J_D\rangle$. Write $\mathcal A = \Delta + \mathcal A'$, with
 $\mathcal A'$ the off-diagonal Fock coupling, and expand the exact
@@ -553,8 +631,8 @@ F' = F_{vv}[C_{ij}, C_{ij}] - \operatorname{diag} . \label{eq:lmp2-fock-screen-d
 
 $-\tilde g/\Delta$ is one Jacobi step from the diagonal estimate with the
 virtual Fock coupling switched on, and it is exact to first order in the
-coupling. Element $(a,b)$ is kept when Eq 8 keeps it, or when
-$\lvert\tilde g_{ab}\rvert > κ\varepsilon$ or $\lvert\tilde g_{ba}\rvert > κ\varepsilon$.
+coupling. Element $(a,b)$ is kept when the Eq-8 mask keeps it, or when
+$\lvert\tilde g_{ab}\rvert > \kappa\varepsilon$ or $\lvert\tilde g_{ba}\rvert > \kappa\varepsilon$.
 The kept values are still $g$.
 
 The core of `fock_dressed_gate`, after the diagonal of $F'$ has been
@@ -579,11 +657,11 @@ Array2::from_shape_fn((nc, nc), |(r, c)| {
 | `fsub` | $F'$, the virtual Fock block on $C_{ij}$ with its diagonal removed |
 | `t0` | $t^0 = -g/\Delta$ |
 | `gt` | $\tilde g = g + F't^0 + t^0F'$ |
-| the returned array | $\max(\lvert g\rvert, \lvert\tilde g\rvert/κ)$, thresholded at $\varepsilon$ by `ferric-mp2/src/ragged.rs::pair_block_from_g_cand_gated` |
+| the returned array | $\max(\lvert g\rvert, \lvert\tilde g\rvert/\kappa)$, thresholded at $\varepsilon$ by `ferric-mp2/src/ragged.rs::pair_block_from_g_cand_gated` |
 
 Points about the screen:
 
-- **It only adds elements.** The gate is $\max(\lvert g\rvert, \lvert\tilde g\rvert/κ)$,
+- **It only adds elements.** The gate is $\max(\lvert g\rvert, \lvert\tilde g\rvert/\kappa)$,
   so the union never drops an Eq-8 element.
 - **The pattern stays swap-closed.** The gate is covariant under the pair
   transpose, $\mathrm{gate}(g^{\mathsf T}) = \mathrm{gate}(g)^{\mathsf T}$, since $\Delta$
@@ -594,26 +672,41 @@ Points about the screen:
   the in-core path the Fock sums run over every virtual and the candidate
   square is chosen by the bound of section
   @sec:amplitude-lmp2-fock-screen-candidates. An element outside $C_{ij}$
-  is not considered, the same scope as the WLLH25 embedding below.
+  is not considered, the same scope as the per-pair embedding of
+  WLLH25 (section @sec:amplitude-lmp2-fock-screen-prior-work).
 - **The occupied off-diagonal coupling is left out.** It would need other
   pairs' integrals. On the systems measured it ranks the dropped amplitudes
   worse than the virtual part. Section @sec:amplitude-lmp2-combined-truncation
   states what that omission costs.
 - **The limits.** `None`, the library default of `AmplitudeLmp2Config`, is
-  the plain Eq-8 pattern bitwise. The integral-direct CLI and Python paths
-  switch the screen on with κ = 1
-  (`ferric-mp2/src/lmp2_direct.rs::DIRECT_FOCK_SCREEN_KAPPA`; section
-  @sec:amplitude-lmp2-fock-screen-default). At $\varepsilon = 0$ the screen is inert. A vacuous $κ$ keeps the whole
-  candidate square (`crates/ferric-mp2/tests/lmp2_fock_screen.rs`).
+  the plain Eq-8 pattern bitwise. The CLI and Python switch the screen on
+  with κ = 1 on both the in-core and the integral-direct path
+  (`ferric-mp2/src/lmp2_amplitude.rs::FOCK_SCREEN_KAPPA_DEFAULT`;
+  `ferric-mp2/src/lmp2_direct.rs::DIRECT_FOCK_SCREEN_KAPPA` is an alias;
+  section @sec:amplitude-lmp2-fock-screen-default). At $\varepsilon = 0$
+  the screen is inert. A vacuous $\kappa$ keeps the whole candidate square
+  (`crates/ferric-mp2/tests/lmp2_fock_screen.rs`).
 - **Memory.** On the integral-direct path the gate holds six
   candidate-square matrices per pair ($F'$, $t^0$, $F't^0$, the $t^0F'$
   temporary, the gate and its transpose; at most four are live at once). The
-  per-group scratch bound that sizes the group concurrency against the
-  memory budget counts all six when the screen is on
+  per-group scratch bound that sizes the stage-5 waves against the memory
+  budget counts all six when the screen is on
   (`ferric-mp2/src/lmp2_direct.rs::group_scratch_bound`). The kept blocks
   stay inside the candidate square, so the candidate-domain bound of the
   pre-flight still holds, and the charge-as-built gate charges them at their
   exact size.
+- **Scheduling under a budget.** The domain groups run in waves
+  (`ferric-mp2/src/lmp2_direct.rs::plan_group_wave`). A wave takes groups
+  while the blocks already built (exact bytes), the wave's own block bounds
+  and `min(len, workers)` copies of its largest group scratch fit the
+  budget beside the strips and metric. The candidate bound of the whole
+  system is not reserved up front: at $\varepsilon > 0$ it is loose (4–6×
+  the built blocks on C12–C16 6-31G at $\varepsilon$ = 1e-4), and reserving it
+  ran C32 one group at a time under the default budget. The group scratch
+  bound counts the whitening transients too: the gathered strip, the
+  transposed copies LAPACK's row-major wrapper makes of it and of the
+  Cholesky factor ($d^2 + 2 d |C_k|$). Groups write their own slots, so the
+  schedule changes no block.
 
 > **Verified equation @eq:lmp2-fock-screen-schur** · the masked error is the Schur norm of the dropped exact amplitudes
 >
@@ -738,14 +831,15 @@ which the strips hold, and the option is refused when the screen is on.
 >
 > <!-- verified: id=lmp2.fock-screen-bound; script=scripts/lmp2_fock_screen_sympy.py; claim=4; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/ragged.rs::{fock_bound_weights,fock_bound_keeps,fock_dressed_gate_rect}; rust_test=ferric-mp2/tests/lmp2_fock_screen.rs::fock_screen_pattern_is_independent_of_the_schwarz_prefilter; registry=local-mp2 -->
 
-### Relation to prior work
+### Relation to prior work {#amplitude-lmp2-fock-screen-prior-work}
 
 The element-wise mask is the single-threshold local MP2 of Wang, Aldossary,
 Shi, Liu, Li and Head-Gordon (JCTC 19, 7577 (2023)), which keeps $(ia|jb)$
 by integral magnitude alone. In a fixed, non-canonical localized virtual
 basis the off-diagonal virtual Fock block couples kept and dropped
 amplitudes. Wang, Ling, Shi, Shen, Wang, Yang, Li and Head-Gordon (JCTC 21,
-10910 (2025); ChemRxiv 10.26434/chemrxiv-2025-j0wd1, Eqs. 43–49) identified
+10910 (2025); ChemRxiv 10.26434/chemrxiv-2025-j0wd1, Eqs. 43–49; WLLH25 in
+this chapter) identified
 that coupling ($\mathcal A_{KD}$ in (@eq:lmp2-fock-screen-schur)) as the
 dominant fixed-pattern error. They correct it with a per-pair block Kapuy
 solve of the dropped amplitudes and a right-hand-side embedding
@@ -764,10 +858,7 @@ amplitudes or pair energies also select PNO spaces and pair classes (Werner
 et al., JCTC 11, 484 (2015); Schwilk et al., JCP 142, 121102 (2015)).
 Pair-natural-orbital methods avoid the problem by selecting in
 pseudo-canonical domains, where the in-domain virtual Fock block is
-diagonal (Pinski et al., JCP 143, 034108 (2015)). To our knowledge, a cheap
-one-step Fock-propagated estimate has not previously been used as the
-membership rule of an element-wise amplitude mask in a fixed localized
-virtual basis. That combination is all this section adds.
+diagonal (Pinski et al., JCP 143, 034108 (2015)).
 
 ### Measured on a dense oracle {#amplitude-lmp2-fock-screen-measured}
 
@@ -805,14 +896,14 @@ What the table shows:
   Octane plain at keep 0.869 ($\varepsilon$ = 3e-7) is 3.4e-7 and WLLH at
   that pattern 6.8e-8, against 2.4e-8 for the screen at keep 0.889.
 - **What WLLH leaves.** WLLH adds no amplitudes but a per-pair Sylvester
-  solve. It removes a factor 2–5, and the remainder is the cross-pair
+  solve. It removes a factor 1.6–5.6, and the remainder is the cross-pair
   occupied Fock coupling it sets to zero. On the same probe with $f_{ik}$
   ($i\ne k$) zeroed, WLLH is exact to $\le 3\times10^{-13}$ on all three
   systems. This is an anchor, not a finding: with a diagonal occupied Fock
   the pairs decouple and the whole-space Sylvester solve is the exact
-  solution. The paper's λ-Boys orbitals, which make $f_{oo}$ more
-  diagonal, were not tried.
-- **Both arms.** Combining the two arms gains a further factor 1.5–5 over
+  solution. The probe uses plain Boys orbitals. λ-Boys orbitals, which
+  make $f_{oo}$ more diagonal, are section @sec:amplitude-lmp2-lambda-boys.
+- **Both arms.** Combining the two arms gains a further factor 1.2–4.8 over
   the screen alone.
 - **The candidate restriction.** The production global path, with the
   screen restricted to each pair's Schwarz candidate square, matches the
@@ -827,21 +918,31 @@ Timings on the production path are in section @sec:amplitude-lmp2-fock-screen-de
 
 ### On by default in the CLI and Python {#amplitude-lmp2-fock-screen-default}
 
-`[local] scheme = "amplitude-threshold"` (CLI, kinds `rimp2` and `att-rimp2`)
-and `run_rimp2(..., local="amplitude-threshold")` (Python) run the screen
-with κ = 1 (`FOCK_SCREEN_KAPPA_DEFAULT`) on both the in-core and the
+`[local] scheme = "amplitude-threshold"` (CLI, kinds `rimp2`, `att-rimp2`
+and `opmp3`), `run_rimp2(..., local="amplitude-threshold")` and
+`run_opmp3(..., local="amplitude-threshold")` (Python) run the screen with
+κ = 1 (`FOCK_SCREEN_KAPPA_DEFAULT`) on both the in-core and the
 integral-direct path, unless `fock_screen = false` / `fock_screen=False` is
 given. The key is an error on the local kinds that do not read it (`drpa`,
 `linlccd`). The Rust `AmplitudeLmp2Config::default` keeps the plain mask,
-which is the exactness anchor. The integral-direct path was switched first;
-the in-core measurements are in section
+which is the exactness anchor. This section has the integral-direct
+measurements; the in-core ones are in section
 @sec:amplitude-lmp2-fock-screen-incore.
 
-The decision rests on criteria fixed before any of the data below was taken.
-At matched $\varepsilon$ the wall-time overhead is at most 10% on the
-largest systems, and the error is lower on every system. On the n-alkanes
-the error grows by less per CH$_2$. On the ACONF20 conformers the error in
-the conformer energy differences is smaller. All four hold.
+The default rests on five criteria fixed before any of the data below was
+taken:
+
+1. Cost: at matched $\varepsilon$ the median wall-time overhead is at most
+   10% on the largest systems, or, failing that, at matched final error the
+   screen is no slower.
+2. Accuracy: the error is lower on every system.
+3. Size extensivity: on the n-alkanes the error grows by less per CH$_2$.
+4. Consistency: on the ACONF20 conformers the error in the conformer
+   energy differences is smaller.
+5. Kept fraction and peak RSS are reported for every run, and no peak RSS
+   pushes a C32 run past the 12 GB cap.
+
+All five hold.
 
 **Construction.** Measured 2026-11-18 with
 `crates/ferric-mp2/tests/lmp2_fock_default_probe.rs` (`probe_fock_default`,
@@ -916,14 +1017,20 @@ $\varepsilon$ = 1e-5 and 1.03 at 1e-4 on C24 and C32. On naphthalene and
 adamantane (one run each, 3–15 s) it is 0.85–1.01. The overhead at matched
 $\varepsilon$ there is −2% to +12%, the largest at 1e-4.
 
-**Size extensivity.** Error per added CH$_2$ along the n-alkanes, a linear
-fit to the last three sizes (μHa per CH$_2$; \* against canonical RI-MP2):
+**Size extensivity.** Error per added CH$_2$ along the n-alkanes, a
+least-squares line through the last three sizes, in μHa per CH$_2$. The
+fits use the tabulated errors: the starred sizes are taken against
+canonical RI-MP2 and the others against the $\varepsilon = 0$ run on the
+same maps. Each slope therefore mixes the truncation slope with the maps'
+own error at the starred sizes, $+0.9$ to $+3.2\times10^{-6}$ Ha on
+C12–C20. At 1e-4 and 1e-5 that is negligible; at 1e-6 it is a visible part
+of the slope.
 
 | $\varepsilon$ | sizes | off | κ = 1 |
 |---|---|---|---|
-| 1e-4 | C20, C24, C32\* | 468 | 313 |
-| 1e-5 | C20, C24, C32\* | 26.5 | 12.3 |
-| 1e-6 | C16, C20, C24\* | 1.88 | 0.73 |
+| 1e-4 | C20, C24\*, C32\* | 468 | 313 |
+| 1e-5 | C20, C24\*, C32\* | 26.5 | 12.3 |
+| 1e-6 | C16, C20, C24\* | 2.14 | 0.98 |
 
 The error per carbon at $\varepsilon$ = 1e-5 is 26.0, 27.2 and 26.4 μHa
 from C20 to C32 without the screen, and 9.1, 9.6 and 10.3 μHa with it.
@@ -953,10 +1060,11 @@ mask is used.
 
 ### The in-core path {#amplitude-lmp2-fock-screen-incore}
 
-The same four criteria were applied to the in-core path
-(`amplitude_lmp2`) before it was switched. Three hold. The overhead
-criterion misses by 0.1 to 0.4 points at the largest size that fits, and
-the screen was made the default anyway for the accuracy it buys.
+The same five criteria apply to the in-core path (`amplitude_lmp2`). Four
+hold outright. The 10% overhead bound of criterion 1 is missed by 0.1 to
+0.4 points at $\varepsilon$ = 1e-5 and 1e-6 on C24, the largest size that
+fits, and criterion 1 holds by its alternative: at matched final error the
+screen is cheaper (cost table below).
 
 **Construction.** Measured 2026-11-18 with the same probe
 (`FD_PATH=incore`), library code of commit `e35f20900`. The setup is 6-31G
@@ -1035,356 +1143,7 @@ in both arms. Every conformer has the lower error with the screen.
 **Reading (provisional, same scope as the direct path).** In core the
 screen removes 42–47% of the error at 1e-4 and 78–99.6% at 1e-6 and below,
 for 6–10% more wall time on C24, and it is cheaper than the plain mask at
-equal error. The 0.1–0.4 point miss on the overhead criterion was accepted
-(Matt, 2026-11-18) for that accuracy.
-
-## Combining the screen, the embedding and λ-Boys orbitals {#amplitude-lmp2-combined-truncation}
-
-A combined production scheme would use three pieces: λ-Boys occupied
-orbitals (WLLH25 Eqs. 8–9, after Subotnik and Head-Gordon, JCP 122, 034109
-(2005)), the WLLH25 block-Kapuy embedding (Eqs. 43–49), and the screen of
-section @sec:amplitude-lmp2-fock-screen extended with occupied coupling.
-This section proves what each does to the energy. The proofs, and a dense
-cross-check on the LMP2 block structure (several pairs, shared virtuals,
-non-zero $f_{oo}$ and $F_{vv}$ off-diagonals), are in
-`scripts/lmp2_combined_sympy.py`. Each claim carries a status. No
-production code implements the occupied extension, the
-Hylleraas-evaluated embedding or the embedded Galerkin solve below. They
-are statements about the equations.
-
-**Setting and assumptions.**
-
-- (A1) The occupied and virtual orbitals are orthonormal, so the amplitude
-  space carries the Euclidean metric and $\mathcal A$ of
-  (@eq:amplitude-lmp2-1) is symmetric. With
-  $\epsilon_{\mathrm{LUMO}} > \epsilon_{\mathrm{HOMO}}$ it is positive
-  definite, its spectrum being $\epsilon_a+\epsilon_b-\epsilon_i-\epsilon_j$.
-- (A2) The retained pattern $K$ and its complement $D$ are closed under the
-  virtual swap $\mathcal S$ and the pair transpose
-  $\mathcal P: (ij,ab)\mapsto(ji,ba)$. Eq 8 and the screen satisfy this by
-  construction.
-- (A3) The reference $E^*$ is the exact minimum over a fixed universe of
-  amplitudes with fixed integrals $J$: the global RI fit, or the union of
-  candidate squares. The domain-local fit of section
-  @sec:integral-direct-domain-local-fit changes $J$ and is outside these
-  statements.
-
-Write $\mathcal W = 2 - \mathcal S$ (eigenvalues 1 and 3, commuting with
-$\mathcal A$), $\Delta = \operatorname{diag}\mathcal A$,
-$\mathcal A' = \mathcal A - \Delta$, and
-
-$$ E_H(t) = \langle\mathcal W t,\ 2J + \mathcal A t\rangle, \qquad t^* = -\mathcal A^{-1}J, \qquad E_H(t) - E^* = (t-t^*)^{\mathsf T}\mathcal W\mathcal A\,(t-t^*) \ge 0 . $$
-
-$E_H$ is a minimum principle over the whole universe.
-
-### P1. The truncation error (PROVEN under A1–A3) {#amplitude-lmp2-combined-p1}
-
-The masked solve is the Galerkin solution $\mathcal A_{KK}t_K = -J_K$,
-$t_D = 0$. Let $R_D = J_D + \mathcal A_{DK}t_K$ be the dropped-block
-residual and
-$\Sigma = \mathcal A_{DD} - \mathcal A_{DK}\mathcal A_{KK}^{-1}\mathcal A_{KD}$
-the Schur complement. By (A2) $\mathcal W$ is block diagonal,
-$\mathcal W_D$ commutes with $\Sigma$, and
-
-$$ E_K - E^* = R_D^{\mathsf T}\,\mathcal W_D\,\Sigma^{-1}R_D = t^{*\mathsf T}_D\,\mathcal W_D\,\Sigma\,t^*_D, \qquad t^*_D = -\Sigma^{-1}R_D , \label{eq:lmp2-combined-truncation-error} $$
-$$ \frac{\lVert R_D\rVert^2}{\lambda_{\max}(\mathcal A)} \;\le\; E_K - E^* \;\le\; \frac{3\,\lVert R_D\rVert^2}{\lambda_{\min}(\mathcal A)} . $$
-
-The bounds hold because $\Sigma^{-1} = (\mathcal A^{-1})_{DD}$ has its
-spectrum in $[\lambda_{\max}^{-1}, \lambda_{\min}^{-1}]$. Two corollaries
-follow:
-
-- The masked energy is an upper bound, $E_K \ge E^*$: it recovers less
-  correlation energy.
-- $K_1 \subseteq K_2 \Rightarrow E^* \le E_{K_2} \le E_{K_1}$. So any screen
-  that only adds elements to the Eq-8 pattern can never raise the energy
-  error, for every $\kappa$ and with or without the occupied term.
-
-The bracket is a computable a-posteriori certificate for any arm that stops
-at a Galerkin solution: $R_D$ costs one matvec over the universe. The CG
-error of section @sec:amplitude-lmp2-accurate-solve adds a non-negative term
-on top, so the bound survives inexact solves.
-
-> **Verified equation @eq:lmp2-combined-truncation-error** · the truncation error, its two-sided bound and nesting
->
-> $E_K - E^* = R_D^{\mathsf T}\mathcal W_D\Sigma^{-1}R_D = t^{*\mathsf T}_D\mathcal W_D\Sigma t^*_D$
-> in symbols on a 2+1 block model with a generic symmetric matrix, and
-> numerically on random instances with the LMP2 block structure, where the
-> two-sided bound holds and a screened pattern is nested in Eq 8 and no
-> worse (P1).
->
-> | | |
-> |---|---|
-> | Proof | `scripts/lmp2_combined_sympy.py`, P1 |
-> | Negative control | the runner drops $\mathcal A_{DK}$ from the Schur complement ("P1: residual identity") |
-> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
-> | Code | `ferric-mp2/src/ragged.rs::pair_blocks_screened` |
->
-> <!-- verified: id=lmp2.combined.truncation-error; script=scripts/lmp2_combined_sympy.py; claim=P1: upper bound; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/ragged.rs::pair_blocks_screened; registry=local-mp2 -->
-
-### P2. The screen's estimate is one Jacobi step (PROVEN) {#amplitude-lmp2-combined-p2}
-
-With $t^0 = -J/\Delta$, the occupied-extended dressed integral is
-
-$$ \tilde g_{ij} = g_{ij} + F'\,t^0_{ij} + t^0_{ij}\,F' - \sum_{k\ne i} f_{ik}\,t^0_{kj} - \sum_{k\ne j} t^0_{ik}\,f_{kj} \;=\; \big(J + \mathcal A' t^0\big)_{ij} . $$
-
-Apply $t^* = t^0 - \Delta^{-1}\mathcal A' t^*$ twice. Exactly,
-
-$$ t^* + \Delta^{-1}\tilde g = (\Delta^{-1}\mathcal A')^2\,t^*, \qquad
-\big|t^*_e + \tilde g_e/\Delta_e\big| \le \rho^2\,\lVert t^*\rVert, \quad \rho = \lVert\Delta^{-1}\mathcal A'\rVert_2 \le \frac{\lVert\mathcal A'\rVert_2}{\Delta_{\min}} . \label{eq:lmp2-combined-jacobi-remainder} $$
-
-So the estimate $-\tilde g/\Delta$ is exact through first order in the Fock
-coupling, and the estimator error $t^* + \Delta^{-1}\tilde g$ is second
-order. It has two sources:
-
-- (i) Paths of length two: a dropped element reached from the integrals
-  only through another element with $J = 0$. A three-element chain has
-  $\tilde g_3 = 0$ and $t^*_3 = O(\rho^2)$, so the estimate is zero there.
-- (ii) The deviation of the kept solution from $t^0$,
-  $t_K - t^0_K = -\mathcal A_{KK}^{-1}\mathcal A'_{KK}t^0_K$, which enters
-  $R_D$ only through $\mathcal A'_{DK}$ and which $\tilde g_D$, built on
-  $t^0$, does not contain.
-
-The committed virtual-only screen drops the occupied terms, which are first
-order in $\lVert f'_{oo}\rVert$. The error of its estimate is therefore
-$O(\rho)$, not $O(\rho^2)$. On the model, halving the coupling divides the
-error of the occupied-extended estimate by 4.0 and that of the
-virtual-only estimate by 2.0.
-
-**The estimate is second order; the mask's miss is not.** Everything above
-is about the estimator. A mask at a fixed threshold drops every element
-whose estimate falls below $\kappa\varepsilon$, and those elements carry
-exact amplitudes of $O(\mu)$ in the coupling strength $\mu$. Unless the mask covers the
-whole support of the occupied coupling term $f'_{oo}\,t$, the norm of the
-dropped exact amplitudes therefore stays first order, for both screens.
-Measured 2026-11-17 on octane / 6-31G at $\varepsilon = 10^{-6}$, with all
-off-diagonal Fock coupling scaled by $\mu$:
-
-| quantity | occupied-extended | virtual-only |
-|---|---|---|
-| estimator error $\lVert t_{\mathrm{est}} - t^*\rVert$, no threshold | $\approx 0.038\,\mu^2$, slope 1.98 | $\approx 0.049\,\mu$, slope 1.00–1.07 |
-| norm of the dropped exact amplitudes, $\kappa$ = 1, 0.1, 0.01 | slope $\approx 1$ | slope $\approx 1$ |
-| miss coefficient, occupied-extended relative to virtual-only | 3% lower ($\kappa$ = 1), 12% lower ($\kappa$ = 0.1), 21% lower ($\kappa$ = 0.01) | |
-| kept amplitudes at production $\kappa = 1$ | 0.05% more | |
-
-Both estimator errors are exactly 0 at $\mu = 0$. The occupied extension
-makes the estimate second order, but at a fixed threshold it lowers the
-dropped-amplitude norm only by the coefficients in the table.
-
-Since $\Sigma = \Delta_D + O(\rho\,\Delta)$, the leading-order error
-estimate is the Kapuy energy of the dressed integrals over the dropped set,
-
-$$ \delta E_{\mathrm{est}} = \sum_{e\in D}\frac{\tilde g_e\,(\mathcal W\tilde g)_e}{\Delta_e} = \sum_{ij}\sum_{(a,b)\in D_{ij}}\frac{\tilde g^{ij}_{ab}\,(2\tilde g^{ij}_{ab} - \tilde g^{ij}_{ba})}{\Delta^{ij}_{ab}} , $$
-
-with relative error $O(\rho)$ of either sign. It is an estimate, not a
-bound, and it sees only the candidate squares the assembly evaluates.
-
-> **Verified equation @eq:lmp2-combined-jacobi-remainder** · the occupied-extended estimate is one Jacobi step with a second-order estimator error
->
-> $t^* + \Delta^{-1}\tilde g = (\Delta^{-1}\mathcal A')^2t^*$ in symbols on a
-> generic 3×3 model and numerically on the block model, with the elementwise
-> bound; the explicit tensor form of $\tilde g$ equals $J + \mathcal A't^0$
-> in symbols ($n_o = n_v = 2$) and numerically; halving the coupling divides
-> the occupied-extended estimator error by about 4 and the virtual-only one
-> by about 2 (P2).
->
-> | | |
-> |---|---|
-> | Proof | `scripts/lmp2_combined_sympy.py`, P2 |
-> | Negative control | the runner removes the occupied term $\sum_{k\ne i} f_{ik}t^0_{kj}$ from $\tilde g$ ("P2: Jacobi") |
-> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
-> | Code | `ferric-mp2/src/ragged.rs::fock_dressed_gate` (the virtual-only form) |
->
-> <!-- verified: id=lmp2.combined.jacobi-remainder; script=scripts/lmp2_combined_sympy.py; claim=P2: remainder identity (numeric); runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/ragged.rs::fock_dressed_gate; registry=local-mp2 -->
-
-### P3. The WLLH25 embedding (identities PROVEN; upper bound of the WLLH energy DISPROVED) {#amplitude-lmp2-combined-p3}
-
-Split $\mathcal A = \mathcal B + \mathcal C$. $\mathcal B$ is $\mathcal A$
-with the occupied off-diagonals removed: block diagonal over pairs, the
-per-pair Sylvester operator of Eq 45.
-$\mathcal C = -(f'_{oo}\oplus f'_{oo})\otimes 1_{vv}$ is the inter-pair
-coupling, $\lVert\mathcal C\rVert_2 = 2\lVert f'_{oo}\rVert_2$. WLLH25
-solves $\tau = -\mathcal B^{-1}J$ per pair, keeps $\tau_D$, and solves the
-kept block with the shifted right-hand side $m = \mathcal B_{KD}\tau_D$:
-$\mathcal A_{KK}t_K = -J_K - \mathcal B_{KD}\tau_D$,
-$t_{\mathrm{emb}} = (t_K, \tau_D)$. For any split, with
-$\varrho = J + \mathcal A\,t_{\mathrm{emb}}$,
-
-$$ \varrho_K = \mathcal C_{KD}\,\tau_D, \qquad
-\varrho_D = \mathcal C_{DK}t_K + \mathcal C_{DD}\tau_D - \mathcal B_{DK}\mathcal B_{KK}^{-1}\mathcal C_{KK}t_K . \label{eq:lmp2-combined-embedding-residual} $$
-
-So $\mathcal C = 0 \Rightarrow t_{\mathrm{emb}} = t^*$ exactly, and the
-whole residual the embedding leaves is linear in the inter-pair occupied
-Fock coupling it sets to zero. That is the probe's "$f_{ik}$ zeroed ⇒ WLLH
-exact" anchor of section @sec:amplitude-lmp2-fock-screen-measured, now a
-theorem. What it cancels exactly is the intra-pair part $\mathcal B_{DK}$
-of the coupling that drives $R_D$ in P1, including the virtual Fock
-coupling the screen also targets. Two energies can be formed:
-
-- **Full Hylleraas** $E_H(t_{\mathrm{emb}})$ (the probe's "H" column):
-  $E_H(t_{\mathrm{emb}}) - E^* = \varrho^{\mathsf T}\mathcal W\mathcal A^{-1}\varrho \ge 0$,
-  an upper bound with error $O(\lVert\mathcal C\rVert^2)$ (ratio 4.03 when
-  $f'_{oo}$ is halved), and the certificate
-  $E_H(t_{\mathrm{emb}}) - E^* \le 3\lVert\varrho\rVert^2/\lambda_{\min}(\mathcal A)$.
-  PROVEN. It costs one matvec over $K\cup D$.
-- **WLLH25 Eq 41 at convergence**,
-  $E_L = \langle\mathcal W t_{\mathrm{emb}}, J\rangle$ (the "lin" column):
-  $E_L - E^* = E_H - E^* - \langle\mathcal W t_{\mathrm{emb}},\varrho\rangle$,
-  first order in $\mathcal C$ with no fixed sign (ratio 2.03). On the model
-  it fell below $E^*$ in 10 of 28 instances. As an upper bound:
-  DISPROVED.
-
-Neither energy is guaranteed to beat the plain mask:
-$E_H(t_{\mathrm{emb}}) > E_K$ in 4 of 28 model instances (DISPROVED as a
-guarantee). The fix is a Galerkin step over the enlarged space
-$K \oplus \operatorname{span}\{\tau^{(ij)}_D\}$, one contracted dropped
-vector per pair:
-
-$$ E_G = \min_{t_K,\ \alpha_{ij}} E_H\Big(t_K + \sum_{ij}\alpha_{ij}\,\tau^{(ij)}_D\Big), \qquad E^* \le E_G \le \min\big(E_K,\ E_H(t_{\mathrm{emb}})\big) . $$
-
-The bound holds because the family contains $\alpha = 0$ and, at
-$\alpha = 1$, the best $t_K$ for the fixed $\tau_D$. $E_G$ is exact at
-$\mathcal C = 0$ and size-consistent (P6). The $\tau^{(ij)}_D$ enter a CG
-solve as extra unknowns. PROVEN by construction; its cost in production is
-OPEN. One global $\alpha$ instead of one per pair is not size-consistent:
-on the model it is off by $+2.2\times10^{-6}$ Ha for two non-interacting
-fragments.
-
-> **Verified equation @eq:lmp2-combined-embedding-residual** · the embedding residual is linear in the inter-pair coupling
->
-> $\varrho_K = \mathcal C_{KD}\tau_D$ for a generic split, $\mathcal C = 0$
-> gives $t_{\mathrm{emb}} = t^*$, $E_H(t_{\mathrm{emb}})$ keeps the upper
-> bound and its certificate, $E_L$ undershoots $E^*$ on some instances, and
-> halving $\lVert\mathcal C\rVert$ divides the $E_H$ error by about 4 and
-> the $E_L$ error by about 2 (P3).
->
-> | | |
-> |---|---|
-> | Proof | `scripts/lmp2_combined_sympy.py`, P3 |
-> | Negative control | the runner flips the sign of the embedding right-hand side ("P3: exact when f_oo diagonal") |
-> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
-> | Code | `ferric-mp2/src/ragged.rs::matvec_indexed` (the operator $\mathcal A$; the embedding has no production code) |
->
-> <!-- verified: id=lmp2.combined.embedding-residual; script=scripts/lmp2_combined_sympy.py; claim=P3: rho_K; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/ragged.rs::matvec_indexed; registry=local-mp2 -->
-
-### P4. λ-Boys (PROVEN; global optimality OPEN) {#amplitude-lmp2-combined-p4}
-
-Maximize WLLH25 Eq 9. Eq 8 of the paper is the same up to the
-rotation-invariant $\sum_i\langle i|r^2|i\rangle$ and $\lVert f_{oo}\rVert_F^2$.
-
-$$ G(U) = \sum_{x=1}^{3}\sum_i (r^x_{ii})^2 + \lambda\sum_i f_{ii}^2 , \qquad \Phi = \sum_{i\ne j} f_{ij}^2 = \lVert f_{oo}\rVert_F^2 - \sum_i f_{ii}^2 . $$
-
-For $U = 1 + \kappa$, $\kappa^{\mathsf T} = -\kappa$, and any symmetric $X$,
-$\partial_{\kappa_{pq}}\sum_i X_{ii}^2 = 4X_{pq}(X_{qq} - X_{pp})$, so
-
-$$ \frac{\partial G}{\partial\kappa_{pq}} = 4\sum_{X}w_X\,X_{pq}\,(X_{qq} - X_{pp}), \qquad (X, w_X) \in \{(r^x, 1),\ (f_{oo}, \lambda)\} , \label{eq:lmp2-combined-lambda-boys} $$
-
-and stationarity is
-$\sum_x r^x_{pq}(r^x_{pp} - r^x_{qq}) + \lambda f_{pq}(f_{pp} - f_{qq}) = 0$
-for all $p<q$. A 2×2 rotation by $\theta$ gives, with
-$d_X = (X_{pp} - X_{qq})/2$ and $c_X = X_{pq}$,
-
-$$ G(\theta) = \mathrm{const} + a\cos4\theta + b\sin4\theta, \qquad a = \sum_X w_X(d_X^2 - c_X^2), \quad b = 2\sum_X w_X d_Xc_X , $$
-
-maximized at $4\theta = \operatorname{atan2}(b, a)$. λ-Boys is therefore
-Boys with a fourth "dipole component" $\sqrt\lambda\,f_{oo}$, and each
-Jacobi step is the exact maximum in its plane, so $G$ rises monotonically.
-The paper's remark that Jacobi sweeps converge less easily concerns rate,
-not the step. Each step maximizes only within its plane, so a converged
-sweep is a stationary point that is a maximum in every 2×2 plane, not
-necessarily a global maximum (OPEN).
-
-If $U_\lambda$ is a global optimum, summing the optimality inequalities at
-$\lambda_1 < \lambda_2$ gives $(\lambda_2 - \lambda_1)(\Phi_1 - \Phi_2) \ge 0$,
-so $\Phi$ is non-increasing in $\lambda$ (PROVEN UNDER the global-optimum
-assumption; seen on the model with warm starts). λ enters P1–P3 through
-
-$$ \lVert\mathcal C\rVert_2 = 2\lVert f'_{oo}\rVert_2 \le 2\sqrt{\Phi} , $$
-
-the occupied part of $\mathcal A'$ in P2's $\rho$, and the embedding
-residual of P3:
-$\lVert\varrho\rVert \le 2\sqrt\Phi\,\big[2\lVert\tau_D\rVert + (1+\gamma)\lVert t_K\rVert\big]$,
-$\gamma = \lVert\mathcal B_{DK}\mathcal B_{KK}^{-1}\rVert_2$, hence
-$E_H(t_{\mathrm{emb}}) - E^* \le 12\,\Phi\,[2\lVert\tau_D\rVert + (1+\gamma)\lVert t_K\rVert]^2/\lambda_{\min}(\mathcal A)$.
-This bound is not size-extensive. It fixes the scaling with $\Phi$, not the
-magnitude.
-
-> **Verified equation @eq:lmp2-combined-lambda-boys** · the λ-Boys gradient and Jacobi angle
->
-> The gradient formula, the 2×2 Jacobi form $G(\theta)$ in symbols, and a
-> numerical Jacobi λ-Boys sweep that is stationary and rises monotonically
-> (P4).
->
-> | | |
-> |---|---|
-> | Proof | `scripts/lmp2_combined_sympy.py`, P4 |
-> | Negative control | the runner drops the factor 4 from the gradient ("P4: gradient") and sets the $f_{oo}$ weight to 0 ("P4: stationarity") |
-> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
-> | Code | `ferric-mp2/src/lmp2_amplitude.rs::localized_spaces` (plain Boys, $\lambda = 0$; λ-Boys is section @sec:amplitude-lmp2-lambda-boys) |
->
-> <!-- verified: id=lmp2.combined.lambda-boys; script=scripts/lmp2_combined_sympy.py; claim=P4: gradient; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/lmp2_amplitude.rs::localized_spaces; registry=local-mp2 -->
-
-### P5. Composition {#amplitude-lmp2-combined-p5}
-
-| piece | error term it attacks | effect on the bound |
-|---|---|---|
-| screen (virtual-only) | $\mathcal B$-driven part of $t^*_D$, by moving it into $K$ | $E^* \le E_{K'} \le E_K$ (P1) |
-| screen (+ occupied) | also the first-order $\mathcal C$-driven part ($\varrho_D \approx \mathcal C_{DK}t_K$) | same |
-| embedding | $\mathcal B_{KD}$ coupling of the remaining $D$, exactly | $E_H(t_{\mathrm{emb}})$ an upper bound; $E_L$ no bound |
-| λ-Boys | $\lVert\mathcal C\rVert \le 2\sqrt\Phi$: the embedding's whole residual and the occupied part of the screen's | none directly; it changes $J$, hence $K$ |
-
-The screen and the embedding overlap in what they target: both act on the
-large dropped exact amplitudes. The screen removes them from $D$, and the
-embedding approximates them by $\tau_D$. After a screen the embedding has
-less left to recover, consistent with the probe's further factor 1.5–5
-instead of 2–5. The occupied extension and λ-Boys overlap too: both reduce
-the $\mathcal C$-driven error, one by keeping those amplitudes and the
-other by shrinking $\mathcal C$. At a fixed threshold the occupied
-extension lowers the dropped-amplitude norm only modestly (P2).
-
-The combination is an upper bound when every piece ends in a Galerkin
-solve over a subspace of the universe (plain, screened or
-embedded-Galerkin, $E_G$), or when the embedding is scored with the full
-Hylleraas form. With the WLLH25 linear energy it is not, and a combined
-method using it needs the a-posteriori estimate of P2 and P3 to be trusted.
-λ trades $\Phi$ against locality: larger $\lambda$ spreads $J$ and enlarges
-$K$ at fixed $\varepsilon$. Where the optimum lies is OPEN and empirical.
-
-### P6. Limits and invariances {#amplitude-lmp2-combined-p6}
-
-- $\varepsilon \to 0$: Eq 8 keeps everything, the screen is inert, and
-  $D = \emptyset$ makes $\tau_D$ and $m$ vanish. Every combination is exact
-  RI-MP2 in any orthonormal orbitals. PROVEN.
-- $\kappa \to \infty$, embedding off: the screen adds nothing and the
-  pattern is the WSHG23 Eq-8 mask. PROVEN.
-- $\lambda = 0$: $G$ is the Boys functional. PROVEN (definition).
-- The untruncated $E^* = -J^{\mathsf T}\mathcal W\mathcal A^{-1}J$ is
-  invariant under orthogonal $U_o$, $U_v$:
-  $Q = U_o\otimes U_o\otimes U_v\otimes U_v$ is orthogonal,
-  $J\to Q^{\mathsf T}J$, $\mathcal A\to Q^{\mathsf T}\mathcal AQ$, and $Q$
-  commutes with $\mathcal S$. The truncated energies are not invariant.
-  PROVEN.
-- Size-consistency (PROVEN UNDER ASSUMPTION). Take non-interacting
-  fragments, with every cross-fragment $(ia|jb)$ and Fock element exactly
-  zero, and fragment-pure orbitals identical to the isolated fragments'.
-  Then $\mathcal A$ preserves the fragment label of each index, $J$ lives
-  only in the all-A and all-B sectors, and the screen's $\mathcal A' t^0$
-  and the per-pair $\mathcal B^{-1}$ stay in them. Every arm (plain,
-  screen, $E_H(t_{\mathrm{emb}})$, $E_L$, $E_G$ with per-pair $\alpha$)
-  gives $E(A{+}B) = E(A) + E(B)$. The localizer half of the assumption
-  holds for Jacobi λ-Boys: on a cross-fragment plane $c_X = 0$ for every
-  $X$, so $b = 0$, $a > 0$ and $\theta = 0$ exactly. Fragment orbitals are
-  never mixed, and the intra-fragment rotations run in the same order as
-  in the isolated run, so the result matches it up to the stopping
-  tolerance. A localizer that can stop at a saddle (PySCF's default Boys
-  optimizer was observed to) gives no such guarantee. The same argument
-  needs the VV-HV construction, the candidate squares and the pair gate to
-  be fragment-local.
-
-The script checks each limit numerically on the block model: at
-$\varepsilon = 0$ every arm gives $E^*$, at $\kappa \to \infty$ the screened
-pattern is the Eq-8 pattern, rotating the orbitals leaves $E^*$ unchanged
-(mutation "P6: rotational invariance"), and non-interacting fragments give
-$E(A{+}B) = E(A) + E(B)$ to a relative $10^{-11}$ for every arm.
+equal error.
 
 ## λ-Boys occupied orbitals, the default {#amplitude-lmp2-lambda-boys}
 
@@ -1393,8 +1152,9 @@ else. In a conjugated molecule several placements of the π bonds have
 nearly the same spread, so Boys picks one of them by small differences, and
 the one it picks can leave large off-diagonal elements $f_{ik}$ between
 neighbouring π orbitals. Those elements drive amplitudes that the
-integral-size mask does not see (section @sec:amplitude-lmp2-fock-screen,
-P2 and P4 above). λ-Boys adds a penalty on that coupling to the Boys
+integral-size mask does not see (section @sec:amplitude-lmp2-fock-screen, and
+sections @sec:amplitude-lmp2-combined-p2 and
+@sec:amplitude-lmp2-combined-p4). λ-Boys adds a penalty on that coupling to the Boys
 objective and keeps the rest of the method unchanged.
 
 The local MP2 drivers localize the active occupieds with λ-Boys at
@@ -1405,7 +1165,7 @@ keep plain Boys, because the measurements below were made on MP2 only.
 **The objective and its stationarity condition.** $G$ is the function of
 section @sec:amplitude-lmp2-combined-p4. The code rotates orbitals $p<q$ as
 $p' = c\,p + s\,q$, $q' = -s\,p + c\,q$ with $c=\cos\theta$, $s=\sin\theta$.
-This is $\kappa_{pq} = -\theta$ in the book's $U = 1+\kappa$, so
+This is $\eta_{pq} = -\theta$ in the book's $U = 1+\eta$, so
 (@eq:lmp2-combined-lambda-boys) changes sign. With
 $d_X = (X_{pp}-X_{qq})/2$, $c_X = X_{pq}$, $a = \sum_X w_X(d_X^2-c_X^2)$ and
 $b = 2\sum_X w_X d_Xc_X$:
@@ -1424,9 +1184,11 @@ on a point that is a maximum in every plane. Two limits:
   $b = 0$, $a > 0$ and $\theta = 0$. The penalty never mixes fragments.
 
 The energy at $\varepsilon = 0$ does not depend on λ, because $E^*$ is
-invariant under any orthogonal occupied rotation (P6). At finite
+invariant under any orthogonal occupied rotation (section
+@sec:amplitude-lmp2-combined-p6). At finite
 $\varepsilon$, λ changes $J$ and therefore the kept set, but the error keeps
-its sign: P1 holds in any orthonormal occupied basis, and $E^*$ is the same
+its sign: the bound of section @sec:amplitude-lmp2-combined-p1 holds in
+any orthonormal occupied basis, and $E^*$ is the same
 in all of them.
 
 **The code.** `ferric-mp2/src/boys.rs::lambda_boys_localize_checked` runs
@@ -1479,13 +1241,17 @@ orbitals? $G$ has several local maxima, and on naphthalene the λ = 10
 optimum is a different π localization from the Boys one (the largest
 element of $\lvert U\rvert - 1$ is 0.707). Starting from converged Boys makes
 the λ-Boys result a deterministic function of the Boys result, and the
-λ = 0 limit the Boys orbitals themselves. Why 10? It is the smallest value
-of the measured grid at which naphthalene moves to the better localization;
+λ = 0 limit the Boys orbitals themselves. Why 10? Of the grid λ = 3, 10,
+100 measured on octane, naphthalene and adamantane, it is the smallest
+value at which naphthalene moves to the better localization;
 on octane larger λ spreads the orbitals and costs accuracy (λ = 100 made
 $f_{oo}$ 40% more diagonal and the largest spread 1.5 times larger).
 
-**Measured.** 6-31G, at matched kept fraction, on the dense oracle of
-section @sec:amplitude-lmp2-fock-screen-measured:
+**Measured 2026-11-17, provisional** (three molecules, one basis). 6-31G,
+at matched kept fraction, on the dense oracle of section
+@sec:amplitude-lmp2-fock-screen-measured. The naphthalene gain is an
+orbital effect, a different π localization, and appears only on that
+molecule:
 
 | System | Effect of λ = 10 against λ = 0 |
 |---|---|
@@ -1506,14 +1272,21 @@ difference of a few percent in $t_{\mathrm{corr}}$ is noise:
 | n-octane, integral-direct | 7 | 2.2 ms | 1.30 / 1.28 s | 0.17% | $1.913 / 1.916\times10^{-3}$ |
 | n-C20H42, integral-direct | 7 | 17.9 ms | 8.53 / 8.87 s | 0.20% | $6.434 / 6.466\times10^{-3}$ |
 
-On n-butane / cc-pVDZ with all electrons and the plain mask, the in-core
-recovery moves from 99.980, 99.671, 94.99% to 99.992, 99.735, 95.20% at
-$\varepsilon = 10^{-5}$, $10^{-4}$, $10^{-3}$, and n-octane at
-$10^{-3}$ from 93.81 to 94.00%. With the Fock screen, the default since
-2026-11-18, n-butane recovers 99.999, 99.893, 96.58%. With frozen core the same n-butane errors
-move by 2 to 3% in either direction. The frozen-core alkane errors grow
-by 0.05 to 0.5%; the default is taken for the
-naphthalene gain at a cost below 0.4% of $t_{\mathrm{corr}}$.
+In-core recoveries of the canonical RI-MP2 correlation energy,
+cc-pVDZ, all electrons (2026-11-18):
+
+| System | Mask | λ | $\varepsilon = 10^{-5}$ | $10^{-4}$ | $10^{-3}$ |
+|---|---|---|---|---|---|
+| n-butane | plain | 0 | 99.980% | 99.671% | 94.99% |
+| n-butane | plain | 10 | 99.992% | 99.735% | 95.20% |
+| n-butane | Fock screen κ = 1 | 10 | 99.999% | 99.893% | 96.58% |
+| n-octane | plain | 0 | | | 93.81% |
+| n-octane | plain | 10 | | | 94.00% |
+
+With frozen core the n-butane errors move by 2 to 3% in either direction
+between λ = 0 and 10, and the frozen-core alkane errors grow by 0.05 to
+0.5%. λ = 10 is the default for the naphthalene gain, at a cost below 0.4%
+of $t_{\mathrm{corr}}$.
 
 > **Verified equation @eq:lmp2-lambda-boys-stationarity** · the λ-Boys pair gradient, the in-plane maximum and the λ = 0 limit
 >
@@ -1572,8 +1345,45 @@ error.
 | `aux_tail_frac` | per-pair auxiliary truncation, rigorously bounded per element by $f\varepsilon$; inactive at $\varepsilon = 0$ | `ferric-mp2/src/lmp2_amplitude.rs::AmplitudeLmp2Config` |
 | `lambda_boys` | λ of the λ-Boys occupied localization, default 10; 0 is plain Boys. Changes the orbitals, so $J$ and the kept set; the error stays one-sided because $E^*$ is rotation invariant; inert at $\varepsilon = 0$ | section @sec:amplitude-lmp2-lambda-boys |
 | `fock_screen` | also keeps elements whose one-step Fock-propagated integral clears $\kappa\varepsilon$ (section @sec:amplitude-lmp2-fock-screen); inert at $\varepsilon = 0$. On by default (κ = 1) in the CLI and Python, in core and integral-direct; `[local] fock_screen = false` turns it off; off in the Rust `AmplitudeLmp2Config::default` | `ferric-mp2/src/ragged.rs::pair_blocks_screened` |
+| `virtual_space` | `"dense"` (default) or `"local"`, the opt-in block-sparse VV-HV build; with it `virtual_tau`, `virtual_tau_loose`, `virtual_solve_radius` and `virtual_boys_tau`. Inert at its trivial limit | section @sec:amplitude-lmp2-algorithm, step 2 |
+| `fvv_sparse_rho` | Rust only: a pair block whose kept density is below this value multiplies by $F$ with a sparse scatter instead of two GEMMs. The same product, so no change to the equation; 0 (the default) keeps every block dense | `ferric-mp2/src/lmp2_amplitude.rs::AmplitudeLmp2Config` |
 | `cg_rtol`, `cg_max_iter` | Rust only: an explicit tolerance disables the tightening; neither is a CLI or Python option | this section |
-| operator | Coulomb or erfc, in the metric and the three-index integrals | chapter @sec:operators |
+| operator | Coulomb with `rimp2`; erfc or terfc with `att-rimp2`, in the metric and the three-index integrals alike | section @sec:amplitude-lmp2-attenuated |
+
+## Attenuated operators {#amplitude-lmp2-attenuated}
+
+`method.kind = "att-rimp2"` with a `[local]` section runs the same scheme
+with the attenuated kernel of chapter @sec:operators, erfc or terfc. Every
+equation of this section is a statement about $J$ and $\mathcal A$. The
+kernel enters only $J$, through the metric $V$ and the three-index
+integrals, and both use the same kernel. So the Hylleraas form, the
+solver bound, the mask, the screen and the domain fit of section
+@sec:integral-direct carry over unchanged, and the robust Dunlap form
+still reduces to the Gram product (@eq:lmp2-domain-fit). Three things
+differ:
+
+- **The pair-gate calibration.** An attenuated pair energy falls off faster
+  with distance than a Coulomb one, so the gate constant is smaller: about
+  0.02 for erfc at $\omega = 1$ Bohr$^{-1}$ against 0.7 for Coulomb
+  (section @sec:amplitude-lmp2-algorithm, step 5).
+- **The Schwarz cut of the integral-direct path with terfc.** Its factors
+  come from the terf tables, and the cut is accepted only inside a
+  validated parameter box: orbital shells up to g, $r_0$ in $[0.3, 2.5]$
+  Å and $r_0\omega \le 8.9$ (`ferric-integrals/src/schwarz.rs::check_terfc_parameters_validated`).
+  Outside it the run is an error unless `schwarz_skip = 0`.
+- **The anchors.** The $\varepsilon = 0$ anchor holds for erfc in core
+  (`eps_zero_anchor_holds_for_erfc_with_no_frozen_core` in
+  `crates/ferric-mp2/tests/lmp2_amplitude.rs`) and on the integral-direct
+  path (`trivial_limit_holds_for_erfc` in
+  `crates/ferric-mp2/tests/lmp2_direct.rs`), and for terfc on the
+  integral-direct path against an independent `ri_mp2` call with the same
+  operator, on water, n-butane and n-octane
+  (`crates/ferric-mp2/tests/lmp2_direct_terfc_omega.rs`). The terfc tests
+  need the terf tables and skip without them.
+
+No sympy script is specific to the attenuated kernels: the algebra above
+holds for any symmetric positive definite metric, which is what the scripts
+of this chapter assume.
 
 ## Numerical anchors {#amplitude-lmp2-numerical-anchors}
 
@@ -1588,7 +1398,7 @@ mutation, dropping one hard virtual, breaks the agreement
 | Check | Reference | Agreement | Test |
 |---|---|---|---|
 | $\varepsilon = 0$, every locality map at its no-op limit, in-core (global and per-pair domain fit) and integral-direct: H2O, n-butane / cc-pVDZ, 6-31G (cc-pvdz-ri), frozen core 0 and one per heavy atom | PySCF `DFMP2` with the same auxiliary basis, checked against a dense numpy sum to $10^{-12}$ | $E_{\mathrm{corr}}$ at most $1.38\times10^{-11}$ Ha over 24 comparisons, at the default PCG stop; bar $10^{-10}$ Ha | `crates/ferric-mp2/tests/validation_lmp2_amplitude.rs`, `eps_zero_matches_canonical_ri_mp2` in `crates/ferric-mp2/tests/lmp2_amplitude.rs` |
-| finite $\varepsilon$ on n-butane / cc-pVDZ, all electrons | PySCF `DFMP2` (canonical) | recovers 99.999%, 99.89%, 96.6% of the DF-MP2 correlation energy in core (λ-Boys, λ = 10, Fock screen κ = 1) at $\varepsilon = 10^{-5}$, $10^{-4}$, $10^{-3}$ with production maps; the error is one-sided and has no tolerance | same |
+| finite $\varepsilon$ on n-butane / cc-pVDZ, all electrons | PySCF `DFMP2` (canonical) | recovers 99.999%, 99.89%, 96.6% of the DF-MP2 correlation energy in core (λ-Boys, λ = 10, Fock screen κ = 1) at $\varepsilon = 10^{-5}$, $10^{-4}$, $10^{-3}$; the in-core error is one-sided and has no tolerance | same |
 
 <!-- figures: site/src/reference/validation.md "Local RI-MP2 (`rimp2` with `[local] scheme = \"amplitude-threshold\"`)" -->
 
@@ -1596,11 +1406,15 @@ ORCA DLPNO-MP2 on the same molecules is recorded on the validation page as
 a ballpark only. It truncates by pair-natural-orbital occupation, not by an
 amplitude threshold, so the two recoveries are not compared.
 
-**The error is superlinear in $\varepsilon$.** As $\varepsilon$ grows by
-factors of ten, the recovery falls from 99.999% to 99.89% to 96.6%. The
-missing correlation energy therefore grows faster than linearly in
-$\varepsilon$. There is no tolerance on it. To reach a target accuracy, run
-a series of $\varepsilon$ values and choose from it.
+**How the error grows with $\varepsilon$.** On n-butane with the default
+screen the recovery falls from 99.999% to 99.89% to 96.6% as $\varepsilon$
+grows from $10^{-5}$ to $10^{-3}$: the missing energy grows about as
+$\varepsilon^{2}$ and then $\varepsilon^{1.5}$ (from $5.8\times10^{-6}$ to
+$6.4\times10^{-4}$ to $2.05\times10^{-2}$ Ha). That is a measurement on one
+molecule, not a law. The plain mask on adamantane flattens below
+$10^{-7}$, the floor of section @sec:amplitude-lmp2-fock-screen. There is
+no tolerance on the error. To reach a target accuracy, run a series of
+$\varepsilon$ values and choose from it.
 
 n-Butane in cc-pVDZ, all electrons, re-run 2026-11-18 at the current defaults (λ-Boys λ = 10, Fock screen κ = 1). Each line
 of the output is cut after `keep_fraction`; the full `local` dict also
@@ -1636,12 +1450,12 @@ eps=  1e-03  E_corr=-0.5791405455  recovery= 96.5805%  E-E*=+2.050e-02 Ha  local
 | Source | Used for |
 |---|---|
 | `crates/ferric-mp2/src/lmp2_amplitude.rs`, `crates/ferric-mp2/src/ragged.rs` | the algorithm, the policy and the mask |
+| `crates/ferric-mp2/src/vvhv_local.rs` | the opt-in local VV-HV build |
 | `scripts/lmp2_hylleraas_vs_wshg23_sympy.py`, claims 1, 2, 4, 5, 6 | verified equations @eq:lmp2-hylleraas and @eq:lmp2-cg-bound |
 | `scripts/lmp2_fock_screen_sympy.py`, claims 1, 2, 3 | verified equation @eq:lmp2-fock-screen-schur |
 | `scripts/lmp2_lambda_boys_sympy.py`, S1 to S4 | verified equation @eq:lmp2-lambda-boys-stationarity |
-| `scripts/lmp2_combined_sympy.py`, P1 to P6 | verified equations @eq:lmp2-combined-truncation-error, @eq:lmp2-combined-jacobi-remainder, @eq:lmp2-combined-embedding-residual and @eq:lmp2-combined-lambda-boys |
 | `crates/ferric-mp2/tests/lmp2_fock_screen_probe.rs` | the dense-oracle measurements of section @sec:amplitude-lmp2-fock-screen-measured |
-| Wang, Ling, Shi, Shen, Wang, Yang, Li and Head-Gordon, JCTC 21, 10910 (2025) | the block-Kapuy embedding compared with the screen |
-| Wang, Aldossary, Shi, Liu, Li and Head-Gordon, J. Chem. Theory Comput. 19, 7577 (2023) | the single-threshold scheme and the Hylleraas stopping rule, as cited in the module documentation |
+| Wang, Ling, Shi, Shen, Wang, Yang, Li and Head-Gordon, JCTC 21, 10910 (2025) (WLLH25) | the block-Kapuy embedding compared with the screen, and λ-Boys |
+| Wang, Aldossary, Shi, Liu, Li and Head-Gordon, J. Chem. Theory Comput. 19, 7577 (2023) (WSHG23) | the single-threshold scheme and the Hylleraas stopping rule, as cited in the module documentation |
 | `site/src/methods/mp2.md`, "Exact and local MP2" | the user-facing description and the certificate fields |
 | `site/src/reference/validation.md` | the anchor row |

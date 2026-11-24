@@ -42,16 +42,12 @@ fn uhf_newton_oh_matches_diis_only() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let cfg_diis = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        ..Default::default()
-    };
-    let cfg_newton = RhfConfig {
-        newton_trigger: 1e-2,
-        ..cfg_diis.clone()
-    };
+    let cfg_diis = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
+    let mut cfg_newton = cfg_diis.clone();
+    cfg_newton.newton_trigger = 1e-2;
 
     let r_diis = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg_diis).unwrap();
     let r_newton = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg_newton).unwrap();
@@ -88,18 +84,14 @@ fn uks_pbe_newton_engages_gga_fxc_and_matches_diis() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let cfg_diis = RhfConfig {
-        xc: Some("PBE".into()),
-        energy_conv: 1e-9,
-        density_conv: 1e-7,
-        max_iter: 200,
-        level_shift: 0.2,
-        ..Default::default()
-    };
-    let cfg_newton = RhfConfig {
-        newton_trigger: 1e-2,
-        ..cfg_diis.clone()
-    };
+    let cfg_diis = RhfConfig::default()
+        .with_xc("PBE")
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-7)
+        .with_max_iter(200)
+        .with_level_shift(0.2);
+    let mut cfg_newton = cfg_diis.clone();
+    cfg_newton.newton_trigger = 1e-2;
 
     let r_diis = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg_diis).unwrap();
 
@@ -182,12 +174,10 @@ fn uhf_hessian_matvec_matches_finite_difference() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let cfg = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
     let res = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
     assert!(res.converged);
 

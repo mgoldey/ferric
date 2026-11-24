@@ -99,6 +99,7 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -162,12 +163,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn check_close(ctx: &str, what: &str, got: f64, want: f64, tol: f64) {
     let d = (got - want).abs();
     eprintln!("{ctx}: {what:<14} ferric {got:+.12} ref {want:+.12} |d| {d:.2e} (tol {tol:.0e})");
@@ -205,7 +200,7 @@ fn load_system(system: &str, basis_name: &str, r: &Value) -> System {
         &ctx,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(r, "/nuclear_repulsion", &ctx),
+        num_ctx(r, "/nuclear_repulsion", &ctx),
         TOL_ENUC,
     );
     let bs = basis::bundled(basis_name).unwrap();
@@ -225,20 +220,19 @@ fn load_system(system: &str, basis_name: &str, r: &Value) -> System {
 }
 
 fn scf_config(cosmo: Option<CosmoConfig>) -> RhfConfig {
-    RhfConfig {
-        max_iter: 300,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        cosmo,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_max_iter(300)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9);
+    c.cosmo = cosmo;
+    c
 }
 
 fn cosmo_config(r: &Value, eps: f64) -> CosmoConfig {
     let lebedev = r["lebedev_points"].as_u64().expect("lebedev_points") as usize;
     CosmoConfig {
         epsilon: eps,
-        radius_scale: num(r, "/radius_scale", "cosmo_config"),
+        radius_scale: num_ctx(r, "/radius_scale", "cosmo_config"),
         lebedev_order: lebedev,
         ..Default::default()
     }
@@ -279,7 +273,7 @@ fn check_system(system: &str, basis_name: &str) {
     let sys = load_system(system, basis_name, &r);
 
     let vac = run(&sys, &method, &scf_config(None), &base_ctx);
-    let e_vac_ref = num(&r, "/vacuum/energy", &base_ctx);
+    let e_vac_ref = num_ctx(&r, "/vacuum/energy", &base_ctx);
     check_close(&base_ctx, "E_vacuum", vac.energy, e_vac_ref, TOL_E_VAC);
 
     let solvated = r["solvated"].as_object().expect("solvated block");
@@ -304,7 +298,7 @@ fn check_system(system: &str, basis_name: &str) {
             &ctx,
             "f(eps)",
             cfg.f_epsilon(),
-            num(block, "/ferric_model/f_epsilon", &ctx),
+            num_ctx(block, "/ferric_model/f_epsilon", &ctx),
             1e-15,
         );
 
@@ -321,7 +315,7 @@ fn check_system(system: &str, basis_name: &str) {
             nseg_ref,
             "{ctx}: cavity segment count differs from PySCF gen_surface with ferric's radii"
         );
-        let area_ref = num(block, "/ferric_model/total_area_bohr2", &ctx);
+        let area_ref = num_ctx(block, "/ferric_model/total_area_bohr2", &ctx);
         check_close(
             &ctx,
             "area/ref-1",
@@ -332,7 +326,7 @@ fn check_system(system: &str, basis_name: &str) {
 
         // Solvated SCF vs the like-for-like reference.
         let res = run(&sys, &method, &scf_config(Some(cfg.clone())), &ctx);
-        let e_ref = num(block, "/ferric_model/energy", &ctx);
+        let e_ref = num_ctx(block, "/ferric_model/energy", &ctx);
         check_close(&ctx, "E_solvated", res.energy, e_ref, TOL_E_SOLV);
 
         let cr =
@@ -341,19 +335,19 @@ fn check_system(system: &str, basis_name: &str) {
             &ctx,
             "E_cosmo",
             cr.e_cosmo,
-            num(block, "/ferric_model/e_solvent", &ctx),
+            num_ctx(block, "/ferric_model/e_solvent", &ctx),
             TOL_E_COSMO,
         );
         check_close(
             &ctx,
             "sum_q",
             cr.charges.sum(),
-            num(block, "/ferric_model/sum_q", &ctx),
+            num_ctx(block, "/ferric_model/sum_q", &ctx),
             TOL_SUM_Q,
         );
 
         if method == "uhf" {
-            let s2_ref = num(block, "/ferric_model/stability/s_squared", &ctx);
+            let s2_ref = num_ctx(block, "/ferric_model/stability/s_squared", &ctx);
             let (na, nb) = {
                 let nelec = sys.mol.nelec() as usize;
                 let two_s = sys.mol.multiplicity - 1;
@@ -366,10 +360,10 @@ fn check_system(system: &str, basis_name: &str) {
 
         // Report the gaps that are NOT the like-for-like comparison.
         let dg = res.energy - vac.energy;
-        let dg_stock = num(block, "/pyscf_cosmo_matched_radii/energy", &ctx) - e_vac_ref;
-        let dg_h110 = num(block, "/ferric_model_h_radius_1p10/energy", &ctx) - e_vac_ref;
-        let dg_modb = num(block, "/pyscf_cosmo_modified_bondi/energy", &ctx) - e_vac_ref;
-        let dg_def = num(block, "/pyscf_cosmo_default/energy", &ctx) - e_vac_ref;
+        let dg_stock = num_ctx(block, "/pyscf_cosmo_matched_radii/energy", &ctx) - e_vac_ref;
+        let dg_h110 = num_ctx(block, "/ferric_model_h_radius_1p10/energy", &ctx) - e_vac_ref;
+        let dg_modb = num_ctx(block, "/pyscf_cosmo_modified_bondi/energy", &ctx) - e_vac_ref;
+        let dg_def = num_ctx(block, "/pyscf_cosmo_default/energy", &ctx) - e_vac_ref;
         let rel_stock = (dg - dg_stock).abs() / dg_stock.abs();
         eprintln!(
             "{ctx}: dG kcal/mol ferric {:+.4} | PySCF stock COSMO, ferric radii {:+.4} \
@@ -398,7 +392,7 @@ fn check_system(system: &str, basis_name: &str) {
             &ctx,
             "H radius 1.10 A (modified Bondi)",
             res.energy,
-            num(block, "/ferric_model_h_radius_1p10/energy", &ctx),
+            num_ctx(block, "/ferric_model_h_radius_1p10/energy", &ctx),
         );
         for &(eps_other, e_other) in &all_fm {
             if eps_other != eps {

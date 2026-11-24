@@ -47,6 +47,16 @@ Claims (each prints "ok [label]" or "FAIL [label]"):
                    test is needed.
  10 [terfc-split]  (a|terfc|b) = (a|1/r|b) - (a|terf|b) from independent
                    quadratures of the three kernels.
+ 11 [taylor-steps] With g(r) = erf(w (r + r0)): g'(0) = (2w/sqrt pi) e^{-w^2 r0^2},
+                   g'''(0) = (2w/sqrt pi)(4 w^4 r0^2 - 2 w^2) e^{-w^2 r0^2},
+                   tau3 = g'''(0)/6 is the r^2 coefficient of terf/r, and
+                   tau3 -> -2 w^3/(3 sqrt pi), the erf coefficient, at r0 = 0
+                   (sympy).
+ 12 [two-center-steps] The steps of the two-center derivation: the prefactor
+                   identity p q sqrt(p+q) theta = (p q)^{3/2}; the k integral
+                   (2/pi) int_0^inf e^{-k^2/4 phi^2} sin(k x)/k dk = erf(phi x)
+                   (mpmath quadrature); G0(S -> 0, s) = e^{-s} and
+                   G0(S, 0) = F_0(S) (sympy).
 
 Mutations (each turns the script red; the runner applies them as exact
 one-occurrence substitutions):
@@ -54,6 +64,7 @@ one-occurrence substitutions):
   - series double-factorial ratio (2i)/(2i+1) -> (2i+1)/(2i+2) ("FAIL [series]")
   - drop the phi/theta prefactor of the two-center formula     ("FAIL [two-center]")
   - curvature constraint r0 w = 1/sqrt 2 -> 1/2                 ("FAIL [curvature]")
+  - g'''(0) bracket 4 w^4 r0^2 - 2 w^2 -> 4 w^4 r0^2 - w^2      ("FAIL [taylor-steps]")
 Exits nonzero when any claim fails.
 """
 
@@ -337,6 +348,50 @@ coul_closed = 2 * mp.pi**2.5 / (pv * qv * mp.sqrt(pv + qv)) * boys(0, th2 * R**2
 check(
     "terfc-split",
     abs(itc - (ic - it)) / abs(itc) < 1e-20 and abs(ic - coul_closed) / ic < 1e-20,
+)
+
+# 11. Taylor steps of the curvature derivation --------------------------------
+g = sp.erf(w * (r + r0))
+g1 = sp.diff(g, r).subs(r, 0)
+g3 = sp.diff(g, r, 3).subs(r, 0)
+g1_book = 2 * w / sp.sqrt(sp.pi) * sp.exp(-(w**2) * r0**2)
+g3_book = (
+    2 * w / sp.sqrt(sp.pi) * (4 * w**4 * r0**2 - 2 * w**2) * sp.exp(-(w**2) * r0**2)
+)
+tau3 = w**3 / (3 * sp.sqrt(sp.pi)) * (4 * w**2 * r0**2 - 2) * sp.exp(-(w**2) * r0**2)
+check(
+    "taylor-steps",
+    sp.simplify(g1 - g1_book) == 0
+    and sp.simplify(g3 - g3_book) == 0
+    and sp.simplify(g3_book / 6 - tau3) == 0
+    and sp.simplify(ser.coeff(r, 2) - tau3) == 0
+    and sp.simplify(tau3.subs(r0, 0) + 2 * w**3 / (3 * sp.sqrt(sp.pi))) == 0,
+)
+
+# 12. steps of the two-center derivation ---------------------------------------
+theta_ = sp.sqrt(p * q / (p + q))
+pref_ok = (
+    sp.simplify(p * q * sp.sqrt(p + q) * theta_ - (p * q) ** sp.Rational(3, 2)) == 0
+)
+worst_k = mp.mpf(0)
+for phv, xv in ((mp.mpf("0.7"), mp.mpf("1.3")), (mp.mpf("2.0"), mp.mpf("0.4"))):
+    kint = (
+        2
+        / mp.pi
+        * mp.quad(
+            lambda kk: mp.exp(-(kk**2) / (4 * phv**2)) * mp.sin(kk * xv) / kk,
+            [0, mp.inf],
+        )
+    )
+    worst_k = max(worst_k, abs(kint - mp.erf(phv * xv)))
+tq = sp.symbols("tq", positive=True)  # tq = sqrt(S)
+g0 = sp.sqrt(sp.pi) / (4 * tq) * (sp.erf(tq + sp.sqrt(s)) + sp.erf(tq - sp.sqrt(s)))
+g0_s0 = sp.simplify(sp.series(g0, tq, 0, 1).removeO() - sp.exp(-s)) == 0
+g0_boys = sp.simplify(g0.subs(s, 0) - sp.sqrt(sp.pi) * sp.erf(tq) / (2 * tq)) == 0
+check(
+    "two-center-steps",
+    pref_ok and worst_k < 1e-20 and g0_s0 and g0_boys,
+    f"k integral worst abs {mp.nstr(worst_k, 3)}",
 )
 
 if failures:

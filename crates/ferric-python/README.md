@@ -131,7 +131,71 @@ Pure-Python helpers under `ferric.*` (not part of the compiled API; their option
 
 * **`ferric.rdkit`**: `from_rdkit`, `from_smiles`, `to_rdkit` (RDKit `Mol` <-> `Molecule`; `pip install "ferric[rdkit]"`).
 * **`ferric.units`**: `BOHR_TO_ANGSTROM`, `ANGSTROM_TO_BOHR`, `HARTREE_TO_EV`, `HARTREE_TO_KCAL_MOL`, `HARTREE_TO_KJ_MOL` (the Rust crates' values).
-* **`ferric.serialize`**: `to_dict`, `to_json`, `molecule_from_dict`, `read_run_log` (plain-data views of molecules and results; the CLI JSON Lines run log).
+* **`ferric.serialize`**: `to_dict`, `to_json`, `molecule_from_dict`, `read_run_log` (plain-data views of molecules and results, read through the explicit `RESULT_SCHEMA`; the CLI JSON Lines run log).
 * **`ferric.qcschema`**: `run`, `molecule_from_qcschema`, `molecule_to_qcschema`.
 * **`ferric.mlip`**: `write_extxyz`, `write_asedb`, `frames`, `to_atoms` (QCSchema results or `FerricCalculator` atoms -> extended XYZ / ASE database, eV and eV/Angstrom, level-of-theory metadata; writing needs `pip install "ferric[ase]"`).
 * **`ferric.ase`** (`pip install "ferric[ase]"`) and **`ferric.viz`** (py3Dmol): ASE calculator and 3-D views.
+
+## 5. Errors
+
+Every exception ferric raises for a failed computation derives from
+`ferric.FerricError` **and** from the builtin class it raised before the
+hierarchy existed, so `except RuntimeError` / `except ValueError` /
+`except NotImplementedError` handlers keep working and messages are unchanged.
+
+| class | also | meaning |
+|---|---|---|
+| `ConvergenceError` | `RuntimeError` | a typed non-convergence (`ScfConvergence`, `Convergence`): SCF, CC, a response solver, the orbital optimisation |
+| `BasisError` | `InputError`, `RuntimeError` | an unknown, unparsable or non-covering basis set / ECP (also a `ValueError`: `BasisSet.bundled` raised that, the `run_*` drivers `RuntimeError`) |
+| `NumericalError` | `RuntimeError` | a typed linear-algebra failure (`Lapack`) |
+| `MemoryBudgetError` | `RuntimeError` | a typed memory refusal (`MemoryExhausted`) |
+| `UnsupportedError` | `NotImplementedError` | a valid option combination the method does not implement (`Unsupported`) |
+| `InputError` | `ValueError` | an invalid argument or option value |
+| `ComputationError` | `RuntimeError` | any other failure that carries no type |
+
+The classes follow the *typed* failure the Rust code returns, not the topic. A
+failure still returned as untyped text is a `ComputationError` even when it
+is "really" a convergence or memory problem (the pre-flight memory check in
+`ferric-core` is one, an unknown functional another), so
+`except ferric.ComputationError` is **not** "all runtime failures": catch
+`RuntimeError` for that, or `FerricError` for everything ferric raises on
+purpose.
+
+```python
+try:
+    ferric.run_frequencies(mol, "def2-svp", scf_max_iter=20)
+except ferric.ConvergenceError:
+    ...  # retry with a level shift
+except ferric.InputError:
+    ...  # fix the call
+```
+
+Things to know when upgrading:
+
+- `type(e).__name__` and the traceback's first token change
+  (`ValueError: ...` is now `ferric.InputError: ...`). The message after it
+  is the same text. Code that compares the class name or parses the
+  traceback line must be updated; `isinstance` and `except` are unaffected.
+- A failure that carries `FerricError::Unsupported` and was raised through a
+  plain `RuntimeError` (the local OP-MP3 refusals in `run_opmp3`, for
+  example) is now an `UnsupportedError`, so `except NotImplementedError`
+  (including the handlers in `ferric.ase`) now catches it. It is still a
+  `RuntimeError`.
+- A bad auxiliary basis from a driver is a `BasisError`, which is also a
+  `ValueError`: `except ValueError` now catches it.
+- `ferric.qcschema.run` classifies by these classes (see its docstring): a
+  driver basis failure is `input_error` (it was `execution_error`).
+
+What stays plain (not in the hierarchy): `TypeError` from argument
+conversion; `configure_gpu` / `configure_precision` and the GPU settings
+helpers, `set_blas_threads` and the libint test hook (plain `ValueError` /
+`RuntimeError`); `Molecule.from_xyz`'s `OSError` for a missing file and the MD
+writers' `OSError`; `NotImplementedError` from the symmetry-frame accessors
+(`density`, `mo_coefficients`, `gradient` of a `symmetry=True` result);
+exceptions raised by pure-Python helpers (`ferric.ase`, `ferric.serialize`,
+...); and Rust panics (`pyo3_runtime.PanicException`). The periodic drivers
+map `General` and `MemoryExhausted` refusals to `InputError`, as they raised
+`ValueError` before.
+
+See `ARCHITECTURE.md` ("Errors") for the mapping from the Rust `FerricError`
+variants and the rule for method authors.

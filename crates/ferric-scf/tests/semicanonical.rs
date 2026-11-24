@@ -45,11 +45,9 @@ fn setup(basis_name: &str) -> Fixture {
         &obs,
         Operator::coulomb(),
         &bounds,
-        &RhfConfig {
-            density_conv: 1e-9,
-            max_iter: 200,
-            ..Default::default()
-        },
+        &RhfConfig::default()
+            .with_density_conv(1e-9)
+            .with_max_iter(200),
     )
     .expect("ROHF on OH should converge");
     assert!(rohf.converged);
@@ -324,10 +322,7 @@ fn invalid_references_are_rejected() {
         &obs_h2o,
         Operator::coulomb(),
         &bounds_h2o,
-        &RhfConfig {
-            density_conv: 1e-9,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_density_conv(1e-9),
     )
     .unwrap();
     assert!(

@@ -62,13 +62,13 @@ area jump as an atom moves, and the energy would then not be differentiable.
 The code uses a smooth switch instead. Each other sphere $B$ multiplies the
 area by a factor that goes from 0 (deep inside $B$) to 1 (outside it):
 
-$$ \mathrm{swf}_k = \prod_{B\ne A} h\!\left(\frac{|\mathbf r_k-\mathbf R_B| - R^{\mathrm{in}}_B}{R^{\mathrm{sw}}_B}\right), \qquad h(x) = x^3(10 - 15x + 6x^2) \ \text{on}\ [0,1] , $$
+$$ \mathrm{swf}_k = \prod_{B\ne A} h_{\rm sw}\!\left(\frac{|\mathbf r_k-\mathbf R_B| - R^{\mathrm{in}}_B}{R^{\mathrm{sw}}_B}\right), \qquad h_{\rm sw}(x) = x^3(10 - 15x + 6x^2) \ \text{on}\ [0,1] , $$
 
-with $h = 0$ below the band and $h = 1$ above it. $h$ is the quintic
+with $h_{\rm sw} = 0$ below the band and $h_{\rm sw} = 1$ above it. $h_{\rm sw}$ is the quintic
 smoothstep of Lange and Herbert (JCP 133, 244111 (2010), eq. 3.19;
 `ferric-pcm/src/cavity.rs::switch_h`). Its derivative is
-$h'(x) = 30x^2(1-x)^2$ (`ferric-pcm/src/cavity.rs::switch_h_deriv`), and
-both $h'$ and $h''$ vanish at $x = 0$ and $x = 1$. So the switch joins the
+$h_{\rm sw}'(x) = 30x^2(1-x)^2$ (`ferric-pcm/src/cavity.rs::switch_h_deriv`), and
+both $h_{\rm sw}'$ and $h_{\rm sw}''$ vanish at $x = 0$ and $x = 1$. So the switch joins the
 constant pieces with a continuous second derivative, and section @sec:gradient can
 differentiate it. The band width scales with the grid spacing,
 
@@ -90,8 +90,8 @@ Each tessera also carries a Gaussian width, used by the matrices of @sec:cavity-
 $$ \xi_k = \frac{\Xi(N_{\mathrm{Leb}})}{R_A\sqrt{4\pi w_g}} . $$
 
 $\Xi$ is a per-order constant (`ferric-pcm/src/matrices.rs::gaussian_xi_table`),
-copied from PySCF's `pcm.py` table `XI` (Li and Frisch/Scalmani,
-JCP 122, 194110 (2005), Table II). Since $R_A\sqrt{4\pi w_g} = \sqrt{4\pi R_A^2 w_g}$,
+copied from PySCF's `pcm.py` table `XI`, which cites J. Chem. Phys. 122,
+194110 (2005), Table II. Since $R_A\sqrt{4\pi w_g} = \sqrt{4\pi R_A^2 w_g}$,
 the width is $\Xi$ over the square root of the unswitched tessera area: a
 tessera on a coarse grid is a broad Gaussian, one on a fine grid a narrow
 one. The width does not depend on where the other atoms are.
@@ -182,13 +182,21 @@ $$ S_{ii} = \frac{\xi_i\sqrt{2/\pi}}{\mathrm{swf}_i}, \qquad D_{ii} = -\frac{\xi
 
 Dividing by $\mathrm{swf}_i$ makes a tessera that is fading out of the
 surface expensive to charge. The finite diagonal also keeps $S$ well conditioned on a dense grid.
+$D_{ii}$ keeps the unswitched self-term. That is PySCF's convention, which
+ferric copies so that the two codes solve the same equations on the same
+cavity (section @sec:ief-operators), and section @sec:gradient differentiates
+the two diagonals accordingly: $S_{ii}$ depends on the switch, $D_{ii}$ does
+not.
 
 **`SdKind::PointCharge`.** Bare point charges: $S_{ij} = 1/r_{ij}$,
 $D_{ij} = \nu_{ij}/r_{ij}^3$, $S_{ii} = 1.0694\sqrt{4\pi/a_i}$ (the GEPOL
 self-energy constant `XI_SELF` in `ferric-pcm/src/matrices.rs`) and
 $D_{ii} = -S_{ii}/(2R_i)$.
 
-Both diagonal $D$ formulas are $-S_{ii}/(2R_i)$. Why? On a sphere of radius
+Both diagonal $D$ formulas are $-1/(2R_i)$ times a single-layer self-term:
+the unswitched $\xi_i\sqrt{2/\pi}$ for `GaussianSmeared`, and $S_{ii}$ itself
+for `PointCharge`. So $D_{ii} = -\mathrm{swf}_iS_{ii}/(2R_i)$ for the default
+kind, and $D_{ii} = -S_{ii}/(2R_i)$ only for `PointCharge`. Why the factor? On a sphere of radius
 $R$ the two kernels are proportional. Let $\cos\gamma = \hat n\cdot\hat n'$
 for two points on the sphere. Then
 $|\mathbf r-\mathbf r'|^2 = 2R^2(1-\cos\gamma)$ and
@@ -207,12 +215,12 @@ one.
 > equals $-1/(2R)$ times the single-layer kernel,
 > $(\mathbf r-\mathbf r')\cdot\hat n'/|\mathbf r-\mathbf r'|^3
 > = -\tfrac{1}{2R}\,1/|\mathbf r-\mathbf r'|$. Both diagonal formulas apply
-> this identity to the tessera's own sphere, which is why $D_{ii} = -S_{ii}/(2R_i)$.
+> this identity to the tessera's own sphere, which is why $D_{ii}$ is $-1/(2R_i)$ times the self-term.
 >
 > | | |
 > |---|---|
 > | Proof | `scripts/pcm_ief_sympy.py`, claim 1 |
-> | Negative control | the field-point normal gives the opposite sign, $+\tfrac{1}{2R}$ times the single-layer kernel |
+> | Negative control | the field-point normal gives the opposite sign, $+\tfrac{1}{2R}$ times the single-layer kernel; the runner transcribes the kernel with $+R(1-\cos\gamma)$ (claim 1 fails) |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-pcm/src/matrices.rs::build_s_d_kind` |
 > | Code test | `point_charge_in_sphere_matches_born_kirkwood_and_gauss_law` in `crates/ferric-pcm/tests/ief_limits.rs`, whose sphere cases exercise the diagonal |
@@ -243,6 +251,7 @@ $\sum_j D_{ij}a_j \to -2\pi$ above.
 > | | |
 > |---|---|
 > | Proof | `scripts/pcm_ief_sympy.py`, claim 2 (Funk–Hecke, exact integrals for $l = 0$ to $6$) |
+> | Negative control | the runner sets $D_l = -S_l/R$ in place of $-S_l/(2R)$ (claim 2 fails at every $l$) |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-pcm/src/matrices.rs::build_s_d_kind` |
 > | Code test | `point_charge_in_sphere_matches_born_kirkwood_and_gauss_law` in `crates/ferric-pcm/tests/ief_limits.rs`, which converges to the continuum only if the discrete $S$ and $D$ approach these spectra |

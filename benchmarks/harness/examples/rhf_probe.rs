@@ -21,14 +21,12 @@ fn main() {
     let obs = PreparedBasis::new(&mol, &obs_set).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let cfg = RhfConfig {
-        max_iter: 200,
-        energy_conv: 1e-7,
-        density_conv: 1e-6,
-        df_j_aux: Some("def2-universal-jkfit".to_string()),
-        df_k_aux: Some("def2-universal-jkfit".to_string()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_max_iter(200)
+        .with_energy_conv(1e-7)
+        .with_density_conv(1e-6)
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit");
     let ctx = ParallelContext::default();
     let t0 = Instant::now();
     eprintln!("[probe] entering solve_rhf...");

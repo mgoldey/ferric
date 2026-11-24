@@ -4,7 +4,8 @@
 
 $J$ and $K$ need the four-centre integrals $(\mu\nu|\lambda\sigma)$, about
 $N^4/8$ distinct ones, which for a few hundred basis functions is already too
-many to store. The default route therefore computes the integrals every
+many to store: at $N = 300$ that is $1.0\times10^9$ integrals, 8.1 GB of
+f64. The default route therefore computes the integrals every
 iteration and contracts each block with the density as soon as it exists:
 a direct build, with nothing fitted, so $J$ and $K$ are exact to the
 screening threshold. Most integrals between functions on distant atoms are
@@ -20,7 +21,7 @@ reproducibility (@sec:direct-and-incremental-incremental-build-runs, @sec:direct
 | Symbol | Meaning | Code name |
 |---|---|---|
 | $s_1 \ge s_2$, $s_3$, $s_4$ | shell indices of a canonical quartet | `s1`, `s2`, `s3`, `s4` |
-| $Q_{PQ}$ | Schwarz factor of a shell pair | `q_table[(s1, s2)]` |
+| $Q_{st}$ | Schwarz factor of the shell pair $(s, t)$ | `q_table[(s1, s2)]` |
 | $d_{\max}$ | density bound for the quartet | `screen.dmax(s1, s2, s3, s4)` |
 | $\tau_{\rm int}$ | `[scf] integral_thresh`, default $10^{-12}$ | `thresh` |
 | $\Delta D$ | change of the density since the last build | `delta_d` |
@@ -86,7 +87,7 @@ integral by two diagonal ones,
 $|(\mu\nu|\lambda\sigma)| \le \sqrt{(\mu\nu|\mu\nu)}\sqrt{(\lambda\sigma|\lambda\sigma)}$.
 Take the largest value over each shell pair,
 
-$$ Q_{PQ} = \max_{a\in P,\,b\in Q}\sqrt{|(ab|ab)|}, $$
+$$ Q_{st} = \max_{a\in s,\,b\in t}\sqrt{|(ab|ab)|}, $$
 
 so that every integral of a quartet is at most $Q_{s_1s_2}Q_{s_3s_4}$. The
 table $Q$ costs $O(N^2)$ diagonal integrals once per geometry (section @sec:schwarz).
@@ -105,8 +106,16 @@ This bounds each dropped term, not their sum: an element of $J$ that collects
 many dropped quartets can be off by more than $\tau_{\rm int}$.
 
 `[scf] screening = "csb"` replaces the bound by
-$\min(Q_{12}Q_{34}, M_{13}M_{24}, M_{14}M_{23})$, which is never looser than
-the Schwarz product; `"csam"` is not a rigorous bound.
+$\min(Q_{12}Q_{34}, M_{13}M_{24}, M_{14}M_{23})$, with
+$M_{st} = \max_{a\in s,\,b\in t}(aa|bb)^{1/2}$ the shell-pair maximum of
+the repulsion between the densities of two functions (section
+@sec:schwarz-combined-schwarz-bound derives it); it is never looser than the
+Schwarz product. `"csam"` multiplies the Schwarz product by
+$\max(X_{13}X_{24}, X_{14}X_{23})^{1/2}$, with the ratio
+$X_{st} = \max_{a\in s,\,b\in t}|(aa|bb)|/\sqrt{|(aa|aa)||(bb|bb)|} \le 1$
+(Thompson and Ochsenfeld, J. Chem. Phys. 147, 144101 (2017), Eqs. 9 to 12,
+ported from Psi4 in `crates/ferric-integrals/src/csam.rs`). That product is
+an estimate, not a bound: it can fall below the integral it screens.
 
 ### Fock matrix
 
@@ -146,16 +155,9 @@ each full build. No other event (a DIIS reset, MOM, a level-shift change)
 forces a rebuild.
 
 The scheme is on only when it can pay and its error cannot reach the
-convergence target:
-
-- the direct route (no density fitting, no pluggable K, no in-core store);
-- `energy_conv` $\ge 10^4\,\tau_{\rm int}$ and `density_conv` $\ge 10^3\,\tau_{\rm int}$
-  (`closed_shell_incremental_enabled` in `crates/ferric-scf/src/direct_jk.rs`;
-  the environment variable `FERRIC_SCF_INCREMENTAL` forces it on or off);
-- the builder has no in-core store (`DirectJK::incremental_pays`).
-
-The open-shell loops build increments only under
-`FERRIC_SCF_UHF_INCREMENTAL=1`.
+convergence target; section @sec:direct-and-incremental-incremental-build-runs
+lists the conditions. The environment variable `FERRIC_SCF_INCREMENTAL`
+forces it on or off.
 
 ### The in-core store
 
@@ -257,6 +259,108 @@ if sym1234 {                              // δbk: (μν) ↔ (λσ)
 - Blocks of 16 or more integrals go through the blocked `digest_j` and
   `digest_k`, which apply the same images as matrix operations.
 
+## Generally contracted bases {#direct-and-incremental-general-contraction}
+
+libint takes one segmented shell per contraction column, and stock libint
+cannot evaluate a generally contracted shell. A correlation-consistent basis
+stores several columns over one exponent list: cc-pVDZ carbon has s columns
+with 9, 9 and 1 non-zero coefficients over the same 9 exponents, and the
+single column is the most diffuse exponent, which also appears in the two
+long columns. The direct builder would recompute the shared primitives for
+each column, and the diffuse primitive inside the core column keeps every
+tight × diffuse primitive pair alive at any distance, since libint's
+primitive-pair screen uses the coefficients only.
+
+`DirectJK` therefore builds $J$ and $K$ on an exactly equivalent rotated
+basis (`ferric-integrals/src/contraction_rotation.rs::RotatedBasis`). Within
+each group of shells on one atom with the same $l$ and the same exponent
+list, it first subtracts the single-primitive columns from the long ones,
+$k' = k - (c_{kq}/c_{sq})\,s$. That stage is shared with the periodic
+short-range walks. Then it recombines the remaining long columns so that
+each one loses the primitives the others keep as pivots, the optimized
+general contraction of Hashimoto, Hirao and Tatewaki (Chem. Phys. Lett.
+243, 190 (1995)). cc-pVDZ carbon becomes s 7, 7, 1 and p 3, 1, and hydrogen
+s 3, 1. Write the parent functions as $\chi = T\chi'$. $T$ is block
+diagonal, the identity outside the rotated groups, with a condition number of
+1.8 for carbon s. A group whose block would exceed 100 keeps the first stage
+only, and a group whose first-stage block already exceeds 100 is not rotated.
+Then, for any density,
+
+$$ D' = T^{\mathsf T} D\,T, \qquad J[D] = T\,J'[D']\,T^{\mathsf T}, \qquad K[D] = T\,K'[D']\,T^{\mathsf T}, $$
+
+where $J'$, $K'$ are the direct builds on the rotated shells. The Schwarz
+table, the CSB or CSAM table when one is selected, the density screen, the
+engines and their shell-pair cache all belong to the rotated shells. The
+incremental build applies the same formula to $\Delta D$. The two transforms
+are serial; in the measured runs below they took under 2 ms per build on
+octane. A basis with nothing to
+rotate (def2, Pople, STO-3G, pcseg) never enters this path.
+
+The rotated basis, its Schwarz table and its engines are built once per
+geometry and kept with the geometry's screening bounds
+(`ferric-scf/src/direct_jk/gc_rotation.rs::GcSlot`), so every four-centre
+build on that geometry shares them. The rotation covers the SCF builds:
+`solve_rhf` on the exact four-centre route (RHF and hybrid RKS), the
+combined open-shell build of `solve_uhf` and `solve_rohf` (and their
+Kohn–Sham hybrids with $\omega = 0$), the exact builds of the DF-increments
+SCF, the separate `DirectJ` and `DirectK` builders (the $J$ or $K$ half when
+the other half is fitted, LinK or COSX), and the in-core store, which then
+holds the integrals of the rotated shells. It also covers the builds that
+follow an SCF on the same geometry: the Newton and TRAH steps, the stability
+analyses, the CPHF of the Hessian and of the response properties, the
+Z-vector and the OO-MP2 $J/K$, all through `rhf::build_jk_with_pool` and its
+siblings. The SCF records its setting on the bounds, so these builds run the
+same rotation as the SCF. Three consumers that build their own bounds copy
+the setting over: the Kohn–Sham Z-vector response (`zvector_ks`), the
+direct CASSCF integrals (`CasScfConfig::gc_rotation`) and the exact exchange
+of the GW $V_{xc}$. Bounds that no SCF configured, such as those of the
+Python `jk`, `grad_jk` and `FockResponse` blocks, never rotate, and
+`FERRIC_GC_ROTATE` does not apply to them. The analytic gradient's four-centre derivative
+integrals are those of the rotated shells, contracted with the rotated
+densities: $T$ does not depend on the geometry and keeps every shell on its
+atom, so this is the same gradient. LinK, CFMM, the Hessian's
+second-derivative integrals and the periodic code use the unrotated basis.
+`[scf] gc_rotation`
+(`RhfConfig::gc_rotation`, spelled exactly) selects the rotation, then
+`FERRIC_GC_ROTATE` when the key is unset (case and blanks ignored), then
+`auto`: `auto` runs both stages, `rot1` the first
+stage only, and `off` the unrotated builder bit for bit; any other value is
+an error (`ferric-scf/src/direct_jk/gc_rotation.rs::GcRotate`).
+
+The timings below are measured runs, not tests. They used `FERRIC_TIMING=1`,
+`[scf] eri = "direct"`, `energy_conv`
+1e-10 and `density_conv` 1e-8 (every build full), 4 rayon threads, on a box
+shared with three other agents' builds (load average 7 to 8 on 4 cores).
+Wall times varied by a factor of 3 between repeats, so the process CPU time
+is the steadier figure.
+
+| System (functions) | Threads | Per-build wall, off → auto (s) | libint thread-s per build, off → auto | Quartets per build, off → auto | SCF CPU time, off → auto (s) |
+|---|---|---|---|---|---|
+| hexane / cc-pVDZ (154) | 4 | 4.8–8.5 → 1.4–4.1 | 16.1–28.5 → 4.0–11.8 | 4.41 M → 3.65 M | 113–126 → 52–54 |
+| hexane / cc-pVDZ (154) | 1 | 9.2–9.8 → 4.2–4.2 | 7.7–8.2 → 2.9–3.0 | 4.41 M → 3.65 M | 110–111 → 49–51 |
+| octane / cc-pVDZ (202) | 4 | 17.3–20.2 → 5.9–6.8 | 57.0–66.8 → 16.3–18.8 | 10.87 M → 8.13 M | 292–296 → 120–122 |
+| hexane / def2-SVP (154) | 4 | 2.7–2.8 → 2.6–2.8 | 6.2–6.5 → 6.2–6.6 | 3.63 M → 3.63 M | 35–37 → 36–36 |
+
+Two or three runs per row, interleaved. The single-thread rows are the least
+disturbed by the other jobs: 2.2 to 2.4 times faster per build, and 2.6 to
+2.8 times less libint time. Stage 1 alone (`rot1`) on octane took 6.9 s
+per build and 140 s of CPU time, against 6.8 s and 122 s for both stages.
+def2-SVP has nothing to rotate, so `auto` runs the same code as `off` and
+gives the same energy bit for bit. In a measured run (not a test), dodecane / cc-pVDZ at the default SCF
+settings (incremental builds, 10 iterations) took 260 s of wall time and
+516 s of CPU time with `off`, and 128 s and 195 s with `auto`; def2-SVP took
+70 s and 141 s.
+
+A second set of measured runs (not tests) covers the builds that follow the
+SCF. Same settings, 2 rayon threads, load average about 2 (the runs' own two
+threads). Butane / cc-pVDZ (106 functions) with `check_stability = true`: the
+RHF internal and external Davidson solves made 435 pooled $J/K$ builds with
+`off` and 425 with `auto`, at a median 1.51 s and 0.73 s each, and the whole
+run took 685 s and 322 s. The rotated basis was set up once for the
+geometry, in 7 ms, and shared by the SCF and all the stability builds. In the
+same session the per-build SCF wall went from 5.49 s to 2.51 s on hexane and
+from 13.5 s to 5.6 s on octane.
+
 ## When the incremental build runs {#direct-and-incremental-incremental-build-runs}
 
 The incremental build is closed-shell, direct-only and conditional:
@@ -268,8 +372,9 @@ The incremental build is closed-shell, direct-only and conditional:
 | `energy_conv` $\ge 10^4\,\tau_{\rm int}$ and `density_conv` $\ge 10^3\,\tau_{\rm int}$ | `ferric-scf/src/direct_jk.rs::closed_shell_incremental_enabled` |
 | open shell | only with `FERRIC_SCF_UHF_INCREMENTAL=1` |
 
-The full rebuild every 8 iterations is a function-local constant of
-`solve_rhf`; nothing else, including a DIIS reset, forces one.
+The full rebuild every 8 iterations is
+`ferric-scf/src/driver.rs::INCREMENTAL_FULL_REBUILD_EVERY`, one value for
+the three drivers; nothing else, including a DIIS reset, forces one.
 
 Why is the open shell off by default? The doc comment of
 `ferric-scf/src/direct_jk.rs::open_shell_incremental_enabled` records the
@@ -291,6 +396,19 @@ agree to the screening threshold, and the rebuild every 8 iterations keeps the
 screened increments from accumulating without bound (the error expression in
 @sec:direct-and-incremental-equations has at most eight screened builds in it).
 
+The contraction rotation of @sec:direct-and-incremental-general-contraction
+changes the bits too: the rotated shells have their own Schwarz table, so the
+screen keeps a slightly different quartet set, and the transforms reassociate
+the sums. In `crates/ferric-scf/tests/gc_rotation.rs`, $J$ and $K$ at a
+fixed density differ from the unrotated builder's by at most 4.9e-12 (water
+with a ghost neon in cc-pVDZ; the set includes Cu, ECP, mixed and Cartesian
+bases) and converged energies by at most 1.2e-12 Ha. At threshold 0 the
+rotated build equals the dense $T J' T^{\mathsf T}$ to rounding. Energy
+differences grow with the number of screened quartets: the measured octane /
+cc-pVDZ run below moved by 8.3e-12 Ha. The rotated builder is bitwise
+identical across thread counts, and `off` reproduces the unrotated builder
+bit for bit.
+
 ## Numerical anchors {#direct-and-incremental-numerical-anchors}
 
 The direct builder is the exact reference against which every other route in
@@ -299,13 +417,9 @@ this chapter is measured. Its own anchors are the energy anchors of section
 
 <!-- figures: site/src/reference/validation.md "UHF and ROHF energies, stability-checked" -->
 
-**Open item.** The unit tests
-`incremental_fock_matches_full_rebuild_water_ccpvdz` and
-`incremental_fock_matches_full_rebuild_methane_ccpvdz` in
-`crates/ferric-scf/src/rhf.rs` no longer exercise the incremental path. Since
-the in-core store became the default for small bases, `incremental_pays()`
-is false for water and methane in cc-pVDZ, so both tests compare the full
-build with itself. They need the store disabled to test what their names say.
+The incremental path is compared with a full rebuild every iteration, with
+the in-core store off, on water, methane and hexane in cc-pVDZ
+(`incremental_fock_matches_full_rebuild_*` in `crates/ferric-scf/src/rhf.rs`).
 
 ## Options that change the equation {#direct-and-incremental-options-change-equation}
 
@@ -313,8 +427,9 @@ build with itself. They need the store disabled to test what their names say.
 |---|---|
 | `[scf] integral_thresh` | $\tau_{\rm int}$ |
 | `[scf] screening = "csb"` | the tighter rigorous bound $\min(Q_{12}Q_{34}, M_{13}M_{24}, M_{14}M_{23})$ |
-| `[scf] screening = "csam"` | a non-rigorous refinement of the Schwarz bound |
+| `[scf] screening = "csam"` | the Schwarz product times $\max(X_{13}X_{24}, X_{14}X_{23})^{1/2}$; an estimate, not a bound |
 | `[scf] eri = "incore"` / `"auto"` | stores the integrals once and builds $J$, $K$ by matrix products (`crates/ferric-scf/src/incore_jk.rs`) |
+| `[scf] gc_rotation` (or `FERRIC_GC_ROTATE`) = `auto` (default) / `rot1` / `off` | the internal contraction rotation of generally contracted bases (@sec:direct-and-incremental-general-contraction); `off` is the unrotated builder |
 
 ## Sources
 
@@ -323,3 +438,5 @@ build with itself. They need the store disabled to test what their names say.
 | `scripts/scf_jk_builders_sympy.py` | verified equation @eq:scf-incremental-jk |
 | `crates/ferric-scf/src/quartet_scatter.rs` | the loop, the screen, the scatter |
 | `crates/ferric-scf/src/direct_jk.rs` | the incremental gates and the open-shell measurement note |
+| `crates/ferric-integrals/src/contraction_rotation.rs`, `crates/ferric-scf/src/direct_jk/gc_rotation.rs` | the contraction rotation and its use in the direct builder |
+| `crates/ferric-scf/tests/gc_rotation.rs` | rotated against unrotated $J$, $K$ and energies; bitwise checks |

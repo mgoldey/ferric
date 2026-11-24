@@ -442,15 +442,19 @@ Measured on n-alkanes (6-31G / cc-pVDZ-RI, frozen core, `n_quad` = 7,
 | `local` 8 Bohr, relative error | 9.9e-4 | 1.07e-3 | 1.09e-3 | 1.11e-3 |
 | `local` 10 Bohr, relative error | 1.6e-4 | 1.7e-4 | 1.8e-4 | 1.8e-4 |
 | `local` 8 Bohr, `|T|`/(`nocc·nvir`) | 0.28 | 0.18 | 0.15 | 0.12 |
-| `local` 8 Bohr, SOS stage (s) / peak RSS (GB) | 5.2 / 1.1 | 19.0 / 2.0 | 37.4 / 2.9 | 72.4 / 3.8 |
+| `local` 8 Bohr, SOS stage (s) / peak RSS (GB), 2026-11-21 | 5.2 / 1.1 | 15.9 / 1.0 | 27.4 / 1.5 | 43.3 / 2.1 |
 | `mo`, SOS stage (s) / peak RSS (GB) | 5.4 / 2.0 | 88.9 / 5.9 | 71.6 / 11.0 | killed above 15 GB |
 
 The relative error at a fixed radius stays flat with size, and the per-orbital
 virtual domain is saturated (about 54 virtuals at 8 Bohr from C20 on). `|T|`
-falls relative to `nocc·nvir` roughly as 1/N. The timings are single runs on a
-shared machine (the `mo` C32 run is slower than C40, so at least one of those
-runs is disturbed), so no exponent is quoted here. At C48 the `mo` path did
-not fit in 15 GB, while `local` peaked at 3.8 GB.
+falls relative to `nocc·nvir` roughly as 1/N. The `local` timings
+(2026-11-21) are the mean of two runs that agree to 1%, at 4 threads, with
+the metric whitened by one Cholesky and a triangular solve; the SOS stage
+grows as N^2.5 from C32 to C48 against the basis size (N^2.53 from C40 to
+C48). The C20 entry and the `mo` row are single runs from 2026-11-08 (the
+`mo` C32 run is slower than C40, so at least one of those runs is
+disturbed). At C48 the `mo` path did not fit in 15 GB, while `local` peaked
+at 2.1 GB (process peak, SCF included).
 
 Two constructions were measured to FAIL and are not used. Keeping the virtual
 side in AOs and cutting its index by distance overestimated |E_OS| by 8.6% to

@@ -21,11 +21,8 @@ use ferric_scf::rohf::{solve_rohf, RohfConfig};
 use ferric_scf::rohf_newton::RohfNewtonInputs;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf_newton::UhfNewtonInputs;
+use ferric_testkit::compare::max_abs;
 use ndarray::Array2;
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
-}
 
 /// A smooth deterministic rotation block (rows × cols), max ~0.1.
 fn kappa(rows: usize, cols: usize, phase: f64) -> Array2<f64> {
@@ -97,11 +94,9 @@ fn ch4_aug() -> Closed {
     let prep = PreparedBasis::new(&mol, &basis::bundled("aug-cc-pvdz").unwrap()).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8);
     let res = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
     let c = res.mos_alpha.clone();
     let f_mo = c.t().dot(&res.fock_alpha).dot(&c);
@@ -193,11 +188,9 @@ fn rohf_matvec_is_homogeneous() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RohfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        ..Default::default()
-    };
+    let cfg = RohfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8);
     let res = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     let n = prep.nbasis();
     let h = oneelectron::hcore(&prep);

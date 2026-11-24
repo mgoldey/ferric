@@ -16,6 +16,11 @@ real eigensolve, and the molecular closed-shell formulas.
 
 Claims (each prints "(claim X)" and exits nonzero on a mismatch):
 
+  krsgdf-block-diagonal   the k-point RS-GDF fit tensors J2(q) and J3(k', q)
+                (sums over K = G + q, K != 0) are the Bloch blocks of the
+                supercell's Gamma J2 and J3 (times N), zero off the
+                q = k' - k diagonal; J2(-q) = J2(q)*; the supercell metric
+                spectrum is the union of the per-q spectra.
   mesh          sympy: sum_{L=0}^{N-1} e^{2 pi i m L/N} = N delta_{m0}; the
                 Gamma-centred mesh {G + q} is the supercell reciprocal
                 lattice; Monkhorst-Pack numerators 2m + 1 - N (odd N: the
@@ -46,7 +51,8 @@ Claims (each prints "(claim X)" and exits nonzero on a mismatch):
                 the direct (2|V|^2) part of the k-point MP2, checked
                 numerically.
 
-Rust: crates/ferric-pbc/src/kdense_aft.rs (J/K kernels), kscf.rs
+Rust: crates/ferric-pbc/src/rsgdf/kpoint.rs (KRsGdf, the k-point fit),
+crates/ferric-pbc/src/kdense_aft.rs (J/K kernels), kscf.rs
 (solve_krhf energy and Fock), kuscf.rs (per-spin Madelung), mp2.rs
 occupied_shift, grad.rs (M matrix), kcorr.rs (kpoint_mp2, kpoint_drpa,
 drpa_q_realified).
@@ -58,7 +64,10 @@ Mutations (each turns the script red):
     KMutation::KernelAtG (marker "[FAIL] (claim krhf-supercell)");
   - kb = ki - kj + ka, as the code's KCorrMutation::KbIndex (marker
     "[FAIL] (claim kmp2-supercell)");
-  - Pi(q) prefactor 4/N_k -> 4 (marker "[FAIL] (claim kdrpa-supercell)").
+  - Pi(q) prefactor 4/N_k -> 4 (marker "[FAIL] (claim kdrpa-supercell)");
+  - the conjugate dropped from the pair transform in J3(k', q), or from the
+    auxiliary transform in J2(q) (marker
+    "[FAIL] (claim krsgdf-block-diagonal)").
 
 Run: python3 scripts/pbc_kpoint_corr_sympy.py   (a few seconds)
 """
@@ -582,8 +591,133 @@ def claim_realify(bq_all):
     )
 
 
+# ---------------------------------------------------------------------------
+# krsgdf-block-diagonal
+# ---------------------------------------------------------------------------
+
+AUX_X = np.array([0.4, 1.3])  # auxiliary s Gaussians in the cell
+AUX_A = np.array([0.6, 1.1])
+NAUX = 2
+
+
+def aux_ft(kv):
+    """X_P(K) = int chi_P e^{-iKx}, chi_P an s Gaussian (one cell, no image sum)."""
+    return np.array(
+        [
+            math.sqrt(math.pi / a) * np.exp(-kv * kv / (4 * a) - 1j * kv * x)
+            for a, x in zip(AUX_A, AUX_X)
+        ]
+    )
+
+
+def kfit_j2(q):
+    """The k-point metric J2(q)_PQ = (1/Omega) sum_{K in G+q, K != 0} v conj(X_P) X_Q."""
+    kv = kgrid(q)
+    x = aux_ft(kv)
+    return np.einsum("pg,qg,g->pq", np.conj(x), x, 4 * math.pi / kv**2) / A
+
+
+def kfit_j3(kp, q):
+    """J3(k', q)_{mn,P} = (1/Omega) sum_{K in G+q, K != 0} v conj(P^{k'}_mn(K)) X_P(K)."""
+    kv = kgrid(q)
+    return (
+        np.einsum(
+            "mng,pg,g->mnp",
+            np.conj(bloch_pair(kp, kv)),
+            aux_ft(kv),
+            4 * math.pi / kv**2,
+        )
+        / A
+    )
+
+
+def claim_krsgdf():
+    """The supercell's Gamma fit tensors, Bloch-transformed with the mesh phases,
+    are block-diagonal in the momentum transfer and equal N times the k-point
+    tensors: sum_{T1 T2} e^{-i q1 T1 a} e^{i q2 T2 a} J2_sc = N J2(q1) delta_{q1 q2}
+    and sum_{L1 L2 T} e^{i k L1 a} e^{-i k' L2 a} e^{i q T a} J3_sc
+    = N J3(k', q) delta_{q, k' - k}. Hence the per-q eigenvalue cut is the
+    supercell's, and the mesh fit is the supercell fit."""
+    g = np.arange(-120, 121) * 2 * math.pi / ASC
+    g = g[(np.abs(g) <= KCUT) & (np.abs(g) > 1e-12)]
+    v = 4 * math.pi / g**2
+    xs = np.array(
+        [aux_ft(g)[p] * np.exp(-1j * g * T * A) for T in range(NK) for p in range(NAUX)]
+    )
+    j2_sc = np.einsum("pg,qg,g->pq", np.conj(xs), xs, v) / ASC
+    psc = sc_pair_ft(g)
+    j3_sc = np.einsum("abg,pg,g->abp", np.conj(psc), xs, v) / ASC
+    ks = [kpt(m) for m in range(NK)]
+
+    def aux_phase(q, sign):
+        return np.array(
+            [cmath.exp(sign * 1j * q * T * A) for T in range(NK) for _ in range(NAUX)]
+        )
+
+    def orb_phase(k, sign):
+        return np.array(
+            [cmath.exp(sign * 1j * k * L * A) for L in range(NK) for _ in range(NAO)]
+        )
+
+    def aux_block(u, q):
+        return (u * aux_phase(q, 1)).reshape(NK, NAUX).sum(axis=0)
+
+    worst2, off2 = 0.0, 0.0
+    for m1 in range(NK):
+        for m2 in range(NK):
+            w = np.einsum(
+                "p,pq,q->pq", aux_phase(ks[m1], -1), j2_sc, aux_phase(ks[m2], 1)
+            )
+            blk = w.reshape(NK, NAUX, NK, NAUX).sum(axis=(0, 2))
+            if m1 == m2:
+                worst2 = max(worst2, float(np.max(np.abs(blk - NK * kfit_j2(ks[m1])))))
+            else:
+                off2 = max(off2, float(np.max(np.abs(blk))))
+    worst3, off3 = 0.0, 0.0
+    for mk in range(NK):
+        for mkp in range(NK):
+            t = np.einsum(
+                "a,b,abp->abp", orb_phase(ks[mk], 1), orb_phase(ks[mkp], -1), j3_sc
+            )
+            t = t.reshape(NK, NAO, NK, NAO, NK * NAUX).sum(axis=(0, 2))
+            for mq in range(NK):
+                blk = (
+                    np.einsum("mnp,p->mnp", t, aux_phase(ks[mq], 1))
+                    .reshape(NAO, NAO, NK, NAUX)
+                    .sum(axis=2)
+                )
+                if (mkp - mk - mq) % NK == 0:
+                    worst3 = max(
+                        worst3,
+                        float(np.max(np.abs(blk - NK * kfit_j3(ks[mkp], ks[mq])))),
+                    )
+                else:
+                    off3 = max(off3, float(np.max(np.abs(blk))))
+    # Time reversal: J2(-q) = conj J2(q); and the supercell metric spectrum is
+    # the union of the per-q spectra, so one lindep cut means the same in both.
+    tr = max(
+        float(np.max(np.abs(kfit_j2(-ks[m]) - np.conj(kfit_j2(ks[m])))))
+        for m in range(NK)
+    )
+    ev_sc = np.sort(np.linalg.eigvalsh(j2_sc))
+    ev_k = np.sort(np.concatenate([NK * np.linalg.eigvalsh(kfit_j2(k)) for k in ks]))
+    spec = float(np.max(np.abs(ev_sc * NK - ev_k)))
+    check(
+        "krsgdf-block-diagonal",
+        worst2 < 1e-11
+        and off2 < 1e-11
+        and worst3 < 1e-11
+        and off3 < 1e-11
+        and tr < 1e-12
+        and spec < 1e-10,
+        f"|J2 blk - N J2(q)| {worst2:.1e}, off {off2:.1e}; |J3 blk - N J3(k',q)| {worst3:.1e}, "
+        f"off {off3:.1e}; |J2(-q) - J2(q)*| {tr:.1e}; spectra {spec:.1e}",
+    )
+
+
 def main():
     claim_mesh()
+    claim_krsgdf()
     eri, ssc = sc_eri()
     s = claim_krhf(eri, ssc)
     claim_kuhf(eri, ssc, s)

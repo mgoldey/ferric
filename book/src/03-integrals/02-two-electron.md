@@ -41,7 +41,7 @@ spherical Gaussians is a closed form:
 
 $$ (ab|cd) = \frac{2\pi^{5/2}}{pq\sqrt{p+q}}\, K_{AB}K_{CD}\, F_0\!\Big(\frac{pq}{p+q}\,|\mathbf P - \mathbf Q|^2\Big), \qquad F_0(T) = \int_0^1 e^{-Tt^2}\,dt . $$
 
-$F_0$ is the zeroth Boys function (section @sec:md-three-center evaluates it). Check two
+$F_0$ is the zeroth Boys function (section @sec:two-electron-boys). Check two
 limits. When $\mathbf P = \mathbf Q$ the argument is zero and $F_0(0) = 1$:
 two concentric clouds repel by a finite amount. When the clouds are far apart,
 $F_0(T) \to \tfrac12\sqrt{\pi/T}$, and the integral becomes
@@ -55,6 +55,32 @@ $\mathbf Q$, and the formula goes to $(2\pi/p)\,K_{AB}\,F_0(p|\mathbf P - \mathb
 the potential of the first cloud at $\mathbf Q$. Higher angular momentum
 adds polynomial factors, which recurrence relations handle; the Boys function
 of higher order $F_n$ appears there.
+
+### The Boys function {#two-electron-boys}
+
+The Boys function of order $n$ is
+
+$$ F_n(T) = \int_0^1 t^{2n} e^{-T t^2}\,dt . $$
+
+Three facts about it are used in this chapter. First, integrate by parts,
+taking $t^{2n}$ as the factor to integrate:
+
+$$ F_n(T) = \frac{e^{-T} + 2T\,F_{n+1}(T)}{2n+1} . $$
+
+Read downward, this gives $F_n$ from $F_{n+1}$ by adding positive terms, which
+is stable. Read upward, $F_{n+1} = \big((2n+1)F_n - e^{-T}\big)/(2T)$, it
+subtracts two nearly equal numbers at small $T$ and is stable only at large
+$T$. Second, differentiating under the integral gives $dF_n/dT = -F_{n+1}$,
+so a Taylor series of $F_n$ about a point $T_k$ needs only the higher-order
+values at $T_k$:
+
+$$ F_n(T_k + \delta) = \sum_{j \ge 0} \frac{(-\delta)^j}{j!}\,F_{n+j}(T_k) . $$
+
+Third, for large $T$ the integrand has decayed long before $t = 1$, and
+extending the upper limit to infinity gives
+$F_0(T) \approx \tfrac12\sqrt{\pi/T}$. The neglected part is the relative
+error $\operatorname{erfc}(\sqrt T)$. Check the other end: $F_n(0) = 1/(2n+1)$.
+Section @sec:md-three-center builds its evaluator from these three facts.
 
 The integrals have the permutational symmetry of real functions,
 
@@ -192,10 +218,12 @@ The Rust wrapper above maps them to `Some`, `None` and an assertion.
 | permutational symmetry of the quartets | `crates/ferric-integrals/tests/eri_permutational_symmetry.rs` | rounding |
 | a C++ throw returns a status, not undefined behaviour | `crates/ferric-integrals/tests/ffi_exception_safety.rs` | — |
 
-The $(ss|ss)$ closed form of @sec:two-electron-engine-computes-engine-serves is a textbook result (Helgaker,
-Jørgensen and Olsen, chapter @sec:kohn-sham). No committed script covers it, and ferric does
-not evaluate it itself; libint2 does. The closed form was checked against a
-direct radial quadrature of the Coulomb integral for this section.
+The $(ss|ss)$ closed form of section @sec:two-electron-engine-computes-engine-serves
+is a textbook result (Helgaker, Jørgensen and Olsen, *Molecular
+Electronic-Structure Theory*, Wiley, 2000, chapter 9). No committed script
+covers it, and ferric does not evaluate it itself; libint2 does. The closed
+form was checked against a direct radial quadrature of the Coulomb integral,
+and the Boys recursion and derivative against quadrature of the definition.
 
 ## Sources
 

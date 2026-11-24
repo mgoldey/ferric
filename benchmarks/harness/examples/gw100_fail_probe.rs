@@ -145,11 +145,9 @@ fn probe(case: &Case, obs_name: &str, dfbs_name: &str) {
         Err(e) => {
             say!("  RHF ERR: {e:?}");
             // Driver uses level_shift=0.5; replicate it, then escalate to 1.0.
-            let cfg2 = RhfConfig {
-                max_iter: 500,
-                level_shift: 0.5,
-                ..Default::default()
-            };
+            let cfg2 = RhfConfig::default()
+                .with_max_iter(500)
+                .with_level_shift(0.5);
             say!("  retry RHF(500 iter, level_shift=0.5)...");
             match solve_rhf(&ctx, &neutral, &obs_n, op, &bounds_n, &cfg2) {
                 Ok(r) if r.converged => {
@@ -162,11 +160,9 @@ fn probe(case: &Case, obs_name: &str, dfbs_name: &str) {
                     r
                 }
                 _ => {
-                    let cfg3 = RhfConfig {
-                        max_iter: 500,
-                        level_shift: 1.0,
-                        ..Default::default()
-                    };
+                    let cfg3 = RhfConfig::default()
+                        .with_max_iter(500)
+                        .with_level_shift(1.0);
                     say!("  retry2 RHF(500 iter, level_shift=1.0)...");
                     match solve_rhf(&ctx, &neutral, &obs_n, op, &bounds_n, &cfg3) {
                         Ok(r) => {

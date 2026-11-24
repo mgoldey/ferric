@@ -34,7 +34,23 @@ openblas-src = { workspace = true }
 serde_json = { workspace = true }
 
 [features]
+# Forwards ferric-rpa's parked research routes (ao_rpa, pno, dlpno_rpa) to the
+# harness examples that drive them. Off by default so workspace builds keep
+# ferric-rpa's default public surface.
+research = ["ferric-rpa/research"]
 gpu = ["ferric-core/gpu", "ferric-tensors/gpu", "ferric-mp2/gpu", "ferric-scf/gpu"]
 # Adds the fault-injection / settings-override seams (the unshipped `dfj-pack` arm of
 # dfj_device_split).
 test-seams = ["gpu", "ferric-scf/test-seams"]
+
+[[example]]
+name = "ao_rpa_bench"
+required-features = ["research"]
+
+[[example]]
+name = "osv_scaling_sweep"
+required-features = ["research"]
+
+[[example]]
+name = "projector_q_sparsity"
+required-features = ["research"]

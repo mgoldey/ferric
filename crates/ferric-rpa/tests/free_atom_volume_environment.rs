@@ -11,31 +11,27 @@ use ferric_rpa::dispersion::live_free_atom_volume;
 use ferric_scf::rhf::RhfConfig;
 
 fn base() -> RhfConfig {
-    RhfConfig {
-        max_iter: 200,
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(200)
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
 }
 
 /// A +1 point charge 3 Bohr from the origin (where the free atom is solved)
 /// and a uniform field: an environment that strongly polarizes an atom there.
 fn embedded() -> RhfConfig {
-    RhfConfig {
-        external_potential: Some(ExternalPotential {
-            point_charges: vec![PointCharge {
-                q: 1.0,
-                x: 0.0,
-                y: 0.0,
-                z: 3.0,
-            }],
-            smeared_charges: Vec::new(),
-            field: Some([0.0, 0.0, 0.02]),
-        }),
-        cosmo: Some(Default::default()),
-        ..base()
-    }
+    let mut c = base().with_external_potential(ExternalPotential {
+        point_charges: vec![PointCharge {
+            q: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 3.0,
+        }],
+        smeared_charges: Vec::new(),
+        field: Some([0.0, 0.0, 0.02]),
+    });
+    c.cosmo = Some(Default::default());
+    c
 }
 
 /// Catches: the environment leaking into the free-atom SCF (external
@@ -100,14 +96,24 @@ fn free_atom_volume_ignores_the_molecular_starting_density() {
     let ctx = ParallelContext::default();
     let bs = basis::bundled("6-31g").expect("6-31g");
     let op = Operator::coulomb();
-    let with_dm0 = RhfConfig {
-        init_guess_density: Some(ndarray::Array2::eye(13)),
-        ..base()
-    };
+    let with_dm0 = base().with_init_guess_density(ndarray::Array2::eye(13));
     for z in [8usize, 10] {
         let vac = live_free_atom_volume(&ctx, z, &bs, op, &base()).expect("default guess");
         let dm0 = live_free_atom_volume(&ctx, z, &bs, op, &with_dm0)
             .unwrap_or_else(|e| panic!("Z={z}: free-atom SCF with a molecular dm0: {e}"));
         assert_eq!(vac.to_bits(), dm0.to_bits(), "Z={z}: {vac} vs {dm0}");
     }
+}
+
+/// Catches: the free atom solved without the basis set's ECP. Iodine in
+/// def2-SVP has a 28-electron ECP; solved with all 53 electrons in the valence
+/// basis the free-atom UHF panicked (occupied block past the basis dimension).
+/// With the ECP applied it is the 25-electron valence atom, whose volume is a
+/// finite positive number.
+#[test]
+fn free_atom_volume_of_an_ecp_atom_uses_the_ecp() {
+    let ctx = ParallelContext::default();
+    let bs = basis::bundled("def2-svp").expect("def2-svp");
+    let v = live_free_atom_volume(&ctx, 53, &bs, Operator::coulomb(), &base()).expect("iodine");
+    assert!(v.is_finite() && v > 0.0, "iodine free volume {v}");
 }

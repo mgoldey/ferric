@@ -116,6 +116,7 @@ use ferric_rpa::{rs_mp2_lr_rpa, RsMp2RpaConfig, RsMp2RpaFormulation, RsMp2RpaRes
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use serde_json::Value;
 
 const ROW_DIR: &str = "testdata/reference/validation/rs_mp2_rpa";
@@ -194,12 +195,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn check_close(ctx: &str, what: &str, got: f64, want: f64, tol: f64) -> f64 {
     let d = (got - want).abs();
     eprintln!("{ctx}: {what:<44} ferric {got:+.12} ref {want:+.12} |d| {d:.2e}");
@@ -256,7 +251,7 @@ fn load_system(system: &str, basis_name: &str) -> Sys {
         &label,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &label),
+        num_ctx(&r, "/nuclear_repulsion", &label),
         TOL_ENUC,
     );
     assert_eq!(
@@ -287,12 +282,10 @@ fn load_system(system: &str, basis_name: &str) -> Sys {
         &obs,
         Operator::coulomb(),
         &bounds,
-        &RhfConfig {
-            max_iter: 400,
-            energy_conv: 1e-11,
-            density_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default()
+            .with_max_iter(400)
+            .with_energy_conv(1e-11)
+            .with_density_conv(1e-10),
     )
     .unwrap_or_else(|e| panic!("{label}: RHF failed: {e:?}"));
     assert!(rhf.converged, "{label}: RHF did not converge");
@@ -300,7 +293,7 @@ fn load_system(system: &str, basis_name: &str) -> Sys {
         &label,
         "E_RHF",
         rhf.energy,
-        num(&r, "/rhf/energy", &label),
+        num_ctx(&r, "/rhf/energy", &label),
         TOL_E_SCF,
     );
     Sys {
@@ -372,7 +365,7 @@ fn check_fields(ctx: &str, sys: &Sys, res: &RsMp2RpaResult, b: &Value, form: RsM
             ctx,
             &format!("{f} {name}"),
             got,
-            num(b, &format!("/{name}"), ctx),
+            num_ctx(b, &format!("/{name}"), ctx),
             tol,
         );
     }
@@ -390,7 +383,7 @@ fn check_fields(ctx: &str, sys: &Sys, res: &RsMp2RpaResult, b: &Value, form: RsM
                     ctx,
                     &format!("B {name}"),
                     got,
-                    num(b, &format!("/B/{name}"), ctx),
+                    num_ctx(b, &format!("/B/{name}"), ctx),
                     TOL_DRPA,
                 );
             }
@@ -411,7 +404,7 @@ fn check_fields(ctx: &str, sys: &Sys, res: &RsMp2RpaResult, b: &Value, form: RsM
                     ctx,
                     &format!("T {name}"),
                     got,
-                    num(b, &format!("/T/{name}"), ctx),
+                    num_ctx(b, &format!("/T/{name}"), ctx),
                     TOL_DRPA,
                 );
             }
@@ -421,14 +414,14 @@ fn check_fields(ctx: &str, sys: &Sys, res: &RsMp2RpaResult, b: &Value, form: RsM
         ctx,
         &format!("{f} e_corr"),
         res.e_corr,
-        num(b, &format!("/{f}/e_corr"), ctx),
+        num_ctx(b, &format!("/{f}/e_corr"), ctx),
         TOL_E_CORR,
     );
     check_close(
         ctx,
         &format!("{f} total_energy"),
         res.total_energy,
-        num(&sys.r, "/rhf/energy", ctx) + num(b, &format!("/{f}/e_corr"), ctx),
+        num_ctx(&sys.r, "/rhf/energy", ctx) + num_ctx(b, &format!("/{f}/e_corr"), ctx),
         TOL_E_CORR + TOL_E_SCF,
     );
     for control in ["wrong_sign", "dmp2_coeff_1"] {
@@ -436,7 +429,7 @@ fn check_fields(ctx: &str, sys: &Sys, res: &RsMp2RpaResult, b: &Value, form: RsM
             ctx,
             &format!("{f} e_corr vs {f}_{control}"),
             res.e_corr,
-            num(b, &format!("/controls/{f}_{control}"), ctx),
+            num_ctx(b, &format!("/controls/{f}_{control}"), ctx),
             TOL_E_CORR,
         );
     }
@@ -487,14 +480,14 @@ fn run_case(system: &str, basis_name: &str) {
             &here,
             "B e_corr vs the T reference",
             rb.e_corr,
-            num(b, "/T/e_corr", &ctx),
+            num_ctx(b, "/T/e_corr", &ctx),
             TOL_E_CORR,
         );
         assert_misses(
             &here,
             "T e_corr vs the B reference",
             rt.e_corr,
-            num(b, "/B/e_corr", &ctx),
+            num_ctx(b, "/B/e_corr", &ctx),
             TOL_E_CORR,
         );
         if i == I_DEFAULT {
@@ -515,7 +508,7 @@ fn run_case(system: &str, basis_name: &str) {
             &ctx,
             &format!("unit slip: {f}(0.42) vs the {f}(0.222254) reference"),
             e,
-            num(b_def, &format!("/{f}/e_corr"), &ctx),
+            num_ctx(b_def, &format!("/{f}/e_corr"), &ctx),
             TOL_E_CORR,
         );
     }
@@ -524,7 +517,7 @@ fn run_case(system: &str, basis_name: &str) {
     for (name, form, w) in ANCHORS {
         let a = &r["anchors"][name];
         assert_eq!(
-            num(a, "/omega", &ctx),
+            num_ctx(a, "/omega", &ctx),
             w,
             "{ctx}: anchor {name} ω differs from the generator's"
         );
@@ -533,14 +526,14 @@ fn run_case(system: &str, basis_name: &str) {
             &ctx,
             &format!("{name}(ω={w:e}) e_corr vs numpy"),
             res.e_corr,
-            num(a, "/e_corr", &ctx),
+            num_ctx(a, "/e_corr", &ctx),
             TOL_E_CORR,
         );
         check_close(
             &ctx,
             &format!("LIMIT {name}(ω={w:e}) vs exact target"),
             res.e_corr,
-            num(a, "/target", &ctx),
+            num_ctx(a, "/target", &ctx),
             TOL_LIMIT,
         );
         if name == "B_omega_to_inf" {

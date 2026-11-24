@@ -5,10 +5,12 @@
 
 use crate::diis::DiisDriver;
 use crate::direct_j::DirectJ;
+use crate::direct_jk::gc_rotation::GcSlot;
 use crate::direct_jk::DirectJK;
 use crate::direct_k::DirectK;
 use crate::fock::{JBuilder, KBuilder};
 use crate::guess::hcore_guess;
+use crate::options::KBuilderKind;
 use crate::result::{ScfExit, ScfResult, Spin};
 use ferric_dft::cdft::Constraint;
 
@@ -24,7 +26,16 @@ use ndarray::Array2;
 use ndarray_linalg::Eigh;
 
 /// Configuration parameters for the RHF solver.
+///
+/// `#[non_exhaustive]`: outside this crate a config is built from
+/// [`RhfConfig::default`], a named constructor ([`RhfConfig::periodic`],
+/// [`RhfConfig::gradient_reference`]) or a lowering
+/// ([`ScfOptions::into_rhf_config`](crate::options::ScfOptions::into_rhf_config)),
+/// then adjusted with the `with_*` setters or by assigning a field (the
+/// fields stay public). There is no struct literal, so a new field takes its
+/// default at every such site.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct RhfConfig {
     /// Maximum SCF iterations for one solve (each ladder rung sets its own).
     /// Default 200.
@@ -53,8 +64,10 @@ pub struct RhfConfig {
     /// Integral screening threshold for the integral-driven J/K builds.
     /// Default 1e-12.
     pub integral_thresh: f64,
-    /// Choose K matrix builder: "direct" (default), "link", or "cosx"
-    /// (seminumerical exchange, see [`crate::cosx_k`]). Honoured by
+    /// Choose K matrix builder: direct (the default, also `None`), LinK, or
+    /// COSX (seminumerical exchange, see [`crate::cosx_k`]); the frontends
+    /// parse the user's spelling with
+    /// [`KBuilderKind::parse`](crate::options::KBuilderKind::parse). Honoured by
     /// `solve_rhf`, `solve_uhf` AND `solve_rohf` (before 2026-09-08 only
     /// `solve_rhf` read it, so it was a silent no-op for open-shell runs).
     /// The open-shell solvers build K_α and K_β from ONE builder instance,
@@ -63,9 +76,9 @@ pub struct RhfConfig {
     /// auto-defaulted for a functional), the functional uses no exact exchange,
     /// or the functional is range-separated (exchange then comes from the
     /// SR/LR density-fitted fitters).
-    pub k_builder: Option<String>,
+    pub k_builder: Option<KBuilderKind>,
     /// COSX knobs (grid, overlap fit, screen); only read when
-    /// `k_builder == Some("cosx")`.
+    /// `k_builder == Some(KBuilderKind::Cosx)`.
     pub cosx: crate::cosx_k::CosxConfig,
     /// Optional auxiliary basis for density-fitted Coulomb (RI-J). When set, J is
     /// built from precomputed 3-center ERIs in O(N^2 · naux) per iteration instead
@@ -120,7 +133,11 @@ pub struct RhfConfig {
     /// Level shift (Ha) applied to the virtual–virtual block of the Fock
     /// matrix in MO basis. Defaults to 0 (no shift). Used to damp oscillations
     /// in open-shell SCF (ROHF/UHF/ROKS) where DIIS plateaus near a near-
-    /// degenerate transition. A shift of 0.1–0.5 Ha is typical.
+    /// degenerate transition. A shift of 0.1–0.5 Ha is typical. The shift is
+    /// ramped off with `e`, the largest element of the DIIS error: RHF/RKS
+    /// `level_shift · min(e / 0.1, 1)` (`closed_shell_level_shift_ramp`),
+    /// UHF/UKS and ROHF/ROKS `level_shift · e / (e + 1e-3)`
+    /// (`open_shell_level_shift_ramp`); `driver.rs` records why they differ.
     pub level_shift: f64,
     /// Whether a meta-GGA functional with `level_shift == 0` gets the automatic
     /// 0.5 Ha virtual-block shift (`driver::effective_level_shift`). `true` (the
@@ -129,10 +146,12 @@ pub struct RhfConfig {
     /// know whether the caller wrote a `level_shift` (CLI `[scf] level_shift`,
     /// the Python `level_shift=` kwarg) set it to `false` when the caller did.
     pub meta_gga_auto_level_shift: bool,
-    /// If > 0 in ROHF/ROKS: switch from DIIS to a damped-Newton step once the
-    /// DIIS error (err_max) drops below this trigger. Setting `1e-2` is a
-    /// reasonable default for OH-doublet LDA/PBE plateaus. A value of 0
-    /// disables Newton entirely (DIIS-only).
+    /// If > 0 (RHF/RKS, UHF/UKS, ROHF/ROKS): replace the DIIS step by a PCG
+    /// Newton step once the DIIS error (err_max) drops below this trigger.
+    /// RHF/RKS additionally requires iteration > 3 and a functional without
+    /// range separation (ω = 0). Setting `1e-2` is a reasonable value for
+    /// OH-doublet LDA/PBE plateaus; `[scf] soscf = true` sets 1e-3. A value
+    /// of 0 disables Newton entirely (DIIS-only).
     pub newton_trigger: f64,
 
     /// AURORA auxiliary-curvature accelerator (arXiv:2608.07354).
@@ -169,7 +188,7 @@ pub struct RhfConfig {
     /// Trust-region parameters, read only when `trah_trigger` is `Some`.
     pub trah: crate::trah::TrahConfig,
     /// If > 0 (RHF/UHF/ROHF/ROKS): activate Maximum-Overlap Method
-    /// reordering after this many DIIS iters. From iter `mom_after_iter + 1`
+    /// reordering after this many SCF iterations. From iter `mom_after_iter + 1`
     /// onward, the occupied MO set is picked by AO-overlap with the
     /// previous-iter accepted set (rather than by ε). Default 0 = disabled.
     /// MOM pins whatever basin DIIS holds at arming — it breaks occupied-set
@@ -436,7 +455,9 @@ pub struct RhfConfig {
     /// cDFT diabat, a MOM excited state) is a legitimate thing to compute.
     ///
     /// Honoured by `solve_rhf`/`solve_rks` (RHF-internal, singlet channel) and
-    /// `solve_uhf`/`solve_uks` (UHF-internal, independent α/β rotations).
+    /// `solve_uhf`/`solve_uks` (UHF-internal, independent α/β rotations). On an
+    /// RHF (not KS) reference it also runs the external RHF→UHF (triplet)
+    /// analysis into [`crate::result::ScfResult::stability_external`].
     /// `solve_rohf`/`solve_roks` SKIP it with a printed reason — the Roothaan
     /// Hessian is a third operator, and analysing a UHF or RHF one there would
     /// be a wrong-operator verdict. VV10 functionals are likewise skipped with
@@ -462,7 +483,7 @@ pub struct RhfConfig {
     /// irreps share the remaining electrons by aufbau. `None` = plain aufbau.
     pub irrep_nelec: Option<Vec<(String, usize)>>,
     /// Which screening bound to build for the LinK-specific pair list when
-    /// `k_builder == Some("link")`. Default
+    /// `k_builder == Some(KBuilderKind::Link)`. Default
     /// [`crate::screening::ScreeningKind::Schwarz`] — byte-identical to every
     /// pre-CSB build. `Csb` selects [`crate::screening::CsbBounds`], the
     /// RIGOROUS `min{Q_µν Q_λσ, M_µλ M_νσ, M_µσ M_νλ}` bound of Thompson &
@@ -483,7 +504,7 @@ pub struct RhfConfig {
     /// typed error naming `screening = "csb"`.
     ///
     /// SCOPE OF THIS FIELD: read ONLY at the `link_schwarz_opt` construction
-    /// site in [`solve_rhf`] (i.e. only when `k_builder == "link"`), where it
+    /// site in [`solve_rhf`] (i.e. only when `k_builder == Some(KBuilderKind::Link)`), where it
     /// selects whether the FRESH LinK table gets an `M` or `X` table. It does
     /// NOT by itself affect the dense direct `build_jk`/`DirectJ`/`DirectK`/
     /// `DirectJK` path (the default, `k_builder` unset), nor
@@ -525,6 +546,15 @@ pub struct RhfConfig {
     /// from, for the certificate. Written by the solver.
     #[doc(hidden)]
     pub eri_route: crate::incore_jk::EriRouteRecord,
+    /// The internal contraction rotation of generally contracted shells
+    /// (cc-pVXZ) in the exact four-centre J/K builds
+    /// ([`crate::direct_jk::GcRotate`]; `crate::direct_jk::gc_rotation`):
+    /// the SCF's, and, through the request the SCF records on its bounds,
+    /// the Newton, stability, response and gradient builds that follow.
+    /// `None` (the default) leaves it to `FERRIC_GC_ROTATE`, then `auto`.
+    /// Changes energies at the screening-noise level (~1e-11 Ha), not
+    /// bitwise; `Off` is the unrotated builder.
+    pub gc_rotation: Option<crate::direct_jk::GcRotate>,
     /// `[scf] relativistic`: the relativistic core Hamiltonian
     /// ([`crate::x2c::Relativistic`]), built once before the loop in place of
     /// `T + V` (see [`crate::x2c::reference_hcore`]). `None` (default) is the
@@ -604,6 +634,7 @@ impl Default for RhfConfig {
             raw_handoff: None,
             eri: crate::incore_jk::EriMode::Auto,
             eri_route: Default::default(),
+            gc_rotation: None,
             relativistic: None,
         }
     }
@@ -638,54 +669,176 @@ impl RhfConfig {
         }
     }
 
+    /// The SCF density threshold of [`RhfConfig::gradient_reference`].
+    pub const GRADIENT_REFERENCE_DENSITY_CONV: f64 = 1e-9;
+
+    /// The reference SCF of a gradient (finite-difference or analytic) or a
+    /// geometry task's certificate: the defaults with `density_conv` at
+    /// [`Self::GRADIENT_REFERENCE_DENSITY_CONV`] (the reachable tight signal
+    /// under the ΔP gate; `energy_conv` stays at its loose default, since a
+    /// tight one floors under DF noise and would hang at `max_iter`, see
+    /// `scf_converged`) and `external_potential` (an embedding field, or
+    /// `None`).
+    ///
+    /// It leaves [`Self::ri_j_task`] at `Energy`: a geometry driver adds
+    /// [`Self::for_geometry_task`] itself.
+    pub fn gradient_reference(
+        external_potential: Option<ferric_core::external_potential::ExternalPotential>,
+    ) -> Self {
+        Self {
+            density_conv: Self::GRADIENT_REFERENCE_DENSITY_CONV,
+            external_potential,
+            ..Self::default()
+        }
+    }
+
+    /// The SCF of the periodic (Gamma-point) solvers: the core-Hamiltonian
+    /// guess (`use_sad_guess = false`), `density_conv` and `max_iter`, every
+    /// other field at its default.
+    pub fn periodic(density_conv: f64, max_iter: usize) -> Self {
+        Self {
+            use_sad_guess: false,
+            density_conv,
+            max_iter,
+            ..Self::default()
+        }
+    }
+
+    // The `with_*` setters each write exactly one field (`with_stability`
+    // the pair it names) and nothing else; `construction_oracle` checks that
+    // one setter at a time.
+
+    /// Set [`gc_rotation`](Self::gc_rotation).
+    #[must_use]
+    pub fn with_gc_rotation(mut self, mode: crate::direct_jk::GcRotate) -> Self {
+        self.gc_rotation = Some(mode);
+        self
+    }
+
     /// Set the maximum number of SCF iterations.
+    #[must_use]
     pub fn with_max_iter(mut self, max_iter: usize) -> Self {
         self.max_iter = max_iter;
         self
     }
     /// Set the density convergence threshold (dp_rms).
+    #[must_use]
     pub fn with_density_conv(mut self, thresh: f64) -> Self {
         self.density_conv = thresh;
         self
     }
+    /// Set the energy convergence threshold (|ΔE|, Ha).
+    #[must_use]
+    pub fn with_energy_conv(mut self, thresh: f64) -> Self {
+        self.energy_conv = thresh;
+        self
+    }
     /// Set the XC functional (e.g. "PBE", "B3LYP", "wB97X-V").
+    #[must_use]
     pub fn with_xc(mut self, xc: impl Into<String>) -> Self {
         self.xc = Some(xc.into());
         self
     }
     /// Set the virtual-block level shift (Ha) for convergence damping.
+    ///
+    /// Only [`Self::level_shift`]: [`Self::meta_gga_auto_level_shift`] keeps
+    /// its value, so on the defaults `with_level_shift(0.0)` still gives a
+    /// meta-GGA the automatic 0.5 Ha shift. The options lowering differs:
+    /// [`ScfOptions::level_shift`](crate::options::ScfOptions::level_shift)
+    /// also clears `meta_gga_auto_level_shift`, so an explicit 0 runs
+    /// unshifted. A frontend lowering a user's `level_shift` should go
+    /// through `ScfOptions`; this setter is the literal field write.
+    #[must_use]
     pub fn with_level_shift(mut self, shift: f64) -> Self {
         self.level_shift = shift;
         self
     }
-    /// Set the K-matrix builder strategy ("direct", "link" or "cosx").
-    pub fn with_k_builder(mut self, builder: impl Into<String>) -> Self {
-        self.k_builder = Some(builder.into());
+    /// Set the K-matrix builder strategy.
+    #[must_use]
+    pub fn with_k_builder(mut self, builder: KBuilderKind) -> Self {
+        self.k_builder = Some(builder);
         self
     }
-    /// Set the COSX knobs (only read when the builder is "cosx").
+    /// Set the COSX knobs (only read when the builder is
+    /// [`KBuilderKind::Cosx`]).
+    #[must_use]
     pub fn with_cosx(mut self, cosx: crate::cosx_k::CosxConfig) -> Self {
         self.cosx = cosx;
         self
     }
+    /// Set the RI-J storage precision ([`Self::ri_j_precision`]).
+    #[must_use]
+    pub fn with_ri_j_precision(mut self, precision: crate::df_j::RiJPrecision) -> Self {
+        self.ri_j_precision = Some(precision);
+        self
+    }
+    /// Set an explicit main Kohn-Sham grid ([`Self::dft_grid`]).
+    #[must_use]
+    pub fn with_dft_grid(mut self, grid: ferric_dft::grid::AtomicGridConfig) -> Self {
+        self.dft_grid = Some(grid);
+        self
+    }
     /// Set the auxiliary basis for density-fitted Coulomb (RI-J).
+    #[must_use]
     pub fn with_df_j_aux(mut self, aux: impl Into<String>) -> Self {
         self.df_j_aux = Some(aux.into());
         self
     }
     /// Set the auxiliary basis for density-fitted exchange (RI-K).
+    #[must_use]
     pub fn with_df_k_aux(mut self, aux: impl Into<String>) -> Self {
         self.df_k_aux = Some(aux.into());
         self
     }
     /// Enable verbose per-iteration SCF output.
+    #[must_use]
     pub fn with_verbose(mut self, verbose: bool) -> Self {
         self.verbose = verbose;
         self
     }
     /// Enable the opt-in post-convergence internal stability analysis.
+    #[must_use]
     pub fn with_check_stability(mut self, check: bool) -> Self {
         self.check_stability = check;
+        self
+    }
+    /// Set [`Self::check_stability`] and [`Self::scf_stability_descent`]
+    /// from a [`Stability`](crate::options::Stability), as the options
+    /// lowering does.
+    #[must_use]
+    pub fn with_stability(mut self, stability: crate::options::Stability) -> Self {
+        self.check_stability = stability.checks();
+        self.scf_stability_descent = stability == crate::options::Stability::Descend;
+        self
+    }
+    /// Set the initial-guess family ([`Self::use_sad_guess`]):
+    /// [`Guess::Sad`](crate::options::Guess::Sad) or
+    /// [`Guess::Core`](crate::options::Guess::Core).
+    #[must_use]
+    pub fn with_guess(mut self, guess: crate::options::Guess) -> Self {
+        self.use_sad_guess = guess == crate::options::Guess::Sad;
+        self
+    }
+    /// Start from the density `d` ([`Self::init_guess_density`]).
+    #[must_use]
+    pub fn with_init_guess_density(mut self, d: Array2<f64>) -> Self {
+        self.init_guess_density = Some(d);
+        self
+    }
+    /// Set (or, with `None`, clear) the embedding field
+    /// ([`Self::external_potential`]).
+    #[must_use]
+    pub fn with_external_potential(
+        mut self,
+        external_potential: impl Into<Option<ferric_core::external_potential::ExternalPotential>>,
+    ) -> Self {
+        self.external_potential = external_potential.into();
+        self
+    }
+    /// Arm MOM after `iter` iterations ([`Self::mom_after_iter`]; 0 is off).
+    #[must_use]
+    pub fn with_mom_after_iter(mut self, iter: usize) -> Self {
+        self.mom_after_iter = iter;
         self
     }
 }
@@ -945,8 +1098,9 @@ pub fn resolve_three_index_budget(config_bytes: usize) -> usize {
 /// `window` entries has not dropped below 0.9x its value over the previous
 /// `window` entries (gradient stopped falling — robust to oscillation, since a
 /// wide-band limit cycle has net-zero running-min change), AND `current_err` is
-/// still above the 1e-4 plateau floor (below it, the separate plateau-acceptance
-/// path owns the regime). Returns `false` when `window == 0` (degenerate/no-op
+/// still above the 1e-4 floor (below it the commutator can park on a fitting or
+/// near-degeneracy floor while the density settles, and the density-change
+/// stopping test, `scf_converged`, owns the regime). Returns `false` when `window == 0` (degenerate/no-op
 /// config) or when there isn't yet `2*window` entries of history.
 pub(crate) fn stall_detected(errmax_history: &[f64], window: usize, current_err: f64) -> bool {
     if window == 0 {
@@ -2159,6 +2313,9 @@ fn solve_rhf_impl(
     require_closed_shell(mol)?;
     crate::mom::check_reference(config, "RHF", false)?;
     crate::incore_jk::begin_scf(bounds);
+    // The response, Newton and stability builds on these bounds follow the
+    // SCF's contraction rotation (`direct_jk::gc_rotation::GcSlot`).
+    bounds.gc.set_request(config.gc_rotation);
     // Split the injection: (S, h, V_nn) go to the shared env builder, the J/K
     // builders are driven in the iteration loop. All `None` on the molecular
     // path.
@@ -2216,20 +2373,6 @@ fn solve_rhf_impl(
         config.diis_flavor != crate::diis::DiisFlavor::Pulay && config.diis_switch_thresh > 0.0,
         env.ooc_budget,
     );
-    // Validate `k_builder` BEFORE any expensive setup, so an unknown value is
-    // rejected even on a run whose DF-J/DF-K path would later override it
-    // (`df_active = false` here is only about which branch reports the error;
-    // the whitelist check is unconditional). The DF-vs-pluggable decision is
-    // re-resolved in `RhfRoute::resolve` once `build_df_jk` has said what is
-    // actually active.
-    crate::fock_assembly::resolve_k_builder(
-        config.k_builder.as_deref(),
-        false,
-        false,
-        false,
-        true,
-        0.0,
-    )?;
     let (route, df_j, df_k) = RhfRoute::resolve(
         &mut phases,
         (ctx, mol, op, prep, config),
@@ -2399,7 +2542,7 @@ fn rhf_initial_density(
     Ok(d)
 }
 
-/// The LinK screening bound for `k_builder = "link"`, else `None`.
+/// The LinK screening bound for `KBuilderKind::Link`, else `None`.
 ///
 /// `config.screening` selects Schwarz (default — byte-identical to the
 /// pre-CSB/CSAM behaviour of always building a fresh `SchwarzBounds` here),
@@ -2416,12 +2559,12 @@ fn rhf_initial_density(
 /// `screening = "csam"` + an RSH functional a clean, actionable error rather
 /// than a silent substitution.
 fn link_screen(
-    kind: Option<&str>,
+    kind: Option<KBuilderKind>,
     op: Operator,
     prep: &PreparedBasis,
     config: &RhfConfig,
 ) -> Result<Option<SchwarzBounds>, FerricError> {
-    if kind == Some("link") {
+    if kind == Some(KBuilderKind::Link) {
         Ok(Some(SchwarzBounds::compute_for_screening(
             op,
             prep,
@@ -2466,26 +2609,26 @@ fn prime_k_builders(
 /// 33 s, most of it the unused K. With `k_builder = "cosx"` COSX replaces the
 /// ω = 0 DF-K (RIJCOSX; a named `df_k_aux` next to it is refused) and DF-J
 /// keeps its own resolution.
-struct RhfRoute<'c> {
+struct RhfRoute {
     /// Whether the K written into `k_buf` ever reaches F. Narrower than
     /// `k_consumed`: an RSH functional consumes exact exchange, but from its
     /// own SR/LR fitters (`dfk_sr`/`dfk_lr`, built by `driver::prepare`), so
     /// the F assembly never reads `k_buf` when ω > 0. True exactly for pure
     /// HF (k_mix = {1, 1, 0}) and ω = 0 hybrids.
     k_buf_consumed: bool,
-    /// A pluggable K builder ("link" / "cosx") is only consumed on the non-DF
+    /// A pluggable K builder (LinK or COSX) is only consumed on the non-DF
     /// path (see the branch structure of [`RhfJk::build_fock`]): when DF-J or
     /// DF-K is active it would be built and then silently ignored — a
     /// pre-existing silent no-op for "link" — so `resolve_k_builder` warns
     /// and skips construction.
     df_any: bool,
     /// The pluggable K builder this run constructs, if any.
-    pluggable_k: Option<&'c str>,
+    pluggable_k: Option<KBuilderKind>,
     /// The builders that produced the energy, for the analytic gradient.
     df_jk_route: Option<crate::result::DfJkRoute>,
 }
 
-impl<'c> RhfRoute<'c> {
+impl RhfRoute {
     /// Resolve the route and build its density-fitted Coulomb (RI-J) /
     /// exchange (RI-K): 3-center tensor(s) + metric(s) once, sharing one
     /// `PreparedBasis` when the J and K aux names agree (see `build_df_jk`) —
@@ -2501,7 +2644,7 @@ impl<'c> RhfRoute<'c> {
             &Molecule,
             Operator,
             &PreparedBasis,
-            &'c RhfConfig,
+            &RhfConfig,
         ),
         env: &crate::driver::ScfEnv<'_>,
         k_mix: ferric_dft::xc_trait::KMix,
@@ -2550,13 +2693,13 @@ impl<'c> RhfRoute<'c> {
         // an active or dropped DF-K does. A pure / RSH functional cannot consume
         // a pluggable K at all (`narrow_k_builder_to_supported` warns).
         let pluggable_k = crate::fock_assembly::resolve_k_builder(
-            config.k_builder.as_deref(),
+            config.k_builder,
             df_j.is_some(),
             df_k.is_some() || df_k_skipped,
             df_k.is_some(),
             k_consumed,
             k_mix.omega,
-        )?;
+        );
         let pluggable_k = crate::fock_assembly::narrow_k_builder_to_supported(
             pluggable_k,
             k_consumed,
@@ -2591,7 +2734,7 @@ struct RhfInputs<'r, 'e> {
     /// Meta-GGA default virtual-block level shift (see
     /// `driver::effective_level_shift`).
     effective_level_shift: f64,
-    route: RhfRoute<'r>,
+    route: RhfRoute,
 }
 
 /// The J/K and XC builders of one RHF solve and the buffers they fill.
@@ -2641,7 +2784,7 @@ impl<'a> RhfJk<'a> {
         ),
         env: &crate::driver::ScfEnv<'_>,
         k_mix: ferric_dft::xc_trait::KMix,
-        route: &RhfRoute<'_>,
+        route: &RhfRoute,
         (df_j, df_k): (
             Option<crate::split_rij::RiJ<'a>>,
             Option<crate::df_k::DfK<'a>>,
@@ -3444,7 +3587,7 @@ impl RhfState {
 
         // Stall: running-min err_max over a window stopped falling. Robust to
         // oscillation (a wide-band limit cycle has net-zero running-min change).
-        // Only fires above the 1e-4 floor — below it the plateau path accepts.
+        // Only fires above the 1e-4 floor — below it the ΔD stopping test decides.
         if self.mon.stalled(err_max, config.stall_window) {
             if scf_trace() {
                 let w = config.stall_window.unwrap_or(0);
@@ -3549,7 +3692,7 @@ impl RhfState {
         // `k_buf` holds K_scf(d) from this iteration's build, so only
         // the final grid is built here.
         let (energy, cosx_final) = match (inp.route.pluggable_k, config.cosx.final_grid.as_ref()) {
-            (Some(crate::options::COSX_K_BUILDER), Some(fg)) => {
+            (Some(KBuilderKind::Cosx), Some(fg)) => {
                 let rec = crate::cosx_k::run_final_pass(
                     ctx,
                     inp.mol,
@@ -4145,7 +4288,10 @@ impl RhfState {
         // F, so an accepted solution never carries the shift.
         if inp.effective_level_shift > 0.0 {
             if let Some(c_p) = self.c_prev.as_ref() {
-                let shift_ramp = inp.effective_level_shift * (err_max / 0.1).min(1.0);
+                let shift_ramp = crate::driver::closed_shell_level_shift_ramp(
+                    inp.effective_level_shift,
+                    err_max,
+                );
                 if shift_ramp > 0.0 {
                     let shift_term = with_blas_threads(opt_in_blas_threads(), || {
                         crate::blas_probe::record(&crate::blas_probe::RHF_LEVEL_SHIFT);
@@ -4262,14 +4408,24 @@ pub fn build_jk(
     k: &mut Array2<f64>,
 ) -> Result<usize, FerricError> {
     if let Some(store) = crate::incore_jk::store_for(bounds, prep)? {
-        store.add_jk(d, j, k);
+        store.add_jk(d, j, k)?;
         return Ok(store.quartets());
     }
-    let pool = crate::engine_pool::EnginePool::new(
-        bounds.op,
-        prep,
-        ferric_integrals::engine_pool::eri_precision(),
-    )?;
+    let precision = ferric_integrals::engine_pool::eri_precision();
+    // On a rotated basis the engines are the cached rotated ones; no pool on
+    // the parent shells is built.
+    if let Some(rot) = GcSlot::for_engines(bounds, prep, bounds.op, precision)? {
+        return rotated_jk(
+            ctx,
+            thresh,
+            d,
+            j,
+            k,
+            rot,
+            crate::reduce::default_band_bytes(),
+        );
+    }
+    let pool = crate::engine_pool::EnginePool::new(bounds.op, prep, precision)?;
     build_jk_with_pool(
         ctx,
         prep,
@@ -4318,9 +4474,15 @@ pub fn build_jk_with_pool(
 
     ctx.check_interrupted()?;
     if let Some(store) = crate::incore_jk::store_for(bounds, prep)? {
-        store.add_jk(d, j, k);
+        store.add_jk(d, j, k)?;
         return Ok(store.quartets());
     }
+    if let Some(rot) = GcSlot::for_pool(bounds, prep, pool)? {
+        return rotated_jk(ctx, thresh, d, j, k, rot, band_bytes);
+    }
+    // The rotated build's inner walk is reported by `rotated_jk`.
+    let t0 =
+        (ferric_core::timing::enabled() && !bounds.gc.is_inert()).then(std::time::Instant::now);
 
     let nsh = prep.nshells();
     let nbf = prep.nbasis();
@@ -4425,7 +4587,64 @@ pub fn build_jk_with_pool(
     *j += &total_j;
     *k += &total_k;
 
-    Ok(computed_quartets.load(Ordering::SeqCst))
+    let computed = computed_quartets.load(Ordering::SeqCst);
+    if let Some(t0) = t0 {
+        report_pooled_jk(false, t0.elapsed().as_secs_f64(), computed);
+    }
+    Ok(computed)
+}
+
+/// `FERRIC_TIMING` line of one pooled J/K build ([`build_jk_with_pool`]):
+/// the response, Newton and stability builds.
+fn report_pooled_jk(rotated: bool, wall: f64, quartets: usize) {
+    if !ferric_core::timing::enabled() {
+        return;
+    }
+    let what = if rotated {
+        "rotated (gc rotation)"
+    } else {
+        "unrotated"
+    };
+    eprintln!("[timing] pooled-jk build ({what}): wall {wall:.3} s, {quartets} quartets");
+}
+
+/// A pooled J/K build on the rotated shells of `rot`
+/// ([`crate::direct_jk::gc_rotation`]): `D' = Tᵀ D T`, the unrotated walk
+/// on the rotated basis, bounds and engines, then `j += T J' Tᵀ`,
+/// `k += T K' Tᵀ`. Exact for any `D`; the transforms are serial, so the
+/// result does not depend on the thread count.
+fn rotated_jk(
+    ctx: &ParallelContext,
+    thresh: f64,
+    d: &Array2<f64>,
+    j: &mut Array2<f64>,
+    k: &mut Array2<f64>,
+    (rot, pool): (
+        std::sync::Arc<crate::direct_jk::gc_rotation::RotatedJk>,
+        std::sync::Arc<crate::engine_pool::EnginePool>,
+    ),
+    band_bytes: usize,
+) -> Result<usize, FerricError> {
+    let t0 = std::time::Instant::now();
+    let _charge = rot.charge_collective(ctx, 3)?;
+    let dr = rot.forward(d);
+    let n = dr.nrows();
+    let (mut jr, mut kr) = (Array2::<f64>::zeros((n, n)), Array2::<f64>::zeros((n, n)));
+    let computed = build_jk_with_pool(
+        ctx,
+        &rot.basis.prep,
+        &rot.bounds,
+        thresh,
+        &dr,
+        &mut jr,
+        &mut kr,
+        &pool,
+        band_bytes,
+    )?;
+    rot.back_add(&jr, j)?;
+    rot.back_add(&kr, k)?;
+    report_pooled_jk(true, t0.elapsed().as_secs_f64(), computed);
+    Ok(computed)
 }
 
 /// The power of two `2^e` that brings `max_abs` into `(½, 1]`, as
@@ -4517,7 +4736,27 @@ pub(crate) fn build_spin_jk_with_pool_homogeneous(
     };
     ctx.check_interrupted()?;
     if let Some(store) = crate::incore_jk::store_for(bounds, prep)? {
-        return Ok(store.spin_jk(d, exchange));
+        return store.spin_jk(d, exchange);
+    }
+    if let Some((rot, rpool)) = GcSlot::for_pool(bounds, prep, pool)? {
+        // The rotated build of the same call (module `direct_jk::gc_rotation`).
+        let _charge = rot.charge_collective(ctx, 6)?;
+        let (da, db) = (rot.forward(d[0]), rot.forward(d[1]));
+        let (jr, kr) = build_spin_jk_with_pool_homogeneous(
+            ctx,
+            &rot.basis.prep,
+            &rot.bounds,
+            thresh,
+            [&da, &db],
+            exchange,
+            &rpool,
+            band_bytes,
+        )?;
+        let k = match kr {
+            Some([ka, kb]) => Some([rot.back(&ka)?, rot.back(&kb)?]),
+            None => None,
+        };
+        return Ok((rot.back(&jr)?, k));
     }
     let nbf = prep.nbasis();
     let zero = || Array2::<f64>::zeros((nbf, nbf));
@@ -4634,7 +4873,27 @@ pub(crate) fn build_multi_jk_with_pool_homogeneous(
         return Ok((Vec::new(), Vec::new()));
     }
     if let Some(store) = crate::incore_jk::store_for(bounds, prep)? {
-        return Ok(store.jk_multi(jd, kd));
+        return store.jk_multi(jd, kd);
+    }
+    if let Some((rot, rpool)) = GcSlot::for_pool(bounds, prep, pool)? {
+        // The rotated build of the same call (module `direct_jk::gc_rotation`).
+        let _charge = rot.charge_collective(ctx, 2 * (jd.len() + kd.len()))?;
+        let jr: Vec<Array2<f64>> = jd.iter().map(|d| rot.forward(d)).collect();
+        let kr: Vec<Array2<f64>> = kd.iter().map(|d| rot.forward(d)).collect();
+        let (js, ks) = build_multi_jk_with_pool_homogeneous(
+            ctx,
+            &rot.basis.prep,
+            &rot.bounds,
+            thresh,
+            &jr.iter().collect::<Vec<_>>(),
+            &kr.iter().collect::<Vec<_>>(),
+            &rpool,
+            band_bytes,
+        )?;
+        let back = |xs: Vec<Array2<f64>>| -> Result<Vec<Array2<f64>>, FerricError> {
+            xs.iter().map(|x| rot.back(x)).collect()
+        };
+        return Ok((back(js)?, back(ks)?));
     }
     let nbf = prep.nbasis();
     // Each density scaled into max|D| ∈ (½, 1], stacked (nbf, nbf, m).
@@ -5682,9 +5941,9 @@ mod tests {
     /// Na4 at aug-cc-pVTZ has a near-degenerate occupied manifold (four overlap
     /// eigenvalues ≈ 3e-5): bare DIIS reaches the correct ground-state energy but
     /// the orbital gradient parks on a noise floor (err_max ≈ 3e-5) it can never
-    /// drain below density_conv, so without plateau acceptance the SCF spins to
-    /// max_iter and returns Err (the "stuck job" in the GW100 aTZ sweep). This is
-    /// the regression for the plateau-acceptance fix: it must converge (flagged)
+    /// drain, so a stopping test on the commutator spins to max_iter (the "stuck
+    /// job" in the GW100 aTZ sweep). The density-change test (`scf_converged`)
+    /// accepts it once ΔD settles. This is the regression: it must converge
     /// to the CORRECT ground state −774.894064, NOT the ~−771.5/−771.7 excited
     /// states that MOM or a raised lindep threshold converge to. Slow (~5-7 min
     /// release): run with --ignored.
@@ -5709,7 +5968,7 @@ mod tests {
         let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
         assert!(
             result.converged,
-            "Na4/aTZ did not converge (plateau acceptance failed); iters={}",
+            "Na4/aTZ did not converge on the density-change test; iters={}",
             result.iterations
         );
         assert!(
@@ -5804,6 +6063,37 @@ mod tests {
     const D_CONV: f64 = 1e-6;
 
     /// The bound is sqrt(dconv) above the ROHF F6 floor and the floor below it.
+    /// The #422 veto at function level (its end-to-end witness, a stalled
+    /// EDIIS in a point-charge field, disappeared with the corrected EDIIS
+    /// curvature in 2026-11): a `Converged` exit with the commutator at or above
+    /// the crossover is refused, recorded and the driver falls back to Pulay; a
+    /// smaller commutator, a non-converged exit and pure Pulay pass through.
+    #[test]
+    fn veto_refuses_a_converged_exit_above_the_energy_diis_crossover() {
+        use crate::diis::{DiisDriver, DiisFlavor};
+        let mut e = DiisDriver::new(DiisFlavor::Ediis, 8, 1e-1);
+        let (exit, fb) =
+            veto_stalled_energy_diis(Some(ScfExit::Converged), &mut e, 0.5, 5, DiisFlavor::Ediis);
+        assert_eq!(exit, None);
+        let fb = fb.expect("the refusal is recorded");
+        assert_eq!((fb.iteration, fb.flavor, fb.bound), (5, "EDIIS", 1e-1));
+        assert_eq!(fb.err_max, 0.5);
+        assert!(!e.uses_energy_history(), "the driver fell back to Pulay");
+
+        let mut e = DiisDriver::new(DiisFlavor::Adiis, 8, 1e-1);
+        let (exit, fb) =
+            veto_stalled_energy_diis(Some(ScfExit::Converged), &mut e, 0.05, 5, DiisFlavor::Adiis);
+        assert_eq!((exit, fb.is_none()), (Some(ScfExit::Converged), true));
+        let (exit, fb) = veto_stalled_energy_diis(None, &mut e, 0.5, 5, DiisFlavor::Adiis);
+        assert_eq!((exit, fb.is_none()), (None, true));
+        assert!(e.uses_energy_history());
+
+        let mut p = DiisDriver::new(DiisFlavor::Pulay, 8, 1e-1);
+        let (exit, fb) =
+            veto_stalled_energy_diis(Some(ScfExit::Converged), &mut p, 0.5, 5, DiisFlavor::Pulay);
+        assert_eq!((exit, fb.is_none()), (Some(ScfExit::Converged), true));
+    }
+
     #[test]
     fn gradient_veto_bound_is_sqrt_dconv_floored_at_1e_minus_3() {
         assert_eq!(gradient_veto_bound(1e-4), 1e-2);
@@ -5942,7 +6232,7 @@ mod tests {
     #[test]
     fn stall_detected_false_below_plateau_floor() {
         // Flat history that would trip the running-min comparison, but
-        // current_err is below the 1e-4 floor: the plateau path (separate logic)
+        // current_err is below the 1e-4 floor: the density-change stopping test
         // owns this regime, not stall detection.
         let w = 4;
         let history = vec![5e-5; 8];
@@ -6689,5 +6979,307 @@ mod tests {
                 .collect()
         };
         (unstack(0, &jscale), unstack(mj, &kscale))
+    }
+}
+
+#[cfg(test)]
+mod construction_oracle {
+    //! The named constructors and `with_*` setters that replaced the struct
+    //! literals outside this crate (roadmap item 11(a)) reproduce those
+    //! literals field for field. `RhfConfig` has no `PartialEq`, so configs
+    //! compare through their `Debug` text (every field; f64 in shortest
+    //! round-trip form).
+    use super::*;
+    use crate::cosx_k::CosxConfig;
+    use crate::df_j::RiJPrecision;
+    use ferric_core::external_potential::{ExternalPotential, PointCharge};
+    use ferric_dft::grid::AtomicGridConfig;
+
+    fn assert_same(old: &RhfConfig, new: &RhfConfig) {
+        assert_eq!(format!("{old:?}"), format!("{new:?}"));
+    }
+
+    fn field() -> ExternalPotential {
+        ExternalPotential {
+            point_charges: vec![PointCharge {
+                q: -0.5,
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+            }],
+            field: Some([0.0, 0.0, 1e-3]),
+            ..Default::default()
+        }
+    }
+
+    /// The Gamma-point configs (`GammaRksConfig::new`, `GammaUhfConfig` /
+    /// `GammaRohfConfig::default`) and the CLI / Python periodic helpers.
+    #[test]
+    fn periodic_is_the_core_guess_literal() {
+        for (density_conv, max_iter) in [(1e-10, 200), (3e-7, 17)] {
+            let old = RhfConfig {
+                use_sad_guess: false,
+                density_conv,
+                max_iter,
+                ..Default::default()
+            };
+            assert_same(&old, &RhfConfig::periodic(density_conv, max_iter));
+        }
+    }
+
+    /// The gradient / geometry-task reference SCFs of ferric-mp2,
+    /// ferric-rpa and the Python geometry drivers.
+    #[test]
+    fn gradient_reference_is_the_tight_density_literal() {
+        for ext in [None, Some(field())] {
+            let old = RhfConfig {
+                density_conv: 1e-9,
+                external_potential: ext.clone(),
+                ..Default::default()
+            };
+            assert_same(&old, &RhfConfig::gradient_reference(ext));
+        }
+    }
+
+    /// Each setter, applied alone, is the one-field struct update it
+    /// replaces, from the defaults and from a non-default base, so a setter
+    /// that also wrote another field would fail here.
+    #[test]
+    fn each_setter_is_its_one_field_struct_update() {
+        use crate::options::{Guess, Stability};
+        type Case = (
+            &'static str,
+            fn(RhfConfig) -> RhfConfig,
+            fn(RhfConfig) -> RhfConfig,
+        );
+        fn grid() -> AtomicGridConfig {
+            AtomicGridConfig {
+                n_radial: 30,
+                n_angular: 50,
+                ..Default::default()
+            }
+        }
+        fn cosx() -> CosxConfig {
+            CosxConfig {
+                overlap_fit: !CosxConfig::default().overlap_fit,
+                ..CosxConfig::default()
+            }
+        }
+        fn dm() -> Array2<f64> {
+            Array2::from_shape_fn((2, 2), |(i, j)| (i + 2 * j) as f64 * 0.25)
+        }
+        let cases: Vec<Case> = vec![
+            (
+                "max_iter",
+                |b| RhfConfig { max_iter: 77, ..b },
+                |b| b.with_max_iter(77),
+            ),
+            (
+                "energy_conv",
+                |b| RhfConfig {
+                    energy_conv: 1e-7,
+                    ..b
+                },
+                |b| b.with_energy_conv(1e-7),
+            ),
+            (
+                "density_conv",
+                |b| RhfConfig {
+                    density_conv: 3e-9,
+                    ..b
+                },
+                |b| b.with_density_conv(3e-9),
+            ),
+            (
+                "level_shift",
+                |b| RhfConfig {
+                    level_shift: 0.25,
+                    ..b
+                },
+                |b| b.with_level_shift(0.25),
+            ),
+            (
+                "level_shift 0",
+                |b| RhfConfig {
+                    level_shift: 0.0,
+                    ..b
+                },
+                |b| b.with_level_shift(0.0),
+            ),
+            (
+                "verbose",
+                |b| RhfConfig { verbose: true, ..b },
+                |b| b.with_verbose(true),
+            ),
+            (
+                "check_stability",
+                |b| RhfConfig {
+                    check_stability: true,
+                    ..b
+                },
+                |b| b.with_check_stability(true),
+            ),
+            (
+                "cosx",
+                |b| RhfConfig { cosx: cosx(), ..b },
+                |b| b.with_cosx(cosx()),
+            ),
+            (
+                "xc",
+                |b| RhfConfig {
+                    xc: Some("PBE0".to_string()),
+                    ..b
+                },
+                |b| b.with_xc("PBE0"),
+            ),
+            (
+                "df_j_aux",
+                |b| RhfConfig {
+                    df_j_aux: Some("def2-universal-jkfit".to_string()),
+                    ..b
+                },
+                |b| b.with_df_j_aux("def2-universal-jkfit"),
+            ),
+            (
+                "df_k_aux",
+                |b| RhfConfig {
+                    df_k_aux: Some(String::new()),
+                    ..b
+                },
+                |b| b.with_df_k_aux(""),
+            ),
+            (
+                "k_builder",
+                |b| RhfConfig {
+                    k_builder: Some(KBuilderKind::Cosx),
+                    ..b
+                },
+                |b| b.with_k_builder(KBuilderKind::Cosx),
+            ),
+            (
+                "ri_j_precision",
+                |b| RhfConfig {
+                    ri_j_precision: Some(RiJPrecision::F64),
+                    ..b
+                },
+                |b| b.with_ri_j_precision(RiJPrecision::F64),
+            ),
+            (
+                "dft_grid",
+                |b| RhfConfig {
+                    dft_grid: Some(grid()),
+                    ..b
+                },
+                |b| b.with_dft_grid(grid()),
+            ),
+            (
+                "guess core",
+                |b| RhfConfig {
+                    use_sad_guess: false,
+                    ..b
+                },
+                |b| b.with_guess(Guess::Core),
+            ),
+            (
+                "guess sad",
+                |b| RhfConfig {
+                    use_sad_guess: true,
+                    ..b
+                },
+                |b| b.with_guess(Guess::Sad),
+            ),
+            (
+                "init_guess_density",
+                |b| RhfConfig {
+                    init_guess_density: Some(dm()),
+                    ..b
+                },
+                |b| b.with_init_guess_density(dm()),
+            ),
+            (
+                "external_potential",
+                |b| RhfConfig {
+                    external_potential: Some(field()),
+                    ..b
+                },
+                |b| b.with_external_potential(field()),
+            ),
+            (
+                "external_potential Some",
+                |b| RhfConfig {
+                    external_potential: Some(field()),
+                    ..b
+                },
+                |b| b.with_external_potential(Some(field())),
+            ),
+            (
+                "external_potential None",
+                |b| RhfConfig {
+                    external_potential: None,
+                    ..b
+                },
+                |b| b.with_external_potential(None),
+            ),
+            (
+                "mom_after_iter",
+                |b| RhfConfig {
+                    mom_after_iter: 5,
+                    ..b
+                },
+                |b| b.with_mom_after_iter(5),
+            ),
+            (
+                "stability off",
+                |b| RhfConfig {
+                    check_stability: false,
+                    scf_stability_descent: false,
+                    ..b
+                },
+                |b| b.with_stability(Stability::Off),
+            ),
+            (
+                "stability check",
+                |b| RhfConfig {
+                    check_stability: true,
+                    scf_stability_descent: false,
+                    ..b
+                },
+                |b| b.with_stability(Stability::Check),
+            ),
+            (
+                "stability descend",
+                |b| RhfConfig {
+                    check_stability: true,
+                    scf_stability_descent: true,
+                    ..b
+                },
+                |b| b.with_stability(Stability::Descend),
+            ),
+        ];
+        // A base where every field a setter writes differs from its default
+        // and from the value the cases write.
+        let mut other = RhfConfig::periodic(1e-10, 50)
+            .with_energy_conv(2e-4)
+            .with_level_shift(0.5)
+            .with_xc("B3LYP")
+            .with_df_j_aux("cc-pvdz-jkfit")
+            .with_df_k_aux("cc-pvdz-jkfit")
+            .with_k_builder(KBuilderKind::Link)
+            .with_ri_j_precision(RiJPrecision::F32)
+            .with_external_potential(ExternalPotential::default())
+            .with_mom_after_iter(2)
+            .with_stability(Stability::Descend)
+            .with_init_guess_density(Array2::zeros((2, 2)));
+        other.meta_gga_auto_level_shift = false;
+        other.dft_grid = Some(AtomicGridConfig::default());
+        for base in [RhfConfig::default(), other] {
+            for (name, old, new) in &cases {
+                assert_eq!(
+                    format!("{:?}", old(base.clone())),
+                    format!("{:?}", new(base.clone())),
+                    "{name}"
+                );
+            }
+        }
     }
 }

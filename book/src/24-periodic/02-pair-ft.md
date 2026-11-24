@@ -25,7 +25,7 @@ it, and @sec:pair-ft-numerical-anchors lists the anchors.
 | Entry point | Location |
 |---|---|
 | Rust | `ferric-pbc/src/pair_ft.rs::{pair_ft,pair_ft_chunked}` |
-| Plan and kernels | `crates/ferric-pbc/src/pair_ft/plan.rs` (`walk`, `site_terms`, `f_rows`) |
+| Plan and kernels | `ferric-pbc/src/pair_ft/plan.rs::{walk,site_terms,f_rows,accumulate_fused}` |
 | $k$-point residues | `crates/ferric-pbc/src/pair_ft/residues.rs` |
 
 ## The transform in closed form {#pair-ft-transform-closed-form}
@@ -61,13 +61,14 @@ The product is one Gaussian at $\mathbf P_c$, scaled by the overlap Gaussian
 $e^{-\alpha\beta|\mathbf A - \mathbf B'|^2/p}$, which depends only on the
 distance between the two centres.
 
-**Angular momentum.** The Cartesian prefactors $x_A^{i}x_B^{j}$ ride along.
+**Angular momentum.** The Cartesian prefactors $x_A^{i}x_B^{j}$ are carried through.
 The McMurchie–Davidson expansion writes them, times the product Gaussian, as
 derivatives of that Gaussian with respect to its centre:
 
 $$ x_A^{i}x_B^{j}e^{-\alpha x_A^2 - \beta x_B^2} = e^{-\alpha\beta X_{AB}^2/p}\sum_t E_t^{ij}\,\partial_{P_x}^t e^{-p(x-P_x)^2}, $$
 
-with $x_A = x - A_x$, $X_{PA} = P_x - A_x$, $X_{AB} = A_x - B_x$ and the overlap Gaussian kept
+with $x_A = x - A_x$, $x_B = x - B'_x$, $X_{PA} = P_x - A_x$,
+$X_{PB} = P_x - B'_x$, $X_{AB} = A_x - B'_x$ and the overlap Gaussian kept
 outside the coefficients. Check the first order: $\partial_{P_x}$ of the
 product Gaussian is $2p(x - P_x)$ times it, so
 $X_{PA} + \tfrac{1}{2p}\cdot 2p(x - P_x) = x - A_x$. Low orders:
@@ -98,7 +99,7 @@ $\mathbf L$.
 Read the factors from left to right: contraction coefficients, the overlap
 of two s primitives, a Gaussian decay in $G$ whose width is set by the
 product exponent $p$, a phase that locates the product, and a polynomial in
-$\mathbf G$ of degree $l_a + l_b$ per dimension. A tight pair (large $p$) has
+$\mathbf G$ of degree $i_d + j_d$ in $G_d$, $l_a + l_b$ in total. A tight pair (large $p$) has
 a wide transform and needs a large $\mathbf G$ sphere; this is why the
 reciprocal-space cost of the chapter grows with the steepest exponent.
 
@@ -119,7 +120,7 @@ an independent libint2 lattice overlap.
 > | | |
 > |---|---|
 > | Proof | `scripts/pbc_ewald_pairft_stress_sympy.py`, part S2, claim `pairft-md` |
-> | Negative control | none in the script; the code tests compare with PySCF |
+> | Negative control | the runner's mutation: the phase $e^{+i\mathbf G\cdot\mathbf P_c}$ in the closed form (the Rust test `mutant_phase_sign_in_pair_ft_is_caught` uses the same flip) |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-pbc/src/pair_ft.rs::pair_ft` |
 > | Code test | `pair_ft_at_nonzero_g_matches_pyscf_ft_aopair` in `crates/ferric-pbc/tests/pbc_stage0.rs` |
@@ -134,9 +135,10 @@ an independent libint2 lattice overlap.
 | 2 | per pair and image: prefactor, $E_t$ tables, phase $e^{-i\mathbf G\cdot\mathbf P_c}$ | |
 | 3 | per $\mathbf G$ chunk: rows $\sum_tE_t(-iG_d)^t$, accumulate into $P_{\mu\nu}(\mathbf G)$ | $N_\text{pair}N_{\mathbf L}N_{\mathbf G}$ |
 
-The prefactor and the overlap Gaussian are formed in the plan's walk
-(`pair_ft/plan.rs`, $c_ac_b(\pi/p)^{3/2}$ and
-$e^{-\alpha\beta|\mathbf A - \mathbf B'|^2/p}$), the phase in `site_terms`.
+The prefactor and the overlap Gaussian are formed in
+`ferric-pbc/src/pair_ft/plan.rs::walk` ($c_ac_b(\pi/p)^{3/2}$ and
+$e^{-\alpha\beta|\mathbf A - \mathbf B'|^2/p}$), the phase in
+`ferric-pbc/src/pair_ft/plan.rs::site_terms`.
 The polynomial rows are `ferric-pbc/src/pair_ft/plan.rs::f_rows`. This is
 its loop over dimensions:
 
@@ -166,7 +168,7 @@ its loop over dimensions:
 | `d` | the dimension $x$, $y$ or $z$ of the product $\prod_d$ |
 | `e_table(...)` | $E_t^{ij}$ for every $(i, j)$ with $i \le l_a$, $j \le l_b$ |
 | `ij` | one Cartesian pair $(i_d, j_d)$ in this dimension |
-| `w[t * ng + g]` | $(-iG_d)^t$ at the chunk's $\mathbf G_g$ (`ChunkG::pw`) |
+| `w[t * ng + g]` | $(-iG_d)^t$ at the chunk's $\mathbf G_g$ (field `pw` of `ferric-pbc/src/pair_ft/plan.rs::ChunkG`) |
 | `frow[g]` | $\sum_tE_t^{i_dj_d}(-iG_d)^t$ |
 
 - **The powers are precomputed.** `ChunkG` forms $(-iG_d)^t$ for
@@ -175,7 +177,12 @@ its loop over dimensions:
 - **One row per dimension, not per Cartesian function.** A Cartesian product
   function needs one $x$ row, one $y$ row and one $z$ row, and a shell pair
   needs $(l_a + 1)(l_b + 1)$ rows per dimension. The product of the three
-  rows is formed afterwards for each Cartesian pair (`accumulate_fused`).
+  rows is formed afterwards for each Cartesian pair
+  (`ferric-pbc/src/pair_ft/plan.rs::accumulate_fused`).
+- **Pure shells.** The derivation is Cartesian. The transform is linear in
+  the basis functions, so a pure (spherical) shell's row is the
+  `ferric_cart2sph` combination of its Cartesian rows; the plan applies that
+  table after `accumulate_fused`.
 - **Streamed in $\mathbf G$.** The transform is evaluated in $\mathbf G$
   chunks (`ferric-pbc/src/pair_ft.rs::pair_ft_chunked`), and no caller holds
   all $\mathbf G$ at once.

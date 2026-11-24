@@ -10,11 +10,17 @@ must occur exactly once in the source, so a renamed line cannot turn a mutation
 into a silent no-op. Each script's header lists the same mutations.
 
 Scripts with a runtime budget of ``SLOW_S`` seconds or more are marked
-``validation`` (the weekly tier, ``pytest -m validation``).
+``validation`` (``pytest -m validation``); book.yml's ``slow-proofs`` job runs
+them nightly and on workflow_dispatch, one job per script.
 
 The registry (``testdata/derivations/registry.json``,
 ``test_derivation_registry.py``) counts a script as run when its file name
 appears in a test here.
+
+``FERRIC_PROOF_SCRIPTS`` (space-separated script names) restricts both tests to
+those scripts; book.yml sets it on a pull request from
+``scripts/select_proofs.py``. Unset, every case runs. A name that is not in
+``CASES``, or an empty value, is a collection error, never an empty run.
 """
 
 import os
@@ -31,6 +37,36 @@ SCRIPTS = Path(__file__).resolve().parents[3] / "scripts"
 # (script, typical-runtime budget in s (the subprocess gets 4x, at least 120 s), [(old source text, mutated text, failing-check marker)])
 CASES = [
     (
+        "omega_ri_sympy.py",
+        10,
+        [
+            ("KERNEL = sp.erfc(w * r) / r", "KERNEL = sp.erf(w * r) / r", "FAIL [C1]"),
+            (
+                "GALERKIN_COULOMB = True",
+                "GALERKIN_COULOMB = False",
+                "FAIL [C4-coulomb-order]",
+            ),
+            (
+                "wmat = sla.cho_solve(sla.cho_factor(v_w, lower=True), l_)",
+                "wmat = sla.cho_solve(sla.cho_factor(v_w, lower=True), np.eye(l_.shape[0]))",
+                "FAIL [C5]",
+            ),
+            ("EXCHANGE_OFFDIAG = 2.0", "EXCHANGE_OFFDIAG = 1.0", "FAIL [C6]"),
+            ("FERMI_SIGN_VIR = -1.0", "FERMI_SIGN_VIR = 1.0", "FAIL [C6]"),
+            (
+                "return float(coul(c) - coul(1 / (1 / c + 1 / mp.mpf(wv) ** 2)))",
+                "return float(coul(1 / (1 / c + 1 / mp.mpf(wv) ** 2)))",
+                "FAIL [C3-model]",
+            ),
+            (
+                "lo_orth, piv = pivoted_cholesky_factored(s_half @ (c * scale), 0.0)",
+                "lo_orth, piv = pivoted_cholesky_factored(c * scale, 0.0)",
+                "FAIL [C6-lowdin-pivots]",
+            ),
+            ("lo = s_mhalf @ lo_orth", "lo = lo_orth", "FAIL [C6]"),
+        ],
+    ),
+    (
         "rpa_drpa_pdep_sympy.py",
         30,
         [
@@ -45,6 +81,26 @@ CASES = [
                 "rhs = B2 + f_t + bt_ + t @ B2 + t @ bt_",
                 "rhs = B2 + f_t + bt_ + t @ bt_",
                 "FAIL [riccati-vs-definition]",
+            ),
+            (
+                "bt_chol = np.linalg.solve(lchol, qia)",
+                "bt_chol = np.linalg.solve(lchol.T, qia)",
+                "FAIL [ri-factor-freedom]",
+            ),
+            (
+                "t = y @ np.linalg.inv(x)",
+                "t = np.linalg.inv(x) @ y",
+                "FAIL [riccati-eigenvector-form]",
+            ),
+            (
+                "u_rand = np.linalg.qr(",
+                "u_rand = 1.5 * np.linalg.qr(",
+                "FAIL [pdep-truncation-sign]",
+            ),
+            (
+                "f = sp.log(1 + xs) - xs + xs**2 / 2",
+                "f = sp.log(1 + xs) - xs + xs**2 / 3",
+                "FAIL [static-summand-bound]",
             ),
         ],
     ),
@@ -132,6 +188,11 @@ CASES = [
         20,
         [
             (
+                "c6 = 1.5 * a0[0] * a0[1] * om[0] * om[1] / (om[0] + om[1])",
+                "c6 = 0.75 * a0[0] * a0[1] * om[0] * om[1] / (om[0] + om[1])",
+                "FAIL [two-oscillator-ratio]",
+            ),
+            (
                 "return 0.5 * np.sum(np.sqrt(lam)) - 1.5 * om.sum()",
                 "return 0.5 * np.sum(np.sqrt(lam)) - 1.0 * om.sum()",
                 "FAIL [qho-vs-frequency]",
@@ -195,6 +256,42 @@ CASES = [
                 "lattice = np.tile(-fixed.sum(axis=0) / n, (n, 1))",
                 "lattice = np.tile(0.0 * fixed.sum(axis=0) / n, (n, 1))",
                 "FAIL [lattice-term]",
+            ),
+        ],
+    ),
+    (
+        "laplace_local_sympy.py",
+        60,
+        [
+            (
+                "return m.T @ (w[:, None] * m)",
+                "return m @ (w[:, None] * m.T)",
+                "FAIL [rotated-equals-canonical]",
+            ),
+            (
+                "out.append([j for j in range(len(vir)) if seen[j]])",
+                "out.append([j for j in range(len(vir)) if seen[j] and j == len(out)])",
+                "FAIL [rotated-equals-canonical]",
+            ),
+            (
+                "return np.linalg.inv(np.linalg.cholesky(v))  # M",
+                "return np.linalg.cholesky(v).T  # M",
+                "FAIL [rotated-equals-canonical]",
+            ),
+            (
+                "if norm2 / (f_vir[a] - f_occ[i]) >= tau:",
+                "if norm2 / (f_occ[i] - f_vir[a]) >= tau:",
+                "FAIL [energy-cut-vacuous]",
+            ),
+            (
+                "expf = expm_sym(f_loc, t)",
+                "expf = np.diag(np.exp(t * np.diag(f_loc)))",
+                "FAIL [ao-sparse-vacuous-equals-canonical]",
+            ),
+            (
+                "Q = R.T * sp.diag(*y) * R",
+                "Q = R * sp.diag(*y) * R.T",
+                "FAIL [rotated-identity]",
             ),
         ],
     ),
@@ -299,6 +396,11 @@ CASES = [
                 "omega_a = c6_eff / (alpha_eff * alpha_eff)",
                 "FAIL [ts-pole-reproduces-c6]",
             ),
+            (
+                "ct = mol - sum(per_atom)",
+                "ct = mol - sum(per_atom[1:])",
+                "FAIL [ct-sum-rule]",
+            ),
         ],
     ),
     (
@@ -322,6 +424,12 @@ CASES = [
                 "FAIL N4 dE/dkappa",
             ),
             ("return h + jm - km_s", "return h + jm - 0.5 * km_s", "FAIL N6 E_ROHF"),
+            (
+                "return u[:, kept] / np.sqrt(lam[kept])",
+                "return u[:, kept] / lam[kept]",
+                "FAIL [O1]",
+            ),
+            ("return x @ x.T @ s_bs", "return s_bs", "FAIL [O2]"),
         ],
     ),
     (
@@ -394,6 +502,107 @@ CASES = [
         ],
     ),
     (
+        "hessian_one_electron_ops_sympy.py",
+        10,
+        [
+            (
+                "if self.op and vx_in_fx:",
+                "if self.op and vx_in_fx and False:",
+                "FAIL O1 skeleton",
+            ),
+            (
+                "3.0 * np.outer(d, d) / r5",
+                "2.0 * np.outer(d, d) / r5",
+                "FAIL O1 skeleton",
+            ),
+            ("in (1, 2)", "in (1,)", "FAIL O5 masked stencil"),
+            ("if a == b:", "if a == b and k == 0:", "FAIL O5 masked stencil"),
+        ],
+    ),
+    (
+        "cosx_gradient_sympy.py",
+        30,
+        [
+            (
+                "out[x] += c * vpt[HOME == x].sum(axis=0)",
+                "out[x] += 0.0 * vpt[HOME == x].sum(axis=0)",
+                "FAIL X1 fit off",
+            ),
+            (
+                'out += c * np.einsum("g,gxc->xc", e, geo.dw)',
+                'out += 0.0 * np.einsum("g,gxc->xc", e, geo.dw)',
+                "FAIL X1 fit off",
+            ),
+            (
+                "[(-pz * cv.T @ delta @ co).ravel() for co, cv, _, _, delta in blocks]",
+                "[(-0.5 * pz * cv.T @ delta @ co).ravel() for co, cv, _, _, delta in blocks]",
+                "FAIL X6 fit on RHF",
+            ),
+            (
+                'out -= np.einsum("xcmn,nm->xc", dsn, p2)',
+                'out -= 0.0 * np.einsum("xcmn,nm->xc", dsn, p2)',
+                "FAIL X5 fit on",
+            ),
+            (
+                "occ = co.T @ (delta + rm) @ co + np.diag(eo)",
+                "occ = co.T @ rm @ co + np.diag(eo)",
+                "FAIL X6 fit on RHF",
+            ),
+        ],
+    ),
+    (
+        "df_jk_hessian_sympy.py",
+        30,
+        [
+            (
+                "metric_second = -0.5 * c @ fit.v2(lam, k, ll) @ c",
+                "metric_second = -1.0 * c @ fit.v2(lam, k, ll) @ c",
+                "FAIL N1 RI-J E_xy",
+            ),
+            (
+                "skel[k, ll] += 2.0 * alpha * np.sum(z[k] * gx[ll])",
+                "skel[k, ll] += alpha * np.sum(z[k] * gx[ll])",
+                "FAIL N2 RI-K E_xy",
+            ),
+            (
+                'j = j + np.einsum("P,Pmn->mn", y[k], a)',
+                "j = j",
+                "FAIL N3 J^x, K^x",
+            ),
+            (
+                'kx = kx - np.einsum("PQ,Pmj,Qlj->ml", vx[k], chat, chat)',
+                "kx = kx",
+                "FAIL H1 fitted RHF Hessian (RI-K)",
+            ),
+            (
+                "STENCIL = [(-2.0, 1.0), (-1.0, -8.0), (1.0, 8.0), (2.0, -1.0)]",
+                "STENCIL = [(-2.0, 0.0), (-1.0, -6.0), (1.0, 6.0), (2.0, 0.0)]",
+                "FAIL ST1 fourth-order stencil",
+            ),
+        ],
+    ),
+    (
+        "dft_vv10_gradient_sympy.py",
+        10,
+        [
+            (
+                "    vsig = 1.5 * w * dw0_dg",
+                "    vsig = 1.5 * u * dw0_dg",
+                "FAIL G1",
+            ),
+            (
+                "            pref = wr[sl, None] * dphi",
+                "            pref = 0.5 * wr[sl, None] * dphi",
+                "FAIL G2",
+            ),
+            (
+                "rho * (BETA + f), dW)",
+                "rho * (BETA + 0.5 * f), dW)",
+                "FAIL G2",
+            ),
+        ],
+    ),
+    (
         "df_jk_gradient_sympy.py",
         10,
         [
@@ -406,6 +615,11 @@ CASES = [
                 "return 1.0 / (lk * (lk - ll))",
                 "return 0.0",
                 "FAIL D3 truncated-metric derivative",
+            ),
+            (
+                "sp.simplify(ri_j_formula(dt) - de_jt) == 0",
+                "sp.simplify(ri_j_formula(d) - de_jt) == 0",
+                "FAIL D4 pair-screened RI-J",
             ),
         ],
     ),
@@ -438,6 +652,16 @@ CASES = [
                 "return w_i.T @ w_j",
                 "return w_i.T @ w_i",
                 "FAIL L1 whitened Gram product",
+            ),
+            (
+                "return float(np.sum((comp @ t) ** 2) + np.sum((t @ comp) ** 2))",
+                "return float(np.sum((comp @ t) ** 2))",
+                "FAIL L5 dropped PNO occupations",
+            ),
+            (
+                "y = a_b - v_bd * v_dd.inv() * a_d",
+                "y = a_b",
+                "FAIL L6 domain restriction",
             ),
         ],
     ),
@@ -567,6 +791,26 @@ CASES = [
                 "omega_link = 1 / (r0 * sp.sqrt(2))  # Operator::terfc",
                 "omega_link = 1 / (r0 * 2)  # Operator::terfc",
                 "FAIL D",
+            ),
+            (
+                "return 1 - tc * tc  # vv10.rs factor_from_r2",
+                "return 1 - tc  # vv10.rs factor_from_r2",
+                "FAIL E",
+            ),
+            (
+                "d1 = 1 - sp.exp(k * denom)  # 1 - e^{-kappa Delta}",
+                "d1 = 1 - sp.exp(-k * denom)  # 1 - e^{-kappa Delta}",
+                "FAIL G",
+            ),
+            (
+                "cross = 2.0 * b_ss(g1, gd)  # the g1-d cross term of the window",
+                "cross = 1.0 * b_ss(g1, gd)  # the g1-d cross term of the window",
+                "FAIL C",
+            ),
+            (
+                "CBS_POWER = 3  # the X^-3 model",
+                "CBS_POWER = 2  # the X^-3 model",
+                "FAIL H",
             ),
         ],
     ),
@@ -843,6 +1087,16 @@ CASES = [
                 "FAIL G",
             ),
             (
+                "return [(p, 2 * weight), (n, 2 * weight), (p + n, -weight)]  # sign-split P + N",
+                "return [(p, 2 * weight), (n, 2 * weight)]  # sign-split P + N",
+                "FAIL F",
+            ),
+            (
+                "return q @ (div * (q.T @ dv @ q)) @ q.T  # Daleckii-Krein dM",
+                "return -cut_inverse(v)[0] @ dv @ cut_inverse(v)[0]  # Daleckii-Krein dM",
+                "FAIL F",
+            ),
+            (
                 "w_overlap = im1 - zeta_ao - vhf  # oo_rimp2_gradient w_overlap",
                 "w_overlap = im1 - zeta_ao  # oo_rimp2_gradient w_overlap",
                 "FAIL O",
@@ -869,6 +1123,11 @@ CASES = [
                 "FAIL E_SS spatial",
             ),
             (
+                "rhs = np.sum(gab**2 / dpos) + 0.5 * np.sum((gab - gab.T) ** 2 / dpos)",
+                "rhs = np.sum(gab**2 / dpos) + np.sum((gab - gab.T) ** 2 / dpos)",
+                "FAIL pair-energy sign split",
+            ),
+            (
                 "def same_spin(bs, eo, ev, scale=0.25):",
                 "def same_spin(bs, eo, ev, scale=0.5):",
                 "FAIL same-spin kernel",
@@ -893,6 +1152,36 @@ CASES = [
                 "coeffs_u[obs_idx] = ls12_u @ c2_u",
                 "FAIL interleaved S_O,R C == 0",
             ),
+            (
+                "return np.sum(g * (2.0 * h - h.transpose(0, 1, 3, 2)) / d)",
+                "return np.sum(g * (2.0 * h + h.transpose(0, 1, 3, 2)) / d)",
+                "FAIL X == 2 B(s, l)",
+            ),
+            (
+                "coef = np.linalg.solve(v, three)  # V^-1 (Q|ia)",
+                "coef = np.linalg.solve(chi.T @ chi, three)  # V^-1 (Q|ia)",
+                "FAIL (ia|jb) - sum_P B B == (delta_ia|delta_jb)",
+            ),
+            (
+                "b += m[p0:p1, q0:q1] @ mo_blk  # beta = 1",
+                "b = m[p0:p1, q0:q1] @ mo_blk  # beta = 1",
+                "FAIL chunked dressing",
+            ),
+            (
+                "return start, start + (q + 1 if rank < s else q)",
+                "return start, start + q",
+                "FAIL band partials sum to G^(i)",
+            ),
+            (
+                "U64, U32 = 2.0**-53, 2.0**-24",
+                "U64, U32 = 2.0**-70, 2.0**-24",
+                "FAIL two f64 orders",
+            ),
+            (
+                "(1 + gamma(b, U32))",
+                "(1 + gamma(b, U64))",
+                "FAIL mixed bound, sub-ulp panel",
+            ),
         ],
     ),
     (
@@ -901,6 +1190,7 @@ CASES = [
         [
             ("/ w_  # dS/dr", "# dS/dr", "BAD 5"),
             ("2.0 * qq_ * k * rr", "qq_ * k * rr", "BAD 5"),
+            ("return 2 * kb * dr", "return kb * dr", "BAD 6 bond"),
         ],
     ),
     (
@@ -999,6 +1289,36 @@ CASES = [
                 "+ mpmath.pi * mpmath.exp(-pv * dv**2) / pv**2",
                 "FAIL s/s",
             ),
+            (
+                "resid = abs(-lb - cf - rem)",
+                "resid = abs(lb - cf - rem)",
+                "FAIL bra-bra",
+            ),
+            ("zv * av * na * nb", "zv * bv * na * nb", "FAIL bra-bra"),
+            (
+                "mpmath.exp(-pv * dv**2) / pv\n",
+                "mpmath.exp(-pv * dv**2) / pv * (dv > 0)\n",
+                "FAIL bra-bra",
+            ),
+        ],
+    ),
+    (
+        "x2c_sympy.py",
+        15,
+        [
+            ("spin = I * sum(", "spin = sum(", "FAIL [dirac-identity]"),
+            ("metric = 2 * c**2", "metric = 4 * c**2", "FAIL [modified-dirac]"),
+            (
+                "lag = Vm + T * X + X.T * T - X.T * T * X",
+                "lag = Vm + T * X + X.T * T + X.T * T * X",
+                "FAIL [decoupling]",
+            ),
+            ("xx.T @ w @ xx * k", "xx.T @ w @ xx * 2 * k", "FAIL [spectrum]"),
+            (
+                "r = sym_pow(s, -0.5) @ inner @ sym_pow(s, 0.5)",
+                "r = sym_pow(s, -0.5) @ sym_pow(s, 0.5)",
+                "FAIL [renorm]",
+            ),
         ],
     ),
     (
@@ -1024,6 +1344,11 @@ CASES = [
                 "CURVATURE_R0W = 1 / sp.sqrt(2)",
                 "CURVATURE_R0W = sp.Rational(1, 2)",
                 "FAIL [curvature]",
+            ),
+            (
+                "(4 * w**4 * r0**2 - 2 * w**2) * sp.exp",
+                "(4 * w**4 * r0**2 - w**2) * sp.exp",
+                "FAIL [taylor-steps]",
             ),
         ],
     ),
@@ -1051,6 +1376,28 @@ CASES = [
                 "return eri_s(name, fa, fb, fa, fb, w, r0v)",
                 "FAIL [schwarz]",
             ),
+            (
+                "diffuse_coeff = sp.Rational(1, 4)",
+                "diffuse_coeff = sp.Rational(1, 2)",
+                "FAIL [diffuse]",
+            ),
+        ],
+    ),
+    (
+        "yukawa_geminal_sympy.py",
+        30,
+        [
+            (
+                "sla_book = 8 * sp.pi * z / (k**2 + z**2) ** 2",
+                "sla_book = 8 * sp.pi * z / (k**2 + z**2)",
+                "FAIL [transforms]",
+            ),
+            ("    g2 = gamma * gamma", "    g2 = gamma", "FAIL [stg-scaling]"),
+            (
+                "/ (kk**2 + zeta**2)",
+                "/ (kk**2 + zeta)",
+                "FAIL [tu-reduction]",
+            ),
         ],
     ),
     (
@@ -1069,6 +1416,11 @@ CASES = [
             ),
             ("cj + cj.T - coef", "cj + cj - coef", "FAIL [model]"),
             ("Vinv_used = M.T @ M", "Vinv_used = M @ M", "FAIL [collapse]"),
+            (
+                "naive_metric = Vw",
+                "naive_metric = VC",
+                "FAIL [naive-complete]",
+            ),
         ],
     ),
     (
@@ -1252,6 +1604,11 @@ CASES = [
                 "f = hso + 0.0 * np.einsum(",
                 "FAIL claim 6 split",
             ),
+            (
+                "    return pa * pb * gsym(a, i, b, j)",
+                "    return -pa * pb * gsym(a, i, b, j)",
+                "FAIL claim 7",
+            ),
         ],
     ),
     (
@@ -1293,6 +1650,26 @@ CASES = [
                 "+ 1.0 * ((r2 - r2.transpose(0, 1, 3, 2)) ** 2).sum()",
                 "FAIL [spin-norm]",
             ),
+            (
+                "    return x + x.transpose(1, 0, 3, 2)  # P(ij)(ab)",
+                "    return 2 * x  # P(ij)(ab)",
+                "FAIL [rccsd-factorization]",
+            ),
+            (
+                "def rccsd_r(t1, t2, wvovo_t2=-0.5):",
+                "def rccsd_r(t1, t2, wvovo_t2=0.5):",
+                "FAIL [rccsd-factorization]",
+            ),
+            (
+                "def eom_sigma(r1, r2, t1, t2, g, im, ladder_half=0.5):",
+                "def eom_sigma(r1, r2, t1, t2, g, im, ladder_half=1.0):",
+                "FAIL [eom-closed-shell]",
+            ),
+            (
+                "def claim_bch_termination(last=5):",
+                "def claim_bch_termination(last=4):",
+                "FAIL [bch-termination]",
+            ),
         ],
     ),
     (
@@ -1311,6 +1688,26 @@ CASES = [
             ),
             ("def rdms(c, swap=False)", "def rdms(c, swap=True)", "FAIL [rdm-energy]"),
             (
+                "        + 2.0 * c1 * c2 * g_act[0, 1, 0, 1]",
+                "        + 1.0 * c1 * c2 * g_act[0, 1, 0, 1]",
+                "FAIL [rdm-two-config]",
+            ),
+            (
+                "def ah_hessian_product(c, gam, big, x, commutator=0.5)",
+                "def ah_hessian_product(c, gam, big, x, commutator=0.0)",
+                "FAIL [ah-hessian]",
+            ),
+            (
+                "    dfa = fa @ x - x @ fa + c.T @ (ja - 0.5 * ka) @ c",
+                "    dfa = fa @ x - x @ fa",
+                "FAIL [ah-frame-derivative]",
+            ),
+            (
+                "def claim_relaxed_hessian(ci_response=1.0)",
+                "def claim_relaxed_hessian(ci_response=0.0)",
+                "FAIL [relaxed-hessian]",
+            ),
+            (
                 "def claim_sigma(h_eff, g_act, hm, half=0.5)",
                 "def claim_sigma(h_eff, g_act, hm, half=1.0)",
                 "FAIL [sigma-split]",
@@ -1321,6 +1718,7 @@ CASES = [
         "cc_triples_weights_and_linlccd_spin_adaptation_sympy.py",
         15,
         [
+            ("SO_DIVISOR = 6.0", "SO_DIVISOR = 36.0", "[FAIL] claim 4"),
             ("4.0 * Wf", "2.0 * Wf", "[FAIL] claim 4b"),
             ('"jbkc,ia->ijkabc"', '"jckb,ia->ijkabc"', "[FAIL] claim 4b"),
             (
@@ -1416,6 +1814,37 @@ CASES = [
                 "on_occupied_side = True",
                 "FAIL [U2]",
             ),
+            (
+                "return 2.0 * (bov * (gaps",
+                "return 4.0 * (bov * (gaps",
+                "FAIL [U3]",
+            ),
+            (
+                "w_d = u0.T @ np.linalg.inv(eps_mat) @ u0 - np.eye(M)",
+                "w_d = u0.T @ np.linalg.inv(eps_mat) @ u0",
+                "FAIL [U3]",
+            ),
+        ],
+    ),
+    (
+        "gw_evgw_sympy.py",
+        15,
+        [
+            (
+                "eps_prop = [eps_qp[m] for m in (OCC, VIR)]",
+                "eps_prop = list(EPS_MF)",
+                "[FAIL] EV2",
+            ),
+            (
+                "eps_qp = [EPS_MF[m] for m in (OCC, VIR)]",
+                'eps_qp = [EPS_MF[m] + mpf("0.01") for m in (OCC, VIR)]',
+                "[FAIL] EV1",
+            ),
+            (
+                "om, s = one_pair_pole(eps_qp[VIR] - eps_qp[OCC])",
+                "om, s = one_pair_pole(EPS_MF[VIR] - EPS_MF[OCC])",
+                "[FAIL] EV3",
+            ),
         ],
     ),
     (
@@ -1436,6 +1865,11 @@ CASES = [
                 "return bare - 4.0 * w_t @ np.linalg.solve(eps, w_t.T), w_t, eps",
                 "return bare - 16.0 * w_t @ np.linalg.solve(eps, w_t.T), w_t, eps",
                 "FAIL [M4]",
+            ),
+            (
+                "return gaps / (u * u + gaps * gaps)",
+                "return 1.0 / (u * u + gaps * gaps)",
+                "FAIL [M5]",
             ),
         ],
     ),
@@ -1488,6 +1922,11 @@ CASES = [
             ),
             ("full[m1] -= 0.5 * f", "full[m1] -= 1.0 * f", "FAIL Q3 full_gradient"),
             ("qb = 2 * q0", "qb = q0", "FAIL Q2 RCD conserves"),
+            (
+                "qm_mm_coul = 0.0  # the embedding holds it",
+                "qm_mm_coul = 1.0  # the embedding holds it",
+                "FAIL Q5 additive MM terms",
+            ),
         ],
     ),
     (
@@ -1508,6 +1947,11 @@ CASES = [
                 "return lam3, lam3 - v * v * v / 6 * e",
                 "return lam3, lam3 - v * v * v / 2 * e",
                 "FAIL T1 lam5",
+            ),
+            (
+                "        * z ** sp.Rational(5, 4)\n",
+                "        * z ** sp.Rational(3, 4)\n",
+                "FAIL T6 norm_int_p",
             ),
         ],
     ),
@@ -1530,6 +1974,11 @@ CASES = [
                 "mat[k, k] += a / (2 * np.sqrt(q[k] * q[k] + b * b))",
                 "FAIL A4 RESP",
             ),
+            (
+                "scale = nelec / n_e.sum() if",
+                "scale = 1.0 if",
+                "FAIL A2 Becke and Hirshfeld",
+            ),
         ],
     ),
     (
@@ -1545,6 +1994,64 @@ CASES = [
                 "np.fill_diagonal(D, -xi * np.sqrt(2 / np.pi) / (2 * rad))",
                 "np.fill_diagonal(D, -xi * np.sqrt(2 / np.pi) / rad)",
                 "[FAIL] 7 sphere",
+            ),
+            ("d_kern = -R * (1 - c)", "d_kern = +R * (1 - c)", "[FAIL] 1 D kernel"),
+            (
+                "d_l = sp.simplify(-s_l / (2 * R))",
+                "d_l = sp.simplify(-s_l / R)",
+                "[FAIL] 2 S_l",
+            ),
+            (
+                "R_l = -f * (1 - D_l / (2 * sp.pi))",
+                "R_l = -f * (1 + D_l / (2 * sp.pi))",
+                "[FAIL] 3 IEF channel",
+            ),
+            (
+                "K1, R1 = k_r(1, Dm)",
+                "K1, R1 = k_r(sp.Rational(77, 79), Dm)",
+                "[FAIL] 4 f=1",
+            ),
+            (
+                "q_sym = (q_raw + Rf.T * (Kf.T).inv() * v) / 2",
+                "q_sym = (q_raw + (Kf.T).inv() * Rf.T * v) / 2",
+                "[FAIL] 5 E(q_sym)",
+            ),
+            ("qv = Qsym * vD", "qv = Qm * vD", "[FAIL] 6 dE/dD"),
+            (
+                "+ 2.0 * c * xi9**3 * ex / rr",
+                "+ c * xi9**3 * ex / rr",
+                "[FAIL] 9 GaussianSmeared",
+            ),
+        ],
+    ),
+    (
+        "pbc_force_sympy.py",
+        120,
+        [
+            (
+                "two_e_pref=8.0,",
+                "two_e_pref=4.0,",
+                "[FAIL] (claim force-fixed-density)",
+            ),
+            (
+                "def analytic_stress(pos, das, volume_term=True):",
+                "def analytic_stress(pos, das, volume_term=False):",
+                "[FAIL] (claim stress-fixed-density)",
+            ),
+            (
+                "z_half=0.5,",
+                "z_half=1.0,",
+                "[FAIL] (claim force-fixed-density)",
+            ),
+            (
+                "lr_nucleus=True)",
+                "lr_nucleus=False)",
+                "[FAIL] (claim force-fixed-density)",
+            ),
+            (
+                "elif kept_dropped and keep[i] != keep[j]:",
+                "elif False:",
+                "[FAIL] (claim rsgdf-fit-derivative)",
             ),
         ],
     ),
@@ -1562,12 +2069,42 @@ CASES = [
                 "e_g0 = -math.pi * sum(q) ** 2 / (vol * omega**2)",
                 "[FAIL] S1 charged triclinic toy",
             ),
+            (
+                "vm = -2.0 * ewald(sc,",
+                "vm = -1.0 * ewald(sc,",
+                "[FAIL] S1 simple-cubic",
+            ),
+            (
+                "grad[m][c] += -4.0 * math.pi / vol",
+                "grad[m][c] += 4.0 * math.pi / vol",
+                "[FAIL] S1 Ewald gradient",
+            ),
+            (
+                "* mp.exp(-1j * Gv * Pv)",
+                "* mp.exp(1j * Gv * Pv)",
+                "[FAIL] S2 MD expansion",
+            ),
+            (
+                "dE = -sp.Rational(1, 4) * vm",
+                "dE = -sp.Rational(1, 2) * vm",
+                "[FAIL] S4 Delta E",
+            ),
+            (
+                "return math.pi / (w * w * det3(lat)) - math.fsum(acc)",
+                "return -math.fsum(acc)",
+                "[FAIL] S4 v_M^LR",
+            ),
         ],
     ),
     (
         "pbc_rsgdf_sympy.py",
         60,
         [
+            (
+                "(g2 <= gcut * gcut) & (first > 0)",
+                "(g2 <= gcut * gcut) & (g2 > 0)",
+                "[FAIL] (claim auto-omega-gcount)",
+            ),
             (
                 "j3_split = j3_split - g0",
                 "j3_split = j3_split + 0 * g0",
@@ -1584,6 +2121,16 @@ CASES = [
         "pbc_kpoint_corr_sympy.py",
         60,
         [
+            (
+                "np.conj(bloch_pair(kp, kv)),",
+                "bloch_pair(kp, kv),",
+                "[FAIL] (claim krsgdf-block-diagonal)",
+            ),
+            (
+                "np.conj(x), x, 4 * math.pi / kv**2",
+                "x, x, 4 * math.pi / kv**2",
+                "[FAIL] (claim krsgdf-block-diagonal)",
+            ),
             (
                 "km[k] += mad * madelung_scale",
                 "km[k] += mad * madelung_scale / NK",
@@ -1777,6 +2324,18 @@ CASES = [
                 "return 0.5 * (xpy - apb_xpy / omega)",
                 "[FAIL] D4",
             ),
+            (
+                "lhs = 2 * sp.diff(e_unpol, rho, 2)",
+                "lhs = 1 * sp.diff(e_unpol, rho, 2)",
+                "[FAIL] A2",
+            ),
+            ("return pr - eps * px", "return pr", "[FAIL] E1"),
+            ("u = l_half @ z / np.sqrt(om)", "u = l_half @ z / om", "[FAIL] E2"),
+            (
+                "return ra, sg, ta, wt * (2 * vs[0] - vs[1])",
+                "return ra, sg, ta, wt * (2 * vs[0] + vs[1])",
+                "[FAIL] E3",
+            ),
         ],
     ),
     (
@@ -1842,6 +2401,11 @@ CASES = [
                 "qk = k_tilde",
                 "FAIL [C2]",
             ),
+            (
+                "return -0.25 * np.sum(d * k)",
+                "return 0.25 * np.sum(d * k)",
+                "FAIL [N10]",
+            ),
         ],
     ),
     (
@@ -1869,6 +2433,17 @@ CASES = [
                 "return f + mu * scv @ scv.T @ s",
                 "FAIL [L1]",
             ),
+            ("EDIIS_QUAD = 0.25", "EDIIS_QUAD = 0.5", "FAIL [E3]"),
+            (
+                "if fermi_dirac(eps, mid, sigma).sum() > n_pairs:",
+                "if fermi_dirac(eps, mid, sigma).sum() < n_pairs:",
+                "FAIL [F1]",
+            ),
+            (
+                "h[i, j] = -0.5 * np.sum((ds[i] - ds[j]) * (fs[i] - fs[j]))",
+                "h[i, j] = -1.0 * np.sum((ds[i] - ds[j]) * (fs[i] - fs[j]))",
+                "FAIL [E1]",
+            ),
         ],
     ),
     (
@@ -1891,6 +2466,11 @@ CASES = [
                 "g += 0.5 * dn * a + 0.5 * b + dn * dfm",
                 "g += 0.5 * dn * a + 1.0 * b + dn * dfm",
                 "FAIL [H5]",
+            ),
+            (
+                "cheap = 0.5 * (gv @ kv + mu * kv @ kv)",
+                "cheap = 0.5 * (gv @ kv - mu * kv @ kv)",
+                "FAIL [T1]",
             ),
         ],
     ),
@@ -2080,7 +2660,8 @@ def _crashed(stderr):
 
 
 # Proofs whose own runtime budget is SLOW_S or more (the exact-derivative XC
-# Hessian and V_xc models, minutes each) run in the weekly validation tier.
+# Hessian and V_xc models, minutes each) are the validation tier: book.yml's
+# nightly slow-proofs job, not the pull-request run.
 SLOW_S = 600
 
 
@@ -2089,8 +2670,27 @@ def _tier(budget, *values, id):
     return pytest.param(*values, marks=marks, id=id)
 
 
+def _selected():
+    """The scripts named by FERRIC_PROOF_SCRIPTS, or every case when unset."""
+    names = {c[0] for c in CASES}
+    only = os.environ.get("FERRIC_PROOF_SCRIPTS")
+    if only is None:
+        return names
+    picked = set(only.split())
+    if not picked or picked - names:
+        raise ValueError(
+            f"FERRIC_PROOF_SCRIPTS={only!r}: empty, or names scripts not in "
+            f"CASES: {sorted(picked - names)}"
+        )
+    return picked
+
+
+SELECTED = _selected()
+
+
 @pytest.mark.parametrize(
-    ("script", "timeout"), [_tier(c[1], c[0], c[1], id=c[0]) for c in CASES]
+    ("script", "timeout"),
+    [_tier(c[1], c[0], c[1], id=c[0]) for c in CASES if c[0] in SELECTED],
 )
 def test_script_holds(script, timeout):
     r = _run(SCRIPTS / script, timeout)
@@ -2106,7 +2706,11 @@ MUTATIONS = [
 
 @pytest.mark.parametrize(
     ("script", "timeout", "old", "new", "marker"),
-    [_tier(m[1], *m, id=f"{m[0]}:{i}") for i, m in enumerate(MUTATIONS)],
+    [
+        _tier(m[1], *m, id=f"{m[0]}:{i}")
+        for i, m in enumerate(MUTATIONS)
+        if m[0] in SELECTED
+    ],
 )
 def test_mutation_turns_the_script_red(tmp_path, script, timeout, old, new, marker):
     src = (SCRIPTS / script).read_text()

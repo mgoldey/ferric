@@ -22,6 +22,8 @@ use ferric_scf::ks_gradient::{ks_gradient_closed_with_exchange_on_grids, KsGradG
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+#[allow(unused_imports)]
+pub use ferric_testkit::compare::max_abs;
 use ndarray::{Array2, Axis};
 
 pub const WATER: &str = "3\nH2O distorted off C2v\n\
@@ -53,17 +55,15 @@ pub fn water() -> Molecule {
 /// Production SCF / Hessian config: functional `xc`, exact J and K, the
 /// test grid.
 pub fn config(xc: &str) -> RhfConfig {
-    RhfConfig {
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        xc: Some(xc.into()),
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        dft_grid: Some(grid_cfg()),
-        max_iter: 200,
-        energy_conv: 1e-13,
-        density_conv: 1e-11,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_xc(xc)
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new())
+        .with_dft_grid(grid_cfg())
+        .with_max_iter(200)
+        .with_energy_conv(1e-13)
+        .with_density_conv(1e-11)
 }
 
 pub struct Pt {
@@ -110,10 +110,6 @@ pub fn rich(h: f64, mut f: impl FnMut(f64) -> Array2<f64>) -> Array2<f64> {
     let coarse = d(h);
     let fine = d(0.5 * h);
     (4.0 * fine - coarse) / 3.0
-}
-
-pub fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0f64, |m, x| m.max(x.abs()))
 }
 
 pub fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
@@ -256,12 +252,10 @@ pub const MUTANT_FACTOR: f64 = 10.0;
 /// local ubuntu-24.04 stack. At 1e-13 the same column misses by 7.4e-11 in
 /// that container.
 pub fn fd_reference_config(cfg: &RhfConfig) -> RhfConfig {
-    RhfConfig {
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        density_conv: cfg.density_conv.min(1e-13),
-        energy_conv: cfg.energy_conv.min(1e-14),
-        ..cfg.clone()
-    }
+    cfg.clone()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_density_conv(cfg.density_conv.min(1e-13))
+        .with_energy_conv(cfg.energy_conv.min(1e-14))
 }
 
 /// Largest DIIS `err_max` an SCF behind the gradient difference may stop at.

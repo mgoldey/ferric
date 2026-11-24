@@ -78,7 +78,6 @@ fn exact() -> ScfJk {
     ScfJk {
         mode: ScfJkMode::Exact,
         aux: None,
-        k_builder: None,
     }
 }
 
@@ -86,7 +85,6 @@ fn rijk() -> ScfJk {
     ScfJk {
         mode: ScfJkMode::RiJk,
         aux: Some("def2-universal-jkfit".into()),
-        k_builder: None,
     }
 }
 
@@ -173,10 +171,7 @@ fn terfc_gradients_on_term_list_kernels_match_the_reference_kernels() {
             None,
             &exact(),
             &mut ScfWarmStart::new(false),
-            RhfConfig {
-                density_conv: 1e-11,
-                ..Default::default()
-            },
+            RhfConfig::default().with_density_conv(1e-11),
         )
         .unwrap()
     });

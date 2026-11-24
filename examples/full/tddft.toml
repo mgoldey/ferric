@@ -66,6 +66,7 @@ check_stability = false                # diagnostic orbital-Hessian check of the
 # k_builder: exchange builder: direct | link | cosx; not read here: only on a four-centre exchange route; this run fits K
 # screening: four-centre screening: schwarz | csb | csam; not read here: only on a four-centre exchange route; this run fits K
 # eri: four-centre J/K build: auto | direct | incore; not read here: only on a four-centre exchange route; this run fits K
+# gc_rotation: direct J/K contraction rotation: auto | rot1 | off (unset: FERRIC_GC_ROTATE, then auto); not read here: only on a four-centre exchange route; this run fits K
 # relativistic: x2c1e: spin-free X2C-1e core Hamiltonian (energy only); not read here: energies of the X2C kinds only
 # cosx_grid: COSX SCF grid; not read here: only with k_builder = "cosx" or jk = "rijcosx"
 # cosx_final_pass: COSX final pass on a larger grid; not read here: only with k_builder = "cosx" or jk = "rijcosx"
@@ -83,6 +84,9 @@ check_stability = false                # diagnostic orbital-Hessian check of the
 # stability_descent: follow a downhill mode at a saddle and re-converge; not read here: rhf, uhf and ksdft energies only
 # symmetry: point-group-blocked closed-shell RHF/RKS; not read here: closed-shell rhf/ksdft energies only
 # irrep_nelec: electrons per irrep; not read here: only with symmetry = true
+# save_reference: write the converged reference SCF to this file; unset by default: no file is written
+# read_reference: read the reference SCF from a save_reference file instead of solving it; unset by default: the reference SCF is solved
+# read_reference_other_build: accept a read_reference file written by another build; not read here: only with read_reference
 # ladder: [[scf.ladder]] convergence-ladder rungs; not read here: rhf and ksdft only
 
 [dft]
@@ -130,6 +134,9 @@ frozen_core = 0             # frozen occupied orbitals: integer, "auto", true (=
 # att_operator: erfc | terfc; not read here: att-rimp2 only
 # att_r0: terfc r0, Angstrom; not read here: att-rimp2 with att_operator = "terfc" only
 # att_omega: terfc sharpness, Angstrom^-1; not read here: att-rimp2 with att_operator = "terfc" only
+# cdd_tol: omega-RI-CDD pseudo-MO Cholesky truncation; not read here: laplace-mp2 / laplace-sos-mp2; setting it selects the omega-RI-CDD route
+# cdd_schwarz_thresh: omega-RI-CDD exchange virtual screen; not read here: laplace-mp2 omega-RI-CDD route only
+# cdd_pair_thresh: omega-RI-CDD exchange pair prescreen; not read here: laplace-mp2 omega-RI-CDD route only
 
 [tddft]
 n_roots = 3       # excited states

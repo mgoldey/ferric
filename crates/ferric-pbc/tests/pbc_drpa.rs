@@ -589,10 +589,7 @@ fn box_limit_shifted_is_a3_with_the_predicted_coefficient_unshifted_is_1_over_a(
         &prep_mol,
         op,
         &bounds,
-        &RhfConfig {
-            density_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_density_conv(1e-10),
     )
     .unwrap();
     assert!(mr.converged);
@@ -849,10 +846,7 @@ fn run_pdep_rpa_from_parts_reproduces_the_molecular_path_bitwise() {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            density_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_density_conv(1e-10),
     )
     .unwrap();
     assert!(rhf.converged);

@@ -111,11 +111,9 @@ fn the_charge_matches_the_documentation_scales_as_n4_and_gates_the_run_and_the_p
     // RI-K for the 6-31G water of this file: probe sizes are those of the
     // molecule and the named fitting basis.
     let prep_p = PreparedBasis::new(&mol, &basis::bundled("6-31g").unwrap()).unwrap();
-    let cfg = RhfConfig {
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some("cc-pvdz-ri".into()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_df_j_aux(String::new())
+        .with_df_k_aux("cc-pvdz-ri");
     let op = Operator::coulomb();
     let probe_need = rik_peak_bytes(3, prep_p.nbasis(), 5, naux);
     install_global(MemoryPool::with_capacity_bytes(probe_need - 1));

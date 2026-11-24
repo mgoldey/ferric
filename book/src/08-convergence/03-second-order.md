@@ -19,7 +19,7 @@ quadratic model of the energy.
 |---|---|---|
 | $\kappa_{ai}$ | occupied–virtual rotation, $C \leftarrow CU(\kappa)$ | `k`, `kappa` |
 | $U(\kappa)$ | Cayley unitary $(1 - \kappa/2)^{-1}(1 + \kappa/2)$ | `cayley_unitary` |
-| $g$ | the code's gradient, $f_{ai}$ (RHF) | `g` |
+| $g$ | the code's gradient, $f_{ai}$: a quarter of $\partial E/\partial\kappa_{ai}$ (RHF), half (UHF), not the $g$ of the notation page | `g` |
 | $\mathbf H\kappa$ | the code's Hessian product | `hessian_matvec_jk` (RHF), `hessian_matvec` (UHF) |
 | $\Delta_{\rm tr}$ | trust radius | the TRAH radius |
 
@@ -92,7 +92,7 @@ form $\delta D$, build $\delta F = J[\delta D] - \tfrac12c_xK[\delta D]$, and
 take the virtual–occupied block of $C^{\mathsf T}\delta FC$. Contract the AO
 integrals with $\delta D$ to see that the two forms agree:
 
-$$ J[\delta D]_{ai} = \sum_{bj}(ai|bj)\,(2\kappa_{bj} + 2\kappa_{bj}) = 4\sum_{bj}(ai|bj)\kappa_{bj}, \qquad \tfrac12K[\delta D]_{ai} = \sum_{bj}\big[(ab|ij) + (aj|ib)\big]\kappa_{bj} . $$
+$$ J[\delta D]_{ai} = \sum_{bj}(ai|bj)\,(2\kappa_{bj} + 2\kappa_{bj}) = 4\sum_{bj}(ai|bj)\kappa_{bj}, \qquad \tfrac12K[\delta D]_{ai} = \sum_{bj}\big[(ab|ij) + (aj|bi)\big]\kappa_{bj} . $$
 
 The two corners of $\delta D$ give the two terms in each. The code's
 gradient is $g = f_{ai}$ and its product is this $\mathbf H\kappa$: a quarter
@@ -131,15 +131,17 @@ $X_\sigma = XN_\sigma - N_\sigma X$, so $(X_\sigma)_{pq} = X_{pq}(n_{\sigma q} -
 the rotation weighted by how much it changes that spin's occupation. With
 $\delta D^\sigma = CX_\sigma C^{\mathsf T}$,
 $\delta f^\sigma = C^{\mathsf T}(J[\delta D^\alpha + \delta D^\beta] - c_xK[\delta D^\sigma])C$,
-$A_\sigma = f^\sigma X - Xf^\sigma$ and $\Delta n_{pq} = n_{\sigma p} - n_{\sigma q}$,
+$A_\sigma = f^\sigma X - Xf^\sigma$ and $\Delta n^\sigma_{pq} = n_{\sigma p} - n_{\sigma q}$,
 
-$$G = \sum_\sigma\tfrac12\Delta n\circ A_\sigma + \tfrac12(X_\sigma f^\sigma - f^\sigma X_\sigma) + \Delta n\circ\delta f^\sigma,\qquad (\mathbf H x)_{pq} = G_{qp} - G_{pq}$$
+$$G = \sum_\sigma\Big[\tfrac12\Delta n^\sigma\circ A_\sigma + \tfrac12(X_\sigma f^\sigma - f^\sigma X_\sigma) + \Delta n^\sigma\circ\delta f^\sigma\Big],\qquad (\mathbf H x)_{pq} = G_{qp} - G_{pq}$$
 
 is the exact Hessian product of $E(CU(x))$ at any orbitals, not only at a
 stationary point (`ferric-scf/src/rohf_trah.rs::rohf_exact_hessian_matvec`; the
 gradient is $2g$ with the blocks of the ROHF energy functional,
-`rohf_exact_gradient`). The molecular Newton and AH product in
-`crates/ferric-scf/src/rohf_newton.rs` is half of it.
+`rohf_exact_gradient`); `rohf_trah` is the second-order solver of the
+periodic injected ROHF path (chapter @sec:periodic). The Newton and AH steps
+of this section use the product in `crates/ferric-scf/src/rohf_newton.rs`,
+which is half of it.
 
 > **Verified equation {#eq:scf-orbital-hessian}** · orbital gradients and Hessian products
 >
@@ -196,7 +198,7 @@ Three points about it:
 - **The gap is diagonal.** The last loop is the canonical-orbital form of
   the one-electron part, as discussed above.
 
-## The rotation {#second-order-rotation}
+## The rotation in code {#second-order-rotation}
 
 The Cayley unitary needs one matrix inverse. The body of
 `ferric-scf/src/cayley.rs::cayley_unitary`, shown whole:
@@ -272,7 +274,9 @@ Points about it:
   the clip instead. RHF and UHF do not truncate.
 - **When it runs.** RHF takes a Newton step once `iter > 3`, when
   $\max\lvert e\rvert <$ `newton_trigger` and the functional has no range
-  separation ($\omega = 0$).
+  separation ($\omega = 0$). The range-separated arm of the product above
+  serves TRAH and the stability analysis; the RHF Newton step itself is
+  gated to $\omega = 0$.
 
 On water / cc-pVDZ (the `589b50832` build) all three routes reach the same
 energy. Newton steps (`soscf=True`) save two iterations over DIIS alone, and
@@ -351,14 +355,15 @@ augmented Hessian becomes Newton.
 > | | |
 > |---|---|
 > | Proof | `scripts/scf_orbital_hessian_sympy.py`, claim T1 |
+> | Negative control | the sign of $\mu$ in the predicted change flipped must fail T1 |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-scf/src/trah.rs::solve_trust_region`, `ferric-scf/src/rohf_ah.rs::rohf_ah_step` |
 >
 > <!-- verified: id=scf.ah-step; script=scripts/scf_orbital_hessian_sympy.py; claim=T1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/trah.rs::solve_trust_region, ferric-scf/src/rohf_ah.rs::rohf_ah_step; registry=rhf -->
 
-The bound $\mu \le \lambda_{\min}$, the sign of $g^{\mathsf T}\kappa$ and the
-small-$g$ limit were checked numerically for this section; the proof covers
-the step equation and the predicted change.
+Claim T1 covers the step equation and the predicted change. The bound
+$\mu \le \lambda_{\min}$, the sign of $g^{\mathsf T}\kappa$ and the small-$g$
+limit argued above are not part of any claim.
 
 ROHF's `rohf_ah_step` solves the eigenproblem at $\alpha = 1$ with block
 Davidson and then scales the step so $\max\lvert\kappa\rvert \le 0.2$. A
@@ -409,11 +414,14 @@ $\rho = \Delta E/\Delta E_{\rm pred}$ decides the radius:
 The radius starts at 0.4. Below $10^{-4}$ the region has collapsed and DIIS
 takes over.
 
-One case breaks the division by $v_0$. If the lowest eigenvector of
-$\mathbf H$ is orthogonal to $g$, the lowest augmented root is $(0, v)$. In
-an SCF this happens exactly whenever the instability breaks a symmetry the
-density still has: the gradient of a symmetric density is totally
-symmetric, and a symmetry-breaking mode is not, so $g\cdot v = 0$. This
+One case breaks the division by $v_0$. If the lowest eigenvector $v$ of
+$\mathbf H$ is orthogonal to $g$, then $(0, v)$ is an eigenvector of the
+augmented matrix with eigenvalue $\lambda_{\min}$. It is the lowest root when
+$\lambda_{\min}$ lies below the lowest root of the problem with $v$ projected
+out, which requires $\lambda_{\min} < 0$. In an SCF this typically happens
+when the instability breaks a symmetry the density still has: the gradient
+of a symmetric density is totally symmetric, and a symmetry-breaking mode is
+not, so $g\cdot v = 0$. This
 hard case is deflated, and the step is completed along the negative mode to
 the boundary.
 
@@ -425,7 +433,9 @@ the boundary.
 | augmented Hessian | the lowest eigenvalue of the augmented matrix, $\alpha = 1$ | $\max\lvert\kappa\rvert \le 0.2$, a clip after the eigenproblem | block Davidson | ROHF via `ah_trigger` (library only) |
 | TRAH | the augmented eigenproblem, $\alpha$ adjusted until $\lvert\kappa\rvert$ fits the radius | $\Delta_{\rm tr}$, from 0.4, at most 2.0 | `solve_trust_region` | RHF, UHF via `trah_trigger` |
 
-TRAH takes precedence over `newton_trigger` where both would fire.
+TRAH takes precedence over `newton_trigger` where both would fire. TRAH is
+graded Smoke in the validation matrix: its convergence is measured on test
+systems, and it has no reference-code comparison.
 
 ## Numerical anchors {#second-order-numerical-anchors}
 
@@ -436,18 +446,11 @@ their smoke and anchor tests in `crates/ferric-scf/tests/`
 checked against finite differences of the energy by the proof above, which
 is the anchor that a scale or sign error in the product would fail.
 
-## Doc fixes needed {#second-order-doc-fixes-needed}
-
-| Text | Code |
-|---|---|
-| `rohf_ah.rs` calls its eigenproblem "generalized" | it is a standard symmetric eigenproblem at $\alpha = 1$ |
-| the RHF Newton product is documented as exact and FD-validated | it is exact at canonical orbitals only; off them it needs `offdiag_gap_correction` |
-| the Davidson `converged` flag and the `newton_trigger` docs | state the condition the code tests |
-| stale text in `crates/ferric-scf/src/rohf.rs` describing the Newton route | update to the current PCG route |
-
 ## Sources
 
 | Source | Used for |
 |---|---|
 | `scripts/scf_orbital_hessian_sympy.py` | verified equations @eq:scf-orbital-hessian and @eq:scf-ah-step |
 | `crates/ferric-scf/src/trah.rs` | the radius table and the $\alpha$ search |
+| T. Steihaug, SIAM J. Numer. Anal. 20, 626 (1983) | truncated CG at negative curvature |
+| B. Helmich-Paris, J. Chem. Phys. 154, 164104 (2021) | TRAH |

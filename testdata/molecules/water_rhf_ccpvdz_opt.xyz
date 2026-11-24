@@ -1,0 +1,5 @@
+3
+water, RHF/cc-pVDZ minimum (ferric run_optimize from water.xyz, build 3f612e0b3; max |g| 5.6e-9 Ha/Bohr)
+O   0.0000000000   0.0000000000   0.1108854052
+H   0.0000000000   0.7487897234  -0.4677087026
+H   0.0000000000  -0.7487897234  -0.4677087026

@@ -58,13 +58,12 @@ fn run_sym(mol: &Molecule, basis_name: &str, cfg: &RhfConfig) -> Result<Symmetri
 }
 
 fn cfg(symmetry: bool) -> RhfConfig {
-    RhfConfig {
-        symmetry,
-        density_conv: 1e-10,
-        energy_conv: 1e-12,
-        max_iter: 200,
-        ..RhfConfig::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_density_conv(1e-10)
+        .with_energy_conv(1e-12)
+        .with_max_iter(200);
+    c.symmetry = symmetry;
+    c
 }
 
 /// Occupied-orbital count per irrep label of a blocked result.
@@ -263,7 +262,10 @@ fn unsupported_combinations_are_typed_errors() {
         ("newton", Box::new(|c| c.newton_trigger = 1e-2)),
         ("trah", Box::new(|c| c.trah_trigger = Some(1e-2))),
         ("stability", Box::new(|c| c.check_stability = true)),
-        ("cosx", Box::new(|c| c.k_builder = Some("cosx".into()))),
+        (
+            "cosx",
+            Box::new(|c| c.k_builder = Some(ferric_scf::options::KBuilderKind::Cosx)),
+        ),
         (
             "pcm",
             Box::new(|c| c.pcm = Some(ferric_pcm::PcmConfig::water())),
@@ -318,6 +320,7 @@ fn unsupported_combinations_are_typed_errors() {
                     }],
                     thole_a: None,
                     exclusions: vec![],
+                    excluded_charges: vec![],
                     dipole_zeta: 1e6,
                     max_sites_dense: 100,
                 })

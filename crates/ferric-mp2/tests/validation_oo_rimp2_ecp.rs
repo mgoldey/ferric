@@ -98,6 +98,7 @@ use ferric_scf::gradient::ecp_gradient;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -164,12 +165,6 @@ fn reference() -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
 }
 
 fn check_close(ctx: &str, what: &str, got: f64, want: f64, tol: f64) {
@@ -244,7 +239,7 @@ fn load(r: &Value, bs: &BasisSet) -> Sys {
         &ctx,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(r, "/nuclear_repulsion", &ctx),
+        num_ctx(r, "/nuclear_repulsion", &ctx),
         TOL_ENUC,
     );
     let s = build(mol, bs);
@@ -262,12 +257,10 @@ fn load(r: &Value, bs: &BasisSet) -> Sys {
 }
 
 fn solve_closed(s: &Sys, ctx: &str) -> ScfResult {
-    let cfg = RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        max_iter: 400,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10)
+        .with_max_iter(400);
     assert!(
         cfg.df_j_aux.is_none() && cfg.df_k_aux.is_none(),
         "exact J/K"
@@ -311,7 +304,7 @@ fn oo_rimp2_hi_def2svp_ecp_energy_vs_numpy() {
     let bs = basis::bundled(BASIS).unwrap();
     let s = load(&r, &bs);
 
-    let gmax = num(&r, "/numpy_oo/max_orbital_gradient", &ctx);
+    let gmax = num_ctx(&r, "/numpy_oo/max_orbital_gradient", &ctx);
     assert!(
         gmax <= NUMPY_MAX_ORBITAL_GRAD,
         "{ctx}: numpy reference not converged (max |dE/dκ| {gmax:.2e})"
@@ -323,7 +316,7 @@ fn oo_rimp2_hi_def2svp_ecp_energy_vs_numpy() {
         &ctx,
         "E_RHF vs PySCF",
         rhf.energy,
-        num(&r, "/pyscf/e_scf", &ctx),
+        num_ctx(&r, "/pyscf/e_scf", &ctx),
         TOL_E_SCF,
     );
     let mp2_cfg = RiMp2Config::default();
@@ -333,25 +326,25 @@ fn oo_rimp2_hi_def2svp_ecp_energy_vs_numpy() {
         &ctx,
         "E_corr(RI) vs PySCF DF-MP2",
         mp2.mp2_corr,
-        num(&r, "/pyscf/e_corr_dfmp2", &ctx),
+        num_ctx(&r, "/pyscf/e_corr_dfmp2", &ctx),
         TOL_E_CORR,
     );
 
     // ---- OO-RI-MP2 ----
     let oo = solve_oo(&s, &rhf, &ctx);
-    let e_oo_ref = num(&r, "/numpy_oo/e_total", &ctx);
+    let e_oo_ref = num_ctx(&r, "/numpy_oo/e_total", &ctx);
     check_close(
         &ctx,
         "E_OO reference part",
         oo.hf_energy,
-        num(&r, "/numpy_oo/e_reference", &ctx),
+        num_ctx(&r, "/numpy_oo/e_reference", &ctx),
         TOL_E_OO_SPLIT,
     );
     check_close(
         &ctx,
         "E_OO doubles part",
         oo.mp2_corr,
-        num(&r, "/numpy_oo/e_doubles", &ctx),
+        num_ctx(&r, "/numpy_oo/e_doubles", &ctx),
         TOL_E_OO_SPLIT,
     );
     check_close(
@@ -366,7 +359,7 @@ fn oo_rimp2_hi_def2svp_ecp_energy_vs_numpy() {
     check_miss(
         &ctx,
         "ECP-less κ=0 vs numpy OO",
-        num(&r, "/ecp_effect/kappa0_total_without_vecp", &ctx),
+        num_ctx(&r, "/ecp_effect/kappa0_total_without_vecp", &ctx),
         e_oo_ref,
         MUST_MISS_E_ECP,
     );

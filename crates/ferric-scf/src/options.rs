@@ -37,10 +37,14 @@
 //!
 //! | Frontend | `df_j_aux` | `df_k_aux` | `guess` | `cosx` | `ri_j_task` | `xc` |
 //! |---|---|---|---|---|---|---|
-//! | `run_rhf` / `run_uhf` / `run_rohf` | unset (exact J) | unset (exact K) | `guess=` kwarg, else SAD | the `cosx_*` kwargs | unset (energy) | unset (HF) |
-//! | `run_dft` | `JK` | `JK`; no RI-K under COSX | `guess=` kwarg, else SAD | the `cosx_*` kwargs | unset (energy) | the functional, default `"LDA"` |
-//! | `run_uks` / `run_roks` | `JK` | `JK`; no RI-K under COSX | `guess=` kwarg, else SAD | the `cosx_*` kwargs | unset (energy) | the functional (required) |
+//! | `run_rhf` / `run_uhf` / `run_rohf` | unset (exact J) | unset (exact K) | `guess=` kwarg, else SAD | the `cosx_*` kwargs | `Energy` | unset (HF) |
+//! | `run_dft` | `JK` | `JK`; no RI-K under COSX | `guess=` kwarg, else SAD | the `cosx_*` kwargs | `Energy` | the functional, default `"LDA"` |
+//! | `run_uks` / `run_roks` | `JK` | `JK`; no RI-K under COSX | `guess=` kwarg, else SAD | the `cosx_*` kwargs | `Energy` | the functional (required) |
 //! | CLI `[scf]` | the kind's default: `JK` for Kohn-Sham, RPA/response and TDA/TDDFT kinds, else unset | as `df_j_aux`; no RI-K under COSX | `[scf] guess`, else SAD | `[scf] cosx_*` and the `[gpu]` fp64 router | from `method.task`: geometry for `optimize` / `frequencies` / `md`, else energy | the kind's functional (`[dft]`, `[rpa] xc`, `[tddft] xc`), else unset |
+//!
+//! `ri_j_task` is not an option but the argument of
+//! [`ScfOptions::into_rhf_config`](crate::options::ScfOptions::into_rhf_config):
+//! the task class the frontend runs.
 //!
 //! The CLI column is `Config::scf_xc_and_aux_defaults` and `ri_j_task_for`
 //! in `ferric-cli`; the Python rows are
@@ -70,8 +74,105 @@ pub const DEFAULT_INTEGRAL_THRESH: f64 = 1e-12;
 pub const SOSCF_NEWTON_TRIGGER: f64 = 1e-3;
 /// Default JK-fit auxiliary basis wherever RI-J/RI-K is auto-selected.
 pub const DEFAULT_JK_AUX: &str = "def2-universal-jkfit";
-/// The [`RhfConfig::k_builder`] spelling that selects COSX exchange.
-pub const COSX_K_BUILDER: &str = "cosx";
+/// The exchange (K) builder an exact-exchange SCF uses
+/// ([`RhfConfig::k_builder`]; `None` there is the default, [`Direct`]).
+///
+/// The frontends receive it as a string (Python `k_builder=`, CLI
+/// `[scf] k_builder`) and parse it once with [`KBuilderKind::parse`]; past
+/// that boundary it is never a string. Named `...Kind` because
+/// [`crate::fock::KBuilder`] is the trait the builders implement.
+///
+/// [`Direct`]: KBuilderKind::Direct
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KBuilderKind {
+    /// The direct four-centre builder (`"direct"`, the default). Spelled
+    /// out, it is still a request: the solvers warn when density fitting
+    /// overrides it.
+    Direct,
+    /// LinK screened exchange (`"link"`, [`crate::link_k`]).
+    Link,
+    /// Seminumerical chain-of-spheres exchange (`"cosx"`,
+    /// [`crate::cosx_k`]), the K of the RIJCOSX composite.
+    Cosx,
+}
+
+/// [`KBuilderKind::parse`]'s refusal: the spelling given. Its `Display` is
+/// the user-facing message, and it lowers to [`FerricError::General`] (the
+/// error the solvers raised for it before the frontends parsed it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownKBuilder(pub String);
+
+impl std::fmt::Display for UnknownKBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unknown k_builder '{}': valid options are 'direct', 'link', 'cosx'",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for UnknownKBuilder {}
+
+impl From<UnknownKBuilder> for FerricError {
+    fn from(e: UnknownKBuilder) -> Self {
+        FerricError::General(e.to_string())
+    }
+}
+
+impl KBuilderKind {
+    /// Every kind, in the order the error message lists them.
+    pub const ALL: [KBuilderKind; 3] = [Self::Direct, Self::Link, Self::Cosx];
+
+    /// Strict, case-sensitive parse of a user spelling: exactly `"direct"`,
+    /// `"link"` or `"cosx"`.
+    pub fn parse(s: &str) -> Result<Self, UnknownKBuilder> {
+        match s {
+            "direct" => Ok(Self::Direct),
+            "link" => Ok(Self::Link),
+            "cosx" => Ok(Self::Cosx),
+            other => Err(UnknownKBuilder(other.to_string())),
+        }
+    }
+
+    /// Whether `s` spells [`KBuilderKind::Cosx`] (through the one
+    /// whitelist). For the checks that read a spelling as typed, to quote it
+    /// in their messages, before the frontend's own parse reports an unknown
+    /// one: an unknown spelling is not COSX.
+    pub fn spells_cosx(s: &str) -> bool {
+        Self::parse(s) == Ok(Self::Cosx)
+    }
+
+    /// [`KBuilderKind::parse`] of an optional keyword (`None` = not given).
+    pub fn parse_opt(s: Option<&str>) -> Result<Option<Self>, UnknownKBuilder> {
+        s.map(Self::parse).transpose()
+    }
+
+    /// The canonical spelling (what [`KBuilderKind::parse`] accepts), used
+    /// in messages, labels and the checkpoint identity.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Link => "link",
+            Self::Cosx => "cosx",
+        }
+    }
+}
+
+impl std::str::FromStr for KBuilderKind {
+    type Err = UnknownKBuilder;
+
+    /// [`KBuilderKind::parse`].
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
+impl std::fmt::Display for KBuilderKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 /// The RIJCOSX rule for the RI-K auxiliary basis: an `explicit` choice
 /// always wins; otherwise the frontend's `default` applies, except under
@@ -84,15 +185,35 @@ pub const COSX_K_BUILDER: &str = "cosx";
 /// Generic over the aux representation; the Python KS entry points and the
 /// CLI `[scf]` lowering both pass [`AuxBasis`].
 pub fn df_k_aux_or_default<T>(
-    k_builder: Option<&str>,
+    k_builder: Option<KBuilderKind>,
     explicit: Option<T>,
     default: Option<T>,
 ) -> Option<T> {
-    explicit.or(if k_builder == Some(COSX_K_BUILDER) {
+    explicit.or(if k_builder == Some(KBuilderKind::Cosx) {
         None
     } else {
         default
     })
+}
+
+/// The Kohn-Sham JK-fit defaults: RI-J on `jk` unless `df_j_aux` names a
+/// choice, and RI-K on `jk` under the RIJCOSX rule
+/// ([`df_k_aux_or_default`]: no RI-K default under COSX). The one home of
+/// the Kohn-Sham JK-fit default, for the Python KS entry points
+/// ([`ScfEntryPoint::options`](crate::options::entry::ScfEntryPoint::options),
+/// over [`AuxBasis`]) and `ksdft_ladder` (over a lowered config's names).
+/// Returns `(df_j_aux, df_k_aux)`: RI-J always has a choice, RI-K may not.
+///
+/// The CLI's per-kind defaults are deliberately separate
+/// (`Config::scf_xc_and_aux_defaults`) and share only the RIJCOSX rule.
+pub fn ks_jk_fit_defaults<T: Clone>(
+    k_builder: Option<KBuilderKind>,
+    df_j_aux: Option<T>,
+    df_k_aux: Option<T>,
+    jk: T,
+) -> (T, Option<T>) {
+    let df_k_aux = df_k_aux_or_default(k_builder, df_k_aux, Some(jk.clone()));
+    (df_j_aux.unwrap_or(jk), df_k_aux)
 }
 
 /// A density-fitting auxiliary basis choice for [`RhfConfig::df_j_aux`] /
@@ -235,8 +356,8 @@ pub struct ScfOptions {
     pub diis_flavor: Option<crate::diis::DiisFlavor>,
     /// [`RhfConfig::integral_thresh`].
     pub integral_thresh: Option<f64>,
-    /// [`RhfConfig::k_builder`] (passed through verbatim).
-    pub k_builder: Option<String>,
+    /// [`RhfConfig::k_builder`].
+    pub k_builder: Option<KBuilderKind>,
     /// [`RhfConfig::cosx`].
     pub cosx: Option<crate::cosx_k::CosxConfig>,
     /// [`RhfConfig::df_j_aux`] (see [`AuxBasis::parse`]).
@@ -296,10 +417,6 @@ pub struct ScfOptions {
     pub dft_grid: Option<ferric_dft::grid::AtomicGridConfig>,
     /// [`RhfConfig::diis_switch_thresh`].
     pub diis_switch_thresh: Option<f64>,
-    /// [`RhfConfig::ri_j_task`]: the task class an unset
-    /// [`RhfConfig::ri_j_precision`] resolves against. A frontend derives it
-    /// from the task it runs; it is not a user knob.
-    pub ri_j_task: Option<crate::df_j::RiJTask>,
     /// [`RhfConfig::screening`].
     pub screening: Option<crate::screening::ScreeningKind>,
     /// [`RhfConfig::verbose`].
@@ -321,7 +438,14 @@ impl ScfOptions {
     /// `RhfConfig::default()` value; adding a field to `RhfConfig` does not
     /// break this function (the test `every_rhf_config_field_is_classified`
     /// is where a new field must be classified).
-    pub fn into_rhf_config(self) -> Result<RhfConfig, FerricError> {
+    ///
+    /// `ri_j_task` is [`RhfConfig::ri_j_task`], the task class an unset
+    /// [`RhfConfig::ri_j_precision`] resolves against: the frontend derives
+    /// it from the task it runs (it is not a user knob, so not an option).
+    pub fn into_rhf_config(
+        self,
+        ri_j_task: crate::df_j::RiJTask,
+    ) -> Result<RhfConfig, FerricError> {
         // Exhaustive destructure: a new ScfOptions field fails to compile
         // here until the lowering decides what it means.
         let ScfOptions {
@@ -358,7 +482,6 @@ impl ScfOptions {
             xc,
             dft_grid,
             diis_switch_thresh,
-            ri_j_task,
             screening,
             verbose,
         } = self;
@@ -468,9 +591,7 @@ impl ScfOptions {
         if let Some(v) = diis_switch_thresh {
             c.diis_switch_thresh = v;
         }
-        if let Some(v) = ri_j_task {
-            c.ri_j_task = v;
-        }
+        c.ri_j_task = ri_j_task;
         if let Some(v) = screening {
             c.screening = v;
         }
@@ -598,6 +719,13 @@ mod tests {
         }
     }
 
+    /// The `k_builder` spelling an oracle passed through verbatim, as the
+    /// frontend now parses it (every spelling the oracles use is valid; the
+    /// unknown ones are `k_builder_spellings_parse_once_with_the_solver_message`).
+    fn kb(spelling: Option<&str>) -> Option<KBuilderKind> {
+        KBuilderKind::parse_opt(spelling).unwrap()
+    }
+
     // ── oracles: the pre-refactor literals ──
 
     fn old_run_rhf(k: Kw) -> RhfConfig {
@@ -608,7 +736,7 @@ mod tests {
             density_conv: k.density_conv.unwrap_or(1e-6),
             diis_size: k.diis_size.unwrap_or(8),
             integral_thresh: k.integral_thresh.unwrap_or(1e-12),
-            k_builder: k.k_builder.map(|s| s.to_string()),
+            k_builder: kb(k.k_builder),
             cosx: k.cosx.unwrap(),
             df_j_aux: k.df_j_aux.map(crate::rhf::normalize_df_aux),
             df_k_aux: k.df_k_aux.map(crate::rhf::normalize_df_aux),
@@ -648,7 +776,7 @@ mod tests {
             density_conv: k.density_conv.unwrap_or(1e-6),
             diis_size: k.diis_size.unwrap_or(8),
             integral_thresh: k.integral_thresh.unwrap_or(1e-12),
-            k_builder: k.k_builder.map(|s| s.to_string()),
+            k_builder: kb(k.k_builder),
             cosx: k.cosx.unwrap(),
             df_j_aux: k.df_j_aux.map(crate::rhf::normalize_df_aux),
             df_k_aux: k.df_k_aux.map(crate::rhf::normalize_df_aux),
@@ -678,7 +806,7 @@ mod tests {
             density_conv: k.density_conv.unwrap_or(1e-6),
             diis_size: k.diis_size.unwrap_or(8),
             integral_thresh: k.integral_thresh.unwrap_or(1e-12),
-            k_builder: k.k_builder.map(|s| s.to_string()),
+            k_builder: kb(k.k_builder),
             df_j_aux: k.df_j_aux.map(crate::rhf::normalize_df_aux),
             df_k_aux: k.df_k_aux.map(crate::rhf::normalize_df_aux),
             ri_j_precision: k.ri_j_precision,
@@ -732,7 +860,7 @@ mod tests {
             diis_size: if hf { k.diis_size } else { None },
             diis_flavor: is(&[E::Rhf]).then(|| k.diis.unwrap_or(DiisFlavor::Pulay)),
             integral_thresh: if hf { k.integral_thresh } else { None },
-            k_builder: k.k_builder,
+            k_builder: kb(k.k_builder),
             // The bindings always resolve the `cosx_*` kwargs: the default
             // COSX settings when none is passed.
             cosx: Some(if is(&[E::Rhf, E::Uhf, E::Dft]) {
@@ -810,7 +938,7 @@ mod tests {
         entry
             .options(kwargs(entry, k))
             .unwrap()
-            .into_rhf_config()
+            .into_rhf_config(crate::df_j::RiJTask::default())
             .unwrap()
     }
 
@@ -1028,7 +1156,7 @@ mod tests {
 
     fn old_rhf_config_budgeted(k_builder: Option<&str>, budget_bytes: Option<usize>) -> RhfConfig {
         RhfConfig {
-            k_builder: k_builder.map(|s| s.to_string()),
+            k_builder: kb(k_builder),
             three_index_budget_bytes: budget_bytes.unwrap_or(0),
             ..Default::default()
         }
@@ -1176,18 +1304,18 @@ mod tests {
     /// the RI-K default regardless, so COSX always met a df_k_aux conflict
     /// the caller never set; it now takes the RIJCOSX rule, as `run_dft`.
     fn open_ks_takes_rijcosx_rule(k: &Kw) -> bool {
-        k.k_builder == Some(COSX_K_BUILDER) && k.df_k_aux.is_none()
+        k.k_builder == Some("cosx") && k.df_k_aux.is_none()
     }
 
     #[test]
     fn open_ks_cosx_drops_the_ri_k_default() {
         let k = Kw {
-            k_builder: Some(COSX_K_BUILDER),
+            k_builder: Some("cosx"),
             ..Kw::default()
         };
         for sad in [true, false] {
             let c = new_run_open_ks(k.clone(), "PBE0", sad);
-            assert_eq!(c.k_builder.as_deref(), Some(COSX_K_BUILDER));
+            assert_eq!(c.k_builder, Some(KBuilderKind::Cosx));
             assert_eq!(c.df_k_aux, None);
             assert_eq!(c.df_j_aux.as_deref(), Some(DEFAULT_JK_AUX));
             // The old construction kept the RI-K default (the bug).
@@ -1211,6 +1339,40 @@ mod tests {
             };
             let c = new_run_open_ks(k, "PBE0", true);
             assert_eq!(c.df_k_aux.as_deref(), Some(DEFAULT_JK_AUX), "{kb:?}");
+        }
+    }
+
+    /// `KBuilderKind::parse` is the one home of the `k_builder` whitelist:
+    /// exactly the three spellings, case-sensitive, untrimmed, and every
+    /// other spelling refused with the message the solvers raised before the
+    /// frontends parsed it (`FerricError::General`, so Python's text is
+    /// unchanged: "General error: unknown k_builder ...").
+    #[test]
+    fn k_builder_spellings_parse_once_with_the_solver_message() {
+        for kind in KBuilderKind::ALL {
+            assert_eq!(KBuilderKind::parse(kind.as_str()), Ok(kind));
+            assert_eq!(kind.as_str().parse::<KBuilderKind>(), Ok(kind));
+            assert_eq!(
+                KBuilderKind::spells_cosx(kind.as_str()),
+                kind == KBuilderKind::Cosx
+            );
+            assert_eq!(kind.to_string(), kind.as_str());
+        }
+        assert_eq!(KBuilderKind::parse_opt(None), Ok(None));
+        for bad in [
+            "Link", "COSX", "Direct", " cosx", "cosx ", "", "bogus", "cosxx", "exact",
+        ] {
+            let e = KBuilderKind::parse(bad).unwrap_err();
+            assert_eq!(e, UnknownKBuilder(bad.to_string()));
+            let text =
+                format!("unknown k_builder '{bad}': valid options are 'direct', 'link', 'cosx'");
+            assert_eq!(e.to_string(), text);
+            assert_eq!(
+                FerricError::from(e).to_string(),
+                format!("General error: {text}")
+            );
+            assert_eq!(KBuilderKind::parse_opt(Some(bad)).unwrap_err().0, bad);
+            assert!(!KBuilderKind::spells_cosx(bad), "{bad:?}");
         }
     }
 
@@ -1382,7 +1544,11 @@ mod tests {
                 set.push("mom_reference");
                 kw.mom_reference = Some(MomReference::Initial);
             }
-            let c = entry.options(kw).unwrap().into_rhf_config().unwrap();
+            let c = entry
+                .options(kw)
+                .unwrap()
+                .into_rhf_config(crate::df_j::RiJTask::default())
+                .unwrap();
             let d = RhfConfig::default();
             let who = entry.name();
             let check = |n: &'static str, ok: bool| {
@@ -1428,16 +1594,19 @@ mod tests {
     fn rijcosx_rule_drops_only_the_ri_k_default() {
         let named = |s: &str| Some(AuxBasis::named(s));
         let d = named(DEFAULT_JK_AUX);
-        assert_eq!(df_k_aux_or_default(Some("cosx"), None, d.clone()), None);
         assert_eq!(
-            df_k_aux_or_default(Some("cosx"), named("x"), d.clone()),
+            df_k_aux_or_default(Some(KBuilderKind::Cosx), None, d.clone()),
+            None
+        );
+        assert_eq!(
+            df_k_aux_or_default(Some(KBuilderKind::Cosx), named("x"), d.clone()),
             named("x")
         );
         assert_eq!(
-            df_k_aux_or_default(Some("cosx"), Some(AuxBasis::Off), d.clone()),
+            df_k_aux_or_default(Some(KBuilderKind::Cosx), Some(AuxBasis::Off), d.clone()),
             Some(AuxBasis::Off)
         );
-        for kb in [None, Some("direct"), Some("link"), Some("COSX")] {
+        for kb in [None, Some(KBuilderKind::Direct), Some(KBuilderKind::Link)] {
             assert_eq!(df_k_aux_or_default(kb, None, d.clone()), d, "{kb:?}");
             assert_eq!(df_k_aux_or_default::<String>(kb, None, None), None);
         }
@@ -1475,7 +1644,7 @@ mod tests {
             level_shift: Some(0.0),
             ..Default::default()
         }
-        .into_rhf_config()
+        .into_rhf_config(crate::df_j::RiJTask::default())
         .unwrap();
         assert!(!c.meta_gga_auto_level_shift);
         assert!(RhfConfig::default().meta_gga_auto_level_shift);
@@ -1489,7 +1658,12 @@ mod tests {
         assert_eq!(d.density_conv, DEFAULT_SCF_DENSITY_CONV);
         assert_eq!(d.diis_size, DEFAULT_DIIS_SIZE);
         assert_eq!(d.integral_thresh, DEFAULT_INTEGRAL_THRESH);
-        same(&ScfOptions::default().into_rhf_config().unwrap(), &d);
+        same(
+            &ScfOptions::default()
+                .into_rhf_config(crate::df_j::RiJTask::default())
+                .unwrap(),
+            &d,
+        );
     }
 
     #[test]
@@ -1511,7 +1685,7 @@ mod tests {
                 stability: Some(st),
                 ..Default::default()
             }
-            .into_rhf_config()
+            .into_rhf_config(crate::df_j::RiJTask::default())
             .unwrap();
             (c.check_stability, c.scf_stability_descent)
         };
@@ -1530,12 +1704,11 @@ mod tests {
         use crate::screening::ScreeningKind;
         let c = ScfOptions {
             diis_switch_thresh: Some(3e-2),
-            ri_j_task: Some(RiJTask::Geometry),
             screening: Some(ScreeningKind::Csb),
             verbose: Some(true),
             ..Default::default()
         }
-        .into_rhf_config()
+        .into_rhf_config(RiJTask::Geometry)
         .unwrap();
         let expected = RhfConfig {
             diis_switch_thresh: 3e-2,
@@ -1609,8 +1782,219 @@ mod tests {
             screening: _,                 // lowered
             raw_handoff: _,               // default
             eri: _,                       // lowered
+            gc_rotation: _,               // default (not an entry-point knob)
             eri_route: _,                 // default (solver output)
             relativistic: _,              // lowered
         } = RhfConfig::default();
+    }
+
+    /// The struct-update literals of the Python bindings that roadmap item
+    /// 11(a) moved onto `ScfOptions` (the `old_*` closures are those
+    /// literals verbatim with their inputs parsed; the `new` sides mirror the
+    /// bindings): `rhf_config_budgeted`, `run_saddle` / `run_irc` /
+    /// `run_frequencies` (xc + MM field), `run_optimize` (MM field + PCM) and
+    /// `run_cdft`.
+    #[test]
+    fn python_struct_update_sites_lower_through_options() {
+        let same = |old: &RhfConfig, new: RhfConfig| {
+            assert_eq!(format!("{old:?}"), format!("{new:?}"));
+        };
+        let lower = |o: ScfOptions| o.into_rhf_config(crate::df_j::RiJTask::Energy).unwrap();
+        let ext = all_knobs().external_potential;
+
+        // rhf_config_budgeted
+        for (k_builder, budget) in [(None, None), (Some(KBuilderKind::Link), Some(1usize << 30))] {
+            let old = RhfConfig {
+                k_builder,
+                three_index_budget_bytes: budget.unwrap_or(0),
+                ..Default::default()
+            };
+            same(
+                &old,
+                lower(ScfOptions {
+                    k_builder,
+                    three_index_budget_bytes: budget,
+                    ..Default::default()
+                }),
+            );
+        }
+
+        for (xc, ext, pcm) in [
+            (None, None, None),
+            (
+                Some("B3LYP"),
+                ext.clone(),
+                Some(ferric_pcm::PcmConfig::default()),
+            ),
+        ] {
+            // run_saddle / run_irc / run_frequencies
+            let old = RhfConfig {
+                xc: xc.map(|s| s.to_string()),
+                external_potential: ext.clone(),
+                ..Default::default()
+            };
+            same(
+                &old,
+                lower(ScfOptions {
+                    xc: xc.map(|s| s.to_string()),
+                    external_potential: ext.clone(),
+                    ..Default::default()
+                }),
+            );
+            // run_optimize
+            let old = RhfConfig {
+                external_potential: ext.clone(),
+                pcm: pcm.clone(),
+                ..Default::default()
+            };
+            same(
+                &old,
+                lower(ScfOptions {
+                    external_potential: ext.clone(),
+                    pcm: pcm.clone(),
+                    ..Default::default()
+                }),
+            );
+        }
+
+        // run_cdft: every kwarg unset, then every kwarg set (an off spelling
+        // for one auxiliary basis, a meta-GGA-relevant explicit level shift).
+        struct Cdft {
+            xc: Option<String>,
+            dft_grid: Option<AtomicGridConfig>,
+            max_iter: Option<usize>,
+            energy_conv: Option<f64>,
+            density_conv: Option<f64>,
+            diis_size: Option<usize>,
+            integral_thresh: Option<f64>,
+            k_builder: Option<KBuilderKind>,
+            df_j_aux: Option<&'static str>,
+            df_k_aux: Option<&'static str>,
+            ri_j_precision: Option<RiJPrecision>,
+            ri_k_precision: Option<RiKPrecision>,
+            level_shift: Option<f64>,
+            mom_after_iter: Option<usize>,
+            external_potential: Option<ExternalPotential>,
+            budget_bytes: Option<usize>,
+            use_sad_guess: bool,
+            constraints: Vec<ferric_dft::cdft::Constraint>,
+            lambda_tol: f64,
+            max_outer: usize,
+            stability_descent: Option<bool>,
+        }
+        let unset = Cdft {
+            xc: None,
+            dft_grid: None,
+            max_iter: None,
+            energy_conv: None,
+            density_conv: None,
+            diis_size: None,
+            integral_thresh: None,
+            k_builder: None,
+            df_j_aux: None,
+            df_k_aux: None,
+            ri_j_precision: None,
+            ri_k_precision: None,
+            level_shift: None,
+            mom_after_iter: None,
+            external_potential: None,
+            budget_bytes: None,
+            use_sad_guess: true,
+            constraints: Vec::new(),
+            lambda_tol: 1e-5,
+            max_outer: 30,
+            stability_descent: None,
+        };
+        let set = Cdft {
+            xc: Some("TPSS".to_string()),
+            dft_grid: Some(AtomicGridConfig {
+                n_radial: 75,
+                n_angular: 302,
+                ..Default::default()
+            }),
+            max_iter: Some(77),
+            energy_conv: Some(1e-7),
+            density_conv: Some(3e-9),
+            diis_size: Some(5),
+            integral_thresh: Some(1e-11),
+            k_builder: Some(KBuilderKind::Cosx),
+            df_j_aux: Some(" def2-universal-jkfit "),
+            df_k_aux: Some("OFF"),
+            ri_j_precision: Some(RiJPrecision::F64),
+            ri_k_precision: Some(RiKPrecision::F32),
+            level_shift: Some(0.1),
+            mom_after_iter: Some(4),
+            external_potential: ext,
+            budget_bytes: Some(1 << 30),
+            use_sad_guess: false,
+            constraints: vec![ferric_dft::cdft::Constraint {
+                fragment: vec![0],
+                spin: ferric_dft::cdft::SpinChannel::Total,
+                target: 2.0,
+            }],
+            lambda_tol: 1e-7,
+            max_outer: 12,
+            stability_descent: Some(false),
+        };
+        for c in [unset, set] {
+            let defaults = RhfConfig::default();
+            let old = RhfConfig {
+                constraints: c.constraints.clone(),
+                cdft_lambda_tol: c.lambda_tol,
+                cdft_max_outer: c.max_outer,
+                cdft_stability_descent: c
+                    .stability_descent
+                    .unwrap_or(defaults.cdft_stability_descent),
+                xc: c.xc.clone(),
+                dft_grid: c.dft_grid.clone(),
+                max_iter: c.max_iter.unwrap_or(defaults.max_iter),
+                energy_conv: c.energy_conv.unwrap_or(defaults.energy_conv),
+                density_conv: c.density_conv.unwrap_or(defaults.density_conv),
+                diis_size: c.diis_size.unwrap_or(defaults.diis_size),
+                integral_thresh: c.integral_thresh.unwrap_or(defaults.integral_thresh),
+                k_builder: c.k_builder,
+                df_j_aux: c.df_j_aux.map(crate::rhf::normalize_df_aux),
+                df_k_aux: c.df_k_aux.map(crate::rhf::normalize_df_aux),
+                ri_j_precision: c.ri_j_precision,
+                ri_k_precision: c.ri_k_precision,
+                level_shift: c.level_shift.unwrap_or(defaults.level_shift),
+                mom_after_iter: c.mom_after_iter.unwrap_or(defaults.mom_after_iter),
+                external_potential: c.external_potential.clone(),
+                three_index_budget_bytes: c.budget_bytes.unwrap_or(0),
+                use_sad_guess: c.use_sad_guess,
+                ..RhfConfig::default()
+            };
+            let mut new = lower(ScfOptions {
+                xc: c.xc,
+                dft_grid: c.dft_grid,
+                max_iter: c.max_iter,
+                energy_conv: c.energy_conv,
+                density_conv: c.density_conv,
+                diis_size: c.diis_size,
+                integral_thresh: c.integral_thresh,
+                k_builder: c.k_builder,
+                df_j_aux: c.df_j_aux.map(AuxBasis::parse),
+                df_k_aux: c.df_k_aux.map(AuxBasis::parse),
+                ri_j_precision: c.ri_j_precision,
+                ri_k_precision: c.ri_k_precision,
+                mom_after_iter: c.mom_after_iter,
+                external_potential: c.external_potential,
+                three_index_budget_bytes: c.budget_bytes,
+                guess: Some(if c.use_sad_guess {
+                    Guess::Sad
+                } else {
+                    Guess::Core
+                }),
+                ..Default::default()
+            });
+            new.level_shift = c.level_shift.unwrap_or(defaults.level_shift);
+            new.constraints = c.constraints;
+            new.cdft_lambda_tol = c.lambda_tol;
+            new.cdft_max_outer = c.max_outer;
+            new.cdft_stability_descent = c
+                .stability_descent
+                .unwrap_or(defaults.cdft_stability_descent);
+            same(&old, new);
+        }
     }
 }

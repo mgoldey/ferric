@@ -175,6 +175,7 @@ use ferric_dft::vv10::Vv10Damping;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::result::Spin;
+use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 
 use crate::rimp2::{ri_mp2_spin_components, RiMp2Config, SpinComponents};
@@ -526,6 +527,26 @@ impl AttVv10Result {
     }
 }
 
+/// [`att_mp2_vv10`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn att_mp2_vv10_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    config: &AttVv10Config,
+) -> Result<AttVv10Result, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(rhf)?;
+    att_mp2_vv10(
+        sys.mol(),
+        sys.basis(),
+        sys.basis_set(),
+        aux.basis(),
+        rhf,
+        config,
+    )
+}
+
 /// Attenuated MP2 + long-range VV10 dispersion (MP2-V), post-HF.
 ///
 /// ```text
@@ -574,6 +595,26 @@ pub fn att_mp2_vv10(
         rhf,
         config,
         AttVv10SpinComponents::Restricted(spin_components),
+    )
+}
+
+/// [`u_att_mp2_vv10`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `scf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn u_att_mp2_vv10_on(
+    aux: &PreparedAux<'_>,
+    scf: &ScfResult,
+    config: &AttVv10Config,
+) -> Result<AttVv10Result, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(scf)?;
+    u_att_mp2_vv10(
+        sys.mol(),
+        sys.basis(),
+        sys.basis_set(),
+        aux.basis(),
+        scf,
+        config,
     )
 }
 
@@ -791,6 +832,32 @@ pub struct AttVv10ScanResult {
     pub e_c_mp2_coulomb: Option<f64>,
 }
 
+/// [`att_mp2_vv10_scan`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn att_mp2_vv10_scan_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    base: &AttVv10Config,
+    arms: &[AttVv10ScanArm],
+    bs: &[f64],
+    include_coulomb_mp2: bool,
+) -> Result<AttVv10ScanResult, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(rhf)?;
+    att_mp2_vv10_scan(
+        sys.mol(),
+        sys.basis(),
+        sys.basis_set(),
+        aux.basis(),
+        rhf,
+        base,
+        arms,
+        bs,
+        include_coulomb_mp2,
+    )
+}
+
 /// Closed-shell MP2-V over a set of (r₀, ω) arms and a grid of `b` values on
 /// ONE converged RHF reference, in one call.
 ///
@@ -805,6 +872,7 @@ pub struct AttVv10ScanResult {
 /// its `r0_bohr`/`omega`/`vv10.b` are ignored. A single arm with a single `b`
 /// reproduces [`att_mp2_vv10`] with the same settings exactly (asserted in the
 /// tests).
+#[allow(clippy::too_many_arguments)]
 pub fn att_mp2_vv10_scan(
     mol: &Molecule,
     obs: &PreparedBasis,

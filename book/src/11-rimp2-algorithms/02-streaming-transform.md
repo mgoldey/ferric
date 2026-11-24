@@ -31,18 +31,22 @@ Sum (@eq:rimp2alg-chunked-dressing) over all chunks and the chunks tile the full
 gives equation @eq:four-step-algorithm-2. The order of the chunks fixes the order of the
 floating-point sum over $Q$.
 
-> **Unverified equation @eq:rimp2alg-chunked-dressing** · chunked dressing equals the full dressing
+> **Verified equation @eq:rimp2alg-chunked-dressing** · chunked dressing equals the full dressing
 >
 > For any partition of the auxiliary rows into chunks, the sum of (@eq:rimp2alg-chunked-dressing) over
-> the chunks equals $B = M\,(Q|ia)$ in exact arithmetic. In floating point the
-> results differ by summation order only.
+> the chunks equals $B = M\,(Q|ia)$ in exact arithmetic, and an output band
+> $[p_0, p_1)$ gives those rows of $B$. In floating point the results differ
+> by summation order only.
 >
 > | | |
 > |---|---|
-> | Proof | none committed. The identity is linearity of the matrix product. To add: a claim in `scripts/mp2_variant_identities.py` that dresses a random $(Q\vert ia)$ with chunk widths 1, 32, 256 and the full width, with a dropped-chunk negative control. |
+> | Proof | `scripts/mp2_variant_identities.py`, claim 9: chunk widths 1, 7, 32 and the full width on a random model, transform and dressing chunk by chunk |
+> | Negative control | one chunk dropped must differ |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-mp2/src/rimp2.rs::stream_dressed_mo_band_budgeted` |
 > | Code tests | `tests/mwe_mo_stream_chunk_budget.rs` pins the width rule (@sec:streaming-transform-chunk-width), not the identity |
 >
-> <!-- unverified: id=rimp2alg.chunked-dressing; todo=add chunk-partition claim to scripts/mp2_variant_identities.py -->
+> <!-- verified: id=rimp2alg.chunked-dressing; script=scripts/mp2_variant_identities.py; claim=9; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/rimp2.rs::stream_dressed_mo_band_budgeted -->
 
 Here is the loop body of `stream_dressed_mo_band_budgeted`, with the long
 comments replaced by the term each line computes and the serial branch of
@@ -73,8 +77,7 @@ $$ \frac{N^2 n_v + N n_o n_v}{N^2 n_o + N n_o n_v} , $$
 
 which for benzene in aug-cc-pVTZ with a frozen core ($N = 414$,
 $n_o = 15$, $n_v = 393$) is 13.9, against $n_v/n_o = 26.2$ for the first
-product alone. The comment at the call site names PySCF, Psi4 and NWChem as
-using the same occupied-first order.
+product alone.
 
 **Parallelism.** Each auxiliary row of the chunk is an independent pair of
 matrix products with a disjoint output row. Below
@@ -141,10 +144,8 @@ and after the ceiling and the rounding, the code returns
 `(capped & !1).max(MO_STREAM_CHUNK_MIN)`. Read it line by line. The
 transient may take one eighth of the budget. Each auxiliary row of the
 chunk is charged two rows of $n_o n_v$ doubles: the MO chunk being filled,
-and, by the function's doc comment, the raw slab that feeds it. (The raw
-rows are $N^2$ wide and belong to the source's block, which the tier of
-section @sec:memory-budget accounts for; the second row here is the code's allowance, not
-the slab's size.) Divide, floor at 32, cap at 256, round down to even:
+and an allowance (the raw rows are $N^2$ wide and belong to the source's
+block, section @sec:memory-budget). Divide, floor at 32, cap at 256, round down to even:
 
 $$ k_{\mathrm{raw}} = \max\!\Big(32,\ \Big\lfloor \frac{\lfloor \mathrm{budget}/8 \rfloor}{16\,n_o n_v} \Big\rfloor\Big), \qquad k = \max\big(32,\ 2\lfloor \min(k_{\mathrm{raw}}, 256)/2 \rfloor\big) . \label{eq:streaming-transform-3} $$
 
@@ -174,18 +175,26 @@ and 200 rows.
 Because (@eq:rimp2alg-chunked-dressing) accumulates with $\beta = 1$, the chunk width is the blocking
 of a floating-point sum over $Q$. Change $k$ and the partial sums change,
 and with them the rounding. The MO-transform rows write disjoint outputs and
-accumulate nothing, so only the dressing constrains $k$. Three rules follow.
+accumulate nothing, so only the dressing constrains $k$. Three rules follow
+from the width; a fourth comes from the metric factor.
 
 - The width reads the resolved budget and the problem shape. It never reads
   the thread count, the free memory at call time or the shared pool's
   ledger. The driver passes the budget resolved at the start of the run,
   not `pool.available_bytes()`.
-- Two runs at the same `[memory] budget_gb` give the same $B$ bit for bit.
+- Two runs at the same `[memory] budget_gb` give the same $B$ bit for bit,
+  under the fourth rule.
 - Two runs at different budgets can differ in the last digits, through $k$
   and through the block size of a spilled source (section @sec:memory-budget). Pin
   `budget_gb` to pin the digits.
+- The metric factor $M$ is built under the serial BLAS count, which defaults
+  to the rayon pool size (section @sec:determinism-and-memory-blas-thread-counts). Two runs at the same budget
+  give the same $B$ bit for bit when `[parallel] blas_threads = 1`
+  (`ferric.set_blas_threads(1)` from Python), or when they also share the
+  thread count.
 
-Water in cc-pVDZ shows the three rules at work (the `589b50832` build). At
+Water in cc-pVDZ shows the rules at work (the `3f612e0b3` build, serial BLAS
+count 1). At
 1 GiB and at 0.004 GiB (4.29 MB, above the 3.11 MB threshold) the width is
 256 and the correlation energies agree bit for bit. At 0.001 GiB the width
 drops to 88, and the energy moves in the last bits:
@@ -193,8 +202,10 @@ drops to 88, and the energy moves in the last bits:
 ```python
 # Water/cc-pVDZ, cc-pVDZ-RI: n_o n_v = 5*19 = 95, so k = 256 needs a budget of at least 32768*95 bytes = 3.11 MB.
 # Run with OPENBLAS_NUM_THREADS=1 FERRIC_MO_STREAM_TRACE=1 to see the resolved width on stderr.
-import os
 import ferric
+
+ferric.set_blas_threads(1)  # serial BLAS count; the default is the rayon pool size
+print("serial BLAS threads:", ferric.blas_threads())
 
 mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
 bs = ferric.BasisSet.bundled("cc-pvdz")
@@ -211,12 +222,15 @@ print("1 GB vs 1 MB difference:", results[1.0] - results[0.001])
 ```
 
 ```text
-budget  1.000 GB  E_corr = -0.204033456682291  bits -0x1.a1dc4afdec140p-3
-budget  0.004 GB  E_corr = -0.204033456682291  bits -0x1.a1dc4afdec140p-3
-budget  0.001 GB  E_corr = -0.204033456682292  bits -0x1.a1dc4afdec15ep-3
+serial BLAS threads: 1
+budget  1.000 GB  E_corr = -0.204033456682291  bits -0x1.a1dc4afdec136p-3
+budget  0.004 GB  E_corr = -0.204033456682291  bits -0x1.a1dc4afdec136p-3
+budget  0.001 GB  E_corr = -0.204033456682292  bits -0x1.a1dc4afdec155p-3
 1 GB vs 4 MB identical: True
-1 GB vs 1 MB difference: 8.326672684688674e-16
+1 GB vs 1 MB difference: 8.604228440844963e-16
 ```
+
+The output is the same, bit for bit, under `RAYON_NUM_THREADS=2` and `12`.
 
 ## Sources
 

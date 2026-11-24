@@ -40,6 +40,8 @@ use ferric_pbc::rsgdf::kpoint::KRsGdfConfig;
 use ferric_pbc::rsgdf::RsGdf;
 use ferric_pbc::rsh::{resolve_periodic_functional_rsh, RshParams};
 use ferric_pbc::uhf::GammaUhfIntegrals;
+#[allow(unused_imports)]
+pub use ferric_testkit::compare::max_abs;
 use ndarray::Array2;
 
 /// libxc name of CAM-B3LYP (the friendly spelling does not resolve).
@@ -91,10 +93,6 @@ pub fn rsh_of(f: &str) -> RshParams {
 
 pub fn diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
     (a - b).iter().fold(0.0_f64, |m, x| m.max(x.abs()))
-}
-
-pub fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0_f64, |m, x| m.max(x.abs()))
 }
 
 pub fn mdiff(a: &Mat3, b: &Mat3) -> f64 {

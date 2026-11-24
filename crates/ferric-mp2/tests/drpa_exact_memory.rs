@@ -19,8 +19,6 @@
 //! `riccati_solve_bytes` itself, so it covers every upstream plane — would
 //! admit the run, and the refusal-label assertion would fail.
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
 use ferric_core::basis;
 use ferric_core::memory::pool::{clear_global, global, install_global, MemoryPool};
 use ferric_core::mol::Molecule;
@@ -34,14 +32,7 @@ use ferric_mp2::lmp2_amplitude::{
 };
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
-
-fn global_lock() -> MutexGuard<'static, ()> {
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    }
-}
+use ferric_testkit::pool::pool_lock;
 
 struct Setup {
     mol: Molecule,
@@ -68,10 +59,7 @@ fn water_631g() -> Setup {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_energy_conv(1e-10),
     )
     .unwrap();
     Setup {
@@ -189,7 +177,7 @@ fn the_riccati_solve_charges_the_pool() {
             &cfg,
         )
     };
-    let _g = global_lock();
+    let _g = pool_lock();
 
     clear_global();
     let reference = run().expect("no pool: the solve runs");

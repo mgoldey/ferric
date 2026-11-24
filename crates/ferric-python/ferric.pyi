@@ -174,6 +174,42 @@ def configure_precision(
     """
     ...
 
+# ── Exceptions ──
+# Every class below also derives from the builtin class the same failure raised
+# before the hierarchy existed, so existing `except RuntimeError` /
+# `except ValueError` / `except NotImplementedError` handlers are unchanged.
+# Messages are the same text as before. See src/errors.rs for the mapping.
+
+class FerricError(Exception):
+    """Root of the ferric exception hierarchy; never raised itself."""
+
+class ConvergenceError(FerricError, RuntimeError):
+    """A typed non-convergence (SCF, CC, a response solver, the orbital
+    optimisation). A failure still returned as untyped text is a
+    ``ComputationError``."""
+
+class NumericalError(FerricError, RuntimeError):
+    """A typed linear-algebra failure (eigensolver, factorization)."""
+
+class MemoryBudgetError(FerricError, RuntimeError):
+    """A typed memory refusal (``MemoryExhausted``). The pre-flight
+    ``check_alloc`` still returns untyped text, so it is a ``ComputationError``."""
+
+class UnsupportedError(FerricError, NotImplementedError):
+    """A valid option combination the method does not implement."""
+
+class ComputationError(FerricError, RuntimeError):
+    """Any failure that carries no type (also a ``RuntimeError``). Not "all
+    runtime failures": catch ``RuntimeError`` for that."""
+
+class InputError(FerricError, ValueError):
+    """An invalid argument or option value."""
+
+class BasisError(InputError, RuntimeError):
+    """A basis set or ECP could not be loaded, parsed or does not cover the
+    molecule. Both a ``ValueError`` and a ``RuntimeError``: ``BasisSet.bundled`` raised
+    the former and the ``run_*`` drivers the latter."""
+
 # ── Classes ──
 
 class Molecule:
@@ -266,7 +302,8 @@ class QmmmSystem:
 
     Constructor takes Angstrom; point_charges() returns Bohr (the units run_rhf/run_optimize
     take for point_charges=). Select the QM region with qm_indices OR qm_seeds + qm_radius_angstrom
-    (+ optional residue_ids to pull in whole residues instead of individual atoms).
+    (+ optional residue_ids to pull in whole residues instead of individual atoms). With
+    qm_indices, residue_ids only labels molecules (read by run_qmmm's polarization_exclusions).
     """
 
     def __init__(
@@ -440,6 +477,7 @@ def run_qmmm(
     mm_topology: MmTopology | None = None,
     thole_a: float | None = None,
     ri_j_precision: str | None = None,
+    polarization_exclusions: str | None = None,
 ) -> QmmmResult:
     """Embedded SCF ("rhf" default, "uhf", "rks" or "uks") energy + QM gradient + MM forces + full gradient.
 
@@ -464,6 +502,12 @@ def run_qmmm(
     on a colocated charge+alpha MM atom and a two-site mutual-induction case.
     Boundary charges (RC/RCD) combined with a polarizable site have no FD
     cross-check yet.
+
+    polarization_exclusions: "molecule" (None = default) -- a site feels neither
+    the permanent charges nor the induced dipoles of its own molecule, labelled
+    by the system's residue_ids, else by the bonds of mm_topology; with neither,
+    ValueError. "none" -- no exclusions (isolated sites such as ions only; an
+    unexcluded TIP3P oxygen is polarized by its own hydrogens).
     """
     ...
 
@@ -1062,8 +1106,8 @@ class RhfResult:
 
     @property
     def exit_reason(self) -> str:
-        """ScfExit variant name: "Converged", "Stalled", "Diverged" or "MaxIter" (the
-        iteration cap was reached). ("Plateau" is reserved: not produced by run_rhf today.)"""
+        """ScfExit variant name: "Converged", "Stalled", "Diverged", "MaxIter" (the
+        iteration cap was reached) or "NotCertified" (ROHF/ROKS only)."""
         ...
 
     @property
@@ -2067,6 +2111,44 @@ class Mp3Result:
     def e_corr(self) -> float: ...
     @property
     def e_total(self) -> float: ...
+
+class OmegaRiResult:
+    """Result of :func:`run_omega_ri`."""
+
+    @property
+    def total_energy(self) -> float: ...
+    @property
+    def rhf_energy(self) -> float: ...
+    @property
+    def e_corr(self) -> float:
+        """Correlation energy of ``method`` (SOS-scaled for ``"cdd-sos-mp2"``)."""
+        ...
+    @property
+    def e_os(self) -> float | None:
+        """Unscaled opposite-spin MP2 component (``None`` for ``"rpa"``)."""
+        ...
+    @property
+    def e_ss(self) -> float | None:
+        """Same-spin MP2 component (``None`` for ``"rpa"`` and ``"cdd-sos-mp2"``)."""
+        ...
+    @property
+    def method(self) -> str: ...
+    @property
+    def fit(self) -> str:
+        """The fit, e.g. ``"erfc(omega=0.1 Bohr^-1)"``."""
+        ...
+    @property
+    def mean_rank_occ(self) -> float | None:
+        """Mean occupied pseudo-MO rank over the Laplace points (CDD methods)."""
+        ...
+    @property
+    def mean_rank_vir(self) -> float | None: ...
+    @property
+    def pair_fraction(self) -> float | None:
+        """Occupied pairs kept by the exchange screen (``"cdd-mp2"`` only)."""
+        ...
+    @property
+    def virtual_fraction(self) -> float | None: ...
 
 class LaplaceMp2Result:
     """Result of a Laplace RI-MP2 calculation."""
@@ -4290,6 +4372,7 @@ def run_rhf(
     eri: Literal["auto", "direct", "incore"] | None = None,
     relativistic: Literal["x2c1e"] | None = None,
     fock_hook_grad: FockHookGrad | None = None,
+    gc_rotation: Literal["auto", "rot1", "off"] | None = None,
 ) -> RhfResult:
     """Closed-shell Restricted Hartree-Fock.
 
@@ -4300,6 +4383,19 @@ def run_rhf(
     run_optimize(scf_relativistic=) and run_frequencies(scf_relativistic=)
     raise, as does an ECP atom. Two-electron and property operators stay
     nonrelativistic; the certificate records "x2c1e" and is Ungraded.
+
+    gc_rotation="auto" | "rot1" | "off" (default None: FERRIC_GC_ROTATE, then
+    "auto"; the CLI's [scf] gc_rotation) chooses the internal contraction
+    rotation of generally contracted bases (cc-pVXZ, ANO) in the exact
+    four-centre J/K builds: the SCF, its in-core ERI store, the Newton,
+    stability and response builds on the same geometry, and with
+    with_gradient=True the gradient's four-centre derivative integrals.
+    "auto" runs both stages, "rot1" the first only, "off" the unrotated
+    builds bit for bit; the spelling is exact (lowercase).
+    It changes energies at the screening-noise level (~1e-11 Ha), never the
+    AO basis; a basis with nothing to rotate (def2, Pople, STO-3G) is
+    unaffected. Same kwarg on run_uhf, run_rohf, run_dft, run_uks and
+    run_roks (not run_ksdft); any other value raises ValueError.
 
     with_gradient=True (default False) also returns the analytic nuclear
     gradient of the reported energy in result.gradient() (natoms x 3,
@@ -4474,6 +4570,7 @@ def run_rhf(
     eri: Literal["auto", "direct", "incore"] | None = None,
     relativistic: Literal["x2c1e"] | None = None,
     fock_hook_grad: None = None,
+    gc_rotation: Literal["auto", "rot1", "off"] | None = None,
 ) -> SymmetricRhfResult: ...
 def run_uhf(
     mol: Molecule,
@@ -4513,6 +4610,7 @@ def run_uhf(
     smeared_charges: list[tuple[float, float, float, float, float]] | None = None,
     solvent: float | str | None = None,
     pcm_lebedev_order: int | None = None,
+    gc_rotation: Literal["auto", "rot1", "off"] | None = None,
 ) -> UhfResult:
     """Unrestricted Hartree-Fock (open-shell). with_gradient=True: the
     analytic gradient in result.gradient() under run_rhf's rules (a
@@ -4601,6 +4699,7 @@ def run_rohf(
     cosx_final_pass: bool | None = None,
     cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
     cosx_overlap_fit: bool | None = None,
+    gc_rotation: Literal["auto", "rot1", "off"] | None = None,
 ) -> UhfResult:
     """Restricted Open-Shell Hartree-Fock. with_gradient=True: the analytic
     gradient in result.gradient() under run_rhf's rules (a fock_hook needs
@@ -4668,6 +4767,7 @@ def run_uks(
     mom_reference: Literal["previous", "initial"] | None = None,
     fock_hook: SpinFockHook | None = None,
     fock_hook_grad: SpinFockHookGrad | None = None,
+    gc_rotation: Literal["auto", "rot1", "off"] | None = None,
 ) -> UhfResult:
     """Unrestricted Kohn-Sham (open-shell DFT): solve_uhf with RhfConfig.xc set,
     the route the CLI takes for kind="ksdft" on an open-shell molecule.
@@ -4682,9 +4782,9 @@ def run_uks(
     The SCF settings are run_dft's: RI-J and RI-K through def2-universal-jkfit
     unless df_j_aux / df_k_aux say "" or "none" (exact), the production
     Becke-Lebedev grid unless grid_* say otherwise, run_rhf's convergence
-    defaults. Range-separated hybrids and meta-GGAs run (energy and gradient); for a
-    VV10 functional (wB97X-V) the gradient agrees with finite differences of the
-    energy to 6e-6 Ha/Bohr (NH2/6-31G), against ~1e-7 for the others.
+    defaults. Range-separated hybrids and meta-GGAs run (energy and gradient); the
+    gradient, VV10 (wB97X-V) included, agrees with finite differences of the
+    energy to ~2e-7 Ha/Bohr (NH2/6-31G).
     dm0 is a pair (D_alpha, D_beta) with run_uhf's checks; guess is
     "minao" (default) or "hcore". run_dft raises for multiplicity > 1.
 
@@ -4741,6 +4841,7 @@ def run_roks(
     guess_projection: str | None = None,
     fock_hook: SpinFockHook | None = None,
     fock_hook_grad: SpinFockHookGrad | None = None,
+    gc_rotation: Literal["auto", "rot1", "off"] | None = None,
 ) -> UhfResult:
     """Restricted open-shell Kohn-Sham: solve_rohf with RhfConfig.xc set, the
     route the CLI takes for kind="rohf" with [dft] functional.
@@ -5294,7 +5395,10 @@ class SaddleResult:
     @property
     def symbols(self) -> list[str]: ...
     @property
-    def coords(self) -> list[tuple[float, float, float]]: ...
+    def coords(self) -> list[tuple[float, float, float]]:
+        """Final-geometry coordinates in Angstrom, matching ``symbols``. Valid
+        to inspect even when ``converged`` is false."""
+        ...
     @property
     def imaginary_mode(self) -> list[float] | None:
         """The followed mode as a flat 3N Cartesian displacement vector.
@@ -5457,6 +5561,9 @@ def run_rimp2(
     with_gradient: bool = False,
     scf_eri: Literal["auto", "direct", "incore"] | None = None,
     lambda_boys: float | None = None,
+    save_reference: str | None = None,
+    read_reference: str | None = None,
+    read_reference_other_build: bool = False,
     mask_certificate: bool | None = None,
 ) -> RiMp2Result:
     """Resolution-of-identity (density-fitted) MP2. Exact by default.
@@ -5533,6 +5640,27 @@ def run_rimp2(
     every MP2-family entry point. Strict: an unknown mode, `jk_auxbasis` with
     "exact", or a `k_builder` the mode overrides raise ValueError. Echoed as
     `result.scf_jk` / `result.jk_auxbasis`.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` (`run_uhf` for an open-shell molecule) solves.
+    `local="amplitude-threshold"` refuses an ECP basis set: its localized virtual space
+    cannot count valence virtuals on ECP atoms.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    ``save_reference="ref.npz"`` writes the converged reference SCF to that
+    file (the CLI's ``[scf] save_reference`` checkpoint); ``read_reference``
+    reads one instead of solving it, so no SCF iteration runs and the
+    correlated stage gets the stored orbitals bit for bit (its energy is the
+    saving call's reference's, equal to a fresh call's at the same
+    thresholds, thread count, ERI route and build). ``run_rimp2``,
+    ``run_ccsd`` and ``run_ccsd_t`` share the files: a reference saved by
+    ``run_rimp2(scf_jk="exact")`` is read by ``run_ccsd``. A file is read
+    only when it is the reference this call would solve (molecule, basis,
+    spin, every SCF setting that moves its numbers, this build unless
+    ``read_reference_other_build=True``); anything else, a missing or
+    corrupted file included, raises ``InputError`` naming why, never a fresh
+    SCF. CLI and Python files are not interchangeable. Exact energy only:
+    with ``local=`` or ``with_gradient=True`` the two keys raise ValueError.
     """
     ...
 
@@ -5572,7 +5700,13 @@ def run_oo_rimp2(
     J/K at every orbital step on the reference's route, four-centre or RI-JK
     on `jk_auxbasis`, so the HF part of total_energy is the fitted one under
     "rijk". "rijcosx" raises ValueError (COSX exchange has no OO route).
-    with_gradient=True solves the reference with RI-J stored in f64."""
+    with_gradient=True solves the reference with RI-J stored in f64.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def run_mp3(
@@ -5586,7 +5720,13 @@ def run_mp3(
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
 ) -> Mp3Result:
-    """Spin-orbital MP3 via einsum."""
+    """Spin-orbital MP3 via einsum.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def run_opmp3(
@@ -5623,7 +5763,50 @@ def run_opmp3(
     and their defaults are those of ``run_rimp2(local=...)``
     (``fock_screen``, ``lambda_boys``, ``virtual_space`` and its
     thresholds); ``compute_reference=True`` also runs the canonical OP-MP3
-    into ``result.local["canonical"]``."""
+    into ``result.local["canonical"]``. The local run refuses an ECP basis set.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` / `run_rohf` (`run_dft` / `run_roks` for a functional reference)
+    solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
+    ...
+
+def run_omega_ri(
+    mol: Molecule,
+    basis_set: BasisSet,
+    auxbasis: BasisSet,
+    omega_bohr: float,
+    method: str = "rimp2",
+    frozen_core: int | None = None,
+    n_quad: int | None = None,
+    cdd_tol: float | None = None,
+    cdd_schwarz_thresh: float | None = None,
+    cdd_pair_thresh: float | None = None,
+    c_os: float | None = None,
+    memory_budget_gb: float | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+) -> OmegaRiResult:
+    """Correlation energy with the omega-RI fitting metric.
+
+    The three-index integrals are erfc(omega r)/r-attenuated and the fit uses
+    the metric V~^-1 V V~^-1 (Glasbrenner, Graf, Ochsenfeld, JCTC 16, 6856
+    (2020); Luenser, Schurkus, Ochsenfeld, JCTC 13, 1647 (2017)).
+    ``omega_bohr`` is in Bohr^-1 (the papers recommend 0.1); 0 is the
+    Coulomb fit. The algebra is dense: the fit changes the energy, not the
+    cost.
+
+    ``method``: ``"rimp2"`` (canonical RI-MP2), ``"cdd-mp2"`` /
+    ``"cdd-sos-mp2"`` (Laplace MP2 / SOS-MP2 in pivoted-Cholesky pseudo-MOs;
+    ``n_quad`` in {3, 5, 7}, default 7; ``cdd_tol`` default 0 keeps every
+    pseudo-MO; ``cdd_schwarz_thresh`` / ``cdd_pair_thresh`` are the paper's
+    exchange screens, default 0 = none; ``c_os`` default 1.3), or ``"rpa"``
+    (full-rank PDEP-RPA, closed shell or UHF). A key the chosen method does
+    not read raises ``ValueError``. The MP2 methods are closed-shell only.
+    """
     ...
 
 def run_laplace_mp2(
@@ -5641,7 +5824,13 @@ def run_laplace_mp2(
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
 ) -> LaplaceMp2Result:
-    """Laplace-transform RI-MP2."""
+    """Laplace-transform RI-MP2.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def run_laplace_sos_mp2(
@@ -5662,7 +5851,13 @@ def run_laplace_sos_mp2(
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
 ) -> SosMp2Result:
-    """Laplace-transform SOS-MP2: E = c_os * E_OS."""
+    """Laplace-transform SOS-MP2: E = c_os * E_OS.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def run_attenuated_rimp2(
@@ -5684,7 +5879,13 @@ def run_attenuated_rimp2(
 
     RHF reference for a singlet; UHF reference + unrestricted RI-MP2 for
     multiplicity > 1 (`result.reference` says which; e_os = E_ab,
-    e_ss = E_aa + E_bb)."""
+    e_ss = E_aa + E_bb).
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` (`run_uhf` for an open-shell molecule) solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def run_terfc_rimp2(
@@ -5710,6 +5911,11 @@ def run_terfc_rimp2(
     ``r0`` omitted: the S66-trained basis-aware default (aug-cc-pVTZ 1.35, aug-cc-pVDZ 1.05;
     Goldey & Head-Gordon, Chem. Phys. Lett. 608, 249 (2014)); ValueError for an
     untabulated basis. An explicit ``r0`` always wins.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` (`run_uhf` for an open-shell molecule) solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
     """
     ...
 
@@ -5732,7 +5938,13 @@ def run_scs_mp2(
     """Spin-component-scaled MP2.
 
     RHF reference for a singlet; UHF reference for multiplicity > 1, with
-    e_os = E_ab and e_ss = E_aa + E_bb (`result.reference` says which)."""
+    e_os = E_ab and e_ss = E_aa + E_bb (`result.reference` says which).
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` (`run_uhf` for an open-shell molecule) solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def run_scs_mp2_2terfc(
@@ -5760,6 +5972,11 @@ def run_scs_mp2_2terfc(
 
     The defaults (r0 0.75/1.05, c_os 1.27, c_ss 4.05) are the aug-cc-pVTZ fit; any
     other basis needs explicit ``r0_bonded`` and ``r0_nonbonded`` (ValueError otherwise).
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` (`run_uhf` for an open-shell molecule) solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
     """
     ...
 
@@ -5783,7 +6000,13 @@ def run_mp2_v(
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
 ) -> Mp2VResult:
-    """MP2-V: attenuated MP2 + Eq-11-damped VV10. r0 in Angstrom, omega in Angstrom^-1."""
+    """MP2-V: attenuated MP2 + Eq-11-damped VV10. r0 in Angstrom, omega in Angstrom^-1.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def run_mp2_v_scan(
@@ -5812,7 +6035,13 @@ def run_mp2_v_scan(
     att_mp2_corr, e_os, e_ss, vv10_e_nl: [per b], certificate}]}`; `total(arm, k) =
     rhf_energy + att_mp2_corr + vv10_e_nl[k]`. Each arm's `certificate` is the
     `run_mp2_v` certificate of that arm's config (one covers its `b` list).
-    Closed shell, terfc only."""
+    Closed shell, terfc only.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def run_vv10_variants(
@@ -5832,7 +6061,11 @@ def run_vv10_variants(
     """EXPERIMENTAL (research harness). Post-HF VV10 E_nl (Ha) for alternative
     short-range weights: each spec is `(kind, r0_angstrom, r0_times_omega_or_None,
     power)` with kind "none" (bare VV10), "eq11" (1 - terfc^2) or "terf" (terf^power,
-    terf = 1 - terfc). No MP2 is run. Closed shell."""
+    terf = 1 - terfc). No MP2 is run. Closed shell.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` solves.
+    """
     ...
 
 def run_rs_mp2_rpa(
@@ -5872,6 +6105,11 @@ def run_rs_mp2_rpa(
     separate single-omega call). `omega` as a list with attenuator="terf", or
     `terf_omega` as a list with "erf", is a ValueError; empty lists and
     repeated formulations are ValueErrors. Scalars return one result.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` (`run_uhf` for an open-shell molecule) solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
     """
     ...
 
@@ -5921,6 +6159,7 @@ def run_dft(
     stability_descent: bool | None = None,
     aurora: bool | None = None,
     trah_trigger: float | None = None,
+    gc_rotation: Literal["auto", "rot1", "off"] | None = None,
 ) -> DftResult:
     """Kohn-Sham DFT (closed-shell). fock_hook: as for run_rhf; with a
     hook every convergence-ladder rung runs with the hook applied and SOSCF
@@ -6047,7 +6286,7 @@ def run_dft(
     basis_set: BasisSet,
     functional: str | None = None,
     k_builder: str | None = None,
-    with_gradient: bool = False,
+    with_gradient: Literal[False] = False,
     max_iter: int | None = None,
     energy_conv: float | None = None,
     density_conv: float | None = None,
@@ -6056,7 +6295,7 @@ def run_dft(
     point_charges: list[tuple[float, float, float, float]] | None = None,
     external_field: tuple[float, float, float] | None = None,
     memory_budget_gb: float | None = None,
-    dispersion: str | None = None,
+    dispersion: None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
     ri_k_precision: str | None = None,
@@ -6088,6 +6327,7 @@ def run_dft(
     stability_descent: bool | None = None,
     aurora: bool | None = None,
     trah_trigger: float | None = None,
+    gc_rotation: Literal["auto", "rot1", "off"] | None = None,
 ) -> SymmetricRhfResult:
     """Point-group-blocked closed-shell RKS (see the ``symmetry=True``
     paragraph of the DftResult overload). Same density-fitting defaults:
@@ -6176,6 +6416,7 @@ def run_dft(
     stability_descent: bool | None = None,
     aurora: bool | None = None,
     trah_trigger: float | None = None,
+    gc_rotation: Literal["auto", "rot1", "off"] | None = None,
 ) -> DftResult | SymmetricRhfResult: ...
 def dft_grid_point_count(
     mol: Molecule,
@@ -6255,7 +6496,7 @@ def run_ksdft(
     basis_set: BasisSet,
     functional: str | None = None,
     k_builder: str | None = None,
-    with_gradient: bool = False,
+    with_gradient: Literal[False] = False,
     max_iter: int | None = None,
     energy_conv: float | None = None,
     density_conv: float | None = None,
@@ -6264,7 +6505,7 @@ def run_ksdft(
     point_charges: list[tuple[float, float, float, float]] | None = None,
     external_field: tuple[float, float, float] | None = None,
     memory_budget_gb: float | None = None,
-    dispersion: str | None = None,
+    dispersion: None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
     ri_k_precision: str | None = None,
@@ -6402,7 +6643,13 @@ def run_ccd(
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
 ) -> CcResult:
-    """Coupled-cluster doubles (CCD)."""
+    """Coupled-cluster doubles (CCD).
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def run_ccsd(
@@ -6416,6 +6663,9 @@ def run_ccsd(
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
+    save_reference: str | None = None,
+    read_reference: str | None = None,
+    read_reference_other_build: bool = False,
 ) -> CcResult:
     """Coupled-cluster singles and doubles (CCSD).
 
@@ -6433,6 +6683,24 @@ def run_ccsd(
     1.3-1.5x slower per iteration). The route taken is on
     ``CcResult.ladder_route``. Any other value raises ValueError. An
     open-shell molecule accepts ``ladder="auto"`` only.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` (`run_uhf` for an open-shell molecule) solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    ``save_reference="ref.npz"`` writes the converged reference SCF to that
+    file (the CLI's ``[scf] save_reference`` checkpoint); ``read_reference``
+    reads one instead of solving it, so no SCF iteration runs and the
+    correlated stage gets the stored orbitals bit for bit (its energy is the
+    saving call's reference's, equal to a fresh call's at the same
+    thresholds, thread count, ERI route and build). ``run_rimp2``,
+    ``run_ccsd`` and ``run_ccsd_t`` share the files: a reference saved by
+    ``run_rimp2(scf_jk="exact")`` is read by ``run_ccsd``. A file is read
+    only when it is the reference this call would solve (molecule, basis,
+    spin, every SCF setting that moves its numbers, this build unless
+    ``read_reference_other_build=True``); anything else, a missing or
+    corrupted file included, raises ``InputError`` naming why, never a fresh
+    SCF. CLI and Python files are not interchangeable.
     """
     ...
 
@@ -6462,6 +6730,11 @@ def run_eom_ccsd(
     ``run_ccsd``; the EOM products take the dense nv^4 ladder when its memory
     plan fits and an RI-panel one otherwise. No left vectors, so no
     oscillator strengths.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
     """
     ...
 
@@ -6476,6 +6749,9 @@ def run_ccsd_t(
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
+    save_reference: str | None = None,
+    read_reference: str | None = None,
+    read_reference_other_build: bool = False,
 ) -> CcResult:
     """CCSD(T): CCSD plus perturbative triples correction.
 
@@ -6492,6 +6768,24 @@ def run_ccsd_t(
     1.3-1.5x slower per iteration). The route taken is on
     ``CcResult.ladder_route``. Any other value raises ValueError. An
     open-shell molecule accepts ``ladder="auto"`` only.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` (`run_uhf` for an open-shell molecule) solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    ``save_reference="ref.npz"`` writes the converged reference SCF to that
+    file (the CLI's ``[scf] save_reference`` checkpoint); ``read_reference``
+    reads one instead of solving it, so no SCF iteration runs and the
+    correlated stage gets the stored orbitals bit for bit (its energy is the
+    saving call's reference's, equal to a fresh call's at the same
+    thresholds, thread count, ERI route and build). ``run_rimp2``,
+    ``run_ccsd`` and ``run_ccsd_t`` share the files: a reference saved by
+    ``run_rimp2(scf_jk="exact")`` is read by ``run_ccsd``. A file is read
+    only when it is the reference this call would solve (molecule, basis,
+    spin, every SCF setting that moves its numbers, this build unless
+    ``read_reference_other_build=True``); anything else, a missing or
+    corrupted file included, raises ``InputError`` naming why, never a fresh
+    SCF. CLI and Python files are not interchangeable.
     """
     ...
 
@@ -6585,6 +6879,11 @@ def run_pdep_rpa(
     a nonzero trunc_thresh, chi0_sparsity other than "dense", k_builder="cosx",
     df_j_aux / df_k_aux, point_charges / external_field / solvent, properties /
     export_npz / compute_* / export_eigpot_*, and run_diagnostics.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
     """
     ...
 
@@ -6619,6 +6918,11 @@ def run_gw(
     RPA energy paths use 20), trunc_thresh = 1e-4, ev_conv_thresh = 1e-4 Ha.
     Calibrated against the validated settings (n_quad = 100, trunc_thresh = 0):
     HOMO/LUMO within 10 meV (G0W0@PBE worst 5.7 meV; @HF starts < 0.1 meV).
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` (`run_dft` with `xc`) solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
     """
     ...
 
@@ -6651,6 +6955,11 @@ def run_u_gw(
     """Open-shell U-G0W0/U-COHSEX/U-evGW0/U-evGW on a UHF/ROHF reference.
 
     Same defaults as run_gw (n_quad = 40, trunc_thresh = 1e-4).
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_uhf` / `run_rohf` (`run_uks` / `run_roks` with `xc`) solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
     """
     ...
 
@@ -6671,7 +6980,13 @@ def run_bse_tda(
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
 ) -> BseResult:
-    """BSE-TDA singlet excitation energies on a closed-shell RHF reference."""
+    """BSE-TDA singlet excitation energies on a closed-shell RHF reference.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def run_tdhf_static_polarizability(
@@ -6699,6 +7014,11 @@ def run_tdhf_static_polarizability(
     Not validated: water/cc-pVDZ/PBE at scissor=0.36 gives 5.20 a.u. vs DOSD
     9.64 (46% low). At the default scissor=0.0 the kernel is often unstable
     and the call raises on a negative alpha diagonal; use scissor ~0.3-0.4 Ha.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_dft` solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
     """
     ...
 
@@ -6763,7 +7083,11 @@ def run_tddft(
     alpha/beta problem for every functional class above, including
     meta-GGAs and hybrid meta-GGAs, reports <S^2> per root in
     TddftResult.s2, and refuses spin="triplet" with a ValueError. ROHF/ROKS
-    references are not offered."""
+    references are not offered.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` / `run_uhf` (`run_dft` / `run_uks` with `functional`) solves.
+    """
     ...
 
 def run_double_hybrid(
@@ -6794,7 +7118,13 @@ def run_double_hybrid(
     The reference is a UKS when ``mol.multiplicity > 1`` or ``unrestricted``
     is True (a singlet UKS equals the RKS route); the PT2 term then uses the
     unrestricted RI-MP2 spin components: E_OS = alpha-beta, E_SS =
-    alpha-alpha + beta-beta."""
+    alpha-alpha + beta-beta.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_dft` (`run_uks` for the unrestricted route) solves.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def run_drpa(
@@ -6823,6 +7153,11 @@ def run_drpa(
     or the local model dict, and "certificate": the validation certificate
     dict (capability "drpa"; schema of ``RhfResult.certificate``; a finite eps
     or an unconverged fixed point is not graded).
+
+    An ECP basis set is refused: the amplitude solver's localized virtual space cannot
+    count valence virtuals on ECP atoms.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
     """
     ...
 
@@ -6843,7 +7178,13 @@ def run_drpa_scan(
 ) -> list[dict[str, object]]:
     """The LOCAL (amplitude-threshold) dRPA over a list of eps values, one
     SCF and one localized assembly. Each dict carries "local" and the
-    "certificate" `run_drpa(local=..., eps=...)` returns at that point."""
+    "certificate" `run_drpa(local=..., eps=...)` returns at that point.
+
+    An ECP basis set is refused: the amplitude solver's localized virtual space cannot
+    count valence virtuals on ECP atoms.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def run_linlccd(
@@ -6865,7 +7206,15 @@ def run_linlccd(
     "drivers-only" or "full". Exact by default; local="amplitude-threshold"
     with eps (required) runs the local approximation (compute_reference adds
     the exact energy as local["e_corr_exact"]). The dict carries "local" and
-    "certificate" (capability "linlccd"; schema of ``RhfResult.certificate``)."""
+    "certificate" (capability "linlccd"; schema of ``RhfResult.certificate``).
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_rhf` solves.
+    `local="amplitude-threshold"` refuses an ECP basis set: its localized virtual space
+    cannot count valence virtuals on ECP atoms.
+    `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+    removed its core.
+    """
     ...
 
 def tune_omega(
@@ -6890,6 +7239,9 @@ def tune_omega(
     omega whose cation is an internal saddle raises RuntimeError. Functionals
     without an orbital-Hessian kernel (VV10) are reported
     "not_analysed", never stable. False reproduces earlier results bit for bit.
+
+    With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+    the one `run_dft` for the neutral molecule and `run_uks` for the cation solves.
     """
     ...
 
@@ -7143,7 +7495,11 @@ def response_modes(
     """Leading n_modes eigenmodes of the closed-shell RPA dielectric built on
     `result` (RHF or RKS, run in `basis_set`), by a dense eigensolve in the
     `auxbasis` (e.g. "cc-pvdz-ri"). omega is an imaginary frequency in Hartree.
-    The static modes are the PDEP eigenpotentials of run_pdep_rpa."""
+    The static modes are the PDEP eigenpotentials of run_pdep_rpa.
+
+    With an ECP basis set the occupied count is the valence one, as in a `result` from
+    `run_rhf` / `run_dft` on that basis.
+    """
     ...
 
 def write_response_mode_cube(

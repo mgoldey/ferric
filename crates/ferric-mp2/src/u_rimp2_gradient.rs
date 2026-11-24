@@ -931,11 +931,7 @@ pub fn total_u_rimp2_gradient_on(
     scf_jk: &ScfJk,
     warm: &mut ScfWarmStart,
 ) -> Result<(f64, Array2<f64>), FerricError> {
-    let rhf_cfg = RhfConfig {
-        density_conv: 1e-9,
-        external_potential: ext.cloned(),
-        ..Default::default()
-    };
+    let rhf_cfg = RhfConfig::gradient_reference(ext.cloned());
     total_u_rimp2_gradient_with(
         mol, obs_basis, aux_basis, op, mp2_config, ext, scf_jk, warm, rhf_cfg,
     )
@@ -1103,16 +1099,13 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let mut cfg = RhfConfig {
-            density_conv: 1e-11,
-            ..Default::default()
-        }
-        .for_geometry_task();
+        let mut cfg = RhfConfig::default()
+            .with_density_conv(1e-11)
+            .for_geometry_task();
         if let Some(aux) = route {
             ScfJk {
                 mode: ScfJkMode::RiJk,
                 aux: Some(aux.to_string()),
-                k_builder: None,
             }
             .apply(&mut cfg);
         }
@@ -1196,10 +1189,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                density_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_density_conv(1e-10),
         )
         .unwrap();
         let uhf = lift_to_unrestricted(&rhf);

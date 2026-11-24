@@ -185,10 +185,7 @@ fn run_case_diag(case: &Case) -> Option<(f64, f64, f64, f64, CationDiag)> {
     let bounds_c = SchwarzBounds::compute(op, &obs_c).ok()?;
 
     let rhf_cfg = RhfConfig::default();
-    let uhf_cfg = UhfConfig {
-        max_iter: 200,
-        ..Default::default()
-    };
+    let uhf_cfg = UhfConfig::default().with_max_iter(200);
 
     // Neutral RHF + RPA
     let rhf_n = solve_rhf(&ctx, &neutral, &obs_n, op, &bounds_n, &rhf_cfg).ok()?;
@@ -233,10 +230,7 @@ fn run_case_diag(case: &Case) -> Option<(f64, f64, f64, f64, CationDiag)> {
                 match solve_uhf(&ctx, &cation, &obs_c, &bounds_c, &uhf_cfg) {
                     Ok(r) => (r, "UHF(hcore)"),
                     Err(_) => {
-                        let rohf_cfg = RohfConfig {
-                            max_iter: 200,
-                            ..Default::default()
-                        };
+                        let rohf_cfg = RohfConfig::default().with_max_iter(200);
                         let r = solve_rohf(&ctx, &cation, &obs_c, op, &bounds_c, &rohf_cfg).ok()?;
                         (r, "ROHF")
                     }

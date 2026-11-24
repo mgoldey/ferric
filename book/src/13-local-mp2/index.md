@@ -15,24 +15,44 @@ and every local run prints its truncation.
 
 | Section | Topic | Registry id | Status |
 |---|---|---|---|
-| 13.1 | Amplitude-threshold local MP2 | `local-mp2` (gap) | edit |
-| 13.2 | The integral-direct path | none | gap |
-| 13.3 | Pair natural orbitals and DLPNO-MP2 | none | gap |
-| 13.4 | Amplitude-threshold local OP-MP3 | `local-opmp3` | gap |
-| 13.5 | The mask certificate | `local-mp2` | edit |
+| @sec:amplitude-lmp2 | Amplitude-threshold local MP2 | `local-mp2` | ready |
+| @sec:integral-direct | The integral-direct path | `local-mp2` | ready |
+| @sec:pno-dlpno | Pair natural orbitals and DLPNO-MP2 | none (library only) | ready |
+| @sec:local-opmp3 | Amplitude-threshold local OP-MP3 | `local-opmp3` | ready |
+| @sec:amplitude-lmp2-combined-truncation | Combining the screen, the embedding and λ-Boys orbitals | `local-mp2` | ready |
+| @sec:lmp2-mask-certificate | The mask certificate | `local-mp2` | edit |
 
 Sections @sec:amplitude-lmp2 and @sec:integral-direct are the production local method
 (`[local] scheme = "amplitude-threshold"`). It keeps an amplitude when the
-integral that drives it exceeds one threshold $\varepsilon$; 13.2 builds the
-same problem without ever forming the global three-index tensor. Section
-@sec:pno-dlpno is a library path with a different truncation, by pair energy and by
-pair natural-orbital occupation. The two families are not compared like for
-like: the validation page reports their recoveries side by side and never
-ranks them.
+integral that drives it exceeds one threshold $\varepsilon$; section
+@sec:integral-direct builds the same problem without ever forming the global
+three-index tensor. Section @sec:pno-dlpno is a library path with a different
+truncation, by pair energy and by pair natural-orbital occupation. The two
+families are not compared like for like: the validation page
+(`site/src/reference/validation.md`, rows "Local RI-MP2" and "DLPNO-MP2")
+reports their recoveries side by side and never ranks them. Section
+@sec:local-opmp3 reuses the kept set and the solver of section
+@sec:amplitude-lmp2 for the two amplitude orders of OP-MP3 (section
+@sec:opmp3), a different method on the same truncation. Section
+@sec:amplitude-lmp2-combined-truncation proves what the Fock-propagated
+screen, a block embedding and λ-Boys orbitals would each do to the energy
+error of a combined scheme that no production code implements.
 
 Section @sec:lmp2-mask-certificate bounds, for one run, the energy the
 amplitude mask of 13.1 loses, from the residual of the masked solve.
 
 Every truncation in this chapter has a trivial limit in which it removes
-nothing, and there the method reproduces the exact RI-MP2 energy. The
-committed tests assert those limits before any truncated number is quoted.
+nothing, and there the method reproduces the exact canonical energy of the
+same method: RI-MP2 for sections @sec:amplitude-lmp2 to @sec:pno-dlpno,
+OP-MP3 for section @sec:local-opmp3. The committed tests assert those limits
+before any truncated number is quoted.
+
+Several symbols carry more than one meaning across the chapter:
+
+| Symbol | Meaning |
+|---|---|
+| $\varepsilon$ | the amplitude threshold. Orbital energies are $\epsilon$ |
+| $\kappa$ | the Fock-screen constant (section @sec:amplitude-lmp2-fock-screen) and the candidate-screen constant `virt_schwarz_kappa` (section @sec:integral-direct). The λ-Boys rotation generator is $\eta$ |
+| $\mathcal S$ | the swap $t^{ab}_{ij} \leftrightarrow t^{ba}_{ij}$. Plain $S$ is the AO overlap, or a Schur complement where a section says so |
+| $\mathcal W$, $G$ | the exchange weight $2 - \mathcal S$; section @sec:local-opmp3 writes it $G$ |
+| $P$ | an auxiliary index, or a projector onto kept amplitudes or PNOs where a section defines it |

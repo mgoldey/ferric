@@ -40,8 +40,6 @@
 //! The pool is process-global, so these tests serialize on a lock and clear
 //! the slot on entry and exit.
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
 use ferric_core::memory::pool::{clear_global, install_global, MemoryPool};
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
@@ -52,34 +50,7 @@ use ferric_mp2::u_rimp2::u_ri_mp2;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::{solve_uhf, UhfConfig};
-
-fn global_lock() -> MutexGuard<'static, ()> {
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    }
-}
-
-/// Clear the process-global pool on entry AND exit so one test's pool can
-/// never leak into another's "unbudgeted" assertions. This is the guard
-/// `e9949eed` had to add on the integrals path after a 100 kB pool one test
-/// installed refused eight sibling tests that never asked for it.
-struct CleanSlot(#[allow(dead_code)] MutexGuard<'static, ()>);
-
-impl CleanSlot {
-    fn acquire() -> Self {
-        let g = global_lock();
-        clear_global();
-        Self(g)
-    }
-}
-
-impl Drop for CleanSlot {
-    fn drop(&mut self) {
-        clear_global();
-    }
-}
+use ferric_testkit::pool::CleanSlot;
 
 /// Closed-shell RI-MP2 on water/6-31G, returning (E_corr, E_total).
 fn run_rimp2() -> (f64, f64) {

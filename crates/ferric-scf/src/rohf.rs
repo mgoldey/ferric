@@ -788,6 +788,9 @@ fn solve_rohf_impl(
 ) -> Result<ScfResult, FerricError> {
     crate::mom::check_reference(config, "ROHF", false)?;
     crate::incore_jk::begin_scf(bounds);
+    // The response, Newton and stability builds on these bounds follow the
+    // SCF's contraction rotation (`direct_jk::gc_rotation::GcSlot`).
+    bounds.gc.set_request(config.gc_rotation);
 
     // Split the injection: (S, h, V_nn) go to the shared env builder, the J/K
     // (and XC) builders are driven in the loop.
@@ -1201,17 +1204,18 @@ fn rohf_pluggable_k<'a>(
     (need_k, omega): (bool, f64),
 ) -> Result<Option<Box<dyn KBuilder + 'a>>, FerricError> {
     let pluggable_k_kind = crate::fock_assembly::resolve_k_builder(
-        config.k_builder.as_deref(),
+        config.k_builder,
         df_j,
         k_df_routed,
         df_k,
         need_k,
         omega,
-    )?;
+    );
     let pluggable_k_kind =
         crate::fock_assembly::narrow_k_builder_to_supported(pluggable_k_kind, need_k, omega);
     crate::cosx_schedule::refuse(pluggable_k_kind, &config.cosx, "ROHF/ROKS")?;
-    if pluggable_k_kind == Some(crate::options::COSX_K_BUILDER) && config.cosx.final_grid.is_some()
+    if pluggable_k_kind == Some(crate::options::KBuilderKind::Cosx)
+        && config.cosx.final_grid.is_some()
     {
         // The COSX final-grid pass is implemented for RHF/RKS and UHF/UKS
         // only. An explicit request is refused; the default one is skipped,
@@ -1879,10 +1883,9 @@ impl RohfState {
         let mut f_new = self.diis.step(&m.f_eff, &m.err);
         phases.stop(extrapolate_t);
         if inp.effective_level_shift > 0.0 && iter > 1 {
-            const SHIFT_DAMP_ERR: f64 = 1e-3;
-            let damp = err_max / (err_max + SHIFT_DAMP_ERR);
-            let shift_eff = inp.effective_level_shift * damp;
-            if shift_eff > 1e-10 {
+            let shift_eff =
+                crate::driver::open_shell_level_shift_ramp(inp.effective_level_shift, err_max);
+            if shift_eff > 0.0 {
                 let c = &self.c;
                 let shift_term: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || {
                     crate::blas_probe::record(&crate::blas_probe::ROHF_LEVEL_SHIFT);
@@ -2186,6 +2189,9 @@ fn rohf_guess_mos(
     let d_b = &d_total * (nocc_b as f64 / nelec as f64);
 
     // F_σ = h + J[D_α + D_β] − K[D_σ], matching this file's own assembly.
+    // Unrotated builds (`SchwarzBounds::unrotated`): the guess does not
+    // follow the SCF's contraction rotation.
+    let bounds = &bounds.unrotated();
     let mut j = Array2::<f64>::zeros((n, n));
     let mut k_scratch = Array2::<f64>::zeros((n, n));
     if let Err(e) = crate::rhf::build_jk(

@@ -43,15 +43,13 @@ pub fn has_deriv2() -> bool {
 }
 
 pub fn config(ext: Option<&ExternalPotential>) -> RhfConfig {
-    RhfConfig {
-        max_iter: 300,
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        external_potential: ext.cloned(),
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(300)
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10)
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new())
+        .with_external_potential(ext.cloned())
 }
 
 pub fn ecp_mol(xyz: &str, charge: i32, mult: usize, bs: &BasisSet) -> Molecule {

@@ -133,11 +133,13 @@ A red proof stops the job at step 2, before the book is built. A box whose
 script is not in the runner's case list fails at step 3.
 
 **Slow proofs.** The runner marks scripts with a runtime budget at or
-above its slow threshold (600 s on `docs/derivations-backfill`) as
-`validation`, the weekly tier. Pull requests run the fast tier. The job that
-publishes the book runs every proof, fast and slow, in the same job before it
-deploys. Publishing therefore never rests on a weekly result from another
-commit.
+above its slow threshold (`SLOW_S`, 600 s) as `validation`. Pull requests and
+tag pushes run the fast tier only. The nightly schedule and
+`workflow_dispatch` also run the slow tier, in the `slow-proofs` job: one job
+per slow script (`scripts/select_proofs.py --slow` lists them), each running
+the script and its mutations with `pytest -m validation`. No other workflow
+runs the slow tier, so a slow proof that breaks is caught by the next nightly
+run, not by the pull request.
 
 **PDF.** A separate job on release tags runs steps 1 to 3, then pandoc. It
 refuses boxes marked `runner_state=pending-merge` and enforces the ceiling on
@@ -154,11 +156,20 @@ is already visible in the repository.
    it (`fn`, `struct`, `enum`, `trait`, `const`, `static` or `type`), or in a
    submodule directory of the same name. The build resolves the line and
    links to it at the build commit. Reason: a line reference drifts with every
-   edit to the file it points into.
-2. **Code excerpts must match the source.** A fenced Rust block preceded by
-   `<!-- excerpt: file.rs::item -->` must occur, with whitespace normalized,
-   inside that item. A change to a kernel then fails the book until the
-   excerpt and the text around it are reread.
+   edit to the file it points into. A `file.rs:123` pin into the repository
+   (any `crates/`, `scripts/` or `site/` file) is an error; a line inside a
+   function that has to be shown is quoted in a marked excerpt instead.
+   Documents outside the repository that do not change, such as the
+   dissertation text, may still be cited by line.
+2. **Code excerpts must match the source.** A fenced block preceded by
+   `<!-- excerpt: file.rs::item -->` (Rust) or
+   `<!-- excerpt: scripts/x.py::function -->` (Python) must occur inside that
+   item. Comments are removed on both sides before the comparison and
+   whitespace is normalized, so an excerpt carries the per-line comments that
+   STYLE.md asks for. A `// ...` line (`# ...` in Python) marks a gap: the
+   pieces between gaps must each occur, in order. Any other omission has to be
+   marked with a gap line, or the check fails. A change to a kernel then fails
+   the book until the excerpt and the text around it are reread.
 3. **Sections name their registry ids.** A section header comment lists the
    registry method ids it covers and its status. The checker fails when a
    `ready` section covers an id that the registry lists under `gaps`, when a
@@ -254,6 +265,27 @@ Conventions the checker enforces:
 
 CI is `.github/workflows/book.yml`. Not yet implemented: the box links to source lines in the HTML,
 the quoted-number check (rule 5) and the `check_doc_style.py` report.
+
+On a pull request the job runs only the proofs the change can affect. `scripts/select_proofs.py`
+reads the changed files and prints `all`, `none` or a list of proof scripts, and the runner
+reads that list from `FERRIC_PROOF_SCRIPTS`:
+
+- `all` when a runner (`test_derivation_*.py`, `test_book_build.py`), `book_build.py`, the
+  selector, `book.yml`, the registry's shape, or any other file under `scripts/` or
+  `testdata/derivations/` changed, or when the selector cannot tell.
+- The changed proof scripts, plus the scripts of each registry entry that changed, plus each
+  script that names a changed file it reads (a Rust source or a reference JSON).
+- `none` for book prose and `crates/*/theory.md`. The step then logs "no proof inputs changed".
+
+The registry test, the checker's tests and the selector's tests run every time; together they take
+about 15 s. The nightly schedule (07:23 UTC), tag pushes and `workflow_dispatch` run every proof
+of the runner's fast tier in the `html` job. The `validation` (slow) tier is deselected there by
+`addopts` in `pyproject.toml`. The nightly schedule and `workflow_dispatch` run it in the separate
+`slow-proofs` job, one matrix job per slow script, so the longest script sets the wall time
+(`uks_xc_hessian_sympy.py`: the script and two mutations at a 1800 s budget, about 90 min; the
+job's timeout is 240 min). Pull requests and tags never run it. To run one script's proofs locally:
+`FERRIC_PROOF_SCRIPTS=omega_ri_sympy.py python3 -m pytest --noconftest crates/ferric-python/tests/test_derivation_scripts.py`
+(add `-m validation` for a slow-tier script).
 
 Appendices live beside `SUMMARY.md` as `book/src/appendix-X-name.md`. A (verified equations and
 proof scripts), B (functions cited) and C (validation grades) are generated and committed; D is

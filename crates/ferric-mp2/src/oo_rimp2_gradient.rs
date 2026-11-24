@@ -71,7 +71,32 @@ use ferric_integrals::threeindex;
 use ferric_scf::gradient::{ecp_gradient, oneelectron_gradient, overlap_deriv_contract};
 use ferric_scf::response_jk::ResponseJk;
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::PreparedAux;
 use ndarray::Array2;
+
+/// [`oo_ri_mp2_gradient`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// the optimised orbitals of `result` (`mos`, `orbital_energies`) are
+/// checked against that system first
+/// ([`ferric_scf::PreparedSystem::check_closed_shell_orbitals`]).
+pub fn oo_ri_mp2_gradient_on(
+    aux: &PreparedAux<'_>,
+    result: &OoRiMp2Result,
+    frozen_core: usize,
+    ext: Option<&ExternalPotential>,
+) -> Result<Array2<f64>, FerricError> {
+    let sys = aux.system();
+    sys.check_closed_shell_orbitals(&result.mos, &result.orbital_energies)?;
+    oo_ri_mp2_gradient(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        sys.bounds(),
+        result,
+        frozen_core,
+        ext,
+    )
+}
 
 /// Compute the analytical nuclear gradient for OO-RI-MP2.
 ///
@@ -86,6 +111,7 @@ use ndarray::Array2;
 /// here to [`REUSE_TOL`]; otherwise they are built.
 ///
 /// With `FERRIC_TIMING` set, prints a phase table ("OO-RI-MP2 gradient").
+#[allow(clippy::too_many_arguments)]
 pub fn oo_ri_mp2_gradient(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -466,12 +492,13 @@ mod tests {
             obs,
             op,
             bounds,
-            &RhfConfig {
-                energy_conv: 1e-11,
-                density_conv: 1e-10,
-                df_j_aux: jk_aux.map(str::to_string),
-                df_k_aux: jk_aux.map(str::to_string),
-                ..Default::default()
+            &{
+                let mut c = RhfConfig::default()
+                    .with_energy_conv(1e-11)
+                    .with_density_conv(1e-10);
+                c.df_j_aux = jk_aux.map(str::to_string);
+                c.df_k_aux = jk_aux.map(str::to_string);
+                c
             }
             .for_geometry_task(),
         )
@@ -559,11 +586,9 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-11,
-                density_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default()
+                .with_energy_conv(1e-11)
+                .with_density_conv(1e-10),
         )
         .unwrap();
         let oo = oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &rhf, &oo_config, None).unwrap();
@@ -617,11 +642,9 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-11,
-                density_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default()
+                .with_energy_conv(1e-11)
+                .with_density_conv(1e-10),
         )
         .unwrap();
         let oo = oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &rhf, &oo_config, None).unwrap();

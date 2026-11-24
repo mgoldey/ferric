@@ -32,7 +32,7 @@ frozen-amplitude C6 on a model with the SCF re-solved at every field.
 |---|---|
 | Rust, analytic | `ferric-mp2/src/cpks_polar.rs::{mp2_polarizability_analytic,analytic_alpha_relaxed}` |
 | Rust, finite field | `ferric-mp2/src/ff_polar.rs::mp2_polarizability_static` |
-| CLI, Python | none |
+| CLI, Python | none; the callers are the Rust tests of the anchors below |
 
 ## The relaxed dipole {#mp2-polarizability-relaxed-dipole}
 
@@ -74,24 +74,17 @@ takes $P$ one-sided: it adds $P_{ij}$, not $P_{ij} + P_{ji}$. It gives this
 density only when it is passed $P + P^{\mathsf T}$. The finite-field driver
 has a second density mode, `ferric-mp2/src/ff_polar.rs::DensityMode`:
 `Relaxed` (the default) is the density above, and `Unrelaxed` passes
-$z = 0$. The unrelaxed density has no Z-vector, so it has none of the
-near-singular response of a symmetric molecule under a field along a
-symmetry axis (NH3, CO2, N2), where the smallest response eigenvalue is
-proportional to the field and $z \sim 1/F$. Its $\alpha$ differs from the
-relaxed one by a few percent, the usual relaxed/unrelaxed MP2 difference.
+$z = 0$. The mode exists because the finite-field relaxed dipole of NH3,
+CO2 and N2 was not smooth in a field along the symmetry axis; the doc
+comment of `ff_polar.rs` attributes this to a response eigenvalue that
+shrinks with the field, which has not been shown. The analytic route below
+does not re-solve the SCF in a field and has no such problem. The
+unrelaxed $\alpha$ differs from the relaxed one by the usual
+relaxed/unrelaxed MP2 difference; no number for it is recorded here.
 
-> **Verified equation @eq:mp2-polar-relaxed-dipole** · the relaxed dipole is the field derivative
->
-> For $h \to h + \lambda R$, $dE/d\lambda = \operatorname{Tr}[(D^{\mathrm{HF}} + D^{\mathrm{corr}}_{\mathrm{rel}})R]$ for the `solve_zvector` relaxed density (part G1).
->
-> | | |
-> |---|---|
-> | Proof | `scripts/mp2_gradient_sympy.py`, part G |
-> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
-> | Code | `ferric-mp2/src/zvector.rs::{solve_zvector,build_relaxed_density_ao}` |
-> | Code test | `cpks_static_relaxed_dipole_vs_pyscf` in `crates/ferric-mp2/tests/cpks_polar.rs` |
->
-> <!-- verified: id=mp2.polar.relaxed-dipole; script=scripts/mp2_gradient_sympy.py; claim=G; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/zvector.rs::{solve_zvector,build_relaxed_density_ao}; rust_test=ferric-mp2/tests/cpks_polar.rs::cpks_static_relaxed_dipole_vs_pyscf -->
+That this density is the field derivative of the energy is the box
+(@eq:zvec-relaxed-density) of section @sec:lagrangian-zvector, proved by
+part G of `scripts/mp2_gradient_sympy.py`.
 
 The script proves the identity for the `solve_zvector` density. The
 polarizability path builds its $z$ with a different right-hand side. Its
@@ -105,7 +98,7 @@ canonical orbitals the $PF$ terms vanish, because $F_{cj} = F_{bk} = 0$
 between occupied and virtual orbitals, and $L_{ck} = I_{kc} - I_{ck}$ with the
 $I$ of `build_imat_ri`. So it is the same $z$.
 
-> **Verified equation {@eq:mp2-polar-relaxed-dipole}b** · `static_relaxed_density_ao` is the gradient's relaxed density
+> **Verified equation {#eq:mp2-polar-static-density}** · `static_relaxed_density_ao` is the gradient's relaxed density
 >
 > The right-hand side $L + (2J - K)[P + P^{\mathsf T}]_{vo}$ equals the
 > `solve_zvector` right-hand side and the two $z$ agree to $10^{-14}$ (claim
@@ -124,7 +117,11 @@ $I$ of `build_imat_ri`. So it is the same $z$.
 
 The finite-field driver, `ferric-mp2/src/ff_polar.rs::mp2_polarizability_static`,
 adds $\mp h\,r_e$ to the core Hamiltonian, re-converges the RHF at each sign,
-builds this density on each, and takes the central difference of $\mu_d$,
+builds this density on each, and takes the central difference of $\mu_d$.
+Its run labelled $+F$ adds $-h\,r_e$, which is $F = -h$ in the convention
+$h \to h + F\,r_d$ of this page, and it forms
+$-(\mu_d(+F) - \mu_d(-F))/(2h)$, so the result is $\partial\mu_d/\partial F_e$
+in this page's convention. It
 then symmetrizes; its default step is $10^{-3}$. Each re-converged SCF
 brings its own convergence noise into the difference.
 
@@ -138,7 +135,7 @@ needs no SCF. Per field axis $x$:
    $$ \partial F = r^x + J[\partial D] - \tfrac12K[\partial D], \qquad \partial D = 2(\mathbf C_vU^x\mathbf C_o^{\mathsf T} + \mathbf C_oU^{x\mathsf T}\mathbf C_v^{\mathsf T}) . $$
 2. Take the canonical orbitals of $F \pm h\,\partial F$ as the reference at
    field $\pm h$.
-3. Difference the relaxed density of @sec:mp2-polarizability-relaxed-dipole on the two references:
+3. Difference the relaxed density of section @sec:mp2-polarizability-relaxed-dipole on the two references:
 
 $$ \alpha_{xy} = -\operatorname{Tr}\Big[\frac{P^{\mathrm{rel}}(+h) - P^{\mathrm{rel}}(-h)}{2h}\,r_y\Big] . \label{eq:mp2-polar-analytic} $$
 

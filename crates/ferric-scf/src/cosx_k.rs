@@ -397,7 +397,9 @@ pub struct CosxConfig {
     /// never underestimates `max|A^g_{mu,nu}|`, anchored there over all
     /// `(la, lb)` to `(4, 4)`). The `max` over BOTH shells is required because
     /// the block feeds `G_{s1} += A F_{s2}` AND the mirror `G_{s2} += A F_{s1}`;
-    /// a dropped block therefore perturbs every `G` element by `< t`. This is
+    /// each dropped block perturbs a `G` element by `< t` per component it
+    /// contributes, so one element's error is bounded by `t` times the number
+    /// of dropped partner blocks feeding it, not by `t` itself. This is
     /// the Neese (2009) S-junction / sn-LinK `eps^K` idea: an integral-only
     /// screen keeps every significant pair at every point (kept fraction ~1 on
     /// small molecules, ~N^1 per point on alkanes — the A-build stays O(N^2)),

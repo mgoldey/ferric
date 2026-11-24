@@ -618,23 +618,7 @@ pub fn reduce_partial_across_ranks(
     ctx: &ferric_core::parallel::ParallelContext,
     partial: &mut Array2<f64>,
 ) {
-    #[cfg(feature = "mpi")]
-    if let Some(world) = ctx.world() {
-        use mpi::traits::CommunicatorCollectives;
-        let mut global = Array2::<f64>::zeros(partial.dim());
-        world.all_reduce_into(
-            partial.as_slice().expect("partial is standard layout"),
-            global
-                .as_slice_mut()
-                .expect("freshly allocated Array2 is standard layout"),
-            mpi::collective::SystemOperation::sum(),
-        );
-        *partial = global;
-    }
-    #[cfg(not(feature = "mpi"))]
-    {
-        let _ = (ctx, partial);
-    }
+    ctx.all_reduce_sum_array(partial);
 }
 
 #[cfg(test)]

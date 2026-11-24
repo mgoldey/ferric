@@ -92,15 +92,14 @@ fn nh2() -> Molecule {
 }
 
 fn config(pcm: Option<PcmConfig>, xc: Option<&str>) -> RhfConfig {
-    RhfConfig {
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        max_iter: 300,
-        energy_conv: E_CONV,
-        density_conv: 1e-9,
-        pcm,
-        xc: xc.map(str::to_string),
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_max_iter(300)
+        .with_energy_conv(E_CONV)
+        .with_density_conv(1e-9);
+    c.pcm = pcm;
+    c.xc = xc.map(str::to_string);
+    c
 }
 
 struct Run {

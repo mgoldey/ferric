@@ -87,24 +87,93 @@ $\Omega$.
 >
 > <!-- verified: id=cc.eom.jacobian; script=scripts/cc_ccsd_eom_brute_force_sympy.py; claim=eom-jacobian; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-cc/src/eom_ccsd.rs::{sigma,intermediates}; rust_test=ferric-cc/tests/validation_eom_ccsd.rs::validation_eom_ccsd_h2o_ccpvdz; registry=eom-ccsd -->
 
-**The product.** `sigma` forms $(\bar H - E_{CC})R$ without building the
-matrix, from the dressed intermediates of `intermediates`: $F_{oo}$,
-$F_{vv}$, $F_{ov}$, $W_{mnij}$, $W_{mbij}$, $W_{ejab}$ and the two $W_{mbej}$
-couplings. $\tau$ with a right vector is `make_tau`,
-$\theta = 2r_{ij}^{ab} - r_{ij}^{ba}$ is `theta_of`, and the doubles part is
-symmetrized at the end, $\sigma_{ijab} \leftarrow \sigma_{ijab} + \sigma_{jiba}$.
+### The product {#eom-ccsd-product}
+
+`sigma` forms $(\bar H - E_{CC})R$ without building the matrix. It uses
+the dressed intermediates of `intermediates`, which are those of PySCF
+`eom_rccsd._IMDS.make_ee`: $F_{mi}$, $F_{ae}$ and $F_{me}$ (with the
+orbital energies on the diagonal of the first two), $W_{mnij}$,
+$W_{mbij}$, $W_{ejab}$, $W_{mnie}$ and the two particle–hole couplings
+$W_{mbej}$ and $W^{\times}_{mbej}$, with
+$\tilde W_{mbej} = W_{mbej} + \tfrac12W^{\times}_{mbej}$. Their
+definitions are a page of contractions; the script transcribes them term by
+term (`eom_intermediates`) and the box below checks the product they
+build. With $\vartheta_{ij}^{ab} = 2r_{ij}^{ab} - r_{ij}^{ba}$ (`theta_of`),
+$\tau_{ij}^{ab} = t_{ij}^{ab} + t_i^at_j^b$, and the right-vector analogue
+$\tilde\tau_{ij}^{ab} = r_{ij}^{ab} + r_i^at_j^b + t_i^ar_j^b$
+(`make_tau`), the singles product is
+
+$$
+\begin{aligned}
+\sigma_i^a ={}& \textstyle\sum_e F_{ae}r_i^e - \sum_m F_{mi}r_m^a
+ + \sum_{me}F_{me}\big(2r_{im}^{ae} - r_{im}^{ea}\big)
+ + \sum_{mef}(mf|ae)\,\vartheta_{mi}^{fe}
+ + 2\sum_{me}\tilde W_{maei}r_m^e \\
+ &- \textstyle\sum_{mne}W_{mnie}\vartheta_{mn}^{ae}
+ - \sum_n t_n^a\sum_{mef}(ne|mf)\,\vartheta_{im}^{ef} .
+\end{aligned} \label{eq:cc-eom-sigma-singles}
+$$
+
+The doubles product is $\sigma_{ij}^{ab} = x_{ij}^{ab} + x_{ji}^{ba}$ with
+
+$$
+\begin{aligned}
+x_{ij}^{ab} ={}& \tfrac12\textstyle\sum_{ef}(ae|bf)\,\tilde\tau_{ij}^{ef} + \tfrac12\sum_{mn}W_{mnij}r_{mn}^{ab}
+ + \sum_e F_{be}r_{ij}^{ae} - \sum_m F_{mj}r_{im}^{ab}
+ - \sum_m t_m^a\sum_{ef}(me|bf)\,\tilde\tau_{ij}^{ef} \\
+ &+ \textstyle\sum_f\Big[\sum_{me}\big(2(me|af) - (mf|ae)\big)r_m^e\Big]t_{ij}^{fb}
+ - \sum_m W_{mbij}r_m^a + \sum_e W_{ejab}r_i^e \\
+ &+ \textstyle\sum_{me}W^{\times}_{mbei}r_{jm}^{ea} + \tfrac12\sum_{me}W^{\times}_{maei}r_{jm}^{eb}
+ + \sum_{me}\tilde W_{mbej}\vartheta_{im}^{ae}
+ - \sum_n\Big[\sum_{me}\big(2W_{nmie} - W_{mnie}\big)r_m^e\Big]t_{nj}^{ab} \\
+ &- \textstyle\sum_e Y_{eb}\,t_{ji}^{ea} - \sum_m Z_{mj}\,t_{im}^{ab}
+ + \tfrac12\sum_{mn}\Big[\sum_{ef}(me|nf)\,\tilde\tau_{ij}^{ef}\Big]\tau_{mn}^{ab},
+\end{aligned} \label{eq:cc-eom-sigma-doubles}
+$$
+
+where
+$Y_{eb} = \sum_n\big[\sum_{mf}\big(2(mf|ne) - (me|nf)\big)r_m^f\big]t_n^b + \sum_{mnf}(me|nf)\,\vartheta_{mn}^{bf}$
+and $Z_{mj} = \sum_{nef}(me|nf)\,\vartheta_{jn}^{ef}$; the $Z$ contraction
+also enters the singles as the last term of (@eq:cc-eom-sigma-singles).
 The particle–particle ladder takes the dense $(ae|bf)$ block or RI panels,
 the same choice as the CCSD ladder.
 
-**The CIS limit.** At $t = 0$, $\bar H = \hat H$, and the singles–singles
-block is the CIS matrix
+> **Verified equation {#eq:cc-eom-closed-shell}** · the closed-shell product is the Jacobian of the spatial residual
+>
+> At converged closed-shell amplitudes of the model, solved with the
+> spatial residual of section @sec:closed-shell-ccsd-equations, the products
+> (@eq:cc-eom-sigma-singles) and (@eq:cc-eom-sigma-doubles), built from a
+> transcription of `intermediates` and `sigma`, equal the 5-point
+> central-difference derivative of that residual along random singlet
+> vectors $(r_1, r_2)$, $r_{ij}^{ab} = r_{ji}^{ba}$. With the box
+> (@eq:cc-eom-jacobian) and the spin-adaptation box of section
+> @sec:closed-shell-ccsd, this ties the code's product to
+> $\bar H - E_{CC}$.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/cc_ccsd_eom_brute_force_sympy.py`, check `eom-closed-shell` |
+> | Negative control | the runner's mutation: the $\tfrac12$ on the ladder and $W_{mnij}$ terms set to 1 |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-cc/src/eom_ccsd.rs::{sigma,intermediates}` |
+> | Code test | `validation_eom_ccsd_h2o_ccpvdz` in `crates/ferric-cc/tests/validation_eom_ccsd.rs` |
+>
+> <!-- verified: id=cc.eom.closed-shell; script=scripts/cc_ccsd_eom_brute_force_sympy.py; claim=eom-closed-shell; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-cc/src/eom_ccsd.rs::{sigma,intermediates}; rust_test=ferric-cc/tests/validation_eom_ccsd.rs::validation_eom_ccsd_h2o_ccpvdz; registry=eom-ccsd -->
+
+### Limits of the matrix {#eom-ccsd-limits}
+
+**The CIS limit.** At $t = 0$, $\bar H = \hat H$. The singles–singles
+block is then the CIS matrix
 
 $$ \delta_{ij}\delta_{ab}(\varepsilon_a - \varepsilon_i) + 2(ia|jb) - (ij|ab) . $$
 
 The factor 2 is the singlet spin coupling. The singlet combines the α and β
 singles in phase. $(ia|jb)$ couples an α single to both the α and the β
 singles, while $(ij|ab)$ couples only singles of the same spin, so the
-singlet block has $2(ia|jb) - (ij|ab)$.
+singlet block has $2(ia|jb) - (ij|ab)$. The other blocks are those of
+$\hat H$ too, so the $t = 0$ eigenvalue problem is CISD in the singles and
+doubles space, measured from $E_{\rm HF}$; it reduces to CIS only on the
+singles–singles block.
 
 **The norm.** The packed vector (`pack`) is $r_1$ then the lower triangle of
 $M_{ia,jb} = r_{ij}^{ab}$. The singles weight needs the norm of the state,
@@ -195,11 +264,14 @@ root 2: omega = 0.39810274 Ha = 10.8329 eV, singles weight 0.9506, residual 4.1e
 ladder route: dense  Davidson iterations: 12
 ```
 
-The boxes prove the matrix the code must represent and the CIS and norm
-pieces of the product. The closed-shell intermediates of `sigma` are a
-transcription of PySCF `eom_rccsd`; the comparison with PySCF in the anchors
-below (`tests/validation_eom_ccsd.rs`) and the CIS block at $t=0$
-(`tests/eom_ccsd_anchors.rs`) are their evidence.
+### What is proven and what is not {#eom-ccsd-proven}
+
+The boxes prove the matrix the code must represent, that the displayed
+closed-shell product is that matrix on the singlet space, and the CIS and
+norm pieces. The script checks a numpy transcription of `intermediates` and
+`sigma`, not the Rust; the comparison with PySCF in the anchors below
+(`tests/validation_eom_ccsd.rs`) and the CIS block at $t=0$
+(`tests/eom_ccsd_anchors.rs`) tie the Rust to it.
 
 ## The algorithm {#eom-ccsd-algorithm}
 
@@ -213,20 +285,20 @@ below (`tests/validation_eom_ccsd.rs`) and the CIS block at $t=0$
 | 6 | Olsen correction, orthogonalize, collapse at `max_space` | | `olsen_correction` |
 | 7 | stop when every residual norm is below `conv_tol`; otherwise error at `max_iter` | | |
 
-**The correction vector.** For a Ritz pair $(\theta, x)$ with residual $r$,
+**The correction vector.** For a Ritz pair $(\omega_k, x)$ with residual $r$,
 `ferric-cc/src/eom_davidson.rs::olsen_correction` adds
 
-$$\delta = -(\Delta - \theta)^{-1} r + \epsilon (\Delta - \theta)^{-1} x,\qquad
-\epsilon = \frac{x^\top (\Delta-\theta)^{-1} r}{x^\top (\Delta-\theta)^{-1} x},$$
+$$\delta = -(D - \omega_k)^{-1} r + \epsilon (D - \omega_k)^{-1} x,\qquad
+\epsilon = \frac{x^\top (D-\omega_k)^{-1} r}{x^\top (D-\omega_k)^{-1} x},$$
 
-where $\Delta$ is the diagonal $F_{vv,aa} - F_{oo,ii}$ (doubles: the sum over
+where $D$ is the dressed diagonal $F_{vv,aa} - F_{oo,ii}$ (doubles: the sum over
 both pairs). Multiply by $x^\top$: the two terms cancel by the choice of
 $\epsilon$, so $x^\top\delta = 0$. The plain preconditioned residual
-$-(\Delta-\theta)^{-1}r$ has a component along $x$, the vector already in
+$-(D-\omega_k)^{-1}r$ has a component along $x$, the vector already in
 the subspace; the second term removes it. The code forms
-$1/(\theta - \Delta)$ once, with the denominator floored at
+$1/(\omega_k - D)$ once, with the denominator floored at
 $10^{-8}$ in magnitude (`PRECOND_FLOOR`), and falls back to the plain
-preconditioned residual when $x^\top(\Delta-\theta)^{-1}x$ is zero or not
+preconditioned residual when $x^\top(D-\omega_k)^{-1}x$ is zero or not
 finite.
 
 The particle–particle ladder of the product takes the same dense or RI route
@@ -244,8 +316,11 @@ scaled to unit spin-summed norm, and `singles_weight` is $2\|r_1\|^2/\|R\|^2$.
 | `[cc] ladder`, `ladder=` | `auto`, `dense`, `ri` | `auto` | ladder route of CCSD and of the product |
 
 The residual threshold bounds the eigenvalue error only to first order in
-the residual, since $\bar H$ is not symmetric. For a symmetric matrix the
-eigenvalue error would be second order in $\|r\|$.
+the residual, since $\bar H$ is not symmetric; for a symmetric matrix the
+eigenvalue error would be second order in $\|r\|$. At the default
+$10^{-6}$ the water and ethylene energies of the anchors below still agree
+with PySCF to $2.9\times10^{-10}$ Ha, so the first-order bound is loose in
+practice.
 
 ## Numerical anchors {#eom-ccsd-numerical-anchors}
 
@@ -261,7 +336,7 @@ eigenvalue error would be second order in $\|r\|$.
 | Source | What it gives |
 |---|---|
 | Stanton and Bartlett, JCP 98, 7029 (1993); PySCF `cc/eom_rccsd.py` | the method and the closed-shell intermediates |
-| `scripts/cc_ccsd_eom_brute_force_sympy.py` | the Jacobian, CIS and norm checks |
+| `scripts/cc_ccsd_eom_brute_force_sympy.py` | the Jacobian, closed-shell product, CIS and norm checks |
 
 **Known limits (2026-11-15).** Singlets of a closed-shell reference only;
 right eigenvectors only, so no left vectors, transition densities or

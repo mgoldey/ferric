@@ -89,6 +89,10 @@ pub struct Config {
     /// `method.kind` is computed exactly.
     #[serde(default)]
     pub local: Option<LocalCfg>,
+    /// Optional `[ri]` section: the RI fitting metric (see [`RiCfg`]).
+    /// Absent means the Coulomb-metric fit, byte-identical to before.
+    #[serde(default)]
+    pub ri: Option<RiCfg>,
     /// Optional `[qmmm]` section: QM/MM embedding. Absent means no QM/MM --
     /// byte-identical to the plain single-region run, the same convention
     /// `[cosmo]` and `[external_potential]` follow.
@@ -1178,30 +1182,35 @@ pub fn parse_trust_update(s: &str) -> Result<ferric_scf::optimize::TrustUpdate, 
 }
 
 impl OptimizeCfg {
-    /// The `initial_hessian` and `trust_update` keys, parsed; exits with the
-    /// parser's message on a bad value.
-    #[must_use]
+    /// The `initial_hessian` and `trust_update` keys, parsed.
+    ///
+    /// # Errors
+    ///
+    /// The parser's message, as `error in [optimize]: ...`, on a bad value.
     pub fn search_options(
         &self,
-    ) -> (
-        Option<ferric_scf::optimize::InitialHessian>,
-        ferric_scf::optimize::TrustUpdate,
-    ) {
-        let die = |e: String| -> ! {
-            eprintln!("error in [optimize]: {e}");
-            std::process::exit(1);
-        };
+    ) -> Result<
+        (
+            Option<ferric_scf::optimize::InitialHessian>,
+            ferric_scf::optimize::TrustUpdate,
+        ),
+        crate::error::CliError,
+    > {
+        let err = |e: String| crate::error::CliError::verbatim(format!("error in [optimize]: {e}"));
         let ih = self
             .initial_hessian
             .as_deref()
-            .map(|s| parse_initial_hessian(s).unwrap_or_else(|e| die(e)));
+            .map(parse_initial_hessian)
+            .transpose()
+            .map_err(err)?;
         let tu = self
             .trust_update
             .as_deref()
-            .map_or_else(Default::default, |s| {
-                parse_trust_update(s).unwrap_or_else(|e| die(e))
-            });
-        (ih, tu)
+            .map(parse_trust_update)
+            .transpose()
+            .map_err(err)?
+            .unwrap_or_default();
+        Ok((ih, tu))
     }
 }
 
@@ -1411,6 +1420,39 @@ impl<'de> Deserialize<'de> for FrozenCore {
 /// The `method.kind`s whose correlation can be run under a local
 /// approximation (`[local]`). The kind names the METHOD; `[local]` says
 /// whether and how its amplitudes are truncated.
+/// The kinds that read an `[ri]` section.
+pub const RI_KINDS: &[&str] = &["rimp2", "laplace-mp2", "laplace-sos-mp2", "pdep-rpa"];
+
+/// Optional `[ri]` section: the fitting metric of the RI (density-fitting)
+/// factorization of the correlation step.
+///
+/// Absent, or `metric = "coulomb"`, is the Coulomb-metric fit every RI
+/// method uses. `metric = "erfc"` is the omega-RI fit of Glasbrenner, Graf,
+/// Ochsenfeld (JCTC 16, 6856 (2020)) and Luenser, Schurkus, Ochsenfeld (JCTC
+/// 13, 1647 (2017)): erfc(omega r)/r three-index integrals with the
+/// `V~^-1 V V~^-1` metric. It changes the energy (first order in the fit
+/// error; ~1e-6 Eh for water at omega = 0.1) and buys nothing in this code:
+/// the algebra stays dense. On `laplace-mp2` / `laplace-sos-mp2`
+/// `metric = "erfc"` selects the omega-RI-CDD route (see `[mp2] cdd_*`).
+#[derive(Deserialize, Default, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct RiCfg {
+    /// `"coulomb"` (default) or `"erfc"`. Anything else is an error.
+    pub metric: Option<String>,
+    /// The attenuation omega in **Bohr⁻¹** (the papers' unit; their
+    /// recommended value is 0.1). Required by `metric = "erfc"` (no
+    /// default) and refused with `"coulomb"`. Must be finite and > 0.
+    pub omega_bohr: Option<f64>,
+}
+
+impl RiCfg {
+    /// The library fit this section names (strict).
+    pub fn fit(&self) -> Result<ferric_mp2::omega_ri::RiFit, String> {
+        ferric_mp2::omega_ri::RiFit::parse_config(self.metric.as_deref(), self.omega_bohr)
+            .map_err(|e| format!("[ri] {e}"))
+    }
+}
+
 pub const LOCAL_KINDS: &[&str] = &["rimp2", "att-rimp2", "drpa", "linlccd", "opmp3"];
 
 /// `[local] scheme`: the local approximation applied to the method's
@@ -2277,6 +2319,21 @@ pub struct Mp2Cfg {
     /// setting measured sparser integrals at r₀ω = 4. Must be finite and
     /// > 0; an error with the erfc operator (use `omega` there).
     pub att_omega: Option<f64>,
+    /// Pivoted-Cholesky truncation of the Laplace pseudo-densities for the
+    /// omega-RI-CDD route of `laplace-mp2` / `laplace-sos-mp2` (setting it,
+    /// or `[ri] metric = "erfc"`, selects that route). `0` (the value
+    /// when only `[ri]` is written) keeps every pseudo-MO above roundoff
+    /// and equals the MO Laplace energy. Must be finite and >= 0.
+    pub cdd_tol: Option<f64>,
+    /// Schwarz-type virtual screen of the omega-RI-CDD exchange term
+    /// (Glasbrenner, Graf, Ochsenfeld JCTC 16, 6856 (2020): theta_schwarz,
+    /// paper value 1e-9). `laplace-mp2` only (SOS-MP2 has no exchange
+    /// term). Omitted = 0 = nothing screened. Must be finite and >= 0.
+    pub cdd_schwarz_thresh: Option<f64>,
+    /// Occupied-pair prescreen of the omega-RI-CDD exchange term (the
+    /// paper's theta_ij, value 1e-6). `laplace-mp2` only. Omitted = 0 =
+    /// every pair kept. Must be finite and >= 0.
+    pub cdd_pair_thresh: Option<f64>,
 }
 
 /// The short-range operator `method.kind = "att-rimp2"` attenuates the MP2
@@ -2830,7 +2887,8 @@ pub struct RpaCfg {
     /// properties that DID work would be worse. What the default changes is
     /// only that the run stops claiming success. Set this to `true` to opt back
     /// in when gaps are acceptable — the honest form of what used to be
-    /// implicit.
+    /// implicit. It forgives gaps in a bundle that was written; a bundle that
+    /// could not be written at all still fails the run.
     pub allow_partial_npz: Option<bool>,
     /// C6 polarizability source. One of:
     ///   "ts"   — Tkatchenko-Scheffler single-pole model (default)
@@ -3401,6 +3459,17 @@ pub struct ScfCfg {
     /// route is not exact four-centre J and K). RI-J/RI-K, LinK, COSX and
     /// range-separated routes are unaffected. Any other value is an error.
     pub eri: Option<String>,
+    /// Internal contraction rotation of generally contracted shells (cc-pVXZ)
+    /// in the direct four-centre J/K builder: `"auto"` (both stages),
+    /// `"rot1"` (diffuse projection only) or `"off"` (the unrotated builder,
+    /// bit for bit). Unset leaves it to `FERRIC_GC_ROTATE`, then `"auto"`.
+    /// The exact four-centre builds of the run follow it (the SCF's direct
+    /// builders and in-core store, the Newton/stability/response J/K and
+    /// the gradient's four-centre derivative integrals on the same
+    /// geometry, the KS Z-vector response, `[cas] integrals = "direct"` and
+    /// the GW exact exchange); energies move at the screening-noise level.
+    /// Any other value, another case included, is an error.
+    pub gc_rotation: Option<String>,
     /// Relativistic core Hamiltonian: `"x2c1e"` (spin-free X2C-1e, as PySCF
     /// `sfx2c1e()`), or unset for the nonrelativistic one. Energies only
     /// (`task = "energy"`), for the kinds in `X2C_KINDS`; all-electron bases
@@ -3493,9 +3562,10 @@ pub struct ScfCfg {
     /// JK-fitting basis for `jk = "rijk" | "rijcosx"` (bundled name, default
     /// def2-universal-jkfit). Never the correlation method's RI aux.
     pub jk_aux: Option<String>,
-    /// Optional virtual-virtual block level shift (Ha) for open-shell SCF
-    /// (UHF / ROHF / UKS / ROKS). The shift is rational-damped by the DIIS
-    /// error so the converged Fock is the unshifted stationary point. A
+    /// Optional virtual-virtual block level shift (Ha). The shift is ramped
+    /// by the DIIS error (`ferric_scf::closed_shell_level_shift_ramp` /
+    /// `open_shell_level_shift_ramp`) so the converged
+    /// Fock is the unshifted stationary point. A
     /// value of 0.2 is a useful default for OH-like doublets at LDA/PBE
     /// where DIIS otherwise plateaus.
     pub level_shift: Option<f64>,
@@ -3645,6 +3715,22 @@ pub struct ScfCfg {
     /// `symmetry = true`): pins the occupation instead of aufbau across
     /// irreps. Listed counts must be even; unlisted irreps follow aufbau.
     pub irrep_nelec: Option<std::collections::BTreeMap<String, usize>>,
+    /// Write the converged reference SCF of a correlated kind to this path
+    /// (`ferric_scf::checkpoint` NPZ), before the correlated stage runs, so
+    /// a later run can read it with `read_reference`. Scope and refusals:
+    /// [`Config::validate_reference_io`].
+    pub save_reference: Option<String>,
+    /// Read the reference SCF from a `save_reference` file instead of
+    /// solving it: no SCF iteration runs. The file must be the calculation
+    /// this run would solve (molecule, basis, spin, every setting that moves
+    /// the SCF's numbers, the route that converges it, this build); anything
+    /// else is an error, never a fallback to a fresh SCF.
+    pub read_reference: Option<String>,
+    /// Accept a `read_reference` file written by another build, or by a
+    /// build not provably the same (dirty tree, unknown commit). Default
+    /// `false`; the run prints and logs that the override was used.
+    #[serde(default)]
+    pub read_reference_other_build: bool,
 }
 
 impl Default for ScfCfg {
@@ -3677,6 +3763,7 @@ impl Default for ScfCfg {
             k_builder: None,
             screening: None,
             eri: None,
+            gc_rotation: None,
             relativistic: None,
             cosx_grid: None,
             cosx_final_pass: None,
@@ -3704,6 +3791,9 @@ impl Default for ScfCfg {
             stability_descent: false,
             symmetry: false,
             irrep_nelec: None,
+            save_reference: None,
+            read_reference: None,
+            read_reference_other_build: false,
         }
     }
 }
@@ -3788,10 +3878,7 @@ impl Config {
             (s.smearing_sigma.is_some(), "[scf] smearing_sigma"),
             (s.mom_after_iter > 0, "[scf] mom_after_iter"),
             (s.mom_reference.is_some(), "[scf] mom_reference"),
-            (
-                s.k_builder.as_deref() == Some(ferric_scf::options::COSX_K_BUILDER),
-                "[scf] k_builder = \"cosx\"",
-            ),
+            (s.k_builder_is_cosx(), "[scf] k_builder = \"cosx\""),
         ];
         if let Some((_, key)) = unsupported.iter().find(|(set, _)| *set) {
             return refuse(format!(
@@ -3880,13 +3967,14 @@ impl OmittedJk {
 
 impl ScfCfg {
     /// The first `[scf]` key set that only the four-centre route reads
-    /// (`k_builder`, `eri`, `screening`, `df_increments`, `df_guess = true`,
+    /// (`k_builder`, `eri`, `gc_rotation`, `screening`, `df_increments`, `df_guess = true`,
     /// `df_guess_aux`): with one of them an omitted `jk` stays exact, so an
     /// input that worked on the four-centre default keeps working unchanged.
     fn exact_route_key(&self) -> Option<&'static str> {
         [
             ("k_builder", self.k_builder.is_some()),
             ("eri", self.eri.is_some()),
+            ("gc_rotation", self.gc_rotation.is_some()),
             ("screening", self.screening.is_some()),
             ("df_increments", self.df_increments),
             ("df_guess", self.df_guess == Some(true)),
@@ -3898,6 +3986,24 @@ impl ScfCfg {
 }
 
 impl ScfCfg {
+    /// `[scf] k_builder` parsed (`KBuilderKind::parse`), by
+    /// `try_scf_config` as its last fallible step: after loading and the
+    /// run's other checks, close to where the solver refused an unknown
+    /// spelling.
+    pub fn k_builder_kind(&self) -> Result<Option<ferric_scf::options::KBuilderKind>, String> {
+        ferric_scf::options::KBuilderKind::parse_opt(self.k_builder.as_deref())
+            .map_err(|e| format!("[scf] k_builder: {e}"))
+    }
+
+    /// Whether `k_builder` spells COSX, for the load-time checks that read
+    /// it as written (to quote it) before `k_builder_kind` refuses an
+    /// unknown spelling, which is not COSX here.
+    pub fn k_builder_is_cosx(&self) -> bool {
+        self.k_builder
+            .as_deref()
+            .is_some_and(ferric_scf::options::KBuilderKind::spells_cosx)
+    }
+
     /// `aurora` / `trah_trigger` scoping: AURORA is closed-shell RHF only, TRAH
     /// is wired for RHF and UHF; anything else would silently ignore the key.
     pub fn validate_accelerators(&self, kind: &str, mult: usize) -> Result<(), String> {
@@ -4067,8 +4173,7 @@ impl ScfCfg {
         router_allowed: bool,
     ) -> Result<ferric_scf::cosx_k::CosxConfig, String> {
         use ferric_scf::cosx_k::{validate_grid, CosxBackend, CosxConfig, CosxHalfTransform};
-        let is_cosx = self.k_builder.as_deref() == Some(ferric_scf::options::COSX_K_BUILDER)
-            || self.jk.as_deref() == Some("rijcosx");
+        let is_cosx = self.k_builder_is_cosx() || self.jk.as_deref() == Some("rijcosx");
         let any_cosx_knob = self.cosx_grid.is_some()
             || self.cosx_final_pass.is_some()
             || self.cosx_final_grid.is_some()
@@ -4238,6 +4343,18 @@ impl ScfCfg {
             .transpose()
             .map_err(|e| format!("[scf] {e}"))
     }
+    /// `[scf] gc_rotation` parsed: `None` when omitted (the variable and the
+    /// default decide), an error naming the key for a value outside
+    /// auto | rot1 | off. The one resolver for load-time validation and the
+    /// lowering.
+    pub fn gc_rotation_resolved(&self) -> Result<Option<ferric_scf::direct_jk::GcRotate>, String> {
+        self.gc_rotation
+            .as_deref()
+            .map(ferric_scf::direct_jk::GcRotate::parse_str)
+            .transpose()
+            .map_err(|e| format!("[scf] gc_rotation: {e}"))
+    }
+
     /// Post-parse validation of the `[scf]` string knobs whose resolution is
     /// otherwise deferred to the point of use. Called from [`load_config`] so
     /// every entry point (CLI and `ferric-batch`) fails before any integral is
@@ -4250,6 +4367,7 @@ impl ScfCfg {
         self.use_density_guess()?;
         self.mom_reference_resolved()?;
         self.relativistic_resolved()?;
+        self.gc_rotation_resolved()?;
         if let Some(p) = self.eri_precision {
             (ferric_integrals::engine_pool::ERI_PRECISION_VAR.validate)(&p)
                 .map_err(|e| format!("[scf] eri_precision {p:e}: {e}"))?;
@@ -5063,9 +5181,7 @@ impl Config {
             ));
         }
         self.validate_cli_wired_keys()?;
-        if task != "energy"
-            && self.scf.k_builder.as_deref() == Some(ferric_scf::options::COSX_K_BUILDER)
-            && !COSX_GRADIENT_KINDS.contains(&kind)
+        if task != "energy" && self.scf.k_builder_is_cosx() && !COSX_GRADIENT_KINDS.contains(&kind)
         {
             return Err(format!(
                 "[scf] k_builder = \"cosx\" is not supported with method.kind = \"{kind}\", \
@@ -5440,6 +5556,98 @@ impl Config {
         Ok(())
     }
 
+    /// `[scf] save_reference` / `read_reference` / `read_reference_other_build`:
+    /// only the runs whose reference SCF is the shared one in `try_run` (the
+    /// correlated kinds, `task = "energy"`) save or read it. Everything else
+    /// solves its SCF elsewhere (its own driver, a convergence ladder, one SCF
+    /// per geometry), so the key would be silently ignored there.
+    pub fn validate_reference_io(&self) -> Result<(), String> {
+        let s = &self.scf;
+        let keys = s.save_reference.is_some() || s.read_reference.is_some();
+        if !keys {
+            if s.read_reference_other_build {
+                return Err("[scf] read_reference_other_build is read only with \
+                            read_reference; it would be silently ignored"
+                    .to_string());
+            }
+            return Ok(());
+        }
+        let key = if s.read_reference.is_some() {
+            "read_reference"
+        } else {
+            "save_reference"
+        };
+        if s.save_reference.is_some() && s.read_reference.is_some() {
+            return Err(
+                "[scf] save_reference and read_reference cannot both be set: \
+                        a read reference is already on disk"
+                    .to_string(),
+            );
+        }
+        if s.read_reference_other_build && s.read_reference.is_none() {
+            return Err("[scf] read_reference_other_build is read only with \
+                        read_reference; it would be silently ignored"
+                .to_string());
+        }
+        for (name, path) in [
+            ("save_reference", s.save_reference.as_deref()),
+            ("read_reference", s.read_reference.as_deref()),
+        ] {
+            if path.is_some_and(|p| p.trim().is_empty()) {
+                return Err(format!(
+                    "[scf] {name} must be a file path, got an empty string"
+                ));
+            }
+        }
+        let task = self.method.task.as_str();
+        if task != "energy" {
+            return Err(format!(
+                "[scf] {key} is supported for task = \"energy\" only (got \"{task}\"): \
+                 an optimization or a Hessian solves a new SCF at every geometry"
+            ));
+        }
+        if self.periodic.is_some() || self.cell.is_some() {
+            return Err(format!(
+                "[scf] {key} is not supported with [cell]: the periodic SCF is not checkpointed"
+            ));
+        }
+        let kind = self.dispatch_kind(self.molecule.multiplicity);
+        let why = match kind {
+            "rhf" | "ksdft" | "uhf" | "rohf" => Some(
+                "an SCF kind converges through its own route (the rhf/ksdft convergence \
+                 ladder, or the UHF/ROHF driver), which the correlated kinds do not take, \
+                 so its reference would be refused by every correlated run; save the \
+                 reference from the first correlated run instead",
+            ),
+            "wb97x-l-v" | "b2plyp" | "dsd-pbep86" => {
+                Some("a double hybrid converges its own Kohn-Sham reference")
+            }
+            "casscf" | "nevpt2" | "opmp3" => Some("this kind runs its own reference SCF"),
+            _ => None,
+        };
+        if let Some(why) = why {
+            return Err(format!(
+                "[scf] {key} is supported by the correlated kinds (rimp2, ccsd, drpa, gw, \
+                 ...) only, not kind = \"{kind}\": {why}"
+            ));
+        }
+        if s.read_reference.is_some() {
+            for (set, name) in [
+                (s.check_stability, "check_stability"),
+                (s.stability_descent, "stability_descent"),
+            ] {
+                if set {
+                    return Err(format!(
+                        "[scf] read_reference cannot be combined with {name}: the stability \
+                         analysis is not stored with the reference, so this run would report \
+                         it as not run"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn validate_cli_wired_keys(&self) -> Result<(), String> {
         let kind = self.method.kind.as_str();
         let task = self.method.task.as_str();
@@ -5464,6 +5672,7 @@ impl Config {
         self.validate_symmetry_keys()?;
 
         self.validate_stability_descent(kind, task)?;
+        self.validate_reference_io()?;
 
         if self.mp2.sets_oo_keys() {
             if kind != "oo-rimp2" {
@@ -5512,6 +5721,7 @@ impl Config {
         }
 
         self.validate_local()?;
+        self.validate_ri(kind, mult)?;
         self.validate_cc_section(kind, mult)?;
         self.validate_eom_section(kind)?;
 
@@ -5561,12 +5771,20 @@ impl Config {
             return Ok(());
         };
         if q.polarizabilities_angstrom3.is_empty() {
-            return match q.thole_a {
-                Some(_) => Err("[qmmm] thole_a needs polarizabilities_angstrom3: with no \
-                                polarizable site it would be silently ignored"
+            return match (q.thole_a, &q.polarization_exclusions) {
+                (Some(_), _) => Err("[qmmm] thole_a needs polarizabilities_angstrom3: with no \
+                                     polarizable site it would be silently ignored"
                     .to_string()),
-                None => Ok(()),
+                (_, Some(_)) => Err("[qmmm] polarization_exclusions needs \
+                                     polarizabilities_angstrom3: with no polarizable site it \
+                                     would be silently ignored"
+                    .to_string()),
+                _ => Ok(()),
             };
+        }
+        if let Some(e) = &q.polarization_exclusions {
+            ferric_scf::qmmm::PolarizationExclusions::parse_config_str(e)
+                .map_err(|err| format!("[qmmm] {err}"))?;
         }
         let kind = self.method.kind.as_str();
         let task = self.method.task.as_str();
@@ -5607,6 +5825,137 @@ impl Config {
                     "[qmmm] thole_a must be finite and >= 0 (0.0 disables damping), got {a}"
                 ));
             }
+        }
+        Ok(())
+    }
+
+    /// The fit selected by `[ri]` (`Coulomb` when the section is absent).
+    pub fn ri_fit(&self) -> Result<ferric_mp2::omega_ri::RiFit, String> {
+        match &self.ri {
+            None => Ok(ferric_mp2::omega_ri::RiFit::Coulomb),
+            Some(r) => r.fit(),
+        }
+    }
+
+    /// Whether `laplace-mp2` / `laplace-sos-mp2` take the omega-RI-CDD route:
+    /// a non-Coulomb `[ri]` fit or any `[mp2] cdd_*` key selects it (an
+    /// `[ri]` section that names the Coulomb fit leaves the plain path).
+    pub fn uses_cdd_route(&self) -> bool {
+        self.ri_fit().map(|f| !f.is_coulomb()).unwrap_or(false)
+            || self.mp2.cdd_tol.is_some()
+            || self.mp2.cdd_schwarz_thresh.is_some()
+            || self.mp2.cdd_pair_thresh.is_some()
+    }
+
+    /// The rules of `[ri]` and `[mp2] cdd_*`. Each refusal is a key a run
+    /// would otherwise silently ignore, or a combination no code path
+    /// implements: `[ri]` outside [`RI_KINDS`]; and, for the erfc fit,
+    /// `task != "energy"` (no omega-RI gradient), a local `[local]` scheme,
+    /// open-shell `rimp2` /
+    /// `laplace-*` (closed-shell drivers only), or on `pdep-rpa` with an NPZ
+    /// / eigenpotential export (the property paths build their own Coulomb
+    /// fit); `cdd_*` on any kind but `laplace-mp2` / `laplace-sos-mp2`; the
+    /// exchange screens on `laplace-sos-mp2`; and `sos_formulation` /
+    /// `domain_cutoff_bohr` on the CDD route.
+    pub fn validate_ri(&self, kind: &str, mult: usize) -> Result<(), String> {
+        let lap = matches!(kind, "laplace-mp2" | "laplace-sos-mp2");
+        let cdd_keys: Vec<&str> = [
+            ("cdd_tol", self.mp2.cdd_tol),
+            ("cdd_schwarz_thresh", self.mp2.cdd_schwarz_thresh),
+            ("cdd_pair_thresh", self.mp2.cdd_pair_thresh),
+        ]
+        .into_iter()
+        .filter_map(|(k, v)| v.map(|_| k))
+        .collect();
+        if !cdd_keys.is_empty() && !lap {
+            return Err(format!(
+                "[mp2] {} {} read by method.kind = \"laplace-mp2\" / \"laplace-sos-mp2\" \
+                 only; kind = \"{kind}\" would silently ignore it",
+                cdd_keys.join(", "),
+                if cdd_keys.len() == 1 { "is" } else { "are" }
+            ));
+        }
+        for (k, v) in [
+            ("cdd_tol", self.mp2.cdd_tol),
+            ("cdd_schwarz_thresh", self.mp2.cdd_schwarz_thresh),
+            ("cdd_pair_thresh", self.mp2.cdd_pair_thresh),
+        ] {
+            if let Some(x) = v {
+                if !(x.is_finite() && x >= 0.0) {
+                    return Err(format!("[mp2] {k} must be finite and >= 0 (got {x})"));
+                }
+            }
+        }
+        if kind == "laplace-sos-mp2"
+            && (self.mp2.cdd_schwarz_thresh.is_some() || self.mp2.cdd_pair_thresh.is_some())
+        {
+            return Err(
+                "[mp2] cdd_schwarz_thresh / cdd_pair_thresh screen the exchange term, which \
+                 SOS-MP2 does not have; remove them for laplace-sos-mp2"
+                    .to_string(),
+            );
+        }
+        if lap && self.uses_cdd_route() {
+            if self.mp2.sos_formulation.is_some() || self.mp2.domain_cutoff_bohr.is_some() {
+                return Err(
+                    "[mp2] sos_formulation / domain_cutoff_bohr select the plain Laplace \
+                     SOS-MP2 algebra; the omega-RI-CDD route ([ri] or [mp2] cdd_*) has its \
+                     own. Remove one or the other."
+                        .to_string(),
+                );
+            }
+            if mult != 1 {
+                return Err(format!(
+                    "the omega-RI-CDD route of {kind} is closed-shell only (multiplicity = {mult})"
+                ));
+            }
+        }
+        let Some(ri) = &self.ri else {
+            return Ok(());
+        };
+        if !RI_KINDS.contains(&kind) {
+            return Err(format!(
+                "[ri] applies to method.kind = {} only; kind = \"{kind}\" would silently \
+                 ignore it. Remove [ri].",
+                RI_KINDS
+                    .iter()
+                    .map(|k| format!("\"{k}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if ri.fit()?.is_coulomb() {
+            // The Coulomb fit is what every path computes without [ri].
+            return Ok(());
+        }
+        if self.method.task != "energy" {
+            return Err(format!(
+                "[ri] is energy-only: there is no omega-RI gradient (task = \"{}\")",
+                self.method.task
+            ));
+        }
+        if matches!(self.local_model(), Ok(Some(_))) {
+            return Err(
+                "[ri] metric = \"erfc\" and a local [local] scheme cannot be combined: the local correlation paths build \
+                 their own Coulomb-metric fits"
+                    .to_string(),
+            );
+        }
+        if kind == "rimp2" && mult != 1 {
+            return Err(format!(
+                "[ri] on rimp2 is closed-shell only (multiplicity = {mult}); the open-shell \
+                 RI-MP2 has no omega-RI fit"
+            ));
+        }
+        if kind == "pdep-rpa"
+            && (self.rpa.export_npz.is_some() || self.rpa.export_eigpot_prefix.is_some())
+        {
+            return Err(
+                "[ri] on pdep-rpa is energy-only: the NPZ / eigenpotential property exports \
+                 build their own Coulomb-metric fit. Remove [rpa] export_npz / \
+                 export_eigpot_prefix or [ri]."
+                    .to_string(),
+            );
         }
         Ok(())
     }
@@ -6472,12 +6821,13 @@ mod compat_guard_tests {
         .unwrap()
         .apply(&mut rc);
         assert_eq!(rc.df_j_aux.as_deref(), Some("cc-pvtz-jkfit"));
-        assert_eq!((rc.df_k_aux, rc.k_builder.as_deref()), (None, Some("cosx")));
-        let mut rs = ferric_scf::rhf::RhfConfig {
-            df_j_aux: Some("def2-universal-jkfit".into()),
-            df_k_aux: Some("def2-universal-jkfit".into()),
-            ..Default::default()
-        };
+        assert_eq!(
+            (rc.df_k_aux, rc.k_builder),
+            (None, Some(ferric_scf::options::KBuilderKind::Cosx))
+        );
+        let mut rs = ferric_scf::rhf::RhfConfig::default()
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         choice("rs-mp2-rpa", "energy", "jk = \"exact\"\n")
             .unwrap()
             .unwrap()
@@ -6724,10 +7074,9 @@ mod compat_guard_tests {
         assert_eq!(c.scf.df_k_aux_resolved().as_deref(), Some(""));
         let rungs = c
             .scf
-            .build_ladder(&ferric_scf::rhf::RhfConfig {
-                df_j_aux: Some("def2-universal-jkfit".into()),
-                ..Default::default()
-            })
+            .build_ladder(
+                &ferric_scf::rhf::RhfConfig::default().with_df_j_aux("def2-universal-jkfit"),
+            )
             .unwrap();
         assert_eq!(rungs[0].config.df_j_aux.as_deref(), Some(""));
         // Anchors: a basis name and an omitted key are unchanged.
@@ -10325,6 +10674,32 @@ json = [1, 2]
         assert!(pol.exclusions.is_empty());
     }
 
+    /// The PQR residue field is the molecule: with the ion as the QM region
+    /// and the water's oxygen polarizable, the oxygen ignores its own two
+    /// hydrogens by default, and `"none"` turns that off.
+    #[test]
+    fn qmmm_polarization_excludes_the_pqr_residue_by_default() {
+        let base = "qm_indices = [3]\npolarizabilities_angstrom3 = [1.44, 0.0, 0.0, 0.0]";
+        let pol = |extra: &str| {
+            let q = qmmm_cfg(&format!("{base}{extra}"));
+            let sys = q.to_system(1, 1).unwrap();
+            let h: Vec<[f64; 3]> = [1, 2]
+                .iter()
+                .map(|&i| [sys.atoms[i].x, sys.atoms[i].y, sys.atoms[i].z_pos])
+                .collect();
+            (q.polarizable_embedding(&sys).unwrap().unwrap(), h)
+        };
+        let (p, h) = pol("");
+        assert_eq!(p.excluded_charges, vec![h]);
+        let (p, _) = pol("\npolarization_exclusions = \"none\"");
+        assert!(p.excluded_charges.is_empty() && p.exclusions.is_empty());
+        let q = qmmm_cfg(&format!("{base}\npolarization_exclusions = \"bonds\""));
+        let e = q
+            .polarizable_embedding(&q.to_system(1, 1).unwrap())
+            .unwrap_err();
+        assert!(e.contains("unknown value"), "{e}");
+    }
+
     #[test]
     fn qmmm_thole_a_selects_the_damping_and_zero_disables_it() {
         let with = |t: &str| {
@@ -10463,6 +10838,7 @@ json = [1, 2]
                 boundary_scheme: default_boundary_scheme(),
                 polarizabilities_angstrom3: vec![],
                 thole_a: None,
+                polarization_exclusions: None,
             };
             match cfg.to_system(0, 1) {
                 Ok(_) => panic!("{label}: an unknown element must be refused"),
@@ -10505,6 +10881,7 @@ json = [1, 2]
             boundary_scheme: default_boundary_scheme(),
             polarizabilities_angstrom3: vec![],
             thole_a: None,
+            polarization_exclusions: None,
         };
         assert!(cfg.to_system(0, 1).is_ok(), "a valid PQR must still build");
     }
@@ -12461,11 +12838,9 @@ kind = "rhf"
     /// `ksdft_ladder` does (docs/profiles-2026-07-14.md 2026-07-19 correction).
     #[test]
     fn empty_ladder_ksdft_base_dispatches_to_ksdft_ladder() {
-        let base = ferric_scf::rhf::RhfConfig {
-            xc: Some("B3LYP".to_string()),
-            max_iter: 100,
-            ..Default::default()
-        };
+        let base = ferric_scf::rhf::RhfConfig::default()
+            .with_xc("B3LYP")
+            .with_max_iter(100);
         let cfg = ScfCfg::default();
         assert!(cfg.ladder.is_empty());
         let built = cfg.build_ladder(&base).unwrap();
@@ -12496,10 +12871,7 @@ kind = "rhf"
         // max_iter per rung (60/60/60/80/100), so a user's flat [scf]
         // max_iter is a starting point each rung's own budget overrides, not
         // a value every rung inherits unchanged.
-        let base = ferric_scf::rhf::RhfConfig {
-            mom_after_iter: 5,
-            ..Default::default()
-        };
+        let base = ferric_scf::rhf::RhfConfig::default().with_mom_after_iter(5);
         let cfg = ScfCfg::default();
         assert!(cfg.ladder.is_empty());
         let built = cfg.build_ladder(&base).unwrap();
@@ -12537,11 +12909,9 @@ kind = "rhf"
     fn empty_ladder_default_escalation_does_not_override_user_df_aux() {
         // If the user already set df_j_aux/df_k_aux in [scf], the default
         // escalation must not clobber it with def2-universal-jkfit.
-        let base = ferric_scf::rhf::RhfConfig {
-            df_j_aux: Some("cc-pvdz-jkfit".to_string()),
-            df_k_aux: Some("cc-pvdz-jkfit".to_string()),
-            ..Default::default()
-        };
+        let base = ferric_scf::rhf::RhfConfig::default()
+            .with_df_j_aux("cc-pvdz-jkfit")
+            .with_df_k_aux("cc-pvdz-jkfit");
         let cfg = ScfCfg::default();
         let built = cfg.build_ladder(&base).unwrap();
         for rung in &built {
@@ -13011,7 +13381,7 @@ max_iter = 42
             );
         }
         let cfg = super::OptimizeCfg::default();
-        assert_eq!(cfg.search_options(), (None, TrustUpdate::Ratio));
+        assert_eq!(cfg.search_options().unwrap(), (None, TrustUpdate::Ratio));
     }
 
     /// The `coordinates` key must actually reach the parsed [`Config`], and an
@@ -13120,6 +13490,13 @@ pub struct QmmmCfg {
     /// disables damping (the bare dipole-dipole tensor), the convention of
     /// Python `run_qmmm(thole_a=0.0)`. Needs `polarizabilities_angstrom3`.
     pub thole_a: Option<f64>,
+    /// Which charges and sites a polarizable site ignores: `"molecule"`
+    /// (default) = its own PQR residue (the residue sequence number), so a
+    /// water's sites are not polarized by that water's own charges; `"none"`
+    /// = no exclusions, right only for isolated sites such as ions. Parsed by
+    /// [`ferric_scf::qmmm::PolarizationExclusions::parse_config_str`]. Needs
+    /// `polarizabilities_angstrom3`.
+    pub polarization_exclusions: Option<String>,
 }
 
 fn default_boundary_scheme() -> String {
@@ -13136,6 +13513,9 @@ fn default_boundary_scheme() -> String {
 #[derive(Debug, Clone)]
 pub struct PqrAtom {
     pub name: String,
+    /// The residue sequence field as written (`resSeq`), the molecule label
+    /// of same-molecule polarization exclusion.
+    pub res_seq: String,
     pub q: f64,
     /// Angstrom, as written in the file.
     pub x: f64,
@@ -13179,6 +13559,22 @@ fn element_from_pqr_name(name: &str) -> String {
 /// Deliberately strict: a record whose field count is not 10 is an ERROR, not
 /// a skipped line. A silently dropped atom changes the MM field without
 /// changing anything a user would look at.
+/// Molecule labels from the PQR residue field, numbered in order of first
+/// appearance (read by same-molecule polarization exclusion).
+fn pqr_residue_ids(atoms: &[PqrAtom]) -> Vec<usize> {
+    let mut seen: Vec<&str> = Vec::new();
+    atoms
+        .iter()
+        .map(|a| match seen.iter().position(|r| *r == a.res_seq) {
+            Some(k) => k,
+            None => {
+                seen.push(&a.res_seq);
+                seen.len() - 1
+            }
+        })
+        .collect()
+}
+
 pub fn parse_pqr(path: &str) -> Result<Vec<PqrAtom>, ferric_core::FerricError> {
     let text = std::fs::read_to_string(path).map_err(|e| {
         ferric_core::FerricError::General(format!("[qmmm] pqr: cannot read {path}: {e}"))
@@ -13207,6 +13603,7 @@ pub fn parse_pqr(path: &str) -> Result<Vec<PqrAtom>, ferric_core::FerricError> {
         };
         out.push(PqrAtom {
             name: f[2].to_string(),
+            res_seq: f[4].to_string(),
             x: num(f[5], "x")?,
             y: num(f[6], "y")?,
             z: num(f[7], "z")?,
@@ -13278,29 +13675,34 @@ impl QmmmCfg {
         &self,
         sys: &ferric_scf::qmmm::QmmmSystem,
     ) -> Result<Option<ferric_scf::polarizable::PolarizableSites>, String> {
-        use ferric_scf::polarizable::{PolarizableSites, DEFAULT_THOLE_A};
+        use ferric_scf::polarizable::DEFAULT_THOLE_A;
+        use ferric_scf::qmmm::PolarizationExclusions;
         if self.polarizabilities_angstrom3.is_empty() {
             return Ok(None);
-        }
-        let sites = sys.to_polarizable_sites();
-        if sites.is_empty() {
-            return Err(
-                "[qmmm] polarizabilities_angstrom3 has no positive entry on an MM atom (entries \
-                 on QM-region atoms are ignored), so nothing would polarize. Remove the key or \
-                 give an MM atom a polarizability."
-                    .to_string(),
-            );
         }
         let thole_a = match self.thole_a {
             None => Some(DEFAULT_THOLE_A),
             Some(a) if a > 0.0 => Some(a),
             Some(_) => None,
         };
-        Ok(Some(PolarizableSites {
-            sites,
-            thole_a,
-            ..Default::default()
-        }))
+        let scheme = PolarizationExclusions::parse_config_str(
+            self.polarization_exclusions
+                .as_deref()
+                .unwrap_or("molecule"),
+        )
+        .map_err(|e| format!("[qmmm] {e}"))?;
+        let ids = sys
+            .polarization_molecule_ids(scheme, None)
+            .map_err(|e| format!("[qmmm] {e}"))?;
+        sys.polarizable_embedding(thole_a, ids.as_deref())
+            .map_err(|e| format!("[qmmm] {e}"))?
+            .map(Some)
+            .ok_or_else(|| {
+                "[qmmm] polarizabilities_angstrom3 has no positive entry on an MM atom (entries \
+                 on QM-region atoms are ignored), so nothing would polarize. Remove the key or \
+                 give an MM atom a polarizability."
+                    .to_string()
+            })
     }
 
     /// Build the `QmmmSystem` this section describes.
@@ -13308,13 +13710,44 @@ impl QmmmCfg {
     /// `qm_charge`/`qm_multiplicity` come from `[molecule]` and apply to the QM
     /// REGION, not the whole structure -- the MM atoms carry their own partial
     /// charges and are not part of the SCF.
+    /// The QM region: explicit `qm_indices`, or every atom within
+    /// `qm_radius_angstrom` of a `qm_seeds` atom.
+    fn qm_selection(
+        &self,
+        have_indices: bool,
+    ) -> Result<ferric_scf::qmmm::QmSelection, ferric_core::FerricError> {
+        use ferric_core::units::ANGSTROM_TO_BOHR;
+        use ferric_core::FerricError;
+        use ferric_scf::qmmm::QmSelection;
+        if have_indices {
+            return Ok(QmSelection::Indices(self.qm_indices.clone()));
+        }
+        let r = self.qm_radius_angstrom.ok_or_else(|| {
+            FerricError::General("[qmmm]: qm_seeds needs qm_radius_angstrom".to_string())
+        })?;
+        if self.qm_seeds.is_empty() {
+            return Err(FerricError::General(
+                "[qmmm]: qm_radius_angstrom needs qm_seeds to measure from".to_string(),
+            ));
+        }
+        if !(r.is_finite() && r > 0.0) {
+            return Err(FerricError::General(format!(
+                "[qmmm]: qm_radius_angstrom must be finite and > 0, got {r}"
+            )));
+        }
+        Ok(QmSelection::WithinRadius {
+            seeds: self.qm_seeds.clone(),
+            radius: r * ANGSTROM_TO_BOHR,
+        })
+    }
+
     pub fn to_system(
         &self,
         qm_charge: i32,
         qm_multiplicity: usize,
     ) -> Result<ferric_scf::qmmm::QmmmSystem, ferric_core::FerricError> {
         use ferric_core::FerricError;
-        use ferric_scf::qmmm::{BoundaryChargeScheme, QmSelection, QmmmAtom, QmmmSystem};
+        use ferric_scf::qmmm::{BoundaryChargeScheme, QmmmAtom, QmmmSystem};
 
         use ferric_core::units::ANGSTROM_TO_BOHR;
 
@@ -13391,29 +13824,9 @@ impl QmmmCfg {
             check("qm_seeds", i)?;
         }
 
-        let selection = if have_indices {
-            QmSelection::Indices(self.qm_indices.clone())
-        } else {
-            let r = self.qm_radius_angstrom.ok_or_else(|| {
-                FerricError::General("[qmmm]: qm_seeds needs qm_radius_angstrom".to_string())
-            })?;
-            if self.qm_seeds.is_empty() {
-                return Err(FerricError::General(
-                    "[qmmm]: qm_radius_angstrom needs qm_seeds to measure from".to_string(),
-                ));
-            }
-            if !(r.is_finite() && r > 0.0) {
-                return Err(FerricError::General(format!(
-                    "[qmmm]: qm_radius_angstrom must be finite and > 0, got {r}"
-                )));
-            }
-            QmSelection::WithinRadius {
-                seeds: self.qm_seeds.clone(),
-                radius: r * ANGSTROM_TO_BOHR,
-            }
-        };
-
-        let mut sys = QmmmSystem::new(&atoms, selection, qm_charge, qm_multiplicity)?;
+        let selection = self.qm_selection(have_indices)?;
+        let mut sys = QmmmSystem::new(&atoms, selection, qm_charge, qm_multiplicity)?
+            .with_residue_ids(pqr_residue_ids(&atoms_pqr))?;
 
         if !self.link_bonds.is_empty() {
             for b in &self.link_bonds {
@@ -13468,6 +13881,113 @@ mod cli_wired_keys_tests {
             .validate_cli_wired_keys()
             .expect_err("config must be refused");
         assert!(e.contains(needle), "error must mention {needle:?}: {e}");
+    }
+
+    // ---- [scf] save_reference / read_reference ----
+
+    fn reference(c: &Config) -> Result<(), String> {
+        c.validate_reference_io()
+    }
+
+    #[test]
+    fn reference_keys_are_accepted_on_the_correlated_energy_kinds() {
+        for (kind, mult) in [
+            ("rimp2", 1),
+            ("ccsd", 1),
+            ("drpa", 1),
+            ("gw", 1),
+            ("tddft", 1),
+            ("rimp2", 2),
+            ("gw", 2),
+            ("pdep-rpa", 2),
+        ] {
+            let save = cfg(kind, "energy", mult, "[scf]\nsave_reference = \"r.npz\"\n");
+            reference(&save).unwrap_or_else(|e| panic!("{kind} save: {e}"));
+            let read = cfg(
+                kind,
+                "energy",
+                mult,
+                "[scf]\nread_reference = \"r.npz\"\nread_reference_other_build = true\n",
+            );
+            reference(&read).unwrap_or_else(|e| panic!("{kind} read: {e}"));
+        }
+        // Neither key: nothing to check.
+        reference(&cfg("rhf", "optimize", 1, "")).unwrap();
+    }
+
+    #[test]
+    fn reference_keys_are_refused_where_no_shared_reference_is_solved() {
+        let save = "[scf]\nsave_reference = \"r.npz\"\n";
+        let read = "[scf]\nread_reference = \"r.npz\"\n";
+        for (kind, task, mult, extra, needle) in [
+            ("rhf", "energy", 1, save, "kind = \"rhf\""),
+            ("ksdft", "energy", 1, save, "kind = \"ksdft\""),
+            // Open-shell ksdft dispatches to the UKS route.
+            ("ksdft", "energy", 2, read, "kind = \"uhf\""),
+            ("uhf", "energy", 2, save, "kind = \"uhf\""),
+            ("rohf", "energy", 2, read, "kind = \"rohf\""),
+            ("b2plyp", "energy", 1, save, "double hybrid"),
+            ("wb97x-l-v", "energy", 1, read, "double hybrid"),
+            ("casscf", "energy", 1, save, "its own reference SCF"),
+            ("opmp3", "energy", 1, read, "its own reference SCF"),
+            ("rimp2", "optimize", 1, save, "task = \"energy\" only"),
+            ("rimp2", "frequencies", 1, read, "task = \"energy\" only"),
+            (
+                "rimp2",
+                "energy",
+                1,
+                "[scf]\nsave_reference = \"a\"\nread_reference = \"b\"\n",
+                "cannot both be set",
+            ),
+            (
+                "rimp2",
+                "energy",
+                1,
+                "[scf]\nread_reference_other_build = true\n",
+                "read only with",
+            ),
+            (
+                "rimp2",
+                "energy",
+                1,
+                "[scf]\nsave_reference = \"a\"\nread_reference_other_build = true\n",
+                "read only with",
+            ),
+            (
+                "rimp2",
+                "energy",
+                1,
+                "[scf]\nsave_reference = \" \"\n",
+                "empty string",
+            ),
+            (
+                "rimp2",
+                "energy",
+                1,
+                "[scf]\nread_reference = \"a\"\ncheck_stability = true\n",
+                "check_stability",
+            ),
+            (
+                "rimp2",
+                "energy",
+                1,
+                "[scf]\nread_reference = \"a\"\nstability_descent = true\n",
+                "stability_descent",
+            ),
+        ] {
+            let e = reference(&cfg(kind, task, mult, extra))
+                .expect_err(&format!("{kind}/{task}/{mult}: {extra}"));
+            assert!(e.contains(needle), "{kind}/{task}: {e}");
+        }
+        // Saving a reference whose run also checks stability is fine: the
+        // verdict is simply not stored.
+        reference(&cfg(
+            "rimp2",
+            "energy",
+            1,
+            "[scf]\nsave_reference = \"a\"\ncheck_stability = true\n",
+        ))
+        .unwrap();
     }
 
     // ---- [pcm] ----
@@ -14190,6 +14710,64 @@ mod cli_wired_keys_tests {
             &cfg("rimp2", "energy", 1, "[mp2]\natt_omega = 1.0\n"),
             "\"att-rimp2\" only",
         );
+    }
+
+    #[test]
+    fn ri_section_and_cdd_keys_are_strict() {
+        let erfc = "[ri]\nmetric = \"erfc\"\nomega_bohr = 0.1\n";
+        for kind in ["rimp2", "laplace-mp2", "laplace-sos-mp2", "pdep-rpa"] {
+            let c = cfg(kind, "energy", 1, erfc);
+            c.validate_cli_wired_keys().unwrap();
+            assert!(!c.ri_fit().unwrap().is_coulomb());
+        }
+        // absent section: Coulomb, and no CDD route
+        let c = cfg("laplace-mp2", "energy", 1, "");
+        assert!(c.ri_fit().unwrap().is_coulomb() && !c.uses_cdd_route());
+        assert!(cfg("laplace-mp2", "energy", 1, "[mp2]\ncdd_tol = 1e-6\n").uses_cdd_route());
+        for (kind, task, mult, body, needle) in [
+            ("ccsd", "energy", 1, erfc, "[ri] applies to"),
+            ("rimp2", "optimize", 1, erfc, "energy-only"),
+            ("rimp2", "energy", 3, erfc, "closed-shell"),
+            ("laplace-mp2", "energy", 3, erfc, "closed-shell"),
+            ("rimp2", "energy", 1, "[ri]\nmetric = \"erf\"\nomega_bohr = 0.1\n", "[ri]"),
+            ("rimp2", "energy", 1, "[ri]\nmetric = \"erfc\"\n", "[ri]"),
+            ("rimp2", "energy", 1, "[ri]\nomega_bohr = 0.1\n", "[ri]"),
+            ("rimp2", "energy", 1, "[mp2]\ncdd_tol = 1e-6\n", "laplace-mp2"),
+            ("laplace-mp2", "energy", 1, "[mp2]\ncdd_tol = -1.0\n", "finite and >= 0"),
+            (
+                "laplace-sos-mp2",
+                "energy",
+                1,
+                "[mp2]\ncdd_pair_thresh = 1e-6\n",
+                "SOS-MP2 does not have",
+            ),
+            (
+                "laplace-sos-mp2",
+                "energy",
+                1,
+                "[mp2]\ncdd_tol = 1e-6\nsos_formulation = \"ao\"\n",
+                "sos_formulation",
+            ),
+            (
+                "pdep-rpa",
+                "energy",
+                1,
+                "[ri]\nmetric = \"erfc\"\nomega_bohr = 0.1\n[rpa]\nexport_npz = \"x.npz\"\n",
+                "energy-only",
+            ),
+            (
+                "rimp2",
+                "energy",
+                1,
+                "[ri]\nmetric = \"erfc\"\nomega_bohr = 0.1\n[local]\nscheme = \"amplitude-threshold\"\neps = 1e-3\n",
+                "[local]",
+            ),
+        ] {
+            refused(&cfg(kind, task, mult, body), needle);
+        }
+        // a typo'd key in [ri] fails to parse at all (deny_unknown_fields)
+        let bad = "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"sto-3g\"\n[method]\nkind = \"rimp2\"\n[ri]\nomega = 0.1\n";
+        assert!(toml::from_str::<Config>(bad).is_err());
     }
 
     #[test]

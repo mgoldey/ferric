@@ -43,6 +43,7 @@ use ferric_rpa::{rs_mp2_lr_rpa, RsMp2RpaConfig, RsMp2RpaFormulation};
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::{ScfResult, Spin};
+use ferric_testkit::reference::num;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -84,12 +85,6 @@ fn reference(system: &str) -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("reference field {ptr} missing or not a number"))
 }
 
 /// PySCF's orbitals for spin `tag` in ferric AO order: (C, eps, nocc).
@@ -150,10 +145,7 @@ fn load(system: &str) -> Sys {
         &mol,
         &obs,
         &bounds,
-        &RhfConfig {
-            max_iter: 400,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_max_iter(400),
     )
     .unwrap_or_else(|e| panic!("{label}: UHF failed: {e:?}"));
     let (ca, ea, na) = spin_orbitals(&r, "alpha");

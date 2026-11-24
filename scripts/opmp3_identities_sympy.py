@@ -49,6 +49,13 @@ Identities (each an exact sympy identity unless marked numerical):
       W2 (negative definite), W3 equals the paper's eigen route
       (analysis_code/resummation.py): sum_i (S^-1 A S)_ii / (1 - zeta_i),
       zeta = eig(A^-1 B); and is additive over a random block-diagonal pair.
+  (e) NUMERICAL, the reference energies of Eq. (@eq:opmp3-5): a random
+      Hamiltonian whose reference Fock operator is semicanonical (diagonal
+      in the oo and vv blocks) with a nonzero ov block F_ia.
+        e1  <0|H|0> == E_HF[rho] = 1/2 sum_i (h_ii + F_ii);
+        e2  brute-force RS E2 in the determinant space == E_NBS + Tr W^(2),
+            E_NBS = sum_ia F_ia^2 / (e_i - e_a) (singles_energy), and E_NBS
+            is not negligible on the model (-3.0e-2 Ha), so the check bites.
 
 Mutations (set OPMP3_MUTATION), each turns the script red:
   os_eighth         Eq. 18 with prefactor 1/8 instead of 1/4 (the dropped
@@ -60,6 +67,8 @@ Mutations (set OPMP3_MUTATION), each turns the script red:
                     Pade inside a block): b1, b3, c1 and both N checks fail.
   w_unsymmetrized   W_ij = 1/8 sum c_ikab <jk||ab> without the (i<->j) half:
                     a2, a3, a4, d1 and d2 fail.
+  nbs_gap_flipped   E_NBS with e_a - e_i in the denominator: both e2 checks
+                    fail.
 
 Measured 2026-11-14 (4.7 s): the unmutated run exits 0 (d2: RS E2
 -0.123479477730 and E3 0.003329488158 equal Tr W^(2), Tr W^(3) to the
@@ -69,8 +78,9 @@ the checks listed above red.
 Exit code 0 iff every check passes; "all identities hold" is printed then.
 
 Book boxes (book/src/10-mp2/11-opmp3.md) cite claim a3 (the Eq. 18 split),
-claim b1 (the Pade series, with b2, b3, c1-c3 and N beside it) and claim d2
-(the traces against Rayleigh-Schroedinger theory, with d1 beside it).
+claim b1 (the Pade series, with b2, b3, c1-c3 and N beside it), claim d2
+(the traces against Rayleigh-Schroedinger theory, with d1 beside it) and
+claim e2 (E_NBS, with e1 beside it).
 """
 
 from __future__ import annotations
@@ -83,7 +93,14 @@ import numpy as np
 import sympy as sp
 
 MUTATION = os.environ.get("OPMP3_MUTATION", "")
-MUTATIONS = ("", "os_eighth", "pade_swapped", "scalar_in_block", "w_unsymmetrized")
+MUTATIONS = (
+    "",
+    "os_eighth",
+    "pade_swapped",
+    "scalar_in_block",
+    "w_unsymmetrized",
+    "nbs_gap_flipped",
+)
 if MUTATION not in MUTATIONS:
     sys.exit(f"unknown OPMP3_MUTATION {MUTATION!r}")
 
@@ -495,6 +512,43 @@ def check_numerical_traces():
     check("d2 Tr W^(3) == RS E3", abs(t3 - e3_rs) < 1e-12 * max(1.0, abs(e3_rs)))
 
 
+# ------------------------------------------------------------------ e: E_HF[rho], E_NBS
+def e_nbs(f_ov, e):
+    """sum_ia F_ia^2 / (e_i - e_a): SemicanonicalSpin::singles_energy."""
+    gap = e[:NOCC, None] - e[None, NOCC:]
+    if MUTATION == "nbs_gap_flipped":
+        gap = -gap
+    return float(np.sum(f_ov * f_ov / gap))
+
+
+def check_numerical_singles():
+    print("== (e) E_HF[rho] and E_NBS vs brute-force Rayleigh-Schroedinger")
+    rng = np.random.default_rng(11)
+    _, asym, e = random_hamiltonian(rng)
+    # A non-Brillouin reference: the Fock operator of |0..NOCC-1> is diagonal
+    # in the occupied and virtual blocks (semicanonical) with an ov block.
+    f_ov = rng.standard_normal((NOCC, NSO - NOCC)) * 0.1
+    fock = np.diag(e)
+    fock[:NOCC, NOCC:] = f_ov
+    fock[NOCC:, :NOCC] = f_ov.T
+    h = fock - sum(asym[:, i, :, i] for i in range(NOCC))
+    hm, dets = hamiltonian_matrix(h, asym)
+    ref = dets.index(sum(1 << p for p in range(NOCC)))
+    e_hf = 0.5 * sum(h[i, i] + fock[i, i] for i in range(NOCC))
+    print(f"   <0|H|0> {hm[ref, ref]:.12f}  1/2 Tr D(h + F) {e_hf:.12f}")
+    check("e1 <0|H|0> == E_HF[rho] = 1/2 Tr D(h + F)", abs(hm[ref, ref] - e_hf) < 1e-12)
+    e2_rs, _ = rs_e2_e3(h, asym, e)
+    oovv, c1, _ = amplitudes(asym, e)
+    doubles = np.trace(np_w(c1, oovv))
+    nbs = e_nbs(f_ov, e)
+    print(f"   RS E2 {e2_rs:.12f}  E_NBS {nbs:.12f}  Tr W2 {doubles:.12f}")
+    check(
+        "e2 RS E2 == E_NBS + Tr W^(2) (semicanonical, F_ia != 0)",
+        abs(e2_rs - nbs - doubles) < 1e-12 * max(1.0, abs(e2_rs)),
+    )
+    check("e2 E_NBS is negative and not negligible", nbs < -1e-3, f"E_NBS {nbs:.3e}")
+
+
 def main() -> int:
     if MUTATION:
         print(f"MUTATION {MUTATION}")
@@ -503,6 +557,7 @@ def main() -> int:
     prove_c()
     check_numerical_pade()
     check_numerical_traces()
+    check_numerical_singles()
     if failures:
         print(f"{failures} identity check(s) FAILED")
         return 1

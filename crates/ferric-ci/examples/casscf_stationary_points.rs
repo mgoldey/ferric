@@ -22,8 +22,8 @@
 use ferric_ci::casscf::{optimize, CasScfConfig, CasScfOptimizer, CasScfProblem, CasScfResult};
 use ferric_ci::driver::{rhf_start, ScfStart};
 use ferric_core::mol::Molecule;
-use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_scf::PreparedSystem;
 use ndarray::{Array1, Array2};
 use ndarray_linalg::{Eigh, UPLO};
 use std::path::PathBuf;
@@ -186,15 +186,9 @@ fn main() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata/molecules/n2.xyz");
     let mol = Molecule::load_xyz(path.to_str().unwrap()).unwrap();
     let bs = ferric_core::basis::bundled("cc-pvdz").unwrap();
-    let prep = PreparedBasis::new(&mol, &bs).unwrap();
-    let rhf = rhf_start(
-        &ParallelContext::default(),
-        &mol,
-        &prep,
-        ScfStart::default(),
-        None,
-    )
-    .unwrap();
+    let sys = PreparedSystem::new(mol, &bs).unwrap();
+    let (mol, prep) = (sys.mol(), sys.basis());
+    let rhf = rhf_start(&sys, ScfStart::default(), None).unwrap();
     let cfg = CasScfConfig {
         n_core: 2,
         n_active: 10,
@@ -212,9 +206,9 @@ fn main() {
         c0.column_mut(p).assign(&cq);
         c0.column_mut(q).assign(&cp);
     }
-    let problem = CasScfProblem::new(&mol, &prep, c0.ncols(), &cfg).unwrap();
+    let problem = CasScfProblem::new(mol, prep, c0.ncols(), &cfg).unwrap();
     let r = optimize(&problem, c0, &cfg).unwrap();
-    let mut low = report("start", &mol, &prep, &problem, &r);
+    let mut low = report("start", mol, prep, &problem, &r);
     let mut cur = r;
     if let Some((scale, max)) = follow {
         for step in 1..=max {
@@ -228,7 +222,7 @@ fn main() {
             let kv: Vec<f64> = low.column(0).iter().map(|x| scale * x).collect();
             let c = problem.rotate(&cur.mo_coeff, &kv).unwrap();
             cur = optimize(&problem, c, &cfg).unwrap();
-            low = report(&format!("follow {step}"), &mol, &prep, &problem, &cur);
+            low = report(&format!("follow {step}"), mol, prep, &problem, &cur);
         }
     }
 }

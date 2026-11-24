@@ -20,10 +20,20 @@ Checks (each label carries "(claim X)"):
   L4  The pair density T T^T + T^T T is symmetric and positive semidefinite,
       its trace is 2 ||T||_F^2, and its eigenvalues sorted descending give the
       occupation numbers the PNO truncation thresholds (numerics).
+  L5  The discarded PNO weight: with P = Q Q^T the projector onto the kept
+      eigenvectors of the pair density, the dropped occupations sum to
+      ||(1-P) T||_F^2 + ||T (1-P)||_F^2 (numerics, every truncation rank).
+  L6  Restricting the fit to an auxiliary domain D can only lower each
+      fitted diagonal element: A^T V^-1 A - A_D^T V_DD^-1 A_D = y^T S^-1 y
+      with S = V_bb - V_bD V_DD^-1 V_Db and y = A_b - V_bD V_DD^-1 A_D
+      (b = outside D), which is positive semidefinite (symbols on a 2+1
+      block, numerics on a 4+3 block).
 
 Mutations (each turns the script red; exact one-occurrence substitutions):
   semicanonicalization replaced by the diagonal of f_pno     (L3 fails)
   whitened Gram product W_i^T W_j with W_i^T W_i              (L1 fails)
+  second index dropped from the discarded weight               (L5 fails)
+  V_bD V_DD^-1 A_D dropped from y                              (L6 fails)
 Exits nonzero on any failed check; prints "FAIL <label>".
 """
 
@@ -168,9 +178,72 @@ def pno_checks():
     )
 
 
+def discarded_weight_checks():
+    rng = np.random.default_rng(11)
+    nv = 7
+    t = rng.standard_normal((nv, nv))
+    d = t @ t.T + t.T @ t
+    evals, evecs = np.linalg.eigh(d)
+    order = np.argsort(evals)[::-1]
+    worst = 0.0
+    for nkeep in range(nv + 1):
+        q = evecs[:, order[:nkeep]]
+        comp = np.eye(nv) - q @ q.T
+        dropped = float(np.sum(evals[order[nkeep:]]))
+        norm = discarded_norm(t, comp)
+        worst = max(worst, abs(dropped - norm) / max(1.0, abs(dropped)))
+    check(
+        "L5 dropped PNO occupations equal the amplitude norm outside the kept space (claim L5)",
+        worst < 1e-12,
+        f"max rel err {worst:.1e}",
+    )
+
+
+def discarded_norm(t, comp):
+    """||(1-P) T||_F^2 + ||T (1-P)||_F^2."""
+    return float(np.sum((comp @ t) ** 2) + np.sum((t @ comp) ** 2))
+
+
+def aux_restriction_residual(v, a, nd):
+    """y and S of the block elimination of V over the domain D = [:nd]."""
+    v_dd, v_db, v_bd, v_bb = v[:nd, :nd], v[:nd, nd:], v[nd:, :nd], v[nd:, nd:]
+    a_d, a_b = a[:nd, :], a[nd:, :]
+    y = a_b - v_bd * v_dd.inv() * a_d
+    s_schur = v_bb - v_bd * v_dd.inv() * v_db
+    return y, s_schur
+
+
+def aux_restriction_checks():
+    # symbols: generic symmetric positive 3x3 metric, D = first two functions
+    v = sp.Matrix(3, 3, lambda i, j: sp.Symbol(f"v{min(i, j)}{max(i, j)}"))
+    a = sp.Matrix(3, 1, lambda i, j: sp.Symbol(f"a{i}"))
+    y, s_schur = aux_restriction_residual(v, a, 2)
+    lhs = (a.T * v.inv() * a)[0] - (a[:2, :].T * v[:2, :2].inv() * a[:2, :])[0]
+    rhs = (y.T * s_schur.inv() * y)[0]
+    ok_sym = sp.simplify(lhs - rhs) == 0
+    # numerics: 4+3 block, two densities
+    rng = np.random.default_rng(12)
+    m = rng.standard_normal((7, 7))
+    vnum = sp.Matrix(m @ m.T + 7 * np.eye(7))
+    anum = sp.Matrix(rng.standard_normal((7, 2)))
+    yn, sn = aux_restriction_residual(vnum, anum, 4)
+    full = anum.T * vnum.inv() * anum
+    dom = anum[:4, :].T * vnum[:4, :4].inv() * anum[:4, :]
+    diff = np.array((full - dom - yn.T * sn.inv() * yn).evalf(), dtype=float)
+    gap = np.array((full - dom).evalf(), dtype=float)
+    ok_num = np.max(np.abs(diff)) < 1e-10 and np.linalg.eigvalsh(gap).min() > -1e-12
+    check(
+        "L6 domain restriction lowers each fitted diagonal: gap = y^T S^-1 y (claim L6)",
+        ok_sym and ok_num,
+        f"num {np.max(np.abs(diff)):.1e}",
+    )
+
+
 def main():
     fit_checks()
     pno_checks()
+    discarded_weight_checks()
+    aux_restriction_checks()
     if failures:
         print(f"{len(failures)} check(s) failed")
         sys.exit(1)

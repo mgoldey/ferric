@@ -72,9 +72,12 @@ zero smoothly at the end of the interval, so the mapped rule meets no
 singularity at $x = 1$.
 
 **MiniMax** is not a minimax grid. It is the Gauss–Legendre map with $u_0$
-taken from a three-entry table, `ferric-rpa/src/quadrature.rs::optimized_u0`
-(the values documented as Furche, J. Chem. Phys. 122, 164106 (2005)). The
-name is kept because it is the configuration string. The configured $u_0$ is
+taken from the three values of
+`ferric-rpa/src/quadrature.rs::optimized_u0`; their origin is not
+documented. The name is kept because it is the configuration string. The
+minimax grids ferric does have are the Laplace grids of section
+@sec:laplace-mp2-quadrature, which the Laplace $\chi_0$ backend of section
+@sec:laplace-ao-chi0 uses. The configured $u_0$ is
 not read: `QuadratureScheme::honours_u0` is false for MiniMax, and callers
 use it to warn instead of dropping a user setting silently.
 
@@ -83,13 +86,21 @@ nodes of the second kind. Its weight is the Chebyshev-2 weight
 $\frac{\pi}{n+1}\sin^2\theta_k$, times $1/\sqrt{1 - x_k^2} = 1/\sin\theta_k$,
 times the Jacobian $\frac{u_0\pi}{4}\sec^2\frac{\pi(1 + x_k)}{4}$.
 Substitute $x = \cos\theta$ and the rule is the trapezoid rule in $\theta$
-with step $\pi/(n + 1)$; the endpoints carry zero weight. So its error on a
-smooth integrand falls as $n^{-2}$. For the Lorentzian $f = u_0/(u_0^2 + u^2)$ the
+with step $h = \pi/(n + 1)$ applied to $g(\theta) = \sin\theta\,F(\cos\theta)$,
+where $F(x) = f(u(x))\,du/dx$ is the pull-back; the endpoints carry zero
+weight. By the Euler–Maclaurin formula the trapezoid error starts at
+$\tfrac{h^2}{12}\big[g'(\pi) - g'(0)\big] = -\tfrac{h^2}{12}\big[F(1) + F(-1)\big]$,
+which is not zero in general, so the error on a smooth integrand falls as
+$n^{-2}$. For the Lorentzian $f = u_0/(u_0^2 + u^2)$ the
 Jacobian cancels $f$ exactly: with $u = u_0\tan\phi$, $f = 1/(u_0\sec^2\phi)$,
 so $f\,du/dx = \pi/4$. The rule is then $\frac{\pi^2}{4(n+1)}\sum_k\sin\theta_k$, and
 the sum of sines gives the closed form the tests use,
 
 $$ \sum_k w_k f(u_k) = \frac{\pi}{4}\,\frac{\pi}{n+1}\cot\frac{\pi}{2(n+1)} \quad\text{at every } n . $$
+
+Expand $h\cot(h/2) = 2 - h^2/6 + O(h^4)$: the rule gives
+$\pi/2 - \pi h^2/24$, and the Euler–Maclaurin term with $F = \pi/4$ is the
+same $-\pi h^2/24$.
 
 Its largest node is at $k = 1$. Rewrite the tangent as a cotangent of the
 complementary angle,
@@ -144,15 +155,16 @@ the largest-node formula written out above; the last is pinned by the test
 
 ## Defaults {#quadratures-defaults}
 
-| Entry point | Scheme | $n$ | $u_0$ |
-|---|---|---|---|
-| Library `QuadratureConfig::default()`, CLI `[rpa]` unset, Python `run_pdep_rpa`, `run_gw` | Gauss–Legendre | 20 | 0.5 |
-| CLI `task = "optimize"` with `pdep-rpa` | Gauss–Legendre | 16 | 0.5 |
-| Exact dRPA (`exact_drpa_config`; CLI `drpa`) | Gauss–Legendre | 48 | 0.5 |
+| Entry point | Scheme | $n$ | $u_0$ | Error, water / cc-pVDZ full rank (Ha) |
+|---|---|---|---|---|
+| Library `QuadratureConfig::default()`, CLI `[rpa]` unset, Python `run_pdep_rpa`, `run_gw` | Gauss–Legendre | 20 | 0.5 | $-3.4\times10^{-6}$ |
+| CLI `task = "optimize"` with `pdep-rpa` | Gauss–Legendre | 16 | 0.5 | $+2.6\times10^{-6}$ |
+| Exact dRPA (`exact_drpa_config`; CLI `drpa`) | Gauss–Legendre | 48 | 0.5 | $-5.0\times10^{-11}$ |
 
-The table is the doc comment of `QuadratureConfig` in
+The first four columns are the doc comment of `QuadratureConfig` in
 `crates/ferric-rpa/src/config.rs`, pinned by its test
-`quadrature_defaults_by_entry_point`.
+`quadrature_defaults_by_entry_point`. The error column is the Python run
+below, against 96 nodes.
 
 **Why 48 for exact dRPA.** The order was read off a convergence table against
 independent plasmon references, Gauss–Legendre at $u_0 = 0.5$ with 24 to 200
@@ -163,7 +175,7 @@ correlated, 32 nodes miss by up to $1.3\times10^{-8}$ Ha (water / cc-pVDZ) and
 $2.7\times10^{-10}$. From 64 on, rounding grows past the quadrature error, so
 more nodes stop helping. The test asserts the chosen order.
 
-The same convergence on the Python side, from the `589b50832` build: the
+The same convergence on the Python side, from the `3f612e0b3` build: the
 full-rank energy of water / cc-pVDZ against the number of nodes, for
 Gauss–Legendre and the Chebyshev-tan map, measured from a 96-node
 Gauss–Legendre run rather than from a plasmon reference.
@@ -178,7 +190,7 @@ aux = ferric.BasisSet.bundled("cc-pvdz-ri")
 ref = ferric.run_pdep_rpa(mol, bs, aux, trunc_thresh=0.0, quadrature="gauss-legendre",
                           n_quad=96, u0=0.5).e_rpa
 for scheme in ["gauss-legendre", "chebyshev-tan"]:
-    for n in [8, 16, 24, 32, 48]:
+    for n in [8, 16, 20, 24, 32, 48]:
         e = ferric.run_pdep_rpa(mol, bs, aux, trunc_thresh=0.0, quadrature=scheme,
                                 n_quad=n, u0=0.5).e_rpa
         print(f"{scheme:15s} n={n:3d}  E_c={e:.12f}  E_c - E_c(GL,96)={e - ref:+.2e}")
@@ -187,38 +199,29 @@ for scheme in ["gauss-legendre", "chebyshev-tan"]:
 ```text
 gauss-legendre  n=  8  E_c=-0.231575889230  E_c - E_c(GL,96)=-3.56e-04
 gauss-legendre  n= 16  E_c=-0.231216906009  E_c - E_c(GL,96)=+2.64e-06
+gauss-legendre  n= 20  E_c=-0.231222968951  E_c - E_c(GL,96)=-3.42e-06
 gauss-legendre  n= 24  E_c=-0.231219461038  E_c - E_c(GL,96)=+8.58e-08
 gauss-legendre  n= 32  E_c=-0.231219560344  E_c - E_c(GL,96)=-1.35e-08
 gauss-legendre  n= 48  E_c=-0.231219546916  E_c - E_c(GL,96)=-5.02e-11
 chebyshev-tan   n=  8  E_c=-0.230166784099  E_c - E_c(GL,96)=+1.05e-03
 chebyshev-tan   n= 16  E_c=-0.231058388653  E_c - E_c(GL,96)=+1.61e-04
+chebyshev-tan   n= 20  E_c=-0.231106247133  E_c - E_c(GL,96)=+1.13e-04
 chebyshev-tan   n= 24  E_c=-0.231147674205  E_c - E_c(GL,96)=+7.19e-05
 chebyshev-tan   n= 32  E_c=-0.231179296718  E_c - E_c(GL,96)=+4.03e-05
 chebyshev-tan   n= 48  E_c=-0.231201208855  E_c - E_c(GL,96)=+1.83e-05
 ```
 
+The default 20-node Gauss–Legendre grid misses by $-3.4\times10^{-6}$ Ha
+here, more than the 16-node grid ($+2.6\times10^{-6}$), because the error
+changes sign between 16 and 24 nodes. Chebyshev–Tan at 48 nodes is still
+worse than Gauss–Legendre at 16. On the dense backend there is no reason to
+choose Chebyshev–Tan; it exists for the Laplace backend (section
+@sec:laplace-ao-chi0-grid).
+
 **$u_0$.** Only $u_0 = 0.5$ has been calibrated on the production (dense
 $\chi_0$) path; there the scheme changes only the quadrature error. The
-Laplace $\chi_0$ backend (section @sec:laplace-ao-chi0) falls back to the dense kernel at any
-node with $u\,t_{\max} > \pi/2$. A smaller $u_0$ moves nodes to smaller $u$,
-so it keeps more of them on the Laplace path.
-`CHEBYSHEV_TAN_RECOMMENDED_U0 = 0.2` is calibrated for that backend only, and
-costs a coarser high-frequency tail.
-
-At equal $(n, u_0)$, Chebyshev–Tan and Gauss–Legendre send about the same
-number of nodes to the fallback, and which sends more depends on $t_{\max}$.
-At $n = 20$:
-
-| $t_{\max}$ | $u_0$ | Nodes on the Laplace path, Chebyshev–Tan | Gauss–Legendre |
-|---|---|---|---|
-| $\approx 1.5$ (H2O / cc-pVDZ) | 0.2 | 16 | 15 |
-| $\approx 1.5$ (H2O / cc-pVDZ) | 0.5 | 13 | 12 |
-
-At $t_{\max} = 2\pi$ the order reverses: Chebyshev–Tan sends one node more to
-the fallback, 13 against 12 at $u_0 = 0.5$. Lowering $u_0$ moves more nodes
-onto the Laplace path than the choice of scheme does. The CLI and the Python
-bindings always use `Chi0Backend::Dense`; `Chi0Backend::Laplace`
-(`crates/ferric-rpa/src/laplace_chi0.rs`) is a library option.
+choice of $u_0$ and scheme for the Laplace $\chi_0$ backend is in section
+@sec:laplace-ao-chi0-grid.
 
 ## Numerical anchors {#quadratures-numerical-anchors}
 

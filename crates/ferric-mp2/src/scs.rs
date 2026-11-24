@@ -17,6 +17,7 @@ use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
+use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 
 use ferric_core::units::ANGSTROM_TO_BOHR;
@@ -69,6 +70,19 @@ impl std::fmt::Display for ScsMp2Result {
             self.total_energy, self.e_os, self.e_ss
         )
     }
+}
+
+/// [`scs_mp2`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn scs_mp2_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    config: &ScsMp2Config,
+) -> Result<ScsMp2Result, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(rhf)?;
+    scs_mp2(sys.mol(), sys.basis(), aux.basis(), rhf, config)
 }
 
 /// Standard SCS-MP2: E = c_OS * E_OS + c_SS * E_SS.
@@ -155,6 +169,19 @@ impl Default for ScsMp2TerfcConfig {
             memory_budget_bytes: None,
         }
     }
+}
+
+/// [`scs_mp2_2terfc`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn scs_mp2_2terfc_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    config: &ScsMp2TerfcConfig,
+) -> Result<ScsMp2Result, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(rhf)?;
+    scs_mp2_2terfc(sys.mol(), sys.basis(), aux.basis(), rhf, config)
 }
 
 /// SCS-MP2(2terfc): E = c_OS * E_OS(r0_1) + c_SS * [E_SS(r0_2) - E_SS(r0_1)].
@@ -273,10 +300,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
@@ -296,10 +320,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();

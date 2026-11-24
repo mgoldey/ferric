@@ -11,6 +11,11 @@
 //! The fix refuses that exit while the commutator is above the energy-to-Pulay
 //! crossover and restarts plain Pulay DIIS from a clean history.
 //!
+//! 2026-11-19: the stalls below were driven by an EDIIS curvature twice the
+//! exact HF interpolant (`diis::tests::ediis_model_equals_hf_energy_of_the_
+//! interpolated_density`). With the exact factor none of these fields stalls;
+//! the veto stays as a guard and is pinned at unit level.
+//!
 //! Exactness anchor: the energy equals plain Pulay DIIS from the same start.
 //! Default Pulay is untouched by construction (it has no veto bound;
 //! `diis::tests::veto_bound_and_pulay_fallback`). Cheap witnesses: benzene/
@@ -81,19 +86,18 @@ fn solve(
     let prep = PreparedBasis::new(mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        max_iter,
-        diis_flavor: flavor,
-        diis_switch_thresh: 1e-1,
-        external_potential: Some(ext.clone()),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_max_iter(max_iter)
+        .with_external_potential(ext.clone());
+    cfg.diis_flavor = flavor;
+    cfg.diis_switch_thresh = 1e-1;
     solve_rhf(&ParallelContext::default(), mol, &prep, op, &bounds, &cfg).unwrap()
 }
 
-/// Benzene/STO-3G in 600 and in 2000 charges (seed 11): EDIIS reaches the
-/// density-settled exit at iteration 5 with err_max 0.12 / 0.45. Without the
-/// fix it reported `converged` at a wrong energy; with it, it matches Pulay.
+/// Benzene/STO-3G in 600 and in 2000 charges (seed 11): before the EDIIS
+/// curvature fix (2026-11-19) EDIIS reached the density-settled exit at
+/// iteration 5 with err_max 0.12 / 0.45; without the veto it reported
+/// `converged` at a wrong energy. Either way the run must match Pulay.
 #[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn ediis_does_not_report_a_stalled_extrapolation_as_converged() {
@@ -119,33 +123,34 @@ fn ediis_does_not_report_a_stalled_extrapolation_as_converged() {
     }
 }
 
-/// When the veto refuses the exit on the LAST allowed iteration the result is
-/// an honest MaxIter: not converged, and the report names the commutator as the
-/// unmet criterion instead of "all criteria met" (benzene, 600 charges, seed 11:
-/// the stall is at iteration 5).
+/// Benzene/STO-3G in 600 charges (seed 11) was the cheap stall witness: with
+/// the former EDIIS curvature (twice the exact HF interpolant) the density
+/// settled at iteration 5 with err_max 0.12 and the veto restarted on Pulay
+/// (16 iterations). With the exact interpolant (2026-11-19) the stall is gone:
+/// no fallback, converged to the Pulay energy in 15 iterations. A search over
+/// benzene/water/CH3Br in 600-3000 charges x 6 seeds found no stall for
+/// EDIIS or ADIIS, so the veto and its MaxIter report are pinned at unit level
+/// (`rhf::tests::veto_refuses_a_converged_exit_above_the_energy_diis_crossover`,
+/// `result::tests::unmet_and_describe_name_the_commutator_when_the_veto_refused_this_exit`).
 #[test]
-fn a_vetoed_exit_on_the_last_iteration_is_reported_as_unmet() {
+fn exact_ediis_curvature_does_not_stall_in_the_former_witness_field() {
     let mol = Molecule::load_xyz("../../testdata/molecules/benzene.xyz").unwrap();
     let ext = field(&mol, 600, 11, -3.0);
-    let r = solve(&mol, &ext, DiisFlavor::Ediis, 5);
-    assert!(!r.converged, "a vetoed exit must not be converged");
-    assert_eq!(r.exit, ferric_scf::result::ScfExit::MaxIter);
+    let r = solve(&mol, &ext, DiisFlavor::Ediis, 200);
+    assert!(r.converged);
     let rep = r.convergence.expect("RHF carries a convergence report");
-    let fb = rep.diis_fallback.expect("the fallback is recorded");
-    assert_eq!((fb.iteration, fb.flavor), (5, "EDIIS"));
-    assert!(fb.err_max >= fb.bound);
-    assert_eq!(rep.unmet(), vec!["err_max"]);
-    let d = rep.describe();
     assert!(
-        d.contains("unmet: err_max") && d.contains("restarted on Pulay"),
-        "{d}"
+        rep.diis_fallback.is_none(),
+        "EDIIS stalled again: {:?}",
+        rep.diis_fallback
     );
-    // A run that restarted and then genuinely converged carries the record as
-    // a note, with nothing unmet.
-    let done = solve(&mol, &ext, DiisFlavor::Ediis, 200);
-    assert!(done.converged);
-    let rep = done.convergence.unwrap();
-    assert!(rep.diis_fallback.is_some() && rep.unmet().is_empty());
+    let plain = solve(&mol, &ext, DiisFlavor::Pulay, 200);
+    assert!(
+        (r.energy - plain.energy).abs() < 1e-8,
+        "{} vs {}",
+        r.energy,
+        plain.energy
+    );
 }
 
 /// The original #422 case (sulfamethoxazole/STO-3G, 2000 charges, net -3 e;

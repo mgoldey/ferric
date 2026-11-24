@@ -43,6 +43,7 @@ use ferric_mp2::attenuated::{AttenuatedMp2Config, BOHR_INV_PER_ANG_INV};
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::scf_jk::{ScfJk, ScfJkMode};
 use ferric_scf::warm_start::ScfWarmStart;
+use ferric_testkit::reference::num;
 use serde_json::Value;
 
 const ROW_DIR: &str = "testdata/reference/validation/u_att_rimp2_gradient_pyscf";
@@ -86,12 +87,6 @@ fn reference(system: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("reference field {ptr} missing or not a number"))
-}
-
 fn check(system: &str) {
     let r = reference(system);
     let mult = r["multiplicity"].as_u64().unwrap() as usize;
@@ -119,15 +114,12 @@ fn check(system: &str) {
         &ScfJk {
             mode: ScfJkMode::Exact,
             aux: None,
-            k_builder: None,
         },
         &mut ScfWarmStart::new(false),
-        RhfConfig {
-            density_conv: 1e-12,
-            energy_conv: 1e-13,
-            max_iter: 300,
-            ..Default::default()
-        },
+        RhfConfig::default()
+            .with_density_conv(1e-12)
+            .with_energy_conv(1e-13)
+            .with_max_iter(300),
     )
     .unwrap();
     let e_ref = num(&r, "/energy_total");

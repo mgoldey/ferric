@@ -13,7 +13,7 @@ use ndarray::Array2;
 
 fn cfg(xc: &str) -> RhfConfig {
     // Doublet OH at LDA/PBE benefits from a level shift to damp DIIS
-    // oscillations. The shift is rational-damped by err_max in solve_rohf
+    // oscillations. The shift is ramped by err_max (open_shell_level_shift_ramp)
     // so the converged state is the unshifted stationary point.
     // The SOMO/HOMO near-degeneracy on doublet OH at LDA/PBE makes plain
     // DIIS oscillate without converging. The Maximum-Overlap Method
@@ -21,15 +21,13 @@ fn cfg(xc: &str) -> RhfConfig {
     // descended into a basin, which converges these cases tightly — see
     // mom-fixes-oh-lda-plateau. We enable it for every functional (it is a
     // no-op once orbitals are well-separated, as for B3LYP/wB97X-V).
-    RhfConfig {
-        xc: Some(xc.into()),
-        energy_conv: 1e-6,
-        density_conv: 1e-3,
-        max_iter: 400,
-        level_shift: 0.2,
-        mom_after_iter: 5,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc(xc)
+        .with_energy_conv(1e-6)
+        .with_density_conv(1e-3)
+        .with_max_iter(400)
+        .with_level_shift(0.2)
+        .with_mom_after_iter(5)
 }
 
 /// Run a single ROKS calculation. The level shift plus MOM (mom_after_iter)

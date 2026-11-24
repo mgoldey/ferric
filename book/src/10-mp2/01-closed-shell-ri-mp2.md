@@ -3,18 +3,18 @@
 <!-- status: ready; registry: ri-mp2 -->
 
 Hartree–Fock gives each electron the *average* field of all the others.
-Real electrons do better than that: they see each other coming and step
-aside. MP2 is the lowest-order correction that captures this. It is
+Real electrons do better than that: they avoid each other at each
+instant. MP2 is the lowest-order correction that captures this. It is
 second-order perturbation theory, with Hartree–Fock as the starting point.
 
 This section builds closed-shell RI-MP2 from the textbook formula to the
-loop that actually runs. Almost everything later in Part V starts here:
+loop in the code. Almost everything in chapters @sec:mp2 to @sec:local-mp2 starts here:
 spin-component scaling, attenuation, orbital optimization, the Laplace
 forms and local MP2 all reuse this pair loop and these fitted integrals.
 
 The plan has three steps:
 
-1. Write the energy in spin orbitals, where it is short and obviously right.
+1. Write the energy in spin orbitals, where it is short.
 2. Sum out spin, which leaves two physically different pieces.
 3. Make the integrals cheap with density fitting, and look at the code that
    does it.
@@ -27,8 +27,10 @@ Notation:
 | $a, b$ | virtual spatial orbitals | `0..nvir`, shifted by `nocc_total` into `eps` |
 | $\mu, \nu$ | atomic orbitals | `0..nbas` |
 | $P, Q$ | auxiliary (fitting) functions | `0..naux` |
+| $\Delta_{ij}^{ab}$ | $\varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j > 0$; the energy carries an explicit minus sign | `denom` $= -\Delta_{ij}^{ab}$ |
+| $M$ | dressing matrix, $M^{\mathsf T}M = V^{-1}$ | `v_inv_sqrt` (built as `l_inv`) |
 
-Entry points: Rust `ferric_mp2::rimp2::ri_mp2`, CLI `method.kind = "rimp2"`,
+Entry points: Rust `ferric-mp2/src/rimp2.rs::ri_mp2`, CLI `method.kind = "rimp2"`,
 Python `ferric.run_rimp2`.
 
 ## The energy, and why it splits in two {#closed-shell-ri-mp2-energy-splits}
@@ -61,8 +63,8 @@ the direct integral is left. In chemists' notation that is $(ia|jb)$.
 **Same spins** ($i\alpha, j\alpha \to a\alpha, b\alpha$). Both halves
 survive, so the integral is $(ia|jb) - (ib|ja)$.
 
-Add up the spin cases. The $\tfrac14$ is cancelled by the ways of choosing
-which electron is which. The result:
+Add up the spin cases; section @sec:spin-adaptation does the count that
+cancels the $\tfrac14$ (@eq:so-mp2-spin-adaptation). The result:
 
 $$ E_{\mathrm{OS}} = -\sum_{ijab} \frac{(ia|jb)^2}{\Delta_{ij}^{ab}}, \qquad E_{\mathrm{SS}} = -\sum_{ijab} \frac{(ia|jb)\,\big[(ia|jb) - (ib|ja)\big]}{\Delta_{ij}^{ab}} . \label{eq:mp2-cs-spin-adaptation} $$
 
@@ -93,8 +95,10 @@ print(r.e_os, r.e_ss, r.e_os + r.e_ss)
 About three quarters of the correlation energy is opposite-spin. SCS-MP2
 is built on this split: MP2 overestimates one component relative to the
 other, so it scales them separately: $c_{\mathrm{OS}}E_{\mathrm{OS}} + c_{\mathrm{SS}}E_{\mathrm{SS}}$
-(section @sec:scs-and-kappa); the code returns both in `ferric-mp2/src/rimp2.rs::SpinComponents`. It also explains why SOS-MP2 (§@sec:laplace-mp2) can drop
-$E_{\mathrm{SS}}$ altogether and buy a cheaper algorithm with it.
+(section @sec:scs-and-kappa); the code returns both in
+`ferric-mp2/src/rimp2.rs::SpinComponents`. It also explains why SOS-MP2
+(section @sec:laplace-mp2) can drop $E_{\mathrm{SS}}$ altogether and buy a
+cheaper algorithm with it.
 
 > **Verified equation @eq:mp2-cs-spin-adaptation** · spin adaptation of the MP2 energy
 >
@@ -109,41 +113,13 @@ $E_{\mathrm{SS}}$ altogether and buy a cheaper algorithm with it.
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-mp2/src/rimp2.rs::pair_energy` |
 >
-> <!-- verified: id=mp2.cs.spin-adaptation; script=scripts/mp2_variant_identities.py; claim=1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/rimp2.rs::pair_energy -->
+> <!-- verified: id=mp2.cs.spin-adaptation; script=scripts/mp2_variant_identities.py; claim=1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/rimp2.rs::pair_energy; registry=ri-mp2 -->
 
-### Reading the inner loop
-
-Equation (@eq:mp2-cs-spin-adaptation) is the code almost word for word. This is the heart of
-`ferric-mp2/src/rimp2.rs::pair_energy` with the κ-regularization branch removed:
-
-```rust
-let jcol = (j - i) * nvir;              // where pair (i,j) starts in the block
-let e_ij = eps[first_occ + i] + eps[first_occ + j];
-for a in 0..nvir {
-    for b in 0..nvir {
-        let g_ab = g_i[(a, jcol + b)];  // (ia|jb)
-        let g_ba = g_i[(b, jcol + a)];  // (ib|ja): same block, transposed
-        let denom = e_ij - eps[nocc_total + a] - eps[nocc_total + b];
-        e_os_ij += g_ab * g_ab / denom;
-        e_ss_ij += g_ab * (g_ab - g_ba) / denom;
-    }
-}
-```
-
-Three points about this loop:
-
-- **The sign is hiding in `denom`.** The code computes
-  $\varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b = -\Delta$,
-  which is negative, and has no leading minus. The two minus signs cancel.
-  It's the same number as (@eq:mp2-cs-spin-adaptation). A port that changes one sign must change
-  the other.
-- **The exchange integral costs nothing.** $(ib|ja)$ sits in the same block
-  as $(ia|jb)$, transposed in $a,b$. One block of integrals per pair feeds
-  both spin cases.
-- **The loop is per pair on purpose.** For a fixed $(i,j)$ everything is a
-  dense $n_v \times n_v$ block. That is the unit later chapters parallelize,
-  ship to a GPU (`rimp2_gpu` calls this same function, so the two paths
-  differ only in how `g_i` was built), and in local MP2 *throw away* (§@sec:local-mp2).
+Equation (@eq:mp2-cs-spin-adaptation) is the code almost word for word:
+`ferric-mp2/src/rimp2.rs::pair_energy` evaluates it one pair $(i, j)$ at a
+time. The kernel and what each line computes are in "The pair kernel" under
+section @sec:closed-shell-ri-mp2-algorithm, after the integrals it reads have
+been built.
 
 ## Density fitting: making $(ia|jb)$ affordable {#closed-shell-ri-mp2-density-fitting-making-affordable}
 
@@ -167,8 +143,8 @@ Term by term:
   other;
 - $B$ is the result, a "dressed" factor that you contract like a matrix.
 
-Density fitting does not change the scaling. In Matt's dissertation: "the fundamental fifth-order scaling is not
-ameliorated" (ch. 4, after Eq. 4.5). The last contraction is still
+Density fitting does not change the scaling. The dissertation says: "the
+fundamental fifth-order scaling is not ameliorated" (ch. 4, after Eq. 4.5). The last contraction is still
 $O(n_o^2 n_v^2 N_{\mathrm{aux}})$. What changes is the prefactor and the
 storage: no $N^4$ integrals, and the expensive step becomes a large matrix
 multiply (BLAS3), which runs near peak FLOP rate.
@@ -185,14 +161,20 @@ That's a Cholesky factor. Write $V = LL^{\mathsf T}$ and take $M = L^{-1}$:
 $$ M^{\mathsf T}M = L^{-\mathsf T}L^{-1} = (LL^{\mathsf T})^{-1} = V^{-1}. \checkmark $$
 
 One factorization ($N_{\mathrm{aux}}^3/3$ flops) replaces an
-eigendecomposition. In the code it's `ferric-mp2/src/rimp2.rs::cholesky_inverse_sqrt`, and the comment
-at the end says exactly this:
+eigendecomposition. In the code it is
+`ferric-mp2/src/rimp2.rs::cholesky_inverse_sqrt`: a LAPACK Cholesky
+factorization $V = LL^{\mathsf T}$ (lower triangle), then the LAPACK
+triangular inverse that gives $L^{-1}$
+(`ferric-core/src/linalg.rs::cholesky_inverse_lower`, `dpotrf` then `dtrtri`;
+0.4 s for the 4060-function cc-pVDZ-RI metric of C48H98 at 4 threads). The
+comment says why $L^{-1}$ is enough:
 
+<!-- excerpt: ferric-mp2/src/rimp2.rs::cholesky_inverse_sqrt -->
 ```rust
-let l = v.cholesky(UPLO::Lower)?;        // V = L L^T
-// ... forward substitution builds l_inv = L^{-1} ...
-// V^{-1/2} = L^{-1} (so that B = L^{-1} (Q|ia) and B^T B = (ia|P) V^{-1} (Q|jb))
-Ok(l_inv)
+// V^{-1/2} = L^{-1}, so that B = L^{-1} (Q|ia) and B^T B = (ia|P) V^{-1} (Q|jb).
+with_blas_threads(opt_in_blas_threads(), || {
+    ferric_core::linalg::cholesky_inverse_lower(v)
+})
 ```
 
 Cholesky also checks the input: it fails if $V$ is not
@@ -200,14 +182,17 @@ positive definite. For the Coulomb operator that can't happen with a sound
 basis and correct integrals. So when it does fail, ferric stops instead of
 quietly fitting with a broken metric.
 
-The long-range operators erf and terf
-(Chapter @sec:operators) give metrics that genuinely lose rank in a Coulomb-fitted
-auxiliary basis. For those, `ferric-mp2/src/rimp2.rs::metric_inverse_sqrt` switches to an
+The long-range erf operator (chapter @sec:operators) gives a metric that
+loses rank in a Coulomb-fitted auxiliary basis. For it,
+`ferric-mp2/src/rimp2.rs::metric_inverse_sqrt` switches to an
 eigendecomposition that drops the tiny eigenvalues
 (`ferric-mp2/src/rimp2.rs::eigh_inverse_sqrt`). Using that path for the
 Coulomb metric would hide exactly the errors the Cholesky check catches.
+A terf metric is refused with an error: the terf kernel is not positive
+definite, so its metric is indefinite and has no inverse square root, and a
+terf interaction is formed instead as Coulomb RI minus terfc RI.
 
-> **Unverified equation {#eq:df-quadratic-error}** · the fitting error is quadratic
+> **Verified equation {#eq:df-quadratic-error}** · the fitting error is quadratic
 >
 > With the same operator in the metric and the three-index integrals, the
 > error of (@eq:closed-shell-ri-mp2-4) is the self-interaction of the fitting residuals:
@@ -216,14 +201,24 @@ Coulomb metric would hide exactly the errors the Cholesky check catches.
 >
 > | | |
 > |---|---|
-> | Proof | none committed. To add: a claim in `scripts/mp2_variant_identities.py` that builds a model four-index tensor from a larger "exact" factor, fits it in a subspace and checks the residual identity. |
-> | Status | derived in the text; no script, no test |
+> | Proof | `scripts/mp2_variant_identities.py`, claim 8 (also: the residual is orthogonal to every $\chi_P$, and the diagonal error is not negative) |
+> | Negative control | a metric in a second operator must break the identity; the runner replaces $V$ by the overlap $\chi^{\mathsf T}\chi$ in the residual and requires the claim to fail |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-mp2/src/rimp2.rs::cholesky_inverse_sqrt` |
 >
-> <!-- unverified: id=df.quadratic-error; todo=add claim to scripts/mp2_variant_identities.py -->
+> <!-- verified: id=df.quadratic-error; script=scripts/mp2_variant_identities.py; claim=8; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/rimp2.rs::cholesky_inverse_sqrt; registry=ri-mp2 -->
 
-Equation @eq:df-quadratic-error follows because the fitted density is the projection of
-$\phi_i\phi_a$ onto the auxiliary space in the $\hat w$ inner product, so the
-residual is orthogonal to every auxiliary function. It is the reason the
+Why is it quadratic? The fitted density is the projection of
+$\phi_i\phi_a$ onto the auxiliary space in the Coulomb inner product
+$(f|g)$, so the residual is orthogonal to every auxiliary function:
+$(\chi_P|\delta_{ia}) = (P|ia) - \sum_{QR} V_{PQ}V^{-1}_{QR}(R|ia) = 0$.
+Write $\phi_i\phi_a = \tilde\rho_{ia} + \delta_{ia}$ with $\tilde\rho_{ia}$ the
+fitted density, and expand
+$(ia|jb) = (\tilde\rho_{ia}|\tilde\rho_{jb}) + (\tilde\rho_{ia}|\delta_{jb}) + (\delta_{ia}|\tilde\rho_{jb}) + (\delta_{ia}|\delta_{jb})$.
+The two middle terms vanish by the orthogonality, and the first is
+$\sum_{PQ}(ia|P)V^{-1}_{PQ}(Q|jb) = \sum_P B^P_{ia}B^P_{jb}$, which leaves
+(@eq:df-quadratic-error). The same argument holds for any operator used in
+both places (erfc or terfc, section @sec:attenuated-mp2). It is the reason the
 metric and the three-index integrals share one operator. A different metric
 operator (`RiMp2Config::metric_op`) breaks the orthogonality and makes the
 error first order; the code keeps it as a measurement option, not a default.
@@ -242,7 +237,7 @@ are called $O$, $V$, $N$ and $X$.
 | 1 | $V_{PQ} = (P\vert Q)$, then $M$ | $N_{\mathrm{aux}}^3$ | `ferric-integrals/src/threeindex.rs::coulomb_metric_2c`, `ferric-mp2/src/rimp2.rs::metric_inverse_sqrt` |
 | 2 | $(P\vert ia) = \sum_{\mu\nu} C_{\mu i}\,(P\vert \mu\nu)\,C_{\nu a}$ | $N_{\mathrm{aux}} N^2 n_o + N_{\mathrm{aux}} N n_o n_v$ | `ferric-mp2/src/rimp2.rs::stream_dressed_mo_band_budgeted` |
 | 3 | $B^P_{ia} = \sum_Q M_{PQ}\,(Q\vert ia)$ | $N_{\mathrm{aux}}^2 n_o n_v$ | same function, same pass |
-| 4 | $(ia\vert jb) = \sum_P B^P_{ia}B^P_{jb}$ and the energy | $\tfrac12 n_o(n_o+1)\,n_v^2 N_{\mathrm{aux}}$ | `ferric-mp2/src/rimp2.rs::spin_components_from_b_ov_kappa_cpu`, `ferric-mp2/src/rimp2.rs::pair_energy` |
+| 4 | $(ia\vert jb) = \sum_P B^P_{ia}B^P_{jb}$ and the energy | $\tfrac12 n_o(n_o+1)\,n_v^2 N_{\mathrm{aux}}$ | `ferric-mp2/src/rimp2.rs::spin_components_from_b_ov_kappa_cpu` (the GEMM), `ferric-mp2/src/rimp2.rs::spin_components_from_blocks` (the pair loop), `ferric-mp2/src/rimp2.rs::pair_energy` |
 
 The driver that calls them in order is
 `ferric-mp2/src/rimp2.rs::ri_mp2_spin_components`.
@@ -281,30 +276,44 @@ needs:
 
 $$ G^{(i)}_{a,\,jb} = \sum_P B^P_{ia} B^P_{jb}, \qquad j \ge i . $$
 
-This is the loop in
-`ferric-mp2/src/rimp2.rs::spin_components_from_b_ov_kappa_cpu`, with the
-comments replaced and the final serial sum shortened to one line:
+The GEMM is a closure in
+`ferric-mp2/src/rimp2.rs::spin_components_from_b_ov_kappa_cpu`; the pair
+loop that consumes it is `ferric-mp2/src/rimp2.rs::spin_components_from_blocks`.
+The closure builds $G^{(i)}$ from the $j \ge i$ tail of $B$:
 
+<!-- excerpt: ferric-mp2/src/rimp2.rs::spin_components_from_b_ov_kappa_cpu -->
 ```rust
-let partials: Vec<(f64, f64)> = (0..nocc)
-    .into_par_iter()                                // one task per occupied i
-    .map(|i| {
-        let b_i = b_ov.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]);  // B^P_{ia}
-        let b_tail = b_ov.slice(ndarray::s![.., i * nvir..]);             // B^P_{jb}, j >= i
-        let g_i = b_i.t().dot(&b_tail);             // G^(i)_{a,jb} = (ia|jb)
-        let (mut e_os_i, mut e_ss_i) = (0.0, 0.0);
-        for j in i..nocc {
-            let fac = if i == j { 1.0 } else { 2.0 };   // weight of (10.6)
-            let (e_os_ij, e_ss_ij) =
-                pair_energy(&g_i.view(), i, j, nvir, eps, first_occ, nocc_total, kappa);
-            e_os_i += fac * e_os_ij;
-            e_ss_i += fac * e_ss_ij;
-        }
-        (e_os_i, e_ss_i)
-    })
-    .collect();
-// ... e_os, e_ss = sums of the partials in order of i ...
+let b_i = b_ov.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]);
+let b_tail = b_ov.slice(ndarray::s![.., i * nvir..]);
+b_i.t().dot(&b_tail)
 ```
+
+The loop calls it once per occupied $i$ (`pair_block(i)`) and weights each
+pair:
+
+<!-- excerpt: ferric-mp2/src/rimp2.rs::spin_components_from_blocks -->
+```rust
+let g_i = pair_block(i);
+
+let (mut e_os_i, mut e_ss_i) = (0.0, 0.0);
+for j in i..nocc {
+    // Symmetry weight: off-diagonal pairs stand in for their mirror.
+    let fac = if i == j { 1.0 } else { 2.0 };
+    let (e_os_ij, e_ss_ij) =
+        pair_energy(&g_i.view(), i, j, nvir, eps, first_occ, nocc_total, kappa);
+    e_os_i += fac * e_os_ij;
+    e_ss_i += fac * e_ss_ij;
+}
+(e_os_i, e_ss_i)
+```
+
+| Code | Equation |
+|---|---|
+| `b_i` | $B^P_{ia}$ for the one $i$, all $a$ |
+| `b_tail` | $B^P_{jb}$ for $j \ge i$ |
+| `g_i` | $G^{(i)}_{a,jb} = (ia\vert jb)$, $j \ge i$ |
+| `fac` | the weight of (@eq:mp2-cs-unique-pairs): 1 on the diagonal, 2 off it |
+| `(e_os_i, e_ss_i)` | the partial sums of one $i$ task; the $(0..n_o)$ range runs in parallel and the partials are added in order of $i$ |
 
 Three points about this loop:
 
@@ -339,16 +348,16 @@ block.
 > |---|---|
 > | Proof | `scripts/mp2_variant_identities.py`, claim 1 (unique-pair checks) |
 > | Negative control | off-diagonal weight 1 must differ |
-> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` (on branch `docs/derivations-backfill`; no runner on this commit) |
-> | Code | `ferric-mp2/src/rimp2.rs::spin_components_from_b_ov_kappa_cpu` |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-mp2/src/rimp2.rs::spin_components_from_blocks` |
 > | Code test | `spin_components_symmetry_matches_naive_double_loop` in `crates/ferric-mp2/src/rimp2.rs`: the production loop against a full $(i,j)$ double loop on H2O/cc-pVDZ, relative $10^{-12}$ |
 >
-> <!-- verified: id=mp2.cs.unique-pairs; script=scripts/mp2_variant_identities.py; claim=1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/rimp2.rs::spin_components_from_b_ov_kappa_cpu; rust_test=ferric-mp2/src/rimp2.rs::spin_components_symmetry_matches_naive_double_loop -->
+> <!-- verified: id=mp2.cs.unique-pairs; script=scripts/mp2_variant_identities.py; claim=1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/rimp2.rs::spin_components_from_blocks; rust_test=ferric-mp2/src/rimp2.rs::spin_components_symmetry_matches_naive_double_loop; registry=ri-mp2 -->
 
 ### The pair kernel
 
 `ferric-mp2/src/rimp2.rs::pair_energy` is equation (@eq:mp2-cs-spin-adaptation) for one pair,
-read from the block $G^{(i)}$:
+read from the block $G^{(i)}$. This is the body of its plain (`None`) arm:
 
 <!-- excerpt: ferric-mp2/src/rimp2.rs::pair_energy -->
 ```rust
@@ -368,14 +377,35 @@ e_ss_ij += g_ab * (g_ab - g_ba) / denom;
 | `e_ss_ij` | the $ij$ term of $E_{\mathrm{SS}}$ |
 | `jcol` | $(j - i)\,n_v$, the column offset of $j$ inside the tail block |
 
+Three points about the kernel:
+
+- **The sign is hiding in `denom`.** The code computes
+  $\varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b = -\Delta$,
+  which is negative, and has no leading minus. The two minus signs cancel.
+  It is the same number as (@eq:mp2-cs-spin-adaptation). A port that changes
+  one sign must change the other.
+- **The exchange integral costs nothing.** $(ib|ja)$ sits in the same block
+  as $(ia|jb)$, transposed in $a,b$. One block of integrals per pair feeds
+  both spin cases.
+- **The loop is per pair on purpose.** For a fixed $(i,j)$ everything is a
+  dense $n_v \times n_v$ block. That is the unit later chapters parallelize,
+  ship to a GPU (`rimp2_gpu` calls this same function, so the two paths
+  differ only in how `g_i` was built), and in local MP2 drop
+  (section @sec:local-mp2).
+
+The κ-regularized branch of the same function is in section
+@sec:scs-and-kappa-kappa-regularized-mp2.
+
 ## Reproducibility {#closed-shell-ri-mp2-reproducibility}
 
-Floating-point addition is not associative, so the order of a sum sets its
-last digits. Two choices make the energy independent of the thread count.
+Section @sec:determinism-and-memory explains why the order of a
+floating-point sum sets its last digits and why a parallel reduction makes
+them depend on the number of workers. Two MP2-specific choices follow from
+it.
 
 - Each $i$ task returns its partial sums, and the partials are added in
-  order of $i$ on one thread. A parallel reduction would combine them in a
-  tree whose shape depends on the number of workers.
+  order of $i$ on one thread (the last lines of
+  `ferric-mp2/src/rimp2.rs::spin_components_from_blocks`).
 - The auxiliary chunk width of the transform is a function of the memory
   budget and the problem size only
   (`ferric-mp2/src/rimp2.rs::mo_stream_chunk_for`). The dressing step
@@ -448,16 +478,12 @@ cargo run --release -- examples/water-rimp2.toml
 Use the `-RI` auxiliary set matched to the orbital basis. `frozen_core`
 defaults to 0 in `[mp2]`; `"auto"` selects the standard small core.
 
-## Sources
+## Sources {#closed-shell-ri-mp2-sources}
 
 | Source | Used for |
 |---|---|
-| sections @sec:spin-adaptation, @sec:closed-shell-ri-mp2-density-fitting-making-affordable and @sec:closed-shell-ri-mp2-energy-splits | equations @eq:mp2-cs-spin-adaptation to @eq:closed-shell-ri-mp2-4, function names |
+| section @sec:spin-adaptation | the spin sum behind (@eq:mp2-cs-spin-adaptation) |
 | Dissertation, chapter 4, sections 4.1 and 4.2 (Eqs. 4.3 to 4.5, Table 4.1, Functions 1 to 4) | the four-step algorithm, the choice of batch index, the scaling statement |
-| `scripts/mp2_variant_identities.py`, claim 1 | verified equations @eq:mp2-cs-spin-adaptation and @eq:mp2-cs-unique-pairs |
+| `scripts/mp2_variant_identities.py`, claims 1 and 8 | verified equations @eq:mp2-cs-spin-adaptation, @eq:mp2-cs-unique-pairs and @eq:df-quadratic-error |
 | `crates/ferric-mp2/src/rimp2.rs` | the pair kernel, the unique-pair loop, the reproducibility and memory rules |
 | `site/src/reference/validation.md` | the anchor figure |
-
-Changes from the sources: the denominator is written as the positive
-$\Delta_{ij}^{ab}$ with an explicit minus sign; the exchange partner is
-written $(ib|ja)$; the dressing matrix is $M$.

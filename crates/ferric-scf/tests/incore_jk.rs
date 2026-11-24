@@ -87,6 +87,8 @@ fn direct_jk(prep: &PreparedBasis, d: &Array2<f64>) -> (Array2<f64>, Array2<f64>
     let ctx = ParallelContext::default();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), prep).unwrap();
     assert!(bounds.incore.get().is_none());
+    // Fresh bounds: no SCF recorded a contraction rotation on them, so the
+    // walk is the unrotated one the rounding bar is about.
     let n = d.nrows();
     let (mut j, mut k) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
     ferric_scf::rhf::build_jk(&ctx, prep, &bounds, 0.0, d, &mut j, &mut k).unwrap();
@@ -121,11 +123,11 @@ fn anchor(label: &str, prep: &PreparedBasis, eri: &IncoreEri, ds: &[Array2<f64>]
     let l = n * n + nsh2 + 1;
     let l_k = 7 * n * n + nsh2 + 3 * n + 6;
     let refs: Vec<&Array2<f64>> = ds.iter().collect();
-    let (js, ks) = eri.jk_multi(&refs, &refs);
-    let abs = eri.abs_copy();
+    let (js, ks) = eri.jk_multi(&refs, &refs).unwrap();
+    let abs = eri.abs_copy().unwrap();
     let dabs: Vec<Array2<f64>> = ds.iter().map(|d| d.mapv(f64::abs)).collect();
     let dabs_refs: Vec<&Array2<f64>> = dabs.iter().collect();
-    let (ja, ka) = abs.jk_multi(&dabs_refs, &dabs_refs);
+    let (ja, ka) = abs.jk_multi(&dabs_refs, &dabs_refs).unwrap();
     let (mut wj, mut wk) = (0.0f64, 0.0f64);
     for (i, d) in ds.iter().enumerate() {
         let (jd, kd) = direct_jk(prep, d);
@@ -162,10 +164,8 @@ fn incore_matches_direct_on_water_symmetric_nonsymmetric_and_scf_densities() {
     let n = prep.nbasis();
     let ctx = ParallelContext::default();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
-    let cfg = RhfConfig {
-        eri: EriMode::Direct,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.eri = EriMode::Direct;
     let scf = solve_rhf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &cfg).unwrap();
     let eri = store(&prep);
     anchor(
@@ -194,14 +194,14 @@ fn incore_matches_direct_on_a_40_density_block() {
     // contraction takes OpenBLAS's GEMV path, whose summation order differs
     // from the many-column GEMM's in the last bits).
     let refs: Vec<&Array2<f64>> = ds.iter().collect();
-    let (jb, kb) = eri.jk_multi(&refs, &refs);
-    let abs = eri.abs_copy();
+    let (jb, kb) = eri.jk_multi(&refs, &refs).unwrap();
+    let abs = eri.abs_copy().unwrap();
     let l_k = 7 * n * n + prep.nshells() * prep.nshells() + 3 * n + 6;
     for (i, d) in ds.iter().enumerate() {
-        let (j1, k1) = eri.jk_multi(&[d], &[d]);
+        let (j1, k1) = eri.jk_multi(&[d], &[d]).unwrap();
         assert_eq!(bits(&j1[0]), bits(&jb[i]), "J[{i}] block vs single");
         let da = d.mapv(f64::abs);
-        let ka = abs.exchange(&[&da]);
+        let ka = abs.exchange(&[&da]).unwrap();
         check_bar(
             &format!("K[{i}] block vs single"),
             &k1[0],
@@ -242,7 +242,7 @@ fn incore_bits_do_not_depend_on_the_thread_count() {
             .unwrap()
             .install(|| {
                 let eri = store(&prep);
-                let (j, k) = eri.jk_multi(&refs, &refs);
+                let (j, k) = eri.jk_multi(&refs, &refs).unwrap();
                 let mut out: Vec<u64> = j.iter().flat_map(bits).collect();
                 out.extend(k.iter().flat_map(bits));
                 out
@@ -268,10 +268,8 @@ fn auto_attaches_the_store_and_reproduces_the_direct_energy() {
     let op = Operator::coulomb();
     let solve = |eri: EriMode| {
         let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-        let cfg = RhfConfig {
-            eri,
-            ..Default::default()
-        };
+        let mut cfg = RhfConfig::default();
+        cfg.eri = eri;
         let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
         // The certificate names the route, and not as an approximation.
         let c = ferric_scf::certificate::scf_certificate(&mol, &r, &cfg);
@@ -319,10 +317,8 @@ fn a_two_step_optimize_rebuilds_the_store_per_geometry() {
         ..Default::default()
     };
     let run = |eri: EriMode| {
-        let cfg = RhfConfig {
-            eri,
-            ..Default::default()
-        };
+        let mut cfg = RhfConfig::default();
+        cfg.eri = eri;
         optimize_geometry(&ctx, &mol, "6-31g", Operator::coulomb(), &cfg, &opt).unwrap()
     };
     let direct = run(EriMode::Direct);
@@ -360,11 +356,8 @@ fn fd_frequencies_rebuild_the_store_per_displacement() {
     // Core guess: the SAD guess runs free-atom SCFs of its own, and a
     // store-reuse defect that those SCFs happened to mask would go unseen.
     let run = |eri: EriMode| {
-        let cfg = RhfConfig {
-            eri,
-            use_sad_guess: false,
-            ..Default::default()
-        };
+        let mut cfg = RhfConfig::default().with_guess(ferric_scf::options::Guess::Core);
+        cfg.eri = eri;
         harmonic_frequencies(&ctx, &mol, "sto-3g", Operator::coulomb(), &cfg, &fc).unwrap()
     };
     let direct = run(EriMode::Direct);
@@ -381,10 +374,8 @@ fn incore_on_a_fitted_route_is_an_error_and_auto_clears_the_slot() {
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let mut cfg = RhfConfig {
-        eri: EriMode::Incore,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.eri = EriMode::Incore;
     assert!(
         solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg)
             .unwrap()
@@ -432,10 +423,8 @@ fn incore_with_a_df_guess_pre_stage_applies_to_the_exact_stage() {
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        eri: EriMode::Incore,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.eri = EriMode::Incore;
     let r = ferric_scf::ladder::solve_rhf_with_df_guess(&ctx, &mol, &prep, op, &bounds, &cfg, None);
     assert!(
         r.is_ok(),

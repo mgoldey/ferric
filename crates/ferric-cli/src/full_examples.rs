@@ -188,6 +188,11 @@ impl Ctx {
     fn exact_k(&self) -> bool {
         !self.own_start() && !self.fitted_jk() && !self.ri_default() && !self.double_hybrid()
     }
+    /// The run's reference is the shared correlated one, which
+    /// `[scf] save_reference` / `read_reference` checkpoint.
+    fn reference_io(&self) -> bool {
+        self.energy() && !self.own_start() && !self.scf_kind() && !self.double_hybrid()
+    }
     /// The closed-shell, non-laddered SCF path that runs the DF-guess
     /// pre-stage.
     fn df_guess_path(&self) -> bool {
@@ -218,8 +223,10 @@ macro_rules! key {
     };
 }
 
-const OWN_START: &str = "not read: this kind runs its own reference SCF, which reads only \
+const OWN_START: &str = "refused: this kind runs its own reference SCF, which reads only \
                          max_iter, energy_conv and density_conv";
+const OWN_START_CAS: &str = "refused: this kind runs its own reference SCF, which reads only \
+                             max_iter, energy_conv, density_conv and gc_rotation";
 const COSX: &str = "only with k_builder = \"cosx\" or jk = \"rijcosx\"";
 const FOUR_CENTRE: &str = "only on a four-centre exchange route; this run fits K";
 const NO_GRID: &str = "only on a run with a Kohn-Sham grid";
@@ -265,6 +272,7 @@ fn keys() -> Vec<Key> {
         key!("scf", "k_builder", "exchange builder: direct | link | cosx", |c| if c.exact_k() { s("direct") } else { Off(FOUR_CENTRE) }),
         key!("scf", "screening", "four-centre screening: schwarz | csb | csam", |c| if c.exact_k() { s("schwarz") } else { Off(FOUR_CENTRE) }),
         key!("scf", "eri", "four-centre J/K build: auto | direct | incore", |c| if c.exact_k() { s("auto") } else { Off(FOUR_CENTRE) }),
+        key!("scf", "gc_rotation", "direct J/K contraction rotation: auto | rot1 | off (unset: FERRIC_GC_ROTATE, then auto)", |c| if c.exact_k() || c.is(&["casscf", "nevpt2"]) { Unset("FERRIC_GC_ROTATE, then auto") } else { Off(FOUR_CENTRE) }),
         key!("scf", "relativistic", "x2c1e: spin-free X2C-1e core Hamiltonian (energy only)", |c| {
             if c.energy() && X2C_KINDS.contains(&c.kind.as_str()) { Unset("nonrelativistic") } else { Off("energies of the X2C kinds only") }
         }),
@@ -302,6 +310,9 @@ fn keys() -> Vec<Key> {
         key!("scf", "stability_descent", "follow a downhill mode at a saddle and re-converge", |c| if c.is(&["rhf", "uhf", "ksdft"]) && c.energy() { n("false") } else { Off("rhf, uhf and ksdft energies only") }),
         key!("scf", "symmetry", "point-group-blocked closed-shell RHF/RKS", |c| if c.is(&["rhf", "ksdft"]) && c.energy() && c.mult == 1 { n("false") } else { Off("closed-shell rhf/ksdft energies only") }),
         key!("scf", "irrep_nelec", "electrons per irrep", |_| Off("only with symmetry = true")),
+        key!("scf", "save_reference", "write the converged reference SCF to this file", |c| if c.reference_io() { Unset("no file is written") } else { Off("correlated kinds with task = \"energy\" only") }),
+        key!("scf", "read_reference", "read the reference SCF from a save_reference file instead of solving it", |c| if c.reference_io() { Unset("the reference SCF is solved") } else { Off("correlated kinds with task = \"energy\" only") }),
+        key!("scf", "read_reference_other_build", "accept a read_reference file written by another build", |_| Off("only with read_reference")),
         key!("scf", "ladder", "[[scf.ladder]] convergence-ladder rungs", |c| if c.is(&["rhf", "ksdft"]) { Unset("the built-in ladder; [[scf.ladder]] rungs replace it") } else { Off("rhf and ksdft only") }),
         // ---- [dft]
         key!("dft", "functional", "XC functional name (LDA, PBE, B3LYP, ...) or libxc name", |c| {
@@ -360,6 +371,12 @@ fn keys() -> Vec<Key> {
         key!("mp2", "att_operator", "erfc | terfc", |c| if c.is(&["att-rimp2"]) { s("erfc") } else { Off("att-rimp2 only") }),
         key!("mp2", "att_r0", "terfc r0, Angstrom", |_| Off("att-rimp2 with att_operator = \"terfc\" only")),
         key!("mp2", "att_omega", "terfc sharpness, Angstrom^-1", |_| Off("att-rimp2 with att_operator = \"terfc\" only")),
+        key!("mp2", "cdd_tol", "omega-RI-CDD pseudo-MO Cholesky truncation", |_| Off("laplace-mp2 / laplace-sos-mp2; setting it selects the omega-RI-CDD route")),
+        key!("mp2", "cdd_schwarz_thresh", "omega-RI-CDD exchange virtual screen", |_| Off("laplace-mp2 omega-RI-CDD route only")),
+        key!("mp2", "cdd_pair_thresh", "omega-RI-CDD exchange pair prescreen", |_| Off("laplace-mp2 omega-RI-CDD route only")),
+        // ---- [ri]
+        key!("ri", "metric", "coulomb | erfc", |_| s("coulomb")),
+        key!("ri", "omega_bohr", "omega-RI attenuation, Bohr^-1", |_| Off("only with metric = \"erfc\", where it is required")),
         // ---- [local]
         key!("local", "scheme", "none | amplitude-threshold", |_| s("none")),
         key!("local", "eps", "amplitude threshold (required with amplitude-threshold; no default)", |_| Off("only with scheme = \"amplitude-threshold\", where it is required")),
@@ -557,6 +574,9 @@ fn sections(c: &Ctx) -> Vec<&'static str> {
     if c.is(LOCAL_KINDS) && c.energy() {
         out.push("local");
     }
+    if c.is(RI_KINDS) && c.energy() {
+        out.push("ri");
+    }
     if c.is(&["ccsd", "ccsd(t)", "eom-ccsd"]) {
         out.push("cc");
     }
@@ -604,6 +624,7 @@ fn serde_fields(section: &str) -> BTreeSet<&'static str> {
         "cas.ci" => fields_of::<CasCiCfg>(),
         "opmp3" => fields_of::<crate::opmp3::Opmp3Cfg>(),
         "local" => fields_of::<LocalCfg>(),
+        "ri" => fields_of::<RiCfg>(),
         "rpa" => fields_of::<RpaCfg>(),
         "gw" => fields_of::<GwCfg>(),
         "tddft" => fields_of::<TddftCfg>(),
@@ -707,7 +728,13 @@ fn generate(t: &Target) -> String {
             let from_min = minimal_value(&min, sec, k.key);
             let line = match (&from_min, own_scf) {
                 (Some(v), _) => Set(v.clone()),
-                (None, Some(read)) if sec == "scf" && !read.contains(&k.key) => Off(OWN_START),
+                (None, Some(read)) if sec == "scf" && !read.contains(&k.key) => {
+                    Off(if ctx.is(&["casscf", "nevpt2"]) {
+                        OWN_START_CAS
+                    } else {
+                        OWN_START
+                    })
+                }
                 _ => (k.line)(&ctx),
             };
             match line {

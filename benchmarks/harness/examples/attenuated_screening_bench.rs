@@ -39,10 +39,7 @@ fn run_one(xyz_path: &str, label: &str) {
         &obs,
         op_c,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-9,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_energy_conv(1e-9),
     )
     .unwrap();
     let t_scf = t0.elapsed();

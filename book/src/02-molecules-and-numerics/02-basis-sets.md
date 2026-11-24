@@ -1,6 +1,6 @@
 # Contracted Gaussians, normalization and parsers {#basis-sets}
 
-<!-- status: edit; registry: -->
+<!-- status: edit; registry: none -->
 
 Molecular orbitals are expanded in functions centered on the atoms. The
 physically natural choice would be Slater functions, $e^{-\zeta r}$, which
@@ -8,7 +8,7 @@ have the cusp at the nucleus and the exponential tail of a real atomic
 orbital. Their multi-center two-electron integrals have no closed form. Gaussians,
 $e^{-\alpha r^2}$, have neither the cusp nor the right tail, but the product
 of two Gaussians on different centers is a Gaussian on a third center, and
-the integral algorithms of Chapter @sec:integrals build on that. Ferric uses Gaussians and
+the integral algorithms of chapter @sec:integrals build on that. Ferric uses Gaussians and
 fixes their shape by summing several of them with fixed coefficients: a
 contracted shell.
 
@@ -34,19 +34,38 @@ the handle the integral engine uses.
 ## A contracted shell {#basis-sets-contracted-shell}
 
 A shell on atom $A$ with angular momentum $l$ and $K$ primitives is a set of
-functions that share exponents and coefficients and differ in the angular part:
+functions that share exponents and coefficients and differ in the angular part.
+With $\mathbf r_A = \mathbf r - \mathbf A$ and $r_A = |\mathbf r_A|$,
 
-$$ \chi_{\mu}(\mathbf r) = Y_{lm}(\mathbf r - \mathbf A)\sum_{p=1}^{K} c_p\,N_p\,|\mathbf r - \mathbf A|^{l} e^{-\alpha_p|\mathbf r - \mathbf A|^{2}} . \label{eq:basis-sets-1} $$
+$$ \chi_{\mu}(\mathbf r) = \mathcal A_\mu(\mathbf r_A)\sum_{p=1}^{K} c_p\,N(\alpha_p, l)\,e^{-\alpha_p r_A^{2}}, \qquad N(\alpha, l) = \Big(\frac{2\alpha}{\pi}\Big)^{3/4} \frac{(4\alpha)^{l/2}}{\sqrt{(2l-1)!!}} . \label{eq:basis-sets-1} $$
 
 Read it from the right. Each primitive is a Gaussian of width set by
 $\alpha_p$: a large $\alpha_p$ is tight around the nucleus, a small one is
-diffuse. The factor $|\mathbf r - \mathbf A|^l$ gives the function the right
-behavior near the nucleus for angular momentum $l$. $N_p$ normalizes the
-primitive by itself. The coefficients $c_p$ mix the primitives into one
-radial shape, and $Y_{lm}$ supplies the angular part, one function per $m$.
+diffuse. $N(\alpha_p, l)$ normalizes the primitive, and the coefficients
+$c_p$ mix the primitives into one radial shape. The angular factor
+$\mathcal A_\mu$ is a polynomial of degree $l$ in the components of
+$\mathbf r_A$, which gives the function the right behavior near the nucleus
+for angular momentum $l$. It is one of two kinds:
+
+- **Cartesian:** a monomial $x_A^{l_x}y_A^{l_y}z_A^{l_z}$ with
+  $l_x+l_y+l_z = l$, one function per monomial.
+- **Pure:** a real solid harmonic
+  $\sqrt{4\pi/(2l+1)}\,r_A^l\,Y_{lm}(\hat{\mathbf r}_A)$, one function per $m$.
+
+libint2 uses this convention, and so does every integral and grid routine in
+the code. Chapter @sec:integrals refers back to (@eq:basis-sets-1).
+
+One factor $N(\alpha, l)$ serves the whole shell, so the components are not
+all unit normalized. A pure function and the Cartesian $(l,0,0)$ component
+have norm 1. The others carry a fixed factor: for a $d$ shell, $xx$ has norm 1
+and $xy$ has squared norm $1/3$; for an $f$ shell, $xyz$ has squared norm
+$1/15$ (section @sec:one-electron derives the factor). Every component of a
+shell is then the same radial function times its polynomial, which is what
+lets the grid code evaluate the radial sum once per shell
+(section @sec:ao-grid).
 
 The coefficients $c_p$ in `Shell::coefficients` are over **unit-normalized
-primitives**: the $N_p$ is not folded into them. A pure shell has $2l+1$
+primitives**: $N(\alpha_p, l)$ is not folded into them. A pure shell has $2l+1$
 functions (real spherical harmonics) and a Cartesian shell $(l+1)(l+2)/2$
 (all monomials $x^{l_x}y^{l_y}z^{l_z}$ with $l_x+l_y+l_z = l$). The two counts
 agree for $l = 0$ and $1$ and first differ at $l = 2$: 5 against 6. The six
@@ -54,6 +73,7 @@ Cartesian d functions span the five pure ones plus the combination
 $x^2+y^2+z^2$, which has s symmetry. The count
 comes from `ferric-core/src/basis.rs::num_functions`:
 
+<!-- excerpt: ferric-core/src/basis.rs::num_functions -->
 ```rust
 pub fn num_functions(l: i32, pure: bool) -> usize {
     if pure {
@@ -89,19 +109,27 @@ every contraction to unit self-overlap when they read it.
 To rescale you need the self-overlap of a contraction. Derive it in three
 steps.
 
-**Step 1: the radial integral.** The angular part is a normalized spherical
-harmonic, so it integrates to 1 and leaves the radial integral with the
-$r^2\,dr$ volume element. For two primitives with exponents $a = \alpha_p$
-and $b = \alpha_q$, substitute $u = (a+b)r^2$:
+**Step 1: the radial integral.** Two primitives of one component share the
+angular factor $\mathcal A_\mu$. Its square integrates over directions to a
+constant that depends on the component but not on the exponents, and that
+leaves the radial integral with the $r^{2l}\cdot r^2\,dr$ volume element.
+For two primitives with exponents $a = \alpha_p$ and $b = \alpha_q$,
+substitute $u = (a+b)r^2$:
 
 $$ \int_0^\infty r^{2l+2}\, e^{-(a+b)r^2}\,dr = \frac{\Gamma(l+\tfrac32)}{2\,(a+b)^{l+3/2}} . $$
 
-**Step 2: normalize.** The primitive normalization is
-$N_p = \big[\Gamma(l+\tfrac32)/(2(2\alpha_p)^{l+3/2})\big]^{-1/2}$, the integral
-above with $b = a$. Multiply the integral by $N_pN_q$. The gamma functions
-cancel, and
+**Step 2: normalize.** Divide the overlap of the two primitives by the square
+root of each one's self-overlap, the integral above with $b = a$. The
+angular constant and the gamma functions cancel, and
 
 $$ S_{pq} = \frac{(2\alpha_p)^{(l+3/2)/2}\,(2\alpha_q)^{(l+3/2)/2}}{(\alpha_p+\alpha_q)^{l+3/2}} = \left(\frac{2\sqrt{\alpha_p\alpha_q}}{\alpha_p+\alpha_q}\right)^{l+3/2} . $$
+
+The angular constant cancels in this ratio, so $S_{pq}$ is the same for
+every component of the shell and for a Cartesian or a pure shell.
+$N(\alpha, l)$ of (@eq:basis-sets-1) is proportional to $\alpha^{l/2+3/4}$, the
+same dependence on $\alpha$ as the ratio, so $S_{pq}$ is also the overlap of
+two primitives as the code normalizes them, up to the component's fixed
+factor.
 
 Check two limits. For $\alpha_p = \alpha_q$ the ratio is 1, as it must be for
 a normalized function with itself. For $\alpha_p \ne \alpha_q$,
@@ -110,7 +138,7 @@ $(\sqrt{\alpha_p}-\sqrt{\alpha_q})^2 > 0$, so $S_{pq} < 1$: two different
 normalized Gaussians overlap by less than one.
 
 **Step 3: sum over the contraction.** The contracted radial function is
-$\sum_p c_p N_p r^l e^{-\alpha_p r^2}$. Its self-overlap is the double sum over
+$\sum_p c_p N(\alpha_p, l)\, r^l e^{-\alpha_p r^2}$. Its self-overlap is the double sum over
 primitive pairs, and the code divides every $c_p$ by $\sqrt{S}$ with
 
 $$ S = \sum_{p,q} c_p c_q\,S_{pq} . \label{eq:basis-unit-self-overlap} $$
@@ -122,6 +150,7 @@ primitive $S = c_1^2$, and the rescaled coefficient is $c_1/|c_1| = \pm 1$.
 The code is (@eq:basis-unit-self-overlap) as a double loop, in
 `ferric-core/src/basis.rs::renormalize_contraction`:
 
+<!-- excerpt: ferric-core/src/basis.rs::renormalize_contraction -->
 ```rust
 let lf = l as f64;
 let mut s = 0.0_f64;
@@ -148,7 +177,7 @@ of zero norm alone instead of dividing by zero.
 libint2 renormalizes contracted shells internally, so its integrals give the
 same answer with or without the rescaling. The grid code that evaluates
 basis functions for DFT does not. It applies only the per-primitive factor
-$N_p$ (section @sec:ao-grid). Without
+$N(\alpha_p, l)$ (section @sec:ao-grid). Without
 the rescaling a def2 shell would be right in every analytic integral and
 wrong on the DFT grid. After the rescaling libint2's own renormalization changes
 nothing, since $S$ is already 1.
@@ -170,9 +199,9 @@ nothing, since $S$ is already 1.
 >
 > <!-- verified: id=basis.unit-self-overlap; script=scripts/basis_normalization_sympy.py; claim=3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-core/src/basis.rs::parse_bse_json; rust_test=ferric-core/src/basis.rs::every_bundled_contraction_has_unit_self_overlap -->
 
-The proof covers the radial normalization. The angular factor of a Cartesian
-$l \ge 2$ function is libint2's convention and is not part of it (see Known
-limits).
+The proof covers the radial normalization. After the rescaling a pure
+function and the $(l,0,0)$ Cartesian component have unit norm; the other
+Cartesian components keep the fixed factors given under (@eq:basis-sets-1).
 
 ## Parsers and the bundled library {#basis-sets-parsers-bundled-library}
 
@@ -233,21 +262,29 @@ and a basis set and builds that list as a libint2 handle. It
 4. records the shell dimensions and offsets: AO function $\mu$ of shell $s$ is
    `shell_offsets[s] + m`, and `nbasis` is their sum.
 
-Steps 3 and 4 are these lines, with the FFI shell record and the copies kept
-for it removed:
+Step 3 is these lines of `new`:
 
+<!-- excerpt: ferric-integrals/src/basis_bridge.rs::PreparedBasis::new -->
 ```rust
 for (ai, atom) in mol.atoms.iter().enumerate() {          // atoms in input order
     let tmpls = bs
         .for_element(atom.z)                              // real Z, also for ghosts
         .ok_or_else(|| bs.missing_element_error(atom.z))?;
-    for sh in tmpls {                                     // shells as in the basis set
-        // ...
-        shell_to_atom.push(ai);
-        shell_l.push(sh.l);
-        shell_pure.push(sh.pure);
-        // ...
-    }
+    located.extend(tmpls.iter().map(|sh| (ai, sh)));      // shells as in the basis set
+}
+```
+
+and step 4 is in the shared constructor it calls, with the FFI shell record
+and the copies kept for it removed:
+
+<!-- excerpt: ferric-integrals/src/basis_bridge.rs::PreparedBasis::from_located -->
+```rust
+for &(ai, sh) in located {
+    // ...
+    shell_to_atom.push(ai);
+    shell_l.push(sh.l);
+    shell_pure.push(sh.pure);
+    // ...
 }
 // ...
 let mut shell_offsets = vec![0usize; nshells + 1];
@@ -272,9 +309,14 @@ shared by all threads, since nothing in it changes after construction.
 
 ## Known limits
 
-- Normalization of the angular part of Cartesian $l \ge 2$ functions follows
-  libint2's convention. The section states the radial normalization, which
-  the code controls.
+Checked 2026-11-19.
+
+- Cartesian components other than $(l,0,0)$ are not unit normalized
+  (the factors under (@eq:basis-sets-1)). A code that normalizes every
+  component gives different coefficients for those functions and the same
+  energies.
+- A molecule with an ECP needs basis shells with $l \le 4$ and no Cartesian
+  $l \ge 2$ shell; `PreparedBasis::new` refuses anything else.
 
 ## Sources
 

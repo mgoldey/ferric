@@ -46,19 +46,18 @@ use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
+use ferric_testkit::molecules::water_xyz;
 use ndarray::Array2;
 
 const AUX: &str = "def2-universal-jkfit";
 const BASIS: &str = "def2-svp";
 
 fn geometry_config(xc: &str, aux: &str) -> RhfConfig {
-    RhfConfig {
-        xc: Some(xc.into()),
-        df_j_aux: Some(aux.into()),
-        df_k_aux: Some(aux.into()),
-        ..RhfConfig::default()
-    }
-    .for_geometry_task()
+    RhfConfig::default()
+        .with_xc(xc)
+        .with_df_j_aux(aux)
+        .with_df_k_aux(aux)
+        .for_geometry_task()
 }
 
 fn handoff(cfg: &RhfConfig) -> &RawHandoff {
@@ -152,13 +151,9 @@ fn reuse_vs_recompute(s: &Setup, open: bool, cfg: &RhfConfig, n_metrics: usize) 
     max_abs_diff(&g_reuse, &g_rec)
 }
 
-fn water() -> Molecule {
-    Molecule::load_xyz("../../testdata/molecules/water.xyz").expect("water.xyz")
-}
-
 #[test]
 fn reused_metric_eigh_gradient_equals_recomputed() {
-    let s = setup(water());
+    let s = setup(water_xyz());
     // ω = 0 hybrid: one Coulomb metric, shared by RI-J and RI-K.
     let d = reuse_vs_recompute(&s, false, &geometry_config("B3LYP", AUX), 1);
     eprintln!("water/def2-SVP B3LYP: max|g_reuse - g_recompute| = {d:.3e}");
@@ -184,8 +179,8 @@ fn reused_metric_eigh_open_shell_gradient_equals_recomputed() {
 /// recompute (the metric bits differ) and equal the plain gradient.
 #[test]
 fn mismatched_geometry_metric_is_not_used() {
-    let a = setup(water());
-    let mut moved = water();
+    let a = setup(water_xyz());
+    let mut moved = water_xyz();
     moved.atoms[1].y += 0.01;
     let b = setup(moved);
     let base = geometry_config("B3LYP", AUX);
@@ -214,7 +209,7 @@ fn mismatched_geometry_metric_is_not_used() {
 /// use it (and must equal its plain gradient).
 #[test]
 fn mismatched_aux_basis_metric_is_not_used() {
-    let s = setup(water());
+    let s = setup(water_xyz());
     let other = "def2-svp-rifit";
     let cfg_a = with_fresh_handoff(&geometry_config("B3LYP", other));
     let _ = scf(&s, false, &cfg_a);
@@ -241,10 +236,11 @@ fn mismatched_aux_basis_metric_is_not_used() {
 /// second offer (the slot would still hold one entry, replaced by key).
 #[test]
 fn sub_solve_without_handoff_keeps_no_metric() {
-    let s = setup(water());
-    let cfg = with_fresh_handoff(&RhfConfig {
-        guess_basis: Some(ferric_scf::basis2::GuessBasis::bundled("sto-3g", "fock").unwrap()),
-        ..geometry_config("B3LYP", AUX)
+    let s = setup(water_xyz());
+    let cfg = with_fresh_handoff(&{
+        let mut c = geometry_config("B3LYP", AUX);
+        c.guess_basis = Some(ferric_scf::basis2::GuessBasis::bundled("sto-3g", "fock").unwrap());
+        c
     });
     let res = scf(&s, false, &cfg);
     assert!(res.guess_basis.is_some(), "the guess-basis SCF did not run");

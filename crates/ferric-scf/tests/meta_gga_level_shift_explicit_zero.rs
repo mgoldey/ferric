@@ -26,11 +26,7 @@ use ferric_scf::screening::SchwarzBounds;
 const WATER: &str = "3\nwater\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n";
 
 fn scan() -> RhfConfig {
-    RhfConfig {
-        xc: Some("SCAN".into()),
-        max_iter: 60,
-        ..Default::default()
-    }
+    RhfConfig::default().with_xc("SCAN").with_max_iter(60)
 }
 
 fn solve(cfg: &RhfConfig) -> (Molecule, Result<ScfResult, ferric_core::FerricError>) {
@@ -67,21 +63,16 @@ fn explicit_zero_turns_off_the_meta_gga_auto_shift() {
     );
 
     // Anchor 1: spelling the default flag changes nothing, bit for bit.
-    let spelled = RhfConfig {
-        meta_gga_auto_level_shift: true,
-        ..scan()
-    };
+    let mut spelled = scan();
+    spelled.meta_gga_auto_level_shift = true;
     let (_, spelled_res) = solve(&spelled);
     let spelled_res = spelled_res.unwrap();
     assert_eq!(auto_res.energy.to_bits(), spelled_res.energy.to_bits());
     assert_eq!(auto_res.iterations, spelled_res.iterations);
 
     // Anchor 2: an explicit 0.5 is the same effective shift as the auto one.
-    let explicit_half = RhfConfig {
-        level_shift: 0.5,
-        meta_gga_auto_level_shift: false,
-        ..scan()
-    };
+    let mut explicit_half = scan().with_level_shift(0.5);
+    explicit_half.meta_gga_auto_level_shift = false;
     let (mol, half_res) = solve(&explicit_half);
     let half_res = half_res.unwrap();
     assert_eq!(auto_res.energy.to_bits(), half_res.energy.to_bits());
@@ -89,10 +80,8 @@ fn explicit_zero_turns_off_the_meta_gga_auto_shift() {
     assert!(shift_entry(&mol, &half_res, &explicit_half).is_some_and(|d| d.contains("user-set")));
 
     // Explicit 0: no shift is reported and the SCF follows another path.
-    let off = RhfConfig {
-        meta_gga_auto_level_shift: false,
-        ..scan()
-    };
+    let mut off = scan();
+    off.meta_gga_auto_level_shift = false;
     assert!(!off.meta_gga_auto_level_shift);
     assert_eq!(
         shift_entry(&mol, &auto_res, &off),
@@ -104,10 +93,7 @@ fn explicit_zero_turns_off_the_meta_gga_auto_shift() {
     // differ. Explicit 0 follows the unshifted path, the default the shifted
     // one.
     let three = |cfg: &RhfConfig| {
-        let cfg = RhfConfig {
-            max_iter: 3,
-            ..cfg.clone()
-        };
+        let cfg = cfg.clone().with_max_iter(3);
         let (_, r) = solve(&cfg);
         r.expect("a capped SCF returns its best effort").energy
     };

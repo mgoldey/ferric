@@ -45,20 +45,22 @@ use ferric_scf::gradient::restricted_scf_gradient;
 use ferric_scf::raw_handoff::with_fresh_handoff;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::molecules::water_xyz;
 use ndarray::Array2;
 
 const AUX: &str = "def2-universal-jkfit";
 const BASIS: &str = "def2-svp";
 
 fn config(thresh: f64) -> RhfConfig {
-    RhfConfig {
-        xc: Some("PBE".into()),
-        df_j_aux: Some(AUX.into()),
-        df_k_aux: None,
-        integral_thresh: thresh,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..RhfConfig::default()
+    {
+        let mut c = RhfConfig::default()
+            .with_xc("PBE")
+            .with_df_j_aux(AUX)
+            .with_energy_conv(1e-11)
+            .with_density_conv(1e-9);
+        c.df_k_aux = None;
+        c.integral_thresh = thresh;
+        c
     }
     .for_geometry_task()
 }
@@ -141,10 +143,6 @@ fn first_dropping_thresh(s: &Setup) -> f64 {
 
 fn butane() -> Molecule {
     Molecule::load_xyz("../../testdata/molecules/alkane_4.xyz").expect("butane")
-}
-
-fn water() -> Molecule {
-    Molecule::load_xyz("../../testdata/molecules/water.xyz").expect("water.xyz")
 }
 
 /// SCF with a hand-off, then the gradient reusing it and the one recomputing.
@@ -246,7 +244,7 @@ fn check_identity_and_bound(s: &Setup, thresh: f64, label: &str) {
 
 #[test]
 fn screened_reuse_matches_the_density_masked_recompute_on_water() {
-    let s = setup(water());
+    let s = setup(water_xyz());
     let t = first_dropping_thresh(&s);
     check_identity_and_bound(&s, t, "water");
 }
@@ -300,7 +298,7 @@ fn dropped_pairs_move_d_p_by_less_than_thresh_times_their_weight() {
 /// computed with the same screening.
 #[test]
 fn screened_gradient_is_the_derivative_of_the_screened_energy() {
-    let s = setup(water());
+    let s = setup(water_xyz());
     let thresh = first_dropping_thresh(&s);
     eprintln!("[FD] threshold {thresh:e}");
     let (g_reuse, g_rec, _) = reuse_and_recompute(&s, &config(thresh));

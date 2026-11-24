@@ -6,8 +6,9 @@
 //!   J_{μν} = Σ_{P,Q} (μν|P) (P|Q)^{-1} (Q|λσ) D_{λσ}
 //!          = Σ_P (μν|P) c_P,    c_P = Σ_Q (P|Q)^{-1} d_Q,    d_Q = Σ_{λσ} (Q|λσ) D_{λσ}
 //!
-//! The 3-center tensor B_{P,μν} = (P|μν) and the inverse Coulomb metric V^{-1}
-//! are precomputed once at construction. Unlike DF-K's rank-2-per-P contraction,
+//! The 3-center tensor B_{P,μν} = (P|μν) and the Cholesky factor of the Coulomb
+//! metric V = L Lᵀ are precomputed once at construction; each build solves
+//! V c = d against L (no explicit inverse is formed). Unlike DF-K's rank-2-per-P contraction,
 //! DF-J's two passes are rank-1-per-P (a GEMV against the flattened density /
 //! flattened accumulator): each block's GEMV already runs the full block width
 //! `b` as its contraction/output dimension in one BLAS-adjacent call, so there
@@ -84,14 +85,10 @@
 //! (`E'(D') ≤ E'(D*)`, `E(D*) ≤ E(D')`, and `E' − E = E'_J − E_J` at any D):
 //! the f32 SCF's energy error is FIRST order, `|U|, |L| ≲ ε_EJ·S_J` (measured
 //! µEh-scale, the `dfj-pack` no-exit mutant's 1.2-5.1 µEh), and `U − L` is
-//! second order. The f64 EXIT is energy-only ([`DfJ::f64_exit_coulomb_energy`](crate::df_j::DfJ::f64_exit_coulomb_energy)):
-//! one recomputed f64 pass 1 at `D'` (no f64 tensor kept, one block resident)
-//! gives `E_J(D')`, and `E'(D') − L = E(D')` is the exact functional at `D'`,
-//! `0 ≤ E(D') − E(D*) ≤ U − L`: SECOND order. It costs one integral
-//! evaluation of the stored columns; the density, orbitals and Fock matrix
-//! stay those of the f32 SCF (first-order in δB). A full f64 exit (the ladder's
-//! veto, DIIS reset and f64 rebuilds to re-converge) would cost one integral
-//! recompute per extra iteration and is not implemented.
+//! second order. There is no f64 exit: the SCF never recomputes the stored
+//! columns in f64, so the reported SCF energy of an f32-stored RI-J run is the
+//! f32 functional's, first order in δB, inside `[L, U]`
+//! (`tests/dfj_f32_storage.rs` checks the window).
 
 mod many;
 
@@ -113,7 +110,6 @@ use ndarray_linalg::cholesky::{CholeskyFactorized, FactorizeC, SolveC};
 use ndarray_linalg::UPLO;
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::Arc;
 
 /// DF-J Coulomb builder. Uses a budget-bounded ThreeIndexSource for raw (P|μν).
 ///
@@ -167,35 +163,6 @@ pub struct DfJ<'a> {
     /// has no J || XC overlap.
     #[cfg(feature = "gpu")]
     device_site: Option<DeviceSite>,
-    /// The bases the f64 exit pass recomputes the integrals from; `Some` only
-    /// for an f32-stored tensor whose builder had them (see
-    /// [`DfJ::enable_f64_exit`]).
-    f64_exit: Option<ExitBases>,
-}
-
-/// What [`DfJ::f64_exit_coulomb_energy`] recomputes the integrals from.
-struct ExitBases {
-    op: Operator,
-    obs: Arc<PreparedBasis>,
-    dfbs: Arc<PreparedBasis>,
-}
-
-/// The two Coulomb energies `E_J = ½ dᵀV⁻¹d` of one density: from the stored
-/// f32 tensor and from the f64 integrals recomputed for the exit.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DfjF32Exit {
-    /// `½ d̂ᵀV⁻¹d̂`, `d̂` from the f32 tensor (what the SCF's energy holds).
-    pub e_j_f32: f64,
-    /// `½ dᵀV⁻¹d`, `d` from the f64 integrals of the same columns.
-    pub e_j_f64: f64,
-}
-
-impl DfjF32Exit {
-    /// What to add to an energy whose Coulomb part is `e_j_f32` to make it the
-    /// f64 functional at the same density.
-    pub fn correction(&self) -> f64 {
-        self.e_j_f64 - self.e_j_f32
-    }
 }
 
 seam_flag!(
@@ -432,11 +399,49 @@ fn f32_rounding() -> F32Rounding {
     }
 }
 
+thread_local! {
+    /// Why the RI-J builders on this thread were asked for their precision,
+    /// while a caller that knows it builds them ([`with_request_source`]).
+    static REQUEST_SOURCE: std::cell::Cell<Option<RiJPrecisionSource>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Run `f` (which builds RI-J tensors) with the source of their requested
+/// precision recorded, so a declined f32 request says whether it was the
+/// default. Restores the previous record on return.
+pub(crate) fn with_request_source<T>(source: RiJPrecisionSource, f: impl FnOnce() -> T) -> T {
+    let prev = REQUEST_SOURCE.with(|c| c.replace(Some(source)));
+    let out = f();
+    REQUEST_SOURCE.with(|c| c.set(prev));
+    out
+}
+
 /// An f32 request that could not be honoured: say so once per builder and
 /// count it in the precision provenance (`f32_range` for a value beyond the
 /// f32 range, `cpu_f64` otherwise).
+///
+/// A tensor declined because it does not fit is a budget decision that
+/// changes the energy (by the f32 storage error, ~1e-7–1e-5 Ha on small
+/// molecules), so the notice says so and how to make the result
+/// budget-independent.
 fn note_f32_declined(why: &F32Declined) {
-    eprintln!("[ferric] RI-J: ri_j_precision = \"f32\" but the tensor stays f64 ({why})");
+    // Says whether the user asked for f32 or it is the default they never set.
+    let requested = match REQUEST_SOURCE.with(std::cell::Cell::get) {
+        Some(RiJPrecisionSource::Explicit) | None => "",
+        Some(_) => " (default)",
+    };
+    let budget_note = match why {
+        F32Declined::DoesNotFit { .. } => {
+            "; the energy therefore follows the memory budget (it differs from an f32 run by \
+             the f32 storage error): set ri_j_precision = \"f64\" for results that do not \
+             depend on the budget"
+        }
+        _ => "",
+    };
+    eprintln!(
+        "[ferric] RI-J: ri_j_precision = \"f32\"{requested} but the tensor stays f64 \
+         ({why}){budget_note}"
+    );
     let reason = match why {
         F32Declined::OutOfRange { .. } => MixedFallback::F32Range,
         _ => MixedFallback::CpuF64,
@@ -677,16 +682,7 @@ impl<'a> DfJ<'a> {
         };
         let mut v = coulomb_metric_2c(op, dfbs)?;
         if dfj_f32_wanted(precision) {
-            match Self::try_new_f32(
-                op,
-                mol,
-                (obs, dfbs),
-                budget_bytes,
-                band,
-                ctx,
-                pair_thresh,
-                v,
-            )? {
+            match Self::try_new_f32(op, (obs, dfbs), budget_bytes, band, ctx, pair_thresh, v)? {
                 // The f32 tensor never goes to the device: no site to route by.
                 Ok(me) => return Ok(me),
                 Err(back) => v = back,
@@ -726,13 +722,11 @@ impl<'a> DfJ<'a> {
     }
 
     /// The `dfj-f32` build of [`new_for_jk`](Self::new_for_jk): the tensor built
-    /// straight into f32 (with the f64 exit armed), or the metric handed back
+    /// straight into f32, or the metric handed back
     /// (`Err`, counted, with a notice) when the f32 tier declines, so the caller
     /// builds the f64 tensor without recomputing or copying the metric.
-    #[allow(clippy::too_many_arguments)]
     fn try_new_f32(
         op: Operator,
-        mol: &ferric_core::mol::Molecule,
         (obs, dfbs): (&PreparedBasis, &PreparedBasis),
         budget_bytes: usize,
         band: (usize, usize),
@@ -751,11 +745,7 @@ impl<'a> DfJ<'a> {
             f32_rounding(),
         )?;
         match built {
-            Ok(source) => {
-                let mut me = Self::from_source_and_metric(source, v, budget_bytes, ctx)?;
-                me.enable_f64_exit(op, mol, obs, dfbs)?;
-                Ok(Ok(me))
-            }
+            Ok(source) => Self::from_source_and_metric(source, v, budget_bytes, ctx).map(Ok),
             Err(why) => {
                 note_f32_declined(&why);
                 Ok(Err(v))
@@ -782,9 +772,7 @@ impl<'a> DfJ<'a> {
     ///
     /// With `precision` f32 the adopted f64 tensor is converted to the f32
     /// tier (`ThreeIndexSource::into_ri_j_f32`) and dropped; a conversion that
-    /// does not fit keeps the f64 tensor and is reported. No f64 exit is
-    /// enabled here (the orbital basis is not passed): call
-    /// [`DfJ::enable_f64_exit`].
+    /// does not fit keeps the f64 tensor and is reported.
     pub fn from_source(
         source: ThreeIndexSource,
         op: Operator,
@@ -793,8 +781,24 @@ impl<'a> DfJ<'a> {
         ctx: Option<&'a ParallelContext>,
         precision: RiJPrecision,
     ) -> Result<Self, FerricError> {
+        Self::from_source_beside(source, op, dfbs, (budget_bytes, 0), ctx, precision)
+    }
+
+    /// [`DfJ::from_source`] when the caller already holds `beside_bytes`
+    /// (the dressed DF-K band of a shared RI-JK set-up): an f32 conversion
+    /// must fit the budget left beside them, so the stored precision depends
+    /// on the budget and the shapes only, never on the pool's state.
+    pub(crate) fn from_source_beside(
+        source: ThreeIndexSource,
+        op: Operator,
+        dfbs: &PreparedBasis,
+        (budget_bytes, beside_bytes): (usize, usize),
+        ctx: Option<&'a ParallelContext>,
+        precision: RiJPrecision,
+    ) -> Result<Self, FerricError> {
         let source = if dfj_f32_wanted(precision) {
-            let (s, declined) = source.into_ri_j_f32(budget_bytes, f32_rounding())?;
+            let (s, declined) =
+                source.into_ri_j_f32_beside((budget_bytes, beside_bytes), f32_rounding())?;
             if let Some(why) = declined {
                 note_f32_declined(&why);
             }
@@ -816,7 +820,7 @@ impl<'a> DfJ<'a> {
     /// notice of [`DfJ::from_source`]).
     ///
     /// The values are those of [`DfJ::from_source`] on a resident tensor (the
-    /// rounding of the same integrals), so J is too. No f64 exit, as there.
+    /// rounding of the same integrals), so J is too.
     pub(crate) fn from_streamed_source_f32(
         source: ThreeIndexSource,
         op: Operator,
@@ -832,38 +836,13 @@ impl<'a> DfJ<'a> {
         // The fit is checked against what is left beside the resident band:
         // without a global pool nothing else would stop both being held over
         // budget. The constructed DfJ keeps the full budget for its own blocking.
-        let room = budget_bytes.saturating_sub(beside_bytes);
-        let (source, declined) = source.into_ri_j_f32(room, f32_rounding())?;
+        let (source, declined) =
+            source.into_ri_j_f32_beside((budget_bytes, beside_bytes), f32_rounding())?;
         if declined.is_some() {
             return Ok(Err(source));
         }
         let v = coulomb_metric_2c(op, dfbs)?;
         Self::from_source_and_metric(source, v, budget_bytes, ctx).map(Ok)
-    }
-
-    /// Let [`Self::f64_exit_coulomb_energy`] recompute this f32 tensor's
-    /// integrals in f64: re-prepares the two bases from `mol` (the recompute
-    /// tier's own recipe) and keeps them. A no-op for an f64 tensor. The bases
-    /// must be the ones the tensor was built from (checked by size).
-    pub fn enable_f64_exit(
-        &mut self,
-        op: Operator,
-        mol: &ferric_core::mol::Molecule,
-        obs: &PreparedBasis,
-        dfbs: &PreparedBasis,
-    ) -> Result<(), FerricError> {
-        if !self.source.is_ri_j_f32() {
-            return Ok(());
-        }
-        let obs = Arc::new(PreparedBasis::new(mol, obs.basis_set())?);
-        let dfbs = Arc::new(PreparedBasis::new(mol, dfbs.basis_set())?);
-        if obs.nbasis() != self.source.nao() || dfbs.nbasis() != self.source.naux() {
-            return Err(FerricError::General(
-                "DF-J f64 exit: re-prepared bases differ from the tensor's".into(),
-            ));
-        }
-        self.f64_exit = Some(ExitBases { op, obs, dfbs });
-        Ok(())
     }
 
     /// [`DfJ::from_source`] with the `(naux, naux)` metric `v` already built.
@@ -900,7 +879,6 @@ impl<'a> DfJ<'a> {
             k_reserve_bytes: 0,
             #[cfg(feature = "gpu")]
             device_site: None,
-            f64_exit: None,
         })
     }
 
@@ -1462,81 +1440,19 @@ impl DfJ<'_> {
         Ok((d_p, j))
     }
 
-    /// The f64 energy exit of an f32-stored tensor (module docs, "Converged
-    /// energy"): `E_J = ½ dᵀV⁻¹d` at `d` from the stored f32 tensor AND from the
-    /// f64 integrals of the same columns, recomputed one block at a time (no f64
-    /// tensor is kept). An SCF that returns `E + correction()` at its final
-    /// density returns the f64 functional there, whose error against the f64 SCF
-    /// is second order. `Ok(None)` for an f64 tensor or when the exit bases were
-    /// not given ([`Self::enable_f64_exit`]). Costs one integral evaluation of
-    /// the stored columns.
-    pub fn f64_exit_coulomb_energy(
-        &self,
-        d: &Array2<f64>,
-    ) -> Result<Option<DfjF32Exit>, FerricError> {
-        let Some(bases) = self.f64_exit.as_ref() else {
-            return Ok(None);
-        };
-        if !self.source.is_ri_j_f32() {
-            return Ok(None);
-        }
-        let w = self.f32_weights(d)?;
-        let mut d32 = self.f32_pass1(w.as_slice().unwrap_or(&[]))?;
-        self.reduce_d_p(&mut d32);
-        let e_j_f32 = 0.5 * d32.dot(&self.solve_metric(&d32)?);
-        let mut d64 = Array1::<f64>::zeros(self.source.naux());
-        self.source.for_each_ri_j_f64_block_recomputed(
-            (bases.op, &*bases.obs, &*bases.dfbs),
-            self.budget_bytes,
-            |q0, rows| {
-                let part = rows.dot(&w);
-                d64.slice_mut(ndarray::s![q0..q0 + part.len()])
-                    .assign(&part);
-                Ok(())
-            },
-        )?;
-        self.reduce_d_p(&mut d64);
-        let e_j_f64 = 0.5 * d64.dot(&self.solve_metric(&d64)?);
-        Ok(Some(DfjF32Exit { e_j_f32, e_j_f64 }))
-    }
-
     /// MPI: sum the per-rank partial `d_P` (disjoint bands, zero elsewhere) so
     /// every rank holds the FULL `d_P` before the global V^{-1} coupling.
     fn reduce_d_p(&self, d_p: &mut Array1<f64>) {
-        #[cfg(feature = "mpi")]
         if let Some(ctx) = self.ctx {
-            use mpi::traits::CommunicatorCollectives;
-            if let Some(world) = ctx.world() {
-                let mut d_p_global = Array1::<f64>::zeros(d_p.len());
-                world.all_reduce_into(
-                    d_p.as_slice().unwrap(),
-                    d_p_global.as_slice_mut().unwrap(),
-                    mpi::collective::SystemOperation::sum(),
-                );
-                *d_p = d_p_global;
-            }
+            ctx.all_reduce_sum_array(d_p);
         }
-        #[cfg(not(feature = "mpi"))]
-        let _ = d_p;
     }
 
     /// MPI: sum the per-rank partial J matrices into the full J on every rank.
     fn reduce_j(&self, j: &mut Array2<f64>) {
-        #[cfg(feature = "mpi")]
         if let Some(ctx) = self.ctx {
-            use mpi::traits::CommunicatorCollectives;
-            if let Some(world) = ctx.world() {
-                let mut j_global = Array2::<f64>::zeros(j.dim());
-                world.all_reduce_into(
-                    j.as_slice().unwrap(),
-                    j_global.as_slice_mut().unwrap(),
-                    mpi::collective::SystemOperation::sum(),
-                );
-                *j = j_global;
-            }
+            ctx.all_reduce_sum_array(j);
         }
-        #[cfg(not(feature = "mpi"))]
-        let _ = j;
     }
 }
 

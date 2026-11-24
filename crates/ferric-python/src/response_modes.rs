@@ -3,7 +3,8 @@
 //! `ferric.write_response_mode_cube` to put one on a cube grid.
 
 use crate::{
-    budget_bytes_from_gb, cube_grid_spec, make_err, DensitySource, PyBasisSet, PyMolecule,
+    budget_bytes_from_gb, check_result_matches_basis, cube_grid_spec, make_err, DensitySource,
+    PyBasisSet, PyMolecule,
 };
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
@@ -11,7 +12,7 @@ use numpy::{IntoPyArray, PyArray1, PyArray2};
 use pyo3::prelude::*;
 
 /// Leading eigenmodes of the RPA dielectric at one imaginary frequency.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "ResponseModes")]
 pub(crate) struct PyResponseModes {
     inner: ferric_rpa::response_modes::ResponseModes,
@@ -85,6 +86,9 @@ fn to_3x3(py: Python<'_>, a: [[f64; 3]; 3]) -> Bound<'_, PyArray2<f64>> {
 /// `basis_set`), with `auxbasis` the RI fitting basis. `omega` is an imaginary
 /// frequency in Hartree (0 = static). Each mode is a charge density in the aux
 /// basis; see `ResponseModes`.
+///
+/// With an ECP basis set the occupied count is the valence one, as in a `result` from `run_rhf` /
+/// `run_dft` on that basis.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, result, n_modes=10, omega=0.0, memory_budget_gb=None))]
 #[allow(clippy::too_many_arguments)]
@@ -98,27 +102,22 @@ fn response_modes(
     memory_budget_gb: Option<f64>,
 ) -> PyResult<PyResponseModes> {
     if n_modes == 0 {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "n_modes must be >= 1",
-        ));
+        return Err(crate::errors::input_err("n_modes must be >= 1"));
     }
     if !(omega.is_finite() && omega >= 0.0) {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "omega must be a finite imaginary frequency >= 0 (Hartree), got {omega}"
         )));
     }
-    let obs = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    // The occupied count comes from the molecule, so it must carry the ECP
+    // core counts of `basis_set`, as the molecule `result` was solved on did.
+    let mol = crate::system::ecp_molecule(mol, basis_set);
+    let obs = PreparedBasis::new(&mol, &basis_set.inner).map_err(make_err)?;
+    let dfbs = PreparedBasis::new(&mol, &auxbasis.inner).map_err(make_err)?;
     let scf = result.scf();
-    if scf.mos_r().nrows() != obs.nbasis() {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "result has {} AOs but basis_set places {} on mol: pass the basis the SCF ran in",
-            scf.mos_r().nrows(),
-            obs.nbasis()
-        )));
-    }
+    check_result_matches_basis("response_modes", scf.mos_r().nrows(), obs.nbasis())?;
     let inner = ferric_rpa::response_modes::response_modes(
-        &mol.inner,
+        &mol,
         &obs,
         &dfbs,
         scf,
@@ -162,7 +161,7 @@ fn write_response_mode_cube(
         "l2" => 1.0 / m.l2_norms[index],
         "coulomb" => 1.0,
         other => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "unknown normalization {other:?}: expected \"l2\" or \"coulomb\""
             )))
         }
@@ -171,7 +170,7 @@ fn write_response_mode_cube(
     let chi =
         ferric_export::eval_basis_on_grid(&mol.inner, &auxbasis.inner, &grid).map_err(make_err)?;
     if chi.nrows() != m.naux {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "auxbasis places {} functions on mol but the modes have naux = {}",
             chi.nrows(),
             m.naux

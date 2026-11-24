@@ -139,6 +139,7 @@ use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::semicanonical::{semicanonicalize, XcSpec};
 use ferric_scf::{ScfResult, Spin};
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -204,12 +205,6 @@ fn reference(system: &str) -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
 }
 
 fn vec_at(v: &Value, ptr: &str, ctx: &str) -> Vec<f64> {
@@ -333,19 +328,17 @@ fn dh_tight() -> DoubleHybridConfig {
 /// `exact_j`: explicit conventional J (`Some("")`); K stays RI in the
 /// attenuated metrics with def2-universal-jkfit (the only RSH-K path).
 fn ks_config(exact_j: bool) -> RhfConfig {
-    let mut cfg = RhfConfig {
+    let mut cfg = RhfConfig::default()
         // The PySCF RI-J reference fits J in f64. The f32 RI-J default moves
         // the energy by 1e-7..1e-6 Ha, above TOL_E_KS. The exact-J runs ignore
         // the field.
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        max_iter: 300,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_max_iter(300)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
         // `Default` of `AtomicGridConfig` is the flat (75,110) grid.
-        dft_grid: Some(Default::default()),
-        ..Default::default()
-    };
-    cfg.xc = Some(WB97X_L_V_NAME.to_string());
+        .with_dft_grid(Default::default())
+        .with_xc(WB97X_L_V_NAME.to_string());
     assert!(cfg.nlc_grid.is_none(), "default VV10 grid expected");
     if exact_j {
         cfg.df_j_aux = Some(String::new());
@@ -372,8 +365,8 @@ fn setup(system: &str) -> Sys {
     let ctx = format!("{system}/{BASIS}");
     assert_eq!(r["basis"].as_str(), Some(BASIS), "{ctx}: basis");
     assert_eq!(r["corr_aux_basis"].as_str(), Some(CORR_AUX), "{ctx}: aux");
-    assert_eq!(num(&r, "/lambda", &ctx), LAMBDA, "{ctx}: lambda");
-    assert_eq!(num(&r, "/omega", &ctx), OMEGA, "{ctx}: omega");
+    assert_eq!(num_ctx(&r, "/lambda", &ctx), LAMBDA, "{ctx}: lambda");
+    assert_eq!(num_ctx(&r, "/omega", &ctx), OMEGA, "{ctx}: omega");
     let charge = r["charge"].as_i64().expect("charge") as i32;
     let mult = r["multiplicity"].as_u64().expect("multiplicity") as usize;
     let xyz = workspace_root().join(MOL_DIR).join(format!("{system}.xyz"));
@@ -383,7 +376,7 @@ fn setup(system: &str) -> Sys {
         &ctx,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &ctx),
+        num_ctx(&r, "/nuclear_repulsion", &ctx),
         TOL_ENUC,
     );
     let obs = PreparedBasis::new(&mol, &basis::bundled(BASIS).unwrap()).unwrap();
@@ -455,9 +448,9 @@ fn wb97xlv_h2o_def2svp_components_vs_pyscf() {
     )
     .unwrap_or_else(|e| panic!("{ctx}: RKS failed: {e:?}"));
     assert!(ks.converged, "{ctx}: RKS not converged");
-    let e_ks_ref = num(r, "/ks/energy", ctx);
+    let e_ks_ref = num_ctx(r, "/ks/energy", ctx);
     check_close(ctx, "E_KS (exact J)", ks.energy, e_ks_ref, TOL_E_KS);
-    let rij_split = num(r, "/rij_minus_exact_j_ks", ctx).abs();
+    let rij_split = num_ctx(r, "/rij_minus_exact_j_ks", ctx).abs();
     assert!(
         TOL_E_KS < rij_split,
         "{ctx}: TOL_E_KS {TOL_E_KS:.0e} cannot tell RI-J from exact J (split {rij_split:.2e})"
@@ -466,13 +459,13 @@ fn wb97xlv_h2o_def2svp_components_vs_pyscf() {
         ctx,
         "E_KS vs exact RHF",
         ks.energy,
-        num(r, "/rhf_control/energy", ctx),
+        num_ctx(r, "/rhf_control/energy", ctx),
     );
     check_miss(
         ctx,
         "E_KS vs VV10 b=6 control",
         ks.energy,
-        num(r, "/ks/control_vv10_b6_energy", ctx),
+        num_ctx(r, "/ks/control_vv10_b6_energy", ctx),
     );
 
     // ---- trivial limit: λ = 0 adds nothing ----
@@ -514,8 +507,8 @@ fn wb97xlv_h2o_def2svp_components_vs_pyscf() {
             .unwrap_or_else(|e| panic!("{ctx}: linlccd {v:?}: {e:?}"))
             .correlation_energy
     };
-    let ref_drv = num(r, "/corr/drivers_only_scaled", ctx);
-    let ref_hh = num(r, "/corr/e_c_scaled", ctx);
+    let ref_drv = num_ctx(r, "/corr/drivers_only_scaled", ctx);
+    let ref_hh = num_ctx(r, "/corr/e_c_scaled", ctx);
     let e_drv = run(LadderVariant::DriversOnly);
     check_close(
         ctx,
@@ -563,7 +556,7 @@ fn wb97xlv_h2o_def2svp_components_vs_pyscf() {
         ctx,
         "e_c_wft = e_c_scaled / λ",
         dh_inj.e_c_wft,
-        num(r, "/corr/e_c_wft", ctx),
+        num_ctx(r, "/corr/e_c_wft", ctx),
         TOL_E_C_INJECTED / LAMBDA,
     );
     check_miss(ctx, "Hh vs DriversOnly ref", e_hh, ref_drv);
@@ -572,7 +565,7 @@ fn wb97xlv_h2o_def2svp_components_vs_pyscf() {
         ctx,
         "λ·E_c vs linear-λ (pre-#239)",
         dh_inj.e_c_scaled,
-        num(r, "/corr/negative_control_linear_lambda", ctx),
+        num_ctx(r, "/corr/negative_control_linear_lambda", ctx),
     );
 
     // ---- E_c and total on ferric's OWN orbitals ----
@@ -588,7 +581,7 @@ fn wb97xlv_h2o_def2svp_components_vs_pyscf() {
         ctx,
         "total",
         dh.total_energy,
-        num(r, "/total", ctx),
+        num_ctx(r, "/total", ctx),
         TOL_TOTAL,
     );
     assert!((dh.total_energy - (dh.e_ks + dh.e_c_scaled)).abs() < 1e-12);
@@ -617,7 +610,7 @@ fn wb97xlv_h2o_def2svp_production_rij_vs_pyscf() {
         ctx,
         "E_KS (RI-J)",
         dh.e_ks,
-        num(r, "/ks_rij/energy", ctx),
+        num_ctx(r, "/ks_rij/energy", ctx),
         TOL_E_KS,
     );
     // A J-recipe swap (exact J against this RI-J reference) must be visible.
@@ -625,20 +618,20 @@ fn wb97xlv_h2o_def2svp_production_rij_vs_pyscf() {
         ctx,
         "E_KS(RI-J) vs exact-J ref",
         dh.e_ks,
-        num(r, "/ks/energy", ctx),
+        num_ctx(r, "/ks/energy", ctx),
     );
     check_close(
         ctx,
         "λ·E_c own orbitals",
         dh.e_c_scaled,
-        num(r, "/corr_rij/e_c_scaled", ctx),
+        num_ctx(r, "/corr_rij/e_c_scaled", ctx),
         TOL_E_C_OWN,
     );
     check_close(
         ctx,
         "total",
         dh.total_energy,
-        num(r, "/total_rij", ctx),
+        num_ctx(r, "/total_rij", ctx),
         TOL_TOTAL,
     );
 }
@@ -654,23 +647,14 @@ fn wb97xlv_oh_def2svp_components_vs_pyscf() {
     // ---- E_KS (ROKS; J exact by construction for an RSH functional) ----
     // Lowest of several starts, as the generator selects the reference: the
     // π-hole basin a single start falls into flips under sub-1e-9 changes.
-    let e_ks_ref = num(r, "/ks/energy", ctx);
+    let e_ks_ref = num_ctx(r, "/ks/energy", ctx);
     let mut runs = Vec::new();
     for (name, cfg) in [
         ("minao", ks_config(false)),
-        (
-            "minao ls0.5",
-            RhfConfig {
-                level_shift: 0.5,
-                ..ks_config(false)
-            },
-        ),
+        ("minao ls0.5", ks_config(false).with_level_shift(0.5)),
         (
             "hcore",
-            RhfConfig {
-                use_sad_guess: false,
-                ..ks_config(false)
-            },
+            ks_config(false).with_guess(ferric_scf::options::Guess::Core),
         ),
     ] {
         let res = solve_rohf(
@@ -692,14 +676,14 @@ fn wb97xlv_oh_def2svp_components_vs_pyscf() {
     let roks = runs.swap_remove(k).1;
     assert!(roks.converged, "{ctx}: ROKS not converged");
     assert!(matches!(roks.spin, Spin::RestrictedOpen), "{ctx}: not ROKS");
-    let spread = num(r, "/ks/accepted_spread", ctx);
+    let spread = num_ctx(r, "/ks/accepted_spread", ctx);
     eprintln!("{ctx}: reference ROKS accepted-start spread {spread:.2e} (pi-hole orientation)");
     check_close(ctx, "E_KS (ROKS)", roks.energy, e_ks_ref, TOL_E_KS);
     check_miss(
         ctx,
         "E_KS vs exact ROHF",
         roks.energy,
-        num(r, "/rohf_control/energy", ctx),
+        num_ctx(r, "/rohf_control/energy", ctx),
     );
 
     // ---- semicanonicalisation against the KS Fock (the SCF's grids) ----
@@ -751,8 +735,8 @@ fn wb97xlv_oh_def2svp_components_vs_pyscf() {
             .unwrap_or_else(|e| panic!("{ctx}: u_linlccd {v:?}: {e:?}"))
             .correlation_energy
     };
-    let ref_drv = num(r, "/corr/drivers_only_scaled", ctx);
-    let ref_hh = num(r, "/corr/e_c_scaled", ctx);
+    let ref_drv = num_ctx(r, "/corr/drivers_only_scaled", ctx);
+    let ref_hh = num_ctx(r, "/corr/e_c_scaled", ctx);
     let e_drv = run(LadderVariant::DriversOnly);
     check_close(
         ctx,
@@ -783,7 +767,7 @@ fn wb97xlv_oh_def2svp_components_vs_pyscf() {
         ctx,
         "λ·E_c vs linear-λ (pre-#239)",
         dh_inj.e_c_scaled,
-        num(r, "/corr/negative_control_linear_lambda", ctx),
+        num_ctx(r, "/corr/negative_control_linear_lambda", ctx),
     );
 
     // ---- E_c and total on ferric's OWN semicanonical orbitals ----
@@ -799,7 +783,7 @@ fn wb97xlv_oh_def2svp_components_vs_pyscf() {
         ctx,
         "total",
         dh.total_energy,
-        num(r, "/total", ctx),
+        num_ctx(r, "/total", ctx),
         TOL_TOTAL,
     );
 }

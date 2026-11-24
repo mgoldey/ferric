@@ -78,12 +78,10 @@ const ALPHA_NE_PYSCF: f64 = 0.629_334_27;
 const TOL_ALPHA: f64 = 1e-7;
 
 fn cfg() -> RhfConfig {
-    RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        max_iter: 300,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_max_iter(300)
 }
 
 /// UHF/def2-SVP energy of a neutral closed-shell atom in a uniform z-field.

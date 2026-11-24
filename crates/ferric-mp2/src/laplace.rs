@@ -30,6 +30,7 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_quadrature::LaplaceQuadrature;
+use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 use ndarray::Array2;
 
@@ -481,7 +482,7 @@ impl std::fmt::Display for SosMp2Result {
 ///
 /// The contraction `Σ Y[Pi,Qj]·Y[Pj,Qi]` swaps the occupied indices *within*
 /// each `(P,Q)` block, so it is evaluated per `nocc×nocc` sub-block of `Y`.
-fn laplace_exchange_energy(
+pub(crate) fn laplace_exchange_energy(
     b_t: &Array2<f64>,
     naux: usize,
     nocc: usize,
@@ -597,7 +598,37 @@ fn laplace_ao_coulomb_energy(
     j_mat.iter().map(|&x| x * x).sum()
 }
 
+/// [`laplace_ri_mp2`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+/// A system with no virtual orbitals is refused
+/// ([`PreparedAux::check_virtual_orbitals`]).
+pub fn laplace_ri_mp2_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    n_quad: usize,
+    frozen_core: usize,
+    memory_budget_bytes: Option<usize>,
+) -> Result<LaplaceMp2Result, FerricError> {
+    let sys = aux.system();
+    aux.check_restricted_reference(rhf)?;
+    aux.check_virtual_orbitals("laplace_ri_mp2_on", rhf)?;
+    laplace_ri_mp2(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        rhf,
+        n_quad,
+        frozen_core,
+        memory_budget_bytes,
+    )
+}
+
 /// AO-Laplace RI-MP2 via pseudo-density factorization of the denominator.
+#[allow(clippy::too_many_arguments)]
 pub fn laplace_ri_mp2(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -685,7 +716,7 @@ const SOS_J_COL_BLOCK: usize = 128;
 /// tile skipped) and the block sums are folded in block order, so the result
 /// does not depend on the pool size. The blocks are a nested rayon fan-out: the
 /// caller's quadrature points are fewer than the pool's threads.
-fn sos_j_square_trace(b: &Array2<f64>) -> f64 {
+pub(crate) fn sos_j_square_trace(b: &Array2<f64>) -> f64 {
     let naux = b.nrows();
     let starts: Vec<usize> = (0..naux).step_by(SOS_J_COL_BLOCK).collect();
     let block_sums: Vec<f64> = starts
@@ -871,8 +902,14 @@ impl LaplaceMp2 {
         warn_if_task_workers_exceed_nominal(self.memory_budget_bytes, "MO quadrature");
         let k_budget = per_task_budget_bytes(self.memory_budget_bytes);
 
-        // 2. Parallel quadrature over points
-        let e_corr: f64 = self
+        // 2. Parallel quadrature over points. The per-point terms are
+        // collected (in point order) and summed serially: a rayon `.sum()`
+        // splits the reduction by the pool's thread count, so its
+        // association, and the last bit of the energy, depended on the
+        // number of threads (1 ulp between 1 and 2 threads on water/cc-pVDZ,
+        // `tests/laplace_dressing_threads.rs`, once the SCF's last bits
+        // moved). The SOS and AO paths below already sum this way.
+        let per_point: Vec<f64> = self
             .points
             .par_iter()
             .zip(self.weights.par_iter())
@@ -889,7 +926,8 @@ impl LaplaceMp2 {
 
                 -w * (2.0 * e_coul - e_exch)
             })
-            .sum();
+            .collect();
+        let e_corr: f64 = per_point.iter().sum();
 
         Ok(e_corr)
     }
@@ -1604,6 +1642,34 @@ pub fn laplace_sos_mp2(
     sos_mp2_dispatch(mol, obs, None, dfbs, op, rhf, config, formulation)
 }
 
+/// [`laplace_sos_mp2_with_basis`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+/// A system with no virtual orbitals is refused
+/// ([`PreparedAux::check_virtual_orbitals`]).
+pub fn laplace_sos_mp2_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    config: &SosMp2Config,
+    formulation: SosFormulation,
+) -> Result<SosMp2Result, FerricError> {
+    let sys = aux.system();
+    aux.check_restricted_reference(rhf)?;
+    aux.check_virtual_orbitals("laplace_sos_mp2_on", rhf)?;
+    laplace_sos_mp2_with_basis(
+        sys.mol(),
+        sys.basis(),
+        sys.basis_set(),
+        aux.basis(),
+        sys.op(),
+        rhf,
+        config,
+        formulation,
+    )
+}
+
 /// [`laplace_sos_mp2`] with the orbital `BasisSet`, which every formulation
 /// accepts and [`SosFormulation::Local`] requires.
 #[allow(clippy::too_many_arguments)]
@@ -1749,10 +1815,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
 
@@ -1787,10 +1850,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
 
@@ -1854,10 +1914,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
 
@@ -1892,10 +1949,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
 
@@ -1954,10 +2008,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
 
@@ -2016,10 +2067,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
 
@@ -2089,10 +2137,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         (mol, obs, dfbs, rhf)
@@ -2327,10 +2372,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
 
@@ -2454,10 +2496,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
 
@@ -2583,10 +2622,7 @@ mod tests {
                 &obs,
                 op,
                 &bounds,
-                &RhfConfig {
-                    energy_conv: 1e-10,
-                    ..Default::default()
-                },
+                &RhfConfig::default().with_energy_conv(1e-10),
             )
             .unwrap();
             let cfg = SosMp2Config {
@@ -2681,10 +2717,7 @@ mod tests {
                     &obs,
                     op,
                     &bounds,
-                    &RhfConfig {
-                        energy_conv: 1e-10,
-                        ..Default::default()
-                    },
+                    &RhfConfig::default().with_energy_conv(1e-10),
                 )
                 .unwrap();
                 (mol, obs, dfbs, rhf)
@@ -2745,10 +2778,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         (mol, obs, dfbs, rhf)

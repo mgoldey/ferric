@@ -8,6 +8,7 @@
 //! auxiliary basis sets.
 
 use crate::mo_transform::transform_3center_ov;
+pub use crate::omega_ri::RiFit;
 use ferric_core::mol::Molecule;
 use ferric_core::orbitals::OrbitalSpace;
 use ferric_core::timing::PhaseAccumulator;
@@ -17,7 +18,7 @@ use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::Operator;
 use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_integrals::threeindex;
-use ferric_scf::ScfResult;
+use ferric_scf::{PreparedAux, ScfResult};
 use ndarray::{Array2, Array3, Axis};
 use ndarray_linalg::{Cholesky, Eigh, UPLO};
 
@@ -322,6 +323,7 @@ pub(crate) fn check_mo_side_alloc(
 ///
 /// See `tests/mwe_rimp2_has_no_guard.rs` for the closed-shell shapes this
 /// mirrors.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn check_u_mo_side_alloc(
     label: &str,
     naux: usize,
@@ -563,8 +565,9 @@ static MO_STREAM_TRACE: ferric_core::config::ConfigVar<bool> = ferric_core::conf
 /// memory budget.
 ///
 /// The transient this bounds is `chunk · width · 8` bytes (`width = nleft ·
-/// nright`), plus the same again for the raw AO slab the transform reads. A
-/// budget share of 1/8 is taken so this transient never crowds out the
+/// nright`). Each row is charged twice: the second row is an allowance, not
+/// the size of the raw AO slab, which is `nao²` wide per row and belongs to
+/// the source's block (sized by the source tier). A budget share of 1/8 is taken so this transient never crowds out the
 /// `b_flat` output it is filling, which is `naux · width · 8` and typically
 /// far larger.
 ///
@@ -602,8 +605,8 @@ pub fn mo_stream_chunk_for_test(width: usize, budget_bytes: usize) -> usize {
 }
 
 pub(crate) fn mo_stream_chunk_for(width: usize, budget_bytes: usize) -> usize {
-    // Two same-shaped transients are live per chunk: the MO block being filled
-    // and the raw AO slab feeding it.
+    // Two rows of `width` per chunk row: the MO block being filled, and an
+    // allowance. The raw AO slab belongs to the source's block, not to this share.
     let per_row_bytes = width.max(1).saturating_mul(8).saturating_mul(2);
     let share = budget_bytes / 8;
     let raw = (share / per_row_bytes.max(1)).max(MO_STREAM_CHUNK_MIN);
@@ -1023,6 +1026,56 @@ pub fn ri_mp2_spin_components(
     rhf: &ScfResult,
     config: &RiMp2Config,
 ) -> Result<(SpinComponents, Array2<f64>), FerricError> {
+    ri_mp2_spin_components_fitted(mol, obs, dfbs, op, rhf, config, &RiFit::Coulomb)
+}
+
+/// [`ri_mp2_spin_components_fitted`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+pub fn ri_mp2_spin_components_fitted_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+    fit: &RiFit,
+) -> Result<(SpinComponents, Array2<f64>), FerricError> {
+    let sys = aux.system();
+    aux.check_restricted_reference(rhf)?;
+    ri_mp2_spin_components_fitted(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        rhf,
+        config,
+        fit,
+    )
+}
+
+/// [`ri_mp2_spin_components`] with an explicit fitting metric.
+///
+/// `RiFit::Coulomb` is byte-identical to [`ri_mp2_spin_components`].
+/// `RiFit::OmegaRi { omega }` is canonical omega-RI-MP2: the 3-index integrals
+/// are `(P|ia)_w` under erfc(ω r)/r and the dressing is `Lᵀ V~^-1`
+/// ([`crate::omega_ri::fit_dressing`]), so `(ia|jb) ~ (ia|P)_w C~ (Q|jb)_w`
+/// with `C~ = V~^-1 V V~^-1`. Requires `op` = Coulomb and
+/// `config.metric_op = None` (the older naive decoupled-metric knob is a
+/// different, non-PSD approximation and the two are not combined).
+pub fn ri_mp2_spin_components_fitted(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+    fit: &RiFit,
+) -> Result<(SpinComponents, Array2<f64>), FerricError> {
+    if !fit.is_coulomb() && config.metric_op.is_some() {
+        return Err(FerricError::General(
+            "RI-MP2: the omega-RI fit and RiMp2Config::metric_op are mutually exclusive".into(),
+        ));
+    }
     let nbas = obs.nbasis();
     let nelec = mol.nelec() as usize;
     let nocc_total = nelec / 2;
@@ -1052,8 +1105,20 @@ pub fn ri_mp2_spin_components(
     // than being silently regularized into a quietly-wrong number.
     let met_op = config.metric_op.unwrap_or(op);
     let tok = acc.begin("metric V^-1/2");
-    let v2c = threeindex::coulomb_metric_2c(met_op, dfbs)?;
-    let v2c_inv_sqrt = metric_inverse_sqrt(&v2c, met_op)?;
+    // `src_op` is the operator of the raw 3-index integrals: `op` for the
+    // standard fit, erfc(ω) for omega-RI (whose dressing is Lᵀ V~^-1).
+    let (src_op, v2c_inv_sqrt) = match fit {
+        RiFit::Coulomb => {
+            let v2c = threeindex::coulomb_metric_2c(met_op, dfbs)?;
+            (op, metric_inverse_sqrt(&v2c, met_op)?)
+        }
+        RiFit::OmegaRi { .. } => crate::omega_ri::fit_dressing(
+            fit,
+            op,
+            dfbs,
+            ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes),
+        )?,
+    };
     acc.stop(tok);
 
     // Stream raw (P|mu nu) aux-blocks from a budgeted ThreeIndexSource and
@@ -1075,7 +1140,9 @@ pub fn ri_mp2_spin_components(
     // source for its whole lifetime, which is what keeps a rebuilt block
     // bit-identical to the original (see eri3_block_screened's purity note).
     let qqr_bounds = match config.eri3_screen_thresh {
-        Some(t) if t > 0.0 => Some(ferric_integrals::qqr3::QqrBounds3::new(op, mol, obs, dfbs)?),
+        Some(t) if t > 0.0 => Some(ferric_integrals::qqr3::QqrBounds3::new(
+            src_op, mol, obs, dfbs,
+        )?),
         _ => None,
     };
     let screen = qqr_bounds
@@ -1083,8 +1150,15 @@ pub fn ri_mp2_spin_components(
         .map(|b| (b, config.eri3_screen_thresh.unwrap_or(0.0)));
     let naux_all = dfbs.nbasis();
     let tok = acc.begin("3c AO (P|mn)");
-    let mut src =
-        ThreeIndexSource::build_band_screened(op, obs, dfbs, budget_bytes, 0, naux_all, screen)?;
+    let mut src = ThreeIndexSource::build_band_screened(
+        src_op,
+        obs,
+        dfbs,
+        budget_bytes,
+        0,
+        naux_all,
+        screen,
+    )?;
     acc.stop(tok);
     // DEBIT the shared pool for b_flat, AFTER `src` has taken its own charge
     // and WHILE it is still outstanding. That ordering is the whole point:
@@ -1199,7 +1273,8 @@ pub fn ri_mp2_spin_components(
     // The mixed-precision error map covers the Coulomb, erfc and terfc energies
     // (`mixed_energy_operator`); any other operator or a kappa-regularised run
     // keeps the device in f64.
-    let mixed_ok = config.kappa.is_none() && mixed_energy_operator(op);
+    // omega-RI has no measured mixed-precision error map: keep it in f64.
+    let mixed_ok = config.kappa.is_none() && fit.is_coulomb() && mixed_energy_operator(op);
     let dims = (nocc, nvir, first_occ, nocc_total);
     let sc = acc.time("pair energies", || {
         dispatch_spin_components(&b_flat, eps, dims, config.kappa, mixed_ok)
@@ -1320,6 +1395,7 @@ pub(crate) fn note_mixed_ran_on_cpu(mixed_ok: bool) {
 /// path and the device path (`rimp2_gpu`) so the two differ ONLY in how `g_i`
 /// was formed.
 #[inline]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn pair_energy(
     g_i: &ndarray::ArrayView2<f64>,
     i: usize,
@@ -1530,6 +1606,24 @@ pub fn spin_components_from_signed_b_ov(
     )
 }
 
+/// [`ri_mp2`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// `op` is the correlation operator (the system's Coulomb operator
+/// unless the caller attenuates it).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+pub fn ri_mp2_with_op_on(
+    aux: &PreparedAux<'_>,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+) -> Result<RiMp2Result, FerricError> {
+    let sys = aux.system();
+    aux.check_restricted_reference(rhf)?;
+    ri_mp2(sys.mol(), sys.basis(), aux.basis(), op, rhf, config)
+}
+
 /// Compute the RI-MP2 correlation energy.
 ///
 /// Requires converged RHF orbitals, an orbital basis (`obs`), and a density-fitting
@@ -1543,13 +1637,60 @@ pub fn ri_mp2(
     rhf: &ScfResult,
     config: &RiMp2Config,
 ) -> Result<RiMp2Result, FerricError> {
+    ri_mp2_fitted(mol, obs, dfbs, op, rhf, config, &RiFit::Coulomb)
+}
+
+/// [`ri_mp2`] with an explicit fitting metric; `RiFit::OmegaRi` is canonical
+/// omega-RI-MP2 (see [`ri_mp2_spin_components_fitted`]).
+pub fn ri_mp2_fitted(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+    fit: &RiFit,
+) -> Result<RiMp2Result, FerricError> {
     let probe = ferric_core::gpu::provenance::PrecisionProbe::start();
-    let (sc, _) = ri_mp2_spin_components(mol, obs, dfbs, op, rhf, config)?;
+    let (sc, _) = ri_mp2_spin_components_fitted(mol, obs, dfbs, op, rhf, config, fit)?;
     Ok(RiMp2Result {
         mp2_corr: sc.e_total,
         total_energy: rhf.energy + sc.e_total,
         precision: probe.finish(ferric_core::gpu::provenance::RIMP2_KERNELS),
     })
+}
+
+/// [`ri_mp2`] (the Coulomb-metric fit) on the system `aux` was prepared on:
+/// [`ri_mp2_fitted_on`] with [`RiFit::Coulomb`].
+pub fn ri_mp2_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+) -> Result<RiMp2Result, FerricError> {
+    ri_mp2_fitted_on(aux, rhf, &RiFit::Coulomb, config)
+}
+
+/// [`ri_mp2_fitted`] on the system `aux` was prepared on; see [`PreparedAux`] for
+/// what such an entry point reads from the system.
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+pub fn ri_mp2_fitted_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    fit: &RiFit,
+    config: &RiMp2Config,
+) -> Result<RiMp2Result, FerricError> {
+    aux.check_restricted_reference(rhf)?;
+    let sys = aux.system();
+    ri_mp2_fitted(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        rhf,
+        config,
+        fit,
+    )
 }
 
 /// All intermediates needed by the analytical RI-MP2 gradient.
@@ -1974,6 +2115,34 @@ pub fn compute_rpa_intermediates_spin(
     config: &RiMp2Config,
     is_alpha: bool,
 ) -> Result<RpaIntermediates, FerricError> {
+    compute_rpa_intermediates_spin_fitted(
+        mol,
+        obs,
+        dfbs,
+        op,
+        rhf,
+        config,
+        is_alpha,
+        &RiFit::Coulomb,
+    )
+}
+
+/// [`compute_rpa_intermediates_spin`] with an explicit fitting metric. For
+/// `RiFit::OmegaRi` the returned `v_inv_sqrt` is the omega-RI dressing
+/// `Lᵀ V~^-1`, which maps the ERFC 3-index rows (not the Coulomb ones): no
+/// energy reads it, and the eigenpotential back-transform is not defined for
+/// this fit.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_rpa_intermediates_spin_fitted(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+    is_alpha: bool,
+    fit: &RiFit,
+) -> Result<RpaIntermediates, FerricError> {
     use ferric_scf::Spin;
     if matches!(rhf.spin, Spin::Restricted) {
         return Err(FerricError::General(
@@ -2007,10 +2176,11 @@ pub fn compute_rpa_intermediates_spin(
     let nvir = nbas - nocc_total;
     let naux = dfbs.nbasis();
 
-    let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
     // erf metric loses rank numerically in a Coulomb aux basis → regularized
-    // eigh V^{-1/2}; Cholesky for Coulomb/erfc/terfc; terf is refused.
-    let v_inv_sqrt = metric_inverse_sqrt(&v2c, op)?;
+    // eigh V^{-1/2}; Cholesky for Coulomb/erfc/terfc; terf is refused. The
+    // omega-RI fit swaps in erfc 3-index integrals and the Lᵀ V~^-1 dressing.
+    let budget_bytes = eri3_budget_bytes(config.memory_budget_bytes);
+    let (src_op, v_inv_sqrt) = crate::omega_ri::fit_dressing(fit, op, dfbs, budget_bytes)?;
 
     let c_occ = c_full
         .slice(ndarray::s![.., first_occ..first_occ + nocc])
@@ -2025,8 +2195,7 @@ pub fn compute_rpa_intermediates_spin(
     // ri_mp2_spin_components's identical migration. Exactness: same
     // contraction, reordered per aux-block, not approximated — see
     // stream_dressed_mo_band's doc.
-    let budget_bytes = eri3_budget_bytes(config.memory_budget_bytes);
-    let mut src = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
+    let mut src = ThreeIndexSource::build(src_op, obs, dfbs, budget_bytes)?;
     let b_ov = stream_dressed_mo_band(&mut src, &v_inv_sqrt, &c_occ, &c_vir, None)?;
 
     Ok(RpaIntermediates {
@@ -2076,6 +2245,21 @@ pub fn compute_rpa_intermediates(
     rhf: &ScfResult,
     config: &RiMp2Config,
 ) -> Result<RpaIntermediates, FerricError> {
+    compute_rpa_intermediates_fitted(mol, obs, dfbs, op, rhf, config, &RiFit::Coulomb)
+}
+
+/// [`compute_rpa_intermediates`] with an explicit fitting metric (see
+/// [`compute_rpa_intermediates_spin_fitted`] for what `v_inv_sqrt` holds under
+/// the omega-RI fit).
+pub fn compute_rpa_intermediates_fitted(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+    fit: &RiFit,
+) -> Result<RpaIntermediates, FerricError> {
     let nbas = obs.nbasis();
     let nelec = mol.nelec() as usize;
     let nocc_total = nelec / 2;
@@ -2085,10 +2269,11 @@ pub fn compute_rpa_intermediates(
     let naux = dfbs.nbasis();
     let c = rhf.mos_r();
 
-    let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
     // erf metric loses rank numerically in a Coulomb aux basis → regularized
-    // eigh V^{-1/2}; Cholesky for Coulomb/erfc/terfc; terf is refused.
-    let v_inv_sqrt = metric_inverse_sqrt(&v2c, op)?;
+    // eigh V^{-1/2}; Cholesky for Coulomb/erfc/terfc; terf is refused. The
+    // omega-RI fit swaps in erfc 3-index integrals and the Lᵀ V~^-1 dressing.
+    let budget_bytes = eri3_budget_bytes(config.memory_budget_bytes);
+    let (src_op, v_inv_sqrt) = crate::omega_ri::fit_dressing(fit, op, dfbs, budget_bytes)?;
 
     let c_occ = c
         .slice(ndarray::s![.., first_occ..first_occ + nocc])
@@ -2097,8 +2282,7 @@ pub fn compute_rpa_intermediates(
 
     // Stream + dress on the fly (see compute_rpa_intermediates_spin's doc for
     // why this replaces eri3_mo_ov_blocked + a separate dressing GEMM).
-    let budget_bytes = eri3_budget_bytes(config.memory_budget_bytes);
-    let mut src = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
+    let mut src = ThreeIndexSource::build(src_op, obs, dfbs, budget_bytes)?;
     let b_ov = stream_dressed_mo_band(&mut src, &v_inv_sqrt, &c_occ, &c_vir, None)?;
 
     Ok(RpaIntermediates {
@@ -2293,29 +2477,31 @@ fn compute_mp2_intermediates_impl(
 /// L^{-1} V L^{-T} = I, i.e., L^{-1} acts as V^{-1/2}.
 pub fn cholesky_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     // One-time (naux, naux) setup factorization, called once per RI-MP2/RPA/GW
-    // intermediates build, outside any rayon region. Opt-in BLAS raise via
-    // FERRIC_BLAS_THREADS (default: the rayon pool size; 1 on a rayon worker);
-    // opt_in_blas_threads()'s rayon-worker self-guard also covers any caller
-    // reached from inside a rayon pool. The forward-substitution triangular
-    // solve below stays untouched (scalar, deliberately serial — see
-    // docs/parallelism-gaps-2026-07-09.md's "deliberately serial" list).
-    let l = with_blas_threads(opt_in_blas_threads(), || v.cholesky(UPLO::Lower))
-        .map_err(|e| FerricError::Lapack(format!("Cholesky on (P|Q): {e}")))?;
-    let n = l.nrows();
-    // Forward-substitution to invert lower-triangular L
-    let mut l_inv = Array2::zeros((n, n));
-    for i in 0..n {
-        l_inv[(i, i)] = 1.0 / l[(i, i)];
-        for j in (0..i).rev() {
-            let mut sum = 0.0;
-            for k in j..i {
-                sum += l[(i, k)] * l_inv[(k, j)];
-            }
-            l_inv[(i, j)] = -sum / l[(i, i)];
-        }
-    }
-    // V^{-1/2} = L^{-1} (so that B = L^{-1} (Q|ia) and B^T B = (ia|P) V^{-1} (Q|jb))
-    Ok(l_inv)
+    // intermediates build, outside any rayon region. LAPACK dpotrf + dtrtri
+    // (ferric_core::linalg::cholesky_inverse_lower) under the opt-in BLAS raise
+    // (FERRIC_BLAS_THREADS, default the rayon pool size; 1 on a rayon worker,
+    // which also covers a caller reached from inside a rayon pool).
+    //
+    // V^{-1/2} = L^{-1}, so that B = L^{-1} (Q|ia) and B^T B = (ia|P) V^{-1} (Q|jb).
+    with_blas_threads(opt_in_blas_threads(), || {
+        ferric_core::linalg::cholesky_inverse_lower(v)
+    })
+}
+
+/// `L⁻¹ H` for the RI metric `V = L Lᵀ`, by one LAPACK Cholesky and one BLAS3
+/// triangular solve, with no explicit inverse: half the flops of forming
+/// [`cholesky_inverse_sqrt`] and then a GEMM. `h` is consumed and overwritten
+/// in place. Same opt-in BLAS raise as [`cholesky_inverse_sqrt`]; call it
+/// outside rayon regions.
+pub fn cholesky_whiten(v: &Array2<f64>, h: Array2<f64>) -> Result<Array2<f64>, FerricError> {
+    use ndarray_linalg::{Diag, SolveTriangularInto};
+    with_blas_threads(opt_in_blas_threads(), || {
+        let l = v
+            .cholesky(UPLO::Lower)
+            .map_err(|e| FerricError::Lapack(format!("Cholesky on (P|Q): {e}")))?;
+        l.solve_triangular_into(UPLO::Lower, Diag::NonUnit, h)
+            .map_err(|e| FerricError::Lapack(format!("whitening L X = H: {e}")))
+    })
 }
 
 /// Compute a SYMMETRIC V^{-1/2} via regularized eigendecomposition with canonical
@@ -2802,10 +2988,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let aux_bs = basis::bundled(aux_name).unwrap();
@@ -2883,10 +3066,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
@@ -2937,10 +3117,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
@@ -3125,10 +3302,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
@@ -3301,10 +3475,7 @@ mod tests {
             &obs,
             opc,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-9,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-9),
         )
         .unwrap();
         let cfg = RiMp2Config::default();
@@ -3390,5 +3561,98 @@ mod tests {
                  contamination, not RI noise)"
             );
         }
+    }
+
+    /// Water in `basis_name` (STO-3G: 7 functions, 6-31G: 13), with its
+    /// converged RHF, for the reference-check tests of the `*_on` entries.
+    fn reference_check_water(
+        basis_name: &str,
+    ) -> (ferric_scf::PreparedSystem, ferric_scf::ScfResult) {
+        let mol = ferric_core::mol::Molecule::parse_xyz(
+            "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let bs = ferric_core::basis::bundled(basis_name).unwrap();
+        let sys = ferric_scf::PreparedSystem::new(mol, &bs).unwrap();
+        let rhf = sys
+            .solve_rhf(&ferric_scf::rhf::RhfConfig::default())
+            .unwrap();
+        (sys, rhf)
+    }
+
+    fn assert_reference_refused<T>(who: &str, r: Result<T, ferric_core::FerricError>) {
+        let msg = r.map(|_| ()).unwrap_err().to_string();
+        assert!(
+            msg.contains("does not belong to this system"),
+            "{who}: {msg}"
+        );
+    }
+
+    /// The `*_on` entries check the reference against `aux`'s system: a
+    /// 6-31G result on an STO-3G system (and the reverse) is an error, where
+    /// the loose kernel, handed the same pair, panics slicing the MOs.
+    #[test]
+    fn on_entries_refuse_a_reference_of_another_system() {
+        let (small, rhf_small) = reference_check_water("sto-3g");
+        let (large, rhf_large) = reference_check_water("6-31g");
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let aux_small = small.prepare_aux(&aux_bs).unwrap();
+        let aux_large = large.prepare_aux(&aux_bs).unwrap();
+        let cfg = RiMp2Config::default();
+        assert_reference_refused("ri_mp2_on", ri_mp2_on(&aux_small, &rhf_large, &cfg));
+        assert_reference_refused("ri_mp2_on", ri_mp2_on(&aux_large, &rhf_small, &cfg));
+        assert_reference_refused(
+            "u_ri_mp2_on",
+            crate::u_rimp2::u_ri_mp2_on(&aux_small, &rhf_large, &cfg),
+        );
+        assert_reference_refused(
+            "mp3_energy_on",
+            crate::mp3::mp3_energy_on(&aux_small, &rhf_large, 0, None),
+        );
+        assert_reference_refused(
+            "scs_mp2_on",
+            crate::scs::scs_mp2_on(&aux_small, &rhf_large, &Default::default()),
+        );
+        assert_reference_refused(
+            "laplace_ri_mp2_on",
+            crate::laplace::laplace_ri_mp2_on(&aux_small, &rhf_large, 7, 0, None),
+        );
+        assert_reference_refused(
+            "rimp2_gradient_analytical_on",
+            crate::gradient::rimp2_gradient_analytical_on(&aux_small, &rhf_large, &cfg, None),
+        );
+        // The OO-RI-MP2 gradient checks the optimised orbitals it is given.
+        let oo_large = crate::oo_rimp2::oo_ri_mp2_on(
+            &aux_large,
+            &rhf_large,
+            &crate::oo_rimp2::OoRiMp2Config::default(),
+            None,
+        )
+        .unwrap();
+        let msg = crate::oo_rimp2_gradient::oo_ri_mp2_gradient_on(&aux_small, &oo_large, 0, None)
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.contains("the orbitals do not belong to this system") && msg.contains("13 AO rows"),
+            "oo_ri_mp2_gradient_on: {msg}"
+        );
+        // What the check replaces: the loose kernel on the same pair panics.
+        let loose = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ri_mp2(
+                small.mol(),
+                small.basis(),
+                aux_small.basis(),
+                small.op(),
+                &rhf_large,
+                &cfg,
+            )
+        }));
+        assert!(loose.is_err(), "the loose kernel did not panic");
+        // The system's own reference still runs.
+        let own = ri_mp2_on(&aux_small, &rhf_small, &cfg).unwrap();
+        assert!(own.mp2_corr < 0.0);
     }
 }

@@ -109,6 +109,12 @@ pub struct CasScfConfig {
     /// ([`CasScfStabilityMode::Off`] by default; see
     /// [`crate::casscf_stability`]).
     pub stability: CasScfStabilityMode,
+    /// Contraction rotation of the [`CasScfIntegrals::Direct`] J/K builds
+    /// (`ferric_scf::direct_jk::gc_rotation`), with the meaning of
+    /// `RhfConfig::gc_rotation`: `None` = `FERRIC_GC_ROTATE`, then `auto`.
+    /// Pass the reference SCF's value so the CASSCF builds follow it (the
+    /// CLI passes `[scf] gc_rotation`). The other integral routes ignore it.
+    pub gc_rotation: Option<ferric_scf::direct_jk::GcRotate>,
 }
 
 /// Residual at which the Davidson solve of an augmented-Hessian step stops:
@@ -189,6 +195,7 @@ impl Default for CasScfConfig {
             optimizer: CasScfOptimizer::default(),
             ah_forcing: AhForcing::default(),
             stability: CasScfStabilityMode::default(),
+            gc_rotation: None,
         }
     }
 }
@@ -410,6 +417,7 @@ impl<'a> CasScfProblem<'a> {
                 prep,
                 route,
                 plan.budget_bytes().saturating_sub(plan.peak_bytes()),
+                config.gc_rotation,
             )?,
         };
 

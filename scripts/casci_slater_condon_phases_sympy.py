@@ -50,6 +50,10 @@ Claims
           +-1 similarity, so it must mismatch element-wise yet give the same
           spectrum. That is checked numerically below, which shows claim 3
           is convention-specific (strictly stronger than an energy test).
+          The similarity is asserted in its explicit form
+          S_AB = (-1)^{#{(p,q): p in B, q in A, p < q}} (book
+          `eq:so-ordering-similarity`); the same matrices compared without
+          S_AB must differ, so the sign check cannot pass vacuously.
 
   5  The spatial second-quantized Hamiltonian (book `eq:hamiltonian-1`, spin sums written
      out) equals the spin-orbital one with antisymmetrized integrals (book
@@ -70,6 +74,11 @@ Claims
      ordering, and f without the sum over k, must differ. Book: verified
      equation `eq:so-normal-order-split`.
 
+  7  H2 in a CAS(2,2): <1a 1b|H|0a 0b> from the explicit JW matrices and from
+     general_element both equal +(10|10), the exchange integral K of the two
+     orbitals (book `02-slater-condon.md`, "Everything else, and a (2,2)
+     check").
+
 Independent route: claim 3 is a brute-force comparison with the explicit
 Jordan-Wigner Hamiltonian in the full Fock space of 8-10 spin orbitals.
 
@@ -86,7 +95,8 @@ markers for claims 5 and 6 are given with them):
   - claim 5: the exchange term of <pq||rs> in the spin-orbital build of
     hamiltonians_claim5 takes a + sign (marker "FAIL claim 5 forms");
   - claim 6: the mean-field sum over k dropped from the Fock matrix f_pq
-    (marker "FAIL claim 6 split").
+    (marker "FAIL claim 6 split");
+  - claim 7: the opposite-spin double element negated (marker "FAIL claim 7").
 
 Run: python3 scripts/casci_slater_condon_phases_sympy.py
 """
@@ -643,6 +653,33 @@ def claim4():
     check(sim < 1e-12, f"|H_ab| == |H_interleaved| element-wise (max {sim:.1e})")
     check(dspec < 1e-10, f"same spectrum (max eigenvalue diff {dspec:.1e})")
 
+    # The similarity is the book's S_AB = (-1)^{#{(p,q): p in B, q in A, p<q}}:
+    # moving each beta creator of the blocked string past every later alpha one.
+    s_ab = np.array(
+        [(-1) ** sum(1 for p in occ(bk) for q in occ(ak) if p < q) for ak, bk in dets]
+    )
+    d_sim = np.abs(m_ab - s_ab[:, None] * m_il * s_ab[None, :]).max()
+    check(
+        d_sim < 1e-12, f"H_ab == S H_interleaved S with S_AB explicit (max {d_sim:.1e})"
+    )
+    d_nosign = np.abs(m_ab - m_il).max()
+    check(d_nosign > 1e-6, f"without S_AB the matrices differ (max {d_nosign:.1e})")
+
+
+def claim7():
+    print("\n=== 7  H2 CAS(2,2): the opposite-spin double is +(10|10)")
+    n = 2
+    jw = JW(2 * n)
+    ket, bra = (0b01, 0b01), (0b10, 0b10)
+    col = h_column(jw, n, encode(*ket, n, "ab"), "ab")
+    jw_val = sp.expand(col.get(encode(*bra, n, "ab"), 0))
+    ferric = sp.expand(general_element(bra[0], bra[1], ket[0], ket[1]))
+    want = gsym(1, 0, 1, 0)
+    check(
+        jw_val == want and ferric == want,
+        f"claim 7: <1a 1b|H|0a 0b> = {jw_val} (JW), {ferric} (general_element)",
+    )
+
 
 def main():
     claim1()
@@ -650,6 +687,7 @@ def main():
     claim3()
     claim5()
     claim6()
+    claim7()
     claim4()
     if FAILED:
         print(f"\n{len(FAILED)} FAILED")

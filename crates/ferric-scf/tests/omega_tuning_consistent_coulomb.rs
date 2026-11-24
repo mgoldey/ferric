@@ -28,9 +28,10 @@ const FUNCTIONAL: &str = "wB97X-V";
 fn cfg_with(df_j_aux: Option<&str>) -> OmegaTuneConfig {
     OmegaTuneConfig {
         functional: FUNCTIONAL.into(),
-        scf: RhfConfig {
-            df_j_aux: df_j_aux.map(str::to_string),
-            ..Default::default()
+        scf: {
+            let mut c = RhfConfig::default();
+            c.df_j_aux = df_j_aux.map(str::to_string);
+            c
         },
         ..Default::default()
     }
@@ -114,10 +115,8 @@ fn neutral_and_cation_run_the_same_coulomb_route() {
     );
 
     // Negative control: the same config with df_j_aux left unresolved.
-    let unresolved = RhfConfig {
-        df_j_aux: None,
-        ..resolved
-    };
+    let mut unresolved = resolved;
+    unresolved.df_j_aux = None;
     let neutral_raw = solve_rhf(&ctx, &mol, &prep, op, &bounds, &unresolved).unwrap();
     let cat_raw = solve_uhf(&ctx, &cation, &prep, &bounds, &unresolved).unwrap();
     assert_ne!(

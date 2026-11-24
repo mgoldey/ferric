@@ -2,24 +2,28 @@
 //!
 //! Each driver runs the exact-J/K Coulomb RHF that starts the calculation
 //! ([`rhf_start`](crate::driver::rhf_start)), then two-step CASSCF
-//! ([`run_casscf`]) or a CASSCF or CAS-CI reference plus
-//! SC-NEVPT2 ([`nevpt2_on_rhf`](crate::driver::nevpt2_on_rhf)). The Python
-//! bindings (`ferric.run_casscf`, `ferric.run_nevpt2`) and the CLI kinds
-//! (`method.kind = "casscf"`, `"nevpt2"`) call these functions, so the same
-//! input gives the same number on both surfaces.
+//! ([`casscf_on`](crate::driver::casscf_on)), CAS-CI
+//! ([`casci_on`](crate::driver::casci_on)) or a CASSCF or CAS-CI
+//! reference plus SC-NEVPT2 ([`nevpt2_on`](crate::driver::nevpt2_on)).
+//! The Python bindings (`ferric.run_casci`, `ferric.run_casscf`,
+//! `ferric.run_nevpt2`) and the CLI kinds (`method.kind = "casscf"`,
+//! `"nevpt2"`) call these functions, so the same input gives the same number
+//! on both surfaces.
+//!
+//! Every driver takes the [`PreparedSystem`](ferric_scf::PreparedSystem)
+//! (molecule with the basis set's ECP applied, its prepared basis), so a
+//! frontend cannot hand the kernels a molecule and a basis that disagree
+//! about the ECP. The kernels underneath
+//! ([`run_casscf`], [`run_cas_ci`], [`sc_nevpt2`]) take the molecule and the
+//! basis separately.
 
 use crate::{
-    run_cas_ci, run_casscf, sc_nevpt2, CasCiConfig, CasScfConfig, Nevpt2Config, Nevpt2Integrals,
-    Nevpt2Reference, Nevpt2Result,
+    run_cas_ci, run_casscf, sc_nevpt2, CasCiConfig, CasCiResult, CasScfConfig, CasScfResult,
+    Nevpt2Config, Nevpt2Integrals, Nevpt2Reference, Nevpt2Result,
 };
-use ferric_core::mol::Molecule;
-use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
-use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::operator::Operator;
-use ferric_scf::rhf::{solve_rhf, RhfConfig};
-use ferric_scf::screening::SchwarzBounds;
-use ferric_scf::ScfResult;
+use ferric_scf::rhf::RhfConfig;
+use ferric_scf::{PreparedSystem, ScfResult};
 
 /// Convergence settings of the RHF start; `None` keeps the [`RhfConfig`]
 /// default.
@@ -31,36 +35,53 @@ pub struct ScfStart {
     pub energy_conv: Option<f64>,
     /// SCF density-change threshold.
     pub density_conv: Option<f64>,
+    /// `RhfConfig::gc_rotation` of the start (the direct J/K contraction
+    /// rotation, `ferric_scf::direct_jk::gc_rotation`); `None` = unset.
+    /// Pass the same value as `CasScfConfig::gc_rotation` so the CASSCF
+    /// direct builds follow the start.
+    pub gc_rotation: Option<ferric_scf::direct_jk::GcRotate>,
 }
 
-/// The exact-J/K Coulomb RHF of `mol` in `prep` with Schwarz screening and
-/// the [`RhfConfig`] defaults, `start`'s overrides and the memory budget
-/// (`three_index_budget_bytes`; `None` is the auto-detected budget). An
+/// The exact-J/K Coulomb RHF of `sys` (its molecule with the basis set's
+/// ECP applied, its prepared basis and Schwarz bounds) with the
+/// [`RhfConfig`] defaults, `start`'s overrides and the memory budget
+/// (`three_index_budget_bytes`; `None` is the auto-detected budget),
+/// screening with the system's kind ([`PreparedSystem::screening`]). An
 /// unconverged SCF is a [`FerricError::ScfConvergence`].
 pub fn rhf_start(
-    ctx: &ParallelContext,
-    mol: &Molecule,
-    prep: &PreparedBasis,
+    sys: &PreparedSystem,
     start: ScfStart,
     memory_budget_bytes: Option<usize>,
 ) -> Result<ScfResult, FerricError> {
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, prep)?;
-    let mut cfg = RhfConfig {
-        three_index_budget_bytes: memory_budget_bytes.unwrap_or(0),
+    let cfg = start_config(start, memory_budget_bytes, sys.screening())?;
+    sys.solve_rhf(&cfg)?.into_converged()
+}
+
+/// The [`RhfConfig`] of the RHF start, lowered through
+/// [`ScfOptions`](ferric_scf::options::ScfOptions): `start`'s thresholds,
+/// the budget and the screening kind, every other field at its default.
+fn start_config(
+    start: ScfStart,
+    memory_budget_bytes: Option<usize>,
+    screening: ferric_scf::screening::ScreeningKind,
+) -> Result<RhfConfig, FerricError> {
+    let ScfStart {
+        max_iter,
+        energy_conv,
+        density_conv,
+        gc_rotation,
+    } = start;
+    let mut cfg = ferric_scf::options::ScfOptions {
+        max_iter,
+        energy_conv,
+        density_conv,
+        three_index_budget_bytes: memory_budget_bytes,
+        screening: Some(screening),
         ..Default::default()
-    };
-    cfg.max_iter = start.max_iter.unwrap_or(cfg.max_iter);
-    cfg.energy_conv = start.energy_conv.unwrap_or(cfg.energy_conv);
-    cfg.density_conv = start.density_conv.unwrap_or(cfg.density_conv);
-    let rhf = solve_rhf(ctx, mol, prep, op, &bounds, &cfg)?;
-    if !rhf.converged {
-        return Err(FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        });
     }
-    Ok(rhf)
+    .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)?;
+    cfg.gc_rotation = gc_rotation;
+    Ok(cfg)
 }
 
 /// The doubly occupied core count `(nelec − n_α − n_β) / 2` that the active
@@ -141,26 +162,47 @@ pub fn casci_config_of(cas: &CasScfConfig) -> CasCiConfig {
     }
 }
 
-/// SC-NEVPT2 on the reference `on` built from the converged RHF `rhf`:
-/// [`run_casscf`] with `cas`, or [`run_cas_ci`] with [`casci_config_of`]
+/// Two-step CASSCF ([`run_casscf`]) on `sys` from its converged RHF `rhf`.
+pub fn casscf_on(
+    sys: &PreparedSystem,
+    rhf: &ScfResult,
+    cas: &CasScfConfig,
+) -> Result<CasScfResult, FerricError> {
+    sys.check_reference(rhf)?;
+    run_casscf(sys.mol(), sys.basis(), rhf, cas)
+}
+
+/// CAS-CI ([`run_cas_ci`]) on `sys` from its converged RHF `rhf`.
+pub fn casci_on(
+    sys: &PreparedSystem,
+    rhf: &ScfResult,
+    cas: &CasCiConfig,
+) -> Result<CasCiResult, FerricError> {
+    sys.check_reference(rhf)?;
+    run_cas_ci(sys.mol(), sys.basis(), rhf, *cas)
+}
+
+/// SC-NEVPT2 on `sys` and the reference `on` built from its converged RHF
+/// `rhf`: [`run_casscf`] with `cas`, or [`run_cas_ci`] with [`casci_config_of`]
 /// (`cas`'s orbital-optimization settings are then not read). The
 /// SC-NEVPT2 settings are the [`Nevpt2Config`] defaults with `cas`'s memory
 /// budget and the Hamiltonian of `cas.integrals`
 /// ([`Nevpt2Integrals::of_casscf`]: density-fitted on the RI route). An
 /// unconverged reference is an error, and so is the RI route on a CAS-CI
 /// reference (the CAS-CI runs on the exact integrals).
-pub fn nevpt2_on_rhf(
-    mol: &Molecule,
-    prep: &PreparedBasis,
+pub fn nevpt2_on(
+    sys: &PreparedSystem,
     rhf: &ScfResult,
     on: Nevpt2On,
     cas: &CasScfConfig,
 ) -> Result<Nevpt2Run, FerricError> {
+    sys.check_reference(rhf)?;
     let nev = Nevpt2Config {
         memory_budget_bytes: cas.memory_budget_bytes,
         integrals: Nevpt2Integrals::of_casscf(cas.integrals),
         ..Default::default()
     };
+    let (mol, prep) = (sys.mol(), sys.basis());
     if on == Nevpt2On::Casci && nev.integrals != Nevpt2Integrals::Dense {
         return Err(FerricError::General(
             "SC-NEVPT2: integrals = \"ri\" sets the CASSCF Hamiltonian; a CAS-CI reference \
@@ -198,6 +240,68 @@ pub fn nevpt2_on_rhf(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `start_config` (through `ScfOptions`) reproduces the config the RHF
+    /// start built before roadmap item 11(a): the
+    /// `RhfConfig { three_index_budget_bytes, ..Default::default() }` literal,
+    /// the three threshold overrides, then `screening` (the literal's
+    /// `..start_config(..)` update in `rhf_start`), field for field
+    /// (`Debug` text; `RhfConfig` has no `PartialEq`).
+    #[test]
+    fn start_config_is_the_old_literal() {
+        use ferric_scf::screening::ScreeningKind;
+        let old = |start: ScfStart, budget: Option<usize>, screening| {
+            let mut cfg = RhfConfig::default();
+            cfg.three_index_budget_bytes = budget.unwrap_or(0);
+            cfg.max_iter = start.max_iter.unwrap_or(cfg.max_iter);
+            cfg.energy_conv = start.energy_conv.unwrap_or(cfg.energy_conv);
+            cfg.density_conv = start.density_conv.unwrap_or(cfg.density_conv);
+            cfg.screening = screening;
+            cfg.gc_rotation = start.gc_rotation;
+            cfg
+        };
+        let all = ScfStart {
+            max_iter: Some(77),
+            energy_conv: Some(1e-9),
+            density_conv: Some(3e-8),
+            gc_rotation: Some(ferric_scf::direct_jk::GcRotate::Off),
+        };
+        for (start, budget, screening) in [
+            (ScfStart::default(), None, ScreeningKind::default()),
+            (all, Some(1 << 30), ScreeningKind::Csb),
+        ] {
+            let new = start_config(start, budget, screening).unwrap();
+            assert_eq!(
+                format!("{:?}", old(start, budget, screening)),
+                format!("{new:?}")
+            );
+        }
+    }
+
+    /// `rhf_start` builds its own config; on a CSB system it must screen
+    /// with CSB (the system's solve methods refuse any other kind).
+    #[test]
+    fn rhf_start_runs_on_a_csb_system() {
+        use ferric_scf::screening::ScreeningKind;
+        use ferric_scf::{EcpMolecule, PrepareOptions};
+        let mol = ferric_core::mol::Molecule::parse_xyz(
+            "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let bs = ferric_core::basis::bundled("sto-3g").unwrap();
+        let options = PrepareOptions {
+            screening: ScreeningKind::Csb,
+            ..Default::default()
+        };
+        let sys = EcpMolecule::new(mol, &bs).prepare(options).unwrap();
+        assert!(
+            rhf_start(&sys, ScfStart::default(), None)
+                .unwrap()
+                .converged
+        );
+    }
 
     #[test]
     fn default_n_core_needs_an_even_remainder() {
@@ -247,6 +351,54 @@ mod tests {
                 memory_budget_bytes: Some(1 << 30),
                 compute_rdms: false,
             }
+        );
+    }
+
+    /// Water in `basis_name` (STO-3G: 7 functions, 6-31G: 13), with its
+    /// converged RHF, for the reference-check tests of the `*_on` entries.
+    fn reference_check_water(
+        basis_name: &str,
+    ) -> (ferric_scf::PreparedSystem, ferric_scf::ScfResult) {
+        let mol = ferric_core::mol::Molecule::parse_xyz(
+            "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let bs = ferric_core::basis::bundled(basis_name).unwrap();
+        let sys = ferric_scf::PreparedSystem::new(mol, &bs).unwrap();
+        let rhf = sys
+            .solve_rhf(&ferric_scf::rhf::RhfConfig::default())
+            .unwrap();
+        (sys, rhf)
+    }
+
+    fn assert_reference_refused<T>(who: &str, r: Result<T, ferric_core::FerricError>) {
+        let msg = r.map(|_| ()).unwrap_err().to_string();
+        assert!(
+            msg.contains("does not belong to this system"),
+            "{who}: {msg}"
+        );
+    }
+
+    #[test]
+    fn on_entries_refuse_a_reference_of_another_system() {
+        let (small, _) = reference_check_water("sto-3g");
+        let (_large, rhf_large) = reference_check_water("6-31g");
+        let cas = CasScfConfig {
+            n_active: 2,
+            n_elec_active: (1, 1),
+            n_core: 4,
+            ..Default::default()
+        };
+        assert_reference_refused("casscf_on", casscf_on(&small, &rhf_large, &cas));
+        assert_reference_refused(
+            "casci_on",
+            casci_on(&small, &rhf_large, &casci_config_of(&cas)),
+        );
+        assert_reference_refused(
+            "nevpt2_on",
+            nevpt2_on(&small, &rhf_large, Nevpt2On::Casscf, &cas),
         );
     }
 }

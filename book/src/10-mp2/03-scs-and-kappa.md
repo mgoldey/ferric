@@ -1,6 +1,6 @@
 # Spin-component scaling and κ-regularization {#scs-and-kappa}
 
-<!-- status: ready; registry: scs-mp2 -->
+<!-- status: ready; registry: scs-mp2, kappa-mp2 -->
 
 MP2 has two systematic errors that a cheap change to the pair loop can
 address. The first is an imbalance between the spin components: for bond
@@ -34,7 +34,7 @@ and $c_{\mathrm{SS}} = 1/3$ (Grimme, J. Chem. Phys. 118, 9095 (2003)).
 Check the limits. With $c_{\mathrm{OS}} = c_{\mathrm{SS}} = 1$, (@eq:scs-and-kappa-1) is
 (@eq:closed-shell-ri-mp2-3), plain RI-MP2; the anchor below checks that. With
 $c_{\mathrm{SS}} = 0$ only the opposite-spin part is left. That is SOS-MP2,
-whose energy contains no exchange product $(ia|jb)(ib|ja)$; §@sec:laplace-mp2 shows why
+whose energy contains no exchange product $(ia|jb)(ib|ja)$; section @sec:laplace-mp2 shows why
 that admits a cheaper algorithm.
 
 Which way should the coefficients go? It depends on the property. The
@@ -45,7 +45,8 @@ spin-component, while the reverse appears generally true for
 intermolecular interactions." Grimme's values raise $c_{\mathrm{OS}}$ and
 lower $c_{\mathrm{SS}}$, which improves reaction energies. For
 intermolecular interactions the best coefficients go the other way:
-SCS-MP2(MI) uses $c_{\mathrm{OS}} = 0.40$, $c_{\mathrm{SS}} = 1.29$ (Goldey
+SCS-MP2(MI) uses $c_{\mathrm{OS}} = 0.40$, $c_{\mathrm{SS}} = 1.29$
+(DiStasio and Head-Gordon, Mol. Phys. 105, 1073 (2007); quoted in the
 dissertation, chapter 5). No single pair serves both, which is the
 motivation for section @sec:scs-mp2-2terfc.
 
@@ -54,7 +55,7 @@ here with a comment added:
 
 ```rust
 let sc = ri_mp2_spin_components_any(mol, obs, dfbs, Operator::coulomb(), rhf, &ri_config)?;
-let scs_corr = config.c_os * sc.e_os + config.c_ss * sc.e_ss;    // (10.9)
+let scs_corr = config.c_os * sc.e_os + config.c_ss * sc.e_ss;    // E_SCS
 ```
 
 `ferric-mp2/src/u_rimp2.rs::ri_mp2_spin_components_any` returns (@eq:mp2-cs-spin-adaptation) on a
@@ -89,8 +90,11 @@ SCS-MP2 E_c = -0.200126  (6/5, 1/3)
 c_ss=0  E_c = -0.152440  (E_OS only)
 ```
 
-(@eq:scs-and-kappa-1) is linear in the two components, so it needs no new proof beyond the
-spin adaptation of section @sec:closed-shell-ri-mp2.
+(@eq:scs-and-kappa-1) is linear in the two components, so the spin
+adaptation of section @sec:closed-shell-ri-mp2 is its proof. Part C of
+`scripts/mp2_family_sympy.py` checks the assembly itself: at
+$c_{\mathrm{OS}} = c_{\mathrm{SS}} = 1$ it is the MP2 energy, and its
+operator limits are those of section @sec:scs-mp2-2terfc.
 
 SCS-MP2 has an analytic gradient (`run_optimize(method="scs-mp2")`): the
 relaxed density weights the opposite-spin part by $c_{\mathrm{OS}}$ and the
@@ -125,12 +129,6 @@ in turn.
   So the magnitude of each term of (@eq:mp2-kappa-factor) is at most
   $\kappa_{\mathrm{reg}}^2\Delta\,|(ia|jb)[\ldots]|$, which goes to zero
   with $\Delta$. A near-degenerate pair cannot diverge.
-
-| $\kappa_{\mathrm{reg}}$ | Behaviour |
-|---|---|
-| $\kappa_{\mathrm{reg}} \to \infty$ | the factor is 1; (@eq:mp2-kappa-factor) is RI-MP2 |
-| $\kappa_{\mathrm{reg}} \to 0$ | the factor is $\kappa_{\mathrm{reg}}^2\Delta^2$; the energy goes to zero |
-| finite | each term is bounded by $\kappa_{\mathrm{reg}}^2\Delta\,(ia|jb)[\ldots]$ as $\Delta \to 0$, so a near-degenerate pair cannot diverge |
 
 What does a finite $\kappa_{\mathrm{reg}}$ do? It sets an energy scale
 $1/\kappa_{\mathrm{reg}}$. Excitations with $\Delta \gg 1/\kappa_{\mathrm{reg}}$
@@ -192,7 +190,7 @@ Some(k) => {
             let g_ba = g_i[(b, jcol + a)]; // (ib|ja)
             let denom = e_ij - eps[nocc_total + a] - eps[nocc_total + b];   // -Delta
             let d1 = 1.0 - (k * denom).exp();         // 1 - e^{-kappa Delta}
-            let damp = d1 * d1;                       // the factor of (10.10)
+            let damp = d1 * d1;                       // the factor of E_kappa
             e_os_ij += damp * g_ab * g_ab / denom;
             e_ss_ij += damp * g_ab * (g_ab - g_ba) / denom;
         }
@@ -210,14 +208,26 @@ Two points about it:
   runs: the loop of @sec:closed-shell-ri-mp2-algorithm with no factor, so no multiplication by a number
   close to 1 enters the plain RI-MP2 energy.
 
-> **Unverified equation @eq:mp2-kappa-factor** · κ-regularized pair factor
+> **Verified equation @eq:mp2-kappa-factor** · κ-regularized pair factor
 >
-> No committed sympy proof covers (@eq:mp2-kappa-factor). The code applies
-> $(1 - e^{\kappa_{\mathrm{reg}} \cdot \texttt{denom}})^2$ with
-> `denom` $= -\Delta$ in `ferric-mp2/src/rimp2.rs::pair_energy`; the limits
-> are tested numerically in `ferric-mp2/tests/kappa_mp2.rs::kappa_limits_recover_mp2_and_zero`.
+> The factor $(1 - e^{\kappa_{\mathrm{reg}}\cdot\texttt{denom}})^2$ with
+> `denom` $= -\Delta$ tends to 1 as $\kappa_{\mathrm{reg}} \to \infty$, is
+> $\kappa_{\mathrm{reg}}^2\Delta^2$ to leading order as
+> $\kappa_{\mathrm{reg}} \to 0$, and satisfies
+> $(1 - e^{-\kappa_{\mathrm{reg}}\Delta})^2/\Delta \le \kappa_{\mathrm{reg}}^2\Delta$.
+> The spatial kernel with this factor on both $E_{\mathrm{OS}}$ and
+> $E_{\mathrm{SS}}$, summed over $j \ge i$ with weight 2 off the diagonal,
+> equals the regularized spin-orbital sum component by component.
 >
-> <!-- unverified: id=mp2.kappa.factor; todo=add a claim to scripts/mp2_variant_identities.py: kappa factor limits (kappa->inf gives MP2, kappa->0 gives 0, bounded as Delta->0) against ferric-mp2/src/rimp2.rs::pair_energy -->
+> | | |
+> |---|---|
+> | Proof | `scripts/mp2_family_sympy.py`, part G (symbolic limits and bound; the factor table above; a brute-force spin-orbital sum as the independent route) |
+> | Negative control | the runner flips the sign of the exponent, $e^{\kappa_{\mathrm{reg}}\texttt{denom}} \to e^{-\kappa_{\mathrm{reg}}\texttt{denom}}$, and requires part G to fail |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-mp2/src/rimp2.rs::pair_energy` |
+> | Code test | `kappa_limits_recover_mp2_and_zero` in `crates/ferric-mp2/tests/kappa_mp2.rs` |
+>
+> <!-- verified: id=mp2.kappa.factor; script=scripts/mp2_family_sympy.py; claim=G; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/rimp2.rs::pair_energy; rust_test=ferric-mp2/tests/kappa_mp2.rs::kappa_limits_recover_mp2_and_zero; registry=kappa-mp2 -->
 
 ## What is anchored {#scs-and-kappa-anchored}
 
@@ -228,21 +238,19 @@ Two points about it:
 
 Figures from `site/src/reference/validation.md`.
 
-## Known limits (2026-11-15)
+## Known limits {#scs-and-kappa-limits}
 
 - κ is closed-shell only on the CLI and in Python, and has no gradient;
   `run_rimp2(with_gradient=True, kappa=...)` raises.
 - κ is refused by the local (amplitude-threshold) scheme.
 
-## Sources
+## Sources {#scs-and-kappa-sources}
 
 | Source | Used for |
 |---|---|
-| section @sec:closed-shell-ri-mp2-energy-splits (κ) | equations @eq:scs-and-kappa-1 and @eq:mp2-kappa-factor, the κ limits |
+| Lee and Head-Gordon, J. Chem. Theory Comput. 14, 5203 (2018) | the κ factor (@eq:mp2-kappa-factor) |
+| DiStasio and Head-Gordon, Mol. Phys. 105, 1073 (2007) | the SCS-MP2(MI) coefficients |
 | `crates/ferric-mp2/src/scs.rs`, `crates/ferric-mp2/src/rimp2.rs` | defaults, the κ factor and its validation |
+| `scripts/mp2_family_sympy.py`, parts C and G | the SCS assembly; the κ limits, bound, factor table and spin adaptation |
 | Goldey dissertation, chapter 5, section 5.1, Eqs. 5.1–5.3 | SCS and SCS(MI) coefficients, the quoted imbalance |
 | `site/src/reference/validation.md` | anchors |
-
-The bound $(1 - e^{-\kappa_{\mathrm{reg}}\Delta})^2/\Delta \le \kappa_{\mathrm{reg}}^2\Delta$
-and the table of factors at $\kappa_{\mathrm{reg}} = 1.45$ Eh⁻¹ were checked
-with sympy and numpy for this section; they are not in a committed script.

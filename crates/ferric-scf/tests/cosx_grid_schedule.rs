@@ -49,13 +49,11 @@ fn run_rhf(cfg: &RhfConfig) -> ScfResult {
 /// `energy_conv` is the loose sanity bound and `density_conv` the tight
 /// criterion (see `cosx_scf.rs::tight` for why 1e-7 / 1e-8).
 fn cosx_rhf(cosx: CosxConfig) -> RhfConfig {
-    RhfConfig {
-        energy_conv: 1e-7,
-        density_conv: 1e-8,
-        k_builder: Some("cosx".into()),
-        cosx,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_energy_conv(1e-7)
+        .with_density_conv(1e-8)
+        .with_k_builder(ferric_scf::options::KBuilderKind::Cosx)
+        .with_cosx(cosx)
 }
 
 fn scheduled() -> CosxConfig {
@@ -97,15 +95,10 @@ fn schedule_off_is_inert() {
     assert!(off.converged);
     assert!(off.cosx_schedule.is_none());
 
-    let base = RhfConfig {
-        k_builder: Some("link".into()),
-        ..cosx_rhf(CosxConfig::default())
-    };
+    let base =
+        cosx_rhf(CosxConfig::default()).with_k_builder(ferric_scf::options::KBuilderKind::Link);
     let link = run_rhf(&base);
-    let link_sched = run_rhf(&RhfConfig {
-        cosx: scheduled(),
-        ..base.clone()
-    });
+    let link_sched = run_rhf(&base.clone().with_cosx(scheduled()));
     assert!(link_sched.cosx_schedule.is_none());
     assert_same_bits(&link, &link_sched, "LinK with an inert schedule");
 }

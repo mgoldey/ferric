@@ -148,12 +148,10 @@ struct Sys {
 }
 
 fn tight() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-12,
-        density_conv: FERRIC_DENSITY_CONV,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-12)
+        .with_density_conv(FERRIC_DENSITY_CONV)
 }
 
 /// Molecule, bases and a converged reference of kind `rhf`/`uhf`/`rohf`.
@@ -178,11 +176,7 @@ fn system(name: &str, scf_kind: &str) -> Sys {
             &mol,
             &obs,
             &bounds,
-            &RhfConfig {
-                check_stability: true,
-                scf_stability_descent: true,
-                ..tight()
-            },
+            &tight().with_stability(ferric_scf::options::Stability::Descend),
         ),
         "rohf" => solve_rohf(&ctx, &mol, &obs, op, &bounds, &tight()),
         _ => panic!("unknown reference {scf_kind}"),

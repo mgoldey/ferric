@@ -192,7 +192,134 @@ impl PrecisionRecord {
     }
 }
 
+impl PrecisionRecord {
+    /// The inverse of [`PrecisionRecord::to_json`], for a record kept as JSON
+    /// (an SCF checkpoint): `from_json(&r.to_json()) == Ok(r)` for every
+    /// record this crate produces. Strict: an unknown kernel, precision,
+    /// fallback or bound kind, a missing or extra key, a `counter_scope` other
+    /// than [`COUNTER_SCOPE`], an `a_posteriori` bound (no kernel computes one)
+    /// or a `none_computed` reason other than the kernel's own is an `Err`.
+    pub fn from_json(value: &serde_json::Value) -> Result<Self, String> {
+        let obj = json_object(value, &["precision", "counter_scope", "kernels"])?;
+        if obj["counter_scope"].as_str() != Some(COUNTER_SCOPE) {
+            return Err(format!("counter_scope {}", obj["counter_scope"]));
+        }
+        let precision = json_precision(&obj["precision"])?;
+        let kernels = obj["kernels"]
+            .as_array()
+            .ok_or("kernels is not an array")?
+            .iter()
+            .map(KernelRecord::from_json)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(PrecisionRecord { precision, kernels })
+    }
+}
+
+/// `value` as an object with exactly the keys `keys`.
+fn json_object<'a>(
+    value: &'a serde_json::Value,
+    keys: &[&str],
+) -> Result<&'a serde_json::Map<String, serde_json::Value>, String> {
+    let obj = value
+        .as_object()
+        .ok_or_else(|| format!("not an object: {value}"))?;
+    let mut found: Vec<&str> = obj.keys().map(String::as_str).collect();
+    let mut want = keys.to_vec();
+    found.sort_unstable();
+    want.sort_unstable();
+    if found != want {
+        return Err(format!("keys {found:?}, expected {want:?}"));
+    }
+    Ok(obj)
+}
+
+fn json_precision(value: &serde_json::Value) -> Result<Precision, String> {
+    value
+        .as_str()
+        .ok_or_else(|| format!("precision {value}"))?
+        .parse()
+}
+
+fn json_u64(value: &serde_json::Value) -> Result<u64, String> {
+    value
+        .as_u64()
+        .ok_or_else(|| format!("not a count: {value}"))
+}
+
 impl KernelRecord {
+    fn from_json(value: &serde_json::Value) -> Result<Self, String> {
+        let obj = json_object(
+            value,
+            &[
+                "kernel",
+                "requested",
+                "mode",
+                "device",
+                "calls_mixed",
+                "calls_f64_fallback",
+                "ladder",
+                "error_bound",
+            ],
+        )?;
+        let kernel: MixedKernel = obj["kernel"]
+            .as_str()
+            .ok_or_else(|| format!("kernel {}", obj["kernel"]))?
+            .parse()?;
+        let device = match &obj["device"] {
+            serde_json::Value::Null => None,
+            serde_json::Value::String(s) if s == "cpu" => Some(KernelDevice::Cpu),
+            d => {
+                let g = json_object(d, &["ordinal", "name", "cc"])?;
+                let ordinal =
+                    usize::try_from(json_u64(&g["ordinal"])?).map_err(|e| e.to_string())?;
+                let name = g["name"].as_str().ok_or("device name")?.to_string();
+                let (major, minor) = g["cc"]
+                    .as_str()
+                    .and_then(|cc| cc.split_once('.'))
+                    .ok_or_else(|| format!("device cc {}", g["cc"]))?;
+                let cc = |t: &str| t.parse::<i32>().map_err(|e| e.to_string());
+                Some(KernelDevice::Gpu {
+                    ordinal,
+                    name,
+                    cc_major: cc(major)?,
+                    cc_minor: cc(minor)?,
+                })
+            }
+        };
+        let names: Vec<&str> = MixedFallback::ALL.iter().map(|r| r.name()).collect();
+        let fallback_obj = json_object(&obj["calls_f64_fallback"], &names)?;
+        let mut calls_f64_fallback = [0; MixedFallback::ALL.len()];
+        for r in MixedFallback::ALL {
+            calls_f64_fallback[r as usize] = json_u64(&fallback_obj[r.name()])?;
+        }
+        let ladder = match &obj["ladder"] {
+            serde_json::Value::Null => None,
+            l => {
+                let l = json_object(l, &["builds_mixed", "builds_total", "exit_rebuilt_f64"])?;
+                Some(LadderRecord {
+                    builds_mixed: json_u64(&l["builds_mixed"])?,
+                    builds_total: json_u64(&l["builds_total"])?,
+                    exit_rebuilt_f64: json_u64(&l["exit_rebuilt_f64"])?,
+                })
+            }
+        };
+        let bound = json_object(&obj["error_bound"], &["kind", "why"])?;
+        let why = no_bound_reason(kernel);
+        if bound["kind"].as_str() != Some("none_computed") || bound["why"].as_str() != Some(why) {
+            return Err(format!("error_bound {}", obj["error_bound"]));
+        }
+        Ok(KernelRecord {
+            kernel,
+            requested: json_precision(&obj["requested"])?,
+            mode: json_precision(&obj["mode"])?,
+            device,
+            calls_mixed: json_u64(&obj["calls_mixed"])?,
+            calls_f64_fallback,
+            ladder,
+            error_bound: ErrorBound::NoneComputed { why },
+        })
+    }
+
     /// This record as one element of the `kernels` array of
     /// [`PrecisionRecord::to_json`]; a non-finite bound is written as a string.
     pub fn to_json(&self) -> serde_json::Value {
@@ -275,8 +402,7 @@ fn no_bound_reason(k: MixedKernel) -> &'static str {
         MixedKernel::DfjF32 => {
             "no per-run bound is computed; each mixed call is an SCF RI-J build that read the \
              f32-stored tensor (calls_f64_fallback counts a declined f32 tier; response and \
-             gradient RI-J builds stay f64; not behind the SCF ladder, no f64 exit unless \
-             DfJ::f64_exit_coulomb_energy was applied); \
+             gradient RI-J builds stay f64; not behind the SCF ladder, no f64 exit); \
              per-build first-order energy error <= (u32+gamma_pair+gamma_naux)*|c|^T|B||w| \
              (ferric_scf::df_j)"
         }
@@ -384,6 +510,77 @@ mod tests {
     use crate::gpu::stats::{
         note_exit_rebuild, note_kernel_mixed, note_ladder_build, note_mixed_fallback,
     };
+
+    #[test]
+    fn from_json_inverts_to_json() {
+        let gpu = KernelDevice::Gpu {
+            ordinal: 1,
+            name: "Some Device".to_string(),
+            cc_major: 8,
+            cc_minor: 6,
+        };
+        let kernel = |k: MixedKernel, device: Option<KernelDevice>| KernelRecord {
+            kernel: k,
+            requested: Precision::Mixed,
+            mode: if device.is_some() {
+                Precision::Mixed
+            } else {
+                Precision::F64
+            },
+            calls_mixed: u64::from(device.is_some()) * 7,
+            device,
+            calls_f64_fallback: [1, 0, 3],
+            ladder: has_ladder(k).then_some(LadderRecord {
+                builds_mixed: 7,
+                builds_total: 9,
+                exit_rebuilt_f64: 1,
+            }),
+            error_bound: ErrorBound::NoneComputed {
+                why: no_bound_reason(k),
+            },
+        };
+        let records = [
+            PrecisionRecord::f64(),
+            PrecisionRecord {
+                precision: Precision::Mixed,
+                kernels: vec![
+                    kernel(MixedKernel::DfjF32, Some(KernelDevice::Cpu)),
+                    kernel(MixedKernel::DfkOcc, Some(gpu)),
+                    kernel(MixedKernel::XcVxc, None),
+                ],
+            },
+        ];
+        for r in records {
+            assert_eq!(PrecisionRecord::from_json(&r.to_json()), Ok(r.clone()));
+            let mut bad = r.to_json();
+            bad["counter_scope"] = serde_json::json!("thread");
+            assert!(PrecisionRecord::from_json(&bad).is_err());
+            let mut extra = r.to_json();
+            extra["more"] = serde_json::json!(1);
+            assert!(PrecisionRecord::from_json(&extra).is_err());
+        }
+        let mut wrong_why = records_with_one_kernel().to_json();
+        wrong_why["kernels"][0]["error_bound"]["why"] = serde_json::json!("other");
+        assert!(PrecisionRecord::from_json(&wrong_why).is_err());
+    }
+
+    fn records_with_one_kernel() -> PrecisionRecord {
+        PrecisionRecord {
+            precision: Precision::Mixed,
+            kernels: vec![KernelRecord {
+                kernel: MixedKernel::DfjF32,
+                requested: Precision::Mixed,
+                mode: Precision::Mixed,
+                device: Some(KernelDevice::Cpu),
+                calls_mixed: 2,
+                calls_f64_fallback: [0, 0, 0],
+                ladder: None,
+                error_bound: ErrorBound::NoneComputed {
+                    why: no_bound_reason(MixedKernel::DfjF32),
+                },
+            }],
+        }
+    }
 
     #[test]
     fn f64_record_is_explicit_f64_with_no_kernels() {

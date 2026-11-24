@@ -1,8 +1,11 @@
 //! SCF orbital checkpoint: file format, atomic IO, identity checks.
 //!
-//! NO SOLVER READS OR WRITES THIS YET. It is the first of the five steps in the
-//! checkpoint design, and it exists so that the later steps have one reviewed
-//! answer to "is this file the calculation I am about to trust?".
+//! No solver reads or writes this. The CLI's `[scf] save_reference` writes a
+//! final file after the reference SCF of a correlated kind, and its
+//! `read_reference` checks one under [`ReadMode::Skip`] and restores it with
+//! [`Checkpoint::into_result`] in place of that SCF. Nothing reads a file as a
+//! guess yet. This module is the one reviewed answer to "is this file the
+//! calculation I am about to trust?".
 //!
 //! # File
 //!
@@ -23,6 +26,12 @@
 //! dimension (u64 LE), one byte that is 1 for Fortran order, and the values as
 //! f64 LE in memory order. `crates/ferric-python/tests/test_scf_checkpoint_format.py`
 //! recomputes it from this paragraph, with numpy as the reader.
+//!
+//! Optional `meta` keys added within version 1 (`one_step_energy_drop`,
+//! `precision_json`, `eri_route`, `writer_threads`) read as absent from an older
+//! file. The other direction fails closed: `meta` is parsed with unknown keys
+//! refused, so a build from before a key existed rejects a newer file with a
+//! [`CheckpointError::Format`] naming the unknown field, never misreads it.
 //!
 //! The layout flag is part of the checksum because layout is part of what
 //! round-trips: [`Checkpoint::read`] returns an array in the memory order it was
@@ -57,7 +66,7 @@
 //! | [`FieldClass::StateSelecting`] | warn | error |
 //! | [`FieldClass::Route`] | log | error |
 //! | `energy_conv`, `density_conv` | ignored | file at least as tight |
-//! | file exit state | any | `Converged` or `Plateau` (echoed), with `converged = true` |
+//! | file exit state | any | `Converged`, with `converged = true` |
 //! | build | log | error unless overridden, and the override is recorded |
 //!
 //! A read that fails is always `Err`: there is no return value that means "start
@@ -73,6 +82,8 @@ pub use identity::{
 };
 
 use crate::result::{ConvergenceReport, DfJkRoute, ScfExit, ScfResult, Spin};
+use crate::rhf::RhfConfig;
+use ferric_core::gpu::provenance::PrecisionRecord;
 use ferric_core::FerricError;
 use ndarray::Array2;
 use std::path::Path;
@@ -149,9 +160,9 @@ pub enum CheckpointError {
         /// The running [`BuildStamp`], via `Display`.
         current: String,
     },
-    /// A skip read of a file whose exit state is not `Converged` or
-    /// `Plateau`, or whose `converged` flag is false.
-    #[error("checkpoint exit state {exit} cannot replace an SCF (Converged or Plateau only)")]
+    /// A skip read of a file whose exit state is not `Converged`, or whose
+    /// `converged` flag is false.
+    #[error("checkpoint exit state {exit} cannot replace an SCF (Converged only)")]
     ExitRefused {
         /// The file's `ScfExit` in `Debug` form, with a note when
         /// `converged = false` is the reason.
@@ -232,7 +243,7 @@ pub struct FinalState {
     /// `None` means exact four-centre J/K. Dropping a route here would pair an
     /// RI energy with an exact gradient, silently.
     pub df_jk: Option<DfJkRoute>,
-    /// `ScfResult::exit`; a skip accepts only `Converged` and `Plateau`.
+    /// `ScfResult::exit`; a skip accepts only `Converged`.
     pub exit: ScfExit,
     /// `ScfResult::converged`; a skip requires `true`.
     pub converged: bool,
@@ -249,6 +260,19 @@ pub struct FinalState {
     pub precision_summary: String,
     /// `{:?}` of the same record.
     pub precision_detail: String,
+    /// `PrecisionRecord::to_json` of the same record, from which
+    /// [`Checkpoint::into_result`] rebuilds the typed record (checked against
+    /// `precision_detail`). `None` in files written before the field existed.
+    pub precision_json: Option<String>,
+    /// The in-core ERI store the solve served J/K from
+    /// (`RhfConfig::eri_route` after the solve), set by the caller that has
+    /// the solve's configuration; `None` for a direct or density-fitted solve,
+    /// and in files written before the field existed.
+    pub eri_route: Option<crate::incore_jk::EriRoute>,
+    /// Rayon threads of the process that wrote the file, for the reader to
+    /// report (thread count is not part of the identity). `None` in files
+    /// written before the field existed.
+    pub writer_threads: Option<usize>,
     /// Populated `ScfResult` fields this file does not store. `induced_dipoles`
     /// and `cosx_final` here make the state unusable under skip.
     pub not_stored: Vec<String>,
@@ -358,6 +382,9 @@ impl Checkpoint {
                 convergence: *convergence,
                 precision_summary: precision.summary(),
                 precision_detail: format!("{precision:?}"),
+                precision_json: Some(precision.to_json().to_string()),
+                eri_route: None,
+                writer_threads: Some(rayon::current_num_threads()),
                 not_stored,
             }),
             iteration: *iterations,
@@ -423,5 +450,114 @@ impl Checkpoint {
         mode: ReadMode,
     ) -> Result<ReadVerdict, CheckpointError> {
         identity::check(self, current, current_build, mode)
+    }
+
+    /// The `ScfResult` a final file stores, in place of a solve with `config`.
+    /// Consumes the checkpoint, so the arrays move rather than being copied.
+    ///
+    /// Call it only after [`Checkpoint::check`] accepted the file under
+    /// [`ReadMode::Skip`] for an identity built from the same `config`: this
+    /// re-checks only what `check` does not see. Every stored array comes back
+    /// bit for bit and in its stored memory order. `xc` and `relativistic`
+    /// are stamped from `config`, as the solvers stamp them (the identity's
+    /// `xc` and `relativistic` fields matched), and the stored in-core ERI
+    /// route ([`FinalState::eri_route`]) is recorded on `config.eri_route`, as
+    /// the solver records it, so a certificate built from `config` names it.
+    /// The diagnostics the file does not store (`stability`,
+    /// `stability_external`, `cosx_schedule`, `guess_basis`) come back `None`,
+    /// which reads "not run".
+    ///
+    /// Refused ([`CheckpointError::MidRun`] / [`CheckpointError::NotRestorable`]):
+    /// a mid-run file, a state that carried `induced_dipoles` or `cosx_final`,
+    /// and a mixed-precision state whose typed record cannot be rebuilt from
+    /// [`FinalState::precision_json`] to the stored `precision_detail` (a file
+    /// from before that field existed, or a record this build cannot parse).
+    pub fn into_result(self, config: &RhfConfig) -> Result<ScfResult, CheckpointError> {
+        let state = self.final_state.ok_or(CheckpointError::MidRun)?;
+        let FinalState {
+            energy,
+            // Checked by the caller against freshly computed integrals.
+            one_electron_energy: _,
+            nuclear_repulsion: _,
+            fock_alpha,
+            fock_beta,
+            rohf_spin_focks,
+            df_jk,
+            exit,
+            converged,
+            iterations,
+            computed_quartets,
+            convergence,
+            precision_summary,
+            precision_detail,
+            precision_json,
+            eri_route,
+            // A record of the writing process, for the caller to report.
+            writer_threads: _,
+            not_stored,
+        } = state;
+        let mut refused: Vec<String> = not_stored
+            .into_iter()
+            .filter(|name| matches!(name.as_str(), "induced_dipoles" | "cosx_final"))
+            .collect();
+        // The typed record, rebuilt from its JSON and accepted only when its
+        // `Debug` is the stored one; an f64 run needs no JSON (older files).
+        let f64_record = PrecisionRecord::f64();
+        let precision = if precision_detail == format!("{f64_record:?}") {
+            Some(f64_record)
+        } else {
+            precision_json
+                .as_deref()
+                .and_then(|text| serde_json::from_str(text).ok())
+                .and_then(|json| PrecisionRecord::from_json(&json).ok())
+                .filter(|record| format!("{record:?}") == precision_detail)
+        };
+        if precision.is_none() {
+            refused.push(format!("precision ({precision_summary})"));
+        }
+        let Some(precision) = precision.filter(|_| refused.is_empty()) else {
+            return Err(CheckpointError::NotRestorable(refused));
+        };
+        config.eri_route.set(eri_route);
+        let OrbitalState {
+            spin,
+            density_total,
+            density_alpha,
+            density_beta,
+            mos_alpha,
+            mos_beta,
+            eps_alpha,
+            eps_beta,
+        } = self.orbitals;
+        // A struct literal, so a new ScfResult field must be decided here.
+        Ok(ScfResult {
+            spin,
+            energy,
+            density_total,
+            density_alpha,
+            density_beta,
+            mos_alpha,
+            mos_beta,
+            eps_alpha,
+            eps_beta,
+            fock_alpha,
+            fock_beta,
+            converged,
+            exit,
+            iterations,
+            computed_quartets,
+            induced_dipoles: None,
+            stability: None,
+            stability_external: None,
+            df_jk,
+            xc: crate::result::xc_record(config.xc.as_deref(), false),
+            rohf_spin_focks,
+            cosx_final: None,
+            cosx_schedule: None,
+            convergence,
+            guess_basis: None,
+            precision,
+            relativistic: config.relativistic,
+        })
     }
 }

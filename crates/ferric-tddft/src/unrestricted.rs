@@ -1,6 +1,6 @@
 //! Spin-conserving linear response of an unrestricted (UHF / UKS) reference:
 //! TDA and Casida over the two-spin particle–hole space
-//! (`book/src/20-tddft/06-unrestricted.md#unrestricted-spin-problem`), and
+//! (`book/src/19-tddft/06-unrestricted.md#unrestricted-spin-problem`), and
 //! `<S²>` of each root (§11).
 //!
 //! The space is the α pairs (`ia = i·nvir_α + a`) followed by the β pairs.
@@ -438,7 +438,7 @@ fn transition_properties(
     Ok((osc, tdips))
 }
 
-/// The spin-overlap data of `<S²>` (`book/src/20-tddft/06-unrestricted.md#unrestricted-each-root`):
+/// The spin-overlap data of `<S²>` (`book/src/19-tddft/06-unrestricted.md#unrestricted-each-root`):
 /// `O = C_αᵀ S C_β` over
 /// all MOs, with the reference occupations.
 pub(crate) struct SpinOverlap {

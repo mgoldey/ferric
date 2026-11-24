@@ -23,13 +23,14 @@
 //!   (`α = −c_K/4` for a closed-shell total density, `−c_K/2` per spin for
 //!   UHF/ROHF): `E_K = Σ_s α_s Σ_ij L^s_ij · M L^s_ij`,
 //!   `L^s_{P,ij} = Σ_μν X_μi (P|μν) X_νj`, `M` the metric (pseudo-)inverse
-//!   `DfK` applies (`V^{-1/2}·V^{-1/2}` with its eigenvalue cut). The
+//!   `DfK` applies (`MᵀM` of its dressing factor: `V⁻¹` through Cholesky
+//!   when no mode is cut, else `V^{-1/2}·V^{-1/2}` with its eigenvalue cut). The
 //!   three-centre weight is `2 α_s X_s Γ^s_P X_sᵀ`, `Γ^s = M L^s`; the
 //!   two-centre weight is the derivative of `M` contracted with
 //!   `Y = Σ_s α_s Σ_ij L^s_ij L^s_ijᵀ`.
 //!
-//! These are the standard DF-SCF gradient expressions (Weigend, Häser, Patzelt
-//! & Ahlrichs, Chem. Phys. Lett. 294, 143 (1998) for RI-J; Weigend, Kattannek
+//! These are the standard DF-SCF gradient expressions (Eichkorn, Treutler, Öhm,
+//! Häser & Ahlrichs, Chem. Phys. Lett. 240, 283 (1995) for RI-J; Weigend, Kattannek
 //! & Ahlrichs, J. Chem. Phys. 130, 164106 (2009) for RI-K), the orbital
 //! response being carried as usual by the energy-weighted density in the
 //! one-electron Pulay term. A numpy prototype of exactly these contractions
@@ -37,7 +38,9 @@
 //!
 //! ## The truncated exchange metric
 //!
-//! `DfK` builds `V^{-1/2}` from `eigh(V)` and DROPS modes with eigenvalue
+//! When a mode would be cut, `DfK` builds `V^{-1/2}` from `eigh(V)` (its
+//! Cholesky route is taken only when it certifies that no mode is cut, and
+//! then fits the same `V⁻¹`) and DROPS modes with eigenvalue
 //! below the cut of `crate::df_k::metric_lindep_cut` (nominally 1e-10, moved
 //! into a spectral gap when an eigenvalue lies within rounding of it; this
 //! gradient applies the same rule to the same `eigh`); the long-range erf metric

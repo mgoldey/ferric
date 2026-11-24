@@ -304,6 +304,41 @@ def test_unconverged_scf_is_a_convergence_error():
     _failed(out, "convergence_error")
 
 
+def test_failures_are_classified_by_the_ferric_exception_class(monkeypatch):
+    """`run` maps ferric.UnsupportedError / ConvergenceError / InputError /
+    BasisError / ComputationError to the documented error types, with the new
+    class name in the message prefix."""
+    cases = [
+        (ferric.UnsupportedError("x is not supported: y"), "unsupported_error"),
+        (
+            ferric.ConvergenceError("SCF did not converge after 1 iterations"),
+            "convergence_error",
+        ),
+        (ferric.InputError("bad option"), "input_error"),
+        (ferric.BasisError("basis error: unknown bundled basis: nope"), "input_error"),
+        (ferric.ComputationError("General error: boom"), "execution_error"),
+        (ferric.ComputationError('Libxc(UnknownName("NOPE"))'), "input_error"),
+        (RuntimeError("plain boom"), "execution_error"),
+    ]
+    for exc, kind in cases:
+        monkeypatch.setattr(
+            qcs, "_run", lambda inp, exc=exc: (_ for _ in ()).throw(exc)
+        )
+        out = qcs.run(_inp())
+        _failed(out, kind, f"{type(exc).__name__}: {exc}")
+
+
+def test_a_driver_basis_failure_is_an_input_error():
+    """A basis that has no shells for an element is refused inside the driver
+    (`run_rhf`), not by `_bundled`'s name lookup. That was an
+    `execution_error` with a `RuntimeError:` prefix; it is now an `input_error`
+    naming `BasisError`."""
+    out = qcs.run(
+        _inp(basis="cc-pvdz", symbols=["H", "I"], geometry=[0, 0, 0, 0, 0, 3.04])
+    )
+    _failed(out, "input_error", "BasisError: basis error:")
+
+
 def test_qcelemental_round_trip():
     qcel = pytest.importorskip("qcelemental", reason="QCElemental is optional")
     from qcelemental.models import AtomicInput, AtomicResult

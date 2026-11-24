@@ -194,11 +194,9 @@ fn full_ethane_topology() -> MmTopology {
 }
 
 fn tight_scf() -> RhfConfig {
-    RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10)
 }
 
 fn coords_of(atoms: &[QmmmAtom]) -> Array2<f64> {
@@ -223,10 +221,7 @@ fn total_energy(atoms: &[QmmmAtom], top: &MmTopology) -> f64 {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        external_potential: sys.to_external_potential(),
-        ..tight_scf()
-    };
+    let cfg = tight_scf().with_external_potential(sys.to_external_potential());
     let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(r.converged, "SCF did not converge in the FD energy probe");
     let (mm_e, _) = qmmm_mm_terms(&sys, top, &coords_of(atoms)).unwrap();
@@ -243,10 +238,7 @@ fn analytic_full_gradient(atoms: &[QmmmAtom], top: &MmTopology) -> Array2<f64> {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        external_potential: sys.to_external_potential(),
-        ..tight_scf()
-    };
+    let cfg = tight_scf().with_external_potential(sys.to_external_potential());
     let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(r.converged);
     let qm_grad = rhf_gradient(

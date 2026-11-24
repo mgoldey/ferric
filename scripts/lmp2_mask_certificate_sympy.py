@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Sympy proofs: the Hylleraas mask certificate of the amplitude-threshold LMP2.
 
-Conventions (book/src/13-local-mp2/05-mask-certificate.md,
+Conventions (book/src/13-local-mp2/06-mask-certificate.md,
 crates/ferric-mp2/src/lmp2_mask_certificate.rs). Closed-shell MP2 in any
 orthonormal occupied / virtual basis, amplitude t[i,a,j,b], g = (ia|jb),
 Fock superoperator  A t = Fvv t + t Fvv - Foo t - t Foo  (SPD for a positive

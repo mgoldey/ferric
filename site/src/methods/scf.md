@@ -35,7 +35,7 @@ energy change draws a warning (see [sharp bits](../using/sharp-bits.md)).
 range-separated hybrid functionals (for example PBE, B3LYP, ωB97X-V), **VV10**
 nonlocal correlation, the **SCAN / r2SCAN / TPSS** meta-GGAs (τ-dependent;
 no density Laplacian), and the hybrid meta-GGAs **TPSSh, M06-2X, SCAN0,
-r2SCAN0** (libxc 6 or later) and **ωB97M-V** (range-separated, with VV10).
+r2SCAN0** and **ωB97M-V** (range-separated, with VV10).
 Any libxc meta-GGA identifier (`MGGA_*`, `HYB_MGGA_*`) is accepted unless libxc
 flags it as needing the density Laplacian (`XC_FLAGS_NEEDS_LAPLACIAN`, e.g.
 SCAN-L, BR89), which is refused with a message naming that component. A hybrid meta-GGA
@@ -166,6 +166,23 @@ why is recorded in the certificate (`ri-j` entry: "aux …, f64 tensor storage
 `dfj-f32` entry in the precision record) and `result.ri_j_precision` in
 Python.
 
+**The default f32 tensor and the memory budget.** The f32 tensor is held in
+memory only. When it does not fit the memory budget, an f32 request (the
+default included) keeps the f64 tensor and says so on stderr ("…
+`ri_j_precision = "f32"` (default) but the tensor stays f64 …") and in the
+certificate. That choice reads the budget alone, never what else the shared
+memory pool happens to hold, so one input under one budget always gets one
+precision. Because the default switches precision with the
+budget, an energy (and everything correlated on that reference) can move by
+up to ~1e-5 Ha between a budget that fits the f32 tensor and one that does
+not: the f32 and f64 tensors of benzene/aug-cc-pVDZ (def2-universal-jkfit)
+give RHF references 5.3e-6 Ha apart and rs-mp2-rpa totals 7.8e-6 Ha apart.
+`ri_j_precision = "f64"` removes the budget-dependent f32 change, but
+energies can still differ in the last bits when the budget changes the
+`jk_storage` tier (with it, the same benzene run agrees to 7e-13 Ha from
+0.12 GiB to an unset budget). The f32 default is kept: it halves the tensor and its error
+is the measured one below.
+
 Measured, def2-SVP, `def2-universal-jkfit`, default grid and thresholds,
 f32 minus f64 (2026-11-07):
 
@@ -202,8 +219,15 @@ needs exact degeneracies.
 
 ### RI-K tensor storage
 
-The RI-K (DF-K) builder keeps the V^{-1/2}-dressed three-index tensor for
-the whole SCF. That tensor is symmetric in its two orbital indices, and it is
+The RI-K (DF-K) builder keeps the metric-dressed three-index tensor
+`B = M (P|μν)`, `MᵀM = V⁻¹`, for the whole SCF. `M` is the Cholesky `L⁻¹`
+when the factor certifies that no metric eigenvalue lies near the `1e-10`
+linear-dependence cut, and otherwise the truncated `V^{-1/2}` from an
+eigendecomposition (which drops those modes); the two give the same K up to
+rounding (about `1e-13` relative), and the Cholesky route is several times
+cheaper to set up. `FERRIC_DFK_METRIC=eigh` forces the eigendecomposition; it
+is a debug escape hatch for comparing the two routes, not a tuning option
+(`auto`, the default, is the only other value; anything else is an error). That tensor is symmetric in its two orbital indices, and it is
 now held as the **packed symmetric half** (`n_aux × n_bf(n_bf+1)/2`
 elements) rather than the full square: half the memory at f64. Both K
 contractions read only one triangle (the occupied path unpacks each
@@ -1063,6 +1087,73 @@ gates on the density RMS change instead.
 **Near-linear-dependence.** Diffuse (aug-) basis sets on close-packed systems
 can drive the overlap matrix near-singular; the canonical-orthogonalization
 threshold is tunable via `FERRIC_LINDEP_THRESH`.
+
+### Reusing a reference SCF
+
+The reference SCF is often half the cost of a correlated run or more. To
+run several correlated methods on one reference, save it from the first run
+and read it in the next:
+
+```toml
+# run 1: kind = "rimp2"
+[scf]
+save_reference = "water-ref.npz"
+```
+
+```toml
+# run 2: kind = "ccsd", same molecule, basis and [scf] settings
+[scf]
+read_reference = "water-ref.npz"
+```
+
+The second run solves no SCF (`[ferric] SCF reference read from ...; no SCF
+iterations run`; the run log's `run_end` has `scf_iterations = 0` and a
+`scf_reference` entry with the file's checksum, iteration count, convergence
+thresholds and the saving run's thread count, and the certificate gains the
+route `scf reference: read from <file> (checksum ...)`). The correlated stage
+gets the saved orbitals, orbital energies, densities and Fock matrices bit for
+bit, so its energy is bitwise the one the saving run's reference gives. That
+equals a fresh run's energy only when the fresh run would converge to the same
+bits: the same convergence thresholds, thread count, in-core or direct ERI
+route (`eri = "auto"` picks it from the memory budget), BLAS kernel and build.
+The file is read only when it is the reference this run would solve: every
+field of the checkpoint identity must match, and so must the route that
+converges it. Anything else is refused with the differing fields named; the
+file is never used as a guess instead. A file converged tighter than the run
+asks is accepted (the run prints that it was), and then the results are those
+of the tighter reference: on water / `rimp2`, 8.4e-10 Ha from a fresh run at
+the default thresholds. Three things look like the same reference and are
+not: the `rhf`/`ksdft` kinds converge through the convergence ladder and the
+correlated kinds do not (so those kinds refuse the keys); the closed-shell
+MP2-family kinds default to an RI-JK reference (`[scf] jk`) where `ccsd` and
+the other kinds solve with exact J/K after a DF-guess pre-stage, so save from
+`rimp2` with `jk = "exact"` to reuse the reference in `ccsd`; and
+`df_guess = false` or `df_increments = true` is another route to another
+reference. A reference with a COSX final-grid pass or polarizable embedding is
+refused before the SCF, by both keys: the file stores neither. Only a file
+from the same clean build is accepted unless `read_reference_other_build =
+true`. Density-fitting tensors and other integrals are rebuilt by the
+correlated stage, as in a fresh run. Keys and refusals:
+[`[scf]`](../reference/input.md#scf).
+
+In Python, `run_rimp2` (exact energy), `run_ccsd` and `run_ccsd_t` take the
+same three keys as keywords and share their files:
+
+```python
+ferric.run_rimp2(mol, obs, aux, save_reference="water-ref.npz")
+ferric.run_ccsd(mol, obs, aux, read_reference="water-ref.npz")
+```
+
+The rules are the CLI's; a refusal raises `ferric.InputError` (a
+`ValueError`). A Python file and a CLI file name different solve routes, so
+neither reads the other.
+
+Measured on sulfamethoxazole / cc-pVDZ (28 atoms, 297 functions),
+`kind = "rimp2"` with its defaults (RI-JK reference, 15 SCF iterations), on
+4 cores shared with other jobs (load 2.3 to 3) and an `opt-level = 2`
+build (2026-11-24): a fresh run took 17.3 s and 18.3 s, the run that saved
+the reference 18.9 s (the file is 2.8 MB), and a run reading it 5.3 s and
+5.9 s, with the same RI-MP2 energy to the last bit.
 
 ### Secondary-basis guess (Q-Chem `BASIS2`)
 

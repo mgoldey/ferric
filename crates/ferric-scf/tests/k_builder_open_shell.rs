@@ -46,6 +46,7 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
+use ferric_testkit::compare::max_abs_diff;
 use ndarray::Array2;
 
 /// CH3 radical (doublet), planar D3h, Angstrom — the same geometry the
@@ -95,13 +96,12 @@ fn setup(
 }
 
 fn cfg(kb: Option<&str>) -> RhfConfig {
-    RhfConfig {
-        k_builder: kb.map(str::to_string),
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
+    c.k_builder = ferric_scf::options::KBuilderKind::parse_opt(kb).expect("spelling");
+    c
 }
 
 fn run_uhf_ch3(kb: Option<&str>) -> ScfResult {
@@ -289,10 +289,7 @@ fn rhf_closed_shell_matches_direct_across_builders() {
         &prep,
         Operator::coulomb(),
         &bounds,
-        &RhfConfig {
-            cosx: CosxConfig::flat_reference(),
-            ..cfg(Some("cosx"))
-        },
+        &cfg(Some("cosx")).with_cosx(CosxConfig::flat_reference()),
     )
     .expect("rhf cosx");
     assert!(cosx.converged);
@@ -342,10 +339,6 @@ fn bits_equal(a: &Array2<f64>, b: &Array2<f64>) -> bool {
         && a.iter()
             .zip(b.iter())
             .all(|(x, y)| x.to_bits() == y.to_bits())
-}
-
-fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    (a - b).iter().fold(0.0f64, |m, v| m.max(v.abs()))
 }
 
 /// K(D_α), K(D_β), K(D_α) again from ONE instance: both K(D_α) bitwise equal,
@@ -479,12 +472,10 @@ fn probe_armed() -> bool {
 /// is therefore a tolerance for path variance, and this test still measures
 /// exactly what it was written to measure.
 fn df_cfg(kb: Option<&str>) -> RhfConfig {
-    RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        max_iter: 400,
-        ..cfg(kb)
-    }
+    cfg(kb)
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit")
+        .with_max_iter(400)
 }
 
 /// CHILD: UHF CH3/cc-pVDZ with DF-J/DF-K AND `k_builder = "link"` must produce
@@ -580,11 +571,9 @@ const DF_WARN_DIRECT: &str =
 /// DF-J + DF-K at STO-3G: the warning and the inertness do not depend on the
 /// orbital basis, and STO-3G keeps the three SCF pairs cheap.
 fn df_cfg_small(kb: Option<&str>) -> RhfConfig {
-    RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        ..cfg(kb)
-    }
+    cfg(kb)
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit")
 }
 
 fn assert_inert(label: &str, plain: &ScfResult, with_kb: &ScfResult) {
@@ -643,14 +632,14 @@ fn probe_child_rks_auto_df_with_direct_builder() {
     }
     let (mol, prep, bounds) = setup(WATER_XYZ, 0, 1, "sto-3g", Operator::coulomb());
     let ctx = ParallelContext::default();
-    let b3lyp = |kb: Option<&str>| RhfConfig {
-        xc: Some("B3LYP".into()),
-        dft_grid: Some(ferric_dft::grid::AtomicGridConfig {
-            n_radial: 25,
-            n_angular: 50,
-            ..Default::default()
-        }),
-        ..cfg(kb)
+    let b3lyp = |kb: Option<&str>| {
+        cfg(kb)
+            .with_xc("B3LYP")
+            .with_dft_grid(ferric_dft::grid::AtomicGridConfig {
+                n_radial: 25,
+                n_angular: 50,
+                ..Default::default()
+            })
     };
     let op = Operator::coulomb();
     let plain = solve_rhf(&ctx, &mol, &prep, op, &bounds, &b3lyp(None)).expect("rks");
@@ -716,27 +705,16 @@ fn direct_builder_without_density_fitting_is_silent() {
     );
 }
 
-// ── (f) hard errors preserved at the open-shell entry points ─────────────────
+// ── (f) hard errors preserved ─────────────────────────────────────────────────
 
+/// An unknown spelling is refused where it is parsed, with the text the
+/// open-shell solvers raised before the frontends parsed it; no `RhfConfig`
+/// can carry one to `solve_uhf` / `solve_rohf` any more.
 #[test]
-fn unknown_k_builder_errors_from_open_shell_entry_points() {
-    let (mol, prep, bounds) = setup(CH3_XYZ, 0, 2, "sto-3g", Operator::coulomb());
-    let ctx = ParallelContext::default();
-    let bad = cfg(Some("bogus"));
-    let eu = solve_uhf(&ctx, &mol, &prep, &bounds, &bad)
-        .map(|_| ())
-        .expect_err("UHF must reject an unknown k_builder");
-    let er = solve_rohf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &bad)
-        .map(|_| ())
-        .expect_err("ROHF must reject an unknown k_builder");
-    for (label, e) in [("UHF", eu), ("ROHF", er)] {
-        let msg = e.to_string();
-        println!("{label}: {msg}");
-        assert!(
-            msg.contains("unknown k_builder 'bogus'"),
-            "{label}: wrong error text: {msg}"
-        );
-    }
+fn unknown_k_builder_is_refused_at_the_parse() {
+    let e = ferric_scf::options::KBuilderKind::parse("bogus").unwrap_err();
+    let msg = ferric_core::FerricError::from(e).to_string();
+    assert!(msg.contains("unknown k_builder 'bogus'"), "{msg}");
 }
 
 /// `k_builder = "cosx"` is Coulomb-only: an attenuated (erfc) Schwarz bound
@@ -764,15 +742,13 @@ fn cosx_refused_for_non_coulomb_operator_open_shell() {
 }
 
 fn rsh_cfg(kb: Option<&str>) -> RhfConfig {
-    RhfConfig {
-        xc: Some("HYB_GGA_XC_WB97X".into()),
-        dft_grid: Some(ferric_dft::grid::AtomicGridConfig {
+    cfg(kb)
+        .with_xc("HYB_GGA_XC_WB97X")
+        .with_dft_grid(ferric_dft::grid::AtomicGridConfig {
             n_radial: 25,
             n_angular: 50,
             ..Default::default()
-        }),
-        ..cfg(kb)
-    }
+        })
 }
 
 /// CHILD: an RSH functional routes exchange through the SR/LR DF-K fitters, so

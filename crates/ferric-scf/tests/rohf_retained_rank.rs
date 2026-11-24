@@ -25,12 +25,10 @@ fn rohf_energy(xyz: &str, mult: usize, basis: &str) -> (f64, usize, f64) {
     let (evals, _) = s.eigh(UPLO::Upper).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        energy_conv: ENERGY_CONV,
-        density_conv: 1e-9,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(ENERGY_CONV)
+        .with_density_conv(1e-9)
+        .with_max_iter(200);
     let r = solve_rohf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg)
         .unwrap_or_else(|e| panic!("ROHF failed: {e:?}"));
     assert!(r.converged);

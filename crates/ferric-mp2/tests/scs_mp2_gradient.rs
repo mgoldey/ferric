@@ -73,6 +73,7 @@ use ferric_scf::scf_jk::{ScfJk, ScfJkMode};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::warm_start::ScfWarmStart;
 use ferric_scf::ScfResult;
+use ferric_testkit::compare::max_abs_diff;
 use ndarray::Array2;
 
 const H: f64 = 5e-4;
@@ -100,7 +101,6 @@ fn rijk() -> ScfJk {
     ScfJk {
         mode: ScfJkMode::RiJk,
         aux: Some("def2-universal-jkfit".to_string()),
-        k_builder: None,
     }
 }
 
@@ -117,11 +117,9 @@ fn point(mol: &Molecule, obs: &BasisSet, aux: &BasisSet, jk: Option<&ScfJk>) -> 
     let prep = PreparedBasis::new(mol, obs).unwrap();
     let dfbs = PreparedBasis::new(mol, aux).unwrap();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let mut cfg = RhfConfig {
-        density_conv: 1e-9,
-        ..Default::default()
-    }
-    .for_geometry_task();
+    let mut cfg = RhfConfig::default()
+        .with_density_conv(1e-9)
+        .for_geometry_task();
     if let Some(jk) = jk {
         jk.apply(&mut cfg);
     }
@@ -177,10 +175,6 @@ fn fd_gradients(
         }
     }
     out
-}
-
-fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    (a - b).iter().fold(0.0f64, |m, v| m.max(v.abs()))
 }
 
 /// The former SCS gradient: RI-MP2's correlation part scaled by

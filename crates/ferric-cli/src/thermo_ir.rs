@@ -4,6 +4,7 @@
 //! `thermochemistry` / `ir_intensities_km_mol` fields of the `frequencies`
 //! run-log record.
 
+use crate::error::CliError;
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
@@ -30,9 +31,9 @@ pub(crate) struct FrequencyExtras {
     pub(crate) json: serde_json::Map<String, serde_json::Value>,
 }
 
-/// `[frequencies] temperature`, `pressure`, `symmetry_number`; exits on a bad
-/// value before any SCF.
-pub(crate) fn thermo_config(cfg: &Config) -> ThermoConfig {
+/// `[frequencies] temperature`, `pressure`, `symmetry_number`; an error on a
+/// bad value before any SCF.
+pub(crate) fn thermo_config(cfg: &Config) -> Result<ThermoConfig, CliError> {
     let f = &cfg.frequencies;
     let d = ThermoConfig::default();
     let tc = ThermoConfig {
@@ -41,30 +42,26 @@ pub(crate) fn thermo_config(cfg: &Config) -> ThermoConfig {
         symmetry_number: f.symmetry_number.unwrap_or(d.symmetry_number),
     };
     if let Err(e) = tc.validate() {
-        eprintln!("error: [frequencies]: {e}");
-        std::process::exit(1);
+        return Err(CliError::msg(format!("[frequencies]: {e}")));
     }
-    tc
+    Ok(tc)
 }
 
 /// Whether to compute IR intensities. `reference` is `None` for a correlated
-/// kind, where `ir_intensities = true` exits with an error before any SCF.
+/// kind, where `ir_intensities = true` is an error before any SCF.
 pub(crate) fn ir_requested(
     method: &str,
     cfg: &Config,
     reference: Option<FrequencyReference>,
-) -> bool {
+) -> Result<bool, CliError> {
     match (reference, cfg.frequencies.ir_intensities) {
-        (Some(_), want) => want.unwrap_or(true),
-        (None, Some(true)) => {
-            eprintln!(
-                "error: [frequencies] ir_intensities = true: IR intensities need the dipole \
-                 derivative, which ferric computes for the SCF kinds (rhf, uhf, rohf, ksdft) \
-                 only; method.kind = \"{method}\" has none"
-            );
-            std::process::exit(1);
-        }
-        (None, _) => false,
+        (Some(_), want) => Ok(want.unwrap_or(true)),
+        (None, Some(true)) => Err(CliError::msg(format!(
+            "[frequencies] ir_intensities = true: IR intensities need the dipole \
+             derivative, which ferric computes for the SCF kinds (rhf, uhf, rohf, ksdft) \
+             only; method.kind = \"{method}\" has none"
+        ))),
+        (None, _) => Ok(false),
     }
 }
 
@@ -81,9 +78,9 @@ pub(crate) fn frequency_extras(
     rhf_config: &RhfConfig,
     reference: Option<FrequencyReference>,
     res: &FrequencyResult,
-) -> FrequencyExtras {
+) -> Result<FrequencyExtras, CliError> {
     let mut json = serde_json::Map::new();
-    let thermo = match res.thermochemistry(mol, &thermo_config(cfg)) {
+    let thermo = match res.thermochemistry(mol, &thermo_config(cfg)?) {
         Ok(th) => {
             for w in &th.warnings {
                 eprintln!("warning: {w}");
@@ -97,13 +94,14 @@ pub(crate) fn frequency_extras(
             None
         }
     };
-    let (ir, ir_note) = match (ir_requested(method, cfg, reference), reference) {
+    let (ir, ir_note) = match (ir_requested(method, cfg, reference)?, reference) {
         (true, Some(r)) => {
             match ir_spectrum(ctx, mol, &bs.name, op, rhf_config, r, res, DEFAULT_IR_FIELD) {
                 Ok(s) => (Some(s), None),
                 Err(e) if cfg.frequencies.ir_intensities == Some(true) => {
-                    eprintln!("error computing IR intensities: {e}");
-                    std::process::exit(1);
+                    return Err(CliError::verbatim(format!(
+                        "error computing IR intensities: {e}"
+                    )));
                 }
                 Err(e) => {
                     eprintln!("warning: IR intensities not computed: {e}");
@@ -147,12 +145,12 @@ pub(crate) fn frequency_extras(
                 .map_or(serde_json::Value::Null, json_f64),
         );
     }
-    FrequencyExtras {
+    Ok(FrequencyExtras {
         thermo,
         ir,
         ir_note,
         json,
-    }
+    })
 }
 
 impl FrequencyExtras {

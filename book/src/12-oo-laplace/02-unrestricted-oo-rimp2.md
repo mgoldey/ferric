@@ -2,7 +2,7 @@
 
 <!-- status: verify; registry: u-oo-rimp2 -->
 
-*Notation follows `book/notation.md`: $\beta$ orbitals carry an overbar
+*Notation follows chapter @sec:notation: $\beta$ orbitals carry an overbar
 ($\bar\imath, \bar a$), and $\sigma$ stands for either spin.*
 
 In an open-shell molecule the $\alpha$ and $\beta$ electrons feel different
@@ -69,8 +69,8 @@ $\delta C^\sigma_c = -C^\sigma_k$, and touches only spin $\sigma$.
 - **The Fock response.** Each $F^\tau$ depends on $D^\sigma$ through $J$,
   and $F^\sigma$ also through $K$. Contracting with the per-spin MP2
   densities and using
-  $\sum_\tau\operatorname{Tr}[P^\tau\,\mathcal G^\tau[\delta D]] = \operatorname{Tr}[\delta D\,\mathcal G[P]]$
-  collects all the $J$ pieces into one build on $P^\alpha + P^\beta$.
+  $\sum_\tau\operatorname{Tr}[W^\tau_{\mathrm{AO}}\,\mathcal G^\tau[\delta D]] = \operatorname{Tr}[\delta D\,\mathcal G[W_{\mathrm{AO}}]]$
+  collects all the $J$ pieces into one build on $W^\alpha_{\mathrm{AO}} + W^\beta_{\mathrm{AO}}$.
 - **The integral response** comes from the rotation derivative of the
   integrals, now in three spin blocks.
 
@@ -87,13 +87,13 @@ either spin, $K$ only for the rotated one. At fixed integrals the U-MP2
 energy depends on $F^\sigma$ through $W^\sigma = \partial E/\partial F^\sigma$,
 the unrelaxed density of the full-Fock functional. Contract $W^\sigma$ with
 $\delta F^\sigma_{\mathrm{MO}}$, use the symmetry identity above with
-$P^\sigma = C^\sigma W^\sigma C^{\sigma\mathsf T}$, and use the
+$W^\sigma_{\mathrm{AO}} = C^\sigma W^\sigma C^{\sigma\mathsf T}$, and use the
 antisymmetry of $WF - FW$ to move $X$ out: the last two terms of
 (@eq:oo-u-gradient) follow.
 
 The result:
 
-$$ g^\sigma_{ai} = g^\sigma_{\mathrm{MP2},ai} + 2F^\sigma_{ai} + 2\big[C^{\sigma\mathsf T}\big(J[P^\alpha + P^\beta] - K[P^\sigma]\big)C^\sigma\big]_{ai} + 2\big(F^\sigma W^\sigma - W^\sigma F^\sigma\big)_{ai}, \qquad P^\sigma = C^\sigma W^\sigma C^{\sigma\mathsf T}. \label{eq:oo-u-gradient} $$
+$$ g^\sigma_{ai} = g^\sigma_{\mathrm{MP2},ai} + 2F^\sigma_{ai} + 2\big[C^{\sigma\mathsf T}\big(J[W^\alpha_{\mathrm{AO}} + W^\beta_{\mathrm{AO}}] - K[W^\sigma_{\mathrm{AO}}]\big)C^\sigma\big]_{ai} + 2\big(F^\sigma W^\sigma - W^\sigma F^\sigma\big)_{ai}, \qquad W^\sigma_{\mathrm{AO}} = C^\sigma W^\sigma C^{\sigma\mathsf T}. \label{eq:oo-u-gradient} $$
 
 All quantities are in the semicanonical frame $C^\sigma u^\sigma$ of spin
 $\sigma$. The result is rotated back as in section @sec:oo-rimp2, by the
@@ -113,16 +113,13 @@ sums corrects for counting each antisymmetric pair twice; the
 opposite-spin sums have distinguishable partners and no $\tfrac12$. The
 $\beta$ blocks follow by exchanging the spins.
 
-**The Coulomb coupling.** $J$ is built once from $P^\alpha + P^\beta$, and
+**The Coulomb coupling.** $J$ is built once from $W^\alpha_{\mathrm{AO}} + W^\beta_{\mathrm{AO}}$, and
 $K$ separately for each spin. Nowhere else in (@eq:oo-u-gradient) does one
 spin's correlation density enter the other spin's gradient directly.
 
 **The integral response.** $g^\sigma_{\mathrm{MP2}}$ is
-`ferric-mp2/src/u_rimp2.rs::compute_u_mp2_orbital_gradient`. Per spin it is
-$\sum_{P,x}B^P_{cx}\Gamma_k[P,x] - \tfrac12\sum_{ijy}N_{ij}[c,y](ik|jy)$ plus
-the $\alpha\bar\beta$ blocks. For antisymmetric amplitudes the pair
-combination is $N_{ij} = 4t_{ij}$ and $\Gamma_k = 2\sum_jB_jt_{kj}^{\mathsf T}$.
-Written out for $\alpha$:
+`ferric-mp2/src/u_rimp2.rs::compute_u_mp2_orbital_gradient`. Written out
+for $\alpha$:
 
 $$ g^{\alpha\alpha}_{ck} = 2\sum_{jab}t^{ab}_{kj}(ca|jb) - 2\sum_{ijb}t^{cb}_{ij}(ik|jb), \qquad
 g^{\alpha\bar\beta}_{ck} = 2\sum_{\bar\jmath a\bar b}t^{a\bar b}_{k\bar\jmath}(ca|\bar\jmath\bar b) - 2\sum_{i\bar\jmath\bar b}t^{c\bar b}_{i\bar\jmath}(ik|\bar\jmath\bar b). \label{eq:unrestricted-oo-rimp2-4} $$
@@ -148,7 +145,7 @@ $B = 0$ the kernel returns zero. Both are checked in the script's
 > **Verified equation @eq:oo-u-gradient** · unrestricted OO-MP2 orbital gradient
 >
 > The integral-response kernel and `u_gradient_solver_frame` are transcribed
-> loop by loop. The kernel equals (@eq:unrestricted-oo-rimp2-4) and the section-14 derivation to
+> loop by loop. The kernel equals (@eq:unrestricted-oo-rimp2-4) and the derivation of section @sec:unrestricted-oo-rimp2-orbital-gradient to
 > $6\times10^{-17}$ relative (bar $10^{-13}$), and each block equals a
 > Richardson difference of its block energy at fixed denominators to
 > $7\times10^{-13}$ relative (bar $10^{-9}$), with and without one frozen
@@ -179,7 +176,7 @@ non-semicanonical orbitals of a 3$\alpha$/2$\beta$ model with separate
 four-centre and RI factors, carries it back with $u_v g u_o^{\mathsf T}$,
 and compares it with Richardson differences of the brute-force
 spin-orbital energy: they agree to $5\times10^{-12}$ for both spins (bar
-$10^{-8}$). Its mutations, $J[P^\alpha + P^\beta] \to J[P^\alpha]$ and
+$10^{-8}$). Its mutations, $J[W^\alpha_{\mathrm{AO}} + W^\beta_{\mathrm{AO}}] \to J[W^\alpha_{\mathrm{AO}}]$ and
 $2(FW - WF) \to 2(WF - FW)$, turn it red. Part O is the closed-shell
 restriction: with $C^\alpha = C^\beta$ the gradient is
 $g = g^\alpha + g^\beta$, and that gradient drives the optimizer that
@@ -202,16 +199,17 @@ only.
 
 `ferric-mp2/src/u_rimp2.rs::compute_u_mp2_orbital_gradient` evaluates
 $g^\sigma_{\mathrm{MP2}}$ through the RI factors $B^{\sigma P}_{pq}$ of each
-spin's semicanonical orbitals, the $V^{-1/2}$-dressed tensor of
+spin's semicanonical orbitals, the $M$-dressed tensor of
 `ferric-mp2/src/oo_rimp2.rs::compute_b_full_mo_with`, so that
 $(pq|rs) = \sum_P B^{\sigma P}_{pq}B^{\tau P}_{rs}$. Indices $i, j, k$ run
 over the active occupied orbitals (`first_occ..nocc_total`), $a, b, c, x, y$
 over the virtuals. The amplitudes are those of
 `ferric-mp2/src/u_rimp2.rs::UMp2Amplitudes`,
 
-$$ t^{ab}_{ij} = \frac{(ia|jb) - (ib|ja)}{D_{ijab}}, \qquad t^{a\bar b}_{i\bar\jmath} = \frac{(ia|\bar\jmath\bar b)}{D_{i\bar\jmath a\bar b}}, \qquad D_{ijab} = \varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b , $$
+$$ t^{ab}_{ij} = -\frac{(ia|jb) - (ib|ja)}{\Delta_{ij}^{ab}}, \qquad t^{a\bar b}_{i\bar\jmath} = -\frac{(ia|\bar\jmath\bar b)}{\Delta_{i\bar\jmath}^{a\bar b}} , $$
 
-which is $-K/\Delta$ with the code's negative denominator. $A_{ij}$ is one
+with $\Delta > 0$ as on the chapter page; the code stores the negative
+denominator $-\Delta$ and divides by it. $A_{ij}$ is one
 $n_v \times n_v$ block $t^{\cdot\,\cdot}_{ij}$.
 `ferric-mp2/src/orbital_gradient_gemm.rs::extract` (a method of `GradientB`)
 copies the blocks $B_{ov}$, $B_{oo}$ and $B_{vv}$ of each spin, and the
@@ -225,6 +223,12 @@ antisymmetric in $(i, j)$ and in $(a, b)$, $A_{jk} = -A_{kj}$ and
 $A_{kj}^{\mathsf T} = -A_{kj}$, so each of the four terms is $A_{kj}$:
 
 $$ M(A_{kj}, A_{jk}) = 4A_{kj} . $$
+
+Per spin the kernel is
+$\sum_{P,x}B^P_{cx}\Gamma_k[P,x] - \tfrac12\sum_{ijy}N_{ij}[c,y](ik|jy)$ plus
+the $\alpha\bar\beta$ blocks, with $N_{ij} = M(A_{ij}, A_{ji})$. For
+antisymmetric amplitudes $N_{ij} = 4t_{ij}$ and
+$\Gamma_k = 2\sum_jB_jt_{kj}^{\mathsf T}$, as the next two displays show.
 
 **Virtual–virtual part.** `ferric-mp2/src/orbital_gradient_gemm.rs::pair_gamma_rows`,
 with weight $\tfrac12$, and
@@ -265,7 +269,7 @@ $\alpha\beta$ amplitudes are stored $\alpha$ first.
 The loop follows the table in section @sec:oo-rimp2-algorithm. The differences, read from
 `u_oo_ri_mp2`:
 
-| Rule | Closed shell (@eq:oo-rimp2-1) | Unrestricted |
+| Rule | Closed shell (section @sec:oo-rimp2-algorithm) | Unrestricted |
 |---|---|---|
 | Step | one $\kappa$ | $\kappa^\sigma_{ai} = -g^\sigma_{ai}/(\varepsilon^\sigma_a - \varepsilon^\sigma_i + \mu)$, one $\mu$ shared by both spins |
 | Cap | 0.3 rad | `max_kappa` (default 0.3 rad), applied to each spin separately |
@@ -294,7 +298,7 @@ parameters dropped and the comments added. It runs once per spin, with that
 spin's `c`, `k`, `w` and `f_mo`; `j_tot` is shared:
 
 ```rust
-let g_mo = c.t().dot(&(&j_tot - k)).dot(c);  // C^T (J[P^a + P^b] - K[P^s]) C
+let g_mo = c.t().dot(&(&j_tot - k)).dot(c);  // C^T (J[W^a + W^b] - K[W^s]) C, AO
 let fw = f_mo.dot(w);                        // F^s W^s
 let wf = w.dot(f_mo);                        // W^s F^s
 let (nvir, nocc_cols) = g.dim();
@@ -308,8 +312,8 @@ for a in 0..nvir {
 
 | Code | Equation |
 |---|---|
-| `j_tot` | $J[P^\alpha + P^\beta]$, from `jk.spin_jk` |
-| `k` | $K[P^\sigma]$ |
+| `j_tot` | $J[W^\alpha_{\mathrm{AO}} + W^\beta_{\mathrm{AO}}]$, from `jk.spin_jk` |
+| `k` | $K[W^\sigma_{\mathrm{AO}}]$ |
 | `w` | $W^\sigma$ |
 | `f_mo` | $F^\sigma$ in the semicanonical frame of $\sigma$ |
 | `g` on entry | $g^\sigma_{\mathrm{MP2}} + 2F^\sigma$ from `add_hf_gradient` |
@@ -341,6 +345,7 @@ $h$ by `hcore_ecp_with_external`. A relativistic reference is refused.
 | Check | Reference | Agreement | Test |
 |---|---|---|---|
 | UHF CH3/cc-pVDZ total energy | independent numpy OO-RI-MP2 | within the $7.5\times10^{-13}$ Ha figure the validation page states for all three systems | `u_oo_rimp2_ch3_ccpvdz_energy_vs_orca` in `crates/ferric-mp2/tests/validation_oo_rimp2.rs` |
+| Same minimum, CH3 | ORCA 6.1.1 | ORCA stops $3.7\times10^{-8}$ Ha above it | same test |
 | H2 singlet through the unrestricted driver | closed-shell OO-RI-MP2 | $10^{-8}$ Ha asserted | `u_oo_rimp2_matches_closed_shell_on_h2` |
 | Converged OH/6-31G point is stationary | $g^\alpha = g^\beta = 0$ | $10^{-10}$ asserted | `u_oo_converged_point_is_stationary_oh_631g` |
 

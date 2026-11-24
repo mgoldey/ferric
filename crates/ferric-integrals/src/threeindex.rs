@@ -2,6 +2,7 @@
 
 use crate::basis_bridge::PreparedBasis;
 use crate::engine::Engine;
+use crate::engine_pool::for_each_with_engine;
 use crate::operator::Operator;
 use crate::qqr3::QqrBounds3;
 use crate::schwarz::{schwarz, schwarz3_aux};
@@ -90,10 +91,18 @@ pub fn coulomb_metric_2c(op: Operator, dfbs: &PreparedBasis) -> Result<Array2<f6
     Ok(v)
 }
 
+/// Shell triples (P|s1 s2), s1 ≥ s2, below which [`eri3_tensor`] runs
+/// serially. Measured 2026-11-19 on a loaded box (load ~13 on 6 cores):
+/// water/cc-pVDZ + cc-pVDZ-RI (2.3k triples) was ~3x slower at 6 rayon
+/// threads than at 1; water/cc-pVTZ + cc-pVTZ-RIFIT was about even and
+/// benzene/cc-pVDZ (~2e5 triples) 2.6x faster.
+pub const PAR_ERI3_TRIPLE_THRESHOLD: usize = 10_000;
+
 /// Build 3-center integrals (P|mn), shape (naux, nbasis, nbasis).
 ///
-/// Parallelized over aux shells `sp` (independent outer loop). Each rayon worker
-/// builds its own `Engine` (Engine: Send) once per region via `for_each_init`.
+/// Parallelized over aux shells `sp` (independent outer loop), one pooled
+/// `Engine` per rayon worker (`for_each_with_engine`), once the shell-triple
+/// count clears [`PAR_ERI3_TRIPLE_THRESHOLD`]; serial below it.
 /// Writes go to disjoint `(p, mu, nu)` regions — each `sp` owns a distinct
 /// aux-row band — so the raw-pointer scatter is data-race-free and bit-identical
 /// to the serial build.
@@ -102,71 +111,62 @@ pub fn eri3_tensor(
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
 ) -> Result<Array3<f64>, FerricError> {
-    use rayon::prelude::*;
-
     let naux = dfbs.nbasis();
     let nbas = obs.nbasis();
     let nsh_obs = obs.nshells();
     let nsh_df = dfbs.nshells();
-    let dims_obs = obs.shell_dims();
-    let offs_obs = obs.shell_offsets();
-    let dims_df = dfbs.shell_dims();
-    let offs_df = dfbs.shell_offsets();
-
-    // Surface any engine-construction error up front (serial, cheap). After this
-    // succeeds the per-worker rebuilds below cannot fail for the same args, so
-    // they `.expect()` — `FerricError` is not `Clone`, so we cannot thread the
-    // error out of the per-worker init closure.
-    Engine::new_3center(op, obs, dfbs, 1e-14)?;
-
     let mut eri = Array3::<f64>::zeros((naux, nbas, nbas));
-
-    // Raw-pointer scatter: each aux shell `sp` writes a disjoint band of aux rows,
-    // so the `(p, mu, nu)` regions written by distinct workers never overlap.
     let eri_ptr = eri.as_mut_ptr() as usize;
-    let stride0 = nbas * nbas; // p-stride
-    let stride1 = nbas; // mu-stride
+    let parallel = nsh_df * nsh_obs * (nsh_obs + 1) / 2 >= PAR_ERI3_TRIPLE_THRESHOLD;
+    for_each_with_engine(
+        parallel,
+        nsh_df,
+        || Engine::new_3center(op, obs, dfbs, 1e-14),
+        |eng, sp| -> Result<(), FerricError> {
+            fill_aux_shell(eng, obs, dfbs, sp, eri_ptr);
+            Ok(())
+        },
+    )?;
+    Ok(eri)
+}
 
-    // One `Engine` per rayon worker, built by the `init` closure scoped to THIS
-    // parallel region (so it is always built for the current op/obs/dfbs — a
-    // process-wide TLS cache would reuse a stale engine on a later call with a
-    // different operator). `Engine: Send`.
-    (0..nsh_df).into_par_iter().for_each_init(
-        || Engine::new_3center(op, obs, dfbs, 1e-14).expect("3-center engine (pre-validated)"),
-        |eng, sp| {
-            let np = dims_df[sp];
-            let p0 = offs_df[sp];
-            for s1 in 0..nsh_obs {
-                let n1 = dims_obs[s1];
-                let m0 = offs_obs[s1];
-                for s2 in 0..=s1 {
-                    if let Some(block) = eng.compute_eri3(obs, dfbs, sp, s1, s2) {
-                        let n2 = dims_obs[s2];
-                        let n0 = offs_obs[s2];
-                        for p in 0..np {
-                            for i in 0..n1 {
-                                for j in 0..n2 {
-                                    let val = block[(p * n1 + i) * n2 + j];
-                                    let pp = p0 + p;
-                                    let mm = m0 + i;
-                                    let nn = n0 + j;
-                                    // SAFETY: rayon workers write to disjoint
-                                    // (P, s1, s2) shell-triple blocks; the μ↔ν
-                                    // symmetry write stays within the same block.
-                                    unsafe {
-                                        let base = eri_ptr as *mut f64;
-                                        *base.add(pp * stride0 + mm * stride1 + nn) = val;
-                                        *base.add(pp * stride0 + nn * stride1 + mm) = val;
-                                    }
-                                }
-                            }
+/// Write (P|μν) for every P of aux shell `sp` into the (naux, nbas, nbas)
+/// tensor at `eri_ptr`, both μν triangles.
+fn fill_aux_shell(
+    eng: &mut Engine,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    sp: usize,
+    eri_ptr: usize,
+) {
+    let nbas = obs.nbasis();
+    let (dims_obs, offs_obs) = (obs.shell_dims(), obs.shell_offsets());
+    let (np, p0) = (dfbs.shell_dims()[sp], dfbs.shell_offsets()[sp]);
+    for s1 in 0..obs.nshells() {
+        for s2 in 0..=s1 {
+            let Some(block) = eng.compute_eri3(obs, dfbs, sp, s1, s2) else {
+                continue;
+            };
+            let (n1, n2) = (dims_obs[s1], dims_obs[s2]);
+            for p in 0..np {
+                for i in 0..n1 {
+                    for j in 0..n2 {
+                        let val = block[(p * n1 + i) * n2 + j];
+                        let row = (p0 + p) * nbas * nbas;
+                        let (mm, nn) = (offs_obs[s1] + i, offs_obs[s2] + j);
+                        // SAFETY: each aux shell `sp` owns the disjoint aux
+                        // row band [p0, p0 + np) (one task per `sp`); the
+                        // μ↔ν mirror stays in that band. Indices < naux·nbas².
+                        unsafe {
+                            let base = eri_ptr as *mut f64;
+                            *base.add(row + mm * nbas + nn) = val;
+                            *base.add(row + nn * nbas + mm) = val;
                         }
                     }
                 }
             }
-        },
-    );
-    Ok(eri)
+        }
+    }
 }
 
 /// Build raw (P|μν) for aux rows [p0, p1) only, returned as (p1-p0, nbas, nbas).

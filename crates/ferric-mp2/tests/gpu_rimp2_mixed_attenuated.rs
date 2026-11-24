@@ -396,13 +396,11 @@ fn non_widened_callers_stay_f64_under_mixed() {
         &obs,
         op,
         &bounds,
-        &ferric_scf::rhf::RhfConfig {
-            df_j_aux: Some("def2-universal-jkfit".into()),
-            df_k_aux: Some("def2-universal-jkfit".into()),
-            energy_conv: 1e-8,
-            density_conv: 1e-6,
-            ..Default::default()
-        },
+        &ferric_scf::rhf::RhfConfig::default()
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit")
+            .with_energy_conv(1e-8)
+            .with_density_conv(1e-6),
     )
     .unwrap();
     let nocc = (mol.nelec() / 2) as u64;

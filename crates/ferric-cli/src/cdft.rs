@@ -30,14 +30,12 @@
 //! two solves sharing one Hamiltonian and is Python-only.
 
 use crate::config::Config;
-use crate::error::die;
+use crate::error::CliError;
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
-use ferric_core::parallel::ParallelContext;
 use ferric_dft::cdft::{Constraint, SpinChannel};
-use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_scf::rhf::RhfConfig;
-use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::PreparedSystem;
 use serde::Deserialize;
 
 /// `[cdft]`: the constraints and the lambda loop of a constrained run.
@@ -161,7 +159,7 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
             cfg.method.task
         ));
     }
-    if cfg.scf.k_builder.as_deref() == Some(ferric_scf::options::COSX_K_BUILDER) {
+    if cfg.scf.k_builder_is_cosx() {
         return Err("[cdft] does not support [scf] k_builder = \"cosx\"".to_string());
     }
     if cfg.qmmm.is_some() || cfg.cosmo.is_some() || cfg.pcm.is_some() || cfg.cell.is_some() {
@@ -351,34 +349,31 @@ fn constraints_for(c: &CdftCfg, mol: &Molecule) -> Result<Vec<Constraint>, Strin
 /// reference config (`rhf_config` is the run's `RhfConfig`, whose `xc` is the
 /// `[dft] functional`), print the result and write the run log's `result` and
 /// `run_end` records.
-#[allow(clippy::too_many_arguments)]
 pub fn run(
     cfg: &Config,
-    ctx: &ParallelContext,
-    mol: &Molecule,
+    sys: &PreparedSystem,
     bs: &BasisSet,
-    prep: &PreparedBasis,
-    bounds: &SchwarzBounds,
     rhf_config: &RhfConfig,
-) {
+) -> Result<(), CliError> {
+    let (ctx, mol, prep, bounds) = (sys.ctx(), sys.mol(), sys.basis(), sys.bounds());
     let Some(c) = cfg.cdft.as_ref() else {
-        die("internal: cdft::run called without a [cdft] section");
+        return Err(CliError::msg(
+            "internal: cdft::run called without a [cdft] section",
+        ));
     };
-    let constraints = constraints_for(c, mol).unwrap_or_else(|e| die(e));
+    let constraints = constraints_for(c, mol).map_err(CliError::msg)?;
     let defaults = RhfConfig::default();
-    let config = RhfConfig {
-        constraints,
-        cdft_lambda_tol: c.lambda_tol.unwrap_or(defaults.cdft_lambda_tol),
-        cdft_max_outer: c.max_outer.unwrap_or(defaults.cdft_max_outer),
-        cdft_stability_descent: c
-            .stability_descent
-            .unwrap_or(defaults.cdft_stability_descent),
-        dft_grid: cdft_grid(c).unwrap_or_else(|e| die(e)),
-        ..rhf_config.clone()
-    };
+    let mut config = rhf_config.clone();
+    config.constraints = constraints;
+    config.cdft_lambda_tol = c.lambda_tol.unwrap_or(defaults.cdft_lambda_tol);
+    config.cdft_max_outer = c.max_outer.unwrap_or(defaults.cdft_max_outer);
+    config.cdft_stability_descent = c
+        .stability_descent
+        .unwrap_or(defaults.cdft_stability_descent);
+    config.dft_grid = cdft_grid(c).map_err(CliError::msg)?;
     crate::log_jk_path(&config, true);
     let r = ferric_scf::cdft_driver::solve_cdft_uhf(ctx, mol, prep, bs, bounds, &config)
-        .unwrap_or_else(|e| die(e));
+        .map_err(CliError::msg)?;
     let max_constraint_error = r.max_residual();
     let lambda_tol = config.cdft_lambda_tol;
     let scf = r.scf;
@@ -468,6 +463,7 @@ pub fn run(
             }),
         );
     }
+    Ok(())
 }
 
 #[cfg(test)]

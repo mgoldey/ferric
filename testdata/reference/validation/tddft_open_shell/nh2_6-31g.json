@@ -17,7 +17,7 @@
  "nstates": 12,
  "pyscf_version": "2.13.1",
  "generator": "scripts/validation/gen_tddft_open_shell_refs.py",
- "note": "dense TDA / Casida on the two-spin A, B of tdscf.uhf.get_ab with the response (pq|rs) by ferric's Coulomb-metric RI and (pq|rs)_omega by its erf-metric RI; flat (75,110) grid; s2 by the book/src/20-tddft/06-unrestricted.md#unrestricted-each-root formula, checked against pyscf.fci.spin_op on the expanded determinant vector when s2_fci_max_dev is not null",
+ "note": "dense TDA / Casida on the two-spin A, B of tdscf.uhf.get_ab with the response (pq|rs) by ferric's Coulomb-metric RI and (pq|rs)_omega by its erf-metric RI; flat (75,110) grid; s2 by the book/src/19-tddft/06-unrestricted.md#unrestricted-each-root formula, checked against pyscf.fci.spin_op on the expanded determinant vector when s2_fci_max_dev is not null",
  "cases": {
   "HF": {
    "xc_pyscf": null,

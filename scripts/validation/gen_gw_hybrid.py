@@ -13,7 +13,7 @@ the exact-exchange part the hybrid put there,
 
 (closed shell, D the total density; c_sr = c_lr = c_x and K_erfc + K_erf = K
 for a global hybrid). PySCF `gw_ac` takes v_mf = mf.get_veff() - mf.get_j(),
-which contains that term (book/src/19-gw-bse/05-continuation-and-qp-equation.md,
+which contains that term (book/src/20-gw-bse/05-continuation-and-qp-equation.md,
 "Hybrid references").
 
 Per functional the block stores, besides gen_gw.run_gwac's usual fields:

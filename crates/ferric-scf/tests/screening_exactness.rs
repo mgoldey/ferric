@@ -831,11 +831,8 @@ fn check_directjk_vs_pyscf(tag: &str, e_bar: f64, jk_bar: f64, unscreened: bool)
     // originally used, it converges on alkane_8 in reasonable time.
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).expect("Schwarz bounds");
-    let config = RhfConfig {
-        density_conv: 1e-8,
-        integral_thresh: PRODUCTION_INTEGRAL_THRESH,
-        ..Default::default()
-    };
+    let mut config = RhfConfig::default().with_density_conv(1e-8);
+    config.integral_thresh = PRODUCTION_INTEGRAL_THRESH;
     let res = solve_rhf(
         &ParallelContext::default(),
         &mol,

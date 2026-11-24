@@ -68,6 +68,7 @@ use ferric_mp2::rimp2::{ri_mp2_spin_components, RiMp2Config, SpinComponents};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use serde_json::Value;
 
 const ROW_DIR: &str = "testdata/reference/validation/kappa_mp2";
@@ -126,12 +127,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn check_close(ctx: &str, what: &str, got: f64, want: f64, tol: f64) {
     let d = (got - want).abs();
     eprintln!("{ctx}: {what:<24} ferric {got:+.13} ref {want:+.13} |d| {d:.2e} (tol {tol:.0e})");
@@ -188,7 +183,7 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str) {
         &ctx,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &ctx),
+        num_ctx(&r, "/nuclear_repulsion", &ctx),
         TOL_ENUC,
     );
     let obs = PreparedBasis::new(&mol, &basis::bundled(basis_name).unwrap()).unwrap();
@@ -206,12 +201,10 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str) {
 
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let cfg = RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_max_iter(200);
     assert!(
         cfg.df_j_aux.is_none() && cfg.df_k_aux.is_none(),
         "exact J/K expected"
@@ -223,7 +216,7 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str) {
         &ctx,
         "E_RHF",
         rhf.energy,
-        num(&r, "/e_rhf", &ctx),
+        num_ctx(&r, "/e_rhf", &ctx),
         TOL_E_RHF,
     );
     assert_eq!(
@@ -245,21 +238,21 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str) {
         &ctx,
         "plain E_OS",
         plain.e_os,
-        num(&r, "/plain/e_os", &ctx),
+        num_ctx(&r, "/plain/e_os", &ctx),
         TOL_E_CORR,
     );
     check_close(
         &ctx,
         "plain E_SS",
         plain.e_ss,
-        num(&r, "/plain/e_ss", &ctx),
+        num_ctx(&r, "/plain/e_ss", &ctx),
         TOL_E_CORR,
     );
     check_close(
         &ctx,
         "plain E_corr vs PySCF",
         plain.e_total,
-        num(&r, "/plain/pyscf_dfmp2_e_corr", &ctx),
+        num_ctx(&r, "/plain/pyscf_dfmp2_e_corr", &ctx),
         TOL_E_CORR,
     );
     let inf = components(&su, Some(KAPPA_INF));
@@ -278,14 +271,14 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str) {
         .iter()
         .map(|row| {
             (
-                num(row, "/kappa", &ctx),
-                num(row, "/e_os", &ctx),
-                num(row, "/e_ss", &ctx),
-                num(row, "/e_corr", &ctx),
+                num_ctx(row, "/kappa", &ctx),
+                num_ctx(row, "/e_os", &ctx),
+                num_ctx(row, "/e_ss", &ctx),
+                num_ctx(row, "/e_corr", &ctx),
             )
         })
         .collect();
-    let plain_ref = num(&r, "/plain/e_corr", &ctx);
+    let plain_ref = num_ctx(&r, "/plain/e_corr", &ctx);
     for (idx, &(kappa, e_os_ref, e_ss_ref, e_corr_ref)) in refs.iter().enumerate() {
         let kctx = format!("{ctx}/kappa={kappa}");
         let got = components(&su, Some(kappa));

@@ -24,10 +24,8 @@ diagonalized there. With every mode kept the result is the auxiliary-basis
 energy exactly. With truncation it is the energy of the projected dielectric
 matrix.
 
-This section describes the loop the code runs, as does
-section @sec:pdep-dielectric-matrix-static-modes: the
-default static solve is one dense diagonalization, not an iterative one, and
-the frequency loop diagonalizes the projected matrix.
+By default the static solve is one dense diagonalization. The iterative
+solvers are library options (section @sec:pdep-algorithm).
 
 | Index | Range | Code name |
 |---|---|---|
@@ -56,22 +54,10 @@ $\boldsymbol\Pi(iu)$ is positive semidefinite. For any vector $\mathbf v$,
 $\mathbf v^{\mathsf T}\boldsymbol\Pi\mathbf v = \sum_{ia} g_{ia}\big(\sum_P v_PB^P_{ia}\big)^2$
 with $g_{ia} = 4\Delta_i^a/(u^2 + (\Delta_i^a)^2) > 0$, a sum of
 non-negative terms. So every eigenvalue of $\tilde{\boldsymbol\varepsilon}(iu)$
-is at least 1. The textbook way to apply $\boldsymbol\Pi$ to a trial potential $\hat V$ is
-the Sternheimer equation, a linear solve per occupied orbital for the
-first-order change of that orbital,
-
-$$ (\hat H_0 - \epsilon_i + iu)\,|\Delta\Psi_i\rangle = -P_{\mathrm{virt}}\hat V|\Psi_i\rangle , $$
-
-with $P_{\mathrm{virt}}$ the projector onto the virtual space. ferric's RI-MO
-implementation does not solve it. With every virtual orbital in hand it sums
-over the occupied-virtual pairs instead, which is (@eq:pdep-1) applied to a
-vector. The test helper `ferric-rpa/src/sternheimer.rs::chi_from_trial_potential`
-returns the single-spin value
-
-$$ -2\sum_{ia}\frac{\Delta_i^a}{u^2 + (\Delta_i^a)^2}\Big(\sum_P V_PB^P_{ia}\Big)^2 , $$
-
-half the closed-shell $\langle V|\tilde\chi_0|V\rangle = -\mathbf V^{\mathsf T}\boldsymbol\Pi\mathbf V$
-(the prefactor 2 against the 4 of (@eq:pdep-1)).
+is at least 1. A plane-wave code applies $\boldsymbol\Pi$ to a trial
+potential by a Sternheimer solve per occupied orbital. With every virtual
+orbital in hand ferric sums over the occupied-virtual pairs instead, which
+is (@eq:pdep-1) applied to a vector.
 
 The static modes solve
 
@@ -93,18 +79,24 @@ $\ln(1 + x) \ge x - x^2/2$, so $|s(\lambda)| \le x^2/2$. A dropped mode
 therefore changes the $u = 0$ summand by at most $\tau^2/2$, which is
 $5\times10^{-9}$ at the default $\tau = 10^{-4}$. This bounds the static
 summand only. At $u > 0$ the static modes no longer diagonalize the matrix
-(@sec:pdep-frequency-loop), and nothing here bounds the energy.
+(section @sec:pdep-frequency-loop), so the energy needs the sign argument
+given there. The bound itself, $\ln(1 + x) - x + x^2/2 \ge 0$, follows from
+its value 0 at $x = 0$ and its derivative $x^2/(1 + x) \ge 0$; check
+`static-summand-bound` of the proof script.
 
-![Left: the 84 static eigenvalues of water / cc-pVDZ (cc-pvdz-ri), as $|\lambda_\xi(0) - 1|$ sorted, with the default threshold. Right: the error of the truncated energy against the full-rank one, against the number of modes kept. Script: `book/src/figures/18-rpa/pdep_spectrum.py`.](../figures/18-rpa/pdep_spectrum.svg)
+![Left: the 84 static eigenvalues of water / cc-pVDZ (cc-pvdz-ri), as $|\lambda_\xi(0) - 1|$ sorted, with the default threshold. Right: the error of the truncated energy against the full-rank one, against the number of modes kept; it cannot be negative (section @sec:pdep-frequency-loop). Script: `book/src/figures/18-rpa/pdep_spectrum.py`.](../figures/18-rpa/pdep_spectrum.svg)
 
 The spectrum falls smoothly over several decades, with no gap to cut at. The
-truncation error is positive (the truncated energy is less negative) and
-falls with the number of modes kept, faster once the threshold passes into
-the steep tail of the spectrum.
+truncation error is positive (the truncated energy is less negative), as
+section @sec:pdep-frequency-loop proves it must be, and falls with the number
+of modes kept, faster once the threshold passes into the steep tail of the
+spectrum.
 
 The same numbers from Python, from the `589b50832` build: the modes kept and
-the energy error at five thresholds, against the full-rank run (water /
-cc-pVDZ).
+the energy error at five thresholds, against a full-rank run on the same
+default 20-node grid (water / cc-pVDZ). That grid itself misses the integral
+by $3.4\times10^{-6}$ Ha (section @sec:quadratures-defaults), more than the
+truncation error at the default $\tau = 10^{-4}$.
 
 ```python
 import ferric
@@ -163,6 +155,21 @@ $\tilde{\boldsymbol\varepsilon} \to \mathbf U^{\mathsf T}\tilde{\boldsymbol\vare
 So (@eq:rpa-pdep-projection) is the auxiliary-basis energy of section @sec:drpa-three-ways. That is why the
 full-rank energy-only configuration skips the static solve altogether.
 
+Truncation has a sign. Let $\lambda_1 \ge \lambda_2 \ge \dots$ be the
+eigenvalues of $\tilde{\boldsymbol\varepsilon}(iu_k)$ and
+$\mu_1 \ge \dots \ge \mu_m$ those of
+$\mathbf U^{\mathsf T}\tilde{\boldsymbol\varepsilon}(iu_k)\mathbf U$ for any
+$N_{\mathrm{aux}} \times m$ matrix $\mathbf U$ with orthonormal columns. By
+Cauchy interlacing $\mu_i \le \lambda_i$, and $\mu_i \ge 1$ because
+$\boldsymbol\Pi$ is positive semidefinite. $s(\lambda) = \ln\lambda + 1 - \lambda$
+is non-positive and decreasing on $\lambda \ge 1$. So
+$\sum_{i\le m}s(\mu_i) \ge \sum_{i\le m}s(\lambda_i) \ge \sum_{\text{all}}s(\lambda_i)$
+at every node. The weights $w_k$ are positive, so the truncated energy is
+never below the full-rank one on the same grid: $E_c(\tau) \ge E_c(0)$.
+The proof script checks the interlacing and the summand inequality on random
+projections (`pdep-truncation-sign`). The amplitude mask of local dRPA
+(section @sec:local-drpa) has no such sign.
+
 > **Verified equation @eq:rpa-pdep-projection** · projection, diagonalization and truncation
 >
 > With the full static eigenbasis, the eigenvalues of
@@ -181,7 +188,8 @@ full-rank energy-only configuration skips the static solve altogether.
 >
 > <!-- verified: id=rpa.pdep.projection; script=scripts/rpa_drpa_pdep_sympy.py; claim=pdep-full-rank; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/energy.rs::eval_eigenvalues_at_frequencies_budgeted; rust_test=ferric-rpa/tests/rpa_energy_route.rs::water_ccpvdz_aux_route_matches_the_eigensolve_route; registry=pdep-rpa -->
 
-The proof does not cover the static-summand bound of @sec:pdep-dielectric-matrix-static-modes.
+The same script covers the static-summand bound of section
+@sec:pdep-dielectric-matrix-static-modes (`static-summand-bound`).
 
 ## The algorithm {#pdep-algorithm}
 
@@ -203,12 +211,13 @@ identity columns (`dielectric_apply` at $u = 0$), so the memory per panel
 follows the budget. The comment beside that arm in
 `crates/ferric-rpa/src/lib.rs` records why the targeted solve lost. RI
 auxiliary sets have 20 to 30 functions per atom, so a physical threshold
-keeps most modes (58 to 86% in the comment's measurements), and a dense
-diagonalization beats a narrow Krylov iteration at that fraction. The
+keeps most modes (60 of 84, 71%, for water at the default threshold in the
+example above), and a dense diagonalization beats a narrow Krylov iteration
+at that fraction. The
 savings of truncation are in steps 5 to 7, not in step 2.
 
-The other static solvers are library options (`PdepRpaConfig::eigensolver`,
-not exposed in the CLI or Python); `run_pdep_rpa_eigensolve` dispatches
+The other static solvers are library options (the choice
+`PdepRpaConfig::eigensolver` is not exposed in the CLI or Python); `run_pdep_rpa_eigensolve` dispatches
 between them. Davidson is seeded with four vectors per atom (an
 atom-localized seed) when $\tau > 0$ and $N_{\mathrm{aux}} > 4N_{\mathrm{at}}$,
 and from the identity otherwise. It is the only solver that reads
@@ -228,7 +237,8 @@ $\mathbf c_\xi^{\mathsf T}V\mathbf c_\eta = \mathbf v_\xi^{\mathsf T}MVM^{\maths
 because $MVM^{\mathsf T} = \mathbf 1$ ($V = LL^{\mathsf T}$, $M = L^{-1}$). On the
 Coulomb path $M = L^{-1}$ is lower triangular, and $M\mathbf v$ in place of
 $M^{\mathsf T}\mathbf v$ gives potentials that are neither $V$-orthonormal
-nor eigenvectors of $V + \Pi$ (section @sec:factorization-and-metric). The energy does not use
+nor solutions of $(V + \Pi^{\mathrm{raw}})\mathbf c = \lambda V\mathbf c$
+(section @sec:factorization-and-metric). The energy does not use
 $\mathbf c_\xi$; the cube and NPZ exports and the polarizability paths do.
 
 **Step 6, the kernel.** The scale factor per pair is the square root of
@@ -332,10 +342,10 @@ worker thread in the frequency loop. `[memory] budget_gb` sets the panel width.
 | Option | Values | Default | Effect |
 |---|---|---|---|
 | `[rpa] trunc_thresh`, `trunc_thresh=` | $\ge 0$ | $10^{-4}$ | $\tau$ in (@eq:pdep-3); 0 keeps every mode |
-| `[rpa] eigensolver_conv_thresh` | float | | residual tolerance of the iterative solvers; ignored, with a warning, by the default dense solve |
+| `[rpa] eigensolver_conv_thresh`, `eigensolver_conv_thresh=` | float | $10^{-6}$ | residual tolerance of the iterative library solvers; the default dense solve ignores it and warns when it is set |
 | `[rpa] chi0_sparsity` | `dense`, `boys`, `auto` | `dense` | the Boys-screened static solve |
 | `[rpa] quadrature`, `n_quad`, `u0` | section @sec:quadratures | Gauss–Legendre, 20, 0.5 | frequency grid |
-| `[mp2] frozen_core`, `frozen_core=` | integer | 0 | frozen occupied orbitals |
+| `[rpa] frozen_core`, `frozen_core=` | integer | 0 | frozen occupied orbitals (the `drpa` kind reads `[mp2] frozen_core` instead) |
 
 ## Numerical anchors {#pdep-numerical-anchors}
 
@@ -347,7 +357,10 @@ worker thread in the frequency loop. `[memory] budget_gb` sets the panel width.
 | Aux-basis route vs the eigensolve route | water, n-octane, n-hexadecane / cc-pVDZ | asserted equal | `crates/ferric-rpa/tests/rpa_energy_route.rs` |
 
 All from `site/src/reference/validation.md`, except the last row, which is
-the test's own assertion.
+the test's own assertion. The kernel is also checked one vector at a time:
+the test helper `ferric-rpa/src/sternheimer.rs::chi_from_trial_potential`
+returns the single-spin $-2\sum_{ia}\Delta_i^a(\sum_PV_PB^P_{ia})^2/(u^2 + (\Delta_i^a)^2)$,
+half the closed-shell $-\mathbf V^{\mathsf T}\boldsymbol\Pi\mathbf V$.
 
 ## Sources {#pdep-sources}
 
@@ -355,8 +368,8 @@ the test's own assertion.
 |---|---|
 | `scripts/rpa_drpa_pdep_sympy.py`, check group 7 | projection and truncation |
 | `crates/ferric-rpa/tests/pdep_eigenpotentials_are_physical.rs` | the back-transform of step 4 |
-| Gygi and Galli, Phys. Rev. B 65, 220102(R) (2002) | dielectric eigenpotentials as a basis for the response |
-| Rocca, Lu and Galli, J. Chem. Phys. 133, 164109 (2010) | the PDEP formulation of the RPA correlation energy |
+| Wilson, Gygi and Galli, Phys. Rev. B 78, 113303 (2008) | dielectric eigenpotentials as a basis for the response |
+| Nguyen and de Gironcoli, Phys. Rev. B 79, 205114 (2009) | the RPA correlation energy from a few eigenmodes of the dielectric matrix |
 
 **Known limits (2026-11-15).**
 

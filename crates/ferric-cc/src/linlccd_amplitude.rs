@@ -48,6 +48,7 @@
 //! forms the VVVV block, matching the canonical implementation's memory
 //! shape.
 
+use ferric_scf::PreparedAux;
 use ndarray::Array2;
 
 use ferric_core::basis::BasisSet;
@@ -128,7 +129,33 @@ pub struct AmplitudeLinLccdResult {
     pub cg_converged: bool,
 }
 
+/// [`amplitude_linlccd`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+pub fn amplitude_linlccd_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    cfg: &AmplitudeLinLccdConfig,
+    variant: LadderVariant,
+) -> Result<AmplitudeLinLccdResult, FerricError> {
+    let sys = aux.system();
+    aux.check_restricted_reference(rhf)?;
+    amplitude_linlccd(
+        sys.mol(),
+        sys.basis(),
+        sys.basis_set(),
+        aux.basis(),
+        sys.op(),
+        rhf,
+        cfg,
+        variant,
+    )
+}
+
 /// Amplitude-threshold LinLCCD with the VV-HV space built internally.
+#[allow(clippy::too_many_arguments)]
 pub fn amplitude_linlccd(
     mol: &Molecule,
     obs: &PreparedBasis,

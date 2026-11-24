@@ -1,23 +1,19 @@
 //! FD validation of the full wB97X-V gradient (RSH + VV10 nonlocal).
 //!
-//! Energy SCF uses wB97X-V with VV10 active; analytical gradient now also
-//! includes the ∂E_nl/∂R contribution. The complement (wB97X, no VV10) is
-//! exercised in `dft_gradient_rsh.rs`.
+//! The analytic gradient includes the moving-grid VV10 term (AO, point
+//! motion, pair distance and Becke weights; see `vv10_gradient_moving_grid.rs`
+//! for the fixed-density checks), so it is the derivative of the SCF energy
+//! and matches a central difference of re-converged energies to the
+//! difference's own error. The complement (wB97X, no VV10) is exercised in
+//! `dft_gradient_rsh.rs`.
 //!
-//! All four cases are `#[ignore]`d: each one does a brute-force central-FD
-//! gradient (2 full wB97X-V SCF solves per atom per Cartesian coordinate,
-//! e.g. 3 atoms × 3 coords × 2 = 18 extra solves for the H2O cases) on top
-//! of the analytical gradient, and wB97X-V is the most expensive functional
-//! in the codebase (RSH exchange = two RI-K builds per iteration, erf+erfc,
-//! plus an O(N^2) VV10 nonlocal-correlation pair sum on its own NLC grid).
-//! That makes this file alone dominate `cargo test -p ferric-scf` wall time
-//! (one debug-mode case observed running 40+ minutes). The analytical
-//! wB97X-V gradient is already checked against independent PySCF references
-//! in `dft_gradient_vs_pyscf.rs` (`wb97xv_h2_ccpvdz_vs_pyscf_grad`,
-//! `wb97xv_h2o_ccpvdz_vs_pyscf_grad`) at a fraction of the cost, so default
-//! `cargo test` coverage of "is the wB97X-V analytical gradient correct" is
-//! unaffected — this file remains available as a deeper, independent
-//! FD-vs-analytical cross-check to run manually/nightly in release mode.
+//! Bar: measured agreement is 5.8e-8..8.6e-8 Ha/Bohr on all four cases
+//! (step 5e-4 Bohr, SCF to 1e-11 Ha, f64 RI-J), the O(h²) floor of the
+//! difference; `BAR = 3e-7` is ~3.5x that. The VV10 grid terms are worth
+//! 5.5e-6 on water/6-31G (`vv10_gradient_moving_grid.rs`), well above it.
+//!
+//! Each case runs 2·natoms·3 extra wB97X-V SCFs (~35 s in a release test
+//! build), hence the medium tier.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -29,15 +25,19 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
 
+/// Analytic-vs-FD bar (Ha/Bohr); see the module doc.
+const BAR: f64 = 3e-7;
+
 fn cfg() -> RhfConfig {
-    RhfConfig {
-        xc: Some("wB97X-V".into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        // f64 RI-J: the f32 default jitters the energy surface by ~1e-7 Ha,
+        // above these bars (site/src/methods/scf.md, "RI-J tensor precision").
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_xc("wB97X-V")
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit")
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
 }
 
 fn fd_gradient(xyz: &str, basis_name: &str, delta: f64) -> Array2<f64> {
@@ -129,40 +129,35 @@ fn run_case(label: &str, xyz: &str, basis_name: &str, tol: f64) {
 }
 
 #[test]
-#[ignore] // slow: 6-point FD gradient (2*natoms*3 full wB97X-V+VV10 SCF solves) on top of the analytic one; run explicitly.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 fn wb97xv_gradient_h2_sto3g_vs_fd() {
-    run_case("H2/sto-3g", "2\nH2\nH 0 0 0\nH 0 0 0.74\n", "sto-3g", 1e-3);
+    run_case("H2/sto-3g", "2\nH2\nH 0 0 0\nH 0 0 0.74\n", "sto-3g", BAR);
 }
 
 #[test]
-#[ignore] // slow: 6-point FD gradient (2*natoms*3 full wB97X-V+VV10 SCF solves) on top of the analytic one; run explicitly.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 fn wb97xv_gradient_h2o_sto3g_vs_fd() {
     run_case(
         "H2O/sto-3g",
         "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
         "sto-3g",
-        2e-3,
+        BAR,
     );
 }
 
 #[test]
-#[ignore] // slow: 6-point FD gradient (2*natoms*3 full wB97X-V+VV10 SCF solves) on top of the analytic one; run explicitly.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 fn wb97xv_gradient_h2_ccpvdz_vs_fd() {
-    run_case(
-        "H2/cc-pVDZ",
-        "2\nH2\nH 0 0 0\nH 0 0 0.74\n",
-        "cc-pvdz",
-        1e-3,
-    );
+    run_case("H2/cc-pVDZ", "2\nH2\nH 0 0 0\nH 0 0 0.74\n", "cc-pvdz", BAR);
 }
 
 #[test]
-#[ignore] // slow: 6-point FD gradient (2*natoms*3 full wB97X-V+VV10 SCF solves) on top of the analytic one; run explicitly.
+#[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 fn wb97xv_gradient_h2o_ccpvdz_vs_fd() {
     run_case(
         "H2O/cc-pVDZ",
         "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
         "cc-pvdz",
-        2e-3,
+        BAR,
     );
 }

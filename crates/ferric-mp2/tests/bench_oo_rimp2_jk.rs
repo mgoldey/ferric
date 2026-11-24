@@ -71,10 +71,11 @@ fn bench_oo_rimp2_jk_routes() {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            df_j_aux: jk_aux.clone(),
-            df_k_aux: jk_aux,
-            ..Default::default()
+        &{
+            let mut c = RhfConfig::default();
+            c.df_j_aux = jk_aux.clone();
+            c.df_k_aux = jk_aux;
+            c
         }
         .for_geometry_task(),
     )

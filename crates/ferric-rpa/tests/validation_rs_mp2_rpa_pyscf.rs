@@ -136,6 +136,7 @@ use ferric_rpa::{rs_mp2_lr_rpa, RsMp2RpaConfig, RsMp2RpaFormulation, RsMp2RpaRes
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -183,12 +184,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn vec_f64(v: &Value, ptr: &str, ctx: &str) -> Vec<f64> {
     v.pointer(ptr)
         .and_then(Value::as_array)
@@ -224,7 +219,7 @@ fn pyscf_orbitals(template: &ScfResult, r: &Value, nocc: usize, ctx: &str) -> Sc
     out.eps_alpha = vec_f64(r, "/rhf/mo_energy", ctx);
     out.density_total = &d_alpha * 2.0;
     out.density_alpha = d_alpha;
-    out.energy = num(r, "/rhf/energy", ctx);
+    out.energy = num_ctx(r, "/rhf/energy", ctx);
     out
 }
 
@@ -258,14 +253,14 @@ fn load_system(system: &str, basis_name: &str) -> Sys {
     let mol = Molecule::load_xyz_with_charge(xyz.to_str().unwrap(), 0, 1)
         .unwrap_or_else(|e| panic!("{}: {e:?}", xyz.display()));
     let enuc = mol.nuclear_repulsion();
-    let enuc_ref = num(&r, "/nuclear_repulsion", &label);
+    let enuc_ref = num_ctx(&r, "/nuclear_repulsion", &label);
     assert!(
         (enuc - enuc_ref).abs() < TOL_ENUC,
         "{label}: E_nuc {enuc} vs {enuc_ref}"
     );
     assert_eq!(mol.nelec() as i64, r["nelectron"].as_i64().unwrap());
     assert_eq!(r["frozen_core"].as_i64(), Some(0));
-    let omega = num(&r, "/omega_bohr_inv", &label);
+    let omega = num_ctx(&r, "/omega_bohr_inv", &label);
     assert!(
         (omega - RsMp2RpaConfig::default().omega).abs() < 1e-15,
         "{label}: the reference omega {omega} is not the production default"
@@ -292,20 +287,18 @@ fn load_system(system: &str, basis_name: &str) -> Sys {
         &obs,
         Operator::coulomb(),
         &bounds,
-        &RhfConfig {
-            max_iter: 400,
-            energy_conv: 1e-11,
-            density_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default()
+            .with_max_iter(400)
+            .with_energy_conv(1e-11)
+            .with_density_conv(1e-10),
     )
     .unwrap_or_else(|e| panic!("{label}: RHF failed: {e:?}"));
     assert!(own.converged, "{label}: RHF did not converge");
     eprintln!(
         "{label}: ferric's own RHF {:+.12} vs PySCF {:+.12} (|d| {:.1e}; not used below)",
         own.energy,
-        num(&r, "/rhf/energy", &label),
-        (own.energy - num(&r, "/rhf/energy", &label)).abs()
+        num_ctx(&r, "/rhf/energy", &label),
+        (own.energy - num_ctx(&r, "/rhf/energy", &label)).abs()
     );
     let nocc = (mol.nelec() as usize) / 2;
     let rhf = pyscf_orbitals(&own, &r, nocc, &label);
@@ -334,7 +327,7 @@ fn check_orthonormal(ctx: &str, obs: &PreparedBasis, rhf: &ScfResult, r: &Value)
         let want = if i == j { 1.0 } else { 0.0 };
         worst = worst.max((v - want).abs());
     }
-    let bar = n * n * f64::EPSILON / num(r, "/overlap_min_eigenvalue", ctx);
+    let bar = n * n * f64::EPSILON / num_ctx(r, "/overlap_min_eigenvalue", ctx);
     eprintln!("{ctx}: max |C^T S C - I| {worst:.2e}, bar {bar:.1e}");
     assert!(
         worst < bar,
@@ -417,22 +410,22 @@ fn check_field(
     got: f64,
     dq: f64,
 ) -> (f64, f64) {
-    let p = num(q, &format!("/fields/{field}"), ctx);
-    let metric = num(q, &format!("/metric_shift/{field}"), ctx);
-    let ints = num(q, &format!("/integral_shift/{field}"), ctx);
+    let p = num_ctx(q, &format!("/fields/{field}"), ctx);
+    let metric = num_ctx(q, &format!("/metric_shift/{field}"), ctx);
+    let ints = num_ctx(q, &format!("/integral_shift/{field}"), ctx);
     let shift = metric + ints;
-    let resid = num(q, &format!("/code_residual/{field}"), ctx);
-    let fp = num(q, &format!("/fp_floor/{field}"), ctx);
-    let flip = num(q, &format!("/cut_flip/{field}"), ctx);
+    let resid = num_ctx(q, &format!("/code_residual/{field}"), ctx);
+    let fp = num_ctx(q, &format!("/fp_floor/{field}"), ctx);
+    let flip = num_ctx(q, &format!("/cut_flip/{field}"), ctx);
     let e_drpa: f64 = drpa_kernels(field)
         .iter()
-        .map(|k| num(&sys.r, &format!("/kernels/{k}/pyscf/e_drpa_nw{nq}"), ctx).abs())
+        .map(|k| num_ctx(&sys.r, &format!("/kernels/{k}/pyscf/e_drpa_nw{nq}"), ctx).abs())
         .sum();
     let quad = 5.0 * dq * e_drpa;
-    let eig = num(q, &format!("/eigenvalue_error/{field}"), ctx);
+    let eig = num_ctx(q, &format!("/eigenvalue_error/{field}"), ctx);
     // Log-det summand rounding, both codes: m·ε per frequency per dRPA kernel.
     let (_, f_wts) = gauss_legendre_nodes(nq, U0);
-    let m = num(&sys.r, "/naux", ctx);
+    let m = num_ctx(&sys.r, "/naux", ctx);
     let n_rings = drpa_kernels(field).len() as f64;
     let logdet =
         2.0 * n_rings * m * f64::EPSILON * f_wts.iter().sum::<f64>() / (2.0 * std::f64::consts::PI);
@@ -521,7 +514,7 @@ fn run_case(system: &str, basis_name: &str) {
                     &qctx,
                     &format!("{f} e_corr vs {f}_control_{control}"),
                     e,
-                    num(q, &format!("/fields/{f}_control_{control}"), &ctx),
+                    num_ctx(q, &format!("/fields/{f}_control_{control}"), &ctx),
                     bar,
                 );
             }
@@ -530,14 +523,14 @@ fn run_case(system: &str, basis_name: &str) {
             &qctx,
             "B e_corr vs the T reference",
             b.e_corr,
-            num(q, "/fields/T_e_corr", &ctx),
+            num_ctx(q, "/fields/T_e_corr", &ctx),
             bars["B_e_corr"],
         );
         assert_misses(
             &qctx,
             "T e_corr vs the B reference",
             t.e_corr,
-            num(q, "/fields/B_e_corr", &ctx),
+            num_ctx(q, "/fields/B_e_corr", &ctx),
             bars["T_e_corr"],
         );
     }

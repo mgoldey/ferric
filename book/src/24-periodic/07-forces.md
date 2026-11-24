@@ -1,6 +1,6 @@
 # Nuclear forces {#forces}
 
-<!-- status: edit; registry: pbc-hf, pbc-ks -->
+<!-- status: edit; registry: pbc-gradient, pbc-hf, pbc-ks -->
 
 Moving atom $A$ in a periodic cell moves its nucleus, every basis function
 centred on it and, for Kohn–Sham, every grid point homed on it, in every
@@ -26,9 +26,12 @@ and sources.
 
 | Entry point | Location |
 |---|---|
-| Gamma, RHF and RKS | `ferric-pbc/src/grad.rs::gamma_rhf_gradient` |
-| Gamma, UHF and UKS | `ferric-pbc/src/grad.rs::gamma_uhf_gradient` |
-| $k$-points | `ferric-pbc/src/kgrad.rs::kpoint_rhf_gradient` and siblings |
+| Gamma, RHF and RKS | `ferric-pbc/src/grad.rs::{gamma_rhf_gradient,gamma_rks_gradient}` |
+| Gamma, UHF and UKS | `ferric-pbc/src/grad.rs::{gamma_uhf_gradient,gamma_uks_gradient}` |
+| Gamma, ROHF and ROKS | `ferric-pbc/src/grad.rs::{gamma_rohf_gradient,gamma_roks_gradient}` |
+| Gamma, RS-GDF | the `_rsgdf` siblings, e.g. `ferric-pbc/src/grad.rs::gamma_rhf_gradient_rsgdf` |
+| $k$-points, closed shell | `ferric-pbc/src/kgrad.rs::kpoint_rhf_gradient` and siblings |
+| $k$-points, open shell | `ferric-pbc/src/kuxcgrad.rs::{kpoint_uks_gradient,kpoint_rohf_gradient,kpoint_roks_gradient}` |
 | CLI | `task = "optimize"` with a `[cell]` section |
 | Python | `with_gradient=True` on the SCF entry points; `gradient()` in Hartree/Bohr per cell |
 
@@ -52,15 +55,37 @@ $-\sum W\,\partial S/\partial R_A$ with $W = \sum_\sigma D_\sigma F_\sigma D_\si
 as in the molecular gradient of section @sec:hf-gradient. For RHF,
 $\sum_\sigma D_\sigma FD_\sigma = 2(D/2)F(D/2) = \tfrac12DFD$.
 
-**Each energy term, differentiated.**
+**Each energy term, differentiated.** Write the pair transform's density
+$\rho(\mathbf G) = \sum_{\lambda\sigma}D_{\lambda\sigma}P_{\lambda\sigma}(\mathbf G)$
+and the dense tensor
+$I_{\mu\nu\lambda\sigma} = \Omega^{-1}\sum_{\mathbf G\neq0}(4\pi/G^2)\operatorname{Re}[P^*_{\mu\nu}P_{\lambda\sigma}]$.
+Moving atom $A$ moves every function centred on it, in all four slots of
+$I$. $\Gamma$ is symmetric under exchange of the two pairs and within each
+pair, so the four slot derivatives are equal, and the force is four times
+the bra derivative of the first pair:
+
+$$ \frac{\partial E_\text{2e}}{\partial A} = \frac{4}{\Omega}\sum_{\mathbf G\neq0}\frac{4\pi}{G^2}\operatorname{Re}\sum_{\mu\in A,\nu}Q^*_{\mu\nu}\sum_{\lambda\sigma}\Gamma_{\mu\nu\lambda\sigma}P_{\lambda\sigma} = \frac{8}{\Omega}\sum_{\mathbf G\in\text{half}}\frac{4\pi}{G^2}\operatorname{Re}\sum_{\mu\in A,\nu}Q^*_{\mu\nu}Z_{\mu\nu} , \label{eq:pbc-grad-two-electron} $$
+
+with $Z = \sum_{\lambda\sigma}\Gamma_{\cdot\cdot\lambda\sigma}P_{\lambda\sigma} = \tfrac12D\rho - \tfrac\alpha2\sum_\sigma D_\sigma PD_\sigma$.
+The 8 is the 4 of the slots times 2 for the half sphere: $\mathbf G$ and
+$-\mathbf G$ give complex-conjugate terms for real functions. The nuclear
+attraction differentiates the same way. The long-range part
+$E_\text{LR} = -\Omega^{-1}\sum_{\mathbf G\neq0}v_\eta\operatorname{Re}[\rho^*S]$
+has a basis row, where $\partial\rho/\partial A = \rho'_A = 2\sum_{\mu\in A,\nu}D_{\mu\nu}Q_{\mu\nu}$
+(bra and ket), and a nuclear row through
+$\partial S/\partial\mathbf R_A = -i\mathbf G\,Z_Ae^{-i\mathbf G\cdot\mathbf R_A}$,
+the structure-factor derivative of (@eq:pbc-ewald-lr-gradient). On the half
+sphere both carry $-2/\Omega$.
+
 
 | Energy term | Force term |
 |---|---|
 | kinetic, ECP | lattice-summed shifted one-electron derivative blocks |
 | SR nuclear attraction (erfc) | three-centre derivative; the nuclear centre by translation invariance, $-(\text{bra} + \text{ket})$ |
-| LR nuclear attraction | basis: $-(2/\Omega)\sum_{\mathbf G}v_\eta\operatorname{Re}[\rho_A'^*S(\mathbf G)]$ with $\rho'_A = 2\sum_{\mu\in A,\nu}D_{\mu\nu}Q_{\mu\nu}$; nucleus: the structure-factor derivative |
-| two-electron (pure AFT) | $(8/\Omega)\sum_{\mathbf G}(4\pi/G^2)\operatorname{Re}\sum_{\mu\in A,\nu}Q^*_{\mu\nu}Z_{\mu\nu}$, $Z = \tfrac12D\rho(\mathbf G) - \tfrac\alpha2\sum_\sigma D_\sigma P(\mathbf G)D_\sigma$ |
-| overlap coupling | $\sum M\,\partial S/\partial R_A$, $M = -W + c_0Z_\text{tot}D - \alpha v_M\sum_\sigma D_\sigma SD_\sigma$ |
+| LR nuclear attraction | basis: $-(2/\Omega)\sum_{\mathbf G}v_\eta\operatorname{Re}[\rho_A'^*S(\mathbf G)]$ with $\rho'_A = 2\sum_{\mu\in A,\nu}D_{\mu\nu}Q_{\mu\nu}$; nucleus: $-(2/\Omega)\sum_{\mathbf G}v_\eta\operatorname{Re}[\rho^*\,\partial S/\partial\mathbf R_A]$ |
+| two-electron (pure AFT) | (@eq:pbc-grad-two-electron) |
+| two-electron (RS-GDF) | $\sum Y\,\partial J3 + \sum W_m\,\partial J2$, (@eq:pbc-grad-rsgdf); the $\mathbf G = 0$ term of $J3$ adds $-c_0'\sum_PY_Pq_P$ to $M$ |
+| overlap coupling | $2\sum_{\mu\in A,\nu}M_{\mu\nu}\,\partial S_{\mu\nu}/\partial A$, $M = -W + c_0Z_\text{tot}D - \alpha v_M\sum_\sigma D_\sigma SD_\sigma$ |
 | Ewald $E_{nn}$ | SR erfc plus LR structure factor (section @sec:ewald) |
 | XC | AO term, grid-point motion and the partition-weight derivative |
 
@@ -71,6 +96,55 @@ $Q_{\nu\mu}$, because $P_{\mu\nu} = P_{\nu\mu}$ at reciprocal-lattice
 $\mathbf G$ (section @sec:pair-ft). $Q$ is three times the size of the pair
 transform, so it is streamed per $\mathbf G$ chunk together with $P$ and
 contracted at once.
+
+**The RS-GDF force.** The production builder fits the ERI, so the
+two-electron energy is $E_\text{2e} = \sum\Gamma\,I^\text{fit}$ with
+$I^\text{fit} = J3\,f(J2)\,J3^{\mathsf T}$ and $f(s) = 1/s$ above `lindep`, 0
+below: exactly the pseudo-inverse of the build's eigenvalue cut (section
+@sec:rsgdf). At fixed density,
+
+$$ dE_\text{2e} = \sum_{\mu\nu,P}Y_{P,\mu\nu}\,dJ3_{\mu\nu,P} + \sum_{PQ}(W_m)_{PQ}\,dJ2_{PQ}, \qquad Y_P = D\,(C_P\cdot D) - \alpha\sum_\sigma D_\sigma C_PD_\sigma,\quad C = f(J2)J3^{\mathsf T} . \label{eq:pbc-grad-rsgdf} $$
+
+$Y$ is $2\sum\Gamma C$, the derivative of $\sum\Gamma J3\,C$ in its two $J3$
+slots. The metric term is the derivative of the matrix function $f$:
+with $J2 = UsU^{\mathsf T}$ and $H = J3^{\mathsf T}\Gamma J3$, the
+Daleckii–Krein formula gives
+$W_m = U(L\circ U^{\mathsf T}HU)U^{\mathsf T}$, where $L_{ij}$ is the divided
+difference $(f(s_i) - f(s_j))/(s_i - s_j)$: $-1/(s_is_j)$ when both are kept,
+$(1/s_k)/(s_k - s_d)$ between a kept and a dropped eigenvalue, 0 when both are
+dropped. The kept–kept block alone is the textbook density-fitting metric term
+$-\tfrac12c^{\mathsf T}(P|Q)'c$. It differentiates a different function
+whenever a dropped direction carries energy, because the kept eigenvectors
+rotate with the geometry. The $\mathbf G = 0$ term $-c_0'S_{\mu\nu}q_P$ of
+$J3$, with $c_0' = \pi/(\eta_\text{gdf}^2\Omega)$, enters only through
+$\partial S$, as $M_{g0} = -c_0'\sum_PY_Pq_P$ added to $M$. The derivative
+integrals $dJ3$ and $dJ2$ are those of section @sec:rsgdf with each centre
+moved: erfc three- and two-centre derivatives in real space, the pair-transform
+derivative $Q$ and $-i\mathbf G X_P$ for an auxiliary centre in reciprocal
+space (`crates/ferric-pbc/src/rsgdf/deriv.rs`, module documentation).
+
+> **Verified equation {#eq:pbc-grad-fixed-density}** · the electronic force rows at fixed density
+>
+> On a triclinic cell with two atoms, s Gaussians and unrelated spin
+> densities $D_\alpha \neq D_\beta$, the two-electron row
+> (@eq:pbc-grad-two-electron), the long-range basis and nuclear rows, the
+> short-range row with its nuclear part taken as minus the bra and ket
+> derivatives, and the overlap rows with $c_0Z_\text{tot}D$ and
+> $-\alpha v_M\sum_\sigma D_\sigma SD_\sigma$ reproduce a central difference of
+> the fixed-density energy. Separately, the fitted energy's derivative
+> (@eq:pbc-grad-rsgdf) with the full Loewner matrix reproduces a central
+> difference with one metric eigenvalue below the cut, and the kept–kept
+> block alone does not.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/pbc_force_sympy.py`, claims `force-fixed-density`, `rsgdf-fit-derivative` |
+> | Negative control | the runner's mutations: $4/\Omega$ in place of $8/\Omega$, the $\tfrac12$ of $\tfrac12D\rho$ dropped, the long-range nuclear row dropped, the kept–dropped Loewner block dropped |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-pbc/src/grad.rs::gamma_uhf_gradient` |
+> | Code test | `h2_force_matches_fd_of_own_energy_both_exxdiv` in `crates/ferric-pbc/tests/pbc_grad.rs` |
+>
+> <!-- verified: id=pbc.grad.fixed-density; script=scripts/pbc_force_sympy.py; claim=force-fixed-density; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-pbc/src/grad.rs::gamma_uhf_gradient; rust_test=ferric-pbc/tests/pbc_grad.rs::h2_force_matches_fd_of_own_energy_both_exxdiv; registry=pbc-gradient -->
 
 **The nuclear centre by translation invariance.** The three-centre integral
 depends on the bra, ket and nuclear centres only through their differences,
@@ -93,10 +167,17 @@ through $S$ goes into one matrix $M$:
 
 **The XC term.** On the periodic SSF/Becke grid the force has an AO term,
 the motion of the grid points homed on $A$, and the derivative of the
-partition weights over the image neighbour list. With the full grid response
-the force is translation invariant. The module documentation records that the
-response is about $2$–$3\times10^{-3}$ Ha/Bohr at a $(40, 50)$ grid on the
-prototype cells, above optimization thresholds, so it is not optional.
+partition weights. The last is new relative to the molecular force: the
+weight $w_{A,0}(\mathbf r)$ of section @sec:kpoint-scf depends on every image
+atom $B + \mathbf L$ within the neighbour cutoff, so moving atom $B$ moves
+all of its images and the weight derivative sums over them,
+$\partial w/\partial\mathbf R_B = \sum_{\mathbf L}\partial w/\partial\mathbf X_{B+\mathbf L}$
+(`ferric-pbc/src/dft.rs::PeriodicGrid`). With the full grid response the
+force is translation invariant. The module documentation records a
+prototype measurement that the response is about $2$–$3\times10^{-3}$
+Ha/Bohr at a $(40, 50)$ grid, above optimization thresholds, so it is not
+optional; no test pins that figure. The XC rows have no proof script
+(registry gap `pbc-ks`).
 
 **Consistency with the energy.** Every lattice sum in the force uses the
 energy's truncation: the same pair images, nucleus candidates and screens,
@@ -107,7 +188,7 @@ anchors below test it to $10^{-7}$ Ha/Bohr.
 
 ## The Madelung term cancels {#forces-madelung-term-cancels}
 
-Look at what `exxdiv = ewald` does to $M$. The Fock matrix of spin $\sigma$
+With `exxdiv = ewald`, $M$ changes in two places. The Fock matrix of spin $\sigma$
 contains $-\alpha v_MSD_\sigma S$ (section @sec:exchange-divergence), so $W$ contains
 
 $$ D_\sigma\big(-\alpha v_MSD_\sigma S\big)D_\sigma = -\alpha v_M\,D_\sigma SD_\sigma SD_\sigma = -\alpha v_MD_\sigma , $$
@@ -122,9 +203,10 @@ Why per spin? The total-density form $-\tfrac{\alpha v_M}2DSD$ is the same
 thing for a closed shell, where $D = 2D_\sigma$ and
 $DSD = 4D_\sigma = 2\sum_\sigma D_\sigma$. On an open shell
 $DSD$ contains the cross terms $D_\alpha SD_\beta + D_\beta SD_\alpha$, and the
-cancellation fails. The module documentation records the size from the
-prototype: $1.7\times10^{-2}$ to $1.5\times10^{-1}$ Ha/Bohr on open shells with
-$\alpha > 0$. Closed shells, `exxdiv = none` and the sum of forces do not see
+cancellation fails. The module documentation records a prototype size of
+$1.7\times10^{-2}$ to $1.5\times10^{-1}$ Ha/Bohr on open shells with
+$\alpha > 0$; the test evidence is that the open-shell mutant tests below
+detect it. Closed shells, `exxdiv = none` and the sum of forces do not see
 that error.
 
 > **Verified equation {#eq:pbc-grad-madelung}** · the Madelung terms cancel in the force
@@ -140,9 +222,9 @@ that error.
 > | Negative control | the claim itself evaluates the total-density form and requires it to fail on the open shell |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-pbc/src/grad.rs::gamma_uhf_gradient` |
-> | Code test | `h2_ewald_and_none_forces_agree` in `crates/ferric-pbc/tests/pbc_grad.rs` |
+> | Code test | `h3_uhf_fd_anchor_catches_each_spin_mutant` in `crates/ferric-pbc/tests/pbc_grad_open.rs` (open shell, the total-density mutant); `h2_ewald_and_none_forces_agree` in `crates/ferric-pbc/tests/pbc_grad.rs` (closed shell) |
 >
-> <!-- verified: id=pbc.grad.madelung; script=scripts/pbc_kpoint_corr_sympy.py; claim=madelung-force; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-pbc/src/grad.rs::gamma_uhf_gradient; rust_test=ferric-pbc/tests/pbc_grad.rs::h2_ewald_and_none_forces_agree; registry=pbc-hf -->
+> <!-- verified: id=pbc.grad.madelung; script=scripts/pbc_kpoint_corr_sympy.py; claim=madelung-force; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-pbc/src/grad.rs::gamma_uhf_gradient; rust_test=ferric-pbc/tests/pbc_grad_open.rs::h3_uhf_fd_anchor_catches_each_spin_mutant; registry=pbc-hf -->
 
 The matrix is built in `ferric-pbc/src/grad.rs::assemble`:
 
@@ -177,19 +259,25 @@ The matrix is built in `ferric-pbc/src/grad.rs::assemble`:
 | `spins.sandwich(s_mat)` | $\sum_\sigma D_\sigma SD_\sigma$ |
 | `-alpha * vm` | $-\alpha v_M$ |
 
-The three `GradMutation` arms are the test mutants: the wrong sign of $W$,
-the Madelung $S$ term left out, and the total-density form. Each is detected
-by `h2_fd_anchor_catches_each_mutant`.
+The three `GradMutation` arms are test mutants: the wrong sign of $W$, the
+Madelung $S$ term left out, and the total-density form. `WSign` and
+`NoMadelungS` are detected by `h2_fd_anchor_catches_each_mutant`.
+`MadelungTotal` needs an open shell, where the two forms differ, and is
+detected by `h3_uhf_fd_anchor_catches_each_spin_mutant` in
+`crates/ferric-pbc/tests/pbc_grad_open.rs` and
+`h3_rohf_fd_anchor_catches_each_mutant` in
+`crates/ferric-pbc/tests/pbc_grad_ro.rs`.
 
 The Ewald nuclear gradient is part of section @sec:ewald's
 `ferric-pbc/src/ewald.rs::ewald_nuclear_gradient_parts`, checked against
 PySCF and finite differences in `ewald_gradient_matches_pyscf_grad_nuc_and_fd`.
 
-The book states the full electronic force (the two-electron,
-nuclear-attraction and XC terms above) without deriving it, and no proof
-script covers it. The forces are anchored by finite differences of
-ferric's own energy instead (@sec:forces-numerical-anchors). That is why this section's status is
-`edit`.
+The two-electron, nuclear-attraction, overlap and RS-GDF rows are derived
+above and checked by `scripts/pbc_force_sympy.py`. The XC rows, the ECP rows
+and the meta-GGA and range-separated variants are stated, not derived, and
+have no proof script; they are anchored by finite differences of ferric's
+own energy (@sec:forces-numerical-anchors). That is why this section's status
+is `edit`.
 
 ## Refusal gates {#forces-refusal-gates}
 
@@ -197,7 +285,7 @@ A force or stress is first order in the departure of the SCF state from
 stationarity. The derivation above assumed a stationary state, so the
 open-shell entry points (Gamma and $k$-point ROHF/ROKS/UHF/UKS) refuse a
 state that is not one, instead of returning a number. The table gives each
-gate with its provenance, taken from the code and `git log -S`:
+gate with its provenance:
 **measured** means calibrated against a force error, **roundoff** a decade or
 more above the observed residual for matching inputs, **arbitrary** no
 derivation or measurement recorded, and **definitional** no tolerance. No
@@ -223,7 +311,7 @@ threshold is a function of system size.
 | SCF `converged` | boolean | every gradient entry (stress follows the force checks) | definitional |
 | Non-finite $E_{xc}$, $V_{xc}$, force, strain derivative | any NaN/Inf | each XC and total assembly | definitional |
 
-Three groups of gates stand out. The orbital-gradient and commutator gates
+The gates fall into three groups. The orbital-gradient and commutator gates
 are the stationarity condition itself, and their values come from measured
 force errors. The Fock-consistency gate catches a mismatched input, such as a
 force requested with the wrong `exxdiv` or functional, by rebuilding the Fock
@@ -267,7 +355,7 @@ a NaN is refused.
 | `ewald` against `none` forces | $10^{-12}$ Ha/Bohr | `h2_ewald_and_none_forces_agree` |
 | each deliberate force mutant | detected above $10^{-3}$ | `h2_fd_anchor_catches_each_mutant` |
 | triclinic s/p cell against finite differences | $1.5\times10^{-8}$ Ha/Bohr | `triclinic_sp_force_matches_fd_of_own_energy` |
-| $1\times1\times3$ mesh force against the supercell force on one copy | | `crates/ferric-pbc/tests/pbc_kgrad.rs` `h2_1x1x3_force_is_the_supercell_force_on_one_copy` |
+| $1\times1\times3$ mesh force against the supercell force on one copy | $10^{-12}$ Ha/Bohr (`SC_BAR`) | `crates/ferric-pbc/tests/pbc_kgrad.rs` `h2_1x1x3_force_is_the_supercell_force_on_one_copy` |
 
 ## Limits {#forces-limits}
 
@@ -283,3 +371,4 @@ a NaN is refused.
 | `crates/ferric-pbc/src/grad.rs`, module documentation | the force terms |
 | section @sec:ewald-ewald-sum-independence | the Ewald gradient |
 | `scripts/pbc_kpoint_corr_sympy.py` | the Madelung cancellation |
+| `scripts/pbc_force_sympy.py` | the electronic rows and the RS-GDF fit derivative |

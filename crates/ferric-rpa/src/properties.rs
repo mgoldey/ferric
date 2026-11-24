@@ -901,6 +901,7 @@ pub fn preflight_grid_path_for_test(
 /// dipoles` already chunks the grid, and the width it chunks at is derived
 /// from this same budget. A `try_reserve` whose `None` branch cannot narrow
 /// anything would be a lie (see the shared brief), so this refuses.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn preflight_grid_path(
     label: &str,
     memory_budget_bytes: Option<usize>,
@@ -998,6 +999,7 @@ pub(crate) fn preflight_grid_path(
 /// seeds a full `b_ov`-shaped `(naux, nov)` buffer AND forms a `(naux, naux)`
 /// `eps_mat` inside the rayon closure — the same worker-count-scaled shape as
 /// the 2026-07-13 incident. Pass 1 for the static path, which runs serially.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn preflight_hirshfeld_path(
     label: &str,
     memory_budget_bytes: Option<usize>,
@@ -2022,10 +2024,7 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
         let ctx = ParallelContext::default();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let cfg = RhfConfig {
-            mom_after_iter: 5,
-            ..Default::default()
-        };
+        let cfg = RhfConfig::default().with_mom_after_iter(5);
         let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &cfg).unwrap();
         (mol, obs, dfbs, op, uhf)
     }

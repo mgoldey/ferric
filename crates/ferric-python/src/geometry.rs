@@ -4,7 +4,7 @@ use super::*;
 
 // ── Optimize ──
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "OptimizeResult")]
 pub(crate) struct PyOptimizeResult {
     #[pyo3(get)]
@@ -34,9 +34,8 @@ impl PyOptimizeResult {
     /// approximations, and a run with `converged = False` is `not graded`.
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::certificate_dict(py, &self.certificate_data)
     }
-
     /// The optimized geometry as a new `Molecule`.
     fn mol(&self) -> PyMolecule {
         PyMolecule {
@@ -265,11 +264,13 @@ pub(crate) fn run_optimize(
     let method = parse_optimize_method(method)?;
     let spin = parse_optimize_reference(reference, &mol.inner)?;
     refuse_unread_optimize_kwargs(method, spin, &k)?;
-    let mut cfg = RhfConfig {
+    let mut cfg = ferric_scf::options::ScfOptions {
         external_potential: build_external_potential(point_charges, external_field),
         pcm: build_pcm_config(solvent, pcm_lebedev_order)?,
         ..Default::default()
-    };
+    }
+    .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
+    .py()?;
     ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut cfg);
     cfg.xc = xc.map(str::to_string);
     cfg.df_j_aux = crate::geometry_df_aux(xc, df_j_aux);
@@ -282,18 +283,17 @@ pub(crate) fn run_optimize(
     // run. Without this an ECP basis (aug-cc-pvdz-pp, Z >= 37) would optimize
     // with the all-electron count against ECP integrals.
     let bs = basis::bundled(basis_name).map_err(make_err)?;
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&bs);
+    let emol = EcpMolecule::new(mol.inner.clone(), &bs).into_mol();
     let mut opt_config = optimize_config(max_steps, e_conv, scf_warm_start, coordinates)?;
     if let Some(s) = initial_hessian {
         opt_config.initial_hessian = Some(
             ferric_scf::optimize::InitialHessian::parse_config_str(s)
-                .map_err(pyo3::exceptions::PyValueError::new_err)?,
+                .map_err(crate::errors::input_err)?,
         );
     }
     if let Some(s) = trust_update {
         opt_config.trust_update = ferric_scf::optimize::TrustUpdate::parse_config_str(s)
-            .map_err(pyo3::exceptions::PyValueError::new_err)?;
+            .map_err(crate::errors::input_err)?;
     }
     ferric_scf::optimize::refuse_internal_coordinates_in_fixed_frame(opt_config.coord_system, &cfg)
         .map_err(|e| value_error(format!("run_optimize: {e}")))?;
@@ -405,7 +405,7 @@ pub(crate) fn run_optimize_uhf(
 /// the SCF: the X2C-1e core Hamiltonian has no nuclear derivative.
 fn refuse_relativistic_kwarg(kwarg: Option<&str>, what: &str) -> PyResult<()> {
     ferric_scf::x2c::refuse_relativistic(crate::scf::parse_relativistic(kwarg)?, what)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+        .map_err(crate::errors::input_err)
 }
 
 /// The surface `run_optimize` differentiates.
@@ -462,7 +462,7 @@ pub(crate) struct OptimizeKwargs<'a> {
 }
 
 fn value_error(msg: String) -> PyErr {
-    pyo3::exceptions::PyValueError::new_err(msg)
+    crate::errors::input_err(msg)
 }
 
 /// Strict `method=`.
@@ -654,7 +654,7 @@ fn optimize_config(
     let coord_system = match coordinates {
         None => ferric_scf::optimize::CoordSystem::Cartesian,
         Some(s) => ferric_scf::optimize::CoordSystem::parse_config_str(s)
-            .map_err(pyo3::exceptions::PyValueError::new_err)?,
+            .map_err(crate::errors::input_err)?,
     };
     Ok(OptimizeConfig {
         max_steps: max_steps.unwrap_or(100),
@@ -1158,11 +1158,7 @@ fn run_optimize_pdep_rpa(
             )
         })
         .map_err(make_err)?;
-    let ref_cfg = RhfConfig {
-        density_conv: 1e-9,
-        ..Default::default()
-    }
-    .for_geometry_task();
+    let ref_cfg = RhfConfig::gradient_reference(None).for_geometry_task();
     let certificate_data = correlated_optimize_certificate(
         "pdep-rpa",
         &r.mol,
@@ -1513,7 +1509,6 @@ fn mp2_gradient_scf_jk(
         ScfJkMode::RiJk => Ok(ScfJk {
             mode: ScfJkMode::RiJk,
             aux: jk.aux.clone(),
-            k_builder: None,
         }),
         _ => Err(value_error(format!(
             "run_optimize: method=\"{who}\" differentiates a four-centre or an RI-JK \
@@ -1535,12 +1530,7 @@ fn mp2_gradient_optimize_result(
     opt_config: &OptimizeConfig,
     spin: ferric_scf::Spin,
 ) -> PyOptimizeResult {
-    let mut ref_cfg = RhfConfig {
-        density_conv: 1e-9,
-        external_potential: ext,
-        ..Default::default()
-    }
-    .for_geometry_task();
+    let mut ref_cfg = RhfConfig::gradient_reference(ext).for_geometry_task();
     scf_jk.apply(&mut ref_cfg);
     let certificate_data = correlated_optimize_certificate(
         kind,
@@ -1648,7 +1638,7 @@ fn run_optimize_oo_rimp2(
     })
 }
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "FrequencyResult")]
 pub(crate) struct PyFrequencyResult {
     /// Vibrational wavenumbers in cm^-1, ascending. `3N-6` entries (`3N-5` if
@@ -1707,8 +1697,9 @@ pub(crate) struct PyFrequencyResult {
     pub(crate) molecule: ferric_core::mol::Molecule,
     /// What `ir_intensities` differentiates, or why it cannot.
     pub(crate) ir_source: Result<IrSource, String>,
-    /// `ir_intensities` after its first call.
-    pub(crate) ir_cache: Option<Vec<f64>>,
+    /// `ir_intensities` after its first successful call; concurrent first
+    /// calls run the six field SCFs once.
+    pub(crate) ir_cache: crate::compute_once::ComputeOnce<Vec<f64>>,
 }
 
 /// The SCF of a frequency run, kept so `FrequencyResult.ir_intensities` can
@@ -1722,6 +1713,16 @@ pub(crate) struct IrSource {
 
 #[pymethods]
 impl PyFrequencyResult {
+    /// Validation certificate of this result (dict form of
+    /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
+    /// `capability` is `"frequencies:<kind>"`; the SCF at the input geometry
+    /// is the reference whose grade, approximations and warnings it inherits,
+    /// the Hessian construction is recorded as the `hessian` approximation,
+    /// and each imaginary frequency count is a warning.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::certificate_dict(py, &self.certificate_data)
+    }
     /// RRHO thermochemistry (dict; see the .pyi). Imaginary modes are left
     /// out with a `RuntimeWarning`.
     #[pyo3(signature = (temperature=298.15, pressure=101325.0, symmetry_number=1))]
@@ -1756,9 +1757,12 @@ impl PyFrequencyResult {
 
     /// IR intensity of each mode in km/mol, in the order of `frequencies`
     /// (the field route: six SCF + gradient evaluations in a field of
-    /// +-1e-3 a.u., computed on the first call and cached).
-    fn ir_intensities(&mut self, py: Python<'_>) -> PyResult<Vec<f64>> {
-        if let Some(a) = &self.ir_cache {
+    /// +-1e-3 a.u., computed on the first call and cached; concurrent first
+    /// calls compute once). A failed evaluation is not cached, so the next
+    /// call retries: if it fails while other threads wait, each of them
+    /// re-runs the six field SCFs in turn before raising.
+    fn ir_intensities(&self, py: Python<'_>) -> PyResult<Vec<f64>> {
+        if let Some(a) = self.ir_cache.get() {
             return Ok(a.clone());
         }
         let src = self
@@ -1767,33 +1771,26 @@ impl PyFrequencyResult {
             .map_err(|why| value_error(why.clone()))?;
         let ctx = ParallelContext::default();
         let mol = &self.molecule;
-        let apt = py
+        let cache = &self.ir_cache;
+        // The cache's lock is taken INSIDE allow_threads, so a waiting thread
+        // has released the GIL.
+        let a = py
             .allow_threads(|| {
-                ferric_scf::infrared::dipole_derivatives_field(
-                    &ctx,
-                    mol,
-                    &src.basis_name,
-                    Operator::coulomb(),
-                    &src.scf_cfg,
-                    src.reference,
-                    ferric_scf::infrared::DEFAULT_IR_FIELD,
-                )
+                cache.get_or_try_init(|| {
+                    let apt = ferric_scf::infrared::dipole_derivatives_field(
+                        &ctx,
+                        mol,
+                        &src.basis_name,
+                        Operator::coulomb(),
+                        &src.scf_cfg,
+                        src.reference,
+                        ferric_scf::infrared::DEFAULT_IR_FIELD,
+                    )?;
+                    ferric_scf::infrared::ir_intensities(&apt, &src.normal_modes)
+                })
             })
             .map_err(make_err)?;
-        let a = ferric_scf::infrared::ir_intensities(&apt, &src.normal_modes).map_err(make_err)?;
-        self.ir_cache = Some(a.clone());
-        Ok(a)
-    }
-
-    /// Validation certificate of this result (dict form of
-    /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
-    /// `capability` is `"frequencies:<kind>"`; the SCF at the input geometry
-    /// is the reference whose grade, approximations and warnings it inherits,
-    /// the Hessian construction is recorded as the `hessian` approximation,
-    /// and each imaginary frequency count is a warning.
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        Ok(a.clone())
     }
 
     fn __repr__(&self) -> String {
@@ -2246,14 +2243,14 @@ pub(crate) fn run_frequencies(
         Some("uhf") => FrequencyReference::Uhf,
         Some("rohf") => FrequencyReference::Rohf,
         Some(other) => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "unknown reference \"{other}\"; expected \"rhf\", \"uhf\" or \"rohf\""
             )))
         }
     };
     if let Some(d) = delta {
         if !(d.is_finite() && d > 0.0) {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "delta must be finite and > 0 (got {d})"
             )));
         }
@@ -2268,11 +2265,13 @@ pub(crate) fn run_frequencies(
     // Hessian needs no new machinery -- only a way to ask for one. Without
     // this, CONFIRMING an embedded saddle (exactly one imaginary frequency)
     // had to be done in vacuum, against a Hessian from a different surface.
-    let mut scf_cfg = RhfConfig {
+    let mut scf_cfg = ferric_scf::options::ScfOptions {
         xc: xc.map(|s| s.to_string()),
         external_potential: build_external_potential(point_charges, external_field),
         ..Default::default()
-    };
+    }
+    .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
+    .py()?;
     // Unset keeps the RhfConfig defaults (200, 1e-3, 1e-6), as before.
     scf_cfg.max_iter = max_iter.unwrap_or(scf_cfg.max_iter);
     scf_cfg.energy_conv = energy_conv.unwrap_or(scf_cfg.energy_conv);
@@ -2288,8 +2287,7 @@ pub(crate) fn run_frequencies(
     refuse_relativistic_kwarg(scf_relativistic, "Hessian or gradient (run_frequencies)")?;
     let mut fcfg = FrequencyConfig {
         reference: refr,
-        hessian: HessianMethod::parse_config_str(hessian)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?,
+        hessian: HessianMethod::parse_config_str(hessian).map_err(crate::errors::input_err)?,
         ..Default::default()
     };
     if let Some(d) = delta {
@@ -2304,8 +2302,8 @@ pub(crate) fn run_frequencies(
         FrequencyReference::Uhf => ferric_scf::Spin::Unrestricted,
         FrequencyReference::Rohf => ferric_scf::Spin::RestrictedOpen,
     };
-    let mut m_ecp = m.clone();
-    m_ecp.apply_ecp(&basis::bundled(basis_name).map_err(make_err)?);
+    let m_ecp =
+        EcpMolecule::new(m.clone(), &basis::bundled(basis_name).map_err(make_err)?).into_mol();
     let (kind, reference) = task_reference_certificate(&m_ecp, basis_name, &scf_cfg, spin);
     let certificate_data = match reference {
         Ok(reference) => {
@@ -2389,8 +2387,7 @@ fn run_frequencies_pdep_rpa(
     };
     let obs = basis::bundled(basis_name).map_err(make_err)?;
     let aux = basis::bundled(aux_name).map_err(make_err)?;
-    let mut m = mol.inner.clone();
-    m.apply_ecp(&obs);
+    let m = EcpMolecule::new(mol.inner.clone(), &obs).into_mol();
     let delta_used = fcfg.delta;
     let r = py
         .allow_threads(|| {
@@ -2411,11 +2408,7 @@ fn run_frequencies_pdep_rpa(
             )
         })
         .map_err(make_err)?;
-    let ref_cfg = RhfConfig {
-        density_conv: 1e-9,
-        ..Default::default()
-    }
-    .for_geometry_task();
+    let ref_cfg = RhfConfig::gradient_reference(None).for_geometry_task();
     let (kind, reference) =
         task_reference_certificate(&m, basis_name, &ref_cfg, ferric_scf::Spin::Restricted);
     let _ = kind;
@@ -2548,8 +2541,7 @@ fn run_frequencies_att_rimp2(
     };
     let obs = basis::bundled(basis_name).map_err(make_err)?;
     let aux = basis::bundled(aux_name).map_err(make_err)?;
-    let mut m = mol.inner.clone();
-    m.apply_ecp(&obs);
+    let m = EcpMolecule::new(mol.inner.clone(), &obs).into_mol();
     let delta_used = fcfg.delta;
     let r = py
         .allow_threads(|| {
@@ -2568,11 +2560,7 @@ fn run_frequencies_att_rimp2(
             )
         })
         .map_err(make_err)?;
-    let mut ref_cfg = RhfConfig {
-        density_conv: 1e-9,
-        ..Default::default()
-    }
-    .for_geometry_task();
+    let mut ref_cfg = RhfConfig::gradient_reference(None).for_geometry_task();
     scf_jk.apply(&mut ref_cfg);
     let (_, reference) = task_reference_certificate(&m, basis_name, &ref_cfg, spin);
     let certificate_data = match reference {
@@ -2683,8 +2671,7 @@ fn run_frequencies_mp2_family(
     fcfg.scf_warm_start = scf_warm_start.unwrap_or(false);
     let obs = basis::bundled(basis_name).map_err(make_err)?;
     let aux = basis::bundled(aux_name).map_err(make_err)?;
-    let mut m = mol.inner.clone();
-    m.apply_ecp(&obs);
+    let m = EcpMolecule::new(mol.inner.clone(), &obs).into_mol();
     let budget = budget_bytes_from_gb(k.memory_budget_gb);
     let frozen_core = k.frozen_core.unwrap_or(0);
 
@@ -2696,11 +2683,7 @@ fn run_frequencies_mp2_family(
         (None, cfg.for_geometry_task(), label, Some(oo))
     } else {
         let jk = mp2_gradient_scf_jk(k, basis_name, kind)?;
-        let mut ref_cfg = RhfConfig {
-            density_conv: 1e-9,
-            ..Default::default()
-        }
-        .for_geometry_task();
+        let mut ref_cfg = RhfConfig::gradient_reference(None).for_geometry_task();
         jk.apply(&mut ref_cfg);
         let label = ferric_mp2::optimize::rimp2_gradient_label(&jk);
         (Some(jk), ref_cfg, label, None)
@@ -2846,7 +2829,7 @@ fn frequency_result_to_py(
         certificate_data,
         molecule,
         ir_source,
-        ir_cache: None,
+        ir_cache: crate::compute_once::ComputeOnce::new(),
     }
 }
 
@@ -2861,7 +2844,7 @@ pub(crate) fn xtb_config(
 ) -> PyResult<ferric_xtb::XtbConfig> {
     let mut cfg = ferric_xtb::XtbConfig {
         method: ferric_xtb::XtbMethod::parse_config_str(method)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?,
+            .map_err(crate::errors::input_err)?,
         ..Default::default()
     };
     if let Some(a) = accuracy {
@@ -2878,7 +2861,7 @@ pub(crate) fn xtb_config(
 
 #[cfg(not(feature = "xtb"))]
 pub(crate) fn xtb_unavailable() -> PyErr {
-    pyo3::exceptions::PyRuntimeError::new_err(
+    crate::make_err(
         "this ferric build was compiled without the `xtb` feature (libxtb); \
          rebuild with `cargo build --release -p ferric-python --features xtb`",
     )
@@ -2992,7 +2975,7 @@ pub(crate) fn run_xtb_frequencies(
         let cfg = xtb_config(method, accuracy, scc_max_iter, electronic_temp)?;
         let delta = delta.unwrap_or(ferric_xtb::DEFAULT_HESSIAN_DELTA);
         if !(delta.is_finite() && delta > 0.0) {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "delta must be finite and > 0 (got {delta})"
             )));
         }
@@ -3030,7 +3013,7 @@ pub(crate) fn run_xtb_frequencies(
                             in ferric"
                     .to_string(),
             ),
-            ir_cache: None,
+            ir_cache: crate::compute_once::ComputeOnce::new(),
         })
     }
     #[cfg(not(feature = "xtb"))]
@@ -3051,7 +3034,7 @@ pub(crate) fn resolve_frequency_dispersion(
         return Ok(None);
     };
     let xc_name = xc.ok_or_else(|| {
-        pyo3::exceptions::PyValueError::new_err(
+        crate::errors::input_err(
             "dispersion= requires xc=: D3(BJ) and MBD@rsSCS parameters are fitted per \
              functional, so there is no dispersion correction for Hartree-Fock",
         )
@@ -3067,7 +3050,7 @@ pub(crate) fn resolve_frequency_dispersion(
             FrequencyReference::Rohf => ferric_scf::zvector_ks::unsupported_reason_roks(scf_cfg),
         };
         if let Some(why) = unsupported {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "dispersion=\"mbd\": the exact MBD@rsSCS gradient is not available: {why}"
             )));
         }

@@ -75,6 +75,7 @@ use ferric_scf::scf_jk::{ScfJk, ScfJkMode};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::warm_start::ScfWarmStart;
 use ferric_scf::ScfResult;
+use ferric_testkit::compare::max_abs;
 use ndarray::Array2;
 use std::path::Path;
 
@@ -127,7 +128,6 @@ fn rijk() -> ScfJk {
     ScfJk {
         mode: ScfJkMode::RiJk,
         aux: Some("def2-universal-jkfit".to_string()),
-        k_builder: None,
     }
 }
 
@@ -145,13 +145,11 @@ fn point(mol: &Molecule, obs: &BasisSet, aux: &BasisSet, jk: Option<&ScfJk>) -> 
     let prep = PreparedBasis::new(mol, obs).unwrap();
     let dfbs = PreparedBasis::new(mol, aux).unwrap();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let mut cfg = RhfConfig {
-        density_conv: 1e-13,
-        energy_conv: 1e-14,
-        max_iter: 300,
-        ..Default::default()
-    }
-    .for_geometry_task();
+    let mut cfg = RhfConfig::default()
+        .with_density_conv(1e-13)
+        .with_energy_conv(1e-14)
+        .with_max_iter(300)
+        .for_geometry_task();
     if let Some(jk) = jk {
         jk.apply(&mut cfg);
     }
@@ -179,10 +177,6 @@ fn displaced(mol: &Molecule, atom: usize, coord: usize, h: f64) -> Molecule {
         _ => m.atoms[atom].zpos += h,
     }
     m
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0f64, |m, v| m.max(v.abs()))
 }
 
 struct Case {

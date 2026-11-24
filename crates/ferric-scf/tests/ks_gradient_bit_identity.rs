@@ -82,19 +82,20 @@ fn cosx() -> CosxConfig {
 /// `exact` turns density fitting off (four-centre J and K).
 fn cfg(xc: &str, exact: bool, cosx_cfg: Option<CosxConfig>) -> RhfConfig {
     let off = exact.then(String::new);
-    RhfConfig {
-        xc: Some(xc.into()),
-        k_builder: cosx_cfg.as_ref().map(|_| "cosx".to_string()),
-        cosx: cosx_cfg.unwrap_or_default(),
-        df_j_aux: off.clone(),
-        df_k_aux: off,
-        energy_conv: 1e-8,
-        density_conv: 1e-6,
-        max_iter: 400,
-        level_shift: 0.2,
-        mom_after_iter: 5,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_xc(xc)
+        .with_cosx(cosx_cfg.clone().unwrap_or_default())
+        .with_energy_conv(1e-8)
+        .with_density_conv(1e-6)
+        .with_max_iter(400)
+        .with_level_shift(0.2)
+        .with_mom_after_iter(5);
+    c.k_builder = cosx_cfg
+        .as_ref()
+        .map(|_| ferric_scf::options::KBuilderKind::Cosx);
+    c.df_j_aux = off.clone();
+    c.df_k_aux = off;
+    c
 }
 
 #[derive(Clone, Copy)]
@@ -158,6 +159,7 @@ fn sites() -> PolarizableSites {
         ],
         thole_a: Some(2.1304),
         exclusions: vec![],
+        excluded_charges: vec![],
         dipole_zeta: 1e4,
         max_sites_dense: 4000,
     }
@@ -651,15 +653,15 @@ const EXPECTED: &[(&str, &[u64])] = &[
     (
         "rks_wb97xv_coarse",
         &[
-            0x3f5ae148145946d9,
-            0x3f88e8b19fa448d9,
-            0xbfbfb3d2e3e7201c,
-            0xbf663c237133cbd9,
-            0xbfaf0f6aec9ad9a1,
-            0x3fb187aa75765aeb,
-            0x3f519c5968b08121,
-            0x3fa8d572d6c6aad2,
-            0x3fac57d39027abf1,
+            0x3f5ad22b403155da,
+            0x3f88ead457855d59,
+            0xbfbfb540bd1d7b15,
+            0xbf6632cfcf8d537e,
+            0xbfaf0e7a6ff9dcf3,
+            0x3fb188709d623d89,
+            0x3f5193745ee96127,
+            0x3fa8d3c55a188402,
+            0x3fac59a03f766db9,
         ],
     ),
     (
@@ -786,12 +788,12 @@ const EXPECTED: &[(&str, &[u64])] = &[
     (
         "uks_wb97xv_coarse",
         &[
-            0x3f5769d2aba6f67f,
-            0xbf47373084a0d0f5,
-            0x3fb204d7b20870f3,
-            0xbf5765d8b9a237d3,
-            0x3f47323bff5f316b,
-            0xbfb204a7cc9cff6e,
+            0x3f576c7418962dce,
+            0xbf473aa134e50fc5,
+            0x3fb204e3206cdb40,
+            0xbf576c7418959a7f,
+            0x3f473aa134e62734,
+            0xbfb204e3206cdaad,
         ],
     ),
     (

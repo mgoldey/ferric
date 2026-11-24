@@ -108,6 +108,7 @@ use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_scf::gradient::rhf_gradient_exact_jk;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -172,12 +173,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
 }
 
 fn grad(v: &Value, ptr: &str, natm: usize, ctx: &str) -> Array2<f64> {
@@ -248,7 +243,7 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str) {
         &ctx,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &ctx),
+        num_ctx(&r, "/nuclear_repulsion", &ctx),
         TOL_ENUC,
     );
 
@@ -271,11 +266,9 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str) {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     // Exact J/K (no df_j_aux/df_k_aux), as in `total_rimp2_gradient`. Tight ΔP:
     // the MP2 part is not variational in the orbitals.
-    let cfg = RhfConfig {
-        density_conv: 1e-9,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_density_conv(1e-9)
+        .with_max_iter(200);
     assert!(cfg.df_j_aux.is_none() && cfg.df_k_aux.is_none());
     let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg)
         .unwrap_or_else(|e| panic!("{ctx}: solve_rhf failed: {e:?}"));
@@ -284,14 +277,14 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str) {
         &ctx,
         "E_RHF vs PySCF",
         rhf.energy,
-        num(&r, "/pyscf/e_rhf", &ctx),
+        num_ctx(&r, "/pyscf/e_rhf", &ctx),
         TOL_E_RHF,
     );
     check_close(
         &ctx,
         "E_RHF vs ORCA",
         rhf.energy,
-        num(&r, "/orca/e_rhf", &ctx),
+        num_ctx(&r, "/orca/e_rhf", &ctx),
         TOL_E_RHF,
     );
     let g_rhf = rhf_gradient_exact_jk(&mol, &obs, op, &bounds, &rhf, None).unwrap();
@@ -306,21 +299,21 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str) {
         &ctx,
         "E_corr vs PySCF",
         mp2.mp2_corr,
-        num(&r, "/pyscf/e_corr", &ctx),
+        num_ctx(&r, "/pyscf/e_corr", &ctx),
         TOL_E_CORR,
     );
     check_close(
         &ctx,
         "E_corr vs ORCA",
         mp2.mp2_corr,
-        num(&r, "/orca/e_corr", &ctx),
+        num_ctx(&r, "/orca/e_corr", &ctx),
         TOL_E_CORR,
     );
     check_close(
         &ctx,
         "E_total vs ORCA",
         mp2.total_energy,
-        num(&r, "/orca/e_total", &ctx),
+        num_ctx(&r, "/orca/e_total", &ctx),
         TOL_E_RHF + TOL_E_CORR,
     );
 
@@ -347,7 +340,7 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str) {
         &ctx,
         "E_corr(fc) vs ORCA",
         mp2_fc.mp2_corr,
-        num(&r, "/orca_frozen_core/e_corr", &ctx),
+        num_ctx(&r, "/orca_frozen_core/e_corr", &ctx),
         TOL_E_CORR,
     );
     let g_fc_ferric =

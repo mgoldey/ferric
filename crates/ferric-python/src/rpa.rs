@@ -7,7 +7,7 @@ use crate::pdep_properties::{
 
 // ── RS-MP2-RPA (SR-MP2 + LR-dRPA, Δ-form B or coupled-rings T) ──
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "RsMp2RpaResult")]
 pub(crate) struct PyRsMp2RpaResult {
     #[pyo3(get)]
@@ -54,12 +54,14 @@ pub(crate) struct PyRsMp2RpaResult {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
+stored_method_result!(PyRsMp2RpaResult, total_energy: total_energy, certificate: certificate_data);
+
 #[pymethods]
 impl PyRsMp2RpaResult {
     #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::method_result::certificate_getter(py, self)
     }
     fn __repr__(&self) -> String {
         format!(
@@ -92,20 +94,12 @@ impl PyRsMp2RpaResult {
 /// (full rank, dense, Coulomb: `refuse_pdep_rpa_gradient` has screened the
 /// settings), the function behind the CLI's pdep-rpa `task = "optimize"`.
 fn pdep_rpa_total_gradient(
-    mol: &ferric_core::mol::Molecule,
-    prep: &PreparedBasis,
-    dfbs: &PreparedBasis,
-    op: Operator,
-    bounds: &SchwarzBounds,
+    dfbs: &PreparedAux<'_>,
     rhf: &ferric_scf::result::ScfResult,
     cfg: &ferric_rpa::PdepRpaConfig,
 ) -> Result<Array2<f64>, ferric_core::FerricError> {
     ferric_rpa::gradient_analytic::rpa_analytic_gradient_on(
-        mol,
-        prep,
         dfbs,
-        op,
-        bounds,
         rhf,
         cfg,
         ferric_rpa::gradient_analytic::RingOrder::Full,
@@ -138,7 +132,7 @@ struct GradientScope<'a> {
 /// see (it takes none of the external potential, PCM or COSX terms).
 fn refuse_pdep_rpa_gradient(s: &GradientScope<'_>) -> PyResult<()> {
     let refuse = |what: String| {
-        Err(pyo3::exceptions::PyValueError::new_err(format!(
+        Err(crate::errors::input_err(format!(
             "run_pdep_rpa: with_gradient=True {what}"
         )))
     };
@@ -163,7 +157,10 @@ fn refuse_pdep_rpa_gradient(s: &GradientScope<'_>) -> PyResult<()> {
     ) {
         return refuse("differentiates dense chi0 only: omit chi0_sparsity".into());
     }
-    if s.k_builder == Some(ferric_scf::options::COSX_K_BUILDER) {
+    // The spelling as passed (the SCF config parses it after this check).
+    if s.k_builder
+        .is_some_and(ferric_scf::options::KBuilderKind::spells_cosx)
+    {
         return refuse("has no COSX exchange response: use an exact k_builder or omit it".into());
     }
     if s.df_aux {
@@ -193,6 +190,10 @@ fn refuse_pdep_rpa_gradient(s: &GradientScope<'_>) -> PyResult<()> {
 
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` (`run_uhf` for an open-shell molecule) solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, omega=None, frozen_core=None, k_builder=None, formulation=None, attenuator=None, r0=None, terf_omega=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
@@ -228,8 +229,10 @@ pub(crate) fn run_rs_mp2_rpa(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let (prep, dfbs, rhf) =
-        converged_reference_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, &cfg_rhf)?;
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
+    let rhf = sys.solve_reference(&cfg_rhf).map_err(make_err)?;
+    let mol = sys.mol();
     let (forms, forms_seq) = rs_scan_axis::<String>(formulation, "formulation")?;
     let forms = forms
         .unwrap_or_else(|| vec!["delta-lr".to_string()])
@@ -237,7 +240,7 @@ pub(crate) fn run_rs_mp2_rpa(
         .map(|f| match f.as_str() {
             "delta-lr" => Ok(ferric_rpa::RsMp2RpaFormulation::DeltaLr),
             "coupled-rings" => Ok(ferric_rpa::RsMp2RpaFormulation::CoupledRings),
-            other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            other => Err(crate::errors::input_err(format!(
                 "unknown formulation \"{other}\"; expected \"delta-lr\" or \"coupled-rings\""
             ))),
         })
@@ -247,7 +250,7 @@ pub(crate) fn run_rs_mp2_rpa(
         "erf" => ferric_rpa::rs_mp2_rpa::Attenuator::Erf,
         "terf" => ferric_rpa::rs_mp2_rpa::Attenuator::Terf,
         other => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "unknown attenuator \"{other}\"; expected \"erf\" or \"terf\""
             )))
         }
@@ -258,12 +261,12 @@ pub(crate) fn run_rs_mp2_rpa(
     let (omegas, omega_seq) = rs_scan_axis::<f64>(omega, "omega")?;
     let (terf_omegas, terf_seq) = rs_scan_axis::<f64>(terf_omega, "terf_omega")?;
     if omega_seq && terf {
-        return Err(pyo3::exceptions::PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "omega is ignored with attenuator=\"terf\"; scan the seam sharpness with a list-valued terf_omega",
         ));
     }
     if terf_seq && !terf {
-        return Err(pyo3::exceptions::PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "terf_omega needs attenuator=\"terf\"; scan an erf split with a list-valued omega",
         ));
     }
@@ -273,7 +276,7 @@ pub(crate) fn run_rs_mp2_rpa(
             .as_ref()
             .and_then(|v| v.iter().find(|w| !(w.is_finite() && **w > 0.0)))
         {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "{name} must be finite and > 0 (got {w})"
             )));
         }
@@ -283,7 +286,7 @@ pub(crate) fn run_rs_mp2_rpa(
         .enumerate()
         .any(|(i, f)| forms[..i].contains(f))
     {
-        return Err(pyo3::exceptions::PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "formulation lists the same formulation twice",
         ));
     }
@@ -308,7 +311,7 @@ pub(crate) fn run_rs_mp2_rpa(
     if is_scan {
         let axis: Vec<f64> = if terf {
             terf_omegas.clone().ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err(
+                crate::errors::input_err(
                     "scanning formulations with attenuator=\"terf\" needs terf_omega",
                 )
             })?
@@ -316,9 +319,8 @@ pub(crate) fn run_rs_mp2_rpa(
             omegas.clone().unwrap_or_else(|| vec![0.420])
         };
         let bohr: Vec<f64> = axis.iter().map(|w| w * to_bohr).collect();
-        let rs =
-            ferric_rpa::rs_mp2_lr_rpa_scan(&mol.inner, &prep, &dfbs, &rhf, &cfg, &bohr, &forms)
-                .map_err(make_ferric_err)?;
+        let rs = ferric_rpa::rs_mp2_lr_rpa_scan_on(&dfbs, &rhf, &cfg, &bohr, &forms)
+            .map_err(crate::make_err)?;
         for (k, r) in rs.into_iter().enumerate() {
             let mut c = cfg.clone();
             c.formulation = forms[k % forms.len()];
@@ -330,11 +332,10 @@ pub(crate) fn run_rs_mp2_rpa(
             points.push((c, r));
         }
     } else {
-        let r = ferric_rpa::rs_mp2_lr_rpa(&mol.inner, &prep, &dfbs, &rhf, &cfg)
-            .map_err(make_ferric_err)?;
+        let r = ferric_rpa::rs_mp2_lr_rpa_on(&dfbs, &rhf, &cfg).map_err(crate::make_err)?;
         points.push((cfg.clone(), r));
     }
-    let base_cert = reference_certificate(&mol.inner, &rhf, &cfg_rhf, &basis_set.inner);
+    let base_cert = reference_certificate(mol, &rhf, &cfg_rhf, &basis_set.inner);
     let mut out = Vec::with_capacity(points.len());
     for (c, r) in points {
         let certificate_data =
@@ -353,7 +354,7 @@ pub(crate) fn run_rs_mp2_rpa(
             e_delta_drpa_full: r.e_delta_drpa_full,
             e_delta_drpa_sr: r.e_delta_drpa_sr,
             scf_jk: jk.mode.as_str().to_string(),
-            jk_label: jk.label(),
+            jk_label: jk.label(cfg_rhf.k_builder),
             jk_auxbasis: jk.aux.clone(),
             certificate_data,
         });
@@ -385,12 +386,12 @@ fn rs_scan_axis<'py, T: FromPyObject<'py>>(
         return Ok((Some(vec![x]), false));
     }
     let v: Vec<T> = o.extract().map_err(|_| {
-        pyo3::exceptions::PyValueError::new_err(format!(
+        crate::errors::input_err(format!(
             "{name} must be a scalar or a sequence of the same type"
         ))
     })?;
     if v.is_empty() {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "{name} must not be an empty list"
         )));
     }
@@ -399,7 +400,7 @@ fn rs_scan_axis<'py, T: FromPyObject<'py>>(
 
 // ── PDEP-RPA ──
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "PdepRpaResult")]
 pub(crate) struct PyPdepRpaResult {
     #[pyo3(get)]
@@ -450,8 +451,15 @@ macro_rules! prop_array {
     };
 }
 
+stored_method_result!(PyPdepRpaResult, total_energy: total_energy, certificate: certificate_data);
+
 #[pymethods]
 impl PyPdepRpaResult {
+    #[doc = method_certificate_doc!()]
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::method_result::certificate_getter(py, self)
+    }
     /// Analytic nuclear gradient of `total_energy` (RHF + RI-dRPA) as an
     /// (natoms, 3) array in Hartree/Bohr, rows in the Molecule's atom order;
     /// `None` unless the result came from `run_pdep_rpa(..., with_gradient=True)`.
@@ -459,11 +467,6 @@ impl PyPdepRpaResult {
         self.gradient_data
             .as_ref()
             .map(|g| PyArray2::from_array(py, g))
-    }
-    #[doc = method_certificate_doc!()]
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
     }
     /// Static dielectric eigenvalues λ_α(0), length M (sorted descending).
     /// Plot `λ - 1` vs α on a log scale for a scree plot of the PDEP basis.
@@ -790,6 +793,10 @@ impl PyPdepRpaResult {
 
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, auxbasis,
@@ -906,22 +913,22 @@ pub(crate) fn run_pdep_rpa(
         })?;
     }
 
-    use ferric_rpa::{run_pdep_rpa as run_pdep_rpa_inner, PdepRpaConfig};
+    use ferric_rpa::{run_pdep_rpa_on, PdepRpaConfig};
 
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
+    let (mol, op) = (sys.mol(), sys.op());
     // The reference SCF must see the ENVIRONMENT, or the dielectric response
     // computed from it is that of an isolated molecule. Screening a
     // ligand-pocket interaction needs the response of the ligand AS IT SITS
     // IN THE POCKET, so the point charges have to reach this SCF.
+    // Parsed before the reference config, which parses `k_builder` last.
+    let pcm = build_pcm_config(solvent, pcm_lebedev_order)?;
     let mut scf_config = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
+    )?;
     if with_gradient && scf_density_conv.is_none() {
         // The analytic gradient's reference setting (`rpa_analytic_gradient`,
         // the CLI optimize path): an energy-grade density threshold leaves
@@ -933,13 +940,16 @@ pub(crate) fn run_pdep_rpa(
     scf_config.df_j_aux = df_j_aux.map(ferric_scf::rhf::normalize_df_aux);
     scf_config.df_k_aux = df_k_aux.map(ferric_scf::rhf::normalize_df_aux);
     scf_config.external_potential = build_external_potential(point_charges, external_field);
-    scf_config.pcm = build_pcm_config(solvent, pcm_lebedev_order)?;
-    let rhf = converged_rhf_with_bounds(&mol.inner, &prep, &bounds, &scf_config)?;
+    scf_config.pcm = pcm;
+    let rhf = sys
+        .solve_rhf(&scf_config)
+        .and_then(ScfResult::into_converged)
+        .map_err(make_err)?;
 
     // Canonical parser (shared with the CLI): unknown schemes error rather than
     // silently running Gauss-Legendre.
     let scheme = QuadratureScheme::parse_config_str(quadrature)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("quadrature: {e}")))?;
+        .map_err(|e| crate::errors::input_err(format!("quadrature: {e}")))?;
     if u0.is_some() && !scheme.honours_u0() {
         eprintln!(
             "warning: u0 is ignored by quadrature='minimax' (it derives u0 from \
@@ -970,7 +980,7 @@ pub(crate) fn run_pdep_rpa(
         need_eigenvalues_freq: true,
         verbose: false,
     };
-    let r = run_pdep_rpa_inner(&mol.inner, &prep, &dfbs, op, &rhf, &cfg).map_err(make_err)?;
+    let r = run_pdep_rpa_on(&dfbs, &rhf, &cfg).map_err(make_err)?;
     if !r.eigensolver_converged {
         eprintln!(
             "warning: PDEP-RPA eigensolver did not fully converge (best-effort Ritz pairs; \
@@ -979,23 +989,21 @@ pub(crate) fn run_pdep_rpa(
     }
     let gradient_data = if with_gradient {
         Some(
-            py.allow_threads(|| {
-                pdep_rpa_total_gradient(&mol.inner, &prep, &dfbs, op, &bounds, &rhf, &cfg)
-            })
-            .map_err(make_err)?,
+            py.allow_threads(|| pdep_rpa_total_gradient(&dfbs, &rhf, &cfg))
+                .map_err(make_err)?,
         )
     } else {
         None
     };
     let certificate_data = ferric_mp2::certificate::with_anchor_envelope(
         ferric_rpa::certificate::pdep_rpa_certificate(
-            &reference_certificate(&mol.inner, &rhf, &scf_config, &basis_set.inner),
+            &reference_certificate(mol, &rhf, &scf_config, &basis_set.inner),
             &auxbasis.inner.name,
             &cfg,
             &r,
         ),
         "PDEP-RPA",
-        &mol.inner,
+        mol,
         &basis_set.inner,
         Some(&auxbasis.inner),
     );
@@ -1003,11 +1011,10 @@ pub(crate) fn run_pdep_rpa(
     let out = run_property_bundle(
         py,
         &BundleJob {
-            ctx: &ctx,
-            mol: &mol.inner,
+            ctx: sys.ctx(),
+            mol,
             bs: &basis_set.inner,
             aux_bs: &auxbasis.inner,
-            prep: &prep,
             dfbs: &dfbs,
             rhf: &rhf,
             op,

@@ -19,11 +19,9 @@ fn rhf_energy(xyz: &str, basis_name: &str) -> f64 {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let config = RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        ..Default::default()
-    };
+    let config = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10);
     let ctx = ParallelContext::default();
     let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
     assert!(result.converged, "RHF did not converge for: {xyz}");
@@ -86,10 +84,7 @@ fn test_gradient_errors_on_ghost() {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let config = RhfConfig {
-        energy_conv: 1e-11,
-        ..Default::default()
-    };
+    let config = RhfConfig::default().with_energy_conv(1e-11);
     let ctx = ParallelContext::default();
     let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
 

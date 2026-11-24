@@ -25,12 +25,12 @@
 //! `c_sr (pq|rs) + (c_lr − c_sr) (pq|rs)_ω`, the second term over a second set
 //! of RI tensors of the erf(ωr)/r operator in its own metric. Triplets drop
 //! the Coulomb term and take the `f_αα − f_αβ` kernel. Derivations:
-//! `book/src/20-tddft/04-rsh.md#rsh-split` (range separation) and §9 (triplets).
+//! `book/src/19-tddft/04-rsh.md#rsh-split` (range separation) and §9 (triplets).
 //!
 //! Scope: this module assembles the closed-shell (restricted) problem.
 //! [`run_tddft`] sends an unrestricted (UHF / UKS) reference to
 //! `crate::unrestricted`, which builds the two-spin A/B space; only ROHF /
-//! ROKS references are refused (`book/src/20-tddft/06-unrestricted.md#unrestricted-spin-problem`).
+//! ROKS references are refused (`book/src/19-tddft/06-unrestricted.md#unrestricted-spin-problem`).
 //!
 //! # Solvers
 //!
@@ -65,7 +65,7 @@ use ferric_integrals::operator::Operator;
 use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_integrals::threeindex;
 use ferric_mp2::rimp2::{eri3_budget_bytes, metric_inverse_sqrt, stream_dressed_mo_band};
-use ferric_scf::ScfResult;
+use ferric_scf::{PreparedAux, ScfResult};
 use ndarray::{Array1, Array2};
 use ndarray_linalg::{Eigh, UPLO};
 
@@ -243,7 +243,7 @@ pub struct TddftResult {
     /// The reference the roots were computed on: restricted or unrestricted.
     pub reference: ferric_scf::Spin,
     /// `<S²>` of each root, same ordering as the energies
-    /// (`book/src/20-tddft/06-unrestricted.md#unrestricted-each-root`):
+    /// (`book/src/19-tddft/06-unrestricted.md#unrestricted-each-root`):
     /// exactly 0 (singlet) or 2 (triplet) on a restricted reference; on an
     /// unrestricted one, `<S²>` of the excited determinant expansion with
     /// coefficients `X` (TDA) or `X = ((X+Y) + (X−Y))/2` renormalized to
@@ -354,7 +354,7 @@ pub(crate) fn build_b_tensors(
     Ok((b_ov, b_oo, b_vv))
 }
 
-/// The erf(ωr)/r tensors of a range-separated hybrid (`book/src/20-tddft/04-rsh.md#rsh-split`):
+/// The erf(ωr)/r tensors of a range-separated hybrid (`book/src/19-tddft/04-rsh.md#rsh-split`):
 /// `B^ω = M_ω (Q|erf|pq)` with `M_ωᵀ M_ω` the pseudo-inverse of the erf
 /// metric `(P|erf|Q)` (eigendecomposition, near-null modes dropped:
 /// [`metric_inverse_sqrt`] for the erf operator), over the same auxiliary
@@ -548,8 +548,8 @@ fn subtract_exchange_b(
 /// A_{ia,jb} = δ_{ij}δ_{ab}(ε_a − ε_i) + c_J (ia|jb) − c_sr (ij|ab) − Δc (ij|ab)_ω
 ///
 /// with `c_J` = 2 (singlet) or 0 (triplet) and the long-range term only for a
-/// range-separated hybrid (`book/src/20-tddft/04-rsh.md#rsh-split`,
-/// `book/src/20-tddft/05-triplets.md#triplets-spin-blocks`). The `+ K_{ia,jb}` f_xc block is
+/// range-separated hybrid (`book/src/19-tddft/04-rsh.md#rsh-split`,
+/// `book/src/19-tddft/05-triplets.md#triplets-spin-blocks`). The `+ K_{ia,jb}` f_xc block is
 /// added by the caller.
 pub(crate) fn build_a_matrix(
     eps: &[f64],
@@ -632,6 +632,7 @@ pub(crate) fn build_b_matrix(
 /// both cross-checked against PySCF's `oscillator_strength`. This helper
 /// previously omitted it (so TDA `f` was half PySCF's) and fed the Casida
 /// branch an un-normalized `(A−B)^{1/2} Z`; both are fixed here.
+#[allow(clippy::too_many_arguments)]
 fn oscillator_strengths(
     obs: &PreparedBasis,
     c_occ: &Array2<f64>,
@@ -671,7 +672,7 @@ fn oscillator_strengths(
     Ok((osc, tdips))
 }
 
-/// Exact-exchange coefficients of a response run (`book/src/20-tddft/04-rsh.md#rsh-split`):
+/// Exact-exchange coefficients of a response run (`book/src/19-tddft/04-rsh.md#rsh-split`):
 /// `c_sr (pq|rs) + (c_lr − c_sr) (pq|rs)_ω`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ExchangeMix {
@@ -765,7 +766,7 @@ fn restricted_s2(spin: ResponseSpin) -> f64 {
 }
 
 /// The refusal of an ROHF / ROKS reference
-/// (`book/src/20-tddft/06-unrestricted.md#unrestricted-spin-problem`).
+/// (`book/src/19-tddft/06-unrestricted.md#unrestricted-spin-problem`).
 fn roks_refusal() -> FerricError {
     FerricError::General(
         "run_tddft: ROHF/ROKS references are refused. Their orbitals diagonalize one \
@@ -927,7 +928,7 @@ pub(crate) fn solve_casida(
 /// root list. The dense path's positive-root cut, mirrored.
 pub(crate) const NEGATIVE_OMEGA_SQ: f64 = crate::davidson::POSITIVE_ROOT;
 
-/// The error for a Casida `Ω² < 0` (`book/src/20-tddft/05-triplets.md#triplets-spin-blocks`).
+/// The error for a Casida `Ω² < 0` (`book/src/19-tddft/05-triplets.md#triplets-spin-blocks`).
 pub(crate) fn negative_omega_sq_error(w2: f64) -> FerricError {
     FerricError::General(format!(
         "TDDFT: Casida has an imaginary root (Omega^2 = {w2:.6e} Ha^2): A+B is not \
@@ -1019,7 +1020,7 @@ impl RiTensors {
 }
 
 /// The Coulomb coefficient `c_J` of `spin`
-/// (`book/src/20-tddft/05-triplets.md#triplets-spin-blocks`).
+/// (`book/src/19-tddft/05-triplets.md#triplets-spin-blocks`).
 pub(crate) fn coulomb_factor(spin: ResponseSpin) -> f64 {
     match spin {
         ResponseSpin::Singlet => 2.0,
@@ -1168,6 +1169,7 @@ fn response_operator<'a>(
 }
 
 /// The matrix-free path.
+#[allow(clippy::too_many_arguments)]
 fn solve_davidson(
     config: &TddftConfig,
     scf: &ScfResult,
@@ -1262,7 +1264,7 @@ fn plan_response_memory(
 }
 
 /// The Coulomb-metric RI tensors, plus the erf-metric set for a
-/// range-separated hybrid (`book/src/20-tddft/04-rsh.md#rsh-split`).
+/// range-separated hybrid (`book/src/19-tddft/04-rsh.md#rsh-split`).
 pub(crate) fn build_response_tensors(
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
@@ -1294,7 +1296,7 @@ pub(crate) fn build_response_tensors(
 /// Oscillator strengths and transition dipoles of the roots. Triplets are
 /// spin-forbidden: the spin-free dipole couples the closed-shell reference
 /// to no triplet, so both are exactly zero
-/// (`book/src/20-tddft/05-triplets.md#triplets-spin-blocks`).
+/// (`book/src/19-tddft/05-triplets.md#triplets-spin-blocks`).
 fn transition_properties(
     obs: &PreparedBasis,
     space: &OvSpace,
@@ -1422,6 +1424,18 @@ pub fn run_tddft(
     })
 }
 
+/// [`run_tddft`] on the system `aux` was prepared on; see [`PreparedAux`] for
+/// what such an entry point reads from the system.
+pub fn run_tddft_on(
+    aux: &PreparedAux<'_>,
+    scf: &ScfResult,
+    config: &TddftConfig,
+) -> Result<TddftResult, FerricError> {
+    aux.check_reference(scf)?;
+    let sys = aux.system();
+    run_tddft(sys.mol(), sys.basis(), aux.basis(), scf, config)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1515,12 +1529,10 @@ mod tests {
             PreparedBasis::new(&mol, &ferric_core::basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let cfg = RhfConfig {
-            xc: xc.map(str::to_string),
-            density_conv: 1e-9,
-            max_iter: 200,
-            ..Default::default()
-        };
+        let mut cfg = RhfConfig::default()
+            .with_density_conv(1e-9)
+            .with_max_iter(200);
+        cfg.xc = xc.map(str::to_string);
         let scf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
         assert!(scf.converged);
         Case {
@@ -1722,7 +1734,7 @@ mod tests {
         (Some("HYB_GGA_XC_CAM_B3LYP"), ResponseSpin::Triplet),
     ];
 
-    /// Exactness anchors of the range-separated exchange (`book/src/20-tddft/04-rsh.md#rsh-split`),
+    /// Exactness anchors of the range-separated exchange (`book/src/19-tddft/04-rsh.md#rsh-split`),
     /// water/cc-pVDZ on a B3LYP reference and kernel, singlet and triplet:
     ///
     /// * ω = 0 with `c_lr ≠ c_sr` (0.20, 0.65) assembles A, B and the
@@ -1861,5 +1873,45 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Water in `basis_name` (STO-3G: 7 functions, 6-31G: 13), with its
+    /// converged RHF, for the reference-check tests of the `*_on` entries.
+    fn reference_check_water(
+        basis_name: &str,
+    ) -> (ferric_scf::PreparedSystem, ferric_scf::ScfResult) {
+        let mol = ferric_core::mol::Molecule::parse_xyz(
+            "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let bs = ferric_core::basis::bundled(basis_name).unwrap();
+        let sys = ferric_scf::PreparedSystem::new(mol, &bs).unwrap();
+        let rhf = sys
+            .solve_rhf(&ferric_scf::rhf::RhfConfig::default())
+            .unwrap();
+        (sys, rhf)
+    }
+
+    fn assert_reference_refused<T>(who: &str, r: Result<T, ferric_core::FerricError>) {
+        let msg = r.map(|_| ()).unwrap_err().to_string();
+        assert!(
+            msg.contains("does not belong to this system"),
+            "{who}: {msg}"
+        );
+    }
+
+    #[test]
+    fn the_on_entry_refuses_a_reference_of_another_system() {
+        let (small, _) = reference_check_water("sto-3g");
+        let (_large, rhf_large) = reference_check_water("6-31g");
+        let aux = small
+            .prepare_aux(&ferric_core::basis::bundled("cc-pvdz-ri").unwrap())
+            .unwrap();
+        assert_reference_refused(
+            "run_tddft_on",
+            run_tddft_on(&aux, &rhf_large, &TddftConfig::default()),
+        );
     }
 }

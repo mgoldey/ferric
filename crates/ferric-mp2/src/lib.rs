@@ -72,6 +72,8 @@ pub mod mp3;
 /// MPI-distributed RI-MP2 (aux-band striping across ranks).
 pub mod mpi_rimp2;
 /// Orbital-optimized RI-MP2 with analytic gradients and Cayley rotations.
+pub mod omega_ri;
+pub mod omega_ri_cdd;
 pub mod oo_rimp2;
 /// OO-RI-MP2 analytical nuclear gradient.
 pub mod oo_rimp2_gradient;
@@ -93,6 +95,7 @@ pub mod pair_domains;
 pub mod pair_energy_screen;
 /// Ragged per-pair domain-block storage for local correlation.
 pub mod ragged;
+mod ragged_transport;
 /// Resolution-of-identity MP2 (density-fitted) using 3-center integrals.
 pub mod rimp2;
 #[cfg(feature = "gpu")]

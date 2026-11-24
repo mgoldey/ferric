@@ -50,7 +50,7 @@ and the cross terms are missing from $\sum_r G_r^2$. The band partials must
 be summed before the square. A linear quantity, such as the exchange matrix
 of DF-K, can be reduced after each rank's contraction; this one cannot.
 
-> **Unverified equation @eq:rimp2alg-aux-band-decomposition** · the band decomposition
+> **Verified equation @eq:rimp2alg-aux-band-decomposition** · the band decomposition
 >
 > For a partition of the auxiliary index into bands, the band partials of
 > (@eq:rimp2alg-aux-band-decomposition) sum to the full-width form of $G^{(i)}$ (equation @eq:pair-kernel-1 with all $j$), and (@eq:distributed-rimp2-2) with the complete
@@ -59,10 +59,13 @@ of DF-K, can be reduced after each rank's contraction; this one cannot.
 >
 > | | |
 > |---|---|
-> | Proof | none committed. To add: a claim in `scripts/mp2_variant_identities.py` that splits a random $B$ into bands, checks (@eq:rimp2alg-aux-band-decomposition) and (@eq:distributed-rimp2-2) against claim 1's energy, with the square-before-sum negative control. |
+> | Proof | `scripts/mp2_variant_identities.py`, claim 10: the bands of `aux_band` partition the range, the partials sum to $G^{(i)}$, and the round-robin owner energy with weight 1 over all $j$ equals $E_{\mathrm{OS}}$ and $E_{\mathrm{SS}}$ of the full sum |
+> | Negative control | the band partials squared before the sum must differ |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-mp2/src/mpi_rimp2.rs::run_mpi_ri_mp2`, `ferric-core/src/parallel.rs::aux_band` |
 > | Code tests | `mpi_rimp2_np1_matches_serial_water` in `crates/ferric-mp2/tests/mpi_rimp2_banding.rs`: one rank against `ri_mp2_spin_components`, $E_{\mathrm{corr}}$, $E_{\mathrm{OS}}$ and $E_{\mathrm{SS}}$ each within $10^{-11}$ Ha; `mpi_rimp2_cross_rank_agreement_water` (within $10^{-12}$ Ha across ranks) and its benzene sibling ($10^{-9}$ Ha) under `mpirun` |
 >
-> <!-- unverified: id=rimp2alg.aux-band-decomposition; todo=add band-split claim to scripts/mp2_variant_identities.py -->
+> <!-- verified: id=rimp2alg.aux-band-decomposition; script=scripts/mp2_variant_identities.py; claim=10; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/mpi_rimp2.rs::run_mpi_ri_mp2, ferric-core/src/parallel.rs::aux_band -->
 
 Here is the loop of `run_mpi_ri_mp2_inner` with the source comments replaced
 and the pair loop over $j, a, b$ elided (it is the loop of `pair_energy`
@@ -71,7 +74,7 @@ with `jcol` $= j\,n_v$ and every $j$ from 0):
 ```rust
 for i in 0..nocc {
     let b_i_band = b_band.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]); // B_{P,ia}, P in band
-    let mut g_i = b_i_band.t().dot(&b_band);       // G^(i,r), full width, (11.12)
+    let mut g_i = b_i_band.t().dot(&b_band);       // G^(i,r), full width
     if let Some(world) = &world {
         use mpi::traits::CommunicatorCollectives;
         let mut g_i_global = Array2::<f64>::zeros(g_i.dim());
@@ -82,11 +85,14 @@ for i in 0..nocc {
         );
         g_i = g_i_global;
     }
-    if i % size == rank {                          // owner of i, (11.13)
+    if i % size == rank {                          // owner of i
         // ... for j in 0..nocc, a, b: e_os, e_ss with weight 1 ...
     }
 }
 ```
+
+The GEMM forms the band partial of (@eq:rimp2alg-aux-band-decomposition), the Allreduce sums it over
+ranks, and the owner test is the rule $i \bmod n_r = r$ of (@eq:distributed-rimp2-2).
 
 ## Cost and memory per rank {#distributed-rimp2-cost-memory-per-rank}
 
@@ -123,7 +129,10 @@ $$ \frac{2 n_o^2 n_v^2 N_{\mathrm{aux}}/n_r}{8 n_o^2 n_v^2} = \frac{N_{\mathrm{a
 
 It falls as ranks are added. The Allreduce volume, $n_o^2 n_v^2$ doubles,
 grows as the fourth power of the size, one power below the GEMM, so a
-larger molecule raises the ratio through $N_{\mathrm{aux}}$.
+larger molecule raises the ratio through $N_{\mathrm{aux}}$. For benzene in
+aug-cc-pVTZ ($N_{\mathrm{aux}} = 912$) it is 228 flops per byte on one rank
+and 14 on 16 ranks. Where the reduction starts to dominate depends on the
+network; no timing has been taken.
 
 Each rank runs a scoped rayon pool of `threads_per_rank(local_ranks,
 physical_cores)` threads, $\max(1, \lfloor \text{physical cores} /

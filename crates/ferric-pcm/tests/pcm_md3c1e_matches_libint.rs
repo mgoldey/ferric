@@ -34,6 +34,7 @@ use ferric_pcm::potential::{
     solute_potential_at_tesserae, solute_potential_at_tesserae_libint,
 };
 use ferric_pcm::{build_cavity, CavityConfig, Tessera};
+use ferric_testkit::molecules::water_xyz;
 use ndarray::Array2;
 
 const KERNEL_BAR: f64 = 1e-12;
@@ -47,10 +48,6 @@ impl Lcg {
             .wrapping_add(1442695040888963407);
         ((self.0 >> 11) as f64) / ((1u64 << 53) as f64) - 0.5
     }
-}
-
-fn water() -> Molecule {
-    Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap()
 }
 
 fn symmetric_density(n: usize, seed: u64) -> Array2<f64> {
@@ -85,7 +82,7 @@ fn has_l(prep: &PreparedBasis, l: i32) -> bool {
 }
 
 fn check(basis_name: &str, need_l: &[i32]) {
-    let mol = water();
+    let mol = water_xyz();
     let bs = basis::bundled(basis_name).unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     for &l in need_l {
@@ -187,7 +184,7 @@ fn results_are_bit_identical_across_pool_sizes() {
 /// libint route and return exactly its bits.
 #[test]
 fn refused_basis_falls_back_to_libint() {
-    let mol = water();
+    let mol = water_xyz();
     let mut bs = basis::bundled("sto-3g").unwrap();
     for shells in bs.shells.values_mut() {
         for sh in shells.iter_mut() {

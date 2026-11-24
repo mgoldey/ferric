@@ -127,6 +127,14 @@ For a post-SCF method the `energy` is the SCF reference, not the method's
 total. `extra.energy_is` says which. Per-iteration records for MP2/RPA/CC/GW
 are not implemented yet.
 
+With `[scf] read_reference`, `extra.scf_iterations` is 0 (the iterations this
+run took) and `extra.scf_reference` records the file: `read`, `checksum`,
+`file_iterations`, `file_energy_conv`, `file_density_conv`, `file_threads` (the saving run's rayon threads; `null` when unknown), `file_build` and `build_override_used`; `extra.scf_precision`
+is the read reference's record (as the run that solved it wrote it), while
+`extra.precision` covers only the kernels this run ran. A run with
+`save_reference` writes a `scf_reference_saved` record with the path and
+checksum.
+
 `run_end.extra.certificate` holds the validation certificate. Its measured
 error and envelope warnings depend on the run's settings; see
 [Certificates](../reference/validation.md#certificates).
@@ -256,7 +264,17 @@ wall-clock seconds `{"t_spaces_s", "t_assembly_s", "t_solve_s",
 `aux_major_in_flight_peak`, `aux_major_coeff_bytes`, `n_batches`, `batch_work_max_s`,
 `batch_work_mean_s`, `t_metric_s`, `t_pairs_s`, `n_pair_groups`,
 `n_distinct_occ_per_group`, `n_trsm`, `n_w_reused`, `own_w_bytes`,
-`own_w_bytes_held`, `group_scratch_bytes_max`, `t_loc_s`). The
+`own_w_bytes_held`, `group_scratch_bytes_max`, `t_loc_s`, and the
+pre-flight and stage-5 schedule: `memory_strips_bytes`,
+`memory_metric_bytes`, `memory_stage3_scratch_bytes`,
+`memory_pair_block_bytes`, `memory_pcg_vector_bytes`,
+`memory_resident_peak_bytes`, `memory_exact` (a boolean: the pair-block and
+PCG figures are exact at `eps = 0` and candidate bounds otherwise),
+`group_concurrency` (the most domain groups a budget-sized wave let run at
+once; 1 with several groups means the budget serialised the pair fits),
+`group_scratch_bound_bytes`, `group_in_flight_peak` (groups measured in
+flight at once) and `n_group_waves` (waves the budget split the groups
+into; 1 when they all fit at once)). The
 `*_thread_s` fields are summed over batch workers (thread-seconds), the
 eval/scatter split is `null` unless it was measured, and `t_reference_s` is
 `0` when the opt-in reference was off. `t_loc_s` is counted inside

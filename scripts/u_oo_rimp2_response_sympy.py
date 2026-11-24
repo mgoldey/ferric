@@ -2,7 +2,7 @@
 """U-OO-RI-MP2 orbital gradient: the integral-response loop, transcribed.
 
 Theory: `book/src/12-oo-laplace/02-unrestricted-oo-rimp2.md#unrestricted-oo-rimp2-orbital-gradient` ("Unrestricted OO-RI-MP2
-orbital gradient") and 14.1 ("The integral-response loop"). Code:
+orbital gradient") and its subsection "The integral-response loop". Code:
 crates/ferric-mp2/src/u_rimp2.rs (u_mp2_orbital_gradient_kernel,
 build_u_mp2_density / u_mp2_density_from_amplitudes),
 crates/ferric-mp2/src/orbital_gradient_gemm.rs (GradientB::extract,
@@ -27,7 +27,7 @@ four-centre ERI from a second factor for the UHF J/K. Each check prints
      the opposite-spin block: the 1/2 * 4 = 2 of the same-spin rows and the
      explicit 2.0 on the ab blocks.
   3  kernel-equals-derivation (numpy): the transcribed kernel equals the
-     section-14 formula sum t d(ia|jb) with
+     derivation of the book section above, sum t d(ia|jb) with
      d(ia|jb) = d_ik (ca|jb) + d_jk (ia|cb) - d_ac (ik|jb) - d_bc (ia|jk),
      block by block (same_a, ab_a, same_b, ab_b), to 1e-13.
   4  kernel-vs-fd (numpy, independent route): each block equals a Richardson

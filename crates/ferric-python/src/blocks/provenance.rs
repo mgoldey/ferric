@@ -6,7 +6,6 @@
 use ferric_core::basis::BasisSet;
 use ferric_core::certificate::{BasisRecord, BlockRecord, BlockUse, BuildStamp, Certificate};
 use ferric_core::mol::Molecule;
-use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 /// The build this extension was compiled from.
@@ -132,13 +131,13 @@ pub(super) fn certificate_from_blocks(
         .enumerate()
         .map(|(i, r)| {
             BlockRecord::from_json_str(&py_to_json(py, r)?)
-                .map_err(|e| PyValueError::new_err(format!("records[{i}]: {e}")))
+                .map_err(|e| crate::errors::input_err(format!("records[{i}]: {e}")))
         })
         .collect::<PyResult<Vec<_>>>()?;
-    let mut c = Certificate::from_blocks(capability, records).map_err(PyValueError::new_err)?;
+    let mut c = Certificate::from_blocks(capability, records).map_err(crate::errors::input_err)?;
     if let Some(r) = reference {
         let r = Certificate::from_json_str(&py_to_json(py, &r)?)
-            .map_err(|e| PyValueError::new_err(format!("reference: {e}")))?;
+            .map_err(|e| crate::errors::input_err(format!("reference: {e}")))?;
         c = c.with_reference(&r);
     }
     for (name, detail) in approximations {

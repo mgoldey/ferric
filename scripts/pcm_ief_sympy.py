@@ -30,7 +30,9 @@ mismatch.
      unsymmetrized Q v; it equals Q v itself exactly when D A S is symmetric
      (the discrete Calderon identity S A D^T = D A S of the exact continuum).
      Controls: the reversed order (K^T)^-1 R^T v changes the energy; a generic
-     D gives q_sym != Q v.
+     D gives q_sym != Q v. Also R K^T - K R^T = f(f-1)/(2 pi) (S A D^T - D A S)
+     for any S, D, A: Q is symmetric at f = 1 on any cavity, and for f < 1
+     exactly when D A S is.
   6  Fock contribution (potential.rs build_reaction_field_operator, lib.rs
      pcm_step): with v_k(D) = v_nuc,k + sum_mn D_mn B^k_mn,
      B^k = <m| -1/|r - r_k| |n>, the gradient of E = 1/2 v^T Q_sym v is
@@ -41,23 +43,45 @@ mismatch.
      charge at d = 0, R/4, R/2 inside a Lebedev sphere converges to the
      Kirkwood energy and the Gauss-law charge as the order goes 50 -> 110 ->
      302, with |E_302 - E_exact| <= |E_302 - E_110|. The Rust twin is
-     crates/ferric-pcm/tests/ief_limits.rs.
+     crates/ferric-pcm/tests/ief_limits.rs. The PointCharge S and D (diagonal
+     S_ii = 1.0694 sqrt(4 pi/a_i), D_ii = -S_ii/(2R)) on the same spheres give
+     a central-charge relative error at eps = 78.4 of 4.5e-3, 3.2e-3 and
+     2.0e-3 at 50, 110 and 302 points (asserted to two figures), more than
+     1e4 times the GaussianSmeared error.
   8  Response gradient (gradient.rs response_term): for S(t), D(t), A(t)
      depending on a nuclear coordinate t at fixed v, E = 1/2 v^T K^-1 R v has
      dE/dt = 1/2 [ -z^T S' x + f/(2 pi) y^T D' u + f/(2 pi) sum_j (D^T y)_j
      w_j A'_jj ] with x = K^-1 R v, y = K^-T v, w = S x + v, u = A w,
      z = y - f/(2 pi) A D^T y (exact, n = 3). Controls: dropping the area
      term, or using q_sym for x, breaks it.
+  9  Gradient kernels (gradient.rs sd_kernel, cavity.rs switch_h and
+     switch_h_deriv, response_term's diagonal coefficients): the transcribed
+     S'(r), h(r) = -S'(r)/r and h'(r) are the r-derivatives of erf(xi r)/r
+     (GaussianSmeared) and 1/r (PointCharge); h_sw' = 30 x^2 (1-x)^2 is the
+     derivative of the quintic switch; grad_r ln h_sw(t), t = (|r - R_B| -
+     R_in)/R_sw, is h_sw'/h_sw (1/R_sw) r_hat; S_jj prop. 1/swf gives
+     dS_jj = -S_jj d ln swf and S_jj prop. a^-1/2 gives -1/2 S_jj d ln swf.
+     Controls: h' without its xi^3 term, and the switch derivative without
+     1/R_sw, both miss.
 
 Independent routes: claim 7 compares the discrete Lebedev-sphere IEF solve
 with the exact Kirkwood series and Gauss's law; claim 8 compares the response
-gradient formula with the exact t-derivative of 1/2 v^T K^-1 R v.
+gradient formula with the exact t-derivative of 1/2 v^T K^-1 R v; claim 9
+differentiates the kernels symbolically.
 
 Mutations (each turns the script red):
   - "+" instead of "-" in the transcribed z = y - f/(2 pi) A D^T y of the
     response gradient (marker "[FAIL] 8 response gradient");
   - D_ii = -S_ii/R instead of -S_ii/(2R) in the transcribed GaussianSmeared
-    diagonal (marker "[FAIL] 7 sphere").
+    diagonal (marker "[FAIL] 7 sphere");
+  - the double-layer kernel with +R(1 - c) (marker "[FAIL] 1 D kernel");
+  - D_l = -S_l/R instead of -S_l/(2R) (marker "[FAIL] 2 S_l");
+  - R_l with (1 + D_l/2 pi) (marker "[FAIL] 3 IEF channel");
+  - the f = 1 operators built at f = 77/79 (marker "[FAIL] 4 f=1");
+  - q_sym with the reversed order (K^T)^-1 R^T v (marker "[FAIL] 5 E(q_sym)");
+  - the Fock term from the raw Q v (marker "[FAIL] 6 dE/dD");
+  - h' with c xi^3 in place of 2 c xi^3 in the transcribed sd_kernel
+    (marker "[FAIL] 9 GaussianSmeared").
 
 Run: python3 scripts/pcm_ief_sympy.py  (needs sympy, numpy, scipy >= 1.15)
 """
@@ -224,6 +248,16 @@ check(
     "5 D A S symmetric => q_sym = Q v exactly",
     zero(sp.simplify(qc_sym - qc_raw).norm()),
 )
+# Why: R K^T - K R^T = f(f-1)/(2 pi) (S A D^T - D A S) for any f, so Q = K^-1 R
+# is symmetric at f = 1 on any cavity and, for f < 1, exactly when D A S is.
+fs = sp.symbols("f", positive=True)
+Ks, Rs = k_r(fs, Dm)
+comm = Rs * Ks.T - Ks * Rs.T
+pred = fs * (fs - 1) / two_pi * (S * A * Dm.T - Dm * A * S)
+check(
+    "5 R K^T - K R^T = f(f-1)/(2 pi) (S A D^T - D A S)",
+    all(zero(sp.expand(e)) for e in comm - pred),
+)
 
 # Claim 6: two basis functions, symbolic symmetric density.
 nb = 2
@@ -361,6 +395,40 @@ if lebedev_rule is not None:
         "7 control: f=(eps-1)/eps misses Born by > 1e-4", rel > 1e-4, f"rel {rel:.2e}"
     )
 
+    # PointCharge S and D (matrices.rs): bare 1/r and (r_i - r_j).n_j/r^3 off
+    # the diagonal, S_ii = 1.0694 sqrt(4 pi/a_i), D_ii = -S_ii/(2R). Central
+    # charge, eps = 78.4: the figures 22.2 prints.
+    pc_rel, gs_rel = [], []
+    e_born = kirkwood_energy(78.4, rad, 0.0)
+    for npts in (50, 110, 302):
+        pos, nrm, area, xi = sphere(npts, rad)
+        vv = 1 / np.linalg.norm(pos, axis=1)
+        rij = pos[:, None, :] - pos[None, :, :]
+        r = np.linalg.norm(rij, axis=2)
+        np.fill_diagonal(r, 1.0)
+        Sp = 1 / r
+        Dp = np.einsum("ijk,jk->ij", rij, nrm) / r**3
+        sii = 1.0694 * np.sqrt(4 * np.pi / area)
+        np.fill_diagonal(Sp, sii)
+        np.fill_diagonal(Dp, -sii / (2 * rad))
+        for Sx, Dx, out in (
+            (Sp, Dp, pc_rel),
+            (*s_d_gaussian(pos, nrm, area, xi, rad), gs_rel),
+        ):
+            Rm, K = ief_charges(Sx, Dx, area, 78.4)
+            q = 0.5 * (np.linalg.solve(K, Rm @ vv) + Rm.T @ np.linalg.solve(K.T, vv))
+            out.append(abs(0.5 * q @ vv - e_born) / abs(e_born))
+    check(
+        "7 PointCharge central charge eps=78.4: rel err 4.5e-3, 3.2e-3, 2.0e-3",
+        [f"{x:.1e}" for x in pc_rel] == ["4.5e-03", "3.2e-03", "2.0e-03"],
+        f"{pc_rel}",
+    )
+    check(
+        "7 PointCharge error > 1e4 x GaussianSmeared error at every grid",
+        all(p > 1e4 * g for p, g in zip(pc_rel, gs_rel)),
+        f"GaussianSmeared {gs_rel}",
+    )
+
 # ---------------------------------------------------------------- claim 8
 t = sp.symbols("t", real=True)
 n8 = 3
@@ -411,6 +479,94 @@ check(
 q8 = (x8 + R8.T * y8) / 2
 bad = (-(z8.T * S8p * q8)[0] + pref8 * (y8.T * D8p * u8)[0] + area_term) / 2
 check("8 control: q_sym in place of x breaks it", not zero(bad - de_exact))
+
+# ---------------------------------------------------------------- claim 9
+rr, xi9 = sp.symbols("r xi", positive=True)
+
+
+def sd_kernel(kind):
+    """Transcription of gradient.rs sd_kernel: (S'(r), h(r), h'(r))."""
+    if kind == "PointCharge":
+        return -1 / rr**2, 1 / rr**3, -3 / rr**4
+    c = 2 / sp.sqrt(sp.pi)
+    er = sp.erf(xi9 * rr)
+    ex = sp.exp(-(xi9**2) * rr**2)
+    s_p = c * xi9 * ex / rr - er / rr**2
+    h = er / rr**3 - c * xi9 * ex / rr**2
+    hp = 3 * c * xi9 * ex / rr**3 - 3 * er / rr**4 + 2.0 * c * xi9**3 * ex / rr
+    return s_p, h, hp
+
+
+for kind, s_of in (("PointCharge", 1 / rr), ("GaussianSmeared", sp.erf(xi9 * rr) / rr)):
+    s_p, h, hp = sd_kernel(kind)
+    ok = (
+        zero(sp.simplify(s_p - sp.diff(s_of, rr)))
+        and zero(sp.simplify(h + s_p / rr))
+        and zero(sp.simplify(sp.nsimplify(hp) - sp.diff(h, rr)))
+    )
+    check(f"9 {kind}: S' = dS/dr, h = -S'/r, h' = dh/dr", ok)
+s_p, h, hp = sd_kernel("GaussianSmeared")
+check(
+    "9 control: h' without its xi^3 term misses",
+    not zero(
+        sp.simplify(
+            sp.nsimplify(hp)
+            - 2 * (2 / sp.sqrt(sp.pi)) * xi9**3 * sp.exp(-(xi9**2) * rr**2) / rr
+            - sp.diff(h, rr)
+        )
+    ),
+)
+
+xs = sp.symbols("x")
+h_sw = xs**3 * (10 - 15 * xs + 6 * xs**2)
+check(
+    "9 switch: h_sw' = 30 x^2 (1-x)^2",
+    zero(sp.expand(sp.diff(h_sw, xs) - 30 * xs**2 * (1 - xs) ** 2)),
+)
+# grad_r ln h_sw(t), t = (|r - R_B| - R_in)/R_sw  =  h_sw'/h_sw (1/R_sw) r_hat.
+px, py, pz, r_in, r_sw = sp.symbols("px py pz R_in R_sw", positive=True)
+dist = sp.sqrt(px**2 + py**2 + pz**2)  # R_B at the origin
+targ = (dist - r_in) / r_sw
+ln_h = sp.log(h_sw.subs(xs, targ))
+pred_g = [
+    30 * targ**2 * (1 - targ) ** 2 / h_sw.subs(xs, targ) / r_sw * comp / dist
+    for comp in (px, py, pz)
+]
+check(
+    "9 grad ln h_sw(t) = h_sw'(t)/h_sw(t) (1/R_sw) r_hat",
+    all(zero(sp.simplify(sp.diff(ln_h, c) - g)) for c, g in zip((px, py, pz), pred_g)),
+)
+check(
+    "9 control: without 1/R_sw the switch gradient misses",
+    not zero(sp.simplify(sp.diff(ln_h, px) - pred_g[0] * r_sw)),
+)
+
+# Diagonal coefficients of d ln swf_j in response_term (claim-8 formula, the
+# 1/2 included): -1/2 z_j x_j dS_jj + 1/2 p y_j u_j dD_jj.
+zj, xj, yj, uj, p9, swf, s0, a0, R9 = sp.symbols(
+    "z_j x_j y_j u_j p swf s0 a0 R", positive=True
+)
+
+
+def diag_coef(S_of_swf, D_of_swf):
+    dS = swf * sp.diff(S_of_swf, swf)  # d/d ln swf
+    dD = swf * sp.diff(D_of_swf, swf)
+    return sp.simplify(-zj * xj * dS / 2 + p9 * yj * uj * dD / 2)
+
+
+S_g = s0 / swf  # GaussianSmeared: S_jj = xi sqrt(2/pi)/swf; D_jj has no swf
+check(
+    "9 GaussianSmeared diagonal: coefficient 1/2 z x S_jj",
+    zero(diag_coef(S_g, sp.Integer(0)) - zj * xj * S_g / 2),
+)
+S_p = s0 * sp.sqrt(4 * sp.pi / (a0 * swf))  # PointCharge: a_j prop. swf
+D_p = -S_p / (2 * R9)
+check(
+    "9 PointCharge diagonal: coefficients 1/4 z x S_jj - 1/4 p y u D_jj",
+    zero(
+        sp.simplify(diag_coef(S_p, D_p) - (zj * xj * S_p / 4 - p9 * yj * uj * D_p / 4))
+    ),
+)
 
 if FAILED:
     print(f"\n{len(FAILED)} claim(s) FAILED: {FAILED}")

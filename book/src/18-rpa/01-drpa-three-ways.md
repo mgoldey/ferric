@@ -33,6 +33,10 @@ through the fitted factor $B$ (section @sec:factorization-and-metric).
 | $a, b$ | virtual | `0..nvir` |
 | $P, Q$ | auxiliary | `0..naux` |
 | $k$ | frequency node, weight $w_k$ | `quad_freqs`, `quad_weights` |
+| $n$ | RPA excitation, energy $\Omega_n$ | |
+| $\Delta_i^a$ | orbital-energy gap $\varepsilon_a - \varepsilon_i$ | `e_ia` |
+| $\boldsymbol\Delta$, $\Delta_n$ | the diagonal matrix of the $\Delta_i^a$, and its $n$-th entry | |
+| $\Delta_{ij}^{ab}$ | pair gap $\Delta_i^a + \Delta_j^b$ | |
 
 | Entry point | Location |
 |---|---|
@@ -65,7 +69,7 @@ the sum and the difference of the $\alpha$ and $\beta$ excitations. The
 coupling block $\begin{pmatrix}(ia|jb) & (ia|jb)\\ (ia|jb) & (ia|jb)\end{pmatrix}$
 becomes $2(ia|jb)$ on the singlet (sum) and zero on the triplet
 (difference). The triplet excitations keep $\Omega = \Delta$ and add nothing
-to the energy below. With $K_{ia,jb} = 2(ia|jb)$ (chapter @sec:notation, section @sec:notation-orbital-rotations) the
+to the energy below. With $K_{ia,jb} = 2(ia|jb)$ (the notation page, section @sec:notation-orbital-rotations) the
 singlet response matrices are
 
 $$ \mathbf A = \boldsymbol\Delta + \mathbf K, \qquad \mathbf B = \mathbf K, \qquad \Delta_{ia,jb} = \Delta_i^a\,\delta_{ij}\delta_{ab}, $$
@@ -142,7 +146,12 @@ $$ \mathbf B + \mathbf A\mathbf T + \mathbf T\mathbf A + \mathbf T\mathbf B\math
 Take the trace of $\mathbf X\boldsymbol\Omega\mathbf X^{-1} = \mathbf A + \mathbf B\mathbf T$:
 $\sum_n\Omega_n = \operatorname{tr}\mathbf A + \operatorname{tr}(\mathbf B\mathbf T)$,
 so (@eq:rpa-drpa-three-routes) is $\tfrac12\operatorname{tr}(\mathbf B\mathbf T)$, which is
-$\tfrac12\sum\mathbf B\circ\mathbf T$ because $\mathbf T$ is symmetric. Insert
+$\tfrac12\sum\mathbf B\circ\mathbf T$ because $\mathbf T$ is symmetric.
+Two facts were used. $\mathbf X$ is invertible when the RPA problem is
+stable ($\boldsymbol\Delta + 2\mathbf K$ positive definite). $\mathbf T$ is
+symmetric because the transpose of the Riccati equation below is the same
+equation, and the solution that is continuous in $\mathbf K$ from
+$\mathbf T = 0$ is unique. Insert
 $\mathbf A = \boldsymbol\Delta + \mathbf K$, $\mathbf B = \mathbf K$, and
 write $\boldsymbol\Delta\mathbf T + \mathbf T\boldsymbol\Delta$ in a form that
 holds in any orbital basis. The drCCD amplitudes $T_{ia,jb}$ solve the Riccati
@@ -174,7 +183,8 @@ $E_{\mathrm{OS}} = -\sum(ia|jb)^2/\Delta_{ij}^{ab}$ comes out negative
 without a minus sign in the loop.
 
 Check the Riccati equation on one mode, $\mathbf A = \Delta + b$,
-$\mathbf B = b$, $\Delta > 0$. Then $\mathcal F(T) = 2\Delta t$ and
+$\mathbf B = b$, $\Delta > 0$. Then $\mathcal F(T) = 2\Delta t$
+($\Delta^{ab}_{ij} = 2\Delta$ for the single pair) and
 $\mathbf R = 0$ is the quadratic
 
 $$ b + 2(\Delta + b)t + bt^2 = 0 . $$
@@ -182,10 +192,12 @@ $$ b + 2(\Delta + b)t + bt^2 = 0 . $$
 Of its two roots, take the one that stays finite as $b \to 0$:
 $t = \big(\sqrt{\Delta(\Delta + 2b)} - \Delta - b\big)/b$, which goes to 0
 with $b$. Then $\tfrac12 bt = \tfrac12\big(\sqrt{\Delta(\Delta + 2b)} - \Delta - b\big)$,
-the plasmon value of @sec:drpa-three-ways-plasmon-formula.
+the plasmon value of section @sec:drpa-three-ways-plasmon-formula.
 
-The code (`fock_super`, `riccati_masked_solve`) iterates the damped fixed
-point $\mathbf T \leftarrow \mathbf T - \mathbf R(\mathbf T)/\bar{\mathbf D}$, where
+The code (`fock_super`, `riccati_masked_solve`) iterates the diagonally
+preconditioned fixed point
+$\mathbf T \leftarrow \mathbf T - \mathbf R(\mathbf T)/\bar{\mathbf D}$, a
+Jacobi iteration with no damping factor, where
 $\bar{\mathbf D}$ is built from the diagonals of the localized occupied and virtual
 Fock blocks,
 
@@ -205,7 +217,7 @@ let tu = ring_product(rg, &t, &u);                        // T (K + K T) = T K +
 for (p, pb) in rg.pairs.iter().enumerate() {
     let mut r = &f_t[p] + &u[p];                          // F(T) + K + K T
     r += &tu[p];                                          //   + T K + T K T = R(T)
-    apply_pattern(&mut r, &pb.pat, pb.db.len());          // the mask of 18.6
+    apply_pattern(&mut r, &pb.pat, pb.db.len());          // the mask P_M
     r2 += r.iter().map(|x| x * x).sum::<f64>();           // ‖R‖²
     let mut tn = t[p].clone();
     tn -= &(&r / &pb.denom);                              // T − R(T)/D
@@ -223,7 +235,11 @@ for (p, pb) in rg.pairs.iter().enumerate() {
   the local approximation of section @sec:local-drpa, where it zeroes the dropped
   amplitudes.
 
-The loop stops at $\lVert\mathbf R\rVert/\lVert\mathbf K\rVert < 10^{-12}$ and
+The loop stops at
+$\lVert\mathbf R\rVert/\lVert\mathbf K\rVert < \max(10^{-12}, c\,\varepsilon)$,
+with $\varepsilon$ the amplitude threshold of section @sec:local-drpa and
+$c$ = `eps_rtol_factor` (0.1 from the CLI and Python, off in the library).
+At $\varepsilon = 0$, the exact method, that is $10^{-12}$. The loop
 returns an error after 500 iterations. The energy is invariant under
 orthogonal rotations within the occupied and within the virtual space, which
 is what licenses the Boys-localized basis the local method needs (section
@@ -231,8 +247,10 @@ is what licenses the Boys-localized basis the local method needs (section
 
 ## Imaginary frequency {#drpa-three-ways-imaginary-frequency}
 
-The third form works in the auxiliary basis. With the RI factor $B^P_{ia}$ of
-section @sec:factorization-and-metric and a real imaginary frequency $u$,
+The third form works in the auxiliary basis. From here on $B$ is the RI
+factor $B^P_{ia}$ of section @sec:factorization-and-metric, not the response
+matrix $\mathbf B$, which equals $\mathbf K$ and is written $\mathbf K$.
+With a real imaginary frequency $u$,
 
 $$ \Pi_{PQ}(iu) = 4\sum_{ia} B^P_{ia}\,\frac{\Delta_i^a}{u^2 + (\Delta_i^a)^2}\,B^Q_{ia}, \label{eq:drpa-three-ways-3} $$
 
@@ -250,7 +268,7 @@ $g_{ia} = 4\Delta_i^a/(u^2 + (\Delta_i^a)^2)$, so $\boldsymbol\Pi = B\,\mathrm{d
 1. Move to the $ov$ space with Sylvester's identity
    $\det(\mathbf 1 + \mathbf M\mathbf N) = \det(\mathbf 1 + \mathbf N\mathbf M)$:
    $\det(\mathbf 1 + \boldsymbol\Pi) = \det(\mathbf 1 + g^{1/2}B^{\mathsf T}Bg^{1/2})$,
-   and $B^{\mathsf T}B = (ia|jb) = \tfrac12\mathbf K$.
+   and $(B^{\mathsf T}B)_{ia,jb} = (ia|jb) = \tfrac12K_{ia,jb}$.
 2. Factor out $(u^2 + \boldsymbol\Delta^2)^{-1/2}$ on both sides:
    $\mathbf 1 + g^{1/2}\tfrac12\mathbf Kg^{1/2} = (u^2 + \boldsymbol\Delta^2)^{-1/2}\big[u^2 + \boldsymbol\Delta^{1/2}(\boldsymbol\Delta + 2\mathbf K)\boldsymbol\Delta^{1/2}\big](u^2 + \boldsymbol\Delta^2)^{-1/2}$.
    The bracket has the eigenvalues of $u^2 + \boldsymbol\Delta(\boldsymbol\Delta + 2\mathbf K)$,
@@ -268,7 +286,7 @@ Expand the logarithm and the ring diagrams reappear. Where the series
 converges, $\ln\det(\mathbf 1 + \boldsymbol\Pi) - \operatorname{tr}\boldsymbol\Pi = \sum_{n\ge2}(-1)^{n+1}\operatorname{tr}\boldsymbol\Pi^n/n$.
 The term with $n$ factors of $\boldsymbol\Pi$ is the ring with $n$ bubbles.
 The $n = 2$ term, $-\tfrac12\operatorname{tr}\boldsymbol\Pi^2$, integrates to
-$2E_{\mathrm{OS}}$, the second-order term of @sec:drpa-three-ways-ring-amplitudes. Subtracting
+$2E_{\mathrm{OS}}$, the second-order term of section @sec:drpa-three-ways-ring-amplitudes. Subtracting
 $\operatorname{tr}\boldsymbol\Pi$ removes the $n = 1$ term.
 
 The integrand is never positive, since $\ln(1 + x) - x \le 0$ for every
@@ -318,9 +336,11 @@ $-\tfrac12$ and no cancellation happens inside it.
 
 ## One function, three algorithms {#drpa-three-ways-function-three-algorithms}
 
-The derivations above show the three forms are one function: @sec:drpa-three-ways-ring-amplitudes derives
-the Riccati equation and its energy from the plasmon eigenvectors, and
-@sec:drpa-three-ways-imaginary-frequency derives the frequency integral from the plasmon eigenvalues. The
+The derivations above show the three forms are one function: section
+@sec:drpa-three-ways-ring-amplitudes derives the Riccati equation and its
+energy from the plasmon eigenvectors, and section
+@sec:drpa-three-ways-imaginary-frequency derives the frequency integral from
+the plasmon eigenvalues. The
 proofs below check this on models, and the Rust test runs all three routes
 on water.
 
@@ -359,9 +379,12 @@ on water.
 >
 > <!-- verified: id=rpa.drpa.series-summand; script=scripts/rpa_drpa_pdep_sympy.py; claim=series-summand; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/energy.rs::trace_log_summand_term; rust_test=ferric-rpa/tests/rpa_energy_route.rs::water_ccpvdz_aux_route_matches_the_eigensolve_route; registry=drpa -->
 
-The script checks the conclusions of @sec:drpa-three-ways-plasmon-formula to @sec:drpa-three-ways-imaginary-frequency, not the intermediate
-steps written out there (the eigenvector form of $\mathbf T$, the determinant
-product).
+The script also checks two intermediate steps on the random model:
+`riccati-eigenvector-form` builds $\mathbf T = \mathbf Y\mathbf X^{-1}$
+from the plasmon eigenvectors and finds it symmetric, a root of the Riccati
+equation and equal to the iterated amplitudes; `determinant-product` checks
+$\det(\mathbf 1 + \boldsymbol\Pi(iu)) = \prod_n(u^2 + \Omega_n^2)/(u^2 + \Delta_n^2)$
+at three values of $u$.
 
 Water / 6-31G with the oxygen core frozen, from the `589b50832` build, runs two of the
 routes: the Riccati solve of `run_drpa` and the full-rank frequency integral
@@ -396,6 +419,9 @@ difference              1.94e-15
 MP2 = E_OS + E_SS       -0.1278349610
 ```
 
+The rings beyond second order remove 30% of direct MP2 here
+($-0.1371$ against $-0.1960$ Ha). dRPA still ends 9 mHa below MP2.
+
 ## The algorithms {#drpa-three-ways-algorithms}
 
 Each form costs something different, which is why each has one job.
@@ -420,8 +446,8 @@ reason is printed. The log line and the certificate name the route taken.
 
 **Ring amplitudes** (`amplitude_drpa` at $\varepsilon = 0$). Boys-localized
 occupied orbitals and projected virtuals (the same localized spaces as local
-MP2, section @sec:amplitude-lmp2), $\mathbf K$ assembled in that basis, and the damped fixed
-point above. The memory grows as $n_o^3n_v^2$ in the ring products. Python
+MP2, section @sec:amplitude-lmp2), $\mathbf K$ assembled in that basis, and the
+preconditioned fixed point above. The memory grows as $n_o^3n_v^2$ in the ring products. Python
 `run_drpa` refuses a run that cannot fit before the SCF and names
 `run_pdep_rpa(trunc_thresh=0)` as the low-memory route to the same energy.
 
@@ -435,6 +461,9 @@ point above. The memory grows as $n_o^3n_v^2$ in the ring products. Python
 | `[local]` | section | absent | the amplitude threshold of section @sec:local-drpa |
 | `run_drpa(diis=)` | integer, 0 off | 8 | DIIS subspace of the Riccati solve |
 | `[memory] budget_gb`, `memory_budget_gb=` | GB | auto | preflight of either route |
+
+The `drpa` kind reads `[mp2] frozen_core`; the `pdep-rpa` kind of section
+@sec:pdep reads `[rpa] frozen_core`.
 
 ## Numerical anchors {#drpa-three-ways-numerical-anchors}
 
@@ -458,6 +487,8 @@ route has no quadrature.
 | `scripts/rpa_drpa_pdep_sympy.py` | the equivalence of the three forms |
 | `site/src/methods/rpa-gw.md`, "Exact and local dRPA" | the user guide |
 | Eshuis, Bates and Furche, Theor. Chem. Acc. 131, 1084 (2012) | review of RI-RPA: the frequency form in the auxiliary basis |
+| Furche, J. Chem. Phys. 129, 114105 (2008) | the plasmon formula (@eq:rpa-drpa-three-routes) |
+| Scuseria, Henderson and Sorensen, J. Chem. Phys. 129, 231101 (2008) | $\mathbf T = \mathbf Y\mathbf X^{-1}$ and the equality of drCCD and dRPA |
 
 **Known limits (2026-11-15).** Closed shell and HF reference only for `drpa`.
 The plasmon route is $O((n_on_v)^3)$ and exists as a reference. The Riccati

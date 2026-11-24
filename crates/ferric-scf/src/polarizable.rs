@@ -103,22 +103,30 @@
 //!
 //! # Exclusions
 //!
-//! `PolarizableSites.exclusions` is a set of unordered `(i, j)` pairs
-//! (indices into `sites`) with:
+//! Two lists, both empty by default (every site sees every other site's
+//! permanent charge and every other site's induced dipole, which is correct
+//! only for isolated, non-bonded polarizable sites such as ions):
 //!
-//! 1. **no mutual induction**: `T_ij` is forced to zero for an excluded pair
-//!    (neither site polarises the other), and
-//! 2. **no permanent-field coupling from the SAME pair**: this is
-//!    implemented by POSITION, not by a separate index map — a permanent
-//!    charge in `ext` located at (within `COLOCATION_TOL` Bohr of) an
-//!    excluded partner site's position is dropped from that site's `E^perm`
-//!    sum. This matches the standard use-case (a polarizable site typically
-//!    IS a permanently-charged MM atom — see `QmmmAtom{x,y,z,charge,alpha}`
-//!    in `crate::qmmm`, one atom, one position, both roles at once) and
-//!    needs no separate site<->ext-charge index field beyond the two lists'
-//!    shared geometry. Default (empty `exclusions`): every site sees every
-//!    other site's permanent charge and every other site's induced dipole,
-//!    which is correct for isolated, non-bonded polarizable sites.
+//! 1. `PolarizableSites.exclusions`, unordered `(i, j)` site-index pairs:
+//!    `T_ij` is forced to zero (neither site polarises the other), and a
+//!    permanent charge colocated with (within `COLOCATION_TOL` Bohr of) the
+//!    excluded partner site is dropped from the site's `E^perm`. This covers
+//!    the case where every atom of a molecule is a polarizable site.
+//! 2. `PolarizableSites.excluded_charges[i]`, positions (Bohr) of permanent
+//!    charges in `ext` whose field site `i` does not feel, matched by the
+//!    same colocation tolerance. This covers charges that are NOT sites
+//!    (TIP3P hydrogens on an oxygen-only polarizable water).
+//!
+//! The polarizable-embedding convention (PE / CPPE exclusion lists) is that
+//! a site feels neither the permanent charges nor the induced dipoles of its
+//! own molecule: a force field's charges already contain the molecule's own
+//! polarization, and an unexcluded water oxygen polarized by its own
+//! hydrogens carries an `E_pol` of about -0.12 Ha that has nothing to do
+//! with the QM region. [`crate::qmmm::QmmmSystem::polarizable_embedding`]
+//! builds both lists from per-atom molecule labels; Python `run_qmmm` and
+//! the CLI use it with same-molecule exclusion on by default. (AMOEBA keeps
+//! intramolecular mutual induction and excludes only the permanent field of
+//! a polarization group; that variant is not offered.)
 
 use crate::qmmm::electric_field_at_points;
 use ferric_core::external_potential::ExternalPotential;
@@ -203,6 +211,12 @@ pub struct PolarizableSites {
     /// partner — see the module doc's Exclusions section. Unordered: `(i,
     /// j)` and `(j, i)` are equivalent; both are accepted.
     pub exclusions: Vec<(usize, usize)>,
+    /// Per-site permanent-charge exclusions: `excluded_charges[i]` holds the
+    /// positions (Bohr) of the `ext` charges whose field site `i` does not
+    /// feel, matched within `COLOCATION_TOL` (see the module doc's
+    /// Exclusions section). Shorter than `sites` (including empty, the
+    /// default) means no extra exclusions for the remaining sites.
+    pub excluded_charges: Vec<Vec<[f64; 3]>>,
     /// Gaussian exponent (Bohr^-2) of the induced-dipole p-shell site basis.
     /// Default [`DEFAULT_DIPOLE_ZETA`] (numerically a point dipole).
     pub dipole_zeta: f64,
@@ -217,6 +231,7 @@ impl Default for PolarizableSites {
             sites: Vec::new(),
             thole_a: Some(DEFAULT_THOLE_A),
             exclusions: Vec::new(),
+            excluded_charges: Vec::new(),
             dipole_zeta: DEFAULT_DIPOLE_ZETA,
             max_sites_dense: DEFAULT_MAX_SITES_DENSE,
         }
@@ -229,6 +244,26 @@ impl PolarizableSites {
         self.exclusions
             .iter()
             .any(|&(a, b)| (a == i && b == j) || (a == j && b == i))
+    }
+
+    /// Whether site `i` feels the field of a permanent charge at `pos`: not
+    /// when the charge sits on site `i` itself or on a site excluded from
+    /// `i`, nor when `pos` is in `excluded_charges[i]`. The one rule the
+    /// energy, the site gradient and the charge gradient all apply.
+    fn sees_charge(&self, i: usize, pos: [f64; 3]) -> bool {
+        let at = |p: [f64; 3]| {
+            let d = [p[0] - pos[0], p[1] - pos[1], p[2] - pos[2]];
+            (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() < COLOCATION_TOL
+        };
+        if let Some(j) = self.sites.iter().position(|s| at([s.x, s.y, s.z])) {
+            if j == i || self.is_excluded(i, j) {
+                return false;
+            }
+        }
+        !self
+            .excluded_charges
+            .get(i)
+            .is_some_and(|list| list.iter().any(|&p| at(p)))
     }
 }
 
@@ -293,7 +328,7 @@ fn thole_tensor(
 }
 
 /// Field of `ext`'s permanent (point + Gaussian-smeared) charges at each
-/// site, honouring colocation-based exclusions (see module doc).
+/// site, honouring both exclusion lists (see module doc).
 fn permanent_field_at_sites(
     sites: &PolarizableSites,
     ext: Option<&ExternalPotential>,
@@ -302,24 +337,11 @@ fn permanent_field_at_sites(
     let mut e_perm = vec![[0.0_f64; 3]; n];
     let Some(ext) = ext else { return e_perm };
 
-    // Colocation lookup: for a given `ext` charge position, which site
-    // indices (if any) sit within COLOCATION_TOL of it.
-    let colocated_site = |x: f64, y: f64, z: f64| -> Option<usize> {
-        sites.sites.iter().position(|s| {
-            let dx = s.x - x;
-            let dy = s.y - y;
-            let dz = s.z - z;
-            (dx * dx + dy * dy + dz * dz).sqrt() < COLOCATION_TOL
-        })
-    };
-
     for (i, site) in sites.sites.iter().enumerate() {
         let ri = [site.x, site.y, site.z];
         for pc in &ext.point_charges {
-            if let Some(j) = colocated_site(pc.x, pc.y, pc.z) {
-                if j == i || sites.is_excluded(i, j) {
-                    continue;
-                }
+            if !sites.sees_charge(i, [pc.x, pc.y, pc.z]) {
+                continue;
             }
             let d = [ri[0] - pc.x, ri[1] - pc.y, ri[2] - pc.z];
             let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
@@ -333,10 +355,8 @@ fn permanent_field_at_sites(
             e_perm[i][2] += inv_r3 * d[2];
         }
         for sc in &ext.smeared_charges {
-            if let Some(j) = colocated_site(sc.x, sc.y, sc.z) {
-                if j == i || sites.is_excluded(i, j) {
-                    continue;
-                }
+            if !sites.sees_charge(i, [sc.x, sc.y, sc.z]) {
+                continue;
             }
             let d = [ri[0] - sc.x, ri[1] - sc.y, ri[2] - sc.z];
             let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
@@ -923,17 +943,6 @@ pub fn site_gradient(
         grad[(i, 2)] += site_grad[2];
     }
 
-    // Colocation lookup for permanent-charge exclusions (same convention as
-    // `permanent_field_at_sites`).
-    let colocated_site = |x: f64, y: f64, z: f64| -> Option<usize> {
-        sites.sites.iter().position(|s| {
-            let dx = s.x - x;
-            let dy = s.y - y;
-            let dz = s.z - z;
-            (dx * dx + dy * dy + dz * dz).sqrt() < COLOCATION_TOL
-        })
-    };
-
     for i in 0..n {
         let ri = [sites.sites[i].x, sites.sites[i].y, sites.sites[i].z];
         let mu_i = [dipoles[(i, 0)], dipoles[(i, 1)], dipoles[(i, 2)]];
@@ -955,10 +964,8 @@ pub fn site_gradient(
         // 3a. Permanent MM point/smeared charges (excluding colocated + excluded pairs).
         if let Some(ext) = ext {
             for pc in &ext.point_charges {
-                if let Some(j) = colocated_site(pc.x, pc.y, pc.z) {
-                    if j == i || sites.is_excluded(i, j) {
-                        continue;
-                    }
+                if !sites.sees_charge(i, [pc.x, pc.y, pc.z]) {
+                    continue;
                 }
                 let rc = [pc.x, pc.y, pc.z];
                 let (contrib, _) = point_charge_field_grad_wrt_site(ri, rc, pc.q, mu_i);
@@ -967,10 +974,8 @@ pub fn site_gradient(
                 g[2] += contrib[2];
             }
             for sc in &ext.smeared_charges {
-                if let Some(j) = colocated_site(sc.x, sc.y, sc.z) {
-                    if j == i || sites.is_excluded(i, j) {
-                        continue;
-                    }
+                if !sites.sees_charge(i, [sc.x, sc.y, sc.z]) {
+                    continue;
                 }
                 // Point-charge approximation for the smeared-charge field
                 // gradient at the site (same simplification documented in
@@ -1085,23 +1090,11 @@ pub fn charge_gradient_contribution(
         return (point_rows, smeared_rows);
     }
 
-    let colocated_site = |x: f64, y: f64, z: f64| -> Option<usize> {
-        sites.sites.iter().position(|s| {
-            let dx = s.x - x;
-            let dy = s.y - y;
-            let dz = s.z - z;
-            (dx * dx + dy * dy + dz * dz).sqrt() < COLOCATION_TOL
-        })
-    };
-
     for (k, pc) in ext.point_charges.iter().enumerate() {
         let rc = [pc.x, pc.y, pc.z];
-        let coloc = colocated_site(pc.x, pc.y, pc.z);
         for i in 0..n {
-            if let Some(j) = coloc {
-                if j == i || sites.is_excluded(i, j) {
-                    continue;
-                }
+            if !sites.sees_charge(i, rc) {
+                continue;
             }
             let ri = [sites.sites[i].x, sites.sites[i].y, sites.sites[i].z];
             let mu_i = [dipoles[(i, 0)], dipoles[(i, 1)], dipoles[(i, 2)]];
@@ -1114,12 +1107,9 @@ pub fn charge_gradient_contribution(
 
     for (k, sc) in ext.smeared_charges.iter().enumerate() {
         let rc = [sc.x, sc.y, sc.z];
-        let coloc = colocated_site(sc.x, sc.y, sc.z);
         for i in 0..n {
-            if let Some(j) = coloc {
-                if j == i || sites.is_excluded(i, j) {
-                    continue;
-                }
+            if !sites.sees_charge(i, rc) {
+                continue;
             }
             let ri = [sites.sites[i].x, sites.sites[i].y, sites.sites[i].z];
             let mu_i = [dipoles[(i, 0)], dipoles[(i, 1)], dipoles[(i, 2)]];

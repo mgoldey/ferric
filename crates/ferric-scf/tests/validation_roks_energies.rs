@@ -127,6 +127,7 @@ use ferric_scf::rhf::RhfConfig;
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::Spin;
+use ferric_testkit::reference::num_ctx;
 use serde_json::Value;
 
 const ROW_DIR: &str = "testdata/reference/validation/roks_energies";
@@ -190,12 +191,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn tol_e(system: &str) -> f64 {
     if system == "oh" {
         TOL_E_OH
@@ -221,22 +216,20 @@ fn roks_config(xc: &str) -> RhfConfig {
         "b3lyp" => Some(AUX.to_string()),
         other => panic!("unknown functional {other}"),
     };
-    let cfg = RhfConfig {
-        xc: Some(ferric_xc(xc).into()),
-        df_j_aux: Some(AUX.to_string()),
-        df_k_aux,
+    let mut cfg = RhfConfig::default()
+        .with_xc(ferric_xc(xc))
+        .with_df_j_aux(AUX.to_string())
         // The PySCF references fit J in f64; pin it (the f32 RI-J default's
         // storage rounding is 1e-7..1e-6 Ha, far above this test's bar).
-        ri_j_precision: Some(RiJPrecision::F64),
-        max_iter: 500,
-        energy_conv: 1e-10,
+        .with_ri_j_precision(RiJPrecision::F64)
+        .with_max_iter(500)
+        .with_energy_conv(1e-10)
         // Same as the UKS half of the KS-DFT row (validation_ks_energies.rs).
-        density_conv: 1e-7,
+        .with_density_conv(1e-7)
         // The references are PySCF on the flat (75,110) grid (generator: prune=None),
         // not the pruned KS default AtomicGridConfig::production().
-        dft_grid: Some(AtomicGridConfig::default()),
-        ..Default::default()
-    };
+        .with_dft_grid(AtomicGridConfig::default());
+    cfg.df_k_aux = df_k_aux;
     // The F6 occupation guard is what makes OH converge to its ground state;
     // it is ON by default and must stay on here (the CLI sets it true).
     assert!(cfg.rohf_occupation_guard, "F6 occupation guard must be on");
@@ -269,7 +262,7 @@ fn check_roks(system: &str, basis_name: &str, xc: &str) -> f64 {
         &ctx,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &ctx),
+        num_ctx(&r, "/nuclear_repulsion", &ctx),
         TOL_ENUC,
     );
     let prep = PreparedBasis::new(&mol, &basis::bundled(basis_name).unwrap()).unwrap();
@@ -283,7 +276,7 @@ fn check_roks(system: &str, basis_name: &str, xc: &str) -> f64 {
 
     // The reference itself: the generator's acceptance, re-checked so a
     // hand-edited JSON cannot slip through.
-    let spread = num(&r, &format!("/{block}/accepted_spread"), &ctx);
+    let spread = num_ctx(&r, &format!("/{block}/accepted_spread"), &ctx);
     eprintln!("{ctx}: PySCF accepted-start spread {spread:.2e} Ha");
     assert!(
         spread < 0.5 * tol_e(system),
@@ -308,12 +301,12 @@ fn check_roks(system: &str, basis_name: &str, xc: &str) -> f64 {
     );
     eprintln!("{ctx}: {} iterations", res.iterations);
 
-    let e_ref = num(&r, &format!("/{block}/energy"), &ctx);
+    let e_ref = num_ctx(&r, &format!("/{block}/energy"), &ctx);
     check_close(&ctx, "energy", res.energy, e_ref, tol_e(system));
 
     // ---- negative controls ----
     // ROKS is a constrained UKS: strictly above the UKS minimum.
-    let e_uks = num(&r, &format!("/uks_{xc}_control/energy"), &ctx);
+    let e_uks = num_ctx(&r, &format!("/uks_{xc}_control/energy"), &ctx);
     let gap = res.energy - e_uks;
     eprintln!("{ctx}: ROKS - UKS(ref) {gap:+.3e} Ha (must exceed {MIN_ROKS_MINUS_UKS:.0e})");
     assert!(
@@ -323,7 +316,7 @@ fn check_roks(system: &str, basis_name: &str, xc: &str) -> f64 {
         res.energy
     );
     // Functional applied at all.
-    let e_rohf = num(&r, "/rohf_control/energy", &ctx);
+    let e_rohf = num_ctx(&r, "/rohf_control/energy", &ctx);
     assert!(
         (res.energy - e_rohf).abs() > CONTROL_GAP,
         "{ctx}: ROKS {:.10} within {CONTROL_GAP:.0e} of the ROHF control {e_rohf:.10} — the \
@@ -333,7 +326,7 @@ fn check_roks(system: &str, basis_name: &str, xc: &str) -> f64 {
     // Functional discriminates.
     let must_miss = MUST_MISS_FACTOR * tol_e(system);
     for other in XCS.iter().filter(|o| **o != xc) {
-        let e_other = num(&r, &format!("/roks_{other}/energy"), &ctx);
+        let e_other = num_ctx(&r, &format!("/roks_{other}/energy"), &ctx);
         assert!(
             (res.energy - e_other).abs() > must_miss,
             "{ctx}: ferric {xc} energy within {must_miss:.0e} of the {other} reference — the \
@@ -351,7 +344,7 @@ fn roks_row(system: &str, xc: &str) {
     let must_miss = MUST_MISS_FACTOR * tol_e(system);
     for (i, b_self) in BASES.iter().enumerate() {
         let b_other = BASES[1 - i];
-        let other = num(
+        let other = num_ctx(
             &reference(system, b_other),
             &format!("/roks_{xc}/energy"),
             system,

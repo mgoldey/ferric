@@ -181,12 +181,10 @@ fn atom_run(symbol: &str, charge: i32, multiplicity: usize, basis_name: &str) ->
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let config = RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let config = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_max_iter(200);
     let ctx = ParallelContext::default();
     let res = solve_uhf(&ctx, &mol, &prep, &bounds, &config).unwrap();
     assert!(
@@ -674,12 +672,10 @@ fn promolecule_diabat_b_population_matches_the_quoted_value() {
 
     let bs = basis::bundled("def2-svp").unwrap();
     let ctx = ParallelContext::default();
-    let config = RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        max_iter: 300,
-        ..Default::default()
-    };
+    let config = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_max_iter(300);
 
     // Atom order is fixed to (He, Ne) in every geometry so that the AO ordering
     // — and hence the density matrices — are directly summable.
@@ -825,12 +821,10 @@ fn unconstrained_hene_cation_at_bonding_separation_is_not_diabat_b() {
 
     let bs = basis::bundled("def2-svp").unwrap();
     let ctx = ParallelContext::default();
-    let config = RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        max_iter: 300,
-        ..Default::default()
-    };
+    let config = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_max_iter(300);
 
     let dimer = format!("2\nHeNe+\nHe 0.0 0.0 0.0\nNe 0.0 0.0 {R}\n");
     let he_g = format!("2\nHe + ghost Ne\nHe 0.0 0.0 0.0\n@Ne 0.0 0.0 {R}\n");

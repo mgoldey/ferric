@@ -110,6 +110,7 @@ fn close_polarizable_sites() -> (PolarizableSites, ExternalPotential) {
         ],
         thole_a: Some(2.1304),
         exclusions: vec![],
+        excluded_charges: vec![],
         dipole_zeta: 1e4,
         max_sites_dense: 4000,
     };
@@ -162,6 +163,7 @@ fn close_polarizable_sites_uks() -> (PolarizableSites, ExternalPotential) {
         ],
         thole_a: Some(2.1304),
         exclusions: vec![],
+        excluded_charges: vec![],
         dipole_zeta: 1e4,
         max_sites_dense: 4000,
     };
@@ -187,14 +189,13 @@ fn close_polarizable_sites_uks() -> (PolarizableSites, ExternalPotential) {
 }
 
 fn rhf_polarizable_cfg(sites: &PolarizableSites, ext: &ExternalPotential) -> RhfConfig {
-    RhfConfig {
-        density_conv: 1e-10,
-        energy_conv: 1e-9,
-        max_iter: 300,
-        external_potential: Some(ext.clone()),
-        polarizable: Some(sites.clone()),
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_density_conv(1e-10)
+        .with_energy_conv(1e-9)
+        .with_max_iter(300)
+        .with_external_potential(ext.clone());
+    c.polarizable = Some(sites.clone());
+    c
 }
 
 // ---------------------------------------------------------------------------
@@ -327,11 +328,9 @@ fn uhf_gradient_with_polarizable_none_matches_plain_uhf_gradient() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        density_conv: 1e-10,
-        max_iter: 300,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_density_conv(1e-10)
+        .with_max_iter(300);
     let result = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
     assert!(result.converged);
 
@@ -352,12 +351,10 @@ fn ks_gradient_closed_with_polarizable_none_matches_plain() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        xc: Some("PBE".into()),
-        density_conv: 1e-9,
-        max_iter: 300,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc("PBE")
+        .with_density_conv(1e-9)
+        .with_max_iter(300);
     let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(result.converged);
 
@@ -380,12 +377,10 @@ fn ks_gradient_uks_with_polarizable_none_matches_plain() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        xc: Some("PBE".into()),
-        density_conv: 1e-9,
-        max_iter: 300,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc("PBE")
+        .with_density_conv(1e-9)
+        .with_max_iter(300);
     let result = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
     assert!(result.converged);
 
@@ -456,10 +451,7 @@ fn rks_scf_energy_polarizable(
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        xc: Some(xc.into()),
-        ..rhf_polarizable_cfg(sites, ext)
-    };
+    let cfg = rhf_polarizable_cfg(sites, ext).with_xc(xc);
     let r = solve_rhf(&ctx, mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(r.converged, "RKS+polarizable FD point failed to converge");
     r.energy
@@ -475,10 +467,7 @@ fn ks_gradient_closed_with_polarizable_matches_finite_difference() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        xc: Some(xc.into()),
-        ..rhf_polarizable_cfg(&sites, &ext)
-    };
+    let cfg = rhf_polarizable_cfg(&sites, &ext).with_xc(xc);
     let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(result.converged);
 
@@ -549,15 +538,14 @@ fn ks_gradient_closed_with_polarizable_matches_finite_difference() {
 /// (energy_conv=1e-7, density_conv=1e-4), rather than raising max_iter
 /// indefinitely against a plateau tighter convergence cannot reach.
 fn uks_polarizable_cfg(sites: &PolarizableSites, ext: &ExternalPotential, xc: &str) -> RhfConfig {
-    RhfConfig {
-        xc: Some(xc.into()),
-        energy_conv: 1e-7,
-        density_conv: 1e-4,
-        max_iter: 400,
-        external_potential: Some(ext.clone()),
-        polarizable: Some(sites.clone()),
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_xc(xc)
+        .with_energy_conv(1e-7)
+        .with_density_conv(1e-4)
+        .with_max_iter(400)
+        .with_external_potential(ext.clone());
+    c.polarizable = Some(sites.clone());
+    c
 }
 
 /// FD energy at a displaced OH-doublet+polarizable-sites geometry, SEEDED

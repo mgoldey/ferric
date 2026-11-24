@@ -15,8 +15,7 @@ pub(crate) fn compute_eri3<'py>(
     basis_set: &PyBasisSet,
     aux_basis_set: &PyBasisSet,
 ) -> PyResult<Bound<'py, PyArray3<f64>>> {
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
+    let emol = ecp_molecule(mol, basis_set);
     let obs = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&emol, &aux_basis_set.inner).map_err(make_err)?;
     let eri3 = ferric_integrals::threeindex::eri3_tensor(Operator::coulomb(), &obs, &dfbs)
@@ -44,9 +43,7 @@ pub(crate) fn resolve_operator(
     r0: Option<f64>,
 ) -> PyResult<Operator> {
     let need = |o: Option<f64>, what: &str| {
-        o.ok_or_else(|| {
-            pyo3::exceptions::PyValueError::new_err(format!("operator '{name}' requires {what}"))
-        })
+        o.ok_or_else(|| crate::errors::input_err(format!("operator '{name}' requires {what}")))
     };
     Ok(match name {
         "coulomb" => Operator::coulomb(),
@@ -61,7 +58,7 @@ pub(crate) fn resolve_operator(
             None => Operator::terf(need(r0, "r0 (Bohr)")?),
         },
         other => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "unknown operator '{other}'; expected coulomb|erf|erfc|terf|terfc"
             )))
         }
@@ -70,6 +67,7 @@ pub(crate) fn resolve_operator(
 
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, aux_basis_set, c_left, c_right, memory_budget_gb=2.0, operator="coulomb", omega=None, r0=None))]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn compute_eri3_mo<'py>(
     py: Python<'py>,
     mol: &PyMolecule,
@@ -82,15 +80,14 @@ pub(crate) fn compute_eri3_mo<'py>(
     omega: Option<f64>,
     r0: Option<f64>,
 ) -> PyResult<Bound<'py, PyArray3<f64>>> {
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
+    let emol = ecp_molecule(mol, basis_set);
     let obs = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&emol, &aux_basis_set.inner).map_err(make_err)?;
     let n_bf = obs.nbasis();
     let cl = c_left.as_array().to_owned();
     let cr = c_right.as_array().to_owned();
     if cl.nrows() != n_bf || cr.nrows() != n_bf {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "coefficient rows must equal n_bf={n_bf} (got c_left {}x{}, c_right {}x{})",
             cl.nrows(),
             cl.ncols(),
@@ -107,7 +104,7 @@ pub(crate) fn compute_eri3_mo<'py>(
 
 /// Result of Boys localization: localized coefficients, orbital centers,
 /// and convergence info.
-#[pyclass(name = "BoysResult")]
+#[pyclass(frozen, name = "BoysResult")]
 pub(crate) struct PyBoysResult {
     pub(crate) c_loc_data: ndarray::Array2<f64>,
     pub(crate) centers_data: ndarray::Array2<f64>,
@@ -156,12 +153,11 @@ pub(crate) fn boys_localize(
     c_orbs: numpy::PyReadonlyArray2<f64>,
     max_iter: usize,
 ) -> PyResult<PyBoysResult> {
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
+    let emol = ecp_molecule(mol, basis_set);
     let obs = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
     let c = c_orbs.as_array().to_owned();
     if c.nrows() != obs.nbasis() {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "c_orbs rows must equal n_bf={} (got {})",
             obs.nbasis(),
             c.nrows()
@@ -320,6 +316,7 @@ pub(crate) fn configure_precision<'py>(
 /// mixed_kernels=...)`. Returns `gpu_status()`.
 #[pyfunction]
 #[pyo3(signature = (preset=None, mode=None, precision=None, mixed_kernels=None, device=None, memory_gb=None, min_flops=None))]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn configure_gpu<'py>(
     py: Python<'py>,
     preset: Option<&str>,
@@ -414,8 +411,7 @@ pub(crate) fn compute_metric_2c<'py>(
     omega: Option<f64>,
     r0: Option<f64>,
 ) -> PyResult<Bound<'py, PyArray2<f64>>> {
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
+    let emol = ecp_molecule(mol, basis_set);
     let dfbs = PreparedBasis::new(&emol, &aux_basis_set.inner).map_err(make_err)?;
     let op = resolve_operator(operator, omega, r0)?;
     let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, &dfbs).map_err(make_err)?;
@@ -424,7 +420,7 @@ pub(crate) fn compute_metric_2c<'py>(
 
 /// Entry point for the `ferric` console script (pyproject.toml
 /// `[project.scripts]`) -- calls the SAME CLI logic the standalone
-/// `ferric`/`ferric-cli` Rust binaries call (`ferric_cli::run`), compiled
+/// `ferric`/`ferric-cli` Rust binaries call (`ferric_cli::try_run`), compiled
 /// into THIS `.so` rather than a second binary shipped in the wheel (see the
 /// maturin project's own documented "both binary and library?" guidance:
 /// shipping a second compiled binary would roughly double the wheel, since
@@ -450,22 +446,28 @@ pub(crate) fn compute_metric_2c<'py>(
 /// `args[1..]`), so this only needs to be non-empty and present, not any
 /// particular string.
 ///
-/// Calls `std::process::exit()` on every error path and on `--help` --
-/// deliberately NOT caught or converted to a Python exception here, because
-/// that IS this command's correct CLI behavior (a shell script or
-/// `subprocess` caller reads $?/returncode, not a Python traceback), and
-/// pyo3 has no supported way to make `std::process::exit` merely raise
-/// instead of terminating the process regardless.
+/// Runs `ferric_cli::try_run`. On an error it writes the CLI's exact stderr
+/// text (`CliError::eprint`) and raises `SystemExit(status)` (2 for a usage
+/// error, 1 otherwise): the console script then exits with that status and
+/// no traceback, exactly as the native binary does, but through Python's own
+/// shutdown (atexit handlers run, `sys.stdout`/`sys.stderr` are flushed)
+/// instead of `std::process::exit`. A shell script or `subprocess` caller
+/// reads $?/returncode, as before. `--help`, `--version` and a completed run
+/// return normally, so the console script exits 0.
 ///
-/// `init_threading()`/the ctrlc handler already ran at `import ferric` (this
-/// module's own init, above) -- `ferric_cli::run` calls `init_threading()`
-/// again internally, which is idempotent (same reasoning as its own doc
-/// comment: it is safe-by-default, not order-sensitive).
+/// Process init is the caller's job for `try_run` (it does not call
+/// `init_threading()`); here it already ran at `import ferric`, in this
+/// module's own init, together with the ctrlc handler.
 #[pyfunction]
 pub(crate) fn _cli_main(py: Python<'_>) -> PyResult<()> {
     let argv: Vec<String> = py.import("sys")?.getattr("argv")?.extract()?;
-    ferric_cli::run(argv);
-    Ok(())
+    match ferric_cli::try_run(argv) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            e.eprint();
+            Err(pyo3::exceptions::PySystemExit::new_err(e.exit_code()))
+        }
+    }
 }
 
 /// Which build of ferric is this?

@@ -386,27 +386,25 @@ impl Molecule {
             .sum()
     }
 
-    /// Populate each atom's `n_core_ecp` from an ECP-carrying basis set.
+    /// Set each atom's `n_core_ecp` to what basis set `bs` implies.
     ///
-    /// For every atom whose element has an ECP definition in `bs.ecps`, set its
-    /// `n_core_ecp` to that definition's `n_core`. Atoms without an ECP are left
-    /// untouched (`n_core_ecp` stays 0), and so are ghost atoms: a ghost is
-    /// basis-only, with no core to replace. Readers already treat a ghost as
-    /// charge 0 and core 0 (`effective_z`, `auto_frozen_core`); skipping it
-    /// here keeps the stored field consistent with them. This is the single
-    /// point where the reduced electron count and effective nuclear charge
-    /// enter the molecule; `nelec()` and `nuclear_repulsion()` both read
-    /// `n_core_ecp` afterward.
+    /// Every real atom whose element has an ECP definition in `bs.ecps` gets
+    /// that definition's `n_core`; every other atom, and every ghost, gets 0.
+    /// A ghost is basis-only, with no core to replace; readers already treat
+    /// a ghost as charge 0 and core 0 (`effective_z`, `auto_frozen_core`).
     ///
-    /// No-op when `bs.ecps` is empty (the all-electron path).
+    /// The result depends on `bs` alone, not on earlier calls: applying an
+    /// all-electron basis to a molecule that an ECP basis was applied to
+    /// restores the all-electron counts, and applying twice is applying once.
+    /// This is the single point where the reduced electron count and
+    /// effective nuclear charge enter the molecule; `nelec()` and
+    /// `nuclear_repulsion()` both read `n_core_ecp` afterward.
     pub fn apply_ecp(&mut self, bs: &BasisSet) {
-        if bs.ecps.is_empty() {
-            return;
-        }
-        for atom in self.atoms.iter_mut().filter(|a| !a.ghost) {
-            if let Some(def) = bs.ecp_for_element(atom.z) {
-                atom.n_core_ecp = def.n_core;
-            }
+        for atom in &mut self.atoms {
+            atom.n_core_ecp = match bs.ecp_for_element(atom.z) {
+                Some(def) if !atom.ghost => def.n_core,
+                _ => 0,
+            };
         }
     }
 }

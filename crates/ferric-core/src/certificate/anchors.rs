@@ -584,6 +584,127 @@ pub fn energy_anchor(method: &str) -> Option<&'static EnergyAnchor> {
     ENERGY_ANCHORS.iter().find(|a| a.method == method)
 }
 
+/// The anchor of one graded `(task, method.kind)` row of
+/// [`TASK_KIND_ROWS`](super::TASK_KIND_ROWS): the test that pins the
+/// derivative the task runs (the analytic gradient for `"optimize"`, the
+/// Hessian for `"frequencies"`) against an independent reference.
+///
+/// It carries no measured error and no envelope (the certificate of a task
+/// run carries neither); it exists so the derivative has a production-code
+/// mutation in `testdata/mutations/ledger.json`, keyed by [`Self::name`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaskAnchor {
+    /// The ledger key, e.g. `"RHF gradient"`. Distinct from every
+    /// [`EnergyAnchor::method`].
+    pub name: &'static str,
+    /// `"optimize"` or `"frequencies"`.
+    pub task: &'static str,
+    /// The CLI `method.kind`.
+    pub kind: &'static str,
+    /// The test file, relative to the workspace root; an Anchors row of the
+    /// grade page links it from its Proof cell.
+    pub evidence: &'static str,
+}
+
+const GEOMETRY_OPTIMIZATION: &str = "crates/ferric-scf/tests/validation_geometry_optimization.rs";
+
+/// The anchor of every task row graded Proven, and of no other.
+pub const TASK_ANCHORS: &[TaskAnchor] = &[
+    TaskAnchor {
+        name: "RHF gradient",
+        task: "optimize",
+        kind: "rhf",
+        evidence: GEOMETRY_OPTIMIZATION,
+    },
+    TaskAnchor {
+        name: "UHF gradient",
+        task: "optimize",
+        kind: "uhf",
+        evidence: GEOMETRY_OPTIMIZATION,
+    },
+    TaskAnchor {
+        name: "ROHF gradient",
+        task: "optimize",
+        kind: "rohf",
+        evidence: GEOMETRY_OPTIMIZATION,
+    },
+    TaskAnchor {
+        name: "KS gradient",
+        task: "optimize",
+        kind: "ksdft",
+        evidence: GEOMETRY_OPTIMIZATION,
+    },
+    TaskAnchor {
+        name: "RI-MP2 gradient",
+        task: "optimize",
+        kind: "rimp2",
+        evidence: "crates/ferric-mp2/tests/validation_rimp2_gradient.rs",
+    },
+    TaskAnchor {
+        name: "PDEP-RPA gradient",
+        task: "optimize",
+        kind: "pdep-rpa",
+        evidence: "crates/ferric-rpa/tests/rpa_analytic_gradient.rs",
+    },
+    TaskAnchor {
+        name: "RHF Hessian",
+        task: "frequencies",
+        kind: "rhf",
+        evidence: "crates/ferric-scf/tests/validation_rhf_hessian.rs",
+    },
+    TaskAnchor {
+        name: "UHF Hessian",
+        task: "frequencies",
+        kind: "uhf",
+        evidence: "crates/ferric-scf/tests/validation_uhf_hessian.rs",
+    },
+    TaskAnchor {
+        name: "ROHF Hessian",
+        task: "frequencies",
+        kind: "rohf",
+        evidence: "crates/ferric-scf/tests/validation_rohf_hessian.rs",
+    },
+    TaskAnchor {
+        name: "RKS Hessian",
+        task: "frequencies",
+        kind: "ksdft",
+        evidence: "crates/ferric-scf/tests/ks_moving_grid_hessian.rs",
+    },
+];
+
+/// A ledger key's evidence file and the capability it earns: the
+/// `method.kind` of an [`EnergyAnchor`], `"<task>:<kind>"` of a
+/// [`TaskAnchor`] (the spelling of [`Certificate::for_task`]'s capability).
+pub fn ledger_anchor(name: &str) -> Option<(&'static str, String)> {
+    energy_anchor(name)
+        .map(|a| (a.evidence, a.kind.to_string()))
+        .or_else(|| {
+            TASK_ANCHORS
+                .iter()
+                .find(|a| a.name == name)
+                .map(|a| (a.evidence, format!("{}:{}", a.task, a.kind)))
+        })
+}
+
+/// Every capability whose certificate is graded [`Grade::Proven`](super::Grade::Proven):
+/// each Proven `method.kind`, and `"<task>:<kind>"` for each row of
+/// [`TASK_KIND_ROWS`](super::TASK_KIND_ROWS) whose task certificate (on a
+/// Proven reference) is Proven.
+pub fn proven_capabilities() -> Vec<String> {
+    use super::{Grade, METHOD_KIND_GRADES, TASK_KIND_ROWS};
+    let kinds = METHOD_KIND_GRADES
+        .iter()
+        .filter(|(_, g)| *g == Grade::Proven)
+        .map(|(k, _)| k.to_string());
+    let tasks = TASK_KIND_ROWS
+        .iter()
+        .filter(|&&(t, k)| {
+            Certificate::for_task(t, k, &Certificate::for_method_kind(k)).grade == Grade::Proven
+        })
+        .map(|(t, k)| format!("{t}:{k}"));
+    kinds.chain(tasks).collect()
+}
+
 /// Whether `run` is one of the bundled sets in `list` on the elements `zs`:
 /// equal shells and ECP for every element of `zs`. The run's name only
 /// orders the search (a listed set of the same canonical name is tried
@@ -1223,32 +1344,40 @@ mod tests {
         }
     }
 
-    /// Every disagreement of one ledger row with the registry and the files
-    /// on disk, pushed to `bad`. Returns the anchor when the row carries a
-    /// recorded result.
+    /// Every ledger key: each [`EnergyAnchor::method`], then each
+    /// [`TaskAnchor::name`].
+    fn ledger_keys() -> impl Iterator<Item = &'static str> {
+        ENERGY_ANCHORS
+            .iter()
+            .map(|a| a.method)
+            .chain(TASK_ANCHORS.iter().map(|a| a.name))
+    }
+
+    /// Every disagreement of one ledger row with the registry
+    /// ([`ledger_anchor`]) and the files on disk, pushed to `bad`. Returns
+    /// the capability the row earns when it carries a recorded result.
     fn ledger_row_disagreements(
         row: &serde_json::Value,
         root: &Path,
         bad: &mut Vec<String>,
-    ) -> Option<&'static str> {
+    ) -> Option<String> {
         let field = |k: &str| row[k].as_str().unwrap_or_default();
         let name = field("anchor");
-        let Some(a) = ENERGY_ANCHORS.iter().find(|a| a.method == name) else {
+        let Some((evidence, capability)) = ledger_anchor(name) else {
             bad.push(format!("ledger row {name:?} is not an anchor"));
             return None;
         };
         let mut push = |m: String| bad.push(format!("{name}: {m}"));
-        if field("evidence") != a.evidence {
+        if field("evidence") != evidence {
             push(format!(
-                "ledger evidence {:?}, registry {:?}",
+                "ledger evidence {:?}, registry {evidence:?}",
                 field("evidence"),
-                a.evidence
             ));
         }
         let test = field("test");
-        let src = std::fs::read_to_string(root.join(a.evidence)).unwrap_or_default();
+        let src = std::fs::read_to_string(root.join(evidence)).unwrap_or_default();
         if test.is_empty() || !src.contains(&format!("fn {test}(")) {
-            push(format!("{} has no test fn {test:?}", a.evidence));
+            push(format!("{evidence} has no test fn {test:?}"));
         }
         let patch = field("patch");
         let bytes = std::fs::read(root.join(patch)).unwrap_or_else(|e| {
@@ -1297,52 +1426,180 @@ mod tests {
                 r("failing_test")
             ));
         }
-        let tests_dir = a.evidence.rsplit_once('/').map_or("", |(d, _)| d);
+        let tests_dir = evidence.rsplit_once('/').map_or("", |(d, _)| d);
         if !r("assertion").starts_with(&format!("{tests_dir}/")) {
             push(format!(
                 "assertion {:?} is outside {tests_dir}/",
                 r("assertion")
             ));
         }
-        Some(a.method)
+        Some(capability)
     }
 
-    /// The mutation ledger agrees with [`ENERGY_ANCHORS`] and with the patch
-    /// files: every anchor has a recorded result (patch hash, base commit,
-    /// failing test) or is listed in [`PENDING_MUTATIONS`].
-    #[test]
-    fn mutation_ledger_matches_the_registry() {
-        let root = workspace_root();
+    /// The ledger read and checked row by row: `(disagreements, keys with a
+    /// recorded result, capabilities those rows earn)`.
+    fn read_ledger(root: &Path) -> (Vec<String>, BTreeSet<String>, BTreeSet<String>) {
         let text = std::fs::read_to_string(root.join(MUTATION_LEDGER)).expect("mutation ledger");
         let ledger: serde_json::Value = serde_json::from_str(&text).expect("ledger JSON");
-        let mut bad = Vec::new();
-        let mut recorded = BTreeSet::new();
+        let (mut bad, mut recorded, mut earned) = (Vec::new(), BTreeSet::new(), BTreeSet::new());
         let mut rows = BTreeSet::new();
         for row in ledger["rows"].as_array().expect("rows") {
             let name = row["anchor"].as_str().unwrap_or_default().to_string();
             if !rows.insert(name.clone()) {
                 bad.push(format!("{name}: two ledger rows"));
             }
-            if let Some(m) = ledger_row_disagreements(row, &root, &mut bad) {
-                recorded.insert(m);
+            if let Some(capability) = ledger_row_disagreements(row, root, &mut bad) {
+                recorded.insert(name);
+                earned.insert(capability);
             }
         }
-        for a in ENERGY_ANCHORS {
-            let pending = PENDING_MUTATIONS.contains(&a.method);
-            match (recorded.contains(a.method), pending) {
+        (bad, recorded, earned)
+    }
+
+    /// The mutation ledger agrees with [`ENERGY_ANCHORS`], [`TASK_ANCHORS`]
+    /// and the patch files: every anchor has a recorded result (patch hash,
+    /// base commit, failing test) or is listed in [`PENDING_MUTATIONS`].
+    #[test]
+    fn mutation_ledger_matches_the_registry() {
+        let (mut bad, recorded, _) = read_ledger(&workspace_root());
+        for key in ledger_keys() {
+            let pending = PENDING_MUTATIONS.contains(&key);
+            match (recorded.contains(key), pending) {
                 (false, false) => bad.push(format!(
-                    "{}: no recorded mutation in {MUTATION_LEDGER} and not pending",
-                    a.method
+                    "{key}: no recorded mutation in {MUTATION_LEDGER} and not pending"
                 )),
-                (true, true) => bad.push(format!("{}: recorded and also pending", a.method)),
+                (true, true) => bad.push(format!("{key}: recorded and also pending")),
                 _ => {}
             }
         }
         for p in PENDING_MUTATIONS {
-            if energy_anchor(p).is_none() {
+            if ledger_anchor(p).is_none() {
                 bad.push(format!("pending {p:?} is not an anchor"));
             }
             println!("mutation pending: {p}");
+        }
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
+    }
+
+    /// Proven capabilities that have NOT earned the grade: no ledger row with
+    /// a recorded mutation. Each entry names the capability (as
+    /// [`proven_capabilities`] spells it) and why it is still graded Proven.
+    /// An entry here is a debt, not a waiver: it is reported on every run and
+    /// fails as soon as the capability earns its row or stops being Proven.
+    const UNEARNED_PROVEN: &[(&str, &str)] = &[];
+
+    /// Every disagreement between the Proven capabilities, the capabilities
+    /// a recorded mutation earns, and the allowlist of unearned ones.
+    fn unearned_proven_disagreements(
+        proven: &[String],
+        earned: &BTreeSet<String>,
+        allow: &[(&str, &str)],
+    ) -> Vec<String> {
+        let mut bad = Vec::new();
+        for c in proven {
+            let allowed = allow.iter().any(|(a, _)| a == c);
+            match (earned.contains(c), allowed) {
+                (false, false) => bad.push(format!(
+                    "{c} is graded Proven with no recorded mutation in {MUTATION_LEDGER} \
+                     (add an anchor, a patch and a ledger row, or lower the grade)"
+                )),
+                (true, true) => bad.push(format!(
+                    "{c} earned its row: remove it from UNEARNED_PROVEN"
+                )),
+                _ => {}
+            }
+        }
+        for (a, why) in allow {
+            if why.trim().is_empty() {
+                bad.push(format!("UNEARNED_PROVEN {a:?} gives no reason"));
+            }
+            if !proven.iter().any(|c| c == a) {
+                bad.push(format!("UNEARNED_PROVEN {a:?} is not graded Proven"));
+            }
+        }
+        bad
+    }
+
+    /// The rule of the grade page: no capability is graded Proven unless an
+    /// anchor test of it has been seen to fail under a committed
+    /// production-code mutation (a ledger row with a recorded result), except
+    /// the commented entries of [`UNEARNED_PROVEN`].
+    #[test]
+    fn every_proven_capability_has_a_recorded_mutation() {
+        let (_, _, earned) = read_ledger(&workspace_root());
+        let proven = proven_capabilities();
+        assert!(proven.iter().any(|c| c == "rhf"), "{proven:?}");
+        assert!(proven.iter().any(|c| c == "optimize:rhf"), "{proven:?}");
+        for (c, why) in UNEARNED_PROVEN {
+            println!("graded Proven without a recorded mutation: {c} ({why})");
+        }
+        let bad = unearned_proven_disagreements(&proven, &earned, UNEARNED_PROVEN);
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
+    }
+
+    /// The checker itself: a Proven capability with no earned row fails, an
+    /// allowlisted one passes, and a stale or reasonless allowlist entry fails.
+    #[test]
+    fn unearned_proven_checker_flags_each_case() {
+        let proven = vec!["rhf".to_string(), "optimize:rhf".to_string()];
+        let earned: BTreeSet<String> = ["rhf".to_string()].into();
+        let one = unearned_proven_disagreements(&proven, &earned, &[]);
+        assert_eq!(one.len(), 1, "{one:?}");
+        assert!(
+            one[0].starts_with("optimize:rhf is graded Proven"),
+            "{one:?}"
+        );
+        let ok = unearned_proven_disagreements(&proven, &earned, &[("optimize:rhf", "why")]);
+        assert!(ok.is_empty(), "{ok:?}");
+        let stale = unearned_proven_disagreements(
+            &proven,
+            &earned,
+            &[("optimize:rhf", " "), ("rhf", "x"), ("ccsd(t)", "x")],
+        );
+        assert_eq!(stale.len(), 3, "{stale:?}");
+    }
+
+    /// Each task anchor names a graded task row, a distinct ledger key, and
+    /// an evidence file that exists and that an Anchors row links; every task
+    /// row graded Proven has one.
+    #[test]
+    fn task_anchors_match_the_registry_and_the_page() {
+        let root = workspace_root();
+        let page = std::fs::read_to_string(root.join(GRADE_SOURCE_PAGE)).unwrap();
+        let (header, rows) = anchor_table(&page);
+        let proof = column(&header, "Proof");
+        let mut bad = Vec::new();
+        let mut keys = BTreeSet::new();
+        for k in ledger_keys() {
+            if !keys.insert(k) {
+                bad.push(format!("ledger key {k:?} twice"));
+            }
+        }
+        for a in TASK_ANCHORS {
+            if !super::super::TASK_KIND_ROWS.contains(&(a.task, a.kind)) {
+                bad.push(format!(
+                    "{}: ({}, {}) is not a graded task row",
+                    a.name, a.task, a.kind
+                ));
+            }
+            if !root.join(a.evidence).is_file() {
+                bad.push(format!(
+                    "{}: evidence {} does not exist",
+                    a.name, a.evidence
+                ));
+            }
+            let link = format!("]({PROOF_PREFIX}{})", a.evidence);
+            if !rows.iter().any(|r| r[proof].contains(&link)) {
+                bad.push(format!("{}: no Anchors row links {}", a.name, a.evidence));
+            }
+        }
+        for c in proven_capabilities().iter().filter(|c| c.contains(':')) {
+            if !TASK_ANCHORS
+                .iter()
+                .any(|a| format!("{}:{}", a.task, a.kind) == *c)
+            {
+                bad.push(format!("{c} is graded Proven with no task anchor"));
+            }
         }
         assert!(bad.is_empty(), "{}", bad.join("\n"));
     }

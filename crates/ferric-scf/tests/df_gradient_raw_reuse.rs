@@ -49,6 +49,7 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
+use ferric_testkit::molecules::water_xyz;
 use ndarray::Array2;
 
 const AUX: &str = "def2-universal-jkfit";
@@ -64,13 +65,11 @@ enum Ref {
 }
 
 fn b3lyp_geometry_config() -> RhfConfig {
-    RhfConfig {
-        xc: Some("B3LYP".into()),
-        df_j_aux: Some(AUX.into()),
-        df_k_aux: Some(AUX.into()),
-        ..RhfConfig::default()
-    }
-    .for_geometry_task()
+    RhfConfig::default()
+        .with_xc("B3LYP")
+        .with_df_j_aux(AUX)
+        .with_df_k_aux(AUX)
+        .for_geometry_task()
 }
 
 fn handoff(cfg: &RhfConfig) -> &RawHandoff {
@@ -156,14 +155,10 @@ fn reuse_vs_recompute(s: &Setup, r: Ref, cfg: &RhfConfig, expect_bytes: Option<u
     max_abs_diff(&g_reuse, &g_rec)
 }
 
-fn water() -> Molecule {
-    Molecule::load_xyz("../../testdata/molecules/water.xyz").expect("water.xyz")
-}
-
 #[test]
 fn reused_raw_gradient_equals_recomputed() {
     // Water, default budget: the unpacked in-core tier.
-    let s = setup(water());
+    let s = setup(water_xyz());
     let d = reuse_vs_recompute(&s, Ref::Rks, &b3lyp_geometry_config(), None);
     eprintln!("water/def2-SVP B3LYP: max|g_reuse - g_recompute| = {d:.3e}");
     assert!(d <= BAR, "water: {d:e}");
@@ -183,10 +178,8 @@ fn reused_raw_gradient_equals_recomputed() {
         nao,
         ferric_scf::df_k::RiKPrecision::resolve(None, nao),
     );
-    let cfg = RhfConfig {
-        three_index_budget_bytes: full + dressed - 1,
-        ..b3lyp_geometry_config()
-    };
+    let mut cfg = b3lyp_geometry_config();
+    cfg.three_index_budget_bytes = full + dressed - 1;
     let d = reuse_vs_recompute(&s, Ref::Rks, &cfg, Some(packed));
     eprintln!("n-octane/def2-SVP B3LYP (packed): max|g_reuse - g_recompute| = {d:.3e}");
     assert!(d <= BAR, "octane: {d:e}");
@@ -204,8 +197,8 @@ fn reused_raw_open_shell_gradients_equal_recomputed() {
 
 #[test]
 fn mismatched_geometry_recomputes() {
-    let a = setup(water());
-    let mut moved = water();
+    let a = setup(water_xyz());
+    let mut moved = water_xyz();
     moved.atoms[1].y += 0.01;
     let b = setup(moved);
     let base = b3lyp_geometry_config();
@@ -234,7 +227,7 @@ fn guess_basis_tensor_never_reaches_the_gradient() {
     // (def2-SVP), a slot the secondary SCF could fill — and nobody cleared —
     // would hand the gradient a tensor in the wrong basis. The slot must hold
     // the main SCF's tensor or nothing.
-    let s = setup(water());
+    let s = setup(water_xyz());
     let aux = ferric_core::basis::bundled(AUX).unwrap();
     let naux = PreparedBasis::new(&s.mol, &aux).unwrap().nbasis();
     let sto = ferric_core::basis::bundled("sto-3g").unwrap();
@@ -244,10 +237,11 @@ fn guess_basis_tensor_never_reaches_the_gradient() {
     let budget = naux * nao_s * nao_s * 8
         + ferric_scf::raw_handoff::gradient_intermediate_bytes(naux, &[nocc])
         + 1;
-    let cfg = with_fresh_handoff(&RhfConfig {
-        three_index_budget_bytes: budget,
-        guess_basis: Some(ferric_scf::basis2::GuessBasis::bundled("sto-3g", "fock").unwrap()),
-        ..b3lyp_geometry_config()
+    let cfg = with_fresh_handoff(&{
+        let mut c = b3lyp_geometry_config();
+        c.three_index_budget_bytes = budget;
+        c.guess_basis = Some(ferric_scf::basis2::GuessBasis::bundled("sto-3g", "fock").unwrap());
+        c
     });
     let res = scf(&s, Ref::Rks, &cfg);
     assert!(res.guess_basis.is_some(), "the guess-basis SCF did not run");

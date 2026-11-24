@@ -2,8 +2,7 @@
 
 <!-- status: ready; registry: laplace-mp2, laplace-sos-mp2 -->
 
-*Notation follows `book/notation.md`. $t$ is the Laplace variable (section @sec:oo-laplace
-introduction).*
+*Notation follows chapter @sec:notation. $t$ is the Laplace variable (chapter @sec:oo-laplace).*
 
 Every MP2 term divides by $\Delta_{ij}^{ab} = (\varepsilon_a - \varepsilon_i) + (\varepsilon_b - \varepsilon_j)$,
 a sum of two pair energies, while the fitted numerator is a product of an
@@ -66,11 +65,15 @@ exponents $\tau_k$ and weights $\omega_k$ that minimize
 $$ \delta(R) = \max_{y\in[1,R]}\Big|\frac1y - \sum_k\omega_ke^{-\tau_ky}\Big| . $$
 
 The error curve of a minimax fit alternates in sign, with $2n_q + 1$ extrema
-of equal size $\delta(R)$. The shipped tables show this for every entry of
-$n_q$ = 3 and 5 and for the $n_q = 7$ entries from $R = 20$ up. The two
-smallest-$R$ entries of $n_q = 7$, where $\delta$ is below $10^{-7}$, show
-extra extrema in the computed error curve. For example, the $n_q = 7$ entry with $R = 50$ has
-$\delta = 3.1\times10^{-6}$.
+of equal size $\delta(R)$. Every shipped entry shows this. For example, the
+$n_q = 7$ entry with $R = 50$ has $\delta = 3.1\times10^{-6}$. The script
+below counts 169 and 17 extrema for the two smallest-$R$ entries of
+$n_q = 7$, where $\delta$ is below $10^{-7}$. Those counts come from the
+count, not the fit. On the 200 001-point grid the step-to-step change of
+the error near an extremum falls to the $10^{-16}$ rounding of the f64
+evaluation, so the sign test picks up spurious changes. The tables carry 17
+significant digits, and the same two curves evaluated in 40-digit
+arithmetic on 20 001 points have 15 extrema each.
 
 **The rescaling.** The tables cover $[1, R]$, and the problem needs
 $[y_{\min}, y_{\max}]$. Substitute $x = y_{\min}\,y$:
@@ -91,7 +94,7 @@ Both claims can be checked from the tables alone. The script below needs
 numpy and the source tree, not the extension; it reads `minimax.rs` at the
 `589b50832` commit, counts the extrema of each error curve on a fine grid,
 and compares the rescaled error with $1/y_{\min}$ for $y_{\min} = 0.37$.
-The two smallest-$R$ entries of $n_q = 7$ are the ones with extra extrema:
+The two smallest-$R$ entries of $n_q = 7$ show the counting artifact:
 
 ```python
 # Standalone: needs only numpy and the ferric source tree (reads crates/ferric-quadrature/src/minimax.rs).
@@ -191,8 +194,9 @@ The rules for the table:
 > | Negative control | the half-exponent of $B(t)$ changed from $\tfrac12$ to 1 must fail ("FAIL F") |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-mp2/src/laplace.rs::weighted_b_mo` |
+> | Code test | `laplace_mp2_h2o_ccpvdz_vs_pyscf_dfmp2` in `crates/ferric-mp2/tests/validation_laplace_mp2.rs` (and its four siblings): the production energy against exact DF-MP2 and against a quadrature-isolated numpy reference (section @sec:laplace-mp2-anchors) |
 >
-> <!-- verified: id=laplace.identity; script=scripts/mp2_family_sympy.py; claim=F; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/laplace.rs::weighted_b_mo -->
+> <!-- verified: id=laplace.identity; script=scripts/mp2_family_sympy.py; claim=F; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/laplace.rs::weighted_b_mo; rust_test=ferric-mp2/tests/validation_laplace_mp2.rs::laplace_mp2_h2o_ccpvdz_vs_pyscf_dfmp2 -->
 
 The proof covers the exact integral. The minimax weights are tabulated data
 and no committed script proves them. Their error in the energy is measured
@@ -246,8 +250,9 @@ supply $1/\Delta$ point by point.
 > | Negative control | the half-exponent $-\tfrac12t \to -t$ must fail |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-mp2/src/laplace.rs::sos_j_square_trace`, `ferric-mp2/src/laplace.rs::laplace_exchange_energy` |
+> | Code test | `laplace_mp2_h2o_ccpvdz_vs_pyscf_dfmp2` in `crates/ferric-mp2/tests/validation_laplace_mp2.rs`: the MO energy, Coulomb and exchange, against the quadrature-isolated numpy reference, at most $3.1\times10^{-11}$ Ha |
 >
-> <!-- verified: id=laplace.factorization; script=scripts/mp2_variant_identities.py; claim=3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/laplace.rs::laplace_exchange_energy -->
+> <!-- verified: id=laplace.factorization; script=scripts/mp2_variant_identities.py; claim=3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/laplace.rs::sos_j_square_trace, ferric-mp2/src/laplace.rs::laplace_exchange_energy; rust_test=ferric-mp2/tests/validation_laplace_mp2.rs::laplace_mp2_h2o_ccpvdz_vs_pyscf_dfmp2 -->
 
 ## The AO form of the Coulomb term {#laplace-mp2-ao-form-coulomb-term}
 
@@ -267,7 +272,8 @@ At $t = 0$ and with no frozen core, $\underline P(0) = C_oC_o^{\mathsf T}$ is
 half the Hartree–Fock density, hence the name. At $t > 0$ each orbital is
 weighted by its own exponential. The AO form is the one a reduced-scaling
 method would sparsify (section @sec:local-laplace-sos); as written here it is dense.
-The same factorization at imaginary time splits the independent-particle
+The same factorization, with the Laplace variable read as an imaginary
+time, splits the independent-particle
 polarizability $\chi_0(iu)$ of RPA into occupied and virtual products
 (section @sec:laplace-ao-chi0). That formulation reaches $\mathcal O(N^3)$
 only with AO sparsity; `crates/ferric-rpa/src/ao_rpa.rs` implements the
@@ -294,8 +300,9 @@ forms the exchange term from the MO factors $B(t)$.
 > | Negative control | the four-factor AO trace used as the exchange term must differ |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-mp2/src/laplace.rs::laplace_ao_coulomb_energy`, `build_pseudo_density_occ`, `build_pseudo_density_vir` |
+> | Code test | `laplace_mp2_h2o_ccpvdz_vs_pyscf_dfmp2` in `crates/ferric-mp2/tests/validation_laplace_mp2.rs`: the AO energy against the MO energy on the same grid, at most $3.4\times10^{-13}$ Ha |
 >
-> <!-- verified: id=laplace.ao-trace; script=scripts/mp2_variant_identities.py; claim=3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/laplace.rs::laplace_ao_coulomb_energy -->
+> <!-- verified: id=laplace.ao-trace; script=scripts/mp2_variant_identities.py; claim=3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/laplace.rs::laplace_ao_coulomb_energy; rust_test=ferric-mp2/tests/validation_laplace_mp2.rs::laplace_mp2_h2o_ccpvdz_vs_pyscf_dfmp2 -->
 
 ## SOS-MP2 {#laplace-mp2-sos-mp2}
 
@@ -319,7 +326,11 @@ contractions. Compare the two intermediates of @sec:laplace-mp2-factorized-energ
   occupied indices. Forming it takes of order $N_{\mathrm{aux}}^2n_o^2n_v$
   multiply-adds per point:
   fifth order, like RI-MP2 itself. No change to the denominator undoes the
-  crossing, because it is in the numerator.
+  crossing, because it is in the numerator. Over $n_q$ points that is
+  $n_qN_{\mathrm{aux}}/n_v$ times the canonical $n_o^2n_v^2N_{\mathrm{aux}}$,
+  about 30 for water in cc-pVDZ at $n_q = 7$ ($N_{\mathrm{aux}} = 84$,
+  $n_v = 19$). The kind `laplace-mp2` is therefore not a faster MP2. It is
+  the quadrature and AO-against-MO anchor for the SOS energy.
 
 So the SOS energy is the part of MP2 whose Laplace form costs less than the
 canonical sum. Two input rules follow:
@@ -367,7 +378,7 @@ n_quad=7: E_OS = -0.1524402626  error = -4.94e-08
 | 3′ | AO path: dressed $B^P_{\mu\nu}$, stored sparse (threshold $10^{-12}$) | `compute_ao`, `compute_sos_ao` |
 | 4 | per point, in parallel over $k$: $B(t_k)$, then $\sum J^2$ and (full MP2) $\sum G\cdot G$ | `weighted_b_mo`, `sos_j_square_trace`, `laplace_exchange_energy` |
 | 4′ | AO path, per point: $\underline P(t_k)$, $\underline Q(t_k)$, the trace (@eq:laplace-ao-trace) | `laplace_ao_coulomb_energy` |
-| 5 | $-\sum_k w_k(\ldots)$ | the `par_iter` sum |
+| 5 | $-\sum_k w_k(\ldots)$ | per-point terms collected, then summed in point order |
 
 Which path each entry point takes:
 
@@ -386,8 +397,8 @@ step 4.
 ## The kernel {#laplace-mp2-kernel}
 
 The per-point MO energy is the `map` closure of the quadrature loop in
-`ferric-mp2/src/laplace.rs::LaplaceMp2::compute_mo`, with the code's
-comments replaced by the equation terms:
+`ferric-mp2/src/laplace.rs::LaplaceMp2::compute_mo`, the library and test
+driver, with the code's comments replaced by the equation terms:
 
 ```rust
 .map(|(&t, &w)| {
@@ -405,6 +416,29 @@ comments replaced by the equation terms:
 | `b_t` | $B^P_{ia}(t_k)$, scaled by $e^{t\varepsilon_i/2}e^{-t\varepsilon_a/2}$ |
 | `e_coul` | $\sum_{PQ}J_{PQ}(t_k)^2$ |
 | `e_exch` | $\sum_{PQ}\sum_{ij}G_{PQ}[i,j]G_{PQ}[j,i]$ |
+
+`compute_mo` ends in a rayon `.sum()`, which adds the per-point terms in a
+tree whose shape depends on the thread count. The production drivers do
+not. `ferric-mp2/src/laplace.rs::LaplaceMp2::compute_sos_mo` drops the exchange term, collects
+the terms in point order and adds them on one thread, for the reason of
+section @sec:pair-kernel-parallel-loop-fixed-summation:
+
+```rust
+.map(|(&t, &w)| {
+    let b_t = weighted_b_mo(&b_flat, &occ_scale, &vir_scale, nocc, nvir, t); // B^P_ia(t_k)
+    -w * sos_j_square_trace(&b_t)                                            // -w_k J^2
+})
+.collect();
+let e_os: f64 = per_point.iter().sum();                                      // in point order
+```
+
+`compute_ao` and `compute_sos_ao` collect the same way. With three to seven
+points the tree of `compute_mo` happens not to split differently in
+practice, so no bit moves today. The block widths do not depend on
+`RAYON_NUM_THREADS` either, so with `[parallel] blas_threads = 1` the SOS
+energy is bit-identical across thread counts, which
+`crates/ferric-cli/tests/thread_count_determinism.rs` checks in separate
+processes.
 
 Three points about it:
 
@@ -426,10 +460,13 @@ Three points about it:
   `SOS_J_COL_BLOCK` = 128 columns, and the block sums are folded in order.
   The per-task memory share is the budget divided by the compile-time
   constant `NOMINAL_TASK_WORKERS` = 8, not by the live pool size. Block
-  widths, and so every bit of the energy, do not depend on
-  `RAYON_NUM_THREADS`.
-  `crates/ferric-mp2/tests/laplace_energy_is_thread_independent.rs` checks
-  this.
+  widths do not depend on `RAYON_NUM_THREADS`, so the Laplace contractions
+  add no thread-count dependence. With `[parallel] blas_threads = 1` every
+  bit of the energy is then thread-independent, which
+  `crates/ferric-mp2/tests/laplace_energy_is_thread_independent.rs` checks.
+  With the default serial BLAS count, the pool size, the metric factor and
+  the SCF move in the last bits with the pool size (section
+  @sec:determinism-and-memory-blas-thread-counts).
 - **Wide pools.** A pool wider than 8 can exceed the budget by
   $n_{\mathrm{workers}}/8$. The code warns when that happens
   (`warn_if_task_workers_exceed_nominal`). The per-task share has a
@@ -440,8 +477,11 @@ Three points about it:
   sparsified copy. It fails fast when `laplace_dressing_peak_bytes` exceeds
   the budget.
 - **Choosing a path.** The AO peak grows as $N_{\mathrm{aux}}N^2$ against
-  $N_{\mathrm{aux}}n_on_v$ for `mo`. The two give the same energy
-  (section @sec:laplace-mp2-anchors), so `mo` is the path to use when memory is short.
+  $N_{\mathrm{aux}}n_on_v$ for `mo`. For `laplace-sos-mp2` the two give the
+  same energy (section @sec:laplace-mp2-anchors), so `mo` is the path to use when memory is
+  short. The kind `laplace-mp2` always takes the AO Coulomb path
+  (`laplace_ri_mp2` calls `compute_ao(.., None)`) and has no MO route from
+  the CLI.
 
 ## Anchors {#laplace-mp2-anchors}
 

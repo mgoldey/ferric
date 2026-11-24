@@ -127,12 +127,7 @@ impl Default for GammaRohfConfig {
         Self {
             exxdiv: ExxDiv::Ewald,
             ewald_start: EwaldStart::Staged,
-            scf: RhfConfig {
-                use_sad_guess: false,
-                density_conv: 1e-10,
-                max_iter: 200,
-                ..Default::default()
-            },
+            scf: RhfConfig::periodic(1e-10, 200),
             initial_mos: None,
             solver: RohfSolver::Diis,
         }
@@ -237,7 +232,8 @@ impl GammaRoksConfig {
     ///   non-aufbau stationary state −1.4434745673 (22 mHa above the pin).
     ///
     /// The shift acts on the virtual block only and is ramped by the solver
-    /// as `ls·err/(err + 1e-3)` (the molecular ROHF ramp; `level_shift` is
+    /// as `ls·err/(err + 1e-3)` (`ferric_scf::open_shell_level_shift_ramp`,
+    /// the molecular open-shell ramp; `level_shift` is
     /// accepted by `validate_injected_rohf`), so it vanishes at convergence
     /// and cannot move the converged state: in the replica LDA/PBE/PBE0 (none
     /// and staged ewald) reproduce their pins to 1e-13 with it. The replica

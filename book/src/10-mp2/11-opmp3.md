@@ -20,13 +20,13 @@ reference (@sec:opmp3-reference), and what is anchored (@sec:opmp3-anchored).
 | $c^{(1)}, c^{(2)}$ | first- and second-order doubles, spin blocked ($\alpha\alpha$, $\beta\beta$, $\alpha\beta$ stored $[i,J,a,B]$) | `UMp3Result::{c1,c2}` |
 | $K$ | $\langle ij\Vert ab\rangle$ ($\alpha\alpha$, $\beta\beta$), $(ia\vert JB)$ ($\alpha\beta$) | `UMp3Result::ints` |
 | $W^{(n)}_\sigma$ | occupied-space matrix of order $n$, spin $\sigma$; SS and OS channels | `WChannels::{ss,os}` |
-| $P(A,B)$ | matrix Padé $A(A-B)^{-1}A$ | `pade` |
+| $\mathcal P(A,B)$ | matrix Padé $A(A-B)^{-1}A$ | `pade` |
 | $x$, $x_{ss}$, $x_{os}$ | scale on $W^{(3)}$; same- and opposite-spin scales | `x_ss` |
 | $E_{\mathrm{NBS}}$ | non-Brillouin singles energy | `e_nbs` |
 
 | Entry point | Location |
 |---|---|
-| Rust | `ferric-mp2/src/opmp3_driver.rs::{run_opmp3,opmp3_on_reference}`; matrices and models in `ferric-mp2/src/opmp3.rs::{w_channels,pade,op_mp3,sop_mp3,ssd_opmp3}`; reference in `ferric-mp2/src/opmp3_reference.rs::opmp3_reference` |
+| Rust | `ferric-mp2/src/opmp3_driver.rs::{run_opmp3,opmp3_on}`; matrices and models in `ferric-mp2/src/opmp3.rs::{w_channels,pade,op_mp3,sop_mp3,ssd_opmp3}`; reference in `ferric-mp2/src/opmp3_reference.rs::opmp3_reference` |
 | CLI | `method.kind = "opmp3"` with `[opmp3] reference` (`examples/oh-opmp3-pbe0.toml`) |
 | Python | `run_opmp3(reference=, x_ss=, auxbasis=)` |
 
@@ -128,40 +128,40 @@ to rounding.
 ## The matrix Padé and the models {#opmp3-matrix-pad-models}
 
 Start from the scalar Padé. Write the series with a counting parameter
-$t$, $E_2 + tE_3 + \dots$, and expand the Padé in $t$:
+$z$, $E_2 + zE_3 + \dots$, and expand the Padé in $z$:
 
-$$ \frac{E_2^2}{E_2 - tE_3} = \frac{E_2}{1 - tE_3/E_2} = E_2 + tE_3 + t^2\frac{E_3^2}{E_2} + t^3\frac{E_3^3}{E_2^2} + \dots $$
+$$ \frac{E_2^2}{E_2 - zE_3} = \frac{E_2}{1 - zE_3/E_2} = E_2 + zE_3 + z^2\frac{E_3^2}{E_2} + z^3\frac{E_3^3}{E_2^2} + \dots $$
 
 It reproduces the first two orders and continues them as a geometric series
 with ratio $E_3/E_2$. The matrix version replaces $E_2$ and $E_3$ by the
 matrices whose traces they are. For symmetric $A = W^{(2)}$ and
 $B = xW^{(3)}$,
 
-$$ P(A,B) = A\,(A-B)^{-1}A, \qquad \operatorname{Tr}P(A,tB) = \operatorname{Tr}A + t\operatorname{Tr}B + t^2\operatorname{Tr}\big[BA^{-1}B\big] + O(t^3) . \label{eq:opmp3-pade} $$
+$$ \mathcal P(A,B) = A\,(A-B)^{-1}A, \qquad \operatorname{Tr}\mathcal P(A,zB) = \operatorname{Tr}A + z\operatorname{Tr}B + z^2\operatorname{Tr}\big[BA^{-1}B\big] + O(z^3) . \label{eq:opmp3-pade} $$
 
-To get the expansion, factor $A - tB = A(1 - tA^{-1}B)$, invert as a
-Neumann series, $(A - tB)^{-1} = A^{-1} + tA^{-1}BA^{-1} + t^2A^{-1}BA^{-1}BA^{-1} + \dots$,
+To get the expansion, factor $A - zB = A(1 - zA^{-1}B)$, invert as a
+Neumann series, $(A - zB)^{-1} = A^{-1} + zA^{-1}BA^{-1} + z^2A^{-1}BA^{-1}BA^{-1} + \dots$,
 and multiply by $A$ on both sides. The first two Taylor coefficients of the
 trace are $E^{(2)}$ and $E^{(3)}$, so the series limit of every model is
 MP3.
 
-Check the limits. At $B = 0$, $P(A, 0) = AA^{-1}A = A$: the resummation
-with no third-order term is MP2. For a $1\times 1$ block $P$ is the scalar
+Check the limits. At $B = 0$, $\mathcal P(A, 0) = AA^{-1}A = A$: the resummation
+with no third-order term is MP2. For a $1\times 1$ block $\mathcal P$ is the scalar
 Padé $a^2/(a-b)$; for commuting $A$ and $B$ each common eigenvector gets it.
 
 Why does the matrix form fix size consistency? For two fragments far apart
 every occupied orbital sits on one of them, and $W$ has no elements
 between orbitals on different fragments: $A$ and $B$ are block diagonal.
 Inverses and products of block-diagonal matrices are block diagonal, so
-$P$ is the block-diagonal
-matrix of each fragment's own $P$, and its trace is the sum of the
+$\mathcal P$ is the block-diagonal
+matrix of each fragment's own $\mathcal P$, and its trace is the sum of the
 fragments' traces. The scalar Padé of the summed traces is not, since
 $(a_1+a_2)^2/(a_1+a_2-b_1-b_2) \ne a_1^2/(a_1-b_1)+a_2^2/(a_2-b_2)$ in
 general. ferric keeps it (P-MP3) as the negative control.
 
 The code diagonalizes the symmetrized $A - B = V\Lambda V^{\mathsf T}$, so
 $(A-B)^{-1} = V\Lambda^{-1}V^{\mathsf T}$, and forms
-$P = (AV)\Lambda^{-1}(AV)^{\mathsf T}$ from
+$\mathcal P = (AV)\Lambda^{-1}(AV)^{\mathsf T}$ from
 `ferric-mp2/src/opmp3.rs::pade`:
 
 <!-- excerpt: ferric-mp2/src/opmp3.rs::pade -->
@@ -178,10 +178,10 @@ let pk = scaled.dot(&av.t());
 |---|---|
 | $A$ on its non-zero rows | `ak` |
 | $V$, $\Lambda$ | `v`, `lam` (from `eigh` of $\tfrac12[(A-B) + (A-B)^{\mathsf T}]$) |
-| $P$ on the kept rows | `pk` |
+| $\mathcal P$ on the kept rows | `pk` |
 
 Rows on which $A$ is identically zero (a channel with no pairs) are left
-out, so $P(0,0) = 0$. An eigenvalue of $A - B$ below $10^{-12}\max|\lambda|$
+out, so $\mathcal P(0,0) = 0$. An eigenvalue of $A - B$ below $10^{-12}\max|\lambda|$
 is a singular denominator and returns an error.
 
 The models are traces over both spins. OP-MP3 resums each spin's full
@@ -189,29 +189,32 @@ $W$; SOP-MP3 resums the same-spin and opposite-spin channels separately,
 each with its own scale on $W^{(3)}$; SSD-OPMP3 damps only the same-spin
 third order:
 
-$$ E_c^{\text{OP-MP3}(x)} = \sum_\sigma\operatorname{Tr}P\big(W^{(2)}_\sigma,\;xW^{(3)}_\sigma\big), \qquad W_\sigma = W^{SS}_\sigma + W^{OS}_\sigma , $$
-$$ E_c^{\text{SOP-MP3}(x_{ss},x_{os})} = \sum_\sigma\Big[\operatorname{Tr}P\big(W^{(2),SS}_\sigma, x_{ss}W^{(3),SS}_\sigma\big) + \operatorname{Tr}P\big(W^{(2),OS}_\sigma, x_{os}W^{(3),OS}_\sigma\big)\Big], \qquad E_c^{\text{SSD-OPMP3}(x_{ss})} = E_c^{\text{SOP-MP3}(x_{ss},1)} . \label{eq:opmp3-4} $$
+$$ E_c^{\text{OP-MP3}(x)} = \sum_\sigma\operatorname{Tr}\mathcal P\big(W^{(2)}_\sigma,\;xW^{(3)}_\sigma\big), \qquad W_\sigma = W^{SS}_\sigma + W^{OS}_\sigma , $$
+$$ E_c^{\text{SOP-MP3}(x_{ss},x_{os})} = \sum_\sigma\Big[\operatorname{Tr}\mathcal P\big(W^{(2),SS}_\sigma, x_{ss}W^{(3),SS}_\sigma\big) + \operatorname{Tr}\mathcal P\big(W^{(2),OS}_\sigma, x_{os}W^{(3),OS}_\sigma\big)\Big], \qquad E_c^{\text{SSD-OPMP3}(x_{ss})} = E_c^{\text{SOP-MP3}(x_{ss},1)} . \label{eq:opmp3-4} $$
 
 `Opmp3Models::evaluate` reports MP2 ($\operatorname{Tr}W^{(2)}$), MP3, the
 scalar Padé (P-MP3), OP-MP3 and SOP-MP3 at $x = 1$, and SSD-OPMP3 at the
-run's $x_{ss}$. Unless the input sets it, $x_{ss}$ is the paper's printed
-value for the reference (`PAPER_X_SS`):
+run's $x_{ss}$. Unless the input sets it, $x_{ss}$ is the value the paper
+prints under each reference in its Figure 3 (`PAPER_X_SS`):
 
 | Reference | hf | pbe0 | pbe | spw92 | r2scan | wb97x-v | wb97m-v | koomp2 |
 |---|---|---|---|---|---|---|---|---|
 | $x_{ss}$ | 0 | 0.50 | 0.70 | 0.75 | 0.60 | 0.50 | 0.50 | 0.45 |
 
-A reference with no printed value and no explicit `x_ss` is an error.
+The paper rounds each fitted value to a multiple of 0.05. Two are set by
+hand: the HF fit is negative ($-0.164$) and is set to 0, and the ωB97X-V
+fit ($0.470$) is set to 0.5 to match the other hybrids. A reference with no
+printed value and no explicit `x_ss` is an error.
 
 > **Verified equation @eq:opmp3-pade** · Padé series, scalar limit, size consistency
 >
-> For symbolic symmetric $2\times2$ $A$, $B$, $P(A,tB) = A + tB + t^2BA^{-1}B + O(t^3)$
+> For symbolic symmetric $2\times2$ $A$, $B$, $\mathcal P(A,zB) = A + zB + z^2BA^{-1}B + O(z^3)$
 > element by element (b1); the $1\times1$ case is $a^2/(a-b)$ (b2); commuting
 > blocks give the per-eigenvalue scalar Padé (b3). For a block-diagonal pair
-> $\operatorname{Tr}P$ is the sum of the blocks' traces (c1), while the scalar
+> $\operatorname{Tr}\mathcal P$ is the sum of the blocks' traces (c1), while the scalar
 > Padé of the summed traces is not (c2: $-8/3$ against $-3$ on the
 > counterexample $A_1 = A_2 = -1$, $B_1 = -\tfrac12$, $B_2 = 0$), except for
-> identical copies (c3). Numerically, $\operatorname{Tr}P$ equals the paper's
+> identical copies (c3). Numerically, $\operatorname{Tr}\mathcal P$ equals the paper's
 > eigen route $\sum_i(S^{-1}AS)_{ii}/(1-\zeta_i)$, $\zeta = \operatorname{eig}(A^{-1}B)$,
 > to $10^{-12}$ (check N).
 >
@@ -258,6 +261,11 @@ E_HF[rho] -76.02676800  E_NBS -6.200e-29  x_ss 0.0
 Tr W2 -0.20404841  Tr W3 -0.00678378  Tr W2 + Tr W3 -0.21083219
 ```
 
+SSD-OPMP3 gives the largest correlation energy of the six because the HF
+reference uses $x_{ss} = 0$. The same-spin channel then stays at its MP2
+value, which drops the positive same-spin third order, and only the
+opposite-spin channel is resummed.
+
 ## The reference {#opmp3-reference}
 
 The reference may be Hartree–Fock or Kohn–Sham, but the perturbation
@@ -276,7 +284,7 @@ of each $F_\sigma$ are diagonalized separately in the SCF orbitals
 unchanged and gives the orbital energies of the denominators of (@eq:mp3-u-spin-blocks);
 what remains of $F^\sigma_{ia}$ enters through $E_{\mathrm{NBS}}$. The driver
 runs RHF or RKS for a singlet and ROHF or ROKS otherwise, with exact
-$J$ and $K$ and an unconverged SCF as an error; `opmp3_on_reference` also
+$J$ and $K$ and an unconverged SCF as an error; `opmp3_on` also
 takes a converged UHF, for which $F^\sigma_{ia} = 0$ and $E_{\mathrm{NBS}} = 0$.
 The amplitude stage uses exact four-centre integrals by default, or RI when
 an auxiliary basis is given.
@@ -296,8 +304,30 @@ for i in first..self.nocc {
 }
 ```
 
-No proof script covers (@eq:opmp3-5). It is checked against independent codes
-instead: PySCF's ROHF $E_2$ and $E_3$ channels on OH, and the Q-Chem 6.4
+> **Verified equation @eq:opmp3-5** · reference energy and non-Brillouin singles
+>
+> A random antisymmetrized Hamiltonian in 6 spin orbitals (3 occupied) is
+> built so that the Fock operator of the reference determinant is diagonal
+> in the occupied and virtual blocks and has a random $F_{ia}$ block. In the
+> 20-determinant space, $\langle 0|H|0\rangle = \tfrac12\sum_i(h_{ii} + F_{ii})$
+> (e1), and brute-force Rayleigh–Schrödinger $E_2$ equals
+> $E_{\mathrm{NBS}} + \operatorname{Tr}W^{(2)}$ (e2). On this model
+> $E_{\mathrm{NBS}} = -3.0\times10^{-2}$ Ha, about half of $E_2$, so a wrong
+> singles term cannot hide.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/opmp3_identities_sympy.py`, checks e1, e2 (claim e2) |
+> | Negative control | mutation `nbs_gap_flipped` ($\varepsilon_a - \varepsilon_i$ in the denominator) turns e2 red |
+> | Runner | `crates/ferric-python/tests/test_opmp3_identities_sympy.py` |
+> | Code | `ferric-mp2/src/opmp3_reference.rs::{opmp3_reference,singles_energy}` |
+> | Code test | `reference_path_rebuilds_e_hf_and_e_nbs_and_matches_pyscf_rohf` in `crates/ferric-mp2/tests/opmp3.rs` |
+>
+> <!-- verified: id=opmp3.reference; script=scripts/opmp3_identities_sympy.py; claim=e2; runner=crates/ferric-python/tests/test_opmp3_identities_sympy.py; code=ferric-mp2/src/opmp3_reference.rs::{opmp3_reference,singles_energy}; rust_test=ferric-mp2/tests/opmp3.rs::reference_path_rebuilds_e_hf_and_e_nbs_and_matches_pyscf_rohf; registry=opmp3 -->
+
+The model has no frozen core; the loop above skips frozen orbitals by its
+start index. The same quantities are also checked against independent
+codes: PySCF's ROHF $E_2$ and $E_3$ channels on OH, and the Q-Chem 6.4
 values of the paper's own tests for $E_{\mathrm{HF}}[\rho]$, $E_{\mathrm{NBS}}$,
 $\operatorname{Tr}W^{(2)}$ and $\operatorname{Tr}W^{(3)}$ (table below).
 
@@ -313,9 +343,11 @@ $\operatorname{Tr}W^{(2)}$ and $\operatorname{Tr}W^{(3)}$ (table below).
 | resummation on the paper's own $W$ matrices vs its per-reaction W4-17 TAE errors | 12 reactions, HF, PBE0, κOOMP2 references | printed 1e-6 kcal/mol | 1e-5 kcal/mol | `crates/ferric-mp2/tests/opmp3_paper.rs` |
 
 The grade in `site/src/reference/validation.md` is Smoke: no committed test
-pins an end-to-end OP-MP3 total against an independent code.
+pins an end-to-end OP-MP3 total against an independent code. The rows above
+pin every ingredient of the total. What Proven needs is one OP-MP3 or
+SSD-OPMP3 total energy from Q-Chem on one molecule, compared in a test.
 
-## Known limits (2026-11-15)
+## Known limits {#opmp3-limits}
 
 - Energy only: no gradient.
 - The reference is exact-$J/K$ only; the amplitude stage holds the spin-blocked
@@ -324,11 +356,11 @@ pins an end-to-end OP-MP3 total against an independent code.
   references) is defined in `opmp3.rs` but no run uses it: OP-MP3 is always
   reported at $x = 1$.
 
-## Sources
+## Sources {#opmp3-sources}
 
 | Source | Used for |
 |---|---|
-| Bystrom, Berkelbach and Hait, arXiv:2609.25330 | the method, Eqs. 11a, 13, 14, 18–22, the $x_{ss}$ table |
+| Bystrom, Berkelbach and Hait, arXiv:2609.25330 | the method, Eqs. 11a, 13, 14, 18–22, the $x_{ss}$ values of Figure 3 |
 | `crates/ferric-mp2/src/opmp3.rs`, `opmp3_reference.rs`, `opmp3_driver.rs` | implementation |
 | `scripts/opmp3_identities_sympy.py` | proofs |
 | `crates/ferric-mp2/tests/opmp3.rs`, `opmp3_qchem.rs`, `opmp3_paper.rs` | anchors |

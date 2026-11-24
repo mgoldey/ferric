@@ -36,7 +36,7 @@ the two occupied orbitals.
 **Both $\alpha$.** Both virtuals must be $\alpha$ too, and both the direct
 and the exchange integral survive. The antisymmetrized integral is
 
-$$ K_{iajb} = (ia|jb) - (ib|ja) , $$
+$$ K_{ijab} = (ia|jb) - (ib|ja) , $$
 
 and the block keeps the $\tfrac14$ of (@eq:closed-shell-ri-mp2-1). The $\beta\beta$ block is the
 same with every index barred.
@@ -85,31 +85,18 @@ UMP2 unchanged.
 > **Verified equation @eq:mp2-u-spin-blocks** · unrestricted MP2 spin blocks
 >
 > The three blocks of (@eq:mp2-u-spin-blocks) sum to the spin-orbital energy (@eq:closed-shell-ri-mp2-1), and the
-> $\tfrac14$ sum over all $(i,j,a,b)$ of the squared antisymmetrized
-> integral equals the sum over $i<j$, $a<b$.
+> $\tfrac14$ sum over all $(i,j,a,b)$ of $K_{ijab}^2/\Delta$, with
+> $K_{ijab} = (ia|jb) - (ib|ja)$, equals
+> $\sum_{i<j,\,a<b} |\langle ij\|ab\rangle|^2/\Delta$.
 >
 > | | |
 > |---|---|
-> | Proof | `scripts/mp2_variant_identities.py`, claim 2; `scripts/mp2_family_sympy.py`, part B |
-> | Negative control | the runner sets the same-spin kernel's scale to 1/2 and requires the claim to fail |
+> | Proof | `scripts/mp2_variant_identities.py`, claim 2 (numerical, the three blocks); `scripts/mp2_family_sympy.py`, part B (symbolic, the quarter factor) |
+> | Negative control | the runner sets the same-spin kernel's scale to 1/2 in claim 2, and the quarter to 1/2 in part B, and requires each to fail |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-mp2/src/u_rimp2.rs::same_spin_block_energy`, `ferric-mp2/src/u_rimp2.rs::opposite_spin_block_energy` |
 >
-> <!-- verified: id=mp2.u.spin-blocks; script=scripts/mp2_variant_identities.py; claim=2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/u_rimp2.rs::same_spin_block_energy, ferric-mp2/src/u_rimp2.rs::opposite_spin_block_energy; rust_test=ferric-mp2/tests/validation_u_rimp2.rs::u_rimp2_oh_ccpvdz_vs_pyscf_dfump2 -->
-
-> **Verified equation @eq:mp2-u-spin-blocks** · the quarter factor
->
-> $\tfrac14\sum_{ijab} K_{ijab}^2/\Delta$ with $K_{ijab} = (ia|jb) - (ib|ja)$
-> equals $\sum_{i<j,\,a<b} |\langle ij\|ab\rangle|^2/\Delta$.
->
-> | | |
-> |---|---|
-> | Proof | `scripts/mp2_family_sympy.py`, part B |
-> | Negative control | the runner replaces the quarter by 1/2 and requires part B to fail |
-> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
-> | Code | `ferric-mp2/src/u_rimp2.rs::same_spin_block_energy` |
->
-> <!-- verified: id=mp2.u.quarter-factor; script=scripts/mp2_family_sympy.py; claim=B; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/u_rimp2.rs::same_spin_block_energy -->
+> <!-- verified: id=mp2.u.spin-blocks; script=scripts/mp2_variant_identities.py; claim=2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/u_rimp2.rs::same_spin_block_energy, ferric-mp2/src/u_rimp2.rs::opposite_spin_block_energy; rust_test=ferric-mp2/tests/validation_u_rimp2.rs::u_rimp2_oh_ccpvdz_vs_pyscf_dfump2; registry=u-ri-mp2 -->
 
 Here are the spin blocks for the OH radical in cc-pVDZ, from the
 `589b50832` build. `run_rimp2` picks the UHF reference from the multiplicity,
@@ -151,7 +138,7 @@ OS fraction       = 0.756
 The same-spin kernel uses the symmetry of $K$ under the joint swap
 $(i,a) \leftrightarrow (j,b)$:
 
-$$ K_{jbia} = (jb|ia) - (ja|ib) = (ia|jb) - (ib|ja) = K_{iajb} , $$
+$$ K_{jiba} = (jb|ia) - (ja|ib) = (ia|jb) - (ib|ja) = K_{ijab} , $$
 
 using $(pq|rs) = (rs|pq)$ for real orbitals. The denominator is symmetric
 under the same swap. So the $(j,i)$ block equals the $(i,j)$ block, as in
@@ -174,7 +161,7 @@ for j in i..nocc {                                   // unique pairs j >= i
             let eps_b = eps[nocc_total + b_idx];
             let g_ab = g_i[(a, jcol + b_idx)]; // (ia|jb)
             let g_ba = g_i[(b_idx, jcol + a)]; // (ib|ja)
-            let k = g_ab - g_ba;                         // K_iajb
+            let k = g_ab - g_ba;                         // K_ijab
             let denom = eps_i + eps_j - eps_a - eps_b;   // -Delta
             let t_val = k / denom;                       // -K/Delta
             energy_ij += t_val * k;                      // -K^2/Delta
@@ -182,12 +169,12 @@ for j in i..nocc {                                   // unique pairs j >= i
     }
     energy_i += fac * energy_ij;
 }
-0.25 * energy_i                                      // the 1/4 of (10.8)
+0.25 * energy_i                                      // the 1/4 of E_aa
 ```
 
-The block `g_i` is built exactly as in @sec:closed-shell-ri-mp2-algorithm, one wide product per $i$.
-The sign convention is the one of 10.1: `denom` is $-\Delta$, and the
-explicit minus of (@eq:mp2-u-spin-blocks) is absent.
+The block `g_i` is built as in section @sec:closed-shell-ri-mp2-algorithm, one wide product
+per $i$. The sign convention is the one of section @sec:closed-shell-ri-mp2: `denom` is
+$-\Delta$, and the explicit minus of (@eq:mp2-u-spin-blocks) is absent.
 
 `ferric-mp2/src/u_rimp2.rs::opposite_spin_block_energy` has no such
 symmetry. Its two indices belong to different spins, $(i, \bar\jmath)$ and
@@ -214,9 +201,13 @@ reference determinant unchanged.
 
 The rotation does not remove the occupied–virtual block. On an ROHF
 reference the energy is the doubles part only. The singles term
-$\sum_{ia} |f_{ia}|^2/(\varepsilon_i - \varepsilon_a)$, which is nonzero
-for semicanonical ROHF orbitals, is not added. The CLI runs UMP2 on a UHF
-reference; the ROHF route is reached from Rust.
+$\sum_\sigma\sum_{ia} |f^\sigma_{ia}|^2/(\varepsilon^\sigma_i - \varepsilon^\sigma_a)$,
+which is nonzero for semicanonical ROHF orbitals, is not added; OP-MP3
+computes the same term as $E_{\mathrm{NBS}}$ (@eq:opmp3-5). The CLI runs UMP2
+on a UHF reference; the ROHF route is reached from Rust. Its anchor sits in
+the GW test suite (`crates/ferric-gw/tests/validation_rohf_reference.rs`),
+which checks every unrestricted correlated method on the same
+semicanonical ROHF orbitals.
 
 The frozen-core count applies to both spins, so a count larger than
 $n_o^\beta$ is an error even when it fits in $n_o^\alpha$.
@@ -231,22 +222,19 @@ $n_o^\beta$ is an error even when it fits in $n_o^\alpha$.
 
 Figures from `site/src/reference/validation.md`.
 
-## Known limits (2026-11-15)
+## Known limits {#unrestricted-ri-mp2-limits}
 
 - κ-regularization (section @sec:scs-and-kappa) is closed-shell only on the CLI and in
   Python; `[mp2] kappa` on an open-shell molecule is refused.
 - No ROHF singles term.
 - The local (amplitude-threshold) scheme of `[local]` is closed-shell only.
 
-## Sources
+## Sources {#unrestricted-ri-mp2-sources}
 
 | Source | Used for |
 |---|---|
-| sections @sec:unrestricted-ri-mp2-energy and @sec:attenuated-mp2 | equations @eq:unrestricted-ri-mp2-1, @eq:mp2-u-spin-blocks, the spin-block derivation |
+| section @sec:spin-adaptation | the spin-orbital to spatial-orbital reduction the spin blocks follow |
 | `crates/ferric-mp2/src/u_rimp2.rs` | kernels, reference handling, frozen core |
 | `scripts/mp2_variant_identities.py` claim 2, `scripts/mp2_family_sympy.py` part B | verified boxes |
 | Goldey dissertation, chapter 5, section 5.1 | the spin-contamination caveat |
 | `site/src/reference/validation.md` | anchors |
-
-Changes from the sources: barred $\beta$ indices instead of capitals; positive
-$\Delta$ with an explicit minus sign.

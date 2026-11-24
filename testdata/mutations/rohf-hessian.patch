@@ -1,0 +1,13 @@
+diff --git a/crates/ferric-scf/src/hessian/rohf.rs b/crates/ferric-scf/src/hessian/rohf.rs
+index cf20d75b1..a475da2a8 100644
+--- a/crates/ferric-scf/src/hessian/rohf.rs
++++ b/crates/ferric-scf/src/hessian/rohf.rs
+@@ -847,7 +847,7 @@ pub fn rohf_hessian_parts_df_mutated(
+             let specs = [&dens.d_alpha, &dens.d_beta].map(|ds| FockSpec {
+                 coulomb: &dens.d_total,
+                 exchange: ds,
+-                k_scale: 1.0,
++                k_scale: 0.5,
+             });
+             (
+                 first_order_ao(prep, op, bounds, natoms, extra_charges(config), &specs)?,

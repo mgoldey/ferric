@@ -9,7 +9,6 @@
 // energies, frequency grid, QP indices); bundling them into structs would only
 // move the boilerplate to the call sites. type_complexity likewise flags the
 // multi-array return tuples, which are self-documenting and used once.
-#![allow(clippy::too_many_arguments)]
 #![allow(clippy::type_complexity)]
 
 // NOTE: no `///` summary here on purpose. `assign.rs` carries its own `//!`
@@ -61,7 +60,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_rpa::config::PdepRpaConfig;
 use ferric_rpa::{run_pdep_rpa, PdepRpaResult};
-use ferric_scf::ScfResult;
+use ferric_scf::{PreparedAux, ScfResult};
 use ndarray::Array1;
 
 /// Clone a PDEP-RPA config with `need_inv_dielectric_freq` forced on. Every GW
@@ -284,6 +283,30 @@ impl std::fmt::Display for UGwResult {
     }
 }
 
+/// [`run_u_gw`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `scf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn run_u_gw_on(
+    aux: &PreparedAux<'_>,
+    scf: &ScfResult,
+    vxc_diag: Option<(&Array1<f64>, &Array1<f64>)>,
+    pdep_cfg: &PdepRpaConfig,
+    gw_cfg: &GwConfig,
+) -> Result<UGwResult, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(scf)?;
+    run_u_gw(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        scf,
+        pdep_cfg,
+        gw_cfg,
+        vxc_diag,
+    )
+}
+
 /// Top-level dispatch — spin-unrestricted. Accepts UHF, ROHF, UKS or ROKS reference.
 ///
 /// A ROHF/ROKS reference is first semi-canonicalized
@@ -306,6 +329,7 @@ impl std::fmt::Display for UGwResult {
 /// KS orbitals and held fixed across the outer loop; for U-COHSEX (static, no
 /// QP root search) it is added to ε_mf + Σ_c. `None` ⇒ HF reference (UHF/ROHF):
 /// no shift, and the QP solve is exactly the shift-zero path.
+#[allow(clippy::too_many_arguments)]
 pub fn run_u_gw(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -337,9 +361,12 @@ pub fn run_u_gw(
         .clone()
         .unwrap_or_else(|| default_u_qp_range(mol, scf));
     let nmo = scf.eps_alpha.len();
-    if qp_range.end > nmo {
+    // The range indexes both spins: bound it by the smaller MO count.
+    let nmo_beta = scf.eps_beta.as_ref().map_or(nmo, Vec::len);
+    let nmo_both = nmo.min(nmo_beta);
+    if qp_range.end > nmo_both {
         return Err(FerricError::General(format!(
-            "run_u_gw: qp_mos upper bound {} exceeds the number of MOs ({nmo})",
+            "run_u_gw: qp_mos upper bound {} exceeds the number of MOs ({nmo_both})",
             qp_range.end
         )));
     }
@@ -447,6 +474,7 @@ fn default_u_qp_range(mol: &Molecule, scf: &ScfResult) -> std::ops::Range<usize>
 /// self-consistency loop — it is a property of the KS reference, not
 /// something that evolves with QP self-consistency (see the doc comments on
 /// `sigma::run_evgw0`/`sigma::run_evgw`).
+#[allow(clippy::too_many_arguments)]
 pub fn run_gw(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -530,6 +558,35 @@ pub fn run_gw(
     }?;
     warn_gw_unconverged(&result, gw_cfg);
     Ok(result)
+}
+
+/// [`run_gw`] on the system `aux` was prepared on; see [`PreparedAux`] for
+/// what such an entry point reads from the system.
+/// A closed-shell system with no virtual orbitals is refused
+/// ([`PreparedAux::check_virtual_orbitals`]).
+pub fn run_gw_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    vxc_diag: Option<&Array1<f64>>,
+    pdep_cfg: &PdepRpaConfig,
+    gw_cfg: &GwConfig,
+) -> Result<GwResult, FerricError> {
+    aux.check_reference(rhf)?;
+    // The kernel refuses an open-shell reference with its own message.
+    if rhf.spin == ferric_scf::Spin::Restricted {
+        aux.check_virtual_orbitals("run_gw_on", rhf)?;
+    }
+    let sys = aux.system();
+    run_gw(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        rhf,
+        pdep_cfg,
+        gw_cfg,
+        vxc_diag,
+    )
 }
 
 /// Surface non-convergence (reliability audit: unreported flags hide that

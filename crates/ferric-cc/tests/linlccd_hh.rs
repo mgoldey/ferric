@@ -49,10 +49,7 @@ fn setup(
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-9,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_energy_conv(1e-9),
     )
     .unwrap();
     (mol, obs, dfbs, rhf)
@@ -185,10 +182,7 @@ fn size_consistent_on_separated_water_dimer() {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         linlccd(m, &obs, &dfbs, op, &rhf, &cfg, LadderVariant::Hh)
@@ -248,11 +242,9 @@ fn h2_dissociation_stays_regular() {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                max_iter: 200,
-                ..Default::default()
-            },
+            &RhfConfig::default()
+                .with_energy_conv(1e-10)
+                .with_max_iter(200),
         )
         .unwrap();
         assert!(
@@ -314,11 +306,9 @@ fn hh_dressing_bounds_amplitudes_where_mp2_blows_up() {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                max_iter: 200,
-                ..Default::default()
-            },
+            &RhfConfig::default()
+                .with_energy_conv(1e-10)
+                .with_max_iter(200),
         )
         .unwrap();
         assert!(
@@ -400,11 +390,9 @@ fn h6_ring_stays_robust_where_ccd_fails() {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                max_iter: 200,
-                ..Default::default()
-            },
+            &RhfConfig::default()
+                .with_energy_conv(1e-10)
+                .with_max_iter(200),
         )
         .unwrap();
         assert!(

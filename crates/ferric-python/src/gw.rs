@@ -8,7 +8,7 @@ use super::*;
 // (see `run_cis_tda`/`run_bse_c6`/`run_bse_c6_ks`'s still-open note there) —
 // see docs/open-work-triage-2026-07-14-open.md #54.
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "GwResult")]
 pub(crate) struct PyGwResult {
     #[pyo3(get)]
@@ -48,7 +48,7 @@ impl PyGwResult {
     #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::certificate_dict(py, &self.certificate_data)
     }
     #[getter]
     fn eps_mf<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
@@ -98,7 +98,7 @@ fn parse_gw_method(method: Option<&str>) -> PyResult<ferric_gw::GwMethod> {
             Some("evgw0") => GwMethod::EvGw0,
             Some("evgw") => GwMethod::EvGw,
             Some(other) => {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                return Err(crate::errors::input_err(format!(
                 "method: unknown value \"{other}\"; expected \"g0w0\", \"cohsex\", \"evgw0\", or \"evgw\""
             )));
             }
@@ -127,7 +127,7 @@ impl PdepArgs<'_> {
     fn config(&self, default_n_quad: usize) -> PyResult<ferric_rpa::PdepRpaConfig> {
         use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
         let scheme = QuadratureScheme::parse_config_str(self.quadrature)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("quadrature: {e}")))?;
+            .map_err(|e| crate::errors::input_err(format!("quadrature: {e}")))?;
         Ok(ferric_rpa::PdepRpaConfig {
             frozen_core: self.frozen_core,
             trunc_thresh: self.trunc_thresh.unwrap_or(1e-4),
@@ -188,6 +188,10 @@ fn gw_config(
 ///
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` (`run_dft` with `xc`) solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, auxbasis,
@@ -225,40 +229,48 @@ pub(crate) fn run_gw(
     scf_density_conv: Option<f64>,
     scf_ri_j_precision: Option<&str>,
 ) -> PyResult<PyGwResult> {
-    use ferric_gw::{run_gw as run_gw_inner, vxc_mo::vxc_diagonal_mo_on_grids};
+    use ferric_gw::{run_gw_on, vxc_mo::vxc_diagonal_mo_on_grids};
 
     let gw_method = parse_gw_method(method)?;
 
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
+    let mol = sys.mol();
 
+    // `scf_ri_j_precision` is read (and parsed) only with a KS reference.
+    let ri_j_precision = match xc {
+        Some(_) => parse_ri_j_precision(scf_ri_j_precision)?,
+        None => None,
+    };
     let cfg = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
+    )?;
     let (scf, cfg, vxc_diag) = if let Some(xc_name) = xc {
         // KS reference through the level-shift ladder.
-        let cfg = ks_jkfit_config(cfg, xc_name, scf_ri_j_precision)?;
-        let (scf, cfg) = ks_ladder_reference(&prep, &bounds, &mol.inner, cfg)?;
+        let cfg = ks_jkfit_config(cfg, xc_name, ri_j_precision);
+        let (scf, cfg) = ks_ladder_reference(&sys, cfg)?;
         let (diag, _beta) = {
             // The grids this reference SCF ran on.
             let grids = ferric_scf::ks_gradient::KsGradGrids::from_config(&cfg);
             vxc_diagonal_mo_on_grids(
-                &mol.inner,
+                mol,
                 &basis_set.inner,
                 xc_name,
                 &scf,
                 &grids.main,
                 &grids.nlc,
+                cfg.gc_rotation,
             )
             .map_err(make_err)?
         };
         (scf, cfg, Some(diag))
     } else {
-        let scf = converged_rhf_with_bounds(&mol.inner, &prep, &bounds, &cfg)?;
+        let scf = sys
+            .solve_rhf(&cfg)
+            .and_then(ScfResult::into_converged)
+            .map_err(make_err)?;
         (scf, cfg, None)
     };
 
@@ -283,23 +295,11 @@ pub(crate) fn run_gw(
         &pdep_cfg,
     );
 
-    // All closure arguments are owned Rust values (an owned Molecule clone
-    // plus locals built above) so nothing Python-borrowed crosses the
-    // boundary; safe to release the GIL for the expensive GW compute.
-    let emol_gw = mol.inner.clone();
+    // The closure borrows only Rust values (the prepared system and locals
+    // built above), so nothing Python-borrowed crosses the boundary; safe to
+    // release the GIL for the expensive GW compute.
     let r = py
-        .allow_threads(|| {
-            run_gw_inner(
-                &emol_gw,
-                &prep,
-                &dfbs,
-                op,
-                &scf,
-                &pdep_cfg,
-                &gw_cfg,
-                vxc_diag.as_ref(),
-            )
-        })
+        .allow_threads(|| run_gw_on(&dfbs, &scf, vxc_diag.as_ref(), &pdep_cfg, &gw_cfg))
         .map_err(make_err)?;
     if !r.outer_converged {
         eprintln!(
@@ -322,7 +322,7 @@ pub(crate) fn run_gw(
         );
     }
     let certificate_data = ferric_gw::certificate::gw_certificate(
-        &reference_certificate(&mol.inner, &scf, &cfg, &basis_set.inner),
+        &reference_certificate(mol, &scf, &cfg, &basis_set.inner),
         &auxbasis.inner.name,
         &pdep_cfg,
         &gw_cfg,
@@ -348,7 +348,7 @@ pub(crate) fn run_gw(
 // BSE-TDA (`run_bse_tda`) is closed-shell only and wired further down
 // (see the "── BSE-TDA ──" section) — see docs/open-work-triage-2026-07-14-open.md #54.
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "UGwResult")]
 pub(crate) struct PyUGwResult {
     #[pyo3(get)]
@@ -390,7 +390,7 @@ impl PyUGwResult {
     #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::certificate_dict(py, &self.certificate_data)
     }
     #[getter]
     fn eps_mf_a<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
@@ -460,6 +460,10 @@ impl PyUGwResult {
 ///
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_uhf` / `run_rohf` (`run_uks` / `run_roks` with `xc`) solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, auxbasis,
@@ -472,6 +476,7 @@ impl PyUGwResult {
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_u_gw(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     auxbasis: &PyBasisSet,
@@ -497,69 +502,72 @@ pub(crate) fn run_u_gw(
     scf_density_conv: Option<f64>,
     scf_ri_j_precision: Option<&str>,
 ) -> PyResult<PyUGwResult> {
-    use ferric_gw::{run_u_gw as run_u_gw_inner, vxc_mo::vxc_diagonal_mo_on_grids};
-    use ferric_scf::rohf::solve_rohf;
+    use ferric_gw::{run_u_gw_on, vxc_mo::vxc_diagonal_mo_on_grids};
 
     let gw_method = parse_gw_method(method)?;
     let reference = match reference.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
         None | Some("uhf") => "uhf",
         Some("rohf") => "rohf",
         Some(other) => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "reference: unknown value \"{other}\"; expected \"uhf\" or \"rohf\""
             )));
         }
     };
 
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
+    let mol = sys.mol();
 
+    // `scf_ri_j_precision` is read (and parsed) only with a KS reference.
+    let ri_j_precision = match xc {
+        Some(_) => parse_ri_j_precision(scf_ri_j_precision)?,
+        None => None,
+    };
     let mut cfg = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
+    )?;
     // MOM after 5 DIIS iters prevents orbital reordering on open-shell atoms
     // (same precedent as the CLI's "pdep-rpa"/"gw" open-shell dispatch).
     cfg.mom_after_iter = 5;
     if let Some(xc_name) = xc {
-        cfg = ks_jkfit_config(cfg, xc_name, scf_ri_j_precision)?;
+        cfg = ks_jkfit_config(cfg, xc_name, ri_j_precision);
     }
     let scf = if reference == "rohf" {
-        solve_rohf(&ctx, &mol.inner, &prep, op, &bounds, &cfg)
+        sys.solve_rohf(&cfg)
     } else {
-        solve_uhf(&ctx, &mol.inner, &prep, &bounds, &cfg)
+        sys.solve_uhf(&cfg)
     };
-    let scf = converged(scf.map_err(make_err)?)?;
+    let scf = scf.and_then(ScfResult::into_converged).map_err(make_err)?;
     let vxc_diag = if let Some(xc_name) = xc {
         // The certificate's reference is the SCF as solved (a ROKS reference
         // is graded `rohf`), before the semi-canonical conversion below.
-        let ref_cert = reference_certificate(&mol.inner, &scf, &cfg, &basis_set.inner);
+        let ref_cert = reference_certificate(mol, &scf, &cfg, &basis_set.inner);
         // ROKS -> semi-canonical per-spin orbitals (what run_u_gw uses
         // internally), so v_xc is diagonalized in the QP equation's own basis;
         // UKS is unchanged.
-        let scf = ferric_scf::semicanonical::unrestricted_reference(&mol.inner, &scf)
+        let scf = ferric_scf::semicanonical::unrestricted_reference(mol, &scf)
             .map_err(make_err)?
             .into_owned();
         let (diag_a, diag_b) = {
             // The grids this reference SCF ran on.
             let grids = ferric_scf::ks_gradient::KsGradGrids::from_config(&cfg);
             vxc_diagonal_mo_on_grids(
-                &mol.inner,
+                mol,
                 &basis_set.inner,
                 xc_name,
                 &scf,
                 &grids.main,
                 &grids.nlc,
+                cfg.gc_rotation,
             )
             .map_err(make_err)?
         };
         (scf, Some((diag_a, diag_b)), ref_cert)
     } else {
-        let ref_cert = reference_certificate(&mol.inner, &scf, &cfg, &basis_set.inner);
+        let ref_cert = reference_certificate(mol, &scf, &cfg, &basis_set.inner);
         (scf, None, ref_cert)
     };
     let (scf, vxc_diag, reference_cert) = vxc_diag;
@@ -585,15 +593,12 @@ pub(crate) fn run_u_gw(
         &pdep_cfg,
     );
 
-    let r = run_u_gw_inner(
-        &mol.inner,
-        &prep,
+    let r = run_u_gw_on(
         &dfbs,
-        op,
         &scf,
+        vxc_diag.as_ref().map(|(a, b)| (a, b)),
         &pdep_cfg,
         &gw_cfg,
-        vxc_diag.as_ref().map(|(a, b)| (a, b)),
     )
     .map_err(make_err)?;
     if !r.outer_converged {
@@ -654,7 +659,7 @@ pub(crate) fn run_u_gw(
 // its own doc comment in `ferric_gw::bse`); the C6/dispersion variants are
 // lower-priority per the G9 task brief and still open.
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "BseResult")]
 pub(crate) struct PyBseResult {
     /// Number of occupied / virtual orbitals in the BSE (ia) window
@@ -686,7 +691,7 @@ impl PyBseResult {
     #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::certificate_dict(py, &self.certificate_data)
     }
     #[getter]
     fn omega<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
@@ -753,6 +758,10 @@ impl PyBseResult {
 ///
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, auxbasis,
@@ -763,6 +772,7 @@ impl PyBseResult {
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_bse_tda(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     auxbasis: &PyBasisSet,
@@ -779,16 +789,20 @@ pub(crate) fn run_bse_tda(
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
 ) -> PyResult<PyBseResult> {
-    use ferric_gw::bse::run_bse_tda as run_bse_tda_inner;
+    use ferric_gw::bse::run_bse_tda_on;
 
-    let op = Operator::coulomb();
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let cfg = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
-    let (prep, dfbs, scf) =
-        converged_rhf_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, &cfg)?;
+    )?;
+    let scf = sys
+        .solve_rhf(&cfg)
+        .and_then(ScfResult::into_converged)
+        .map_err(make_err)?;
+    let mol = sys.mol();
 
     let fc = frozen_core.unwrap_or(0);
     let pdep_cfg = PdepArgs {
@@ -803,10 +817,9 @@ pub(crate) fn run_bse_tda(
     }
     .config(20)?;
 
-    let r =
-        run_bse_tda_inner(&mol.inner, &prep, &dfbs, op, &scf, &pdep_cfg, fc).map_err(make_err)?;
+    let r = run_bse_tda_on(&dfbs, &scf, &pdep_cfg, fc).map_err(make_err)?;
     let certificate_data = ferric_gw::certificate::bse_tda_certificate(
-        &reference_certificate(&mol.inner, &scf, &cfg, &basis_set.inner),
+        &reference_certificate(mol, &scf, &cfg, &basis_set.inner),
         &auxbasis.inner.name,
         &pdep_cfg,
         &r,
@@ -831,7 +844,7 @@ pub(crate) fn run_bse_tda(
 // worse than ferric's production dRPA/PDEP C6 pipeline. Only the STATIC
 // (omega=0) polarizability is exposed as a production entry point.
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "TdhfStaticPolarizabilityResult")]
 pub(crate) struct PyTdhfStaticPolarizabilityResult {
     #[pyo3(get)]
@@ -850,7 +863,7 @@ impl PyTdhfStaticPolarizabilityResult {
     #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::certificate_dict(py, &self.certificate_data)
     }
     /// Cartesian alpha_ij(0) tensor (3x3, a.u.), i,j in {x,y,z}.
     #[getter]
@@ -905,6 +918,10 @@ impl PyTdhfStaticPolarizabilityResult {
 ///
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_dft` solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, auxbasis, xc,
@@ -915,6 +932,7 @@ impl PyTdhfStaticPolarizabilityResult {
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_tdhf_static_polarizability(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     auxbasis: &PyBasisSet,
@@ -934,22 +952,22 @@ pub(crate) fn run_tdhf_static_polarizability(
     scf_density_conv: Option<f64>,
     scf_ri_j_precision: Option<&str>,
 ) -> PyResult<PyTdhfStaticPolarizabilityResult> {
-    use ferric_gw::bse::run_rpax_static_polarizability;
+    use ferric_gw::bse::run_rpax_static_polarizability_on;
 
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
+    let mol = sys.mol();
 
     // KS reference (required — see doc comment above), same ladder path
     // run_gw's xc branch uses.
+    let ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
     let cfg = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
-    let cfg = ks_jkfit_config(cfg, xc, scf_ri_j_precision)?;
-    let (scf, cfg) = ks_ladder_reference(&prep, &bounds, &mol.inner, cfg)?;
+    )?;
+    let cfg = ks_jkfit_config(cfg, xc, ri_j_precision);
+    let (scf, cfg) = ks_ladder_reference(&sys, cfg)?;
 
     let fc = frozen_core.unwrap_or(0);
     let pdep_cfg = ferric_rpa::PdepRpaConfig {
@@ -970,19 +988,10 @@ pub(crate) fn run_tdhf_static_polarizability(
         .config(20)?
     };
 
-    let r = run_rpax_static_polarizability(
-        &mol.inner,
-        &prep,
-        &dfbs,
-        op,
-        &scf,
-        &pdep_cfg,
-        fc,
-        scissor.unwrap_or(0.0),
-    )
-    .map_err(make_err)?;
+    let r = run_rpax_static_polarizability_on(&dfbs, &scf, &pdep_cfg, fc, scissor.unwrap_or(0.0))
+        .map_err(make_err)?;
     let certificate_data = ferric_gw::certificate::tdhf_static_polarizability_certificate(
-        &reference_certificate(&mol.inner, &scf, &cfg, &basis_set.inner),
+        &reference_certificate(mol, &scf, &cfg, &basis_set.inner),
         &auxbasis.inner.name,
         &pdep_cfg,
         scissor.unwrap_or(0.0),

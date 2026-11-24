@@ -4,7 +4,7 @@
 //!
 //! The QP shift at a KS reference is Σx − v_mf, where v_mf is everything in
 //! the KS Fock besides h + J: the semilocal V_xc AND the exact exchange a
-//! hybrid put there (book/src/19-gw-bse/05-continuation-and-qp-equation.md,
+//! hybrid put there (book/src/20-gw-bse/05-continuation-and-qp-equation.md,
 //! "Hybrid references"). Σx is
 //! the FULL exchange, so a v_mf without the K term counts the exact-exchange
 //! fraction twice. `vxc_mo::vxc_diagonal_mo_on_grids` is that v_mf.
@@ -153,16 +153,15 @@ fn h2o(r: &Value) -> H2o {
 /// there `df_k_aux` stays at its def2-universal-jkfit default and the
 /// comparison carries that fitting error (the `Bars` of that case).
 fn ks_config(xc: &str, exact_k: bool) -> RhfConfig {
-    RhfConfig {
-        xc: Some(xc.into()),
-        df_j_aux: Some(String::new()),
-        df_k_aux: exact_k.then(String::new),
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        dft_grid: Some(AtomicGridConfig::default()),
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_xc(xc)
+        .with_df_j_aux(String::new())
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10)
+        .with_dft_grid(AtomicGridConfig::default());
+    c.df_k_aux = exact_k.then(String::new);
+    c
 }
 
 /// Bars for one functional: SCF energy, v_mf / ε_mf / Σx diagonal, QP.
@@ -215,6 +214,7 @@ fn hybrid_case(block: &str, exact_k: bool, bars: Bars) {
         &scf,
         &AtomicGridConfig::default(),
         &AtomicGridConfig::default_nlc(),
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -362,12 +362,10 @@ fn pure_functional_has_no_k_term() {
     let r = reference();
     let sys = h2o(&r);
     let grid = AtomicGridConfig::default();
-    let cfg = RhfConfig {
-        xc: Some("pbe".into()),
-        df_j_aux: Some(String::new()),
-        dft_grid: Some(grid.clone()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc("pbe")
+        .with_df_j_aux(String::new())
+        .with_dft_grid(grid.clone());
     let scf = solve_rhf(
         &ParallelContext::default(),
         &sys.mol,
@@ -378,7 +376,8 @@ fn pure_functional_has_no_k_term() {
     )
     .unwrap();
     let nlc = AtomicGridConfig::default_nlc();
-    let (v, _) = vxc_diagonal_mo_on_grids(&sys.mol, &sys.obs_bs, "pbe", &scf, &grid, &nlc).unwrap();
+    let (v, _) =
+        vxc_diagonal_mo_on_grids(&sys.mol, &sys.obs_bs, "pbe", &scf, &grid, &nlc, None).unwrap();
     let ks = KsXc::new(&sys.mol, &sys.obs_bs, "pbe", &grid, &nlc).unwrap();
     let d = 2.0 * &scf.density_alpha;
     let mut vao = ndarray::Array2::<f64>::zeros(d.raw_dim());

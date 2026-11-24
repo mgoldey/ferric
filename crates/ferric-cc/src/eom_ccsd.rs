@@ -58,6 +58,7 @@ use ferric_integrals::operator::Operator;
 use ferric_mp2::mo_transform::{transform_3center_oo, transform_3center_ov, transform_3center_vv};
 use ferric_mp2::rimp2::{active_occ, cholesky_inverse_sqrt};
 use ferric_mp2::spinorbital::build_b;
+use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 use ferric_tensors::{einsum_dyn, permute_to_owned, Axis};
 use ndarray::{s, Array1, Array2, Array4, ArrayD, Ix2, Ix4, IxDyn};
@@ -837,6 +838,30 @@ fn spin_norm(r1: &Array2<f64>, r2: &Array4<f64>) -> (f64, f64) {
         .sum();
     let total = s1 + ab + 0.5 * same;
     (s1 / total, 1.0 / total.sqrt())
+}
+
+/// [`eom_ccsd_singlets`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn eom_ccsd_singlets_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    cc: &CcResult,
+    frozen_core: usize,
+    cfg: &EomCcsdConfig,
+) -> Result<EomCcsdResult, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(rhf)?;
+    eom_ccsd_singlets(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        rhf,
+        cc,
+        frozen_core,
+        cfg,
+    )
 }
 
 /// The lowest `cfg.n_roots` EE-EOM-CCSD singlet excitation energies from

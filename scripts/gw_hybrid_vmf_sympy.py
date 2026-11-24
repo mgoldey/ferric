@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Sympy proof of the static GW shift on a hybrid / range-separated-hybrid KS
-reference (book/src/19-gw-bse/05-continuation-and-qp-equation.md,
+reference (book/src/20-gw-bse/05-continuation-and-qp-equation.md,
 "Hybrid references";
 ferric_gw::vxc_mo::vxc_diagonal_mo_on_grids and its add_exact_exchange).
 

@@ -27,6 +27,17 @@ RHF is solved to 1e-14 at every x; nuclear repulsion is omitted.
        G2 dE/dx equals the code's Lagrangian assembly
           Tr[D_tot h'] + sum (im1 - zeta - vhf_s1occ) S'
           + d/dx B(D_HF, D_HF + 2 D_rel) + the RI 3c/2c response.
+  F  The same gradient on a fitted (RI-JK) reference (response_jk.rs
+     fitted_bilinear_gradient, df_gradient.rs): the reference J uses
+     (mn|P) V^-1 (Q|ls), its K the eigenvalue-cut M = f(V) (one metric mode
+     below the cut), and every J/K of part G is the fitted one.
+       F0 B(D1, D2) = Q(u) - Q(v), u, v = (D1 +- D2)/2, and
+          Q_K(P - N) = 2 Q_K(P) + 2 Q_K(N) - Q_K(P + N) on random densities;
+          the cut drops at least one mode (else the dM mutation is vacuous);
+       F1 dE/dx equals the part-G assembly with the separable term
+          d/dx B = dQ(u) - dQ(v), dQ_J the RI-J gradient, dQ_K the RI-K
+          gradient of PSD channels (sign split) with the Daleckii-Krein dM,
+          for MP2 with and without one frozen core.
   O  OO-RI-MP2 zero-response nuclear gradient (oo_rimp2_gradient.rs). OO-MP2 is
      converged at every x (semicanonical full-Fock functional, max|g| < 1e-11);
      dE/dx equals the z = 0 Lagrangian with zeta's occ-vir block (F W)_ia and
@@ -46,6 +57,8 @@ as exact substitutions of the lines tagged with these comments):
   * RHS term I_ia - I_ai with the sign of I_ai flipped breaks G ("FAIL G").
   * the SCS density weight (c_OS - c_SS) -> c_OS breaks G ("FAIL G").
   * zeta occ-vir weight eps_i -> eps_a breaks G ("FAIL G").
+  * the sign-split P + N channel dropped breaks F ("FAIL F").
+  * Daleckii-Krein dM -> the plain -M dV M breaks F ("FAIL F").
   * vhf_s1occ dropped breaks O ("FAIL O").
   * U-OO Fock-response density part J[P^a + P^b] -> J[P^a] breaks U ("FAIL U").
   * U-OO rotation part 2 (F W - W F) -> 2 (W F - F W) breaks U ("FAIL U").
@@ -216,12 +229,14 @@ def diis_scf(s, h, fock_of, dens_of, c0, tol=1e-13, max_iter=300):
     raise AssertionError("SCF did not converge")
 
 
-def rhf(s, h, eri, nocc):
+def rhf(s, h, jkf, nocc):
+    """RHF with the J/K builder jkf(d) -> (J, K): four-centre or fitted."""
+
     def dens_of(c):
         return [2 * c[0][:, :nocc] @ c[0][:, :nocc].T]
 
     def fock_of(d):
-        jm, km = jk(eri, d[0])
+        jm, km = jkf(d[0])
         return [h + jm - 0.5 * km]
 
     c, f = diis_scf(s, h, fock_of, dens_of, [eigh(h, s)[1]])
@@ -254,20 +269,37 @@ def mp2_pieces(c, eps, u, v, nocc, fc, c_os, c_ss):
     return np.sum(g * tt), t, tt, b_full, vm12
 
 
-def total_energy(x, nocc, fc, c_os, c_ss, dh=None, lam=0.0):
-    s, h, eri, u, v = inputs(x)
+class FourCentre:
+    """The reference SCF of parts G and O: exact four-centre J and K."""
+
+    def jk_at(self, x):
+        eri = inputs(x)[2]
+        return lambda d: jk(eri, d)
+
+    def separable(self, x, d1, d2):
+        """d/dx B(D1, D2) = d/dx 1/2 Tr[D1 (J - K/2)[D2]] at fixed densities."""
+        jd, kd = jk(d_inputs(x)[2], d2)
+        return 0.5 * np.sum(d1 * (jd - 0.5 * kd))
+
+
+FOUR_CENTRE = FourCentre()
+
+
+def total_energy(x, nocc, fc, c_os, c_ss, dh=None, lam=0.0, ref=FOUR_CENTRE):
+    s, h, _, u, v = inputs(x)
     if dh is not None:
         h = h + lam * dh
-    e_hf, c, eps, _ = rhf(s, h, eri, nocc)
+    e_hf, c, eps, _ = rhf(s, h, ref.jk_at(x), nocc)
     e2 = mp2_pieces(c, eps, u, v, nocc, fc, c_os, c_ss)[0]
     return e_hf + e2
 
 
 # ================================================================ part G
-def zvector_gradient(x, nocc, fc, c_os, c_ss, dh_probe):
-    s, h, eri, u, v = inputs(x)
-    ds, dh, deri, du, dv = d_inputs(x)
-    _, c, eps, _ = rhf(s, h, eri, nocc)
+def zvector_gradient(x, nocc, fc, c_os, c_ss, dh_probe, ref=FOUR_CENTRE):
+    s, h, _, u, v = inputs(x)
+    ds, dh, _, du, dv = d_inputs(x)
+    gjk = ref.jk_at(x)
+    _, c, eps, _ = rhf(s, h, gjk, nocc)
     nmo = c.shape[1]
     nv = nmo - nocc
     _, t, tt, b_full, vm12 = mp2_pieces(c, eps, u, v, nocc, fc, c_os, c_ss)
@@ -290,7 +322,7 @@ def zvector_gradient(x, nocc, fc, c_os, c_ss, dh_probe):
         for i in range(fc, nocc):
             dm1[k, i] = dm1[i, k] = imat[k, i] / (eps[k] - eps[i])
     # Z-vector right-hand side and CPHF over every occupied orbital.
-    jc, kc = jk(eri, c @ dm1 @ c.T)
+    jc, kc = gjk(c @ dm1 @ c.T)
     veff_mo = c.T @ (2 * jc - kc) @ c
     i_ia, i_ai = imat[:nocc, nocc:].T, imat[nocc:, :nocc]
     xvo = veff_mo[nocc:, :nocc] + i_ia - i_ai  # RHS
@@ -299,7 +331,7 @@ def zvector_gradient(x, nocc, fc, c_os, c_ss, dh_probe):
     def a_z(zvec):
         zm = zvec.reshape(nv, nocc)
         dz = cv @ zm @ co.T + co @ zm.T @ cv.T
-        jz, kz = jk(eri, dz)
+        jz, kz = gjk(dz)
         az = cv.T @ (4 * jz - kz - kz.T) @ co
         coupling = 0.5 * az  # Z-vector coupling
         return ((eps[nocc:, None] - eps[None, :nocc]) * zm + coupling).ravel()
@@ -319,13 +351,11 @@ def zvector_gradient(x, nocc, fc, c_os, c_ss, dh_probe):
     ip = imat.copy()
     ip[nocc:, :nocc] = imat[:nocc, nocc:].T
     im1 = c @ ip @ c.T
-    jr, kr = jk(eri, d_rel)
+    jr, kr = gjk(d_rel)
     p_occ = co @ co.T
     vhf = p_occ @ (2 * jr - kr) @ p_occ
     grad = np.sum((d_hf + d_rel) * dh) + np.sum((im1 - zeta_ao - vhf) * ds)
-    d2 = d_hf + 2 * d_rel
-    jd, kd = jk(deri, d2)
-    grad += 0.5 * np.sum(d_hf * (jd - 0.5 * kd))
+    grad += ref.separable(x, d_hf, d_hf + 2 * d_rel)
     grad += ri_response(c, nocc, fc, tt, u, v, du, dv, vm12)
     return grad, g1
 
@@ -341,6 +371,152 @@ def ri_response(c, nocc, fc, tt, u, v, du, dv, vm12):
     e3c = 4 * np.sum(y * du_ia)
     e2c = -2 * np.einsum("PQ,Pia,Qia->", dv, m_u, y)
     return e3c + e2c
+
+
+# ================================================================ part F
+NJK, METRIC_CUT = 8, 0.2
+
+
+def make_fit_model():
+    """JK-fitting factors w(x) = (P|mn) and metric V(x) with one mode below the cut."""
+    rng = np.random.default_rng(20261119)
+
+    def rsym(n, scale):
+        m = rng.standard_normal((n, n))
+        return scale * (m + m.T)
+
+    q = np.linalg.qr(rng.standard_normal((NJK, NJK)))[0]
+    lam = np.concatenate([[0.05], np.linspace(0.6, 2.0, NJK - 1)])
+    return {
+        "w0": np.array([rsym(NBF, 0.06) for _ in range(NJK)]),
+        "w1": np.array([rsym(NBF, 0.02) for _ in range(NJK)]),
+        "v0": q @ np.diag(lam) @ q.T,
+        "v1": rsym(NJK, 0.02),
+    }
+
+
+def cut_inverse(v):
+    """M = f(V), f(l) = 1/l above METRIC_CUT, 0 below (DfK's eigenvalue cut)."""
+    lam, q = np.linalg.eigh(v)
+    f = np.where(lam > METRIC_CUT, 1.0 / lam, 0.0)
+    return q @ np.diag(f) @ q.T, lam, q, f
+
+
+def d_cut_inverse(v, dv):
+    """Daleckii-Krein derivative of M = f(V) along dV."""
+    _, lam, q, f = cut_inverse(v)
+    dl = lam[:, None] - lam[None, :]
+    same = np.abs(dl) < 1e-12
+    fp = np.where(lam > METRIC_CUT, -1.0 / lam**2, 0.0)
+    div = np.where(same, fp[:, None], (f[:, None] - f[None, :]) / np.where(same, 1, dl))
+    return q @ (div * (q.T @ dv @ q)) @ q.T  # Daleckii-Krein dM
+
+
+class FittedJK:
+    """The fitted (RI-JK) reference: J with V^-1, K with the cut M, one basis."""
+
+    def __init__(self):
+        self.m = make_fit_model()
+
+    def factors(self, x):
+        return self.m["w0"] + x * self.m["w1"], self.m["v0"] + x * self.m["v1"]
+
+    def jk_at(self, x):
+        w, v = self.factors(x)
+        eri_j = np.einsum("Pmn,PQ,Qls->mnls", w, np.linalg.inv(v), w)
+        eri_k = np.einsum("Pmn,PQ,Qls->mnls", w, cut_inverse(v)[0], w)
+        return lambda d: (jk(eri_j, d)[0], jk(eri_k, d)[1])
+
+    def q_form(self, x, d):
+        """Q(D) = 1/2 Tr[D G(D)], G = J - K/2 (values, for the identities)."""
+        jm, km = self.jk_at(x)(d)
+        return 0.5 * np.sum(d * (jm - 0.5 * km))
+
+    def d_q_j(self, x, d):
+        """RI-J gradient of 1/2 d^T V^-1 d at fixed D."""
+        w, v = self.factors(x)
+        c = np.linalg.solve(v, np.einsum("Pmn,mn->P", w, d))
+        return c @ np.einsum("Pmn,mn->P", self.m["w1"], d) - 0.5 * c @ self.m["v1"] @ c
+
+    def d_q_k(self, x, d, alpha):
+        """RI-K gradient of alpha Tr[D K(D)] for a PSD D = X X^T (one channel)."""
+        lam, u = np.linalg.eigh(d)
+        if lam.min() < -1e-10 * max(1.0, np.abs(lam).max()):
+            raise AssertionError("RI-K channel density is not positive semidefinite")
+        xf = u * np.sqrt(np.clip(lam, 0.0, None))
+        w, v = self.factors(x)
+        el = np.einsum("Pmn,mi,nj->Pij", w, xf, xf)
+        d_el = np.einsum("Pmn,mi,nj->Pij", self.m["w1"], xf, xf)
+        m = cut_inverse(v)[0]
+        dm = d_cut_inverse(v, self.m["v1"])
+        return alpha * (
+            2 * np.einsum("PQ,Pij,Qij->", m, d_el, el)
+            + np.einsum("PQ,Pij,Qij->", dm, el, el)
+        )
+
+    def separable(self, x, d1, d2):
+        """d/dx B(D1, D2) through Q(u) - Q(v) and the sign split of each K channel."""
+        u, v = 0.5 * (d1 + d2), 0.5 * (d1 - d2)
+        g = self.d_q_j(x, u) - self.d_q_j(x, v)
+        for dens, alpha in signed_channels(u, -0.25) + signed_channels(v, 0.25):
+            g += self.d_q_k(x, dens, alpha)
+        return g
+
+
+def sign_split(d):
+    """D = P - N with P, N PSD (eigenvalue sign)."""
+    lam, u = np.linalg.eigh(d)
+    p = u @ np.diag(np.where(lam > 0, lam, 0.0)) @ u.T
+    return p, p - d
+
+
+def signed_channels(d, weight):
+    """response_jk.rs signed_channels: Q_K(P - N) = 2Q_K(P) + 2Q_K(N) - Q_K(P + N)."""
+    lam = np.linalg.eigvalsh(d)
+    if np.all(lam >= -1e-8 * np.abs(lam).max()):
+        return [(d, weight)]
+    p, n = sign_split(d)
+    return [(p, 2 * weight), (n, 2 * weight), (p + n, -weight)]  # sign-split P + N
+
+
+FITTED = FittedJK()
+
+
+def part_f():
+    print("F: RI-MP2 gradient on a fitted (RI-JK) reference vs re-solved differences")
+    x0, nocc = 0.1, 3
+    lam = np.linalg.eigvalsh(FITTED.factors(x0)[1])
+    n_cut = int(np.sum(lam < METRIC_CUT))
+    report(
+        "F", f"F0 metric modes below the cut (need >= 1): {n_cut}", 0 if n_cut else 1, 0
+    )
+    rng = np.random.default_rng(7)
+    d1, d2 = sym(rng.standard_normal((NBF, NBF))), sym(rng.standard_normal((NBF, NBF)))
+    u, v = 0.5 * (d1 + d2), 0.5 * (d1 - d2)
+    jm, km = FITTED.jk_at(x0)(d1)
+    b12 = 0.5 * np.sum(d2 * (jm - 0.5 * km))
+    err = abs(FITTED.q_form(x0, u) - FITTED.q_form(x0, v) - b12)
+    report("F", "F0 B(D1, D2) == Q(u) - Q(v)", err, 1e-12)
+    p, n = sign_split(v)
+    qk = [np.sum(dd * FITTED.jk_at(x0)(dd)[1]) for dd in (p - n, p, n, p + n)]
+    report(
+        "F",
+        "F0 Q_K(P - N) == 2Q_K(P) + 2Q_K(N) - Q_K(P + N)",
+        abs(qk[0] - 2 * qk[1] - 2 * qk[2] + qk[3]),
+        1e-12,
+    )
+    for fc in (0, 1):
+        label = f"MP2, frozen core {fc}"
+        grad, _ = zvector_gradient(x0, nocc, fc, 1.0, 1.0, np.zeros((NBF, NBF)), FITTED)
+        fd = richardson(
+            lambda xx, fc=fc: total_energy(xx, nocc, fc, 1.0, 1.0, ref=FITTED), x0, 1e-3
+        )
+        report(
+            "F",
+            f"F1 fitted-reference gradient, {label}",
+            abs(grad - fd) / max(1, abs(fd)),
+            1e-8,
+        )
 
 
 def part_g():
@@ -637,7 +813,7 @@ def part_o():
     x0, nocc = 0.1, 3
     s, h, eri, u, v = inputs(x0)
     ds, dh, deri, du, dv = d_inputs(x0)
-    _, c_hf, _, _ = rhf(s, h, eri, nocc)
+    _, c_hf, _, _ = rhf(s, h, lambda d: jk(eri, d), nocc)
     bfac = np.einsum("PQ,Qmn->Pmn", inv_sqrt(v), u)
     c, gmax = oo_converge(s, h, eri, bfac, nocc, c_hf)
     if not gmax < 1e-11:
@@ -690,6 +866,7 @@ def part_o():
 def main():
     part_s()
     part_g()
+    part_f()
     part_u()
     part_o()
     if FAILED:

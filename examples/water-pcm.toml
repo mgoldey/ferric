@@ -1,8 +1,9 @@
 # RHF/STO-3G water in IEF-PCM water ([pcm], ferric_pcm). `solvent = "water"`
 # is epsilon = 78.4 from the shared solvent table (the same table as the
 # Python `run_rhf(solvent="water")`); `epsilon = 78.4` gives the same run.
-# Energy runs of rhf/uhf/rohf/ksdft/pdep-rpa only: no gradient has a PCM
-# term, so task = "optimize"/"frequencies" is refused.
+# Energy runs take rhf/uhf/rohf/ksdft/pdep-rpa. task = "optimize" adds the
+# analytic IEF-PCM gradient for rhf/uhf/rohf/ksdft; task = "frequencies" is
+# refused.
 # Equivalence to the library call is asserted by
 # crates/ferric-cli/tests/cli_wired_keys.rs (pcm_rhf_matches_the_library_and_solvates).
 [molecule]

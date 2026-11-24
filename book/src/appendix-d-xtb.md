@@ -1,6 +1,6 @@
 # Appendix D: The semiempirical interface (xTB) {#appendix-d}
 
-<!-- status: gap; registry: none -->
+<!-- status: gap; registry: xtb -->
 
 ferric can call the GFN family of semiempirical methods through the `xtb`
 library, for conformer screening and for relaxing a structure before a
@@ -30,10 +30,10 @@ at run time.
 
 Two build facts matter:
 
-- **Build libxtb at `-O2`.** The crate documentation records that libxtb built
-  at `-O3` with gfortran 13.3 returned a GFN1 and GFN2 gradient about 20 times
-  too large that disagrees with finite differences, while the energy stayed
-  correct. The binding is not at fault, and the same source built at `-O2`
+- **Build libxtb at `-O2`.** The crate documentation records (2026-07-27,
+  xtb 6.7.1) that libxtb built at `-O3` with gfortran 13.3 returned a GFN1
+  and GFN2 gradient about 20 times too large that disagrees with finite
+  differences, while the energy stayed correct. The binding is not at fault, and the same source built at `-O2`
   passes xtb's own unit tests. If gradients look wrong, check how libxtb was
   built before suspecting ferric.
 - **Parameter files.** libxtb finds its GFN parameter files through
@@ -97,7 +97,7 @@ continue on a density that is not self-consistent.
 ## Threading {#appendix-d-threading}
 
 libxtb keeps process-global state, so it is not thread-safe, and
-`XtbCalculator` is deliberately neither `Send` nor `Sync`. A compile-time guard
+`XtbCalculator` is neither `Send` nor `Sync`. A compile-time guard
 in `calculator.rs` fails the build if that stops being true. Three rules
 follow.
 
@@ -130,20 +130,21 @@ own.
 
 **Grade.** `site/src/reference/validation.md` has no row for xTB, the CLI has
 no xTB kind, and the Python optimization result carries a certificate graded
-`not graded`. Treat xTB results as unproven in the sense of that page. The
+`not graded` (`ungraded` in its JSON form, section
+@sec:python-cube-provenance-certificate-provenance-label). Treat xTB results as unproven in the sense of that page. The
 checks above support the binding. They do not support a statement about the
 accuracy of GFN-xTB for any chemistry.
 
 ## Known limits (2026-11-15) {#appendix-d-known-limits-2026-11}
 
 - Not in the CLI. Python and Rust only.
-- Ghost atoms and ECP atoms are refused (D.2).
+- Ghost atoms and ECP atoms are refused (@sec:appendix-d-computed).
 - GFN-FF writes a `gfnff_topo` file into the current directory when it loads,
   and the C interface has no switch to prevent it. Run from a scratch
   directory.
 - No implicit solvation is exposed, and there is no xTB Hessian other than the
   finite difference of the gradient.
-- A libxtb built at `-O3` gives wrong gradients (D.1).
+- A libxtb built at `-O3` gives wrong gradients (@sec:appendix-d-build-availability).
 - Periodic cells are not passed: the molecule is created with no lattice.
 
 ## Sources {#appendix-d-sources}

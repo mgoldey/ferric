@@ -70,13 +70,14 @@ fn supported_kinds_match_the_dispatch_arms_in_run() {
     let src = std::fs::read_to_string(workspace_root().join("crates/ferric-cli/src/lib.rs"))
         .expect("read ferric-cli/src/lib.rs");
 
-    // The body of `run()`: from its signature to the next top-level `fn`.
+    // The body of `try_run()` (the CLI behind `run()`): from its signature to
+    // the next top-level `fn`.
     let start = src
-        .find("pub fn run(args: Vec<String>)")
-        .expect("run() must exist");
+        .find("pub fn try_run(args: Vec<String>)")
+        .expect("try_run() must exist");
     let len = src[start..]
         .find("\nfn ")
-        .expect("a top-level fn must follow run()");
+        .expect("a top-level fn must follow try_run()");
     let body = &src[start..start + len];
 
     let mut dispatched = BTreeSet::new();

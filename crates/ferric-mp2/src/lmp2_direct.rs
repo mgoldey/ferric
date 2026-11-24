@@ -1,7 +1,8 @@
 //! Integral-direct assembly for the amplitude-threshold local MP2 family —
 //! the missing piece named by the wall-clock measurement in
 //! `wiki/amplitude-threshold-lmp2.md` §20–21: the global 3-index tensor
-//! (`eri3_mo_ov_blocked`, `(naux, no·nv)`) and the N⁵ whitening GEMM behind
+//! (`eri3_mo_ov_blocked`, `(naux, no·nv)`), its N⁴ whitening `B̃ = V^{-1/2}B`,
+//! and the N⁵ all-pairs Gram product `J = B̃ᵀB̃` behind
 //! `assemble_ragged_direct_aux` are never formed here.
 //!
 //! Pipeline (paper's Alg-2 shape, per-atom batched):
@@ -46,6 +47,7 @@
 //! sets), exactness will instead demand radii that track the molecular
 //! DIAMETER. These predictions differ, so the sweep can distinguish them.
 
+use ferric_scf::PreparedAux;
 use ndarray::{Array1, Array2, Array3, ArrayView2, Axis};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -148,6 +150,26 @@ pub struct DirectConfig {
     pub split_eri3_timers: bool,
     /// How stage 3 walks the (P|μν) triples. See [`Eri3Pass`].
     pub eri3_pass: Eri3Pass,
+    /// MPI context to stripe the assembly over. `None`, or a one-rank
+    /// context, is the serial path exactly. With `size > 1` the domain
+    /// groups are ordered along the molecule and cut into one contiguous run
+    /// per rank; a rank builds strips only for the occupieds in its pairs,
+    /// each covering only the partners it has there, and the metric blocks
+    /// those need. The ranks then exchange their pair blocks (the
+    /// `ragged_transport` module), so every rank returns the full ragged
+    /// system and runs the same solve.
+    ///
+    /// What is distributed: the strip build, the metric and the pair fits,
+    /// in time and in memory. What is not: every rank ends up holding all
+    /// pair blocks and the solver's vectors, so the solve's footprint does
+    /// not shrink with the rank count.
+    ///
+    /// A strip built over fewer partners goes through differently shaped
+    /// GEMMs, so a striped run agrees with the serial one to rounding, not
+    /// bit for bit. The ranks must hold identical localized spaces: the
+    /// owner of each group is computed on every rank from them. Stage-3 and
+    /// stage-5 counters, timers and strip sizes describe this rank's share.
+    pub mpi: Option<ferric_core::parallel::ParallelContext>,
 }
 
 impl DirectConfig {
@@ -199,6 +221,7 @@ impl Default for DirectConfig {
             virt_schwarz_kappa: None,
             split_eri3_timers: false,
             eri3_pass: Eri3Pass::Batches,
+            mpi: None,
         }
     }
 }
@@ -336,13 +359,21 @@ pub struct DirectStats {
     /// The integral-free memory pre-flight of this assembly (see
     /// [`DirectMemoryEstimate`]).
     pub memory: DirectMemoryEstimate,
-    /// Stage-5 domain groups run at once: the worker count, or fewer when
-    /// the budget cannot hold that many groups' scratch beside the resident
-    /// set (0 before stage 5).
+    /// Stage-5 domain groups allowed in flight at once: the worker count when
+    /// ungated (whatever the number of groups), else the widest cap
+    /// `min(len, workers)` of the budget-sized waves (see `plan_group_wave`),
+    /// so a gated run with one group reports 1. With more than one group, 1
+    /// means the budget serialised stage 5. 0 before stage 5.
     pub group_concurrency: usize,
-    /// The largest per-group scratch bound the concurrency is sized with
+    /// The largest per-group scratch bound the waves are sized with
     /// (`group_scratch_bound`; ≥ the measured `group_scratch_bytes_max`).
     pub group_scratch_bound_bytes: usize,
+    /// Stage-5 groups measured in flight at once (peak); 0 before stage 5.
+    pub group_in_flight_peak: usize,
+    /// Stage-5 waves: 1 when ungated or when every group fits one wave (a
+    /// single group included), more when the budget split the groups; 0
+    /// before stage 5.
+    pub n_group_waves: usize,
 }
 
 /// Byte accounting of the direct LMP2 path, computed from the locality maps
@@ -472,6 +503,7 @@ fn preflight_memory(
     let dims_df = dfbs.shell_dims();
     let naux = dfbs.nbasis();
     let strips_bytes = (0..no)
+        .filter(|&i| maps.stripe.as_ref().is_none_or(|s| s.needed[i]))
         .map(|i| {
             let rows: usize = maps.aux_ext[i].iter().map(|&sh| dims_df[sh]).sum();
             let cols = maps.virt_ext[i].len();
@@ -542,6 +574,21 @@ struct Strip {
     /// nv-length inverse map (usize::MAX = absent).
     col_pos: Vec<usize>,
     b: Array2<f64>,
+}
+
+impl Strip {
+    /// The placeholder for an occupied this rank does not build under a
+    /// rank stripe. Its inverse maps are empty, so any read of it panics on
+    /// the index instead of returning a zero integral.
+    fn absent() -> Self {
+        Self {
+            rows: Vec::new(),
+            row_pos: Vec::new(),
+            cols: Vec::new(),
+            col_pos: Vec::new(),
+            b: Array2::zeros((0, 0)),
+        }
+    }
 }
 
 fn sorted_union(lists: impl IntoIterator<Item = impl IntoIterator<Item = usize>>) -> Vec<usize> {
@@ -780,7 +827,9 @@ fn gather_strip(
 /// reuses its columns there instead of re-solving. The caller pre-flights
 /// the full store (`8·Σ_i |D_i|·|cols_i|`) against the scratch budget and
 /// passes `keep_w = false` over it; otherwise each `W_i` is dropped as soon
-/// as its q is taken (one worker's `W` at a time).
+/// as its q is taken (one worker's `W` at a time). Under a rank stripe
+/// `needed` marks the occupieds with a strip here; the others get an empty
+/// q and `qmax = 0`.
 #[allow(clippy::too_many_arguments)]
 fn whiten_own_domains(
     no: usize,
@@ -792,6 +841,7 @@ fn whiten_own_domains(
     dfbs: &PreparedBasis,
     aux_radius_bohr: f64,
     keep_w: bool,
+    needed: Option<&[bool]>,
 ) -> Result<OwnWhitened, FerricError> {
     use rayon::prelude::*;
     let sq = scale.abs().sqrt();
@@ -799,6 +849,10 @@ fn whiten_own_domains(
     let per_i: Vec<Result<PerI, FerricError>> = (0..no)
         .into_par_iter()
         .map(|i| {
+            if needed.is_some_and(|n| !n[i]) {
+                // no strip on this rank, and none of its pairs asks for q_i
+                return Ok((Vec::new(), 0.0, keep_w.then(|| Array2::zeros((0, 0)))));
+            }
             let dfuncs = shell_funcs(dfbs, &aux_dom[i]);
             if dfuncs.is_empty() {
                 return Err(FerricError::General(format!(
@@ -1989,10 +2043,160 @@ struct LocalityMaps {
     aux_ext: Vec<Vec<usize>>,
     virt_ext: Vec<Vec<usize>>,
     batches: Vec<(usize, Vec<usize>)>,
+    /// The rank stripe ([`DirectConfig::mpi`] with more than one rank): the
+    /// extended sets and batches above then cover this rank's pairs only.
+    stripe: Option<RankStripe>,
 }
 
 fn centers(m: &Array2<f64>) -> Vec<[f64; 3]> {
     m.rows().into_iter().map(|r| [r[0], r[1], r[2]]).collect()
+}
+
+/// The Cartesian axis along which `pts` spread most (largest variance; the
+/// lowest axis on a tie).
+fn spread_axis(pts: &[[f64; 3]]) -> usize {
+    let n = pts.len().max(1) as f64;
+    let mut best = (0usize, -1.0f64);
+    for x in 0..3 {
+        let mean = pts.iter().map(|a| a[x]).sum::<f64>() / n;
+        let var = pts.iter().map(|a| (a[x] - mean).powi(2)).sum::<f64>();
+        if var > best.1 {
+            best = (x, var);
+        }
+    }
+    best.0
+}
+
+/// The surviving pairs `(i ≤ j)` in stage-5 order (i-major).
+fn kept_pairs(keep: &[bool], no: usize) -> Vec<(usize, usize)> {
+    (0..no)
+        .flat_map(|i| (i..no).map(move |j| (i, j)))
+        .filter(|&(i, j)| keep[i * no + j])
+        .collect()
+}
+
+/// Each pair's fit domain `D_ij = D_i ∪ D_j` (aux shells).
+fn pair_domains(unique: &[(usize, usize)], aux_dom: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    unique
+        .iter()
+        .map(|&(i, j)| sorted_union([aux_dom[i].iter().copied(), aux_dom[j].iter().copied()]))
+        .collect()
+}
+
+/// One rank's share of the pair fits under [`DirectConfig::mpi`].
+#[derive(Debug, Clone)]
+struct RankStripe {
+    ctx: ferric_core::parallel::ParallelContext,
+    /// Per surviving pair ([`kept_pairs`] order): this rank fits it.
+    mine: Vec<bool>,
+    /// Per occupied: it is in a pair this rank fits, so this rank builds its
+    /// strip.
+    needed: Vec<bool>,
+}
+
+/// The rank that fits each domain group. Groups are ordered by where their
+/// first pair sits along the molecule (`pos` = each occupied's place along
+/// [`spread_axis`]; a pair sorts by its lower then its upper occupied) and
+/// that order is cut into `size` runs of about equal `weight`. A rank's pairs
+/// are then a contiguous run, so the partners an occupied has on one rank sit
+/// close together and its strip there covers only their domains.
+fn group_owners(
+    group_list: &[(Vec<usize>, Vec<usize>)],
+    unique: &[(usize, usize)],
+    pos: &[usize],
+    weight: &[f64],
+    size: usize,
+) -> Vec<usize> {
+    let keys: Vec<(usize, usize)> = group_list
+        .iter()
+        .map(|(_, pxs)| {
+            pxs.iter()
+                .map(|&px| {
+                    let (i, j) = unique[px];
+                    (pos[i].min(pos[j]), pos[i].max(pos[j]))
+                })
+                .min()
+                .expect("a domain group has at least one pair")
+        })
+        .collect();
+    let mut order: Vec<usize> = (0..group_list.len()).collect();
+    order.sort_unstable_by_key(|&g| (keys[g], g));
+    let total: f64 = weight.iter().sum();
+    let mut owner = vec![0usize; group_list.len()];
+    let mut before = 0.0f64;
+    for g in order {
+        if total > 0.0 {
+            let mid = before + 0.5 * weight[g];
+            owner[g] = ((mid / total * size as f64) as usize).min(size - 1);
+        }
+        before += weight[g];
+    }
+    owner
+}
+
+/// Rank `ctx.rank`'s stripe of the pair fits, and each occupied's partners
+/// on this rank (itself and every occupied it shares one of this rank's
+/// pairs with; empty for an occupied this rank never fits). Integral-free and
+/// the same arithmetic on every rank, so the ranks agree on the owners
+/// without talking. A group's weight is a flop proxy for its fit: `d²·(d +
+/// Σ_pairs |C_ij|)` for a domain of `d` functions.
+fn rank_stripe(
+    ctx: ferric_core::parallel::ParallelContext,
+    keep: &[bool],
+    aux_dom: &[Vec<usize>],
+    virt_dom: &[Vec<usize>],
+    occ_xyz: &[[f64; 3]],
+    dims_df: &[usize],
+) -> (RankStripe, Vec<Vec<usize>>) {
+    let no = occ_xyz.len();
+    let unique = kept_pairs(keep, no);
+    let group_list = group_by_domain(pair_domains(&unique, aux_dom));
+    let axis = spread_axis(occ_xyz);
+    let mut along: Vec<usize> = (0..no).collect();
+    along.sort_unstable_by(|&a, &b| {
+        occ_xyz[a][axis]
+            .partial_cmp(&occ_xyz[b][axis])
+            .expect("NaN occupied centroid")
+            .then(a.cmp(&b))
+    });
+    let mut pos = vec![0usize; no];
+    for (p, &i) in along.iter().enumerate() {
+        pos[i] = p;
+    }
+    let weight: Vec<f64> = group_list
+        .iter()
+        .map(|(dsh, pxs)| {
+            let d: usize = dsh.iter().map(|&sh| dims_df[sh]).sum();
+            let n: usize = pxs
+                .iter()
+                .map(|&px| {
+                    let (i, j) = unique[px];
+                    sorted_union([virt_dom[i].iter().copied(), virt_dom[j].iter().copied()]).len()
+                })
+                .sum();
+            (d * d) as f64 * (d + n) as f64
+        })
+        .collect();
+    let owner = group_owners(&group_list, &unique, &pos, &weight, ctx.size);
+    let mut mine = vec![false; unique.len()];
+    let mut partners: Vec<Vec<usize>> = vec![Vec::new(); no];
+    for ((_, pxs), &r) in group_list.iter().zip(&owner) {
+        if r != ctx.rank {
+            continue;
+        }
+        for &px in pxs {
+            mine[px] = true;
+            let (i, j) = unique[px];
+            partners[i].extend([i, j]);
+            partners[j].extend([i, j]);
+        }
+    }
+    for p in &mut partners {
+        p.sort_unstable();
+        p.dedup();
+    }
+    let needed = partners.iter().map(|p| !p.is_empty()).collect();
+    (RankStripe { ctx, mine, needed }, partners)
 }
 
 /// Occupieds grouped by the atom nearest their Boys centroid; with
@@ -2019,18 +2223,7 @@ fn integral_batches(
     if batch_merge <= 1 {
         return batches;
     }
-    let axis = {
-        let n = atom_xyz.len().max(1) as f64;
-        let mut best = (0usize, -1.0f64);
-        for x in 0..3 {
-            let mean = atom_xyz.iter().map(|a| a[x]).sum::<f64>() / n;
-            let var = atom_xyz.iter().map(|a| (a[x] - mean).powi(2)).sum::<f64>();
-            if var > best.1 {
-                best = (x, var);
-            }
-        }
-        best.0
-    };
+    let axis = spread_axis(atom_xyz);
     batches.sort_unstable_by(|(a1, _), (a2, _)| {
         atom_xyz[*a1][axis]
             .partial_cmp(&atom_xyz[*a2][axis])
@@ -2048,6 +2241,47 @@ fn integral_batches(
         .collect()
 }
 
+/// The rank stripe (`None` without [`DirectConfig::mpi`] or on one rank) and
+/// each occupied's partners: every surviving partner, or under a stripe the
+/// ones it shares one of this rank's pairs with ([`rank_stripe`]), so its
+/// strip covers those pairs only.
+fn stripe_and_partners(
+    dcfg: &DirectConfig,
+    keep: &[bool],
+    aux_dom: &[Vec<usize>],
+    virt_dom: &[Vec<usize>],
+    occ_xyz: &[[f64; 3]],
+    dfbs: &PreparedBasis,
+) -> (Option<RankStripe>, Vec<Vec<usize>>) {
+    let no = occ_xyz.len();
+    match dcfg.mpi.filter(|c| c.size > 1) {
+        None => (
+            None,
+            (0..no)
+                .map(|i| (0..no).filter(|&j| keep[i * no + j]).collect())
+                .collect(),
+        ),
+        Some(c) => {
+            let (s, p) = rank_stripe(c, keep, aux_dom, virt_dom, occ_xyz, dfbs.shell_dims());
+            (Some(s), p)
+        }
+    }
+}
+
+/// `batches` without the occupieds a rank stripe leaves to other ranks.
+fn own_batches(
+    mut batches: Vec<(usize, Vec<usize>)>,
+    stripe: Option<&RankStripe>,
+) -> Vec<(usize, Vec<usize>)> {
+    if let Some(s) = stripe {
+        batches.retain_mut(|(_, is)| {
+            is.retain(|&i| s.needed[i]);
+            !is.is_empty()
+        });
+    }
+    batches
+}
+
 fn build_locality_maps(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -2062,9 +2296,6 @@ fn build_locality_maps(
         Some(cal) => pair_gate_keep(&spaces.occ_centers, &spaces.occ_spreads, no, eps, cal),
         None => (vec![true; no * no], 0),
     };
-    let partners: Vec<Vec<usize>> = (0..no)
-        .map(|i| (0..no).filter(|&j| keep[i * no + j]).collect())
-        .collect();
     let atom_xyz: Vec<[f64; 3]> = mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
     let occ_xyz = centers(&spaces.occ_centers);
     let virt_xyz = centers(&spaces.virt_centers);
@@ -2095,6 +2326,7 @@ fn build_locality_maps(
     let virt_supp = (0..nv)
         .map(|a| supp_shells(obs, spaces.c_vloc.column(a), dcfg.ao_tail))
         .collect();
+    let (stripe, partners) = stripe_and_partners(dcfg, &keep, &aux_dom, &virt_dom, &occ_xyz, dfbs);
     // extended per-occupied unions over surviving partners (pair sets are
     // D_ij = D_i ∪ D_j and C_ij = V_i ∪ V_j, both ⊆ the extended sets)
     let aux_ext = (0..no)
@@ -2103,7 +2335,10 @@ fn build_locality_maps(
     let virt_ext = (0..no)
         .map(|i| sorted_union(partners[i].iter().map(|&j| virt_dom[j].iter().copied())))
         .collect();
-    let batches = integral_batches(&atom_xyz, &occ_xyz, dcfg.batch_merge);
+    let batches = own_batches(
+        integral_batches(&atom_xyz, &occ_xyz, dcfg.batch_merge),
+        stripe.as_ref(),
+    );
     LocalityMaps {
         keep,
         n_gated,
@@ -2114,6 +2349,7 @@ fn build_locality_maps(
         aux_ext,
         virt_ext,
         batches,
+        stripe,
     }
 }
 
@@ -2211,19 +2447,26 @@ fn assemble_gated(
         gate,
         &mut stats,
     )?;
-    let ragged = fit_pairs(
-        &pre,
+    let t0 = Instant::now();
+    let input = PairFitInput {
+        pre: &pre,
         dfbs,
         spaces,
         eps,
         scale,
         dcfg,
-        FitPath::Cholesky,
+        path: FitPath::Cholesky,
         gate,
         fock_screen,
-        &mut stats,
-    )?;
-    Ok((ragged, pre.n_gated, stats))
+    };
+    let (slots, _) = fit_pair_slots(input, &mut stats)?;
+    // The fits were the last readers of the strips and the metric: drop them
+    // before the ranks exchange blocks, so a rank never holds its strips
+    // beside the whole ragged system.
+    let (n_gated, ctx) = (pre.n_gated, pre.stripe.as_ref().map(|s| s.ctx));
+    drop(pre);
+    let ragged = gather_ragged(slots, ctx, gate, 0, t0, &mut stats)?;
+    Ok((ragged, n_gated, stats))
 }
 
 /// What stages 1–4 hand to stage 5: the gate, the distance domains, the
@@ -2235,6 +2478,10 @@ struct StripsAndMetric {
     virt_dom: Vec<Vec<usize>>,
     strips: Vec<Strip>,
     metric_blocks: MetricBlocks,
+    /// The rank stripe: `strips` then holds [`Strip::absent`] for every
+    /// occupied outside `stripe.needed`, and the built ones cover this
+    /// rank's pairs only.
+    stripe: Option<RankStripe>,
 }
 
 /// Stages 1–4 of [`assemble_ragged_direct_local`]: gate and maps
@@ -2306,6 +2553,7 @@ fn strips_and_metric(
         aux_ext,
         virt_ext,
         batches,
+        stripe,
     } = maps;
     stats.t_maps_s = t0.elapsed().as_secs_f64();
 
@@ -2344,7 +2592,8 @@ fn strips_and_metric(
             .collect(),
         Eri3Pass::AuxMajor => aux_major_pass(&bctx, dcfg.scratch_budget_bytes, stats),
     };
-    let strips = collect_strips(no, batch_out, dcfg.split_eri3_timers, stats)?;
+    let needed = stripe.as_ref().map(|s| s.needed.as_slice());
+    let strips = collect_strips(no, batch_out, dcfg.split_eri3_timers, needed, stats)?;
     stats.t_eri3_s = t0.elapsed().as_secs_f64();
 
     let t0 = Instant::now();
@@ -2365,15 +2614,20 @@ fn strips_and_metric(
         virt_dom,
         strips,
         metric_blocks,
+        stripe,
     })
 }
 
 /// Batch outputs → one strip per occupied (an occupied no batch built is a
 /// construction bug), summing the stage-3 counters, timers and strip sizes.
+/// Under a rank stripe `needed` marks the occupieds this rank builds; the
+/// others get [`Strip::absent`], and the row/column means are over the
+/// built strips.
 fn collect_strips(
     no: usize,
     batch_out: Vec<BatchOut>,
     split_timers: bool,
+    needed: Option<&[bool]>,
     stats: &mut DirectStats,
 ) -> Result<Vec<Strip>, FerricError> {
     stats.n_batches = batch_out.len();
@@ -2403,13 +2657,8 @@ fn collect_strips(
     if stats.n_batches > 0 {
         stats.batch_work_mean_s /= stats.n_batches as f64;
     }
-    let strips: Vec<Strip> = strips
-        .into_iter()
-        .enumerate()
-        .map(|(i, s)| {
-            s.ok_or_else(|| FerricError::General(format!("lmp2_direct: no strip built for i={i}")))
-        })
-        .collect::<Result<_, _>>()?;
+    let strips = fill_absent_strips(strips, needed)?;
+    let n_built = needed.map_or(no, |n| n.iter().filter(|&&b| b).count());
     for st in &strips {
         stats.strip_rows_mean += st.rows.len() as f64;
         stats.strip_rows_max = stats.strip_rows_max.max(st.rows.len());
@@ -2417,11 +2666,45 @@ fn collect_strips(
         stats.strip_cols_max = stats.strip_cols_max.max(st.cols.len());
         stats.strip_bytes_total += st.b.len() * 8;
     }
-    if no > 0 {
-        stats.strip_rows_mean /= no as f64;
-        stats.strip_cols_mean /= no as f64;
+    if n_built > 0 {
+        stats.strip_rows_mean /= n_built as f64;
+        stats.strip_cols_mean /= n_built as f64;
     }
     Ok(strips)
+}
+
+/// One strip per occupied: the built one, [`Strip::absent`] for an occupied
+/// the rank stripe leaves to other ranks, an error for any other gap.
+fn fill_absent_strips(
+    strips: Vec<Option<Strip>>,
+    needed: Option<&[bool]>,
+) -> Result<Vec<Strip>, FerricError> {
+    strips
+        .into_iter()
+        .enumerate()
+        .map(|(i, s)| match s {
+            Some(s) => Ok(s),
+            None if needed.is_some_and(|n| !n[i]) => Ok(Strip::absent()),
+            None => Err(FerricError::General(format!(
+                "lmp2_direct: no strip built for i={i}"
+            ))),
+        })
+        .collect()
+}
+
+/// Everything stage 5 reads: what [`fit_pairs`] is called with, bundled for
+/// [`fit_pair_slots`].
+#[derive(Clone, Copy)]
+struct PairFitInput<'a> {
+    pre: &'a StripsAndMetric,
+    dfbs: &'a PreparedBasis,
+    spaces: &'a LocalizedSpaces,
+    eps: f64,
+    scale: f64,
+    dcfg: &'a DirectConfig,
+    path: FitPath,
+    gate: Option<SolveGate>,
+    fock_screen: Option<f64>,
 }
 
 /// Which stage-5 fit runs: the production Cholesky/triangular-solve path,
@@ -2481,7 +2764,10 @@ fn schwarz_screen(
             stats.own_w_bytes = own_w_store_bytes(&pre.aux_dom, &pre.strips, dims_df);
             let keep = stats.own_w_bytes <= dcfg.scratch_budget_bytes;
             let (aux_dom, strips) = (&pre.aux_dom, &pre.strips);
-            let o = whiten_own_domains(no, scale, aux_dom, strips, dims_df, mb, dfbs, r, keep)?;
+            let needed = pre.stripe.as_ref().map(|s| s.needed.as_slice());
+            let o = whiten_own_domains(
+                no, scale, aux_dom, strips, dims_df, mb, dfbs, r, keep, needed,
+            )?;
             Ok((Some((o.q, o.qmax)), o.w))
         }
         #[cfg(test)]
@@ -2505,17 +2791,24 @@ fn schwarz_screen(
 /// κ screen is on. The screen only ever SHRINKS the union, so the
 /// strip-coverage invariant is untouched; `a ∈ V_i ∪ V_j` lies in both
 /// strips' extended columns (i, j are mutual partners), so a missing
-/// column position is a construction bug and panics loudly.
+/// column position is a construction bug and panics loudly. Under a rank
+/// stripe `mine` marks this rank's pairs; the others get an empty set and
+/// their strips are not read.
 fn pair_candidates(
     unique: &[(usize, usize)],
     virt_dom: &[Vec<usize>],
     strips: &[Strip],
     qvirt: Option<&(Vec<Vec<f64>>, Vec<f64>)>,
     kappa_eps: Option<f64>,
+    mine: Option<&[bool]>,
 ) -> Vec<Vec<usize>> {
     unique
         .iter()
-        .map(|&(i, j)| {
+        .enumerate()
+        .map(|(px, &(i, j))| {
+            if mine.is_some_and(|m| !m[px]) {
+                return Vec::new();
+            }
             let cij = sorted_union([virt_dom[i].iter().copied(), virt_dom[j].iter().copied()]);
             match (qvirt, kappa_eps) {
                 (Some((q, qmax)), Some(th)) => cij
@@ -2532,15 +2825,26 @@ fn pair_candidates(
         .collect()
 }
 
-/// Upper bound on one domain group's scratch in [`fit_domain_group`]:
-/// `V_DD` and its Cholesky factor (`2d²`), one whitened `W_k` per distinct
-/// occupied over its candidate union (`Σ_k d·|C_k|`), and the widest pair's
-/// two column selections, `J_ij` and its transpose (`2·d·n + 2·n²`).
-/// With the Fock-propagated screen on (`screen_on`), the widest pair's
-/// gate scratch in [`crate::ragged::pair_blocks_screened`] is added:
-/// `F'`, `t⁰`, `F't⁰`, the `t⁰F'` temporary, the gate and its transpose,
-/// [`FOCK_SCREEN_SCRATCH_MATRICES`]` · n²` (all six counted, although at
-/// most four are live at once). Off, the bound is unchanged.
+/// Upper bound on one domain group's scratch in [`fit_domain_group`],
+/// counted from its allocations. Held for the whole group: `V_DD` and its
+/// Cholesky factor (`2d²`) and one whitened `W_k` per distinct occupied over
+/// its candidate union (`Σ_k d·|C_k|`). On top of that, the larger of the
+/// two phases' transients:
+///
+/// - whitening occupied `k` ([`whiten`]): the gathered strip `A_k` and the
+///   transposed right-hand side LAPACK's row-major wrapper copies
+///   (`2·d·|C_k|`; the owned copy it solves into IS `W_k`), plus the
+///   transposed `L` it copies per call (`d²`);
+/// - the pair fits: the widest pair's two column selections, `J_ij` and its
+///   transpose (`2·d·n + 2·n²`), and with the Fock-propagated screen on
+///   (`screen_on`) the gate scratch of
+///   [`crate::ragged::pair_blocks_screened`] (`F'`, `t⁰`, `F't⁰`, the `t⁰F'`
+///   temporary, the gate and its transpose,
+///   [`FOCK_SCREEN_SCRATCH_MATRICES`]` · n²`, all six counted although at
+///   most four are live at once).
+///
+/// The pair blocks a group builds are not scratch: they are bounded by
+/// [`group_block_bound`] and charged at their exact bytes once built.
 fn group_scratch_bound(
     dfbs: &PreparedBasis,
     dsh: &[usize],
@@ -2557,7 +2861,7 @@ fn group_scratch_bound(
         .max()
         .unwrap_or(0);
     let mut want: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
-    for &px in pxs {
+    for &px in pxs.iter().filter(|&&px| !pair_cands[px].is_empty()) {
         let (i, j) = unique[px];
         for k in [i, j] {
             want.entry(k)
@@ -2566,12 +2870,89 @@ fn group_scratch_bound(
         }
     }
     let w: usize = want.values().map(|c| d * c.len()).sum();
+    let c_max = want.values().map(BTreeSet::len).max().unwrap_or(0);
+    let whiten = d * d + 2 * d * c_max;
     let screen = if screen_on {
         FOCK_SCREEN_SCRATCH_MATRICES * n_max * n_max
     } else {
         0
     };
-    8 * (2 * d * d + w + 2 * d * n_max + 2 * n_max * n_max + screen)
+    let fits = 2 * d * n_max + 2 * n_max * n_max + screen;
+    8 * (2 * d * d + w + whiten.max(fits))
+}
+
+/// Upper bound on the pair blocks one domain group builds: each pair's
+/// block (and its mirror when `i ≠ j`) at the full candidate width
+/// `n = |C_ij|`, [`block_bytes`] each — the Eq-8 mask only drops rows and
+/// columns, so the built blocks are never larger.
+fn group_block_bound(
+    pxs: &[usize],
+    unique: &[(usize, usize)],
+    pair_cands: &[Vec<usize>],
+    nv: usize,
+) -> usize {
+    pxs.iter()
+        .map(|&px| {
+            let n = pair_cands[px].len();
+            let (i, j) = unique[px];
+            match n {
+                0 => 0,
+                _ if i == j => block_bytes(n, n, nv),
+                _ => 2 * block_bytes(n, n, nv),
+            }
+        })
+        .sum()
+}
+
+/// One stage-5 wave: groups `start..end` of the group list, run together
+/// with at most `workers` of them in flight, and the scratch reserved for
+/// them (`min(len, workers)` × the wave's largest group scratch).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GroupWave {
+    end: usize,
+    scratch: usize,
+    /// The wave stopped because the next group did not fit, not because the
+    /// list ran out.
+    budget_limited: bool,
+}
+
+/// The next wave from `start`: as many groups as fit in `avail` bytes,
+/// charging each group's block bound (`blocks[g]`) — its blocks stay
+/// resident — and `min(len, workers)` copies of the wave's largest scratch
+/// bound (`scratch[g]`), since any `workers` of the wave's groups can run at
+/// once. Always at least one group, so the schedule makes progress; a lone
+/// group that does not fit is left to the charge-as-built gate, which
+/// refuses it on its exact bytes.
+fn plan_group_wave(
+    start: usize,
+    scratch: &[usize],
+    blocks: &[usize],
+    workers: usize,
+    avail: usize,
+) -> GroupWave {
+    let workers = workers.max(1);
+    let need = |len: usize, s_max: usize, b_sum: usize| {
+        b_sum.saturating_add(len.min(workers).saturating_mul(s_max))
+    };
+    let (mut s_max, mut b_sum) = (scratch[start], blocks[start]);
+    let mut end = start + 1;
+    while end < scratch.len() {
+        let (s, b) = (s_max.max(scratch[end]), b_sum.saturating_add(blocks[end]));
+        if need(end + 1 - start, s, b) > avail {
+            return GroupWave {
+                end,
+                scratch: (end - start).min(workers).saturating_mul(s_max),
+                budget_limited: true,
+            };
+        }
+        (s_max, b_sum) = (s, b);
+        end += 1;
+    }
+    GroupWave {
+        end,
+        scratch: (end - start).min(workers).saturating_mul(s_max),
+        budget_limited: false,
+    }
 }
 
 /// Candidate-square matrices the Fock-propagated gate holds per pair
@@ -2582,12 +2963,15 @@ const FOCK_SCREEN_SCRATCH_MATRICES: usize = 6;
 /// EXACT bytes (pair block + PCG vectors) the moment they exist, so at ε > 0,
 /// where the pre-flight is only a bound, the assembly stops at the first
 /// group that takes the stage-5 resident set (strips + metric + own-domain
-/// `W` + blocks so far) or the solve's (blocks + PCG vectors) over the
-/// budget. Groups not yet started are skipped once it trips.
+/// `W` + the running wave's group scratch + blocks so far) or the solve's
+/// (blocks + PCG vectors) over the budget. Groups not yet started are
+/// skipped once it trips.
 struct BlockCharge {
     budget_bytes: usize,
     base_bytes: usize,
     est: DirectMemoryEstimate,
+    /// The running wave's reserved group scratch ([`GroupWave::scratch`]).
+    scratch: AtomicUsize,
     ragged: AtomicUsize,
     vectors: AtomicUsize,
     tripped: Mutex<Option<String>>,
@@ -2610,7 +2994,8 @@ impl BlockCharge {
         let r_tot = self.ragged.fetch_add(r, Ordering::Relaxed) + r;
         let v_tot = self.vectors.fetch_add(v, Ordering::Relaxed) + v;
         let solve = r_tot + crate::ragged::PCG_RESIDENT_VECTORS * v_tot;
-        let held = (self.base_bytes + r_tot).max(solve);
+        let base = self.base_bytes + self.scratch.load(Ordering::Relaxed);
+        let held = (base + r_tot).max(solve);
         if held <= self.budget_bytes {
             return;
         }
@@ -2620,8 +3005,9 @@ impl BlockCharge {
                 format!(
                     "lmp2_direct: refused during the pair fits: the blocks built so far already \
                      need {:.2} GB (pair blocks {:.2} GB + {} PCG amplitude vectors {:.2} GB; \
-                     strips + metric {:.2} GB), over the memory budget of {:.2} GB; the whole \
-                     system needs at most {:.2} GB (candidate-domain bound). The pair blocks \
+                     strips + metric + group scratch {:.2} GB), over the memory budget of \
+                     {:.2} GB; the whole system needs at most {:.2} GB (candidate-domain \
+                     bound). The pair blocks \
                      and PCG vectors stay resident for the whole solve and are not blocked. \
                      Raise [memory] budget_gb / FERRIC_MEM_BUDGET_GB, or shrink the pair \
                      blocks: a larger [local] eps, a smaller virt_radius, or the pair gate \
@@ -2630,7 +3016,7 @@ impl BlockCharge {
                     gb(r_tot),
                     crate::ragged::PCG_RESIDENT_VECTORS,
                     gb(crate::ragged::PCG_RESIDENT_VECTORS * v_tot),
-                    gb(self.base_bytes),
+                    gb(base),
                     gb(self.budget_bytes),
                     gb(self.est.resident_peak()),
                 )
@@ -2647,28 +3033,30 @@ impl BlockCharge {
 /// group ([`fit_domain_group`]); per-group work is held per worker and
 /// dropped after its group. Results are written back into original-pair
 /// order slots, so the assembled pair order is the ungrouped loop's.
-#[allow(clippy::too_many_arguments)]
-fn fit_pairs(
-    pre: &StripsAndMetric,
-    dfbs: &PreparedBasis,
-    spaces: &LocalizedSpaces,
-    eps: f64,
-    scale: f64,
-    dcfg: &DirectConfig,
-    path: FitPath,
-    gate: Option<SolveGate>,
-    fock_screen: Option<f64>,
+///
+/// Returns the per-pair slots THIS rank fitted (all of them without a rank
+/// stripe) and the resident bytes they sit beside (strips, metric, held `W`).
+fn fit_pair_slots(
+    input: PairFitInput<'_>,
     stats: &mut DirectStats,
-) -> Result<Ragged, FerricError> {
+) -> Result<(Vec<crate::ragged_transport::Slot>, usize), FerricError> {
     use rayon::prelude::*;
+    let PairFitInput {
+        pre,
+        dfbs,
+        spaces,
+        eps,
+        scale,
+        dcfg,
+        path,
+        gate,
+        fock_screen,
+    } = input;
     let (no, nv) = (spaces.no, spaces.nv);
-    let t0 = Instant::now();
     let fo: Vec<f64> = (0..no).map(|i| spaces.f_oo[(i, i)]).collect();
     let fv: Vec<f64> = (0..nv).map(|a| spaces.f_vv[(a, a)]).collect();
-    let unique: Vec<(usize, usize)> = (0..no)
-        .flat_map(|i| (i..no).map(move |j| (i, j)))
-        .filter(|&(i, j)| pre.keep[i * no + j])
-        .collect();
+    let unique = kept_pairs(&pre.keep, no);
+    let mine = pre.stripe.as_ref().map(|s| s.mine.as_slice());
     let kappa_eps: Option<f64> = match dcfg.virt_schwarz_kappa {
         Some(k) if eps > 0.0 => Some(k * eps),
         _ => None,
@@ -2698,24 +3086,18 @@ fn fit_pairs(
         &pre.strips,
         qvirt.as_ref(),
         kappa_eps,
+        mine,
     );
     for c in &pair_cands {
         stats.virt_cand_mean += c.len() as f64;
         stats.virt_cand_max = stats.virt_cand_max.max(c.len());
     }
-    if !pair_cands.is_empty() {
-        stats.virt_cand_mean /= pair_cands.len() as f64;
+    let n_fitted = mine.map_or(unique.len(), |m| m.iter().filter(|&&b| b).count());
+    if n_fitted > 0 {
+        stats.virt_cand_mean /= n_fitted as f64;
     }
 
-    let pair_dom: Vec<Vec<usize>> = unique
-        .iter()
-        .map(|&(i, j)| {
-            sorted_union([
-                pre.aux_dom[i].iter().copied(),
-                pre.aux_dom[j].iter().copied(),
-            ])
-        })
-        .collect();
+    let pair_dom = pair_domains(&unique, &pre.aux_dom);
     let own_w: Option<Vec<Option<GroupW>>> = own_w.map(|w| {
         trim_own_w(
             w,
@@ -2732,7 +3114,7 @@ fn fit_pairs(
         .flatten()
         .map(|g| 8 * g.w.len())
         .sum();
-    let group_list = group_by_domain(pair_dom);
+    let group_list = own_groups(group_by_domain(pair_dom), mine);
     let ctx = PairFitCtx {
         unique: &unique,
         pair_cands: &pair_cands,
@@ -2760,36 +3142,31 @@ fn fit_pairs(
     // The screen is inert at ε = 0 (`pair_blocks_screened` skips it there).
     let screen_on = fock_screen.is_some() && eps > 0.0;
     let workers = rayon::current_num_threads().max(1);
-    let g_max = group_list
+    let scratch: Vec<usize> = group_list
         .iter()
         .map(|(dsh, pxs)| group_scratch_bound(dfbs, dsh, pxs, &unique, &pair_cands, screen_on))
-        .max()
-        .unwrap_or(0);
-    // Groups in flight at once: each holds one group's scratch, so a budget
-    // that cannot hold `workers` of them beside the resident set runs fewer.
-    // Groups are independent, so this changes the schedule, never a block.
-    let concurrent = match gate {
-        None => workers,
-        Some(g) => (g
-            .budget_bytes
-            .saturating_sub(base_bytes + stats.memory.pair_block_bytes)
-            / g_max.max(1))
-        .clamp(1, workers),
-    };
-    stats.group_concurrency = concurrent;
-    stats.group_scratch_bound_bytes = g_max;
+        .collect();
+    let blocks: Vec<usize> = group_list
+        .iter()
+        .map(|(_, pxs)| group_block_bound(pxs, &unique, &pair_cands, nv))
+        .collect();
+    stats.group_scratch_bound_bytes = scratch.iter().copied().max().unwrap_or(0);
     let charge = gate.map(|g| BlockCharge {
         budget_bytes: g.budget_bytes,
-        base_bytes: base_bytes + concurrent * g_max,
+        base_bytes,
         est: stats.memory,
+        scratch: AtomicUsize::new(0),
         ragged: AtomicUsize::new(0),
         vectors: AtomicUsize::new(0),
         tripped: Mutex::new(None),
     });
+    let (in_flight, in_flight_peak) = (AtomicUsize::new(0), AtomicUsize::new(0));
     let run_group = |(dsh, pxs): &(Vec<usize>, Vec<usize>)| -> GroupResult {
         if charge.as_ref().is_some_and(BlockCharge::is_tripped) {
             return Ok((Vec::new(), GroupCounts::default()));
         }
+        let now = in_flight.fetch_add(1, Ordering::Relaxed) + 1;
+        in_flight_peak.fetch_max(now, Ordering::Relaxed);
         let out = match path {
             FitPath::Cholesky => fit_domain_group(&ctx, dsh, pxs),
             #[cfg(test)]
@@ -2799,35 +3176,139 @@ fn fit_pairs(
                 inverse_oracle::fit_domain_group_inverse_oracle(&ctx, dsh, pxs)
                     .map(|s| (s, GroupCounts::default()))
             }
-        }?;
+        };
+        in_flight.fetch_sub(1, Ordering::Relaxed);
+        let out = out?;
         if let Some(c) = &charge {
             c.charge(&out.0);
         }
         Ok(out)
     };
-    let group_out: Vec<GroupResult> = if concurrent >= workers {
-        group_list.par_iter().map(&run_group).collect()
-    } else {
-        let mut out = Vec::with_capacity(group_list.len());
-        for chunk in group_list.chunks(concurrent) {
-            out.extend(chunk.par_iter().map(&run_group).collect::<Vec<_>>());
+    // Groups run in waves sized against what the budget has left beside the
+    // resident set and the blocks built so far (exact bytes), charging the
+    // wave's own blocks at their candidate bound and `min(len, workers)`
+    // copies of its largest group scratch. The whole system's candidate
+    // bound is never reserved up front: it is loose at ε > 0 (the mask drops
+    // rows and columns), and reserving it serialised runs whose blocks fit.
+    // Groups are independent and write their own slots, so the schedule
+    // changes the order of work, never a block.
+    let (group_out, concurrent, n_waves) = match &charge {
+        None => (group_list.par_iter().map(&run_group).collect(), workers, 1),
+        Some(c) => {
+            let mut out: Vec<GroupResult> = Vec::with_capacity(group_list.len());
+            let (mut start, mut concurrent, mut n_waves) = (0usize, 0usize, 0usize);
+            let mut limited = false;
+            while start < group_list.len() && !c.is_tripped() {
+                let held = base_bytes + c.ragged.load(Ordering::Relaxed);
+                let avail = c.budget_bytes.saturating_sub(held);
+                let wave = plan_group_wave(start, &scratch, &blocks, workers, avail);
+                // the widest wave the budget let run
+                concurrent = concurrent.max((wave.end - start).min(workers));
+                limited |= wave.budget_limited;
+                c.scratch.store(wave.scratch, Ordering::Relaxed);
+                let wave_groups = &group_list[start..wave.end];
+                out.extend(wave_groups.par_iter().map(&run_group).collect::<Vec<_>>());
+                n_waves += 1;
+                start = wave.end;
+            }
+            if limited && concurrent == 1 && workers > 1 {
+                ferric_core::memory::warn_width_collapsed(
+                    "LMP2 pair-fit groups",
+                    1,
+                    workers,
+                    c.budget_bytes.saturating_sub(base_bytes),
+                    "stage-5 domain groups ran one at a time beside the pair blocks (same \
+                     blocks, serial)",
+                );
+            }
+            (out, concurrent, n_waves)
         }
-        out
     };
+    stats.group_concurrency = concurrent;
+    stats.n_group_waves = n_waves;
+    stats.group_in_flight_peak = in_flight_peak.into_inner();
     if let Some(msg) = charge.and_then(|c| c.tripped.into_inner().ok().flatten()) {
         return Err(FerricError::MemoryExhausted(msg));
     }
-    let ragged = ragged_from_groups(unique.len(), group_out, stats)?;
+    let slots = slots_from_groups(unique.len(), group_out, stats)?;
+    Ok((slots, base_bytes))
+}
+
+/// Stage 5 after the fits: the slots become the ragged system. Under a rank
+/// stripe the ranks first exchange block skeletons (index lists and masks),
+/// and the system comes back as this rank's share
+/// ([`crate::ragged::RaggedShare`]): its own blocks whole, the others
+/// hollow. `beside_bytes` is what is still resident beside this rank's own
+/// blocks; with a gate, the exchange buffer must fit in what the budget has
+/// left.
+fn gather_ragged(
+    mut slots: Vec<crate::ragged_transport::Slot>,
+    stripe: Option<ferric_core::parallel::ParallelContext>,
+    gate: Option<SolveGate>,
+    beside_bytes: usize,
+    t0: Instant,
+    stats: &mut DirectStats,
+) -> Result<Ragged, FerricError> {
+    let owned_slots: Vec<bool> = slots.iter().map(Option::is_some).collect();
+    if let Some(c) = stripe {
+        let avail = gate.map(|g| {
+            let own: usize = slots
+                .iter()
+                .flatten()
+                .flatten()
+                .map(PairBlock::heap_bytes)
+                .sum();
+            g.budget_bytes.saturating_sub(beside_bytes + own)
+        });
+        crate::ragged_transport::gather_slots(&c, &mut slots, avail)?;
+    }
+    let ragged = ragged_from_slots(slots, stripe.map(|c| (c, owned_slots.as_slice())))?;
     stats.t_pairs_s = t0.elapsed().as_secs_f64();
     mem_trace(
         "pairs",
         &[
             ("ragged", ragged.heap_bytes()),
             ("group_scratch_max", stats.group_scratch_bytes_max),
+            ("group_scratch_bound", stats.group_scratch_bound_bytes),
             ("own_w_held", stats.own_w_bytes_held),
         ],
     );
     Ok(ragged)
+}
+
+/// Stage 5 on borrowed stage-1–4 products (tests fit the same `pre` more
+/// than once): [`fit_pair_slots`] then [`gather_ragged`], with the strips
+/// and the metric still resident during the exchange. The driver
+/// ([`assemble_gated`]) drops them first.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn fit_pairs(
+    pre: &StripsAndMetric,
+    dfbs: &PreparedBasis,
+    spaces: &LocalizedSpaces,
+    eps: f64,
+    scale: f64,
+    dcfg: &DirectConfig,
+    path: FitPath,
+    gate: Option<SolveGate>,
+    fock_screen: Option<f64>,
+    stats: &mut DirectStats,
+) -> Result<Ragged, FerricError> {
+    let t0 = Instant::now();
+    let input = PairFitInput {
+        pre,
+        dfbs,
+        spaces,
+        eps,
+        scale,
+        dcfg,
+        path,
+        gate,
+        fock_screen,
+    };
+    let (slots, base_bytes) = fit_pair_slots(input, stats)?;
+    let ctx = pre.stripe.as_ref().map(|s| s.ctx);
+    gather_ragged(slots, ctx, gate, base_bytes, t0, stats)
 }
 
 /// Pairs grouped by their pair domain D_ij (shell list), groups ordered by
@@ -2844,14 +3325,33 @@ fn group_by_domain(pair_dom: Vec<Vec<usize>>) -> Vec<(Vec<usize>, Vec<usize>)> {
 
 /// Group outputs → the ragged pair list in original-pair order (an unfilled
 /// slot is a grouping bug), summing the per-group counters into `stats`.
-fn ragged_from_groups(
+/// The domain groups this rank fits: every group without a stripe, else the
+/// groups of its own pairs ([`rank_stripe`] gives a whole group to one rank,
+/// so a group's first pair decides).
+fn own_groups(
+    group_list: Vec<(Vec<usize>, Vec<usize>)>,
+    mine: Option<&[bool]>,
+) -> Vec<(Vec<usize>, Vec<usize>)> {
+    match mine {
+        None => group_list,
+        Some(m) => group_list
+            .into_iter()
+            .filter(|(_, pxs)| m[pxs[0]])
+            .collect(),
+    }
+}
+
+/// Per-unique-pair slots filled from the groups this rank fitted, with the
+/// group counters summed into `stats`. A slot of a group another rank owns
+/// stays `None`.
+fn slots_from_groups(
     n_unique: usize,
     group_out: Vec<Result<(SlotOut, GroupCounts), FerricError>>,
     stats: &mut DirectStats,
-) -> Result<Ragged, FerricError> {
+) -> Result<Vec<crate::ragged_transport::Slot>, FerricError> {
     stats.n_pair_groups = group_out.len();
     let mut n_occ = 0usize;
-    let mut slots: Vec<Option<Vec<PairBlock>>> = (0..n_unique).map(|_| None).collect();
+    let mut slots: Vec<crate::ragged_transport::Slot> = (0..n_unique).map(|_| None).collect();
     for r in group_out {
         let (slot_out, counts) = r?;
         n_occ += counts.n_occ;
@@ -2865,15 +3365,33 @@ fn ragged_from_groups(
     if stats.n_pair_groups > 0 {
         stats.n_distinct_occ_per_group = n_occ as f64 / stats.n_pair_groups as f64;
     }
+    Ok(slots)
+}
+
+/// The ragged system of fully filled slots, in slot order. An empty slot is
+/// an error: a grouping bug, or a striped run whose skeletons were not
+/// gathered (a rank-pinned context with no MPI world behind it). `share`
+/// names the MPI context and the slots this rank fitted; the system is then
+/// that rank's share.
+fn ragged_from_slots(
+    slots: Vec<crate::ragged_transport::Slot>,
+    share: Option<(ferric_core::parallel::ParallelContext, &[bool])>,
+) -> Result<Ragged, FerricError> {
     let mut pairs: Vec<PairBlock> = Vec::new();
+    let mut owned: Vec<bool> = Vec::new();
     for (px, s) in slots.into_iter().enumerate() {
-        pairs.extend(s.ok_or_else(|| {
+        let blocks = s.ok_or_else(|| {
             FerricError::General(format!(
-                "lmp2_direct: pair slot {px} never filled (grouping bug)"
+                "lmp2_direct: pair slot {px} never filled (grouping bug, or a rank stripe \
+                 without an MPI world to gather over)"
             ))
-        })?);
+        })?;
+        owned.resize(owned.len() + blocks.len(), share.is_none_or(|(_, o)| o[px]));
+        pairs.extend(blocks);
     }
-    Ok(Ragged::from_pairs(pairs))
+    let mut ragged = Ragged::from_pairs(pairs);
+    ragged.share = share.map(|(ctx, _)| crate::ragged::RaggedShare { ctx, owned });
+    Ok(ragged)
 }
 
 /// Compact whitened occ-occ Gram `(ik|jl)` for the LinLCCD hh ladder —
@@ -3359,6 +3877,34 @@ pub fn assemble_pp_fitted_direct(
         .collect()
 }
 
+/// [`amplitude_lmp2_direct`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// `op` is the correlation operator (the system's Coulomb operator
+/// unless the caller attenuates it).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+pub fn amplitude_lmp2_direct_on(
+    aux: &PreparedAux<'_>,
+    op: Operator,
+    rhf: &ScfResult,
+    cfg: &AmplitudeLmp2Config,
+    dcfg: &DirectConfig,
+) -> Result<(AmplitudeLmp2Result, DirectStats), FerricError> {
+    let sys = aux.system();
+    aux.check_restricted_reference(rhf)?;
+    amplitude_lmp2_direct(
+        sys.mol(),
+        sys.basis(),
+        sys.basis_set(),
+        aux.basis(),
+        op,
+        rhf,
+        cfg,
+        dcfg,
+    )
+}
+
 /// Integral-direct amplitude-threshold LMP2 driver — the direct-path
 /// sibling of [`crate::lmp2_amplitude::amplitude_lmp2`]. `cfg.fit_radius_bohr`
 /// and `cfg.aux_tail_frac` are ignored (the direct path's locality lives in
@@ -3367,6 +3913,7 @@ pub fn assemble_pp_fitted_direct(
 /// `cfg.compute_reference` (default false) opts in to the canonical
 /// `ri_mp2` reference, which DOES form the global `(naux, no·nv)` tensor
 /// this path otherwise never builds — leave it off for a reduced-cost run.
+#[allow(clippy::too_many_arguments)]
 pub fn amplitude_lmp2_direct(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -3648,10 +4195,7 @@ mod stage_b_tests {
         let dfbs =
             PreparedBasis::new(&mol, &ferric_core::basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
         let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
-        let cfg = RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        };
+        let cfg = RhfConfig::default().with_energy_conv(1e-10);
         let rhf = solve_rhf(
             &ParallelContext::default(),
             &mol,
@@ -3845,10 +4389,7 @@ mod stage_b_tests {
                 PreparedBasis::new(&mol, &ferric_core::basis::bundled("cc-pvdz-ri").unwrap())
                     .unwrap();
             let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
-            let cfg = RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            };
+            let cfg = RhfConfig::default().with_energy_conv(1e-10);
             let rhf = solve_rhf(
                 &ParallelContext::default(),
                 &mol,
@@ -4022,10 +4563,7 @@ mod stage_b_tests {
             PreparedBasis::new(&mol, &ferric_core::basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let cfg = RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        };
+        let cfg = RhfConfig::default().with_energy_conv(1e-10);
         let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
         let (vvhv, _) = checked_vvhv(&mol, &obs, &obs_bs, &rhf, "test").unwrap();
         let spaces = localized_spaces(&mol, &obs, &rhf, 4, &vvhv).unwrap();
@@ -4277,10 +4815,7 @@ mod stage_c_tests {
         let dfbs =
             PreparedBasis::new(&mol, &ferric_core::basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
         let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
-        let cfg = RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        };
+        let cfg = RhfConfig::default().with_energy_conv(1e-10);
         let rhf = solve_rhf(
             &ParallelContext::default(),
             &mol,
@@ -4317,20 +4852,24 @@ mod stage_c_tests {
 
     /// Stages 1–4 at ε with the calibrated gate `cal`.
     fn pre_of(su: &Setup, op: Operator, eps: f64, cal: f64) -> StripsAndMetric {
+        pre_with(su, op, eps, Some(cal), &production_maps(None)).0
+    }
+
+    /// Stages 1–4 at ε under `dcfg` (gate `cal`, `None` = every pair), with
+    /// their counters.
+    fn pre_with(
+        su: &Setup,
+        op: Operator,
+        eps: f64,
+        cal: Option<f64>,
+        dcfg: &DirectConfig,
+    ) -> (StripsAndMetric, DirectStats) {
         let mut st = DirectStats::default();
-        strips_and_metric(
-            &su.mol,
-            &su.obs,
-            &su.dfbs,
-            op,
-            &su.spaces,
-            eps,
-            Some(cal),
-            &production_maps(None),
-            None,
-            &mut st,
+        let pre = strips_and_metric(
+            &su.mol, &su.obs, &su.dfbs, op, &su.spaces, eps, cal, dcfg, None, &mut st,
         )
-        .unwrap()
+        .unwrap();
+        (pre, st)
     }
 
     fn fit(
@@ -4346,6 +4885,317 @@ mod stage_c_tests {
         )
         .unwrap();
         (r, st)
+    }
+
+    /// The slots one simulated rank fits from its own strips (no gather: a
+    /// rank-pinned context has no MPI world).
+    fn rank_slots(
+        su: &Setup,
+        pre: &StripsAndMetric,
+        eps: f64,
+        dcfg: &DirectConfig,
+    ) -> Vec<crate::ragged_transport::Slot> {
+        let mut st = DirectStats::default();
+        let input = PairFitInput {
+            pre,
+            dfbs: &su.dfbs,
+            spaces: &su.spaces,
+            eps,
+            scale: 1.0,
+            dcfg,
+            path: FitPath::Cholesky,
+            gate: None,
+            fock_screen: None,
+        };
+        fit_pair_slots(input, &mut st).unwrap().0
+    }
+
+    /// Largest elementwise difference between two blocks' arrays, after
+    /// requiring the same pair, index lists and mask.
+    fn block_diff(a: &PairBlock, b: &PairBlock) -> f64 {
+        assert_eq!((a.i, a.j), (b.i, b.j));
+        assert_eq!((&a.da, &a.db), (&b.da, &b.db), "pair ({}, {})", a.i, a.j);
+        assert_eq!((&a.pos_da, &a.pos_db), (&b.pos_da, &b.pos_db));
+        assert_eq!(a.pat, b.pat, "pair ({}, {}) mask", a.i, a.j);
+        [
+            (&a.fvv_aa, &b.fvv_aa),
+            (&a.fvv_bb, &b.fvv_bb),
+            (&a.j_blk, &b.j_blk),
+            (&a.denom, &b.denom),
+        ]
+        .iter()
+        .flat_map(|(x, y)| x.iter().zip(y.iter()).map(|(p, q)| (p - q).abs()))
+        .fold(0.0, f64::max)
+    }
+
+    /// The rank stripe partitions the assembly. For 2, 3 and 5 simulated
+    /// ranks, each building only its own strips: every slot is fitted by
+    /// exactly one rank, the union of the ranks' slots is the serial ragged
+    /// system (same index lists and masks, values to rounding: a strip over
+    /// fewer partners goes through differently shaped GEMMs), and no rank
+    /// holds more strip bytes than the serial run. One rank is the serial
+    /// path bit for bit. The gate is off, as in the CLI default, so every
+    /// occupied pairs with every other and a strip shrinks only because it
+    /// covers this rank's partners.
+    #[test]
+    fn rank_stripes_union_to_the_serial_blocks() {
+        use ferric_core::parallel::ParallelContext;
+        // octane: long enough that the pair domains differ, so there are
+        // several domain groups to stripe (butane has one).
+        let su = setup("alkane_8.xyz", 8);
+        let (eps, op) = (1e-4, Operator::coulomb());
+        let dcfg = production_maps(None);
+        let (pre, st_pre) = pre_with(&su, op, eps, None, &dcfg);
+        let (serial, st) = fit(&su, &pre, eps, &dcfg, FitPath::Cholesky);
+        assert!(
+            st.n_pair_groups >= 5,
+            "need >= 5 groups, got {}",
+            st.n_pair_groups
+        );
+        let one = DirectConfig {
+            mpi: Some(ParallelContext::for_rank(0, 1)),
+            ..dcfg.clone()
+        };
+        let (pre_one, _) = pre_with(&su, op, eps, None, &one);
+        assert!(pre_one.stripe.is_none(), "one rank is the serial path");
+        let (one_rank, _) = fit(&su, &pre_one, eps, &one, FitPath::Cholesky);
+        for (a, b) in one_rank.pairs.iter().zip(&serial.pairs) {
+            assert_eq!(block_diff(a, b), 0.0);
+        }
+        let scale = serial
+            .pairs
+            .iter()
+            .flat_map(|pb| pb.j_blk.iter())
+            .fold(0.0f64, |m, v| m.max(v.abs()));
+        for size in [2usize, 3, 5] {
+            let mut strip_bytes = Vec::new();
+            let per_rank: Vec<_> = (0..size)
+                .map(|rank| {
+                    let striped = DirectConfig {
+                        mpi: Some(ParallelContext::for_rank(rank, size)),
+                        ..dcfg.clone()
+                    };
+                    let (pre_r, st_r) = pre_with(&su, op, eps, None, &striped);
+                    strip_bytes.push(st_r.strip_bytes_total);
+                    rank_slots(&su, &pre_r, eps, &striped)
+                })
+                .collect();
+            let n_slots = per_rank[0].len();
+            let mut union: Vec<PairBlock> = Vec::new();
+            for px in 0..n_slots {
+                let owners: Vec<usize> = (0..size).filter(|&r| per_rank[r][px].is_some()).collect();
+                assert_eq!(owners.len(), 1, "size {size}: slot {px} owners {owners:?}");
+                union.extend(per_rank[owners[0]][px].clone().unwrap());
+            }
+            assert_eq!(union.len(), serial.pairs.len(), "size {size}");
+            let worst = union
+                .iter()
+                .zip(&serial.pairs)
+                .map(|(a, b)| block_diff(a, b))
+                .fold(0.0, f64::max);
+            eprintln!(
+                "[stripe] size {size}: max block diff {worst:.2e} (scale {scale:.2e}); strip \
+                 bytes per rank {strip_bytes:?} vs serial {}",
+                st_pre.strip_bytes_total
+            );
+            assert!(worst <= 1e-11 * scale.max(1.0), "size {size}: {worst:.3e}");
+            // No rank did all of the work, and more than one did some. (A
+            // group is never split, and most of octane's pairs share one
+            // domain, so at 5 ranks some get no group.)
+            let working = per_rank
+                .iter()
+                .filter(|s| s.iter().flatten().count() > 0)
+                .count();
+            assert!(
+                working >= 2,
+                "size {size}: {working} rank(s) fitted anything"
+            );
+            for (rank, s) in per_rank.iter().enumerate() {
+                let n = s.iter().flatten().count();
+                assert!(n < n_slots, "size {size}: rank {rank} fitted everything");
+                assert!(
+                    strip_bytes[rank] <= st_pre.strip_bytes_total,
+                    "size {size}: rank {rank} holds {} strip bytes, serial {}",
+                    strip_bytes[rank],
+                    st_pre.strip_bytes_total
+                );
+            }
+            assert!(
+                strip_bytes.iter().any(|&b| b < st_pre.strip_bytes_total),
+                "size {size}: no rank's strips shrank"
+            );
+        }
+    }
+
+    /// A rank-pinned context has no MPI world to gather over, so the full
+    /// driver must refuse rather than return a partial ragged system.
+    #[test]
+    fn a_stripe_without_a_world_is_refused() {
+        use ferric_core::parallel::ParallelContext;
+        let su = setup("alkane_8.xyz", 8);
+        let eps = 1e-4;
+        let striped = DirectConfig {
+            mpi: Some(ParallelContext::for_rank(0, 2)),
+            ..production_maps(None)
+        };
+        let (pre, _) = pre_with(&su, Operator::coulomb(), eps, Some(0.7), &striped);
+        let mut st = DirectStats::default();
+        let err = fit_pairs(
+            &pre,
+            &su.dfbs,
+            &su.spaces,
+            eps,
+            1.0,
+            &striped,
+            FitPath::Cholesky,
+            None,
+            None,
+            &mut st,
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("never filled"), "{err}");
+    }
+
+    /// The trivial limit of the split solve: a share that owns every block
+    /// (one rank, no MPI world) runs the same PCG as no share at all, so the
+    /// amplitudes, the energy and the true residual are bit for bit the
+    /// plain indexed solve's.
+    #[test]
+    fn a_share_owning_every_block_is_the_plain_solve() {
+        use crate::lmp2_amplitude::hylleraas_energy_and_residual;
+        use crate::ragged::{solve_ragged_budgeted_with, MatvecPath, RaggedShare};
+        use ferric_core::parallel::ParallelContext;
+        let su = setup("alkane_4.xyz", 4);
+        let eps = 1e-4;
+        let pre = pre_of(&su, Operator::coulomb(), eps, 0.7);
+        let dcfg = production_maps(None);
+        let (plain, _) = fit(&su, &pre, eps, &dcfg, FitPath::Cholesky);
+        let mut shared = plain.clone();
+        shared.share = Some(RaggedShare {
+            ctx: ParallelContext::for_rank(0, 1),
+            owned: vec![true; shared.pairs.len()],
+        });
+        let f_oo = &su.spaces.f_oo;
+        // budget 0: no gather plan, so both run the indexed matvec
+        let a = solve_ragged_budgeted_with(&plain, f_oo, 1e-9, 200, 0, 0.0);
+        let b = solve_ragged_budgeted_with(&shared, f_oo, 1e-9, 200, 0, 0.0);
+        assert_eq!(a.decision.path, MatvecPath::Indexed);
+        assert_eq!(b.decision.path, MatvecPath::Indexed);
+        assert!(a.solve.converged && a.solve.iterations > 3);
+        assert_eq!(a.solve.iterations, b.solve.iterations);
+        for (x, y) in a.solve.t.iter().zip(&b.solve.t) {
+            assert_eq!(x, y);
+        }
+        let ea = hylleraas_energy_and_residual(&plain, f_oo, None, &a.solve.t).unwrap();
+        let eb = hylleraas_energy_and_residual(&shared, f_oo, None, &b.solve.t).unwrap();
+        assert_eq!(ea.0.to_bits(), eb.0.to_bits());
+        assert_eq!(ea.1.to_bits(), eb.1.to_bits());
+        assert!(ea.0 < -0.1, "a real correlation energy, got {}", ea.0);
+    }
+
+    /// A chain of `no` occupieds one Bohr apart whose aux domain is the
+    /// `2·reach + 1` shells around it (one function per shell), every pair
+    /// kept: the integral-free inputs of [`rank_stripe`].
+    fn chain(no: usize, reach: usize) -> (Vec<bool>, Vec<Vec<usize>>, Vec<[f64; 3]>) {
+        let dom = (0..no)
+            .map(|i| (i.saturating_sub(reach)..(i + reach + 1).min(no)).collect())
+            .collect();
+        let xyz = (0..no).map(|i| [0.0, i as f64, 0.0]).collect();
+        (vec![true; no * no], dom, xyz)
+    }
+
+    /// The stripe plan on a synthetic chain: the ranks' pairs partition the
+    /// surviving pairs, an occupied is needed exactly when it is in one of
+    /// the rank's pairs, its partners are exactly the occupieds it shares
+    /// those pairs with (and itself), and the pair work is split within a
+    /// factor of two of even.
+    #[test]
+    fn rank_stripe_partitions_pairs_and_names_their_partners() {
+        use ferric_core::parallel::ParallelContext;
+        let (no, reach) = (40usize, 3usize);
+        let (keep, dom, xyz) = chain(no, reach);
+        let dims = vec![1usize; no];
+        let unique = kept_pairs(&keep, no);
+        for size in [2usize, 3, 4, 7] {
+            let mut owners = vec![0usize; unique.len()];
+            for rank in 0..size {
+                let ctx = ParallelContext::for_rank(rank, size);
+                let (s, partners) = rank_stripe(ctx, &keep, &dom, &dom, &xyz, &dims);
+                let mut want: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); no];
+                for (px, &(i, j)) in unique.iter().enumerate() {
+                    if s.mine[px] {
+                        owners[px] += 1;
+                        want[i].extend([i, j]);
+                        want[j].extend([i, j]);
+                    }
+                }
+                for i in 0..no {
+                    assert_eq!(
+                        s.needed[i],
+                        !want[i].is_empty(),
+                        "size {size} rank {rank} i {i}"
+                    );
+                    let got: BTreeSet<usize> = partners[i].iter().copied().collect();
+                    assert_eq!(got, want[i], "size {size} rank {rank} i {i}");
+                }
+                let share = s.mine.iter().filter(|&&m| m).count() as f64 / unique.len() as f64;
+                assert!(
+                    share > 0.5 / size as f64 && share < 2.0 / size as f64,
+                    "size {size} rank {rank}: {share:.3} of the pairs"
+                );
+            }
+            assert!(owners.iter().all(|&n| n == 1), "size {size}: {owners:?}");
+        }
+    }
+
+    /// Why the cut follows the molecule: on the chain, the partner-domain
+    /// rows a rank's strips need (`Σ_i |∪_{j ∈ partners(i)} D_j|`, the strip
+    /// row count) fall with the rank count, while an every-`size`-th-group
+    /// split leaves each rank needing most of them. The bounds are the
+    /// measured fractions (0.60, 0.40, 0.30 at 2, 4, 8 ranks) with margin:
+    /// the rank at the low end of the chain holds a strip for every occupied.
+    #[test]
+    fn a_contiguous_stripe_shrinks_the_strip_rows_a_modulo_one_does_not() {
+        use ferric_core::parallel::ParallelContext;
+        let (no, reach) = (60usize, 3usize);
+        let (keep, dom, xyz) = chain(no, reach);
+        let dims = vec![1usize; no];
+        let rows = |partners: &[Vec<usize>]| -> usize {
+            partners
+                .iter()
+                .map(|p| sorted_union(p.iter().map(|&j| dom[j].iter().copied())).len())
+                .sum()
+        };
+        let serial = rows(&vec![(0..no).collect::<Vec<usize>>(); no]);
+        let unique = kept_pairs(&keep, no);
+        let groups = group_by_domain(pair_domains(&unique, &dom));
+        for (size, bound) in [(2usize, 0.65), (4, 0.45), (8, 0.35)] {
+            let worst = (0..size)
+                .map(|rank| {
+                    let ctx = ParallelContext::for_rank(rank, size);
+                    rows(&rank_stripe(ctx, &keep, &dom, &dom, &xyz, &dims).1)
+                })
+                .max()
+                .unwrap();
+            let modulo = (0..size)
+                .map(|rank| {
+                    let mut partners: Vec<Vec<usize>> = vec![Vec::new(); no];
+                    for (_, pxs) in groups.iter().skip(rank).step_by(size) {
+                        for &px in pxs {
+                            let (i, j) = unique[px];
+                            partners[i].extend([i, j]);
+                            partners[j].extend([i, j]);
+                        }
+                    }
+                    rows(&partners)
+                })
+                .max()
+                .unwrap();
+            let (c, m) = (worst as f64 / serial as f64, modulo as f64 / serial as f64);
+            eprintln!("[stripe rows] size {size}: contiguous {c:.3}, modulo {m:.3} of serial");
+            assert!(c < bound, "size {size}: contiguous {c:.3}");
+            assert!(m > 0.75, "size {size}: modulo {m:.3}");
+        }
     }
 
     /// The surviving pairs (i ≤ j) in stage-5 order and their domains D_ij.
@@ -4476,6 +5326,7 @@ mod stage_c_tests {
                 dfbs,
                 10.0,
                 false,
+                None,
             )
             .unwrap();
             (o.q, o.qmax)
@@ -4486,6 +5337,7 @@ mod stage_c_tests {
             &pre.strips,
             qvirt.as_ref(),
             kappa.map(|k| k * eps),
+            None,
         );
         let mut occ: HashMap<&[usize], BTreeSet<usize>> = HashMap::new();
         for (px, &(i, j)) in unique.iter().enumerate() {
@@ -4600,6 +5452,7 @@ mod stage_c_tests {
                             &su.dfbs,
                             dcfg.aux_radius_bohr,
                             false,
+                            None,
                         )
                         .unwrap();
                         let (q_old, _) = inverse_oracle::schwarz_virtual_q_inverse_oracle(
@@ -4814,10 +5667,7 @@ mod memory_gate_tests {
         let dfbs =
             PreparedBasis::new(&mol, &ferric_core::basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
         let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
-        let rcfg = RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        };
+        let rcfg = RhfConfig::default().with_energy_conv(1e-10);
         let rhf = solve_rhf(
             &ParallelContext::default(),
             &mol,
@@ -5000,14 +5850,96 @@ mod memory_gate_tests {
         );
         let (r1, s1) = run(&c, 1e-3, truth, &maps()).unwrap();
         assert_eq!(r1.e_corr.to_bits(), r0.e_corr.to_bits());
-        // The bound left no room for two groups' scratch: stage 5 ran them
-        // one at a time, with the same blocks.
+        // The candidate bound does not fit beside two groups' scratch: stage
+        // 5 ran in budget-sized waves, with the same blocks.
         assert_eq!(st.group_concurrency, 2);
-        assert_eq!(s1.group_concurrency, 1, "group blocking never engaged");
+        assert_eq!(st.n_group_waves, 1);
+        assert!(
+            s1.n_group_waves >= 2,
+            "group blocking never engaged: {s1:?}"
+        );
         let solve_only = r0.solve_resident_bytes;
         let tight = base.max(solve_only / 2);
         let msg = exhausted(run(&c, 1e-3, tight, &maps()));
         assert!(msg.contains("during the pair fits"), "{msg}");
+    }
+
+    /// A wave takes groups while their block bounds plus `min(len, workers)`
+    /// copies of the largest scratch fit, always at least one group, and says
+    /// whether the budget (not the list's end) stopped it.
+    #[test]
+    fn plan_group_wave_packs_groups_into_the_budget() {
+        let scratch = [10, 30, 20, 10];
+        let blocks = [100, 100, 100, 100];
+        // everything: 400 + 2·30
+        let all = plan_group_wave(0, &scratch, &blocks, 2, 460);
+        assert_eq!(
+            all,
+            GroupWave {
+                end: 4,
+                scratch: 60,
+                budget_limited: false
+            }
+        );
+        // two groups: 200 + 2·30 = 260 fits, three (300 + 60) does not
+        let two = plan_group_wave(0, &scratch, &blocks, 2, 300);
+        assert_eq!(
+            two,
+            GroupWave {
+                end: 2,
+                scratch: 60,
+                budget_limited: true
+            }
+        );
+        // nothing fits: still one group, its own scratch reserved
+        let one = plan_group_wave(1, &scratch, &blocks, 4, 0);
+        assert_eq!(
+            one,
+            GroupWave {
+                end: 2,
+                scratch: 30,
+                budget_limited: true
+            }
+        );
+        // the last group alone
+        let last = plan_group_wave(3, &scratch, &blocks, 4, 0);
+        assert_eq!(
+            last,
+            GroupWave {
+                end: 4,
+                scratch: 10,
+                budget_limited: false
+            }
+        );
+    }
+
+    /// ε > 0 with the budget at the strips + metric + candidate bound of the
+    /// pair blocks + one group's scratch bound. The previous schedule
+    /// reserved the whole candidate bound up front, which leaves room for one
+    /// group's scratch and ran stage 5 one group at a time (the C32 audit: a
+    /// 13.2 GB bound under the default budget). The waves reserve only their
+    /// own groups' block bounds beside the blocks actually built, so both
+    /// workers run groups, with the same blocks.
+    #[test]
+    fn finite_eps_groups_run_concurrently_under_the_candidate_bound() {
+        let c = case(6);
+        let (r0, st) = run(&c, 1e-3, AMPLE, &maps()).unwrap();
+        assert_eq!(st.group_concurrency, 2);
+        assert_eq!(st.n_group_waves, 1);
+        let est = st.memory;
+        assert!(!est.exact);
+        let base = est.strips_bytes + est.metric_bytes + st.own_w_bytes_held;
+        let g = st.group_scratch_bound_bytes;
+        let budget = base + est.pair_block_bytes + g;
+        // what a schedule that reserves the whole bound would have left
+        assert!(budget - base - est.pair_block_bytes < 2 * g);
+        let (r1, s1) = run(&c, 1e-3, budget, &maps()).unwrap();
+        assert_eq!(r1.e_corr.to_bits(), r0.e_corr.to_bits());
+        // The bound does not fit beside the scratch, so the schedule ran in
+        // waves, and none of them was cut to one group.
+        assert!(s1.n_group_waves >= 2, "{s1:?}");
+        assert_eq!(s1.group_concurrency, 2, "{s1:?}");
+        assert!((1..=2).contains(&s1.group_in_flight_peak), "{s1:?}");
     }
 
     /// The stage-3 slab blocking: a one-byte scratch cap (one aux shell per

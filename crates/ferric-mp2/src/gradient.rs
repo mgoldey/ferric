@@ -17,6 +17,7 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::scf_jk::{ScfJk, ScfJkMode};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::warm_start::{solve_rhf_warm, ScfWarmStart};
+use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 use ndarray::Array2;
 
@@ -35,10 +36,7 @@ fn total_energy(
     // density drains cleanly to ~1e-9); energy_conv is only a loose
     // "not-descending" bound and floors above 1e-10 under DF noise, so setting it
     // tight would just hang the SCF at MaxIter (see rhf::scf_converged).
-    let rhf_config = RhfConfig {
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let rhf_config = RhfConfig::gradient_reference(None);
     let ctx = ferric_core::parallel::ParallelContext::default();
     let rhf = solve_rhf(&ctx, mol, &obs, op, &bounds, &rhf_config)?;
     if !rhf.converged {
@@ -90,6 +88,31 @@ pub fn rimp2_gradient_fd(
         }
     }
     Ok(grad)
+}
+
+/// [`rimp2_gradient_analytical`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+pub fn rimp2_gradient_analytical_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+    ext: Option<&ExternalPotential>,
+) -> Result<Array2<f64>, FerricError> {
+    let sys = aux.system();
+    aux.check_restricted_reference(rhf)?;
+    rimp2_gradient_analytical(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        sys.bounds(),
+        rhf,
+        config,
+        ext,
+    )
 }
 
 /// Compute the analytical RI-MP2 nuclear gradient via the real multi-block
@@ -146,6 +169,7 @@ pub fn rimp2_gradient_fd(
 /// block 6); block 5 runs on `bounds.op`, the reference SCF's operator. They
 /// are the same operator for RI-MP2; [`crate::att_rimp2_gradient`] passes erfc
 /// on a Coulomb reference.
+#[allow(clippy::too_many_arguments)]
 pub fn rimp2_gradient_analytical(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -251,6 +275,10 @@ fn rimp2_gradient_from_intermediates_timed(
         bounds,
         rhf,
         &inter,
+        // `inter` is the energy step's on `op` (`rimp2_gradient_intermediates_timed`).
+        Some(crate::oo_rimp2::MetricFactor::of_ov_intermediates(
+            op, &inter,
+        )),
         budget_bytes,
         ext,
         controls,
@@ -286,6 +314,7 @@ pub fn relaxed_ri_gradient(
         bounds,
         rhf,
         inter,
+        None,
         budget_bytes,
         None,
         ZvectorControls::DEFAULT,
@@ -294,6 +323,8 @@ pub fn relaxed_ri_gradient(
 }
 
 /// The shared tail of the RI-MP2 and [`relaxed_ri_gradient`] paths.
+/// `metric` is `inter`'s `V^{-1/2}` when it is the factor of `op` on `dfbs`
+/// (see [`crate::zvector::lagrangian_imat_timed`]).
 #[allow(clippy::too_many_arguments)]
 fn relaxed_gradient_from_intermediates(
     mol: &Molecule,
@@ -303,6 +334,7 @@ fn relaxed_gradient_from_intermediates(
     bounds: &SchwarzBounds,
     rhf: &ScfResult,
     inter: &crate::rimp2::Mp2Intermediates,
+    metric: Option<crate::oo_rimp2::MetricFactor<'_>>,
     budget_bytes: usize,
     ext: Option<&ExternalPotential>,
     controls: ZvectorControls,
@@ -312,8 +344,19 @@ fn relaxed_gradient_from_intermediates(
     let jk = acc.time("J/K route setup", || {
         ResponseJk::for_scf(&ctx, mol, obs, bounds, rhf)
     })?;
-    let zv = solve_zvector_timed(obs, dfbs, op, &jk, rhf, inter, budget_bytes, controls, acc)?
-        .require_converged()?;
+    let zv = solve_zvector_timed(
+        obs,
+        dfbs,
+        op,
+        &jk,
+        rhf,
+        inter,
+        metric,
+        budget_bytes,
+        controls,
+        acc,
+    )?
+    .require_converged()?;
     // `op` is the CORRELATION operator (the (P|ia) integrals and the RI
     // metric, so `b_full` in the Z-vector and the 3c/2c response); the
     // reference's own two-electron derivative runs on the operator its
@@ -1037,7 +1080,6 @@ pub fn exact_scf_jk() -> ScfJk {
     ScfJk {
         mode: ScfJkMode::Exact,
         aux: None,
-        k_builder: None,
     }
 }
 
@@ -1200,12 +1242,7 @@ pub(crate) fn solve_rhf_reference(
     // at the loose default — a tight 1e-10 would hang at MaxIter. See total_energy above.
     // A geometry task: an unset RI-J precision resolves to f64 (no effect on
     // the four-centre route).
-    let mut rhf_cfg = RhfConfig {
-        density_conv: 1e-9,
-        external_potential: ext.cloned(),
-        ..Default::default()
-    }
-    .for_geometry_task();
+    let mut rhf_cfg = RhfConfig::gradient_reference(ext.cloned()).for_geometry_task();
     scf_jk.apply(&mut rhf_cfg);
     if let (ScfJkMode::RiJk, Some(aux)) = (scf_jk.mode, scf_jk.aux.as_deref()) {
         // The fitted route keeps the reference's RI-J/RI-K tensors through
@@ -1275,7 +1312,18 @@ pub(crate) fn rimp2_terms_gradient_timed(
         acc.time("intermediates: spin scaling", || {
             inter.apply_spin_scaling(term.scaling)
         })?;
-        let imat = crate::zvector::lagrangian_imat_timed(obs, dfbs, term.op, rhf, &inter, acc)?;
+        // `inter` is the energy step's, on `term.op`: its V^-1/2 is b_full's.
+        let imat = crate::zvector::lagrangian_imat_timed(
+            obs,
+            dfbs,
+            term.op,
+            rhf,
+            &inter,
+            Some(crate::oo_rimp2::MetricFactor::of_ov_intermediates(
+                term.op, &inter,
+            )),
+            acc,
+        )?;
         let g_ri = integral_response_gradient_3c2c_timed(
             mol,
             obs,
@@ -1407,6 +1455,68 @@ mod tests {
         }
     }
 
+    /// The Z-vector's `b_full` on the energy step's `V^{-1/2}` (attenuated
+    /// operator too) is the `b_full` that rebuilds the metric and its
+    /// factor, bit for bit, so the gradient that reuses it is unchanged.
+    #[test]
+    fn b_full_on_the_energy_steps_metric_is_bitwise_the_rebuilt_one() {
+        let mol = Molecule::parse_xyz(
+            "3\nwater\nO 0.02 -0.01 0.117790\nH 0.0 0.785453 -0.451161\nH 0.03 -0.735453 -0.491161\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let obs_bs = basis::bundled("cc-pvdz").unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let cfg = RiMp2Config {
+            frozen_core: 1,
+            ..Default::default()
+        };
+        let (rhf, obs, dfbs, _) = solve_rhf_reference(
+            &mol,
+            &obs_bs,
+            &aux_bs,
+            Operator::coulomb(),
+            &cfg,
+            None,
+            &exact_scf_jk(),
+            &mut ScfWarmStart::new(false),
+        )
+        .unwrap();
+        for op in [Operator::coulomb(), Operator::erfc(0.33)] {
+            let inter =
+                compute_mp2_intermediates_ov_only(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
+            let c = rhf.mos_r();
+            let rebuilt = crate::oo_rimp2::compute_b_full_mo(&obs, &dfbs, op, c).unwrap();
+            let factor = crate::oo_rimp2::MetricFactor::of_ov_intermediates(op, &inter);
+            let reused =
+                crate::oo_rimp2::compute_b_full_mo_with_metric(&obs, &dfbs, op, factor, c).unwrap();
+            assert_eq!(rebuilt.dim(), reused.dim());
+            assert!(
+                rebuilt
+                    .iter()
+                    .zip(reused.iter())
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "{:?}: b_full differs",
+                op.kind
+            );
+        }
+        // A factor of another operator is refused, not used.
+        let inter =
+            compute_mp2_intermediates_ov_only(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &cfg)
+                .unwrap();
+        let coulomb =
+            crate::oo_rimp2::MetricFactor::of_ov_intermediates(Operator::coulomb(), &inter);
+        let err = crate::oo_rimp2::compute_b_full_mo_with_metric(
+            &obs,
+            &dfbs,
+            Operator::erfc(0.33),
+            coulomb,
+            rhf.mos_r(),
+        );
+        assert!(err.is_err());
+    }
+
     #[test]
     fn test_rimp2_gradient_fd_h2_symmetry() {
         // H2 along z-axis: gradient should be equal and opposite on the two atoms
@@ -1533,10 +1643,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let config = RiMp2Config::default();
@@ -1587,10 +1694,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let config = RiMp2Config::default();
@@ -1629,10 +1733,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let config = RiMp2Config::default();
@@ -1763,10 +1864,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let config = RiMp2Config::default();
@@ -1829,10 +1927,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                density_conv: 1e-9,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_density_conv(1e-9),
         )
         .unwrap();
         let config = RiMp2Config {
@@ -1876,10 +1971,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let config = RiMp2Config::default();
@@ -1937,10 +2029,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let config = RiMp2Config::default();
@@ -1998,10 +2087,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                density_conv: 1e-9,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_density_conv(1e-9),
         )
         .unwrap();
         let config = RiMp2Config::default();
@@ -2048,10 +2134,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let config = RiMp2Config::default();
@@ -2102,10 +2185,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let config = RiMp2Config::default();
@@ -2138,10 +2218,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let nocc = (mol.nelec() / 2) as usize;

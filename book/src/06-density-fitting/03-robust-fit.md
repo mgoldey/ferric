@@ -8,9 +8,9 @@ and that error comes out second order in the part of the density the
 auxiliary basis misses. Attenuated MP2 and its relatives sometimes want to fit
 under one kernel and evaluate under another: fit with a short-range erfc
 kernel, whose metric couples only nearby auxiliary functions, and evaluate the
-full Coulomb interaction. The obvious substitution then has a first-order
-error, and for an attenuated fitting kernel that error grows without bound as
-the kernels separate. Dunlap's robust form evaluates the interaction so that
+full Coulomb interaction. The obvious substitution, the physical integrals
+with the attenuated metric, is wrong even where the auxiliary basis is
+complete, and its error grows without bound as the kernels separate. Dunlap's robust form evaluates the interaction so that
 the error is again the interaction of two residuals, whatever kernel produced
 the fit.
 
@@ -24,7 +24,7 @@ The plan:
 | Entry point | Location |
 |---|---|
 | Rust | `ferric-mp2/src/rimp2.rs::{ri_mp2_robust_attenuated_metric,ri_mp2_robust_attenuated_metric_with,robust_fit_coulomb_parts,solve_metric_system,spin_components_from_g}` |
-| Config | `RiMp2Config::metric_op` (the fitting kernel $\hat w$) |
+| Fitting kernel | the `metric_op` argument of the two robust functions; `RiMp2Config::metric_op` in `ri_mp2` selects the naive form of section @sec:robust-fit-robust-form instead |
 
 Notation for this section: $\hat C$ is the physical kernel (Coulomb in the
 code), $\hat w$ the fitting kernel, and $x, y$ product densities (orbital or
@@ -68,11 +68,11 @@ gives an integral error of size $\delta^2$.
 
 The diagonal error is also stationary in the coefficients (Dunlap). Write it
 as a function of arbitrary coefficients,
-$D_x(c) = (x|\hat w|x) - 2c^{\mathsf T}A_x + c^{\mathsf T}V_wc$. This is a
+$\mathcal E_x(c) = (x|\hat w|x) - 2c^{\mathsf T}A_x + c^{\mathsf T}V_wc$. This is a
 quadratic with its minimum at $c_x$. Expand about the minimum,
 $c = c_x + d$; the linear term $2d^{\mathsf T}(V_wc_x - A_x)$ vanishes, and
 
-$$ D_x(c_x + d) = D_x(c_x) + d^{\mathsf T}V_w\,d . $$
+$$ \mathcal E_x(c_x + d) = \mathcal E_x(c_x) + d^{\mathsf T}V_w\,d . $$
 
 So an error $d$ in the coefficients, from rounding or from an iterative
 solve, moves the energy error only at second order in $d$.
@@ -87,20 +87,6 @@ from $V = LL^{\mathsf T}$ is not symmetric, so $MM \ne V^{-1}$. A formula that
 is not a Gram product $B^{\mathsf T}B$ must therefore solve with $V$ instead
 of applying $M$ twice. The robust form below is such a formula.
 
-> **Verified equation {#eq:df-robust-collapse}** · with $\hat w = \hat C$ the robust form is standard RI
->
-> $G = J^{\mathsf T}V_C^{-1}J = B^{\mathsf T}B$ with $B = L^{-1}J$, and the
-> Cholesky factor satisfies $M^{\mathsf T}M = V^{-1}$ but $MM \ne V^{-1}$.
->
-> | | |
-> |---|---|
-> | Proof | `scripts/robust_fit_sympy.py`, claims collapse and cholesky |
-> | Negative control | $V^{-1} \to MM$ must fail (recorded mutation) |
-> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
-> | Code | `ferric-mp2/src/rimp2.rs::solve_metric_system` |
->
-> <!-- verified: id=df.robust.collapse; script=scripts/robust_fit_sympy.py; claim=collapse; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/rimp2.rs::solve_metric_system -->
-
 > **Verified equation {#eq:df-robust-stationary}** · the same-kernel fitting error is quadratic and stationary
 >
 > With $\hat w = \hat C$ the diagonal error $(\delta_x|\hat C|\delta_x)$ has zero
@@ -114,10 +100,10 @@ of applying $M$ twice. The robust form below is such a formula.
 >
 > <!-- verified: id=df.robust.stationary; script=scripts/robust_fit_sympy.py; claim=stationary; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/rimp2.rs::solve_metric_system -->
 
-Section @sec:closed-shell-ri-mp2 states the error identity as the unverified box
-`df.quadratic-error`. Verified equation @eq:df-robust-stationary is that statement: the error
-identity of @sec:robust-fit-robust-form with $\hat w = \hat C$ is the same equation, and claim
-residual (Verified equation @eq:df-robust-residual) proves it for any coefficients.
+The quadratic-error identity (@eq:df-quadratic-error) of section
+@sec:closed-shell-ri-mp2 is the identity of section @sec:robust-fit-robust-form
+at $\hat w = \hat C$, and claim residual (Verified equation
+@eq:df-robust-residual) proves it for any coefficients.
 
 ## The robust form {#robust-fit-robust-form}
 
@@ -132,6 +118,32 @@ $J_x^{\mathsf T}V_w^{-1}J_y$. Nothing in this expression cancels the cross
 terms. For an attenuated $\hat w$ it is worse: an erfc kernel weaker than
 Coulomb gives a small $V_w$, so $V_w^{-1}$ is large and multiplies the full
 Coulomb $J$ on both sides.
+
+Check the complete-basis limit. Take a density in the auxiliary span,
+$\rho_x = \sum_P d_{Px}\chi_P$. Then $J_x = V_Cd_x$, and the naive form is
+$d_x^{\mathsf T}V_CV_w^{-1}V_Cd_y$, where the exact interaction is
+$d_x^{\mathsf T}V_Cd_y$. The two agree only if $V_w = V_C$. The error does
+not vanish with the fitting residual: it is first order in $V_w - V_C$, a
+different small parameter. `RiMp2Config::metric_op` selects exactly this
+expression in `ferric-mp2/src/rimp2.rs::ri_mp2`; the robust form below is
+the separate entry point of the table above.
+
+> **Verified claim** · the naive form is wrong for a density the auxiliary basis spans
+>
+> On the three-centre model of this section with $\rho = \chi_P$,
+> the robust form is exact to $2\times10^{-16}$ relative at $\omega_m = 1.5$,
+> where the naive $V_CV_w^{-1}V_C$ misses $V_C$ by $90$ times its largest
+> element. Halving $\omega_m$ from 0.004 to 0.002 halves the naive error
+> (ratio 2.02), so it is first order in $V_w - V_C$.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/robust_fit_sympy.py`, claim naive-complete |
+> | Negative control | $V_C$ in place of $V_w$ in the naive form must fail (recorded mutation) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-mp2/src/rimp2.rs::ri_mp2` (`RiMp2Config::metric_op`) |
+>
+> <!-- verified: id=df.robust.naive-complete; script=scripts/robust_fit_sympy.py; claim=naive-complete; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/rimp2.rs::ri_mp2 -->
 
 **The robust form.** Fit with $\hat w$, and evaluate the physical
 interaction symmetrically: each fitted density interacts with the exact other
@@ -150,7 +162,8 @@ $$ (x|\hat C|y) - G_{xy} = (\delta_x|\hat C|\delta_y) . $$
 
 The error is bilinear in the residuals, whatever kernel produced them. The
 diagonal error $(\delta_x|\hat C|\delta_x)$ is $\ge 0$ because $\hat C$ is
-positive definite, so the robust form never overbinds a self-interaction.
+positive definite, so the robust form never overestimates a diagonal
+integral.
 
 Check the limits.
 
@@ -160,14 +173,28 @@ Check the limits.
 - **Complete auxiliary basis.** The residuals are zero for any $\hat w$, and
   $G$ is exact.
 - **Coefficient error.** Apply the quadratic expansion of @sec:robust-fit-fit-error to the
-  physical kernel. The diagonal error is $D_x(c)$ with $\hat C$ in place of
+  physical kernel. The diagonal error is $\mathcal E_x(c)$ with $\hat C$ in place of
   $\hat w$, minimized at the $\hat C$-optimal coefficients $c^C_x$. At the
   $\hat w$ fit,
-  $D_x(c^w_x) = D_x(c^C_x) + (c^w_x - c^C_x)^{\mathsf T}V_C\,(c^w_x - c^C_x)$.
+  $\mathcal E_x(c^w_x) = \mathcal E_x(c^C_x) + (c^w_x - c^C_x)^{\mathsf T}V_C\,(c^w_x - c^C_x)$.
   With $\hat w \ne \hat C$ the coefficients are no longer the $\hat C$-optimal
   ones, and the error is not stationary in $c$: it grows quadratically with
   the coefficient mismatch. So each diagonal element of the robust error is
   at least the standard-RI one, and equal to it only when $\hat w = \hat C$.
+
+> **Verified equation {#eq:df-robust-collapse}** · with $\hat w = \hat C$ the robust form is standard RI
+>
+> $G = J^{\mathsf T}V_C^{-1}J = B^{\mathsf T}B$ with $B = L^{-1}J$, and the
+> Cholesky factor satisfies $M^{\mathsf T}M = V^{-1}$ but $MM \ne V^{-1}$.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/robust_fit_sympy.py`, claims collapse and cholesky |
+> | Negative control | $V^{-1} \to MM$ must fail (recorded mutation) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-mp2/src/rimp2.rs::solve_metric_system` |
+>
+> <!-- verified: id=df.robust.collapse; script=scripts/robust_fit_sympy.py; claim=collapse; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/rimp2.rs::solve_metric_system -->
 
 What does this buy on a model? `scripts/robust_fit_sympy.py` builds $s$
 Gaussians on three centres with twelve auxiliary functions, fits under
@@ -218,7 +245,7 @@ error stays within 3% of the standard-RI error over the whole range.
 > <!-- verified: id=df.robust.diverges; script=scripts/robust_fit_sympy.py; claim=diverges; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/rimp2.rs::ri_mp2_robust_attenuated_metric -->
 
 The script's full claim list is residual, collapse, cholesky, stationary,
-model, diverges and psd-diag.
+model, diverges, psd-diag and naive-complete.
 
 ## The algorithm {#robust-fit-algorithm}
 

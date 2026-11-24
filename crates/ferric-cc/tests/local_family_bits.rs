@@ -53,10 +53,7 @@ fn local_family_energies_are_bit_identical_to_the_recorded_base() {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_energy_conv(1e-10),
     )
     .unwrap();
     let lcfg = AmplitudeLinLccdConfig::default();

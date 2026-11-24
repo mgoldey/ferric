@@ -34,6 +34,7 @@ use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::{solve_uhf, solve_uhf_with_guess};
 use ferric_scf::{ScfResult, Spin};
+use ferric_testkit::compare::max_abs;
 use ndarray::{s, Array2};
 
 /// Diatomics on a tilted axis (no Cartesian axis is special), Å.
@@ -50,13 +51,11 @@ enum Reference {
 }
 
 fn ks(xc: &str) -> RhfConfig {
-    RhfConfig {
-        xc: Some(xc.to_string()),
-        max_iter: 300,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc(xc.to_string())
+        .with_max_iter(300)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
 }
 
 fn fd_step() -> f64 {
@@ -64,10 +63,6 @@ fn fd_step() -> f64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(1e-3)
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
 }
 
 fn displaced(mol: &Molecule, atom: usize, k: usize, h: f64) -> Molecule {
@@ -211,6 +206,7 @@ fn fd_orth(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fd_full(
     reference: Reference,
     mol: &Molecule,

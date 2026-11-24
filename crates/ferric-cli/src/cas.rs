@@ -5,20 +5,20 @@
 //! The run is the exact-J/K Coulomb RHF start with the library defaults, then
 //! the CAS step, so the CLI reads only `[cas]` (active space and orbital
 //! optimization), `[cas.ci]` (the CI eigensolver), `[scf]` `max_iter` /
-//! `energy_conv` / `density_conv`, `[memory]`, `[parallel]` and `[output]`.
+//! `energy_conv` / `density_conv` / `gc_rotation` (read by the RHF start and
+//! the direct CASSCF J/K alike), `[memory]`, `[parallel]` and `[output]`.
 //! [`resolve_plan`] refuses every other section and key at load time, so no
 //! key is read by one surface and ignored by the other.
 
 use crate::config::Config;
-use crate::error::die;
+use crate::error::CliError;
 use ferric_ci::casscf::{CasScfIntegrals, CasScfOptimizer, CasScfStabilityMode};
-use ferric_ci::driver::{nevpt2_on_rhf, rhf_start, Nevpt2On, ScfStart};
+use ferric_ci::driver::{casscf_on, nevpt2_on, rhf_start, Nevpt2On, ScfStart};
 use ferric_ci::{CasScfConfig, Nevpt2Classes};
 use ferric_core::basis;
 use ferric_core::certificate::BuildStamp;
 use ferric_core::mol::Molecule;
-use ferric_core::parallel::ParallelContext;
-use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_scf::{EcpMolecule, PrepareOptions};
 use serde::Deserialize;
 
 /// `[cas]`: the active space of `method.kind = "casscf"` / `"nevpt2"` and the
@@ -114,7 +114,8 @@ pub(crate) const READ_SECTIONS: &[&str] = &[
 ];
 
 /// The `[scf]` keys a CAS run reads.
-pub(crate) const READ_SCF_KEYS: &[&str] = &["max_iter", "energy_conv", "density_conv"];
+pub(crate) const READ_SCF_KEYS: &[&str] =
+    &["max_iter", "energy_conv", "density_conv", "gc_rotation"];
 
 fn positive(name: &str, v: Option<f64>) -> Result<(), String> {
     match v {
@@ -305,12 +306,16 @@ pub fn resolve_plan(cfg: &Config, text: &str) -> Result<Option<CasPlan>, String>
             integrals,
             optimizer,
             stability,
+            // The direct CASSCF J/K follow the reference SCF's contraction
+            // rotation.
+            gc_rotation: cfg.scf.gc_rotation_resolved()?,
             ..d
         },
         scf: ScfStart {
             max_iter: scf_key("max_iter").then_some(cfg.scf.max_iter),
             energy_conv: scf_key("energy_conv").then_some(cfg.scf.energy_conv),
             density_conv: scf_key("density_conv").then_some(cfg.scf.density_conv),
+            gc_rotation: cfg.scf.gc_rotation_resolved()?,
         },
     }))
 }
@@ -350,41 +355,47 @@ fn stability_json(st: Option<&ferric_ci::CasScfStability>) -> serde_json::Value 
 
 /// Run `cfg`'s CAS plan; `gpu_flag` is whether `--gpu` was given (refused:
 /// the CAS kinds run on the CPU).
-pub fn run_cas(cfg: &Config, gpu_flag: bool) {
+pub fn run_cas(cfg: &Config, gpu_flag: bool) -> Result<(), CliError> {
     let Some(plan) = cfg.cas_plan.as_ref() else {
-        die("internal: run_cas called without a CAS plan");
+        return Err(CliError::msg("internal: run_cas called without a CAS plan"));
     };
     let kind = cfg.method.kind.as_str();
     if gpu_flag {
-        die(format!(
+        return Err(CliError::msg(format!(
             "--gpu is not read by method.kind = \"{kind}\", which runs on the CPU"
-        ));
+        )));
     }
-    let mut mol = Molecule::load_xyz_with_charge(
+    let mol = Molecule::load_xyz_with_charge(
         &cfg.molecule.xyz,
         cfg.molecule.charge,
         cfg.molecule.multiplicity,
     )
-    .unwrap_or_else(|e| die(e));
+    .map_err(CliError::msg)?;
     let bs = match (&cfg.basis.name, &cfg.basis.path) {
         (Some(name), _) => basis::bundled(name),
         (None, Some(path)) => basis::load_g94(path),
         (None, None) => Err(ferric_core::FerricError::Basis("no basis specified".into())),
     }
-    .unwrap_or_else(|e| die(e));
-    mol.apply_ecp(&bs);
+    .map_err(CliError::msg)?;
+    let ecp = EcpMolecule::new(mol, &bs);
     let mut cas = plan.cas;
     cas.n_core = match plan.n_core {
         Some(n) => n,
-        None => ferric_ci::driver::default_n_core(mol.nelec() as usize, cas.n_elec_active, "[cas]")
-            .unwrap_or_else(|e| die(e)),
+        None => {
+            let nelec = ecp.mol().nelec() as usize;
+            ferric_ci::driver::default_n_core(nelec, cas.n_elec_active, "[cas]")
+                .map_err(CliError::msg)?
+        }
     };
     let resolution = ferric_core::memory::resolve_budget(cas.memory_budget_bytes);
     ferric_core::memory::pool::install_global(
         ferric_core::memory::pool::MemoryPool::with_capacity_bytes(resolution.bytes),
     );
     eprintln!("[ferric] {}", resolution.audit_line());
-    let prep = PreparedBasis::new(&mol, &bs).unwrap_or_else(|e| die(e));
+    let sys = ecp
+        .prepare(PrepareOptions::default())
+        .map_err(CliError::msg)?;
+    let (mol, prep) = (sys.mol(), sys.basis());
     if let Some(rl) = ferric_scf::runlog::log() {
         ferric_scf::runlog::set_build_identity(
             ferric_build_info::VERSION,
@@ -402,6 +413,7 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) {
                 "max_iter": plan.scf.max_iter,
                 "energy_conv": plan.scf.energy_conv,
                 "density_conv": plan.scf.density_conv,
+                "gc_rotation": plan.scf.gc_rotation.map(|g| g.as_str()),
                 "memory_budget_bytes": resolution.bytes,
                 "openblas_num_threads": std::env::var("OPENBLAS_NUM_THREADS").ok(),
                 "rayon_num_threads": rayon::current_num_threads(),
@@ -416,9 +428,7 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) {
             }),
         );
     }
-    let ctx = ParallelContext::default();
-    let rhf =
-        rhf_start(&ctx, &mol, &prep, plan.scf, cas.memory_budget_bytes).unwrap_or_else(|e| die(e));
+    let rhf = rhf_start(&sys, plan.scf, cas.memory_budget_bytes).map_err(CliError::msg)?;
     let (na, nb) = cas.n_elec_active;
     let header = |name: &str| {
         println!("{name}/{} on {}", bs.name, cfg.molecule.xyz);
@@ -433,11 +443,11 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) {
     };
     let (energy, converged) = match plan.nevpt2 {
         None => {
-            let r = ferric_ci::run_casscf(&mol, &prep, &rhf, &cas).unwrap_or_else(|e| die(e));
+            let r = casscf_on(&sys, &rhf, &cas).map_err(CliError::msg)?;
             let cert = ferric_mp2::certificate::with_anchor_envelope(
                 ferric_ci::certificate::casscf_certificate(&r, &cas).with_build(build_stamp()),
                 "CASSCF",
-                &mol,
+                mol,
                 &bs,
                 None,
             );
@@ -480,7 +490,7 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) {
             (r.e_total, r.converged)
         }
         Some(on) => {
-            let run = nevpt2_on_rhf(&mol, &prep, &rhf, on, &cas).unwrap_or_else(|e| die(e));
+            let run = nevpt2_on(&sys, &rhf, on, &cas).map_err(CliError::msg)?;
             let cert = ferric_mp2::certificate::with_anchor_envelope(
                 ferric_ci::certificate::nevpt2_certificate(
                     on,
@@ -489,7 +499,7 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) {
                 )
                 .with_build(build_stamp()),
                 "SC-NEVPT2",
-                &mol,
+                mol,
                 &bs,
                 None,
             );
@@ -549,4 +559,5 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) {
             }),
         );
     }
+    Ok(())
 }

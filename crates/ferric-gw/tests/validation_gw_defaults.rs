@@ -168,12 +168,10 @@ fn load(system: &str, mult: usize) -> Sys {
 }
 
 fn scf_config(xc: Option<&str>) -> RhfConfig {
-    let mut c = RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        ..Default::default()
-    };
+    let mut c = RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10);
     if let Some(x) = xc {
         // As `run_gw(xc=...)` and the CLI KS reference: RI-J/RI-K.
         c.xc = Some(x.into());
@@ -221,7 +219,7 @@ fn closed(system: &str, xc: Option<&str>, method: GwMethod) -> [[f64; 2]; 2] {
     assert!(scf.converged, "{}: SCF did not converge", sys.label);
     let vxc = xc.map(|x| {
         let g = KsGradGrids::from_config(&cfg);
-        vxc_diagonal_mo_on_grids(&sys.mol, &sys.obs_bs, x, &scf, &g.main, &g.nlc)
+        vxc_diagonal_mo_on_grids(&sys.mol, &sys.obs_bs, x, &scf, &g.main, &g.nlc, None)
             .unwrap_or_else(|e| panic!("{}: v_xc: {e:?}", sys.label))
             .0
     });
@@ -302,12 +300,9 @@ fn hf_starts_h2o_defaults_within_bar() {
 #[ignore = "validation: GW defaults vs validated settings"]
 fn u_g0w0_uhf_oh_defaults_within_bar() {
     let sys = load("oh", 2);
-    let cfg = RhfConfig {
-        density_conv: 1e-9,
-        check_stability: true,
-        scf_stability_descent: true,
-        ..scf_config(None)
-    };
+    let cfg = scf_config(None)
+        .with_density_conv(1e-9)
+        .with_stability(ferric_scf::options::Stability::Descend);
     let scf = solve_uhf(&sys.ctx, &sys.mol, &sys.obs, &sys.bounds, &cfg)
         .unwrap_or_else(|e| panic!("oh: UHF failed: {e:?}"));
     assert!(scf.converged, "oh: UHF did not converge");
@@ -365,7 +360,7 @@ fn closed_window(system: &str, xc: &str) -> impl Fn(usize) -> Vec<f64> {
     .unwrap_or_else(|e| panic!("{}: SCF failed: {e:?}", sys.label));
     assert!(scf.converged, "{}: SCF did not converge", sys.label);
     let g = KsGradGrids::from_config(&cfg);
-    let vxc = vxc_diagonal_mo_on_grids(&sys.mol, &sys.obs_bs, xc, &scf, &g.main, &g.nlc)
+    let vxc = vxc_diagonal_mo_on_grids(&sys.mol, &sys.obs_bs, xc, &scf, &g.main, &g.nlc, None)
         .unwrap_or_else(|e| panic!("{}: v_xc: {e:?}", sys.label))
         .0;
     move |n_quad: usize| {
@@ -452,16 +447,14 @@ const UKS_COARSE_N_QUAD: usize = 16;
 /// every QP solve returned a root.
 fn uks_frontier(system: &str) -> impl Fn(&PdepRpaConfig, &GwConfig) -> [[f64; 2]; 2] {
     let sys = load(system, 2);
-    let cfg = RhfConfig {
-        mom_after_iter: 5,
-        ..scf_config(Some("pbe"))
-    };
+    let cfg = scf_config(Some("pbe")).with_mom_after_iter(5);
     let scf = solve_uhf(&sys.ctx, &sys.mol, &sys.obs, &sys.bounds, &cfg)
         .unwrap_or_else(|e| panic!("{system}: UKS failed: {e:?}"));
     assert!(scf.converged, "{system}: UKS did not converge");
     let g = KsGradGrids::from_config(&cfg);
-    let (va, vb) = vxc_diagonal_mo_on_grids(&sys.mol, &sys.obs_bs, "pbe", &scf, &g.main, &g.nlc)
-        .unwrap_or_else(|e| panic!("{system}: v_xc: {e:?}"));
+    let (va, vb) =
+        vxc_diagonal_mo_on_grids(&sys.mol, &sys.obs_bs, "pbe", &scf, &g.main, &g.nlc, None)
+            .unwrap_or_else(|e| panic!("{system}: v_xc: {e:?}"));
     let ne = usize::try_from(sys.mol.nelec()).unwrap();
     let (na, nb) = (ne.div_ceil(2), ne / 2);
     let label = sys.label.clone();

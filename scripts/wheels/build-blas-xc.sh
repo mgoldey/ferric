@@ -26,7 +26,7 @@
 set -euo pipefail
 
 PREFIX="$1"
-: "${OPENBLAS_VERSION:?}" "${LIBXC_VERSION:?}" "${EIGEN_PREFIX:?}"
+: "${OPENBLAS_VERSION:?}" "${LIBXC_VERSION:?}" "${LIBXC_SHA256:?}" "${EIGEN_PREFIX:?}"
 TMPBASE="${RUNNER_TEMP:-/tmp}"
 if command -v cygpath >/dev/null; then TMPBASE="$(cygpath -u "$TMPBASE")"; fi
 WORK="$TMPBASE/blas-xc-src"
@@ -46,6 +46,7 @@ curl -sSfL -o "$PREFIX/licenses/eigen-COPYING.MPL2.txt" \
 
 # --- libxc: shared on macOS (delocate bundles it), static on Windows ---
 curl -sSfL -o libxc.tgz "https://gitlab.com/libxc/libxc/-/archive/${LIBXC_VERSION}/libxc-${LIBXC_VERSION}.tar.gz"
+echo "${LIBXC_SHA256}  libxc.tgz" | { sha256sum -c - 2>/dev/null || shasum -a 256 -c -; }
 # Two doc symlinks (ChangeLog, README) that Git-for-Windows tar cannot create.
 tar --exclude="libxc-${LIBXC_VERSION}/ChangeLog" --exclude="libxc-${LIBXC_VERSION}/README" -xzf libxc.tgz
 if [ "$OS" = Darwin ]; then XC_SHARED=ON; else XC_SHARED=OFF; fi

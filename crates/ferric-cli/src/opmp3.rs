@@ -12,20 +12,16 @@
 //! time.
 
 use crate::config::Config;
-use crate::error::die;
+use crate::error::CliError;
 use ferric_core::basis;
 use ferric_core::certificate::BuildStamp;
 use ferric_core::mol::Molecule;
-use ferric_core::parallel::ParallelContext;
-use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::operator::Operator;
 use ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config;
-use ferric_mp2::local_opmp3::{local_opmp3_on_reference, LocalOpmp3Result};
+use ferric_mp2::local_opmp3::{local_opmp3_on, LocalOpmp3Result};
 use ferric_mp2::opmp3_driver::{
-    opmp3_on_reference, opmp3_scf, opmp3_scf_config, Opmp3Config, Opmp3Integrals, Opmp3RefKind,
-    Opmp3Result,
+    opmp3_on, opmp3_scf, opmp3_scf_config, Opmp3Config, Opmp3Integrals, Opmp3RefKind, Opmp3Result,
 };
-use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::PreparedSystem;
 use serde::Deserialize;
 
 /// `[opmp3]`: the reference and model settings of `method.kind = "opmp3"`.
@@ -183,41 +179,49 @@ pub fn resolve_plan(cfg: &Config, text: &str) -> Result<Option<Opmp3Plan>, Strin
 
 /// Run `cfg`'s OP-MP3 plan; `gpu_flag` is whether `--gpu` was given (refused:
 /// the kind runs on the CPU).
-pub fn run_opmp3(cfg: &Config, gpu_flag: bool) {
+pub fn run_opmp3(cfg: &Config, gpu_flag: bool) -> Result<(), CliError> {
     let Some(plan) = cfg.opmp3_plan.as_ref() else {
-        die("internal: run_opmp3 called without an OP-MP3 plan");
+        return Err(CliError::msg(
+            "internal: run_opmp3 called without an OP-MP3 plan",
+        ));
     };
     if gpu_flag {
-        die("--gpu is not read by method.kind = \"opmp3\", which runs on the CPU");
+        return Err(CliError::msg(
+            "--gpu is not read by method.kind = \"opmp3\", which runs on the CPU",
+        ));
     }
     let config = &plan.config;
-    let mut mol = Molecule::load_xyz_with_charge(
+    let mol = Molecule::load_xyz_with_charge(
         &cfg.molecule.xyz,
         cfg.molecule.charge,
         cfg.molecule.multiplicity,
     )
-    .unwrap_or_else(|e| die(e));
+    .map_err(CliError::msg)?;
     let bs = match (&cfg.basis.name, &cfg.basis.path) {
         (Some(name), _) => basis::bundled(name),
         (None, Some(path)) => basis::load_g94(path),
         (None, None) => Err(ferric_core::FerricError::Basis("no basis specified".into())),
     }
-    .unwrap_or_else(|e| die(e));
-    mol.apply_ecp(&bs);
+    .map_err(CliError::msg)?;
     let resolution = ferric_core::memory::resolve_budget(config.memory_budget_bytes);
     ferric_core::memory::pool::install_global(
         ferric_core::memory::pool::MemoryPool::with_capacity_bytes(resolution.bytes),
     );
     eprintln!("[ferric] {}", resolution.audit_line());
-    let prep = PreparedBasis::new(&mol, &bs).unwrap_or_else(|e| die(e));
-    let aux = plan.auxbasis.as_deref().map(|name| {
-        let a = basis::bundled(name).unwrap_or_else(|e| die(e));
-        PreparedBasis::new(&mol, &a).unwrap_or_else(|e| die(e))
-    });
+    let sys = PreparedSystem::new(mol, &bs).map_err(CliError::msg)?;
+    let (mol, prep) = (sys.mol(), sys.basis());
+    let aux = plan
+        .auxbasis
+        .as_deref()
+        .map(|name| -> Result<_, CliError> {
+            let a = basis::bundled(name).map_err(CliError::msg)?;
+            sys.prepare_aux(&a).map_err(CliError::msg)
+        })
+        .transpose()?;
     let integrals = aux
         .as_ref()
         .map_or(Opmp3Integrals::Exact, Opmp3Integrals::Ri);
-    let x_ss = config.resolved_x_ss().unwrap_or_else(|e| die(e));
+    let x_ss = config.resolved_x_ss().map_err(CliError::msg)?;
     if let Some(rl) = ferric_scf::runlog::log() {
         ferric_scf::runlog::set_build_identity(
             ferric_build_info::VERSION,
@@ -244,28 +248,25 @@ pub fn run_opmp3(cfg: &Config, gpu_flag: bool) {
             }),
         );
     }
-    let ctx = ParallelContext::default();
-    let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap_or_else(|e| die(e));
-    let scf = opmp3_scf(&ctx, &mol, &prep, &bounds, config).unwrap_or_else(|e| die(e));
-    let canonical = || {
-        opmp3_on_reference(&ctx, &mol, &prep, &bounds, &scf, integrals, config)
-            .unwrap_or_else(|e| die(e))
-    };
+    let scf = opmp3_scf(&sys, config).map_err(CliError::msg)?;
+    let canonical = || opmp3_on(&sys, &scf, integrals, config).map_err(CliError::msg);
     let (r, local) = match (&plan.local, aux.as_ref()) {
         (Some((lcfg, with_reference)), Some(aux)) => {
-            let lr =
-                local_opmp3_on_reference(&ctx, &mol, &prep, &bs, &bounds, &scf, aux, config, lcfg)
-                    .unwrap_or_else(|e| die(e));
-            let reference = with_reference.then(canonical);
+            let lr = local_opmp3_on(aux, &scf, config, lcfg).map_err(CliError::msg)?;
+            let reference = with_reference.then(canonical).transpose()?;
             (lr.opmp3.clone(), Some((lr, reference)))
         }
-        (Some(_), None) => die("internal: local OP-MP3 plan without an auxiliary basis"),
-        (None, _) => (canonical(), None),
+        (Some(_), None) => {
+            return Err(CliError::msg(
+                "internal: local OP-MP3 plan without an auxiliary basis",
+            ))
+        }
+        (None, _) => (canonical()?, None),
     };
     let scf_config = opmp3_scf_config(config);
     let reference = ferric_scf::certificate::with_scf_envelope(
-        crate::scf_certificate_stamped(&mol, &scf, &scf_config, None),
-        &mol,
+        crate::scf_certificate_stamped(mol, &scf, &scf_config, None),
+        mol,
         &scf,
         &scf_config,
         &bs,
@@ -350,6 +351,7 @@ pub fn run_opmp3(cfg: &Config, gpu_flag: bool) {
             }),
         );
     }
+    Ok(())
 }
 
 /// The local block of the printout: the model (ε, kept fraction), the

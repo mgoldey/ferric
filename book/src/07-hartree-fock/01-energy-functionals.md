@@ -48,14 +48,14 @@ virtual ones, $p, q$ over all.
 The Coulomb and exchange builders (`JBuilder` and `KBuilder` in
 `crates/ferric-scf/src/fock.rs`) compute two linear maps of a density:
 
-$$ J(D)_{\mu\nu} = \sum_{\lambda\sigma}(\mu\nu|\lambda\sigma)D_{\lambda\sigma}, \qquad K(D)_{\mu\nu} = \sum_{\lambda\sigma}(\mu\lambda|\nu\sigma)D_{\lambda\sigma} . $$
+$$ J[D]_{\mu\nu} = \sum_{\lambda\sigma}(\mu\nu|\lambda\sigma)D_{\lambda\sigma}, \qquad K[D]_{\mu\nu} = \sum_{\lambda\sigma}(\mu\lambda|\nu\sigma)D_{\lambda\sigma} . $$
 
-$J(D)_{\mu\nu}$ is the electrostatic potential of the charge cloud $D$,
+$J[D]_{\mu\nu}$ is the electrostatic potential of the charge cloud $D$,
 taken between $\chi_\mu$ and $\chi_\nu$. $K$ swaps one index of the pair
 across the two electrons; it has no classical analogue. Both maps are linear.
 By the 8-fold symmetry each is also symmetric under the trace pairing:
 
-$$ \operatorname{tr}[A\,J(B)] = \operatorname{tr}[B\,J(A)], \qquad \operatorname{tr}[A\,K(B)] = \operatorname{tr}[B\,K(A)] . $$
+$$ \operatorname{tr}[A\,J[B]] = \operatorname{tr}[B\,J[A]], \qquad \operatorname{tr}[A\,K[B]] = \operatorname{tr}[B\,K[A]] . $$
 
 That identity is what lets us differentiate the quadratic terms below.
 
@@ -64,7 +64,7 @@ That identity is what lets us differentiate the quadratic terms below.
 The code's closed-shell density carries the occupation 2,
 $D = 2C_oC_o^{\mathsf T}$. The energy is
 
-$$ E[D] = \operatorname{tr}(Dh) + \tfrac12\operatorname{tr}[D\,J(D)] - \tfrac14\operatorname{tr}[D\,K(D)] + E_{nn} . $$
+$$ E[D] = \operatorname{tr}(Dh) + \tfrac12\operatorname{tr}[D\,J[D]] - \tfrac14\operatorname{tr}[D\,K[D]] + E_{nn} . $$
 
 The $\tfrac12$ on the Coulomb term stops each pair of electrons from being
 counted twice. The exchange weight is $\tfrac14$ because exchange acts only
@@ -74,15 +74,15 @@ Differentiate. Vary $D \to D + \delta$ and keep first order. The one-electron
 term gives $\operatorname{tr}(\delta h)$. Expand the Coulomb term by
 linearity:
 
-$$ \tfrac12\operatorname{tr}[(D+\delta)J(D+\delta)] - \tfrac12\operatorname{tr}[D\,J(D)] = \tfrac12\operatorname{tr}[\delta\,J(D)] + \tfrac12\operatorname{tr}[D\,J(\delta)] + O(\delta^2) . $$
+$$ \tfrac12\operatorname{tr}[(D+\delta)J[D+\delta]] - \tfrac12\operatorname{tr}[D\,J[D]] = \tfrac12\operatorname{tr}[\delta\,J[D]] + \tfrac12\operatorname{tr}[D\,J[\delta]] + O(\delta^2) . $$
 
-Use the trace symmetry on the second term, $\operatorname{tr}[D\,J(\delta)] = \operatorname{tr}[\delta\,J(D)]$,
-so the change is $\operatorname{tr}[\delta\,J(D)]$. The exchange term goes
-the same way and gives $-\tfrac12\operatorname{tr}[\delta\,K(D)]$. Collect:
-$\delta E = \operatorname{tr}[\delta\,(h + J(D) - \tfrac12K(D))]$, and the
+Use the trace symmetry on the second term, $\operatorname{tr}[D\,J[\delta]] = \operatorname{tr}[\delta\,J[D]]$,
+so the change is $\operatorname{tr}[\delta\,J[D]]$. The exchange term goes
+the same way and gives $-\tfrac12\operatorname{tr}[\delta\,K[D]]$. Collect:
+$\delta E = \operatorname{tr}[\delta\,(h + J[D] - \tfrac12K[D])]$, and the
 Fock matrix is the bracket:
 
-$$ F = \frac{\partial E}{\partial D} = h + J(D) - \tfrac12K(D) . $$
+$$ F = \frac{\partial E}{\partial D} = h + J[D] - \tfrac12K[D] . $$
 
 Substitute $F$ back into $E$. Half of $\operatorname{tr}(DF)$ is
 $\tfrac12\operatorname{tr}(Dh) + \tfrac12\operatorname{tr}[DJ] - \tfrac14\operatorname{tr}[DK]$,
@@ -95,8 +95,8 @@ The loop evaluates this form (`e_elec_no_xc` in `solve_rhf`). It
 needs the Fock matrix, which the loop has already built, and no separate
 contraction of $J$ or $K$ with $D$.
 
-Check one doubly occupied orbital $\phi$. Then $\operatorname{tr}[DJ(D)] = 4(\phi\phi|\phi\phi)$
-and $\operatorname{tr}[DK(D)] = 4(\phi\phi|\phi\phi)$, so
+Check one doubly occupied orbital $\phi$. Then $\operatorname{tr}[DJ[D]] = 4(\phi\phi|\phi\phi)$
+and $\operatorname{tr}[DK[D]] = 4(\phi\phi|\phi\phi)$, so
 $E - E_{nn} = 2h_{\phi\phi} + 2(\phi\phi|\phi\phi) - (\phi\phi|\phi\phi) = 2h_{\phi\phi} + (\phi\phi|\phi\phi)$:
 two electrons, each with its one-electron energy, and one repulsion between
 them. The exchange term has removed the half of the Coulomb term that counted
@@ -129,30 +129,45 @@ Slater–Condon expression.
 ### UHF
 
 UHF gives each spin its own orbitals. The per-spin densities are
-$D_\sigma = C_{\sigma o}C_{\sigma o}^{\mathsf T}$ (occupation 1) and the total
-is $D = D_\alpha + D_\beta$. Coulomb repulsion sees the total charge;
+$D^\sigma = C^\sigma_o(C^\sigma_o)^{\mathsf T}$ (occupation 1) and the total
+is $D = D^\alpha + D^\beta$. Coulomb repulsion sees the total charge;
 exchange acts within one spin:
 
-$$ E = \operatorname{tr}(Dh) + \tfrac12\operatorname{tr}[D\,J(D)] - \tfrac12\sum_\sigma\operatorname{tr}[D_\sigma K(D_\sigma)] + E_{nn} . $$
+$$ E = \operatorname{tr}(Dh) + \tfrac12\operatorname{tr}[D\,J[D]] - \tfrac12\sum_\sigma\operatorname{tr}[D^\sigma K[D^\sigma]] + E_{nn} . $$
 
-Differentiate with respect to $D_\alpha$ as above. $D$ depends on $D_\alpha$
-with unit weight, so the Coulomb term gives $J(D)$; the exchange term has
-only its $\alpha$ part, which gives $K(D_\alpha)$. The same holds for
+Differentiate with respect to $D^\alpha$ as above. $D$ depends on $D^\alpha$
+with unit weight, so the Coulomb term gives $J[D]$; the exchange term has
+only its $\alpha$ part, which gives $K[D^\alpha]$. The same holds for
 $\beta$:
 
-$$ F_\sigma = \frac{\partial E}{\partial D_\sigma} = h + J(D) - K(D_\sigma), \qquad E = \tfrac12\sum_\sigma\operatorname{tr}[D_\sigma(h + F_\sigma)] + E_{nn} . $$
+$$ F^\sigma = \frac{\partial E}{\partial D^\sigma} = h + J[D] - K[D^\sigma], \qquad E = \tfrac12\sum_\sigma\operatorname{tr}[D^\sigma(h + F^\sigma)] + E_{nn} . $$
 
 Stationarity per spin gives the Pople–Nesbet equations
-$F_\sigma C_\sigma = SC_\sigma\varepsilon_\sigma$.
+$F^\sigma C^\sigma = SC^\sigma\varepsilon^\sigma$.
 
-Two limits check the expression. At $D_\alpha = D_\beta = D/2$ the exchange
-sum is $2\cdot\tfrac12\operatorname{tr}[\tfrac{D}{2}K(\tfrac{D}{2})] = \tfrac14\operatorname{tr}[DK(D)]$,
-so the UHF energy is the RHF energy of $D$, and $F_\alpha = F_\beta = h + J(D) - \tfrac12K(D) = F$.
-And for a single electron in orbital $\phi$, $D_\alpha = \phi\phi^{\mathsf T}$
-and $D_\beta = 0$, both $\operatorname{tr}[D_\alpha J(D_\alpha)]$ and
-$\operatorname{tr}[D_\alpha K(D_\alpha)]$ equal $(\phi\phi|\phi\phi)$, and
+Two limits check the expression. At $D^\alpha = D^\beta = D/2$ the exchange
+sum is $2\cdot\tfrac12\operatorname{tr}[\tfrac{D}{2}K[\tfrac{D}{2}]] = \tfrac14\operatorname{tr}[DK[D]]$,
+so the UHF energy is the RHF energy of $D$, and $F^\alpha = F^\beta = h + J[D] - \tfrac12K[D] = F$.
+And for a single electron in orbital $\phi$, $D^\alpha = \phi\phi^{\mathsf T}$
+and $D^\beta = 0$, both $\operatorname{tr}[D^\alpha J[D^\alpha]]$ and
+$\operatorname{tr}[D^\alpha K[D^\alpha]]$ equal $(\phi\phi|\phi\phi)$, and
 $E - E_{nn} = h_{\phi\phi}$. A hydrogen atom has no self-repulsion in
 Hartree–Fock.
+
+A UHF determinant need not be an eigenfunction of $S^2$. With
+$S_z = (n_\alpha - n_\beta)/2$ for $n_\alpha$ and $n_\beta$ electrons of each spin,
+its expectation value is
+
+$$ \langle S^2\rangle = S_z(S_z + 1) + n_\beta - \operatorname{tr}(D^\alpha S D^\beta S) , $$
+
+and the last term is $\sum_{ij}|(C^\alpha_o)^{\mathsf T}SC^\beta_o|_{ij}^2$, the
+overlap of the occupied $\alpha$ and $\beta$ orbitals. When every $\beta$
+orbital lies in the span of the $\alpha$ ones (RHF, ROHF) the trace is
+$n_\beta$ and $\langle S^2\rangle = S_z(S_z+1)$; the excess over that value is
+the spin contamination. The open-shell anchors below compare this quantity
+with PySCF (`s_squared` in `crates/ferric-scf/tests/validation_open_shell_scf.rs`,
+3.13e-7). Chapters @sec:mp2 and @sec:gw-bse start from UHF references, so the
+contamination of the reference carries into them.
 
 > **Verified equation {#eq:scf-fock-is-de-dd}** · the Fock matrix is the density derivative of the energy
 >
@@ -163,7 +178,7 @@ Hartree–Fock.
 >
 > | | |
 > |---|---|
-> | Proof | `scripts/hf_energy_sympy.py`, claims S1, S2 and N1 |
+> | Proof | `scripts/hf_energy_sympy.py`, claims S1, S2, N1 and N2 |
 > | Negative control | the RHF exchange weight $\tfrac12 \to 1$ must fail N2 |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-scf/src/rhf.rs::solve_rhf`, `ferric-scf/src/uhf.rs::solve_uhf` |
@@ -179,9 +194,9 @@ range-separated branch and the timing calls removed:
 ```rust
 let f = &mut st.f;
 f.assign(&inp.env.h);                          // F = h
-*f += &self.j_buf;                             //   + J(D)
+*f += &self.j_buf;                             //   + J[D]
 // ... range-separated branch removed ...
-f.scaled_add(-0.5 * k_mix.sr, &self.k_buf);    //   - 1/2 c_x K(D), c_x = 1 for HF
+f.scaled_add(-0.5 * k_mix.sr, &self.k_buf);    //   - 1/2 c_x K[D], c_x = 1 for HF
 ```
 
 and the energy, a few lines later:
@@ -197,7 +212,7 @@ let e_elec_no_xc: f64 = 0.5 * (d * &(&env.h + &*f)).sum();   // 1/2 tr[D(h + F)]
   $c_x$ for a hybrid functional (chapter @sec:kohn-sham); a pure functional skips the
   line.
 - The UHF and ROHF loops evaluate the same trace per spin,
-  $\tfrac12\sum_\sigma\operatorname{tr}[D_\sigma(h + F_\sigma)]$:
+  $\tfrac12\sum_\sigma\operatorname{tr}[D^\sigma(h + F^\sigma)]$:
   `0.5 * ((&(h + &*f_a) * d_a).sum() + (&(h + &*f_b) * d_b).sum())`.
 
 ### ROHF
@@ -207,10 +222,10 @@ ROHF uses one orbital set $C$ whose columns split into closed ($c$), open
 $n_\alpha = (1_c, 1_o, 0_v)$ and $n_\beta = (1_c, 0_o, 0_v)$, and the
 densities are
 
-$$ D_\beta = C_cC_c^{\mathsf T}, \qquad D_\alpha = D_\beta + C_oC_o^{\mathsf T}, \qquad D_\sigma = C\operatorname{diag}(n_\sigma)C^{\mathsf T} . $$
+$$ D^\beta = C_cC_c^{\mathsf T}, \qquad D^\alpha = D^\beta + C_oC_o^{\mathsf T}, \qquad D^\sigma = C\operatorname{diag}(n_\sigma)C^{\mathsf T} . $$
 
 The energy is the UHF functional at these densities, with the same
-$F_\sigma = h + J(D_\alpha + D_\beta) - K(D_\sigma)$. `solve_rohf` evaluates
+$F^\sigma = h + J[D^\alpha + D^\beta] - K[D^\sigma]$. `solve_rohf` evaluates
 exactly the UHF trace formula. In MO integrals it is the high-spin energy
 
 $$ E = 2\sum_c h_{cc} + \sum_t h_{tt} + \sum_{cc'}[2J_{cc'} - K_{cc'}] + \sum_{ct}[2J_{ct} - K_{ct}] + \tfrac12\sum_{tu}[J_{tu} - K_{tu}] + E_{nn}, $$
@@ -219,34 +234,34 @@ with $t, u$ open, $J_{pq} = (pp|qq)$ and $K_{pq} = (pq|pq)$.
 
 What is new in ROHF is the stationarity condition. UHF has two Fock matrices
 and two orbital sets, one equation each. ROHF has two Fock matrices and one
-orbital set, so neither $F_\alpha$ nor $F_\beta$ alone can be diagonalized.
+orbital set, so neither $F^\alpha$ nor $F^\beta$ alone can be diagonalized.
 The condition comes from the orbital gradient.
 
 **Orbital gradient.** Rotate the orbitals, $C \to Ce^{\kappa}$ with $\kappa$
-real and antisymmetric, and write $f_\sigma = C^{\mathsf T}F_\sigma C$ for
+real and antisymmetric, and write $f^\sigma = C^{\mathsf T}F^\sigma C$ for
 the Fock matrices in the MO basis. In the MO basis
-$D_\sigma = \operatorname{diag}(n_\sigma)$, and to first order
-$\delta D_\sigma = \kappa\,n_\sigma - n_\sigma\kappa$, that is,
-$(\delta D_\sigma)_{pq} = (n_{\sigma q} - n_{\sigma p})\kappa_{pq}$. The energy
-changes by $\delta E = \sum_\sigma\operatorname{tr}(f_\sigma\delta D_\sigma)$.
+$D^\sigma = \operatorname{diag}(n_\sigma)$, and to first order
+$\delta D^\sigma = \kappa\,n_\sigma - n_\sigma\kappa$, that is,
+$(\delta D^\sigma)_{pq} = (n_{\sigma q} - n_{\sigma p})\kappa_{pq}$. The energy
+changes by $\delta E = \sum_\sigma\operatorname{tr}(f^\sigma\delta D^\sigma)$.
 
 A rotation inside $c$, $o$ or $v$ mixes orbitals of equal occupation, so
 $n_{\sigma p} = n_{\sigma q}$ and neither density changes. Take a rotation
 between $v$ and $c$, with $\kappa_{vc} = -\kappa_{cv}$. For $\alpha$,
-$(\delta D_\alpha)_{vc} = (1 - 0)\kappa_{vc}$ and
-$(\delta D_\alpha)_{cv} = (0 - 1)\kappa_{cv} = \kappa_{vc}$, so the trace
-picks up $2(f_\alpha)_{vc}\kappa_{vc}$. $\beta$ gives the same with $f_\beta$.
+$(\delta D^\alpha)_{vc} = (1 - 0)\kappa_{vc}$ and
+$(\delta D^\alpha)_{cv} = (0 - 1)\kappa_{cv} = \kappa_{vc}$, so the trace
+picks up $2(f^\alpha)_{vc}\kappa_{vc}$. $\beta$ gives the same with $f^\beta$.
 For a rotation between $v$ and $o$, only $\alpha$ has different occupations,
 and for $o$ and $c$ only $\beta$ does. The three blocks (row index the
 orbital rotated into) are
 
-$$ \frac{\partial E}{\partial\kappa_{pq}} = 2g_{pq}, \qquad g_{vc} = (f_\alpha + f_\beta)_{vc}, \quad g_{vo} = (f_\alpha)_{vo}, \quad g_{oc} = (f_\beta)_{oc} . $$
+$$ \frac{\partial E}{\partial\kappa_{pq}} = 2g_{pq}, \qquad g_{vc} = (f^\alpha + f^\beta)_{vc}, \quad g_{vo} = (f^\alpha)_{vo}, \quad g_{oc} = (f^\beta)_{oc} . $$
 
 ROHF convergence means $g = 0$. Read the blocks physically. A closed-shell
 electron moving to a virtual orbital takes one electron of each spin with
 it, so both Fock matrices count. An open-shell electron is $\alpha$, so
-promoting it to a virtual involves $F_\alpha$ only. Filling the open orbital
-from a closed one moves a $\beta$ electron, so $F_\beta$ only.
+promoting it to a virtual involves $F^\alpha$ only. Filling the open orbital
+from a closed one moves a $\beta$ electron, so $F^\beta$ only.
 `ferric-scf/src/rohf.rs::rohf_gradient_mo` builds these blocks (its three
 loops are the three equations), and the DIIS error is
 $SC(g - g^{\mathsf T})C^{\mathsf T}S$.
@@ -254,11 +269,12 @@ $SC(g - g^{\mathsf T})C^{\mathsf T}S$.
 **Effective Fock matrix.** To use an ordinary diagonalization, ROHF builds
 one matrix $R$ whose eigenvectors satisfy $g = 0$.
 `ferric-scf/src/rohf.rs::roothaan_fock_inner` is PySCF's `get_roothaan_fock`
-with the Guest–Saunders choice. With $F_c = (F_\alpha + F_\beta)/2$ and the
-projectors $P_c = D_\beta S$, $P_o = (D_\alpha - D_\beta)S$,
-$P_v = 1 - D_\alpha S$,
+with the Guest–Saunders choice (the diagonal blocks all $F_c$; other choices
+change the orbital energies only, as shown below). With $F_c = (F^\alpha + F^\beta)/2$ and the
+projectors $P_c = D^\beta S$, $P_o = (D^\alpha - D^\beta)S$,
+$P_v = 1 - D^\alpha S$,
 
-$$ R = M + M^{\mathsf T}, \qquad M = \tfrac12P_c^{\mathsf T}F_cP_c + \tfrac12P_o^{\mathsf T}F_cP_o + \tfrac12P_v^{\mathsf T}F_cP_v + P_o^{\mathsf T}F_\beta P_c + P_o^{\mathsf T}F_\alpha P_v + P_v^{\mathsf T}F_cP_c . $$
+$$ R = M + M^{\mathsf T}, \qquad M = \tfrac12P_c^{\mathsf T}F_cP_c + \tfrac12P_o^{\mathsf T}F_cP_o + \tfrac12P_v^{\mathsf T}F_cP_v + P_o^{\mathsf T}F^\beta P_c + P_o^{\mathsf T}F^\alpha P_v + P_v^{\mathsf T}F_cP_c . $$
 
 Why projectors? $P_cC = C_cC_c^{\mathsf T}SC$ keeps the closed columns of $C$
 and zeroes the others, because $C^{\mathsf T}SC = 1$. So
@@ -268,9 +284,9 @@ one Fock matrix in one block, and $C^{\mathsf T}RC$ has the block table
 
 | | $c$ | $o$ | $v$ |
 |---|---|---|---|
-| $c$ | $F_c$ | $F_\beta$ | $F_c$ |
-| $o$ | $F_\beta$ | $F_c$ | $F_\alpha$ |
-| $v$ | $F_c$ | $F_\alpha$ | $F_c$ |
+| $c$ | $F_c$ | $F^\beta$ | $F_c$ |
+| $o$ | $F^\beta$ | $F_c$ | $F^\alpha$ |
+| $v$ | $F_c$ | $F^\alpha$ | $F_c$ |
 
 Compare the off-diagonal blocks with the gradient: they are $g/2$ ($vc$) and
 $g$ ($vo$, $oc$). So $RC = SC\varepsilon$ at self-consistency is the same
@@ -292,8 +308,8 @@ let mut f = 0.5 * p_c_t.dot(&f_c).dot(&p_c);
 
 | Code | Equation |
 |---|---|
-| `p_c`, `p_o`, `p_v` | $P_c = D_\beta S$, $P_o = (D_\alpha - D_\beta)S$, $P_v = 1 - D_\alpha S$ |
-| `f_c` | $F_c = (F_\alpha + F_\beta)/2$ |
+| `p_c`, `p_o`, `p_v` | $P_c = D^\beta S$, $P_o = (D^\alpha - D^\beta)S$, $P_v = 1 - D^\alpha S$ |
+| `f_c` | $F_c = (F^\alpha + F^\beta)/2$ |
 | the six lines | the six terms of $M$, in order |
 | `f_sym` | $R = M + M^{\mathsf T}$ |
 
@@ -330,7 +346,7 @@ holds because ROHF is UHF with a constraint on the orbitals.
 |---|---|
 | $J$, $K$ conventions | `crates/ferric-scf/src/fock.rs` (`JBuilder`, `KBuilder`) |
 | RHF $F$, $E$ | `solve_rhf` (`f.assign(&h)`, `e_elec_no_xc`) |
-| UHF $F_\sigma$, $E$ | `solve_uhf` |
+| UHF $F^\sigma$, $E$ | `solve_uhf` |
 | ROHF $E$, $R$, $g$ | `solve_rohf`, `roothaan_fock_inner`, `rohf_gradient_mo` |
 
 ## One iteration {#energy-functionals-iteration}
@@ -340,11 +356,11 @@ step 2, and chapter @sec:convergence about steps 3 and 4.
 
 | Step | Quantity | Section |
 |---|---|---|
-| 1 | density from the current orbitals: $D = 2C_oC_o^{\mathsf T}$, or $D^\alpha, D^\beta$ | 7.1 |
-| 2 | $J[D]$ and $K[D]$ (or $K[D^\sigma]$), then $F = h + J - \tfrac12 K$, or $F^\sigma = h + J[D^\alpha + D^\beta] - K[D^\sigma]$ | 7.3 to 7.5 |
-| 3 | the energy $E = \tfrac12\operatorname{tr}[D(h+F)] + E_{nn}$, and the error vector | 8.1 |
-| 4 | an extrapolated or shifted Fock matrix | 8.1, 8.2 |
-| 5 | $\tilde F = X^{\mathsf T} F X$, its eigenvectors, $C = X\tilde C$ | 7.2 |
+| 1 | density from the current orbitals: $D = 2C_oC_o^{\mathsf T}$, or $D^\alpha, D^\beta$ | @sec:energy-functionals |
+| 2 | $J[D]$ and $K[D]$ (or $K[D^\sigma]$), then $F = h + J - \tfrac12 K$, or $F^\sigma = h + J[D^\alpha + D^\beta] - K[D^\sigma]$ | @sec:direct-and-incremental, @sec:ri-j-ri-k-split-ri-j, @sec:link-cosx-cfmm |
+| 3 | the energy $E = \tfrac12\operatorname{tr}[D(h+F)] + E_{nn}$, and the error vector | @sec:diis |
+| 4 | an extrapolated or shifted Fock matrix | @sec:diis, @sec:level-shift-mom-smearing |
+| 5 | $\tilde F = X^{\mathsf T} F X$, its eigenvectors, $C = X\tilde C$ | @sec:orthogonalization-and-guesses |
 
 ROHF diagonalizes the effective Fock matrix $R$ in step 5 and uses the UHF
 energy of its two densities in step 3. The open-shell solvers share the
@@ -353,17 +369,17 @@ J/K route decision with the closed-shell solver
 
 Step 2 dominates the cost. $J$ and $K$ each contract $N^4$ integrals with
 the density, against $N^3$ for the diagonalization of step 5. Sections @sec:direct-and-incremental to
-7.5 are different ways of doing that contraction.
+@sec:link-cosx-cfmm are different ways of doing that contraction.
 
 ## Options that change the equation {#energy-functionals-options-change-equation}
 
 | Option | Effect | Where |
 |---|---|---|
 | `[dft] functional` | replaces $-\tfrac12 K$ by $-\tfrac12 c_x K + V_{xc}$ (RKS, UKS, ROKS) | chapter @sec:kohn-sham |
-| `[external_potential]`, `[qmmm]` | adds the point-charge and field terms to $h$ once, before the loop | chapter @sec:implicit-solvation |
-| `[cosmo]`, `[pcm]` | adds a reaction-field term to $F$ every iteration | chapter @sec:embedding |
+| `[external_potential]`, `[qmmm]` | adds the point-charge and field terms to $h$ once, before the loop | section @sec:external-potentials |
+| `[cosmo]`, `[pcm]` | adds a reaction-field term to $F$ every iteration | chapter @sec:implicit-solvation |
 | `fock_hook` (Python) | adds $V = \partial E_h/\partial D$ to $F$ every iteration | section @sec:fock-hooks |
-| `relativistic = "x2c1e"` | replaces $T + V$ in $h$ by the spin-free X2C-1e Hamiltonian | the user guide |
+| `relativistic = "x2c1e"` | replaces $T + V$ in $h$ by the spin-free X2C-1e Hamiltonian | section @sec:pvp-x2c |
 
 ## Numerical anchors {#energy-functionals-numerical-anchors}
 
@@ -383,10 +399,13 @@ carries them as its measured error.
 | Source | Used for |
 |---|---|
 | `scripts/hf_energy_sympy.py` | verified equations @eq:scf-fock-is-de-dd and @eq:scf-rohf-gradient |
+| C. C. J. Roothaan, Rev. Mod. Phys. 23, 69 (1951); J. A. Pople and R. K. Nesbet, J. Chem. Phys. 22, 571 (1954) | the RHF and UHF equations |
+| M. F. Guest and V. R. Saunders, Mol. Phys. 28, 819 (1974) | the canonicalization of the ROHF effective Fock matrix |
 | `site/src/reference/validation.md` | the anchors |
 
-The intermediate steps of @sec:energy-functionals-functionals that are not in the theory section (the
-expansion of the Coulomb term, the one-orbital and one-electron limits, the
-$FDS = SDF$ step, the $\delta D_\sigma$ element bookkeeping and the
-projector argument) were checked numerically on a random seven-function
-model for this section.
+The intermediate steps of @sec:energy-functionals-functionals map onto the
+claims as follows. The expansion of the Coulomb term is the content of S1 and
+N1, the one-orbital and one-electron limits are N9, the $\delta D^\sigma$
+element bookkeeping is N4, and the projector argument is N3, all in
+`scripts/hf_energy_sympy.py`. The step from $FC = SC\varepsilon$ to
+$FDS = SDF$ is claim N2 of `scripts/scf_diis_sympy.py`.

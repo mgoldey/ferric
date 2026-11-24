@@ -28,7 +28,7 @@ pub struct RungOutcome {
     pub iters: usize,
     /// The rung's exit reason.
     pub exit: ScfExit,
-    /// Always `f64::NAN`: neither ladder driver fills it in.
+    /// Always `f64::NAN`: the ladder driver does not fill it in.
     pub final_err_max: f64, // best-effort; set to f64::NAN if not surfaced
     /// The rung's final total energy (Hartree).
     pub final_energy: f64,
@@ -44,8 +44,7 @@ pub struct LadderResult {
     /// Whether some rung converged.
     pub converged: bool,
     /// Index of the converged rung. When none converged, the index of the
-    /// lowest-energy rung for [`solve_rhf_ladder`] and of the last rung for
-    /// [`solve_rohf_ladder`].
+    /// lowest-energy rung.
     pub rung_reached: usize,
     /// One entry per rung that ran, in order.
     pub rung_outcomes: Vec<RungOutcome>,
@@ -703,6 +702,8 @@ pub fn default_ladder_from(base: &RhfConfig) -> Vec<Rung> {
 /// DF-JK aux is auto-defaulted to `def2-universal-jkfit` only when the base
 /// leaves it unset AND a functional is present (hybrids/RSH need K; pure DFT
 /// still benefits from RI-J) — a bare-HF base with no aux keeps direct J/K.
+/// The defaults are [`crate::options::ks_jk_fit_defaults`] (so no RI-K
+/// default under COSX), the rule the Kohn-Sham entry points apply.
 pub fn ksdft_ladder(base: &RhfConfig) -> Vec<Rung> {
     let mk = |level_shift: f64, max_iter: usize| {
         let mut c = base.clone();
@@ -711,15 +712,15 @@ pub fn ksdft_ladder(base: &RhfConfig) -> Vec<Rung> {
         c.stall_window = Some(15);
         c.divergence_tol = Some(0.5);
         if c.xc.is_some() {
-            if c.df_j_aux.is_none() {
-                c.df_j_aux = Some("def2-universal-jkfit".to_string());
-            }
-            // RIJCOSX: COSX replaces RI-K, so no RI-K default under it.
-            if c.df_k_aux.is_none()
-                && c.k_builder.as_deref() != Some(crate::options::COSX_K_BUILDER)
-            {
-                c.df_k_aux = Some("def2-universal-jkfit".to_string());
-            }
+            // The Kohn-Sham JK-fit defaults and the RIJCOSX rule, from their
+            // one home in `crate::options` (what the KS entry points apply).
+            let (j, k) = crate::options::ks_jk_fit_defaults(
+                c.k_builder,
+                c.df_j_aux.take(),
+                c.df_k_aux.take(),
+                crate::options::DEFAULT_JK_AUX.to_string(),
+            );
+            (c.df_j_aux, c.df_k_aux) = (Some(j), k);
         }
         c
     };
@@ -763,78 +764,6 @@ pub fn ksdft_ladder(base: &RhfConfig) -> Vec<Rung> {
             restart: false,
         },
     ]
-}
-
-/// Walk a convergence ladder using ROHF/ROKS, carrying each failed rung's density
-/// forward as the next rung's guess.
-///
-/// The open-shell counterpart of [`solve_rhf_ladder`]. ROHF/ROKS has no closed-shell
-/// fallback and is materially harder to converge — radicals and open-shell
-/// transition-metal complexes are exactly the systems that stall plain DIIS, and
-/// exactly what a robustness-oriented functional is for.
-///
-/// Returns the first converged rung, or the lowest-energy non-converged result with
-/// `converged: false`.
-pub fn solve_rohf_ladder(
-    ctx: &ParallelContext,
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    op: Operator,
-    bounds: &SchwarzBounds,
-    ladder: &[Rung],
-) -> Result<LadderResult, FerricError> {
-    let mut outcomes: Vec<RungOutcome> = Vec::new();
-    let mut best: Option<ScfResult> = None;
-    let mut carry: Option<ndarray::Array2<f64>> = None;
-    let mut guess_report: Option<GuessBasisReport> = None;
-
-    for (i, rung) in ladder.iter().enumerate() {
-        let mut cfg = rung.config.clone();
-        // Carry the previous rung's best-effort density in as this rung's guess.
-        if !rung.restart {
-            if let Some(d) = carry.as_ref() {
-                cfg.init_guess_density = Some(d.clone());
-            }
-        }
-        // See the identical block in `solve_rhf_ladder`.
-        let r = {
-            let _rung_scope = crate::runlog::RungScope::enter(i);
-            crate::rohf::solve_rohf_best_effort(ctx, mol, prep, op, bounds, &cfg)?
-        };
-        log_rung(ctx, i, &cfg, &r);
-        outcomes.push(RungOutcome {
-            iters: r.iterations,
-            exit: r.exit,
-            final_err_max: f64::NAN,
-            final_energy: r.energy,
-        });
-        note_guess_report(&mut guess_report, &r);
-        if r.converged {
-            return Ok(LadderResult {
-                result: with_guess_report(r, &guess_report),
-                converged: true,
-                rung_reached: i,
-                rung_outcomes: outcomes,
-            });
-        }
-        carry = Some(r.density_total.clone());
-        best = match best {
-            Some(b) if b.energy <= r.energy => Some(b),
-            _ => Some(r),
-        };
-    }
-
-    let result = with_guess_report(
-        best.ok_or_else(|| FerricError::General("solve_rohf_ladder: empty ladder".into()))?,
-        &guess_report,
-    );
-    let n = outcomes.len().saturating_sub(1);
-    Ok(LadderResult {
-        result,
-        converged: false,
-        rung_reached: n,
-        rung_outcomes: outcomes,
-    })
 }
 
 #[cfg(test)]
@@ -1010,6 +939,55 @@ mod tests {
     /// `ksdft_ladder` structural guarantees (fast, no SCF): carries the base's
     /// functional/grid into every rung, escalates the level shift, and layers
     /// stall/divergence early-abort on top.
+    /// The rungs' JK-fit defaults equal the copy `ksdft_ladder` kept before
+    /// it called `options::ks_jk_fit_defaults` (the oracle below, verbatim),
+    /// for every combination of functional, aux settings and builder.
+    #[test]
+    fn ksdft_ladder_jk_defaults_match_its_old_copy() {
+        use crate::options::KBuilderKind;
+        let old = |c: &mut RhfConfig| {
+            if c.xc.is_some() {
+                if c.df_j_aux.is_none() {
+                    c.df_j_aux = Some("def2-universal-jkfit".to_string());
+                }
+                // RIJCOSX: COSX replaces RI-K, so no RI-K default under it.
+                if c.df_k_aux.is_none() && c.k_builder != Some(KBuilderKind::Cosx) {
+                    c.df_k_aux = Some("def2-universal-jkfit".to_string());
+                }
+            }
+        };
+        let auxes = [None, Some(""), Some("cc-pvtz-jkfit")];
+        let kinds = [
+            None,
+            Some(KBuilderKind::Direct),
+            Some(KBuilderKind::Link),
+            Some(KBuilderKind::Cosx),
+        ];
+        for xc in [None, Some("PBE"), Some("B3LYP")] {
+            for j in auxes {
+                for k in auxes {
+                    for kb in kinds {
+                        let base = RhfConfig {
+                            xc: xc.map(str::to_string),
+                            df_j_aux: j.map(str::to_string),
+                            df_k_aux: k.map(str::to_string),
+                            k_builder: kb,
+                            ..RhfConfig::default()
+                        };
+                        let mut want = base.clone();
+                        old(&mut want);
+                        for rung in ksdft_ladder(&base) {
+                            let c = rung.config;
+                            let case = format!("{xc:?} {j:?} {k:?} {kb:?}");
+                            assert_eq!(c.df_j_aux, want.df_j_aux, "{case}");
+                            assert_eq!(c.df_k_aux, want.df_k_aux, "{case}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn ksdft_ladder_carries_xc_and_escalates() {
         let grid = ferric_dft::grid::AtomicGridConfig {

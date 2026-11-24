@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """CCD, CCSD and EOM-CCSD working equations against a brute-force e^{-T} H e^{T}.
 
-Theory: `book/src/16-coupled-cluster/01-ccd-ccsd-spin-orbital.md#ccd-ccsd-spin-orbital-equations`, `book/src/16-coupled-cluster/04-eom-ccsd.md#eom-ccsd-equations`. Every check asserts; the script exits
+Theory: `book/src/16-coupled-cluster/01-ccd-ccsd-spin-orbital.md#ccd-ccsd-spin-orbital-equations`, `book/src/16-coupled-cluster/02-closed-shell-ccsd.md#closed-shell-ccsd-equations`, `book/src/16-coupled-cluster/04-eom-ccsd.md#eom-ccsd-equations`, `book/src/16-coupled-cluster/04-eom-ccsd.md#eom-ccsd-product`. Every check asserts; the script exits
 nonzero on any failure and prints "FAIL [label]".
 
 Model. Five spatial orbitals (two occupied, three virtual), ten spin orbitals
@@ -37,15 +37,31 @@ Checks (labels in brackets are printed and cited by the book):
                      the same-spin block is R_ij^ab - R_ij^ba, and the
                      closed-shell energy sum (2(ia|jb) - (ib|ja)) (t_ij^ab +
                      t_i^a t_j^b) equals the brute-force energy.
+  [rccsd-factorization] the closed-shell residual ccsd_closed_shell.rs
+                     evaluates (PySCF rccsd: F, L, W_oooo, W_voov, W_vovo,
+                     the dressed W_abcd ladder, the T1 and P(ij)(ab)-symmetrized
+                     T2 equations), transcribed in numpy with the t1 t1 pieces
+                     grouped into tau, minus D t equals the alpha singles and
+                     the alpha-beta doubles block of the brute-force residual
+                     on the expanded amplitudes.
   [eom-jacobian]     at converged CCSD amplitudes, the Jacobian dR_mu/dt_nu
                      of the residual (5-point stencil, exact for a quartic)
                      equals <mu|e^{-T}He^{T}|nu> - E_CC delta_mu,nu on the
                      singles and doubles: EOM-CCSD is the CC Jacobian.
+  [eom-closed-shell] at converged closed-shell amplitudes of the spatial
+                     residual, the singlet product of eom_ccsd.rs (sigma over
+                     the PySCF make_ee intermediates, transcribed in numpy)
+                     equals the 5-point Jacobian of that residual along random
+                     singlet vectors.
   [cis-limit]        at t = 0 the singlet singles block of H - E_ref is
                      delta_ij delta_ab (eps_a - eps_i) + 2(ia|jb) - (ij|ab).
   [spin-norm]        for a closed-shell (r1, r2) the norm of its spin-orbital
                      expansion over distinct determinants is
                      2|r1|^2 + |r2|^2 + 1/2 |r2 - r2^(ab)|^2 (spin_norm).
+  [bch-termination]  at random t1 and t2 the nested commutator
+                     [..[[H, T], T]..] is nonzero at fourfold nesting and
+                     vanishes to round-off at fivefold, so the series of
+                     e^{-T} H e^{T} stops after the 1/24 term.
   [negative-controls] each deliberately wrong variant must fail its check.
 
 Mutations (each turns the script red with the marker given):
@@ -58,7 +74,14 @@ Mutations (each turns the script red with the marker given):
   - the exchange integral dropped from the closed-shell energy sum
     (marker "FAIL [spin-adaptation]");
   - 2(ia|jb) replaced by (ia|jb) in the singlet CIS block
-    (marker "FAIL [cis-limit]").
+    (marker "FAIL [cis-limit]");
+  - P(ij)(ab) x replaced by 2x in rccsd_r (marker "FAIL [rccsd-factorization]");
+  - the -1/2 t2 term of W_vovo given the opposite sign
+    (marker "FAIL [rccsd-factorization]");
+  - the 1/2 on the ladder and W_mnij terms of eom_sigma set to 1
+    (marker "FAIL [eom-closed-shell]");
+  - the fivefold commutator test moved to fourfold nesting
+    (marker "FAIL [bch-termination]").
 """
 
 import itertools
@@ -325,6 +348,27 @@ def random_t(scale=0.15):
     return t1, t2
 
 
+def claim_bch_termination(last=5):
+    print("\n=== the BCH series of e^{-T} H e^{T} stops after the fourfold commutator")
+    t1, t2 = random_t()
+    t = t_operator(t1, t2).toarray()
+    term = HAM.toarray()
+    sizes = []
+    for _ in range(last):
+        term = term @ t - t @ term
+        sizes.append(np.abs(term).max())
+    print(
+        "       max |n-fold commutator|, n = 1..5: "
+        + ", ".join(f"{x:.2g}" for x in sizes)
+    )
+    check(sizes[3] > 1e-3, "bch-termination", f"fourfold commutator {sizes[3]:.2f}")
+    check(
+        sizes[last - 1] < 1e-12,
+        "bch-termination",
+        f"{last}-fold commutator {sizes[last - 1]:.1e}",
+    )
+
+
 def claim_ccd():
     print("\n=== CCD residual and energy vs brute force")
     _, t2 = random_t()
@@ -399,6 +443,293 @@ def claim_spin_adaptation():
         d < 1e-12, "spin-adaptation", f"closed-shell energy sum vs brute force: {d:.1e}"
     )
     return cs_energy, t1s, t2s, e_b
+
+
+# ------------------------------------- the closed-shell factorization the code runs
+def sym_ijab(x):
+    return x + x.transpose(1, 0, 3, 2)  # P(ij)(ab)
+
+
+def rccsd_r(t1, t2, wvovo_t2=-0.5):
+    """ccsd_closed_shell.rs iteration body (PySCF rccsd), Fock-free residual r.
+
+    The full spatial residual is r - D t with D_ia = eps_i - eps_a and
+    D_ijab = eps_i + eps_j - eps_a - eps_b; the code updates t = r / D.
+    """
+    o, v = slice(0, NO), slice(NO, NSP)
+    ovov, ovoo, oovv = G[o, v, o, v], G[o, v, o, o], G[o, o, v, v]
+    ovvo, ovvv, oooo, vvvv = G[o, v, v, o], G[o, v, v, v], G[o, o, o, o], G[v, v, v, v]
+    es = np.einsum
+    tt = es("ia,jb->ijab", t1, t1)
+    foo = 2 * es("kcld,ilcd->ki", ovov, t2 + tt) - es("kdlc,ilcd->ki", ovov, t2 + tt)
+    fvv = -2 * es("kcld,klad->ac", ovov, t2 + tt) + es("kdlc,klad->ac", ovov, t2 + tt)
+    fov = 2 * es("kcld,ld->kc", ovov, t1) - es("kdlc,ld->kc", ovov, t1)
+    loo = foo + 2 * es("lcki,lc->ki", ovoo, t1) - es("kcli,lc->ki", ovoo, t1)
+    lvv = fvv + 2 * es("kdac,kd->ac", ovvv, t1) - es("kcad,kd->ac", ovvv, t1)
+    r1 = (
+        es("ac,ic->ia", fvv, t1)
+        - es("ki,ka->ia", foo, t1)
+        + 2 * es("kc,kica->ia", fov, t2)
+        - es("kc,ikca->ia", fov, t2)
+        + es("kc,ic,ka->ia", fov, t1, t1)
+        + 2 * es("kcai,kc->ia", ovvo, t1)
+        - es("kiac,kc->ia", oovv, t1)
+        + 2 * es("kdac,ikcd->ia", ovvv, t2 + tt)
+        - es("kcad,ikcd->ia", ovvv, t2 + tt)
+        - 2 * es("lcki,klac->ia", ovoo, t2 + tt)
+        + es("kcli,klac->ia", ovoo, t2 + tt)
+    )
+    woooo = (
+        es("lcki,jc->klij", ovoo, t1)
+        + es("kclj,ic->klij", ovoo, t1)
+        + es("kcld,ijcd->klij", ovov, t2 + tt)
+        + oooo.transpose(0, 2, 1, 3)
+    )
+    wvoov = (
+        es("kcad,id->akic", ovvv, t1)
+        - es("kcli,la->akic", ovoo, t1)
+        + ovvo.transpose(2, 0, 3, 1)
+        - 0.5 * es("ldkc,ilda->akic", ovov, t2)
+        - 0.5 * es("lckd,ilad->akic", ovov, t2)
+        - es("ldkc,ilda->akic", ovov, tt)
+        + es("ldkc,ilad->akic", ovov, t2)
+    )
+    wvovo = (
+        es("kdac,id->akci", ovvv, t1)
+        - es("lcki,la->akci", ovoo, t1)
+        + oovv.transpose(2, 0, 3, 1)
+        + wvovo_t2 * es("lckd,ilda->akci", ovov, t2)
+        - es("lckd,ilda->akci", ovov, tt)
+    )
+    wvvvv = (
+        vvvv.transpose(0, 2, 1, 3)
+        - es("kdac,kb->abcd", ovvv, t1)
+        - es("kcbd,ka->abcd", ovvv, t1)
+    )
+    tmp2 = ovvv.transpose(1, 3, 0, 2) - es("kibc,ka->abic", oovv, t1)
+    r2 = sym_ijab(es("abic,jc->ijab", tmp2, t1))
+    tmp2 = es("kcai,jc->akij", ovvo, t1) + ovoo.transpose(1, 3, 0, 2)
+    r2 -= sym_ijab(es("akij,kb->ijab", tmp2, t1))
+    r2 += ovov.transpose(0, 2, 1, 3)
+    r2 += es("klij,klab->ijab", woooo, t2 + tt)
+    r2 += es("abcd,ijcd->ijab", wvvvv, t2 + tt)
+    r2 += sym_ijab(es("ac,ijcb->ijab", lvv, t2))
+    r2 -= sym_ijab(es("ki,kjab->ijab", loo, t2))
+    r2 += sym_ijab(
+        2 * es("akic,kjcb->ijab", wvoov, t2) - es("akci,kjcb->ijab", wvovo, t2)
+    )
+    r2 -= sym_ijab(es("akic,kjbc->ijab", wvoov, t2))
+    r2 -= sym_ijab(es("bkci,kjac->ijab", wvovo, t2))
+    return r1, r2
+
+
+DIA_S = EPS[:NO, None] - EPS[None, NO:]
+DIJAB_S = DIA_S[:, None, :, None] + DIA_S[None, :, None, :]
+
+
+def rccsd_full(t1s, t2s, **kw):
+    r1, r2 = rccsd_r(t1s, t2s, **kw)
+    return r1 - DIA_S * t1s, r2 - DIJAB_S * t2s
+
+
+def claim_rccsd_factorization():
+    print("\n=== the closed-shell factorization ccsd_closed_shell.rs evaluates")
+    t1s = rng.normal(scale=0.15, size=(NO, NV))
+    x = rng.normal(scale=0.15, size=(NO, NO, NV, NV))
+    t2s = x + x.transpose(1, 0, 3, 2)
+    _, r1, r2 = brute(*expand(t1s, t2s))
+    a, b = slice(0, None, 2), slice(1, None, 2)
+    f1, f2 = rccsd_full(t1s, t2s)
+    d1 = np.abs(f1 - r1[a, a]).max()
+    d2 = np.abs(f2 - r2[a, b, a, b]).max()
+    check(
+        max(d1, d2) < 1e-12,
+        "rccsd-factorization",
+        f"singles {d1:.1e}, opposite-spin doubles {d2:.1e}",
+    )
+    d = np.abs(f2 - f2.transpose(1, 0, 3, 2)).max()
+    check(d < 1e-13, "rccsd-factorization", f"r_ij^ab == r_ji^ba: {d:.1e}")
+    return t1s, t2s, r2[a, b, a, b]
+
+
+# ---------------------------------------- the closed-shell EOM product the code runs
+def make_tau(t2, t1, r1, fac):
+    x = np.einsum("ia,jb->ijab", t1, r1)
+    return t2 + 0.5 * fac * (x + x.transpose(1, 0, 3, 2))
+
+
+def theta_of(x):
+    return 2.0 * x - x.transpose(0, 1, 3, 2)
+
+
+def eom_blocks():
+    o, v = slice(0, NO), slice(NO, NSP)
+    return {
+        "oooo": G[o, o, o, o],
+        "ovoo": G[o, v, o, o],
+        "ovov": G[o, v, o, v],
+        "oovv": G[o, o, v, v],
+        "ovvo": G[o, v, v, o],
+        "ovvv": G[o, v, v, v],
+        "vvvv": G[v, v, v, v],
+    }
+
+
+def eom_intermediates(t1, t2, g):
+    """eom_ccsd.rs::intermediates (PySCF eom_rccsd._IMDS.make_ee)."""
+    es = np.einsum
+    ovoo, ovov, oovv, ovvo, ovvv, oooo = (
+        g["ovoo"],
+        g["ovov"],
+        g["oovv"],
+        g["ovvo"],
+        g["ovvv"],
+        g["oooo"],
+    )
+    eo, ev = EPS[:NO], EPS[NO:]
+    tau = make_tau(t2, t1, t1, 1.0)
+    theta = theta_of(t2)
+    l_ovov = 2.0 * ovov - ovov.transpose(0, 3, 2, 1)
+    f_vv = 2.0 * es("mf,mfae->ae", t1, ovvv) - es("mf,meaf->ae", t1, ovvv)
+    w_ovoo = es("mebf,ijef->mbij", ovvv, tau)
+    w_ovvo = es("jf,mebf->mbej", t1, ovvv)
+    w_ovvo_x = -es("jf,mfbe->mbej", t1, ovvv)
+    w_ooov = es("if,mfne->mnie", t1, ovov) + ovoo.transpose(2, 0, 3, 1)
+    tmp = es("njbf,mfne->mbej", t2, ovov)
+    w_ovvo = w_ovvo - 0.5 * tmp
+    w_ovvo_x = w_ovvo_x + tmp
+    x = es("menf,jf->menj", ovov, t1)
+    w_ovvo = w_ovvo - es("nb,menj->mbej", t1, x)
+    x = es("mfne,jf->menj", ovov, t1)
+    w_ovvo_x = w_ovvo_x + es("nb,menj->mbej", t1, x)
+    w_ovvo = w_ovvo + 0.5 * es("njfb,menf->mbej", theta, l_ovov)
+    fov = es("nf,menf->me", t1, l_ovov)
+    tilab = 0.5 * es("ia,jb->ijab", t1, t1) + t2
+    f_oo = es("mief,menf->ni", tilab, l_ovov)
+    f_vv = f_vv - es("mnaf,menf->ae", tilab, l_ovov)
+    w_ovvo = w_ovvo - es("nb,menj->mbej", t1, ovoo)
+    w_ovvo_x = w_ovvo_x + es("nb,nemj->mbej", t1, ovoo)
+    w_ovvo = w_ovvo + ovvo.transpose(0, 2, 1, 3)
+    w_ovvo_x = w_ovvo_x - oovv.transpose(0, 2, 3, 1)
+    f_oo = f_oo + np.diag(eo) + 0.5 * es("me,ie->mi", fov, t1)
+    f_vv = f_vv + np.diag(ev) - 0.5 * es("me,ma->ae", fov, t1)
+    w1 = es("je,nemi->mnij", t1, ovoo)
+    w_oooo = w1 + w1.transpose(1, 0, 3, 2) + oooo.transpose(0, 2, 1, 3)
+    tmp = es("meni,jneb->mbji", ovoo, t2)
+    w_ovoo = w_ovoo - 0.5 * tmp.transpose(0, 1, 3, 2) - tmp
+    x = 2.0 * ovoo - ovoo.transpose(2, 1, 0, 3)
+    w_ovoo = w_ovoo + 0.5 * es("nemi,njeb->mbij", x, theta)
+    f_oo = f_oo + es("ne,nemi->mi", t1, x)
+    w_oooo = w_oooo + es("ijef,menf->mnij", tau, ovov)
+    w_ovoo = w_ovoo - es("nb,mnij->mbij", t1, w_oooo)
+    t_oovv = es("njbf,nemf->ejmb", t2, ovov)
+    t_ovvo = -0.5 * es("nifb,menf->eimb", theta, l_ovov) + 0.5 * t_oovv
+    w_ovoo = w_ovoo - es("ie,ejmb->mbij", t1, t_ovvo)
+    w_ovoo = w_ovoo - es("ie,ejmb->mbji", t1, t_oovv)
+    w_ovoo = w_ovoo + ovoo.transpose(3, 1, 2, 0)
+    t_ovvo = t_ovvo - ovvo.transpose(1, 3, 0, 2)
+    t_oovv = t_oovv - oovv.transpose(3, 1, 0, 2)
+    w_ovoo = w_ovoo + es("mebj,ie->mbij", ovvo, t1)
+    w_ovoo = w_ovoo + es("mjbe,ie->mbji", oovv, t1)
+    w_ovoo = w_ovoo + es("me,ijeb->mbij", fov, t2)
+    ebmf = ovvv.transpose(1, 2, 0, 3)
+    w = es("ebmf,miaf->eiab", ebmf, t2)
+    w_vovv = -0.5 * w.transpose(0, 1, 3, 2) - w + ebmf.transpose(1, 2, 3, 0)
+    tmp = -0.5 * ebmf + ebmf.transpose(1, 0, 2, 3)
+    w_vovv = w_vovv + es("efmb,mifa->eiba", tmp, theta)
+    w_vovv = w_vovv + es("meni,mnab->eiab", ovoo, tau)
+    w_vovv = w_vovv - es("me,miab->eiab", fov, t2)
+    w_vovv = w_vovv + es("ma,eimb->eiab", t1, t_ovvo)
+    w_vovv = w_vovv + es("ma,eimb->eiba", t1, t_oovv)
+    return {
+        "f_oo": f_oo,
+        "f_vv": f_vv,
+        "fov": fov,
+        "w_oooo": w_oooo,
+        "w_ovoo": w_ovoo,
+        "w_ovvo": w_ovvo,
+        "w_ovvo_x": w_ovvo_x,
+        "w_ooov": w_ooov,
+        "w_vovv": w_vovv,
+    }
+
+
+def eom_sigma(r1, r2, t1, t2, g, im, ladder_half=0.5):
+    """eom_ccsd.rs::sigma: (Hbar - E_CC) R on the singlet space."""
+    es = np.einsum
+    ovov, ovvv = g["ovov"], g["ovvv"]
+    hr1 = es("ae,ie->ia", im["f_vv"], r1) - es("mi,ma->ia", im["f_oo"], r1)
+    hr1 += 2.0 * es("me,imae->ia", im["fov"], r2) - es("me,imea->ia", im["fov"], r2)
+    tau2 = make_tau(r2, r1, t1, 2.0)
+    hr2 = es("ijef,aebf->ijab", tau2, g["vvvv"])
+    hr2 += es("mnij,mnab->ijab", im["w_oooo"], r2)
+    hr2 *= ladder_half
+    hr2 += es("be,ijae->ijab", im["f_vv"], r2)
+    hr2 -= es("mj,imab->ijab", im["f_oo"], r2)
+    theta = theta_of(r2)
+    hr1 += es("mfae,mife->ia", ovvv, theta)
+    tmp = es("meaf,ijef->maij", ovvv, tau2)
+    hr2 -= es("ma,mbij->ijab", t1, tmp)
+    tmp = 2.0 * es("meaf,me->af", ovvv, r1) - es("mfae,me->af", ovvv, r1)
+    hr2 += es("af,ijfb->ijab", tmp, t2)
+    hr2 -= es("mbij,ma->ijab", im["w_ovoo"], r1)
+    hr2 += es("ejab,ie->ijab", im["w_vovv"], r1)
+    tmp = es("mbej,imea->jiab", im["w_ovvo_x"], r2)
+    hr2 += tmp + 0.5 * tmp.transpose(0, 1, 3, 2)
+    wvo = 0.5 * im["w_ovvo_x"] + im["w_ovvo"]
+    hr1 += 2.0 * es("maei,me->ia", wvo, r1)
+    hr2 += es("mbej,imae->ijab", wvo, theta)
+    hr1 -= es("mnie,mnae->ia", im["w_ooov"], theta)
+    tmp = 2.0 * es("nmie,me->ni", im["w_ooov"], r1) - es(
+        "mnie,me->ni", im["w_ooov"], r1
+    )
+    hr2 -= es("ni,njab->ijab", tmp, t2)
+    tmp = 2.0 * es("mfne,mf->en", ovov, r1) - es("menf,mf->en", ovov, r1)
+    tmp = es("en,nb->eb", tmp, t1) + es("menf,mnbf->eb", ovov, theta)
+    hr2 -= es("eb,ijea->jiab", tmp, t2)
+    tmp = es("nemf,imef->ni", ovov, theta)
+    hr1 -= es("na,ni->ia", t1, tmp)
+    hr2 -= es("mj,miab->ijba", tmp, t2)
+    tmp = es("menf,ijef->mnij", ovov, tau2)
+    hr2 += es("mnij,mnab->ijab", tmp, 0.5 * make_tau(t2, t1, t1, 1.0))
+    return hr1, hr2 + hr2.transpose(1, 0, 3, 2)
+
+
+def solve_rccsd():
+    t1 = np.zeros((NO, NV))
+    t2 = G[:NO, NO:, :NO, NO:].transpose(0, 2, 1, 3) / DIJAB_S
+    for _ in range(300):
+        r1, r2 = rccsd_r(t1, t2)
+        n1, n2 = r1 / DIA_S, r2 / DIJAB_S
+        if max(np.abs(n1 - t1).max(), np.abs(n2 - t2).max()) < 1e-14:
+            return n1, n2
+        t1, t2 = n1, n2
+    raise RuntimeError("model closed-shell CCSD did not converge")
+
+
+def claim_eom_closed_shell():
+    print("\n=== closed-shell EOM product == Jacobian of the spatial residual")
+    t1, t2 = solve_rccsd()
+    res = max(np.abs(a).max() for a in rccsd_full(t1, t2))
+    check(res < 1e-12, "eom-closed-shell", f"converged spatial residual {res:.1e}")
+    g = eom_blocks()
+    im = eom_intermediates(t1, t2, g)
+    worst = 0.0
+    for _ in range(3):
+        r1 = rng.normal(size=(NO, NV))
+        x = rng.normal(size=(NO, NO, NV, NV))
+        r2 = x + x.transpose(1, 0, 3, 2)
+        s1, s2 = eom_sigma(r1, r2, t1, t2, g, im)
+        h = 1e-3
+        cols = [rccsd_full(t1 + s * h * r1, t2 + s * h * r2) for s in (-2, -1, 1, 2)]
+        j1, j2 = (
+            (c0 - 8 * c1 + 8 * c2 - c3) / (12 * h) for c0, c1, c2, c3 in zip(*cols)
+        )
+        scale = max(np.abs(j1).max(), np.abs(j2).max())
+        worst = max(worst, np.abs(s1 - j1).max() / scale, np.abs(s2 - j2).max() / scale)
+    check(
+        worst < 1e-10, "eom-closed-shell", f"max |sigma - J r| / max|J r| = {worst:.1e}"
+    )
 
 
 def solve_ccsd():
@@ -546,9 +877,12 @@ if __name__ == "__main__":
     claim_ccd()
     t1, t2 = claim_ccsd()
     sa = claim_spin_adaptation()
+    claim_rccsd_factorization()
     claim_eom()
+    claim_eom_closed_shell()
     claim_cis()
     r1s, r2s, n_so = claim_spin_norm()
+    claim_bch_termination()
     claim_negative_controls(t1, t2, sa, r1s, r2s, n_so)
     if FAILED:
         print(f"\n{len(FAILED)} FAILED: {sorted(set(FAILED))}")

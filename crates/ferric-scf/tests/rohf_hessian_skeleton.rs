@@ -89,6 +89,7 @@ use ferric_scf::result::{ScfResult, Spin};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::compare::{max_abs, max_abs_diff};
 use ndarray::{Array1, Array2};
 use serde_json::Value;
 
@@ -149,14 +150,12 @@ fn mol_of(xyz: &str, mult: usize) -> Molecule {
 
 /// Exact J/K, tight convergence.
 fn scf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 500,
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(500)
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10)
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new())
 }
 
 fn prep_for(m: &Molecule, basis_name: &str) -> (PreparedBasis, SchwarzBounds) {
@@ -314,17 +313,6 @@ fn fd_richardson(
     let coarse = fd_hessian(mol, basis_name, h, &mut grad);
     let fine = fd_hessian(mol, basis_name, 0.5 * h, &mut grad);
     (4.0 * fine - coarse) / 3.0
-}
-
-fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    assert_eq!(a.dim(), b.dim());
-    a.iter()
-        .zip(b.iter())
-        .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()))
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0f64, |m, x| m.max(x.abs()))
 }
 
 fn assert_close(ctx: &str, got: &Array2<f64>, want: &Array2<f64>, tol: f64) {
@@ -755,10 +743,7 @@ fn public_hessian_entry_points_refuse_rohf_and_name_the_entry_point() {
     let water = mol_of(WATER_DISTORTED, 1);
     let rhf = solve_rhf(&ctx, &water, &prep, op, &bounds, &cfg).unwrap();
     assert!(rohf_skeleton_parts(&water, &prep, op, &bounds, &rhf, &cfg).is_err());
-    let ks = RhfConfig {
-        xc: Some("PBE".into()),
-        ..scf_config()
-    };
+    let ks = scf_config().with_xc("PBE");
     assert!(rohf_skeleton_parts(&fx.mol, &fx.prep, op, &fx.bounds, &fx.rohf, &ks).is_err());
 }
 

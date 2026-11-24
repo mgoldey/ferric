@@ -158,6 +158,7 @@ use ferric_scf::cdft_driver::{solve_cdft_uhf, CdftResult};
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
+use ferric_testkit::reference::num_ctx;
 use ndarray::{s, Array2};
 use ndarray_linalg::{Determinant, Inverse};
 use serde_json::Value;
@@ -421,12 +422,6 @@ fn reference(r_tag: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 /// (nao × nocc) matrix from the reference's row-major list of rows.
 fn mat(v: &Value, ptr: &str, ctx: &str) -> Array2<f64> {
     let rows = v
@@ -472,14 +467,12 @@ fn grid_cfg() -> AtomicGridConfig {
 
 /// Unconstrained UKS/PBE; exact J (no `df_j_aux`), as NWChem `direct`.
 fn base_config() -> RhfConfig {
-    RhfConfig {
-        xc: Some("PBE".into()),
-        dft_grid: Some(grid_cfg()),
-        max_iter: 500,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc("PBE")
+        .with_dft_grid(grid_cfg())
+        .with_max_iter(500)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
 }
 
 struct System {
@@ -509,7 +502,7 @@ fn load_system(r_tag: &str, basis_name: &str, r: &Value) -> System {
         &tag,
         "E_nuc (geometry/units)",
         mol.nuclear_repulsion(),
-        num(r, "/nuclear_repulsion", &tag),
+        num_ctx(r, "/nuclear_repulsion", &tag),
         TOL_ENUC,
     );
     let bs = basis::bundled(basis_name).unwrap();
@@ -856,17 +849,17 @@ fn et_kernel_on_nwchem_determinants_matches_nwchem() {
                 }
 
                 // ── kernel vs NWChem et ──
-                let e_a = num(&r, &format!("/results/{grid}/state_a/energy"), &ctx);
-                let e_b = num(&r, &format!("/results/{grid}/state_b/energy"), &ctx);
-                let lam_a = num(&r, &format!("/results/{grid}/state_a/lambda"), &ctx);
-                let lam_b = num(&r, &format!("/results/{grid}/state_b/lambda"), &ctx);
+                let e_a = num_ctx(&r, &format!("/results/{grid}/state_a/energy"), &ctx);
+                let e_b = num_ctx(&r, &format!("/results/{grid}/state_b/energy"), &ctx);
+                let lam_a = num_ctx(&r, &format!("/results/{grid}/state_a/lambda"), &ctx);
+                let lam_b = num_ctx(&r, &format!("/results/{grid}/state_b/lambda"), &ctx);
                 let et = format!("/results/{grid}/et_nwchem");
                 let dc = direct_coupling(&sys, &a, &b, e_a - enuc, e_b - enuc, true);
                 check_rel(
                     &ctx,
                     "S_RP (full precision)",
                     dc.s,
-                    num(
+                    num_ctx(
                         &r,
                         &format!("/results/{grid}/et_pyscf_recompute/s_rp"),
                         &ctx,
@@ -877,24 +870,24 @@ fn et_kernel_on_nwchem_determinants_matches_nwchem() {
                     &ctx,
                     "H1(RP)",
                     dc.h1,
-                    num(&r, &format!("{et}/h1_rp"), &ctx),
+                    num_ctx(&r, &format!("{et}/h1_rp"), &ctx),
                     TOL_KERNEL_H,
                 );
                 check(
                     &ctx,
                     "H2(RP)",
                     dc.h2,
-                    num(&r, &format!("{et}/h2_rp"), &ctx),
+                    num_ctx(&r, &format!("{et}/h2_rp"), &ctx),
                     TOL_KERNEL_H,
                 );
                 check(
                     &ctx,
                     "H(RP)",
                     dc.h,
-                    num(&r, &format!("{et}/h_rp"), &ctx),
+                    num_ctx(&r, &format!("{et}/h_rp"), &ctx),
                     TOL_KERNEL_H,
                 );
-                let v_ref = num(&r, &format!("{et}/v_rp_abs"), &ctx);
+                let v_ref = num_ctx(&r, &format!("{et}/v_rp_abs"), &ctx);
                 let dv = check(&ctx, "|V(RP)|", dc.v.abs(), v_ref, TOL_KERNEL_V);
 
                 // NEGATIVE CONTROL: dropping the transition-density exchange.
@@ -973,10 +966,10 @@ fn wu_vv_coupling_is_invariant_under_constraint_offset() {
             let g = "converged";
             let a = det_from_ref(&r, g, "state_a", &ctx);
             let b = det_from_ref(&r, g, "state_b", &ctx);
-            let e_a = num(&r, &format!("/results/{g}/state_a/energy"), &ctx);
-            let e_b = num(&r, &format!("/results/{g}/state_b/energy"), &ctx);
-            let lam_a = num(&r, &format!("/results/{g}/state_a/lambda"), &ctx);
-            let lam_b = num(&r, &format!("/results/{g}/state_b/lambda"), &ctx);
+            let e_a = num_ctx(&r, &format!("/results/{g}/state_a/energy"), &ctx);
+            let e_b = num_ctx(&r, &format!("/results/{g}/state_b/energy"), &ctx);
+            let lam_a = num_ctx(&r, &format!("/results/{g}/state_a/lambda"), &ctx);
+            let lam_b = num_ctx(&r, &format!("/results/{g}/state_b/lambda"), &ctx);
             let shift = &sys.s_ao * (TARGET_N / N_ELEC);
             let w0p = &sys.w[0] - &shift;
             let w1p = &sys.w[1] - &shift;
@@ -1058,22 +1051,21 @@ fn mirror_det(sys: &System, a: &Det) -> Det {
 /// Constrained UKS/PBE solve of the diabat with the hole on `frag`.
 /// The end-to-end cDFT config for one diabat (hole on fragment `frag`).
 fn diabat_config(frag: usize, lambda_init: f64) -> RhfConfig {
-    RhfConfig {
-        constraints: vec![Constraint {
-            fragment: vec![frag],
-            spin: SpinChannel::Total,
-            target: TARGET_N,
-        }],
-        cdft_lambda_tol: 1e-10,
-        cdft_lambda_init: Some(vec![lambda_init]),
-        cdft_max_outer: E2E_MAX_OUTER,
-        // Skipped on KS references anyway (no f_xc response kernel); off so
-        // the run cannot pay for an eigensolve it will not use.
-        cdft_stability_descent: false,
-        level_shift: E2E_LEVEL_SHIFT,
-        max_iter: E2E_INNER_MAX_ITER,
-        ..base_config()
-    }
+    let mut c = base_config()
+        .with_level_shift(E2E_LEVEL_SHIFT)
+        .with_max_iter(E2E_INNER_MAX_ITER);
+    c.constraints = vec![Constraint {
+        fragment: vec![frag],
+        spin: SpinChannel::Total,
+        target: TARGET_N,
+    }];
+    c.cdft_lambda_tol = 1e-10;
+    c.cdft_lambda_init = Some(vec![lambda_init]);
+    c.cdft_max_outer = E2E_MAX_OUTER;
+    // Skipped on KS references anyway (no f_xc response kernel); off so
+    // the run cannot pay for an eigensolve it will not use.
+    c.cdft_stability_descent = false;
+    c
 }
 
 /// The same diabat config with NO λ start (issue #283): `cdft_lambda_init` is
@@ -1086,11 +1078,10 @@ fn diabat_config(frag: usize, lambda_init: f64) -> RhfConfig {
 /// two fields the issue is about and a difference in the ROOT cannot be
 /// attributed to anything else.
 fn diabat_config_from_zero(frag: usize) -> RhfConfig {
-    RhfConfig {
-        cdft_lambda_init: None,
-        cdft_max_outer: LAM0_MAX_OUTER,
-        ..diabat_config(frag, 0.0)
-    }
+    let mut c = diabat_config(frag, 0.0);
+    c.cdft_lambda_init = None;
+    c.cdft_max_outer = LAM0_MAX_OUTER;
+    c
 }
 
 fn solve_diabat(sys: &System, frag: usize, lambda_init: f64) -> CdftResult {
@@ -1176,11 +1167,11 @@ fn run_basis(basis_name: &str) {
             &tag,
             "E_unc vs NWChem 99x302",
             e_unc,
-            num(&r, "/results/matched/unconstrained/energy", &tag),
+            num_ctx(&r, "/results/matched/unconstrained/energy", &tag),
             TOL_E_UNC,
         );
 
-        let lam_ref = num(&r, &format!("{cv}/state_a/lambda"), &tag);
+        let lam_ref = num_ctx(&r, &format!("{cv}/state_a/lambda"), &tag);
         let ra = solve_diabat(&sys, 0, lam_ref);
         let (e_a, lam_a) = (ra.scf.energy, ra.lambdas[0]);
         let a = det_from_cdft(&ra);
@@ -1247,25 +1238,25 @@ fn run_basis(basis_name: &str) {
         }
 
         // ── state ingredients vs NWChem (grid limit, as in the cDFT row) ──
-        let e_unc_nw = num(&r, &format!("{cv}/unconstrained/energy"), &tag);
+        let e_unc_nw = num_ctx(&r, &format!("{cv}/unconstrained/energy"), &tag);
         check(
             &tag,
             "E_A - E_unc (300x974)",
             e_a - e_unc,
-            num(&r, &format!("{cv}/state_a/energy"), &tag) - e_unc_nw,
+            num_ctx(&r, &format!("{cv}/state_a/energy"), &tag) - e_unc_nw,
             TOL_DE,
         );
         check(&tag, "lambda_A (300x974)", lam_a, lam_ref, TOL_LAMBDA);
         eprintln!(
             "{tag}: vs NWChem 99x302 (info): dlambda {:+.2e} dE {:+.2e}",
-            lam_a - num(&r, "/results/matched/state_a/lambda", &tag),
-            e_a - num(&r, "/results/matched/state_a/energy", &tag)
+            lam_a - num_ctx(&r, "/results/matched/state_a/lambda", &tag),
+            e_a - num_ctx(&r, "/results/matched/state_a/energy", &tag)
         );
 
         // ── direct (NWChem-definition) coupling on ferric's determinants ──
         let dc = direct_coupling(&sys, &a, &b, e_a - enuc, e_b - enuc, true);
-        let s_nw = num(&r, &format!("{cv}/et_pyscf_recompute/s_rp"), &tag);
-        let v_nw = num(&r, &format!("{cv}/et_nwchem/v_rp_abs"), &tag);
+        let s_nw = num_ctx(&r, &format!("{cv}/et_pyscf_recompute/s_rp"), &tag);
+        let v_nw = num_ctx(&r, &format!("{cv}/et_nwchem/v_rp_abs"), &tag);
         check_rel(&tag, "|S_AB| vs NWChem", dc.s.abs(), s_nw.abs(), TOL_S_REL);
         check_rel(
             &tag,
@@ -1423,7 +1414,7 @@ fn he2_plus_diabats_converge_from_lambda_zero() {
             let r = reference(r_tag, basis_name);
             let sys = load_system(r_tag, basis_name, &r);
             let tag = &sys.tag;
-            let lam_ref = num(&r, "/results/converged/state_a/lambda", tag);
+            let lam_ref = num_ctx(&r, "/results/converged/state_a/lambda", tag);
 
             // (1) the row's own run: ferric's root from NWChem's λ.
             let from_nw = solve_diabat(&sys, 0, lam_ref);

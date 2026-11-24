@@ -2,8 +2,9 @@
 
 Anchors are independent constructions:
 
-* `ao2mo` equals the dense `eri()` tensor (a separate serial quartet loop)
-  contracted with numpy, for four different non-square coefficient blocks;
+* `ao2mo` equals the dense `eri()` tensor contracted with numpy, for four
+  sets of rectangular coefficient blocks (k = 1 and k = nao included), on
+  both of its paths (in-core and integral-direct) and with d/f shells;
 * `df_mo` equals a numpy fit from `eri3()` + `eri2()`, and an RI-MP2 energy
   assembled in numpy from it reproduces `run_rimp2`;
 * SCF gradients assembled in numpy from `grad_*` equal central finite
@@ -45,13 +46,33 @@ def _canonical(ints, f):
 # ── ao2mo ──
 
 
+# Orbital widths as (k1, k2, k3, k4); "n" is nao. ao2mo picks its path by
+# peak memory: every water/cc-pVDZ case (nao 24, in-core peak under the
+# 32 MiB floor) runs in-core and every water/cc-pVTZ case (nao 58, d and f
+# shells) integral-direct, so both paths are anchored.
+_WIDTHS = {
+    "narrow": (3, 5, 2, 4),
+    "k1-kn": (1, "n", "n", 1),
+    "full": ("n", "n", "n", "n"),
+    "kn-k1-k7-kn": ("n", 1, 7, "n"),
+}
+
+
+@pytest.mark.parametrize("widths", list(_WIDTHS), ids=list(_WIDTHS))
 @pytest.mark.parametrize(
-    "operator, omega", [("coulomb", None), ("erfc", 0.4)], ids=["coulomb", "erfc"]
+    "basis, operator, omega",
+    [
+        ("cc-pvdz", "coulomb", None),
+        ("cc-pvdz", "erfc", 0.4),
+        ("cc-pvtz", "coulomb", None),
+    ],
+    ids=["ccpvdz-coulomb", "ccpvdz-erfc", "ccpvtz-coulomb"],
 )
-def test_ao2mo_matches_the_dense_eri_contraction(operator, omega):
-    _, _, ints = _ints(WATER, "cc-pvdz")
+def test_ao2mo_matches_dense_eri_contraction(basis, operator, omega, widths):
+    _, _, ints = _ints(WATER, basis)
     n = ints.nao
-    c1, c2, c3, c4 = (_RNG.standard_normal((n, k)) for k in (3, 5, 2, 4))
+    ks = [n if k == "n" else k for k in _WIDTHS[widths]]
+    c1, c2, c3, c4 = (_RNG.standard_normal((n, k)) for k in ks)
     ref = np.einsum(
         "ijkl,ip,jq,kr,ls->pqrs",
         ints.eri(operator, omega=omega),
@@ -62,8 +83,11 @@ def test_ao2mo_matches_the_dense_eri_contraction(operator, omega):
         optimize=True,
     )
     got = ints.ao2mo(c1, c2, c3, c4, operator, omega=omega)
-    assert got.shape == (3, 5, 2, 4)
-    np.testing.assert_allclose(got, ref, atol=1e-11)
+    assert got.shape == tuple(ks)
+    # Relative to the largest element: the sums run over nao^4 terms of
+    # random-coefficient products, so absolute rounding grows with scale.
+    scale = max(1.0, float(np.abs(ref).max()))
+    assert float(np.abs(got - ref).max()) <= 1e-12 * scale
 
 
 def test_ao2mo_refuses_above_the_memory_cap_and_bad_coefficients():

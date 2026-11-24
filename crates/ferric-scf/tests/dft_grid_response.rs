@@ -29,12 +29,10 @@ fn run(xc: &str, basis_name: &str) -> ndarray::Array2<f64> {
     let obs = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let cfg = RhfConfig {
-        xc: Some(xc.into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc(xc)
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit");
     let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
     ks_gradient_closed(&mol, &obs, &bs, op, &bounds, xc, &rhf, None).unwrap()
 }
@@ -89,10 +87,10 @@ fn uks_b3lyp_h2o_ccpvdz_translational_invariance() {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        xc: Some(xc.into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
+    let cfg = RhfConfig::default()
+        .with_xc(xc)
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit")
         // energy_conv/density_conv intentionally left at the crate default
         // (see `run()` above and rhf.rs's RhfConfig::default doc comment):
         // dp_rms is the real convergence signal under DF, ΔE floors well
@@ -101,9 +99,7 @@ fn uks_b3lyp_h2o_ccpvdz_translational_invariance() {
         // a gate scf_converged is designed to never satisfy under DF,
         // causing an intermittent MaxIter -> Err(ScfConvergence) depending
         // on exactly how many DIIS cycles the run happened to take.
-        density_conv: 1e-8,
-        ..Default::default()
-    };
+        .with_density_conv(1e-8);
     let uhf = solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg).unwrap();
 
     let g = ks_gradient_uks(&mol, &prep, &bs, op, &bounds, xc, &uhf, None).unwrap();

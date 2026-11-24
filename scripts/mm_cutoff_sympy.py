@@ -23,9 +23,18 @@ Claims:
      truncation is below 1e-20) at radii below r_sw and inside the switching
      window; E_rf(r_c) = 0 numerically.
 
-Mutations (each turns the script red, marker "BAD 5"):
-  - drop the 1/w from the transcribed switch derivative dS/dr;
-  - drop the factor 2 from the transcribed reaction-field force 2 qq k_rf r.
+  6. The plain (uncut) bond, LJ and Coulomb gradients of energy.rs
+     (`bonded_terms`, `plain_pair`): row i gets dE/dr (r_i - r_j)/r and row j
+     its negative, with dE/dr = 2 k (r - r0), 4 e s (-12 (sigma/r)^12 +
+     6 (sigma/r)^6)/r and -s qq/r^2; each equals the symbolic gradient of
+     k (r - r0)^2, 4 e s ((sigma/r)^12 - (sigma/r)^6) and s qq/r.
+
+Mutations (each turns the script red):
+  - drop the 1/w from the transcribed switch derivative dS/dr (marker "BAD 5");
+  - drop the factor 2 from the transcribed reaction-field force 2 qq k_rf r
+    (marker "BAD 5");
+  - drop the factor 2 from the transcribed bond dE/dr 2 k (r - r0)
+    (marker "BAD 6 bond").
 """
 
 import sys
@@ -145,6 +154,49 @@ print(
 )
 if not ok5b:
     fails.append("5 E_rf(r_c)")
+
+# Claim 6: the plain (uncut) bond and pair gradients in energy.rs. The code adds
+# dE/dr * (r_i - r_j)/r to row i and its negative to row j.
+xi_, yi_, zi_, xj_, yj_, zj_ = sp.symbols("x_i y_i z_i x_j y_j z_j", real=True)
+kb, r0, s_lj, s_c = sp.symbols("k r_0 s_lj s_coul", positive=True)
+ri, rj = (xi_, yi_, zi_), (xj_, yj_, zj_)
+rij = [a - b for a, b in zip(ri, rj)]
+rn = sp.sqrt(sum(d * d for d in rij))
+
+
+def bond_dedr(rr):
+    dr = rr - r0
+    return 2 * kb * dr  # energy.rs bonded_terms: dedr = 2.0 * b.k * dr
+
+
+def lj_dedr(rr):
+    sr6 = (sig / rr) ** 6
+    return s_lj * 4 * ep * (-12 * sr6 * sr6 + 6 * sr6) / rr  # plain_pair
+
+
+def coul_dedr(rr):
+    return -s_c * qq / (rr * rr)  # plain_pair
+
+
+terms = (
+    ("bond k (r - r0)^2", kb * (rn - r0) ** 2, bond_dedr),
+    (
+        "LJ 4 e s ((sigma/r)^12 - (sigma/r)^6)",
+        s_lj * 4 * ep * ((sig / rn) ** 12 - (sig / rn) ** 6),
+        lj_dedr,
+    ),
+    ("Coulomb s qq/r", s_c * qq / rn, coul_dedr),
+)
+for label, energy, dedr in terms:
+    row_i = [dedr(rn) * d / rn for d in rij]
+    gi = sum((sp.diff(energy, c) - g) ** 2 for c, g in zip(ri, row_i))
+    gj = sum((sp.diff(energy, c) + g) ** 2 for c, g in zip(rj, row_i))
+    check(f"6 {label}: rows i, j = +/- dE/dr r_hat (claim 6)", gi + gj)
+check(
+    "6 control: Coulomb dE/dr with +qq/r^2",
+    sp.diff(s_c * qq / rn, xi_) + coul_dedr(rn) * rij[0] / rn,
+    False,
+)
 
 if fails:
     print("FAILED:", fails)

@@ -9,7 +9,7 @@ use super::*;
 /// Energies are per unit cell, Hartree. `energy` includes `e_nuc` (Ewald,
 /// neutralising-background convention = PySCF `Cell.energy_nuc()`) and, for
 /// `exxdiv="ewald"`, the Madelung exchange shift `-madelung * N_e / 2`.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "GammaRhfResult")]
 pub(crate) struct PyGammaRhfResult {
     /// Total energy per cell (Hartree).
@@ -68,28 +68,30 @@ pub(crate) struct PyGammaRhfResult {
     pub(crate) stress_data: Option<Array2<f64>>,
 }
 
+periodic_method_result!(PyGammaRhfResult, |r| capability: "rhf-gamma", mesh: None);
+
 #[pymethods]
 impl PyGammaRhfResult {
-    /// Alias of `energy` (the same value), so callers can read either spelling.
+    #[doc = alias_doc!(energy)]
     #[getter]
     fn total_energy(&self) -> f64 {
-        self.energy
+        crate::method_result::total_energy_getter(self)
     }
-
     /// Validation certificate (see `GammaOpenShellResult.certificate`):
     /// capability `"rhf-gamma"`, `grade` `"ungraded"`.
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        pbc::pbc_certificate_dict(
-            py,
-            "rhf-gamma",
-            &self.jk,
-            self.auxbasis.as_deref(),
-            &self.exxdiv,
-            None,
-            self.converged,
-            self.iterations,
-        )
+        crate::method_result::certificate_getter(py, self)
+    }
+    /// Stage timings and counters: hcore (setup, S/T, SR/LR attraction,
+    /// Ewald), the J/K build (RS-GDF: SR metric, SR 3-centre, LR pair FT,
+    /// LR GEMM, G = 0, metric eigh, B; dense: pair FT, GEMM), the SCF's
+    /// J/K calls, and counters (triplets, G vectors, chunks, aux dropped).
+    /// `{"wall_s", "cpu_s", "unattributed_wall_s", "stages": {name: {"wall_s",
+    /// "cpu_s", "calls"}}, "counters": {name: int}}`.
+    #[getter]
+    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        crate::pbc::timings_dict(py, &self.timings_data)
     }
     /// Analytic nuclear gradient `dE/dR` (natoms x 3, Hartree/Bohr per cell,
     /// rows in the Molecule's atom order); `None` unless `with_gradient=True`.
@@ -105,16 +107,6 @@ impl PyGammaRhfResult {
         self.stress_data
             .as_ref()
             .map(|g| PyArray2::from_array(py, g))
-    }
-    /// Stage timings and counters: hcore (setup, S/T, SR/LR attraction,
-    /// Ewald), the J/K build (RS-GDF: SR metric, SR 3-centre, LR pair FT,
-    /// LR GEMM, G = 0, metric eigh, B; dense: pair FT, GEMM), the SCF's
-    /// J/K calls, and counters (triplets, G vectors, chunks, aux dropped).
-    /// `{"wall_s", "cpu_s", "unattributed_wall_s", "stages": {name: {"wall_s",
-    /// "cpu_s", "calls"}}, "counters": {name: int}}`.
-    #[getter]
-    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
-        pbc::timings_dict(py, &self.timings_data)
     }
     /// MO energies (Hartree), ascending, 1D numpy array.
     fn mo_energy<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
@@ -156,16 +148,14 @@ pub(crate) fn validate_periodic_cell(
     bs: &ferric_core::basis::BasisSet,
 ) -> PyResult<Molecule> {
     if mol.charge != 0 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "{fname}: charged cell (charge = {}) is not supported: a periodic \
              charged cell needs a neutralising-background correction for the \
              electrons that is not implemented. Use a neutral cell.",
             mol.charge
         )));
     }
-    let mut emol = mol.clone();
-    emol.apply_ecp(bs);
-    Ok(emol)
+    Ok(EcpMolecule::new(mol.clone(), bs).into_mol())
 }
 
 /// Reject what a closed-shell periodic driver (RHF/RKS and the correlation
@@ -179,7 +169,7 @@ pub(crate) fn validate_gamma_cell(
     mol: &Molecule,
     bs: &ferric_core::basis::BasisSet,
 ) -> PyResult<Molecule> {
-    let bad = |m: String| -> PyResult<Molecule> { Err(pyo3::exceptions::PyValueError::new_err(m)) };
+    let bad = |m: String| -> PyResult<Molecule> { Err(crate::errors::input_err(m)) };
     let emol = validate_periodic_cell(fname, mol, bs)?;
     if emol.multiplicity != 1 {
         return bad(format!(
@@ -414,9 +404,10 @@ pub(crate) fn gamma_auxbasis(
     }
     if let Ok(name) = obj.extract::<String>() {
         return basis::bundled(&name).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!(
-                "{fname}: auxbasis {name:?} is not a bundled basis: {e}"
-            ))
+            crate::errors::input_err_msg(
+                &e,
+                format!("{fname}: auxbasis {name:?} is not a bundled basis: {e}"),
+            )
         });
     }
     Err(pyo3::exceptions::PyTypeError::new_err(format!(
@@ -444,7 +435,7 @@ pub(crate) fn parse_gamma_options(
     omega: Option<f64>,
 ) -> PyResult<GammaOptions> {
     let auxbasis: Option<()> = if auxbasis_given { Some(()) } else { None };
-    let val_err = |m: String| pyo3::exceptions::PyValueError::new_err(m);
+    let val_err = |m: String| crate::errors::input_err(m);
     let exx = ferric_pbc::ExxDiv::parse_config_str(exxdiv).map_err(|e| val_err(format!("{e}")))?;
     let use_rsgdf = match jk.to_ascii_lowercase().as_str() {
         "dense" => false,
@@ -660,7 +651,7 @@ pub(crate) fn run_rhf_gamma(
     gdf_omega: Option<f64>,
     sr_column_rotation: Option<bool>,
 ) -> PyResult<PyGammaRhfResult> {
-    let val_err = |m: String| pyo3::exceptions::PyValueError::new_err(m);
+    let val_err = |m: String| crate::errors::input_err(m);
     let GammaOptions {
         exx,
         lattice_bohr: a,
@@ -692,10 +683,13 @@ pub(crate) fn run_rhf_gamma(
         Some(obj) => {
             let aux_bs = gamma_auxbasis("run_rhf_gamma", obj)?;
             let aux = PreparedBasis::new(cell.mol(), &aux_bs).map_err(|e| {
-                val_err(format!(
-                    "run_rhf_gamma: auxbasis '{}' cannot be placed on this cell: {e}",
-                    aux_bs.name
-                ))
+                crate::errors::input_err_msg(
+                    &e,
+                    format!(
+                        "run_rhf_gamma: auxbasis '{}' cannot be placed on this cell: {e}",
+                        aux_bs.name
+                    ),
+                )
             })?;
             let choice = GammaJk::RsGdf {
                 aux: Box::new(aux),
@@ -722,12 +716,7 @@ pub(crate) fn run_rhf_gamma(
             (GammaJk::Dense { max_bytes }, None)
         }
     };
-    let config = RhfConfig {
-        use_sad_guess: false,
-        density_conv,
-        max_iter,
-        ..Default::default()
-    };
+    let config = RhfConfig::periodic(density_conv, max_iter);
     let run = py
         .allow_threads(|| {
             gamma_rhf_driver(&cell, &prep, exx, omega_bohr, &jk_choice, &config, want)

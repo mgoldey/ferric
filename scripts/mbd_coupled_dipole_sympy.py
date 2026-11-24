@@ -44,6 +44,9 @@ E = 1/2 sum_p sqrt(lambda_p) - 3/2 sum_A w_A.
      C6_AB = (3/2) alpha_A alpha_B w_A w_B / (w_A + w_B), the Casimir-Polder
      C6 of two single poles (scripts/rpa_c6_polarizability_sympy.py, check
      london-integral).
+  7b two-oscillator-ratio (numpy): two bare oscillators (alpha 9 and 4.5,
+     w 0.6 and 0.43, f = 1) give E/(-C6_London/R^6) - 1 = 8.11e-4 at 6 Bohr
+     and 5.89e-7 at 20 Bohr: the higher orders fall off faster than R^-6.
   8  energy-adjoint (numpy): dE/dH = 1/4 H^(-1/2), the first step of
      rsscs_backward (G = 1/4 V diag(lambda^-1/2) V^T), against a central
      finite difference of E in every element of a symmetric perturbation.
@@ -77,6 +80,7 @@ Mutations (each turns the named check red):
   - the width prefactor sqrt(2/pi)/3 as 1/3                      [sigma-self-energy]
   - the contraction over the diagonal block B = A only           [scs-dimer-closed-form]
   - the adjoint 1/4 lambda^-1/2 as 1/2 lambda^-1/2               [energy-adjoint]
+  - the London C6 prefactor 1.5 as 0.75                          [two-oscillator-ratio]
   - t_gg_vjp's dg2/dsigma (3 - 2 z^2) as (3 + 2 z^2)            [vjp-partials]
   - step 4's C6 adjoint 6/pi as 3/pi                             [gradient-vs-fd]
   - step 3's R~ -> alpha~ adjoint R~/(3 alpha~) as R~/(2 alpha~) [gradient-vs-fd]
@@ -385,6 +389,25 @@ def london_second_order():
         "qho-second-order-london",
         sp.simplify(sp.factor(second) + f**2 * london / r**6) == 0,
         f"{sp.factor(sp.simplify(second))}",
+    )
+
+
+def two_oscillator_ratio():
+    """Two bare oscillators (f = 1) on z: E_MBD / (-C6_London / R^6) -> 1."""
+    a0, om = np.array([9.0, 4.5]), np.array([0.6, 0.43])
+    c6 = 1.5 * a0[0] * a0[1] * om[0] * om[1] / (om[0] + om[1])
+    got = {}
+    for r in (6.0, 20.0):
+        h = np.diag(np.repeat(om**2, 3))
+        v = om[0] * om[1] * np.sqrt(a0[0] * a0[1]) * t_bare(np.array([0.0, 0.0, r]))
+        h[3:, :3], h[:3, 3:] = v, v.T
+        got[r] = qho_energy(h, om) / (-c6 / r**6) - 1.0
+    check(
+        "two-oscillator-ratio",
+        abs(got[6.0] - 8.11e-4) < 5e-7
+        and abs(got[20.0] - 5.89e-7) < 5e-10
+        and got[20.0] < got[6.0] * 1e-2,
+        f"ratio - 1 = {got[6.0]:.3e} at 6 Bohr, {got[20.0]:.3e} at 20 Bohr",
     )
 
 
@@ -827,6 +850,7 @@ def lattice_term():
 symbolic()
 numeric()
 london_second_order()
+two_oscillator_ratio()
 vjp_symbolic()
 gradient_numeric()
 orthonormality_terms()

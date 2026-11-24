@@ -44,7 +44,7 @@ use ferric_scf::infrared::{
 };
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
-use ndarray::Array2;
+use ferric_testkit::compare::max_abs;
 
 const DC: f64 = 1.0e-10;
 
@@ -71,17 +71,12 @@ fn hydroxyl() -> Molecule {
 }
 
 fn scf(xc: Option<&str>) -> RhfConfig {
-    RhfConfig {
-        xc: xc.map(str::to_string),
-        density_conv: DC,
-        energy_conv: DC,
-        max_iter: 300,
-        ..Default::default()
-    }
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0f64, |m, v| m.max(v.abs()))
+    let mut c = RhfConfig::default()
+        .with_density_conv(DC)
+        .with_energy_conv(DC)
+        .with_max_iter(300);
+    c.xc = xc.map(str::to_string);
+    c
 }
 
 /// `(K_g, K_mu)`: max change of the gradient and of the dipole per unit
@@ -99,11 +94,7 @@ fn sensitivities(
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let at = |dc: f64| {
-        let c = RhfConfig {
-            density_conv: dc,
-            energy_conv: 1e-3,
-            ..cfg.clone()
-        };
+        let c = cfg.clone().with_density_conv(dc).with_energy_conv(1e-3);
         let r = match reference {
             FrequencyReference::Rhf => {
                 ferric_scf::rhf::solve_rhf(&ctx, mol, &prep, op, &bounds, &c).unwrap()

@@ -295,7 +295,9 @@ pub fn solve_rhf_with_df_increments(
     let x = canonical_orthogonalizer(&s)?;
 
     // ---- Stage 2: ONE exact full build at D0, retained as F_ex(D0) ------
-    let mut direct_jk = DirectJK::new(ctx, prep, bounds, base.integral_thresh, ooc_budget);
+    bounds.gc.set_request(base.gc_rotation);
+    let mut direct_jk = DirectJK::new(ctx, prep, bounds, base.integral_thresh, ooc_budget)
+        .with_gc_request(base.gc_rotation);
     let mut exact_builds = 0usize;
     let mut exact_quartets = 0usize;
     let mut j_ref = Array2::<f64>::zeros((n, n));

@@ -65,6 +65,44 @@ pub struct ResponseJk<'a> {
     incore: Option<std::sync::Arc<crate::incore_jk::IncoreEri>>,
 }
 
+/// The RI-J and RI-K builders of `route` on `dfbs`. With an f64 RI-J
+/// tensor the raw `(P|μν)` tensor is built ONCE: RI-K dresses it (its own
+/// constructor builds the same tensor with the same call and dresses it the
+/// same way) and RI-J then keeps it with the same metric `DfJ::new` builds,
+/// for one three-index pass instead of two. The builders are bitwise those of
+/// two independent builds when both take the same storage tier (always under
+/// an ample budget; under a tight pool the single raw tensor can leave room
+/// for a different RI-K layout than the second raw tensor did) (the SCF's `fock_assembly::build_df_jk`
+/// shares it the same way). An f32 RI-J tensor is built by its own f32 pass,
+/// so that route keeps the two independent builds.
+fn fitted_pair(
+    route: &DfJkRoute,
+    prep: &PreparedBasis,
+    dfbs: &PreparedBasis,
+) -> Result<(crate::df_j::DfJ<'static>, crate::df_k::DfK<'static>), FerricError> {
+    use crate::df_j::{DfJ, RiJPrecision};
+    use crate::df_k::DfK;
+    use ferric_integrals::three_index_source::ThreeIndexSource;
+    let (op, budget) = (route.op, route.budget_bytes);
+    if route.ri_j_precision != RiJPrecision::F64 {
+        let j = DfJ::new_with_precision(op, prep, dfbs, budget, route.ri_j_precision)?;
+        let k = DfK::new_with_precision(op, prep, dfbs, budget, route.ri_k_precision)?;
+        return Ok((j, k));
+    }
+    let mut raw = ThreeIndexSource::build(op, prep, dfbs, budget)?;
+    let k = DfK::from_full_raw_with_precision(
+        &mut raw,
+        prep,
+        dfbs,
+        op,
+        budget,
+        None,
+        route.ri_k_precision,
+    )?;
+    let j = DfJ::from_source(raw, op, dfbs, budget, None, RiJPrecision::F64)?;
+    Ok((j, k))
+}
+
 impl<'a> ResponseJk<'a> {
     /// The four-centre route.
     pub fn exact(
@@ -83,7 +121,8 @@ impl<'a> ResponseJk<'a> {
 
     /// The route `scf` recorded: four-centre when it has none, RI-JK when J
     /// and K were fitted on one auxiliary basis with no range separation.
-    /// Builds the fitted builders (one three-index pass each) up front.
+    /// Builds the fitted builders up front (one shared three-index pass for an
+    /// f64 RI-J tensor, see `fitted_pair`).
     pub fn for_scf(
         ctx: &'a ParallelContext,
         mol: &Molecule,
@@ -126,20 +165,7 @@ impl<'a> ResponseJk<'a> {
             }
         };
         let dfbs = crate::df_gradient::aux_basis(mol, &aux)?;
-        let j = crate::df_j::DfJ::new_with_precision(
-            route.op,
-            prep,
-            &dfbs,
-            route.budget_bytes,
-            route.ri_j_precision,
-        )?;
-        let k = crate::df_k::DfK::new_with_precision(
-            route.op,
-            prep,
-            &dfbs,
-            route.budget_bytes,
-            route.ri_k_precision,
-        )?;
+        let (j, k) = fitted_pair(route, prep, &dfbs)?;
         Ok(ResponseJk {
             ctx,
             prep,
@@ -188,7 +214,7 @@ impl<'a> ResponseJk<'a> {
         let (mut j, mut k) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
         match (&self.fitted, self.store()?) {
             (Some(f), _) => fitted_jk(f, d, &mut j, &mut k)?,
-            (None, Some(s)) => s.add_jk(d, &mut j, &mut k),
+            (None, Some(s)) => s.add_jk(d, &mut j, &mut k)?,
             (None, None) => {
                 crate::rhf::build_jk(self.ctx, self.prep, self.bounds, thresh, d, &mut j, &mut k)?;
             }
@@ -209,7 +235,7 @@ impl<'a> ResponseJk<'a> {
         let n = d.nrows();
         let (mut j, mut k) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
         if let (None, Some(s)) = (&self.fitted, self.store()?) {
-            s.add_jk(d, &mut j, &mut k);
+            s.add_jk(d, &mut j, &mut k)?;
             return Ok((j, k));
         }
         match (&self.fitted, pool) {
@@ -476,6 +502,7 @@ mod tests {
     use super::*;
     use crate::df_gradient::{routed_two_electron_gradient, ExchangeMix, TwoElectronDensity};
     use crate::rhf::{solve_rhf, RhfConfig};
+    use ferric_testkit::compare::max_abs;
 
     const WATER: &str = "3\nwater, off C2v\nO 0.02 -0.01 0.117790\nH 0.0 0.785453 -0.451161\nH 0.03 -0.735453 -0.491161\n";
 
@@ -614,6 +641,44 @@ mod tests {
         );
     }
 
+    /// The response builders built from one shared raw tensor
+    /// ([`fitted_pair`]) give the J and K of two independent builds (the
+    /// constructors `ResponseJk` called before), bit for bit.
+    #[test]
+    fn shared_raw_pair_is_the_independent_builds_bitwise() {
+        let (mol, prep, _, scf) = setup(true);
+        let route = scf.df_jk.clone().expect("RI-JK route");
+        assert_eq!(route.ri_j_precision, crate::df_j::RiJPrecision::F64);
+        let dfbs = crate::df_gradient::aux_basis(&mol, route.j_aux.as_deref().unwrap()).unwrap();
+        let (mut j_shared, mut k_shared) = fitted_pair(&route, &prep, &dfbs).unwrap();
+        let mut j_alone = crate::df_j::DfJ::new_with_precision(
+            route.op,
+            &prep,
+            &dfbs,
+            route.budget_bytes,
+            route.ri_j_precision,
+        )
+        .unwrap();
+        let mut k_alone = crate::df_k::DfK::new_with_precision(
+            route.op,
+            &prep,
+            &dfbs,
+            route.budget_bytes,
+            route.ri_k_precision,
+        )
+        .unwrap();
+        for d in [scf.density_r().clone(), indefinite(scf.density_r())] {
+            let n = d.nrows();
+            let mut out = [(); 4].map(|_| Array2::<f64>::zeros((n, n)));
+            j_shared.build(&d, &mut out[0]).unwrap();
+            j_alone.build(&d, &mut out[1]).unwrap();
+            k_shared.build(&d, &mut out[2]).unwrap();
+            k_alone.build(&d, &mut out[3]).unwrap();
+            assert_eq!(bits(&out[0]), bits(&out[1]), "J");
+            assert_eq!(bits(&out[2]), bits(&out[3]), "K");
+        }
+    }
+
     const OH: &str = "2\nOH doublet\nO 0.0 0.0 0.0\nH 0.05 0.0 0.9697\n";
 
     /// A converged UHF on OH/cc-pVDZ, four-centre or RI-JK.
@@ -636,10 +701,6 @@ mod tests {
         let scf = crate::uhf::solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
         assert!(scf.converged);
         (mol, prep, bounds, scf)
-    }
-
-    fn max_abs(a: &Array2<f64>) -> f64 {
-        a.iter().fold(0.0f64, |m, v| m.max(v.abs()))
     }
 
     /// Rounding bar of two evaluations of one gradient that associate their

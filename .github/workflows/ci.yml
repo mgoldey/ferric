@@ -118,6 +118,8 @@ env:
   # active BLAS/LAPACK alternatives so the next such drift is diagnosable.
   OPENBLAS_CORETYPE: Haswell
   LIBINT2_PREFIX: /home/runner/libint2
+  # libxc 7.0.0 (scripts/install-libxc.sh), read by crates/ferric-dft/build.rs.
+  LIBXC_PREFIX: /home/runner/libxc
   # Every job installs the sha256-pinned stock libint2 2.13.1
   # (scripts/install-libint.sh), whose boys.h ferric overrides (GmEval copy,
   # Boys/Tenno table-edge and overflow fixes; shim/libint2_overrides/). Make
@@ -192,7 +194,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd
+            libboost-dev patchelf zstd
 
       - name: Runner hardware / BLAS
         run: |
@@ -209,6 +211,10 @@ jobs:
       # for the package, its AM limits and why the SONAME is rewritten.
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
+      - name: Install libxc
+        uses: ./.github/actions/install-libxc
 
       - name: Verify libint2 capabilities
         run: |
@@ -274,6 +280,19 @@ jobs:
             ~/.cargo/git
           key: cargo-v3-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: cargo-v3-${{ runner.os }}-
+
+      # The count of item-level `#[allow(clippy::too_many_arguments)]` per
+      # crate may only go down (scripts/too_many_arguments_baseline.json);
+      # clippy below rejects a new offender that has no allow. Cheap, so it
+      # runs before the build steps. A crate below its baseline is only a
+      # notice here (two PRs that each lower it must not turn main red).
+      - name: too_many_arguments ratchet
+        run: python3 scripts/too_many_arguments_ratchet.py
+
+      # ferric-testkit may only be a dev-dependency (never shipped, and a
+      # normal dependency could close a cycle through ferric-core).
+      - name: ferric-testkit is dev-only
+        run: python3 scripts/check_testkit_dev_only.py
 
       - name: Check (all targets)
         timeout-minutes: 60
@@ -526,7 +545,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd
+            libboost-dev patchelf zstd
 
       - name: Runner hardware / BLAS
         run: |
@@ -543,6 +562,10 @@ jobs:
       # for the package, its AM limits and why the SONAME is rewritten.
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
+      - name: Install libxc
+        uses: ./.github/actions/install-libxc
 
       - name: Verify libint2 capabilities
         run: |
@@ -1041,7 +1064,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd
+            libboost-dev patchelf zstd
 
       - name: Runner hardware / BLAS
         run: |
@@ -1058,6 +1081,10 @@ jobs:
       # for the package, its AM limits and why the SONAME is rewritten.
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
+      - name: Install libxc
+        uses: ./.github/actions/install-libxc
 
       - name: Verify libint2 capabilities
         run: |
@@ -1378,8 +1405,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # Same runtime environment as test-shard: the archived binaries link
-      # libopenblas/liblapack/libxc from apt and libint2.so by ABSOLUTE SONAME
-      # under $LIBINT2_PREFIX, so all of these are required to even start them.
+      # libopenblas/liblapack from apt and libint2.so / libxc.so by ABSOLUTE
+      # SONAME under $LIBINT2_PREFIX / $LIBXC_PREFIX, so all of these are
+      # required to even start them.
       - name: Free runner disk space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
@@ -1398,10 +1426,14 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd
+            libboost-dev patchelf zstd
 
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
+      - name: Install libxc
+        uses: ./.github/actions/install-libxc
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
@@ -1534,13 +1566,17 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd
+            libboost-dev patchelf zstd
 
       # libint2: conda-forge 2.13.1 (prebuilt, second-derivative integrals),
       # installed by the same script developers use; see scripts/install-libint.sh
       # for the package, its AM limits and why the SONAME is rewritten.
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
+      - name: Install libxc
+        uses: ./.github/actions/install-libxc
 
       - name: Restore cargo cache
         # No target/ (see the push job's restore step); v3 key to match.
@@ -1746,13 +1782,17 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd
+            libboost-dev patchelf zstd
 
       # libint2: conda-forge 2.13.1 (prebuilt, second-derivative integrals),
       # installed by the same script developers use; see scripts/install-libint.sh
       # for the package, its AM limits and why the SONAME is rewritten.
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
+      - name: Install libxc
+        uses: ./.github/actions/install-libxc
 
       - name: Restore cargo cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -1894,10 +1934,14 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd
+            libboost-dev patchelf zstd
 
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
+      - name: Install libxc
+        uses: ./.github/actions/install-libxc
 
       - name: Restore cargo cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -1993,7 +2037,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd \
+            libboost-dev patchelf zstd \
             libopenmpi-dev openmpi-bin clang libclang-dev
 
       - name: MPI toolchain identification
@@ -2010,6 +2054,10 @@ jobs:
       # for the package, its AM limits and why the SONAME is rewritten.
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
+      - name: Install libxc
+        uses: ./.github/actions/install-libxc
 
       - name: Restore cargo cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -2450,6 +2498,54 @@ jobs:
 
           echo "MPI cross-rank correctness check passed at np 1, 2, 3 (+4 for the ordering guard)"
 
+  # The ONLY job that builds the `research` feature of ferric-rpa: the parked
+  # AO imaginary-time chi0 (`ao_rpa`), OSV/DNV (`pno`) and pair-PNO
+  # (`dlpno_rpa`) routes and their tests. They have no CLI or Python caller and
+  # are compiled out of every default-feature job, so without this job they
+  # would bit-rot unseen. Standalone (no `needs:`), same setup as the `mpi` job.
+  rpa-research:
+    name: ferric-rpa research feature
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/share/boost \
+            "$AGENT_TOOLSDIRECTORY/CodeQL" 2>/dev/null || true
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+
+      - name: Install system dependencies
+        run: |
+          sudo grep -rlE 'dl\.google\.com' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null \
+            | xargs -r sudo rm -fv
+          sudo sed -i -E 's|^([^#].*dl\.google\.com.*)$|# \1|' /etc/apt/sources.list 2>/dev/null || true
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake g++ gfortran \
+            libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
+            libxc-dev libboost-dev patchelf zstd
+
+      - name: Install libint2
+        run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
+
+      - name: Restore cargo cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-v3-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-v3-${{ runner.os }}-
+
+      - name: Test ferric-rpa with the research feature
+        run: cargo test -p ferric-rpa --features research --locked
+
   # ---------------------------------------------------------------------
   # FAST jobs below. None of these `needs: build-and-test` and none touch
   # libint2 -- the point is a red run in well under a minute instead of
@@ -2483,9 +2579,27 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --all --check
 
+  # pre-commit and python-quality call the reusable workflows shared with
+  # smeltery and attestation (roadmap 39; attestation
+  # docs/superpowers/specs/2026-11-20-shared-ci-templates-design.md), pinned
+  # by ONE full commit SHA of mgoldey/attestation
+  # (crates/ferric-python/tests/test_shared_workflows.py). Bump that SHA
+  # deliberately, both refs together. A called job's check reads
+  # `<caller name> / <called name>`: `pre-commit / pre-commit`,
+  # `python-quality / python-quality`. Workflow-level `env:` above does NOT
+  # reach a called workflow; neither job needs any of it (no libint2, no
+  # BLAS, no cargo).
+  #
+  # SUPPLY CHAIN. python-quality used to avoid astral-sh/setup-uv ("one fewer
+  # supply-chain surface") by `pip install uv` off setup-python. The
+  # templates use setup-uv and actions/checkout pinned by full SHA in
+  # attestation, reviewed there by tests/test_shared_workflows.py (one SHA
+  # per action, every action SHA-pinned), and this file pins attestation
+  # itself by full SHA, so nothing reaches ferric's CI without a commit here
+  # that moves the pin. The surface moved to one reviewed pin; it did not
+  # grow by a floating ref.
   pre-commit:
     name: pre-commit
-    runs-on: ubuntu-22.04
     # No libint2, no cargo build -- this is the enforcement path
     # .pre-commit-config.yaml's own header describes as MISSING today:
     # bandit (medium+), ruff's critical subset (E9/F63/F7/F82), shellcheck
@@ -2494,111 +2608,97 @@ jobs:
     # locally. `git commit --no-verify`, or an edit made straight in the
     # GitHub web UI, bypasses every one of them with nothing else in CI to
     # catch it. This job runs the identical hook set the local commit hook
-    # runs, so there is no path into `main` that skips them.
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+    # runs, so there is no path into `main` that skips them. The hooks are
+    # remote repos, so pre-commit itself is the pinned `uvx pre-commit@4.6.2`
+    # (was `pip install pre-commit==4.6.2`) and nothing of ferric is
+    # installed; the template's default args are
+    # `run --all-files --show-diff-on-failure`, as before.
+    uses: mgoldey/attestation/.github/workflows/reusable-pre-commit.yml@b1c5cb2f93b43d0b2441f40c323a4c7741ebc5a9 # attestation main 2026-11-20 (PR #70)
+    with:
+      runs-on: ubuntu-22.04
+      python-version: "3.11"
+      timeout-minutes: 10
+      pre-commit-version: "4.6.2"
 
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.11"
-
-      - name: Install pre-commit
-        run: pip install pre-commit==4.6.2
-
-      - name: pre-commit run --all-files
-        run: pre-commit run --all-files --show-diff-on-failure
-
+  # No libint2, no cargo build. What each input keeps from the steps this job
+  # used to spell out:
+  #
+  # ruff-version -- VERSION PINNING TRAP, resolved: .pre-commit-config.yaml
+  # used to pin ruff at v0.16.6, but the tree was reformatted with ruff
+  # 0.15.8, and `ruff format` output is not stable across ruff versions.
+  # Verified directly in the container that will run this workflow
+  # (2026-09-16): `uvx ruff@0.15.8 format --check .` reports 244/244 files
+  # already formatted (0 diffs) against this tree, while `uvx ruff@0.16.6
+  # format --check .` reports 7 files would change (all *.md, from a
+  # Markdown fenced-code-block formatting behaviour that changed between
+  # those two releases -- README.md, crates/ferric-python/README.md,
+  # scripts/gw100/basis_gaps/CONVERSION_NOTES.md, site/src/methods/cc.md,
+  # site/src/using/python.md, site/src/using/quickstart.md). 0.15.8 is
+  # therefore the version pinned HERE, and .pre-commit-config.yaml's ruff rev
+  # was moved down to v0.15.8 to match -- keep the two in sync (the
+  # shared-workflows test checks it); if either drifts, `ruff format --check`
+  # fails on arrival for a reason that has nothing to do with the PR that
+  # trips it. `ruff format --check .` is BLOCKING.
+  #
+  # ruff-check-blocking: false -- NON-BLOCKING `ruff check .` (default rule
+  # set), its output teed to the step summary. Default `ruff check .` found
+  # 682 findings before the Python-wide reformat (top codes: E702 315, E741
+  # 89, E701 84, F401 55, F841 32). Measured again in-container 2026-09-16,
+  # with that reformat partially landed: 282. Re-measured 2026-11-19 with
+  # ruff 0.15.8 on main: 586 (E741 256, F811 74, F401 58, F841 44, E401 36,
+  # E402 34, E731 31, F541 28, F405 23, E722 1, F403 1), so the tree grew
+  # past the earlier figure and is NOT clean. Exit criterion to flip this to
+  # BLOCKING (drop the input): the count above reaches 0 (or every survivor
+  # carries an explicit inline `# noqa: <code>` with a reason, the same bar
+  # scripts/ci-gate.sh's clippy ALLOWED_LINTS list holds Rust lints to) -- a
+  # report-only step with no exit criterion is how a gate stays permanently
+  # decorative.
+  #
+  # pre-sync -- bandit (medium+ severity), BLOCKING, matching
+  # .pre-commit-config.yaml's bandit hook exactly (same rev, same `-ll -q`,
+  # same exclude). Run BEFORE `uv sync` on purpose: `uv sync` populates .venv
+  # with third-party packages (numpy, scipy, rdkit, ...), and bandit -r . has
+  # no project-awareness -- pointed at a tree that already has a .venv, it
+  # scans vendored dependency code too and buries the two real findings
+  # under ~500 third-party ones. Running before .venv exists keeps its output
+  # identical to a bare-checkout run.
+  #
+  # sync-args -- populates .venv from the `dev` extra (numpy/scipy/pytest/
+  # pytest-cov/ipython...). `--no-install-project`: this project's build
+  # backend is maturin (see pyproject.toml `[build-system]`), and building it
+  # needs a Rust toolchain, libint2 and the same shim headers build-and-test
+  # installs -- none of which this fast, libint2-free job has. Every tool here
+  # either needs only the dependency set or nothing from the venv at all
+  # (ruff/ty/bandit run standalone via uvx).
+  #
+  # ty-command + ty-blocking: false -- NON-BLOCKING, output teed to the step
+  # summary. 392 diagnostics measured 2026-09-16 in this same container:
+  # `--exclude` applied for terf-tables' frozen Python-2 file (ty has no
+  # `[tool.ty]` config in this repo yet, hence the CLI flag rather than
+  # picking up ruff's `extend-exclude`), and run AFTER `uv sync` so imports
+  # resolve against a populated .venv -- an EMPTY venv inflates this to 561
+  # (339 of them bare `unresolved-import`), per the measurement that
+  # motivated this policy. Exit criterion to flip to BLOCKING: add a
+  # checked-in `[tool.ty]` config (with its own exclude) and drive the
+  # diagnostic count to 0 or an explicitly-justified allow-list.
+  #
+  # lock-check: false -- this job never ran `uv lock --check`; turning it on
+  # is a separate change, made once it is known to pass.
   python-quality:
     name: python-quality
-    runs-on: ubuntu-22.04
-    # No libint2, no cargo build. Deliberately not `uses: astral-sh/setup-uv`
-    # or any other third-party action -- `pip install uv` off the already
-    # SHA-pinned actions/setup-python is one fewer supply-chain surface to
-    # track for a tool this job only needs as a `uvx` launcher.
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: "3.11"
-
-      - name: Install uv
-        run: pip install uv
-
-      # VERSION PINNING TRAP, resolved: .pre-commit-config.yaml used to pin
-      # ruff at v0.16.6, but the tree was reformatted with ruff 0.15.8, and
-      # `ruff format` output is not stable across ruff versions. Verified
-      # directly in the container that will run this workflow (2026-09-16):
-      # `uvx ruff@0.15.8 format --check .` reports 244/244 files already
-      # formatted (0 diffs) against this tree, while `uvx ruff@0.16.6 format
-      # --check .` reports 7 files would change (all *.md, from a Markdown
-      # fenced-code-block formatting behaviour that changed between those
-      # two releases -- README.md, crates/ferric-python/README.md,
-      # scripts/gw100/basis_gaps/CONVERSION_NOTES.md, site/src/methods/cc.md,
-      # site/src/using/python.md, site/src/using/quickstart.md). 0.15.8 is
-      # therefore the version pinned HERE, and .pre-commit-config.yaml's
-      # ruff rev was moved down to v0.15.8 to match -- keep the two in sync;
-      # if either drifts, `ruff format --check` fails on arrival for a
-      # reason that has nothing to do with the PR that trips it.
-      - name: ruff format --check
-        run: uvx ruff@0.15.8 format --check .
-
-      - name: ruff check (default rule set, report-only)
-        # NON-BLOCKING. Default `ruff check .` found 682 findings before the
-        # Python-wide reformat (top codes: E702 315, E741 89, E701 84, F401
-        # 55, F841 32). Measured again in-container 2026-09-16, with that
-        # reformat partially landed: 282. Re-measured 2026-11-19 with
-        # ruff 0.15.8 on main: 586 (E741 256, F811 74, F401 58, F841 44,
-        # E401 36, E402 34, E731 31, F541 28, F405 23, E722 1, F403 1), so
-        # the tree grew past the earlier figure and is NOT clean. Exit criterion to flip this to
-        # BLOCKING: the count above reaches 0 (or every survivor carries an
-        # explicit inline `# noqa: <code>` with a reason, the same bar
-        # scripts/ci-gate.sh's clippy ALLOWED_LINTS list holds Rust lints to)
-        # -- a `continue-on-error` with no exit criterion is how a gate stays
-        # permanently decorative.
-        continue-on-error: true
-        run: |
-          echo "## ruff check (default rule set) -- report only, see step comment for exit criterion" >> "$GITHUB_STEP_SUMMARY"
-          uvx ruff@0.15.8 check . 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
-
-      - name: bandit (medium+ severity)
-        # BLOCKING -- matches .pre-commit-config.yaml's bandit hook exactly
-        # (same rev, same `-ll -q`, same exclude). Run BEFORE `uv sync`
-        # below on purpose: `uv sync` populates .venv with third-party
-        # packages (numpy, scipy, rdkit, ...), and bandit -r . has no
-        # project-awareness -- pointed at a tree that already has a .venv,
-        # it scans vendored dependency code too and buries the two real
-        # findings under ~500 third-party ones. Running here, before .venv
-        # exists, keeps this step's output identical to a bare-checkout run.
-        run: uvx bandit@1.9.4 -ll -q -r . -x terf-tables/generate_interpolation_tables.py
-
-      # Populates .venv from the `dev` extra (numpy/scipy/pytest/pytest-cov/
-      # ipython...). `--no-install-project`: this project's build backend is
-      # maturin (see pyproject.toml `[build-system]`), and building it needs
-      # a Rust toolchain, libint2 and the same shim headers build-and-test
-      # installs -- none of which this fast, libint2-free job has. Every
-      # tool below either needs only the dependency set (pytest) or nothing
-      # from the venv at all (ruff/ty run standalone via uvx).
-      - name: uv sync (dev extra, dependencies only)
-        run: uv sync --extra dev --no-install-project
-
-      - name: ty check (report-only)
-        # NON-BLOCKING. 392 diagnostics measured 2026-09-16 in this same
-        # container: `--exclude` applied for terf-tables' frozen Python-2
-        # file (ty has no `[tool.ty]` config in this repo yet, hence the CLI
-        # flag rather than picking up ruff's `extend-exclude`), and run AFTER
-        # `uv sync` above so imports resolve against a populated .venv -- an
-        # EMPTY venv inflates this to 561 (339 of them bare
-        # `unresolved-import`), per the measurement that motivated this
-        # policy. Exit criterion to flip to BLOCKING: add a checked-in
-        # `[tool.ty]` config (with its own exclude) and drive the diagnostic
-        # count to 0 or an explicitly-justified allow-list.
-        continue-on-error: true
-        run: |
-          echo "## ty check -- report only, see step comment for exit criterion" >> "$GITHUB_STEP_SUMMARY"
-          uvx ty@0.0.81 check --exclude 'terf-tables/generate_interpolation_tables.py' 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+    uses: mgoldey/attestation/.github/workflows/reusable-python-gates.yml@b1c5cb2f93b43d0b2441f40c323a4c7741ebc5a9 # attestation main 2026-11-20 (PR #70)
+    with:
+      name: python-quality
+      runs-on: ubuntu-22.04
+      python-version: "3.11"
+      timeout-minutes: 15
+      pre-sync: uvx bandit@1.9.4 -ll -q -r . -x terf-tables/generate_interpolation_tables.py
+      sync-args: --extra dev --no-install-project
+      ruff-version: "0.15.8"
+      ruff-check-blocking: false
+      ty-command: uvx ty@0.0.81 check --exclude 'terf-tables/generate_interpolation_tables.py'
+      ty-blocking: false
+      lock-check: false
 
   # ---------------------------------------------------------------------
   # Nightly-only coverage. NON-BLOCKING (both steps below are
@@ -2648,13 +2748,17 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd
+            libboost-dev patchelf zstd
 
       # libint2: conda-forge 2.13.1 (prebuilt, second-derivative integrals),
       # installed by the same script developers use; see scripts/install-libint.sh
       # for the package, its AM limits and why the SONAME is rewritten.
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
+      - name: Install libxc
+        uses: ./.github/actions/install-libxc
 
       - name: Restore cargo cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -2733,9 +2837,10 @@ jobs:
         # pytest step's own comment saying "nobody has observed a green run
         # yet" was describing this, not a flaky test.
         #
-        # `pip install uv` rather than astral-sh/setup-uv for the same reason
-        # python-quality gives: no third-party action off the already-present
-        # Python.
+        # `pip install uv` rather than astral-sh/setup-uv: no third-party
+        # action of this job's own off the already-present Python. (pre-commit
+        # and python-quality get setup-uv only through the attestation
+        # templates' reviewed SHA pin; see the comment above pre-commit.)
         run: pip install uv
 
       - name: uv sync (dev + build extras)
@@ -2924,10 +3029,14 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd
+            libboost-dev patchelf zstd
 
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
+      - name: Install libxc
+        uses: ./.github/actions/install-libxc
 
       # Same install step as slow-tests -- the action SHA is
       # pinned, the Rust version floats on `stable` by design (see the

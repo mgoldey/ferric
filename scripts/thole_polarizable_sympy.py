@@ -44,6 +44,7 @@ Mutations (each turns the script red; exact one-occurrence substitutions):
   T-derivative coefficient 1/2 instead of 1                  (T3 fails)
   Fock term with a factor 1/2                                 (T4 fails)
   lam5 with v^3/2 instead of v^3/6                            (T1 fails)
+  norm_int_p transcribed with zeta^(3/4) for zeta^(5/4)       (T6 fails)
 Exits nonzero on any failed check; prints "FAIL <label>".
 """
 

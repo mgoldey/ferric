@@ -8,7 +8,7 @@ result or for the building blocks, and keeps the arrays in memory. Whatever
 the route, each sample needs a record of what produced it: two samples with
 the same keys can come from different builds, references or grids, and the
 arrays do not show it. This section maps the Python entry points onto the
-quantities of 27.1–27.3 (@sec:python-cube-provenance-results-property-functions-building), covers cube files (@sec:python-cube-provenance-cube-files), and then the
+quantities of sections @sec:npz-bundle to @sec:polarizability-pdep-c6 (@sec:python-cube-provenance-results-property-functions-building), covers cube files (@sec:python-cube-provenance-cube-files), and then the
 certificate, which is the provenance record a dataset should keep with every
 sample (@sec:python-cube-provenance-certificate-provenance-label).
 
@@ -88,6 +88,21 @@ from `crates/ferric-core/src/certificate.rs`:
 | `warnings` | warnings raised during the run, duplicates dropped | to drop suspect samples |
 | `blocks`, `routes` | building-block records and exact routes, when used | composed or unusual paths |
 
+The grade has two spellings. The JSON form (the NPZ `certificate` key, and
+the `certificate` dict of a Python result) holds the serialized enum in
+snake case; the printed certificate and appendix @sec:appendix-c use the
+validation page's word (`Grade::as_str` in `crates/ferric-core/src/certificate.rs`).
+Filter a dataset on the JSON value:
+
+| JSON value | Printed word |
+|---|---|
+| `proven` | Proven |
+| `proven_narrow` | Proven (narrow) |
+| `smoke` | Smoke |
+| `spike` | Spike |
+| `stub` | Stub |
+| `ungraded` | not graded |
+
 For `pdep-rpa` the grade is capped by the reference SCF's grade, and the
 reference's settings appear among the approximations with the `scf ` prefix
 (`PdepRpaResult.certificate` in `ferric.pyi`).
@@ -106,7 +121,7 @@ Three cautions apply when you use the certificate as a trust label.
    "no error".
 3. **Composed results are ungraded.** `certificate_from_blocks` records the
    `AoIntegrals.provenance()` dicts a custom result was built from and always
-   sets `grade` to `ungraded`, because no validation row covers the caller's
+   sets `grade` to `ungraded` (printed "not graded"), because no validation row covers the caller's
    code.
 
 Keep the whole certificate with each sample. It is small, and it is the only

@@ -153,6 +153,7 @@ use ferric_integrals::operator::Operator;
 use ferric_mp2::mo_transform::{transform_3center_oo, transform_3center_ov, transform_3center_vv};
 use ferric_mp2::rimp2::{active_occ, cholesky_inverse_sqrt};
 use ferric_mp2::spinorbital::build_b;
+use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 use ferric_tensors::{einsum, Axis};
 use ndarray::linalg::general_mat_mul;
@@ -521,6 +522,20 @@ fn pair_job_energy(k: &KernelInputs<'_>, (a, b): (usize, usize)) -> f64 {
     sum
 }
 
+/// [`ccsd_t_closed_shell`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn ccsd_t_closed_shell_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    cc: &CcResult,
+    cfg: &CcConfig,
+) -> Result<f64, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(rhf)?;
+    ccsd_t_closed_shell(sys.mol(), sys.basis(), aux.basis(), sys.op(), rhf, cc, cfg)
+}
+
 /// Compute the spin-adapted (closed-shell) CCSD(T) perturbative-triples
 /// correction.
 ///
@@ -800,10 +815,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-11,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-11),
         )
         .unwrap();
         Setup {
@@ -1119,10 +1131,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-11,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-11),
         )
         .unwrap();
         let s = Setup {

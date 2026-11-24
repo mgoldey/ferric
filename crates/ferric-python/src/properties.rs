@@ -16,8 +16,8 @@ pub(crate) enum DensitySource<'py> {
 impl<'py> DensitySource<'py> {
     fn density(&self) -> &Array2<f64> {
         match self {
-            DensitySource::Rhf(r) => &r.density_data,
-            DensitySource::Dft(d) => &d.density_data,
+            DensitySource::Rhf(r) => &r.scf_data.density_total,
+            DensitySource::Dft(d) => &d.scf_data.density_total,
         }
     }
 
@@ -28,12 +28,27 @@ impl<'py> DensitySource<'py> {
         }
     }
 
-    fn scf_config(&self) -> &RhfConfig {
-        match self {
-            DensitySource::Rhf(r) => &r.scf_config,
-            DensitySource::Dft(d) => &d.scf_config,
+    /// The solve and its settings as shared handles, for work that runs
+    /// with the GIL released: cloning the `Arc`s copies no arrays.
+    fn shared(&self) -> SharedReference {
+        let (scf, config) = match self {
+            DensitySource::Rhf(r) => (&r.scf_data, &r.scf_config),
+            DensitySource::Dft(d) => (&d.scf_data, &d.scf_config),
+        };
+        SharedReference {
+            scf: Arc::clone(scf),
+            config: Arc::clone(config),
         }
     }
+}
+
+/// A reference result's solve and SCF settings, shared with the result
+/// (`DensitySource::shared`).
+pub(crate) struct SharedReference {
+    /// The converged solve (density, orbitals, energies).
+    pub(crate) scf: Arc<ScfResult>,
+    /// The settings it was solved with.
+    pub(crate) config: Arc<RhfConfig>,
 }
 
 impl<'py> FromPyObject<'py> for DensitySource<'py> {
@@ -50,27 +65,64 @@ impl<'py> FromPyObject<'py> for DensitySource<'py> {
     }
 }
 
-/// The molecule with `basis_set`'s ECP applied (`Atom::n_core_ecp`), as the
-/// SCF drivers apply it. The nuclear charge a property pairs with the density
-/// is `Atom::effective_z`, so a property on an ECP atom needs this; a bare
-/// `PyMolecule` carries no ECP until a basis is attached.
-fn ecp_molecule(mol: &PyMolecule, basis_set: &PyBasisSet) -> ferric_core::mol::Molecule {
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
-    emol
+// `ecp_molecule` (system.rs): the nuclear charge a property pairs with the
+// density is `Atom::effective_z`, so a property on an ECP atom needs the
+// molecule with the basis set's ECP applied; a bare `PyMolecule` carries no
+// ECP until a basis is attached.
+
+/// Refuse a `result` whose AO dimension `result_nbf` (rows of its density /
+/// MO coefficients) is not the `nbf` basis functions `basis_set` places on
+/// `mol`, i.e. a result computed for another molecule or basis set. Raises
+/// `ValueError` naming both sizes, before any array is indexed by the basis
+/// size (which would otherwise panic in ndarray and surface as
+/// `PanicException`). `who` prefixes the message.
+pub(crate) fn check_result_matches_basis(who: &str, result_nbf: usize, nbf: usize) -> PyResult<()> {
+    if result_nbf == nbf {
+        return Ok(());
+    }
+    Err(crate::errors::input_err(format!(
+        "{who}: result has {result_nbf} basis functions but basis_set places {nbf} on mol; \
+         pass the molecule and basis set the result was computed with"
+    )))
+}
+
+/// `f(molecule, prepared basis, density)` with the GIL released, for the
+/// density properties whose work is pure Rust. The molecule carries the
+/// basis set's ECP (`ecp_molecule`); the basis is prepared inside the
+/// release, and the density is read through the result's shared solve
+/// (`DensitySource::shared`, as `hirshfeld_charges` does). A preparation or
+/// `f` error is converted to its Python exception once, after the GIL is
+/// back (`make_err` takes the GIL to pick the class).
+fn on_density_without_gil<T: Send>(
+    py: Python<'_>,
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    result: &DensitySource,
+    f: impl FnOnce(&Molecule, &PreparedBasis, &Array2<f64>) -> Result<T, ferric_core::FerricError>
+        + Send,
+) -> PyResult<T> {
+    let emol = ecp_molecule(mol, basis_set);
+    let bs = &basis_set.inner;
+    let reference = result.shared();
+    py.allow_threads(|| {
+        let prep = PreparedBasis::new(&emol, bs)?;
+        f(&emol, &prep, &reference.scf.density_total)
+    })
+    .map_err(make_err)
 }
 
 /// Electrostatic potential at each nucleus, in Hartree atomic units (e/Bohr).
 /// `result` is an `RhfResult` or `DftResult` from a converged SCF.
 #[pyfunction]
 pub(crate) fn esp_at_atoms(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     result: DensitySource,
 ) -> PyResult<Vec<f64>> {
-    let emol = ecp_molecule(mol, basis_set);
-    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
-    ferric_rpa::properties::esp_at_atoms(&emol, &prep, result.density()).map_err(make_err)
+    on_density_without_gil(py, mol, basis_set, &result, |emol, prep, d| {
+        ferric_rpa::properties::esp_at_atoms(emol, prep, d)
+    })
 }
 
 /// Electrostatic potential at ARBITRARY points, in Hartree atomic units
@@ -85,22 +137,25 @@ pub(crate) fn esp_at_atoms(
 /// `result` is an `RhfResult` or `DftResult` from a converged SCF.
 #[pyfunction]
 pub(crate) fn esp_at_points(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     result: DensitySource,
     points: numpy::PyReadonlyArray2<f64>,
 ) -> PyResult<Vec<f64>> {
+    // The basis is prepared before the shape check, as before the GIL was
+    // released, so a basis error still wins over a bad `points` shape.
     let emol = ecp_molecule(mol, basis_set);
-    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
-    let arr = points.as_array();
-    if arr.ncols() != 3 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "points must have shape (N, 3); got (_, {})",
-            arr.ncols()
-        )));
-    }
-    let pts: Vec<[f64; 3]> = arr.rows().into_iter().map(|r| [r[0], r[1], r[2]]).collect();
-    ferric_scf::properties::esp_at_points(&emol, &prep, result.density(), &pts).map_err(make_err)
+    let bs = &basis_set.inner;
+    let prep = py
+        .allow_threads(|| PreparedBasis::new(&emol, bs))
+        .map_err(make_err)?;
+    let pts = points_to_vec(&points)?;
+    let reference = result.shared();
+    py.allow_threads(|| {
+        ferric_scf::properties::esp_at_points(&emol, &prep, &reference.scf.density_total, &pts)
+    })
+    .map_err(make_err)
 }
 
 /// Electrostatic potential on a molecular van der Waals surface.
@@ -121,16 +176,10 @@ pub(crate) fn esp_on_surface<'py>(
     vdw_scale: f64,
     n_angular: usize,
 ) -> PyResult<(Bound<'py, PyArray2<f64>>, Vec<f64>, usize)> {
-    let emol = ecp_molecule(mol, basis_set);
-    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
-    let (pts, esp, n_buried) = ferric_scf::properties::esp_on_surface_counted(
-        &emol,
-        &prep,
-        result.density(),
-        vdw_scale,
-        n_angular,
-    )
-    .map_err(make_err)?;
+    let (pts, esp, n_buried) =
+        on_density_without_gil(py, mol, basis_set, &result, |emol, prep, d| {
+            ferric_scf::properties::esp_on_surface_counted(emol, prep, d, vdw_scale, n_angular)
+        })?;
     let mut arr = ndarray::Array2::<f64>::zeros((pts.len(), 3));
     for (i, p) in pts.iter().enumerate() {
         for (k, v) in p.iter().enumerate() {
@@ -169,12 +218,12 @@ pub(crate) fn hirshfeld_charges(
     py.allow_threads(|| job.run()).map_err(make_err)
 }
 
-/// Owned inputs of one `hirshfeld_charges` call.
+/// Owned inputs of one `hirshfeld_charges` call. The result's solve and
+/// settings are shared with it (`Arc`), not copied.
 pub(crate) struct HirshfeldJob {
     pub(crate) mol: ferric_core::mol::Molecule,
     pub(crate) bs: ferric_core::basis::BasisSet,
-    pub(crate) density: ndarray::Array2<f64>,
-    pub(crate) config: RhfConfig,
+    pub(crate) reference: SharedReference,
     pub(crate) use_scf: bool,
 }
 
@@ -189,8 +238,7 @@ impl HirshfeldJob {
             use_scf: parse_proatom(proatom)?,
             mol: ecp_molecule(mol, basis_set),
             bs: basis_set.inner.clone(),
-            density: result.density().clone(),
-            config: result.scf_config().clone(),
+            reference: result.shared(),
         })
     }
 
@@ -198,8 +246,8 @@ impl HirshfeldJob {
         hirshfeld_with_proatoms(
             &self.mol,
             &self.bs,
-            &self.density,
-            &self.config,
+            &self.reference.scf.density_total,
+            &self.reference.config,
             self.use_scf,
         )
     }
@@ -210,7 +258,7 @@ pub(crate) fn parse_proatom(proatom: &str) -> PyResult<bool> {
     match proatom {
         "scf" => Ok(true),
         "slater" => Ok(false),
-        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+        other => Err(crate::errors::input_err(format!(
             "unknown proatom {other:?}: expected \"scf\" or \"slater\""
         ))),
     }
@@ -250,6 +298,7 @@ pub(crate) fn orbital_moments(
             "orbital_moments: restricted (RHF/RKS) results only".into(),
         )));
     }
+    check_result_matches_basis("orbital_moments", scf.mos_r().nrows(), prep.nbasis())?;
     let (centers, spreads) =
         ferric_integrals::oneelectron::orbital_moments(&prep, scf.mos_r()).map_err(make_err)?;
     let c: Vec<[f64; 3]> = (0..centers.nrows())
@@ -267,6 +316,11 @@ pub(crate) fn density_second_moment(
     result: DensitySource,
 ) -> PyResult<[[f64; 3]; 3]> {
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    check_result_matches_basis(
+        "density_second_moment",
+        result.density().nrows(),
+        prep.nbasis(),
+    )?;
     ferric_integrals::oneelectron::density_second_moment(&prep, result.density(), [0.0; 3])
         .map_err(make_err)
 }
@@ -275,7 +329,7 @@ pub(crate) fn density_second_moment(
 pub(crate) fn points_to_vec(points: &numpy::PyReadonlyArray2<f64>) -> PyResult<Vec<[f64; 3]>> {
     let arr = points.as_array();
     if arr.ncols() != 3 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "points must have shape (N, 3); got (_, {})",
             arr.ncols()
         )));
@@ -336,6 +390,11 @@ pub(crate) fn eval_density_on_points(
 ) -> PyResult<Vec<f64>> {
     let pts = points_to_vec(&points)?;
     let chi = ao_values_checked(&mol.inner, &basis_set.inner, &pts)?;
+    check_result_matches_basis(
+        "eval_density_on_points",
+        result.density().nrows(),
+        chi.nrows(),
+    )?;
     Ok(density_from_ao_values(result.density(), &chi))
 }
 
@@ -368,6 +427,7 @@ pub(crate) fn eval_mo_on_points<'py>(
     }
     let pts = points_to_vec(&points)?;
     let chi = ao_values_checked(&mol.inner, &basis_set.inner, &pts)?;
+    check_result_matches_basis("eval_mo_on_points", c.nrows(), chi.nrows())?;
     let mut out = Array2::<f64>::zeros((pts.len(), mo_indices.len()));
     for (k, &i) in mo_indices.iter().enumerate() {
         let psi = c.column(i).dot(&chi);
@@ -386,15 +446,13 @@ pub(crate) fn cube_grid_spec(
     shape: Option<[usize; 3]>,
 ) -> PyResult<ferric_integrals::ao_grid::GridSpec> {
     if !(spacing.is_finite() && spacing > 0.0) {
-        return Err(pyo3::exceptions::PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "spacing must be a positive number of Bohr",
         ));
     }
     let atoms = &mol.inner.atoms;
     if atoms.is_empty() {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "molecule has no atoms",
-        ));
+        return Err(crate::errors::input_err("molecule has no atoms"));
     }
     let origin = origin.unwrap_or_else(|| {
         let mut lo = [f64::INFINITY; 3];
@@ -416,9 +474,7 @@ pub(crate) fn cube_grid_spec(
         [n(0), n(1), n(2)]
     });
     if shape.contains(&0) {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "shape entries must be >= 1",
-        ));
+        return Err(crate::errors::input_err("shape entries must be >= 1"));
     }
     Ok(ferric_integrals::ao_grid::GridSpec {
         origin,
@@ -445,6 +501,7 @@ pub(crate) fn cube_grid_spec(
 #[pyo3(signature = (path, mol, basis_set, result, what="density", mo_index=None, spacing=0.3, padding=4.0, origin=None, shape=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn write_cube(
+    py: Python<'_>,
     path: &str,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
@@ -456,21 +513,18 @@ pub(crate) fn write_cube(
     origin: Option<[f64; 3]>,
     shape: Option<[usize; 3]>,
 ) -> PyResult<([f64; 3], [usize; 3])> {
+    /// What the cube holds, validated before the GIL is released.
+    enum Field {
+        Density,
+        Mo(usize),
+    }
     let grid = cube_grid_spec(mol, spacing, padding, origin, shape)?;
     let (origin, shape) = (grid.origin, [grid.n_x, grid.n_y, grid.n_z]);
-    let (vals, comment): (Vec<f64>, String) = match what {
-        "density" => {
-            let chi = ferric_export::eval_basis_on_grid(&mol.inner, &basis_set.inner, &grid)
-                .map_err(make_err)?;
-            (
-                density_from_ao_values(result.density(), &chi),
-                "total electron density (e/Bohr^3), lengths in Bohr".to_string(),
-            )
-        }
+    let field = match what {
+        "density" => Field::Density,
         "mo" => {
-            let i = mo_index.ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err("what=\"mo\" requires mo_index")
-            })?;
+            let i = mo_index
+                .ok_or_else(|| crate::errors::input_err("what=\"mo\" requires mo_index"))?;
             let scf = result.scf();
             if scf.spin != ferric_scf::result::Spin::Restricted {
                 return Err(make_err(
@@ -484,22 +538,61 @@ pub(crate) fn write_cube(
                     c.ncols()
                 )));
             }
-            let chi = ferric_export::eval_basis_on_grid(&mol.inner, &basis_set.inner, &grid)
-                .map_err(make_err)?;
-            (
-                c.column(i).dot(&chi).to_vec(),
-                format!("MO {i} (psi, Bohr^-3/2), lengths in Bohr"),
-            )
+            Field::Mo(i)
         }
         other => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "unknown what {other:?}: expected \"density\" or \"mo\""
             )))
         }
     };
-    let data =
-        ndarray::Array3::from_shape_vec((shape[0], shape[1], shape[2]), vals).map_err(make_err)?;
-    ferric_export::export_cube(path, &mol.inner, &grid, &data, &comment).map_err(make_err)?;
+    /// A failure inside the GIL release, converted to its exception after it.
+    enum Fail {
+        Grid(ferric_export::GtoEvalError),
+        /// The result's basis size and the grid's.
+        Mismatch(usize, usize),
+        Shape(ndarray::ShapeError),
+        Export(ferric_export::cube::ExportError),
+    }
+    let reference = result.shared();
+    let (mol, bs) = (&mol.inner, &basis_set.inner);
+    // The grid evaluation and the file write touch no Python object.
+    py.allow_threads(|| {
+        let chi = ferric_export::eval_basis_on_grid(mol, bs, &grid).map_err(Fail::Grid)?;
+        let (vals, comment): (Vec<f64>, String) = match field {
+            Field::Density => {
+                let d = &reference.scf.density_total;
+                if d.nrows() != chi.nrows() {
+                    return Err(Fail::Mismatch(d.nrows(), chi.nrows()));
+                }
+                (
+                    density_from_ao_values(d, &chi),
+                    "total electron density (e/Bohr^3), lengths in Bohr".to_string(),
+                )
+            }
+            Field::Mo(i) => {
+                let c = reference.scf.mos_r();
+                if c.nrows() != chi.nrows() {
+                    return Err(Fail::Mismatch(c.nrows(), chi.nrows()));
+                }
+                (
+                    c.column(i).dot(&chi).to_vec(),
+                    format!("MO {i} (psi, Bohr^-3/2), lengths in Bohr"),
+                )
+            }
+        };
+        let data = ndarray::Array3::from_shape_vec((shape[0], shape[1], shape[2]), vals)
+            .map_err(Fail::Shape)?;
+        ferric_export::export_cube(path, mol, &grid, &data, &comment).map_err(Fail::Export)
+    })
+    .map_err(|e| match e {
+        Fail::Grid(e) => make_err(e),
+        Fail::Mismatch(result_nbf, nbf) => {
+            check_result_matches_basis("write_cube", result_nbf, nbf).unwrap_err()
+        }
+        Fail::Shape(e) => make_err(e),
+        Fail::Export(e) => make_err(e),
+    })?;
     Ok((origin, shape))
 }
 
@@ -508,13 +601,14 @@ pub(crate) fn write_cube(
 /// converged SCF.
 #[pyfunction]
 pub(crate) fn lowdin_charges(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     result: DensitySource,
 ) -> PyResult<Vec<f64>> {
-    let emol = ecp_molecule(mol, basis_set);
-    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
-    ferric_rpa::properties::lowdin_charges(&emol, &prep, result.density()).map_err(make_err)
+    on_density_without_gil(py, mol, basis_set, &result, |emol, prep, d| {
+        ferric_rpa::properties::lowdin_charges(emol, prep, d)
+    })
 }
 
 /// Mulliken partial charges (units of e), the standard textbook population
@@ -524,13 +618,14 @@ pub(crate) fn lowdin_charges(
 /// is an `RhfResult` or `DftResult` from a converged SCF.
 #[pyfunction]
 pub(crate) fn mulliken_charges(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     result: DensitySource,
 ) -> PyResult<Vec<f64>> {
-    let emol = ecp_molecule(mol, basis_set);
-    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
-    ferric_rpa::properties::mulliken_charges(&emol, &prep, result.density()).map_err(make_err)
+    on_density_without_gil(py, mol, basis_set, &result, |emol, prep, d| {
+        ferric_rpa::properties::mulliken_charges(emol, prep, d)
+    })
 }
 
 /// CHELPG (CHarges from Electrostatic Potentials, Grid-based) partial
@@ -543,13 +638,14 @@ pub(crate) fn mulliken_charges(
 /// `RhfResult` or `DftResult` from a converged SCF.
 #[pyfunction]
 pub(crate) fn chelpg_charges(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     result: DensitySource,
 ) -> PyResult<Vec<f64>> {
-    let emol = ecp_molecule(mol, basis_set);
-    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
-    ferric_rpa::properties::chelpg_charges(&emol, &prep, result.density()).map_err(make_err)
+    on_density_without_gil(py, mol, basis_set, &result, |emol, prep, d| {
+        ferric_rpa::properties::chelpg_charges(emol, prep, d)
+    })
 }
 
 /// RESP (Restrained ElectroStatic Potential) partial charges (units of e).
@@ -562,13 +658,14 @@ pub(crate) fn chelpg_charges(
 /// `DftResult` from a converged SCF.
 #[pyfunction]
 pub(crate) fn resp_charges(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     result: DensitySource,
 ) -> PyResult<Vec<f64>> {
-    let emol = ecp_molecule(mol, basis_set);
-    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
-    ferric_rpa::properties::resp_charges(&emol, &prep, result.density()).map_err(make_err)
+    on_density_without_gil(py, mol, basis_set, &result, |emol, prep, d| {
+        ferric_rpa::properties::resp_charges(emol, prep, d)
+    })
 }
 
 /// Per-atom Hirshfeld-partitioned static dipole polarizability tensors
@@ -596,6 +693,11 @@ pub(crate) fn hirshfeld_polarizability<'py>(
     let emol = ecp_molecule(mol, basis_set);
     let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&emol, &auxbasis.inner).map_err(make_err)?;
+    check_result_matches_basis(
+        "hirshfeld_polarizability",
+        result.density().nrows(),
+        prep.nbasis(),
+    )?;
     let op = Operator::coulomb();
     let cfg = ferric_rpa::PdepRpaConfig {
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),

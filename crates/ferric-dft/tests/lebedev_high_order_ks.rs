@@ -30,18 +30,16 @@ fn pbe_energy(n_angular: usize) -> f64 {
     let obs = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let cfg = RhfConfig {
-        xc: Some("PBE".into()),
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        dft_grid: Some(AtomicGridConfig {
+    let cfg = RhfConfig::default()
+        .with_xc("PBE")
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_dft_grid(AtomicGridConfig {
             n_radial: 75,
             n_angular,
             prune: None,
             weight_cut: None,
-        }),
-        ..Default::default()
-    };
+        });
     let r = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
     assert!(r.converged, "{n_angular}: SCF did not converge");
     r.energy

@@ -194,6 +194,7 @@ use ferric_scf::properties::{proatom_ground_state_mult, scf_proatom_provider, sc
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
+use ferric_testkit::reference::num_ctx;
 use ndarray::{s, Array2};
 use serde_json::Value;
 
@@ -337,12 +338,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn vec1(v: &Value, ptr: &str, ctx: &str) -> Vec<f64> {
     v.pointer(ptr)
         .and_then(Value::as_array)
@@ -403,12 +398,10 @@ fn check(ctx: &str, what: &str, d: f64, tol: f64) {
 }
 
 fn scf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
 }
 
 /// Elementwise overlap check: the reference's PySCF overlap, permuted to
@@ -491,7 +484,7 @@ fn proatoms(
     for &z in zs {
         let actx = format!("{ctx} free Z={z}");
         let base = format!("/free_atoms/{z}");
-        let step = num(r, &format!("{base}/proatom_radii_step_bohr"), &actx);
+        let step = num_ctx(r, &format!("{base}/proatom_radii_step_bohr"), &actx);
         assert_eq!(
             step, 0.05,
             "{actx}: reference table step is not ferric-cli's 0.05 Bohr"
@@ -516,7 +509,7 @@ fn proatoms(
         check(
             &actx,
             "free-atom SCF energy",
-            (e_own - num(r, &format!("{base}/scf/energy"), &actx)).abs(),
+            (e_own - num_ctx(r, &format!("{base}/scf/energy"), &actx)).abs(),
             TOL_E_ATOM,
         );
         let own = spherically_averaged_proatom(z, bs, &dens_own, &radii).unwrap();
@@ -795,7 +788,7 @@ fn check_molecule(system: &str, basis_name: &str) -> Vec<f64> {
     check(
         &ctx,
         "RHF energy",
-        (res.energy - num(&r, "/scf/energy", &ctx)).abs(),
+        (res.energy - num_ctx(&r, "/scf/energy", &ctx)).abs(),
         TOL_E_SCF,
     );
     let q2 = hirshfeld_charges(&mol, &bs, res.density_total(), Some(p_own)).unwrap();
@@ -985,7 +978,7 @@ fn free_atom_volume_row(symbol_lc: &str, basis_name: &str) -> (f64, f64, f64) {
     let ctx = format!("{system}/{basis_name}");
     let (mol, bs, _prep) = load(&system, basis_name, &r, &ctx);
     let d_ref = mat(&r, "/density_total_ferric_order", &ctx);
-    let dense = num(&r, "/volume_dense_grid", &ctx);
+    let dense = num_ctx(&r, "/volume_dense_grid", &ctx);
 
     // THE ANCHOR.
     let w1 = weight_one_volume_on_the_production_grid(&mol, &bs, &d_ref);
@@ -1014,7 +1007,7 @@ fn free_atom_volume_row(symbol_lc: &str, basis_name: &str) -> (f64, f64, f64) {
     // Measured H: 1.19e-3 here vs 8.48e-4 on the lattice. Printed so the
     // difference is on the record rather than asserted as a property it is
     // not.
-    let ref_floor = num(&r, "/measurements/floor_loss_rel", &ctx);
+    let ref_floor = num_ctx(&r, "/measurements/floor_loss_rel", &ctx);
     eprintln!(
         "{ctx}: weight-1 {w1:.9} vs dense {dense:.9} ({w1_rel:.2e} rel); floored {:.9}; \
          floor loss {floor_loss:.3e} ([measurement] reference, on the lattice: \
@@ -1035,12 +1028,12 @@ fn free_atom_volume_row(symbol_lc: &str, basis_name: &str) -> (f64, f64, f64) {
     check(
         &ctx,
         "free-atom lattice volume same-D (rel)",
-        max_rel_diff(&v_lat, &[num(&r, "/volume_ferric_none_lattice", &ctx)]),
+        max_rel_diff(&v_lat, &[num_ctx(&r, "/volume_ferric_none_lattice", &ctx)]),
         TOL_VOL_SAME_REL,
     );
     // The lattice's own error on the un-floored moment, from the reference's
     // two lattice numbers: this is what the quadratures must be separated by.
-    let lattice_rel = (num(&r, "/volume_weight_one_lattice", &ctx) - dense).abs() / dense;
+    let lattice_rel = (num_ctx(&r, "/volume_weight_one_lattice", &ctx) - dense).abs() / dense;
 
     (w1_rel, floor_loss, lattice_rel)
 }

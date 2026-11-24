@@ -120,10 +120,7 @@ fn main() {
         .expect("neutral RHF");
 
     // Cation / anion UHF, neutral-MO seeded (per gw100 best practice).
-    let uhf_cfg = UhfConfig {
-        max_iter: 200,
-        ..Default::default()
-    };
+    let uhf_cfg = UhfConfig::default().with_max_iter(200);
     let seed = rhf_n.mos_alpha.clone();
 
     let obs_c = PreparedBasis::new(&cation, &obs_bs).unwrap();

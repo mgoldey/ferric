@@ -52,6 +52,7 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
 use ferric_scf::{ScfResult, Spin};
+use ferric_testkit::reference::num_ctx;
 use serde_json::Value;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -116,12 +117,10 @@ fn load(system: &str, mult: usize) -> Sys {
 }
 
 fn scf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10)
 }
 
 fn u_oo_config(frozen_core: usize) -> UOoRiMp2Config {
@@ -171,12 +170,6 @@ fn check_close(ctx: &str, what: &str, got: f64, want: f64, tol: f64) {
         d < tol,
         "{ctx}: {what} {got:.12} vs {want:.12} (|d| {d:.2e} >= {tol:.0e})"
     );
-}
-
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
 }
 
 /// The RHF as an unrestricted reference with `C_β = C_α`.
@@ -285,14 +278,10 @@ fn check_vs_numpy(system: &str) {
         &ctx,
         "E_nuc",
         s.mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &ctx),
+        num_ctx(&r, "/nuclear_repulsion", &ctx),
         1e-9,
     );
-    let uhf_cfg = RhfConfig {
-        check_stability: true,
-        scf_stability_descent: true,
-        ..scf_config()
-    };
+    let uhf_cfg = scf_config().with_stability(ferric_scf::options::Stability::Descend);
     let uhf = solve_uhf(
         &ParallelContext::default(),
         &s.mol,
@@ -306,7 +295,7 @@ fn check_vs_numpy(system: &str) {
         &ctx,
         "E_UHF vs PySCF",
         uhf.energy,
-        num(&r, "/pyscf/e_scf", &ctx),
+        num_ctx(&r, "/pyscf/e_scf", &ctx),
         TOL_E_SCF,
     );
     let mp2_fc1 = u_ri_mp2(
@@ -325,21 +314,21 @@ fn check_vs_numpy(system: &str) {
         &ctx,
         "U-RI-MP2 fc1 E_corr vs DFUMP2",
         mp2_fc1.mp2_corr,
-        num(&r, "/numpy_oo/fc1/e_dfump2_corr_kappa0", &ctx),
+        num_ctx(&r, "/numpy_oo/fc1/e_dfump2_corr_kappa0", &ctx),
         TOL_E_CORR_DFUMP2,
     );
     let mut e = [0.0; 2];
     for fc in [1usize, 0] {
         let key = format!("/numpy_oo/fc{fc}");
-        let g_np = num(&r, &format!("{key}/max_orbital_gradient"), &ctx);
+        let g_np = num_ctx(&r, &format!("{key}/max_orbital_gradient"), &ctx);
         assert!(g_np <= 1e-8, "{ctx}: numpy fc{fc} max|g| {g_np:.2e}");
-        let anchor = num(&r, &format!("{key}/anchor_kappa0_diff"), &ctx);
+        let anchor = num_ctx(&r, &format!("{key}/anchor_kappa0_diff"), &ctx);
         assert!(
             anchor.abs() <= 1e-10,
             "{ctx}: numpy fc{fc} anchor {anchor:.2e}"
         );
         let oo = run_u_oo(&s, &uhf, fc, &ctx);
-        let want = num(&r, &format!("{key}/e_total"), &ctx);
+        let want = num_ctx(&r, &format!("{key}/e_total"), &ctx);
         check_close(
             &ctx,
             &format!("U-OO fc{fc} total vs numpy"),

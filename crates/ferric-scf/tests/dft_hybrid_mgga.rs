@@ -1,4 +1,4 @@
-//! Hybrid meta-GGA (TPSSh, M06-2X, SCAN0, wB97M-V) SCF energies.
+//! Hybrid meta-GGA (TPSSh, M06-2X, SCAN0, r2SCAN0, wB97M-V) SCF energies.
 //!
 //! A hybrid meta-GGA is the τ-dependent semilocal path of the pure meta-GGAs
 //! (`dft_scan.rs`) plus the exact-exchange fraction libxc reports, applied
@@ -84,16 +84,14 @@ fn load_ref(name: &str) -> Ref {
 /// The PySCF-matched configuration: flat (75, 110) grid, exact four-centre
 /// J and K (an empty aux name turns density fitting off).
 fn cfg(xc: &str) -> RhfConfig {
-    RhfConfig {
-        dft_grid: Some(AtomicGridConfig::default()),
-        xc: Some(xc.into()),
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        energy_conv: ENERGY_CONV,
-        density_conv: DENSITY_CONV,
-        max_iter: 300,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_dft_grid(AtomicGridConfig::default())
+        .with_xc(xc)
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new())
+        .with_energy_conv(ENERGY_CONV)
+        .with_density_conv(DENSITY_CONV)
+        .with_max_iter(300)
 }
 
 #[derive(Clone, Copy)]
@@ -216,6 +214,33 @@ fn scan0_nh2_uks_vs_pyscf() {
     );
 }
 
+/// r2SCAN0 (libxc HYB_MGGA_XC_R2SCAN0, 25% exact exchange; libxc >= 6.1).
+/// One combined libxc component, so the exact-exchange fraction is the one
+/// `xc_hyb_exx_coef` reports for it.
+#[test]
+fn r2scan0_h2o_rks_vs_pyscf() {
+    check(
+        "H2O",
+        H2O,
+        1,
+        "r2SCAN0",
+        Reference::Rks,
+        "h2o_cc-pvdz_r2scan0.json",
+    );
+}
+
+#[test]
+fn r2scan0_nh2_uks_vs_pyscf() {
+    check(
+        "NH2",
+        NH2,
+        2,
+        "r2SCAN0",
+        Reference::Uks,
+        "nh2_cc-pvdz_r2scan0.json",
+    );
+}
+
 /// ωB97M-V: range-separated (erf/erfc exact exchange, ω = 0.3) hybrid
 /// meta-GGA plus VV10 on the (50, 50) NLC grid, through the paths the GGA
 /// ωB97X-V uses. ferric builds range-separated exchange only by RI-K, so this
@@ -229,12 +254,10 @@ fn wb97m_v_h2o_rks_vs_pyscf() {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let c = RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        ..cfg("wB97M-V")
-    };
+    let c = cfg("wB97M-V")
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit")
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64);
     let res = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &c).unwrap();
     assert!(res.converged);
     let r = load_ref("h2o_cc-pvdz_wb97m_v.json");
@@ -256,15 +279,16 @@ fn tpssh_energy_decomposes_at_fixed_density() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let exact = |xc: Option<&str>| RhfConfig {
-        dft_grid: Some(AtomicGridConfig::default()),
-        xc: xc.map(Into::into),
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        energy_conv: 1e-10,
-        density_conv: 1e-9,
-        max_iter: 300,
-        ..Default::default()
+    let exact = |xc: Option<&str>| {
+        let mut c = RhfConfig::default()
+            .with_dft_grid(AtomicGridConfig::default())
+            .with_df_j_aux(String::new())
+            .with_df_k_aux(String::new())
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-9)
+            .with_max_iter(300);
+        c.xc = xc.map(Into::into);
+        c
     };
     let h = oneelectron::hcore(&prep);
     let vnn = mol.nuclear_repulsion();
@@ -352,12 +376,10 @@ fn stability_case(xyz: &str, mult: usize, ref_file: &str) {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let c = RhfConfig {
-        check_stability: true,
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        ..cfg("TPSSh")
-    };
+    let c = cfg("TPSSh")
+        .with_check_stability(true)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10);
     let res = if mult == 1 {
         solve_rhf(&ctx, &mol, &prep, op, &bounds, &c)
     } else {
@@ -412,9 +434,10 @@ fn tpssh_newton_matches_diis() {
             .unwrap()
         };
         let diis = run(&cfg("TPSSh"));
-        let newton = run(&RhfConfig {
-            newton_trigger: 1e-2,
-            ..cfg("TPSSh")
+        let newton = run(&{
+            let mut c = cfg("TPSSh");
+            c.newton_trigger = 1e-2;
+            c
         });
         let d = (diis.energy - newton.energy).abs();
         eprintln!(

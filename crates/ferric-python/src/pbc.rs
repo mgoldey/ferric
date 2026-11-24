@@ -61,20 +61,19 @@ use ferric_pbc::{
     kpoint_uks_gradient, kpoint_uks_stress, solve_krohf_keep, solve_kroks_keep, solve_kuks_keep,
     KUksGradConfig, KUksStressConfig,
 };
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
 
 // ─────────────────────────────────────────────────────────────── helpers ──
 
 fn val_err(m: String) -> PyErr {
-    PyValueError::new_err(m)
+    crate::errors::input_err(m)
 }
 
 /// Map a `ferric-pbc` error: refusals (`General`) are `ValueError`s with the
 /// Rust message, anything numerical is a `RuntimeError`.
 fn pbc_err(fname: &'static str) -> impl Fn(FerricError) -> PyErr {
     move |e| match refusal_text(e) {
-        Ok(m) => PyValueError::new_err(format!("{fname}: {m}")),
-        Err(other) => PyRuntimeError::new_err(format!("{fname}: {other}")),
+        Ok(m) => crate::errors::input_err(format!("{fname}: {m}")),
+        Err(other) => crate::errors::from_core_msg(&other, format!("{fname}: {other}")),
     }
 }
 
@@ -216,12 +215,7 @@ fn non_negative_angstrom(fname: &str, name: &str, v: f64) -> PyResult<f64> {
 }
 
 fn gamma_scf_config(max_iter: usize, density_conv: f64) -> RhfConfig {
-    RhfConfig {
-        use_sad_guess: false,
-        density_conv,
-        max_iter,
-        ..Default::default()
-    }
+    RhfConfig::periodic(density_conv, max_iter)
 }
 
 /// SCF knobs of `run_roks_gamma`: `GammaRoksConfig::new(functional).scf`
@@ -322,7 +316,7 @@ impl<'a> PbcArgs<'a, '_> {
     fn scf_kind(&self) -> PyResult<PbcKind<'a>> {
         match self.role {
             PbcRole::Scf(k) => Ok(k),
-            PbcRole::Correlation | PbcRole::CellOnly => Err(PyRuntimeError::new_err(format!(
+            PbcRole::Correlation | PbcRole::CellOnly => Err(crate::make_err(format!(
                 "{}: internal: SCF prologue on non-SCF args",
                 self.fname
             ))),
@@ -337,7 +331,7 @@ impl<'a> PbcArgs<'a, '_> {
             PbcKind::Uks(f) => OpenMethod::Uks(f.to_string()),
             PbcKind::Roks(f) => OpenMethod::Roks(f.to_string()),
             PbcKind::Rhf | PbcKind::Rks(_) => {
-                return Err(PyRuntimeError::new_err(format!(
+                return Err(crate::make_err(format!(
                     "{}: internal: open-shell entry on a closed-shell kind",
                     self.fname
                 )))
@@ -505,10 +499,13 @@ fn pbc_setup(a: &PbcArgs<'_, '_>) -> PyResult<PbcSetup> {
         Some(obj) => {
             let bs = gamma_auxbasis(a.fname, obj)?;
             let p = PreparedBasis::new(cell.mol(), &bs).map_err(|e| {
-                val_err(format!(
-                    "{}: auxbasis '{}' cannot be placed on this cell: {e}",
-                    a.fname, bs.name
-                ))
+                crate::errors::input_err_msg(
+                    &e,
+                    format!(
+                        "{}: auxbasis '{}' cannot be placed on this cell: {e}",
+                        a.fname, bs.name
+                    ),
+                )
             })?;
             (Some(p), Some(bs.name))
         }
@@ -1241,7 +1238,7 @@ fn gamma_rhf_reference(
 
 /// Result of `run_uhf_gamma` / `run_rohf_gamma` / `run_uks_gamma` /
 /// `run_roks_gamma`. Energies per cell, Hartree.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "GammaOpenShellResult")]
 struct PyGammaOpenShellResult {
     /// `"uhf"`, `"rohf"`, `"uks"` or `"roks"`.
@@ -1311,29 +1308,26 @@ struct PyGammaOpenShellResult {
     stress_data: Option<Array2<f64>>,
 }
 
+periodic_method_result!(PyGammaOpenShellResult, |r| capability: format!("{}-gamma", r.method), mesh: None);
+
 #[pymethods]
 impl PyGammaOpenShellResult {
-    /// Alias of `energy` (the same value), so callers can read either spelling.
+    #[doc = alias_doc!(energy)]
     #[getter]
     fn total_energy(&self) -> f64 {
-        self.energy
+        crate::method_result::total_energy_getter(self)
     }
-
     /// Validation certificate (schema of `RhfResult.certificate`). Periodic
     /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
     /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        pbc_certificate_dict(
-            py,
-            &format!("{}-gamma", self.method),
-            &self.jk,
-            self.auxbasis.as_deref(),
-            &self.exxdiv,
-            None,
-            self.converged,
-            self.iterations,
-        )
+        crate::method_result::certificate_getter(py, self)
+    }
+    /// Stage timings and counters (see `timings_dict`).
+    #[getter]
+    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        crate::pbc::timings_dict(py, &self.timings_data)
     }
     /// Analytic nuclear gradient `dE/dR` (natoms x 3, Hartree/Bohr per
     /// cell, rows in the Molecule's atom order) of the final SCF stage;
@@ -1347,11 +1341,6 @@ impl PyGammaOpenShellResult {
     /// antisymmetric part). `None` unless `with_stress=True`.
     fn stress<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
         opt_array(py, &self.stress_data)
-    }
-    /// Stage timings and counters (see `timings_dict`).
-    #[getter]
-    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
-        timings_dict(py, &self.timings_data)
     }
     /// Alpha MO energies (Hartree), ascending.
     fn mo_energy_alpha<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
@@ -2046,7 +2035,7 @@ fn run_roks_gamma(
 // ─────────────────────────────────────────────────────────── Gamma RKS ──
 
 /// Result of `run_rks_gamma`. Energies per cell, Hartree.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "GammaRksResult")]
 struct PyGammaRksResult {
     #[pyo3(get)]
@@ -2086,29 +2075,26 @@ struct PyGammaRksResult {
     stress_data: Option<Array2<f64>>,
 }
 
+periodic_method_result!(PyGammaRksResult, |r| capability: "rks-gamma", mesh: None);
+
 #[pymethods]
 impl PyGammaRksResult {
-    /// Alias of `energy` (the same value), so callers can read either spelling.
+    #[doc = alias_doc!(energy)]
     #[getter]
     fn total_energy(&self) -> f64 {
-        self.energy
+        crate::method_result::total_energy_getter(self)
     }
-
     /// Validation certificate (schema of `RhfResult.certificate`). Periodic
     /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
     /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        pbc_certificate_dict(
-            py,
-            "rks-gamma",
-            &self.jk,
-            self.auxbasis.as_deref(),
-            &self.exxdiv,
-            None,
-            self.converged,
-            self.iterations,
-        )
+        crate::method_result::certificate_getter(py, self)
+    }
+    /// Stage timings and counters (see `timings_dict`).
+    #[getter]
+    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        crate::pbc::timings_dict(py, &self.timings_data)
     }
     /// Analytic nuclear gradient `dE/dR` (natoms x 3, Hartree/Bohr per
     /// cell); `None` unless `with_gradient=True`.
@@ -2119,11 +2105,6 @@ impl PyGammaRksResult {
     /// symmetrised); `None` unless `with_stress=True`.
     fn stress<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
         opt_array(py, &self.stress_data)
-    }
-    /// Stage timings and counters (see `timings_dict`).
-    #[getter]
-    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
-        timings_dict(py, &self.timings_data)
     }
     /// MO energies (Hartree), ascending.
     fn mo_energy<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
@@ -2325,7 +2306,7 @@ fn run_rks_gamma(
 // ─────────────────────────────────────────────── Gamma MP2 / dRPA ──
 
 /// Result of `run_mp2_gamma` / `run_drpa_gamma` (SCF + correlation).
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "GammaCorrelationResult")]
 struct PyGammaCorrelationResult {
     /// `"mp2"` or `"drpa"`.
@@ -2379,6 +2360,8 @@ struct PyGammaCorrelationResult {
     timings_data: PbcTimings,
 }
 
+periodic_method_result!(PyGammaCorrelationResult, |r| capability: format!("{}-gamma", r.method), mesh: None);
+
 #[pymethods]
 impl PyGammaCorrelationResult {
     /// Validation certificate (schema of `RhfResult.certificate`). Periodic
@@ -2386,22 +2369,13 @@ impl PyGammaCorrelationResult {
     /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        pbc_certificate_dict(
-            py,
-            &format!("{}-gamma", self.method),
-            &self.jk,
-            self.auxbasis.as_deref(),
-            &self.exxdiv,
-            None,
-            self.converged,
-            self.iterations,
-        )
+        crate::method_result::certificate_getter(py, self)
     }
     /// Stage timings and counters (see `timings_dict`); the correlation
     /// step is the `"gamma MP2"` / `"gamma dRPA"` stage.
     #[getter]
     fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
-        timings_dict(py, &self.timings_data)
+        crate::pbc::timings_dict(py, &self.timings_data)
     }
     fn __repr__(&self) -> String {
         format!(
@@ -2681,7 +2655,7 @@ impl From<&LindepReport> for LindepTotals {
 }
 
 /// Result of `run_rhf_kpts` / `run_uhf_kpts`. Energies per cell, Hartree.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "KpointScfResult")]
 struct PyKpointScfResult {
     /// `"rhf"`, `"uhf"`, `"uks"`, `"rohf"` or `"roks"`.
@@ -2778,29 +2752,27 @@ struct PyKpointScfResult {
     stress_data: Option<Array2<f64>>,
 }
 
+periodic_method_result!(PyKpointScfResult, |r| capability: format!("{}-kpts", r.method), mesh: Some((r.mesh, r.centring.as_str())));
+
 #[pymethods]
 impl PyKpointScfResult {
-    /// Alias of `energy` (the same value), so callers can read either spelling.
+    #[doc = alias_doc!(energy)]
     #[getter]
     fn total_energy(&self) -> f64 {
-        self.energy
+        crate::method_result::total_energy_getter(self)
     }
-
     /// Validation certificate (schema of `RhfResult.certificate`). Periodic
     /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
     /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        pbc_certificate_dict(
-            py,
-            &format!("{}-kpts", self.method),
-            &self.jk,
-            self.auxbasis.as_deref(),
-            &self.exxdiv,
-            Some((self.mesh, self.centring.as_str())),
-            self.converged,
-            self.iterations,
-        )
+        crate::method_result::certificate_getter(py, self)
+    }
+    /// Coarse stage timings (`"k hcore"`, `"k J/K build"`, `"k SCF"`) and
+    /// the RS-GDF counters (see `timings_dict`).
+    #[getter]
+    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        crate::pbc::timings_dict(py, &self.timings_data)
     }
     /// Analytic nuclear gradient `dE/dR` (natoms x 3, Hartree/Bohr per cell,
     /// rows in the Molecule's atom order; the force on ONE copy of each atom
@@ -2815,12 +2787,6 @@ impl PyKpointScfResult {
     /// unless `with_stress=True`.
     fn stress<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
         opt_array(py, &self.stress_data)
-    }
-    /// Coarse stage timings (`"k hcore"`, `"k J/K build"`, `"k SCF"`) and
-    /// the RS-GDF counters (see `timings_dict`).
-    #[getter]
-    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
-        timings_dict(py, &self.timings_data)
     }
     fn __repr__(&self) -> String {
         format!(
@@ -3398,7 +3364,7 @@ fn check_kpoint_ks_support(
 }
 
 /// Result of `run_rks_kpts`. Energies per cell, Hartree.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "KpointRksResult")]
 struct PyKpointRksResult {
     #[pyo3(get)]
@@ -3454,29 +3420,26 @@ struct PyKpointRksResult {
     stress_data: Option<Array2<f64>>,
 }
 
+periodic_method_result!(PyKpointRksResult, |r| capability: "rks-kpts", mesh: Some((r.mesh, r.centring.as_str())));
+
 #[pymethods]
 impl PyKpointRksResult {
-    /// Alias of `energy` (the same value), so callers can read either spelling.
+    #[doc = alias_doc!(energy)]
     #[getter]
     fn total_energy(&self) -> f64 {
-        self.energy
+        crate::method_result::total_energy_getter(self)
     }
-
     /// Validation certificate (schema of `RhfResult.certificate`). Periodic
     /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
     /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        pbc_certificate_dict(
-            py,
-            "rks-kpts",
-            &self.jk,
-            self.auxbasis.as_deref(),
-            &self.exxdiv,
-            Some((self.mesh, self.centring.as_str())),
-            self.converged,
-            self.iterations,
-        )
+        crate::method_result::certificate_getter(py, self)
+    }
+    /// Stage timings and counters (see `timings_dict`).
+    #[getter]
+    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        crate::pbc::timings_dict(py, &self.timings_data)
     }
     /// Analytic stress `σ_ab = (1/Ω) dE/dε_ab` (3 x 3, Hartree/Bohr³; strain
     /// of the lattice rows AND the atoms, fixed fractional coordinates;
@@ -3491,11 +3454,6 @@ impl PyKpointRksResult {
     /// term on the energy's own grid; `None` unless `with_gradient=True`.
     fn gradient<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
         opt_array(py, &self.gradient_data)
-    }
-    /// Stage timings and counters (see `timings_dict`).
-    #[getter]
-    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
-        timings_dict(py, &self.timings_data)
     }
     fn __repr__(&self) -> String {
         format!(
@@ -3901,7 +3859,7 @@ fn kpoint_open_entry(
     let fname = a.fname;
     if let Some(x) = level_shift {
         if !(x.is_finite() && x >= 0.0) {
-            return Err(PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "{fname}: level_shift must be a finite number >= 0 (Hartree), got {x}"
             )));
         }
@@ -4087,7 +4045,7 @@ fn run_rohf_kpts(
 // ─────────────────────────────────────────────── k-point MP2 / dRPA ──
 
 /// Result of `run_mp2_kpts` / `run_drpa_kpts` (k-point RHF + correlation).
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "KpointCorrelationResult")]
 struct PyKpointCorrelationResult {
     /// `"mp2"` or `"drpa"`.
@@ -4155,6 +4113,8 @@ struct PyKpointCorrelationResult {
     timings_data: PbcTimings,
 }
 
+periodic_method_result!(PyKpointCorrelationResult, |r| capability: format!("{}-kpts", r.method), mesh: Some((r.mesh, r.centring.as_str())));
+
 #[pymethods]
 impl PyKpointCorrelationResult {
     /// Validation certificate (schema of `RhfResult.certificate`). Periodic
@@ -4162,23 +4122,14 @@ impl PyKpointCorrelationResult {
     /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        pbc_certificate_dict(
-            py,
-            &format!("{}-kpts", self.method),
-            &self.jk,
-            self.auxbasis.as_deref(),
-            &self.exxdiv,
-            Some((self.mesh, self.centring.as_str())),
-            self.converged,
-            self.iterations,
-        )
+        crate::method_result::certificate_getter(py, self)
     }
     /// Coarse stage timings (`"k hcore"`, `"k J/K build"`, `"k SCF"`,
     /// dense: `"k correlation pair tensors"`, then `"k MP2"` / `"k dRPA"`)
     /// and the RS-GDF counters (see `timings_dict`).
     #[getter]
     fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
-        timings_dict(py, &self.timings_data)
+        crate::pbc::timings_dict(py, &self.timings_data)
     }
     fn __repr__(&self) -> String {
         format!(
@@ -4526,6 +4477,7 @@ fn run_drpa_kpts(
     mol, lattice, basis_set, auxbasis, range_split=None, sr_column_rotation=None,
     memory_budget_gb=None,
 ))]
+#[allow(clippy::too_many_arguments)]
 fn auto_gdf_omega(
     py: Python<'_>,
     mol: &PyMolecule,
@@ -4621,10 +4573,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 /// The periodic certificate (`ferric_pbc::certificate::pbc_certificate`)
-/// stamped with this build, as a dict.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn pbc_certificate_dict(
-    py: Python<'_>,
+/// stamped with this build.
+pub(crate) fn pbc_certificate_stamped(
     capability: &str,
     jk: &str,
     auxbasis: Option<&str>,
@@ -4632,14 +4582,13 @@ pub(crate) fn pbc_certificate_dict(
     mesh: Option<((usize, usize, usize), &str)>,
     converged: bool,
     iterations: usize,
-) -> PyResult<PyObject> {
-    let c = ferric_pbc::certificate::pbc_certificate(
+) -> ferric_core::certificate::Certificate {
+    ferric_pbc::certificate::pbc_certificate(
         capability, jk, auxbasis, exxdiv, mesh, converged, iterations,
     )
     .with_build(ferric_core::certificate::BuildStamp::new(
         ferric_build_info::VERSION,
         ferric_build_info::COMMIT,
         ferric_build_info::DIRTY,
-    ));
-    crate::certificate_dict(py, &c)
+    ))
 }

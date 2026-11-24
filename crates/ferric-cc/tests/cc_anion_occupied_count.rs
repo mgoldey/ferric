@@ -45,6 +45,7 @@ use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use serde_json::Value;
 
 /// RHF total energy (validation_cc.rs `TOL_RHF`).
@@ -68,12 +69,6 @@ fn workspace_root() -> PathBuf {
         }
     }
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
 }
 
 fn uint(v: &Value, ptr: &str, ctx: &str) -> usize {
@@ -132,7 +127,7 @@ fn load_case(system: &str) -> Case {
     let mut mol = Molecule::parse_xyz(xyz, charge, 1).unwrap();
     mol.apply_ecp(&bs);
     assert!(
-        (mol.nuclear_repulsion() - num(&reference, "/nuclear_repulsion", &ctx)).abs() < 1e-9,
+        (mol.nuclear_repulsion() - num_ctx(&reference, "/nuclear_repulsion", &ctx)).abs() < 1e-9,
         "{ctx}: geometry mismatch"
     );
     assert_eq!(
@@ -148,12 +143,10 @@ fn load_case(system: &str) -> Case {
 
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let cfg = RhfConfig {
-        max_iter: 200,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_max_iter(200)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9);
     let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg)
         .unwrap_or_else(|e| panic!("{ctx}: RHF failed: {e:?}"));
     assert!(rhf.converged && rhf.df_jk.is_none(), "{ctx}: exact RHF");
@@ -161,7 +154,7 @@ fn load_case(system: &str) -> Case {
         &ctx,
         "E_RHF",
         rhf.energy,
-        num(&reference, "/rhf/energy", &ctx),
+        num_ctx(&reference, "/rhf/energy", &ctx),
         TOL_RHF,
     );
 
@@ -193,8 +186,8 @@ fn check_all_electron(c: &Case) {
     let (ctx, r) = (c.ctx.as_str(), &c.reference);
     let op = Operator::coulomb();
     let cfg = cc_cfg(0);
-    let e_ccsd = num(r, "/all_electron/ccsd/e_corr", ctx);
-    let e_t = num(r, "/all_electron/ccsd_t/e_t", ctx);
+    let e_ccsd = num_ctx(r, "/all_electron/ccsd/e_corr", ctx);
+    let e_t = num_ctx(r, "/all_electron/ccsd_t/e_t", ctx);
 
     let sa = ccsd_closed_shell(&c.mol, &c.obs, &c.dfbs, op, &c.rhf, &cfg).unwrap();
     close(
@@ -230,7 +223,7 @@ fn check_frozen_core(c: &Case) {
         ctx,
         "E_CCSD sa frozen core",
         sa.correlation_energy,
-        num(r, "/frozen_core/ccsd/e_corr", ctx),
+        num_ctx(r, "/frozen_core/ccsd/e_corr", ctx),
         TOL_CC,
     );
     let t_sa = ccsd_t_closed_shell(&c.mol, &c.obs, &c.dfbs, op, &c.rhf, &sa, &cfg).unwrap();
@@ -238,7 +231,7 @@ fn check_frozen_core(c: &Case) {
         ctx,
         "E_(T) sa frozen core",
         t_sa,
-        num(r, "/frozen_core/ccsd_t/e_t", ctx),
+        num_ctx(r, "/frozen_core/ccsd_t/e_t", ctx),
         TOL_T,
     );
     let so = ccsd(&c.mol, &c.obs, &c.dfbs, op, &c.rhf, &cfg).unwrap();
@@ -246,7 +239,7 @@ fn check_frozen_core(c: &Case) {
         ctx,
         "E_CCSD so frozen core",
         so.correlation_energy,
-        num(r, "/frozen_core/ccsd/e_corr", ctx),
+        num_ctx(r, "/frozen_core/ccsd/e_corr", ctx),
         TOL_CC,
     );
     let t_so = ccsd_t(&c.mol, &c.obs, &c.dfbs, op, &c.rhf, &so, &cfg).unwrap();
@@ -254,7 +247,7 @@ fn check_frozen_core(c: &Case) {
         ctx,
         "E_(T) so frozen core",
         t_so,
-        num(r, "/frozen_core/ccsd_t/e_t", ctx),
+        num_ctx(r, "/frozen_core/ccsd_t/e_t", ctx),
         TOL_T,
     );
 }

@@ -55,6 +55,7 @@
 //!   attaches; the measured record (C16/erfc/ε=1e-3 crossover, aux-domain
 //!   saturation) is in `wiki/amplitude-threshold-lmp2.md` §§23–26.
 
+use ferric_scf::PreparedAux;
 use ndarray::{s, Array2, Axis};
 use std::collections::HashMap;
 
@@ -1070,6 +1071,32 @@ pub fn require_hf_reference(rhf: &ScfResult, who: &str) -> Result<(), FerricErro
     }
 }
 
+/// [`amplitude_lmp2`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// `op` is the correlation operator (the system's Coulomb operator
+/// unless the caller attenuates it).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+pub fn amplitude_lmp2_on(
+    aux: &PreparedAux<'_>,
+    op: Operator,
+    rhf: &ScfResult,
+    cfg: &AmplitudeLmp2Config,
+) -> Result<AmplitudeLmp2Result, FerricError> {
+    let sys = aux.system();
+    aux.check_restricted_reference(rhf)?;
+    amplitude_lmp2(
+        sys.mol(),
+        sys.basis(),
+        sys.basis_set(),
+        aux.basis(),
+        op,
+        rhf,
+        cfg,
+    )
+}
+
 /// Amplitude-threshold local MP2 with the VV-HV space built internally.
 pub fn amplitude_lmp2(
     mol: &Molecule,
@@ -1787,6 +1814,9 @@ where
     let mut e_dir = 0.0;
     let mut e_exx = 0.0;
     for (p, pb) in rg.pairs.iter().enumerate() {
+        if !rg.owns(p) {
+            continue;
+        }
         let nb = pb.db.len();
         for (r, &a) in pb.da.iter().enumerate() {
             for (c, &b) in pb.db.iter().enumerate() {
@@ -1803,7 +1833,7 @@ where
             }
         }
     }
-    2.0 * e_dir - e_exx
+    rg.sum_over_ranks(2.0 * e_dir - e_exx)
 }
 
 /// The stationary Hylleraas energy
@@ -1872,13 +1902,15 @@ pub fn hylleraas_energy_and_residual(
                 .sum::<f64>()
         })
         .sum();
-    Ok((energy, r2.sqrt()))
+    Ok((energy, rg.sum_over_ranks(r2).sqrt()))
 }
 
 /// `‖P J‖`: the 2-norm of the pattern-projected right-hand side over every
 /// block — the `bnorm` the PCG's `relres` is relative to.
 pub fn pattern_rhs_norm(rg: &Ragged) -> f64 {
-    rg.pairs
+    // a hollow block's empty `j_blk` adds nothing
+    let local = rg
+        .pairs
         .iter()
         .map(|pb| {
             pb.j_blk
@@ -1888,8 +1920,8 @@ pub fn pattern_rhs_norm(rg: &Ragged) -> f64 {
                 .map(|(j, _)| j * j)
                 .sum::<f64>()
         })
-        .sum::<f64>()
-        .sqrt()
+        .sum::<f64>();
+    rg.sum_over_ranks(local).sqrt()
 }
 
 /// A rigorous lower bound on λ_min of the pattern-projected PCG operator
@@ -2839,10 +2871,7 @@ mod tests {
         let obs = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let cfg = RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        };
+        let cfg = RhfConfig::default().with_energy_conv(1e-10);
         let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
         (mol, obs, bs, rhf)
     }

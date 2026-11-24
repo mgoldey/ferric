@@ -32,6 +32,7 @@ Mutations (each turns the named check red):
   - PREF, the Casimir-Polder prefactor, 3/pi -> 3/(2 pi)      [c6-quadrature-converged]
   - kernel screening term 16 -> 4                             [kernel-vs-casida]
   - TS pole omega_A without its factor 4/3                    [ts-pole-reproduces-c6]
+  - alpha_CT with the first atom left out of sum_A           [ct-sum-rule]
 
 Run: python3 scripts/rpa_c6_polarizability_sympy.py  (needs sympy, numpy)
 """

@@ -9,8 +9,9 @@
 //! `AoIntegrals.df_jk(aux)` returns a `DfJk`: the production RI-J/RI-K
 //! fitters, built once and reused for every density.
 //!
-//! MO transforms: `ao2mo(c1, c2, c3, c4)` (integral-direct (pq|rs), never
-//! holding the nao⁴ AO tensor) and `df_mo(aux, c1, c2)` (fitted B^P_pq).
+//! MO transforms: `ao2mo(c1, c2, c3, c4)` ((pq|rs) from the dense AO tensor
+//! when that is small, else integral-direct, never holding nao⁴) and
+//! `df_mo(aux, c1, c2)` (fitted B^P_pq).
 //!
 //! `AoIntegrals.xc_functional(name)` returns an `XcFunctional`: E_xc and V_xc
 //! (closed or spin-polarized) and the XC gradient on the SCF's own grid;
@@ -54,7 +55,7 @@ use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
-use ferric_integrals::engine_pool::eri_precision;
+use ferric_integrals::engine_pool::{eri_precision, for_each_with_engine, EnginePool};
 use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::three_index_source::ThreeIndexSource;
@@ -63,10 +64,10 @@ use ferric_scf::df_j::{DfJ, RiJPrecision};
 use ferric_scf::df_k::DfK;
 use ferric_scf::fock::{JBuilder, KBuilder};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::PreparedSystem;
 use ndarray::{Array2, Array3, Array4, Axis};
 use numpy::{PyArray2, PyArray3, PyArray4, PyArrayDyn, PyReadonlyArray2, PyReadonlyArrayDyn};
 use provenance::certificate_from_blocks;
-use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use rayon::prelude::*;
 
@@ -84,7 +85,7 @@ const DENSITY_SYMMETRY_TOL: f64 = 1e-10;
 fn parse_operator(operator: &str, omega: Option<f64>) -> PyResult<Operator> {
     match (operator, omega) {
         ("coulomb", None) => Ok(Operator::coulomb()),
-        ("coulomb", Some(_)) => Err(PyValueError::new_err(
+        ("coulomb", Some(_)) => Err(crate::errors::input_err(
             "operator='coulomb' takes no omega; use operator='erf' or 'erfc'",
         )),
         ("erf" | "erfc", Some(w)) if w.is_finite() && w > 0.0 => Ok(if operator == "erf" {
@@ -92,10 +93,10 @@ fn parse_operator(operator: &str, omega: Option<f64>) -> PyResult<Operator> {
         } else {
             Operator::erfc(w)
         }),
-        ("erf" | "erfc", _) => Err(PyValueError::new_err(format!(
+        ("erf" | "erfc", _) => Err(crate::errors::input_err(format!(
             "operator='{operator}' requires a positive finite omega (Bohr^-1), got {omega:?}"
         ))),
-        _ => Err(PyValueError::new_err(format!(
+        _ => Err(crate::errors::input_err(format!(
             "unknown operator '{operator}'; expected 'coulomb', 'erf' or 'erfc'"
         ))),
     }
@@ -105,7 +106,9 @@ fn parse_operator(operator: &str, omega: Option<f64>) -> PyResult<Operator> {
 /// error first, because `f64::max` drops NaN and would hide them.
 fn asymmetry(a: &Array2<f64>, what: &str) -> PyResult<f64> {
     if !a.iter().all(|v| v.is_finite()) {
-        return Err(PyValueError::new_err(format!("{what} contains NaN or inf")));
+        return Err(crate::errors::input_err(format!(
+            "{what} contains NaN or inf"
+        )));
     }
     Ok(a.iter()
         .zip(a.t().iter())
@@ -125,7 +128,7 @@ fn stack(m: Vec<Array2<f64>>, n: usize) -> Array3<f64> {
 fn checked_square(m: PyReadonlyArray2<'_, f64>, n: usize, what: &str) -> PyResult<Array2<f64>> {
     let m = m.as_array().to_owned();
     if m.dim() != (n, n) {
-        return Err(PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "{what} has shape {:?}, expected ({n}, {n})",
             m.dim()
         )));
@@ -141,7 +144,7 @@ fn checked_density(density: PyReadonlyArray2<'_, f64>, n: usize) -> PyResult<Arr
     let d = checked_square(density, n, "density")?;
     let asym = asymmetry(&d, "density")?;
     if asym > DENSITY_SYMMETRY_TOL {
-        return Err(PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "density is not symmetric (max |D - D^T| = {asym:.3e}); the J/K builds fold ERI \
              permutational symmetry and need a symmetric density"
         )));
@@ -153,28 +156,143 @@ fn checked_density(density: PyReadonlyArray2<'_, f64>, n: usize) -> PyResult<Arr
 fn checked_coeffs(c: PyReadonlyArray2<'_, f64>, nao: usize, what: &str) -> PyResult<Array2<f64>> {
     let c = c.as_array().to_owned();
     if c.nrows() != nao {
-        return Err(PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "{what} has shape {:?}, expected ({nao}, k)",
             c.dim()
         )));
     }
     if !c.iter().all(|v| v.is_finite()) {
-        return Err(PyValueError::new_err(format!("{what} contains NaN or inf")));
+        return Err(crate::errors::input_err(format!(
+            "{what} contains NaN or inf"
+        )));
     }
     Ok(c)
 }
 
-/// (μν|rs) for every AO pair μν and the ket MO pair rs, from one shell pair
-/// (s1, s2) of the bra: all kets (s3 ≥ s4) are computed, scattered into
-/// `(n1·n2, nao, nao)`, and transformed with `c3`/`c4`. Returns the block as
-/// `(n1·n2, n3·n4)` rows in (a, b) order within the shell pair.
+/// At or below this many f64 words (32 MiB) of in-core peak, `ao2mo` takes
+/// the in-core path whatever the direct path would hold: a nao⁴ AO tensor
+/// this small is not a memory question, and computing each unique quartet
+/// once beats twice.
+const AO2MO_INCORE_FLOOR_WORDS: usize = (32 << 20) / 8;
+
+/// Peak words of a pipeline in which stage `i` is built from stage `i - 1`,
+/// which is then freed: the largest pair of adjacent stages.
+fn pipeline_peak(stages: &[usize]) -> usize {
+    match stages {
+        [only] => *only,
+        _ => stages.windows(2).map(|w| w[0] + w[1]).max().unwrap_or(0),
+    }
+}
+
+/// `ao2mo`'s two algorithms, with the stage sizes (f64 words) each holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ao2moPath {
+    /// The 8-fold dense (μν|λσ), then four GEMMs.
+    InCore,
+    /// Bra shell pairs, each against every ket: never holds nao⁴.
+    Direct,
+}
+
+/// Stage sizes of `path` for `nao` AOs and orbital widths `k`; `pair_rows`
+/// is Σ over bra shell pairs s1 ≥ s2 of n1·n2 (the direct path's collected
+/// blocks). Per-worker scratch (one shell pair's (n1·n2, nao, nao) block per
+/// rayon thread) is not counted.
+fn ao2mo_stages(path: Ao2moPath, nao: usize, k: [usize; 4], pair_rows: usize) -> Vec<usize> {
+    let ket = k[2] * k[3];
+    let tail = [nao * nao * ket, k[0] * nao * ket, k[0] * k[1] * ket];
+    let head = match path {
+        // dense AO, then (nao², λ, r) and its transpose (nao², r, λ).
+        Ao2moPath::InCore => vec![nao.pow(4), nao.pow(3) * k[2], nao.pow(3) * k[2]],
+        Ao2moPath::Direct => vec![pair_rows * ket],
+    };
+    head.into_iter().chain(tail).collect()
+}
+
+/// The path `ao2mo` takes and its peak words: in-core when that peak is
+/// under the 32 MiB floor or strictly below the direct one. Equal peaks (all
+/// four widths = nao: both are 2·nao⁴) go direct, which measured faster
+/// there from nao ~41 up (water/cc-pVTZ, nao 58: 540 vs 626 ms on one
+/// thread); in-core was ~2x faster at nao 24.
+fn ao2mo_plan(nao: usize, k: [usize; 4], pair_rows: usize) -> (Ao2moPath, usize) {
+    let incore = pipeline_peak(&ao2mo_stages(Ao2moPath::InCore, nao, k, pair_rows));
+    let direct = pipeline_peak(&ao2mo_stages(Ao2moPath::Direct, nao, k, pair_rows));
+    if incore <= AO2MO_INCORE_FLOOR_WORDS || incore < direct {
+        (Ao2moPath::InCore, incore)
+    } else {
+        (Ao2moPath::Direct, direct)
+    }
+}
+
+/// t[R, a, b] = Σ_λσ ca_λa cb_σb g[R, λ, σ], with `g` viewed as
+/// (R, nao, nao) and SYMMETRIC in (λ, σ): both callers fill both ket
+/// triangles. The symmetry lets the first GEMM contract σ with `ca`
+/// (x[R, λ, a] = Σ_σ g[R, σ, λ] ca_σa); `x` is transposed to (R, a, λ) and
+/// a second GEMM contracts λ with `cb`. Two GEMMs, no per-R loop.
+fn ket_transform(g: Array2<f64>, ca: &Array2<f64>, cb: &Array2<f64>) -> Array2<f64> {
+    let (rows, n) = (g.nrows(), ca.nrows());
+    let (ma, mb) = (ca.ncols(), cb.ncols());
+    let x = g
+        .into_shape_with_order((rows * n, n))
+        .expect("contiguous")
+        .dot(ca)
+        .into_shape_with_order((rows, n, ma))
+        .expect("contiguous");
+    let xt = x.permuted_axes([0, 2, 1]).as_standard_layout().into_owned();
+    xt.into_shape_with_order((rows * ma, n))
+        .expect("contiguous")
+        .dot(cb)
+        .into_shape_with_order((rows, ma * mb))
+        .expect("contiguous")
+}
+
+/// out[p, q, c] = Σ_μν c1_μp c2_νq half[μ, ν, c], with `half` viewed as
+/// (nao, nao, cols): C1ᵀ over μ in one GEMM, then C2ᵀ over ν per p (each a
+/// (k2, nao)·(nao, cols) GEMM, large whenever cols is).
+fn bra_transform(half: Array2<f64>, c1: &Array2<f64>, c2: &Array2<f64>) -> Array3<f64> {
+    let n = c1.nrows();
+    let cols = half.ncols();
+    let (m1, m2) = (c1.ncols(), c2.ncols());
+    let t1 = c1
+        .t()
+        .dot(
+            &half
+                .into_shape_with_order((n, n * cols))
+                .expect("contiguous"),
+        )
+        .into_shape_with_order((m1, n, cols))
+        .expect("contiguous");
+    let mut out = Array3::<f64>::zeros((m1, m2, cols));
+    for (p, slab) in t1.axis_iter(Axis(0)).enumerate() {
+        out.index_axis_mut(Axis(0), p).assign(&c2.t().dot(&slab));
+    }
+    out
+}
+
+/// One shell quartet, or the engine's refusal as an error.
+fn quartet<'e>(
+    eng: &'e mut Engine,
+    prep: &PreparedBasis,
+    [s1, s2, s3, s4]: [usize; 4],
+) -> Result<Option<&'e [f64]>, FerricError> {
+    eng.compute_quartet_checked(prep, s1, s2, s3, s4)
+        .map_err(|status| {
+            FerricError::Libint(format!(
+                "ERI engine refused shell quartet ({s1},{s2}|{s3},{s4}): status {status}"
+            ))
+        })
+}
+
+/// (μν|rs) for every AO pair μν of the bra shell pair (s1, s2) and the ket
+/// MO pair rs: all kets (s3 ≥ s4) are computed, scattered into
+/// `(n1·n2, nao, nao)` (both triangles), and ket-transformed with `c3`/`c4`.
+/// Returns `(n1·n2, k3·k4)` rows in (a, b) order within the shell pair.
 fn half_transformed_pair(
     eng: &mut Engine,
     prep: &PreparedBasis,
     (s1, s2): (usize, usize),
     c3: &Array2<f64>,
     c4: &Array2<f64>,
-) -> Result<Array2<f64>, String> {
+) -> Result<Array2<f64>, FerricError> {
     let n = prep.nbasis();
     let dims = prep.shell_dims();
     let offs = prep.shell_offsets();
@@ -182,14 +300,8 @@ fn half_transformed_pair(
     let mut g = Array3::<f64>::zeros((n1 * n2, n, n));
     for s3 in 0..prep.nshells() {
         for s4 in 0..=s3 {
-            let block = match eng.compute_quartet_checked(prep, s1, s2, s3, s4) {
-                Ok(Some(b)) => b,
-                Ok(None) => continue,
-                Err(status) => {
-                    return Err(format!(
-                        "ERI engine refused shell quartet ({s1},{s2}|{s3},{s4}): status {status}"
-                    ))
-                }
+            let Some(block) = quartet(eng, prep, [s1, s2, s3, s4])? else {
+                continue;
             };
             let (n3, n4) = (dims[s3], dims[s4]);
             for ab in 0..n1 * n2 {
@@ -204,120 +316,149 @@ fn half_transformed_pair(
             }
         }
     }
-    let (m3, m4) = (c3.ncols(), c4.ncols());
-    // (ab·λ, σ) · C4 -> (ab, λ, s); then C3ᵀ per ab -> (ab, r, s).
-    let gs = g
-        .into_shape_with_order((n1 * n2 * n, n))
-        .expect("contiguous")
-        .dot(c4)
-        .into_shape_with_order((n1 * n2, n, m4))
+    let g = g
+        .into_shape_with_order((n1 * n2, n * n))
         .expect("contiguous");
-    let mut out = Array2::<f64>::zeros((n1 * n2, m3 * m4));
-    for (ab, slab) in gs.axis_iter(Axis(0)).enumerate() {
-        let rs = c3.t().dot(&slab);
-        out.row_mut(ab)
-            .assign(&rs.into_shape_with_order(m3 * m4).expect("contiguous"));
-    }
-    Ok(out)
+    Ok(ket_transform(g, c3, c4))
 }
 
-/// (pq|rs) = Σ C1_μp C2_νq C3_λr C4_σs (μν|λσ), integral-direct: one pass
-/// over bra shell pairs (parallel, 2-fold bra symmetry, 2-fold ket symmetry)
-/// builds the half-transformed `(nao, nao, n3·n4)`, then two GEMMs finish it.
-fn ao2mo_direct(
+/// Bra shell pairs s1 ≥ s2, in order.
+fn bra_pairs(nsh: usize) -> Vec<(usize, usize)> {
+    (0..nsh)
+        .flat_map(|s1| (0..=s1).map(move |s2| (s1, s2)))
+        .collect()
+}
+
+/// Σ over bra shell pairs s1 ≥ s2 of n1·n2: the rows the direct path holds.
+fn bra_pair_rows(prep: &PreparedBasis) -> usize {
+    let dims = prep.shell_dims();
+    bra_pairs(prep.nshells())
+        .iter()
+        .map(|&(s1, s2)| dims[s1] * dims[s2])
+        .sum()
+}
+
+/// (pq|rs) = Σ C1_μp C2_νq C3_λr C4_σs (μν|λσ), shape (k1, k2, k3, k4), by
+/// the path `ao2mo_plan` picked. Both paths build the half-transformed
+/// (μν|rs) as `(nao², k3·k4)` and finish with the same `bra_transform`.
+fn ao2mo_transform(
     op: Operator,
     prep: &PreparedBasis,
+    path: Ao2moPath,
     c: [&Array2<f64>; 4],
-) -> Result<Array4<f64>, String> {
+) -> Result<Array4<f64>, FerricError> {
+    let n = prep.nbasis();
+    let half = match path {
+        Ao2moPath::InCore => {
+            let eri = dense_eri(op, prep)?
+                .into_shape_with_order((n * n, n * n))
+                .expect("contiguous");
+            ket_transform(eri, c[2], c[3])
+        }
+        Ao2moPath::Direct => half_transformed_direct(op, prep, c[2], c[3])?,
+    };
+    let k = [c[0].ncols(), c[1].ncols(), c[2].ncols(), c[3].ncols()];
+    Ok(bra_transform(half, c[0], c[1])
+        .into_shape_with_order(k)
+        .expect("contiguous"))
+}
+
+/// Integral-direct half transform (μν|rs) as `(nao², k3·k4)`: one parallel
+/// pass over bra shell pairs with pooled engines (2-fold bra, 2-fold ket symmetry; each unique
+/// quartet is computed twice, once from each side of the bra–ket swap).
+fn half_transformed_direct(
+    op: Operator,
+    prep: &PreparedBasis,
+    c3: &Array2<f64>,
+    c4: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
     let n = prep.nbasis();
     let offs = prep.shell_offsets();
     let dims = prep.shell_dims();
-    let (m1, m2, m3, m4) = (c[0].ncols(), c[1].ncols(), c[2].ncols(), c[3].ncols());
-    let pairs: Vec<(usize, usize)> = (0..prep.nshells())
-        .flat_map(|s1| (0..=s1).map(move |s2| (s1, s2)))
-        .collect();
-    let blocks = pairs
+    let pool = EnginePool::new(op, prep, eri_precision())?;
+    let blocks = bra_pairs(prep.nshells())
         .par_iter()
-        .map_init(
-            || Engine::new_2e(op, prep, eri_precision()),
-            |eng, &pair| -> Result<_, String> {
-                let eng = eng.as_mut().map_err(|e| e.to_string())?;
-                Ok((pair, half_transformed_pair(eng, prep, pair, c[2], c[3])?))
-            },
-        )
-        .collect::<Result<Vec<_>, String>>()?;
-    let mut half = Array3::<f64>::zeros((n, n, m3 * m4));
+        .map(|&pair| -> Result<_, FerricError> {
+            let blk = pool.with(|eng| half_transformed_pair(eng, prep, pair, c3, c4))?;
+            Ok((pair, blk))
+        })
+        .collect::<Result<Vec<_>, FerricError>>()?;
+    let mut half = Array2::<f64>::zeros((n * n, c3.ncols() * c4.ncols()));
     for ((s1, s2), blk) in blocks {
         for a in 0..dims[s1] {
             for b in 0..dims[s2] {
                 let row = blk.row(a * dims[s2] + b);
                 let (mu, nu) = (offs[s1] + a, offs[s2] + b);
-                half.slice_mut(ndarray::s![mu, nu, ..]).assign(&row);
-                half.slice_mut(ndarray::s![nu, mu, ..]).assign(&row);
+                half.row_mut(mu * n + nu).assign(&row);
+                half.row_mut(nu * n + mu).assign(&row);
             }
         }
     }
-    // C1ᵀ over μ, then C2ᵀ over ν per p.
-    let t1 = c[0]
-        .t()
-        .dot(
-            &half
-                .into_shape_with_order((n, n * m3 * m4))
-                .expect("contiguous"),
-        )
-        .into_shape_with_order((m1, n, m3 * m4))
-        .expect("contiguous");
-    let mut out = Array3::<f64>::zeros((m1, m2, m3 * m4));
-    for (p, slab) in t1.axis_iter(Axis(0)).enumerate() {
-        out.index_axis_mut(Axis(0), p).assign(&c[1].t().dot(&slab));
-    }
-    Ok(out
-        .into_shape_with_order((m1, m2, m3, m4))
-        .expect("contiguous"))
+    Ok(half)
 }
 
-/// Dense (μν|λσ) over every shell quartet, scattered by 8-fold symmetry.
-///
-/// Serial on purpose: this is the nao⁴ reference tensor for small systems,
-/// not a production path (`jk()` is the production path).
-fn dense_eri(op: Operator, prep: &PreparedBasis) -> PyResult<Array4<f64>> {
+/// Unique shell quartets below which `dense_eri` runs serially. Measured
+/// 2026-11-19 on a loaded box (load ~13 on 6 cores): water/cc-pVDZ (3k
+/// quartets) took 22 ms serial vs 56 ms at 6 rayon threads; water/cc-pVTZ
+/// (32k) 221 ms serial vs 130 ms.
+const PAR_DENSE_ERI_QUARTET_THRESHOLD: usize = 10_000;
+
+/// Dense (μν|λσ) over every unique shell quartet, scattered by 8-fold
+/// symmetry. Parallel over bra shell pairs above
+/// [`PAR_DENSE_ERI_QUARTET_THRESHOLD`] with one pooled engine per worker
+/// (`for_each_with_engine`), serial below it. Deterministic: every element
+/// is the image of exactly one unique quartet, so each is written by one
+/// task with one value whatever the thread count or schedule.
+fn dense_eri(op: Operator, prep: &PreparedBasis) -> Result<Array4<f64>, FerricError> {
     let n = prep.nbasis();
-    let nsh = prep.nshells();
-    let dims = prep.shell_dims();
-    let offs = prep.shell_offsets();
-    let mut eng = Engine::new_2e(op, prep, eri_precision()).map_err(make_err)?;
     let mut eri = Array4::<f64>::zeros((n, n, n, n));
-    for s1 in 0..nsh {
-        for s2 in 0..=s1 {
-            let p12 = s1 * (s1 + 1) / 2 + s2;
-            for s3 in 0..nsh {
-                for s4 in 0..=s3 {
-                    if s3 * (s3 + 1) / 2 + s4 > p12 {
-                        continue;
-                    }
-                    let block = match eng.compute_quartet_checked(prep, s1, s2, s3, s4) {
-                        Ok(Some(b)) => b,
-                        Ok(None) => continue,
-                        Err(status) => {
-                            return Err(make_err(format!(
-                                "ERI engine refused shell quartet ({s1},{s2}|{s3},{s4}): status {status}"
-                            )))
-                        }
-                    };
-                    let (n1, n2, n3, n4) = (dims[s1], dims[s2], dims[s3], dims[s4]);
-                    for a in 0..n1 {
-                        for b in 0..n2 {
-                            for c in 0..n3 {
-                                for d in 0..n4 {
-                                    let v = block[((a * n2 + b) * n3 + c) * n4 + d];
-                                    let (i, j) = (offs[s1] + a, offs[s2] + b);
-                                    let (k, l) = (offs[s3] + c, offs[s4] + d);
-                                    for (p, q) in [(i, j), (j, i)] {
-                                        for (r, s) in [(k, l), (l, k)] {
-                                            eri[[p, q, r, s]] = v;
-                                            eri[[r, s, p, q]] = v;
-                                        }
-                                    }
+    let base = eri.as_mut_ptr() as usize;
+    let pairs = bra_pairs(prep.nshells());
+    let parallel = pairs.len() * (pairs.len() + 1) / 2 >= PAR_DENSE_ERI_QUARTET_THRESHOLD;
+    for_each_with_engine(
+        parallel,
+        pairs.len(),
+        || Engine::new_2e(op, prep, eri_precision()),
+        |eng, p12| scatter_bra_pair(eng, prep, &pairs, p12, base),
+    )?;
+    Ok(eri)
+}
+
+/// Every unique quartet (s1 s2|s3 s4) with bra pair `pairs[p12]` and ket
+/// pair at or below it, written with its 8 images into the (nao,)*4 tensor
+/// at `base`.
+fn scatter_bra_pair(
+    eng: &mut Engine,
+    prep: &PreparedBasis,
+    pairs: &[(usize, usize)],
+    p12: usize,
+    base: usize,
+) -> Result<(), FerricError> {
+    let n = prep.nbasis();
+    let (dims, offs) = (prep.shell_dims(), prep.shell_offsets());
+    let at = |p: usize, q: usize, r: usize, s: usize| ((p * n + q) * n + r) * n + s;
+    let (s1, s2) = pairs[p12];
+    for &(s3, s4) in &pairs[..=p12] {
+        let Some(block) = quartet(eng, prep, [s1, s2, s3, s4])? else {
+            continue;
+        };
+        let (n1, n2, n3, n4) = (dims[s1], dims[s2], dims[s3], dims[s4]);
+        for a in 0..n1 {
+            for b in 0..n2 {
+                for c in 0..n3 {
+                    for d in 0..n4 {
+                        let v = block[((a * n2 + b) * n3 + c) * n4 + d];
+                        let (i, j) = (offs[s1] + a, offs[s2] + b);
+                        let (k, l) = (offs[s3] + c, offs[s4] + d);
+                        for (p, q) in [(i, j), (j, i)] {
+                            for (r, s) in [(k, l), (l, k)] {
+                                // SAFETY: (p,q,r,s) and (r,s,p,q) are images
+                                // of the unique quartet (s1 s2|s3 s4), which
+                                // only this task computes; indices are < n.
+                                unsafe {
+                                    let e = base as *mut f64;
+                                    *e.add(at(p, q, r, s)) = v;
+                                    *e.add(at(r, s, p, q)) = v;
                                 }
                             }
                         }
@@ -326,7 +467,7 @@ fn dense_eri(op: Operator, prep: &PreparedBasis) -> PyResult<Array4<f64>> {
             }
         }
     }
-    Ok(eri)
+    Ok(())
 }
 
 /// AO integrals and J/K builds for one molecule in one basis.
@@ -334,7 +475,7 @@ fn dense_eri(op: Operator, prep: &PreparedBasis) -> PyResult<Array4<f64>> {
 /// Construct once per geometry; every method reuses the prepared basis. ECPs
 /// carried by the basis are applied exactly as `run_rhf` applies them
 /// (`hcore()` includes V_ECP; `nelec` counts valence electrons).
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "AoIntegrals")]
 struct PyAoIntegrals {
     mol: Molecule,
@@ -423,7 +564,7 @@ impl PyAoIntegrals {
                 .zip(&self.mol.atoms)
                 .all(|(a, b)| a.z == b.z && [a.x, a.y, a.zpos] == [b.x, b.y, b.zpos]);
         if !same_atoms || xc.bs.name != self.bs.name || xc.prep.nbasis() != self.prep.nbasis() {
-            return Err(PyValueError::new_err(
+            return Err(crate::errors::input_err(
                 "xc was built by another AoIntegrals (different molecule or basis)",
             ));
         }
@@ -495,8 +636,7 @@ impl PyAoIntegrals {
 impl PyAoIntegrals {
     #[new]
     fn new(mol: &PyMolecule, basis_set: &PyBasisSet) -> PyResult<Self> {
-        let mut emol = mol.inner.clone();
-        emol.apply_ecp(&basis_set.inner);
+        let emol = crate::system::ecp_molecule(mol, basis_set);
         let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
         let log = provenance::Log::new(&emol, &basis_set.inner);
         Ok(PyAoIntegrals {
@@ -593,13 +733,13 @@ impl PyAoIntegrals {
         let n = self.prep.nbasis() as f64;
         let gb = n.powi(4) * 8.0 / f64::from(1u32 << 30);
         if gb > max_gb {
-            return Err(PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "dense ERI tensor needs {gb:.2} GiB > max_gb={max_gb}; use jk() or eri3()/eri2(), \
                  or raise max_gb"
             )));
         }
         let prep = &self.prep;
-        let eri = py.allow_threads(|| dense_eri(op, prep))?;
+        let eri = py.allow_threads(|| dense_eri(op, prep)).map_err(make_err)?;
         self.log.note(self.op_use("eri", operator, omega, None));
         Ok(PyArray4::from_owned_array(py, eri))
     }
@@ -744,9 +884,19 @@ impl PyAoIntegrals {
     /// MO-basis ERIs (pq|rs) = Σ C1_μp C2_νq C3_λr C4_σs (μν|λσ), shape
     /// (k1, k2, k3, k4), chemists' notation.
     ///
-    /// Integral-direct: the nao⁴ AO tensor is never stored; peak memory is
-    /// the half-transformed nao²·k3·k4 plus the result, and above `max_gb`
-    /// GiB it raises `ValueError`. Put the smaller orbital sets in `c3`/`c4`.
+    /// Two algorithms, picked by peak memory (f64 words, K = k3·k4):
+    ///
+    /// * in-core: the 8-fold dense AO tensor (each unique quartet computed
+    ///   once), then four GEMMs. Peak max(nao⁴ + nao³·k3, 2·nao³·k3,
+    ///   nao³·k3 + nao²·K, nao²·K + k1·nao·K, k1·nao·K + k1·k2·K).
+    /// * integral-direct: never holds nao⁴; each unique quartet is computed
+    ///   twice. Peak max(P·K + nao²·K, nao²·K + k1·nao·K, k1·nao·K +
+    ///   k1·k2·K), P = Σ_{s1≥s2} n1·n2 ≈ nao²/2.
+    ///
+    /// In-core runs when its peak is at most 32 MiB or strictly below the
+    /// direct one. Above `max_gb` GiB for the chosen path it raises
+    /// `ValueError`.
+    /// Put the smaller orbital sets in `c3`/`c4`.
     #[pyo3(signature = (c1, c2, c3, c4, operator="coulomb", omega=None, max_gb=DEFAULT_ERI_MAX_GB))]
     #[allow(clippy::too_many_arguments)]
     fn ao2mo<'py>(
@@ -768,18 +918,18 @@ impl PyAoIntegrals {
             checked_coeffs(c3, n, "c3")?,
             checked_coeffs(c4, n, "c4")?,
         ];
-        let k: Vec<f64> = c.iter().map(|m| m.ncols() as f64).collect();
-        let words = (n * n) as f64 * k[2] * k[3] + k.iter().product::<f64>();
-        let gb = words * 8.0 / f64::from(1u32 << 30);
+        let k = [c[0].ncols(), c[1].ncols(), c[2].ncols(), c[3].ncols()];
+        let (path, words) = ao2mo_plan(n, k, bra_pair_rows(&self.prep));
+        let gb = words as f64 * 8.0 / f64::from(1u32 << 30);
         if gb > max_gb {
-            return Err(PyValueError::new_err(format!(
-                "ao2mo needs {gb:.2} GiB > max_gb={max_gb} (half-transformed nao^2*k3*k4 plus \
-                 the result); use df_mo(), or raise max_gb"
+            return Err(crate::errors::input_err(format!(
+                "ao2mo needs {gb:.2} GiB > max_gb={max_gb} (peak of its {path:?} path); use \
+                 df_mo(), or raise max_gb"
             )));
         }
         let prep = &self.prep;
         let out = py
-            .allow_threads(|| ao2mo_direct(op, prep, [&c[0], &c[1], &c[2], &c[3]]))
+            .allow_threads(|| ao2mo_transform(op, prep, path, [&c[0], &c[1], &c[2], &c[3]]))
             .map_err(make_err)?;
         self.log.note(self.op_use("ao2mo", operator, omega, None));
         Ok(PyArray4::from_owned_array(py, out))
@@ -873,8 +1023,8 @@ impl PyAoIntegrals {
     /// `aux` differentiates the fits `df_jk(aux, operator, omega)` builds
     /// instead (the energy of an SCF with `df_j_aux=df_k_aux=aux`): the
     /// 3-index integrals, the auxiliary-basis centres and the metric (RI-J:
-    /// Cholesky inverse; RI-K: DfK's truncated V^-1/2, see
-    /// ferric_scf::df_gradient).
+    /// Cholesky inverse; RI-K: the metric (pseudo-)inverse DfK fits, its
+    /// Cholesky L^-1 or truncated V^-1/2, see ferric_scf::df_gradient).
     #[pyo3(signature = (density, operator="coulomb", omega=None, aux=None, memory_budget_gb=None))]
     fn grad_jk<'py>(
         &self,
@@ -1086,7 +1236,7 @@ impl PyAoIntegrals {
             .allow_threads(|| {
                 ferric_dft::ks::KsXc::new(mol, bs, functional, &grids.main, &grids.nlc)
             })
-            .map_err(|e| PyValueError::new_err(format!("functional '{functional}': {e}")))?;
+            .map_err(|e| crate::errors::input_err(format!("functional '{functional}': {e}")))?;
         let k = closed.k_mix();
         let x = PyXcFunctional {
             name: functional.to_string(),
@@ -1329,9 +1479,7 @@ impl PyAoIntegrals {
         let h = py
             .allow_threads(|| ferric_scf::x2c::x2c1e_hcore(mol, bs, c))
             .map_err(|e| match e {
-                FerricError::Basis(_) | FerricError::General(_) => {
-                    PyValueError::new_err(e.to_string())
-                }
+                FerricError::Basis(_) | FerricError::General(_) => crate::errors::input_err(e),
                 other => make_err(other),
             })?;
         self.log.note(
@@ -1378,7 +1526,7 @@ struct PyDfJk {
 impl PyDfJk {
     fn build_j(&mut self, d: &Array2<f64>) -> PyResult<Array2<f64>> {
         let dfj = self.j.as_mut().map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!(
+            crate::make_err(format!(
                 "RI-J is unavailable for this operator/aux basis ({e}); k() still works"
             ))
         })?;
@@ -1500,7 +1648,7 @@ impl PyXcFunctional {
     )> {
         let cfg = &self.grids.main;
         ferric_scf::hessian::xc_blocks::check(&self.mol, &self.bs, &self.name, cfg)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            .map_err(crate::errors::input_err)?;
         Ok((&self.mol, &self.prep, &self.name, cfg))
     }
     fn open(&mut self) -> PyResult<&ferric_dft::ks::KsXcUks> {
@@ -2019,14 +2167,14 @@ impl SpinFrame {
     fn new(c: &Array2<f64>, e: &[f64], nocc: usize, what: &str) -> PyResult<Self> {
         let nmo = c.ncols();
         if e.len() != nmo || nocc == 0 || nocc >= nmo {
-            return Err(PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "{what}: need mo_energy of length {nmo} (got {}) and 0 < nocc < {nmo} (got {nocc})",
                 e.len()
             )));
         }
         let denom = Array2::from_shape_fn((nmo - nocc, nocc), |(a, i)| e[nocc + a] - e[i]);
         if denom.iter().any(|&x| !(x > 0.0)) {
-            return Err(PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "{what}: e_a - e_i must be positive for every virtual/occupied pair (not an \
                  aufbau reference, or orbital energies out of order)"
             )));
@@ -2171,7 +2319,7 @@ fn checked_rotations(
     u: Vec<PyReadonlyArray2<'_, f64>>,
 ) -> PyResult<Vec<Array2<f64>>> {
     if u.len() != frames.len() {
-        return Err(PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "expected {} rotation matrix(es), got {}",
             frames.len(),
             u.len()
@@ -2184,14 +2332,14 @@ fn checked_rotations(
         .map(|(sp, (f, x))| {
             let x = x.as_array().to_owned();
             if x.dim() != f.denom.dim() {
-                return Err(PyValueError::new_err(format!(
+                return Err(crate::errors::input_err(format!(
                     "rotation {sp} has shape {:?}, expected (nvir, nocc) = {:?}",
                     x.dim(),
                     f.denom.dim()
                 )));
             }
             if !x.iter().all(|v| v.is_finite()) {
-                return Err(PyValueError::new_err("rotation contains NaN or inf"));
+                return Err(crate::errors::input_err("rotation contains NaN or inf"));
             }
             Ok(x)
         })
@@ -2207,7 +2355,7 @@ fn checked_rotations(
 /// U with `(A + B) U = rhs`: for a one-electron perturbation h1 use
 /// `rhs = -C_vᵀ h1 C_o`, then `D1 = density(U)`; for a Z-vector, the
 /// Lagrangian. Exact four-centre J/K, or RI-J/RI-K with `cphf(aux=...)`.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "Cphf")]
 struct PyCphf {
     resp: Response,
@@ -2277,7 +2425,7 @@ fn check_tol(tol: f64) -> PyResult<()> {
     if tol.is_finite() && tol > 0.0 {
         return Ok(());
     }
-    Err(PyValueError::new_err(format!(
+    Err(crate::errors::input_err(format!(
         "solve: tol must be positive and finite, got {tol}"
     )))
 }
@@ -2286,7 +2434,7 @@ fn check_tol(tol: f64) -> PyResult<()> {
 /// are the pair `(U_a, U_b)`, `density` gives `D1_s = C_vs U_s C_osᵀ + h.c.`
 /// (unit occupation) and `F1_s = J(D1_a + D1_b) - exchange mix·K(D1_s) +
 /// f_xc_s`.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "Ucphf")]
 struct PyUcphf {
     resp: Response,
@@ -2497,7 +2645,7 @@ pub(crate) fn checked_dm0(
     let what = format!("{who}: dm0");
     let d = checked_start_density(dm0, &s, nelec, &what)?;
     d.map_err(|(count, tol)| {
-        PyValueError::new_err(format!(
+        crate::errors::input_err(format!(
             "{what} holds tr(D S) = {count:.12} electrons, the system has {nelec} \
              (|difference| above the round-off bound n^2 eps sum|D*S| = {tol:.3e}); \
              dm0 must be the total closed-shell density for this molecule, charge and basis"
@@ -2521,7 +2669,7 @@ pub(crate) fn checked_dm0_spin(
         return Ok(None);
     };
     let pair = || {
-        PyValueError::new_err(format!(
+        crate::errors::input_err(format!(
             "{who}: dm0 must be a pair (D_alpha, D_beta) of (n, n) arrays; \
              for a closed-shell total density D pass (D / 2, D / 2)"
         ))
@@ -2540,7 +2688,7 @@ pub(crate) fn checked_dm0_spin(
         let what = format!("{who}: dm0[{i}] ({name})");
         let d: PyReadonlyArray2<'_, f64> = dm0.get_item(i)?.extract().map_err(|_| pair())?;
         let d = checked_start_density(d, &s, n_s as f64, &what)?.map_err(|(count, tol)| {
-            PyValueError::new_err(format!(
+            crate::errors::input_err(format!(
                 "{what} holds tr(D S) = {count:.12} electrons, the system has {n_s} \
                  (|difference| above the round-off bound n^2 eps sum|D*S| = {tol:.3e}); \
                  dm0 must be (D_alpha, D_beta) for this molecule, charge, multiplicity and basis"
@@ -2568,7 +2716,7 @@ fn checked_start_density(
     let asym = asymmetry(&d, what)?;
     let tol = roundoff_symmetry_tol(&d);
     if !within_roundoff_symmetry(&d, asym) {
-        return Err(PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "{what} is not symmetric (max |D - D^T| = {asym:.3e}, above the round-off \
              bound 4 n eps ||D||_F = {tol:.3e})"
         )));
@@ -2577,7 +2725,7 @@ fn checked_start_density(
     let count = d.iter().zip(s.iter()).map(|(x, y)| x * y).sum::<f64>();
     let tol = electron_count_tol(&d, s);
     if !count.is_finite() || !tol.is_finite() {
-        return Err(PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "{what}: tr(D S) = {count} or its round-off bound {tol} is not finite; \
              the density entries overflow the electron-count check"
         )));
@@ -2642,7 +2790,7 @@ impl PyFockHook {
         let v = v.as_array().to_owned();
         let n = self.nao;
         if v.dim() != (n, n) {
-            return Err(PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "fock_hook returned {name} of shape {:?}, expected ({n}, {n})",
                 v.dim()
             )));
@@ -2650,7 +2798,7 @@ impl PyFockHook {
         let asym = asymmetry(&v, &format!("fock_hook's {name}"))?;
         let tol = roundoff_symmetry_tol(&v);
         if !within_roundoff_symmetry(&v, asym) {
-            return Err(PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "fock_hook returned a non-symmetric {name} (max |{name} - {name}^T| = {asym:.3e}, \
                  above the round-off bound 4 n eps ||{name}||_F = {tol:.3e})"
             )));
@@ -2662,7 +2810,7 @@ impl PyFockHook {
         if e.is_finite() {
             Ok(e)
         } else {
-            Err(PyValueError::new_err(format!(
+            Err(crate::errors::input_err(format!(
                 "fock_hook returned a non-finite energy {e}"
             )))
         }
@@ -2820,13 +2968,13 @@ impl PyFockHookGrad {
         let g = g.as_array().to_owned();
         let natoms = mol.atoms.len();
         if g.dim() != (natoms, 3) {
-            return Err(PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "fock_hook_grad returned shape {:?}, expected ({natoms}, 3)",
                 g.dim()
             )));
         }
         if g.iter().any(|v| !v.is_finite()) {
-            return Err(PyValueError::new_err(
+            return Err(crate::errors::input_err(
                 "fock_hook_grad returned a non-finite value",
             ));
         }
@@ -2887,20 +3035,16 @@ pub(crate) enum OpenShell {
 /// Unsupported settings are a `ValueError` before any work. GIL released
 /// for the SCF. Returns the result, with the hook's noise-floor term added
 /// to its exit report, and that term (0 without a hook).
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn solve_open_shell(
     py: Python<'_>,
     kind: OpenShell,
-    ctx: &ParallelContext,
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    op: Operator,
-    bounds: &SchwarzBounds,
+    sys: &PreparedSystem,
     config: &ferric_scf::rhf::RhfConfig,
     fock_hook: Option<&Bound<'_, PyAny>>,
     dm0: Option<&(Array2<f64>, Array2<f64>)>,
 ) -> PyResult<(ferric_scf::result::ScfResult, f64)> {
     use ferric_scf::{rohf, uhf};
+    let (ctx, mol, prep, op, bounds) = (sys.ctx(), sys.mol(), sys.basis(), sys.op(), sys.bounds());
     let solve = |hook: Option<ferric_scf::fock::SpinFockHook<'_>>| match (kind, dm0, hook) {
         (OpenShell::Uhf, Some((a, b)), h) => {
             uhf::solve_uhf_from_spin_densities(ctx, mol, prep, bounds, config, (a, b), h)
@@ -2921,8 +3065,7 @@ pub(crate) fn solve_open_shell(
         let r = py.allow_threads(|| solve(None)).map_err(make_err)?;
         return Ok((r, 0.0));
     };
-    ferric_scf::rhf::validate_fock_hook(config)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    ferric_scf::rhf::validate_fock_hook(config).map_err(crate::errors::input_err)?;
     let mut h = PyFockHook::new(hook, prep.nbasis())?;
     let r = py.allow_threads(|| {
         let mut f = |d_a: &Array2<f64>, d_b: &Array2<f64>| h.call_spin(d_a, d_b);
@@ -2938,19 +3081,14 @@ pub(crate) fn solve_open_shell(
 /// for the SCF. Unsupported settings are a `ValueError` before any work.
 /// Returns the result, with the hook's noise-floor term added to its exit
 /// report, and that term.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn solve_rhf_hooked(
     py: Python<'_>,
-    ctx: &ParallelContext,
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    op: Operator,
-    bounds: &SchwarzBounds,
+    sys: &PreparedSystem,
     config: &ferric_scf::rhf::RhfConfig,
     hook: &Bound<'_, PyAny>,
 ) -> PyResult<(ferric_scf::result::ScfResult, f64)> {
-    ferric_scf::rhf::validate_fock_hook(config)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let (ctx, mol, prep, op, bounds) = (sys.ctx(), sys.mol(), sys.basis(), sys.op(), sys.bounds());
+    ferric_scf::rhf::validate_fock_hook(config).map_err(crate::errors::input_err)?;
     let mut h = PyFockHook::new(hook, prep.nbasis())?;
     let r = py.allow_threads(|| {
         let mut f = |d: &Array2<f64>| h.call(d);
@@ -2970,28 +3108,21 @@ pub(crate) fn solve_rhf_hooked(
 /// would lack the hook's explicit term) and `dispersion is not None` (the
 /// dispersion terms would not include the hook); both are refused before the
 /// SCF.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn solve_ks_ladder(
     py: Python<'_>,
-    ctx: &ParallelContext,
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    op: Operator,
-    bounds: &SchwarzBounds,
+    sys: &PreparedSystem,
     ladder: &[ferric_scf::ladder::Rung],
     hooked: Option<(&Bound<'_, PyAny>, bool, bool)>,
 ) -> PyResult<(ferric_scf::result::ScfResult, ferric_scf::rhf::RhfConfig)> {
     let refuse = |what: &str| {
-        Err(PyValueError::new_err(format!(
+        Err(crate::errors::input_err(format!(
             "run_dft: fock_hook cannot be combined with {what}"
         )))
     };
     match hooked {
         None => {
             let lr = py
-                .allow_threads(|| {
-                    ferric_scf::ladder::solve_rhf_ladder(ctx, mol, prep, op, bounds, ladder)
-                })
+                .allow_threads(|| sys.solve_rhf_ladder(ladder))
                 .map_err(make_err)?;
             let cfg = ladder
                 .get(lr.rung_reached)
@@ -3001,9 +3132,7 @@ pub(crate) fn solve_ks_ladder(
         }
         Some((_, true, _)) => refuse(KS_HOOK_GRADIENT_REFUSAL),
         Some((_, _, true)) => refuse("dispersion"),
-        Some((hook, false, false)) => {
-            solve_hooked_ladder(py, ctx, mol, prep, op, bounds, ladder, hook)
-        }
+        Some((hook, false, false)) => solve_hooked_ladder(py, sys, ladder, hook),
     }
 }
 
@@ -3029,21 +3158,16 @@ fn hooked_rung_config(rung: &ferric_scf::ladder::Rung) -> ferric_scf::rhf::RhfCo
 /// result, or the lowest-energy rung's when none converges (as the plain
 /// ladder does), with that rung's [`hooked_rung_config`]. Rung 0 is the call
 /// `solve_rhf_hooked` makes, so a run that converges there is unchanged.
-#[allow(clippy::too_many_arguments)]
 fn solve_hooked_ladder(
     py: Python<'_>,
-    ctx: &ParallelContext,
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    op: Operator,
-    bounds: &SchwarzBounds,
+    sys: &PreparedSystem,
     ladder: &[ferric_scf::ladder::Rung],
     hook: &Bound<'_, PyAny>,
 ) -> PyResult<(ferric_scf::result::ScfResult, ferric_scf::rhf::RhfConfig)> {
+    let (ctx, mol, prep, op, bounds) = (sys.ctx(), sys.mol(), sys.basis(), sys.op(), sys.bounds());
     let configs: Vec<_> = ladder.iter().map(hooked_rung_config).collect();
     for cfg in &configs {
-        ferric_scf::rhf::validate_fock_hook(cfg)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        ferric_scf::rhf::validate_fock_hook(cfg).map_err(crate::errors::input_err)?;
     }
     let mut h = PyFockHook::new(hook, prep.nbasis())?;
     let r = py.allow_threads(|| {
@@ -3109,7 +3233,7 @@ pub(crate) fn refuse_symmetric_dft(
     hooked: bool,
 ) -> PyResult<()> {
     if hooked {
-        return Err(PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "run_dft: fock_hook cannot be combined with symmetry=True / irrep_nelec",
         ));
     }
@@ -3144,7 +3268,7 @@ fn einsum(
     let views: Vec<_> = operands.iter().map(|a| a.as_array()).collect();
     let out = py
         .allow_threads(|| ferric_tensors::einsum_chain_dyn(spec, &views, scale))
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        .map_err(crate::errors::input_err)?;
     if out.ndim() == 0 {
         let v = *out
             .iter()

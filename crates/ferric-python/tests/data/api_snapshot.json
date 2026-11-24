@@ -778,6 +778,14 @@
     }
    }
   },
+  "BasisError": {
+   "bases": [
+    "InputError",
+    "RuntimeError"
+   ],
+   "constructor": null,
+   "members": {}
+  },
   "BasisSet": {
    "constructor": null,
    "members": {
@@ -1264,6 +1272,14 @@
     }
    }
   },
+  "ComputationError": {
+   "bases": [
+    "FerricError",
+    "RuntimeError"
+   ],
+   "constructor": null,
+   "members": {}
+  },
   "ConformerEnsemble": {
    "constructor": null,
    "members": {
@@ -1469,6 +1485,14 @@
      ]
     }
    }
+  },
+  "ConvergenceError": {
+   "bases": [
+    "FerricError",
+    "RuntimeError"
+   ],
+   "constructor": null,
+   "members": {}
   },
   "Cphf": {
    "constructor": null,
@@ -1813,6 +1837,13 @@
      "kind": "attribute"
     }
    }
+  },
+  "FerricError": {
+   "bases": [
+    "Exception"
+   ],
+   "constructor": null,
+   "members": {}
   },
   "FrequencyResult": {
    "constructor": null,
@@ -2321,6 +2352,14 @@
     }
    }
   },
+  "InputError": {
+   "bases": [
+    "FerricError",
+    "ValueError"
+   ],
+   "constructor": null,
+   "members": {}
+  },
   "IrcBranch": {
    "constructor": null,
    "members": {
@@ -2826,6 +2865,14 @@
     }
    }
   },
+  "MemoryBudgetError": {
+   "bases": [
+    "FerricError",
+    "RuntimeError"
+   ],
+   "constructor": null,
+   "members": {}
+  },
   "MmTopology": {
    "constructor": null,
    "members": {
@@ -3142,6 +3189,52 @@
      "kind": "attribute"
     },
     "rhf_energy": {
+     "kind": "attribute"
+    }
+   }
+  },
+  "NumericalError": {
+   "bases": [
+    "FerricError",
+    "RuntimeError"
+   ],
+   "constructor": null,
+   "members": {}
+  },
+  "OmegaRiResult": {
+   "constructor": null,
+   "members": {
+    "e_corr": {
+     "kind": "attribute"
+    },
+    "e_os": {
+     "kind": "attribute"
+    },
+    "e_ss": {
+     "kind": "attribute"
+    },
+    "fit": {
+     "kind": "attribute"
+    },
+    "mean_rank_occ": {
+     "kind": "attribute"
+    },
+    "mean_rank_vir": {
+     "kind": "attribute"
+    },
+    "method": {
+     "kind": "attribute"
+    },
+    "pair_fraction": {
+     "kind": "attribute"
+    },
+    "rhf_energy": {
+     "kind": "attribute"
+    },
+    "total_energy": {
+     "kind": "attribute"
+    },
+    "virtual_fraction": {
      "kind": "attribute"
     }
    }
@@ -4498,6 +4591,14 @@
     }
    }
   },
+  "UnsupportedError": {
+   "bases": [
+    "FerricError",
+    "NotImplementedError"
+   ],
+   "constructor": null,
+   "members": {}
+  },
   "WeightedStats": {
    "constructor": null,
    "members": {
@@ -5804,6 +5905,21 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "scf_density_conv"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "save_reference"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "read_reference"
+   },
+   {
+    "default": "False",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "read_reference_other_build"
    }
   ],
   "run_ccsd_t": [
@@ -5853,6 +5969,21 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "scf_density_conv"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "save_reference"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "read_reference"
+   },
+   {
+    "default": "False",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "read_reference_other_build"
    }
   ],
   "run_cdft": [
@@ -6212,6 +6343,11 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "trah_trigger"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "gc_rotation"
    }
   ],
   "run_double_hybrid": [
@@ -7966,6 +8102,79 @@
     "name": "casscf_stability"
    }
   ],
+  "run_omega_ri": [
+   {
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "mol"
+   },
+   {
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "basis_set"
+   },
+   {
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "auxbasis"
+   },
+   {
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "omega_bohr"
+   },
+   {
+    "default": "'rimp2'",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "method"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "frozen_core"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "n_quad"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "cdd_tol"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "cdd_schwarz_thresh"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "cdd_pair_thresh"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "c_os"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "memory_budget_gb"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "scf_max_iter"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "scf_energy_conv"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "scf_density_conv"
+   }
+  ],
   "run_oo_rimp2": [
    {
     "kind": "POSITIONAL_OR_KEYWORD",
@@ -8822,6 +9031,11 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "ri_j_precision"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "polarization_exclusions"
    }
   ],
   "run_rhf": [
@@ -9027,6 +9241,11 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "fock_hook_grad"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "gc_rotation"
    }
   ],
   "run_rhf_gamma": [
@@ -9378,6 +9597,21 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "lambda_boys"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "save_reference"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "read_reference"
+   },
+   {
+    "default": "False",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "read_reference_other_build"
    },
    {
     "default": "None",
@@ -9768,6 +10002,11 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "cosx_overlap_fit"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "gc_rotation"
    }
   ],
   "run_rohf_gamma": [
@@ -10139,6 +10378,11 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "fock_hook_grad"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "gc_rotation"
    }
   ],
   "run_roks_gamma": [
@@ -11221,6 +11465,11 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "pcm_lebedev_order"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "gc_rotation"
    }
   ],
   "run_uhf_gamma": [
@@ -11607,6 +11856,11 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "fock_hook_grad"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "gc_rotation"
    }
   ],
   "run_uks_gamma": [

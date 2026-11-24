@@ -60,6 +60,33 @@ is the second-order ring with one short-range and one long-range
 interaction; the mixed rings of T are that coloring at third order and
 beyond.
 
+The boxes that follow check this classification at orders 2 and 3. It holds at
+every order $n$, for the following reason. The $n$th-order ring energy
+$P_n(\mathbf K)$ of the recursion (@eq:cross-term-3) is a homogeneous
+polynomial of degree $n$ in the entries of $\mathbf K$. Expand
+$P_n(\mathbf K_{\mathrm{sr}} + \mathbf K_{\mathrm{lr}})$ into its $2^n$
+colorings, one range per interaction. Exactly one coloring has every
+interaction short-range, and it equals $P_n(\mathbf K_{\mathrm{sr}})$; exactly
+one has every interaction long-range, and it equals
+$P_n(\mathbf K_{\mathrm{lr}})$. T's order-$n$ term,
+$P_n(\mathbf K_{\mathrm C}) - P_n(\mathbf K_{\mathrm{sr}})$, is therefore every
+coloring except the pure short-range one, and B's, $P_n(\mathbf K_{\mathrm{lr}})$,
+is the pure long-range one alone. `scripts/rs_mp2_rpa_ring_orders.py`
+checks the one-mode form of this statement through fifth order; it is not a
+registered proof and binds no box.
+
+The two corrections therefore live on different scales at the same
+$\omega$. By (@eq:rsrpa-forms-one-mode), T − B is first order in $k_l$
+($3k_s^2k_l/4\Delta^2$ at leading order), while B's own correction,
+$k_l^3/(4\Delta^2)$, is third order. In the water run of section
+@sec:two-formulations-run, at the one default $\omega = 0.420$ Å$^{-1}$,
+B's correction is 2.48 µHa and T's is 2.16 mHa, a factor of 870. A
+`coupled-rings` run at the default $\omega$ is not a B run with more rings
+added: it moves the energy about three orders of magnitude further. An
+$\omega$ chosen for one formulation is therefore not a sensible choice for
+the other. The code keeps one default for both (section @sec:two-formulations-options), and neither
+value is benchmarked in ferric (section @sec:two-formulations-known-limits).
+
 > **Verified equation @eq:rsrpa-forms-orders** · second order is full MP2; the third-order rings of each formulation
 >
 > On the many-mode model of section @sec:cross-term with $\mathbf K_{\mathrm C} = \mathbf K_{\mathrm{sr}} + \mathbf K_{\mathrm{lr}}$,
@@ -98,10 +125,13 @@ beyond.
 
 As $\omega \to 0$ the erf operator vanishes: $v_{\mathrm{lr}} = 0$ and
 $v_{\mathrm{sr}} = 1/r$. Then $\Delta E_{\mathrm{dRPA}}[\mathrm{lr}] = 0$ in
-B, the two brackets of T cancel, and both energies are
-$E_{\mathrm{MP2}}[\mathrm C]$. As $\omega \to \infty$, $v_{\mathrm{sr}} = 0$
-and both are $E_{\mathrm{MP2}}[\mathrm C] + \Delta E_{\mathrm{dRPA}}[\mathrm C]$,
-MP2 with every ring beyond second order screened.
+B and the two brackets of T cancel. As $\omega \to \infty$,
+$v_{\mathrm{sr}} = 0$. So
+
+$$ \lim_{\omega\to0} E^{\mathrm B}_c = \lim_{\omega\to0} E^{\mathrm T}_c = E_{\mathrm{MP2}}[\mathrm C], \qquad \lim_{\omega\to\infty} E^{\mathrm B}_c = \lim_{\omega\to\infty} E^{\mathrm T}_c = E_{\mathrm{MP2}}[\mathrm C] + \Delta E_{\mathrm{dRPA}}[\mathrm C] : \label{eq:rsrpa-forms-limits} $$
+
+MP2 at one end, and MP2 with every ring beyond second order screened at the
+other.
 
 The terf attenuator satisfies the same split identity, so it has the same
 limits with the direction reversed: $\omega = 1/(r_0\sqrt2)$, so a large
@@ -309,7 +339,8 @@ Boys-screened $\chi_0$, `need_inv_dielectric_freq`) and return
 `FerricError::Unsupported { feature, reason }`: `feature` names the option as
 the caller set it, `reason` gives the cause and the supported alternative
 (`trunc_thresh = 0`, dense $\chi_0$). `crates/ferric-rpa/tests/terf_refusals.rs`
-triggers each, closed shell and for truncation open shell, and shows that erf
+triggers each on a closed-shell reference, and truncation also on an
+open-shell one, and shows that erf
 with B and terf with T take the same options. T with terf needs none of them:
 its dRPA energies use Coulomb and terfc. The CLI reads only `trunc_thresh` from
 `[rpa]` for `rs-mp2-rpa`, and `run_rs_mp2_rpa` exposes no dRPA option, so the
@@ -348,8 +379,8 @@ RsMp2RpaFormulation::CoupledRings => {
   $\Delta E_{\mathrm{dRPA}}[\mathrm{lr}]$. In the T arm `delta_full` and
   `delta_sr` are $\Delta E_{\mathrm{dRPA}}[\mathrm C]$ and
   $\Delta E_{\mathrm{dRPA}}[\mathrm{sr}]$ of (@eq:two-formulations-2).
-- `dmp2` is $2E_{\mathrm{OS}}$ for a closed-shell reference and $d$ of the
-  open-shell section below for an open-shell one; `assemble` does not know
+- `dmp2` is $2E_{\mathrm{OS}}$ for a closed-shell reference and $d$ of
+  (@eq:rsrpa-open-shell-d) for an open-shell one; `assemble` does not know
   which.
 - The B arm also returns `e_drpa_lr` and the diagnostic
   `e_corr_naive` $= E_{\mathrm{MP2}}[\mathrm{sr}] + E_{\mathrm{dRPA}}[\mathrm{lr}]$
@@ -416,8 +447,8 @@ terf  E_MP2[C] = -0.20403346  E_MP2[lr] = -0.00000244  2E_OS[lr] = -0.00000318
       T: dRPA[C] - 2E_OS[C] = 0.07365746  dRPA[sr] - 2E_OS[sr] = 0.07373603  E_c = -0.20411203
 ```
 
-With erf, B lies 2.48 µHa above MP2 and T 2.16 mEh above it; the naive
-sum A of (@eq:cross-term-6) lies 5.20 mEh above, the cross term and the
+With erf, B lies 2.48 µHa above MP2 and T 2.16 mHa above it; the naive
+sum A of (@eq:cross-term-6) lies 5.20 mHa above, the cross term and the
 long-range exchange it drops. With terf at the default $r_0 = 3.18$ Bohr
 the long-range MP2 energy is only 2.4 µHa, so B is within 0.01 µHa of MP2.
 T is 78.6 µHa below MP2 there: its short-range bracket is larger than its
@@ -437,71 +468,46 @@ Coulomb one.
 The dRPA runs at full rank by default (`RsMp2RpaConfig::drpa`, a
 `PdepRpaConfig` with `trunc_thresh = 0`). The CLI reads only `trunc_thresh`
 from `[rpa]`; the Python entry point exposes no dRPA option. The choice of
-$\omega$ is not benchmarked, and the CLI prints a notice saying so.
+$\omega$ is not benchmarked, and the CLI prints a notice saying so. The
+validation page says the same in more detail: ACONF ties RI-MP2 at
+$\omega \le 0.3$ Å$^{-1}$, and the aug-cc-pVTZ criterion was met only
+marginally on one small subset. One default serves both formulations,
+although at a given $\omega$ their corrections differ by orders of magnitude
+(section @sec:two-formulations-energies).
 
-## Anchors {#two-formulations-anchors}
-
-From `site/src/reference/validation.md` (rs-mp2-rpa is graded Proven):
-
-| Check | Systems | Result |
-|---|---|---|
-| B and T `e_corr` vs PySCF's own `DFMP2` and `gw.rpa.RPA` per operator, default $\omega$ | H2O, C2H4, water dimer / cc-pVDZ, aug-cc-pVDZ; 20 and 40 points | $\le 2.0\times10^{-12}$ Ha; components $\le 5.5\times10^{-11}$ Ha, the erf metric shift |
-| every component vs a numpy assembly on the same fitted integrals | H2O, NH3 / cc-pVDZ; H2O / aug-cc-pVDZ; $\omega$ = 0.222, 0.42 Bohr⁻¹ | $\le 4.7\times10^{-11}$ Ha |
-| $\omega \to 0$ and $\omega \to \infty$ limits | same | to $4.3\times10^{-11}$ Ha |
-
-The grade covers an RHF reference with exact J and K, the erf attenuator at
-the default $\omega$, either formulation, frozen core 0, `trunc_thresh` 0 or
-below, and Gauss–Legendre quadrature with $u_0 = 0.5$ and 20 or 40 points.
-The terf split is checked by its limits and, for B's long range, by the
-Ne$_2$ comparison of section @sec:two-formulations-terf-sign; the grade does
-not cover it.
-
-## Known limits (2026-11-17)
-
-- Energy only, no gradient. The closed-shell RHF path is the one the
-  sections above derive; the open-shell path is below.
-- No benchmark selects $\omega$ or $r_0$.
-- B with terf is compared against independent fits on one system, Ne$_2$
-  at one geometry, $r_0 = 1.35$ Å and $r_0\omega \in \{2, 4\}$. The
-  open-shell terf B path (`open_shell_signed_parts`) has no molecular test;
-  its signed log-determinant is checked on a random model
-  (`signed_logdet_matches_plasmon_open_shell` in
-  `crates/ferric-rpa/src/energy.rs`).
-- No test triggers the refusals of section @sec:two-formulations-terf-refusals.
-- The fusion test of section @sec:shared-intermediates covers `coupled-rings` only.
-
-## Open shell
+## Open shell {#two-formulations-open-shell}
 
 With `multiplicity > 1`, `kind = "rs-mp2-rpa"` and `run_rs_mp2_rpa` take a
 UHF reference (energies only), or a ROHF one semi-canonicalized per spin.
 `rs_mp2_lr_rpa` then takes `scan_impl_unrestricted`. Each operator builds one pair of spin
 intermediates in one aux basis. The pair feeds the unrestricted MP2 blocks
 and the spin-summed dRPA, $\boldsymbol\epsilon = \mathbf 1 + \boldsymbol\Pi_\alpha + \boldsymbol\Pi_\beta$.
-The subtracted second-order term is not $2E_{\rm OS}$. It is
+The subtracted second-order term is not $2E_{\mathrm{OS}}$. It is
 
-$$ d = E_{\alpha\beta} + \tfrac12\big(D_{\alpha\alpha} + D_{\beta\beta}\big), \qquad D_{\sigma\sigma} = \sum_{ijab\in\sigma}\frac{(ia|jb)^2}{D_{ij}^{ab}}, $$
+$$ d = E_{\alpha\beta} + \tfrac12\big(E^{\mathrm d}_{\alpha\alpha} + E^{\mathrm d}_{\beta\beta}\big), \qquad E^{\mathrm d}_{\sigma\sigma} = -\sum_{ijab\in\sigma}\frac{(ia|jb)^2}{\Delta_{ij}^{ab}}, \label{eq:rsrpa-open-shell-d} $$
 
-the direct part of spin-orbital MP2. It equals $2E_{\rm OS}$ only when the two
-spins have the same orbitals. With $d$ in place of $2E_{\rm OS}$, both forms
-again equal $E_{\rm MP2}[\mathrm C]$ through second order.
+the direct part of spin-orbital MP2. It equals $2E_{\mathrm{OS}}$ only when the two
+spins have the same orbitals. With $d$ in place of $2E_{\mathrm{OS}}$, both forms
+again equal $E_{\mathrm{MP2}}[\mathrm C]$ through second order.
 
 The code names: per operator $v$, `ferric-mp2/src/u_rimp2.rs::u_ri_mp2_from_parts`
 gives the U-MP2 blocks $E_{\alpha\alpha}$, $E_{\beta\beta}$, $E_{\alpha\beta}$
 from the spin pair $B_\sigma[v]$, and `ferric-rpa/src/lib.rs::u_pdep_rpa_from_intermediates`
 gives the spin-summed dRPA of section @sec:open-shell-dielectric.
-$D_{\sigma\sigma}$ is the $E_{\rm OS}$ of the closed-shell kernel
+$E^{\mathrm d}_{\sigma\sigma}$ is the $E_{\mathrm{OS}}$ of the closed-shell kernel
 `ferric-mp2/src/rimp2.rs::spin_components_from_b_ov` run on spin $\sigma$'s
-$B$ and orbital energies. Here $D_{ij}^{ab} = -\Delta_{ij}^{ab}$ is negative.
+$B$ and orbital energies, and `ferric-rpa/src/rs_mp2_rpa.rs::open_shell_parts`
+forms $d$ from the three blocks.
 With terf the long range uses the signed factor per spin:
 `ferric-mp2/src/u_rimp2.rs::u_ri_mp2_signed_from_parts` for the U-MP2 blocks,
-the signed closed-shell kernel for $D_{\sigma\sigma}$, and
+the signed closed-shell kernel for $E^{\mathrm d}_{\sigma\sigma}$, and
 `signed_drpa_energy` with one channel per spin (prefactor 2 each) for the
-dRPA. The two energies are the closed-shell ones with $2E_{\rm OS}$ replaced by $d$:
+dRPA. The two energies are the closed-shell ones with $2E_{\mathrm{OS}}$ replaced by $d$:
 
-$$ E^{\rm B}_c = E_{\rm MP2}[\mathrm C] + E_{\rm dRPA}[\mathrm{lr}] - d[\mathrm{lr}], \qquad
-E^{\rm T}_c = E_{\rm MP2}[\mathrm C] + \big(E_{\rm dRPA}[\mathrm C] - d[\mathrm C]\big) - \big(E_{\rm dRPA}[\mathrm{sr}] - d[\mathrm{sr}]\big), $$
+$$ E^{\mathrm B}_c = E_{\mathrm{MP2}}[\mathrm C] + E_{\mathrm{dRPA}}[\mathrm{lr}] - d[\mathrm{lr}], \qquad
+E^{\mathrm T}_c = E_{\mathrm{MP2}}[\mathrm C] + \big(E_{\mathrm{dRPA}}[\mathrm C] - d[\mathrm C]\big) - \big(E_{\mathrm{dRPA}}[\mathrm{sr}] - d[\mathrm{sr}]\big), $$
 
-with $d[v] = E_{\alpha\beta}[v] + \tfrac12\big(D_{\alpha\alpha}[v] + D_{\beta\beta}[v]\big)$.
+with $d[v]$ of (@eq:rsrpa-open-shell-d) built from the integrals of operator $v$.
 
 Why $d$? Expand the dRPA integrand to second order in the integrals:
 $\ln(1 + x) - x = -x^2/2 + O(x^3)$, so
@@ -511,34 +517,104 @@ prefactor 2 per spin,
 
 $$ \operatorname{tr}\boldsymbol\Pi^2 = \sum_{\sigma\tau}\sum_{ia\in\sigma}\sum_{jb\in\tau}\frac{4\,\Delta_{ia}\Delta_{jb}\,(ia|jb)^2}{(u^2 + \Delta_{ia}^2)(u^2 + \Delta_{jb}^2)}, \qquad \int_0^\infty\frac{\Delta_1\Delta_2\,du}{(u^2 + \Delta_1^2)(u^2 + \Delta_2^2)} = \frac{\pi}{2(\Delta_1 + \Delta_2)} . $$
 
-So $E^{(2)} = \tfrac12\sum_{\sigma\tau}\sum(ia|jb)^2/D$ with
-$D = -(\Delta_{ia} + \Delta_{jb})$. The $\alpha\alpha$ and $\beta\beta$ terms
-give $\tfrac12D_{\alpha\alpha} + \tfrac12D_{\beta\beta}$; the $\alpha\beta$ and
-$\beta\alpha$ terms together give $E_{\alpha\beta}$. That sum is $d$, the
-direct (no-exchange) part of the spin-orbital MP2 energy,
-$\tfrac12\sum_{ijab}\langle ij|ab\rangle^2/D$.
+So $E^{(2)} = -\tfrac12\sum_{\sigma\tau}\sum(ia|jb)^2/(\Delta_{ia} + \Delta_{jb})$.
+The $\alpha\alpha$ and $\beta\beta$ terms give
+$\tfrac12E^{\mathrm d}_{\alpha\alpha} + \tfrac12E^{\mathrm d}_{\beta\beta}$; the
+$\alpha\beta$ and $\beta\alpha$ terms together give $E_{\alpha\beta}$. That
+sum is $d$, the direct (no-exchange) part of the spin-orbital MP2 energy,
+$-\tfrac12\sum_{ijab}\langle ij|ab\rangle^2/\Delta_{ij}^{ab}$.
 
 $2E_{\alpha\beta}$ equals $d$ only when
-$D_{\alpha\alpha} = D_{\beta\beta} = E_{\alpha\beta}$, which holds when the
-two spins have the same orbitals. Check the singlet limit: run through the
-UHF path, $d = 2E_{\rm OS}$, the U-dRPA equals the closed-shell dRPA
-(prefactors $2 + 2 = 4$), and every open-shell result equals the restricted
-one. Every bracket again starts at third order, so both forms equal the
-open-shell $E_{\rm MP2}[\mathrm C] = E_{\alpha\alpha} + E_{\beta\beta} + E_{\alpha\beta}$
-through second order, and the limits are the closed-shell ones:
-$v_{\rm lr} = 0$ gives $E_{\rm MP2}[\mathrm C]$, and $v_{\rm sr} = 0$ gives
-$E_{\rm MP2}[\mathrm C] + E_{\rm dRPA}[\mathrm C] - d[\mathrm C]$.
+$E^{\mathrm d}_{\alpha\alpha} = E^{\mathrm d}_{\beta\beta} = E_{\alpha\beta}$,
+which holds when the two spins have the same orbitals. Check the singlet
+limit: run through the UHF path, $d = 2E_{\mathrm{OS}}$, the U-dRPA equals the
+closed-shell dRPA (prefactors $2 + 2 = 4$), and every open-shell result
+equals the restricted one. Every bracket again starts at third order, so both
+forms equal the open-shell
+$E_{\mathrm{MP2}}[\mathrm C] = E_{\alpha\alpha} + E_{\beta\beta} + E_{\alpha\beta}$
+through second order, and the limits are (@eq:rsrpa-forms-limits) with
+$d[\mathrm C]$ in place of $2E_{\mathrm{OS}}[\mathrm C]$ inside
+$\Delta E_{\mathrm{dRPA}}[\mathrm C]$.
+
+> **Verified equation @eq:rsrpa-open-shell-d** · the open-shell second-order ring
+>
+> On a random open-shell model ($\alpha$: 3 occupied, 3 virtual; $\beta$: 2
+> occupied, 4 virtual; RI factors of rank 6 and 5), the $\lambda^2$
+> coefficient of the spin-orbital plasmon energy, taken by a Cauchy integral,
+> equals $d$ to $10^{-12}$ relative, and $2E_{\alpha\beta}$ misses it by more
+> than $10^3$ times that bar. The frequency integral and the spin-block sum
+> are checked symbolically; the B and T forms reach $E_{\mathrm{MP2}}[\mathrm C]$
+> at second order, and the singlet limit gives $d = 2E_{\mathrm{OS}}$.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/u_attenuated_sympy.py`, checks `u-ring2-equals-dmp2`, `ring2-spin-blocks`, `freq-integral`, `2eab-misses-open-shell`, `u-b-form-second-order`, `u-t-form-second-order`, `u-limits`, `singlet-dmp2` |
+> | Negative control | the runner replaces $d$ by $2E_{\alpha\beta}$; `u-ring2-equals-dmp2` turns red |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-rpa/src/rs_mp2_rpa.rs::open_shell_parts` |
+> | Code test | `unrestricted_dmp2_is_the_second_order_of_the_udrpa` in `crates/ferric-rpa/src/rs_mp2_rpa.rs` |
+>
+> <!-- verified: id=rsrpa.open-shell-d; script=scripts/u_attenuated_sympy.py; claim=u-ring2-equals-dmp2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/rs_mp2_rpa.rs::open_shell_parts; rust_test=ferric-rpa/src/rs_mp2_rpa.rs::unrestricted_dmp2_is_the_second_order_of_the_udrpa; registry=u-rs-mp2-rpa -->
 
 The two spin sets of one operator are co-resident, so the pre-flight charges
 both (`ferric-rpa/src/budget.rs::scan_charge_unrestricted`).
-`scripts/u_attenuated_sympy.py` checks $d$ symbolically and against the
-Cauchy-integral $\lambda^2$ coefficient of the spin-orbital plasmon energy,
-the second-order and limit statements, and the singlet limit. On OH, NH2 and O2
+On OH, NH2 and O2
 at cc-pVDZ the T form matches PySCF (`DFUMP2` + `URPA`) to ≤ 1.5e-13 Ha.
 Using $2E_{\alpha\beta}$ instead moves T by 1.9e-4 to 3.4e-3 Ha. The B form
 needs the erf fit, whose metric PySCF factors differently, so it is checked
 against numpy on ferric's integrals (≤ 7e-14 Ha). The Boys-screened $\chi_0$
 is closed shell only.
+
+## Anchors {#two-formulations-anchors}
+
+From `site/src/reference/validation.md` (rs-mp2-rpa is graded Proven for an
+RHF reference; the open-shell row of that page is an anchor, outside the
+`rs-mp2-rpa` certificate scope):
+
+| Check | Systems | Result |
+|---|---|---|
+| B and T `e_corr` vs PySCF's own `DFMP2` and `gw.rpa.RPA` per operator, default $\omega$ | H2O, C2H4, water dimer / cc-pVDZ, aug-cc-pVDZ; 20 and 40 points | $\le 2.0\times10^{-12}$ Ha; components $\le 5.5\times10^{-11}$ Ha, the erf metric shift |
+| every component vs a numpy assembly on the same fitted integrals | H2O, NH3 / cc-pVDZ; H2O / aug-cc-pVDZ; $\omega$ = 0.222, 0.42 Bohr⁻¹ | $\le 4.7\times10^{-11}$ Ha |
+| $\omega \to 0$ and $\omega \to \infty$ limits | same | to $4.3\times10^{-11}$ Ha |
+
+The grade covers an RHF reference with exact J and K, the erf attenuator at
+the default $\omega$, either formulation, frozen core 0, `trunc_thresh` 0 or
+below, the Lanczos eigensolver, the dense $\chi_0$ backend and sparsity, and
+Gauss–Legendre quadrature with $u_0 = 0.5$ and 20 or 40 points. Runs with
+PDEP truncation (`trunc_thresh` above 0) are outside this scope.
+The terf split is checked by its limits and, for B's long range, by the
+Ne$_2$ comparison of section @sec:two-formulations-terf-sign; the grade does
+not cover it.
+
+## Known limits (2026-11-17) {#two-formulations-known-limits}
+
+- Energy only, no gradient. The closed-shell RHF path is the one most of
+  this section derives; the open-shell path is in section
+  @sec:two-formulations-open-shell.
+- No benchmark selects $\omega$ or $r_0$.
+- B with terf is compared against independent fits on one system, Ne$_2$
+  at one geometry, $r_0 = 1.35$ Å and $r_0\omega \in \{2, 4\}$. The
+  open-shell terf B path (`open_shell_signed_parts`) is checked on one
+  molecule in the large-$r_0$ limit only: OH / UHF at $r_0 = 10$ and 20 Bohr
+  reaches U-RI-MP2 to $10^{-10}$ Ha
+  (`open_shell_terf_b_tends_to_ump2_at_large_r0` in
+  `crates/ferric-rpa/tests/terf_open_shell_anchor.rs`), against a measured
+  floor of the signed log-determinant of $2.7\times10^{-12}$ Ha. No
+  molecular test resolves its third-order bracket. Its signed
+  log-determinant is also checked on a random model
+  (`signed_logdet_matches_plasmon_open_shell` in
+  `crates/ferric-rpa/src/energy.rs`).
+- Two refusals of section @sec:two-formulations-terf-refusals have no
+  test: the terf metric factor in `metric_inverse_sqrt` and the
+  nonpositive determinant. `signed_logdet_refuses_a_nonpositive_gap`
+  (`crates/ferric-rpa/src/energy.rs`) tests a different refusal, a
+  nonpositive orbital gap. The four option refusals are tested in
+  `crates/ferric-rpa/tests/terf_refusals.rs`, and the Schwarz refusal by
+  `schwarz_and_csb_refuse_terf_as_invalid_not_unimplemented`
+  (`crates/ferric-integrals/tests/operator_positivity_gate.rs`).
+- No test compares B's shared path with independent
+  `ri_mp2_spin_components` and `run_pdep_rpa` calls inside ferric (section
+  @sec:shared-intermediates).
 
 ## Sources
 

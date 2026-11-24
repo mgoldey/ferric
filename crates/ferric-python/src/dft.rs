@@ -1,12 +1,15 @@
 //! KS-DFT and double-hybrid bindings: moved verbatim from `lib.rs`.
 
 use super::*;
-use crate::scf::scf_options_from_kwargs;
+use crate::method_result::MethodResult;
+use crate::scf::{scf_options_from_kwargs, FockHook};
+use ferric_core::certificate::Certificate;
 use ferric_scf::options::entry::{ScfEntryPoint, ScfKwargs};
+use std::borrow::Cow;
 
 // ── KS-DFT ──
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "DftResult")]
 pub(crate) struct PyDftResult {
     /// SCF energy PLUS the dispersion correction, when one was requested.
@@ -42,19 +45,18 @@ pub(crate) struct PyDftResult {
     /// `(E_xc, V_xc)` of the converged density, computed on the first
     /// `vxc()` / `e_xc` call and cached. Lazy so a caller who never asks for
     /// it does not pay a grid build + XC evaluation per `run_dft`.
-    pub(crate) xc_cache: std::sync::OnceLock<(f64, Array2<f64>)>,
-    /// Serializes the first evaluation so concurrent first calls build the
-    /// grid once (`OnceLock::get_or_try_init` is not stable).
-    pub(crate) xc_lock: std::sync::Mutex<()>,
-    pub(crate) density_data: Array2<f64>,
+    /// Concurrent first calls build the grid once.
+    pub(crate) xc_cache: crate::compute_once::ComputeOnce<(f64, Array2<f64>)>,
     /// Analytic nuclear gradient (natoms × 3) in Ha/Bohr, when computed
     /// (i.e. `with_gradient=True` was passed to `run_ksdft`). Closed-shell
     /// LDA / GGA / hybrid / RSH only; VV10 nonlocal piece is excluded.
     pub(crate) gradient_data: Option<Array2<f64>>,
-    pub(crate) scf_data: ScfResult,
+    /// The solve, shared (`Arc`) as in `PyRhfResult::scf_data`; `density()`
+    /// reads its `density_total`.
+    pub(crate) scf_data: Arc<ScfResult>,
     /// The base SCF settings (functional, grid, density fitting, thresholds)
     /// this result was solved with; see `PyRhfResult::scf_config`.
-    pub(crate) scf_config: RhfConfig,
+    pub(crate) scf_config: Arc<RhfConfig>,
     /// The SCF ran with a `fock_hook` (recorded on the certificate).
     pub(crate) fock_hooked: bool,
 }
@@ -69,33 +71,51 @@ impl PyDftResult {
             &self.xc_mol,
             &self.xc_basis,
             &self.scf_config,
-            &self.density_data,
+            &self.scf_data.density_total,
         );
-        let (cache, lock) = (&self.xc_cache, &self.xc_lock);
-        // One evaluation even under concurrent first calls: the guard is taken
-        // INSIDE allow_threads, so a waiting thread has released the GIL and
-        // cannot deadlock the thread computing (which needs the GIL back).
+        let cache = &self.xc_cache;
+        // The cache's lock is taken INSIDE allow_threads, so a waiting thread
+        // has released the GIL and cannot deadlock the thread computing.
         py.allow_threads(|| {
-            let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-            if cache.get().is_none() {
-                let pair = ferric_scf::rhf::ks_vxc_closed(mol, bs, cfg, d)?;
-                let _ = cache.set(pair);
-            }
-            Ok::<(), ferric_core::FerricError>(())
+            cache.get_or_try_init(|| ferric_scf::rhf::ks_vxc_closed(mol, bs, cfg, d))
         })
-        .map_err(make_err)?;
-        Ok(cache.get().expect("xc_cache is set under xc_lock above"))
+        .map_err(make_err)
+    }
+}
+
+impl MethodResult for PyDftResult {
+    fn total_energy(&self) -> f64 {
+        self.total_energy
+    }
+    fn certificate(&self) -> Cow<'_, Certificate> {
+        let c = scf_kind_certificate(
+            &self.xc_mol,
+            &self.scf_data,
+            &self.scf_config,
+            &self.xc_basis,
+            self.fock_hooked,
+        );
+        Cow::Owned(match self.dispersion_model.as_deref() {
+            Some(m) => c.with_approximation("dispersion", m),
+            None => c,
+        })
     }
 }
 
 #[pymethods]
 impl PyDftResult {
-    /// Alias of `total_energy` (the same value), so callers can read either spelling.
+    #[doc = alias_doc!(total_energy)]
     #[getter]
     fn energy(&self) -> f64 {
-        self.total_energy
+        crate::method_result::total_energy_getter(self)
     }
-
+    /// Validation certificate of this result (see `RhfResult.certificate`),
+    /// with a `dispersion` approximation when a correction was added to
+    /// `total_energy`.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::method_result::certificate_getter(py, self)
+    }
     /// Precision provenance of this KS-DFT SCF (see `RhfResult.precision`;
     /// the `xc-vxc` kernel carries a `ladder` record).
     #[getter]
@@ -114,24 +134,6 @@ impl PyDftResult {
     #[getter]
     fn ri_k_precision(&self) -> Option<&'static str> {
         self.scf_data.ri_k_precision().map(|p| p.as_str())
-    }
-    /// Validation certificate of this result (see `RhfResult.certificate`),
-    /// with a `dispersion` approximation when a correction was added to
-    /// `total_energy`.
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let c = scf_kind_certificate(
-            &self.xc_mol,
-            &self.scf_data,
-            &self.scf_config,
-            &self.xc_basis,
-            self.fock_hooked,
-        );
-        let c = match self.dispersion_model.as_deref() {
-            Some(m) => c.with_approximation("dispersion", m),
-            None => c,
-        };
-        certificate_dict(py, &c)
     }
     /// Exchange-correlation potential V_xc[D] of the converged density `D`
     /// (`density()`), as an AO matrix (n_bf x n_bf), on the SCF's own XC grid.
@@ -169,7 +171,7 @@ impl PyDftResult {
     }
 
     fn density<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        PyArray2::from_array(py, &self.density_data)
+        PyArray2::from_array(py, &self.scf_data.density_total)
     }
 
     /// Kohn-Sham orbital energies (Hartree), ascending: the eigenvalues of
@@ -218,11 +220,11 @@ impl PyDftResult {
     fn stationarity_tol(&self) -> Option<f64> {
         scf_stationarity_tol(&self.scf_data)
     }
-    /// SCF exit reason: one of `"Converged"`, `"Plateau"`, `"Stalled"`,
-    /// `"Diverged"`, `"MaxIter"`, `"NotCertified"` (ROHF/ROKS only) — the
-    /// `ScfExit` variant name. Strictly more
-    /// informative than the `converged` bool, which collapses every failure
-    /// mode into `false` — a `Plateau` and a `Diverged` need different fixes.
+    /// SCF exit reason: one of `"Converged"`, `"Stalled"`, `"Diverged"`,
+    /// `"MaxIter"`, `"NotCertified"` (ROHF/ROKS only) — the `ScfExit` variant
+    /// name. Strictly more informative than the `converged` bool, which
+    /// collapses every failure mode into `false` — a `MaxIter` and a
+    /// `Diverged` need different fixes.
     #[getter]
     fn exit_reason(&self) -> String {
         format!("{:?}", self.scf_data.exit)
@@ -253,7 +255,7 @@ impl PyDftResult {
 // MP2-based double hybrids (B2PLYP, DSD-PBEP86)
 // ---------------------------------------------------------------------------
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "DoubleHybridResult")]
 pub(crate) struct PyDoubleHybridResult {
     #[pyo3(get)]
@@ -279,6 +281,8 @@ pub(crate) struct PyDoubleHybridResult {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
+stored_method_result!(PyDoubleHybridResult, total_energy: total_energy, certificate: certificate_data);
+
 #[pymethods]
 impl PyDoubleHybridResult {
     /// Validation certificate (see `RhfResult.certificate`): capability
@@ -290,7 +294,7 @@ impl PyDoubleHybridResult {
     /// `spin-component-scaling`.
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::method_result::certificate_getter(py, self)
     }
     fn __repr__(&self) -> String {
         format!(
@@ -326,10 +330,15 @@ impl PyDoubleHybridResult {
 ///
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_dft` (`run_uks` for the unrestricted route) solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, kind="b2plyp", frozen_core=None, k_builder=None, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, scf_ri_j_precision=None, dispersion=None, unrestricted=false))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_double_hybrid(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     auxbasis: &PyBasisSet,
@@ -348,7 +357,7 @@ pub(crate) fn run_double_hybrid(
         "b2plyp" => DoubleHybridKind::B2plyp,
         "dsdpbep86" => DoubleHybridKind::DsdPbep86,
         _ => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "unknown double hybrid kind '{kind}'; expected 'b2plyp' or 'dsd-pbep86'"
             )))
         }
@@ -357,7 +366,7 @@ pub(crate) fn run_double_hybrid(
         None => base_kind,
         Some(d) if d == "d3bj" || d == "d3(bj)" => base_kind.with_d3bj(),
         Some(d) => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "dispersion={d:?} is not available for a double hybrid: pass \"d3bj\" (or \
                  \"d3(bj)\") for its own published D3(BJ) set, or omit it"
             )))
@@ -365,24 +374,23 @@ pub(crate) fn run_double_hybrid(
     };
     let open_shell = unrestricted || mol.inner.multiplicity > 1;
 
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
+    let mol = sys.mol();
 
+    let ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
     let cfg = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
-    let cfg = ks_jkfit_config(cfg, dh_kind.xc_name(), scf_ri_j_precision)?;
+    )?;
+    let cfg = ks_jkfit_config(cfg, dh_kind.xc_name(), ri_j_precision);
 
     let (ks, cfg) = if open_shell {
-        let ks = solve_uhf(&ctx, &mol.inner, &prep, &bounds, &cfg).map_err(make_err)?;
-        (converged(ks)?, cfg)
+        let ks = sys.solve_uhf(&cfg).and_then(ScfResult::into_converged);
+        (ks.map_err(make_err)?, cfg)
     } else {
-        ks_ladder_reference(&prep, &bounds, &mol.inner, cfg)?
+        ks_ladder_reference(&sys, cfg)?
     };
 
     let mut mp2_cfg = dh_kind.mp2_config();
@@ -391,20 +399,20 @@ pub(crate) fn run_double_hybrid(
     }
     mp2_cfg.memory_budget_bytes = budget_bytes_from_gb(memory_budget_gb);
 
-    let r = if open_shell {
-        u_mp2_double_hybrid(&mol.inner, &prep, &dfbs, &ks, &mp2_cfg)
+    let r = if ks.spin == ferric_scf::Spin::Unrestricted {
+        u_mp2_double_hybrid_on(&dfbs, &ks, &mp2_cfg)
     } else {
-        mp2_double_hybrid(&mol.inner, &prep, &dfbs, &ks, &mp2_cfg)
+        mp2_double_hybrid_on(&dfbs, &ks, &mp2_cfg)
     }
     .map_err(make_err)?;
     let e_dispersion = match dh_kind.d3bj_functional() {
         Some(f) => {
             let params = ferric_d3::d3bj_params_for_functional(f).map_err(make_err)?;
-            Some(ferric_d3::d3bj_energy_for_molecule(&mol.inner, &params).map_err(make_err)?)
+            Some(ferric_d3::d3bj_energy_for_molecule(mol, &params).map_err(make_err)?)
         }
         None => None,
     };
-    let mut reference = reference_certificate(&mol.inner, &ks, &cfg, &basis_set.inner);
+    let mut reference = reference_certificate(mol, &ks, &cfg, &basis_set.inner);
     if let Some(f) = dh_kind.d3bj_functional() {
         reference =
             reference.with_approximation("dispersion", format!("D3(BJ) with {f} parameters"));
@@ -461,7 +469,7 @@ pub(crate) fn run_double_hybrid(
 ///   - pure (LDA/GGA/meta-GGA): no exact exchange, so no RI-K tensor is
 ///     built and `df_k_aux` has no effect.
 ///   - global hybrid (B3LYP, PBE0, ...): RI-K, a second three-index tensor
-///     beside RI-J's: the V^-1/2-dressed packed `(P|mn)` (f64,
+///     beside RI-J's: the metric-dressed packed `(P|mn)` (f64,
 ///     `ri_k_precision`) of `naux_K * nbf * (nbf + 1) / 2` elements
 ///     (`naux_K * nbf**2` in a `[gpu]` mode that may build K on the
 ///     device). `df_k_aux=""` selects exact four-centre K and builds no
@@ -504,6 +512,7 @@ pub(crate) fn run_double_hybrid(
     diis_size=None, integral_thresh=None, eri=None, guess=None,
     smeared_charges=None, solvent=None, pcm_lebedev_order=None,
     stability_descent=None, aurora=None, trah_trigger=None,
+    gc_rotation=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_dft(
@@ -552,36 +561,35 @@ pub(crate) fn run_dft(
     stability_descent: Option<bool>,
     aurora: Option<bool>,
     trah_trigger: Option<f64>,
+    gc_rotation: Option<&str>,
 ) -> PyResult<PyObject> {
     refuse_dm0_with_guess("run_dft", dm0.is_some(), guess, guess_basis)?;
-    let hook_grad =
-        crate::scf::parse_fock_hook_grad("run_dft", fock_hook, fock_hook_grad, with_gradient)?;
+    let hook = crate::scf::parse_fock_hook("run_dft", fock_hook, fock_hook_grad, with_gradient)?;
+    let fock_hook = hook.as_ref().map(FockHook::callable);
+    let hook_grad = hook.as_ref().and_then(FockHook::grad);
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
     // Refuse an (E, grad-E) pair that does not belong to the same surface.
     //
     // `total_energy` below is `e_scf + e_dispersion`, but `gradient_data` is
-    // Owned clone so the compute closure below never borrows the PyMolecule
-    // pyclass field across the allow_threads boundary. The basis set's ECP
-    // core counts are applied (no-op without an ECP basis), so `nelec()` is
-    // the valence count the SCF occupies and `dm0` is checked against it, as
-    // in `run_rhf`; every later step uses this molecule.
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
-    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
+    // The system owns a clone of the molecule, so the compute closures below
+    // never borrow the PyMolecule pyclass field across the allow_threads
+    // boundary. The basis set's ECP core counts are applied (no-op without an
+    // ECP basis), so `nelec()` is the valence count the SCF occupies and
+    // `dm0` is checked against it, as in `run_rhf`; every later step uses
+    // this molecule.
+    let sys = prepare(py, mol, basis_set)?;
+    let (ctx, emol, prep, op) = (sys.ctx(), sys.mol(), sys.basis(), sys.op());
     // Parse the string/PyO3 kwargs in the order the pre-`ScfOptions`
     // construction evaluated them, so a call with several bad kwargs raises
     // the same (first) error.
     let relativistic = crate::scf::parse_relativistic(relativistic)?;
     let xc_name = ScfEntryPoint::Dft
         .functional(functional)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
+        .map_err(crate::errors::input_err)?
         .expect("run_dft always resolves a functional")
         .to_string();
     // Rung 0 starts from dm0; later rungs carry the previous rung's density.
-    let init_guess_density = blocks::checked_dm0(dm0, &prep, emol.nelec() as f64, "run_dft")?;
+    let init_guess_density = blocks::checked_dm0(dm0, prep, emol.nelec() as f64, "run_dft")?;
     // Resolve `dispersion=` BEFORE the SCF: an unknown spelling or a
     // functional with no published parameters must not cost an SCF first.
     let dispersion = dispersion
@@ -618,6 +626,9 @@ pub(crate) fn run_dft(
     }
     // run_dft's policy (RI-J / RI-K on by default, the RIJCOSX rule, the
     // "LDA" default) is `ScfEntryPoint::Dft`'s (ferric_scf::options::entry).
+    // Parsed last of the keywords: an unknown spelling was the solver's
+    // refusal before the binding parsed it (same class and text).
+    let k_builder = crate::parse_k_builder(k_builder)?;
     let kw = ScfKwargs {
         max_iter,
         energy_conv,
@@ -657,9 +668,12 @@ pub(crate) fn run_dft(
         ..ScfKwargs::default()
     };
     let options = scf_options_from_kwargs(ScfEntryPoint::Dft, kw)?;
-    let mut cfg = options.into_rhf_config().py()?;
+    let mut cfg = options
+        .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
+        .py()?;
+    cfg.gc_rotation = crate::scf::parse_gc_rotation(gc_rotation)?;
     if cfg.symmetry {
-        return solve_symmetric_outcome(py, "run_dft", &ctx, &emol, &prep, op, &bounds, &cfg);
+        return solve_symmetric_outcome(py, "run_dft", &sys, &cfg);
     }
     // The gradient below goes through `restricted_scf_gradient`, which
     // differentiates `cfg.dft_grid` (pruned or not), the grid the SCF runs on.
@@ -670,15 +684,14 @@ pub(crate) fn run_dft(
     // is energy-only, so a gradient run drops it (`gradient_task_config`) and
     // `total_energy` stays on the surface the gradient describes.
     if with_gradient {
-        ferric_scf::gradient::preflight_cosx_restricted(&cfg)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        ferric_scf::gradient::preflight_cosx_restricted(&cfg).map_err(crate::errors::input_err)?;
         cfg = ferric_scf::gradient::gradient_task_config(&cfg).into_owned();
     }
     // MBD@rsSCS's exact gradient needs the Z-vector relaxation term: refuse an
     // unsupported setup before the SCF and the free-atom solves, not after.
     if with_gradient && matches!(dispersion, Some(DispersionSpec::Mbd(_))) {
         if let Some(r) = ferric_scf::zvector_ks::unsupported_reason(&cfg) {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "dispersion=\"mbd\" with with_gradient=True: the exact MBD@rsSCS gradient \
                  is not available: {r}"
             )));
@@ -691,17 +704,13 @@ pub(crate) fn run_dft(
     // a convergence error if the whole ladder fails to converge.
     let ladder = ferric_scf::ladder::ksdft_ladder(&cfg);
     // Release the GIL for the duration of the SCF ladder. Every argument
-    // below is an owned Rust value (`emol` is a clone; `ctx`/`prep`/`bounds`/
-    // `ladder` are built above), so nothing Python-borrowed crosses the
+    // below is an owned Rust value (`sys` holds a clone of the molecule;
+    // `ladder` is built above), so nothing Python-borrowed crosses the
     // closure boundary.
     let fock_hooked = fock_hook.is_some();
     let (rhf, rung_cfg) = blocks::solve_ks_ladder(
         py,
-        &ctx,
-        &emol,
-        &prep,
-        op,
-        &bounds,
+        &sys,
         &ladder,
         fock_hook.map(|h| {
             (
@@ -736,8 +745,8 @@ pub(crate) fn run_dft(
                 py.allow_threads(|| {
                     evaluate_dispersion(
                         spec,
-                        &ctx,
-                        &emol,
+                        ctx,
+                        emol,
                         &bs_owned,
                         op,
                         &cfg,
@@ -753,18 +762,18 @@ pub(crate) fn run_dft(
     let gradient_data = if with_gradient {
         // Exactly `ks_gradient_closed` unless the SCF's exchange was COSX.
         let mut g = ferric_scf::gradient::restricted_scf_gradient(
-            &emol,
-            &prep,
+            emol,
+            prep,
             &basis_set.inner,
             op,
-            &bounds,
+            sys.bounds(),
             &cfg,
             &rhf,
         )
         .map_err(make_err)?;
         // The hook's explicit term (its Pulay term is already in `g`).
-        if let Some(h) = &hook_grad {
-            g = h.add_to(py, g, &rhf, false, &emol)?;
+        if let Some(h) = hook_grad {
+            g = h.add_to(py, g, &rhf, false, emol)?;
         }
         // Dispersion is additive in the ENERGY, so it is additive in the
         // gradient. Adding it here rather than returning the bare KS gradient
@@ -808,14 +817,12 @@ pub(crate) fn run_dft(
         dispersion_model,
         volume_ratios,
         converged: rhf.converged,
-        xc_mol: emol,
+        xc_mol: sys.into_mol(),
         xc_basis: basis_set.inner.clone(),
-        xc_cache: std::sync::OnceLock::new(),
-        xc_lock: std::sync::Mutex::new(()),
-        density_data: rhf.density_total.clone(),
+        xc_cache: crate::compute_once::ComputeOnce::new(),
         gradient_data,
-        scf_data: rhf,
-        scf_config: rung_cfg,
+        scf_data: Arc::new(rhf),
+        scf_config: Arc::new(rung_cfg),
         fock_hooked,
     };
     Ok(Py::new(py, result)?.into_any())
@@ -830,7 +837,7 @@ pub(crate) fn refuse_dft_symmetry_extras(
     with_gradient: bool,
     dispersion: bool,
 ) -> PyResult<()> {
-    let refuse = |m: &str| Err(pyo3::exceptions::PyValueError::new_err(m.to_string()));
+    let refuse = |m: &str| Err(crate::errors::input_err(m.to_string()));
     if !symmetry {
         return refuse("run_dft: irrep_nelec requires symmetry=True");
     }
@@ -917,14 +924,13 @@ pub(crate) fn resolve_dispersion(spec: &str, xc_name: &str) -> PyResult<Dispersi
     let named = |prefix: &str| -> PyResult<Option<String>> {
         match lower.strip_prefix(prefix).and_then(|r| r.strip_suffix(')')) {
             None => Ok(None),
-            Some(inner) if inner.trim().is_empty() => Err(pyo3::exceptions::PyValueError::new_err(
-                format!("dispersion=\"{prefix})\" names no functional"),
-            )),
+            Some(inner) if inner.trim().is_empty() => Err(crate::errors::input_err(format!(
+                "dispersion=\"{prefix})\" names no functional"
+            ))),
             Some(inner) => Ok(Some(inner.trim().to_string())),
         }
     };
-    let value_err =
-        |e: ferric_core::FerricError| pyo3::exceptions::PyValueError::new_err(e.to_string());
+    let value_err = |e: ferric_core::FerricError| crate::errors::input_err(e);
     let d3 = |f: String| -> PyResult<DispersionSpec> {
         ferric_d3::d3bj_params_for_functional(&f).map_err(value_err)?;
         Ok(DispersionSpec::D3Bj(f))
@@ -945,7 +951,7 @@ pub(crate) fn resolve_dispersion(spec: &str, xc_name: &str) -> PyResult<Dispersi
     if let Some(f) = named("mbd(")? {
         return mbd(f);
     }
-    Err(pyo3::exceptions::PyValueError::new_err(format!(
+    Err(crate::errors::input_err(format!(
         "unknown dispersion scheme {spec:?}; expected \"d3bj\", \"d3(bj)\", \
          \"d3bj(<functional>)\", \"mbd\" or \"mbd(<functional>)\". Pass \
          dispersion=None for no correction -- there is no value meaning \"compute zero\"."
@@ -1126,6 +1132,7 @@ pub(crate) fn run_ksdft(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -1193,6 +1200,7 @@ struct OpenKsKwargs<'a, 'py> {
     mom_reference: Option<&'a str>,
     fock_hook: Option<&'a Bound<'py, PyAny>>,
     fock_hook_grad: Option<&'a Bound<'py, PyAny>>,
+    gc_rotation: Option<&'a str>,
 }
 
 /// Shared body of [`run_uks`] / [`run_roks`]: the KS-DFT SCF config of
@@ -1250,18 +1258,17 @@ fn run_open_ks(
         mom_reference,
         fock_hook,
         fock_hook_grad,
+        gc_rotation,
     } = kw;
     refuse_dm0_with_guess(who, dm0.is_some(), guess, guess_basis)?;
     let use_sad_guess = parse_guess(guess)?;
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
+    let ecp = EcpMolecule::new(mol.inner.clone(), &basis_set.inner);
     // Refuse a molecule whose electron count cannot carry the multiplicity
     // before any integral work (an odd count with multiplicity 1, ...).
-    let n_spin = spin_counts(&emol, who)?;
-    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let dm0 = blocks::checked_dm0_spin(dm0, &prep, n_spin, who)?;
+    let n_spin = spin_counts(ecp.mol(), who)?;
+    let sys = prepare_ecp(py, ecp)?;
+    let (emol, prep) = (sys.mol(), sys.basis());
+    let dm0 = blocks::checked_dm0_spin(dm0, prep, n_spin, who)?;
     // Parsed in the order the pre-`ScfOptions` construction evaluated them;
     // the keywords added later (6b) after them.
     let relativistic = crate::scf::parse_relativistic(relativistic)?;
@@ -1269,8 +1276,7 @@ fn run_open_ks(
     let ri_k_precision = parse_ri_k_precision(ri_k_precision)?;
     let dft_grid =
         resolve_dft_grid_with_cut(grid_radial, grid_angular, grid_prune, grid_weight_cut)?;
-    let hook_grad =
-        crate::scf::parse_fock_hook_grad(who, fock_hook, fock_hook_grad, with_gradient)?;
+    let hook = crate::scf::parse_fock_hook(who, fock_hook, fock_hook_grad, with_gradient)?;
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
     let eri = crate::scf::parse_eri(eri)?;
     let cosx = resolve_cosx_kwargs(
@@ -1291,6 +1297,9 @@ fn run_open_ks(
     // run_uks / run_roks policy (run_dft's KS defaults, including the
     // RIJCOSX rule) is `ScfEntryPoint::Uks` / `Roks`'s
     // (ferric_scf::options::entry).
+    // Parsed last of the keywords: an unknown spelling was the solver's
+    // refusal before the binding parsed it (same class and text).
+    let k_builder = crate::parse_k_builder(k_builder)?;
     let kw = ScfKwargs {
         max_iter,
         energy_conv,
@@ -1325,30 +1334,23 @@ fn run_open_ks(
         ..ScfKwargs::default()
     };
     let options = scf_options_from_kwargs(entry, kw)?;
-    let mut config = options.into_rhf_config().py()?;
+    let mut config = options
+        .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
+        .py()?;
+    config.gc_rotation = crate::scf::parse_gc_rotation(gc_rotation)?;
     let (solver, gradient_kind) = match kind {
         OpenKs::Uks => (blocks::OpenShell::Uhf, ScfGradientKind::Uhf),
         OpenKs::Roks => (blocks::OpenShell::Rohf, ScfGradientKind::Rohf),
     };
+    let fock_hook = hook.as_ref().map(FockHook::callable);
     if with_gradient {
         config = scf_gradient_config(who, gradient_kind, &config, fock_hook)?;
-        if fock_hook.is_some() && hook_grad.is_none() {
+        if hook.as_ref().is_some_and(FockHook::lacks_grad) {
             return crate::scf::refuse_hook_without_grad(who);
         }
     }
-    let ctx = ParallelContext::default();
-    let (r, hook_term) = blocks::solve_open_shell(
-        py,
-        solver,
-        &ctx,
-        &emol,
-        &prep,
-        op,
-        &bounds,
-        &config,
-        fock_hook,
-        dm0.as_ref(),
-    )?;
+    let (r, hook_term) =
+        blocks::solve_open_shell(py, solver, &sys, &config, fock_hook, dm0.as_ref())?;
     // As run_uhf / run_rohf: the hook's noise-floor term can put a
     // user-set energy_conv below the floor (a zero term never warns).
     crate::scf::warn_hook_noise_floor(
@@ -1356,22 +1358,22 @@ fn run_open_ks(
         who,
         SolverFamily::OpenShell,
         energy_conv.is_some(),
-        &emol,
-        &prep,
+        emol,
+        prep,
         &config,
         hook_term,
     );
     let gradient = with_gradient
         .then(|| {
-            let g = scf_gradient(py, gradient_kind, &emol, &prep, &bounds, &config, &r)?;
+            let g = scf_gradient(py, gradient_kind, &sys, &config, &r)?;
             // The hook's explicit term (its Pulay term is already in `g`).
-            match &hook_grad {
-                Some(h) => h.add_to(py, g, &r, true, &emol),
+            match hook.as_ref().and_then(FockHook::grad) {
+                Some(h) => h.add_to(py, g, &r, true, emol),
                 None => Ok(g),
             }
         })
         .transpose()?;
-    let mut result = PyUhfResult::from_scf(r, &emol, &config, &prep, fock_hook.is_some());
+    let mut result = PyUhfResult::from_scf(r, emol, &config, prep, fock_hook.is_some());
     result.gradient_data = gradient;
     Ok(result)
 }
@@ -1424,6 +1426,7 @@ fn run_open_ks(
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
     trah_trigger=None, guess_basis=None, guess_projection=None, mom_reference=None,
     fock_hook=None, fock_hook_grad=None,
+    gc_rotation=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_uks<'py>(
@@ -1470,6 +1473,7 @@ pub(crate) fn run_uks<'py>(
     mom_reference: Option<&str>,
     fock_hook: Option<&Bound<'py, PyAny>>,
     fock_hook_grad: Option<&Bound<'py, PyAny>>,
+    gc_rotation: Option<&str>,
 ) -> PyResult<PyUhfResult> {
     let kw = OpenKsKwargs {
         functional,
@@ -1512,6 +1516,7 @@ pub(crate) fn run_uks<'py>(
         mom_reference,
         fock_hook,
         fock_hook_grad,
+        gc_rotation,
     };
     run_open_ks(py, OpenKs::Uks, mol, basis_set, kw)
 }
@@ -1540,6 +1545,7 @@ pub(crate) fn run_uks<'py>(
     smeared_charges=None, solvent=None, pcm_lebedev_order=None,
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
     guess_basis=None, guess_projection=None, fock_hook=None, fock_hook_grad=None,
+    gc_rotation=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_roks<'py>(
@@ -1583,6 +1589,7 @@ pub(crate) fn run_roks<'py>(
     guess_projection: Option<&str>,
     fock_hook: Option<&Bound<'py, PyAny>>,
     fock_hook_grad: Option<&Bound<'py, PyAny>>,
+    gc_rotation: Option<&str>,
 ) -> PyResult<PyUhfResult> {
     let kw = OpenKsKwargs {
         functional,
@@ -1625,6 +1632,7 @@ pub(crate) fn run_roks<'py>(
         mom_reference: None,
         fock_hook,
         fock_hook_grad,
+        gc_rotation,
     };
     run_open_ks(py, OpenKs::Roks, mol, basis_set, kw)
 }
@@ -1656,7 +1664,7 @@ pub(crate) fn register_open_shell_scf(m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[pyo3(signature = (mol, functional, s9 = 0.0))]
 pub(crate) fn d3bj_energy(mol: &PyMolecule, functional: &str, s9: f64) -> PyResult<f64> {
     if !s9.is_finite() {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "d3bj_energy: s9 must be finite, got {s9}"
         )));
     }
@@ -1668,7 +1676,7 @@ pub(crate) fn d3bj_energy(mol: &PyMolecule, functional: &str, s9: f64) -> PyResu
 }
 
 /// Result of `mbd_rsscs_energy`. Atomic units; per-atom lists in atom order.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "MbdRsscsResult")]
 pub(crate) struct PyMbdRsscsResult {
     /// MBD@rsSCS dispersion energy (Hartree).
@@ -1728,15 +1736,14 @@ pub(crate) fn mbd_rsscs_energy(
     use ferric_rpa::dispersion::mbd_rsscs::MbdRsscsConfig;
     let cfg = match (beta, functional) {
         (Some(b), None) => MbdRsscsConfig::with_beta(b),
-        (None, Some(f)) => MbdRsscsConfig::for_functional(f)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?,
+        (None, Some(f)) => MbdRsscsConfig::for_functional(f).map_err(crate::errors::input_err)?,
         (Some(_), Some(_)) => {
-            return Err(pyo3::exceptions::PyValueError::new_err(
+            return Err(crate::errors::input_err(
                 "mbd_rsscs_energy: pass either beta or functional, not both",
             ))
         }
         (None, None) => {
-            return Err(pyo3::exceptions::PyValueError::new_err(
+            return Err(crate::errors::input_err(
                 "mbd_rsscs_energy: beta is functional dependent — pass beta=... or \
                  functional=... (PBE, PBE0, HSE06)",
             ))
@@ -1744,13 +1751,13 @@ pub(crate) fn mbd_rsscs_energy(
     };
     let atoms = &mol.inner.atoms;
     if let Some(i) = atoms.iter().position(|a| a.ghost) {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "mbd_rsscs_energy: atom {i} is a ghost; MBD needs a real atom (and a volume \
              ratio) at every center — remove ghost atoms first"
         )));
     }
     if volume_ratios.len() != atoms.len() {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "mbd_rsscs_energy: {} volume ratios for {} atoms",
             volume_ratios.len(),
             atoms.len()

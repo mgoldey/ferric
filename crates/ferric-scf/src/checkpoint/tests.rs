@@ -82,7 +82,7 @@ fn fixed_process() -> ProcessSettings {
         gpu_mode: "Off".to_string(),
         libint_version: "2.7.2".to_string(),
         cargo_features: "mpi=false gpu=false cfmm-incomplete=false".to_string(),
-        env: vec![None; 8],
+        env: vec![None; 11],
     }
 }
 
@@ -198,6 +198,16 @@ fn report() -> ConvergenceReport {
     }
 }
 
+fn eri_route() -> crate::incore_jk::EriRoute {
+    crate::incore_jk::EriRoute {
+        nbasis: 7,
+        bytes: 123_456,
+        quartets: 789,
+        build_seconds: 0.25,
+        mode: crate::incore_jk::EriMode::Incore,
+    }
+}
+
 fn final_state(spin: Spin, nao: usize) -> FinalState {
     let open = spin != Spin::Restricted;
     FinalState {
@@ -216,6 +226,9 @@ fn final_state(spin: Spin, nao: usize) -> FinalState {
         convergence: Some(report()),
         precision_summary: "f64".to_string(),
         precision_detail: format!("{:?}", PrecisionRecord::f64()),
+        precision_json: Some(PrecisionRecord::f64().to_json().to_string()),
+        eri_route: Some(eri_route()),
+        writer_threads: Some(3),
         not_stored: Vec::new(),
     }
 }
@@ -279,6 +292,9 @@ fn same_final(a: &FinalState, b: &FinalState) -> bool {
         && same_report(&a.convergence, &b.convergence)
         && a.precision_summary == b.precision_summary
         && a.precision_detail == b.precision_detail
+        && a.precision_json == b.precision_json
+        && a.eri_route == b.eri_route
+        && a.writer_threads == b.writer_threads
         && a.not_stored == b.not_stored
 }
 
@@ -429,7 +445,6 @@ fn df_jk_route_is_never_confused_with_exact() {
 fn every_exit_state_round_trips() {
     for exit in [
         ScfExit::Converged,
-        ScfExit::Plateau,
         ScfExit::Stalled,
         ScfExit::Diverged,
         ScfExit::MaxIter,
@@ -480,7 +495,14 @@ fn from_result_carries_every_stored_field_to_disk() {
     for spin in ALL_SPINS {
         let result = scf_result(spin);
         let identity = Scenario::water(spin).identity();
-        let ck = Checkpoint::from_result(&result, -122.5, 9.25, identity, clean_build()).unwrap();
+        let mut ck =
+            Checkpoint::from_result(&result, -122.5, 9.25, identity, clean_build()).unwrap();
+        let state = ck.final_state.as_mut().unwrap();
+        // The writer's thread count, and no ERI route (the caller sets it).
+        assert_eq!(state.writer_threads, Some(rayon::current_num_threads()));
+        assert_eq!(state.eri_route, None);
+        state.writer_threads = Some(3);
+        state.eri_route = Some(eri_route());
         let back = round_trip(&ck);
         assert!(same_state(&final_ck(spin), &back), "{spin:?}");
         let state = back.final_state.unwrap();
@@ -499,6 +521,112 @@ fn from_result_records_what_it_could_not_store() {
         ck.final_state.unwrap().not_stored,
         vec!["induced_dipoles".to_string()]
     );
+}
+
+fn result_bits(r: &crate::result::ScfResult) -> Vec<u64> {
+    let mut out = vec![r.energy.to_bits()];
+    let arrays = [
+        Some(&r.density_total),
+        Some(&r.density_alpha),
+        r.density_beta.as_ref(),
+        Some(&r.mos_alpha),
+        r.mos_beta.as_ref(),
+        Some(&r.fock_alpha),
+        r.fock_beta.as_ref(),
+        r.rohf_spin_focks.as_ref().map(|f| &f.0),
+        r.rohf_spin_focks.as_ref().map(|f| &f.1),
+    ];
+    for a in arrays.into_iter().flatten() {
+        out.push(u64::from(a.is_standard_layout()));
+        out.extend(a.iter().map(|v| v.to_bits()));
+    }
+    out.extend(r.eps_alpha.iter().map(|v| v.to_bits()));
+    out.extend(r.eps_beta.iter().flatten().map(|v| v.to_bits()));
+    out
+}
+
+#[test]
+fn into_result_gives_back_the_stored_result_bit_for_bit() {
+    for spin in ALL_SPINS {
+        let mut result = scf_result(spin);
+        result.xc = Some("PBE".to_string());
+        let identity = Scenario::water(spin).identity();
+        let ck = Checkpoint::from_result(&result, -122.5, 9.25, identity, clean_build()).unwrap();
+        let config = RhfConfig::default().with_xc("PBE");
+        let back = round_trip(&ck).clone().into_result(&config).unwrap();
+        assert_eq!(result_bits(&back), result_bits(&result), "{spin:?}");
+        assert_eq!(back.spin, result.spin);
+        assert_eq!(back.df_jk, result.df_jk);
+        assert_eq!(back.exit, result.exit);
+        assert_eq!(back.converged, result.converged);
+        assert_eq!(back.iterations, result.iterations);
+        assert_eq!(back.computed_quartets, result.computed_quartets);
+        assert_eq!(back.convergence, result.convergence);
+        assert_eq!(back.xc.as_deref(), Some("PBE"));
+        assert_eq!(back.precision, PrecisionRecord::f64());
+        assert!(back.stability.is_none() && back.guess_basis.is_none());
+        assert_eq!(config.eri_route.get(), None, "from_result stores no route");
+    }
+}
+
+#[test]
+fn into_result_records_the_stored_eri_route_on_the_config() {
+    let config = RhfConfig::default();
+    let back = round_trip(&final_ck(Spin::Unrestricted));
+    assert_eq!(
+        back.final_state.as_ref().unwrap().eri_route,
+        Some(eri_route())
+    );
+    assert_eq!(back.final_state.as_ref().unwrap().writer_threads, Some(3));
+    let _ = back.into_result(&config).unwrap();
+    assert_eq!(config.eri_route.get(), Some(eri_route()));
+}
+
+#[test]
+fn an_f64_state_without_precision_json_restores_and_a_mixed_one_does_not() {
+    let mut ck = final_ck(Spin::Restricted);
+    ck.final_state.as_mut().unwrap().precision_json = None;
+    let r = ck.clone().into_result(&RhfConfig::default()).unwrap();
+    assert_eq!(r.precision, PrecisionRecord::f64());
+    let state = ck.final_state.as_mut().unwrap();
+    state.precision_summary = "mixed (dfj-f32 mixed on cpu: 2 mixed call(s))".to_string();
+    state.precision_detail = "PrecisionRecord { precision: Mixed, kernels: [..] }".to_string();
+    let e = ck
+        .clone()
+        .into_result(&RhfConfig::default())
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("precision (mixed (dfj-f32"), "{e}");
+}
+
+#[test]
+fn into_result_refuses_a_mid_run_file_and_what_it_cannot_rebuild() {
+    let config = RhfConfig::default();
+    let identity = Scenario::water(Spin::Restricted).identity();
+    let mid = Checkpoint::mid_run(
+        orbitals(Spin::Restricted, 7),
+        3,
+        identity.clone(),
+        clean_build(),
+    )
+    .unwrap();
+    assert_eq!(
+        mid.clone().into_result(&config).unwrap_err(),
+        CheckpointError::MidRun
+    );
+
+    let mut ck = final_ck(Spin::Restricted);
+    ck.final_state.as_mut().unwrap().not_stored = vec!["cosx_final".to_string()];
+    let e = ck.clone().into_result(&config).unwrap_err();
+    assert_eq!(e, CheckpointError::NotRestorable(vec!["cosx_final".into()]));
+
+    let mut ck = final_ck(Spin::Restricted);
+    let state = ck.final_state.as_mut().unwrap();
+    // The JSON (an f64 record) does not rebuild the stored `Debug`: refused.
+    state.precision_summary = "mixed (dfk: 3)".to_string();
+    state.precision_detail = "PrecisionRecord { mixed }".to_string();
+    let e = ck.clone().into_result(&config).unwrap_err().to_string();
+    assert!(e.contains("precision (mixed (dfk: 3))"), "{e}");
 }
 
 // --------------------------------------------------------- unusable files
@@ -842,6 +970,15 @@ fn identity_table() -> Vec<(&'static str, FieldClass, Mutator)> {
         ("FERRIC_DF_GUESS_TIGHT", StateSelecting, |s| {
             s.process.env[7] = Some("0".to_string());
         }),
+        ("FERRIC_DFK_METRIC", Route, |s| {
+            s.process.env[8] = Some("eigh".to_string());
+        }),
+        ("FERRIC_GC_ROTATE", Route, |s| {
+            s.process.env[9] = Some("off".to_string());
+        }),
+        ("FERRIC_GPU_MIXED_K_PANEL", Route, |s| {
+            s.process.env[10] = Some("1000000000".to_string());
+        }),
         ("use_sad_guess", StateSelecting, |s| {
             s.config.use_sad_guess = false;
         }),
@@ -934,7 +1071,7 @@ fn identity_table() -> Vec<(&'static str, FieldClass, Mutator)> {
             s.config.cdft_stability_descent = false
         }),
         ("k_builder", Route, |s| {
-            s.config.k_builder = Some("link".to_string())
+            s.config.k_builder = Some(crate::options::KBuilderKind::Link)
         }),
         ("cosx", Route, |s| {
             s.config.cosx.overlap_fit = !s.config.cosx.overlap_fit
@@ -963,6 +1100,9 @@ fn identity_table() -> Vec<(&'static str, FieldClass, Mutator)> {
         ("eri", Route, |s| {
             s.config.eri = crate::incore_jk::EriMode::Direct;
         }),
+        ("gc_rotation", Route, |s| {
+            s.config.gc_rotation = Some(crate::direct_jk::GcRotate::Off);
+        }),
         ("relativistic", Method, |s| {
             s.config.relativistic = Some(crate::x2c::Relativistic::X2c1e);
         }),
@@ -975,7 +1115,7 @@ fn identity_table() -> Vec<(&'static str, FieldClass, Mutator)> {
 fn a_change_between_two_values_is_seen_not_only_presence() {
     let mut base = Scenario::water(Spin::Restricted);
     base.config.xc = Some("PBE".to_string());
-    base.config.k_builder = Some("link".to_string());
+    base.config.k_builder = Some(crate::options::KBuilderKind::Link);
     base.config.df_j_aux = Some("def2-universal-jkfit".to_string());
     base.config.df_k_aux = Some("def2-universal-jkfit".to_string());
     base.config.xc_omega = Some(0.3);
@@ -983,7 +1123,7 @@ fn a_change_between_two_values_is_seen_not_only_presence() {
     let table: [(&str, Mutator); 6] = [
         ("xc", |s| s.config.xc = Some("B3LYP".to_string())),
         ("k_builder", |s| {
-            s.config.k_builder = Some("cosx".to_string())
+            s.config.k_builder = Some(crate::options::KBuilderKind::Cosx)
         }),
         ("df_j_aux", |s| {
             s.config.df_j_aux = Some("cc-pvdz-jkfit".to_string())
@@ -1168,6 +1308,30 @@ fn every_identity_field_has_a_row() {
     // Covered by its own test: it moves with the basis in any real change.
     rows.insert("nao".to_string());
     assert_eq!(fields, rows);
+}
+
+/// The `k_builder` identity value is the spelling's `Debug` text, exactly
+/// as when the field was an `Option<String>`, so a checkpoint written before
+/// `KBuilderKind` still matches its run.
+#[test]
+fn k_builder_identity_value_is_the_pre_enum_spelling() {
+    use crate::options::KBuilderKind;
+    let value = |kb: Option<KBuilderKind>| {
+        let mut s = Scenario::water(Spin::Restricted);
+        s.config.k_builder = kb;
+        s.identity()
+            .fields
+            .into_iter()
+            .find(|f| f.name == "k_builder")
+            .unwrap()
+            .value
+    };
+    assert_eq!(value(None), format!("{:?}", None::<String>));
+    for kind in KBuilderKind::ALL {
+        let old: Option<String> = Some(kind.as_str().to_string());
+        assert_eq!(value(Some(kind)), format!("{old:?}"), "{kind:?}");
+    }
+    assert_eq!(value(Some(KBuilderKind::Cosx)), "Some(\"cosx\")");
 }
 
 #[test]
@@ -1690,6 +1854,13 @@ fn each_process_setting_reaches_the_identity_from_the_environment() {
             "FERRIC_TERF_TABLE_DIR",
         ),
         ("FERRIC_DF_GUESS_TIGHT", "0", "FERRIC_DF_GUESS_TIGHT"),
+        ("FERRIC_DFK_METRIC", "eigh", "FERRIC_DFK_METRIC"),
+        ("FERRIC_GC_ROTATE", "off", "FERRIC_GC_ROTATE"),
+        (
+            "FERRIC_GPU_MIXED_K_PANEL",
+            "1000000000",
+            "FERRIC_GPU_MIXED_K_PANEL",
+        ),
     ] {
         let changed = key(&[(variable, value)]);
         let moved: Vec<&str> = changed
@@ -1701,6 +1872,35 @@ fn each_process_setting_reaches_the_identity_from_the_environment() {
             .collect();
         assert_eq!(moved, [name], "{variable}={value}");
     }
+    // FERRIC_DFK_METRIC is recorded parsed: unset, `auto` and ` AUTO ` are one
+    // identity.
+    for value in ["auto", " AUTO "] {
+        assert_eq!(
+            key(&[("FERRIC_DFK_METRIC", value)]).fields,
+            base.fields,
+            "FERRIC_DFK_METRIC={value:?}"
+        );
+    }
+    // So is FERRIC_GC_ROTATE; `OFF` and `off` are one identity too, and a
+    // value that does not parse keeps its raw text (the SCF refuses it).
+    for value in ["auto", " AUTO ", "Auto"] {
+        assert_eq!(
+            key(&[("FERRIC_GC_ROTATE", value)]).fields,
+            base.fields,
+            "FERRIC_GC_ROTATE={value:?}"
+        );
+    }
+    assert_eq!(
+        key(&[("FERRIC_GC_ROTATE", "OFF")]).fields,
+        key(&[("FERRIC_GC_ROTATE", "off")]).fields
+    );
+    let raw = key(&[("FERRIC_GC_ROTATE", "none")]);
+    let gc = raw
+        .fields
+        .iter()
+        .find(|f| f.name == "FERRIC_GC_ROTATE")
+        .unwrap();
+    assert_eq!(gc.value, format!("{:?}", Some("none")));
     let field = |name: &str| base.fields.iter().find(|f| f.name == name).unwrap();
     assert_eq!(
         field("libint_version").value,
@@ -1770,11 +1970,10 @@ fn skip_needs_a_file_at_least_as_tight_and_guess_ignores_it() {
 }
 
 #[test]
-fn skip_accepts_converged_and_echoes_plateau_and_refuses_every_other_exit() {
+fn skip_accepts_converged_and_refuses_every_other_exit() {
     let current = Scenario::water(Spin::Restricted).identity();
     for (exit, accepted) in [
         (ScfExit::Converged, true),
-        (ScfExit::Plateau, true),
         (ScfExit::Stalled, false),
         (ScfExit::Diverged, false),
         (ScfExit::MaxIter, false),
@@ -1952,6 +2151,9 @@ const CHILD_ENV: &str = "FERRIC_CKPT_TEST_CHILD";
 fn child(test: &str, envs: &[(&str, &str)]) -> Vec<String> {
     let mut cmd = Command::new(std::env::current_exe().unwrap());
     cmd.args(["--exact", test, "--nocapture", "--test-threads=1"]);
+    // An inherited debug route switch would move the unset baseline.
+    cmd.env_remove("FERRIC_DFK_METRIC");
+    cmd.env_remove("FERRIC_GC_ROTATE");
     for (k, v) in envs {
         cmd.env(k, v);
     }
@@ -1977,7 +2179,7 @@ fn full_config() -> RhfConfig {
         nlc_grid: Some(Default::default()),
         smearing_sigma: Some(1e-3),
         irrep_nelec: Some(vec![("A1".to_string(), 8), ("B2".to_string(), 2)]),
-        k_builder: Some("cosx".to_string()),
+        k_builder: Some(crate::options::KBuilderKind::Cosx),
         df_j_aux: Some("def2-universal-jkfit".to_string()),
         df_k_aux: Some("def2-universal-jkfit".to_string()),
         external_potential: Some(ExternalPotential {
@@ -2268,6 +2470,13 @@ fn golden_ck() -> Checkpoint {
     // The v1 file predates `one_step_energy_drop`; it must read back as None.
     if let Some(rep) = ck.final_state.as_mut().and_then(|f| f.convergence.as_mut()) {
         rep.one_step_energy_drop = None;
+    }
+    // ... and `precision_json`, which reads back as None (an f64 record
+    // restores without it).
+    if let Some(state) = ck.final_state.as_mut() {
+        state.precision_json = None;
+        state.eri_route = None;
+        state.writer_threads = None;
     }
     ck
 }

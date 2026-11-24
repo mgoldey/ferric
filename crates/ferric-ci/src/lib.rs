@@ -564,15 +564,13 @@ mod tests {
             &prep,
             op,
             &bounds,
-            &RhfConfig {
+            &RhfConfig::default()
                 // density_conv (ΔP RMS) is the primary/tight SCF gate in ferric
                 // (energy_conv is only a loose "still descending" sanity bound —
                 // see rhf.rs). Tighten it so the reference RHF energy matches
                 // PySCF's to well under the 1e-8 CAS-CI comparison tolerance.
-                energy_conv: 1e-10,
-                density_conv: 1e-9,
-                ..Default::default()
-            },
+                .with_energy_conv(1e-10)
+                .with_density_conv(1e-9),
         )
         .unwrap();
         (mol, prep, rhf)

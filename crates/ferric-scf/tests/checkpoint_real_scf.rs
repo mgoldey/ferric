@@ -71,18 +71,11 @@ fn solve(case: &Case, mol: &Molecule, prep: &PreparedBasis) -> ScfResult {
 }
 
 fn tight() -> RhfConfig {
-    RhfConfig {
-        density_conv: 1e-8,
-        ..Default::default()
-    }
+    RhfConfig::default().with_density_conv(1e-8)
 }
 
 fn cases() -> Vec<Case> {
-    let ri_pbe = RhfConfig {
-        xc: Some("PBE".to_string()),
-        df_j_aux: Some("def2-universal-jkfit".to_string()),
-        ..tight()
-    };
+    let ri_pbe = tight().with_xc("PBE").with_df_j_aux("def2-universal-jkfit");
     let case = |name, xyz, mult, basis, spin, config| Case {
         name,
         xyz,
@@ -221,10 +214,7 @@ fn a_different_guess_can_converge_to_a_different_state_and_identity_sees_it() {
         config,
     };
     let default = tight();
-    let hcore = RhfConfig {
-        use_sad_guess: false,
-        ..tight()
-    };
+    let hcore = tight().with_guess(ferric_scf::options::Guess::Core);
     let (from_default, from_hcore) = (
         solve(&case(default.clone()), &mol, &prep),
         solve(&case(hcore.clone()), &mol, &prep),

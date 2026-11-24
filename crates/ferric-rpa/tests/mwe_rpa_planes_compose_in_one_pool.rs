@@ -50,8 +50,6 @@
 //!
 //! The pool is process-global, so these tests serialize and clear the slot.
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
 use ferric_core::basis;
 use ferric_core::memory::pool::{clear_global, install_global, MemoryPool};
 use ferric_core::mol::Molecule;
@@ -63,6 +61,7 @@ use ferric_rpa::{run_pdep_rpa, PdepRpaConfig};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::pool::CleanSlot;
 
 /// Measured pool peak of one `run_pdep_rpa` on the fixture below, bytes.
 /// Recorded, not assumed: see the table in the module doc.
@@ -122,30 +121,6 @@ const MEASURED_BECKE_PEAK: usize = 44_112_624;
 const MEASURED_BECKE_PEAK_FLOOR: usize = 40_000_000;
 /// Upper edge (12 workers) with margin. A peak above this is real drift.
 const MEASURED_BECKE_PEAK_CEIL: usize = 48_000_000;
-
-fn global_lock() -> MutexGuard<'static, ()> {
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    }
-}
-
-struct CleanSlot(#[allow(dead_code)] MutexGuard<'static, ()>);
-
-impl CleanSlot {
-    fn acquire() -> Self {
-        let g = global_lock();
-        clear_global();
-        Self(g)
-    }
-}
-
-impl Drop for CleanSlot {
-    fn drop(&mut self) {
-        clear_global();
-    }
-}
 
 struct Fixture {
     mol: Molecule,

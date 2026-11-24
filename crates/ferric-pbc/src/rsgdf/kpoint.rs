@@ -412,7 +412,7 @@ fn late_back_transform(
     let data = j3.as_slice_mut().ok_or_else(|| {
         FerricError::General("KRsGdf column rotation: J3 is not contiguous".into())
     })?;
-    r.obs.back_transform_complex_rows(data, w)
+    crate::sr_rotation::back_transform_complex_rows(&r.obs, data, w)
 }
 
 /// [`sr_bins_of`] with the column rotation of a k-point energy build

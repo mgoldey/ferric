@@ -38,7 +38,7 @@ pub(crate) fn alias_kwarg<T>(
     new: Option<T>,
 ) -> PyResult<Option<T>> {
     match (old, new) {
-        (Some(_), Some(_)) => Err(pyo3::exceptions::PyValueError::new_err(format!(
+        (Some(_), Some(_)) => Err(crate::errors::input_err(format!(
             "{driver}: `{old_name}` is a deprecated alias of `{new_name}`; pass only `{new_name}`"
         ))),
         (Some(v), None) => {
@@ -150,7 +150,7 @@ pub(crate) fn scf_stationarity_tol(r: &ScfResult) -> Option<f64> {
 }
 
 /// Result of a closed-shell RHF (or `run_ksdft` KS-DFT) calculation.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "RhfResult")]
 pub(crate) struct PyRhfResult {
     /// Total SCF energy in Hartree (electronic + nuclear repulsion).
@@ -166,25 +166,41 @@ pub(crate) struct PyRhfResult {
     /// (reflects Schwarz/QQR screening; lower than the naive N^4 count).
     #[pyo3(get)]
     pub(crate) computed_quartets: usize,
-    pub(crate) density_data: Array2<f64>,
-    pub(crate) orbital_energies_data: Vec<f64>,
-    pub(crate) scf_data: ScfResult,
+    /// The solve, shared (`Arc`): a function that takes this result as a
+    /// reference and releases the GIL clones the `Arc`, not the arrays
+    /// (ARCHITECTURE.md roadmap item 13). `density()` and
+    /// `orbital_energies()` read its `density_total` and `eps_alpha`.
+    pub(crate) scf_data: Arc<ScfResult>,
     /// The SCF settings this result was solved with. `hirshfeld_charges`
     /// solves its free-atom proatoms with the same settings, as ferric-cli does.
-    pub(crate) scf_config: RhfConfig,
+    pub(crate) scf_config: Arc<RhfConfig>,
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
     /// `dE/dR` (natoms x 3, Hartree/Bohr) when solved with `with_gradient=True`.
     pub(crate) gradient_data: Option<Array2<f64>>,
 }
 
+stored_method_result!(PyRhfResult, total_energy: energy, certificate: certificate_data);
+
 #[pymethods]
 impl PyRhfResult {
-    /// Alias of `energy` (the same value), so callers can read either spelling.
+    #[doc = alias_doc!(energy)]
     #[getter]
     fn total_energy(&self) -> f64 {
-        self.energy
+        crate::method_result::total_energy_getter(self)
     }
-
+    /// Validation certificate of this result (the dict form of
+    /// `ferric_core::certificate::Certificate`): `capability`, `build`,
+    /// `grade` (`"proven"`, `"proven_narrow"`, `"smoke"`, `"spike"`, `"stub"`
+    /// or `"ungraded"`, from the `method.kind` matrix of the validation page;
+    /// an unconverged SCF is `"ungraded"`), `grade_source`, `measured_error`,
+    /// `approximations` (`[{"name", "detail"}]`: RI-J/RI-K, LinK/COSX, XC
+    /// grid, level shift, ECP, embedding, solvation), `precision` and
+    /// `warnings` (one per element, basis or functional outside the solver's
+    /// energy anchor among them; those do not change the grade).
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::method_result::certificate_getter(py, self)
+    }
     /// Analytic nuclear gradient `dE/dR` as an (natoms, 3) array in
     /// Hartree/Bohr, rows in the Molecule's atom order; `None` unless the
     /// result came from `run_rhf(..., with_gradient=True)`.
@@ -195,11 +211,11 @@ impl PyRhfResult {
     }
     /// The converged AO-basis density matrix as a 2D numpy array (n_bf × n_bf).
     fn density<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        PyArray2::from_array(py, &self.density_data)
+        PyArray2::from_array(py, &self.scf_data.density_total)
     }
     /// Molecular orbital energies (Hartree) as a 1D numpy array, ascending order.
     fn orbital_energies<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_vec(py, self.orbital_energies_data.clone())
+        PyArray1::from_vec(py, self.scf_data.eps_alpha.clone())
     }
     /// MO coefficient matrix C (n_bf × n_mo), column k = MO k in ascending
     /// energy order — the same matrix the Rust post-HF drivers consume.
@@ -252,19 +268,6 @@ impl PyRhfResult {
     fn ri_k_precision(&self) -> Option<&'static str> {
         self.scf_data.ri_k_precision().map(|p| p.as_str())
     }
-    /// Validation certificate of this result (the dict form of
-    /// `ferric_core::certificate::Certificate`): `capability`, `build`,
-    /// `grade` (`"proven"`, `"proven_narrow"`, `"smoke"`, `"spike"`, `"stub"`
-    /// or `"ungraded"`, from the `method.kind` matrix of the validation page;
-    /// an unconverged SCF is `"ungraded"`), `grade_source`, `measured_error`,
-    /// `approximations` (`[{"name", "detail"}]`: RI-J/RI-K, LinK/COSX, XC
-    /// grid, level shift, ECP, embedding, solvation), `precision` and
-    /// `warnings` (one per element, basis or functional outside the solver's
-    /// energy anchor among them; those do not change the grade).
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
-    }
     /// First-order energy change (Hartree) of one plain Roothaan step from the
     /// converged density, `Tr[F[D] (D' - D)]` with `D'` the aufbau density of
     /// the final `F[D]`. It is `<= 0` and zero (to rounding) only at a
@@ -286,8 +289,8 @@ impl PyRhfResult {
     fn stationarity_tol(&self) -> Option<f64> {
         scf_stationarity_tol(&self.scf_data)
     }
-    /// SCF exit reason: the `ScfExit` variant name (`"Converged"`, `"Plateau"`,
-    /// `"Stalled"`, `"Diverged"`, `"MaxIter"`). `converged=False` with
+    /// SCF exit reason: the `ScfExit` variant name (`"Converged"`,
+    /// `"Stalled"`, `"Diverged"`, `"MaxIter"`, `"NotCertified"`). `converged=False` with
     /// `"MaxIter"` means the iteration cap (`max_iter`) was reached; the final
     /// residuals below say how far from the thresholds the run was.
     #[getter]
@@ -364,7 +367,7 @@ impl PyRhfResult {
 pub(crate) fn check_trah_trigger(t: Option<f64>) -> PyResult<Option<TrahTrigger>> {
     t.map(TrahTrigger::new)
         .transpose()
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+        .map_err(crate::errors::input_err)
 }
 
 /// The `guess=` kwarg as parsed by [`parse_guess`] (`true` = SAD/MINAO).
@@ -388,9 +391,7 @@ pub(crate) fn scf_options_from_kwargs(
     entry: ScfEntryPoint,
     kw: ScfKwargs<'_>,
 ) -> PyResult<ScfOptions> {
-    entry
-        .options(kw)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    entry.options(kw).map_err(crate::errors::input_err)
 }
 
 /// The knobs each SCF entry point refuses
@@ -569,7 +570,7 @@ pub(crate) fn parse_ri_k_precision(
 ) -> PyResult<Option<ferric_scf::df_k::RiKPrecision>> {
     s.map(ferric_scf::df_k::RiKPrecision::parse_config_str)
         .transpose()
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+        .map_err(crate::errors::input_err)
 }
 
 /// Strict parse of an `eri` / `scf_eri` kwarg (`"auto"`, `"direct"`,
@@ -577,8 +578,19 @@ pub(crate) fn parse_ri_k_precision(
 pub(crate) fn parse_eri(s: Option<&str>) -> PyResult<ferric_scf::incore_jk::EriMode> {
     s.map_or(Ok(ferric_scf::incore_jk::EriMode::Auto), |s| {
         ferric_scf::incore_jk::EriMode::parse_config_str(s)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("eri: {e}")))
+            .map_err(|e| crate::errors::input_err(format!("eri: {e}")))
     })
+}
+
+/// Strict parse of a `gc_rotation` kwarg (exactly `"auto"`, `"rot1"` or
+/// `"off"`, as `[scf] gc_rotation`); `None` leaves `RhfConfig::gc_rotation` unset
+/// (`FERRIC_GC_ROTATE`, then `"auto"`), the library default.
+pub(crate) fn parse_gc_rotation(
+    s: Option<&str>,
+) -> PyResult<Option<ferric_scf::direct_jk::GcRotate>> {
+    s.map(ferric_scf::direct_jk::GcRotate::parse_str)
+        .transpose()
+        .map_err(|e| crate::errors::input_err(format!("gc_rotation: {e}")))
 }
 
 /// Strict parse of a `relativistic` kwarg (`"x2c1e"`); `None` is the
@@ -588,7 +600,7 @@ pub(crate) fn parse_relativistic(
 ) -> PyResult<Option<ferric_scf::x2c::Relativistic>> {
     s.map(ferric_scf::x2c::Relativistic::parse_config_str)
         .transpose()
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+        .map_err(crate::errors::input_err)
 }
 
 #[pyfunction]
@@ -606,6 +618,7 @@ pub(crate) fn parse_relativistic(
     fock_hook=None,
     guess_basis=None, guess_projection=None, ri_j_precision=None, dm0=None,
     with_gradient=false, eri=None, relativistic=None, fock_hook_grad=None,
+    gc_rotation=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_rhf(
@@ -651,19 +664,19 @@ pub(crate) fn run_rhf(
     eri: Option<&str>,
     relativistic: Option<&str>,
     fock_hook_grad: Option<&Bound<'_, PyAny>>,
+    gc_rotation: Option<&str>,
 ) -> PyResult<PyObject> {
     refuse_dm0_with_guess("run_rhf", dm0.is_some(), guess, guess_basis)?;
-    let hook_grad = parse_fock_hook_grad("run_rhf", fock_hook, fock_hook_grad, with_gradient)?;
+    let hook = parse_fock_hook("run_rhf", fock_hook, fock_hook_grad, with_gradient)?;
+    let fock_hook = hook.as_ref().map(FockHook::callable);
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
-    // Apply ECP core-electron counts (no-op without an ECP basis) so nelec()
-    // gives the valence count; the effective nuclear charge is set inside
-    // PreparedBasis::new from basis_set.ecps.
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
-    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let init_guess_density = blocks::checked_dm0(dm0, &prep, emol.nelec() as f64, "run_rhf")?;
+    // The molecule with the basis set's ECP core counts applied (no-op
+    // without an ECP basis), so nelec() gives the valence count; the
+    // effective nuclear charge is set inside PreparedBasis::new from
+    // basis_set.ecps.
+    let sys = prepare(py, mol, basis_set)?;
+    let (emol, prep) = (sys.mol(), sys.basis());
+    let init_guess_density = blocks::checked_dm0(dm0, prep, emol.nelec() as f64, "run_rhf")?;
     // Parse the string/PyO3 kwargs in the order the pre-`ScfOptions` literal
     // evaluated them, so a call with several bad kwargs raises the same error.
     let cosx = resolve_cosx_kwargs(
@@ -683,6 +696,9 @@ pub(crate) fn run_rhf(
     let trah_trigger = check_trah_trigger(trah_trigger)?;
     // Defaults come from ferric_scf::options, the lowering the CLI `[scf]`
     // section also goes through.
+    // Parsed last of the keywords: an unknown spelling was the solver's
+    // refusal before the binding parsed it (same class and text).
+    let k_builder = crate::parse_k_builder(k_builder)?;
     let kw = ScfKwargs {
         max_iter,
         energy_conv,
@@ -722,16 +738,18 @@ pub(crate) fn run_rhf(
         ..ScfKwargs::default()
     };
     let options = scf_options_from_kwargs(ScfEntryPoint::Rhf, kw)?;
-    let mut config = options.into_rhf_config().py()?;
+    let mut config = options
+        .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
+        .py()?;
+    config.gc_rotation = parse_gc_rotation(gc_rotation)?;
     if with_gradient {
         config = scf_gradient_config("run_rhf", ScfGradientKind::Rhf, &config, fock_hook)?;
-        if fock_hook.is_some() && hook_grad.is_none() {
+        if hook.as_ref().is_some_and(FockHook::lacks_grad) {
             return refuse_hook_without_grad("run_rhf");
         }
     }
-    let ctx = ParallelContext::default();
     // Release the GIL for the duration of the SCF. Every argument below is an
-    // owned Rust value (`emol` is a clone; `prep`/`bounds`/`config` are built
+    // owned Rust value (`sys` holds a clone of the molecule; `config` is built
     // above), so nothing Python-borrowed crosses the closure boundary.
     //
     // Without this, a second Python thread cannot even ENTER this function
@@ -743,31 +761,27 @@ pub(crate) fn run_rhf(
         "run_rhf",
         SolverFamily::ClosedShell,
         energy_conv.is_some(),
-        &emol,
-        &prep,
+        emol,
+        prep,
         &config,
     );
     let user_set = energy_conv.is_some();
     if with_gradient {
-        let hooked = fock_hook
-            .zip(hook_grad.as_ref())
-            .map(|(hook, grad)| RhfGradientHook {
-                hook,
+        let hooked = hook.as_ref().and_then(|h| {
+            h.grad().map(|grad| RhfGradientHook {
+                hook: h.callable(),
                 grad,
                 user_set_energy_conv: user_set,
-            });
+            })
+        });
         let args = RhfGradientArgs {
-            mol: &emol,
-            prep: &prep,
-            bounds: &bounds,
+            sys: &sys,
             config,
             hooked,
         };
-        return solve_rhf_with_gradient(py, &ctx, args);
+        return solve_rhf_with_gradient(py, args);
     }
-    solve_rhf_outcome(
-        py, &ctx, &emol, &prep, op, &bounds, config, fock_hook, user_set,
-    )
+    solve_rhf_outcome(py, &sys, config, fock_hook, user_set)
 }
 
 /// Which SCF a `with_gradient=True` run differentiates.
@@ -795,13 +809,13 @@ pub(crate) fn scf_gradient_config(
     fock_hook: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<RhfConfig> {
     let refuse = |what: &str| {
-        Err(pyo3::exceptions::PyValueError::new_err(format!(
+        Err(crate::errors::input_err(format!(
             "{who}: with_gradient=True cannot be combined with {what}"
         )))
     };
     if fock_hook.is_some() {
         ferric_scf::rhf::validate_fock_hook(config)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{who}: {e}")))?;
+            .map_err(|e| crate::errors::input_err_msg(&e, format!("{who}: {e}")))?;
     }
     if matches!(kind, ScfGradientKind::Rhf) {
         if config.symmetry || config.irrep_nelec.is_some() {
@@ -823,7 +837,7 @@ pub(crate) fn scf_gradient_config(
         ScfGradientKind::Uhf => ferric_scf::gradient::preflight_cosx_unrestricted(config),
         ScfGradientKind::Rohf => ferric_scf::gradient::preflight_cosx_restricted_open(config),
     };
-    preflight.map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{who}: {e}")))?;
+    preflight.map_err(|e| crate::errors::input_err_msg(&e, format!("{who}: {e}")))?;
     // A gradient is a geometry task: an unset RI-J precision resolves to f64
     // (the f32 RI-J energy surface is jagged between nearby geometries), an
     // explicit one is kept.
@@ -836,15 +850,13 @@ pub(crate) fn scf_gradient_config(
 /// `kind`, by the dispatcher that differentiates the J/K, exchange and
 /// solvation the SCF used (`restricted_scf_gradient` and its open-shell
 /// siblings). An unconverged SCF raises: its gradient is not the derivative
-/// of its energy. The orbital basis is `prep`'s own
-/// ([`PreparedBasis::basis_set`]), so the gradient cannot be taken in a
-/// different basis from the one the SCF was solved in.
+/// of its energy. The molecule, orbital basis (its own
+/// [`PreparedBasis::basis_set`]) and bounds are `sys`'s, so the gradient
+/// cannot be taken on a different system from the one the SCF was solved on.
 pub(crate) fn scf_gradient(
     py: Python<'_>,
     kind: ScfGradientKind,
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    bounds: &SchwarzBounds,
+    sys: &PreparedSystem,
     config: &RhfConfig,
     r: &ScfResult,
 ) -> PyResult<Array2<f64>> {
@@ -857,7 +869,7 @@ pub(crate) fn scf_gradient(
             last_energy: r.energy,
         }));
     }
-    let op = Operator::coulomb();
+    let (mol, prep, op, bounds) = (sys.mol(), sys.basis(), sys.op(), sys.bounds());
     let basis = prep.basis_set();
     py.allow_threads(|| match kind {
         ScfGradientKind::Rhf => restricted_scf_gradient(mol, prep, basis, op, bounds, config, r),
@@ -878,12 +890,10 @@ pub(crate) struct RhfGradientHook<'a, 'py> {
 }
 
 /// What [`solve_rhf_with_gradient`] solves and differentiates. There is no
-/// separate orbital basis: the result uses `prep`'s
+/// separate orbital basis: the result uses the system's
 /// ([`PreparedBasis::basis_set`]), as [`solve_open_shell_entry`] does.
 pub(crate) struct RhfGradientArgs<'a, 'py> {
-    pub(crate) mol: &'a Molecule,
-    pub(crate) prep: &'a PreparedBasis,
-    pub(crate) bounds: &'a SchwarzBounds,
+    pub(crate) sys: &'a PreparedSystem,
     pub(crate) config: RhfConfig,
     /// `Some`: the solve is the hooked one and the gradient gains the hook's
     /// explicit term.
@@ -894,31 +904,27 @@ pub(crate) struct RhfGradientArgs<'a, 'py> {
 /// [`scf_gradient_config`] already ran) and its analytic gradient.
 pub(crate) fn solve_rhf_with_gradient(
     py: Python<'_>,
-    ctx: &ParallelContext,
     args: RhfGradientArgs<'_, '_>,
 ) -> PyResult<PyObject> {
     let RhfGradientArgs {
-        mol,
-        prep,
-        bounds,
+        sys,
         config,
         hooked,
     } = args;
-    let op = Operator::coulomb();
+    let (mol, prep) = (sys.mol(), sys.basis());
     let r = match &hooked {
         None => py
-            .allow_threads(|| solve_rhf(ctx, mol, prep, op, bounds, &config))
+            .allow_threads(|| sys.solve_rhf(&config))
             .map_err(make_err)?,
         Some(h) => {
-            let (r, term) =
-                blocks::solve_rhf_hooked(py, ctx, mol, prep, op, bounds, &config, h.hook)?;
+            let (r, term) = blocks::solve_rhf_hooked(py, sys, &config, h.hook)?;
             let family = SolverFamily::ClosedShell;
             let user_set = h.user_set_energy_conv;
             warn_hook_noise_floor(py, "run_rhf", family, user_set, mol, prep, &config, term);
             r
         }
     };
-    let mut g = scf_gradient(py, ScfGradientKind::Rhf, mol, prep, bounds, &config, &r)?;
+    let mut g = scf_gradient(py, ScfGradientKind::Rhf, sys, &config, &r)?;
     if let Some(h) = &hooked {
         g = h.grad.add_to(py, g, &r, false, mol)?;
     }
@@ -928,9 +934,47 @@ pub(crate) fn solve_rhf_with_gradient(
     Ok(Py::new(py, result)?.into_any())
 }
 
-/// The `fock_hook_grad` kwarg of `who`, checked: it needs a `fock_hook` and
+/// A `fock_hook=` with the `fock_hook_grad=` that goes with it: a gradient
+/// term without a hook is not representable (see [`parse_fock_hook`]).
+pub(crate) struct FockHook<'a, 'py> {
+    /// The hook.
+    fock: &'a Bound<'py, PyAny>,
+    /// Its explicit nuclear derivative (only with `with_gradient=True`).
+    grad: Option<blocks::PyFockHookGrad>,
+}
+
+/// The `fock_hook` / `fock_hook_grad` kwargs of `who`, parsed into one
+/// optional [`FockHook`]: `fock_hook_grad` needs a `fock_hook` and
 /// `with_gradient=True` (otherwise it is never read, which raises).
-pub(crate) fn parse_fock_hook_grad(
+pub(crate) fn parse_fock_hook<'a, 'py>(
+    who: &str,
+    fock_hook: Option<&'a Bound<'py, PyAny>>,
+    fock_hook_grad: Option<&Bound<'_, PyAny>>,
+    with_gradient: bool,
+) -> PyResult<Option<FockHook<'a, 'py>>> {
+    let grad = parse_fock_hook_grad(who, fock_hook, fock_hook_grad, with_gradient)?;
+    Ok(fock_hook.map(|fock| FockHook { fock, grad }))
+}
+
+impl<'a, 'py> FockHook<'a, 'py> {
+    /// The hook callable.
+    pub(crate) fn callable(&self) -> &'a Bound<'py, PyAny> {
+        self.fock
+    }
+
+    /// Its explicit gradient term, if one was passed.
+    pub(crate) fn grad(&self) -> Option<&blocks::PyFockHookGrad> {
+        self.grad.as_ref()
+    }
+
+    /// No `fock_hook_grad=` (refused with `with_gradient=True`).
+    pub(crate) fn lacks_grad(&self) -> bool {
+        self.grad.is_none()
+    }
+}
+
+/// The `fock_hook_grad` half of [`parse_fock_hook`].
+fn parse_fock_hook_grad(
     who: &str,
     fock_hook: Option<&Bound<'_, PyAny>>,
     fock_hook_grad: Option<&Bound<'_, PyAny>>,
@@ -940,7 +984,7 @@ pub(crate) fn parse_fock_hook_grad(
         return Ok(None);
     };
     let refuse = |why: &str| {
-        Err(pyo3::exceptions::PyValueError::new_err(format!(
+        Err(crate::errors::input_err(format!(
             "{who}: fock_hook_grad {why}"
         )))
     };
@@ -956,7 +1000,7 @@ pub(crate) fn parse_fock_hook_grad(
 /// The `ValueError` for `with_gradient=True` with a `fock_hook` but no
 /// `fock_hook_grad`.
 pub(crate) fn refuse_hook_without_grad<T>(who: &str) -> PyResult<T> {
-    Err(pyo3::exceptions::PyValueError::new_err(format!(
+    Err(crate::errors::input_err(format!(
         "{who}: with_gradient=True with a fock_hook needs fock_hook_grad=, the hook's explicit \
          nuclear derivative dE_hook/dR at fixed density, shape (natoms, 3) in Hartree/Bohr \
          (zeros when the hook depends on the density only); the analytic gradient supplies \
@@ -970,7 +1014,7 @@ pub(crate) fn refuse_hook_without_grad<T>(who: &str) -> PyResult<T> {
 pub(crate) fn symmetry_err(who: &'static str) -> impl Fn(ferric_core::error::FerricError) -> PyErr {
     move |e| {
         if ferric_scf::symmetric::is_symmetry_refusal(&e) {
-            pyo3::exceptions::PyValueError::new_err(format!("{who}(symmetry=True): {e}"))
+            crate::errors::input_err(format!("{who}(symmetry=True): {e}"))
         } else {
             make_err(e)
         }
@@ -980,17 +1024,13 @@ pub(crate) fn symmetry_err(who: &'static str) -> impl Fn(ferric_core::error::Fer
 /// Run the point-group-blocked closed-shell solve (`config.symmetry` set) and
 /// wrap it as a `SymmetricRhfResult`. `who` names the Python entry point in
 /// refusals.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn solve_symmetric_outcome(
     py: Python<'_>,
     who: &'static str,
-    ctx: &ParallelContext,
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    op: Operator,
-    bounds: &SchwarzBounds,
+    sys: &PreparedSystem,
     config: &RhfConfig,
 ) -> PyResult<PyObject> {
+    let (ctx, mol, prep, op, bounds) = (sys.ctx(), sys.mol(), sys.basis(), sys.op(), sys.bounds());
     let sym = py
         .allow_threads(|| {
             ferric_scf::symmetric::solve_rhf_symmetric(ctx, mol, prep, op, bounds, config)
@@ -1006,20 +1046,16 @@ pub(crate) fn solve_symmetric_outcome(
 /// (`blocks::solve_rhf_hooked`), which refuses symmetry itself, and is
 /// followed by the hook's noise-floor advisory ([`warn_hook_noise_floor`];
 /// `user_set_energy_conv` says whether `energy_conv` was passed).
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn solve_rhf_outcome(
     py: Python<'_>,
-    ctx: &ParallelContext,
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    op: Operator,
-    bounds: &SchwarzBounds,
+    sys: &PreparedSystem,
     config: RhfConfig,
     fock_hook: Option<&Bound<'_, PyAny>>,
     user_set_energy_conv: bool,
 ) -> PyResult<PyObject> {
+    let (mol, prep) = (sys.mol(), sys.basis());
     if let Some(hook) = fock_hook {
-        let (r, term) = blocks::solve_rhf_hooked(py, ctx, mol, prep, op, bounds, &config, hook)?;
+        let (r, term) = blocks::solve_rhf_hooked(py, sys, &config, hook)?;
         warn_hook_noise_floor(
             py,
             "run_rhf",
@@ -1033,15 +1069,15 @@ pub(crate) fn solve_rhf_outcome(
         return wrap_rhf_result(py, mol, prep.basis_set(), r, config, true);
     }
     if config.irrep_nelec.is_some() && !config.symmetry {
-        return Err(pyo3::exceptions::PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "run_rhf: irrep_nelec requires symmetry=True",
         ));
     }
     if config.symmetry {
-        return solve_symmetric_outcome(py, "run_rhf", ctx, mol, prep, op, bounds, &config);
+        return solve_symmetric_outcome(py, "run_rhf", sys, &config);
     }
     let r = py
-        .allow_threads(|| solve_rhf(ctx, mol, prep, op, bounds, &config))
+        .allow_threads(|| sys.solve_rhf(&config))
         .map_err(make_err)?;
     wrap_rhf_result(py, mol, prep.basis_set(), r, config, false)
 }
@@ -1080,10 +1116,8 @@ impl PyRhfResult {
             converged: r.converged,
             iterations: r.iterations,
             computed_quartets: r.computed_quartets,
-            density_data: r.density_total.clone(),
-            orbital_energies_data: r.eps_alpha.clone(),
-            scf_data: r,
-            scf_config: config,
+            scf_data: Arc::new(r),
+            scf_config: Arc::new(config),
             certificate_data,
             gradient_data: None,
         }
@@ -1107,7 +1141,7 @@ pub(crate) fn add_rhf_result_classes(m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// raise instead of returning matrices that look like input-frame data, and
 /// no function that takes an `RhfResult` (gradients, post-HF, Hirshfeld,
 /// properties) accepts this object.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "SymmetricRhfResult")]
 pub(crate) struct PySymmetricRhfResult {
     /// Total SCF energy (Hartree) of the symmetrized geometry.
@@ -1140,28 +1174,38 @@ impl PySymmetricRhfResult {
     fn from_solution(sym: ferric_scf::symmetric::SymmetricRhf) -> Self {
         let mol = sym.molecule();
         let (rotation, origin_bohr) = sym.frame_transform();
-        let scf = sym.scf_in_frame();
+        let symbols = mol.atoms.iter().map(|a| a.symbol.clone()).collect();
+        let coords_angstrom = mol
+            .atoms
+            .iter()
+            .map(|a| {
+                (
+                    a.x / ANGSTROM_TO_BOHR,
+                    a.y / ANGSTROM_TO_BOHR,
+                    a.zpos / ANGSTROM_TO_BOHR,
+                )
+            })
+            .collect();
+        let energy = sym.energy();
+        let point_group = sym.group().to_string();
+        let orbital_irreps = sym.orbital_irreps().to_vec();
+        let max_symmetrization_shift = sym.max_symmetrization_shift();
+        let irrep_occupations = sym.irrep_occupations();
+        // The class keeps no `ScfResult` (its AO matrices are in the rotated
+        // frame and are never returned), so the orbital energies are its only
+        // copy: moved out of the solve, not cloned.
+        let scf = sym.into_scf_in_frame();
         PySymmetricRhfResult {
-            energy: sym.energy(),
+            energy,
             converged: scf.converged,
             iterations: scf.iterations,
-            point_group: sym.group().to_string(),
-            orbital_irreps: sym.orbital_irreps().to_vec(),
-            max_symmetrization_shift: sym.max_symmetrization_shift(),
-            orbital_energies_data: scf.eps_alpha.clone(),
-            irrep_occupations: sym.irrep_occupations(),
-            symbols: mol.atoms.iter().map(|a| a.symbol.clone()).collect(),
-            coords_angstrom: mol
-                .atoms
-                .iter()
-                .map(|a| {
-                    (
-                        a.x / ANGSTROM_TO_BOHR,
-                        a.y / ANGSTROM_TO_BOHR,
-                        a.zpos / ANGSTROM_TO_BOHR,
-                    )
-                })
-                .collect(),
+            point_group,
+            orbital_irreps,
+            max_symmetrization_shift,
+            orbital_energies_data: scf.eps_alpha,
+            irrep_occupations,
+            symbols,
+            coords_angstrom,
             rotation,
             origin_angstrom: origin_bohr.map(|x| x / ANGSTROM_TO_BOHR),
         }
@@ -1175,12 +1219,11 @@ symmetry=False for density/MO coefficients/gradients.";
 
 #[pymethods]
 impl PySymmetricRhfResult {
-    /// Alias of `energy` (the same value), so callers can read either spelling.
+    #[doc = alias_doc!(energy)]
     #[getter]
     fn total_energy(&self) -> f64 {
         self.energy
     }
-
     /// Orbital energies (Hartree) in MO-column order, aligned with
     /// `orbital_irreps`. Occupied columns come first (energy-ordered), then
     /// the virtuals, so with `irrep_nelec` the list need not be globally
@@ -1231,7 +1274,7 @@ impl PySymmetricRhfResult {
 
 // ── UHF (open-shell) ──
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "UhfResult")]
 pub(crate) struct PyUhfResult {
     #[pyo3(get)]
@@ -1322,14 +1365,22 @@ impl PyUhfResult {
     }
 }
 
+stored_method_result!(PyUhfResult, total_energy: energy, certificate: certificate_data);
+
 #[pymethods]
 impl PyUhfResult {
-    /// Alias of `energy` (the same value), so callers can read either spelling.
+    #[doc = alias_doc!(energy)]
     #[getter]
     fn total_energy(&self) -> f64 {
-        self.energy
+        crate::method_result::total_energy_getter(self)
     }
-
+    /// Validation certificate of this result (see `RhfResult.certificate`).
+    /// A UHF/UKS result solved without `stability_descent=True` carries the
+    /// "internal stability not checked" warning.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::method_result::certificate_getter(py, self)
+    }
     /// The COSX final-grid pass record (see `RhfResult.cosx_final_pass`).
     #[getter]
     fn cosx_final_pass(&self, py: Python<'_>) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
@@ -1347,13 +1398,6 @@ impl PyUhfResult {
     #[getter]
     fn precision(&self, py: Python<'_>) -> PyResult<PyObject> {
         precision_dict(py, &self.precision)
-    }
-    /// Validation certificate of this result (see `RhfResult.certificate`).
-    /// A UHF/UKS result solved without `stability_descent=True` carries the
-    /// "internal stability not checked" warning.
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
     }
     /// First-order energy change of one plain Roothaan step from the converged
     /// density, summed over spins (see `RhfResult.one_step_energy_drop`), or
@@ -1477,6 +1521,7 @@ impl PyUhfResult {
     dm0=None, with_gradient=false, mom_reference=None, eri=None, relativistic=None,
     fock_hook_grad=None,
     soscf=None, smeared_charges=None, solvent=None, pcm_lebedev_order=None,
+    gc_rotation=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_uhf(
@@ -1518,9 +1563,10 @@ pub(crate) fn run_uhf(
     smeared_charges: Option<Vec<(f64, f64, f64, f64, f64)>>,
     solvent: Option<&Bound<'_, PyAny>>,
     pcm_lebedev_order: Option<usize>,
+    gc_rotation: Option<&str>,
 ) -> PyResult<PyUhfResult> {
     refuse_dm0_with_guess("run_uhf", dm0.is_some(), guess, guess_basis)?;
-    let hook_grad = parse_fock_hook_grad("run_uhf", fock_hook, fock_hook_grad, with_gradient)?;
+    let hook = parse_fock_hook("run_uhf", fock_hook, fock_hook_grad, with_gradient)?;
     let mom_reference =
         parse_mom_reference("run_uhf", mom_reference, mom_after_iter, stability_descent)?;
     let trah_trigger = check_trah_trigger(trah_trigger)?;
@@ -1529,15 +1575,11 @@ pub(crate) fn run_uhf(
     // silently select a different SCF state (on O2/STO-3G the two guesses
     // land on states 0.255 Ha apart).
     let use_sad_guess = parse_guess(guess)?;
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
-    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let sys = prepare(py, mol, basis_set)?;
     let dm0 = match dm0 {
         Some(d) => {
-            let n_spin = spin_counts(&emol, "run_uhf")?;
-            blocks::checked_dm0_spin(Some(d), &prep, n_spin, "run_uhf")?
+            let n_spin = spin_counts(sys.mol(), "run_uhf")?;
+            blocks::checked_dm0_spin(Some(d), sys.basis(), n_spin, "run_uhf")?
         }
         None => None,
     };
@@ -1553,6 +1595,9 @@ pub(crate) fn run_uhf(
     let eri = parse_eri(eri)?;
     let relativistic = parse_relativistic(relativistic)?;
     let pcm = build_pcm_config(solvent, pcm_lebedev_order)?;
+    // Parsed last of the keywords: an unknown spelling was the solver's
+    // refusal before the binding parsed it (same class and text).
+    let k_builder = crate::parse_k_builder(k_builder)?;
     let kw = ScfKwargs {
         max_iter,
         energy_conv,
@@ -1585,18 +1630,17 @@ pub(crate) fn run_uhf(
         ..ScfKwargs::default()
     };
     let options = scf_options_from_kwargs(ScfEntryPoint::Uhf, kw)?;
-    let config: UhfConfig = options.into_rhf_config().py()?;
+    let mut config: UhfConfig = options
+        .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
+        .py()?;
+    config.gc_rotation = parse_gc_rotation(gc_rotation)?;
     solve_open_shell_entry(
         py,
         blocks::OpenShell::Uhf,
         OpenShellEntry {
-            emol: &emol,
-            prep: &prep,
-            op,
-            bounds: &bounds,
+            sys: &sys,
             config,
-            fock_hook,
-            hook_grad,
+            hook,
             dm0,
             with_gradient,
             user_set_energy_conv: energy_conv.is_some(),
@@ -1638,6 +1682,7 @@ pub(crate) fn run_uhf(
     with_gradient=false, eri=None, relativistic=None, fock_hook_grad=None,
     guess=None, soscf=None, smeared_charges=None, solvent=None, pcm_lebedev_order=None,
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
+    gc_rotation=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_rohf(
@@ -1676,19 +1721,16 @@ pub(crate) fn run_rohf(
     cosx_final_pass: Option<bool>,
     cosx_final_grid: Option<&Bound<'_, PyAny>>,
     cosx_overlap_fit: Option<bool>,
+    gc_rotation: Option<&str>,
 ) -> PyResult<PyUhfResult> {
     refuse_dm0_with_guess("run_rohf", dm0.is_some(), guess, guess_basis)?;
-    let hook_grad = parse_fock_hook_grad("run_rohf", fock_hook, fock_hook_grad, with_gradient)?;
+    let hook = parse_fock_hook("run_rohf", fock_hook, fock_hook_grad, with_gradient)?;
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
-    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let sys = prepare(py, mol, basis_set)?;
     let dm0 = match dm0 {
         Some(d) => {
-            let n_spin = spin_counts(&emol, "run_rohf")?;
-            blocks::checked_dm0_spin(Some(d), &prep, n_spin, "run_rohf")?
+            let n_spin = spin_counts(sys.mol(), "run_rohf")?;
+            blocks::checked_dm0_spin(Some(d), sys.basis(), n_spin, "run_rohf")?
         }
         None => None,
     };
@@ -1705,6 +1747,9 @@ pub(crate) fn run_rohf(
     )?;
     let use_sad_guess = parse_guess(guess)?;
     let pcm = build_pcm_config(solvent, pcm_lebedev_order)?;
+    // Parsed last of the keywords: an unknown spelling was the solver's
+    // refusal before the binding parsed it (same class and text).
+    let k_builder = crate::parse_k_builder(k_builder)?;
     let kw = ScfKwargs {
         max_iter,
         energy_conv,
@@ -1734,18 +1779,17 @@ pub(crate) fn run_rohf(
         ..ScfKwargs::default()
     };
     let options = scf_options_from_kwargs(ScfEntryPoint::Rohf, kw)?;
-    let config: RohfConfig = options.into_rhf_config().py()?;
+    let mut config: RohfConfig = options
+        .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
+        .py()?;
+    config.gc_rotation = parse_gc_rotation(gc_rotation)?;
     solve_open_shell_entry(
         py,
         blocks::OpenShell::Rohf,
         OpenShellEntry {
-            emol: &emol,
-            prep: &prep,
-            op,
-            bounds: &bounds,
+            sys: &sys,
             config,
-            fock_hook,
-            hook_grad,
+            hook,
             dm0,
             with_gradient,
             user_set_energy_conv: energy_conv.is_some(),
@@ -1754,19 +1798,14 @@ pub(crate) fn run_rohf(
 }
 
 /// The per-call inputs of [`solve_open_shell_entry`]: the prepared system,
-/// the lowered config, the optional `fock_hook` (and its gradient term), the
+/// the lowered config, the optional [`FockHook`] (with its gradient term), the
 /// optional `dm0` and the run switches. There is no separate orbital basis:
-/// the gradient uses `prep`'s ([`PreparedBasis::basis_set`]), so the solve
-/// and the gradient cannot be handed different bases.
+/// the gradient uses the system's ([`PreparedBasis::basis_set`]), so the
+/// solve and the gradient cannot be handed different bases.
 struct OpenShellEntry<'a, 'py> {
-    // TODO(ARCHITECTURE.md roadmap: PreparedSystem)
-    emol: &'a Molecule,
-    prep: &'a PreparedBasis,
-    op: Operator,
-    bounds: &'a SchwarzBounds,
+    sys: &'a PreparedSystem,
     config: RhfConfig,
-    fock_hook: Option<&'a Bound<'py, PyAny>>,
-    hook_grad: Option<blocks::PyFockHookGrad>,
+    hook: Option<FockHook<'a, 'py>>,
     dm0: Option<(Array2<f64>, Array2<f64>)>,
     /// `with_gradient=True`: also return the analytic nuclear gradient.
     with_gradient: bool,
@@ -1774,8 +1813,8 @@ struct OpenShellEntry<'a, 'py> {
     user_set_energy_conv: bool,
 }
 
-/// The shared tail of `run_uhf` / `run_rohf` once the molecule, basis,
-/// bounds and lowered config are built: the `with_gradient` config and its
+/// The shared tail of `run_uhf` / `run_rohf` once the prepared system and
+/// the lowered config are built: the `with_gradient` config and its
 /// hook refusal, the noise-floor warnings, the (GIL-released) solve, the
 /// optional gradient and the `UhfResult`. `shell` picks the solver, the
 /// gradient and the `run_*` name in messages, so they cannot disagree.
@@ -1789,26 +1828,23 @@ fn solve_open_shell_entry(
         blocks::OpenShell::Rohf => ("run_rohf", ScfGradientKind::Rohf),
     };
     let OpenShellEntry {
-        emol,
-        prep,
-        op,
-        bounds,
+        sys,
         mut config,
-        fock_hook,
-        hook_grad,
+        hook,
         dm0,
         with_gradient,
         user_set_energy_conv,
     } = args;
+    let fock_hook = hook.as_ref().map(FockHook::callable);
     if with_gradient {
         config = scf_gradient_config(who, gradient_kind, &config, fock_hook)?;
-        if fock_hook.is_some() && hook_grad.is_none() {
+        if hook.as_ref().is_some_and(FockHook::lacks_grad) {
             return refuse_hook_without_grad(who);
         }
     }
-    let ctx = ParallelContext::default();
+    let (emol, prep) = (sys.mol(), sys.basis());
     // Release the GIL for the duration of the SCF. Every argument below is an
-    // owned Rust value (`emol` is a clone; `prep`/`bounds`/`config` are built
+    // owned Rust value (`sys` holds a clone of the molecule; `config` is built
     // above), so nothing Python-borrowed crosses the closure boundary.
     warn_energy_conv_noise_floor(
         py,
@@ -1820,18 +1856,7 @@ fn solve_open_shell_entry(
         &config,
     );
     let fock_hooked = fock_hook.is_some();
-    let (r, term) = blocks::solve_open_shell(
-        py,
-        shell,
-        &ctx,
-        emol,
-        prep,
-        op,
-        bounds,
-        &config,
-        fock_hook,
-        dm0.as_ref(),
-    )?;
+    let (r, term) = blocks::solve_open_shell(py, shell, sys, &config, fock_hook, dm0.as_ref())?;
     warn_hook_noise_floor(
         py,
         who,
@@ -1845,8 +1870,8 @@ fn solve_open_shell_entry(
     let gradient = with_gradient
         .then(|| {
             let k = gradient_kind;
-            let g = scf_gradient(py, k, emol, prep, bounds, &config, &r)?;
-            match &hook_grad {
+            let g = scf_gradient(py, k, sys, &config, &r)?;
+            match hook.as_ref().and_then(FockHook::grad) {
                 Some(h) => h.add_to(py, g, &r, true, emol),
                 None => Ok(g),
             }

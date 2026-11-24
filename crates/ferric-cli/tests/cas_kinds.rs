@@ -15,7 +15,7 @@
 //! * `cli_casscf_equals_the_driver_bit_for_bit`: H2O CAS(4,4), N2 CAS(6,6)
 //!   at 1.0977 and 1.6 Å and O2 CAS(8,6) in the `(5, 3)` sector, 6-31G
 //!   (`testdata/reference/casscf_*_pyscf.json`). The logged total equals
-//!   `ferric_ci::driver::rhf_start` + `run_casscf` called in-process with
+//!   `ferric_ci::driver::rhf_start` + `casscf_on` called in-process with
 //!   the same settings, bit for bit (both run the same deterministic code on
 //!   the same rayon width), and it lies within 1e-9 Ha of PySCF (measured
 //!   gaps are at most 1.5e-11 Ha; the derived bar is in `casscf_vs_pyscf.rs`).
@@ -24,7 +24,7 @@
 //! * `cli_nevpt2_equals_the_driver_bit_for_bit`: H2O CAS(4,4), N2 CAS(6,6)
 //!   at 1.0977 and 2.2 Å (`testdata/reference/nevpt2_refs.json`), the CASSCF
 //!   gradient tolerance of the reference file passed as `[cas] grad_tol`.
-//!   Every class energy and the total equal `nevpt2_on_rhf` in-process bit
+//!   Every class energy and the total equal `nevpt2_on` in-process bit
 //!   for bit, and each class lies within the PySCF bar of `nevpt2.rs`.
 //! * `cli_keys_reach_the_config`: settings that move the answer reach it
 //!   (`[cas] max_iter = 2` leaves CASSCF unconverged, warned and not
@@ -46,12 +46,11 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use ferric_ci::driver::{nevpt2_on_rhf, rhf_start, Nevpt2On, ScfStart};
-use ferric_ci::{run_casscf, CasScfConfig, Nevpt2Classes};
+use ferric_ci::driver::{casscf_on, nevpt2_on, rhf_start, Nevpt2On, ScfStart};
+use ferric_ci::{CasScfConfig, Nevpt2Classes};
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
-use ferric_core::parallel::ParallelContext;
-use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_scf::PreparedSystem;
 use serde_json::Value;
 
 #[path = "support/cli_bin.rs"]
@@ -167,22 +166,14 @@ fn pool() -> rayon::ThreadPool {
         .unwrap()
 }
 
-/// Molecule (singlet RHF start), prepared basis and converged RHF exactly as
+/// The prepared system (singlet RHF start) and converged RHF exactly as
 /// `ferric_cli::cas::run_cas` builds them.
-fn library_start(xyz: &str, basis_name: &str) -> (Molecule, PreparedBasis, ferric_scf::ScfResult) {
-    let mut mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+fn library_start(xyz: &str, basis_name: &str) -> (PreparedSystem, ferric_scf::ScfResult) {
+    let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
     let bs = basis::bundled(basis_name).unwrap();
-    mol.apply_ecp(&bs);
-    let prep = PreparedBasis::new(&mol, &bs).unwrap();
-    let rhf = rhf_start(
-        &ParallelContext::default(),
-        &mol,
-        &prep,
-        ScfStart::default(),
-        None,
-    )
-    .unwrap();
-    (mol, prep, rhf)
+    let sys = PreparedSystem::new(mol, &bs).unwrap();
+    let rhf = rhf_start(&sys, ScfStart::default(), None).unwrap();
+    (sys, rhf)
 }
 
 fn usize_of(v: &Value) -> usize {
@@ -224,14 +215,14 @@ fn cli_casscf_equals_the_driver_bit_for_bit() {
         let total = res["total"].as_f64().unwrap();
 
         let lib = pool().install(|| {
-            let (mol, prep, rhf) = library_start(xyz, basis_name);
+            let (sys, rhf) = library_start(xyz, basis_name);
             let cfg = CasScfConfig {
                 n_active,
                 n_elec_active: (na, nb),
                 n_core,
                 ..Default::default()
             };
-            run_casscf(&mol, &prep, &rhf, &cfg).unwrap()
+            casscf_on(&sys, &rhf, &cfg).unwrap()
         });
         assert!(lib.converged, "{name}");
         assert_eq!(
@@ -285,7 +276,7 @@ fn cli_nevpt2_equals_the_driver_bit_for_bit() {
         assert_eq!(res["kind"], "nevpt2");
         let comp = &res["components"];
         let lib = pool().install(|| {
-            let (mol, prep, rhf) = library_start(xyz, basis_name);
+            let (sys, rhf) = library_start(xyz, basis_name);
             let cfg = CasScfConfig {
                 n_active,
                 n_elec_active: (na, nb),
@@ -293,7 +284,7 @@ fn cli_nevpt2_equals_the_driver_bit_for_bit() {
                 grad_tol,
                 ..Default::default()
             };
-            nevpt2_on_rhf(&mol, &prep, &rhf, Nevpt2On::Casscf, &cfg).unwrap()
+            nevpt2_on(&sys, &rhf, Nevpt2On::Casscf, &cfg).unwrap()
         });
         let r = &lib.result;
         let total = res["total"].as_f64().unwrap();
@@ -658,4 +649,40 @@ fn cli_refusals_are_named() {
             "{tag}: an SCF ran before the refusal"
         );
     }
+}
+
+/// `[scf] gc_rotation` is read by the CAS kinds (the RHF start and the
+/// direct CASSCF J/K follow it), not refused by the `[scf]` key filter, and
+/// the run log records it. On 6-31G (nothing to rotate) every value is the
+/// default run bit for bit; a value of another case is refused at load.
+#[test]
+fn scf_gc_rotation_is_read() {
+    let (xyz, _) = h2o();
+    let cas = "n_active = 4\nn_elec_active = [2, 2]\nintegrals = \"direct\"\n";
+    let base = run_cli_ok("gc_default", &xyz, &toml_for("casscf", "6-31g", cas));
+    let e0 = base.result()["total"].as_f64().unwrap();
+    assert!(base.record("run_start")["config"]["gc_rotation"].is_null());
+    for v in ["off", "auto"] {
+        let r = run_cli_ok(
+            &format!("gc_{v}"),
+            &xyz,
+            &format!(
+                "{}\n[scf]\ngc_rotation = \"{v}\"\n",
+                toml_for("casscf", "6-31g", cas)
+            ),
+        );
+        assert_eq!(r.record("run_start")["config"]["gc_rotation"], v);
+        let e = r.result()["total"].as_f64().unwrap();
+        assert_eq!(e.to_bits(), e0.to_bits(), "{v}");
+    }
+    let bad = run_cli(
+        "gc_bad",
+        &xyz,
+        &format!(
+            "{}\n[scf]\ngc_rotation = \"OFF\"\n",
+            toml_for("nevpt2", "6-31g", cas)
+        ),
+    );
+    assert!(!bad.ok);
+    assert!(bad.stderr.contains("gc_rotation"), "{}", bad.stderr);
 }

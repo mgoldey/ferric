@@ -2,7 +2,7 @@
 
 <!-- status: gap; registry: none -->
 
-The kernels of 4.1 split $1/r$ with an error function. The kernels here cut
+The kernels of section @sec:erf-terf split $1/r$ with an error function. The kernels here cut
 it off with an exponential. Two physical situations call for that. A charge
 inside a polarizable medium is screened: its potential falls off as
 $e^{-\zeta r}/r$, faster than $1/r$, and $1/\zeta$ is the screening length.
@@ -69,17 +69,34 @@ the integral, as in @sec:terf-table-engine-center-integral-auxiliary-function. T
 $$ \widehat{\Big(\frac{e^{-\zeta r}}{r}\Big)}(k) = \frac{4\pi}{k^2 + \zeta^2}, $$
 
 and the Gaussian charge distributions contribute $e^{-k^2/4\rho}$ and the
-phase $e^{i\mathbf k\cdot\mathbf R}$. Substitute $k = 2\sqrt\rho\,\kappa$.
-The Gaussian becomes $e^{-\kappa^2}$, the denominator becomes
-$k^2 + \zeta^2 = 4\rho(\kappa^2 + U)$, and the phase depends on
-$kR = 2\kappa\sqrt T$. After the substitution only $T$ and $U$ remain. At
+phase $e^{i\mathbf k\cdot\mathbf R}$. Substitute $k = 2\sqrt\rho\,t$.
+The Gaussian becomes $e^{-t^2}$, the denominator becomes
+$k^2 + \zeta^2 = 4\rho(t^2 + U)$, and the phase depends on
+$kR = 2t\sqrt T$. After the substitution only $T$ and $U$ remain. At
 $\zeta = 0$, $U = 0$ and the integral is the Coulomb one, a function of $T$
 alone: the Boys function. $\zeta \to 0$ turns the Yukawa kernel into
-Coulomb, approached from below because $e^{-\zeta r} < 1$. The substitution
-was checked with sympy, and the transform by direct integration of
-$(4\pi/k)\int_0^\infty e^{-\zeta r}\sin(kr)\,dr$.
+Coulomb, approached from below because $e^{-\zeta r} < 1$.
 
-Its interpolation covers $U \in [10^{-7}, 10^{3}]$; outside that range the
+> **Verified claim** · the exact kernels' transforms and the $(T, U)$ reduction
+>
+> The transforms are $4\pi/(k^2+\zeta^2)$ for $e^{-\zeta r}/r$ and
+> $8\pi\zeta/(k^2+\zeta^2)^2$ for $e^{-\zeta r}$, both positive for
+> $\zeta > 0$, so both kernels are positive definite. Scaling
+> $\rho \to \lambda\rho$, $\zeta \to \sqrt\lambda\,\zeta$,
+> $R \to R/\sqrt\lambda$ keeps $T$ and $U$ and multiplies the s-s Yukawa
+> integral by $\sqrt\lambda$; at $\zeta \to 0$ the integral tends to
+> $\operatorname{erf}(\sqrt\rho R)/R$ from below.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/yukawa_geminal_sympy.py`, claims transforms, tu-reduction and coulomb-limit |
+> | Negative control | $k^2 + \zeta$ in place of $k^2 + \zeta^2$ must fail tu-reduction (recorded mutation) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-integrals/src/operator.rs::yukawa` |
+>
+> <!-- verified: id=operators.yukawa.transforms; script=scripts/yukawa_geminal_sympy.py; claim=transforms; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-integrals/src/operator.rs::yukawa -->
+
+The `TennoGmEval` interpolation covers $U \in [10^{-7}, 10^{3}]$; outside that range the
 result depends on the libint2 build, which `Operator::yukawa` documents
 case by case. @sec:yukawa-geminal-limits-caller-must-respect lists the cases.
 
@@ -91,8 +108,8 @@ the $-1/\gamma$ of the F12 geminal folded into the coefficients. The same
 fit feeds three libint2 classes, chosen by `kind`: the geminal $f_{12}$
 (`cgtg`), the geminal times $1/r_{12}$ (`cgtg_x_coulomb`), and
 $|\nabla f_{12}|^2$ (`delcgtg2`). Each is a sum of Gaussian-kernel
-integrals, one per term of the fit. This is the construction in
-`Operator::stg`, with the doc comment and the `FIT` table removed:
+integrals, one per term of the fit. The construction in
+`Operator::stg` follows, with the doc comment and the `FIT` table removed:
 
 ```rust
 let mut op = Self::primitive(kind, gamma, 0.0);
@@ -120,11 +137,25 @@ needs. Every Gaussian has zero slope at $r = 0$, so the fitted geminal has
 zero slope there. Evaluated from the coefficients in `operator.rs` (at
 $\gamma = 1$, before the $-1/\gamma$ prefactor), the fit gives
 $\sum_i c_i = 1.011522$ at $r = 0$ against $e^0 = 1$, and its largest
-deviation from $e^{-r}$ on $[0, 10]$ is 0.0194, near $r = 0.42$. These two
-numbers come from evaluating the six terms with numpy; no committed test
-pins them.
+deviation from $e^{-r}$ on $[0, 10]$ is 0.0194, at $r = 0.417$. Under the
+scaling the deviation becomes $0.0194/\gamma$ at $r = 0.417/\gamma$.
 
-None of the three is admitted by the Schwarz table builder.
+> **Verified claim** · the six-term fit and its $\gamma$ scaling
+>
+> Read from the `FIT` table in `operator.rs`: $\sum_i c_i = 1.011522$,
+> zero slope at $r = 0$, largest deviation from $e^{-r}$ on $[0, 10]$
+> 0.0194 at $r = 0.417$; with $\alpha_i \to \gamma^2\alpha_i$ and
+> $c_i \to -c_i/\gamma$ the deviation is $0.0194/\gamma$ at
+> $r = 0.417/\gamma$ for $\gamma = 0.5, 1.3, 2.0$.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/yukawa_geminal_sympy.py`, claims fit and stg-scaling |
+> | Negative control | $\gamma$ in place of $\gamma^2$ in the exponent scaling must fail (recorded mutation) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-integrals/src/operator.rs::stg` |
+>
+> <!-- verified: id=operators.geminal.fit; script=scripts/yukawa_geminal_sympy.py; claim=fit; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-integrals/src/operator.rs::stg -->
 
 ## Limits a caller must respect {#yukawa-geminal-limits-caller-must-respect}
 
@@ -157,11 +188,11 @@ screen hides a bad value.
 | Yukawa and Slater-geminal auxiliary functions at the edges of libint2's table, against a quadrature reference that is itself anchored | `crates/ferric-integrals/tests/tenno_table_edge.rs` | per point, derived from the reference value |
 | small-$T$ behaviour of the Yukawa recursion | `crates/ferric-integrals/tests/yukawa_urr_small_t.rs` | per test |
 
-No proof script covers these kernels. The Fourier transform
-$\widehat{e^{-\zeta r}/r} = 4\pi/(k^2 + \zeta^2)$ shows the Yukawa kernel is
-positive definite, so a Schwarz bound would be valid; the code does not build
-one. A proof script and a committed test of the fitted geminal against the
-exact one would move this section out of `gap`.
+`scripts/yukawa_geminal_sympy.py` proves the kernel identities above. Both
+exact kernels are positive definite, so a Schwarz bound would be valid; the
+code does not build one. No Rust test compares the integrals of the fitted
+geminal with those of the exact Slater geminal; one would move this section
+out of `gap`.
 
 ## Sources
 

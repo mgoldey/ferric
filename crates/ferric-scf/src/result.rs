@@ -15,15 +15,13 @@ pub enum Spin {
     RestrictedOpen,
 }
 
-/// Why the SCF loop stopped. Distinguishes acceptable exits (Converged,
-/// Plateau) from failures the ladder should escalate past (Stalled, Diverged,
-/// MaxIter, NotCertified).
+/// Why the SCF loop stopped. Distinguishes the one acceptable exit
+/// (Converged) from failures the ladder should escalate past (Stalled,
+/// Diverged, MaxIter, NotCertified).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScfExit {
     /// Standard convergence: energy + orbital gradient below thresholds.
     Converged,
-    /// Near-degeneracy plateau accepted (gradient stalled below the 1e-4 floor).
-    Plateau,
     /// Gradient running-minimum stopped falling above the 1e-4 floor.
     Stalled,
     /// Energy climbed beyond divergence_tol for consecutive iterations.
@@ -549,6 +547,18 @@ impl DfJkRoute {
 }
 
 impl ScfResult {
+    /// `self`, or [`ferric_core::FerricError::ScfConvergence`] when it did not converge:
+    /// the one rule every driver applies to a reference SCF.
+    pub fn into_converged(self) -> Result<Self, ferric_core::FerricError> {
+        if !self.converged {
+            return Err(ferric_core::FerricError::ScfConvergence {
+                iterations: self.iterations,
+                last_energy: self.energy,
+            });
+        }
+        Ok(self)
+    }
+
     /// Storage precision of the RI-K dressed tensor(s) this SCF's exchange was
     /// built from, or `None` when K was not density-fitted.
     pub fn ri_k_precision(&self) -> Option<crate::df_k::RiKPrecision> {
@@ -646,7 +656,7 @@ mod tests {
     #[test]
     fn scf_exit_variants_distinct() {
         assert_ne!(ScfExit::Converged, ScfExit::Stalled);
-        assert_ne!(ScfExit::Plateau, ScfExit::MaxIter);
+        assert_ne!(ScfExit::NotCertified, ScfExit::MaxIter);
         assert_ne!(ScfExit::Diverged, ScfExit::Converged);
     }
 }

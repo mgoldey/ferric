@@ -230,29 +230,32 @@ fn cosx_full_k_cell() {
         // COSX_FK_SCF_DCONV, default 1e-5 — the SCF is not the timed quantity).
         let scf_mode = std::env::var("COSX_FK_SCF").unwrap_or_else(|_| "dfjk".into());
         let scf_cfg = match scf_mode.as_str() {
-            "dfjk" => RhfConfig {
-                df_j_aux: Some(JKFIT.to_string()),
-                df_k_aux: Some(JKFIT.to_string()),
-                ..RhfConfig::default()
-            },
+            "dfjk" => RhfConfig::default()
+                .with_df_j_aux(JKFIT.to_string())
+                .with_df_k_aux(JKFIT.to_string()),
             // Window-chaining knobs (an SCF that does not fit one foreground
             // window): COSX_FK_SCF_MAXITER caps the iterations, the density is
             // saved UNCONVERGED (flagged) when COSX_FK_SCF_SAVE_UNCONVERGED=1,
             // and COSX_FK_SCF_RESTART_IN seeds the next window from it.
             // "direct": the plain direct J+K SCF (incremental Fock), no
             // 3-index tensors — the exact, low-memory route for nbf >= ~400.
-            "link" | "cosx" | "direct" => RhfConfig {
-                k_builder: (scf_mode != "direct").then(|| scf_mode.clone()),
-                density_conv: env_num("COSX_FK_SCF_DCONV", 1e-5),
-                max_iter: env_num("COSX_FK_SCF_MAXITER", RhfConfig::default().max_iter),
-                verbose: true,
-                init_guess_density: std::env::var("COSX_FK_SCF_RESTART_IN").ok().map(|p| {
+            "link" | "cosx" | "direct" => {
+                let mut c = RhfConfig::default()
+                    .with_density_conv(env_num("COSX_FK_SCF_DCONV", 1e-5))
+                    .with_max_iter(env_num(
+                        "COSX_FK_SCF_MAXITER",
+                        RhfConfig::default().max_iter,
+                    ))
+                    .with_verbose(true);
+                c.k_builder = (scf_mode != "direct")
+                    .then(|| ferric_scf::options::KBuilderKind::parse(&scf_mode).expect("mode"));
+                c.init_guess_density = std::env::var("COSX_FK_SCF_RESTART_IN").ok().map(|p| {
                     let (d0, _) = load_density(&p, nbf, nocc);
                     println!("SCF restart density loaded from {p}");
                     d0
-                }),
-                ..RhfConfig::default()
-            },
+                });
+                c
+            }
             other => panic!(
                 "COSX_FK_SCF = {other:?}: expected \"dfjk\", \"direct\", \"link\" or \"cosx\""
             ),

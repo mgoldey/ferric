@@ -118,12 +118,10 @@ fn run(system: &str) {
     assert_eq!(dfbs.nbasis() as f64, num(&r, "/naux"));
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let scf = RhfConfig {
-        max_iter: 200,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let scf = RhfConfig::default()
+        .with_max_iter(200)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9);
     let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &scf).unwrap();
     assert!(rhf.converged && rhf.df_jk.is_none());
     let d_rhf = (rhf.energy - num(&r, "/rhf/energy")).abs();

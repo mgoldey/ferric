@@ -36,22 +36,21 @@ enum Route {
 
 /// HF on `route`, tight convergence.
 fn config(route: Route, level_shift: f64) -> RhfConfig {
-    let (j, k, kb): (&str, &str, Option<&str>) = match route {
-        Route::RiJCosx => (AUX, "", Some("cosx")),
+    let (j, k, kb): (&str, &str, Option<ferric_scf::options::KBuilderKind>) = match route {
+        Route::RiJCosx => (AUX, "", Some(ferric_scf::options::KBuilderKind::Cosx)),
         Route::DfJDirectK => (AUX, "", None),
         Route::DfKDirectJ => ("", AUX, None),
         Route::Fitted => (AUX, AUX, None),
     };
-    RhfConfig {
-        energy_conv: 1e-9,
-        density_conv: 1e-7,
-        max_iter: 200,
-        level_shift,
-        df_j_aux: Some(j.into()),
-        df_k_aux: Some(k.into()),
-        k_builder: kb.map(Into::into),
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-7)
+        .with_max_iter(200)
+        .with_level_shift(level_shift)
+        .with_df_j_aux(j)
+        .with_df_k_aux(k);
+    c.k_builder = kb;
+    c
 }
 
 struct Sys {
@@ -157,10 +156,8 @@ fn newton_matches_diis_on_route(xyz: &str, mult: usize, kind: Kind, route: Route
     let s = sys(xyz, mult);
     // As in the fitted-response tests: UHF shifts, ROHF does not.
     let cfg_diis = config(route, if kind == Kind::Rohf { 0.0 } else { 0.2 });
-    let cfg_newton = RhfConfig {
-        newton_trigger: 1e-2,
-        ..cfg_diis.clone()
-    };
+    let mut cfg_newton = cfg_diis.clone();
+    cfg_newton.newton_trigger = 1e-2;
     let r_diis = solve(&s, kind, &cfg_diis);
     let (h0, d0) = counters(kind);
     let u0 = unfitted_response_builds_on_this_thread();
@@ -243,10 +240,8 @@ fn rohf_newton_dfk_directj() {
 fn trah_matches_diis_on_route(xyz: &str, mult: usize, kind: Kind, route: Route) {
     let s = sys(xyz, mult);
     let cfg_diis = config(route, 0.0);
-    let cfg_trah = RhfConfig {
-        trah_trigger: Some(1e-2),
-        ..cfg_diis.clone()
-    };
+    let mut cfg_trah = cfg_diis.clone();
+    cfg_trah.trah_trigger = Some(1e-2);
     let r_diis = solve(&s, kind, &cfg_diis);
     let (h0, d0) = counters(kind);
     let u0 = unfitted_response_builds_on_this_thread();
@@ -308,10 +303,7 @@ fn stability_on_a_fitted_scf_builds_no_direct_response() {
             (NH2, 2)
         };
         let s = sys(xyz, mult);
-        let cfg = RhfConfig {
-            check_stability: true,
-            ..config(Route::Fitted, 0.0)
-        };
+        let cfg = config(Route::Fitted, 0.0).with_check_stability(true);
         let (h0, d0) = counters(kind);
         let res = solve(&s, kind, &cfg);
         let (h1, d1) = counters(kind);
@@ -426,10 +418,7 @@ fn stability_on_a_fitted_scf_builds_no_direct_response() {
 fn oh_pi_radical_on_a_fitted_route_is_marginal() {
     use ferric_scf::stability::{StabilityConfig, StabilityVerdict};
     let s = sys(OH, 2);
-    let cfg = RhfConfig {
-        check_stability: true,
-        ..config(Route::Fitted, 0.0)
-    };
+    let cfg = config(Route::Fitted, 0.0).with_check_stability(true);
     let res = solve(&s, Kind::Uhf, &cfg);
     assert!(res.converged);
     let st = res.stability.as_ref().expect("stability was requested");

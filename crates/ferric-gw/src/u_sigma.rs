@@ -149,6 +149,7 @@ pub fn run_u_g0w0(
 /// Helper: per-spin G0W0 QP loop. `vxc_diag` is this spin's absolute-MO-
 /// indexed v_xc diagonal (KS reference) or `None` (HF reference).
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 fn qp_per_spin_g0w0(
     mo_b: &MoB,
     m_proj: &ndarray::Array3<f64>,
@@ -464,6 +465,7 @@ pub fn run_u_evgw0(
 
 /// U-evGW: rebuild W every iteration with QP-shifted ε's per spin.
 /// `vxc_diag` as in [`run_u_evgw0`] (shift fixed from the starting orbitals).
+#[allow(clippy::too_many_arguments)]
 pub fn run_u_evgw(
     mol: &ferric_core::mol::Molecule,
     obs: &ferric_integrals::basis_bridge::PreparedBasis,

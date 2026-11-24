@@ -8,31 +8,34 @@ Hartree–Fock. It describes hydrogen bonds well, overestimates dispersion
 between stacked rings, and in a finite basis adds basis set superposition
 error on top.
 
-This chapter starts from the closed-shell RI-MP2 energy and builds the
-methods that reuse its pair loop. The open-shell form splits by spin.
-Spin-component scaling weights the opposite- and same-spin parts
-differently, and κ-regularization damps small denominators. Attenuated MP2
-cuts the correlation off at a fitted length, which removes much of the
-overbinding. Later sections cover the range-split cross term, a VV10
-dispersion tail, MP3 and the double hybrids.
+The chapter has three parts.
 
-Sections:
+The MP2 energy and its spin forms:
 
-- [@sec:closed-shell-ri-mp2 Closed-shell RI-MP2 energy](01-closed-shell-ri-mp2.md): the
-  energy, its opposite- and same-spin parts, density fitting, and the loop
-  that runs.
-- [@sec:unrestricted-ri-mp2 Unrestricted RI-MP2](02-unrestricted-ri-mp2.md): three spin blocks
-  for an open-shell reference.
-- [@sec:scs-and-kappa Spin-component scaling and κ-regularization](03-scs-and-kappa.md):
-  two one-line changes to the pair loop.
-- [@sec:attenuated-mp2 Attenuated MP2: erfc and terfc](04-attenuated-mp2.md): short-range
-  correlation with a full Hartree–Fock energy.
-- [@sec:scs-mp2-2terfc SCS-MP2(2terfc)](05-scs-mp2-2terfc.md): two attenuation lengths,
-  one for each spin component.
-- [@sec:attenuation-basis-limit Attenuation and the basis-set limit](06-attenuation-basis-limit.md):
-  how the fitted length moves with the basis.
-- [@sec:range-split-cross-term The range-split cross term](07-range-split-cross-term.md)
-- [@sec:mp2-v MP2-V: attenuated MP2 with a VV10 tail](08-mp2-v.md)
-- [@sec:mp3 MP3](09-mp3.md)
-- [@sec:double-hybrids MP2-based double hybrids](10-double-hybrids.md)
-- [@sec:opmp3 Orbital-partitioned Padé MP3](11-opmp3.md)
+- @sec:closed-shell-ri-mp2: the closed-shell energy, its opposite- and
+  same-spin parts, density fitting, and the loop that runs.
+- @sec:unrestricted-ri-mp2: three spin blocks for an open-shell reference.
+- @sec:scs-and-kappa: spin-component scaling and κ-regularization, two
+  one-line changes to the pair loop.
+
+Attenuation, which cuts the correlation off at a fitted length and removes
+much of the overbinding:
+
+- @sec:attenuated-mp2: erfc and terfc attenuation, short-range correlation
+  with a full Hartree–Fock energy.
+- @sec:scs-mp2-2terfc: two attenuation lengths, one for each spin
+  component.
+- @sec:attenuation-basis-limit: a summary of the literature on how the
+  fitted length moves with the basis; no code of its own.
+- @sec:range-split-cross-term: the cross term between short- and long-range
+  correlation, and the two ways ferric adds long-range RPA to attenuated
+  MP2.
+- @sec:mp2-v: attenuated MP2 with a VV10 dispersion tail.
+
+Methods that reuse the amplitudes:
+
+- @sec:mp3: the third-order energy, closed and open shell.
+- @sec:double-hybrids: a DFT method, a scaled MP2 term on Kohn–Sham
+  orbitals.
+- @sec:opmp3: orbital-partitioned Padé MP3, a size-consistent resummation
+  of MP2 and MP3.

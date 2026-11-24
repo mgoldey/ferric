@@ -151,11 +151,9 @@ fn the_two_channel_charge_gates_the_run_and_the_probe() {
     // --- the pre-SCF probe and the dispatch ----------------------------------
     // The probe sizes the molecule's own (alpha, beta) = (5, 4)... NH2 doublet
     // has 9 electrons: 5 alpha, 4 beta.
-    let cfg = RhfConfig {
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some("cc-pvdz-ri".into()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_df_j_aux(String::new())
+        .with_df_k_aux("cc-pvdz-ri");
     let op = Operator::coulomb();
     let probe_need = rik_peak_bytes_channels(3, n, &[5, 4], naux);
     install_global(MemoryPool::with_capacity_bytes(probe_need - 1));
@@ -203,12 +201,10 @@ fn the_two_channel_charge_gates_the_run_and_the_probe() {
         use ferric_scf::uhf::solve_uhf;
         let big = PreparedBasis::new(&mol, &basis::bundled("def2-tzvp").unwrap()).unwrap();
         let bounds = SchwarzBounds::compute(op, &big).unwrap();
-        let cfg = RhfConfig {
-            max_iter: 300,
-            df_j_aux: Some("cc-pvdz-ri".into()),
-            df_k_aux: Some("cc-pvdz-ri".into()),
-            ..Default::default()
-        };
+        let cfg = RhfConfig::default()
+            .with_max_iter(300)
+            .with_df_j_aux("cc-pvdz-ri")
+            .with_df_k_aux("cc-pvdz-ri");
         let ctx = ParallelContext::default();
         clear_global();
         let uhf = solve_uhf(&ctx, &mol, &big, &bounds, &cfg).unwrap();
@@ -401,12 +397,10 @@ fn whole_hessian_peak(label: &str, basis_name: &str, aux: &str) {
     let (n, naux, natoms) = (prep.nbasis(), auxbs.nbasis(), mol.atoms.len());
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        max_iter: 300,
-        df_j_aux: Some(aux.into()),
-        df_k_aux: Some(aux.into()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_max_iter(300)
+        .with_df_j_aux(aux)
+        .with_df_k_aux(aux);
     let ctx = ParallelContext::default();
     let uhf = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
     let nelec = mol.nelec() as usize;

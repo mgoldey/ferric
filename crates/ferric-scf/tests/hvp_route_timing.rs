@@ -150,15 +150,13 @@ fn run_closed_shell(mol: &Molecule, basis_name: &str) {
     let no = mol.nelec() as usize / 2;
     eprintln!("RHF: nbf={n} naux={} nocc={no}", aux.nbasis());
 
-    let cfg = RhfConfig {
-        energy_conv: 1e-7,
-        density_conv: 1e-5,
-        max_iter: 100,
-        df_j_aux: Some(AUX.into()),
-        df_k_aux: Some(AUX.into()),
-        ri_j_precision: Some(RiJPrecision::F64),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-7)
+        .with_density_conv(1e-5)
+        .with_max_iter(100)
+        .with_df_j_aux(AUX)
+        .with_df_k_aux(AUX)
+        .with_ri_j_precision(RiJPrecision::F64);
     let (res, t_scf) =
         timed(|| ferric_scf::rhf::solve_rhf(&ctx, mol, &prep, op, &bounds, &cfg).unwrap());
     eprintln!("RHF reference SCF: {} it, {t_scf:.1} s", res.iterations);

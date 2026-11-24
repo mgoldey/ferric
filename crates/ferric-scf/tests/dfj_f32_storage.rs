@@ -30,8 +30,7 @@
 //!  * SCF (RHF, RI-JK, water/cc-pVDZ and benzene/def2-SVP): with D* the f64
 //!    minimum, D' the f32 one and `E'` the rounded-B functional,
 //!    `L = E'_J(D') − E_J(D') ≤ E_f32 − E_f64 ≤ E'_J(D*) − E_J(D*) = U`,
-//!    within `bar` (floors and termination, below), and the f64 energy exit
-//!    `E_f32 + (E_J(D') − E'_J(D'))` lands in `[0, U − L]` of the f64 energy.
+//!    within `bar` (floors and termination, below).
 //!    `bar = 2(|dE_exit,f64| + |dE_exit,f32|) + T(D*) + T(D') + 2F(D*) + 2F(D')`:
 //!    `F = (γ_pair+γ_naux)S_J` is the summation floor of ONE `½dᵀV⁻¹d`
 //!    evaluation (`S_J = |c|ᵀ|B||w|`), `T = F + g_K·½Σ|D|∘S_K +
@@ -789,16 +788,14 @@ fn mutants_fail_the_per_build_check() {
 fn scf(sys: &System, f32: bool) -> ScfResult {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &sys.obs).unwrap();
-    let cfg = RhfConfig {
-        energy_conv: 1e-6,
-        density_conv: 1e-9,
-        max_iter: 200,
-        df_j_aux: Some(AUX.into()),
-        df_k_aux: Some(AUX.into()),
-        three_index_budget_bytes: 3 << 30,
-        ri_j_precision: Some(precision(f32)),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-6)
+        .with_density_conv(1e-9)
+        .with_max_iter(200)
+        .with_df_j_aux(AUX)
+        .with_df_k_aux(AUX)
+        .with_ri_j_precision(precision(f32));
+    cfg.three_index_budget_bytes = 3 << 30;
     let _r = Request::set(None);
     let k0 = kernel_counters()[MixedKernel::DfjF32.index()];
     let res = solve_rhf(
@@ -911,10 +908,9 @@ impl Model {
     }
 }
 
-/// The f32 SCF's energy sits in the derived first-order window `[L, U]`; the
-/// f64 energy exit brings it into the second-order window `[0, U − L]`.
+/// The f32 SCF's energy sits in the derived first-order window `[L, U]`.
 #[test]
-fn scf_energy_is_inside_the_derived_window_and_the_f64_exit_is_second_order() {
+fn scf_energy_is_inside_the_derived_first_order_window() {
     let _g = lock();
     for sys in [water(), benzene()] {
         let r64 = scf(&sys, false);
@@ -929,25 +925,16 @@ fn scf_energy_is_inside_the_derived_window_and_the_f64_exit_is_second_order() {
             + m.energy_floor(&sys, &r32, f_p)
             + 2.0 * (f_s + f_p);
 
-        // The f64 exit through the production pass (a fresh f32 builder).
-        let exit = sys
-            .dfj(true, usize::MAX, 0.0)
-            .f64_exit_coulomb_energy(&r32.density_total)
-            .unwrap()
-            .expect("new_for_jk enables the f64 exit");
-        let corr = exit.correction();
-        let corrected = de + corr;
         let (pair, naux) = (m.b.ncols(), sys.naux());
         let m_first = dfj_f32_energy_error_factor(pair, naux) * sj_s.max(sj_p);
         eprintln!(
             "{}: E_f32 − E_f64 {de:.3e}  window [L {l:.3e}, U {u:.3e}] (U − L {:.3e})  bar {bar:.3e}  \
-             first-order estimate {m_first:.3e} (|dE|/est {:.3e})  exit correction {corr:.3e} (vs −L: {:.3e})  \
-             corrected error {corrected:.3e}  [worst-case solve term, not in bar: {solve_s:.3e}]  \
+             first-order estimate {m_first:.3e} (|dE|/est {:.3e})  \
+             [worst-case solve term, not in bar: {solve_s:.3e}]  \
              iterations f64 {} f32 {}",
             sys.label,
             u - l,
             de.abs() / m_first,
-            corr + l,
             r64.iterations,
             r32.iterations
         );
@@ -966,13 +953,6 @@ fn scf_energy_is_inside_the_derived_window_and_the_f64_exit_is_second_order() {
         assert!(
             -(U32 * sj_p) - bar <= de && de <= U32 * sj_s + q_s + bar,
             "{}: ΔE outside the first-order model",
-            sys.label
-        );
-        // The production exit is −L to the floors of four evaluations.
-        assert!((corr + l).abs() <= 4.0 * f_p, "{}: exit ≠ −L", sys.label);
-        assert!(
-            -bar - 4.0 * f_p <= corrected && corrected <= (u - l) + bar + 4.0 * f_p,
-            "{}: the f64 exit is not second order",
             sys.label
         );
     }

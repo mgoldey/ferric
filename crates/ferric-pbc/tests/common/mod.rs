@@ -288,12 +288,10 @@ pub fn array2(rows: &[&[f64]]) -> ndarray::Array2<f64> {
 
 /// Tight closed-shell RHF config the injected path accepts.
 pub fn gamma_config() -> RhfConfig {
-    RhfConfig {
-        use_sad_guess: false,
-        density_conv: 1e-10,
-        max_iter: 200,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_density_conv(1e-10)
+        .with_max_iter(200)
 }
 
 /// Gamma-point RHF on the lattice `(S, h, E_nn)` with arbitrary injected

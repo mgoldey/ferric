@@ -26,19 +26,20 @@ the runner.
 | Symbol | Meaning | Code name |
 |---|---|---|
 | $x$, $g$ | Cartesian coordinates and gradient, flattened to length $3N$ | `x`, `grad` |
-| $H$ | inverse Hessian estimate of the minimizer | `h`, `h_inv` |
+| $H$ | inverse Hessian estimate of the minimizer (in the Lindh subsection, $H^{\rm L}$ is the model Hessian itself, not an inverse) | `h`, `h_inv` |
 | $s$, $y$ | achieved step and gradient change | `s`, `y` |
 | $B$ | Hessian estimate of the saddle search, Hartree/Bohr²/u | `hess` |
 | $b_i$, $g_i$ | projected mass-weighted Hessian eigenvalue and gradient component | `evals`, `g_q` |
 | $\lambda_p$, $\lambda_n$ | P-RFO shifts for the followed mode and for the rest | `lambda_p`, `lambda_n` |
-| $q = \sqrt m\,x$ | mass-weighted coordinates | `q`, `sm` |
+| $q = \sqrt m\,x$ | mass-weighted coordinates (in the internal-coordinate subsections, $q$ is an internal coordinate) | `q`, `sm` |
+| $\mathsf B$ | Wilson matrix $\partial q/\partial x$ of the internal coordinates | `b_matrix` |
 
 | Entry point | Location |
 |---|---|
 | Rust, minimum | `ferric-scf/src/optimize.rs::{optimize_geometry,optimize_coordinates}`; open shell `optimize_geometry_uhf`, `optimize_geometry_rohf` |
 | Rust, saddle | `ferric-scf/src/saddle.rs::find_saddle` |
 | Rust, path | `ferric-scf/src/irc.rs::follow_irc` |
-| CLI | `task = "optimize"`, section `[optimize]` (`max_steps`, `g_max_thresh`, `g_rms_thresh`, `e_conv`, `trust_radius`, `coordinates`, `initial_hessian`, `trust_update`, `scf_warm_start`) |
+| CLI | minimum only (saddle and IRC are Python only): `task = "optimize"`, section `[optimize]` (`max_steps`, `g_max_thresh`, `g_rms_thresh`, `e_conv`, `trust_radius`, `coordinates`, `initial_hessian`, `trust_update`, `scf_warm_start`) |
 | Python | `run_optimize`, `run_saddle`, `run_irc` |
 
 ## Minimization {#geometry-search-minimization}
@@ -58,7 +59,8 @@ secant condition $B's = y$, or, for the inverse $H = B^{-1}$, $H'y = s$.
 ferric runs BFGS on the inverse Hessian $H$, so that each step is a matrix
 product and never a linear solve. The default starts from the inverse of
 the Lindh model Hessian (`initial_hessian = "lindh"`, section @sec:geometry-search-lindh-model-hessian).
-`"simple"` starts from the identity. There is no line search. Each step is
+`"simple"` starts from the identity (in Cartesians; Schlegel's diagonal in
+internals). There is no line search. Each step is
 $p = -Hg$, scaled uniformly onto the trust radius $\Delta$ when it is longer:
 
 $$ s = \alpha p,\qquad \alpha = \min\!\Big(1, \frac{\Delta}{\lVert p\rVert}\Big) . $$
@@ -127,12 +129,34 @@ let next = if !accept || predicted >= 0.0 || ratio < TRUST_SHRINK_RATIO {
 | `TRUST_GROW_RATIO` | $\tfrac34$ |
 | `r_min`, `r_max` | $0.01\,r_{\rm trust}$ and $10\,r_{\rm trust}$ in Cartesians |
 
+> **Verified equation** · the ratio trust rule
+>
+> For $s = \alpha p$, $p = -Hg$ and $B = H^{-1}$ the model change is
+> $\alpha\,g^{\mathsf T}p\,(1-\alpha/2)$, negative for positive definite $H$
+> and $0 < \alpha \le 1$ (symbols). The transcribed `ratio_trust_update`
+> shrinks, keeps, doubles and clamps as listed above, with its constants read
+> back from `optimize.rs`; on the Rosenbrock function from $(-1.2, 1)$ the
+> ratio search keeps no uphill step and reaches the minimum to $10^{-6}$,
+> while the fixed-radius search at the same radius keeps uphill steps. The
+> radius never grows on a rejected step or on a step with
+> $\Delta E_{\rm pred} \ge 0$, over a grid that reaches every branch.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/geometry_search_steps_sympy.py`, claims T1, T2 and T3 |
+> | Negative control | the runner swaps the shrink and grow thresholds (claim T2 fails) and drops the rejection and non-descent clauses of the shrink condition (claim T3 fails) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-scf/src/optimize.rs::ratio_trust_update` |
+> | Code test | `ratio_trust_update_follows_the_decision_table` and `ratio_trust_update_never_grows_on_rejection_or_a_non_descent_model` in `crates/ferric-scf/src/optimize.rs` |
+>
+> <!-- verified: id=geom.trust-ratio; script=scripts/geometry_search_steps_sympy.py; claim=T2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/optimize.rs::ratio_trust_update; rust_test=ferric-scf/src/optimize.rs::ratio_trust_update_follows_the_decision_table; registry=geometry-search -->
+
 ### The BFGS update
 
-With $\rho = 1/(y^{\mathsf T}s)$ the inverse update is
+With $p = -Hg$ and $s = \alpha p$ as above, and $\rho = 1/(y^{\mathsf T}s)$, the
+inverse update is
 
-$$ p = -H g, \qquad s = p\,\min\!\Big(1, \frac{r_{\mathrm{trust}}}{\lVert p\rVert}\Big), \qquad
-H' = H + \frac{y^{\mathsf T}s + y^{\mathsf T}Hy}{(y^{\mathsf T}s)^2}\,s\,s^{\mathsf T} - \frac{H y\,s^{\mathsf T} + s\,y^{\mathsf T}H}{y^{\mathsf T}s} . \label{eq:geom-bfgs} $$
+$$ H' = H + \frac{y^{\mathsf T}s + y^{\mathsf T}Hy}{(y^{\mathsf T}s)^2}\,s\,s^{\mathsf T} - \frac{H y\,s^{\mathsf T} + s\,y^{\mathsf T}H}{y^{\mathsf T}s} . \label{eq:geom-bfgs} $$
 
 It is the inverse of the direct BFGS update of $B = H^{-1}$,
 
@@ -157,10 +181,10 @@ accepted, so nothing downstream would catch that.
 The update is therefore guarded
 (`ferric-scf/src/optimize.rs::guarded_inverse_bfgs_update`):
 
-$$ H' = \begin{cases} H & \lvert y^{\mathsf T}s\rvert \le 10^{-12}:\ \text{reset to the seed instead},\\ H & y^{\mathsf T}s \le \varepsilon\,\lVert y\rVert\,\lVert s\rVert,\ \ \varepsilon = 10^{-8}:\ \text{skipped},\\ \text{the update above} & \text{otherwise.} \end{cases} $$
+$$ H' = \begin{cases} H_0 & \lvert y^{\mathsf T}s\rvert \le 10^{-12}:\ \text{reset to the seed},\\ H & y^{\mathsf T}s \le \varepsilon\,\lVert y\rVert\,\lVert s\rVert,\ \ \varepsilon = 10^{-8}:\ \text{skipped},\\ \text{the update above} & \text{otherwise.} \end{cases} $$
 
 When $\lvert y^{\mathsf T}s\rvert \le 10^{-12}$ the update is skipped and $H$
-is reset to the starting Hessian. When $y^{\mathsf T}s \le
+is reset to the starting Hessian $H_0$. When $y^{\mathsf T}s \le
 10^{-8}\lVert y\rVert\lVert s\rVert$, negative curvature along the step, the
 update is skipped and $H$ is kept, with a printed note. A skipped update
 leaves $H$ positive definite by induction from the starting Hessian, so
@@ -267,7 +291,7 @@ molecule, bonded or not. Each internal coordinate $q$ contributes its force
 constant times the outer product of its Wilson vector
 $b_q = \partial q/\partial x$ (from `ferric-core/src/internal_coords.rs::primitive_derivatives`):
 
-$$ H^{\rm L} = \sum_q k_q\, b_q b_q^{\mathsf T} . $$
+$$ H^{\rm L} = \sum_q k_q\, b_q b_q^{\mathsf T} . \label{eq:geom-lindh} $$
 
 Two properties follow term by term. Each term is a rank-one positive
 semi-definite matrix, so $H^{\rm L}$ is symmetric and positive
@@ -331,7 +355,7 @@ null vectors; L4 a brute-force numpy sum over every term, which the Rust
 test `lindh_hessian_matches_the_numpy_reference` matches through
 `testdata/reference/lindh_model_hessian.json`.
 
-> **Verified equation** · the Lindh model Hessian
+> **Verified equation @eq:geom-lindh** · the Lindh model Hessian
 >
 > The force constants and their distance derivatives hold in symbols, the
 > constants in the Rust equal Table 1 of the paper, the closed-form Wilson
@@ -350,70 +374,8 @@ test `lindh_hessian_matches_the_numpy_reference` matches through
 >
 > <!-- verified: id=geom.lindh; script=scripts/lindh_hessian_sympy.py; claim=L4; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-core/src/model_hessian.rs::lindh_cartesian_hessian; rust_test=ferric-scf/tests/optimizer_model_hessian.rs::lindh_hessian_matches_the_numpy_reference; registry=geometry-search -->
 
-### Measured step counts
-
-Steps to convergence at HF/STO-3G from RDKit/MMFF starting geometries, with
-the default thresholds (`g_max` 4.5e-4, `g_rms` 3e-4, `e_conv` 1e-6). "Old"
-is `simple` + `fixed`, "new" is `lindh` + `ratio`. geomeTRIC 1.1 in TRIC
-coordinates, run on ferric gradients through `ferric.ase`, is an outside
-reference:
-
-| molecule (atoms) | Cartesian old | Cartesian new | internal old | internal new | geomeTRIC |
-|---|---|---|---|---|---|
-| water (3) | 5 | 3 | 5 | 3 | 4 |
-| ethanol (9) | 28 | 4 | 16 | 12 | 5 |
-| butane (14) | 19 | 5 | 16 | 12 | 8 |
-| paracetamol (20) | 60 | 33 | 30 | 23 | 29 |
-| alanine dipeptide (22) | 118 | 39 | 40 | 27 | 22 |
-| aspirin (21) | 58 | 16 | 32 | 17 | 21 |
-| ibuprofen (33) | 80 | 19 | 67 | 21 | 16 |
-| sulfamethoxazole (28) | 170 | 92 | 46 | 24 | 25 |
-| total | 538 | 211 | 252 | 139 | 130 |
-| pregabalin (28) | | 21 | | 30 | 17 |
-| procaine (37) | | 13 | | 17 | 18 |
-| lidocaine (39) | | 78 | | 34 | 42 |
-| metoprolol (44) | | 43 | | 31 | 30 |
-| total, 12 molecules | | 366 | | 251 | 237 |
-| rejected steps, 12 molecules | | 18 | | 24 | |
-
-Which change does the work? `lindh` alone (Cartesian, `fixed`) gives 4, 5,
-49, 30 and 26 steps on ethanol, butane, alanine dipeptide, aspirin and
-ibuprofen. `ratio` alone reproduces the old trajectories exactly, since with
-the identity seed no step reaches the trust boundary. So the seed gives most
-of the gain on these molecules.
-
-The searches also differ in where they stop. The old Cartesian search stops
-0.01 to 0.10 mHa above the minimum the others reach (0.03 to 0.21 Å RMSD):
-with the identity seed a soft mode meets the gradient thresholds before it
-is relaxed. The new searches end within 4e-3 mHa of each other, except
-Cartesian new on sulfamethoxazole. Its long early steps turn the sulfonamide
-C–C–N–S torsion from 13° to −64° (internals and geomeTRIC stop at +59°), and
-it ends in a rotamer 3.3 mHa lower. Both end points are minima: re-optimizing
-either one with the other search moves the energy by less than 0.02 mHa.
-
-The same molecule at PBE/def2-SVP (RI-J/RI-K, f64), from the same start,
-shows how far apart two converged searches can end. Cartesian old does not
-converge in 150 steps. Cartesian new converges in 47 steps, internal new in
-36 (1 rejected), internal old in 35. The new searches end within 1e-3 mHa of
-each other. With the per-block clip in place of the one-factor clip
-(section @sec:geometry-search-lindh-model-hessian) the internal search takes 37 steps and ends 0.04 mHa above
-the Cartesian one. From those
-two end points a further 150 internal steps at `g_max` 1.5e-5 (none reaches
-that threshold) move them by less than 0.05 mHa, and they stay 0.02 mHa
-apart. The analytic Hessian at the internal end point has one mode at
-22.7i cm⁻¹ (NH2 and methyl hydrogens). Re-optimizing from ±0.15 Å along it
-lowers the energy by at most 0.05 mHa, so it is a soft region of the same
-basin at the loose default thresholds, not a saddle above a lower one.
-
-The unconverged old search ends 1.39 mHa lower, and the same
-re-optimization takes it further, to 1.50 mHa below the new end points: its
-150 short steps carry it out of the starting basin into a lower one.
-geomeTRIC on the same surface takes 53 steps and ends 2.3 mHa below the new
-end points, in a third basin; its calculator and `run_optimize` agree to
-0.01 mHa at one geometry. At this level the molecule has several rotamers
-within a few mHa, and which one a local search reaches depends on its early
-steps. An end-point gap of this size between the old Cartesian and the
-internal searches is a different basin, not a convergence criterion.
+On a set of drug-like molecules the seed, not the trust rule, gives most of
+the gain in step count (section @sec:geometry-search-measurements).
 
 ### Redundant internal coordinates
 
@@ -422,12 +384,12 @@ update on bonds, angles and proper dihedrals:
 
 | Step | Quantity | Function |
 |---|---|---|
-| 1 | start from the empirical diagonal Hessian (Schlegel), so $H_{ii} = 1/k_i$ | `ferric-core/src/internal_coords.rs::InternalCoords::initial_hessian_diagonal` |
-| 2 | $g_q = G^{-}B\,g_x$ with the generalized inverse of $G = BB^{\mathsf T}$ | `ferric_core::internal_coords::gradient_to_internal` |
+| 1 | start from a diagonal inverse Hessian $1/k_q$: the Lindh force constant of each primitive floored at $10^{-3}$ (default), or Schlegel's empirical estimate under `initial_hessian = "simple"` | `ferric-scf/src/optimize.rs::internal_inverse_seed`, `ferric-core/src/model_hessian.rs::lindh_force_constant`, `ferric-core/src/internal_coords.rs::InternalCoords::initial_hessian_diagonal` |
+| 2 | $g_q = G^{-}\mathsf B\,g_x$ with the generalized inverse of $G = \mathsf B\mathsf B^{\mathsf T}$ | `ferric_core::internal_coords::gradient_to_internal` |
 | 3 | $p = -Hg_q$, clipped per coordinate type: bonds against the Cartesian trust radius, angles and dihedrals against $0.3$ rad. A mixed norm would add Bohr² to rad² | `ferric-scf/src/optimize.rs::clip_internal_step` |
 | 4 | back-transform to Cartesians iteratively, to $10^{-9}$ Bohr, in at most 25 passes. If it fails the step is halved, up to five attempts, and the best iterate is taken with a printed warning | `ferric_core::internal_coords::step_to_cartesian` |
 | 5 | update $H$ with the **achieved** displacement $s$ read from the two geometries, not the requested one. The requested step can differ from the achieved one by more than its own size in a redundant set. A dihedral crossing $\pm\pi$ is wrapped to the short way round | `ferric-scf/src/optimize.rs::bfgs_secant_step` |
-| 6 | on an unusable update, reset to the empirical diagonal, not the identity, which has no meaning when coordinates have different units | same loop |
+| 6 | on an unusable update, reset to the seed of step 1, not the identity, which has no meaning when coordinates have different units | same loop |
 
 The update uses the same curvature guard as in Cartesians. The convergence
 test is the Cartesian one in both systems, so "converged" means the same
@@ -435,15 +397,15 @@ thing in both. The coordinates are built once from the starting geometry,
 because the Hessian history is indexed against that primitive list; if they
 cannot be built the run falls back to Cartesians with a printed warning.
 
-### The internal step under the ratio rule
+### The internal step under the ratio rule {#geometry-search-internal-ratio-step}
 
 Under `"ratio"` the internal search scales both radii by one factor
-$f \in [0.01, 4]$. Write $\rho_d = f r_{\rm trust}$ for bonds and
-$\rho_a = 0.3 f$ for angles, and split $p = -Hg_q$ into its distance and
+$f \in [0.01, 4]$. Write $r_d = f r_{\rm trust}$ for bonds and
+$r_a = 0.3 f$ for angles, and split $p = -Hg_q$ into its distance and
 angular blocks $p_d$, $p_a$. The step is clipped by one factor
 (`ferric-scf/src/optimize.rs::clip_internal_step_uniform`):
 
-$$ \Delta q = \alpha p,\qquad \alpha = \min\!\Big(1, \frac{\rho_d}{\lVert p_d\rVert}, \frac{\rho_a}{\lVert p_a\rVert}\Big) . $$
+$$ \Delta q = \alpha p,\qquad \alpha = \min\!\Big(1, \frac{r_d}{\lVert p_d\rVert}, \frac{r_a}{\lVert p_a\rVert}\Big) . $$
 
 Each block stays inside its own radius and the units are never added. The
 first-order change is $g_q^{\mathsf T}\Delta q = -\alpha\, g_q^{\mathsf T}Hg_q < 0$
@@ -460,26 +422,26 @@ rule is $\max(\lVert s_{\rm dist}\rVert/r_{\rm trust}, \lVert s_{\rm ang}\rVert/
 in the units of $f$.
 
 Why one factor? Under `"fixed"` the two blocks are clipped by their own
-factors $a$ and $b$ (`clip_internal_step`, the search before the ratio rule,
-kept bit for bit). Then
+factors $a$ and $b$ (`clip_internal_step`, kept bit for bit for
+`trust_update = "fixed"`). Then
 
 $$ g_q^{\mathsf T}\Delta q = a\,g_d^{\mathsf T}p_d + b\,g_a^{\mathsf T}p_a , $$
 
 which is not sign-definite: $g_d^{\mathsf T}p_d$ can be positive while the
 sum $g_q^{\mathsf T}p$ is negative. With both blocks clipped,
-$a/b = (\rho_d\lVert p_a\rVert)/(\rho_a\lVert p_d\rVert)$ does not depend on
+$a/b = (r_d\lVert p_a\rVert)/(r_a\lVert p_d\rVert)$ does not depend on
 $f$, so the clipped direction is the same at every radius, and shrinking
 the radius cannot restore descent. With
-$\Delta E(\Delta q) \approx g^{\mathsf T}\Delta q + \tfrac12\Delta q^{\mathsf T}B\Delta q$,
+$\Delta E(\Delta q) \approx g^{\mathsf T}\Delta q + \tfrac12\Delta q^{\mathsf T}H^{-1}\Delta q$,
 a direction whose first-order descent is small against its curvature rises
-until the radius is below $2\lvert g^{\mathsf T}u\rvert/(u^{\mathsf T}Bu)$
+until the radius is below $2\lvert g^{\mathsf T}u\rvert/(u^{\mathsf T}H^{-1}u)$
 along the unit direction $u$, which can be below the floor $f = 0.01$.
 
 *The achieved step.* The back-transformation returns $s = P\Delta q$ to first
-order, with $P = GG^{-}$ the projector onto the range of $G = BB^{\mathsf T}$.
-The internal gradient $g_q = G^{-}Bg_x$ lies in that range, so
+order, with $P = GG^{-}$ the projector onto the range of $G = \mathsf B\mathsf B^{\mathsf T}$.
+The internal gradient $g_q = G^{-}\mathsf Bg_x$ lies in that range, so
 $g_q^{\mathsf T}s = g_q^{\mathsf T}\Delta q$. That is also the Cartesian change
-$g_x^{\mathsf T}\Delta x$ with $\Delta x = B^{\mathsf T}G^{-}\Delta q$. A descent
+$g_x^{\mathsf T}\Delta x$ with $\Delta x = \mathsf B^{\mathsf T}G^{-}\Delta q$. A descent
 $\Delta q$ therefore gives a descent $s$ for a short enough step.
 
 *The radius.* `ratio_trust_update` sets the radius to $\tfrac14\lVert s\rVert$
@@ -501,65 +463,40 @@ above SCF noise: the per-block direction is barely downhill and its
 curvature term wins at the floor radius. One factor would have given
 $g_q^{\mathsf T}\Delta q = b\,g_q^{\mathsf T}p = -1.1\times10^{-5}$.
 
+> **Verified equation** · the one-factor internal clip
+>
+> The one-factor clip gives $g^{\mathsf T}\Delta q = -\alpha\,g^{\mathsf T}Hg$
+> and the per-block ratio $a/b$ does not depend on $f$ (symbols). On 2000
+> random positive definite $H$ (8 coordinates, inverse-Hessian spectrum over
+> three decades) the one-factor clip always descends, while the per-block
+> clip is uphill in more than 20 cases and stays uphill when the radius
+> shrinks a hundredfold; a model direction that does not descend falls back
+> to $-H_0g$ (claim C1). The achieved step keeps the first-order change:
+> $g_q^{\mathsf T}P\Delta q = g_q^{\mathsf T}\Delta q = g_x^{\mathsf T}\Delta x$
+> for random rank-deficient $\mathsf B$ (12 internals, 9 Cartesians, rank 6;
+> claim C2).
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/geometry_search_steps_sympy.py`, claims C1 and C2 |
+> | Negative control | the runner replaces the one-factor clip by the per-block clip (claim C1 fails) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-scf/src/optimize.rs::clip_internal_step_uniform` |
+> | Code test | `ratio_internal_step_descends_where_the_per_block_clip_does_not` in `crates/ferric-scf/src/optimize.rs` |
+>
+> <!-- verified: id=geom.internal-clip; script=scripts/geometry_search_steps_sympy.py; claim=C1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/optimize.rs::clip_internal_step_uniform; rust_test=ferric-scf/src/optimize.rs::ratio_internal_step_descends_where_the_per_block_clip_does_not; registry=geometry-search -->
+
 ### Which coordinates are the default
 
-Internals are not the default, because they add ways to fail (bond
-perception, back-transformation) that Cartesians do not have. The default
-was chosen on three criteria, in order: the search stays in the starting
-basin, it does not fail, and then the step count. The four flexible
-molecules in the lower rows of the step-count table (RDKit ETKDG seed 7 +
-MMFF starts) were added for this choice. The basin test is the largest
-change of any heavy-atom dihedral between start and end point.
-
-Before the runs the artifact hypothesis was written down. A broken internal
-back-transformation would show as many rejected steps and
-back-transformation warnings, as dihedrals that stay near the start only
-because steps are suppressed, and as an end point that differs from
-geomeTRIC's and moves when a Cartesian search restarts from it. A real
-coordinate effect gives the same end point as geomeTRIC. The end-point
-comparison tells the two apart; the step count does not.
-
-| molecule | largest dihedral change: Cartesian / internal / geomeTRIC | rejected steps: Cartesian / internal |
-|---|---|---|
-| paracetamol | 22° / 22° (opposite signs, same energy) / – | 2 / 3 |
-| sulfamethoxazole | 77° (C–C–N–S, +13° → −64°) / 46° (→ +59°) / – | 7 / 0 |
-| pregabalin | 15.6° / 16.5° / 16.1° | 1 / 3 |
-| procaine | 4.7° / 4.7° / 4.7° | 0 / 1 |
-| lidocaine | 80° / 80° / 80° (N–C–C–N, −107° → +172°) | 5 / 2 |
-| metoprolol | 22.7° / 24.3° / 24.5° | 2 / 4 |
-
-The other molecules change no dihedral by more than 17° in either search.
-On the four new molecules the internal search ends within 0.4° and 0.003 Å
-RMSD of geomeTRIC's end point and within 1.7° and 0.024 Å of the Cartesian
-one, with no back-transformation warnings and no fallback steps. Lidocaine
-turns by 80° in all three optimizers: that is a downhill relaxation from the
-MMFF start, not a barrier crossing. Only Cartesian sulfamethoxazole leaves
-the starting basin. On this set internals lead on the first criterion (the
-one sulfamethoxazole case), tie on the second (no failures; 24 rejected
-steps against 18) and lead on steps in total (251 against 366), while
-taking more steps than Cartesians on six of the twelve molecules (ethanol 12
-against 4, butane 12 against 5, pregabalin 30 against 21).
-
-The default also governs searches outside this set, and two of them go
-against internals.
-
-- Pregabalin at PBE/def2-SVP (RI-J/RI-K, f64), same start: Cartesian 34
-  steps (2 rejected), internal 21 (1 rejected). The internal search stops
-  0.44 mHa above the Cartesian end point, with the C5–C8–C9–O10 torsion at
-  +109° where the Cartesian search reaches +129°. Its last steps still lower
-  the energy by about 1e-6 Ha each, and $\Delta E$ falls below `e_conv`
-  while the gradient is under its thresholds. A Cartesian search restarted
-  from the internal end point stops after one step, so the default
-  thresholds do not tell the two end points apart.
-- Water at HF/STO-3G in a uniform field of 0.02 a.u. along $x$
-  (`external_field`): Cartesian converges in 22 steps; internal does not
-  converge in 100, 14 mHa higher, with the largest gradient component fixed
-  at 1.1e-2. A field exerts a torque. The internal step cannot rotate the
-  molecule, and the convergence test is on the Cartesian gradient, which
-  contains the torque. Fixed point or smeared charges (QM/MM MM atoms) and
-  polarizable sites break the invariance the same way (a net force and
-  torque). PCM and COSMO cavities are built from the atoms and move with
-  them, so they keep it.
+Cartesians are the default and `coordinates = "internal"` is opt-in.
+Internals add ways to fail (bond perception, back-transformation) that
+Cartesians do not have, and the internal step cannot rotate the molecule.
+That matters when the energy is not invariant under rotation: a uniform
+field exerts a torque, and fixed point or smeared charges (QM/MM MM atoms)
+and polarizable sites exert a net force and torque. The convergence test is
+on the Cartesian gradient, which contains the torque, so an internal search
+there cannot converge. PCM and COSMO cavities are built from the atoms and
+move with them, so they keep the invariance.
 
 An explicit `coordinates = "internal"` with any of those terms is refused
 before the first SCF, with an error that names the cause and suggests
@@ -567,18 +504,17 @@ before the first SCF, with an error that names the cause and suggests
 `ferric-scf/src/optimize.rs::refuse_internal_coordinates_in_fixed_frame`,
 called by every SCF and OO-RI-MP2 optimizer, the CLI and `run_optimize`.
 Adding the six rigid-body coordinates to the internal set was not chosen: it
-changes the $B$ matrix, the model Hessian and every recorded internal path,
-and Cartesian already handles these systems. A `fock_hook` is opaque and is
-not inspected.
-
-The default therefore stays Cartesian. `coordinates = "internal"` is the
-choice for an isolated molecule where a soft torsion near a barrier matters.
+changes the $\mathsf B$ matrix, the model Hessian and every recorded internal
+path, and Cartesian already handles these systems. A `fock_hook` is opaque
+and is not inspected. `coordinates = "internal"` is the choice for an
+isolated molecule where a soft torsion near a barrier matters. The
+measurements behind the choice are in section @sec:geometry-search-measurements.
 
 ### What is proven and what is not {#geometry-search-proven}
 
-Beyond the boxes above (B1 to B3, L1 to L4) and below (P1, P2, F1, F2, I1),
-`scripts/geometry_search_steps_sympy.py` checks the trust rule and the
-internal step:
+The boxes above (B1 to B3, T1 to T3, L1 to L4, C1, C2) and below (P1, P2,
+F1, F2, I1) cover the step rules. The trust-rule and internal-step claims of
+`scripts/geometry_search_steps_sympy.py` in one table:
 
 | Claim | What it checks |
 |---|---|
@@ -592,8 +528,8 @@ The script's mutations each turn it red: the ratio-rule thresholds inverted
 (shrink above $\tfrac34$) fails T2; a shrink only on $r < \tfrac14$, without
 the rejection guard, fails T3; a per-block internal clip in place of the one
 factor fails C1. The claims are about the step rules. That a search reaches
-the same basin as another optimizer is the measurement of the tables above,
-not a proof.
+the same basin as another optimizer is the measurement of section
+@sec:geometry-search-measurements, not a proof.
 
 ## Saddle points: P-RFO {#geometry-search-saddle-points-p-rfo}
 
@@ -734,7 +670,7 @@ where Murtagh–Sargent divides by zero and Powell does not
 > Each of the two corrections satisfies the secant condition
 > $\Delta B\,\Delta x = e$ in symbols, so every mixture $\varphi$ does. The code's
 > update satisfies $B'\Delta x = \Delta g$, is symmetric, and keeps a negative
-> eigenvalue of an indefinite $B$ that the BFGS update of 14.20 would drive out.
+> eigenvalue of an indefinite $B$ that the BFGS update (@eq:geom-bfgs) would drive out.
 >
 > | | |
 > |---|---|
@@ -792,7 +728,10 @@ down that gradient, and $\Delta x_i = \Delta q_i/\sqrt{m_i}$ converts it back:
 $$ \Delta q = -\ell\,\frac{g_q}{\lVert g_q\rVert}, \qquad \ell = \min(\ell_0,\,2\lVert g_q\rVert), \qquad
 \Delta x_i = -\,\ell\,\frac{g_i}{m_i\,\lVert g_q\rVert}, \label{eq:geom-irc-step} $$
 
-with $\ell_0 = 0.1$ $\sqrt{\mathrm u}$ Bohr. The walk starts from
+with $\ell_0 = 0.1$ $\sqrt{\mathrm u}$ Bohr. $\ell$ is a length and
+$\lVert g_q\rVert$ a gradient in Ha/(Bohr $\sqrt{\mathrm u}$), so the factor 2
+carries units of u Bohr²/Ha, an inverse curvature in the units of
+$\ell$. The walk starts from
 $q_{\mathrm{saddle}} \pm 0.2\,\hat q$, where $\hat q$ is the mass-weighted,
 normalized mode, and stops when $\max\lvert g\rvert < 10^{-4}$ Ha/Bohr or
 after 200 steps per branch. The Cartesian step divides by $m_i$, not
@@ -838,16 +777,16 @@ by dividing by $\sqrt{m_i}$, which completes the two-stage form of (@eq:geom-irc
 
 **The damping.** A fixed-length step cannot settle into a basin: near a
 minimum it overshoots and orbits. The source records NH3 inversion at the
-default threshold: steps of 0.15 and 0.05 both ran to the step budget (400
-and 800 steps) while 0.02 converged, in 63. Capping the step at
+threshold $10^{-4}$ Ha/Bohr, before the damping: undamped steps of 0.15 and
+0.05 both ran to the step budget (400 and 800 steps) while 0.02 converged,
+in 63 (`ferric-scf/src/irc.rs::walk`). Capping the step at
 $2\lVert g_q\rVert$ shrinks it with the gradient. Far from the minimum
 $\ell_0$ governs and the path is unchanged. The cap only binds at the end,
 where the path shape no longer matters because the endpoint is what is
 being identified.
 
-**What it does not do.** There is no higher-order integrator
-(Gonzalez–Schlegel, local quadratic approximation), so the path length and
-the energy profile are not quantitative. There is no automatic check that
+**What it does not do.** The path length and the energy profile are not
+quantitative (see the known limits below). There is no automatic check that
 an endpoint is a minimum. Each `IrcBranch::converged` says only whether the
 gradient threshold was met, and a `false` branch identifies no basin.
 `IrcResult::both_converged` is the condition for reading the endpoints as a
@@ -857,26 +796,26 @@ reports the first point as converged), so they are refused at the boundary.
 
 All three searches on small systems at RHF/STO-3G, from the `589b50832`
 build: a distorted water minimized with the default (`lindh` + `ratio`) and
-the old (`simple` + `fixed`) settings, then the NH3 inversion saddle from a
+with `simple` + `fixed`, then the NH3 inversion saddle from a
 near-planar start and the IRC from it. `run_optimize` prints a step table
 for each search; the output keeps the first table and drops the second and
 the warm-start summaries. Both minimizations reach the same energy to
 $10^{-9}$ Ha, in 3 and 6 steps; the saddle has one imaginary mode, and both
-IRC branches converge in 63 steps, with barriers that agree to
+IRC branches converge in 63 steps at the default damped step of 0.1, the
+same count as the undamped 0.02 step above, with barriers that agree to
 $10^{-9}$ Ha.
 
 ```python
-# A distorted water minimized with the default (lindh + ratio) and the old (simple + fixed)
-# search; then the NH3 inversion saddle (planar start) and its IRC, RHF/STO-3G.
+# A distorted water minimized with the default (lindh + ratio) and with simple + fixed; then the NH3 inversion saddle (planar start) and its IRC, RHF/STO-3G.
 import ferric
 
 water = ferric.Molecule.from_arrays(
     ["O", "H", "H"], [(0.0, 0.0, 0.12), (0.0, 0.85, -0.45), (0.0, -0.70, -0.50)]
 )
-new = ferric.run_optimize(water, "sto-3g")
-old = ferric.run_optimize(water, "sto-3g", initial_hessian="simple", trust_update="fixed")
-print("lindh+ratio steps:", new.steps, new.converged, f"{new.energy:.10f}")
-print("simple+fixed steps:", old.steps, old.converged, f"{old.energy:.10f}")
+lindh = ferric.run_optimize(water, "sto-3g")
+simple = ferric.run_optimize(water, "sto-3g", initial_hessian="simple", trust_update="fixed")
+print("lindh+ratio steps:", lindh.steps, lindh.converged, f"{lindh.energy:.10f}")
+print("simple+fixed steps:", simple.steps, simple.converged, f"{simple.energy:.10f}")
 
 nh3 = ferric.Molecule.from_arrays(
     ["N", "H", "H", "H"],
@@ -886,7 +825,7 @@ ts = ferric.run_saddle(nh3, "sto-3g", hessian="analytic")
 print("saddle:", ts.converged, " n_imaginary:", ts.n_imaginary,
       " transition state:", ts.is_transition_state(), f" E = {ts.energy:.10f}")
 
-# SaddleResult.coords is assumed to be in Angstrom (from_arrays default); check before use.
+# SaddleResult.coords is in Angstrom, the from_arrays default.
 ts_mol = ferric.Molecule.from_arrays(ts.symbols, ts.coords)
 irc = ferric.run_irc(ts_mol, "sto-3g", ts.imaginary_mode)
 print("IRC both converged:", irc.both_converged(),
@@ -908,6 +847,134 @@ saddle: True  n_imaginary: 1  transition state: True  E = -55.4376652481
 IRC both converged: True  forward/reverse steps: 63 63
 barriers (Ha): 0.01775452065485439 0.01775452159194657
 ```
+
+## Measured search behaviour {#geometry-search-measurements}
+
+This section records measurements, not derivations; none of them is pinned
+by a test.
+
+### Step counts
+
+Steps to convergence at HF/STO-3G from RDKit/MMFF starting geometries, with
+the default thresholds (`g_max` 4.5e-4, `g_rms` 3e-4, `e_conv` 1e-6),
+measured 2026-11-16. "simple" is `simple` + `fixed`, "lindh" is `lindh` +
+`ratio`. geomeTRIC 1.1 in TRIC coordinates, run on ferric gradients through
+`ferric.ase`, is an outside reference:
+
+| molecule (atoms) | Cartesian simple | Cartesian lindh | internal simple | internal lindh | geomeTRIC |
+|---|---|---|---|---|---|
+| water (3) | 5 | 3 | 5 | 3 | 4 |
+| ethanol (9) | 28 | 4 | 16 | 12 | 5 |
+| butane (14) | 19 | 5 | 16 | 12 | 8 |
+| paracetamol (20) | 60 | 33 | 30 | 23 | 29 |
+| alanine dipeptide (22) | 118 | 39 | 40 | 27 | 22 |
+| aspirin (21) | 58 | 16 | 32 | 17 | 21 |
+| ibuprofen (33) | 80 | 19 | 67 | 21 | 16 |
+| sulfamethoxazole (28) | 170 | 92 | 46 | 24 | 25 |
+| total | 538 | 211 | 252 | 139 | 130 |
+| pregabalin (28) | | 21 | | 30 | 17 |
+| procaine (37) | | 13 | | 17 | 18 |
+| lidocaine (39) | | 78 | | 34 | 42 |
+| metoprolol (44) | | 43 | | 31 | 30 |
+| total, 12 molecules | | 366 | | 251 | 237 |
+| rejected steps, 12 molecules | | 18 | | 24 | |
+
+Which change does the work? `lindh` alone (Cartesian, `fixed`) gives 4, 5,
+49, 30 and 26 steps on ethanol, butane, alanine dipeptide, aspirin and
+ibuprofen. `ratio` alone reproduces the `simple` + `fixed` trajectories exactly, since with
+the identity seed no step reaches the trust boundary. So the seed gives most
+of the gain on these molecules.
+
+The searches also differ in where they stop. The `simple` Cartesian search stops
+0.01 to 0.10 mHa above the minimum the others reach (0.03 to 0.21 Å RMSD):
+with the identity seed a soft mode meets the gradient thresholds before it
+is relaxed. The `lindh` searches end within 4e-3 mHa of each other, except
+Cartesian `lindh` on sulfamethoxazole. Its long early steps turn the sulfonamide
+C–C–N–S torsion from 13° to −64° (internals and geomeTRIC stop at +59°), and
+it ends in a rotamer 3.3 mHa lower. Both end points are minima: re-optimizing
+either one with the other search moves the energy by less than 0.02 mHa.
+
+The same molecule at PBE/def2-SVP (RI-J/RI-K, f64), from the same start,
+shows how far apart two converged searches can end. Cartesian `simple` does not
+converge in 150 steps. Cartesian `lindh` converges in 47 steps, internal `lindh` in
+36 (1 rejected), internal `simple` in 35. The `lindh` searches end within 1e-3 mHa of
+each other. With the per-block clip in place of the one-factor clip
+(section @sec:geometry-search-internal-ratio-step) the internal search takes 37 steps and ends 0.04 mHa above
+the Cartesian one. From those
+two end points a further 150 internal steps at `g_max` 1.5e-5 (none reaches
+that threshold) move them by less than 0.05 mHa, and they stay 0.02 mHa
+apart. The analytic Hessian at the internal end point has one mode at
+22.7i cm⁻¹ (NH2 and methyl hydrogens). Re-optimizing from ±0.15 Å along it
+lowers the energy by at most 0.05 mHa, so it is a soft region of the same
+basin at the loose default thresholds, not a saddle above a lower one.
+
+The unconverged Cartesian `simple` search ends 1.39 mHa lower, and the same
+re-optimization takes it further, to 1.50 mHa below the `lindh` end points: its
+150 short steps carry it out of the starting basin into a lower one.
+geomeTRIC on the same surface takes 53 steps and ends 2.3 mHa below the `lindh`
+end points, in a third basin; its calculator and `run_optimize` agree to
+0.01 mHa at one geometry. At this level the molecule has several rotamers
+within a few mHa, and which one a local search reaches depends on its early
+steps. An end-point gap of this size between the `simple` Cartesian and the
+internal searches is a different basin, not a convergence criterion.
+
+### The coordinate default
+
+The default (section @sec:geometry-search-lindh-model-hessian) was chosen on three criteria, in order: the search stays in the starting
+basin, it does not fail, and then the step count. The four flexible
+molecules in the lower rows of the step-count table (RDKit ETKDG seed 7 +
+MMFF starts) were added for this choice, measured 2026-11-16. The basin test is the largest
+change of any heavy-atom dihedral between start and end point.
+
+Before the runs the artifact hypothesis was written down. A broken internal
+back-transformation would show as many rejected steps and
+back-transformation warnings, as dihedrals that stay near the start only
+because steps are suppressed, and as an end point that differs from
+geomeTRIC's and moves when a Cartesian search restarts from it. A real
+coordinate effect gives the same end point as geomeTRIC. The end-point
+comparison tells the two apart; the step count does not.
+
+| molecule | largest dihedral change: Cartesian / internal / geomeTRIC | rejected steps: Cartesian / internal |
+|---|---|---|
+| paracetamol | 22° / 22° (opposite signs, same energy) / – | 2 / 3 |
+| sulfamethoxazole | 77° (C–C–N–S, +13° → −64°) / 46° (→ +59°) / – | 7 / 0 |
+| pregabalin | 15.6° / 16.5° / 16.1° | 1 / 3 |
+| procaine | 4.7° / 4.7° / 4.7° | 0 / 1 |
+| lidocaine | 80° / 80° / 80° (N–C–C–N, −107° → +172°) | 5 / 2 |
+| metoprolol | 22.7° / 24.3° / 24.5° | 2 / 4 |
+
+The other molecules change no dihedral by more than 17° in either search.
+On those four molecules the internal search ends within 0.4° and 0.003 Å
+RMSD of geomeTRIC's end point and within 1.7° and 0.024 Å of the Cartesian
+one, with no back-transformation warnings and no fallback steps. Lidocaine
+turns by 80° in all three optimizers: that is a downhill relaxation from the
+MMFF start, not a barrier crossing. Only Cartesian sulfamethoxazole leaves
+the starting basin. On this set internals lead on the first criterion (the
+one sulfamethoxazole case), tie on the second (no failures; 24 rejected
+steps against 18) and lead on steps in total (251 against 366), while
+taking more steps than Cartesians on six of the twelve molecules (ethanol 12
+against 4, butane 12 against 5, pregabalin 30 against 21).
+
+The default also governs searches outside this set, and two of them go
+against internals.
+
+- Pregabalin at PBE/def2-SVP (RI-J/RI-K, f64), same start: Cartesian 34
+  steps (2 rejected), internal 21 (1 rejected). The internal search stops
+  0.44 mHa above the Cartesian end point, with the C5–C8–C9–O10 torsion at
+  +109° where the Cartesian search reaches +129°. Its last steps still lower
+  the energy by about 1e-6 Ha each, and $\Delta E$ falls below `e_conv`
+  while the gradient is under its thresholds. A Cartesian search restarted
+  from the internal end point stops after one step, so the default
+  thresholds do not tell the two end points apart.
+- Water at HF/STO-3G in a uniform field of 0.02 a.u. along $x$
+  (`external_field`): Cartesian converges in 22 steps; internal does not
+  converge in 100, 14 mHa higher, with the largest gradient component fixed
+  at 1.1e-2. A field exerts a torque. The internal step cannot rotate the
+  molecule, and the convergence test is on the Cartesian gradient, which
+  contains the torque. Fixed point or smeared charges (QM/MM MM atoms) and
+  polarizable sites break the invariance the same way (a net force and
+  torque). PCM and COSMO cavities are built from the atoms and move with
+  them, so they keep it.
 
 ## Reproducibility {#geometry-search-reproducibility}
 
@@ -931,12 +998,19 @@ barriers (Ha): 0.01775452065485439 0.01775452159194657
 |---|---|
 | `coordinates` | `cartesian` (default) or `internal`; strict parse, no silent default |
 | `initial_hessian` | `lindh` (default) or `simple`; strict parse. The coordinate-only search `ferric-scf/src/optimize.rs::optimize_coordinates` (periodic cells) has no molecule to build the model from, starts from the identity and refuses `lindh`. The QM/MM search seeds from the free-atom block of the whole-structure Lindh model (`ferric-scf/src/optimize.rs::lindh_inverse_hessian_free`, section @sec:geometry-search-lindh-model-hessian); `simple` gives the identity there too |
-| `trust_update` | `ratio` (default) or `fixed`; strict parse. `simple` with `fixed` reproduces the earlier search bit for bit (`simple_hessian_and_fixed_trust_reproduce_the_recorded_trajectories`) |
+| `trust_update` | `ratio` (default) or `fixed`; strict parse. `simple` with `fixed` reproduces the recorded identity-seeded, fixed-radius trajectories bit for bit (`simple_hessian_and_fixed_trust_reproduce_the_recorded_trajectories`) |
 | energy correction (dispersion) | added to energy and gradient at every step by a caller closure. With the default no-correction closure the path is byte-identical (`a_zero_correction_is_byte_identical_to_no_correction`) |
 | `follow_mode` | which projected mode to climb, by ascending eigenvalue; 0 follows the lowest |
 | `hessian_recalc_every` | rebuild the exact Hessian every $N$ steps instead of carrying the Bofill update |
-| open shell | `run_optimize` covers UHF and ROHF; `run_saddle` and `run_irc` are closed shell only |
+| open shell | `run_optimize` covers UHF and ROHF |
 | QM/MM | `run_optimize_qmmm` has its own boundary handling; see chapter @sec:embedding |
+
+**Known limits (2026-11-19).**
+
+- `run_saddle` and `run_irc` are closed shell only.
+- The IRC walk has no higher-order integrator (Gonzalez–Schlegel, local
+  quadratic approximation), so its path length and energy profile are not
+  quantitative.
 
 ## Numerical anchors {#geometry-search-numerical-anchors}
 
@@ -944,7 +1018,7 @@ barriers (Ha): 0.01775452065485439 0.01775452159194657
 |---|---|---|---|
 | Geometry optimization, RHF and RKS: H2O, NH3, CH2O from distorted starts / RHF and B3LYP 6-31G, PBE cc-pVDZ | PySCF analytic gradient driven to $10^{-6}$ Ha/Bohr by scipy BFGS | distances at most 2.6e-6 Bohr, angles at most 1.1e-4°, energies at most 9.3e-13 Ha; bars 2e-5 Bohr, 1e-3°, 1e-10 Ha | `crates/ferric-scf/tests/validation_geometry_optimization.rs` |
 | Geometry optimization, UHF, ROHF and UKS: HO2, CH3, NH2 / UHF, ROHF, UKS-PBE 6-31G | the same | the same distance, angle and energy bounds | same |
-| NH3 inversion saddle, RHF/STO-3G: FD and analytic Hessians | each other | both searches end on a transition state with one imaginary frequency; geometries within 5e-3 Bohr and energies within 1e-6 Ha (asserted). The FD route builds two Hessians of 50 gradients each, the analytic route none | `crates/ferric-scf/tests/saddle_analytic_hessian.rs` |
+| NH3 inversion saddle, RHF/STO-3G: FD and analytic Hessians | each other | both searches end on a transition state with one imaginary frequency; geometries within 5e-3 Bohr and energies within 1e-6 Ha (asserted). The FD route builds two Hessians of 25 gradients each (50 in all), the analytic route none | `crates/ferric-scf/tests/saddle_analytic_hessian.rs` |
 | IRC of NH3 inversion | the geometry itself | the two branches land on opposite sides of the plane; both endpoints are downhill from the saddle | `crates/ferric-scf/tests/irc_connects_minima.rs` |
 | P-RFO against a surface with a known saddle | closed form | the discriminating positive-curvature case and the zero-gradient trivial limit | `crates/ferric-scf/src/saddle.rs` unit tests |
 
@@ -965,7 +1039,7 @@ negative mode.
 |---|---|
 | `crates/ferric-scf/src/optimize.rs`, `saddle.rs`, `irc.rs` module documentation and loops | every formula and refusal in this section |
 | `scripts/geometry_search_steps_sympy.py` | verified equations @eq:geom-bfgs to @eq:geom-irc-step |
-| `scripts/lindh_hessian_sympy.py` | the Lindh model box |
+| `scripts/lindh_hessian_sympy.py` | verified equation @eq:geom-lindh |
 | Banerjee, Adams, Simons and Shepard, J. Phys. Chem. 89, 52 (1985); Bofill, J. Comput. Chem. 15, 1 (1994) | P-RFO and the Hessian update, as cited in `saddle.rs` |
 | Pulay and Fogarasi, J. Chem. Phys. 96, 2856 (1992); Schlegel, Theor. Chim. Acta 66, 333 (1984) | redundant internals and the initial Hessian, as cited in `ferric-core/src/internal_coords.rs` |
 | `site/src/reference/validation.md` | the optimization rows and the saddle and IRC capability rows |

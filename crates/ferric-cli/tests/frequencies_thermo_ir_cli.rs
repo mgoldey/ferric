@@ -144,11 +144,9 @@ fn thermo_and_ir_are_printed_logged_and_match_the_library() {
     }
 
     // Intensities: the library on the same SCF settings.
-    let scf = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-10,
-        ..Default::default()
-    };
+    let scf = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-10);
     let ctx = ParallelContext::default();
     let fc = FrequencyConfig::default();
     let fr = harmonic_frequencies(&ctx, &mol, "sto-3g", Operator::coulomb(), &scf, &fc).unwrap();

@@ -1,14 +1,13 @@
 //! `run_opmp3`: orbital-partitioned Padé MP3 (`ferric_mp2::opmp3_driver`).
 
 use super::*;
-use ferric_mp2::local_opmp3::{local_opmp3_on_reference, LocalOpmp3Result};
+use ferric_mp2::local_opmp3::{local_opmp3_on, LocalOpmp3Result};
 use ferric_mp2::opmp3::WChannels;
 use ferric_mp2::opmp3_driver::{
-    opmp3_on_reference, opmp3_scf, opmp3_scf_config, Opmp3Config, Opmp3Integrals, Opmp3RefKind,
-    Opmp3Result,
+    opmp3_on, opmp3_scf, opmp3_scf_config, Opmp3Config, Opmp3Integrals, Opmp3RefKind, Opmp3Result,
 };
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "Opmp3Result")]
 pub(crate) struct PyOpmp3Result {
     inner: Opmp3Result,
@@ -42,6 +41,11 @@ fn channels_dict<'py>(py: Python<'py>, w: &WChannels) -> PyResult<Bound<'py, pyo
 
 #[pymethods]
 impl PyOpmp3Result {
+    /// Validation certificate (see `RhfResult.certificate`).
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::certificate_dict(py, &self.certificate_data)
+    }
     /// The reference SCF energy as converged (the KS energy for DFT).
     #[getter]
     fn e_scf(&self) -> f64 {
@@ -79,7 +83,7 @@ impl PyOpmp3Result {
             .find(|(k, _)| *k == model)
             .map(|&(_, e)| self.inner.total(e))
             .ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err(format!(
+                crate::errors::input_err(format!(
                     "unknown OP-MP3 model {model:?}; one of mp2, mp3, p-mp3, op-mp3, sop-mp3, \
                      ssd-opmp3"
                 ))
@@ -91,7 +95,7 @@ impl PyOpmp3Result {
         match order {
             2 => channels_dict(py, &self.inner.w.w2),
             3 => channels_dict(py, &self.inner.w.w3),
-            _ => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            _ => Err(crate::errors::input_err(format!(
                 "order must be 2 or 3, got {order}"
             ))),
         }
@@ -100,11 +104,6 @@ impl PyOpmp3Result {
     #[getter]
     fn max_ov(&self) -> (f64, f64) {
         (self.inner.max_ov[0], self.inner.max_ov[1])
-    }
-    /// Validation certificate (see `RhfResult.certificate`).
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
     }
     /// `None` for the exact method; for `local="amplitude-threshold"` a dict
     /// with `scheme`, `eps`, `keep_fraction`, `integral_direct` (False),
@@ -148,7 +147,12 @@ impl PyOpmp3Result {
 /// `auxbasis=None` runs exact four-centre integrals (the paper's choice).
 /// `local="amplitude-threshold"` with `eps=` runs the local OP-MP3
 /// (`ferric_mp2::local_opmp3`; RI, closed shell) with the CLI `[local]`
-/// rules and defaults (`fock_screen`, `lambda_boys`, `virtual_space`).
+/// rules and defaults (`fock_screen`, `lambda_boys`, `virtual_space`); it
+/// refuses an ECP basis set, as `run_rimp2(local=...)` does.
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` / `run_rohf` (`run_dft` / `run_roks` for a functional reference) solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, reference="hf", x_ss=None, auxbasis=None, frozen_core=None, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, local=None, eps=None, compute_reference=None, fock_screen=None, lambda_boys=None, virtual_space=None, virtual_tau=None, virtual_tau_loose=None, virtual_solve_radius=None, virtual_boys_tau=None))]
 #[allow(clippy::too_many_arguments)]
@@ -175,8 +179,7 @@ pub(crate) fn run_opmp3(
     virtual_solve_radius: Option<f64>,
     virtual_boys_tau: Option<f64>,
 ) -> PyResult<PyOpmp3Result> {
-    let kind = Opmp3RefKind::parse_config_str(reference)
-        .map_err(pyo3::exceptions::PyValueError::new_err)?;
+    let kind = Opmp3RefKind::parse_config_str(reference).map_err(crate::errors::input_err)?;
     let model = crate::mp2::local_model_from_kwargs(
         "run_opmp3",
         ferric_cli::LocalCfg {
@@ -194,7 +197,7 @@ pub(crate) fn run_opmp3(
         },
     )?;
     if model.is_some() && (auxbasis.is_none() || mol.inner.multiplicity != 1) {
-        return Err(pyo3::exceptions::PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "run_opmp3: local=\"amplitude-threshold\" runs on RI integrals of a closed-shell \
              molecule: pass auxbasis= (and a singlet)",
         ));
@@ -209,16 +212,12 @@ pub(crate) fn run_opmp3(
         ..Opmp3Config::new(kind)
     };
     let x = config.resolved_x_ss().map_err(make_err)?;
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let aux = auxbasis
-        .map(|a| PreparedBasis::new(&mol.inner, &a.inner))
-        .transpose()
-        .map_err(make_err)?;
+    let sys = prepare(py, mol, basis_set)?;
+    let mol = sys.mol();
+    let aux = auxbasis.map(|a| prepare_aux(py, &sys, a)).transpose()?;
     let integrals = aux
         .as_ref()
         .map_or(Opmp3Integrals::Exact, Opmp3Integrals::Ri);
-    let ctx = ParallelContext::default();
-    let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).map_err(make_err)?;
     // the same builder as the CLI's [local] run (`LocalModel::amplitude_config`)
     let lcfg = model.as_ref().map(|m| {
         (
@@ -228,22 +227,11 @@ pub(crate) fn run_opmp3(
     });
     let (scf, inner, local_run) = py
         .allow_threads(|| {
-            let scf = opmp3_scf(&ctx, &mol.inner, &prep, &bounds, &config)?;
-            let canonical =
-                || opmp3_on_reference(&ctx, &mol.inner, &prep, &bounds, &scf, integrals, &config);
+            let scf = opmp3_scf(&sys, &config)?;
+            let canonical = || opmp3_on(&sys, &scf, integrals, &config);
             match (&lcfg, aux.as_ref()) {
                 (Some((lc, with_reference)), Some(aux)) => {
-                    let lr = local_opmp3_on_reference(
-                        &ctx,
-                        &mol.inner,
-                        &prep,
-                        &basis_set.inner,
-                        &bounds,
-                        &scf,
-                        aux,
-                        &config,
-                        lc,
-                    )?;
+                    let lr = local_opmp3_on(aux, &scf, &config, lc)?;
                     let reference = with_reference.then(canonical).transpose()?;
                     let r = lr.opmp3.clone();
                     Ok::<_, ferric_core::FerricError>((scf, r, Some((lr, reference))))
@@ -255,12 +243,8 @@ pub(crate) fn run_opmp3(
             }
         })
         .map_err(make_err)?;
-    let reference_cert = reference_certificate(
-        &mol.inner,
-        &scf,
-        &opmp3_scf_config(&config),
-        &basis_set.inner,
-    );
+    let reference_cert =
+        reference_certificate(mol, &scf, &opmp3_scf_config(&config), &basis_set.inner);
     let aux_name = auxbasis.map(|a| a.inner.name.as_str());
     let certificate_data = match (&local_run, aux_name) {
         (Some((lr, _)), Some(a)) => ferric_mp2::certificate::local_opmp3_certificate(

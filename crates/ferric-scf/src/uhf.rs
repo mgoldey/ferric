@@ -8,6 +8,7 @@ use crate::direct_j::DirectJ;
 use crate::direct_k::DirectK;
 use crate::fock::{JBuilder, KBuilder};
 use crate::guess::hcore_guess;
+use crate::options::KBuilderKind;
 use crate::result::{ScfExit, ScfResult, Spin};
 use crate::rhf::{validate_injected, InjectedConfigError, PeriodicInjection, RhfConfig};
 use crate::screening::SchwarzBounds;
@@ -519,6 +520,7 @@ pub fn solve_uhf_fockmod(
 /// which only [`solve_uhf_blocked`] honours. A Fock `hook` acts on the target
 /// solve only, never on the secondary-basis SCF or the Fock projection behind
 /// `guess_basis` (see `rhf::solve_rhf_routed`).
+#[allow(clippy::too_many_arguments)]
 fn solve_uhf_molecular(
     ctx: &ParallelContext,
     mol: &Molecule,
@@ -800,6 +802,9 @@ fn solve_uhf_impl(
 ) -> Result<ScfResult, FerricError> {
     crate::mom::check_reference(config, "UHF", true)?;
     crate::incore_jk::begin_scf(bounds);
+    // The response, Newton and stability builds on these bounds follow the
+    // SCF's contraction rotation (`direct_jk::gc_rotation::GcSlot`).
+    bounds.gc.set_request(config.gc_rotation);
 
     // Split the injection: (S, h, V_nn) go to the shared env builder, the J/K
     // builders are driven in the iteration loop. All `None` on the molecular
@@ -914,13 +919,13 @@ fn solve_uhf_impl(
     // exact-exchange path — exactly where the combined `DirectJK` would
     // otherwise run; J then comes from `DirectJ`.
     let pluggable_k_kind = crate::fock_assembly::resolve_k_builder(
-        config.k_builder.as_deref(),
+        config.k_builder,
         df_j.is_some(),
         jk_route.k_df_routed,
         df_k.is_some(),
         need_k,
         k_mix.omega,
-    )?;
+    );
     let pluggable_k_kind =
         crate::fock_assembly::narrow_k_builder_to_supported(pluggable_k_kind, need_k, k_mix.omega);
     // `LinkBound::SchwarzRef` applies whichever refinement the caller's
@@ -1199,7 +1204,7 @@ struct UhfInputs<'r, 'e> {
     fractional_blocks_second_order: bool,
     /// The cDFT (or other external) Fock modifier.
     fock_mod: Option<UhfFockMod<'r>>,
-    pluggable_k_kind: Option<&'r str>,
+    pluggable_k_kind: Option<KBuilderKind>,
     /// The builders that produced the energy, for the analytic gradient.
     df_jk_route: Option<crate::result::DfJkRoute>,
 }
@@ -1661,7 +1666,7 @@ impl UhfState {
         // COSX final-grid pass (opt-in, `CosxConfig::final_grid`):
         // `k_a_buf`/`k_b_buf` hold K_scf(D_σ) from this iteration's build.
         let (energy, cosx_final) = match (inp.pluggable_k_kind, config.cosx.final_grid.as_ref()) {
-            (Some(crate::options::COSX_K_BUILDER), Some(fg)) => {
+            (Some(KBuilderKind::Cosx), Some(fg)) => {
                 let rec = crate::cosx_k::run_final_pass(
                     ctx,
                     inp.mol,
@@ -2128,20 +2133,19 @@ impl UhfState {
         });
         // Optional level shift on each spin's virtual–virtual block, applied
         // after DIIS so the DIIS error / convergence criterion remains
-        // anchored to the unshifted Fock. Rational-damped by err_max so the
-        // converged Fock is the unshifted stationary point (see solve_rohf
-        // for the same formula and rationale).
+        // anchored to the unshifted Fock. Ramped by err_max
+        // (`driver::open_shell_level_shift_ramp`) so the converged Fock is the
+        // unshifted stationary point.
         if inp.effective_level_shift > 0.0 && iter > 1 {
-            const SHIFT_DAMP_ERR: f64 = 1e-3;
             let err_max = self
                 .err_a
                 .iter()
                 .chain(self.err_b.iter())
                 .map(|v| v.abs())
                 .fold(0.0_f64, f64::max);
-            let damp = err_max / (err_max + SHIFT_DAMP_ERR);
-            let shift_eff = inp.effective_level_shift * damp;
-            if shift_eff > 1e-10 {
+            let shift_eff =
+                crate::driver::open_shell_level_shift_ramp(inp.effective_level_shift, err_max);
+            if shift_eff > 0.0 {
                 let (shift_a, shift_b) =
                     virtual_level_shift_terms(&self.c_a, &self.c_b, nocc_a, nocc_b, s, shift_eff);
                 f_a_new += &shift_a;
@@ -3235,8 +3239,11 @@ fn uhf_guess_mos(
         return Ok(None);
     };
 
-    // Split the spin-summed guess density evenly and build F_α = F_β at it.
+    // Split the spin-summed guess density evenly and build F_α = F_β at it,
+    // with unrotated builds (`SchwarzBounds::unrotated`): the guess does not
+    // follow the SCF's contraction rotation.
     let d_spin = &d_total * 0.5;
+    let bounds = &bounds.unrotated();
     let mut j = Array2::<f64>::zeros((n, n));
     let mut k = Array2::<f64>::zeros((n, n));
     if let Err(e) = crate::rhf::build_jk(

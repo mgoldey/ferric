@@ -19,10 +19,11 @@
 //!   exchange is always fitted), `ScfResult::df_jk` records the builders and
 //!   the 2e term differentiates the FITTED energy instead
 //!   (`crate::df_gradient::routed_two_electron_gradient`).
-//! - `∇E_xc` is the semilocal XC AO-basis-derivative contribution. Grid-weight
-//!   derivatives ("grid response") are NOT included — this introduces an
-//!   error of ~1e-5 Ha/Bohr at (75, 110) grids, suitable for geometry
-//!   optimization but not high-accuracy gradient calculations.
+//! - `∇E_xc` is the XC derivative on the moving grid: the AO term plus the
+//!   grid response (points ride their home atom, Becke weights move), PySCF's
+//!   `grid_response=True` convention. The VV10 nonlocal term adds the pair
+//!   distance term of its double sum, so the gradient is the derivative of the
+//!   energy the SCF computes.
 //!
 //! Supports LDA, GGA, plain hybrid-GGA (B3LYP), range-separated hybrid-GGA
 //! (wB97X-family), and meta-GGA (SCAN / r2SCAN) — semilocal piece + scaled
@@ -575,6 +576,9 @@ pub fn twoelectron_k_gradient(
     d: &Array2<f64>,
     c_k: f64,
 ) -> Result<Array2<f64>, FerricError> {
+    if let Some(r) = crate::gradient::gradient_rotation(prep, op, bounds)? {
+        return twoelectron_k_gradient(&r.basis.prep, op, &r.bounds, &r.forward(d), c_k);
+    }
     let max_d = d.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
     crate::gradient::par_twoelectron_gradient(prep, op, bounds, max_d, |mu, nu, la, sg| {
         -0.25 * c_k * d[(mu, la)] * d[(nu, sg)]
@@ -591,6 +595,9 @@ pub fn twoelectron_gradient_scaled_k(
     d: &Array2<f64>,
     c_k: f64,
 ) -> Result<Array2<f64>, FerricError> {
+    if let Some(r) = crate::gradient::gradient_rotation(prep, op, bounds)? {
+        return twoelectron_gradient_scaled_k(&r.basis.prep, op, &r.bounds, &r.forward(d), c_k);
+    }
     let max_d = d.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
     crate::gradient::par_twoelectron_gradient(prep, op, bounds, max_d, |mu, nu, la, sg| {
         0.5 * d[(mu, nu)] * d[(la, sg)] - 0.25 * c_k * d[(mu, la)] * d[(nu, sg)]
@@ -610,6 +617,17 @@ pub fn twoelectron_gradient_uhf_scaled_k(
     d_beta: &Array2<f64>,
     c_k: f64,
 ) -> Result<Array2<f64>, FerricError> {
+    if let Some(r) = crate::gradient::gradient_rotation(prep, op, bounds)? {
+        return twoelectron_gradient_uhf_scaled_k(
+            &r.basis.prep,
+            op,
+            &r.bounds,
+            &r.forward(d_total),
+            &r.forward(d_alpha),
+            &r.forward(d_beta),
+            c_k,
+        );
+    }
     let max_d = d_total.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
     crate::gradient::par_twoelectron_gradient(prep, op, bounds, max_d, |mu, nu, la, sg| {
         0.5 * d_total[(mu, nu)] * d_total[(la, sg)]
@@ -630,6 +648,16 @@ pub fn twoelectron_k_gradient_uhf(
     d_beta: &Array2<f64>,
     c_k: f64,
 ) -> Result<Array2<f64>, FerricError> {
+    if let Some(r) = crate::gradient::gradient_rotation(prep, op, bounds)? {
+        return twoelectron_k_gradient_uhf(
+            &r.basis.prep,
+            op,
+            &r.bounds,
+            &r.forward(d_alpha),
+            &r.forward(d_beta),
+            c_k,
+        );
+    }
     let d_total: Array2<f64> = d_alpha + d_beta;
     let max_d = d_total.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
     crate::gradient::par_twoelectron_gradient(prep, op, bounds, max_d, |mu, nu, la, sg| {

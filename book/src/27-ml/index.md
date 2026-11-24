@@ -14,15 +14,15 @@ describe models. The derivations behind the polarizabilities and charges are
 in chapter @sec:polarizabilities, and those behind $C_6$ in chapter @sec:dispersion. Here the subject is the
 arrays a consumer receives.
 
-| § | Read it when you need |
+| Section | Read it when you need |
 |---|---|
-| 27.1 | the NPZ feature bundle: every key, its definition, shape, units and frame behaviour |
-| 27.2 | the electrostatic features: ESP, field, multipoles and the five charge schemes |
-| 27.3 | polarizabilities (molecular, per-atom, charge transfer), PDEP modes and $C_6$ |
-| 27.4 | the Python surface, cube files and the certificate as a provenance label |
-| 27.5 | bit-reproducibility rules and which quantity carries which validation grade |
-| 27.6 | energies, gradients, Hessians and response properties as training labels |
-| 27.7 | one worked consumer, the esp-conditioning dataset builder |
+| @sec:npz-bundle | the NPZ feature bundle: every key, its definition, shape, units and frame behaviour |
+| @sec:electrostatics-and-charges | the electrostatic features: ESP, field, multipoles and the five charge schemes |
+| @sec:polarizability-pdep-c6 | polarizabilities (molecular, per-atom, charge transfer), PDEP modes and $C_6$ |
+| @sec:python-cube-provenance | the Python surface, cube files and the certificate as a provenance label |
+| @sec:reproducibility-and-grades | bit-reproducibility rules and which quantity carries which validation grade |
+| @sec:training-labels | energies, gradients, Hessians and response properties as training labels |
+| @sec:esp-conditioning | one worked consumer, the esp-conditioning dataset builder |
 
 Units are atomic units throughout: Bohr, Hartree, $e$, and $e\,a_0$ for
 dipoles. The user guide pages `site/src/using/export.md`,

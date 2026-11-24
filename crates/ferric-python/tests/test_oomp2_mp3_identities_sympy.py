@@ -4,8 +4,9 @@ The script proves, with sympy.physics.secondquant plus exact numeric oracles,
 the MP3 ring/ladder prefactors of ``ferric-mp2/src/mp3.rs`` and the full OO-MP2
 orbital gradient of ``ferric-mp2/src/oo_rimp2.rs``. The unmutated run must exit
 0. Each mutation (ring coefficient 1 -> 1/4, flipped kappa generator, dropped
-two-particle correlation density) must exit nonzero: a gate that has never been
-seen to fail is an assumption.
+two-particle correlation density, the 1/2 of E_HF set to 1, exchange weighted 2
+in the spatial Fock matrix, a flipped Delta in the canonical Hylleraas form)
+must exit nonzero: a gate that has never been seen to fail is an assumption.
 """
 
 import os
@@ -45,6 +46,9 @@ def test_identities_hold():
         ("ring_quarter", "A2 ring: the mp3.rs coefficient equals the derived one"),
         ("kappa_sign", "B2 generalized Fock"),
         ("drop_two_particle", "B2 generalized Fock"),
+        ("ehf_half", "B1 E_HF (wicks)"),
+        ("fock_k_double", "B0 model: spin-orbital Fock"),
+        ("delta_sign", "B1 canonical form"),
     ],
 )
 def test_each_mutation_turns_the_script_red(mutation, failing):

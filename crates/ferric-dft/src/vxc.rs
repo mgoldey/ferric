@@ -31,7 +31,7 @@ use rayon::prelude::*;
 /// the SCF builds.
 ///
 /// * LDA / GGA / hybrid / range-separated GGA: [`DensityFloor::SEMILOCAL`] =
-///   1e-14. libxc 5.2's own per-functional `dens_threshold` (below which it
+///   1e-14. libxc's own per-functional `dens_threshold` (5.2.3 and 7.0.0 alike) (below which it
 ///   returns zero) is 1e-15 for LDA_X, VWN, PW, B88, PBE_X, P86, PW91 and the
 ///   B3LYP/PBE0/LRC-ωPBE handles, 1e-14 for LYP, CAM-B3LYP and ωB97X(-V),
 ///   1e-12 for PBE_C. The floor sits at LYP's threshold, so it drops at most

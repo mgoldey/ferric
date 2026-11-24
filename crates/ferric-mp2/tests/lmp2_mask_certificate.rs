@@ -54,16 +54,15 @@ fn setup(xyz: &str, frozen_core: usize) -> Setup {
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let mut rhf_config = RhfConfig::default();
+    rhf_config.energy_conv = 1e-10;
     let rhf = solve_rhf(
         &ferric_core::parallel::ParallelContext::default(),
         &mol,
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        },
+        &rhf_config,
     )
     .unwrap();
     let vvhv = build_vvhv(&mol, &obs, &obs_bs, &rhf).unwrap();

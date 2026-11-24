@@ -37,7 +37,14 @@ Claims (each prints "ok [label]" or "FAIL [label]"):
                  below the exact integral and below the naive error; at
                  small w_m the robust error tends to that of standard RI.
   7 [psd-diag]   Robust diagonal errors (x|C|x) - G_xx are >= 0 (C positive
-                 definite): the robust fit never overbinds a self-interaction.
+                 definite): the robust fit never overestimates a diagonal
+                 integral.
+  8 [naive-complete] For densities IN the auxiliary span (rho = chi_P), the
+                 robust form is exact for any w, while the naive
+                 J^T V_w^-1 J = V_C V_w^-1 V_C differs from V_C: its error
+                 does not vanish with the fitting residual. It is first
+                 order in V_w - V_C (halving w_m near 0 halves the error).
+                 This is what RiMp2Config::metric_op computes in ri_mp2.
 
 Mutations (each turns the script red; the runner applies them as exact
 one-occurrence substitutions):
@@ -45,6 +52,7 @@ one-occurrence substitutions):
   - use V_w instead of V_C in the c^T V c term        ("FAIL [model]")
   - c^T J + J^T c -> 2 c^T J (G not symmetric)         ("FAIL [model]")
   - Cholesky factor applied twice, V^-1 -> M M         ("FAIL [collapse]")
+  - naive form with V_C in place of V_w                ("FAIL [naive-complete]")
 The fit coefficients themselves cannot be mutated into a failure of claims 1
 and 5: the residual identity holds for any c. What the choice of c changes is
 the size of the error (claims 4, 6).
@@ -261,6 +269,29 @@ for wm in (0.5, 1.5, 6.0):
     G = robust_g(coef, VC, J)
     ok &= bool(np.all(np.diag(exact - G) >= -1e-13 * np.max(np.abs(exact))))
 check("psd-diag", ok)
+
+
+# 8. naive form on densities in the auxiliary span ----------------------------
+def span_errors(wm):
+    """Relative errors of naive and robust for rho = chi_P (complete basis)."""
+    Vw = mat(aux_f, aux_f, "erfc", wm)
+    naive_metric = Vw
+    naive = VC @ solve(naive_metric, VC)  # J = V_C when rho is an aux function
+    coef = solve(Vw, Vw)  # A = V_w, so c = 1
+    G = robust_g(coef, VC, VC)
+    scale = np.max(np.abs(VC))
+    return np.max(np.abs(VC - naive)) / scale, np.max(np.abs(VC - G)) / scale
+
+
+en_15, er_15 = span_errors(1.5)
+en_a, _ = span_errors(0.004)
+en_b, _ = span_errors(0.002)
+check(
+    "naive-complete",
+    er_15 < 1e-8 and en_15 > 1e-2 and abs(en_a / en_b - 2.0) < 0.05,
+    f"w_m = 1.5: naive {en_15:.2e}, robust {er_15:.1e}; "
+    f"naive(0.004)/naive(0.002) = {en_a / en_b:.3f}",
+)
 
 if failures:
     print(f"{len(failures)} claim(s) failed: {', '.join(failures)}")

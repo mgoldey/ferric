@@ -13,7 +13,7 @@ use super::*;
 /// Units: constructor takes AMBER-convention units (kcal/mol, Angstrom,
 /// degrees), matching most published force fields; internally converted
 /// once to Hartree/Bohr/radians.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "MmTopology")]
 #[derive(Clone)]
 pub(crate) struct PyMmTopology {
@@ -39,7 +39,7 @@ impl PyMmTopology {
         torsions: Vec<(usize, usize, usize, usize, u32, f64, f64)>,
     ) -> PyResult<Self> {
         if sigmas_angstrom.len() != charges.len() || epsilons_kcal.len() != charges.len() {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "MmTopology.from_amber_units: charges ({}), sigmas_angstrom ({}) and \
                  epsilons_kcal ({}) must have the same length",
                 charges.len(),
@@ -85,7 +85,7 @@ impl PyMmTopology {
 /// `point_charges=` kwarg are in **Bohr**. `qm_molecule()` /
 /// `point_charges()` feed the existing `run_rhf` / `run_uhf` / `run_optimize`
 /// unchanged, or use `run_qmmm` for energy + gradients in one call.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "QmmmSystem")]
 #[derive(Clone)]
 pub(crate) struct PyQmmmSystem {
@@ -107,8 +107,9 @@ impl PyQmmmSystem {
     /// `residue_ids` (one entry per atom, `PocketCharges.residue_ids` shape)
     /// alongside `qm_seeds`/`qm_radius_angstrom` to pull in whole residues
     /// instead — a residue joins if ANY of its atoms is within radius.
-    /// `residue_ids` together with `qm_indices` is an error (an explicit
-    /// index list has no notion of "whole residue" to complete).
+    /// With `qm_indices`, `residue_ids` only labels molecules (nothing to
+    /// complete); `run_qmmm`'s polarizable embedding reads the labels to
+    /// keep each site from being polarized by its own molecule.
     /// `widths_angstrom`, when given, must have one entry per atom (0.0 =
     /// point charge, matching [`ferric_scf::qmmm::QmmmAtom`]'s default).
     /// Ignored for atoms that end up in the QM region, exactly like `charges`.
@@ -134,7 +135,7 @@ impl PyQmmmSystem {
     ) -> PyResult<Self> {
         use ferric_scf::qmmm::{QmSelection, QmmmAtom, QmmmSystem};
         if symbols.len() != coords_angstrom.len() || symbols.len() != charges.len() {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "symbols ({}), coords_angstrom ({}) and charges ({}) must have the same length",
                 symbols.len(),
                 coords_angstrom.len(),
@@ -143,7 +144,7 @@ impl PyQmmmSystem {
         }
         if let Some(w) = &widths_angstrom {
             if w.len() != symbols.len() {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                return Err(crate::errors::input_err(format!(
                     "widths_angstrom ({}) must have one entry per atom ({})",
                     w.len(),
                     symbols.len()
@@ -152,7 +153,7 @@ impl PyQmmmSystem {
         }
         if let Some(a) = &polarizabilities_angstrom3 {
             if a.len() != symbols.len() {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                return Err(crate::errors::input_err(format!(
                     "polarizabilities_angstrom3 ({}) must have one entry per atom ({})",
                     a.len(),
                     symbols.len()
@@ -164,7 +165,7 @@ impl PyQmmmSystem {
             .enumerate()
             .find(|(_, c)| c.len() != 3)
         {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "coords_angstrom[{i}] has {} components, expected 3",
                 bad.len()
             )));
@@ -196,8 +197,12 @@ impl PyQmmmSystem {
                 .with_alpha(alpha_bohr3)
             })
             .collect();
+        let mut labels = None;
         let selection = match (qm_indices, qm_seeds, qm_radius_angstrom, residue_ids) {
-            (Some(idx), None, None, None) => QmSelection::Indices(idx),
+            (Some(idx), None, None, rid) => {
+                labels = rid;
+                QmSelection::Indices(idx)
+            }
             (None, Some(seeds), Some(r), None) => QmSelection::WithinRadius {
                 seeds,
                 radius: r * ANGSTROM_TO_BOHR,
@@ -210,13 +215,17 @@ impl PyQmmmSystem {
                 }
             }
             _ => {
-                return Err(pyo3::exceptions::PyValueError::new_err(
+                return Err(crate::errors::input_err(
                     "select the QM region with EITHER qm_indices OR qm_seeds + \
                      qm_radius_angstrom (+ optional residue_ids)",
                 ))
             }
         };
-        let inner = QmmmSystem::new(&atoms, selection, charge, multiplicity).map_err(make_err)?;
+        let mut inner =
+            QmmmSystem::new(&atoms, selection, charge, multiplicity).map_err(make_err)?;
+        if let Some(ids) = labels {
+            inner = inner.with_residue_ids(ids).map_err(make_err)?;
+        }
         if let Some(&bad) = inner.qm_indices.iter().find(|&&i| atoms[i].z == 0) {
             // Say WHY it is there and what to do. A bare-charge site (symbol
             // "X", z = 0) is how a pocket point charge enters the structure --
@@ -226,7 +235,7 @@ impl PyQmmmSystem {
             // picked a bad atom" from "your radius is too large", which the
             // bare index did not.
             let n_bare = atoms.iter().filter(|a| a.z == 0).count();
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "QM atom {bad} has symbol {:?}, which is not an element, so it \
                  cannot be in the QM region -- a bare-charge site (z = 0) has no \
                  basis functions. This structure has {n_bare} such site(s), which \
@@ -262,7 +271,7 @@ impl PyQmmmSystem {
     /// find the M2 shell. Returns a new system.
     fn with_boundary_charges(&self, bonds: Vec<(usize, usize)>, scheme: &str) -> PyResult<Self> {
         let scheme = ferric_scf::qmmm::BoundaryChargeScheme::parse_config_str(scheme)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+            .map_err(crate::errors::input_err)?;
         Ok(Self {
             inner: self
                 .inner
@@ -399,7 +408,7 @@ impl PyQmmmSystem {
 /// views. All gradients are `dE/dR` in Hartree/Bohr except `mm_forces()`,
 /// which is the FORCE (`−dE/dR`) on each embedding charge, because that is
 /// what an MM integrator consumes.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "QmmmResult")]
 pub(crate) struct PyQmmmResult {
     #[pyo3(get)]
@@ -434,7 +443,7 @@ impl PyQmmmResult {
     /// approximations; a run that did not converge is a warning.
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::certificate_dict(py, &self.certificate_data)
     }
     /// `dE/dR` on the QM molecule as solved: real QM atoms then link
     /// hydrogens, `(n_qm + n_link, 3)`.
@@ -521,7 +530,13 @@ impl PyQmmmResult {
 /// `polarizabilities_angstrom3=` (any nonzero entry among the MM atoms),
 /// `thole_a` sets the Thole damping parameter (`None`/omitted = the
 /// standard default `2.1304`; pass `0.0` to disable damping entirely — the
-/// bare point-dipole tensor). `QmmmResult.e_pol`/`.induced_dipoles()`
+/// bare point-dipole tensor). `polarization_exclusions` is `"molecule"`
+/// (default): a site feels neither the charges nor the induced dipoles of
+/// its own molecule, taken from the system's `residue_ids` or else from the
+/// bonds of `mm_topology`; with neither, `ValueError`. `"none"` turns
+/// exclusions off (isolated sites such as ions only: an unexcluded TIP3P
+/// oxygen is polarized by its own hydrogens, about -0.12 Ha at 1.44 A^3).
+/// `QmmmResult.e_pol`/`.induced_dipoles()`
 /// report the polarisation energy and converged dipoles. The QM gradient
 /// correctly includes the polarizable Fock-term contribution for ALL FOUR
 /// methods (`"rhf"`/`"uhf"`/`"rks"`/`"uks"`, via `rhf_gradient_with_polarizable`/
@@ -548,7 +563,7 @@ impl PyQmmmResult {
 /// follows the same convention `full_gradient` already uses for
 /// `mm_forces`, but is unverified in combination.
 #[pyfunction]
-#[pyo3(signature = (system, basis_name, method=None, xc=None, max_iter=None, energy_conv=None, density_conv=None, level_shift=None, mom_after_iter=None, guess=None, mm_topology=None, thole_a=None, ri_j_precision=None))]
+#[pyo3(signature = (system, basis_name, method=None, xc=None, max_iter=None, energy_conv=None, density_conv=None, level_shift=None, mom_after_iter=None, guess=None, mm_topology=None, thole_a=None, ri_j_precision=None, polarization_exclusions=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_qmmm(
     system: &PyQmmmSystem,
@@ -564,6 +579,7 @@ pub(crate) fn run_qmmm(
     mm_topology: Option<&PyMmTopology>,
     thole_a: Option<f64>,
     ri_j_precision: Option<&str>,
+    polarization_exclusions: Option<&str>,
 ) -> PyResult<PyQmmmResult> {
     use ferric_scf::gradient::{
         rhf_gradient, rhf_gradient_with_polarizable, uhf_gradient, uhf_gradient_with_polarizable,
@@ -572,56 +588,57 @@ pub(crate) fn run_qmmm(
         ks_gradient_closed_with_polarizable_on_grids, ks_gradient_uks_with_exchange_on_grids,
         ks_gradient_uks_with_polarizable_on_grids,
     };
-    use ferric_scf::polarizable::{induce, PolarizableSites, DEFAULT_THOLE_A};
-    use ferric_scf::qmmm::{full_gradient_with_mm, mm_forces, qmmm_mm_terms};
+    use ferric_scf::polarizable::{induce, DEFAULT_THOLE_A};
+    use ferric_scf::qmmm::{
+        full_gradient_with_mm, mm_forces, qmmm_mm_terms, PolarizationExclusions,
+    };
 
     let method = method.unwrap_or("rhf");
     let is_ks = matches!(method, "rks" | "uks");
     if xc.is_some() && !is_ks {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "run_qmmm: xc is only valid for method=\"rks\"/\"uks\", got method={method:?}"
         )));
     }
     if is_ks && xc.is_none() {
-        return Err(pyo3::exceptions::PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "run_qmmm: method=\"rks\"/\"uks\" requires xc",
         ));
     }
 
-    let sys = &system.inner;
+    let mm_sys = &system.inner;
     let bs = basis::bundled(basis_name).map_err(make_err)?;
-    let mut mol = sys.to_qm_molecule();
-    mol.apply_ecp(&bs);
-    let prep = PreparedBasis::new(&mol, &bs).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let pol_sites = sys.to_polarizable_sites();
-    let polarizable = if pol_sites.is_empty() {
+    let sys = PreparedSystem::new(mm_sys.to_qm_molecule(), &bs).map_err(make_err)?;
+    let (ctx, mol, prep, op, bounds) = (sys.ctx(), sys.mol(), sys.basis(), sys.op(), sys.bounds());
+    let polarizable = if mm_sys.to_polarizable_sites().is_empty() {
         None
     } else {
-        Some(PolarizableSites {
-            sites: pol_sites,
-            thole_a: match thole_a {
-                None => Some(DEFAULT_THOLE_A),
-                Some(a) if a > 0.0 => Some(a),
-                Some(_) => None,
-            },
-            exclusions: Vec::new(),
-            dipole_zeta: 1e4,
-            max_sites_dense: 4000,
-        })
+        let scheme =
+            PolarizationExclusions::parse_config_str(polarization_exclusions.unwrap_or("molecule"))
+                .map_err(crate::errors::input_err)?;
+        let bonds: Option<Vec<(usize, usize)>> =
+            mm_topology.map(|t| t.inner.bonds.iter().map(|b| (b.i, b.j)).collect());
+        let ids = mm_sys
+            .polarization_molecule_ids(scheme, bonds.as_deref())
+            .map_err(crate::errors::input_err)?;
+        let thole_a = match thole_a {
+            None => Some(DEFAULT_THOLE_A),
+            Some(a) if a > 0.0 => Some(a),
+            Some(_) => None,
+        };
+        mm_sys
+            .polarizable_embedding(thole_a, ids.as_deref())
+            .map_err(make_err)?
     };
-    let mut config = RhfConfig {
-        max_iter: max_iter.unwrap_or_else(default_scf_max_iter),
-        energy_conv: energy_conv.unwrap_or(1e-3),
-        density_conv: density_conv.unwrap_or(1e-6),
-        level_shift: level_shift.unwrap_or(0.0),
-        mom_after_iter: mom_after_iter.unwrap_or(0),
-        use_sad_guess: parse_guess(guess)?,
-        external_potential: sys.to_external_potential(),
-        polarizable,
-        ..Default::default()
-    };
+    let mut config = RhfConfig::default()
+        .with_max_iter(max_iter.unwrap_or_else(default_scf_max_iter))
+        .with_energy_conv(energy_conv.unwrap_or(1e-3))
+        .with_density_conv(density_conv.unwrap_or(1e-6))
+        .with_level_shift(level_shift.unwrap_or(0.0))
+        .with_mom_after_iter(mom_after_iter.unwrap_or(0))
+        .with_external_potential(mm_sys.to_external_potential());
+    config.use_sad_guess = parse_guess(guess)?;
+    config.polarizable = polarizable;
     if is_ks {
         config.xc = xc.map(|s| s.to_string());
         // RI-J always on for KS-DFT (matches run_ksdft's density_fit
@@ -631,17 +648,16 @@ pub(crate) fn run_qmmm(
         config.ri_j_precision = parse_ri_j_precision(ri_j_precision)?;
         config.df_k_aux = Some("def2-universal-jkfit".to_string());
     }
-    let ctx = ParallelContext::default();
     let ext = config.external_potential.as_ref();
     let (r, qm_grad) = match method {
         "rhf" => {
-            let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).map_err(make_err)?;
+            let r = solve_rhf(ctx, mol, prep, op, bounds, &config).map_err(make_err)?;
             let g = if config.polarizable.is_some() {
                 rhf_gradient_with_polarizable(
-                    &mol,
-                    &prep,
+                    mol,
+                    prep,
                     op,
-                    &bounds,
+                    bounds,
                     &r,
                     ext,
                     config.polarizable.as_ref(),
@@ -649,18 +665,18 @@ pub(crate) fn run_qmmm(
                 )
                 .map_err(make_err)?
             } else {
-                rhf_gradient(&mol, &prep, op, &bounds, &r, ext).map_err(make_err)?
+                rhf_gradient(mol, prep, op, bounds, &r, ext).map_err(make_err)?
             };
             (r, g)
         }
         "uhf" => {
-            let r = solve_uhf(&ctx, &mol, &prep, &bounds, &config).map_err(make_err)?;
+            let r = solve_uhf(ctx, mol, prep, bounds, &config).map_err(make_err)?;
             let g = if config.polarizable.is_some() {
                 uhf_gradient_with_polarizable(
-                    &mol,
-                    &prep,
+                    mol,
+                    prep,
                     op,
-                    &bounds,
+                    bounds,
                     &r,
                     ext,
                     config.polarizable.as_ref(),
@@ -668,19 +684,19 @@ pub(crate) fn run_qmmm(
                 )
                 .map_err(make_err)?
             } else {
-                uhf_gradient(&mol, &prep, op, &bounds, &r, ext).map_err(make_err)?
+                uhf_gradient(mol, prep, op, bounds, &r, ext).map_err(make_err)?
             };
             (r, g)
         }
         "rks" => {
-            let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).map_err(make_err)?;
+            let r = solve_rhf(ctx, mol, prep, op, bounds, &config).map_err(make_err)?;
             let g = if config.polarizable.is_some() {
                 ks_gradient_closed_with_polarizable_on_grids(
-                    &mol,
-                    &prep,
+                    mol,
+                    prep,
                     &bs,
                     op,
-                    &bounds,
+                    bounds,
                     xc.unwrap(),
                     &r,
                     ext,
@@ -691,11 +707,11 @@ pub(crate) fn run_qmmm(
                 .map_err(make_err)?
             } else {
                 ks_gradient_closed_with_exchange_on_grids(
-                    &mol,
-                    &prep,
+                    mol,
+                    prep,
                     &bs,
                     op,
-                    &bounds,
+                    bounds,
                     xc.unwrap(),
                     &r,
                     ext,
@@ -707,14 +723,14 @@ pub(crate) fn run_qmmm(
             (r, g)
         }
         "uks" => {
-            let r = solve_uhf(&ctx, &mol, &prep, &bounds, &config).map_err(make_err)?;
+            let r = solve_uhf(ctx, mol, prep, bounds, &config).map_err(make_err)?;
             let g = if config.polarizable.is_some() {
                 ks_gradient_uks_with_polarizable_on_grids(
-                    &mol,
-                    &prep,
+                    mol,
+                    prep,
                     &bs,
                     op,
-                    &bounds,
+                    bounds,
                     xc.unwrap(),
                     &r,
                     ext,
@@ -725,11 +741,11 @@ pub(crate) fn run_qmmm(
                 .map_err(make_err)?
             } else {
                 ks_gradient_uks_with_exchange_on_grids(
-                    &mol,
-                    &prep,
+                    mol,
+                    prep,
                     &bs,
                     op,
-                    &bounds,
+                    bounds,
                     xc.unwrap(),
                     &r,
                     ext,
@@ -741,7 +757,7 @@ pub(crate) fn run_qmmm(
             (r, g)
         }
         m => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "run_qmmm: method must be \"rhf\", \"uhf\", \"rks\" or \"uks\", got {m:?}"
             )))
         }
@@ -760,31 +776,31 @@ pub(crate) fn run_qmmm(
             .collect();
         let site_basis_p =
             ferric_integrals::site_basis::SiteBasis::new(&site_xyz, 1).map_err(make_err)?;
-        let ir =
-            induce(&mol, &prep, ext, pol, &site_basis_p, r.density_total()).map_err(make_err)?;
+        let ir = induce(mol, prep, ext, pol, &site_basis_p, r.density_total()).map_err(make_err)?;
         (ir.e_pol, Some(ir.dipoles))
     } else {
         (0.0, None)
     };
     let (e_pol, induced_dipoles_data) = e_pol;
 
-    let forces = mm_forces(sys, &mol, &prep, r.density_total()).map_err(make_err)?;
+    let forces = mm_forces(mm_sys, mol, prep, r.density_total()).map_err(make_err)?;
 
     let (mm_energy, mut full) = match mm_topology {
         Some(top) => {
-            let n = sys.atoms.len();
+            let n = mm_sys.atoms.len();
             let mut coords_full = Array2::<f64>::zeros((n, 3));
-            for (i, a) in sys.atoms.iter().enumerate() {
+            for (i, a) in mm_sys.atoms.iter().enumerate() {
                 coords_full[(i, 0)] = a.x;
                 coords_full[(i, 1)] = a.y;
                 coords_full[(i, 2)] = a.z_pos;
             }
-            let (e_mm, g_mm) = qmmm_mm_terms(sys, &top.inner, &coords_full).map_err(make_err)?;
-            let full = full_gradient_with_mm(sys, &qm_grad, &forces, &g_mm).map_err(make_err)?;
+            let (e_mm, g_mm) = qmmm_mm_terms(mm_sys, &top.inner, &coords_full).map_err(make_err)?;
+            let full = full_gradient_with_mm(mm_sys, &qm_grad, &forces, &g_mm).map_err(make_err)?;
             (e_mm, full)
         }
         None => {
-            let full = ferric_scf::qmmm::full_gradient(sys, &qm_grad, &forces).map_err(make_err)?;
+            let full =
+                ferric_scf::qmmm::full_gradient(mm_sys, &qm_grad, &forces).map_err(make_err)?;
             (ferric_mm::MmEnergy::default(), full)
         }
     };
@@ -804,9 +820,9 @@ pub(crate) fn run_qmmm(
             .as_ref()
             .expect("polarizable config always produces dipoles");
         let site_rows = ferric_scf::qmmm::polarizable_site_gradient(
-            sys,
-            &mol,
-            &prep,
+            mm_sys,
+            mol,
+            prep,
             r.density_total(),
             ext,
             pol,
@@ -820,7 +836,7 @@ pub(crate) fn run_qmmm(
         }
         if let Some(ext) = ext {
             let charge_rows =
-                ferric_scf::qmmm::polarizable_charge_gradient_rows(sys, ext, pol, dipoles);
+                ferric_scf::qmmm::polarizable_charge_gradient_rows(mm_sys, ext, pol, dipoles);
             for (full_idx, g) in charge_rows {
                 for k in 0..3 {
                     full[(full_idx, k)] += g[k];
@@ -831,8 +847,8 @@ pub(crate) fn run_qmmm(
 
     let certificate_data = ferric_scf::certificate::qmmm_certificate(
         method,
-        &reference_certificate(&mol, &r, &config, &bs),
-        sys,
+        &reference_certificate(mol, &r, &config, &bs),
+        mm_sys,
         mm_topology.map(|t| t.inner.n_atoms()),
         r.converged,
     );
@@ -853,7 +869,7 @@ pub(crate) fn run_qmmm(
 
 /// Result of `run_optimize_qmmm`: the relaxed partition plus its energy
 /// trajectory.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "QmmmOptimizeResult")]
 pub(crate) struct PyQmmmOptimizeResult {
     #[pyo3(get)]
@@ -878,7 +894,7 @@ impl PyQmmmOptimizeResult {
     /// approximations; a run that did not converge is a warning.
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::certificate_dict(py, &self.certificate_data)
     }
     /// The partition at the final (optimized) geometry.
     fn system(&self) -> PyQmmmSystem {
@@ -949,12 +965,12 @@ pub(crate) fn run_optimize_qmmm(
     let method_name = method.unwrap_or("rhf");
     let is_ks = matches!(method_name, "rks" | "uks");
     if xc.is_some() && !is_ks {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "run_optimize_qmmm: xc is only valid for method=\"rks\"/\"uks\", got method={method_name:?}"
         )));
     }
     if is_ks && xc.is_none() {
-        return Err(pyo3::exceptions::PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "run_optimize_qmmm: method=\"rks\"/\"uks\" requires xc",
         ));
     }
@@ -964,7 +980,7 @@ pub(crate) fn run_optimize_qmmm(
         "rks" => QmmmMethod::Rks(xc.unwrap().to_string()),
         "uks" => QmmmMethod::Uks(xc.unwrap().to_string()),
         m => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "run_optimize_qmmm: method must be \"rhf\", \"uhf\", \"rks\" or \"uks\", got {m:?}"
             )))
         }
@@ -984,12 +1000,12 @@ pub(crate) fn run_optimize_qmmm(
     if let Some(s) = initial_hessian {
         opt.initial_hessian = Some(
             ferric_scf::optimize::InitialHessian::parse_config_str(s)
-                .map_err(pyo3::exceptions::PyValueError::new_err)?,
+                .map_err(crate::errors::input_err)?,
         );
     }
     if let Some(s) = trust_update {
         opt.trust_update = ferric_scf::optimize::TrustUpdate::parse_config_str(s)
-            .map_err(pyo3::exceptions::PyValueError::new_err)?;
+            .map_err(crate::errors::input_err)?;
     }
     let cfg = QmmmOptimizeConfig {
         method: qmmm_method,
@@ -1048,7 +1064,7 @@ pub(crate) fn parse_move_mm(
         return match s.as_str() {
             "none" => Ok(MoveMm::None),
             "all" => Ok(MoveMm::All),
-            other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            other => Err(crate::errors::input_err(format!(
                 "run_optimize_qmmm: unknown move_mm string {other:?}; expected \"none\", \"all\", \
                  (\"within\", radius_angstrom), or (\"residues\", [ids])"
             ))),
@@ -1058,7 +1074,7 @@ pub(crate) fn parse_move_mm(
         match tag.as_str() {
             "within" => {
                 let r: f64 = arg.extract().map_err(|_| {
-                    pyo3::exceptions::PyValueError::new_err(
+                    crate::errors::input_err(
                         "run_optimize_qmmm: (\"within\", radius_angstrom) needs a float radius",
                     )
                 })?;
@@ -1066,21 +1082,21 @@ pub(crate) fn parse_move_mm(
             }
             "residues" => {
                 let ids: Vec<usize> = arg.extract().map_err(|_| {
-                    pyo3::exceptions::PyValueError::new_err(
+                    crate::errors::input_err(
                         "run_optimize_qmmm: (\"residues\", [ids]) needs a list of int residue ids",
                     )
                 })?;
                 return Ok(MoveMm::Residues(ids));
             }
             other => {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                return Err(crate::errors::input_err(format!(
                     "run_optimize_qmmm: unknown move_mm tag {other:?}; expected \"within\" or \"residues\""
                 )))
             }
         }
     }
     let _ = py;
-    Err(pyo3::exceptions::PyValueError::new_err(
+    Err(crate::errors::input_err(
         "run_optimize_qmmm: move_mm must be \"none\", \"all\", (\"within\", radius_angstrom), \
          or (\"residues\", [ids])",
     ))

@@ -16,7 +16,7 @@
 //!
 //! `DfK` drops metric modes below the cut of `crate::df_k::metric_lindep_cut`
 //! (nominally 1e-10; the Hessian counts dropped modes with the same rule, on
-//! its own `dsyev` spectrum, which that rule classifies solver-independently
+//! its own `dsyevd` spectrum, which that rule classifies solver-independently
 //! by construction). With none dropped,
 //! `M = V⁻¹` exactly (the product of the two `V^{-1/2}` factors), so every
 //! derivative below follows from `∂M = −M V_x M`. A metric with a dropped mode
@@ -76,7 +76,10 @@
 //! ## CPHF
 //!
 //! `G(D1) = J(D1) − ½K(D1)` is linear in `D1`; the response uses the SCF's own
-//! `DfK` (the dressed `V^{-1/2}(Q|μν)` source), `K = Σ_P B_P D1 B_P`. The
+//! `DfK` (the dressed `M (Q|μν)` source, `MᵀM = V⁻¹`), `K = Σ_P B_P D1 B_P`.
+//! A Hessian built outside a geometry task's metric capture may get a DfK on
+//! the Cholesky route while its SCF used `eigh` (or the reverse); the two
+//! differ only by rounding, about 1e-12 relative in the CPHF `K`. The
 //! response density `D1 = X C_oᵀ + C_o Xᵀ` (`X = 2 C_v U`; the occupied
 //! block `X = −C_o S_oo`) is indefinite, so the occupied path `build_from_occ`
 //! (which needs `D = C Cᵀ`) does not apply; instead

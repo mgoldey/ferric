@@ -291,7 +291,7 @@ RI-J and RI-K gradients of section @sec:df-jk-gradient), so it rewrites $B$ in t
 Put $u = \tfrac12(D_1 + D_2)$ and $v = \tfrac12(D_1 - D_2)$, expand
 $Q(u) - Q(v)$, and use self-adjointness to combine the cross terms:
 
-$$ Q(u) - Q(v) = \tfrac12\operatorname{Tr}\big[(u - v)\,G(u + v)\big] = \tfrac12\operatorname{Tr}\big[D_2\,G(D_1)\big] = B(D_1, D_2) . $$
+$$ Q(u) - Q(v) = \tfrac12\operatorname{Tr}\big[(u - v)\,G(u + v)\big] = \tfrac12\operatorname{Tr}\big[D_2\,G(D_1)\big] = B(D_1, D_2) . \label{eq:mp2-grad-fitted-polarization} $$
 
 With $D_1 = D^{\mathrm{HF}}$ and $D_2 = D^{\mathrm{HF}} + 2D^{\mathrm{corr}}_{\mathrm{rel}}$,
 $u = D^{\mathrm{HF}} + D^{\mathrm{corr}}_{\mathrm{rel}}$ and
@@ -302,7 +302,7 @@ density is negative. Split such a density by eigenvalue sign, $D = P - N$
 with $P, N \succeq 0$. Expanding $Q(P \pm N)$ gives
 $Q(P) + Q(N) \pm 2B(P, N)$; eliminate $B(P, N)$ between the two signs:
 
-$$ Q_K(P - N) = 2Q_K(P) + 2Q_K(N) - Q_K(P + N) . $$
+$$ Q_K(P - N) = 2Q_K(P) + 2Q_K(N) - Q_K(P + N) . \label{eq:mp2-grad-fitted-sign-split} $$
 
 Both identities hold for any symmetric bilinear form. The MP2 integral
 response on its own RI basis does not change. The result is the gradient of
@@ -319,6 +319,27 @@ Daleckii–Krein derivative of $M$ (the module doc of
 `ferric-scf/src/response_jk.rs::fitted_bilinear_gradient`. Since $u$ and $v$
 are full rank, it costs a few full-rank RI-K gradient channels, where the SCF
 gradient's density has occupied rank.
+
+> **Verified equation @eq:mp2-grad-fitted-polarization** · the fitted reference gradient
+>
+> $B(D_1, D_2) = Q(u) - Q(v)$ and the sign split (@eq:mp2-grad-fitted-sign-split)
+> hold on random densities. On a model whose reference J is fitted with
+> $V^{-1}$ and whose K uses an eigenvalue-cut $M$ that drops one metric mode,
+> the gradient of part G with every $J$ and $K$ fitted and the separable term
+> taken as $\partial_RQ(u) - \partial_RQ(v)$ (RI-J gradient, RI-K gradient of
+> positive semidefinite channels, Daleckii–Krein $\partial M$) equals a
+> Richardson difference of the re-solved fitted $E_{\mathrm{HF}} + E^{(2)}$,
+> with and without a frozen core.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/mp2_gradient_sympy.py`, part F |
+> | Negative control | the runner's mutations drop the $-Q_K(P + N)$ channel, and replace the Daleckii–Krein $\partial M$ by $-M\,\partial V M$; each turns F red |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-scf/src/response_jk.rs::{fitted_bilinear_gradient,signed_channels}` |
+> | Code test | `rijk_gradient_matches_fd_of_the_fitted_energy_water` in `crates/ferric-mp2/tests/rimp2_gradient_rijk.rs` |
+>
+> <!-- verified: id=mp2.grad.fitted-reference; script=scripts/mp2_gradient_sympy.py; claim=F; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/response_jk.rs::{fitted_bilinear_gradient,signed_channels}; rust_test=ferric-mp2/tests/rimp2_gradient_rijk.rs::rijk_gradient_matches_fd_of_the_fitted_energy_water; registry=ri-mp2-gradient -->
 
 **Which reference the CLI uses.** With `[scf] jk` omitted, a closed-shell
 MP2-family run takes the fitted reference on the JK set matched to the
@@ -474,7 +495,7 @@ Schwarz bounds and $J/K$ route
 (`ferric-mp2/src/gradient.rs::relaxed_gradient_from_intermediates`). For
 RI-MP2 the two are the same operator. The scaling $s$ enters as
 $c_{\mathrm{OS}} = c_{\mathrm{SS}} = s$ in (@eq:mp2-grad-scs-weights). A fitted reference
-changes only the Coulomb rows, as in @sec:rimp2-gradient-fitted-ri-jk-reference.
+changes only the Coulomb rows, as in section @sec:rimp2-gradient-fitted-ri-jk-reference.
 
 **The erfc derivative integrals.** Take $s$-type Gaussian charge
 distributions: exponent $p$ at $P$ with prefactor $K_1$, exponent $q$ at $Q$
@@ -511,7 +532,30 @@ rule and the $\omega \to 0$ limit, and checks the operator split on a
 one-dimensional s-Gaussian model against finite differences (section
 @sec:rimp2-gradient-proven).
 
-**terfc.** With `att_operator = "terfc"` the correlation kernel is
+> **Verified equation {#eq:mp2-grad-att-erfc}** · the attenuated (erfc) RI-MP2 gradient
+>
+> On a one-dimensional model with real $s$-Gaussian Coulomb and erfc
+> integrals, Coulomb in the reference terms of the operator table and erfc
+> in the correlation terms, the analytic Lagrangian equals a Richardson
+> difference of the re-solved $E_{\mathrm{HF}} + s\,E_c[\operatorname{erfc}]$
+> for $s = 1$ and 1.2, with and without a frozen core (part L). The erfc
+> closed forms and their derivatives are checked against a quadrature and
+> against differences (part E), and the $\omega \to 0$ limit is the
+> Coulomb RI-MP2 gradient (parts W and Z).
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/att_rimp2_gradient_sympy.py`, parts E, W, L and Z |
+> | Negative control | the runner's mutations (the erfc metric derivative dropped, the 3-centre derivative on Coulomb, the correlation density's veff dropped from the Z-vector right-hand side, the four-centre term on erfc) each turn L red; $\rho_\omega \to \rho$ turns E red |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-mp2/src/att_rimp2_gradient.rs::att_rimp2_gradient_analytical` |
+> | Code test | `att_gradient_matches_fd_water` in `crates/ferric-mp2/tests/att_rimp2_gradient_fd.rs` |
+>
+> <!-- verified: id=mp2.grad.att-erfc; script=scripts/att_rimp2_gradient_sympy.py; claim=L; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/att_rimp2_gradient.rs::att_rimp2_gradient_analytical; rust_test=ferric-mp2/tests/att_rimp2_gradient_fd.rs::att_gradient_matches_fd_water; registry=att-rimp2-gradient -->
+
+### terfc {#rimp2-gradient-terfc}
+
+With `att_operator = "terfc"` the correlation kernel is
 $\operatorname{terfc}(r; r_0, \omega)/r$, with $(P|\mu\nu)$ and $V$ both
 under terfc, and there is no scaling. The operator table above holds row by
 row with terfc in place of erfc. The code is the RI-MP2 gradient with the
@@ -543,7 +587,7 @@ the gap is $7.4\times10^{-3}$, so the test is not vacuous
 (`terfc_gradient_matches_erfc_in_the_r0_to_zero_limit`). The open-shell terfc
 gradient is section @sec:u-rimp2-gradient-terfc-scs-mp2-2terfc.
 
-> **Verified equation {@eq:mp2-grad-scs-weights}b** · the terfc RI-MP2 gradient
+> **Verified equation {#eq:mp2-grad-terfc}** · the terfc RI-MP2 gradient
 >
 > On a one-dimensional model with real $s$-Gaussian Coulomb and terfc
 > integrals (the terfc closed forms checked against a $k$-space quadrature of
@@ -561,13 +605,15 @@ gradient is section @sec:u-rimp2-gradient-terfc-scs-mp2-2terfc.
 >
 > <!-- verified: id=mp2.grad.terfc; script=scripts/terfc_rimp2_gradient_sympy.py; claim=L; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/att_rimp2_gradient.rs::terfc_rimp2_gradient_analytical; rust_test=ferric-mp2/tests/terfc_rimp2_gradient_fd.rs::terfc_gradient_matches_fd_water; registry=terfc-rimp2-gradient -->
 
-**SCS-MP2(2terfc).** The energy is
+### SCS-MP2(2terfc) {#rimp2-gradient-scs-2terfc}
+
+The energy is
 $E_{\mathrm{HF}} + c_{\mathrm{OS}} E_{\mathrm{OS}}[\tau_1] + c_{\mathrm{SS}}\,(E_{\mathrm{SS}}[\tau_2] - E_{\mathrm{SS}}[\tau_1])$,
 evaluated by `ferric-mp2/src/scs.rs::scs_mp2_2terfc` on a Coulomb RHF, with
 $\tau_k = \operatorname{terfc}(r; r_0^{(k)}, \omega_k)/r$,
 $\omega_k = 1/(\sqrt2\,r_0^{(k)})$ and $r_0^{(1)} < r_0^{(2)}$ (published 0.75
 and 1.05 Å, $c_{\mathrm{OS}} = 1.27$, $c_{\mathrm{SS}} = 4.05$). Each
-$E_{\mathrm{OS}}[\tau]$, $E_{\mathrm{SS}}[\tau]$ is the spin component of
+$E_{\mathrm{OS}}[\tau]$, $E_{\mathrm{SS}}[\tau]$ is the spin component of section
 @sec:rimp2-gradient-scs-mp2 with $(P|\mu\nu)$ and $V$ under $\tau$.
 Regroup the energy by operator. With
 $E_c[\tau; a, b] = a\,E_{\mathrm{OS}}[\tau] + b\,E_{\mathrm{SS}}[\tau]$,
@@ -578,7 +624,7 @@ the sum of two spin-scaled terfc RI-MP2 terms
 (`ferric-mp2/src/scs_2terfc_gradient.rs::scs_2terfc_terms`). Each term is
 the SCS gradient on its terfc operator, with
 $\tilde T = (a + b)\,t - b\,\bar t$ in $x^P_{ia}$ and in the second slot of
-$P$. Negative and zero weights are allowed; nothing in
+$P$. Negative and zero weights are allowed; nothing in section
 @sec:rimp2-gradient-scs-mp2 assumes positive ones. Each term builds its amplitudes, $x$,
 unrelaxed density and RI response on its own operator, exactly as the
 single-operator gradient does. Every first variation of $E_c$ at fixed
@@ -609,9 +655,9 @@ the two terms are $2.7\times10^{-3}$ and $2.8\times10^{-2}$ in size
 term on the wrong cutoff or a weight on the wrong spin block, since both
 read the same term list. Finite differences of the energy can.
 
-> **Verified equation {@eq:mp2-grad-scs-weights}c** · the SCS-MP2(2terfc) gradient
+> **Verified equation {#eq:mp2-grad-scs-2terfc}** · the SCS-MP2(2terfc) gradient
 >
-> On the one-dimensional model of 15.8b with two terfc cutoffs, the
+> On the one-dimensional model of (@eq:mp2-grad-terfc) with two terfc cutoffs, the
 > Lagrangian with summed $I$, $P$ and one Z-vector equals a Richardson
 > difference of the re-solved SCS-MP2(2terfc) energy, with and without a
 > frozen core.
@@ -631,7 +677,7 @@ read the same term list. Finite differences of the energy can.
 The Z-vector assumes a stationary RHF, so the gradient error follows the
 SCF density convergence. Tighten `scf_density_conv` for finite-difference work. An
 unconverged Z-vector is an error, not a gradient. The fitted reference costs
-a few full-rank RI-K gradient channels ($u$ and $v$ of @sec:rimp2-gradient-fitted-ri-jk-reference are full
+a few full-rank RI-K gradient channels ($u$ and $v$ of section @sec:rimp2-gradient-fitted-ri-jk-reference are full
 rank, where the SCF gradient's density has occupied rank). Its declared
 peak memory is checked against the budget before the reference SCF
 (@sec:rimp2-gradient-fitted-ri-jk-reference).
@@ -746,8 +792,9 @@ The proof scripts and their measured tolerances:
 | Script, part | What it checks | Measured |
 |---|---|---|
 | `scripts/mp2_gradient_sympy.py`, G | the assembled MP2 and SCS-MP2 $(6/5, 1/3)$ gradients on a model with $S$, $h$, the ERIs, $(P\vert\mu\nu)$ and $V$ all moving, against Richardson differences of the re-solved energy, with and without a frozen core; $\operatorname{Tr}[(D^{\mathrm{HF}} + D^{\mathrm{corr}}_{\mathrm{rel}})R] = dE/d\lambda$ for $h \to h + \lambda R$ | $10^{-11}$ relative; $10^{-12}$ |
+| `scripts/mp2_gradient_sympy.py`, F | the fitted (RI-JK) reference: the separable term as $Q(u) - Q(v)$, the sign split into PSD channels, and the fitted gradient (RI-J through $V^{-1}$, RI-K through the eigenvalue-cut metric with its Daleckii–Krein derivative) against Richardson differences of the re-solved fitted energy, frozen core 0 and 1 | identities $\le 1.3\times10^{-15}$; gradient $9\times10^{-11}$ |
 | `scripts/mp2_gradient_sympy.py`, S | $\partial E/\partial K = 2\tilde T$; the orbital-energy derivatives are the diagonals of $P + P^{\mathsf T}$ with $\tilde T$ in the second slot | symbolic |
-| `scripts/att_rimp2_gradient_sympy.py`, A | the $s$-type Coulomb and erf closed forms against an independent $t$-quadrature of $\operatorname{erfc}(\omega r)/r = (2/\sqrt\pi)\int_\omega^\infty e^{-t^2r^2}\,dt$, their sympy derivatives against Richardson differences, the limit and first order in $\omega$, and the assembled Lagrangian on a model with real $s$-Gaussian Coulomb and erfc integrals against the re-solved energy | |
+| `scripts/att_rimp2_gradient_sympy.py`, E, W, L, Z | the $s$-type Coulomb and erf closed forms against an independent $t$-quadrature of $\operatorname{erfc}(\omega r)/r = (2/\sqrt\pi)\int_\omega^\infty e^{-t^2r^2}\,dt$, their sympy derivatives against Richardson differences, the limit and first order in $\omega$, and the assembled Lagrangian on a model with real $s$-Gaussian Coulomb and erfc integrals against the re-solved energy | |
 | `scripts/terfc_rimp2_gradient_sympy.py`, K, H, L, R | the $s$-type terf integral and its $R$-derivative against a $k$-space quadrature of the kernel's Fourier transform (no $G_0$); $G_1 = -\partial_SG_0$ symbolically; the Hermite derivative identity; the assembled Lagrangian on a 1-D model at $\omega r_0 = 1/\sqrt2$ and 4, frozen core 0 and 1; the $r_0 \to 0$ limit | Lagrangian to $1.1\times10^{-10}$ relative |
 | `scripts/scs_2terfc_gradient_sympy.py`, S | the regrouping into two terms (check S1, the code's `scs_2terfc_terms`) and $\tilde T = (a + b)t - b\bar t$ per term (check S2) | symbolic |
 | `scripts/scs_2terfc_gradient_sympy.py`, C | on the 1-D model with terfc integrals at both cutoffs, the analytic gradient against Richardson differences of the re-solved energy, evaluated from $E_{\mathrm{OS}}$ and $E_{\mathrm{SS}}$ directly and not from the term list, frozen core 0 and 1 | $1.6\times10^{-10}$ relative |
@@ -763,7 +810,7 @@ checked only by the Rust tests above and those of section
 | Source | What it gives |
 |---|---|
 | section @sec:lagrangian-zvector-z-vector-equation-ferric | the Z-vector equation the derivation starts from |
-| `scripts/mp2_gradient_sympy.py`, parts G and S | the proofs |
+| `scripts/mp2_gradient_sympy.py`, parts F, G and S | the proofs |
 | `scripts/att_rimp2_gradient_sympy.py` | the erfc chain rule, the $\omega \to 0$ limit, the operator split |
 | `scripts/terfc_rimp2_gradient_sympy.py` | the terfc closed forms and derivatives vs $k$-space quadrature, the Hermite derivative, the operator split, the $r_0 \to 0$ limit |
 | PySCF `grad/mp2.py` | the convention the right-hand side follows |

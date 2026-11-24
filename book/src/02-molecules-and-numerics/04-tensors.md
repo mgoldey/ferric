@@ -1,6 +1,6 @@
 # Dense tensors and the einsum macro {#tensors}
 
-<!-- status: edit; registry: -->
+<!-- status: edit; registry: none -->
 
 Correlation methods are written as sums over products of tensors with up to
 four indices: amplitudes $t_{ij}^{ab}$, integrals $(ia|jb)$, fitted factors
@@ -13,6 +13,7 @@ an index string, and turns it into matrix products.
 |---|---|
 | Labeled tensor | `ferric-tensors/src/tensor.rs::Tensor`, `ferric-tensors/src/axis.rs::Axis` |
 | Contraction | `ferric-tensors/src/einsum.rs::{einsum_binary,einsum_binary_batched,einsum_dyn}`, `ferric-tensors/src/einsum_chain.rs::einsum_chain_dyn` |
+| Macro | `einsum!`, in `crates/ferric-tensor-macro/src/lib.rs` |
 | Python | `ferric.einsum` |
 
 ## Storage {#tensors-storage}
@@ -65,6 +66,7 @@ permutation can cost a full copy of the operand, so the code avoids it where
 it can. From `ferric-tensors/src/einsum.rs::to_2d_or_transpose`, with the
 row and column counts computed above it removed:
 
+<!-- excerpt: ferric-tensors/src/einsum.rs::to_2d_or_transpose -->
 ```rust
 let fwd: Vec<usize> = first.iter().chain(second.iter()).copied().collect();
 if fwd.iter().enumerate().all(|(i, &p)| i == p) && op.is_standard_layout() {
@@ -100,6 +102,38 @@ returns $C$ with axes $i,a,j,b$, and the caller permutes it to $i,j,a,b$ if it
 needs that order. A spec that interleaves the two groups, such as
 `ikac,kjcb->ijab`, is an error.
 
+### The `einsum!` macro {#tensors-einsum-macro}
+
+Method code writes a contraction as one macro call. The MP3
+particle–particle ladder is
+
+```rust
+let x: ArrayD<f64> = einsum!("ijab,abcd->ijcd", &t, &vvvv);
+```
+
+with $a, b$ contracted and $i, j, c, d$ free. Three properties come from
+`crates/ferric-tensor-macro/src/lib.rs`:
+
+- **The spec is parsed at compile time.** A malformed spec, or one that
+  breaks a class rule of the table above, fails the build. The macro emits
+  a call to `einsum_binary_batched` with the axis groups already worked out.
+- **A scalar spec returns `f64`.** `einsum!("ijab,ijab->", &t, &v)` is the
+  full contraction of two tensors, the form every energy takes.
+- **A shape mismatch panics, by design.** Inside one function every operand
+  is built from the same validated dimensions, so a mismatch can only be a
+  bug in the spec, and the macro treats it like an out-of-bounds index.
+  `einsum_dyn` returns an error instead.
+
+An optional third argument scales the result. With a batch index the
+product runs once per slice. In
+
+```rust
+let c: ArrayD<f64> = einsum!("kij,kij->ij", &a, &a, 0.5);
+```
+
+$k$ is contracted and $i, j$ are batch indices, so the result is
+$c_{ij} = \tfrac12\sum_k a_{kij}^2$, one length-$k$ dot product per $(i, j)$.
+
 ### Why the matrix product is k-blocked
 
 The product the engine calls does not hand the whole inner dimension to one
@@ -107,6 +141,7 @@ GEMM. It splits the contracted axis into blocks of `GEMM_K_BLOCK` = 128 and
 accumulates the blocks in ascending order, in
 `ferric-tensors/src/einsum.rs::gemm_kblocked`:
 
+<!-- excerpt: ferric-tensors/src/einsum.rs::gemm_kblocked -->
 ```rust
 let mut k0 = 0;
 while k0 < k {
@@ -141,17 +176,19 @@ $AB$ depends only on row $i$ of $A$, and each band runs the same ascending-k
 block loop, so in exact arithmetic the split changes nothing. OpenBLAS does
 not honor that at the bit level for every split. Its dgemm microkernel
 unrolls the row axis by 2, so a band with an odd row count finishes its last
-row on a different code path with a different accumulation order. The
-documentation of `is_valid_band_width` in the same file records a maximum
-deviation of 3.3e-2 on its probe data. So every band has an even row count.
+row on a different code path with a different accumulation order, and the
+result differs from the unbanded product by far more than rounding. So every
+band has an even row count; the test
+`row_banded_gemm_is_thread_count_independent` in the same file pins it.
 With that rule every band width gives the same bits as the unbanded product,
 and the width may depend on the worker count without changing any result.
 
 ## Known limits
 
+Checked 2026-11-19.
+
 - Single-operand sums, traces and diagonals are errors by design.
-- The AO-Laplace code is dense, and no $O(N)$ scaling is implemented or
-  measured for it (section @sec:laplace-mp2-anchors, "Known limits").
+- The crate has no sparse format.
 
 ## Sources
 

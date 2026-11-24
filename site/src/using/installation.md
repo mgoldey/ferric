@@ -154,7 +154,11 @@ platform without a wheel (only Linux x86_64 is tested; see the table above).
 - **libint2 2.13.1**: the conda-forge Linux x86-64 build, which includes
   second-derivative integrals; `scripts/install-libint.sh` downloads it (checksum
   pinned) and needs `curl`, `python3`, `zstd` and `patchelf`
-- **libxc**, **OpenBLAS**, **LAPACK**, **Eigen3** and **Boost** headers
+- **libxc 7.0.0**: built from source by `scripts/install-libxc.sh` (tarball
+  checksum pinned; about ten minutes) and needs `curl`, `cmake` and `patchelf`.
+  The distribution `libxc-dev` packages are older (5.x on Ubuntu 22.04) and
+  lack the r2SCAN hybrids
+- **OpenBLAS**, **LAPACK**, **Eigen3** and **Boost** headers
 - **Python 3.10+ and maturin**: optional, for the Python bindings
 
 ### Steps (Ubuntu 22.04+)
@@ -165,14 +169,16 @@ The apt list matches what CI installs (`.github/workflows/ci.yml`).
 # 1. System dependencies
 sudo apt-get install -y build-essential cmake g++ gfortran wget git \
     libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-    libxc-dev libboost-dev patchelf zstd \
+    libboost-dev patchelf zstd \
     python3-dev python3-pip python3-venv
 
-# 2. Get ferric and install libint2 (seconds)
+# 2. Get ferric, install libint2 (seconds) and build libxc (minutes)
 git clone https://github.com/mgoldey/ferric
 cd ferric
 scripts/install-libint.sh ~/.local/libint2-2.13.1
 export LIBINT2_PREFIX=~/.local/libint2-2.13.1
+scripts/install-libxc.sh ~/.local/libxc-7.0.0
+export LIBXC_PREFIX=~/.local/libxc-7.0.0
 
 # 3. Build ferric
 cargo build --release
@@ -184,6 +190,11 @@ OPENBLAS_NUM_THREADS=1 ./target/release/ferric examples/water-rhf.toml
 The last line should end with `converged  = true` and
 `energy     = -74.9631468000 Hartree`, as shown in the
 [first calculation](./quickstart.md).
+
+`LIBXC_PREFIX` is read by `crates/ferric-dft/build.rs`; unset, it defaults to
+the installer's `~/.local/libxc-7.0.0` when that exists and otherwise links
+whatever `libxc` the linker finds. Like the libint2 script, `install-libxc.sh`
+records the library's absolute path in every binary that links it.
 
 `LIBINT2_PREFIX` is read by `crates/ferric-integrals/build.rs`; unset, it
 defaults to the installer's `~/.local/libint2-2.13.1` when that exists, and to

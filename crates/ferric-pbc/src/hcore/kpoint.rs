@@ -478,7 +478,7 @@ fn kpoint_sr_rotation(
             rot.mutant
         )));
     }
-    RotatedBasis::detect(cell, prep, rot, "periodic_hcore_kpts")
+    crate::sr_rotation::detect(cell, prep, rot, "periodic_hcore_kpts")
 }
 
 /// Unhermitised `S(k)`, `T(k)` (one per mesh point).
@@ -821,7 +821,7 @@ impl<'a> SrKCtx<'a> {
             let data = m.as_slice_mut().ok_or_else(|| {
                 FerricError::General("periodic_hcore_kpts: V_SR(k) is not contiguous".into())
             })?;
-            rot.back_transform_complex_rows(data, 1)?;
+            crate::sr_rotation::back_transform_complex_rows(rot, data, 1)?;
             debug_assert_eq!(m.dim(), (n, n));
         }
         Ok((v, n_triplets, n_ordered))

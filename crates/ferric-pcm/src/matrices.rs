@@ -18,9 +18,8 @@
 //! with `ξ = 1.0694` the standard GEPOL point-charge self-energy constant
 //! (Cancès, Mennucci, Tomasi, J. Chem. Phys. 107, 3032 (1997)).
 //!
-//! `SdKind::GaussianSmeared` (PySCF `pcm.py::get_D_S`'s formulation, Li &
-//! Frisch/Scalmani, "Continuous Surface Charge Polarizable Continuum
-//! Models", J. Chem. Phys. 122, 194110 (2005)) instead treats each tessera as
+//! `SdKind::GaussianSmeared` (PySCF `pcm.py::get_D_S`'s formulation; the
+//! width table cites J. Chem. Phys. 122, 194110 (2005), Table II) instead treats each tessera as
 //! a Gaussian charge distribution of width `xi_k` set by the LOCAL Lebedev
 //! grid density (`xi_k = XI[ng] / (r_vdw_k * sqrt(w_k))`, `w_k` the tessera's
 //! unnormalized Lebedev weight, see [`crate::cavity::Tessera::charge_exp`]):
@@ -79,8 +78,8 @@ use crate::cavity::Tessera;
 /// [`SdKind::PointCharge`].
 const XI_SELF: f64 = 1.0694;
 
-/// Per-Lebedev-order Gaussian-charge-width prefactor `XI[ng]` (Table II, Li &
-/// Frisch/Scalmani, J. Chem. Phys. 122, 194110 (2005), as used by PySCF's
+/// Per-Lebedev-order Gaussian-charge-width prefactor `XI[ng]` (Table II,
+/// J. Chem. Phys. 122, 194110 (2005), as cited and used by PySCF's
 /// `pcm.py`; values copied from PySCF 2.13.1's `pyscf.solvent.pcm.XI`). The
 /// orders of [`crate::config::SUPPORTED_LEBEDEV_ORDERS`], the ones this
 /// crate's cavity construction accepts, are tabulated. Shared with

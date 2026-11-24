@@ -5,11 +5,8 @@ For each {molecule, functional}, runs PySCF RKS with:
   * grids.atom_grid = (75, 110), prune = None
   * grids.radii_adjust = becke_atomic_radii_adjust  — matches ferric Becke 1988
   * grad: `Gradients.grid_response = True` so the reference includes the Becke
-    partition-weight derivative + grid-coordinate response. Matches ferric's
-    P2.1 grid-response implementation in `xc_gradient_closed_lda_from_density`.
-    (Other functionals (PBE/B3LYP/wB97X-V) still use the LDA-only response in
-    ferric for now, but PySCF's grid-response output is independent of the
-    functional family and is the right reference once GGA response lands.)
+    partition-weight derivative and grid-coordinate response, on the main grid
+    and (wB97X-V) on the VV10 NLC grid, as ferric's KS gradient does.
 
 Output: JSON {label, basis, xc, grad: [[gx, gy, gz], ...]} per atom.
 """
@@ -58,10 +55,10 @@ def run_one(label, atom_spec, charge, spin, basis, xc):
     mf.kernel()
 
     g = mf.Gradients()
-    # ferric's Becke grid-response (P2.1) covers the semilocal LDA/GGA piece.
-    # VV10 nonlocal correlation is NOT yet grid-response-aware in ferric, so
-    # wB97X-V references stay at grid_response=False until that lands.
-    g.grid_response = xc != "wb97x-v"
+    # Grid response for every functional, the VV10 NLC grid included
+    # (PySCF's get_nlc_vxc_full_response): ferric differentiates both moving
+    # grids.
+    g.grid_response = True
     g_arr = g.kernel()  # shape (natoms, 3)
 
     return {

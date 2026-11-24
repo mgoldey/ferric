@@ -23,7 +23,7 @@ use ferric_core::timing::PhaseAccumulator;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_scf::{ScfResult, Spin};
+use ferric_scf::{PreparedAux, ScfResult, Spin};
 use ndarray::{Array2, Array3, Array4, ArrayView2};
 
 /// Components of the U-RI-MP2 correlation energy.
@@ -168,6 +168,22 @@ fn u_mo_side_dims(
     let no_b = crate::rimp2::active_occ(nocc_total_b, config.frozen_core)?;
     let _ = scf; // shapes depend only on the molecule/basis, not the MO values
     Ok((naux, no_a, nbas - nocc_total_a, no_b, nbas - nocc_total_b))
+}
+
+/// [`u_ri_mp2`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `scf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// `op` is the correlation operator (the system's Coulomb operator
+/// unless the caller attenuates it).
+pub fn u_ri_mp2_with_op_on(
+    aux: &PreparedAux<'_>,
+    op: Operator,
+    scf: &ScfResult,
+    config: &RiMp2Config,
+) -> Result<URiMp2Result, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(scf)?;
+    u_ri_mp2(sys.mol(), sys.basis(), aux.basis(), op, scf, config)
 }
 
 /// Compute the U-RI-MP2 correlation energy from a UHF or ROHF reference.
@@ -316,6 +332,18 @@ pub fn u_ri_mp2(
     })
 }
 
+/// [`u_ri_mp2`] on the system `aux` was prepared on; see [`PreparedAux`] for
+/// what such an entry point reads from the system.
+pub fn u_ri_mp2_on(
+    aux: &PreparedAux<'_>,
+    scf: &ScfResult,
+    config: &RiMp2Config,
+) -> Result<URiMp2Result, FerricError> {
+    aux.check_reference(scf)?;
+    let sys = aux.system();
+    u_ri_mp2(sys.mol(), sys.basis(), aux.basis(), sys.op(), scf, config)
+}
+
 impl URiMp2Components {
     /// The opposite-spin / same-spin split the SCS and attenuated drivers
     /// read: `e_os = e_ab`, `e_ss = e_aa + e_bb`. On a closed-shell reference
@@ -328,6 +356,22 @@ impl URiMp2Components {
             e_total: self.e_total,
         }
     }
+}
+
+/// [`ri_mp2_spin_components_any`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `scf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// `op` is the correlation operator (the system's Coulomb operator
+/// unless the caller attenuates it).
+pub fn ri_mp2_spin_components_any_on(
+    aux: &PreparedAux<'_>,
+    op: Operator,
+    scf: &ScfResult,
+    config: &RiMp2Config,
+) -> Result<crate::rimp2::SpinComponents, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(scf)?;
+    ri_mp2_spin_components_any(sys.mol(), sys.basis(), aux.basis(), op, scf, config)
 }
 
 /// RI-MP2 opposite-/same-spin components under `op` on ANY reference.
@@ -1704,12 +1748,10 @@ mod tests {
 
         // Open-shell run on same molecule (singlet, M=1)
         let mol_us = Molecule::parse_xyz(xyz, 0, 1).unwrap();
-        let uhf_cfg = UhfConfig {
-            max_iter: 200,
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            ..Default::default()
-        };
+        let uhf_cfg = UhfConfig::default()
+            .with_max_iter(200)
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8);
         // UHF will converge to a symmetric solution for singlet H2 if seeded
         // from neutral RHF MOs (no spin contamination).
         let c_seed = rhf.mos_r().clone();
@@ -1757,12 +1799,10 @@ mod tests {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
 
-        let uhf_cfg = UhfConfig {
-            max_iter: 200,
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            ..Default::default()
-        };
+        let uhf_cfg = UhfConfig::default()
+            .with_max_iter(200)
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8);
         let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
         println!("OH UHF: E={:.8}, iters={}", uhf.energy, uhf.iterations);
 
@@ -1798,12 +1838,10 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let uhf_cfg = UhfConfig {
-            max_iter: 200,
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            ..Default::default()
-        };
+        let uhf_cfg = UhfConfig::default()
+            .with_max_iter(200)
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8);
         let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
 
         let energy_res = u_ri_mp2(&mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
@@ -1877,12 +1915,10 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let uhf_cfg = UhfConfig {
-            max_iter: 200,
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            ..Default::default()
-        };
+        let uhf_cfg = UhfConfig::default()
+            .with_max_iter(200)
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8);
         let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
         let amps =
             compute_u_mp2_amplitudes(&mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
@@ -1950,12 +1986,10 @@ mod tests {
         let rhf = ferric_scf::rhf::solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default())
             .unwrap();
         let c_seed = rhf.mos_r().clone();
-        let uhf_cfg = UhfConfig {
-            max_iter: 200,
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            ..Default::default()
-        };
+        let uhf_cfg = UhfConfig::default()
+            .with_max_iter(200)
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8);
         let uhf = ferric_scf::uhf::solve_uhf_with_guess(
             &ctx,
             &mol,
@@ -2015,12 +2049,10 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let uhf_cfg = UhfConfig {
-            max_iter: 200,
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            ..Default::default()
-        };
+        let uhf_cfg = UhfConfig::default()
+            .with_max_iter(200)
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8);
         let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
         let amps =
             compute_u_mp2_amplitudes(&mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
@@ -2273,12 +2305,10 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let uhf_cfg = UhfConfig {
-            max_iter: 200,
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            ..Default::default()
-        };
+        let uhf_cfg = UhfConfig::default()
+            .with_max_iter(200)
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8);
         let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
 
         let inter_a = compute_rpa_intermediates_spin(

@@ -50,6 +50,7 @@ use ferric_scf::engine_pool::EnginePool;
 use ferric_scf::response_jk::ResponseJk;
 use ferric_scf::result::DfJkRoute;
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 use ndarray::{Array2, Array3};
 use std::cell::RefCell;
@@ -256,6 +257,68 @@ pub fn compute_b_full_mo(
     compute_b_full_mo_with(&ao, c)
 }
 
+/// A metric factor `V^{-1/2}` and the operator whose metric it factors, as
+/// [`OoRiMp2AoTensors::build`] builds it
+/// (`cholesky_inverse_sqrt(coulomb_metric_2c(op, dfbs))`).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MetricFactor<'a> {
+    pub(crate) op: Operator,
+    pub(crate) v_inv_sqrt: &'a Array2<f64>,
+}
+
+impl<'a> MetricFactor<'a> {
+    /// The factor of intermediates built by
+    /// [`crate::rimp2::compute_mp2_intermediates_ov_only`] on `op`, which
+    /// builds `V^{-1/2}` exactly as above. Only for those: an `inter`
+    /// assembled from other densities may carry another factor.
+    pub(crate) fn of_ov_intermediates(
+        op: Operator,
+        inter: &'a crate::rimp2::Mp2Intermediates,
+    ) -> Self {
+        MetricFactor {
+            op,
+            v_inv_sqrt: &inter.v_inv_sqrt,
+        }
+    }
+}
+
+/// [`compute_b_full_mo`] with the metric factor already built: only the raw
+/// `(P|μν)` source is built, under the same budget, and streamed through the
+/// same transform, so the result is that of [`compute_b_full_mo`]. A factor
+/// of another operator, or of another aux basis size, is an error.
+pub(crate) fn compute_b_full_mo_with_metric(
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    metric: MetricFactor<'_>,
+    c: &Array2<f64>,
+) -> Result<Array3<f64>, FerricError> {
+    if metric.op != op {
+        return Err(FerricError::General(format!(
+            "compute_b_full_mo_with_metric: the metric factor was built for {:?}, the \
+             transform is on {:?}",
+            metric.op, op
+        )));
+    }
+    let (naux, nmo) = (dfbs.nbasis(), c.ncols());
+    if metric.v_inv_sqrt.dim() != (naux, naux) {
+        return Err(FerricError::General(format!(
+            "compute_b_full_mo_with_metric: V^-1/2 is {:?}, the aux basis has {naux} functions",
+            metric.v_inv_sqrt.dim()
+        )));
+    }
+    let mut src = ThreeIndexSource::build(
+        op,
+        obs,
+        dfbs,
+        ferric_core::memory::resolve_budget_bytes(None),
+    )?;
+    let b_flat = crate::rimp2::stream_dressed_mo_band(&mut src, metric.v_inv_sqrt, c, c, None)?;
+    b_flat
+        .into_shape_with_order((naux, nmo, nmo))
+        .map_err(|e| FerricError::General(format!("compute_b_full_mo_with_metric reshape: {e}")))
+}
+
 /// Full-MO 3-center B tensor from pre-built AO invariants.
 ///
 /// Delegates to the shared canonical streamer
@@ -402,6 +465,7 @@ impl<'a> OoJk<'a> {
 
     /// The route of `scf` as described on [`OoJk`]: fitted for an RI-JK
     /// reference, four-centre (with `pool`) otherwise.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn for_reference(
         ctx: &'a ferric_core::parallel::ParallelContext,
         mol: &Molecule,
@@ -1474,6 +1538,31 @@ fn integral_response_kernel(
     g
 }
 
+/// [`oo_ri_mp2`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+pub fn oo_ri_mp2_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    config: &OoRiMp2Config,
+    ext: Option<&ExternalPotential>,
+) -> Result<OoRiMp2Result, FerricError> {
+    let sys = aux.system();
+    aux.check_restricted_reference(rhf)?;
+    oo_ri_mp2(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        sys.bounds(),
+        rhf,
+        config,
+        ext,
+    )
+}
+
 /// Run OO-RI-MP2.
 ///
 /// Starting from converged RHF orbitals, iteratively optimize MO coefficients
@@ -1484,6 +1573,7 @@ fn integral_response_kernel(
 /// vir-vir Fock blocks diagonal) and `orbital_energies` are their diagonal
 /// Fock elements, i.e. the MP2 denominators actually used. This is what
 /// `oo_rimp2_gradient::oo_ri_mp2_gradient` expects.
+#[allow(clippy::too_many_arguments)]
 pub fn oo_ri_mp2(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -1877,10 +1967,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         assert!(rhf.converged);
@@ -2245,12 +2332,13 @@ mod tests {
                 &obs,
                 op,
                 &bounds,
-                &RhfConfig {
-                    energy_conv: 1e-11,
-                    density_conv: 1e-10,
-                    df_j_aux: jk_aux.map(str::to_string),
-                    df_k_aux: jk_aux.map(str::to_string),
-                    ..Default::default()
+                &{
+                    let mut c = RhfConfig::default()
+                        .with_energy_conv(1e-11)
+                        .with_density_conv(1e-10);
+                    c.df_j_aux = jk_aux.map(str::to_string);
+                    c.df_k_aux = jk_aux.map(str::to_string);
+                    c
                 }
                 .for_geometry_task(),
             )
@@ -2743,10 +2831,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         assert!(rhf.converged);
@@ -2866,10 +2951,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         assert!(rhf.converged);
@@ -3169,10 +3251,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         assert!(rhf.converged);
@@ -3282,10 +3361,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();

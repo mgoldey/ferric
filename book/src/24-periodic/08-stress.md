@@ -1,6 +1,6 @@
 # The stress tensor {#stress}
 
-<!-- status: ready; registry: pbc-ewald-pairft-stress -->
+<!-- status: edit; registry: pbc-ewald-pairft-stress, pbc-stress -->
 
 The force asks how the energy changes when one atom moves. The stress asks
 how it changes when the whole cell is deformed: the lattice vectors and the
@@ -216,7 +216,7 @@ each:
   which gives $\frac{G_aG_b}{2p}P$.
 - The polynomial through $\mathbf G$: $dG_c/d\varepsilon_{ab} = -\delta_{cb}G_a$,
   so it gives $-G_aP^g_b$, with $P^g_b$ the $G_b$-derivative of the
-  polynomial factor.
+  polynomial factor times the Gaussian, the phase and the prefactor.
 - The separation: $d(\mathbf A - \mathbf B')_c/d\varepsilon_{ab} = \delta_{ca}(\mathbf A - \mathbf B')_b$.
   The bra-centre derivative $Q_a = \partial P/\partial A_a$ contains the
   separation derivative and the motion of $\mathbf P_c = (\alpha\mathbf A + \beta\mathbf B')/p$
@@ -254,7 +254,7 @@ $$
 | 2 | each reciprocal energy: $-\delta_{ab}E + \Omega^{-1}\sum_{\mathbf G}[v'(-2G_aG_b)\Phi + v\,d\Phi]$, with $d\Phi$ from the pair-transform strain | `ferric-pbc/src/pair_ft.rs::pair_ft_strain_chunked` |
 | 3 | overlap-coupled terms: the force's matrix $M$ contracted with per-image pair vectors | `ferric-pbc/src/stress.rs::gamma_rhf_stress` |
 | 4 | Madelung: $-\tfrac\alpha2\sum_\sigma\operatorname{tr}(D_\sigma SD_\sigma S)\,dv_M/d\varepsilon$ | `ferric-pbc/src/ewald.rs::madelung_strain` |
-| 5 | XC, ECP and RS-GDF terms | listed in the `stress.rs` module documentation |
+| 5 | XC, ECP and RS-GDF terms | `ferric-pbc/src/stress.rs::xc_stress`, `ferric-pbc/src/stress.rs::ecp_strain_term`; not derived here |
 
 Step 3 is the force's $M$ (Pulay, the $c_0Z_\text{tot}$ term and the Madelung
 $S$ term) with a different derivative of $S$: an overlap element between a
@@ -273,6 +273,54 @@ derivative describes. With the sets frozen, the stress is the exact
 derivative of the energy that was computed. The same reasoning makes the
 finite-difference anchors clean: they strain a frozen cell.
 
+**Steps 2 and 3 at fixed density.** Write each reciprocal energy as
+$E = \Omega^{-1}\sum_{\mathbf G}v(G^2)\Phi(\mathbf G)$, with $\Phi$ a
+bilinear form in the pair transforms: $\tfrac12|\rho|^2$ for Coulomb,
+$-\tfrac\alpha2\sum_\sigma\sum D^\sigma D^\sigma\operatorname{Re}[P^*P]$ for
+exchange, and $-\operatorname{Re}[\rho^*S(\mathbf G)]$ for the long-range
+nuclear attraction. Three things move: $\Omega^{-1}$ gives $-\delta_{ab}E$;
+$G^2$ moves by $-2G_aG_b$; and $\Phi$ moves through $dP/d\varepsilon$
+(@eq:pbc-stress-pairft), while the structure factor $S(\mathbf G)$ does not,
+because its phases are strain-invariant. So
+
+$$ \frac{dE}{d\varepsilon_{ab}} = -\delta_{ab}E + \frac1\Omega\sum_{\mathbf G}\Big[v'(G^2)(-2G_aG_b)\Phi + v\,\frac{d\Phi}{d\varepsilon_{ab}}\Big], \qquad v' = -\frac{v}{G^2}\ \text{(bare)},\quad v' = -v_\eta\Big(\frac1{G^2} + \frac1{4\eta^2}\Big)\ \text{(Ewald LR)} . \label{eq:pbc-stress-reciprocal} $$
+
+The overlap-coupled energy
+$c_0Z_\text{tot}\operatorname{tr}(DS) - \tfrac\alpha2v_M\sum_\sigma\operatorname{tr}(D_\sigma SD_\sigma S)$
+gives $\sum M\,dS/d\varepsilon$ with the force's
+$M = c_0Z_\text{tot}D - \alpha v_M\sum_\sigma D_\sigma SD_\sigma$ (its Pulay
+part $-W$ comes from the orthonormality constraint, as for the force), plus
+$-\delta_{ab}c_0Z_\text{tot}\operatorname{tr}(DS)$ from $c_0 \propto \Omega^{-1}$.
+For s functions $dS/d\varepsilon$ is the $\mathbf G = 0$ case of
+@eq:pbc-stress-pairft. The Madelung constant's own strain is step 4.
+
+> **Verified equation {#eq:pbc-stress-fixed-density}** · the reciprocal and overlap stress at fixed density
+>
+> On a triclinic cell with two atoms, s Gaussians and unrelated spin
+> densities $D_\alpha \neq D_\beta$, the Coulomb, exchange and long-range
+> nuclear terms of @eq:pbc-stress-reciprocal, the overlap terms through
+> $M$ and the $c_0$ volume term reproduce all nine components of a central
+> strain difference of the fixed-density energy at frozen index sets
+> (largest component 0.75 Ha, residual $7\times10^{-10}$ Ha). The
+> short-range erfc attraction and the Madelung strain are outside the model.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/pbc_force_sympy.py`, claim `stress-fixed-density` |
+> | Negative control | the runner's mutation drops the $c_0$ volume term |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-pbc/src/stress.rs::gamma_uhf_stress` |
+> | Code test | `h2_rhf_stress_matches_fd_of_own_energy_all_nine_both_exxdiv` in `crates/ferric-pbc/tests/pbc_stress.rs` |
+>
+> <!-- verified: id=pbc.stress.fixed-density; script=scripts/pbc_force_sympy.py; claim=stress-fixed-density; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-pbc/src/stress.rs::gamma_uhf_stress; rust_test=ferric-pbc/tests/pbc_stress.rs::h2_rhf_stress_matches_fd_of_own_energy_all_nine_both_exxdiv; registry=pbc-stress -->
+
+**Step 5 is not derived.** The XC strain (the grid points and weights move
+with the atoms and the cell), the ECP strain and the RS-GDF strain (the
+three-centre and metric tensors under strain, the fit-derivative of
+@eq:pbc-grad-rsgdf with strained integrals) have no section and no proof
+here. They are tested against finite differences of ferric's own energy
+only, and recorded as gaps in `testdata/derivations/registry.json`.
+
 ## Options {#stress-options}
 
 | Option | Values | Default | Effect |
@@ -289,7 +337,15 @@ finite-difference anchors clean: they strain a frozen cell.
 | `ewald` minus `none` stress equals the Madelung strain term | $10^{-9}$ | `h2_rhf_ewald_minus_none_is_the_madelung_strain` |
 | pressure against finite differences of an isotropic scaling (a consistency check, not independent of the nine-component anchor) | $10^{-9}$ | `h2_rhf_pressure_matches_isotropic_scaling` |
 | one-point mesh stress against the Gamma stress | | `crates/ferric-pbc/tests/pbc_kstress.rs` `one_point_mesh_rhf_stress_is_the_gamma_stress` |
-| each stress mutant (`NoPulay`, `FtNoCentres`, `GUnstrained`, `NoVolume`, `NoEwaldLr`, `NoEwaldBg`, `NoC0Volume`, `NoSrImages` with `exxdiv = none`; `NoMadelung`, `MadelungS` with `exxdiv = ewald`; the variants of `ferric-pbc/src/stress.rs::StressMutation`) misses finite differences on at least one component; the volume-only mutants are diagonal by construction | the FD anchor of the row above | `crates/ferric-pbc/tests/pbc_stress.rs` `h2_fd_anchor_catches_each_mutant` |
+| each stress mutant (listed below) misses finite differences on at least one component | the FD anchor of the row above | `crates/ferric-pbc/tests/pbc_stress.rs` `h2_fd_anchor_catches_each_mutant` |
+
+The mutants are the variants of `ferric-pbc/src/stress.rs::StressMutation`:
+
+- with `exxdiv = none`: `NoPulay`, `FtNoCentres`, `GUnstrained`,
+  `NoVolume`, `NoEwaldLr`, `NoEwaldBg`, `NoC0Volume`, `NoSrImages`;
+- with `exxdiv = ewald`: `NoMadelung`, `MadelungS`.
+
+The volume-only mutants are diagonal by construction.
 
 The scripted proof of the Ewald strain (part S5 of
 `scripts/pbc_ewald_pairft_stress_sympy.py`) agrees with central finite
@@ -304,7 +360,9 @@ files of `crates/ferric-pbc/tests/`.
 - No lattice-vector relaxation.
 - Gamma-point stress is Python-only; the CLI `stress = true` requires
   `kmesh`.
-- VV10 is refused. Per-functional support is listed in the input reference.
+- VV10 is refused. Per-functional support is listed in the `stress` row of
+  the `[cell]` table in `site/src/reference/input.md`.
+- The XC, ECP and RS-GDF strain terms are not derived on this page.
 
 ## Sources {#stress-sources}
 

@@ -3,7 +3,7 @@
 //! Exactness anchor first: at ε = 0 the pattern keeps everything, the
 //! pattern solves are the full localized amplitude equations, and every
 //! OP-MP3 model must equal the canonical driver's
-//! (`opmp3_on_reference`, same RI basis) on the HF AND the PBE0 reference
+//! (`opmp3_on`, same RI basis) on the HF AND the PBE0 reference
 //! (the KS one exercises the HF-Fock-of-the-KS-density localization, the
 //! non-diagonal `F_oo`/`F_vv` of `A`, and the semicanonical frozen core).
 //! W is compared by eigenvalues (`W_loc = Uᵀ W_can U`).
@@ -33,17 +33,14 @@ use std::path::{Path, PathBuf};
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
-use ferric_core::parallel::ParallelContext;
-use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::lmp2_amplitude::{amplitude_lmp2, AmplitudeLmp2Config, FOCK_SCREEN_KAPPA_DEFAULT};
-use ferric_mp2::local_opmp3::{local_opmp3_on_reference, LocalOpmp3Result};
+use ferric_mp2::local_opmp3::{local_opmp3_on, LocalOpmp3Result};
 use ferric_mp2::opmp3::{Opmp3Models, WChannels};
 use ferric_mp2::opmp3_driver::{
-    opmp3_on_reference, opmp3_scf, Opmp3Config, Opmp3Integrals, Opmp3RefKind, Opmp3Result,
+    opmp3_on, opmp3_scf, Opmp3Config, Opmp3Integrals, Opmp3RefKind, Opmp3Result,
 };
-use ferric_scf::screening::SchwarzBounds;
-use ferric_scf::ScfResult;
+use ferric_scf::{PreparedSystem, ScfResult};
 use ndarray::Array2;
 use ndarray_linalg::{Eigh, UPLO};
 
@@ -73,11 +70,9 @@ fn workspace_root() -> PathBuf {
 const ANCHOR_BAR: f64 = 1e-10;
 
 struct Sys {
-    mol: Molecule,
-    obs: PreparedBasis,
+    sys: PreparedSystem,
     obs_bs: basis::BasisSet,
-    aux: PreparedBasis,
-    bounds: SchwarzBounds,
+    aux_bs: basis::BasisSet,
     scf: ScfResult,
     config: Opmp3Config,
 }
@@ -86,20 +81,17 @@ fn system(reference: &str, frozen_core: usize) -> Sys {
     let xyz = workspace_root().join("testdata/molecules/alkane_3.xyz");
     let mol = Molecule::load_xyz(xyz.to_str().unwrap()).unwrap();
     let obs_bs = basis::bundled("6-31g").unwrap();
-    let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
-    let aux = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
-    let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
+    let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+    let sys = PreparedSystem::new(mol, &obs_bs).unwrap();
     let mut config = Opmp3Config::new(Opmp3RefKind::parse_config_str(reference).unwrap());
     config.frozen_core = frozen_core;
     config.scf_energy_conv = Some(1e-12);
     config.scf_density_conv = Some(1e-10);
-    let scf = opmp3_scf(&ParallelContext::default(), &mol, &obs, &bounds, &config).unwrap();
+    let scf = opmp3_scf(&sys, &config).unwrap();
     Sys {
-        mol,
-        obs,
+        sys,
         obs_bs,
-        aux,
-        bounds,
+        aux_bs,
         scf,
         config,
     }
@@ -115,31 +107,13 @@ fn local_cfg(sys: &Sys, eps: f64) -> AmplitudeLmp2Config {
 }
 
 fn local(sys: &Sys, eps: f64) -> LocalOpmp3Result {
-    local_opmp3_on_reference(
-        &ParallelContext::default(),
-        &sys.mol,
-        &sys.obs,
-        &sys.obs_bs,
-        &sys.bounds,
-        &sys.scf,
-        &sys.aux,
-        &sys.config,
-        &local_cfg(sys, eps),
-    )
-    .expect("local OP-MP3")
+    let aux = sys.sys.prepare_aux(&sys.aux_bs).unwrap();
+    local_opmp3_on(&aux, &sys.scf, &sys.config, &local_cfg(sys, eps)).expect("local OP-MP3")
 }
 
 fn canonical(sys: &Sys) -> Opmp3Result {
-    opmp3_on_reference(
-        &ParallelContext::default(),
-        &sys.mol,
-        &sys.obs,
-        &sys.bounds,
-        &sys.scf,
-        Opmp3Integrals::Ri(&sys.aux),
-        &sys.config,
-    )
-    .expect("canonical OP-MP3")
+    let aux = sys.sys.prepare_aux(&sys.aux_bs).unwrap();
+    opmp3_on(&sys.sys, &sys.scf, Opmp3Integrals::Ri(&aux), &sys.config).expect("canonical OP-MP3")
 }
 
 fn models(m: &Opmp3Models) -> [(&'static str, f64); 6] {
@@ -261,13 +235,14 @@ fn finite_eps_keeps_e_nbs_and_the_2n1_identity() {
 #[test]
 fn finite_eps_e2_matches_amplitude_lmp2_on_the_same_maps() {
     let sys = system("hf", 0);
+    let aux = sys.sys.prepare_aux(&sys.aux_bs).unwrap();
     for eps in [1e-4, 1e-5] {
         let loc = local(&sys, eps);
         let lmp2 = amplitude_lmp2(
-            &sys.mol,
-            &sys.obs,
+            sys.sys.mol(),
+            sys.sys.basis(),
             &sys.obs_bs,
-            &sys.aux,
+            aux.basis(),
             Operator::coulomb(),
             &sys.scf,
             &AmplitudeLmp2Config {

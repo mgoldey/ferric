@@ -154,7 +154,13 @@ dRPA is not variational, so the error is first order in what is dropped. It
 is positive (less correlation) at every point measured, which is a
 measurement, not a guarantee, and grows faster than linearly in `eps`: on
 n-octane / 6-31G it is 6.7e-7, 3.9e-5, 5.5e-4 and 1.0e-2 Ha at `eps` = 1e-6,
-1e-5, 1e-4 and 1e-3, keeping 82%, 50%, 18% and 3% of the amplitudes. `[local] reference = true`
+1e-5, 1e-4 and 1e-3, keeping 82%, 50%, 18% and 3% of the amplitudes
+(measured with the solver stopped at relative residual 1e-12). By default the
+CLI and Python stop the local solve at relative residual max(1e-12, 0.1·`eps`)
+(Python `eps_rtol_factor=`, 0 to disable the link; the CLI has no key for it); on water / 6-31G
+that solver error (±3e-8 Ha at `eps` = 1e-4) is larger than the truncation
+error, which is exactly zero there, so compare with the exact limit at
+`eps_rtol_factor=0`. `[local] reference = true`
 (Python `compute_reference=True`) also computes the canonical plasmon dRPA and
 prints the error against it. `[local] eps_sweep` (Python `run_drpa_scan`)
 evaluates several `eps` on one SCF and one localized assembly. Proven
@@ -185,7 +191,7 @@ range. **No speedup over PDEP is claimed for local dRPA.**
 The equations and conventions of this section, the BSE-TDA and the RPAx
 polarizability, with the code paths and tests behind each, are in
 the GW chapter of the ferric book,
-[`book/src/19-gw-bse/`](https://github.com/mgoldey/ferric/tree/main/book/src/19-gw-bse);
+[`book/src/20-gw-bse/`](https://github.com/mgoldey/ferric/tree/main/book/src/20-gw-bse);
 the identities it relies on are checked by
 [`scripts/gw_self_energy_sympy.py`](https://github.com/mgoldey/ferric/blob/main/scripts/gw_self_energy_sympy.py).
 
@@ -296,7 +302,7 @@ fractions \\(c_{sr}\\) and \\(c_{lr}\\) and the range-separation parameter
 \\(c_{sr}(pq|rs) + (c_{lr}-c_{sr})(pq|rs)_\omega\\), where the second term uses a second
 set of RI tensors for \\(\mathrm{erf}(\omega r)/r\\). Those tensors are fitted in the erf
 metric, so the fit error is second order in the erf-norm residual of the
-quantity being fitted (`book/src/20-tddft/04-rsh.md#rsh-split`). The printout and
+quantity being fitted (`book/src/19-tddft/04-rsh.md#rsh-split`). The printout and
 `TddftResult` report `c_sr` (as `c_hf`), `c_lr` and `omega`. A `[tddft] c_hf`
 override on a range-separated functional is refused.
 
@@ -310,7 +316,7 @@ functional) or UKS reference (`examples/nh2-tddft-uks.toml`; Python
 `run_tddft` picks it with `reference="auto"`). The response space is the
 α and β occupied→virtual pairs; A and B couple them through the Coulomb
 term and the α-β block of the spin-resolved f<sub>xc</sub> kernel, and
-exact exchange acts within each spin (`book/src/20-tddft/06-unrestricted.md#unrestricted-spin-problem`).
+exact exchange acts within each spin (`book/src/19-tddft/06-unrestricted.md#unrestricted-spin-problem`).
 Every functional class the closed-shell route takes works here, including
 range-separated hybrids, τ-only meta-GGAs and hybrid meta-GGAs (TPSSh,
 M06-2X). The roots are spin-conserving and not spin-adapted, so there is no

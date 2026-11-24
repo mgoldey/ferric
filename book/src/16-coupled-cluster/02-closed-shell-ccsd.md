@@ -93,28 +93,108 @@ of (@eq:mp2-cs-spin-adaptation) as the two bullets.
 >
 > <!-- verified: id=cc.ccsd.spin-adaptation; script=scripts/cc_ccsd_eom_brute_force_sympy.py; claim=spin-adaptation; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-cc/src/ccsd_closed_shell.rs::{ccsd_closed_shell,expand_amplitudes_to_spin_orbital}; rust_test=ferric-cc/tests/validation_cc.rs::ccsd_spin_adapted_matches_df_reference; registry=ccsd -->
 
-**The factorization the code evaluates.**
+## The equations the code evaluates {#closed-shell-ccsd-equations}
+
 `ferric-cc/src/ccsd_closed_shell.rs::ccsd_closed_shell` does not derive the
 spatial residual from the spin-orbital one at run time. It evaluates the
 closed-shell equations of Hirata, Podeszwa, Tobita and Bartlett, JCP 120,
 2581 (2004), Eqs. 35–45, in the form of PySCF `rccsd.update_amps` and
-`rintermediates`:
+`rintermediates`. They are written here with chemist integrals over
+spatial orbitals and $\tau_{ij}^{ab} = t_{ij}^{ab} + t_i^at_j^b$. The code
+keeps the $t_1t_1$ pieces as separate contractions; collecting them into
+$\tau$ changes nothing but the grouping.
 
-- the one-body intermediates $F_{oo}$, $F_{vv}$, $F_{ov}$ and $L_{oo}$,
-  $L_{vv}$ (Eqs. 37–41). There is no orbital-energy shift, so $\varepsilon$
-  enters only through $\Delta$;
-- the two-body intermediates $W_{oooo}$, $W_{voov}$, $W_{vovo}$ (Eqs. 42–45);
-- the T1 and T2 equations (Eqs. 35, 36). The T2 part is built as one half
-  $x$ and symmetrized as $x + x^{(ij)(ab)}$, which enforces
-  $t_{ij}^{ab} = t_{ji}^{ba}$.
+**One-body intermediates** (Eqs. 37–41). With $f_{ia} = 0$ and the Fock
+diagonal moved into $D$ below, they carry no Fock term and no
+orbital-energy shift:
 
-$(t_1, t_2)$ are extrapolated jointly by DIIS (`diis_step_two`).
+$$
+\begin{aligned}
+F_{ki} &= \textstyle\sum_{lcd}\big[2(kc|ld) - (kd|lc)\big]\tau_{il}^{cd}, \\
+F_{ac} &= -\textstyle\sum_{kld}\big[2(kc|ld) - (kd|lc)\big]\tau_{kl}^{ad}, \\
+F_{kc} &= \textstyle\sum_{ld}\big[2(kc|ld) - (kd|lc)\big]t_l^d, \\
+L_{ki} &= F_{ki} + \textstyle\sum_{lc}\big[2(lc|ki) - (kc|li)\big]t_l^c, \\
+L_{ac} &= F_{ac} + \textstyle\sum_{kd}\big[2(kd|ac) - (kc|ad)\big]t_k^d .
+\end{aligned} \label{eq:cc-rccsd-one-body}
+$$
 
-The box proves that solving the spatial equations is solving CCSD. It does
-not reach the Hirata factorization the code evaluates: that is a
-transcription of PySCF `rccsd`, and its evidence is the Rust comparison with
-the spin-orbital `ccsd` on the same integrals and with PySCF `cc.CCSD`
-(`tests/validation_cc.rs`).
+**Two-body intermediates** (Eqs. 42–45):
+
+$$
+\begin{aligned}
+W_{klij} &= (ki|lj) + \textstyle\sum_c (lc|ki)\,t_j^c + \sum_c (kc|lj)\,t_i^c + \sum_{cd}(kc|ld)\,\tau_{ij}^{cd}, \\
+W_{akic} &= (kc|ai) + \textstyle\sum_d (kc|ad)\,t_i^d - \sum_l (kc|li)\,t_l^a
+ + \sum_{ld}(ld|kc)\big(t_{il}^{ad} - \tfrac12t_{il}^{da} - t_i^dt_l^a\big) - \tfrac12\sum_{ld}(lc|kd)\,t_{il}^{ad}, \\
+W_{akci} &= (ki|ac) + \textstyle\sum_d (kd|ac)\,t_i^d - \sum_l (lc|ki)\,t_l^a
+ - \sum_{ld}(lc|kd)\big(\tfrac12t_{il}^{da} + t_i^dt_l^a\big),
+\end{aligned} \label{eq:cc-rccsd-two-body}
+$$
+
+and $W_{abcd}$ of (@eq:cc-rccsd-ladder) below.
+
+**Singles.** The non-Fock part of the singles residual is
+
+$$
+\begin{aligned}
+r_i^a ={}& \textstyle\sum_c F_{ac}t_i^c - \sum_k F_{ki}t_k^a
+ + \sum_{kc}F_{kc}\big(2t_{ki}^{ca} - t_{ik}^{ca} + t_i^ct_k^a\big)
+ + \sum_{kc}\big[2(kc|ai) - (ki|ac)\big]t_k^c \\
+ &+ \textstyle\sum_{kcd}\big[2(kd|ac) - (kc|ad)\big]\tau_{ik}^{cd}
+ - \sum_{klc}\big[2(lc|ki) - (kc|li)\big]\tau_{kl}^{ac} .
+\end{aligned} \label{eq:cc-rccsd-singles}
+$$
+
+**Doubles.** Write $\mathcal P x_{ij}^{ab} = x_{ij}^{ab} + x_{ji}^{ba}$.
+The code builds the half $x$ and symmetrizes it, which enforces
+$r_{ij}^{ab} = r_{ji}^{ba}$:
+
+$$
+\begin{aligned}
+r_{ij}^{ab} ={}& (ia|jb) + \textstyle\sum_{kl}W_{klij}\tau_{kl}^{ab} + \sum_{cd}W_{abcd}\tau_{ij}^{cd}
+ + \mathcal P\Big\{\textstyle\sum_c\big[(ia|cb) - \sum_k (ki|bc)\,t_k^a\big]t_j^c
+ - \sum_k\big[(ia|jk) + \sum_c (kc|ai)\,t_j^c\big]t_k^b \\
+ &+ \textstyle\sum_c L_{ac}t_{ij}^{cb} - \sum_k L_{ki}t_{kj}^{ab}
+ + \sum_{kc}\big(2W_{akic} - W_{akci}\big)t_{kj}^{cb}
+ - \sum_{kc}W_{akic}t_{kj}^{bc} - \sum_{kc}W_{bkci}t_{kj}^{ac}\Big\} .
+\end{aligned} \label{eq:cc-rccsd-doubles}
+$$
+
+**The update.** With $D_i^a = \varepsilon_i - \varepsilon_a$ and
+$D_{ij}^{ab} = \varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b$,
+the full residuals are $R = r - Dt$, and one iteration sets $t \leftarrow r/D$,
+the fixed point of $R = 0$. $(t_1, t_2)$ are then extrapolated jointly by
+DIIS (`diis_step_two`).
+
+> **Verified equation {#eq:cc-rccsd-factorization}** · the transcribed factorization is the CCSD residual
+>
+> For random spatial $t_1$ and $t_2 = t_2^{(ij)(ab)}$, the residuals
+> $r_i^a - D_i^at_i^a$ and $r_{ij}^{ab} - D_{ij}^{ab}t_{ij}^{ab}$ of
+> (@eq:cc-rccsd-singles) and (@eq:cc-rccsd-doubles), with the intermediates
+> of (@eq:cc-rccsd-one-body), (@eq:cc-rccsd-two-body) and
+> (@eq:cc-rccsd-ladder), equal the α singles and the opposite-spin doubles
+> of the brute-force projections
+> $\langle\Phi_\mu|e^{-\hat T}\hat He^{\hat T}|\Phi_0\rangle$ on the amplitudes
+> expanded by `expand_amplitudes_to_spin_orbital`.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/cc_ccsd_eom_brute_force_sympy.py`, check `rccsd-factorization` |
+> | Negative control | the runner's mutations: $\mathcal P$ replaced by $2x$; the sign of the $\tfrac12t_{il}^{da}$ term of $W_{akci}$ flipped |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-cc/src/ccsd_closed_shell.rs::{ccsd_closed_shell,dense_ladder}` |
+> | Code test | `ccsd_spin_adapted_matches_df_reference` in `crates/ferric-cc/tests/validation_cc.rs` |
+>
+> <!-- verified: id=cc.ccsd.rccsd-factorization; script=scripts/cc_ccsd_eom_brute_force_sympy.py; claim=rccsd-factorization; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-cc/src/ccsd_closed_shell.rs::{ccsd_closed_shell,dense_ladder}; rust_test=ferric-cc/tests/validation_cc.rs::ccsd_spin_adapted_matches_df_reference; registry=ccsd -->
+
+### What is proven and what is not {#closed-shell-ccsd-proven}
+
+The box above (@eq:cc-ccsd-spin-adaptation) proves that solving the spatial
+equations is solving CCSD. The box (@eq:cc-rccsd-factorization) proves that
+the equations displayed here are those spatial equations. The script
+checks a numpy transcription of the Rust loop, not the Rust loop itself;
+that the Rust evaluates the same expressions is shown by its comparison
+with the spin-orbital `ccsd` on the same integrals and with PySCF
+`cc.CCSD` (`tests/validation_cc.rs`).
 
 ## The algorithm {#closed-shell-ccsd-algorithm}
 
@@ -130,7 +210,7 @@ the spin-orbital `ccsd` on the same integrals and with PySCF `cc.CCSD`
 **The ladder.** Step 4 is the $n_o^2n_v^4$ term and the only place an
 $n_v^4$ object appears. Its vertex is
 
-$$ W_{abcd} = (ac|bd) - \sum_k (kd|ac)\,t_k^b - \sum_k (kc|bd)\,t_k^a . $$
+$$ W_{abcd} = (ac|bd) - \sum_k (kd|ac)\,t_k^b - \sum_k (kc|bd)\,t_k^a . \label{eq:cc-rccsd-ladder} $$
 
 It carries no $t_1^2$ term; that piece enters through $\tau$. The code never
 forms $W_{abcd}$. The dense route contracts $(ac|bd)$ with $\tau$, and the

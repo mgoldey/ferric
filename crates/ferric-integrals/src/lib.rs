@@ -24,6 +24,9 @@ pub mod blas_threads;
 pub mod cabs;
 /// Per-integral-class libint2 capability checks (refuse instead of a libint2 assert).
 pub mod capability;
+/// Exact column rotations of generally contracted shells (cc-pVXZ), used
+/// internally by the periodic SR walks and the direct SCF J/K builder.
+pub mod contraction_rotation;
 /// Per-grid-point three-center-one-electron AO blocks `A^g_{mu,nu}` for
 /// seminumerical exchange (COSX / sn-LinK).
 pub mod cosx_a;

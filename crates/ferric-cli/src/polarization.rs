@@ -17,6 +17,8 @@ pub struct Polarization {
     e_pol: f64,
     n_sites: usize,
     thole_a: Option<f64>,
+    /// Excluded site pairs and excluded (site, charge) pairs.
+    excluded: (usize, usize),
     dipoles: Vec<Vec<f64>>,
 }
 
@@ -50,6 +52,10 @@ pub fn evaluate(
             e_pol: ir.e_pol,
             n_sites: pol.sites.len(),
             thole_a: pol.thole_a,
+            excluded: (
+                pol.exclusions.len(),
+                pol.excluded_charges.iter().map(Vec::len).sum(),
+            ),
             dipoles: ir.dipoles.outer_iter().map(|d| d.to_vec()).collect(),
         }),
         Err(e) => {
@@ -74,6 +80,10 @@ impl Polarization {
              energy above)",
             self.e_pol, self.n_sites
         );
+        println!(
+            "               same-molecule exclusions: {} site pairs, {} site-charge pairs",
+            self.excluded.0, self.excluded.1
+        );
         if let Some(rl) = ferric_scf::runlog::log() {
             rl.note(
                 "polarization",
@@ -82,6 +92,8 @@ impl Polarization {
                     "e_pol": self.e_pol,
                     "n_sites": self.n_sites,
                     "thole_a": self.thole_a,
+                    "excluded_site_pairs": self.excluded.0,
+                    "excluded_site_charge_pairs": self.excluded.1,
                     "induced_dipoles": self.dipoles,
                 }),
             );

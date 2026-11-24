@@ -5,13 +5,13 @@
 # Format: page<TAB>matched text (whitespace collapsed). Keep this list short.
 book/src/00-notation.md	Eq. 1.23
 book/src/01-second-quantization/02-wick.md	Eq. 1.23
+book/src/03-integrals/03-derivatives.md	chapter 12
 book/src/04-operators/01-erf-terf.md	chapter 4
 book/src/04-operators/01-erf-terf.md	Eqs. 4.1
 book/src/04-operators/03-yukawa-geminal.md	(2.7.2)
 book/src/04-operators/03-yukawa-geminal.md	(2.13.1)
 book/src/10-mp2/01-closed-shell-ri-mp2.md	Eq. 4.5
-book/src/11-rimp2-algorithms/01-four-step-algorithm.md	section 10.1.3
-book/src/11-rimp2-algorithms/03-pair-kernel.md	sections 10.1.3
 book/src/11-rimp2-algorithms/05-parallel-performance.md	section 4.4
+book/src/11-rimp2-algorithms/06-device-mixed-precision.md	section 3.1
 book/src/22-implicit-solvation/01-cavity-and-bem.md	eq. 3.19
 book/src/22-implicit-solvation/01-cavity-and-bem.md	eqs. 3.19

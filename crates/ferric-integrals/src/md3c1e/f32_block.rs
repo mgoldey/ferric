@@ -425,6 +425,7 @@ impl Md3c1e {
 
     /// [`Md3c1e::pair_block_f32`] with an injectable defect (mutation tests).
     #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
     pub fn pair_block_f32_with(
         &self,
         s1: usize,
@@ -481,6 +482,7 @@ impl Md3c1e {
     }
 
     /// One surviving primitive pair, every tile, folded into the accumulators.
+    #[allow(clippy::too_many_arguments)]
     fn prim_pair_f32(
         &self,
         prog: &RProgram,
@@ -606,6 +608,7 @@ impl Md3c1e {
     /// `sum_pp S_pp` pushed through `|C|` (`sabs`, same layout), so
     /// `kappa = sabs / |A|`. `sum` selects the primitive-pair term `V`.
     #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
     pub fn pair_block_f32_bound(
         &self,
         s1: usize,
@@ -645,6 +648,7 @@ impl Md3c1e {
     }
 
     /// Add one primitive pair's `B_pp`, `S_pp` and `|A_pp|` to `tot`.
+    #[allow(clippy::too_many_arguments)]
     fn bound_prim_pair(
         &self,
         tot: &mut BoundAcc,

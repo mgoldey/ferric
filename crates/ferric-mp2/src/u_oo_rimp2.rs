@@ -50,6 +50,7 @@ use ferric_scf::fock::{JBuilder, KBuilder};
 use ferric_scf::response_jk::ResponseJk;
 use ferric_scf::result::DfJkRoute;
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::PreparedAux;
 use ferric_scf::{ScfResult, Spin};
 use ndarray::Array2;
 
@@ -794,6 +795,29 @@ fn antisymmetric_ov(
     m
 }
 
+/// [`u_oo_ri_mp2`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `uhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn u_oo_ri_mp2_on(
+    aux: &PreparedAux<'_>,
+    uhf: &ScfResult,
+    config: &UOoRiMp2Config,
+    ext: Option<&ExternalPotential>,
+) -> Result<UOoRiMp2Result, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(uhf)?;
+    u_oo_ri_mp2(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        sys.bounds(),
+        uhf,
+        config,
+        ext,
+    )
+}
+
 /// Drive U-OO-RI-MP2 from a converged UHF or ROHF reference.
 ///
 /// J/K follow the reference's route: RI-JK when `uhf` fitted J
@@ -802,6 +826,7 @@ fn antisymmetric_ov(
 ///
 /// The returned `mos_alpha`/`mos_beta` are in the per-spin SEMICANONICAL frame
 /// and `eps_alpha`/`eps_beta` are the MP2 denominators actually used.
+#[allow(clippy::too_many_arguments)]
 pub fn u_oo_ri_mp2(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -1262,12 +1287,10 @@ mod tests {
 
         // UHF reference seeded from RHF MOs to land at the same singlet solution
         let c_seed = rhf.mos_r().clone();
-        let uhf_cfg = UhfConfig {
-            max_iter: 200,
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            ..Default::default()
-        };
+        let uhf_cfg = UhfConfig::default()
+            .with_max_iter(200)
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8);
         let uhf = solve_uhf_with_guess(
             &ctx,
             &mol,
@@ -1317,10 +1340,7 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let uhf_cfg = UhfConfig {
-            max_iter: 200,
-            ..Default::default()
-        };
+        let uhf_cfg = UhfConfig::default().with_max_iter(200);
         let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
         let umpc = crate::u_rimp2::u_ri_mp2(
             &mol,
@@ -1402,13 +1422,14 @@ mod tests {
                 &mol,
                 &obs,
                 &bounds,
-                &UhfConfig {
-                    max_iter: 200,
-                    energy_conv: 1e-11,
-                    density_conv: 1e-9,
-                    df_j_aux: jk_aux.map(str::to_string),
-                    df_k_aux: jk_aux.map(str::to_string),
-                    ..Default::default()
+                &{
+                    let mut c = UhfConfig::default()
+                        .with_max_iter(200)
+                        .with_energy_conv(1e-11)
+                        .with_density_conv(1e-9);
+                    c.df_j_aux = jk_aux.map(str::to_string);
+                    c.df_k_aux = jk_aux.map(str::to_string);
+                    c
                 }
                 .for_geometry_task(),
             )
@@ -1756,14 +1777,12 @@ mod tests {
             &t.obs,
             t.op,
             &t.bounds,
-            &RhfConfig {
-                energy_conv: 1e-11,
-                density_conv: 1e-9,
-                df_j_aux: Some(JK_AUX.into()),
-                df_k_aux: Some(JK_AUX.into()),
-                ..Default::default()
-            }
-            .for_geometry_task(),
+            &RhfConfig::default()
+                .with_energy_conv(1e-11)
+                .with_density_conv(1e-9)
+                .with_df_j_aux(JK_AUX)
+                .with_df_k_aux(JK_AUX)
+                .for_geometry_task(),
         )
         .unwrap();
         assert!(crate::oo_rimp2::rijk_route(&rhf).is_some());

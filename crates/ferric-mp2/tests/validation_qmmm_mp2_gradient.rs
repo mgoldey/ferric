@@ -83,6 +83,7 @@ use ferric_scf::gradient::rhf_gradient;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -131,12 +132,6 @@ fn reference(file_stem: &str) -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("reference field {ptr} missing or not a number"))
 }
 
 fn xyz3(v: &Value) -> [f64; 3] {
@@ -281,13 +276,11 @@ fn setup(r: &Value, ctx: &str) -> Setup {
 }
 
 fn rhf(s: &Setup, ext: Option<&ExternalPotential>, ctx: &str) -> ScfResult {
-    let cfg = RhfConfig {
-        external_potential: ext.cloned(),
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        max_iter: 300,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_external_potential(ext.cloned())
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10)
+        .with_max_iter(300);
     let res = solve_rhf(
         &ParallelContext::default(),
         &s.mol,

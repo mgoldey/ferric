@@ -86,6 +86,7 @@ use ferric_scf::ladder::{ksdft_ladder, solve_rhf_ladder};
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use serde_json::Value;
 
 const ROW_DIR: &str = "testdata/reference/validation/b2plyp_pyscf";
@@ -157,27 +158,19 @@ fn reference(system: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 /// The KS config of `run_mp2_double_hybrid_arm`, pinned to the settings the
 /// reference runs (flat grid, f64 RI-J storage). `tight` tightens the SCF
 /// stop by two orders to measure ferric's own convergence term.
 fn ks_config(tight: bool) -> RhfConfig {
-    RhfConfig {
-        xc: Some(DoubleHybridKind::B2plyp.xc_name().into()),
-        df_j_aux: Some(JKFIT.to_string()),
-        df_k_aux: Some(JKFIT.to_string()),
-        ri_j_precision: Some(RiJPrecision::F64),
-        energy_conv: if tight { 1e-12 } else { 1e-10 },
-        density_conv: if tight { 1e-10 } else { 1e-8 },
-        max_iter: 200,
-        dft_grid: Some(AtomicGridConfig::default()),
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc(DoubleHybridKind::B2plyp.xc_name())
+        .with_df_j_aux(JKFIT.to_string())
+        .with_df_k_aux(JKFIT.to_string())
+        .with_ri_j_precision(RiJPrecision::F64)
+        .with_energy_conv(if tight { 1e-12 } else { 1e-10 })
+        .with_density_conv(if tight { 1e-10 } else { 1e-8 })
+        .with_max_iter(200)
+        .with_dft_grid(AtomicGridConfig::default())
 }
 
 struct Run {
@@ -236,7 +229,7 @@ struct Bars {
 }
 
 fn bars(r: &Value, fc: usize, ctx: &str) -> Bars {
-    let rep = |k: &str| num(r, &format!("/reproduction/{k}"), ctx);
+    let rep = |k: &str| num_ctx(r, &format!("/reproduction/{k}"), ctx);
     let (ks, os, ss) = (
         rep("e_ks"),
         rep(&format!("fc{fc}_e_os")),
@@ -265,7 +258,7 @@ fn run_case(system: &str, basis_name: &str, aux: &str) {
     let r = reference(system, basis_name);
     let ctx = format!("{system}/{basis_name}");
     let run = solve(system, basis_name, aux, false);
-    let enuc_ref = num(&r, "/nuclear_repulsion", &ctx);
+    let enuc_ref = num_ctx(&r, "/nuclear_repulsion", &ctx);
     assert!(
         (run.mol.nuclear_repulsion() - enuc_ref).abs() < TOL_ENUC,
         "{ctx}: nuclear repulsion differs: geometry/unit mismatch"
@@ -276,25 +269,25 @@ fn run_case(system: &str, basis_name: &str, aux: &str) {
         &ctx,
         "E_KS",
         run.ks.energy,
-        num(&r, "/ks/energy", &ctx),
+        num_ctx(&r, "/ks/energy", &ctx),
         b0.e_ks,
     );
     check(
         &ctx,
         "HOMO",
         run.ks.eps_alpha[nocc - 1],
-        num(&r, "/ks/homo", &ctx),
+        num_ctx(&r, "/ks/homo", &ctx),
         b0.eps,
     );
     check(
         &ctx,
         "LUMO",
         run.ks.eps_alpha[nocc],
-        num(&r, "/ks/lumo", &ctx),
+        num_ctx(&r, "/ks/lumo", &ctx),
         b0.eps,
     );
     // The functional is applied: B3LYP on the same grid and fit is far away.
-    let b3 = num(&r, "/b3lyp_control/energy", &ctx);
+    let b3 = num_ctx(&r, "/b3lyp_control/energy", &ctx);
     assert!(
         (run.ks.energy - b3).abs() > 1e-3,
         "{ctx}: B2PLYP KS energy is within 1e-3 of the B3LYP control"
@@ -308,21 +301,21 @@ fn run_case(system: &str, basis_name: &str, aux: &str) {
             &tag,
             "E_OS",
             out.spin_components.e_os,
-            num(&r, &format!("{k}/e_os"), &tag),
+            num_ctx(&r, &format!("{k}/e_os"), &tag),
             b.e_os,
         );
         check(
             &tag,
             "E_SS",
             out.spin_components.e_ss,
-            num(&r, &format!("{k}/e_ss"), &tag),
+            num_ctx(&r, &format!("{k}/e_ss"), &tag),
             b.e_ss,
         );
         check(
             &tag,
             "total",
             out.total_energy,
-            num(&r, &format!("{k}/total"), &tag),
+            num_ctx(&r, &format!("{k}/total"), &tag),
             b.total,
         );
         // The PT2 term is not negligible, and the total is the definition.
@@ -387,11 +380,9 @@ fn default_grid_and_ri_j_storage_shift_the_total() {
     let mut worst = 0.0f64;
     for (system, basis_name, aux) in CASES {
         let pinned = solve(system, basis_name, aux, false);
-        let default_cfg = RhfConfig {
-            dft_grid: None,
-            ri_j_precision: None,
-            ..ks_config(false)
-        };
+        let mut default_cfg = ks_config(false);
+        default_cfg.dft_grid = None;
+        default_cfg.ri_j_precision = None;
         let dflt = solve_with(system, basis_name, aux, default_cfg);
         let d = (dh(&pinned, 0).total_energy - dh(&dflt, 0).total_energy).abs();
         eprintln!("{system}/{basis_name}: default-vs-pinned total {d:.2e}");

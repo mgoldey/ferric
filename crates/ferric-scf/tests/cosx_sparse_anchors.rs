@@ -94,18 +94,16 @@ fn setup_with(mol: Molecule, basis: &str, df: bool, density_conv: f64) -> Setup 
     let aux = "def2-universal-jkfit";
     // The DF-JK reference keeps the default energy_conv (a sanity bound, not a
     // target — 1e-10 with a loose density_conv does not converge).
-    let cfg = RhfConfig {
-        energy_conv: if df {
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(if df {
             RhfConfig::default().energy_conv
         } else {
             1e-10
-        },
-        density_conv,
-        integral_thresh: 1e-14,
-        df_j_aux: df.then(|| aux.to_string()),
-        df_k_aux: df.then(|| aux.to_string()),
-        ..Default::default()
-    };
+        })
+        .with_density_conv(density_conv);
+    cfg.integral_thresh = 1e-14;
+    cfg.df_j_aux = df.then(|| aux.to_string());
+    cfg.df_k_aux = df.then(|| aux.to_string());
     let res = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).expect("rhf");
     assert!(res.converged, "reference RHF did not converge");
     let nocc = (mol.nelec() / 2) as usize;
@@ -314,16 +312,14 @@ fn sparse_cosx_rhf_water_energy_matches_dense() {
     let bounds = SchwarzBounds::compute(op, &prep).expect("schwarz");
     let ctx = ParallelContext::default();
     let run = |half: CosxHalfTransform| {
-        let c = RhfConfig {
-            k_builder: Some("cosx".into()),
-            cosx: CosxConfig {
+        let c = RhfConfig::default()
+            .with_k_builder(ferric_scf::options::KBuilderKind::Cosx)
+            .with_cosx(CosxConfig {
                 half_transform: half,
                 ..CosxConfig::flat_reference()
-            },
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            ..Default::default()
-        };
+            })
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8);
         let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &c).expect("rhf");
         assert!(r.converged);
         (r.energy, r.iterations)

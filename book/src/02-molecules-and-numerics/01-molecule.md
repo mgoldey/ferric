@@ -1,6 +1,6 @@
 # Molecule, charge, multiplicity and units {#molecule}
 
-<!-- status: edit; registry: -->
+<!-- status: edit; registry: none -->
 
 A calculation starts from a list of nuclei, a net charge and a spin
 multiplicity. Everything else about the electrons follows from those three
@@ -25,7 +25,7 @@ The plan:
 | Core electrons replaced by an ECP | $n^{\mathrm{ECP}}_A$ | `Atom::n_core_ecp` |
 | Net charge | $q$ | `Molecule::charge` |
 | Multiplicity | $M = 2S+1$ | `Molecule::multiplicity` |
-| Electrons | $N$ | `Molecule::nelec()` |
+| Electrons | $N_{\mathrm{el}}$ | `Molecule::nelec()` |
 
 | Entry point | Location |
 |---|---|
@@ -38,7 +38,7 @@ The plan:
 Inside the code every length is in Bohr and every energy in Hartree. In
 these units the electron mass, the elementary charge, $\hbar$ and
 $4\pi\varepsilon_0$ are 1, so the Coulomb energy of two unit charges a distance $r$ apart is $1/r$ with no
-prefactor. Every integral in Chapter @sec:integrals is written this way.
+prefactor. Every integral in chapter @sec:integrals is written this way.
 
 Input geometries are in Ångström, so one conversion sits at the boundary.
 The XYZ parser multiplies by one constant,
@@ -47,6 +47,7 @@ radius $0.52917721092$ Å (CODATA 2010, the value PySCF uses). These are the
 three definitions in `units.rs`, with their doc comments replaced by short
 ones:
 
+<!-- excerpt: ferric-core/src/units.rs::{BOHR_RADIUS_ANGSTROM,ANGSTROM_TO_BOHR,BOHR_TO_ANGSTROM} -->
 ```rust
 pub const BOHR_RADIUS_ANGSTROM: f64 = 0.529_177_210_92;   // a_0 in Å
 pub const ANGSTROM_TO_BOHR: f64 = 1.0 / BOHR_RADIUS_ANGSTROM;   // 1 Å ≈ 1.889 Bohr
@@ -93,6 +94,7 @@ $n^{\mathrm{ECP}}_A = 0$ and $Z^{\mathrm{eff}}_A = Z_A$.
 The code is (@eq:molecule-1) line for line, in
 `ferric-core/src/mol.rs::Atom::effective_z`:
 
+<!-- excerpt: ferric-core/src/mol.rs::Atom::effective_z -->
 ```rust
 pub fn effective_z(&self) -> i32 {
     if self.ghost {
@@ -112,32 +114,33 @@ both see the ECP once `apply_ecp` has run.
 
 Each real atom brings $Z^{\mathrm{eff}}_A$ electrons, and a net charge $q$
 removes $q$ of them. Split the total into $N_\alpha$ spin-up and $N_\beta$
-spin-down electrons. Two conditions fix the split: the counts add to $N$,
+spin-down electrons. Two conditions fix the split: the counts add to $N_{\mathrm{el}}$,
 and the multiplicity counts the unpaired electrons, $M - 1 = 2S = N_\alpha -
 N_\beta$:
 
-$$ N_\alpha + N_\beta = N, \qquad N_\alpha - N_\beta = M - 1 . $$
+$$ N_\alpha + N_\beta = N_{\mathrm{el}}, \qquad N_\alpha - N_\beta = M - 1 . $$
 
 Add the two equations and divide by 2 to get $N_\alpha$. Subtract the second
 from the first to get $N_\beta$:
 
-$$ N = \sum_A Z^{\mathrm{eff}}_A - q, \qquad N_\alpha = \frac{N + M - 1}{2}, \qquad N_\beta = N - N_\alpha . \label{eq:molecule-2} $$
+$$ N_{\mathrm{el}} = \sum_A Z^{\mathrm{eff}}_A - q, \qquad N_\alpha = \frac{N_{\mathrm{el}} + M - 1}{2}, \qquad N_\beta = N_{\mathrm{el}} - N_\alpha . \label{eq:molecule-2} $$
 
-Check it on water: $N = 8 + 1 + 1 = 10$ and $M = 1$ give
-$N_\alpha = N_\beta = 5$. The cation $\mathrm{H_2O^+}$ has $N = 9$, and $M = 1$
+Check it on water: $N_{\mathrm{el}} = 8 + 1 + 1 = 10$ and $M = 1$ give
+$N_\alpha = N_\beta = 5$. The cation $\mathrm{H_2O^+}$ has $N_{\mathrm{el}} = 9$, and $M = 1$
 gives $N_\alpha = 9/2$, which is not an electron count. A doublet, $M = 2$,
 gives $N_\alpha = 5$ and $N_\beta = 4$.
 
-So (@eq:molecule-2) has an integer solution only when $N + M - 1$ is even, which means an
+So (@eq:molecule-2) has an integer solution only when $N_{\mathrm{el}} + M - 1$ is even, which means an
 odd electron count needs an even multiplicity and the reverse. It also needs
-$N_\beta \ge 0$, so $M - 1$ may not exceed $N$. The construction `from_atoms`
+$N_\beta \ge 0$, so $M - 1$ may not exceed $N_{\mathrm{el}}$. The construction `from_atoms`
 checks both conditions in
 `ferric-core/src/mol.rs::validate_electron_multiplicity_parity`:
 
+<!-- excerpt: ferric-core/src/mol.rs::validate_electron_multiplicity_parity -->
 ```rust
 let two_s = multiplicity as i64 - 1;   // M - 1 = 2S = N_alpha - N_beta
-let numerator = nelec as i64 + two_s;  // 2 N_alpha = N + M - 1
-// fail if N_alpha < 0, N_alpha is not an integer, or N_beta < 0 (M - 1 > N)
+let numerator = nelec as i64 + two_s;  // 2 N_alpha = N_el + M - 1
+// fail if N_alpha < 0, N_alpha is not an integer, or N_beta < 0 (M - 1 > N_el)
 if numerator < 0 || numerator % 2 != 0 || numerator > 2 * nelec as i64 {
     return Err(FerricError::General(format!(
         // ...
@@ -150,7 +153,7 @@ numbers. Without the check, an inconsistent
 molecule would fail later in the SCF loop with a message that does not
 mention the molecule.
 
-A restricted Hartree–Fock reference needs an even $N$ and $M = 1$. The CLI
+A restricted Hartree–Fock reference needs an even $N_{\mathrm{el}}$ and $M = 1$. The CLI
 kind `rhf` refuses $M > 1$ and points to `uhf` or `rohf` (validation page,
 "Open shells in the CLI").
 
@@ -172,6 +175,7 @@ picture of the atom.
 `ferric-core/src/mol.rs::Molecule::nuclear_repulsion` is the double loop of
 (@eq:molecule-3):
 
+<!-- excerpt: ferric-core/src/mol.rs::Molecule::nuclear_repulsion -->
 ```rust
 for i in 0..self.atoms.len() {
     if self.atoms[i].ghost {
@@ -196,6 +200,39 @@ Only the accumulator's declaration and the return have been removed.
 Skipping ghosts gives the same sum as multiplying by $Z^{\mathrm{eff}} = 0$, and
 avoids a division by zero when a ghost sits on top of a real atom.
 
+## A run on water {#molecule-water-run}
+
+The Python bindings expose the electron count of (@eq:molecule-2) and the
+nuclear repulsion of (@eq:molecule-3). Run from the repository root:
+
+```python
+import ferric
+
+water = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+print(water.nelec(), round(water.nuclear_repulsion(), 8))
+
+cation = ferric.Molecule.from_xyz("testdata/molecules/water.xyz", charge=1, multiplicity=2)
+print(cation.nelec())
+
+try:
+    ferric.Molecule.from_xyz("testdata/molecules/water.xyz", charge=1)
+except OSError as err:
+    print(str(err).split(":")[1].strip())
+```
+
+On the build of commit `3f612e0b3` this prints
+
+```text
+10 9.18919323
+9
+inconsistent charge/multiplicity
+```
+
+The first line is $N_{\mathrm{el}} = 10$ and $E_{\mathrm{nn}}$ in Hartree for
+the geometry in `water.xyz`. The doublet cation has 9 electrons. The
+singlet cation is refused when the molecule is built, by the parity check
+above; the bindings raise it as an `OSError`.
+
 ## Frozen core {#molecule-frozen-core}
 
 Core electrons sit close to the nucleus and barely change when bonds form.
@@ -205,9 +242,10 @@ calculation leaves the core orbitals out of the correlation treatment, which
 saves time, and the standard correlation-consistent basis sets are built to
 describe valence correlation only.
 
-`frozen_core = "auto"` freezes the small-core convention that Psi4, ORCA and
-Q-Chem use. `ferric-core/src/mol.rs::core_orbitals` counts the orbitals per
-element:
+`frozen_core = "auto"` freezes a small-core convention, the one pinned by
+the test `core_orbitals_matches_the_small_core_convention` in
+`ferric-core/src/mol.rs`. `ferric-core/src/mol.rs::core_orbitals` counts the
+orbitals per element:
 
 | Elements | Core orbitals |
 |---|---|
@@ -231,6 +269,7 @@ The molecule's count is the sum over real atoms, minus
 $n^{\mathrm{ECP}}_A/2$ for each ECP atom, since the potential has already
 removed those orbitals. From `ferric-core/src/mol.rs::Molecule::auto_frozen_core`:
 
+<!-- excerpt: ferric-core/src/mol.rs::Molecule::auto_frozen_core -->
 ```rust
 self.atoms
     .iter()
@@ -259,10 +298,12 @@ underflow when the freeze covers every occupied orbital.
 
 ## Known limits
 
+Checked 2026-11-19.
+
 - The element table stops at xenon, so every XYZ symbol must be H to Xe.
 - The auto-freeze count is not checked against the occupied count in this
-  module. The check lives at the configuration boundary, where it can name the
-  offending key.
+  module. `active_occ` checks it where the count enters an energy, and its
+  error names `frozen_core`.
 
 ## Sources
 

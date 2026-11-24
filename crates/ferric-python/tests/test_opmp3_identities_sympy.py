@@ -45,6 +45,7 @@ def test_identities_hold():
         ("pade_swapped", "b1 P(A, tB)"),
         ("scalar_in_block", "c1 Tr P(A1+A2, B1+B2)"),
         ("w_unsymmetrized", "d2 Tr W^(2) == RS E2"),
+        ("nbs_gap_flipped", "e2 RS E2 == E_NBS + Tr W^(2)"),
     ],
 )
 def test_each_mutation_turns_the_script_red(mutation, failing):

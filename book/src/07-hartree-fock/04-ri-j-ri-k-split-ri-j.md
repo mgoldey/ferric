@@ -5,8 +5,10 @@
 Density fitting (chapter @sec:density-fitting) expands each orbital product
 $\chi_\mu\chi_\nu$ in an auxiliary basis, so the four-centre integrals of
 section @sec:direct-and-incremental factor into three-centre ones that are computed once per geometry
-and stored. It is the default for Kohn–Sham runs and opt-in for
-Hartree–Fock. Coulomb and exchange use the fit differently. The Coulomb matrix
+and stored. It is the default for Kohn–Sham runs and for the reference SCF
+of the MP2-family kinds (`[scf] jk = "rijk"` with `jk` omitted), and opt-in
+for a plain Hartree–Fock run; the route table in `site/src/methods/scf.md`,
+"Choosing how exchange is built", lists which route runs when. Coulomb and exchange use the fit differently. The Coulomb matrix
 is the potential of one charge cloud, the density, so one fit per iteration
 is enough. Exchange has no single cloud, because the density connects the two
 electrons of each integral, so every exchange product has to be fitted.
@@ -26,12 +28,10 @@ the tensor; then precision, anchors and options.
 | Entry point | Location |
 |---|---|
 | Rust | `ferric-scf/src/df_j.rs::DfJ`, `ferric-scf/src/df_k.rs::DfK`, `ferric-scf/src/split_rij.rs::SplitRiJ` |
-| CLI | `[scf] df_j_aux`, `df_k_aux`, `jk_storage`, `ri_j_precision`; KS defaults to `def2-universal-jkfit` |
+| CLI | `[scf] df_j_aux`, `df_k_aux`, `jk_storage`, `ri_j_precision`, `ri_k_precision`; KS defaults to `def2-universal-jkfit` |
 | Python | `df_j_aux=`, `df_k_aux=` on `run_rhf`, `run_uhf`, `run_rohf`, `run_dft` |
 
-Which route runs for which functional and spin is the table in
-`site/src/methods/scf.md`, "Choosing how exchange is built"; this section is
-about what each route computes.
+This section is about what each route computes.
 
 ## The equations {#ri-j-ri-k-split-ri-j-equations}
 
@@ -126,9 +126,14 @@ are f64. This halves the stored tensor, the largest object of an RI-J run
 energy carries an error first order in the rounding. Geometry and frequency
 tasks default to f64.
 
-Water in cc-pVDZ with def2-universal-jkfit for both fits, from the `589b50832`
-build, shows the two errors side by side: the fitting error of RI-JK against
-exact $J$ and $K$, and the f32 rounding on top of it, about fifty times smaller.
+Water in cc-pVDZ with def2-universal-jkfit for both fits, from the `3f612e0b3`
+build, shows the fitting errors and the f32 rounding side by side. RI-J alone
+lowers the energy by $3.21\times10^{-5}$ Ha, as the bound above says. RI-JK
+raises it by $3.26\times10^{-5}$ Ha: the exchange energy is
+$-\tfrac14\operatorname{tr}[DK]$, the fitted $K$ underestimates
+$\operatorname{tr}[DK]$ (claim N10), so the fitted exchange errs upward and
+outweighs the Coulomb error. The f32 rounding on top is about fifty times
+smaller.
 
 ```python
 import ferric
@@ -138,16 +143,20 @@ bs = ferric.BasisSet.bundled("cc-pvdz")
 aux = "def2-universal-jkfit"
 
 e_direct = ferric.run_rhf(mol, bs).energy                      # exact J and K
+e_rij64 = ferric.run_rhf(mol, bs, df_j_aux=aux,
+                         ri_j_precision="f64").energy          # fitted J only
 e_rijk64 = ferric.run_rhf(mol, bs, df_j_aux=aux, df_k_aux=aux,
                           ri_j_precision="f64").energy         # fitted, f64 tensor
 e_rijk32 = ferric.run_rhf(mol, bs, df_j_aux=aux, df_k_aux=aux).energy  # f32 RI-J default
 print(f"direct              {e_direct:.10f}")
+print(f"RI-J (f64) - direct  {e_rij64 - e_direct:.2e}")
 print(f"RI-JK (f64) - direct {e_rijk64 - e_direct:.2e}")
 print(f"RI-JK f32 - f64      {e_rijk32 - e_rijk64:.2e}")
 ```
 
 ```text
 direct              -76.0267679974
+RI-J (f64) - direct  -3.21e-05
 RI-JK (f64) - direct 3.26e-05
 RI-JK f32 - f64      -6.28e-07
 ```
@@ -169,11 +178,44 @@ once per geometry, so RI-K stores the dressed tensor and needs no solve per
 build. RI-J stores the raw tensor and solves with $V$ each build, which costs
 one $N_{\rm aux}$-vector solve.
 
-The dressing for K is the symmetric $M = U_s\lambda_s^{-1/2}U_s^{\mathsf T}$
-over the eigenpairs of $V$ with $\lambda$ above a cut of about $10^{-10}$
-(`v_inv_sqrt_lindep`, `metric_lindep_cut`): $M^{\mathsf T}M$ is the
-pseudo-inverse of $V$ on the kept span. RI-J uses the full Cholesky inverse,
+The dressing for K is either $M = L^{-1}$ ($V = LL^{\mathsf T}$) or the
+symmetric $M = U_s\lambda_s^{-1/2}U_s^{\mathsf T}$ over the eigenpairs of $V$
+above a cut; the subscript $s$ marks the kept ("surviving") eigenpairs
+(`v_inv_sqrt_lindep`). $M^{\mathsf T}M$ is the pseudo-inverse of $V$ on the
+kept span. The cut is the nominal
+$\tau = 10^{-10}$ (`DFK_LINDEP_THRESH`) unless an eigenvalue lies within
+$100\,\varepsilon\max|\lambda|$ of it; then
+`ferric-scf/src/df_k.rs::metric_lindep_cut` moves the cut to the nearest point
+in the window $[\tau/100, 100\tau]$ that is that far from every eigenvalue,
+so that two eigensolvers that differ by rounding keep the same modes. RI-J uses the full Cholesky inverse,
 so the two fits differ only when modes are cut.
+
+Which factor (`DfkMetricRoute`): Cholesky when it certifies (to rounding)
+that the cut would keep every mode, the eigendecomposition otherwise
+(`ferric-scf/src/df_k.rs::certified_cholesky_factor`). From the factor,
+$1/\lambda_{\min} = \lVert L^{-1}\rVert_2^2 \le
+\min(\lVert L^{-1}\rVert_F^2, \lVert L^{-1}\rVert_1\lVert L^{-1}\rVert_\infty)$
+and $\max\lambda \le \lVert V\rVert_\infty$; the computed factor is exact
+for $V + E$ with $\lVert E\rVert \lesssim N_{\rm aux}\varepsilon\lVert V\rVert$.
+Cholesky is taken when that lower bound on $\lambda_{\min}$ is at least twice
+$\tau + (100 + N_{\rm aux})\,\varepsilon\lVert V\rVert_\infty$, which puts
+every eigenvalue above the cut with its margin up to the factorization's own
+rounding. Under MPI every rank must agree (an all-reduce of the vote): a band of
+$L^{-1}$-dressed rows summed with a band of $V^{-1/2}$-dressed rows is no fit. A metric with
+eigenvalues near or below the cut (near-linearly-dependent auxiliary sets),
+an indefinite one (`dpotrf` fails), the erf metric of a range-separated
+hybrid (not tried: it always has near-null modes), and every DF-K built
+while a geometry task's gradient captures the metric eigendecomposition (the
+gradient reuses it) take the eigendecomposition; so does
+`FERRIC_DFK_METRIC=eigh` (a debug switch). The two factors fit the same span
+then and differ only in rounding: about $10^{-13}$ relative in $K$ at a fixed
+density, and within $3\times10^{-11}$ Ha in converged SCF energies of C8–C16
+alkanes at `energy_conv = 1e-10`, part of which is convergence noise. A
+lower-triangular $M$ also halves the dressing flops: the GEMM of the $Q$ block
+$[q_a, q_b)$ skips the rows $P < q_a$, where $M$ is zero (the flop count of a
+triangular solve); the measured dressing time fell 20–35%, the dressing being
+partly memory bound. On C16H34/def2-SVP the factor step fell from 1.5 s to
+0.1 s and the dressing from 8.9 s to 7.1 s (4 threads, a shared machine).
 
 **Three contractions.** They give the same $K$ and differ in cost:
 
@@ -244,12 +286,13 @@ the Boys function where its relative error is at most $10^{-14}$ per term
 blocks at `integral_thresh`. It applies to the Coulomb operator with orbital
 $l \le 4$ and auxiliary $l \le 6$.
 
-`scripts/scf_jk_builders_sympy.py` (claims S1–S3, N1–N8) proves that the fit
-is a Coulomb-metric projection, the energy error is the residual self-energy,
-RI-J and RI-K are exact for a complete auxiliary set, $M = L^{-1}$ and
-$M = V^{-1/2}$ agree, the occupied and signed-factor routes equal the density
-route, the cut metric fits the kept span, and the packed weights are exact.
-The robust-form stationarity was checked numerically for this section. The
+`scripts/scf_jk_builders_sympy.py` (claims S1–S3, N1–N8, N10) proves that the
+fit is a Coulomb-metric projection, the energy error is the residual
+self-energy, RI-J and RI-K are exact for a complete auxiliary set,
+$M = L^{-1}$ and $M = V^{-1/2}$ agree, the occupied and signed-factor routes
+equal the density route, the cut metric fits the kept span, the packed
+weights are exact, and the RI-K exchange energy errs high. The robust-form
+stationarity is claim S3. The
 response form $G + G^{\mathsf T}$ is claim F1 of
 `scripts/hessian_factored_k_sympy.py` (section @sec:hf-hessian-factored-ri-k).
 
@@ -257,9 +300,9 @@ response form $G + G^{\mathsf T}$ is claim F1 of
 
 | Step | RI-J | RI-K | Split-RI-J |
 |---|---|---|---|
-| once per geometry | $(P\vert\mu\nu)$ packed, Cholesky of $V$ | $B = M(P\vert\mu\nu)$, $M$ the truncated $V^{-1/2}$ | Cholesky of $V$ only |
+| once per geometry | $(P\vert\mu\nu)$ packed, Cholesky of $V$ | $B = M(P\vert\mu\nu)$, $M = L^{-1}$ or the truncated $V^{-1/2}$ | Cholesky of $V$ only |
 | per build | $\gamma = (P\vert\mu\nu)\,w$, solve $Vc = \gamma$, $J = (\mu\nu\vert P)c$ | one of the three routes | recompute the integrals, contract $D$ and $c$ in Hermite form |
-| storage | $N_{\rm aux}N(N+1)/2$, f32 by default | $N_{\rm aux}N^2$ f64, in core or spilled | none |
+| storage | $N_{\rm aux}N(N+1)/2$, f32 by default | $N_{\rm aux}N(N+1)/2$ f64 (packed; f32 with `ri_k_precision = "f32"`), in core or spilled | none |
 
 Where the tensor lives (in core, packed, spilled to disk) is the subject of
 section @sec:three-index-sources.
@@ -325,28 +368,59 @@ the `None` arm runs the density route.
 
 ## Precision {#ri-j-ri-k-split-ri-j-precision}
 
-RI-J stores the tensor in f32 for single points by default. Every other
-quantity is f64. The SCF then converges on the operator of the rounded tensor,
-so the energy error is first order in the rounding, which
-`site/src/methods/scf.md` states. Geometry optimizations and frequencies
-default to f64.
+The f32 RI-J storage is described with the example above: the energy error
+is first order in the rounding (`site/src/methods/scf.md` states the same).
+There is no f64 exit: the reported energy is the f32 functional's, and
+`crates/ferric-scf/tests/dfj_f32_storage.rs` checks that it lies in the
+first-order window the `df_j.rs` module doc derives.
 
-**Open item.** `DfJ::f64_exit_coulomb_energy` would make that error second
-order by recomputing $E_J$ once at the converged density in f64. It is
-implemented and tested (`crates/ferric-scf/tests/dfj_f32_storage.rs`) but no
-production path calls it, while the module doc of `crates/ferric-scf/src/df_j.rs`
-describes the f64 exit as if the SCF energy used it. Either the exit is wired
-in or the module doc says it is unused.
+What decides f32 or f64 for an f32 request (under `jk_storage = "auto"`,
+`"memory"` or `"split"`; `"disk"` and `"direct"` keep f64; `"split"` stores
+a J tensor at all only where Split-RI-J cannot run, so there an f32 tensor
+is rare). First the
+budget: the f32 tensor is built only when it fits, counted with the f64
+tensor it is converted from at its budget-only placement and, in a shared
+RI-JK set-up, the DF-K band in its nominal layout
+(`ferric-scf/src/fock_assembly.rs::rij_f32_beside`). The pool's free bytes
+are never read, so one input under one budget always gets one precision.
+The price is in memory, not precision: where the pool later forces the
+square DF-K layout, the band is larger than the one counted, and the run can
+use more than the budget the decision assumed.
+Then the range, element by element as the tensor is rounded: a finite value
+beyond `f32::MAX` keeps the whole tensor f64, with a stderr notice and
+`f32_range` in the precision record
+(`ferric-integrals/src/three_index_source/f32_store.rs`, `F32Declined`).
+That depends on the integrals only, so it is deterministic too; a Coulomb
+3-index integral is bounded by its Schwarz factors, far below `f32::MAX`,
+so it is not expected to fire.
+
+Known limitation: nothing else about the values or the result decides the
+precision. An element of magnitude below `f32::MIN_POSITIVE` ($\approx 1.2\times10^{-38}$)
+is stored subnormal or as zero, an absolute error of at most $2^{-150}$ (the
+$\eta$ term of the `df_j.rs` bound), and the relative rounding $2^{-24}$ of
+every element is accepted whatever it does to the energy. No run-time check
+compares the first-order error estimate (`dfj_f32_energy_error_factor` times
+$|c|^{\mathsf T}|B||w|$, which grows with the system) with a tolerance, and
+nothing falls back to f64 on it. `dfj_f32_storage.rs` checks the error window
+on its test molecules only. A large system, or an energy difference at the
+µEh scale, gets the f32 result unless `ri_j_precision = "f64"` is set.
+
+RI-K stores the dressed tensor as the packed lower triangle on the CPU, f64 by
+default; that tier is bit-identical to the square tensor
+(`crates/ferric-scf/tests/dfk_packed_storage.rs`). The square f64 tensor is
+kept only when a `[gpu]` mode may build $K$ on the device. With
+`ri_k_precision = "f32"` (opt-in) each element is rounded to f32 once, a
+quarter of the square f64 size, and widened to f64 before the same products.
+No f64 copy is kept, so f32 RI-K has no f64 exit either: the SCF converges to
+the stationary point of the rounded functional and the energy error is first
+order in the rounding (`crates/ferric-scf/src/df_k.rs` module doc records
+$|E_{\rm f32} - E_{\rm f64}|$ from 2.6e-9 to 1.08e-7 Ha on water and
+sulfamethoxazole).
 
 ## Split-RI-J {#ri-j-ri-k-split-ri-j-split-ri-j}
 
-Split-RI-J solves the same $Vc = \gamma$ with the same Cholesky factor. The
-difference is that $(P|\mu\nu)$ is recomputed each build in a
-McMurchie–Davidson kernel that never forms the Cartesian block. Two
-approximations sit on top of RI-J: the large-argument Boys asymptote where its
-error is at most $10^{-14}$ per term (`FAR_EPS`), and a Schwarz-type screen on
-(orbital pair, auxiliary shell) blocks. It is RI-J to those tolerances, not to
-rounding. It is chosen by `jk_storage = "split"`, or by `"auto"` when the
+Split-RI-J (derived in @sec:ri-j-ri-k-split-ri-j-equations) is RI-J to the
+tolerances of its two approximations, not to rounding. It is chosen by `jk_storage = "split"`, or by `"auto"` when the
 three-index tensor does not fit the budget
 (`crates/ferric-scf/tests/auto_split_rij.rs`). It trades memory for time: it
 stores nothing of size $N_{\rm aux}N^2$, and pays one three-index integral
@@ -367,17 +441,9 @@ tensor) and `crates/ferric-scf/tests/dfj_f32_storage.rs` (f32 storage).
 |---|---|
 | `df_j_aux`, `df_k_aux` | the auxiliary basis; `""` turns fitting off |
 | `ri_j_precision = "f32"` / `"f64"` | RI-J tensor storage |
+| `ri_k_precision = "f32"` / `"f64"` | RI-K dressed-tensor storage (f64 default) |
 | `jk_storage = "auto"`, `"memory"`, `"disk"`, `"direct"`, `"split"` | where the tensor lives, or Split-RI-J |
 | a range-separated hybrid | two RI-K fitters, $\mathrm{erfc}(\omega r)/r$ and $\mathrm{erf}(\omega r)/r$, on one auxiliary basis |
-
-## Doc fixes needed {#ri-j-ri-k-split-ri-j-doc-fixes-needed}
-
-| Text | Code |
-|---|---|
-| `df_j.rs` module doc: "the inverse Coulomb metric $V^{-1}$ [is] precomputed" | a Cholesky factor is stored and solved against; no inverse is formed |
-| `df_j.rs` module doc: f64 exit makes the error second order | the exit is not called (open item above) |
-| orphaned doc comments in `df_k.rs` and `fock_assembly.rs` | attach or delete |
-| `split_rij.rs` describes the build as exact | it carries `FAR_EPS` and the block screen |
 
 ## Sources
 
@@ -385,3 +451,5 @@ tensor) and `crates/ferric-scf/tests/dfj_f32_storage.rs` (f32 storage).
 |---|---|
 | `scripts/scf_jk_builders_sympy.py` | verified equations @eq:scf-rij-packed to @eq:scf-rik-routes |
 | `site/src/methods/scf.md`, "Choosing how exchange is built" | routes and the f32 statement |
+| B. I. Dunlap, J. W. D. Connolly and J. R. Sabin, J. Chem. Phys. 71, 3396 (1979); F. Weigend, Phys. Chem. Chem. Phys. 4, 4285 (2002) | the Coulomb-metric fit and RI-K |
+| F. Neese, J. Comput. Chem. 24, 1740 (2003) | Split-RI-J |

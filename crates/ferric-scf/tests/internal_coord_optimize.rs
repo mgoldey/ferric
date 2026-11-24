@@ -54,10 +54,7 @@ use ferric_scf::optimize::{
 use ferric_scf::rhf::RhfConfig;
 
 fn rhf_cfg() -> RhfConfig {
-    RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    }
+    RhfConfig::default().with_energy_conv(1e-10)
 }
 
 /// H2 started from a stretched 1.0 Angstrom bond — the same system as the

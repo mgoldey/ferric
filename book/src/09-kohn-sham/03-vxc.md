@@ -60,8 +60,9 @@ That is the von Weizsäcker value $\tau_W$. One orbital is fixed by its
 density, so $\tau$ carries nothing new there. With several orbitals,
 $\tau \ge \tau_W$ (the Cauchy–Schwarz inequality on
 $\nabla\rho = 4\sum_i\phi_i\nabla\phi_i$), so a meta-GGA can tell a
-one-orbital region from one where several orbitals overlap. ferric uses no
-density Laplacian: meta-GGAs are evaluated $\tau$-only.
+one-orbital region from one where several orbitals overlap. Meta-GGAs that
+need the density Laplacian are refused (section
+@sec:ks-equations-functional-families).
 
 **Spin-polarized packing.** Polarized quantities follow libxc's interleaved
 order: $\rho = (\rho_\alpha, \rho_\beta)$,
@@ -105,6 +106,27 @@ An LDA has $v_\sigma = v_\tau = 0$ and keeps only the first term; a GGA has
 $v_\tau = 0$. In a uniform density $\nabla\rho = 0$, so the GGA term
 vanishes and a GGA's matrix has the LDA form.
 
+**The matrix element and the potential.** The textbook Kohn–Sham potential
+is the functional derivative $\delta E_{xc}/\delta\rho$, a function of
+position. Vary $\rho$ by $\delta\rho$. Then $\delta\sigma = 2\nabla\rho\cdot\nabla\delta\rho$
+and
+
+$$ \delta E_{xc} = \int\bigl(v_\rho\,\delta\rho + 2v_\sigma\nabla\rho\cdot\nabla\delta\rho\bigr)\,d\mathbf r . $$
+
+Integrate the second term by parts. The boundary term vanishes for a
+decaying density, and
+
+$$ v_{xc} = \frac{\delta E_{xc}}{\delta\rho} = v_\rho - 2\nabla\cdot(v_\sigma\nabla\rho) . $$
+
+This potential needs the second derivatives of $\rho$. The matrix-element
+form above does not. The two differ by a pure divergence. By the product
+rule,
+
+$$ v_\rho\chi_\mu\chi_\nu + 2v_\sigma\nabla\rho\cdot\nabla(\chi_\mu\chi_\nu) - v_{xc}\chi_\mu\chi_\nu = \nabla\cdot\bigl(2v_\sigma\nabla\rho\,\chi_\mu\chi_\nu\bigr), $$
+
+which integrates to zero for decaying AOs. So both define the same Fock
+matrix, and the code uses the left form.
+
 Where does the $\tfrac12$ of $\tau$ go? In $V_{xc}$ it stays: each matrix
 element carries $\tfrac12v_\tau$. In the nuclear gradient (section @sec:xc-gradient) it
 cancels: moving a nucleus differentiates both $\partial_b\chi_\mu$ and
@@ -135,27 +157,6 @@ $\partial\sigma_{\alpha\beta}/\partial\nabla\rho_\alpha = \nabla\rho_\beta$.
 At $\rho_\alpha = \rho_\beta$ the polarized matrix reduces to the closed-shell
 one (`test_polarized_equals_closed_at_equal_spin_densities`).
 
-**The matrix element and the potential.** The textbook Kohn–Sham potential
-is the functional derivative $\delta E_{xc}/\delta\rho$, a function of
-position. Vary $\rho$ by $\delta\rho$. Then $\delta\sigma = 2\nabla\rho\cdot\nabla\delta\rho$
-and
-
-$$ \delta E_{xc} = \int\bigl(v_\rho\,\delta\rho + 2v_\sigma\nabla\rho\cdot\nabla\delta\rho\bigr)\,d\mathbf r . $$
-
-Integrate the second term by parts. The boundary term vanishes for a
-decaying density, and
-
-$$ v_{xc} = \frac{\delta E_{xc}}{\delta\rho} = v_\rho - 2\nabla\cdot(v_\sigma\nabla\rho) . $$
-
-This potential needs the second derivatives of $\rho$. The matrix-element
-form above does not. The two differ by a pure divergence. By the product
-rule,
-
-$$ v_\rho\chi_\mu\chi_\nu + 2v_\sigma\nabla\rho\cdot\nabla(\chi_\mu\chi_\nu) - v_{xc}\chi_\mu\chi_\nu = \nabla\cdot\bigl(2v_\sigma\nabla\rho\,\chi_\mu\chi_\nu\bigr), $$
-
-which integrates to zero for decaying AOs. So both define the same Fock
-matrix, and the code uses the left form.
-
 > **Verified equation {#eq:ks-vxc-matrix-elements}** · $V_{xc} = \partial E_{xc}/\partial D$, closed shell and polarized
 >
 > For a generic $e(\rho, \sigma, \tau)$ (closed shell) and a generic
@@ -173,7 +174,7 @@ matrix, and the code uses the left form.
 > | Negative control | the runner drops the $\tfrac12$ on $v_\tau$ (numeric closed fails), sets the polarized cross coefficient to 2, and halves the GGA factor; the script's own controls fail the same way symbolically |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` (validation tier: about 12 minutes) |
 > | Code | `ferric-dft/src/vxc.rs::{semilocal_vxc_closed_scratch,semilocal_vxc_polarized_scratch}` |
-> | Code test | `tau_from_density_matrix_matches_explicit_mo_sum` in `crates/ferric-dft/src/density_on_grid.rs` |
+> | Code test | `tau_from_density_matrix_matches_explicit_mo_sum` in `crates/ferric-dft/src/density_on_grid.rs` (the $\tau$ input); the matrix itself is checked end to end by the pytest `test_vxc_is_the_derivative_of_exc` |
 >
 > <!-- verified: id=ks.vxc.matrix-elements; script=scripts/dft_vxc_matrix_elements_sympy.py; claim=closed; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-dft/src/vxc.rs::{semilocal_vxc_closed_scratch,semilocal_vxc_polarized_scratch}; rust_test=ferric-dft/src/density_on_grid.rs::tau_from_density_matrix_matches_explicit_mo_sum; registry=ks-mgga -->
 
@@ -181,7 +182,7 @@ The numeric claim's residual on the model is $\le 7\times10^{-17}$, closed and
 polarized. The production check of the same identity is end to end: a
 central difference of ferric's own $E_{xc}$ along a random symmetric $X$
 against $\mathrm{Tr}[V_{xc}X]$ for PBE, SCAN, ωB97X and ωB97X-V, closed and
-polarized, to $10^{-9}$ relative (`test_vxc_is_the_derivative_of_exc` in
+polarized, to $10^{-9}\max(1, \lvert\mathrm dE_{xc}/\mathrm dt\rvert)$ (`test_vxc_is_the_derivative_of_exc` in
 `crates/ferric-python/tests/test_xc_blocks.py`).
 `crates/ferric-dft/tests/mgga_polarized_packing.rs` checks the polarized
 packing, the independence of the two $\tau$ channels, and the values
@@ -277,6 +278,12 @@ batches and calls the same libxc kernels, so the two cannot drift.
 with $s = wv_\rho$, $f_a = 2wv_\sigma\partial_a\rho$, $t = \tfrac12wv_\tau$
 (below the density floor all three are zero).
 
+Step 4 sits between two per-batch passes. So $\rho$, $\nabla\rho$ and $\tau$
+for every point of the grid are resident between them, $O(N_{\rm grid})$
+memory, and the AO values of each batch are either kept from step 3 or
+recomputed in step 6 (the resident or recompute option below; both give
+the same bits).
+
 Step 6 folds all three terms into one GEMM. Read off what
 $V_b + V_b^{\mathsf T}$ contains, term by term:
 
@@ -322,7 +329,10 @@ inside a batch everything is serial; the batch contributions are summed in a
 fixed grouping that depends on the problem shape, never on the thread
 count. The result is bit-identical across thread counts. Setting the
 screening threshold to zero keeps every shell and is the exactness anchor
-of the screen.
+of the screen: `batched_matches_dense_in_the_trivial_limit_closed_shell` and
+`batched_matches_dense_in_the_trivial_limit_uks` in
+`crates/ferric-dft/src/ks.rs` compare the batched matrix at threshold zero
+with the dense one.
 
 ## Options {#vxc-options}
 
@@ -336,7 +346,7 @@ of the screen.
 
 | Quantity | Value | Source |
 |---|---|---|
-| FD of $E_{xc}$ vs $\mathrm{Tr}[V_{xc}X]$, PBE, SCAN, ωB97X-V | $10^{-9}$ relative | `test_vxc_is_the_derivative_of_exc`, `crates/ferric-python/tests/test_xc_blocks.py` |
+| FD of $E_{xc}$ vs $\mathrm{Tr}[V_{xc}X]$, PBE, SCAN, ωB97X-V | $10^{-9}\max(1, \lvert\mathrm dE_{xc}/\mathrm dt\rvert)$ | `test_vxc_is_the_derivative_of_exc`, `crates/ferric-python/tests/test_xc_blocks.py` |
 | polarized evaluation vs PySCF `eval_xc`, packing | bit-for-bit | `crates/ferric-dft/tests/mgga_polarized_packing.rs` |
 | SCAN, r2SCAN energies vs PySCF | $\le 4.0\times10^{-12}$ Ha (RKS) | `crates/ferric-scf/tests/validation_mgga_energies.rs` |
 

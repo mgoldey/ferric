@@ -93,6 +93,7 @@ pub fn hirshfeld_margin() -> f64 {
 }
 
 mod hirshfeld_grid;
+mod slater_proatom;
 pub use hirshfeld_grid::{
     atomic_effective_volumes_hirshfeld, atomic_effective_volumes_hirshfeld_on_grid,
     estimate_hirshfeld_grid_scan_bytes, estimate_hirshfeld_volume_gradient_bytes,
@@ -102,6 +103,7 @@ pub use hirshfeld_grid::{
     preflight_hirshfeld_grid_scan_reserved, HIRSHFELD_GRAD_CHUNK_POINTS,
     HIRSHFELD_VOLUME_CHUNK_POINTS,
 };
+pub use slater_proatom::SlaterProatom;
 
 /// Evaluate the electrostatic potential V(R_A) at each nuclear position,
 /// excluding the divergent self-interaction Z_A/|R_A − R_A|.
@@ -1067,6 +1069,11 @@ pub fn scf_proatom_radii() -> Vec<f64> {
 ///   `config.xc` is set, fractional (ensemble) occupation of the degenerate
 ///   frontier orbitals so the open-shell GGA atom stays spherical and converges.
 ///
+/// When `bs` carries an effective core potential for `z`, the free atom gets
+/// it ([`Molecule::apply_ecp`]), exactly as the molecule's SCF does: the
+/// proatom is then the valence density, integrating to `z - n_core`, and
+/// consistent with the (valence) molecular density it partitions.
+///
 /// The total density is spherically averaged by [`spherically_averaged_proatom`]
 /// onto [`scf_proatom_radii`]. It returns `None` — so the Hirshfeld routine
 /// falls back to the Slater proatom of [`slater_xi_for_z`] for that atom — for a
@@ -1088,7 +1095,12 @@ pub fn scf_proatom_provider<'a>(
         let mult = proatom_ground_state_mult(z);
         let sym = ferric_core::elements::z_to_symbol(z).unwrap_or("X");
         let axyz = format!("1\n{sym}\n{sym} 0 0 0\n");
-        let amol = Molecule::parse_xyz(&axyz, 0, mult).ok()?;
+        let mut amol = Molecule::parse_xyz(&axyz, 0, mult).ok()?;
+        // The basis set's ECP, as the molecule's own SCF applies it: the
+        // molecular density of an ECP basis is the valence density, so the
+        // proatom must be the valence density too (and an all-electron count
+        // in an ECP basis overfills it). A no-op for an all-electron basis.
+        amol.apply_ecp(bs);
         let aobs = PreparedBasis::new(&amol, bs).ok()?;
         let abounds = crate::screening::SchwarzBounds::compute(op, &aobs).ok()?;
         let mut acfg = config.clone();
@@ -1179,8 +1191,6 @@ pub fn lowdin_charges(
     prep: &PreparedBasis,
     density: &Array2<f64>,
 ) -> Result<Vec<f64>, FerricError> {
-    use ndarray_linalg::Eigh;
-
     let nbf = prep.nbasis();
     if density.nrows() != nbf || density.ncols() != nbf {
         return Err(FerricError::General(format!(
@@ -1193,20 +1203,8 @@ pub fn lowdin_charges(
     let s = oneelectron::overlap(prep);
 
     // S = U diag(λ) U^T → S^{1/2} = U diag(√λ) U^T.
-    let (eigvals, eigvecs) = s
-        .eigh(ndarray_linalg::UPLO::Upper)
-        .map_err(|e| FerricError::General(format!("lowdin_charges: S eigh failed: {e}")))?;
-    let mut sqrt_lambda = Array2::<f64>::zeros((nbf, nbf));
-    for i in 0..nbf {
-        if eigvals[i] <= 0.0 {
-            return Err(FerricError::General(format!(
-                "lowdin_charges: overlap eigenvalue {} <= 0 (linear dependence)",
-                eigvals[i]
-            )));
-        }
-        sqrt_lambda[(i, i)] = eigvals[i].sqrt();
-    }
-    let s_half = eigvecs.dot(&sqrt_lambda).dot(&eigvecs.t());
+    let s_half = ferric_core::linalg::symmetric_sqrt(&s)
+        .map_err(|e| FerricError::General(format!("lowdin_charges: S^1/2: {e}")))?;
 
     // M = S^{1/2} · D · S^{1/2}
     let m = s_half.dot(density).dot(&s_half);
@@ -1323,6 +1321,7 @@ struct EspGridPoint {
 /// resolver. Every production caller passes `None` (the ambient budget); the
 /// parameter is a TEST SEAM so the guard's refusal can be exercised at a
 /// chosen budget, not a user-facing knob.
+#[allow(clippy::too_many_arguments)]
 fn chelpg_grid_esp(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -2041,7 +2040,10 @@ fn solve_resp_restrained_with_max_iter(
 /// qualitative: on H2O, CO and CH3OH they differ from the free-atom SCF
 /// proatom charges by 0.23–0.72 e and flip the sign of the CH3OH carbon
 /// (`crates/ferric-rpa/tests/validation_hirshfeld.rs`).
-/// [`scf_proatom_provider`] supplies the free-atom SCF proatoms. The additive per-atom
+/// [`scf_proatom_provider`] supplies the free-atom SCF proatoms. An atom
+/// carrying an ECP does not use this exponent: [`SlaterProatom::for_atom`]
+/// gives it a valence-shell proatom instead (a single exponential has no core
+/// to remove). The additive per-atom
 /// polarizability partition in `pdep_polarizability_hirshfeld` is less
 /// sensitive to the proatom shape, since its sum rule is enforced numerically.
 pub fn slater_xi_for_z(z: i32) -> f64 {
@@ -2151,6 +2153,73 @@ mod tests {
             assert_eq!(pa.radii, pb.radii);
             assert_eq!(pa.rho, pb.rho, "Z={z}");
         }
+    }
+
+    /// An ECP element's free atom carries the basis set's ECP, like the
+    /// molecule's SCF: iodine in def2-SVP (28-electron core) is solved with its
+    /// 25 valence electrons, so the proatom integrates to Z - n_core = 25. It
+    /// used to be solved with all 53 electrons in the valence basis and panicked
+    /// in `UhfState::new` (occupied block past the basis dimension).
+    #[test]
+    fn proatom_provider_applies_the_basis_ecp() {
+        let bs = basis::bundled("def2-svp").unwrap();
+        let n_core = bs
+            .ecp_for_element(53)
+            .expect("def2-SVP has an I ECP")
+            .n_core;
+        let ctx = ParallelContext::default();
+        let cfg = RhfConfig::default();
+        let provider = scf_proatom_provider(&ctx, &bs, Operator::coulomb(), &cfg);
+        let pa = provider(53, 0).expect("iodine SCF proatom");
+        // 4 pi Int r^2 rho dr by the trapezoid rule on the 0.05 Bohr table
+        // (the [0, 0.05] Bohr sliver carries ~r^3 of the density: negligible).
+        let (r, rho) = (pa.radii(), pa.rho());
+        let n: f64 = (1..r.len())
+            .map(|k| {
+                let f = |i: usize| r[i] * r[i] * rho[i];
+                0.5 * (f(k - 1) + f(k)) * (r[k] - r[k - 1])
+            })
+            .sum::<f64>()
+            * 4.0
+            * std::f64::consts::PI;
+        let valence = f64::from(53 - n_core);
+        assert!(
+            (n - valence).abs() < 0.05,
+            "iodine proatom holds {n} electrons, expected the {valence} valence ones"
+        );
+    }
+
+    /// The Slater fallback proatom of an ECP atom holds the valence electrons
+    /// of the density it partitions: iodine with def2-SVP's ECP applied (as
+    /// every Hirshfeld caller passes the molecule) integrates to 53 - 28 = 25,
+    /// numerically as well as by construction, and H keeps the single
+    /// exponential normalized to 1.
+    #[test]
+    fn slater_fallback_proatom_of_an_ecp_atom_is_the_valence_one() {
+        let bs = basis::bundled("def2-svp").unwrap();
+        let mut mol = Molecule::parse_xyz("2\nHI\nH 0 0 0\nI 0 0 3.3\n", 0, 1).unwrap();
+        mol.apply_ecp(&bs);
+        assert_eq!(mol.atoms[1].n_core_ecp, 28);
+        let quad = |p: &SlaterProatom| -> f64 {
+            let h = 1e-3;
+            (1..=40_000)
+                .map(|k| {
+                    let r = k as f64 * h;
+                    r * r * p.at(r) * h
+                })
+                .sum::<f64>()
+                * 4.0
+                * std::f64::consts::PI
+        };
+        let i = SlaterProatom::for_atom(&mol.atoms[1]);
+        assert!(
+            (i.n_electrons() - 25.0).abs() < 1e-12,
+            "{}",
+            i.n_electrons()
+        );
+        assert!((quad(&i) - 25.0).abs() < 1e-6, "{}", quad(&i));
+        let h = SlaterProatom::for_atom(&mol.atoms[0]);
+        assert!((quad(&h) - 1.0).abs() < 1e-6, "{}", quad(&h));
     }
 
     fn build_h2() -> (

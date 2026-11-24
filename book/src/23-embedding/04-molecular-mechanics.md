@@ -20,9 +20,11 @@ describe: the MM–MM energy and the Lennard-Jones between the QM and MM atoms
 
 The section goes term by term: bonds, angles and torsions (@sec:molecular-mechanics-bonds-angles-torsions), the
 dihedral gradient (@sec:molecular-mechanics-dihedral-angle-gradient), the nonbonded sum and its exclusions (@sec:molecular-mechanics-nonbonded-terms-exclusions-1),
-the QM–MM Lennard-Jones (@sec:molecular-mechanics-qm-mm-lennard-jones) and the optional cutoff (@sec:molecular-mechanics-opt-nonbonded-cutoff). The
+the QM–MM Lennard-Jones (@sec:molecular-mechanics-qm-mm-lennard-jones) and the optional cutoff (@sec:molecular-mechanics-opt-nonbonded-cutoff), then a
+Python example (@sec:molecular-mechanics-running-it). The
 proofs are in `scripts/mm_dihedral_gradient_sympy.py` (60-digit arithmetic,
-a negative control per claim) and `scripts/mm_cutoff_sympy.py`.
+a negative control per claim) and `scripts/mm_cutoff_sympy.py` (the cutoff
+identities, and the bond and pair gradients in claim 6).
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -61,6 +63,21 @@ the constants are half of those a $\tfrac12k(r-r_0)^2$ code uses: OpenMM's
 differentiate $(r-r_0)^2$ to $2(r-r_0)$ and use $\partial r/\partial\mathbf R_i = \mathbf r_{ij}/r$:
 
 $$ \frac{\partial E}{\partial\mathbf R_i} = 2k(r-r_0)\,\frac{\mathbf r_{ij}}{r} = -\frac{\partial E}{\partial\mathbf R_j} . $$
+
+> **Verified equation {#eq:mm-bond-gradient}** · the bond gradient
+>
+> The rows $\pm 2k(r-r_0)\,\mathbf r_{ij}/r$ equal the symbolic gradient of
+> $k(r-r_0)^2$ with respect to all six coordinates of the two atoms.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/mm_cutoff_sympy.py`, claim 6 |
+> | Negative control | the runner drops the factor 2 from `bond_dedr` |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-mm/src/energy.rs::bonded_terms` |
+> | Code test | `bond_energy_hand_computed_and_gradient_vs_fd` in `crates/ferric-mm/tests/terms_fd.rs` |
+>
+> <!-- verified: id=mm.bond.gradient; script=scripts/mm_cutoff_sympy.py; claim=6; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mm/src/energy.rs::bonded_terms; rust_test=ferric-mm/tests/terms_fd.rs::bond_energy_hand_computed_and_gradient_vs_fd; registry=mm -->
 
 **Angles.** The valence angle $\theta\in[0,\pi]$ at the central atom $j$ is
 also harmonic, again with no leading $\tfrac12$:
@@ -301,6 +318,23 @@ if mixed.epsilon != 0.0 && scale_lj != 0.0 {
 | $E_{\mathrm{LJ}}$ of the pair | `e_lj` |
 | $\partial E_{\mathrm{LJ}}/\partial r$ | `dedr`, then times $\pm\hat{\mathbf r}$ on the two atoms |
 
+> **Verified equation {#eq:mm-pair-gradient}** · the Lennard-Jones and Coulomb pair gradients
+>
+> With the 1–4 scale factors left symbolic, the rows
+> $\pm(\partial E/\partial r)\,\hat{\mathbf r}$ built from the code's `dedr`
+> expressions equal the symbolic gradient of each pair energy with respect to
+> both atoms.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/mm_cutoff_sympy.py`, claim 6 |
+> | Negative control | a Coulomb `dedr` of $+q_iq_j/r^2$ fails the same check |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-mm/src/energy.rs::plain_pair` |
+> | Code test | `nonbonded_hand_computed_and_gradient_vs_fd` in `crates/ferric-mm/tests/terms_fd.rs` |
+>
+> <!-- verified: id=mm.pair.gradient; script=scripts/mm_cutoff_sympy.py; claim=6; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mm/src/energy.rs::plain_pair; rust_test=ferric-mm/tests/terms_fd.rs::nonbonded_hand_computed_and_gradient_vs_fd; registry=mm -->
+
 ### Which pairs count
 
 Atoms one or two bonds apart already interact through the bond and angle
@@ -489,6 +523,62 @@ energy and the full gradient are bit-identical to `gradient`, and the Coulomb
 energy differs by exactly $-c_{\mathrm{rf}}\sum q_iq_j$, the constant shift
 (`crates/ferric-mm/tests/cutoff.rs`).
 
+## Running it {#molecular-mechanics-running-it}
+
+From Python the force field enters through `run_qmmm(mm_topology=)`. The
+topology covers every atom of the structure, QM atoms included, because the
+exclusions come from the full bond graph. This water dimer puts one water in
+the QM region and gives the other the TIP3P parameters with flexible bonds:
+
+```python
+import ferric
+
+# Water dimer: atoms 0-2 are the QM water, atoms 3-5 the MM water (TIP3P).
+symbols = ["O", "H", "H", "O", "H", "H"]
+coords = [
+    (0.000, 0.000, 0.000), (0.757, 0.586, 0.000), (-0.757, 0.586, 0.000),
+    (0.000, -0.300, 2.900), (0.757, 0.286, 2.900), (-0.757, 0.286, 2.900),
+]
+charges = [-0.834, 0.417, 0.417] * 2
+system = ferric.QmmmSystem(symbols, coords, charges, qm_indices=[0, 1, 2])
+
+# AMBER units: kcal/mol, Angstrom, degrees. TIP3P with flexible bonds.
+topology = ferric.MmTopology.from_amber_units(
+    charges,
+    [3.15061, 0.0, 0.0] * 2,
+    [0.1521, 0.0, 0.0] * 2,
+    [(0, 1, 553.0, 0.9572), (0, 2, 553.0, 0.9572),
+     (3, 4, 553.0, 0.9572), (3, 5, 553.0, 0.9572)],
+    [(1, 0, 2, 100.0, 104.52), (4, 3, 5, 100.0, 104.52)],
+    [],
+)
+result = ferric.run_qmmm(system, "cc-pvdz", mm_topology=topology)
+print(f"E_total = {result.energy:.10f} Ha")
+for name, value in result.mm_energy.items():
+    print(f"  {name:8s} {value: .6e}")
+```
+
+At build `3f612e0b3` this prints:
+
+```text
+E_total = -76.0217877933 Ha
+  bond      2.184894e-08
+  angle     2.733705e-09
+  torsion   0.000000e+00
+  lj        9.150682e-04
+  coulomb   0.000000e+00
+  total     9.150928e-04
+```
+
+The components follow the additive rules of section
+@sec:qmmm-boundaries-additive-mm-terms. The QM water's bonds and angle are
+dropped, so the small bond and angle energies are the MM water's, whose O–H
+length differs from $r_0$ by about $10^{-4}$ Å. The MM–MM Coulomb term is
+zero because the only MM–MM pairs are 1–2 and 1–3 within one water, both
+excluded. The QM–MM Coulomb interaction is inside the SCF energy, not here.
+The Lennard-Jones energy is the oxygen–oxygen repulsion across the cut at
+2.92 Å, about $9.2\times10^{-4}$ Ha (0.57 kcal/mol).
+
 ## The algorithm {#molecular-mechanics-algorithm}
 
 | Step | Quantity | Cost | Function |
@@ -524,7 +614,7 @@ options and always use the all-pairs sum.
 
 | Source | What it gives |
 |---|---|
-| `scripts/mm_dihedral_gradient_sympy.py`, `scripts/mm_cutoff_sympy.py` | the dihedral and angle gradients, the cutoff identities |
+| `scripts/mm_dihedral_gradient_sympy.py`, `scripts/mm_cutoff_sympy.py` | the dihedral and angle gradients, the cutoff identities, the bond and pair gradients |
 | `crates/ferric-mm/tests/vs_openmm.rs`, `crates/ferric-mm/tests/validation_mm.rs`, `crates/ferric-mm/tests/cutoff.rs`, `crates/ferric-mm/tests/terms_fd.rs`, `crates/ferric-mm/tests/ring_exclusions.rs` | OpenMM comparisons, FD, and the ring rule |
 
 **Known limits (2026-11-15).**

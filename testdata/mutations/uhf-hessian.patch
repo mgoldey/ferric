@@ -1,0 +1,13 @@
+diff --git a/crates/ferric-scf/src/hessian/uhf_df.rs b/crates/ferric-scf/src/hessian/uhf_df.rs
+index 8ea0503e9..88bfd20fe 100644
+--- a/crates/ferric-scf/src/hessian/uhf_df.rs
++++ b/crates/ferric-scf/src/hessian/uhf_df.rs
+@@ -260,7 +260,7 @@ pub(super) fn open_shell_two_electron(
+     let no_density = Array2::<f64>::zeros(d.dim());
+     let specs = [da, db].map(|ds| FockSpec {
+         coulomb: if rij.is_some() { &no_density } else { d },
+-        exchange: if rik.is_some() { &no_density } else { ds },
++        exchange: if rik.is_some() { &no_density } else { da },
+         k_scale: k_fock,
+     });
+     let t = phases.begin("first-order Fock (1e + ERI 1st derivs)");

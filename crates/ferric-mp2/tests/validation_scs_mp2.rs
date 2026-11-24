@@ -58,6 +58,7 @@ use ferric_mp2::scs::{scs_mp2, ScsMp2Config};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use serde_json::Value;
 
 const ROW_DIR: &str = "testdata/reference/validation/attenuated_mp2";
@@ -113,12 +114,6 @@ fn reference(system: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn check_close(ctx: &str, what: &str, got: f64, want: f64, tol: f64) {
     let d = (got - want).abs();
     eprintln!("{ctx}: {what:<8} ferric {got:+.12} ref {want:+.12} |d| {d:.2e} (tol {tol:.1e})");
@@ -144,7 +139,7 @@ fn load_system(system: &str, r: &Value) -> System {
         &ctx,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(r, "/nuclear_repulsion", &ctx),
+        num_ctx(r, "/nuclear_repulsion", &ctx),
         TOL_ENUC,
     );
     assert_eq!(r["auxbasis"].as_str(), Some(AUXBASIS), "{ctx}: aux basis");
@@ -162,12 +157,10 @@ fn load_system(system: &str, r: &Value) -> System {
     );
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let cfg = RhfConfig {
-        max_iter: 200,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_max_iter(200)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9);
     let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg)
         .unwrap_or_else(|e| panic!("{ctx}: RHF failed: {e:?}"));
     assert!(rhf.converged, "{ctx}: RHF not converged");
@@ -175,7 +168,7 @@ fn load_system(system: &str, r: &Value) -> System {
         &ctx,
         "E_RHF",
         rhf.energy,
-        num(r, "/rhf_energy", &ctx),
+        num_ctx(r, "/rhf_energy", &ctx),
         TOL_RHF,
     );
     System {
@@ -190,9 +183,9 @@ fn check_system(system: &str) {
     let r = reference(system);
     let sys = load_system(system, &r);
     let ctx = format!("{system}/{BASIS}");
-    let e_os_ref = num(&r, "/coulomb/e_os", &ctx);
-    let e_ss_ref = num(&r, "/coulomb/e_ss", &ctx);
-    let e_mp2_ref = num(&r, "/coulomb/e_corr", &ctx);
+    let e_os_ref = num_ctx(&r, "/coulomb/e_os", &ctx);
+    let e_ss_ref = num_ctx(&r, "/coulomb/e_ss", &ctx);
+    let e_mp2_ref = num_ctx(&r, "/coulomb/e_corr", &ctx);
     let e_scs_ref = C_OS * e_os_ref + C_SS * e_ss_ref;
 
     let res = scs_mp2(
@@ -254,7 +247,7 @@ fn scs_mp2_with_unit_coefficients_is_ri_mp2() {
             &ctx,
             "vs ref",
             res.scs_corr,
-            num(&r, "/coulomb/e_corr", &ctx),
+            num_ctx(&r, "/coulomb/e_corr", &ctx),
             TOL_COMPONENT,
         );
     }

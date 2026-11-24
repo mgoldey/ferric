@@ -71,13 +71,11 @@ fn h2o_pbe() -> Case {
     let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
-    let cfg = RhfConfig {
-        xc: Some("pbe".into()),
-        max_iter: 200,
-        energy_conv: 1e-10,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc("pbe")
+        .with_max_iter(200)
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-9);
     let rks = solve_rhf(
         &ParallelContext::default(),
         &mol,

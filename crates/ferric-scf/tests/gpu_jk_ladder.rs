@@ -64,6 +64,7 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
+use ferric_testkit::molecules::water_xyz;
 use ndarray::{Array1, Array2, ArrayView2};
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
@@ -295,17 +296,15 @@ fn gpu_delta(a: &GpuStatsSnapshot, b: &GpuStatsSnapshot) -> (u64, u64, u64) {
 fn scf(sys: &System, arm: Arm, k: Kernels) -> Run {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &sys.obs).unwrap();
-    let cfg = RhfConfig {
+    let mut cfg = RhfConfig::default()
         // dP is the real gate; energy_conv is only a "not still descending" bound
         // (an RI energy never settles to 1e-10, see the noise-floor notes).
-        energy_conv: 1e-6,
-        density_conv: DENSITY_CONV,
-        max_iter: 200,
-        df_j_aux: Some(AUX.into()),
-        df_k_aux: Some(AUX.into()),
-        three_index_budget_bytes: 3 << 30,
-        ..Default::default()
-    };
+        .with_energy_conv(1e-6)
+        .with_density_conv(DENSITY_CONV)
+        .with_max_iter(200)
+        .with_df_j_aux(AUX)
+        .with_df_k_aux(AUX);
+    cfg.three_index_budget_bytes = 3 << 30;
     let _s = Seams::arm(arm, k);
     let (l0, g0) = (counters(LadderSite::Jk), stats());
     let k0 = kernel_counters();
@@ -554,13 +553,9 @@ fn budget(sys: &System, f64_run: &ScfResult) -> Budget {
 
 // ---------------------------------------------------------------- the sweep
 
-fn water() -> Molecule {
-    Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap()
-}
-
 fn sized_systems() -> Vec<System> {
     vec![
-        System::new("H2O/cc-pVDZ", water(), "cc-pvdz", Kind::Rhf),
+        System::new("H2O/cc-pVDZ", water_xyz(), "cc-pvdz", Kind::Rhf),
         System::new(
             "C6H6/def2-SVP",
             Molecule::load_xyz("../../testdata/molecules/benzene.xyz").unwrap(),
@@ -871,7 +866,13 @@ fn f64_default_matches_pre_ladder_golden() {
         return;
     }
     let golden: [(&str, Molecule, &str, u64, usize); 2] = [
-        ("H2O/cc-pVDZ", water(), "cc-pvdz", 0xc053_01b6_0893_26f6, 13),
+        (
+            "H2O/cc-pVDZ",
+            water_xyz(),
+            "cc-pvdz",
+            0xc053_01b6_0893_26f6,
+            13,
+        ),
         (
             "C6H6/def2-SVP",
             Molecule::load_xyz("../../testdata/molecules/benzene.xyz").unwrap(),

@@ -73,7 +73,7 @@ use ferric_pbc::hcore::{periodic_hcore, PeriodicHcore, PeriodicHcoreConfig};
 use ferric_pbc::lattice::Cell;
 use ferric_pbc::stress::{gamma_rhf_stress, GammaStressConfig, StressMutation};
 use ferric_scf::result::{ScfResult, Spin};
-use ferric_scf::rhf::{solve_rhf_injected, PeriodicInjection, RhfConfig};
+use ferric_scf::rhf::{solve_rhf_injected, PeriodicInjection};
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
 use std::collections::HashMap;
@@ -339,11 +339,8 @@ fn rhf(
     let op = Operator::coulomb();
     // Never read on the injected path; required by the signature.
     let bounds = SchwarzBounds::compute(op, p).expect("schwarz");
-    let cfg = RhfConfig {
-        init_guess_density: seed.cloned(),
-        max_iter: 300,
-        ..gamma_config()
-    };
+    let mut cfg = gamma_config().with_max_iter(300);
+    cfg.init_guess_density = seed.cloned();
     let inj = PeriodicInjection {
         s: hc.s.clone(),
         h: hc.h.clone(),

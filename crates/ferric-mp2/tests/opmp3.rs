@@ -73,16 +73,14 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::mp3::mp3_energy;
 use ferric_mp2::opmp3::{op_mp3, w_matrices, Opmp3Models, WMatrices};
-use ferric_mp2::opmp3_driver::{
-    opmp3_on_reference, run_opmp3, Opmp3Config, Opmp3Integrals, Opmp3RefKind,
-};
+use ferric_mp2::opmp3_driver::{opmp3_on, run_opmp3, Opmp3Config, Opmp3Integrals, Opmp3RefKind};
 use ferric_mp2::opmp3_reference::opmp3_reference;
 use ferric_mp2::u_mp3::{u_mp3, UMp3Config, UMp3Eri, UMp3Result};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
-use ferric_scf::ScfResult;
+use ferric_scf::{PreparedSystem, ScfResult};
 use ndarray::{Array2, Array4};
 use ndarray_linalg::Solve;
 use serde_json::Value;
@@ -122,12 +120,10 @@ fn check(ctx: &str, got: f64, want: f64, tol: f64) {
 }
 
 fn tight() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10)
 }
 
 struct Sys {
@@ -158,11 +154,7 @@ fn system(name: &str, scf_kind: &str) -> Sys {
             &mol,
             &obs,
             &bounds,
-            &RhfConfig {
-                check_stability: true,
-                scf_stability_descent: true,
-                ..tight()
-            },
+            &tight().with_stability(ferric_scf::options::Stability::Descend),
         ),
         "rohf" => solve_rohf(&ctx, &mol, &obs, op, &bounds, &tight()),
         _ => panic!("unknown reference {scf_kind}"),
@@ -417,21 +409,14 @@ fn molecule(atoms: &str, shift: f64) -> Molecule {
 }
 
 fn hf_models(mol: &Molecule) -> (f64, Opmp3Models) {
-    let obs = PreparedBasis::new(mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+    let sys = PreparedSystem::new(mol.clone(), &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let cfg = Opmp3Config {
         scf_energy_conv: Some(1e-12),
         scf_density_conv: Some(1e-10),
         scf_max_iter: Some(400),
         ..Opmp3Config::new(Opmp3RefKind::Hf)
     };
-    let r = run_opmp3(
-        &ParallelContext::default(),
-        mol,
-        &obs,
-        Opmp3Integrals::Exact,
-        &cfg,
-    )
-    .expect("opmp3");
+    let r = run_opmp3(&sys, Opmp3Integrals::Exact, &cfg).expect("opmp3");
     (r.e_hf + r.e_nbs, r.models)
 }
 
@@ -514,11 +499,10 @@ fn reference_path_rebuilds_e_hf_and_e_nbs_and_matches_pyscf_rohf() {
         }
     }
     let oh = system("oh", "rohf");
-    let res = opmp3_on_reference(
-        &ctx,
-        &oh.mol,
-        &oh.obs,
-        &oh.bounds,
+    // The same molecule and basis as `oh` (no ECP), so the same bounds.
+    let oh_sys = PreparedSystem::new(oh.mol.clone(), &basis::bundled("cc-pvdz").unwrap()).unwrap();
+    let res = opmp3_on(
+        &oh_sys,
         &oh.scf,
         Opmp3Integrals::Exact,
         &Opmp3Config::new(Opmp3RefKind::Hf),

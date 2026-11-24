@@ -13,7 +13,7 @@ pub(crate) fn parse_cdft_kind(kind: &str) -> PyResult<ferric_dft::cdft::SpinChan
     match kind.to_ascii_lowercase().as_str() {
         "charge" => Ok(SpinChannel::Total),
         "spin" => Ok(SpinChannel::SpinDiff),
-        _ => Err(pyo3::exceptions::PyValueError::new_err(format!(
+        _ => Err(crate::errors::input_err(format!(
             "unknown cDFT constraint kind '{kind}': valid options are 'charge' \
              (N_alpha + N_beta on the fragment) and 'spin' (N_alpha - N_beta)"
         ))),
@@ -41,7 +41,7 @@ pub(crate) fn cdft_kind_name(spin: ferric_dft::cdft::SpinChannel) -> &'static st
 /// operator of the fragment (`ferric_dft::cdft`). With an ECP basis only the
 /// explicitly-treated (valence) electrons are counted. Atom indices are
 /// range-checked against the molecule when the constraint is used.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "CdftConstraint")]
 #[derive(Clone)]
 pub(crate) struct PyCdftConstraint {
@@ -57,14 +57,14 @@ impl PyCdftConstraint {
     fn new(atoms: Vec<i64>, target: f64, kind: &str) -> PyResult<Self> {
         let spin = parse_cdft_kind(kind)?;
         if atoms.is_empty() {
-            return Err(pyo3::exceptions::PyValueError::new_err(
+            return Err(crate::errors::input_err(
                 "CdftConstraint: atoms must be a non-empty list of atom indices",
             ));
         }
         let mut idx = Vec::with_capacity(atoms.len());
         for &a in &atoms {
             if a < 0 {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                return Err(crate::errors::input_err(format!(
                     "CdftConstraint: atom index {a} is negative (indices are 0-based)"
                 )));
             }
@@ -76,13 +76,13 @@ impl PyCdftConstraint {
         if sorted.len() != idx.len() {
             // The fragment weight is a SUM of per-atom Becke weights, so a
             // repeated index would count that atom twice.
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "CdftConstraint: duplicate atom index in {atoms:?}; a repeated atom \
                  would be weighted twice in the fragment population"
             )));
         }
         if !target.is_finite() {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "CdftConstraint: target must be finite, got {target}"
             )));
         }
@@ -128,7 +128,7 @@ impl PyCdftConstraint {
 /// `run_cdft` raises `RuntimeError` instead of returning. The inner SCF at the
 /// final lambda can still be unconverged, which `scf_converged` reports, and
 /// `converged` is True only when BOTH hold.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "CdftResult")]
 pub(crate) struct PyCdftResult {
     /// Total energy (Ha) at the constrained density, WITHOUT the constraint
@@ -187,14 +187,15 @@ pub(crate) struct PyCdftResult {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
+stored_method_result!(PyCdftResult, total_energy: energy, certificate: certificate_data);
+
 #[pymethods]
 impl PyCdftResult {
-    /// Alias of `energy` (the same value), so callers can read either spelling.
+    #[doc = alias_doc!(energy)]
     #[getter]
     fn total_energy(&self) -> f64 {
-        self.energy
+        crate::method_result::total_energy_getter(self)
     }
-
     /// Validation certificate of this result (dict form of
     /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
     /// `capability` is `"cdft:uhf"` or `"cdft:uks"` and the grade is
@@ -205,7 +206,7 @@ impl PyCdftResult {
     /// approximations; an unconverged inner SCF or constraint is a warning.
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::method_result::certificate_getter(py, self)
     }
     fn density_alpha<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         PyArray2::from_array(py, &self.density_alpha_data)
@@ -303,7 +304,7 @@ pub(crate) fn cdft_hamiltonian_key(emol: &Molecule, config: &RhfConfig) -> Strin
         config.xc,
         effective_aux(&config.df_j_aux),
         effective_aux(&config.df_k_aux),
-        config.k_builder,
+        config.k_builder.map(ferric_scf::options::KBuilderKind::as_str),
         config.dft_grid,
         config.external_potential,
     )
@@ -408,7 +409,7 @@ pub(crate) fn run_cdft(
     scf_ri_j_precision: Option<&str>,
 ) -> PyResult<PyCdftResult> {
     use ferric_dft::cdft::{Constraint, SpinChannel};
-    let value_err = |msg: String| pyo3::exceptions::PyValueError::new_err(msg);
+    let value_err = |msg: String| crate::errors::input_err(msg);
     // `max_outer` is this driver's own iteration; the bare SCF spellings are
     // deprecated aliases of the `scf_`-prefixed ones.
     let max_iter = alias_kwarg(
@@ -437,8 +438,9 @@ pub(crate) fn run_cdft(
     )?;
 
     let use_sad_guess = parse_guess(guess)?;
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
+    // Validated on the ECP molecule before any integral; prepared below.
+    let ecp = EcpMolecule::new(mol.inner.clone(), &basis_set.inner);
+    let emol = ecp.mol();
     let natoms = emol.atoms.len();
     let nelec = emol.nelec();
     if nelec <= 0 {
@@ -552,47 +554,64 @@ pub(crate) fn run_cdft(
         })
     };
 
-    let config = RhfConfig {
-        constraints: cons,
-        cdft_lambda_tol: lambda_tol,
-        cdft_max_outer: max_outer,
-        cdft_stability_descent: stability_descent.unwrap_or(defaults.cdft_stability_descent),
+    let k_builder = crate::parse_k_builder(k_builder)?;
+    let mut config = ferric_scf::options::ScfOptions {
         xc,
         dft_grid,
-        max_iter: max_iter.unwrap_or(defaults.max_iter),
-        energy_conv: energy_conv.unwrap_or(defaults.energy_conv),
-        density_conv: density_conv.unwrap_or(defaults.density_conv),
-        diis_size: diis_size.unwrap_or(defaults.diis_size),
-        integral_thresh: integral_thresh.unwrap_or(defaults.integral_thresh),
-        k_builder: k_builder.map(|s| s.to_string()),
+        max_iter,
+        energy_conv,
+        density_conv,
+        diis_size,
+        integral_thresh,
+        k_builder,
         // Same shared parser as run_rhf/run_uhf/run_dft, so "exact"/"off" mean
         // exact J/K here too and cdft_coupling's Hamiltonian key sees one
         // spelling for one Hamiltonian.
-        df_j_aux: df_j_aux.map(ferric_scf::rhf::normalize_df_aux),
-        df_k_aux: df_k_aux.map(ferric_scf::rhf::normalize_df_aux),
+        df_j_aux: df_j_aux.map(ferric_scf::options::AuxBasis::parse),
+        df_k_aux: df_k_aux.map(ferric_scf::options::AuxBasis::parse),
         ri_j_precision: parse_ri_j_precision(scf_ri_j_precision)?,
         ri_k_precision: parse_ri_k_precision(scf_ri_k_precision)?,
-        level_shift: level_shift.unwrap_or(defaults.level_shift),
-        mom_after_iter: mom_after_iter.unwrap_or(defaults.mom_after_iter),
+        mom_after_iter,
         external_potential: build_external_potential(point_charges, external_field),
-        // 0 means "unset -> auto" (resolve_three_index_budget).
-        three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb).unwrap_or(0),
-        use_sad_guess,
-        ..defaults
-    };
+        // `None` is "unset -> auto" (resolve_three_index_budget).
+        three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+        guess: Some(if use_sad_guess {
+            ferric_scf::options::Guess::Sad
+        } else {
+            ferric_scf::options::Guess::Core
+        }),
+        ..Default::default()
+    }
+    .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
+    .py()?
+    // The field write keeps run_cdft's existing behaviour: an explicit
+    // `level_shift=` leaves the meta-GGA automatic shift on, against the
+    // convention documented on `RhfConfig::meta_gga_auto_level_shift`
+    // (`ScfOptions::level_shift` would clear it). A known bug, shared with
+    // run_qmmm, left for its own PR (ARCHITECTURE.md, 11a follow-ups).
+    .with_level_shift(level_shift.unwrap_or(defaults.level_shift));
+    config.constraints = cons;
+    config.cdft_lambda_tol = lambda_tol;
+    config.cdft_max_outer = max_outer;
+    config.cdft_stability_descent = stability_descent.unwrap_or(defaults.cdft_stability_descent);
 
-    let hamiltonian_key = cdft_hamiltonian_key(&emol, &config);
+    let hamiltonian_key = cdft_hamiltonian_key(emol, &config);
     let bs = basis_set.inner.clone();
-    let prep = PreparedBasis::new(&emol, &bs).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let overlap = ferric_integrals::oneelectron::overlap(&prep);
-    let ctx = ParallelContext::default();
+    let sys = prepare_ecp(py, ecp)?;
+    let (emol, prep) = (sys.mol(), sys.basis());
+    let overlap = ferric_integrals::oneelectron::overlap(prep);
     // Release the GIL for the whole constrained solve. Everything the closure
     // touches is an owned Rust value built above.
     let r = py
         .allow_threads(|| {
-            ferric_scf::cdft_driver::solve_cdft_uhf(&ctx, &emol, &prep, &bs, &bounds, &config)
+            ferric_scf::cdft_driver::solve_cdft_uhf(
+                sys.ctx(),
+                emol,
+                prep,
+                &bs,
+                sys.bounds(),
+                &config,
+            )
         })
         .map_err(make_err)?;
 
@@ -606,7 +625,7 @@ pub(crate) fn run_cdft(
     let nocc_beta = (nel - nopen.min(nel)) / 2;
     let scf = r.scf;
     let certificate_data = ferric_scf::certificate::cdft_certificate(
-        &reference_certificate(&emol, &scf, &config, &bs),
+        &reference_certificate(emol, &scf, &config, &bs),
         &config,
         &ferric_scf::certificate::CdftRun {
             lambdas: &r.lambdas,
@@ -651,7 +670,7 @@ pub(crate) fn run_cdft(
 }
 
 /// Wu–Van Voorhis electronic coupling between two cDFT diabats.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "CdftCouplingResult")]
 pub(crate) struct PyCdftCouplingResult {
     /// Orthogonalized coupling H_ab (Ha). Its SIGN is a determinant-phase
@@ -680,7 +699,7 @@ impl PyCdftCouplingResult {
     /// an approximation.
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::certificate_dict(py, &self.certificate_data)
     }
     fn __repr__(&self) -> String {
         format!(
@@ -717,7 +736,7 @@ pub(crate) fn cdft_coupling(
 ) -> PyResult<PyCdftCouplingResult> {
     use ferric_dft::cdft::SpinChannel;
     use ferric_scf::cdft_coupling::{coupling_hab, DiabaticState};
-    let value_err = |msg: String| pyo3::exceptions::PyValueError::new_err(msg);
+    let value_err = |msg: String| crate::errors::input_err(msg);
     for (name, st) in [("state_a", state_a), ("state_b", state_b)] {
         if st.spins.len() != 1 || st.weight_matrices.len() != 1 || st.lambdas.len() != 1 {
             return Err(value_err(format!(

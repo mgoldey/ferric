@@ -71,15 +71,13 @@ fn sys(tilt_deg: f64) -> Sys {
 }
 
 fn lda(energy_conv: f64, density_conv: f64) -> RhfConfig {
-    RhfConfig {
-        xc: Some("LDA".to_string()),
-        energy_conv,
-        density_conv,
-        max_iter: 60,
+    RhfConfig::default()
+        .with_xc("LDA")
+        .with_energy_conv(energy_conv)
+        .with_density_conv(density_conv)
+        .with_max_iter(60)
         // The flip splits at the 1e-6..1e-9 Ha level, below f32 RI-J rounding.
-        ri_j_precision: Some(RiJPrecision::F64),
-        ..Default::default()
-    }
+        .with_ri_j_precision(RiJPrecision::F64)
 }
 
 /// max |C_occ C_occᵀ − D| over both spins.
@@ -174,12 +172,9 @@ fn oh_uks_lda_converges_stationary_at_every_orientation() {
 /// OH⁻ spreads 9.7e-5 Ha at the same tilts).
 #[test]
 fn oh_uks_lda_energy_is_orientation_invariant_on_a_fine_grid() {
-    let cfg = RhfConfig {
-        dft_grid: Some(ferric_dft::grid::AtomicGridConfig::production_sized(
-            99, 590,
-        )),
-        ..lda(1e-10, 1e-9)
-    };
+    let cfg = lda(1e-10, 1e-9).with_dft_grid(ferric_dft::grid::AtomicGridConfig::production_sized(
+        99, 590,
+    ));
     let energies: Vec<f64> = [0.0, 30.0, 71.0]
         .iter()
         .map(|&tilt| {
@@ -273,10 +268,7 @@ fn oh_uks_lda_descends_to_the_minimum_from_inside_its_basin() {
 /// iterations, 13° unconverged at 200). With the DF-J response: 12 and 8.
 #[test]
 fn oh_uks_lda_ri_j_converges_at_tilted_orientations() {
-    let cfg = RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".to_string()),
-        ..lda(1e-10, 1e-9)
-    };
+    let cfg = lda(1e-10, 1e-9).with_df_j_aux("def2-universal-jkfit");
     for tilt in [5.0, 13.0] {
         let s = sys(tilt);
         let r = solve_uhf(
@@ -338,25 +330,20 @@ fn oh_uks_pbe_hole_orientation_is_below_the_gw_bars_on_99x590() {
     let bs = basis::bundled("cc-pvdz").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
-    let cfg = RhfConfig {
-        xc: Some("pbe".into()),
+    let cfg = RhfConfig::default()
+        .with_xc("pbe")
         // Exact J/K and the flat grid, as validation_gw's OH UKS row.
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        dft_grid: Some(ferric_dft::grid::AtomicGridConfig {
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new())
+        .with_dft_grid(ferric_dft::grid::AtomicGridConfig {
             n_radial: 99,
             n_angular: 590,
             ..Default::default()
-        }),
-        max_iter: 200,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
-    let hcore = RhfConfig {
-        use_sad_guess: false,
-        ..cfg.clone()
-    };
+        })
+        .with_max_iter(200)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9);
+    let hcore = cfg.clone().with_guess(ferric_scf::options::Guess::Core);
     let ctx = ParallelContext::default();
     let runs: Vec<ScfResult> = [("default guess", &cfg), ("core-Hamiltonian guess", &hcore)]
         .into_iter()

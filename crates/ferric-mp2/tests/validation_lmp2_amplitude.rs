@@ -89,6 +89,7 @@ use ferric_mp2::lmp2_direct::{
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use ndarray::s;
 use serde_json::Value;
 
@@ -153,12 +154,6 @@ fn load_json(name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn check_close(ctx: &str, what: &str, got: f64, want: f64, tol: f64) {
     let d = (got - want).abs();
     eprintln!("{ctx}: {what:<34} ferric {got:+.13} ref {want:+.13} |d| {d:.2e} (tol {tol:.0e})");
@@ -199,7 +194,7 @@ fn setup(system: &str, basis_name: &str, r: &Value) -> Setup {
         &ctx,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(r, "/nuclear_repulsion", &ctx),
+        num_ctx(r, "/nuclear_repulsion", &ctx),
         TOL_ENUC,
     );
     let obs_bs = basis::bundled(basis_name).unwrap();
@@ -217,12 +212,10 @@ fn setup(system: &str, basis_name: &str, r: &Value) -> Setup {
     );
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let cfg = RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_max_iter(200);
     assert!(
         cfg.df_j_aux.is_none() && cfg.df_k_aux.is_none(),
         "exact J/K expected"
@@ -230,7 +223,13 @@ fn setup(system: &str, basis_name: &str, r: &Value) -> Setup {
     let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg)
         .unwrap_or_else(|e| panic!("{ctx}: solve_rhf failed: {e:?}"));
     assert!(rhf.converged, "{ctx}: RHF not converged");
-    check_close(&ctx, "E_RHF", rhf.energy, num(r, "/e_rhf", &ctx), TOL_E_RHF);
+    check_close(
+        &ctx,
+        "E_RHF",
+        rhf.energy,
+        num_ctx(r, "/e_rhf", &ctx),
+        TOL_E_RHF,
+    );
     Setup {
         ctx,
         mol,
@@ -325,7 +324,7 @@ fn anchor(system: &str, basis_name: &str) {
         .map(|row| {
             (
                 row["frozen_core"].as_u64().unwrap() as usize,
-                num(row, "/e_corr", &su.ctx),
+                num_ctx(row, "/e_corr", &su.ctx),
             )
         })
         .collect();
@@ -431,7 +430,7 @@ fn finite_eps_c4h10_ccpvdz_error_is_one_sided_and_monotone() {
     let su = setup("c4h10", "cc-pvdz", &r);
     for row in r["dfmp2"].as_array().unwrap() {
         let fc = row["frozen_core"].as_u64().unwrap() as usize;
-        let e_ref = num(row, "/e_corr", &su.ctx);
+        let e_ref = num_ctx(row, "/e_corr", &su.ctx);
         for path in ["in-core", "direct"] {
             let mut errs = Vec::new();
             for &eps in &EPS_SWEEP {
@@ -489,8 +488,8 @@ fn finite_eps_c4h10_ccpvdz_error_is_one_sided_and_monotone() {
 fn orca_ballpark(system: &str) {
     let r = load_json(&format!("orca_{system}_cc-pvdz.json"));
     let ctx = format!("{system}/cc-pvdz (ORCA ballpark)");
-    let e_df = num(&r, "/pyscf_dfmp2_e_corr", &ctx);
-    let e_orca_ri = num(&r, "/orca/ri_mp2/e_corr", &ctx);
+    let e_df = num_ctx(&r, "/pyscf_dfmp2_e_corr", &ctx);
+    let e_orca_ri = num_ctx(&r, "/orca/ri_mp2/e_corr", &ctx);
     check_close(
         &ctx,
         "ORCA RI-MP2 vs PySCF DFMP2",
@@ -503,9 +502,9 @@ fn orca_ballpark(system: &str) {
         eprintln!(
             "BALLPARK {system}/cc-pvdz fc=0 ORCA {tag:<16} {:.4}% of ORCA RI-MP2 \
              (TCutPNO {:.0e}, avg PNOs/pair {})",
-            num(&r, &format!("/orca/{tag}/pct_of_orca_ri_mp2"), &ctx),
-            num(&r, &format!("/orca/{tag}/tcut_pno"), &ctx),
-            num(&r, &format!("/orca/{tag}/avg_pnos_per_pair"), &ctx),
+            num_ctx(&r, &format!("/orca/{tag}/pct_of_orca_ri_mp2"), &ctx),
+            num_ctx(&r, &format!("/orca/{tag}/tcut_pno"), &ctx),
+            num_ctx(&r, &format!("/orca/{tag}/avg_pnos_per_pair"), &ctx),
         );
     }
     let mut prev = f64::NEG_INFINITY;
@@ -569,10 +568,7 @@ fn default_cg_rtol_size_rows_are_within_their_bound() {
             &obs,
             coul,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         for (name, op, cal) in [("coul", coul, 0.7), ("erfc", Operator::erfc(1.0), 0.02)] {

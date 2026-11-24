@@ -39,6 +39,7 @@ use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
+use ferric_testkit::compare::max_abs;
 use ndarray::Array2;
 
 /// Explicit budget so the SCF never reads the process-global budget env var
@@ -47,10 +48,6 @@ const BUDGET: usize = 2 << 30;
 
 /// See the module doc for the derivation.
 const TOL: f64 = 1e-11;
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0f64, |m, v| m.max(v.abs()))
-}
 
 /// Returns (max|F − H − J + ½K_mix − V_xc|, max|V_xc|) for `xc` on water/STO-3G.
 fn fock_residual(xc: &str, mutate_d: impl Fn(&Array2<f64>) -> Array2<f64>) -> (f64, f64) {

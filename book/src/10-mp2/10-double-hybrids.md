@@ -11,9 +11,9 @@ evaluated on its own Kohn–Sham orbitals, and it turns down the semilocal
 correlation to make room for it. The MP2 part is section @sec:scs-and-kappa's
 spin-component sum; what is new is the reference.
 
-The plan: the energy and its parameters (@sec:double-hybrids-energy), what is anchored
-(@sec:double-hybrids-anchored), and the derivation of the two MP2 terms on a Kohn–Sham
-determinant (@sec:double-hybrids-derivation).
+The plan: the energy and its parameters (@sec:double-hybrids-energy), the derivation of the
+two MP2 terms on a Kohn–Sham determinant (@sec:double-hybrids-derivation), the code, and what
+is anchored (@sec:double-hybrids-anchored).
 
 | Entry point | Location |
 |---|---|
@@ -23,11 +23,14 @@ determinant (@sec:double-hybrids-derivation).
 
 ## The energy {#double-hybrids-energy}
 
-$$ E_{\mathrm{DH}} = E_{\mathrm{KS}}\big[a_x E_x^{\mathrm{HF}} + (1 - a_x) E_x^{\mathrm{DFA}} + a_c\,E_c^{\mathrm{DFA}}\big] + c_{\mathrm{OS}}\,E_{\mathrm{OS}} + c_{\mathrm{SS}}\,E_{\mathrm{SS}} . \label{eq:dh-assembly} $$
+$$ E_{\mathrm{DH}} = E_{\mathrm{KS}}^{(a_x,\,a_c)} + c_{\mathrm{OS}}\,E_{\mathrm{OS}} + c_{\mathrm{SS}}\,E_{\mathrm{SS}} . \label{eq:dh-assembly} $$
 
-Read it in two parts. $E_{\mathrm{KS}}$ is the converged energy of a hybrid
-functional with exact-exchange fraction $a_x$, semilocal exchange fraction
-$b_x = 1 - a_x$ and semilocal correlation scaled by $a_c$. Written out for
+Read it in two parts. $E_{\mathrm{KS}}^{(a_x,\,a_c)}$, written
+$E_{\mathrm{KS}}$ below, is the converged energy of a hybrid functional
+with exchange $a_x E_x^{\mathrm{HF}} + (1 - a_x) E_x^{\mathrm{DFA}}$ and
+correlation $a_c E_c^{\mathrm{DFA}}$: exact-exchange fraction $a_x$,
+semilocal exchange fraction $b_x = 1 - a_x$ and semilocal correlation
+scaled by $a_c$. Written out for
 a closed-shell density $D$,
 
 $$ E_{\mathrm{KS}} = E_{nn} + \operatorname{Tr}[Dh] + \tfrac12\operatorname{Tr}\big[DJ[D]\big] - \tfrac{a_x}{4}\operatorname{Tr}\big[DK[D]\big] + b_x E_x^{\mathrm{DFA}}[\rho] + a_c E_c^{\mathrm{DFA}}[\rho] . $$
@@ -73,119 +76,7 @@ weights: Some(vec![0.47, 0.73]),
 >
 > <!-- verified: id=dh.parameters; script=scripts/double_hybrid_sympy.py; claim=P; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-dft/src/libxc.rs::{b2plyp_def,dsd_pbep86_def}; rust_test=ferric-mp2/tests/validation_dsd_pbep86_pyscf.rs::dsd_pbep86_h2o_cc_pvdz_vs_pyscf; registry=double-hybrid -->
 
-### The D3(BJ) sets
-
-`dispersion = "d3bj"` (CLI `[dft]`, Python `dispersion=`) adds the damped
-two-body dispersion sum of Grimme, Ehrlich and Goerigk (J. Comput. Chem.
-32, 1456 (2011)),
-
-$$ E_{\mathrm{D3(BJ)}} = -\sum_{A<B}\Big[ s_6\frac{C_6^{AB}}{R_{AB}^6 + f_{AB}^6} + s_8\frac{C_8^{AB}}{R_{AB}^8 + f_{AB}^8}\Big],\qquad f_{AB} = a_1\sqrt{C_8^{AB}/C_6^{AB}} + a_2 . $$
-
-It depends on the geometry only, not on the orbitals, so it adds to the
-total and does not enter the SCF. Each damping row was fitted together
-with a set of functional coefficients and travels with it:
-
-| Set | $a_x$ | $b_x$ | $a_c$ | $c_{\mathrm{OS}}$ | $c_{\mathrm{SS}}$ | $(s_6, s_8, a_1, a_2)$ |
-|---|---|---|---|---|---|---|
-| B2PLYP-D3(BJ) (Goerigk and Grimme, Phys. Chem. Chem. Phys. 13, 6670 (2011)) | 0.53 | 0.47 B88 | 0.73 LYP | 0.27 | 0.27 | (0.64, 0.9147, 0.3065, 5.0570) |
-| DSD-PBEP86-D3(BJ) (Kozuch and Martin 2013, the D3(BJ) refit) | 0.69 | 0.31 PBE | 0.44 P86 | 0.52 | 0.22 | (0.48, 0, 0, 5.6) |
-
-B2PLYP-D3(BJ) keeps the B2PLYP coefficients unchanged. DSD-PBEP86 was
-refitted with its dispersion term, so `dispersion = "d3bj"` on
-`dsd-pbep86` selects the refit set as a whole; adding the D3(BJ) row to
-the no-dispersion coefficients would mix two fits. The refit Kohn–Sham half
-is its own `XcDef`, `ferric-dft/src/libxc.rs::dsd_pbep86_d3bj_def`, beside
-`b2plyp_def` and `dsd_pbep86_def`. With $a_1 = 0$ and
-$s_8 = 0$ each DSD-PBEP86 pair term is $-s_6 C_6/(R^6 + a_2^6)$. The rows
-are in `ferric-d3/src/params.rs` (`b2plyp`, `dsdpbep86`) and equal
-simple-dftd3's rational-damping rows (`crates/ferric-d3/testdata/d3bj_params_snapshot.json`).
-The 2011 DSD-PBEP86-D2 set is not offered.
-
-### The code
-
-The MP2 step is a few lines on top of RI-MP2. This is
-`mp2_double_hybrid` with the `RiMp2Config` construction and the result
-struct trimmed:
-
-```rust
-if !ks.converged {
-    return Err(FerricError::ScfConvergence {                 // unconverged KS: refused
-        iterations: ks.iterations,
-        last_energy: ks.energy,
-    });
-}
-let op = Operator::coulomb();                                // full 1/r, no attenuation
-// ... ri_cfg carries frozen_core and the memory budget ...
-let (sc, _b_ov) = ri_mp2_spin_components(mol, obs, dfbs, op, ks, &ri_cfg)?;   // E_OS, E_SS on KS orbitals
-let e_corr_scaled = cfg.c_os * sc.e_os + cfg.c_ss * sc.e_ss; // c_OS E_OS + c_SS E_SS
-// total_energy: ks.energy + e_corr_scaled                   // equation 10.25
-```
-
-- **Nothing in the MP2 code knows about DFT.** `ri_mp2_spin_components` is
-  the routine of section @sec:closed-shell-ri-mp2, handed a Kohn–Sham `ScfResult`. Its orbital
-  energies are the Kohn–Sham eigenvalues.
-- **`ks.energy` already is $E_{\mathrm{KS}}$.** The semilocal and exact
-  exchange fractions were applied inside the SCF; the driver adds only the
-  scaled PT2 term (and, when requested, the D3(BJ) energy).
-- **An unconverged reference is an error.** The CLI kinds converge their
-  own KS reference before the MP2 step, and `mp2_double_hybrid` refuses an
-  unconverged one.
-- **`u_mp2_double_hybrid` is the same with `u_ri_mp2`.** It takes
-  $E_{\mathrm{OS}} = E_{\alpha\beta}$ and
-  $E_{\mathrm{SS}} = E_{\alpha\alpha} + E_{\beta\beta}$.
-
-The CLI and Python converge a closed-shell molecule through the KS
-convergence ladder, and a molecule with `multiplicity > 1` (or Python
-`unrestricted=True`) as a UKS. Both use RI-J and RI-K on
-def2-universal-jkfit unless the input names another fit.
-
-The KS orbitals are not Hartree–Fock orbitals, so the Brillouin condition
-fails and the singles term of MP2 is not zero. Standard double hybrids,
-B2PLYP included, drop it; so does ferric (@sec:double-hybrids-derivation).
-
-For water in cc-pVDZ (cc-pVDZ-RI fit), from the `589b50832` build, the two
-double hybrids report their parts below. The D3(BJ) variant of DSD-PBEP86
-switches to its own refit coefficients (0.52/0.22, the second table above),
-so its total is not the plain total plus $E_{\mathrm{D3(BJ)}}$:
-
-```python
-import ferric
-
-mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
-bs = ferric.BasisSet.bundled("cc-pvdz")
-aux = ferric.BasisSet.bundled("cc-pvdz-ri")
-
-for kind in ("b2plyp", "dsd-pbep86"):
-    r = ferric.run_double_hybrid(mol, bs, aux, kind=kind)
-    print(f"{kind}: E_KS {r.e_ks:.8f}  E_OS {r.e_os:.8f}  E_SS {r.e_ss:.8f}  "
-          f"c_OS {r.c_os} c_SS {r.c_ss}  scaled {r.e_corr_scaled:.8f}  total {r.total_energy:.8f} Ha")
-r = ferric.run_double_hybrid(mol, bs, aux, kind="dsd-pbep86", dispersion="d3bj")
-print(f"dsd-pbep86-d3bj: c_OS {r.c_os} c_SS {r.c_ss}  E_D3(BJ) {r.e_dispersion:.8f}  total {r.total_energy:.8f} Ha")
-```
-
-```text
-b2plyp: E_KS -76.28847284  E_OS -0.18094189  E_SS -0.06097447  c_OS 0.27 c_SS 0.27  scaled -0.06531742  total -76.35379026 Ha
-dsd-pbep86: E_KS -76.17899005  E_OS -0.16785877  E_SS -0.05671784  c_OS 0.51 c_SS 0.36  scaled -0.10602639  total -76.28501644 Ha
-dsd-pbep86-d3bj: c_OS 0.52 c_SS 0.22  E_D3(BJ) -0.00021634  total -76.27927890 Ha
-```
-
-## What is anchored {#double-hybrids-anchored}
-
-| Kind | Grade | Evidence |
-|---|---|---|
-| `b2plyp` | Proven | total energy vs PySCF built from the definition (`dft.RKS` with 0.53 HF + 0.47 B88, 0.73 LYP, then `mp.dfmp2.DFMP2` on the KS orbitals): ≤ 1.3e-11 Ha; E_KS ≤ 7.1e-13, E_OS ≤ 4.1e-11, E_SS ≤ 1.5e-11 Ha (H2O, NH3, CH4 / cc-pVDZ and def2-SVP, frozen core 0 and 1); test `crates/ferric-mp2/tests/validation_b2plyp_pyscf.rs` |
-| `dsd-pbep86` | Proven | total energy vs PySCF built from the definition (`dft.RKS` with 0.72 HF + 0.28 PBE, 0.44 P86, then `mp.dfmp2.DFMP2` scaled 0.51/0.36): ≤ 1.9e-11 Ha; E_KS ≤ 6.5e-13, E_OS ≤ 2.2e-11, E_SS ≤ 2.3e-11 Ha (same cases as B2PLYP); test `crates/ferric-mp2/tests/validation_dsd_pbep86_pyscf.rs`, which also asserts that the superseded 0.69/0.31/0.56/0.29 set misses by at least 100 bars |
-| UKS reference and the D3(BJ) sets | in the `dsd-pbep86` row | B2PLYP, DSD-PBEP86 and DSD-PBEP86-D3(BJ) on a UKS reference, plus B2PLYP-D3(BJ), vs PySCF `dft.UKS` + `mp.dfump2.DFUMP2` and simple-dftd3: total ≤ 3.2e-11 Ha, E_KS ≤ 3.1e-13, E_OS ≤ 7.6e-11, E_SS ≤ 1.8e-11, D3(BJ) ≤ 3.6e-16 Ha (NH2, CH3 doublets / cc-pVDZ and def2-SVP, frozen core 0 and 1); a singlet through the UKS route equals the RKS route to ≤ 9.9e-14 Ha; test `crates/ferric-mp2/tests/validation_udh_pyscf.rs` |
-
-Both closed-shell references run a flat (75, 110) grid with RI-J in f64.
-The CLI default (pruned grid, f32 RI-J) moves the total by up to 1.0e-6 Ha
-(B2PLYP) and 1.2e-6 Ha (DSD-PBEP86), so a default run carries no anchor and
-the CLI prints a notice. Only Grimme's 2006 B2PLYP parameters, the 2013
-no-dispersion DSD-PBEP86 set and the D3(BJ) sets above are checked; no
-comparison of B2PLYP with experiment is claimed. Figures from
-`site/src/reference/validation.md`.
-
-## Derivation {#double-hybrids-derivation}
+### Derivation {#double-hybrids-derivation}
 
 Which two sums are $E_{\mathrm{OS}}$ and $E_{\mathrm{SS}}$ on a Kohn–Sham
 determinant, and what is left out?
@@ -261,7 +152,119 @@ invariance under relabelling α and β), and claim D checks that $a_1 = 0$,
 $s_8 = 0$ reduce the D3(BJ) pair energy to $-s_6C_6/(R^6+a_2^6)$ and that
 the `dftd3` package's rows equal the cited parameters.
 
-## Known limits (2026-11-15)
+### The D3(BJ) sets
+
+`dispersion = "d3bj"` (CLI `[dft]`, Python `dispersion=`) adds the damped
+two-body dispersion sum of Grimme, Ehrlich and Goerigk (J. Comput. Chem.
+32, 1456 (2011)),
+
+$$ E_{\mathrm{D3(BJ)}} = -\sum_{A<B}\Big[ s_6\frac{C_6^{AB}}{R_{AB}^6 + f_{AB}^6} + s_8\frac{C_8^{AB}}{R_{AB}^8 + f_{AB}^8}\Big],\qquad f_{AB} = a_1\sqrt{C_8^{AB}/C_6^{AB}} + a_2 . $$
+
+It depends on the geometry only, not on the orbitals, so it adds to the
+total and does not enter the SCF. Each damping row was fitted together
+with a set of functional coefficients and travels with it:
+
+| Set | $a_x$ | $b_x$ | $a_c$ | $c_{\mathrm{OS}}$ | $c_{\mathrm{SS}}$ | $(s_6, s_8, a_1, a_2)$ |
+|---|---|---|---|---|---|---|
+| B2PLYP-D3(BJ) (Goerigk and Grimme, Phys. Chem. Chem. Phys. 13, 6670 (2011)) | 0.53 | 0.47 B88 | 0.73 LYP | 0.27 | 0.27 | (0.64, 0.9147, 0.3065, 5.0570) |
+| DSD-PBEP86-D3(BJ) (Kozuch and Martin 2013, the D3(BJ) refit) | 0.69 | 0.31 PBE | 0.44 P86 | 0.52 | 0.22 | (0.48, 0, 0, 5.6) |
+
+B2PLYP-D3(BJ) keeps the B2PLYP coefficients unchanged. DSD-PBEP86 was
+refitted with its dispersion term, so `dispersion = "d3bj"` on
+`dsd-pbep86` selects the refit set as a whole; adding the D3(BJ) row to
+the no-dispersion coefficients would mix two fits. The refit Kohn–Sham half
+is its own `XcDef`, `ferric-dft/src/libxc.rs::dsd_pbep86_d3bj_def`, beside
+`b2plyp_def` and `dsd_pbep86_def`. With $a_1 = 0$ and
+$s_8 = 0$ each DSD-PBEP86 pair term is $-s_6 C_6/(R^6 + a_2^6)$. The rows
+are in `ferric-d3/src/params.rs` (`b2plyp`, `dsdpbep86`) and equal
+simple-dftd3's rational-damping rows (`crates/ferric-d3/testdata/d3bj_params_snapshot.json`).
+The 2011 DSD-PBEP86-D2 set is not offered.
+
+### The code
+
+The MP2 step is a few lines on top of RI-MP2. This is
+`mp2_double_hybrid` with the `RiMp2Config` construction and the result
+struct trimmed:
+
+```rust
+if !ks.converged {
+    return Err(FerricError::ScfConvergence {                 // unconverged KS: refused
+        iterations: ks.iterations,
+        last_energy: ks.energy,
+    });
+}
+let op = Operator::coulomb();                                // full 1/r, no attenuation
+// ... ri_cfg carries frozen_core and the memory budget ...
+let (sc, _b_ov) = ri_mp2_spin_components(mol, obs, dfbs, op, ks, &ri_cfg)?;   // E_OS, E_SS on KS orbitals
+let e_corr_scaled = cfg.c_os * sc.e_os + cfg.c_ss * sc.e_ss; // c_OS E_OS + c_SS E_SS
+// total_energy: ks.energy + e_corr_scaled                   // E_DH
+```
+
+- **Nothing in the MP2 code knows about DFT.** `ri_mp2_spin_components` is
+  the routine of section @sec:closed-shell-ri-mp2, handed a Kohn–Sham `ScfResult`. Its orbital
+  energies are the Kohn–Sham eigenvalues.
+- **`ks.energy` already is $E_{\mathrm{KS}}$.** The semilocal and exact
+  exchange fractions were applied inside the SCF; the driver adds only the
+  scaled PT2 term (and, when requested, the D3(BJ) energy).
+- **An unconverged reference is an error.** The CLI kinds converge their
+  own KS reference before the MP2 step, and `mp2_double_hybrid` refuses an
+  unconverged one.
+- **`u_mp2_double_hybrid` is the same with `u_ri_mp2`.** It takes
+  $E_{\mathrm{OS}} = E_{\alpha\beta}$ and
+  $E_{\mathrm{SS}} = E_{\alpha\alpha} + E_{\beta\beta}$.
+
+The CLI and Python converge a closed-shell molecule through the KS
+convergence ladder, and a molecule with `multiplicity > 1` (or Python
+`unrestricted=True`) as a UKS. Both use RI-J and RI-K on
+def2-universal-jkfit unless the input names another fit.
+
+The KS orbitals are not Hartree–Fock orbitals, so the Brillouin condition
+fails and the singles term of MP2 is not zero. Standard double hybrids,
+B2PLYP included, drop it; so does ferric (@sec:double-hybrids-derivation).
+
+For water in cc-pVDZ (cc-pVDZ-RI fit), from the `589b50832` build, the two
+double hybrids report their parts below. The D3(BJ) variant of DSD-PBEP86
+switches to its own refit coefficients (0.52/0.22, the second table above),
+so its total is not the plain total plus $E_{\mathrm{D3(BJ)}}$:
+
+```python
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+for kind in ("b2plyp", "dsd-pbep86"):
+    r = ferric.run_double_hybrid(mol, bs, aux, kind=kind)
+    print(f"{kind}: E_KS {r.e_ks:.8f}  E_OS {r.e_os:.8f}  E_SS {r.e_ss:.8f}  "
+          f"c_OS {r.c_os} c_SS {r.c_ss}  scaled {r.e_corr_scaled:.8f}  total {r.total_energy:.8f} Ha")
+r = ferric.run_double_hybrid(mol, bs, aux, kind="dsd-pbep86", dispersion="d3bj")
+print(f"dsd-pbep86-d3bj: c_OS {r.c_os} c_SS {r.c_ss}  E_D3(BJ) {r.e_dispersion:.8f}  total {r.total_energy:.8f} Ha")
+```
+
+```text
+b2plyp: E_KS -76.28847284  E_OS -0.18094189  E_SS -0.06097447  c_OS 0.27 c_SS 0.27  scaled -0.06531742  total -76.35379026 Ha
+dsd-pbep86: E_KS -76.17899005  E_OS -0.16785877  E_SS -0.05671784  c_OS 0.51 c_SS 0.36  scaled -0.10602639  total -76.28501644 Ha
+dsd-pbep86-d3bj: c_OS 0.52 c_SS 0.22  E_D3(BJ) -0.00021634  total -76.27927890 Ha
+```
+
+## What is anchored {#double-hybrids-anchored}
+
+| Kind | Grade | Evidence |
+|---|---|---|
+| `b2plyp` | Proven | total energy vs PySCF built from the definition (`dft.RKS` with 0.53 HF + 0.47 B88, 0.73 LYP, then `mp.dfmp2.DFMP2` on the KS orbitals): ≤ 1.3e-11 Ha; E_KS ≤ 7.1e-13, E_OS ≤ 4.1e-11, E_SS ≤ 1.5e-11 Ha (H2O, NH3, CH4 / cc-pVDZ and def2-SVP, frozen core 0 and 1); test `crates/ferric-mp2/tests/validation_b2plyp_pyscf.rs` |
+| `dsd-pbep86` | Proven | total energy vs PySCF built from the definition (`dft.RKS` with 0.72 HF + 0.28 PBE, 0.44 P86, then `mp.dfmp2.DFMP2` scaled 0.51/0.36): ≤ 1.9e-11 Ha; E_KS ≤ 6.5e-13, E_OS ≤ 2.2e-11, E_SS ≤ 2.3e-11 Ha (same cases as B2PLYP); test `crates/ferric-mp2/tests/validation_dsd_pbep86_pyscf.rs`, which also asserts that the superseded 0.69/0.31/0.56/0.29 set misses by at least 100 bars |
+| UKS reference and the D3(BJ) sets | Proven (graded with the `dsd-pbep86` row of the validation page) | B2PLYP, DSD-PBEP86 and DSD-PBEP86-D3(BJ) on a UKS reference, plus B2PLYP-D3(BJ), vs PySCF `dft.UKS` + `mp.dfump2.DFUMP2` and simple-dftd3: total ≤ 3.2e-11 Ha, E_KS ≤ 3.1e-13, E_OS ≤ 7.6e-11, E_SS ≤ 1.8e-11, D3(BJ) ≤ 3.6e-16 Ha (NH2, CH3 doublets / cc-pVDZ and def2-SVP, frozen core 0 and 1); a singlet through the UKS route equals the RKS route to ≤ 9.9e-14 Ha; test `crates/ferric-mp2/tests/validation_udh_pyscf.rs` |
+
+Both closed-shell references run a flat (75, 110) grid with RI-J in f64.
+The CLI default (pruned grid, f32 RI-J) moves the total by up to 1.0e-6 Ha
+(B2PLYP) and 1.2e-6 Ha (DSD-PBEP86), so a default run carries no anchor and
+the CLI prints a notice. Only Grimme's 2006 B2PLYP parameters, the 2013
+no-dispersion DSD-PBEP86 set and the D3(BJ) sets above are checked; no
+comparison of B2PLYP with experiment is claimed. Figures from
+`site/src/reference/validation.md`.
+
+## Known limits {#double-hybrids-limits}
 
 - No gradient or Hessian: the MP2 term is not differentiated (the KS
   Hessian refuses double hybrids with a typed error).
@@ -272,7 +275,7 @@ the `dftd3` package's rows equal the cited parameters.
   ROHF reference is.
 - The 2011 DSD-PBEP86-D2 set is not offered.
 
-## Sources
+## Sources {#double-hybrids-sources}
 
 | Source | Used for |
 |---|---|

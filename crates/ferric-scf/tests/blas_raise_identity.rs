@@ -62,11 +62,9 @@ fn rhf_converged_energy_consistent_across_blas_thread_counts() {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9);
 
     let run = || solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
 
@@ -134,13 +132,11 @@ fn rks_lda_dfj_converged_energy_consistent_across_blas_thread_counts() {
             let prep = PreparedBasis::new(&mol, &bs).unwrap();
             let op = Operator::coulomb();
             let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-            let cfg = RhfConfig {
-                xc: Some("LDA".into()),
-                df_j_aux: Some("def2-universal-jkfit".into()),
-                energy_conv: 1e-10,
-                density_conv: 1e-8,
-                ..Default::default()
-            };
+            let cfg = RhfConfig::default()
+                .with_xc("LDA")
+                .with_df_j_aux("def2-universal-jkfit")
+                .with_energy_conv(1e-10)
+                .with_density_conv(1e-8);
 
             let run =
                 || solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();

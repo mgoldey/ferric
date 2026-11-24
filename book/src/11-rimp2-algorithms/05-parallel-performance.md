@@ -35,7 +35,7 @@ here.
 | Seek-bound storage of $(ia\vert P)$ and $B$ | neither is stored; only the raw AO tensor spills, read sequentially in blocks | @sec:four-step-algorithm-changed, @sec:memory-budget-run-holds |
 | Function 4 reading $B$ from disk, batch $n_B$ tied to the core count | all of $B$ in memory; one GEMM task per $i$ over the $j \ge i$ tail | @sec:pair-kernel-batching-over-occupied-index |
 | Reductions in thread-dependent order | per-$i$ partials summed in order on one thread; chunk width independent of the thread count | @sec:streaming-transform-reproducibility, @sec:pair-kernel-parallel-loop-fixed-summation |
-| One node only | auxiliary bands across MPI ranks (library only) | 11.7 |
+| One node only | auxiliary bands across MPI ranks (library only) | @sec:distributed-rimp2 |
 
 The first and third rows remove the reason the 2014 efficiency fell at small
 sizes. Section @sec:pair-kernel-parallel-loop-fixed-summation derives a limit of the current design: with one task per
@@ -58,7 +58,7 @@ A measurement that could support a statement in this section needs:
 |---|---|
 | A series of sizes past the point where the pair stage dominates, with the tail fitted, not the whole series | the dissertation's own finding is that efficiency is size dependent |
 | The transform and the pair stage timed separately | they have different parallel structure (@sec:streaming-transform, @sec:pair-kernel) |
-| Fixed `[memory] budget_gb` and `OPENBLAS_NUM_THREADS=1` | the budget changes the chunk and the tier; BLAS threads inside rayon oversubscribe |
+| Fixed `[memory] budget_gb`, `[parallel] blas_threads = 1` and `OPENBLAS_NUM_THREADS=1` | the budget changes the chunk and the tier; the default serial BLAS count is the pool size, which moves the metric factor in the last bits (section @sec:determinism-and-memory-blas-thread-counts); BLAS threads inside rayon oversubscribe |
 | The bits of the energy compared across thread counts | the committed bit-identity test (section @sec:pair-kernel-parallel-loop-fixed-summation) runs water/cc-pVDZ only; a timing series would extend it to the measured sizes |
 | Runs on a quiet machine (`box-lease`, `scripts/README.md`) | timings taken beside other jobs are biased |
 
@@ -66,7 +66,10 @@ A measurement that could support a statement in this section needs:
 
 - No committed timing of RI-MP2 parallel scaling.
 - The committed test that the CPU energy is bit-identical across rayon pool
-  sizes covers one small system (H2O/cc-pVDZ, pools of 1, 2 and 6).
+  sizes covers one small system (H2O/cc-pVDZ, pools of 1, 2 and 6), and only
+  with the serial BLAS count at 1: it runs inside `pool.install`, where a
+  rayon worker's serial count is 1. With the default serial count the energy
+  moves in the last bits with the pool size.
 
 ## Sources
 
