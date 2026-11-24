@@ -902,8 +902,14 @@ impl LaplaceMp2 {
         warn_if_task_workers_exceed_nominal(self.memory_budget_bytes, "MO quadrature");
         let k_budget = per_task_budget_bytes(self.memory_budget_bytes);
 
-        // 2. Parallel quadrature over points
-        let e_corr: f64 = self
+        // 2. Parallel quadrature over points. The per-point terms are
+        // collected (in point order) and summed serially: a rayon `.sum()`
+        // splits the reduction by the pool's thread count, so its
+        // association, and the last bit of the energy, depended on the
+        // number of threads (1 ulp between 1 and 2 threads on water/cc-pVDZ,
+        // `tests/laplace_dressing_threads.rs`, once the SCF's last bits
+        // moved). The SOS and AO paths below already sum this way.
+        let per_point: Vec<f64> = self
             .points
             .par_iter()
             .zip(self.weights.par_iter())
@@ -920,7 +926,8 @@ impl LaplaceMp2 {
 
                 -w * (2.0 * e_coul - e_exch)
             })
-            .sum();
+            .collect();
+        let e_corr: f64 = per_point.iter().sum();
 
         Ok(e_corr)
     }
