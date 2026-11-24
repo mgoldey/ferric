@@ -885,11 +885,13 @@ Done:
    `read_reference_other_build = true`. Refused at load time: the SCF
    kinds (their ladder / UHF / ROHF route is not the correlated one), the
    double hybrids, CAS, OP-MP3, other tasks, `[cell]`, both keys at once,
-   `read_reference` with `check_stability` / `stability_descent`, and
-   `read_reference` on open-shell `pdep-rpa` (its arm re-solves the same
-   UHF + MOM reference instead of using the shared one: a duplicate SCF
-   on every open-shell PDEP-RPA run, left as a follow-up because removing
-   it needs its own bitwise check). Refused before the SCF: a reference
+   and `read_reference` with `check_stability` / `stability_descent`.
+   Open-shell `pdep-rpa` used to re-solve the same UHF + MOM reference in
+   its arm (`run_pdep_rpa_arm`) and so refused `read_reference`; the arm
+   now consumes the shared reference (one UHF solve per run instead of
+   two; the energy, SCF energy, stdout and certificate are bitwise those
+   of the old double solve on OH / STO-3G and 6-31G, OH + PBE and triplet
+   CH2 / cc-pVDZ), and `read_reference` is accepted there. Refused before the SCF: a reference
    with the COSX final-grid pass or polarizable embedding (the file
    stores neither), and a save path that is a directory, a symlink or in
    a missing directory. Tests: `ferric-cli/tests/scf_reference_io.rs`,
