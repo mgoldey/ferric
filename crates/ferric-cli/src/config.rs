@@ -13822,6 +13822,116 @@ mod cli_wired_keys_tests {
         assert!(e.contains(needle), "error must mention {needle:?}: {e}");
     }
 
+    // ---- [scf] save_reference / read_reference ----
+
+    fn reference(c: &Config) -> Result<(), String> {
+        c.validate_reference_io()
+    }
+
+    #[test]
+    fn reference_keys_are_accepted_on_the_correlated_energy_kinds() {
+        for (kind, mult) in [
+            ("rimp2", 1),
+            ("ccsd", 1),
+            ("drpa", 1),
+            ("gw", 1),
+            ("tddft", 1),
+            ("rimp2", 2),
+            ("gw", 2),
+            ("pdep-rpa", 2),
+        ] {
+            let save = cfg(kind, "energy", mult, "[scf]\nsave_reference = \"r.npz\"\n");
+            reference(&save).unwrap_or_else(|e| panic!("{kind} save: {e}"));
+            if !(kind == "pdep-rpa" && mult > 1) {
+                let read = cfg(
+                    kind,
+                    "energy",
+                    mult,
+                    "[scf]\nread_reference = \"r.npz\"\nread_reference_other_build = true\n",
+                );
+                reference(&read).unwrap_or_else(|e| panic!("{kind} read: {e}"));
+            }
+        }
+        // Neither key: nothing to check.
+        reference(&cfg("rhf", "optimize", 1, "")).unwrap();
+    }
+
+    #[test]
+    fn reference_keys_are_refused_where_no_shared_reference_is_solved() {
+        let save = "[scf]\nsave_reference = \"r.npz\"\n";
+        let read = "[scf]\nread_reference = \"r.npz\"\n";
+        for (kind, task, mult, extra, needle) in [
+            ("rhf", "energy", 1, save, "kind = \"rhf\""),
+            ("ksdft", "energy", 1, save, "kind = \"ksdft\""),
+            // Open-shell ksdft dispatches to the UKS route.
+            ("ksdft", "energy", 2, read, "kind = \"uhf\""),
+            ("uhf", "energy", 2, save, "kind = \"uhf\""),
+            ("rohf", "energy", 2, read, "kind = \"rohf\""),
+            ("b2plyp", "energy", 1, save, "double hybrid"),
+            ("wb97x-l-v", "energy", 1, read, "double hybrid"),
+            ("casscf", "energy", 1, save, "its own reference SCF"),
+            ("opmp3", "energy", 1, read, "its own reference SCF"),
+            ("rimp2", "optimize", 1, save, "task = \"energy\" only"),
+            ("rimp2", "frequencies", 1, read, "task = \"energy\" only"),
+            ("pdep-rpa", "energy", 2, read, "open-shell pdep-rpa"),
+            (
+                "rimp2",
+                "energy",
+                1,
+                "[scf]\nsave_reference = \"a\"\nread_reference = \"b\"\n",
+                "cannot both be set",
+            ),
+            (
+                "rimp2",
+                "energy",
+                1,
+                "[scf]\nread_reference_other_build = true\n",
+                "read only with",
+            ),
+            (
+                "rimp2",
+                "energy",
+                1,
+                "[scf]\nsave_reference = \"a\"\nread_reference_other_build = true\n",
+                "read only with",
+            ),
+            (
+                "rimp2",
+                "energy",
+                1,
+                "[scf]\nsave_reference = \" \"\n",
+                "empty string",
+            ),
+            (
+                "rimp2",
+                "energy",
+                1,
+                "[scf]\nread_reference = \"a\"\ncheck_stability = true\n",
+                "check_stability",
+            ),
+            (
+                "rimp2",
+                "energy",
+                1,
+                "[scf]\nread_reference = \"a\"\nstability_descent = true\n",
+                "stability_descent",
+            ),
+        ] {
+            let e = reference(&cfg(kind, task, mult, extra))
+                .expect_err(&format!("{kind}/{task}/{mult}: {extra}"));
+            assert!(e.contains(needle), "{kind}/{task}: {e}");
+        }
+        // Saving a reference whose run also checks stability is fine: the
+        // verdict is simply not stored.
+        reference(&cfg(
+            "rimp2",
+            "energy",
+            1,
+            "[scf]\nsave_reference = \"a\"\ncheck_stability = true\n",
+        ))
+        .unwrap();
+    }
+
     // ---- [pcm] ----
 
     #[test]
