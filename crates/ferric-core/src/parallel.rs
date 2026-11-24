@@ -248,6 +248,30 @@ impl ParallelContext {
         let _ = data;
     }
 
+    /// `(max, min)` of `value` over the ranks. With nothing to reduce
+    /// ([`Self::reduces`] false) both are `value`. Same call-site rule as
+    /// [`Self::all_reduce_sum`].
+    pub fn all_reduce_extremes(&self, value: f64) -> (f64, f64) {
+        #[cfg_attr(not(feature = "mpi"), allow(unused_mut))]
+        let (mut hi, mut lo) = (value, value);
+        #[cfg(feature = "mpi")]
+        if let Some(world) = self.world() {
+            use mpi::collective::SystemOperation;
+            use mpi::traits::CommunicatorCollectives;
+            world.all_reduce_into(
+                std::slice::from_ref(&value),
+                std::slice::from_mut(&mut hi),
+                SystemOperation::max(),
+            );
+            world.all_reduce_into(
+                std::slice::from_ref(&value),
+                std::slice::from_mut(&mut lo),
+                SystemOperation::min(),
+            );
+        }
+        (hi, lo)
+    }
+
     /// Whether [`Self::all_reduce_sum`] reduces anything: true only with the
     /// `mpi` feature and a multi-rank world behind this context.
     pub fn reduces(&self) -> bool {

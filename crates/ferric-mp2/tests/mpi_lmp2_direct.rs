@@ -38,26 +38,6 @@ use ferric_mp2::lmp2_direct::{amplitude_lmp2_direct, DirectConfig};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 
-/// Largest and smallest `value` over the ranks.
-fn rank_extremes(ctx: &ParallelContext, value: f64) -> (f64, f64) {
-    use mpi::collective::SystemOperation;
-    use mpi::traits::CommunicatorCollectives;
-    let (mut hi, mut lo) = (value, value);
-    if let Some(world) = ctx.world() {
-        world.all_reduce_into(
-            std::slice::from_ref(&value),
-            std::slice::from_mut(&mut hi),
-            SystemOperation::max(),
-        );
-        world.all_reduce_into(
-            std::slice::from_ref(&value),
-            std::slice::from_mut(&mut lo),
-            SystemOperation::min(),
-        );
-    }
-    (hi, lo)
-}
-
 /// Peak resident set of this process since the last [`reset_hwm`], bytes.
 fn vm_hwm() -> usize {
     let status = std::fs::read_to_string("/proc/self/status").expect("/proc/self/status");
@@ -187,7 +167,7 @@ fn check(case: &Case) {
         assert_eq!(case.strips_striped, case.strips_serial);
         assert_eq!(case.e_striped.to_bits(), case.e_serial.to_bits());
     }
-    let (hi, lo) = rank_extremes(&ctx, case.e_striped);
+    let (hi, lo) = ctx.all_reduce_extremes(case.e_striped);
     if ctx.is_root() {
         eprintln!("cross-rank spread over {} ranks: {:.3e}", ctx.size, hi - lo);
     }
@@ -223,7 +203,7 @@ fn mpi_lmp2_direct_striped_memory_alkane() {
         });
     let case = run_alkane(n);
     check(&case);
-    let (hi, lo) = rank_extremes(&case.ctx, case.strips_striped as f64);
+    let (hi, lo) = case.ctx.all_reduce_extremes(case.strips_striped as f64);
     if case.ctx.is_root() {
         eprintln!(
             "[alkane_{n}] strip bytes over {} ranks: largest {:.3}, smallest {:.3} of serial",

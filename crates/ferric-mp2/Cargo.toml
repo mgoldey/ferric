@@ -55,3 +55,9 @@ ferric-testkit = { path = "../ferric-testkit" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 ferric-d3 = { path = "../ferric-d3" }
+
+# Timing harness for the MPI integral-direct LMP2 (run instructions in its
+# module doc). The binary has no non-MPI mode, so it is only built with `mpi`.
+[[example]]
+name = "mpi_lmp2_bench"
+required-features = ["mpi"]
