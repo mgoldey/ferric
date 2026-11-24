@@ -250,17 +250,40 @@ pub(crate) fn unpack_slots(
     Ok(())
 }
 
-/// Bytes [`gather_slots`] holds at its peak beside the blocks: the flat
-/// buffer plus one reduction chunk.
-pub(crate) fn gather_bytes(global_lens: &[f64]) -> Result<usize, FerricError> {
-    let (_, total) = offsets(global_lens)?;
-    Ok(8 * (total + total.min(REDUCE_CHUNK)))
+/// End of the window of consecutive slots starting at `start`: the longest
+/// run whose encoded length stays within [`REDUCE_CHUNK`] (at least one
+/// slot, so a slot longer than a chunk is a window of its own).
+fn window_end(global_lens: &[f64], start: usize) -> Result<usize, FerricError> {
+    let (mut end, mut len) = (start, 0usize);
+    while end < global_lens.len() {
+        let add = to_index(global_lens[end])?;
+        if end > start && len.saturating_add(add) > REDUCE_CHUNK {
+            break;
+        }
+        len = len.saturating_add(add);
+        end += 1;
+    }
+    Ok(end)
 }
 
-/// Give every rank every slot: reduce the length table, then the packed
-/// buffer, then decode what this rank did not fit. `avail_bytes`, when set,
-/// is what the memory budget has left for the transport buffer; exceeding it
-/// is an error before the buffer is allocated.
+/// Bytes [`gather_slots`] holds at its peak beside the blocks: the largest
+/// window's flat buffer plus one reduction chunk.
+pub(crate) fn gather_bytes(global_lens: &[f64]) -> Result<usize, FerricError> {
+    let (mut start, mut peak) = (0usize, 0usize);
+    while start < global_lens.len() {
+        let end = window_end(global_lens, start)?;
+        let (_, total) = offsets(&global_lens[start..end])?;
+        peak = peak.max(total + total.min(REDUCE_CHUNK));
+        start = end;
+    }
+    Ok(8 * peak)
+}
+
+/// Give every rank every slot: reduce the length table, then, one window of
+/// slots at a time, the packed buffer, decoding what this rank did not fit.
+/// The transport buffer is one window, not the whole system. `avail_bytes`,
+/// when set, is what the memory budget has left for it; exceeding that is an
+/// error before any buffer is allocated.
 ///
 /// Call from the rank's serial point (see [`ParallelContext::all_reduce_sum`]).
 /// On a context with no MPI world the reductions do nothing and the slots
@@ -279,11 +302,18 @@ pub(crate) fn gather_slots(
             avail,
         )?;
     }
-    let mut buf = pack_slots(slots, &lens)?;
-    for chunk in buf.chunks_mut(REDUCE_CHUNK) {
-        ctx.all_reduce_sum(chunk);
+    let mut start = 0usize;
+    while start < slots.len() {
+        let end = window_end(&lens, start)?;
+        let (win, win_lens) = (&mut slots[start..end], &lens[start..end]);
+        let mut buf = pack_slots(win, win_lens)?;
+        for chunk in buf.chunks_mut(REDUCE_CHUNK) {
+            ctx.all_reduce_sum(chunk);
+        }
+        unpack_slots(win, win_lens, &buf)?;
+        start = end;
     }
-    unpack_slots(slots, &lens, &buf)
+    Ok(())
 }
 
 #[cfg(test)]

@@ -150,17 +150,25 @@ pub struct DirectConfig {
     pub split_eri3_timers: bool,
     /// How stage 3 walks the (P|μν) triples. See [`Eri3Pass`].
     pub eri3_pass: Eri3Pass,
-    /// MPI context to stripe the stage-5 pair fits over. `None`, or a
-    /// one-rank context, is the serial path exactly. With `size > 1`, rank
-    /// `r` fits the domain groups `g % size == r` and the ranks then exchange
-    /// their pair blocks (the `ragged_transport` module), so every rank returns
-    /// the full ragged system and runs the same solve.
+    /// MPI context to stripe the assembly over. `None`, or a one-rank
+    /// context, is the serial path exactly. With `size > 1` the domain
+    /// groups are ordered along the molecule and cut into one contiguous run
+    /// per rank; a rank builds strips only for the occupieds in its pairs,
+    /// each covering only the partners it has there, and the metric blocks
+    /// those need. The ranks then exchange their pair blocks (the
+    /// `ragged_transport` module), so every rank returns the full ragged
+    /// system and runs the same solve.
     ///
-    /// Version 1: only the pair fits are distributed. Every rank still builds
-    /// all strips and ends up holding all pair blocks, so memory per rank
-    /// does not shrink with the rank count. Counters summed over groups
-    /// (`n_trsm`, `n_w_reused`, the group scratch maximum) describe this
-    /// rank's groups only.
+    /// What is distributed: the strip build, the metric and the pair fits,
+    /// in time and in memory. What is not: every rank ends up holding all
+    /// pair blocks and the solver's vectors, so the solve's footprint does
+    /// not shrink with the rank count.
+    ///
+    /// A strip built over fewer partners goes through differently shaped
+    /// GEMMs, so a striped run agrees with the serial one to rounding, not
+    /// bit for bit. The ranks must hold identical localized spaces: the
+    /// owner of each group is computed on every rank from them. Stage-3 and
+    /// stage-5 counters, timers and strip sizes describe this rank's share.
     pub mpi: Option<ferric_core::parallel::ParallelContext>,
 }
 
@@ -495,6 +503,7 @@ fn preflight_memory(
     let dims_df = dfbs.shell_dims();
     let naux = dfbs.nbasis();
     let strips_bytes = (0..no)
+        .filter(|&i| maps.stripe.as_ref().is_none_or(|s| s.needed[i]))
         .map(|i| {
             let rows: usize = maps.aux_ext[i].iter().map(|&sh| dims_df[sh]).sum();
             let cols = maps.virt_ext[i].len();
@@ -565,6 +574,21 @@ struct Strip {
     /// nv-length inverse map (usize::MAX = absent).
     col_pos: Vec<usize>,
     b: Array2<f64>,
+}
+
+impl Strip {
+    /// The placeholder for an occupied this rank does not build under a
+    /// rank stripe. Its inverse maps are empty, so any read of it panics on
+    /// the index instead of returning a zero integral.
+    fn absent() -> Self {
+        Self {
+            rows: Vec::new(),
+            row_pos: Vec::new(),
+            cols: Vec::new(),
+            col_pos: Vec::new(),
+            b: Array2::zeros((0, 0)),
+        }
+    }
 }
 
 fn sorted_union(lists: impl IntoIterator<Item = impl IntoIterator<Item = usize>>) -> Vec<usize> {
@@ -803,7 +827,9 @@ fn gather_strip(
 /// reuses its columns there instead of re-solving. The caller pre-flights
 /// the full store (`8·Σ_i |D_i|·|cols_i|`) against the scratch budget and
 /// passes `keep_w = false` over it; otherwise each `W_i` is dropped as soon
-/// as its q is taken (one worker's `W` at a time).
+/// as its q is taken (one worker's `W` at a time). Under a rank stripe
+/// `needed` marks the occupieds with a strip here; the others get an empty
+/// q and `qmax = 0`.
 #[allow(clippy::too_many_arguments)]
 fn whiten_own_domains(
     no: usize,
@@ -815,6 +841,7 @@ fn whiten_own_domains(
     dfbs: &PreparedBasis,
     aux_radius_bohr: f64,
     keep_w: bool,
+    needed: Option<&[bool]>,
 ) -> Result<OwnWhitened, FerricError> {
     use rayon::prelude::*;
     let sq = scale.abs().sqrt();
@@ -822,6 +849,10 @@ fn whiten_own_domains(
     let per_i: Vec<Result<PerI, FerricError>> = (0..no)
         .into_par_iter()
         .map(|i| {
+            if needed.is_some_and(|n| !n[i]) {
+                // no strip on this rank, and none of its pairs asks for q_i
+                return Ok((Vec::new(), 0.0, keep_w.then(|| Array2::zeros((0, 0)))));
+            }
             let dfuncs = shell_funcs(dfbs, &aux_dom[i]);
             if dfuncs.is_empty() {
                 return Err(FerricError::General(format!(
@@ -2012,10 +2043,160 @@ struct LocalityMaps {
     aux_ext: Vec<Vec<usize>>,
     virt_ext: Vec<Vec<usize>>,
     batches: Vec<(usize, Vec<usize>)>,
+    /// The rank stripe ([`DirectConfig::mpi`] with more than one rank): the
+    /// extended sets and batches above then cover this rank's pairs only.
+    stripe: Option<RankStripe>,
 }
 
 fn centers(m: &Array2<f64>) -> Vec<[f64; 3]> {
     m.rows().into_iter().map(|r| [r[0], r[1], r[2]]).collect()
+}
+
+/// The Cartesian axis along which `pts` spread most (largest variance; the
+/// lowest axis on a tie).
+fn spread_axis(pts: &[[f64; 3]]) -> usize {
+    let n = pts.len().max(1) as f64;
+    let mut best = (0usize, -1.0f64);
+    for x in 0..3 {
+        let mean = pts.iter().map(|a| a[x]).sum::<f64>() / n;
+        let var = pts.iter().map(|a| (a[x] - mean).powi(2)).sum::<f64>();
+        if var > best.1 {
+            best = (x, var);
+        }
+    }
+    best.0
+}
+
+/// The surviving pairs `(i ≤ j)` in stage-5 order (i-major).
+fn kept_pairs(keep: &[bool], no: usize) -> Vec<(usize, usize)> {
+    (0..no)
+        .flat_map(|i| (i..no).map(move |j| (i, j)))
+        .filter(|&(i, j)| keep[i * no + j])
+        .collect()
+}
+
+/// Each pair's fit domain `D_ij = D_i ∪ D_j` (aux shells).
+fn pair_domains(unique: &[(usize, usize)], aux_dom: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    unique
+        .iter()
+        .map(|&(i, j)| sorted_union([aux_dom[i].iter().copied(), aux_dom[j].iter().copied()]))
+        .collect()
+}
+
+/// One rank's share of the pair fits under [`DirectConfig::mpi`].
+#[derive(Debug, Clone)]
+struct RankStripe {
+    ctx: ferric_core::parallel::ParallelContext,
+    /// Per surviving pair ([`kept_pairs`] order): this rank fits it.
+    mine: Vec<bool>,
+    /// Per occupied: it is in a pair this rank fits, so this rank builds its
+    /// strip.
+    needed: Vec<bool>,
+}
+
+/// The rank that fits each domain group. Groups are ordered by where their
+/// first pair sits along the molecule (`pos` = each occupied's place along
+/// [`spread_axis`]; a pair sorts by its lower then its upper occupied) and
+/// that order is cut into `size` runs of about equal `weight`. A rank's pairs
+/// are then a contiguous run, so the partners an occupied has on one rank sit
+/// close together and its strip there covers only their domains.
+fn group_owners(
+    group_list: &[(Vec<usize>, Vec<usize>)],
+    unique: &[(usize, usize)],
+    pos: &[usize],
+    weight: &[f64],
+    size: usize,
+) -> Vec<usize> {
+    let keys: Vec<(usize, usize)> = group_list
+        .iter()
+        .map(|(_, pxs)| {
+            pxs.iter()
+                .map(|&px| {
+                    let (i, j) = unique[px];
+                    (pos[i].min(pos[j]), pos[i].max(pos[j]))
+                })
+                .min()
+                .expect("a domain group has at least one pair")
+        })
+        .collect();
+    let mut order: Vec<usize> = (0..group_list.len()).collect();
+    order.sort_unstable_by_key(|&g| (keys[g], g));
+    let total: f64 = weight.iter().sum();
+    let mut owner = vec![0usize; group_list.len()];
+    let mut before = 0.0f64;
+    for g in order {
+        if total > 0.0 {
+            let mid = before + 0.5 * weight[g];
+            owner[g] = ((mid / total * size as f64) as usize).min(size - 1);
+        }
+        before += weight[g];
+    }
+    owner
+}
+
+/// Rank `ctx.rank`'s stripe of the pair fits, and each occupied's partners
+/// on this rank (itself and every occupied it shares one of this rank's
+/// pairs with; empty for an occupied this rank never fits). Integral-free and
+/// the same arithmetic on every rank, so the ranks agree on the owners
+/// without talking. A group's weight is a flop proxy for its fit: `d²·(d +
+/// Σ_pairs |C_ij|)` for a domain of `d` functions.
+fn rank_stripe(
+    ctx: ferric_core::parallel::ParallelContext,
+    keep: &[bool],
+    aux_dom: &[Vec<usize>],
+    virt_dom: &[Vec<usize>],
+    occ_xyz: &[[f64; 3]],
+    dims_df: &[usize],
+) -> (RankStripe, Vec<Vec<usize>>) {
+    let no = occ_xyz.len();
+    let unique = kept_pairs(keep, no);
+    let group_list = group_by_domain(pair_domains(&unique, aux_dom));
+    let axis = spread_axis(occ_xyz);
+    let mut along: Vec<usize> = (0..no).collect();
+    along.sort_unstable_by(|&a, &b| {
+        occ_xyz[a][axis]
+            .partial_cmp(&occ_xyz[b][axis])
+            .expect("NaN occupied centroid")
+            .then(a.cmp(&b))
+    });
+    let mut pos = vec![0usize; no];
+    for (p, &i) in along.iter().enumerate() {
+        pos[i] = p;
+    }
+    let weight: Vec<f64> = group_list
+        .iter()
+        .map(|(dsh, pxs)| {
+            let d: usize = dsh.iter().map(|&sh| dims_df[sh]).sum();
+            let n: usize = pxs
+                .iter()
+                .map(|&px| {
+                    let (i, j) = unique[px];
+                    sorted_union([virt_dom[i].iter().copied(), virt_dom[j].iter().copied()]).len()
+                })
+                .sum();
+            (d * d) as f64 * (d + n) as f64
+        })
+        .collect();
+    let owner = group_owners(&group_list, &unique, &pos, &weight, ctx.size);
+    let mut mine = vec![false; unique.len()];
+    let mut partners: Vec<Vec<usize>> = vec![Vec::new(); no];
+    for ((_, pxs), &r) in group_list.iter().zip(&owner) {
+        if r != ctx.rank {
+            continue;
+        }
+        for &px in pxs {
+            mine[px] = true;
+            let (i, j) = unique[px];
+            partners[i].extend([i, j]);
+            partners[j].extend([i, j]);
+        }
+    }
+    for p in &mut partners {
+        p.sort_unstable();
+        p.dedup();
+    }
+    let needed = partners.iter().map(|p| !p.is_empty()).collect();
+    (RankStripe { ctx, mine, needed }, partners)
 }
 
 /// Occupieds grouped by the atom nearest their Boys centroid; with
@@ -2042,18 +2223,7 @@ fn integral_batches(
     if batch_merge <= 1 {
         return batches;
     }
-    let axis = {
-        let n = atom_xyz.len().max(1) as f64;
-        let mut best = (0usize, -1.0f64);
-        for x in 0..3 {
-            let mean = atom_xyz.iter().map(|a| a[x]).sum::<f64>() / n;
-            let var = atom_xyz.iter().map(|a| (a[x] - mean).powi(2)).sum::<f64>();
-            if var > best.1 {
-                best = (x, var);
-            }
-        }
-        best.0
-    };
+    let axis = spread_axis(atom_xyz);
     batches.sort_unstable_by(|(a1, _), (a2, _)| {
         atom_xyz[*a1][axis]
             .partial_cmp(&atom_xyz[*a2][axis])
@@ -2085,9 +2255,6 @@ fn build_locality_maps(
         Some(cal) => pair_gate_keep(&spaces.occ_centers, &spaces.occ_spreads, no, eps, cal),
         None => (vec![true; no * no], 0),
     };
-    let partners: Vec<Vec<usize>> = (0..no)
-        .map(|i| (0..no).filter(|&j| keep[i * no + j]).collect())
-        .collect();
     let atom_xyz: Vec<[f64; 3]> = mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
     let occ_xyz = centers(&spaces.occ_centers);
     let virt_xyz = centers(&spaces.virt_centers);
@@ -2118,6 +2285,22 @@ fn build_locality_maps(
     let virt_supp = (0..nv)
         .map(|a| supp_shells(obs, spaces.c_vloc.column(a), dcfg.ao_tail))
         .collect();
+    // Under a rank stripe an occupied's partners are the ones it shares one
+    // of this rank's pairs with, so its strip covers those pairs only.
+    let (stripe, partners): (Option<RankStripe>, Vec<Vec<usize>>) =
+        match dcfg.mpi.filter(|c| c.size > 1) {
+            None => (
+                None,
+                (0..no)
+                    .map(|i| (0..no).filter(|&j| keep[i * no + j]).collect())
+                    .collect(),
+            ),
+            Some(c) => {
+                let (s, p) =
+                    rank_stripe(c, &keep, &aux_dom, &virt_dom, &occ_xyz, dfbs.shell_dims());
+                (Some(s), p)
+            }
+        };
     // extended per-occupied unions over surviving partners (pair sets are
     // D_ij = D_i ∪ D_j and C_ij = V_i ∪ V_j, both ⊆ the extended sets)
     let aux_ext = (0..no)
@@ -2126,7 +2309,13 @@ fn build_locality_maps(
     let virt_ext = (0..no)
         .map(|i| sorted_union(partners[i].iter().map(|&j| virt_dom[j].iter().copied())))
         .collect();
-    let batches = integral_batches(&atom_xyz, &occ_xyz, dcfg.batch_merge);
+    let mut batches = integral_batches(&atom_xyz, &occ_xyz, dcfg.batch_merge);
+    if let Some(s) = &stripe {
+        batches.retain_mut(|(_, is)| {
+            is.retain(|&i| s.needed[i]);
+            !is.is_empty()
+        });
+    }
     LocalityMaps {
         keep,
         n_gated,
@@ -2137,6 +2326,7 @@ fn build_locality_maps(
         aux_ext,
         virt_ext,
         batches,
+        stripe,
     }
 }
 
@@ -2234,19 +2424,26 @@ fn assemble_gated(
         gate,
         &mut stats,
     )?;
-    let ragged = fit_pairs(
-        &pre,
+    let t0 = Instant::now();
+    let input = PairFitInput {
+        pre: &pre,
         dfbs,
         spaces,
         eps,
         scale,
         dcfg,
-        FitPath::Cholesky,
+        path: FitPath::Cholesky,
         gate,
         fock_screen,
-        &mut stats,
-    )?;
-    Ok((ragged, pre.n_gated, stats))
+    };
+    let (slots, _) = fit_pair_slots(input, &mut stats)?;
+    // The fits were the last readers of the strips and the metric: drop them
+    // before the ranks exchange blocks, so a rank never holds its strips
+    // beside the whole ragged system.
+    let (n_gated, ctx) = (pre.n_gated, pre.stripe.as_ref().map(|s| s.ctx));
+    drop(pre);
+    let ragged = gather_ragged(slots, ctx, gate, 0, t0, &mut stats)?;
+    Ok((ragged, n_gated, stats))
 }
 
 /// What stages 1–4 hand to stage 5: the gate, the distance domains, the
@@ -2258,6 +2455,10 @@ struct StripsAndMetric {
     virt_dom: Vec<Vec<usize>>,
     strips: Vec<Strip>,
     metric_blocks: MetricBlocks,
+    /// The rank stripe: `strips` then holds [`Strip::absent`] for every
+    /// occupied outside `stripe.needed`, and the built ones cover this
+    /// rank's pairs only.
+    stripe: Option<RankStripe>,
 }
 
 /// Stages 1–4 of [`assemble_ragged_direct_local`]: gate and maps
@@ -2329,6 +2530,7 @@ fn strips_and_metric(
         aux_ext,
         virt_ext,
         batches,
+        stripe,
     } = maps;
     stats.t_maps_s = t0.elapsed().as_secs_f64();
 
@@ -2367,7 +2569,8 @@ fn strips_and_metric(
             .collect(),
         Eri3Pass::AuxMajor => aux_major_pass(&bctx, dcfg.scratch_budget_bytes, stats),
     };
-    let strips = collect_strips(no, batch_out, dcfg.split_eri3_timers, stats)?;
+    let needed = stripe.as_ref().map(|s| s.needed.as_slice());
+    let strips = collect_strips(no, batch_out, dcfg.split_eri3_timers, needed, stats)?;
     stats.t_eri3_s = t0.elapsed().as_secs_f64();
 
     let t0 = Instant::now();
@@ -2388,15 +2591,20 @@ fn strips_and_metric(
         virt_dom,
         strips,
         metric_blocks,
+        stripe,
     })
 }
 
 /// Batch outputs → one strip per occupied (an occupied no batch built is a
 /// construction bug), summing the stage-3 counters, timers and strip sizes.
+/// Under a rank stripe `needed` marks the occupieds this rank builds; the
+/// others get [`Strip::absent`], and the row/column means are over the
+/// built strips.
 fn collect_strips(
     no: usize,
     batch_out: Vec<BatchOut>,
     split_timers: bool,
+    needed: Option<&[bool]>,
     stats: &mut DirectStats,
 ) -> Result<Vec<Strip>, FerricError> {
     stats.n_batches = batch_out.len();
@@ -2429,10 +2637,15 @@ fn collect_strips(
     let strips: Vec<Strip> = strips
         .into_iter()
         .enumerate()
-        .map(|(i, s)| {
-            s.ok_or_else(|| FerricError::General(format!("lmp2_direct: no strip built for i={i}")))
+        .map(|(i, s)| match s {
+            Some(s) => Ok(s),
+            None if needed.is_some_and(|n| !n[i]) => Ok(Strip::absent()),
+            None => Err(FerricError::General(format!(
+                "lmp2_direct: no strip built for i={i}"
+            ))),
         })
         .collect::<Result<_, _>>()?;
+    let n_built = needed.map_or(no, |n| n.iter().filter(|&&b| b).count());
     for st in &strips {
         stats.strip_rows_mean += st.rows.len() as f64;
         stats.strip_rows_max = stats.strip_rows_max.max(st.rows.len());
@@ -2440,9 +2653,9 @@ fn collect_strips(
         stats.strip_cols_max = stats.strip_cols_max.max(st.cols.len());
         stats.strip_bytes_total += st.b.len() * 8;
     }
-    if no > 0 {
-        stats.strip_rows_mean /= no as f64;
-        stats.strip_cols_mean /= no as f64;
+    if n_built > 0 {
+        stats.strip_rows_mean /= n_built as f64;
+        stats.strip_cols_mean /= n_built as f64;
     }
     Ok(strips)
 }
@@ -2519,7 +2732,10 @@ fn schwarz_screen(
             stats.own_w_bytes = own_w_store_bytes(&pre.aux_dom, &pre.strips, dims_df);
             let keep = stats.own_w_bytes <= dcfg.scratch_budget_bytes;
             let (aux_dom, strips) = (&pre.aux_dom, &pre.strips);
-            let o = whiten_own_domains(no, scale, aux_dom, strips, dims_df, mb, dfbs, r, keep)?;
+            let needed = pre.stripe.as_ref().map(|s| s.needed.as_slice());
+            let o = whiten_own_domains(
+                no, scale, aux_dom, strips, dims_df, mb, dfbs, r, keep, needed,
+            )?;
             Ok((Some((o.q, o.qmax)), o.w))
         }
         #[cfg(test)]
@@ -2543,17 +2759,24 @@ fn schwarz_screen(
 /// κ screen is on. The screen only ever SHRINKS the union, so the
 /// strip-coverage invariant is untouched; `a ∈ V_i ∪ V_j` lies in both
 /// strips' extended columns (i, j are mutual partners), so a missing
-/// column position is a construction bug and panics loudly.
+/// column position is a construction bug and panics loudly. Under a rank
+/// stripe `mine` marks this rank's pairs; the others get an empty set and
+/// their strips are not read.
 fn pair_candidates(
     unique: &[(usize, usize)],
     virt_dom: &[Vec<usize>],
     strips: &[Strip],
     qvirt: Option<&(Vec<Vec<f64>>, Vec<f64>)>,
     kappa_eps: Option<f64>,
+    mine: Option<&[bool]>,
 ) -> Vec<Vec<usize>> {
     unique
         .iter()
-        .map(|&(i, j)| {
+        .enumerate()
+        .map(|(px, &(i, j))| {
+            if mine.is_some_and(|m| !m[px]) {
+                return Vec::new();
+            }
             let cij = sorted_union([virt_dom[i].iter().copied(), virt_dom[j].iter().copied()]);
             match (qvirt, kappa_eps) {
                 (Some((q, qmax)), Some(th)) => cij
@@ -2800,10 +3023,8 @@ fn fit_pair_slots(
     let (no, nv) = (spaces.no, spaces.nv);
     let fo: Vec<f64> = (0..no).map(|i| spaces.f_oo[(i, i)]).collect();
     let fv: Vec<f64> = (0..nv).map(|a| spaces.f_vv[(a, a)]).collect();
-    let unique: Vec<(usize, usize)> = (0..no)
-        .flat_map(|i| (i..no).map(move |j| (i, j)))
-        .filter(|&(i, j)| pre.keep[i * no + j])
-        .collect();
+    let unique = kept_pairs(&pre.keep, no);
+    let mine = pre.stripe.as_ref().map(|s| s.mine.as_slice());
     let kappa_eps: Option<f64> = match dcfg.virt_schwarz_kappa {
         Some(k) if eps > 0.0 => Some(k * eps),
         _ => None,
@@ -2833,24 +3054,18 @@ fn fit_pair_slots(
         &pre.strips,
         qvirt.as_ref(),
         kappa_eps,
+        mine,
     );
     for c in &pair_cands {
         stats.virt_cand_mean += c.len() as f64;
         stats.virt_cand_max = stats.virt_cand_max.max(c.len());
     }
-    if !pair_cands.is_empty() {
-        stats.virt_cand_mean /= pair_cands.len() as f64;
+    let n_fitted = mine.map_or(unique.len(), |m| m.iter().filter(|&&b| b).count());
+    if n_fitted > 0 {
+        stats.virt_cand_mean /= n_fitted as f64;
     }
 
-    let pair_dom: Vec<Vec<usize>> = unique
-        .iter()
-        .map(|&(i, j)| {
-            sorted_union([
-                pre.aux_dom[i].iter().copied(),
-                pre.aux_dom[j].iter().copied(),
-            ])
-        })
-        .collect();
+    let pair_dom = pair_domains(&unique, &pre.aux_dom);
     let own_w: Option<Vec<Option<GroupW>>> = own_w.map(|w| {
         trim_own_w(
             w,
@@ -2867,8 +3082,7 @@ fn fit_pair_slots(
         .flatten()
         .map(|g| 8 * g.w.len())
         .sum();
-    let stripe = dcfg.mpi.filter(|c| c.size > 1);
-    let group_list = stripe_groups(group_by_domain(pair_dom), stripe.as_ref());
+    let group_list = own_groups(group_by_domain(pair_dom), mine);
     let ctx = PairFitCtx {
         unique: &unique,
         pair_cands: &pair_cands,
@@ -2988,10 +3202,51 @@ fn fit_pair_slots(
     Ok((slots, base_bytes))
 }
 
-/// Stage 5: fit every surviving pair's block and return the ragged system.
-/// With a rank stripe ([`DirectConfig::mpi`]) this rank fits its own domain
-/// groups and the ranks then exchange blocks, so the result is the full
-/// system on every rank.
+/// Stage 5 after the fits: under a rank stripe the ranks exchange their
+/// blocks, then the slots become the ragged system (the full one on every
+/// rank). `beside_bytes` is what is still resident beside this rank's own
+/// blocks; with a gate, the exchange buffer must fit in what the budget has
+/// left (the gathered blocks themselves are the system the solve gate
+/// already admitted).
+fn gather_ragged(
+    mut slots: Vec<crate::ragged_transport::Slot>,
+    stripe: Option<ferric_core::parallel::ParallelContext>,
+    gate: Option<SolveGate>,
+    beside_bytes: usize,
+    t0: Instant,
+    stats: &mut DirectStats,
+) -> Result<Ragged, FerricError> {
+    if let Some(c) = stripe {
+        let avail = gate.map(|g| {
+            let own: usize = slots
+                .iter()
+                .flatten()
+                .flatten()
+                .map(PairBlock::heap_bytes)
+                .sum();
+            g.budget_bytes.saturating_sub(beside_bytes + own)
+        });
+        crate::ragged_transport::gather_slots(&c, &mut slots, avail)?;
+    }
+    let ragged = ragged_from_slots(slots)?;
+    stats.t_pairs_s = t0.elapsed().as_secs_f64();
+    mem_trace(
+        "pairs",
+        &[
+            ("ragged", ragged.heap_bytes()),
+            ("group_scratch_max", stats.group_scratch_bytes_max),
+            ("group_scratch_bound", stats.group_scratch_bound_bytes),
+            ("own_w_held", stats.own_w_bytes_held),
+        ],
+    );
+    Ok(ragged)
+}
+
+/// Stage 5 on borrowed stage-1–4 products (tests fit the same `pre` more
+/// than once): [`fit_pair_slots`] then [`gather_ragged`], with the strips
+/// and the metric still resident during the exchange. The driver
+/// ([`assemble_gated`]) drops them first.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn fit_pairs(
     pre: &StripsAndMetric,
@@ -3017,34 +3272,9 @@ fn fit_pairs(
         gate,
         fock_screen,
     };
-    let (mut slots, base_bytes) = fit_pair_slots(input, stats)?;
-    if let Some(c) = dcfg.mpi.filter(|c| c.size > 1) {
-        // What the budget has left beside the strips, the metric and this
-        // rank's own blocks; the gathered blocks themselves are the ragged
-        // system the solve gate already admitted.
-        let avail = gate.map(|g| {
-            let own: usize = slots
-                .iter()
-                .flatten()
-                .flatten()
-                .map(PairBlock::heap_bytes)
-                .sum();
-            g.budget_bytes.saturating_sub(base_bytes + own)
-        });
-        crate::ragged_transport::gather_slots(&c, &mut slots, avail)?;
-    }
-    let ragged = ragged_from_slots(slots)?;
-    stats.t_pairs_s = t0.elapsed().as_secs_f64();
-    mem_trace(
-        "pairs",
-        &[
-            ("ragged", ragged.heap_bytes()),
-            ("group_scratch_max", stats.group_scratch_bytes_max),
-            ("group_scratch_bound", stats.group_scratch_bound_bytes),
-            ("own_w_held", stats.own_w_bytes_held),
-        ],
-    );
-    Ok(ragged)
+    let (slots, base_bytes) = fit_pair_slots(input, stats)?;
+    let ctx = pre.stripe.as_ref().map(|s| s.ctx);
+    gather_ragged(slots, ctx, gate, base_bytes, t0, stats)
 }
 
 /// Pairs grouped by their pair domain D_ij (shell list), groups ordered by
@@ -3061,21 +3291,18 @@ fn group_by_domain(pair_dom: Vec<Vec<usize>>) -> Vec<(Vec<usize>, Vec<usize>)> {
 
 /// Group outputs → the ragged pair list in original-pair order (an unfilled
 /// slot is a grouping bug), summing the per-group counters into `stats`.
-/// The domain groups rank `stripe.rank` fits: every group without a stripe,
-/// else the groups `g % size == rank` of the list (which is sorted by first
-/// pair, the same on every rank). The ranks' shares are disjoint and cover
-/// the list.
-fn stripe_groups(
+/// The domain groups this rank fits: every group without a stripe, else the
+/// groups of its own pairs ([`rank_stripe`] gives a whole group to one rank,
+/// so a group's first pair decides).
+fn own_groups(
     group_list: Vec<(Vec<usize>, Vec<usize>)>,
-    stripe: Option<&ferric_core::parallel::ParallelContext>,
+    mine: Option<&[bool]>,
 ) -> Vec<(Vec<usize>, Vec<usize>)> {
-    match stripe {
+    match mine {
         None => group_list,
-        Some(c) => group_list
+        Some(m) => group_list
             .into_iter()
-            .enumerate()
-            .filter(|(g, _)| g % c.size == c.rank)
-            .map(|(_, grp)| grp)
+            .filter(|(_, pxs)| m[pxs[0]])
             .collect(),
     }
 }
@@ -4563,20 +4790,24 @@ mod stage_c_tests {
 
     /// Stages 1–4 at ε with the calibrated gate `cal`.
     fn pre_of(su: &Setup, op: Operator, eps: f64, cal: f64) -> StripsAndMetric {
+        pre_with(su, op, eps, Some(cal), &production_maps(None)).0
+    }
+
+    /// Stages 1–4 at ε under `dcfg` (gate `cal`, `None` = every pair), with
+    /// their counters.
+    fn pre_with(
+        su: &Setup,
+        op: Operator,
+        eps: f64,
+        cal: Option<f64>,
+        dcfg: &DirectConfig,
+    ) -> (StripsAndMetric, DirectStats) {
         let mut st = DirectStats::default();
-        strips_and_metric(
-            &su.mol,
-            &su.obs,
-            &su.dfbs,
-            op,
-            &su.spaces,
-            eps,
-            Some(cal),
-            &production_maps(None),
-            None,
-            &mut st,
+        let pre = strips_and_metric(
+            &su.mol, &su.obs, &su.dfbs, op, &su.spaces, eps, cal, dcfg, None, &mut st,
         )
-        .unwrap()
+        .unwrap();
+        (pre, st)
     }
 
     fn fit(
@@ -4594,18 +4825,8 @@ mod stage_c_tests {
         (r, st)
     }
 
-    /// Every field of a block as bits, for bitwise comparison.
-    fn block_bits(pb: &PairBlock) -> (Vec<usize>, Vec<bool>, Vec<u64>) {
-        let idx = [&[pb.i, pb.j][..], &pb.da, &pb.db, &pb.pos_da, &pb.pos_db].concat();
-        let vals = [&pb.fvv_aa, &pb.fvv_bb, &pb.j_blk, &pb.denom]
-            .iter()
-            .flat_map(|a| a.iter().map(|v| v.to_bits()))
-            .collect();
-        (idx, pb.pat.clone(), vals)
-    }
-
-    /// The slots one simulated rank fits (no gather: a rank-pinned context
-    /// has no MPI world).
+    /// The slots one simulated rank fits from its own strips (no gather: a
+    /// rank-pinned context has no MPI world).
     fn rank_slots(
         su: &Setup,
         pre: &StripsAndMetric,
@@ -4627,34 +4848,74 @@ mod stage_c_tests {
         fit_pair_slots(input, &mut st).unwrap().0
     }
 
-    /// The MPI rank stripe partitions the pair fits. For 1, 2, 3 and 5
-    /// simulated ranks: every slot is fitted by exactly one rank, and the
-    /// union of the ranks' slots is the serial ragged system bit for bit.
-    /// One rank is the serial path itself.
+    /// Largest elementwise difference between two blocks' arrays, after
+    /// requiring the same pair, index lists and mask.
+    fn block_diff(a: &PairBlock, b: &PairBlock) -> f64 {
+        assert_eq!((a.i, a.j), (b.i, b.j));
+        assert_eq!((&a.da, &a.db), (&b.da, &b.db), "pair ({}, {})", a.i, a.j);
+        assert_eq!((&a.pos_da, &a.pos_db), (&b.pos_da, &b.pos_db));
+        assert_eq!(a.pat, b.pat, "pair ({}, {}) mask", a.i, a.j);
+        [
+            (&a.fvv_aa, &b.fvv_aa),
+            (&a.fvv_bb, &b.fvv_bb),
+            (&a.j_blk, &b.j_blk),
+            (&a.denom, &b.denom),
+        ]
+        .iter()
+        .flat_map(|(x, y)| x.iter().zip(y.iter()).map(|(p, q)| (p - q).abs()))
+        .fold(0.0, f64::max)
+    }
+
+    /// The rank stripe partitions the assembly. For 2, 3 and 5 simulated
+    /// ranks, each building only its own strips: every slot is fitted by
+    /// exactly one rank, the union of the ranks' slots is the serial ragged
+    /// system (same index lists and masks, values to rounding: a strip over
+    /// fewer partners goes through differently shaped GEMMs), and no rank
+    /// holds more strip bytes than the serial run. One rank is the serial
+    /// path bit for bit. The gate is off, as in the CLI default, so every
+    /// occupied pairs with every other and a strip shrinks only because it
+    /// covers this rank's partners.
     #[test]
     fn rank_stripes_union_to_the_serial_blocks() {
         use ferric_core::parallel::ParallelContext;
         // octane: long enough that the pair domains differ, so there are
         // several domain groups to stripe (butane has one).
         let su = setup("alkane_8.xyz", 8);
-        let eps = 1e-4;
-        let pre = pre_of(&su, Operator::coulomb(), eps, 0.7);
+        let (eps, op) = (1e-4, Operator::coulomb());
         let dcfg = production_maps(None);
+        let (pre, st_pre) = pre_with(&su, op, eps, None, &dcfg);
         let (serial, st) = fit(&su, &pre, eps, &dcfg, FitPath::Cholesky);
-        let serial_bits: Vec<_> = serial.pairs.iter().map(block_bits).collect();
         assert!(
             st.n_pair_groups >= 5,
             "need >= 5 groups, got {}",
             st.n_pair_groups
         );
-        for size in [1usize, 2, 3, 5] {
+        let one = DirectConfig {
+            mpi: Some(ParallelContext::for_rank(0, 1)),
+            ..dcfg.clone()
+        };
+        let (pre_one, _) = pre_with(&su, op, eps, None, &one);
+        assert!(pre_one.stripe.is_none(), "one rank is the serial path");
+        let (one_rank, _) = fit(&su, &pre_one, eps, &one, FitPath::Cholesky);
+        for (a, b) in one_rank.pairs.iter().zip(&serial.pairs) {
+            assert_eq!(block_diff(a, b), 0.0);
+        }
+        let scale = serial
+            .pairs
+            .iter()
+            .flat_map(|pb| pb.j_blk.iter())
+            .fold(0.0f64, |m, v| m.max(v.abs()));
+        for size in [2usize, 3, 5] {
+            let mut strip_bytes = Vec::new();
             let per_rank: Vec<_> = (0..size)
                 .map(|rank| {
                     let striped = DirectConfig {
                         mpi: Some(ParallelContext::for_rank(rank, size)),
                         ..dcfg.clone()
                     };
-                    rank_slots(&su, &pre, eps, &striped)
+                    let (pre_r, st_r) = pre_with(&su, op, eps, None, &striped);
+                    strip_bytes.push(st_r.strip_bytes_total);
+                    rank_slots(&su, &pre_r, eps, &striped)
                 })
                 .collect();
             let n_slots = per_rank[0].len();
@@ -4664,17 +4925,43 @@ mod stage_c_tests {
                 assert_eq!(owners.len(), 1, "size {size}: slot {px} owners {owners:?}");
                 union.extend(per_rank[owners[0]][px].clone().unwrap());
             }
-            let union_bits: Vec<_> = union.iter().map(block_bits).collect();
-            assert_eq!(union_bits, serial_bits, "size {size}");
-            // every rank did some of the work, and none did all of it
+            assert_eq!(union.len(), serial.pairs.len(), "size {size}");
+            let worst = union
+                .iter()
+                .zip(&serial.pairs)
+                .map(|(a, b)| block_diff(a, b))
+                .fold(0.0, f64::max);
+            eprintln!(
+                "[stripe] size {size}: max block diff {worst:.2e} (scale {scale:.2e}); strip \
+                 bytes per rank {strip_bytes:?} vs serial {}",
+                st_pre.strip_bytes_total
+            );
+            assert!(worst <= 1e-11 * scale.max(1.0), "size {size}: {worst:.3e}");
+            // No rank did all of the work, and more than one did some. (A
+            // group is never split, and most of octane's pairs share one
+            // domain, so at 5 ranks some get no group.)
+            let working = per_rank
+                .iter()
+                .filter(|s| s.iter().flatten().count() > 0)
+                .count();
+            assert!(
+                working >= 2,
+                "size {size}: {working} rank(s) fitted anything"
+            );
             for (rank, s) in per_rank.iter().enumerate() {
                 let n = s.iter().flatten().count();
-                assert!(n > 0, "size {size}: rank {rank} fitted nothing");
+                assert!(n < n_slots, "size {size}: rank {rank} fitted everything");
                 assert!(
-                    size == 1 || n < n_slots,
-                    "size {size}: rank {rank} fitted everything"
+                    strip_bytes[rank] <= st_pre.strip_bytes_total,
+                    "size {size}: rank {rank} holds {} strip bytes, serial {}",
+                    strip_bytes[rank],
+                    st_pre.strip_bytes_total
                 );
             }
+            assert!(
+                strip_bytes.iter().any(|&b| b < st_pre.strip_bytes_total),
+                "size {size}: no rank's strips shrank"
+            );
         }
     }
 
@@ -4685,11 +4972,11 @@ mod stage_c_tests {
         use ferric_core::parallel::ParallelContext;
         let su = setup("alkane_8.xyz", 8);
         let eps = 1e-4;
-        let pre = pre_of(&su, Operator::coulomb(), eps, 0.7);
         let striped = DirectConfig {
             mpi: Some(ParallelContext::for_rank(0, 2)),
             ..production_maps(None)
         };
+        let (pre, _) = pre_with(&su, Operator::coulomb(), eps, Some(0.7), &striped);
         let mut st = DirectStats::default();
         let err = fit_pairs(
             &pre,
@@ -4705,6 +4992,111 @@ mod stage_c_tests {
         )
         .unwrap_err();
         assert!(format!("{err}").contains("never filled"), "{err}");
+    }
+
+    /// A chain of `no` occupieds one Bohr apart whose aux domain is the
+    /// `2·reach + 1` shells around it (one function per shell), every pair
+    /// kept: the integral-free inputs of [`rank_stripe`].
+    fn chain(no: usize, reach: usize) -> (Vec<bool>, Vec<Vec<usize>>, Vec<[f64; 3]>) {
+        let dom = (0..no)
+            .map(|i| (i.saturating_sub(reach)..(i + reach + 1).min(no)).collect())
+            .collect();
+        let xyz = (0..no).map(|i| [0.0, i as f64, 0.0]).collect();
+        (vec![true; no * no], dom, xyz)
+    }
+
+    /// The stripe plan on a synthetic chain: the ranks' pairs partition the
+    /// surviving pairs, an occupied is needed exactly when it is in one of
+    /// the rank's pairs, its partners are exactly the occupieds it shares
+    /// those pairs with (and itself), and the pair work is split within a
+    /// factor of two of even.
+    #[test]
+    fn rank_stripe_partitions_pairs_and_names_their_partners() {
+        use ferric_core::parallel::ParallelContext;
+        let (no, reach) = (40usize, 3usize);
+        let (keep, dom, xyz) = chain(no, reach);
+        let dims = vec![1usize; no];
+        let unique = kept_pairs(&keep, no);
+        for size in [2usize, 3, 4, 7] {
+            let mut owners = vec![0usize; unique.len()];
+            for rank in 0..size {
+                let ctx = ParallelContext::for_rank(rank, size);
+                let (s, partners) = rank_stripe(ctx, &keep, &dom, &dom, &xyz, &dims);
+                let mut want: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); no];
+                for (px, &(i, j)) in unique.iter().enumerate() {
+                    if s.mine[px] {
+                        owners[px] += 1;
+                        want[i].extend([i, j]);
+                        want[j].extend([i, j]);
+                    }
+                }
+                for i in 0..no {
+                    assert_eq!(
+                        s.needed[i],
+                        !want[i].is_empty(),
+                        "size {size} rank {rank} i {i}"
+                    );
+                    let got: BTreeSet<usize> = partners[i].iter().copied().collect();
+                    assert_eq!(got, want[i], "size {size} rank {rank} i {i}");
+                }
+                let share = s.mine.iter().filter(|&&m| m).count() as f64 / unique.len() as f64;
+                assert!(
+                    share > 0.5 / size as f64 && share < 2.0 / size as f64,
+                    "size {size} rank {rank}: {share:.3} of the pairs"
+                );
+            }
+            assert!(owners.iter().all(|&n| n == 1), "size {size}: {owners:?}");
+        }
+    }
+
+    /// Why the cut follows the molecule: on the chain, the partner-domain
+    /// rows a rank's strips need (`Σ_i |∪_{j ∈ partners(i)} D_j|`, the strip
+    /// row count) fall with the rank count, while an every-`size`-th-group
+    /// split leaves each rank needing most of them. The bounds are the
+    /// measured fractions (0.60, 0.40, 0.30 at 2, 4, 8 ranks) with margin:
+    /// the rank at the low end of the chain holds a strip for every occupied.
+    #[test]
+    fn a_contiguous_stripe_shrinks_the_strip_rows_a_modulo_one_does_not() {
+        use ferric_core::parallel::ParallelContext;
+        let (no, reach) = (60usize, 3usize);
+        let (keep, dom, xyz) = chain(no, reach);
+        let dims = vec![1usize; no];
+        let rows = |partners: &[Vec<usize>]| -> usize {
+            partners
+                .iter()
+                .map(|p| sorted_union(p.iter().map(|&j| dom[j].iter().copied())).len())
+                .sum()
+        };
+        let serial = rows(&vec![(0..no).collect::<Vec<usize>>(); no]);
+        let unique = kept_pairs(&keep, no);
+        let groups = group_by_domain(pair_domains(&unique, &dom));
+        for (size, bound) in [(2usize, 0.65), (4, 0.45), (8, 0.35)] {
+            let worst = (0..size)
+                .map(|rank| {
+                    let ctx = ParallelContext::for_rank(rank, size);
+                    rows(&rank_stripe(ctx, &keep, &dom, &dom, &xyz, &dims).1)
+                })
+                .max()
+                .unwrap();
+            let modulo = (0..size)
+                .map(|rank| {
+                    let mut partners: Vec<Vec<usize>> = vec![Vec::new(); no];
+                    for (_, pxs) in groups.iter().skip(rank).step_by(size) {
+                        for &px in pxs {
+                            let (i, j) = unique[px];
+                            partners[i].extend([i, j]);
+                            partners[j].extend([i, j]);
+                        }
+                    }
+                    rows(&partners)
+                })
+                .max()
+                .unwrap();
+            let (c, m) = (worst as f64 / serial as f64, modulo as f64 / serial as f64);
+            eprintln!("[stripe rows] size {size}: contiguous {c:.3}, modulo {m:.3} of serial");
+            assert!(c < bound, "size {size}: contiguous {c:.3}");
+            assert!(m > 0.75, "size {size}: modulo {m:.3}");
+        }
     }
 
     /// The surviving pairs (i ≤ j) in stage-5 order and their domains D_ij.
@@ -4835,6 +5227,7 @@ mod stage_c_tests {
                 dfbs,
                 10.0,
                 false,
+                None,
             )
             .unwrap();
             (o.q, o.qmax)
@@ -4845,6 +5238,7 @@ mod stage_c_tests {
             &pre.strips,
             qvirt.as_ref(),
             kappa.map(|k| k * eps),
+            None,
         );
         let mut occ: HashMap<&[usize], BTreeSet<usize>> = HashMap::new();
         for (px, &(i, j)) in unique.iter().enumerate() {
@@ -4959,6 +5353,7 @@ mod stage_c_tests {
                             &su.dfbs,
                             dcfg.aux_radius_bohr,
                             false,
+                            None,
                         )
                         .unwrap();
                         let (q_old, _) = inverse_oracle::schwarz_virtual_q_inverse_oracle(

@@ -1,5 +1,5 @@
-//! MPI rank stripe of the integral-direct LMP2 pair fits
-//! (`DirectConfig::mpi`), checked under a real `mpirun`.
+//! MPI rank stripe of the integral-direct LMP2 assembly (strips, metric and
+//! pair fits; `DirectConfig::mpi`), checked under a real `mpirun`.
 //!
 //! Each rank runs the serial driver and the striped driver in the same
 //! process and compares them, then the ranks compare with each other. The
@@ -18,6 +18,12 @@
 //! What a run at `-np 1` shows: the striped path with one rank is the serial
 //! path (the stripe is off at `size == 1`). The cross-rank and
 //! serial-vs-striped checks only mean something at `-np >= 2`.
+//!
+//! The ignored `..._memory_alkane` case prints each rank's strip bytes and
+//! peak resident set for the striped and the serial run. Give each rank its
+//! share of the cores, e.g. `RAYON_NUM_THREADS=3 mpirun -np 2 <bin>
+//! --ignored --nocapture --test-threads=1`; `FERRIC_MPI_LMP2_ALKANE` picks
+//! the chain length (default 20).
 
 #![cfg(feature = "mpi")]
 
@@ -51,14 +57,35 @@ fn rank_extremes(ctx: &ParallelContext, value: f64) -> (f64, f64) {
     (hi, lo)
 }
 
-/// Octane / 6-31G / cc-pVDZ-RI at eps = 1e-4 with the production maps: long
-/// enough that the pair domains differ, so there are several domain groups
-/// to stripe.
-#[test]
-fn mpi_lmp2_direct_striped_matches_serial_octane() {
+/// Peak resident set of this process since the last [`reset_hwm`], bytes.
+fn vm_hwm() -> usize {
+    let status = std::fs::read_to_string("/proc/self/status").expect("/proc/self/status");
+    ferric_core::memory::sys::parse_status_kb_field(&status, "VmHWM").expect("VmHWM")
+}
+
+fn reset_hwm() {
+    std::fs::write("/proc/self/clear_refs", "5").expect("clear_refs");
+}
+
+/// What one rank saw: the two runs' counters and peak resident sets.
+struct Case {
+    ctx: ParallelContext,
+    e_serial: f64,
+    e_striped: f64,
+    groups_serial: usize,
+    groups_striped: usize,
+    strips_serial: usize,
+    strips_striped: usize,
+    hwm_serial: usize,
+    hwm_striped: usize,
+}
+
+/// `alkane_<n>` / 6-31G / cc-pVDZ-RI at eps = 1e-4 with the production maps,
+/// striped over the world and then serial, on every rank.
+fn run_alkane(n: usize) -> Case {
     let ctx = ParallelContext::default();
     let xyz = format!(
-        "{}/../../testdata/molecules/alkane_8.xyz",
+        "{}/../../testdata/molecules/alkane_{n}.xyz",
         env!("CARGO_MANIFEST_DIR")
     );
     let mol = Molecule::load_xyz(&xyz).unwrap();
@@ -74,63 +101,94 @@ fn mpi_lmp2_direct_striped_matches_serial_octane() {
 
     let cfg = AmplitudeLmp2Config {
         eps: 1e-4,
-        frozen_core: 8,
+        frozen_core: n,
         ..Default::default()
     };
-    let serial_maps = DirectConfig::production();
     let striped_maps = DirectConfig {
         mpi: Some(ctx),
         ..DirectConfig::production()
     };
-    let (serial, st_serial) =
-        amplitude_lmp2_direct(&mol, &obs, &obs_bs, &dfbs, op, &rhf, &cfg, &serial_maps).unwrap();
+    reset_hwm();
     let (striped, st_striped) =
         amplitude_lmp2_direct(&mol, &obs, &obs_bs, &dfbs, op, &rhf, &cfg, &striped_maps).unwrap();
-
-    let diff = (striped.e_corr - serial.e_corr).abs();
+    let hwm_striped = vm_hwm();
+    reset_hwm();
+    let serial_maps = DirectConfig::production();
+    let (serial, st_serial) =
+        amplitude_lmp2_direct(&mol, &obs, &obs_bs, &dfbs, op, &rhf, &cfg, &serial_maps).unwrap();
+    let hwm_serial = vm_hwm();
+    let case = Case {
+        ctx,
+        e_serial: serial.e_corr,
+        e_striped: striped.e_corr,
+        groups_serial: st_serial.n_pair_groups,
+        groups_striped: st_striped.n_pair_groups,
+        strips_serial: st_serial.strip_bytes_total,
+        strips_striped: st_striped.strip_bytes_total,
+        hwm_serial,
+        hwm_striped,
+    };
+    let mb = |b: usize| b as f64 / (1 << 20) as f64;
     eprintln!(
-        "[octane] rank {}/{}: serial e_corr = {:.15} ({} groups)  striped e_corr = {:.15} \
-         ({} groups on this rank)  diff = {diff:.3e}",
+        "[alkane_{n}] rank {}/{}: e_corr serial {:.15} striped {:.15} diff {:.3e} | groups \
+         {}/{} | strips {:.1}/{:.1} MiB | peak RSS {:.0}/{:.0} MiB (striped/serial)",
         ctx.rank,
         ctx.size,
-        serial.e_corr,
-        st_serial.n_pair_groups,
-        striped.e_corr,
-        st_striped.n_pair_groups,
+        case.e_serial,
+        case.e_striped,
+        (case.e_striped - case.e_serial).abs(),
+        case.groups_striped,
+        case.groups_serial,
+        mb(case.strips_striped),
+        mb(case.strips_serial),
+        mb(case.hwm_striped),
+        mb(case.hwm_serial),
     );
+    case
+}
+
+/// The checks every case must pass: striped == serial to rounding on every
+/// rank, the ranks agree, and their groups together are the serial groups.
+fn check(case: &Case) {
+    let Case { ctx, .. } = *case;
     assert!(
-        serial.e_corr < -0.1,
+        case.e_serial < -0.1,
         "a real correlation energy, got {}",
-        serial.e_corr
+        case.e_serial
     );
-    // The gathered blocks are the serial blocks (up to the sign of a zero),
-    // and every rank then runs the same solve.
+    // A strip over fewer partners goes through differently shaped GEMMs, so
+    // the striped blocks are the serial ones to rounding, not bit for bit.
+    let diff = (case.e_striped - case.e_serial).abs();
     assert!(
-        diff <= 1e-12,
+        diff <= 1e-10,
         "rank {}: striped LMP2 differs from serial by {diff:.3e} Ha",
         ctx.rank
     );
     if ctx.size > 1 {
-        // The stripe was on: this rank fitted a strict share of the groups.
+        // The stripe was on: this rank fitted a strict share of the groups
+        // and built no more strip than the serial run.
         assert!(
-            st_striped.n_pair_groups < st_serial.n_pair_groups,
+            case.groups_striped < case.groups_serial,
             "rank {}: fitted {} of {} groups, so nothing was striped",
             ctx.rank,
-            st_striped.n_pair_groups,
-            st_serial.n_pair_groups
+            case.groups_striped,
+            case.groups_serial
+        );
+        assert!(
+            case.strips_striped <= case.strips_serial,
+            "rank {}: {} strip bytes, serial {}",
+            ctx.rank,
+            case.strips_striped,
+            case.strips_serial
         );
     } else {
-        assert_eq!(st_striped.n_pair_groups, st_serial.n_pair_groups);
-        assert_eq!(striped.e_corr.to_bits(), serial.e_corr.to_bits());
+        assert_eq!(case.groups_striped, case.groups_serial);
+        assert_eq!(case.strips_striped, case.strips_serial);
+        assert_eq!(case.e_striped.to_bits(), case.e_serial.to_bits());
     }
-
-    let (hi, lo) = rank_extremes(&ctx, striped.e_corr);
+    let (hi, lo) = rank_extremes(&ctx, case.e_striped);
     if ctx.is_root() {
-        eprintln!(
-            "[octane] cross-rank spread over {} ranks: {:.3e}",
-            ctx.size,
-            hi - lo
-        );
+        eprintln!("cross-rank spread over {} ranks: {:.3e}", ctx.size, hi - lo);
     }
     assert!(
         hi - lo <= 1e-12,
@@ -138,14 +196,42 @@ fn mpi_lmp2_direct_striped_matches_serial_octane() {
         hi - lo
     );
     // Every rank's groups together are the serial groups.
-    let (mut total, mine) = (0.0f64, st_striped.n_pair_groups as f64);
-    if let Some(world) = ctx.world() {
-        use mpi::traits::CommunicatorCollectives;
-        world.all_reduce_into(
-            std::slice::from_ref(&mine),
-            std::slice::from_mut(&mut total),
-            mpi::collective::SystemOperation::sum(),
+    let mut totals = [case.groups_striped as f64];
+    ctx.all_reduce_sum(&mut totals);
+    if ctx.world().is_some() {
+        assert_eq!(totals[0] as usize, case.groups_serial);
+    }
+}
+
+/// Octane: long enough that the pair domains differ, so there are several
+/// domain groups to stripe.
+#[test]
+fn mpi_lmp2_direct_striped_matches_serial_octane() {
+    check(&run_alkane(8));
+}
+
+/// A longer chain (default C20), for the per-rank memory printout: at more
+/// than one rank some rank must hold fewer strip bytes than the serial run.
+#[test]
+#[ignore = "minutes; run under mpirun for the per-rank memory numbers"]
+fn mpi_lmp2_direct_striped_memory_alkane() {
+    let n = std::env::var("FERRIC_MPI_LMP2_ALKANE")
+        .ok()
+        .map_or(20, |v| {
+            v.parse().expect("FERRIC_MPI_LMP2_ALKANE is a chain length")
+        });
+    let case = run_alkane(n);
+    check(&case);
+    let (hi, lo) = rank_extremes(&case.ctx, case.strips_striped as f64);
+    if case.ctx.is_root() {
+        eprintln!(
+            "[alkane_{n}] strip bytes over {} ranks: largest {:.3}, smallest {:.3} of serial",
+            case.ctx.size,
+            hi / case.strips_serial as f64,
+            lo / case.strips_serial as f64
         );
-        assert_eq!(total as usize, st_serial.n_pair_groups);
+    }
+    if case.ctx.size > 1 {
+        assert!(lo < case.strips_serial as f64, "no rank's strips shrank");
     }
 }
