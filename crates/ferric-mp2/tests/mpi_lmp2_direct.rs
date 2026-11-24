@@ -108,11 +108,8 @@ fn run_alkane(n: usize) -> Case {
     let rhf = solve_rhf(&serial_ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
     assert!(rhf.converged, "rank {}: RHF must converge", ctx.rank);
 
-    let cfg = AmplitudeLmp2Config {
-        eps: 1e-4,
-        frozen_core: n,
-        ..Default::default()
-    };
+    // The production model (Fock screen on), as the CLI runs it.
+    let cfg = AmplitudeLmp2Config::production(1e-4, n, None);
     let striped_maps = DirectConfig {
         mpi: Some(ctx),
         ..production_maps()

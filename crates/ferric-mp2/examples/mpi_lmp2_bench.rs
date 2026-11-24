@@ -17,7 +17,8 @@
 //! ## Run (always `OPENBLAS_NUM_THREADS=1`)
 //!
 //! Defaults: `testdata/molecules/alkane_20.xyz`, 6-31g, cc-pvdz-ri, eps 1e-4,
-//! one frozen core per non-hydrogen atom, `DirectConfig::production()`.
+//! one frozen core per non-hydrogen atom, and the production model the CLI
+//! runs: `AmplitudeLmp2Config::production` with `DirectConfig::production()`.
 //! Flags (all optional): `--xyz PATH --basis NAME --aux NAME --eps X
 //! --frozen-core N --aux-radius BOHR --virt-radius BOHR|none --ao-tail X
 //! --schwarz-skip X --batch-merge N --kappa X|none`.
@@ -202,11 +203,8 @@ fn run(ctx: &ParallelContext, args: &Args) -> bool {
     assert!(rhf.converged, "rank {}: RHF must converge", ctx.rank);
     let t_scf = t_scf.elapsed().as_secs_f64();
 
-    let cfg = AmplitudeLmp2Config {
-        eps: args.eps,
-        frozen_core,
-        ..Default::default()
-    };
+    // The production model, from its single source: what the CLI runs.
+    let cfg = AmplitudeLmp2Config::production(args.eps, frozen_core, None);
     let maps = DirectConfig {
         mpi: Some(*ctx),
         ..args.maps.clone()

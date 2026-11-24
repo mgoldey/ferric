@@ -1656,13 +1656,14 @@ impl LocalModel {
         eri3_budget_bytes: Option<usize>,
     ) -> ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config {
         ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config {
-            eps: self.eps[0],
-            frozen_core,
-            eri3_budget_bytes,
             fock_screen: self.fock_screen,
             virtual_space: self.virtual_space.clone(),
             lambda_boys: self.lambda_boys,
-            ..Default::default()
+            ..ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config::production(
+                self.eps[0],
+                frozen_core,
+                eri3_budget_bytes,
+            )
         }
     }
 
@@ -1914,12 +1915,13 @@ impl LocalCfg {
             }
             None
         };
+        // Every model default comes from the library's production config
+        // (the single source): a key the user left out takes its value there.
+        let prod = ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config::production(eps[0], 0, None);
         let virtual_space = self.virtual_space()?;
-        let lambda_boys = self
-            .lambda_boys
-            .unwrap_or(ferric_mp2::boys::LAMBDA_BOYS_DEFAULT);
+        let lambda_boys = self.lambda_boys.unwrap_or(prod.lambda_boys);
         ferric_mp2::boys::check_lambda_boys(lambda_boys).map_err(|e| format!("[local] {e}"))?;
-        let fock_on = self.fock_screen.unwrap_or(true);
+        let fock_on = self.fock_screen.unwrap_or(prod.fock_screen.is_some());
         refuse_kappa_under_fock_screen(fock_on, direct.as_ref())?;
         Ok(Some(LocalModel {
             eps,
@@ -1928,7 +1930,12 @@ impl LocalCfg {
             direct,
             virtual_space,
             lambda_boys,
-            fock_screen: fock_on.then_some(ferric_mp2::lmp2_amplitude::FOCK_SCREEN_KAPPA_DEFAULT),
+            fock_screen: if fock_on {
+                prod.fock_screen
+                    .or(Some(ferric_mp2::lmp2_amplitude::FOCK_SCREEN_KAPPA_DEFAULT))
+            } else {
+                None
+            },
         }))
     }
 }
@@ -7195,6 +7202,12 @@ mod compat_guard_tests {
             ),
             (10.0, Some(20.0), 1e-4, 1e-5, 4)
         );
+        // No drift, field for field: a keyless `[local]` section resolves to
+        // the library's production configs exactly. Debug covers every field,
+        // so a field added later is compared without touching this test.
+        let lib = ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config::production(1e-4, 3, Some(123));
+        assert_eq!(format!("{l:?}"), format!("{lib:?}"));
+        assert_eq!(format!("{d:?}"), format!("{p:?}"));
         assert_eq!(l.eps, 1e-4);
         assert_eq!(l.frozen_core, 3);
         assert_eq!(l.eri3_budget_bytes, Some(123));

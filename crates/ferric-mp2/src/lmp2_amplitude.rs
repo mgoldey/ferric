@@ -208,6 +208,33 @@ impl Default for AmplitudeLmp2Config {
 }
 
 impl AmplitudeLmp2Config {
+    /// THE production local-MP2 model: what the CLI (`kind = "rimp2"` with
+    /// `[local] scheme = "amplitude-threshold"`), the Python binding and
+    /// every benchmark run when no model key is given. `eps`, `frozen_core`
+    /// and the 3-index budget come from the caller; the Fock-propagated
+    /// screen is on at κ = [`FOCK_SCREEN_KAPPA_DEFAULT`], the occupieds are
+    /// λ-Boys at [`crate::boys::LAMBDA_BOYS_DEFAULT`], the virtual space is
+    /// the dense VV-HV build, the pair gate is off. ([`Default`] differs: it
+    /// has no Fock screen.)
+    ///
+    /// This is the single source. The CLI derives its `[local]` defaults
+    /// from it, and `local_rimp2_configs_are_the_production_defaults`
+    /// (ferric-cli) fails if a keyless `[local]` section resolves to
+    /// anything else, field for field. A timing or memory measurement of
+    /// "production" LMP2 must start from this and
+    /// `crate::lmp2_direct::DirectConfig::production`.
+    pub fn production(eps: f64, frozen_core: usize, eri3_budget_bytes: Option<usize>) -> Self {
+        Self {
+            eps,
+            frozen_core,
+            eri3_budget_bytes,
+            fock_screen: Some(FOCK_SCREEN_KAPPA_DEFAULT),
+            lambda_boys: crate::boys::LAMBDA_BOYS_DEFAULT,
+            virtual_space: crate::vvhv_local::VirtualSpace::Dense,
+            ..Default::default()
+        }
+    }
+
     /// The assembly configuration of the NON-MP2 members of the family
     /// (dRPA, LinLCCD, rCCD): `eps`, `frozen_core` and the 3-index budget
     /// from the caller, plain Boys occupieds (λ =
