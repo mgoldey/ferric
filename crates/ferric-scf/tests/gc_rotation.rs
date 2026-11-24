@@ -66,6 +66,27 @@ fn max_abs(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
     })
 }
 
+/// The guard in [`max_abs`] trips: a NaN on either side panics instead of
+/// reading as a zero difference.
+#[test]
+fn max_abs_refuses_a_nan_difference() {
+    let a = Array2::from_elem((2, 2), 1.0);
+    assert_eq!(max_abs(&a, &a), 0.0);
+    for (i, bad) in [f64::NAN, f64::INFINITY].into_iter().enumerate() {
+        let mut b = a.clone();
+        b[(1, i)] = bad;
+        for (x, y) in [(&a, &b), (&b, &a)] {
+            let r = std::panic::catch_unwind(|| max_abs(x, y));
+            let msg = r.expect_err("max_abs accepted a non-finite difference");
+            let msg = msg
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .unwrap_or_default();
+            assert!(msg.contains("non-finite difference"), "{msg}");
+        }
+    }
+}
+
 fn bits_equal(a: &Array2<f64>, b: &Array2<f64>) -> bool {
     a.iter()
         .zip(b.iter())
@@ -463,4 +484,258 @@ fn uhf_energy_rotated_matches_unrotated() {
 #[test]
 fn rohf_energy_rotated_matches_unrotated() {
     compare_scf("nh2", 2, "cc-pvdz", true, Kind::Rohf);
+}
+
+/// Fresh bounds for `prep` whose pooled builds run rotation `mode`
+/// (`SchwarzBounds::gc`, the request an SCF records).
+fn bounds_with(prep: &PreparedBasis, mode: GcRotate) -> SchwarzBounds {
+    let b = SchwarzBounds::compute(Operator::coulomb(), prep).unwrap();
+    b.gc.set_request(Some(mode));
+    b
+}
+
+/// The pooled builds (`build_jk`, `build_jk_with_pool_homogeneous`) and the
+/// single-matrix SCF builders (`DirectJ`, `DirectK`) rotate under `Auto` and
+/// `Rot1`, and agree with the unrotated builds to `JK_TOL`; a rotated result
+/// is not the unrotated one bit for bit (it did rotate).
+#[test]
+fn pooled_and_single_matrix_builds_rotate_and_match_unrotated() {
+    use ferric_scf::direct_j::DirectJ;
+    use ferric_scf::direct_k::DirectK;
+    use ferric_scf::fock::{JBuilder, KBuilder};
+    use ferric_scf::rhf::{build_jk, build_jk_with_pool_homogeneous};
+    let ctx = ParallelContext::default();
+    for (stem, name) in [("water", "cc-pvtz"), ("c2h4", "cc-pvdz")] {
+        let mol = load(stem, 1);
+        let prep = PreparedBasis::new(&mol, &basis::bundled(name).unwrap()).unwrap();
+        let n = prep.nbasis();
+        let d = density(n, 0);
+        // A small response-like density: the homogeneous build rescales it.
+        let dsmall = 3e-5 * &density(n, 4);
+        let run = |mode: GcRotate| {
+            let b = bounds_with(&prep, mode);
+            let (mut j, mut k) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
+            build_jk(&ctx, &prep, &b, THRESH, &d, &mut j, &mut k).unwrap();
+            let pool = ferric_scf::engine_pool::EnginePool::new(
+                b.op,
+                &prep,
+                ferric_integrals::engine_pool::eri_precision(),
+            )
+            .unwrap();
+            let (mut jh, mut kh) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
+            build_jk_with_pool_homogeneous(
+                &ctx,
+                &prep,
+                &b,
+                THRESH,
+                &dsmall,
+                &mut jh,
+                &mut kh,
+                &pool,
+                1 << 26,
+            )
+            .unwrap();
+            let mut js = Array2::zeros((n, n));
+            JBuilder::build(
+                &mut DirectJ::new(&ctx, &prep, &b, THRESH, 1 << 30),
+                &d,
+                &mut js,
+            )
+            .unwrap();
+            let mut ks = Array2::zeros((n, n));
+            KBuilder::build(
+                &mut DirectK::new(&ctx, &prep, &b, THRESH, 1 << 30),
+                &d,
+                &mut ks,
+            )
+            .unwrap();
+            [j, k, jh, kh, js, ks]
+        };
+        let off = run(GcRotate::Off);
+        for mode in [GcRotate::Auto, GcRotate::Rot1] {
+            let rot = run(mode);
+            let names = [
+                "build_jk J",
+                "build_jk K",
+                "homog J",
+                "homog K",
+                "DirectJ",
+                "DirectK",
+            ];
+            for ((what, a), b) in names.iter().zip(&rot).zip(&off) {
+                // The homogeneous build's operand is 3e-5 of the others.
+                let scale = if what.starts_with("homog") { 3e-5 } else { 1.0 };
+                let e = max_abs(a, b);
+                eprintln!("{stem}/{name} {mode:?} {what}: max|d| {e:.2e}");
+                assert!(e <= JK_TOL * scale, "{stem}/{name} {mode:?} {what}: {e:e}");
+                assert!(
+                    !bits_equal(a, b),
+                    "{stem}/{name} {mode:?} {what} did not rotate"
+                );
+            }
+        }
+    }
+}
+
+/// The pooled builds on a segmented basis are the unrotated builds bit for
+/// bit under `Auto`, and the rotated pooled build is bitwise identical
+/// across thread counts.
+#[test]
+fn pooled_builds_bitwise_segmented_and_across_threads() {
+    use ferric_scf::rhf::build_jk;
+    let mol = load("c2h4", 1);
+    let ctx = ParallelContext::default();
+    let build = |prep: &PreparedBasis, mode: GcRotate| {
+        let n = prep.nbasis();
+        let b = bounds_with(prep, mode);
+        let d = density(n, 1);
+        let (mut j, mut k) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
+        build_jk(&ctx, prep, &b, THRESH, &d, &mut j, &mut k).unwrap();
+        (j, k)
+    };
+    for name in ["def2-svp", "6-31g*", "sto-3g"] {
+        let prep = PreparedBasis::new(&mol, &basis::bundled(name).unwrap()).unwrap();
+        let (j0, k0) = build(&prep, GcRotate::Off);
+        let (j1, k1) = build(&prep, GcRotate::Auto);
+        assert!(bits_equal(&j0, &j1) && bits_equal(&k0, &k1), "{name}");
+    }
+    let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+    let run = |threads: usize| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap()
+            .install(|| build(&prep, GcRotate::Auto))
+    };
+    let (j1, k1) = run(1);
+    for threads in [2, 4] {
+        let (j, k) = run(threads);
+        assert!(
+            bits_equal(&j, &j1) && bits_equal(&k, &k1),
+            "{threads} threads"
+        );
+    }
+}
+
+/// `(energy, store rotated?)` of a direct-route RHF on the in-core store.
+fn incore_scf(mol: &Molecule, name: &str, mode: GcRotate) -> (f64, bool) {
+    let prep = PreparedBasis::new(mol, &basis::bundled(name).unwrap()).unwrap();
+    let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+    let ctx = ParallelContext::default();
+    let mut config = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8);
+    config.eri = EriMode::Incore;
+    let config = config.with_gc_rotation(mode);
+    let res = solve_rhf(&ctx, mol, &prep, Operator::coulomb(), &bounds, &config).unwrap();
+    assert!(res.converged);
+    let store = ferric_scf::incore_jk::store_for(&bounds, &prep)
+        .unwrap()
+        .expect("the in-core store serves the SCF's bounds");
+    (res.energy, store.rotated())
+}
+
+/// The in-core store holds the rotated integrals under `Auto` (none under
+/// `Off`, and none for a segmented basis), and the SCF energy agrees with the
+/// unrotated store's to `E_TOL`.
+#[test]
+fn incore_store_rotates_and_matches_unrotated() {
+    let mol = load("c2h4", 1);
+    let (e0, r0) = incore_scf(&mol, "cc-pvdz", GcRotate::Off);
+    let (e1, r1) = incore_scf(&mol, "cc-pvdz", GcRotate::Auto);
+    assert!(!r0 && r1);
+    let de = (e1 - e0).abs();
+    eprintln!("c2h4/cc-pvdz in-core: E {e1:.12} vs off {e0:.12}, |dE| {de:.2e}");
+    assert!(de <= E_TOL, "|dE| = {de:e}");
+    let (es0, _) = incore_scf(&mol, "def2-svp", GcRotate::Off);
+    let (es1, rs1) = incore_scf(&mol, "def2-svp", GcRotate::Auto);
+    assert!(!rs1);
+    assert_eq!(es0.to_bits(), es1.to_bits(), "def2-svp in-core");
+}
+
+/// The post-SCF stability analyses (RHF internal and external, UHF
+/// internal: the Newton operator's J/K, pooled builds on the SCF's bounds)
+/// run the SCF's rotation; their lowest eigenvalues agree with the
+/// unrotated ones.
+#[test]
+fn stability_eigenvalues_rotated_match_unrotated() {
+    let ctx = ParallelContext::default();
+    let cfg = |mode: GcRotate| {
+        let mut c = RhfConfig::default()
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8)
+            .with_check_stability(true)
+            .with_gc_rotation(mode);
+        c.eri = EriMode::Direct;
+        c
+    };
+    let lowest = |mol: &Molecule, uhf: bool, mode: GcRotate| {
+        let prep = PreparedBasis::new(mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+        let res = if uhf {
+            solve_uhf(&ctx, mol, &prep, &bounds, &cfg(mode))
+        } else {
+            solve_rhf(&ctx, mol, &prep, Operator::coulomb(), &bounds, &cfg(mode))
+        }
+        .unwrap();
+        assert!(res.converged);
+        let internal = res.stability.as_ref().expect("internal stability ran");
+        let external = res.stability_external.as_ref().map(|s| s.lowest_eigenvalue);
+        (internal.lowest_eigenvalue, external)
+    };
+    for (mol, uhf, label) in [
+        (load("water", 1), false, "water RHF"),
+        (load("oh", 2), true, "OH UHF"),
+    ] {
+        let (i0, x0) = lowest(&mol, uhf, GcRotate::Off);
+        let (i1, x1) = lowest(&mol, uhf, GcRotate::Auto);
+        eprintln!("{label}: internal {i1:.12} vs off {i0:.12}; external {x1:?} vs {x0:?}");
+        assert!((i1 - i0).abs() <= 1e-8, "{label} internal: {i1} vs {i0}");
+        if let (Some(a), Some(b)) = (x0, x1) {
+            assert!((a - b).abs() <= 1e-8, "{label} external: {a} vs {b}");
+        }
+        assert_eq!(x0.is_some(), x1.is_some());
+    }
+}
+
+/// The analytic gradient's four-centre derivative walk runs on the rotated
+/// shells with the rotated densities; RHF and UHF gradients agree with the
+/// unrotated ones to 1e-9 Eh/bohr.
+#[test]
+fn gradient_rotated_matches_unrotated() {
+    use ferric_scf::gradient::{rhf_gradient, uhf_gradient};
+    let ctx = ParallelContext::default();
+    let grad = |stem: &str, mult: usize, name: &str, mode: GcRotate| {
+        let mol = load(stem, mult);
+        let prep = PreparedBasis::new(&mol, &basis::bundled(name).unwrap()).unwrap();
+        let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+        let mut c = RhfConfig::default()
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8)
+            .with_gc_rotation(mode);
+        c.eri = EriMode::Direct;
+        let op = Operator::coulomb();
+        if mult == 1 {
+            let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &c).unwrap();
+            rhf_gradient(&mol, &prep, op, &bounds, &r, None).unwrap()
+        } else {
+            let r = solve_uhf(&ctx, &mol, &prep, &bounds, &c).unwrap();
+            uhf_gradient(&mol, &prep, op, &bounds, &r, None).unwrap()
+        }
+    };
+    for (stem, mult, name) in [
+        ("c2h4", 1, "cc-pvdz"),
+        ("water", 1, "cc-pvtz"),
+        ("oh", 2, "cc-pvdz"),
+    ] {
+        let g0 = grad(stem, mult, name, GcRotate::Off);
+        let g1 = grad(stem, mult, name, GcRotate::Auto);
+        let e = max_abs(&g1, &g0);
+        eprintln!("{stem}/{name} gradient: max|dG| {e:.2e} Eh/bohr");
+        assert!(e <= 1e-9, "{stem}/{name}: {e:e}");
+        assert!(
+            !bits_equal(&g1, &g0),
+            "{stem}/{name}: the gradient did not rotate"
+        );
+    }
 }
