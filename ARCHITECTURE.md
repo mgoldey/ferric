@@ -927,7 +927,20 @@ Done:
    asked. `GcSlot` has three states: never recorded (fresh bounds: no
    build rotates, `FERRIC_GC_ROTATE` is not read), recorded unset (a
    config left `gc_rotation` unset: the variable, then `auto`) and
-   recorded value; the record is shared by clones, last writer wins. The
+   recorded value; the record is shared by clones, last writer wins for
+   later resolutions (a builder that already resolved keeps its rotation,
+   and a cached level stays cached). Bounds carry their owner geometry
+   (`geometry_key`, which hashes atoms, shell layout, exponents and
+   contraction coefficients, set by `SchwarzBounds::compute`); a rotation
+   for any other geometry is refused before any level is built. Behaviour
+   change from phase 1: a standalone `DirectJK` on fresh bounds with
+   `FERRIC_GC_ROTATE=rot1` (or unset, i.e. `auto`) used to rotate and now
+   runs unrotated; `.with_gc_request(None)` restores the variable-based
+   choice. The rotated builds agree on their buffer reservation across MPI
+   ranks (`RotatedJk::charge_collective`, a min all-reduce like `df_k`'s
+   Cholesky vote) before any reduction, so a refusal on one rank is an
+   error on every rank, never a hang. The in-core store is reused only
+   when it was built on the requested rotation. The
    SCF drivers record their `RhfConfig::gc_rotation` (`GcSlot::set_request`,
    next to `incore_jk::begin_scf`), and every build on those bounds
    follows it: the SCF's `DirectJK`, `DirectJ`, `DirectK` and in-core

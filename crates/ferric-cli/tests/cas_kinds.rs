@@ -650,3 +650,39 @@ fn cli_refusals_are_named() {
         );
     }
 }
+
+/// `[scf] gc_rotation` is read by the CAS kinds (the RHF start and the
+/// direct CASSCF J/K follow it), not refused by the `[scf]` key filter, and
+/// the run log records it. On 6-31G (nothing to rotate) every value is the
+/// default run bit for bit; a value of another case is refused at load.
+#[test]
+fn scf_gc_rotation_is_read() {
+    let (xyz, _) = h2o();
+    let cas = "n_active = 4\nn_elec_active = [2, 2]\nintegrals = \"direct\"\n";
+    let base = run_cli_ok("gc_default", &xyz, &toml_for("casscf", "6-31g", cas));
+    let e0 = base.result()["total"].as_f64().unwrap();
+    assert!(base.record("run_start")["config"]["gc_rotation"].is_null());
+    for v in ["off", "auto"] {
+        let r = run_cli_ok(
+            &format!("gc_{v}"),
+            &xyz,
+            &format!(
+                "{}\n[scf]\ngc_rotation = \"{v}\"\n",
+                toml_for("casscf", "6-31g", cas)
+            ),
+        );
+        assert_eq!(r.record("run_start")["config"]["gc_rotation"], v);
+        let e = r.result()["total"].as_f64().unwrap();
+        assert_eq!(e.to_bits(), e0.to_bits(), "{v}");
+    }
+    let bad = run_cli(
+        "gc_bad",
+        &xyz,
+        &format!(
+            "{}\n[scf]\ngc_rotation = \"OFF\"\n",
+            toml_for("nevpt2", "6-31g", cas)
+        ),
+    );
+    assert!(!bad.ok);
+    assert!(bad.stderr.contains("gc_rotation"), "{}", bad.stderr);
+}

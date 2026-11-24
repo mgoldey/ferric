@@ -1062,3 +1062,40 @@ fn second_order_scf_rotated_matches_unrotated() {
         assert!(de <= E_TOL, "{label}: |dE| = {de:e}");
     }
 }
+
+/// `attach_for_scf` reuses the bounds' store only when it was built on the
+/// requested rotation: `off` on bounds holding a rotated store rebuilds an
+/// unrotated one (and the other way round, and across stages), while a
+/// repeat of the same request reuses the store.
+#[test]
+fn incore_store_reuse_follows_the_requested_rotation() {
+    use ferric_scf::incore_jk::attach_for_scf;
+    use std::sync::Arc;
+    let ctx = ParallelContext::default();
+    let mol = load("water", 1);
+    let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+    let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+    let attach = |mode: GcRotate| {
+        let mut config = RhfConfig::default().with_gc_rotation(mode);
+        config.eri = EriMode::Incore;
+        attach_for_scf(&ctx, &prep, &bounds, &config, usize::MAX / 4, (true, 0.0))
+            .unwrap()
+            .expect("eri = incore attaches a store")
+    };
+    let auto = attach(GcRotate::Auto);
+    assert!(auto.rotated());
+    assert!(
+        Arc::ptr_eq(&auto, &attach(GcRotate::Auto)),
+        "same request reused"
+    );
+    let off = attach(GcRotate::Off);
+    assert!(!off.rotated(), "off served a rotated store");
+    assert!(Arc::ptr_eq(&off, &attach(GcRotate::Off)));
+    let auto2 = attach(GcRotate::Auto);
+    assert!(auto2.rotated() && !Arc::ptr_eq(&auto2, &off));
+    let rot1 = attach(GcRotate::Rot1);
+    assert!(
+        rot1.rotated() && !Arc::ptr_eq(&rot1, &auto2),
+        "rot1 served auto's store"
+    );
+}

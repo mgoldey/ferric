@@ -253,7 +253,7 @@ The active space and the CASSCF orbital optimization of `method.kind =
 other. Both kinds start from the exact-J/K Coulomb RHF with the library
 defaults (the start of Python `run_casscf` / `run_nevpt2`, which run the same
 code), so they read only `[cas]`, `[cas.ci]`, `[scf]` `max_iter` /
-`energy_conv` / `density_conv`, `[memory]`, `[parallel]` and `[output]`; any
+`energy_conv` / `density_conv` / `gc_rotation` (the RHF start and the `integrals = "direct"` CASSCF J/K), `[memory]`, `[parallel]` and `[output]`; any
 other section or `[scf]` key is an error at load time. `[molecule]
 multiplicity` must be 1: the spin of the CAS state comes from
 `n_elec_active`. `task = "energy"` only. See

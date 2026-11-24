@@ -164,8 +164,11 @@ fn row_start(r: usize) -> usize {
     r * (r + 1) / 2
 }
 
-/// The identity of the geometry and basis a store serves: atom positions and
-/// charges, the shell layout and exponents, and the operator.
+/// The identity of the geometry and basis a store (or a contraction
+/// rotation, `direct_jk::gc_rotation`) serves: atom positions and charges,
+/// the shell layout, every shell's angular momentum, spherical or Cartesian
+/// form, exponents and contraction coefficients, and the operator. Two
+/// bases that differ only in coefficients get different keys.
 pub(crate) fn geometry_key(prep: &PreparedBasis, op: Operator) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     prep.nbasis().hash(&mut h);
@@ -178,8 +181,14 @@ pub(crate) fn geometry_key(prep: &PreparedBasis, op: Operator) -> u64 {
     prep.shell_to_atom().hash(&mut h);
     for sh in prep.located_shells() {
         sh.l.hash(&mut h);
+        sh.pure.hash(&mut h);
+        sh.exponents.len().hash(&mut h);
         for e in sh.exponents {
             e.to_bits().hash(&mut h);
+        }
+        sh.coefficients.len().hash(&mut h);
+        for c in sh.coefficients {
+            c.to_bits().hash(&mut h);
         }
     }
     format!("{op:?}").hash(&mut h);
@@ -463,6 +472,17 @@ impl IncoreEri {
     /// Whether the store holds the ERIs of the contraction-rotated shells.
     pub fn rotated(&self) -> bool {
         self.rot.is_some()
+    }
+
+    /// Whether the store was built on exactly the rotation `rot` (`None`:
+    /// unrotated). The rotations are the bounds' cached ones, one per
+    /// level, so identity is pointer identity.
+    fn has_rotation(&self, rot: Option<&Arc<crate::direct_jk::gc_rotation::RotatedJk>>) -> bool {
+        match (&self.rot, rot) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
     }
 
     /// `f(ds)` on the stored shells: the densities forward-transformed and
@@ -895,8 +915,16 @@ pub fn attach_for_scf(
         config.eri_route.set(Some(route.clone()));
         route
     };
+    // The store holds the ERIs of the contraction-rotated shells when the
+    // SCF's direct builds would rotate (`direct_jk::gc_rotation`): about half
+    // the libint time on cc-pVXZ, J/K equal to the unrotated store's to
+    // rounding (no screening here). Resolved before any reuse: a store of
+    // another rotation (rotated under `off`, unrotated under `auto`, the
+    // other stage) is rebuilt, never served.
+    let gc_mode = crate::direct_jk::GcRotate::resolve(config.gc_rotation)?;
+    let rot = bounds.gc.rotation(prep, bounds, gc_mode)?;
     if let Some(s) = bounds.incore.get() {
-        if s.serves(prep, bounds.op) {
+        if s.serves(prep, bounds.op) && s.has_rotation(rot.as_ref()) {
             record(&s, false);
             return Ok(Some(s));
         }
@@ -922,16 +950,11 @@ pub fn attach_for_scf(
         (EriMode::Auto, Err(_)) => return clear(),
         (_, Err(e)) => return Err(e),
     };
-    // The store holds the ERIs of the contraction-rotated shells when the
-    // SCF's direct builds would rotate (`direct_jk::gc_rotation`): about half
-    // the libint time on cc-pVXZ, J/K equal to the unrotated store's to
-    // rounding (no screening here).
-    let mode = crate::direct_jk::GcRotate::resolve(config.gc_rotation)?;
-    let rot = bounds.gc.rotation(prep, bounds, mode)?;
     let store = Arc::new(IncoreEri::build_in(
         ctx, prep, rot, bounds.op, &plan, charge,
     )?);
     bounds.incore.set(Some(store.clone()));
+    let route_rotated = store.rotated();
     let route = record(&store, true);
     if config.verbose {
         eprintln!(
@@ -946,6 +969,8 @@ pub fn attach_for_scf(
             serde_json::json!({
                 "route": "incore",
                 "mode": mode.as_str(),
+                "gc_rotation": gc_mode.as_str(),
+                "rotated": route_rotated,
                 "nbasis": route.nbasis,
                 "bytes": route.bytes,
                 "quartets": route.quartets,

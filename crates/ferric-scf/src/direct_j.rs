@@ -73,7 +73,7 @@ impl<'a> DirectJ<'a> {
         let Some(r) = self.gc.resolve(self.prep, self.bounds)? else {
             return Ok(None);
         };
-        let _charge = r.charge(2)?;
+        let _charge = r.charge_collective(self.ctx, 2)?;
         let dr = r.forward(d);
         let n = dr.nrows();
         let mut xr = Array2::<f64>::zeros((n, n));

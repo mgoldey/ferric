@@ -116,7 +116,9 @@ impl SchwarzBounds {
             csb_m: None,
             csam_x: None,
             incore: Default::default(),
-            gc: Default::default(),
+            gc: crate::direct_jk::gc_rotation::GcSlot::owned_by(crate::incore_jk::geometry_key(
+                prep, op,
+            )),
         })
     }
 

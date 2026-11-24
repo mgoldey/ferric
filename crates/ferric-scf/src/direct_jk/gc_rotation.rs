@@ -85,7 +85,16 @@
 //!   never on unrecorded bounds.
 //!
 //! The recorded value is shared by every clone of the bounds, and the last
-//! writer wins (a second SCF on the same bounds re-records). A pooled build
+//! writer wins (a second SCF on the same bounds re-records) for the
+//! resolutions that follow it: a builder that has already resolved its
+//! rotation (a `DirectJK`, `DirectJ` or `DirectK` past its first build)
+//! keeps it, and a rotation already cached at a level stays cached.
+//!
+//! A change from phase 1: a standalone [`super::DirectJK`] on fresh bounds
+//! (no SCF recorded on them, no request of its own) used to read
+//! `FERRIC_GC_ROTATE` and rotate under `auto`; it now runs unrotated. Give
+//! it `.with_gc_request(None)` to select by the variable (then `auto`), or
+//! `.with_gc_rotation(mode)` for a fixed choice. A pooled build
 //! rotates only when its engine pool says what it computes
 //! ([`EnginePool::eri_key`]); a pool from `EnginePool::from_fn` has no key
 //! and runs unrotated. A basis with nothing to rotate (def2, Pople, STO-3G,
@@ -308,6 +317,32 @@ impl RotatedJk {
         Ok(built)
     }
 
+    /// [`RotatedJk::charge`] agreed across the MPI ranks of `ctx`: the
+    /// rotated walk reduces its partial matrices across the ranks, so a rank
+    /// whose reservation fails must not leave the others waiting in that
+    /// reduction. Every rank reserves, then all vote (a min all-reduce, as
+    /// `df_k`'s Cholesky vote); unless every rank succeeded, every rank
+    /// returns an error (its own, or one naming another rank) before any
+    /// collective of the build. A no-op vote at one rank or without `mpi`.
+    pub(crate) fn charge_collective(
+        &self,
+        ctx: &ferric_core::parallel::ParallelContext,
+        count: usize,
+    ) -> Result<ferric_core::memory::pool::Reservation, FerricError> {
+        let local = self.charge(count);
+        if all_ranks_agree(ctx, local.is_ok()) {
+            return local;
+        }
+        match local {
+            Err(e) => Err(e),
+            Ok(_) => Err(FerricError::General(
+                "direct J/K contraction-rotation buffers: the reservation failed on another MPI \
+                 rank, so no rank runs the rotated build"
+                    .into(),
+            )),
+        }
+    }
+
     /// The `D'` and `X'` buffers of a rotated build (`count · n²` doubles),
     /// charged to the memory pool while the guard lives.
     pub(crate) fn charge(
@@ -320,6 +355,26 @@ impl RotatedJk {
             count * n * n * std::mem::size_of::<f64>(),
         )
     }
+}
+
+/// Whether `local` holds on every MPI rank of `ctx` (a min all-reduce;
+/// `local` itself at one rank or without the `mpi` feature).
+fn all_ranks_agree(ctx: &ferric_core::parallel::ParallelContext, local: bool) -> bool {
+    #[cfg(feature = "mpi")]
+    if let Some(world) = ctx.world() {
+        use mpi::traits::CommunicatorCollectives;
+        let mine = [i32::from(local)];
+        let mut all = [0i32];
+        world.all_reduce_into(
+            &mine[..],
+            &mut all[..],
+            mpi::collective::SystemOperation::min(),
+        );
+        return all[0] == 1;
+    }
+    #[cfg(not(feature = "mpi"))]
+    let _ = ctx;
+    local
 }
 
 /// The contraction rotation cache of one [`SchwarzBounds`] (its `gc`
@@ -359,6 +414,9 @@ type LevelEntry = (u64, Option<Arc<RotatedJk>>);
 struct GcSlotInner {
     /// Bounds of a rotated basis: never rotate.
     inert: bool,
+    /// `geometry_key` of the basis and operator the bounds were computed
+    /// for ([`SchwarzBounds::compute`]); a rotation is served only for it.
+    owner: Option<u64>,
     request: std::sync::RwLock<Request>,
     /// Per level (`[Ogc, Rot1]`): `None` = not detected yet.
     levels: std::sync::Mutex<[Option<LevelEntry>; 2]>,
@@ -374,6 +432,15 @@ impl std::fmt::Debug for GcSlot {
 }
 
 impl GcSlot {
+    /// The slot of bounds computed for the geometry `key`
+    /// (`incore_jk::geometry_key`).
+    pub(crate) fn owned_by(key: u64) -> Self {
+        GcSlot(Arc::new(GcSlotInner {
+            owner: Some(key),
+            ..Default::default()
+        }))
+    }
+
     fn inert() -> Self {
         GcSlot(Arc::new(GcSlotInner {
             inert: true,
@@ -455,6 +522,19 @@ impl GcSlot {
             RotationLevel::Rot1 => 1,
         };
         let key = crate::incore_jk::geometry_key(prep, bounds.op);
+        let refuse = || {
+            Err(FerricError::General(
+                "gc rotation: the bounds were computed for another geometry, basis or \
+                 operator; a rotation is never built or reused for another one (rebuild the \
+                 bounds for this geometry)"
+                    .into(),
+            ))
+        };
+        // The owner first: a cold level must not be built (and cached) for a
+        // geometry the bounds do not describe.
+        if self.0.owner.is_some_and(|o| o != key) {
+            return refuse();
+        }
         let lock = || {
             self.0
                 .levels
@@ -681,10 +761,45 @@ mod tests {
         assert!(b.gc.rotation(&prep, &b, GcRotate::Auto).unwrap().is_some());
         let e = b.gc.rotation(&moved, &b, GcRotate::Auto).unwrap_err();
         assert!(e.to_string().contains("another geometry"), "{e}");
-        // A level not built yet is built for the geometry it is asked for;
-        // the other geometry is then refused there too.
-        assert!(b.gc.rotation(&moved, &b, GcRotate::Rot1).unwrap().is_some());
-        assert!(b.gc.rotation(&prep, &b, GcRotate::Rot1).is_err());
+        // A level not built yet is refused for the other geometry too (the
+        // bounds' owner is checked before any build), and the owner's own
+        // request at that level still builds afterwards.
+        let e = b.gc.rotation(&moved, &b, GcRotate::Rot1).unwrap_err();
+        assert!(e.to_string().contains("another geometry"), "{e}");
+        assert!(b.gc.rotation(&prep, &b, GcRotate::Rot1).unwrap().is_some());
+        // Fresh bounds, cold at every level: refused before any build.
+        let c = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+        for m in [GcRotate::Auto, GcRotate::Rot1] {
+            assert!(c.gc.rotation(&moved, &c, m).is_err(), "{m:?}");
+        }
+        assert!(c.gc.rotation(&prep, &c, GcRotate::Auto).unwrap().is_some());
+    }
+
+    /// Two bases that differ only in a contraction coefficient (same
+    /// geometry, shells and exponents) are different geometries for the
+    /// cache: the other one is refused, cold or warm.
+    #[test]
+    fn rotation_of_other_coefficients_is_refused() {
+        let (mol, prep) = water(0.1);
+        let mut bs = basis::bundled("cc-pvdz").unwrap();
+        let sh = bs
+            .shells
+            .get_mut(&8)
+            .unwrap()
+            .iter_mut()
+            .find(|sh| sh.coefficients.len() > 1)
+            .unwrap();
+        sh.coefficients[0] *= 1.0 + 1e-9;
+        let other = PreparedBasis::new(&mol, &bs).unwrap();
+        assert_eq!(prep.nbasis(), other.nbasis());
+        assert_ne!(
+            crate::incore_jk::geometry_key(&prep, Operator::coulomb()),
+            crate::incore_jk::geometry_key(&other, Operator::coulomb())
+        );
+        let b = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+        assert!(b.gc.rotation(&other, &b, GcRotate::Auto).is_err());
+        assert!(b.gc.rotation(&prep, &b, GcRotate::Auto).unwrap().is_some());
+        assert!(b.gc.rotation(&other, &b, GcRotate::Auto).is_err());
     }
 
     /// Concurrent first uses from rayon workers (the rotated Schwarz table

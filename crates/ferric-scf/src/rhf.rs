@@ -4626,7 +4626,7 @@ fn rotated_jk(
     band_bytes: usize,
 ) -> Result<usize, FerricError> {
     let t0 = std::time::Instant::now();
-    let _charge = rot.charge(3)?;
+    let _charge = rot.charge_collective(ctx, 3)?;
     let dr = rot.forward(d);
     let n = dr.nrows();
     let (mut jr, mut kr) = (Array2::<f64>::zeros((n, n)), Array2::<f64>::zeros((n, n)));
@@ -4740,7 +4740,7 @@ pub(crate) fn build_spin_jk_with_pool_homogeneous(
     }
     if let Some((rot, rpool)) = GcSlot::for_pool(bounds, prep, pool)? {
         // The rotated build of the same call (module `direct_jk::gc_rotation`).
-        let _charge = rot.charge(6)?;
+        let _charge = rot.charge_collective(ctx, 6)?;
         let (da, db) = (rot.forward(d[0]), rot.forward(d[1]));
         let (jr, kr) = build_spin_jk_with_pool_homogeneous(
             ctx,
@@ -4877,7 +4877,7 @@ pub(crate) fn build_multi_jk_with_pool_homogeneous(
     }
     if let Some((rot, rpool)) = GcSlot::for_pool(bounds, prep, pool)? {
         // The rotated build of the same call (module `direct_jk::gc_rotation`).
-        let _charge = rot.charge(2 * (jd.len() + kd.len()))?;
+        let _charge = rot.charge_collective(ctx, 2 * (jd.len() + kd.len()))?;
         let jr: Vec<Array2<f64>> = jd.iter().map(|d| rot.forward(d)).collect();
         let kr: Vec<Array2<f64>> = kd.iter().map(|d| rot.forward(d)).collect();
         let (js, ks) = build_multi_jk_with_pool_homogeneous(

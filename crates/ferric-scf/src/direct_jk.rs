@@ -450,7 +450,7 @@ impl<'a> DirectJK<'a> {
         };
         let r: &RotatedJk = r;
         let n = r.basis.nbasis();
-        let _charge = r.charge(ds.len() + outs.len())?;
+        let _charge = r.charge_collective(ctx, ds.len() + outs.len())?;
         let t0 = std::time::Instant::now();
         let dr: Vec<Array2<f64>> = ds.iter().map(|d| r.forward(d)).collect();
         let t_fwd = t0.elapsed().as_secs_f64();
