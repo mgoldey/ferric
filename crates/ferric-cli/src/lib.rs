@@ -1270,7 +1270,15 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
     if let Some(path) = cfg.scf.save_reference.as_deref() {
         reference_io::check_save_path(path)?;
     }
-    let mut reference_read: Option<serde_json::Value> = None;
+    if let Some((plan, _)) = reference_plan.as_ref() {
+        let key = if cfg.scf.read_reference.is_some() {
+            "read_reference"
+        } else {
+            "save_reference"
+        };
+        reference_io::refuse_unstorable(key, plan.config, jk_route.k_builder)?;
+    }
+    let mut reference_read: Option<(serde_json::Value, String)> = None;
     let result = if let (Some(path), Some((plan, identity))) =
         (cfg.scf.read_reference.as_deref(), reference_plan.as_ref())
     {
@@ -1281,7 +1289,7 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
             plan,
             cfg.scf.read_reference_other_build,
         )?;
-        reference_read = Some(read.record);
+        reference_read = Some((read.record, read.provenance));
         read.result
     } else if route == ReferenceRoute::Ladder {
         // `[scf] df_guess` is not (yet) composed with the multi-rung
@@ -1400,8 +1408,10 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
         solve_rhf(ctx, mol, prep, op, bounds, &rhf_config)?
     };
     // Written before the correlated stage, so a failure there keeps it.
-    if let (Some(path), Some((_, identity))) = (cfg.scf.save_reference.as_deref(), reference_plan) {
-        reference_io::save(path, &sys, identity, &result)?;
+    if let (Some(path), Some((plan, identity))) =
+        (cfg.scf.save_reference.as_deref(), reference_plan)
+    {
+        reference_io::save(path, &sys, identity, plan.config, &result)?;
     }
 
     // Same-basis Hirshfeld proatom: neutral free-atom SCF densities in the
@@ -1439,6 +1449,12 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
     // certificate carries them as `scf reference: ...` (`with_reference`).
     let scf_cert =
         ferric_scf::certificate::with_scf_envelope(scf_cert, mol, &result, scf_cert_config, &bs);
+    // A read reference names its file, so a post-SCF certificate says where
+    // its reference came from (`scf reference: read from ...`).
+    let scf_cert = match reference_read.as_ref() {
+        Some((_, provenance)) => scf_cert.with_route("reference", provenance.clone()),
+        None => scf_cert,
+    };
 
     // Evaluated before the dispatch (one arm takes `result` by value),
     // printed after the method's own output.
@@ -1578,7 +1594,7 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
         extra["precision"] = run_precision_json(&run_probe);
         extra["scf_precision"] = scf_precision;
         add_scf_certificate(&mut extra, method, &scf_cert);
-        if let Some(record) = reference_read {
+        if let Some((record, _)) = reference_read {
             extra["scf_reference"] = record;
         }
         rl.run_end(energy, scf_converged, &format!("{scf_exit:?}"), extra);
@@ -2375,9 +2391,10 @@ fn open_shell_reference_config(method: &str, rhf_config: &RhfConfig) -> RhfConfi
 /// `Config::validate_multiplicity` admitted (rimp2, oo-rimp2, pdep-rpa, gw,
 /// mp2-v, all task = "energy").
 ///
-/// pdep-rpa/gw/mp2-v keep the MOM-from-iteration-5 UHF they have always been
-/// given here (pdep-rpa and gw re-solve their own UHF inside their arms;
-/// mp2-v consumes this one, dispatching on `result.spin`). rimp2/oo-rimp2
+/// pdep-rpa/mp2-v keep the MOM-from-iteration-5 UHF they have always been
+/// given here (pdep-rpa re-solves the same UHF inside its arm; mp2-v consumes
+/// this one, dispatching on `result.spin`). gw does not come here: its
+/// UHF/ROHF is `gw_open_shell_reference`, which `run_gw` reuses. rimp2/oo-rimp2
 /// get the plain UHF that `kind = "uhf"` runs with the same `[scf]` keys, so
 /// the reference energy an open-shell RI-MP2 run prints IS the `uhf` energy.
 fn solve_open_shell_reference(

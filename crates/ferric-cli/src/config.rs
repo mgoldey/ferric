@@ -5570,13 +5570,19 @@ impl Config {
                     .to_string(),
             );
         }
-        if s.read_reference.is_some() && (s.check_stability || s.stability_descent) {
-            return Err(
-                "[scf] read_reference cannot be combined with check_stability: \
-                        the stability analysis is not stored with the reference, so this \
-                        run would report it as not run"
-                    .to_string(),
-            );
+        if s.read_reference.is_some() {
+            for (set, name) in [
+                (s.check_stability, "check_stability"),
+                (s.stability_descent, "stability_descent"),
+            ] {
+                if set {
+                    return Err(format!(
+                        "[scf] read_reference cannot be combined with {name}: the stability \
+                         analysis is not stored with the reference, so this run would report \
+                         it as not run"
+                    ));
+                }
+            }
         }
         Ok(())
     }

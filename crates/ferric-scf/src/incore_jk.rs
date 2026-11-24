@@ -700,7 +700,7 @@ impl EriRouteRecord {
         self.0.lock().ok().and_then(|g| g.clone())
     }
 
-    fn set(&self, r: Option<EriRoute>) {
+    pub(crate) fn set(&self, r: Option<EriRoute>) {
         if let Ok(mut g) = self.0.lock() {
             *g = r;
         }

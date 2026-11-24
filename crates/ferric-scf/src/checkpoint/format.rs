@@ -2,6 +2,7 @@
 
 use super::identity::{BuildStamp, Fnv, ScfIdentity};
 use super::{Checkpoint, CheckpointError, FinalState, OrbitalState, FORMAT_VERSION};
+use crate::incore_jk::{EriMode, EriRoute};
 use crate::result::{ConvergenceReport, DfJkRoute, DiisFallback, GradientVetoes, ScfExit, Spin};
 use ferric_integrals::operator::{Operator, OperatorKind};
 use ndarray::{arr1, Array1, Array2, ArrayD, Ix1, Ix2, IxDyn};
@@ -164,7 +165,51 @@ struct FinalMeta {
     /// Absent in checkpoints written before the field existed.
     #[serde(default)]
     precision_json: Option<String>,
+    /// Absent in checkpoints written before the field existed.
+    #[serde(default)]
+    eri_route: Option<EriRouteMeta>,
+    /// Absent in checkpoints written before the field existed.
+    #[serde(default)]
+    writer_threads: Option<usize>,
     not_stored: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EriRouteMeta {
+    nbasis: usize,
+    bytes: usize,
+    quartets: usize,
+    #[serde(with = "float_bits")]
+    build_seconds: f64,
+    mode: String,
+}
+
+fn eri_route_to_meta(r: &EriRoute) -> EriRouteMeta {
+    let EriRoute {
+        nbasis,
+        bytes,
+        quartets,
+        build_seconds,
+        mode,
+    } = r;
+    EriRouteMeta {
+        nbasis: *nbasis,
+        bytes: *bytes,
+        quartets: *quartets,
+        build_seconds: *build_seconds,
+        mode: mode.as_str().to_string(),
+    }
+}
+
+fn eri_route_from_meta(m: EriRouteMeta) -> Result<EriRoute, CheckpointError> {
+    Ok(EriRoute {
+        nbasis: m.nbasis,
+        bytes: m.bytes,
+        quartets: m.quartets,
+        build_seconds: m.build_seconds,
+        mode: EriMode::parse_config_str(&m.mode).map_err(CheckpointError::Format)?,
+    })
 }
 
 #[derive(Serialize, Deserialize)]
@@ -411,6 +456,8 @@ fn final_to_meta(state: &FinalState) -> FinalMeta {
         precision_summary: state.precision_summary.clone(),
         precision_detail: state.precision_detail.clone(),
         precision_json: state.precision_json.clone(),
+        eri_route: state.eri_route.as_ref().map(eri_route_to_meta),
+        writer_threads: state.writer_threads,
         not_stored: state.not_stored.clone(),
     }
 }
@@ -1009,6 +1056,8 @@ fn decode_final(
         precision_summary: meta.precision_summary,
         precision_detail: meta.precision_detail,
         precision_json: meta.precision_json,
+        eri_route: meta.eri_route.map(eri_route_from_meta).transpose()?,
+        writer_threads: meta.writer_threads,
         not_stored: meta.not_stored,
     })
 }

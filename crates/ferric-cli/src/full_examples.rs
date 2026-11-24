@@ -223,7 +223,7 @@ macro_rules! key {
     };
 }
 
-const OWN_START: &str = "not read: this kind runs its own reference SCF, which reads only \
+const OWN_START: &str = "refused: this kind runs its own reference SCF, which reads only \
                          max_iter, energy_conv and density_conv";
 const COSX: &str = "only with k_builder = \"cosx\" or jk = \"rijcosx\"";
 const FOUR_CENTRE: &str = "only on a four-centre exchange route; this run fits K";
