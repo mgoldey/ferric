@@ -1110,8 +1110,12 @@ integrals are rebuilt by the correlated stage, as in a fresh run. The keys are
 CLI only; the Python drivers solve their own reference. Keys and refusals:
 [`[scf]`](../reference/input.md#scf).
 
-Measured on benzene / cc-pVDZ (228 functions), `kind = "rimp2"`, 4 threads
-(2026-11-24): MEASUREMENT_PLACEHOLDER
+Measured on sulfamethoxazole / cc-pVDZ (28 atoms, 297 functions),
+`kind = "rimp2"` with its defaults (RI-JK reference, 15 SCF iterations), on
+4 cores shared with other jobs (load 2.3 to 3) and an `opt-level = 2`
+build (2026-11-24): a fresh run took 17.3 s and 18.3 s, the run that saved
+the reference 18.9 s (the file is 2.8 MB), and a run reading it 5.3 s and
+5.9 s, with the same RI-MP2 energy to the last bit.
 
 ### Secondary-basis guess (Q-Chem `BASIS2`)
 
