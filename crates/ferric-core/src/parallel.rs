@@ -205,7 +205,7 @@ impl ParallelContext {
 
     /// Run `f` inside a rayon pool sized for this rank (see
     /// [`Self::rayon_threads`]), propagating a pool-build failure as
-    /// [`FerricError::Libint`]. MPI entry points run their whole body in it so
+    /// [`crate::FerricError::Libint`]. MPI entry points run their whole body in it so
     /// `np` ranks on one node do not each spawn a full-width pool.
     pub fn with_rank_pool<F, R>(&self, f: F) -> Result<R, crate::FerricError>
     where
