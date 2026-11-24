@@ -851,6 +851,32 @@ Done:
     - Move the Python `run_cdft` / geometry keyword → `ScfOptions` mapping
       into ferric-scf, so its oracle tests the code the binding runs
       instead of a hand copy in `options::tests`.
+-  Reference SCF reuse across runs (profiling-audit lead 4): CLI
+   `[scf] save_reference = "path"` writes the converged reference SCF of a
+   correlated kind (`task = "energy"`) as a `ferric_scf::checkpoint` final
+   file before the correlated stage; `read_reference = "path"` reads one
+   under `ReadMode::Skip` and restores it (`Checkpoint::restore`, new: the
+   stored arrays bit for bit, `xc`/`relativistic` stamped from the config,
+   the unstored diagnostics `None`; refuses a mixed-precision record, a
+   COSX final pass or induced dipoles) in place of the solve, so no SCF
+   iteration runs and the correlated energy is bitwise a fresh run's.
+   The identity is the library's `ScfIdentity::new` on the configuration
+   the solver receives, plus two CLI fields pushed onto `fields`
+   (`cli_reference_route`: plain / DF-guess + aux / DF-increments + aux /
+   UHF / GW UHF-ROHF, and `mpi_ranks`); `identity.rs` is unchanged. One
+   `ReferenceRoute` in `ferric-cli/src/lib.rs` decides both the solve and
+   that field. A mismatch is an error naming the fields, never a fallback
+   (as a guess or a fresh SCF); the stored `Tr[Dh]` and `Vnn` are
+   rechecked bitwise against this run's integrals. A dirty or unknown
+   build needs `read_reference_other_build = true`. Refused at load time:
+   the SCF kinds (their ladder / UHF / ROHF route is not the correlated
+   one), the double hybrids, CAS, OP-MP3, other tasks, `[cell]`, both
+   keys at once, and `read_reference` with `check_stability`. Tests:
+   `ferric-cli/tests/scf_reference_io.rs`, `checkpoint::tests::restore_*`.
+   Follow-ups: no Python keyword (the Python drivers solve their own
+   reference and take no result object); no file guess (a mismatched file
+   is refused, not used to seed the SCF); the SCF kinds could save once
+   the ladder's final rung is part of the identity.
 
 Next, each as its own PR following the patterns above:
 

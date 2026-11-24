@@ -1096,11 +1096,14 @@ correlated energy is bitwise the one a fresh run gives, because the file is
 read only when it is the reference this run would converge to: every field of
 the checkpoint identity must match, and so must the route that converges it.
 Anything else is refused with the differing fields named; the file is never
-used as a guess instead. Two things look like the same reference and are not:
-the `rhf`/`ksdft` kinds converge through the convergence ladder and the
-correlated kinds do not (so those kinds refuse the keys), and the closed-shell
-correlated kinds run a DF-guess pre-stage by default, so `df_guess = false` is
-a different reference. A file converged tighter than the run asks is accepted.
+used as a guess instead. Three things look like the same reference and are
+not: the `rhf`/`ksdft` kinds converge through the convergence ladder and the
+correlated kinds do not (so those kinds refuse the keys); the closed-shell
+MP2-family kinds default to an RI-JK reference (`[scf] jk`) where `ccsd` and
+the other kinds solve with exact J/K after a DF-guess pre-stage, so save from
+`rimp2` with `jk = "exact"` to reuse the reference in `ccsd`; and
+`df_guess = false` or `df_increments = true` is another route to another
+reference. A file converged tighter than the run asks is accepted.
 Only a file from the same clean build is accepted unless
 `read_reference_other_build = true`. Density-fitting tensors and other
 integrals are rebuilt by the correlated stage, as in a fresh run. The keys are

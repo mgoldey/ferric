@@ -126,14 +126,22 @@ fn read_key(file: &PathBuf) -> String {
     )
 }
 
-/// Save on one kind, read on it and on a second kind: each read gives the
-/// fresh run's energy bit for bit and runs no SCF iteration.
-fn save_then_read(tag: &str, mol: &str, kinds: [&str; 2]) {
+/// Save on the first kind, read on it and on the second: each read gives the
+/// fresh run's energy bit for bit and runs no SCF iteration. Each kind comes
+/// with its own `[scf]` lines (the MP2 family's default RI-JK reference is
+/// not CCSD's exact one, so the RHF case asks RI-MP2 for `jk = "exact"`).
+fn save_then_read(tag: &str, mol: &str, kinds: [(&str, &str); 2]) {
     let file = scratch().join(format!("{tag}.npz"));
     let _ = std::fs::remove_file(&file);
+    let (first, first_scf) = kinds[0];
     let saved = ok(
         &format!("{tag}_save"),
-        &input(mol, "6-31g", kinds[0], &path_key("save_reference", &file)),
+        &input(
+            mol,
+            "6-31g",
+            first,
+            &format!("{first_scf}{}", path_key("save_reference", &file)),
+        ),
     );
     assert!(saved.count("scf_iter") > 0, "the saving run solves its SCF");
     assert!(
@@ -142,11 +150,11 @@ fn save_then_read(tag: &str, mol: &str, kinds: [&str; 2]) {
         saved.stderr
     );
     assert!(file.is_file(), "no file at {}", file.display());
-    for kind in kinds {
-        let fresh = ok(&format!("{tag}_{kind}_fresh"), &input(mol, "6-31g", kind, ""));
+    for (kind, scf) in kinds {
+        let fresh = ok(&format!("{tag}_{kind}_fresh"), &input(mol, "6-31g", kind, scf));
         let read = ok(
             &format!("{tag}_{kind}_read"),
-            &input(mol, "6-31g", kind, &read_key(&file)),
+            &input(mol, "6-31g", kind, &format!("{scf}{}", read_key(&file))),
         );
         assert_eq!(
             read.total_bits(kind),
@@ -176,12 +184,16 @@ fn save_then_read(tag: &str, mol: &str, kinds: [&str; 2]) {
 
 #[test]
 fn an_rhf_reference_saved_by_rimp2_gives_rimp2_and_ccsd_their_fresh_energies() {
-    save_then_read("rhf", WATER, ["rimp2", "ccsd"]);
+    save_then_read(
+        "rhf",
+        WATER,
+        [("rimp2", "jk = \"exact\"\n"), ("ccsd", "")],
+    );
 }
 
 #[test]
 fn a_uhf_reference_saved_by_rimp2_gives_rimp2_and_oo_rimp2_their_fresh_energies() {
-    save_then_read("uhf", OH, ["rimp2", "oo-rimp2"]);
+    save_then_read("uhf", OH, [("rimp2", ""), ("oo-rimp2", "")]);
 }
 
 fn saved_water(tag: &str) -> PathBuf {
@@ -217,15 +229,16 @@ fn a_reference_for_another_basis_geometry_or_route_is_refused() {
         &input(&moved_mol, "sto-3g", "rimp2", &read_key(&file)),
     );
     assert!(e.contains("coordinates"), "{e}");
-    // The same molecule and basis solved on another route (no DF-guess
-    // pre-stage) is another reference.
+    // The same molecule and basis solved on another route (exact J/K
+    // through the DF-corrected incremental SCF, not RI-JK) is another
+    // reference.
     let e = refused(
         "mismatch_route",
         &input(
             WATER,
             "sto-3g",
             "rimp2",
-            &format!("df_guess = false\n{}", read_key(&file)),
+            &format!("df_increments = true\n{}", read_key(&file)),
         ),
     );
     assert!(e.contains("cli_reference_route"), "{e}");
