@@ -9478,13 +9478,14 @@ mod scf_config_lowering_tests {
     }
 
     /// `[scf] gc_rotation` reaches `RhfConfig::gc_rotation`; unset leaves it
-    /// `None`; a value outside auto | rot1 | off is refused by key name.
+    /// `None`; a value outside auto | rot1 | off (another case included) is
+    /// refused by key name.
     #[test]
     fn gc_rotation_key_reaches_the_config() {
         use ferric_scf::direct_jk::GcRotate;
         for (value, want) in [
             ("auto", GcRotate::Auto),
-            ("ROT1", GcRotate::Rot1),
+            ("rot1", GcRotate::Rot1),
             ("off", GcRotate::Off),
         ] {
             let cfg = parse(&header(
@@ -9497,6 +9498,11 @@ mod scf_config_lowering_tests {
         let cfg = parse(&header("rhf", ""));
         let c = new_lowering(&cfg, "energy", false, None).unwrap().unwrap();
         assert_eq!(c.gc_rotation, None);
+        // The spelling is exact, like the other `[scf]` string keys.
+        for bad in ["ROT1", "Off", " auto"] {
+            let cfg = parse(&header("rhf", &format!("[scf]\ngc_rotation = \"{bad}\"\n")));
+            assert!(cfg.scf.validate().is_err(), "{bad:?}");
+        }
         let cfg = parse(&header("rhf", "[scf]\ngc_rotation = \"none\"\n"));
         let e = new_lowering(&cfg, "energy", false, None)
             .unwrap()

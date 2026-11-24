@@ -157,7 +157,7 @@ impl GcRotate {
             "rot1" => Ok(Self::Rot1),
             "off" => Ok(Self::Off),
             _ => Err(format!(
-                "invalid value {s:?}: expected \"auto\", \"rot1\" or \"off\" (unset means \"auto\")"
+                "invalid value {s:?}: expected exactly \"auto\", \"rot1\" or \"off\""
             )),
         }
     }
