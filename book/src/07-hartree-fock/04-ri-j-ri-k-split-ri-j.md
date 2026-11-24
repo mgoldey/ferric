@@ -375,12 +375,17 @@ There is no f64 exit: the reported energy is the f32 functional's, and
 first-order window the `df_j.rs` module doc derives.
 
 What decides f32 or f64 for an f32 request (under `jk_storage = "auto"`,
-`"memory"` or `"split"`; `"disk"` and `"direct"` keep f64). First the
+`"memory"` or `"split"`; `"disk"` and `"direct"` keep f64; `"split"` stores
+a J tensor at all only where Split-RI-J cannot run, so there an f32 tensor
+is rare). First the
 budget: the f32 tensor is built only when it fits, counted with the f64
 tensor it is converted from at its budget-only placement and, in a shared
 RI-JK set-up, the DF-K band in its nominal layout
 (`ferric-scf/src/fock_assembly.rs::rij_f32_beside`). The pool's free bytes
 are never read, so one input under one budget always gets one precision.
+The price is in memory, not precision: where the pool later forces the
+square DF-K layout, the band is larger than the one counted, and the run can
+use more than the budget the decision assumed.
 Then the range, element by element as the tensor is rounded: a finite value
 beyond `f32::MAX` keeps the whole tensor f64, with a stderr notice and
 `f32_range` in the precision record

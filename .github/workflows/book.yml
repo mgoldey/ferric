@@ -60,10 +60,11 @@ on:
 permissions:
   contents: read
 
-# A scheduled run is alone in its group (run_id), so a dispatch on main never
-# cancels it, nor it a dispatch.
+# A scheduled or dispatched run is alone in its group (run_id): both can run
+# the slow-proofs matrix (hours), which a second dispatch on the same ref
+# must never cancel. Pull requests and tags still cancel their older run.
 concurrency:
-  group: book-${{ github.event.pull_request.number || (github.event_name == 'schedule' && github.run_id) || github.ref }}
+  group: book-${{ github.event.pull_request.number || ((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.run_id) || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -201,7 +202,8 @@ jobs:
     runs-on: ubuntu-22.04
     # Per script: the script and each of its mutations, run one after another
     # at the script's budget (uks_xc_hessian_sympy.py: 3 x 1800 s = 90 min;
-    # each subprocess may take 4x its budget before the runner's own timeout).
+    # the runner's own per-subprocess timeout is 4x the budget, longer than
+    # this job, so a genuine hang is cut here, by the job timeout).
     timeout-minutes: 240
     strategy:
       fail-fast: false

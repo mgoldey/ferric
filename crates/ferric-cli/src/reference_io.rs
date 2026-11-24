@@ -1,4 +1,5 @@
-//! `[scf] save_reference` / `read_reference`: the reference SCF of a
+//! `[scf] save_reference` / `read_reference` (and the same keywords on the
+//! Python correlated drivers, `Surface::Python`): the reference SCF of a
 //! correlated kind, written once it converges and read back in place of the
 //! solve by a later run (RI-MP2 now, CCSD on the same reference next).
 //!
@@ -85,7 +86,7 @@ pub fn identity(sys: &PreparedSystem, plan: &ReferencePlan<'_>) -> Result<ScfIde
         &sys.op(),
         plan.config,
     )
-    .map_err(|e| CliError::msg(format!("[scf] reference identity: {e}")))?;
+    .map_err(|e| CliError::msg(format!("{}: {e}", plan.surface.key("reference identity"))))?;
     for (name, value) in [
         (ROUTE_FIELD, plan.route.clone()),
         (RANKS_FIELD, sys.ctx().size.to_string()),
