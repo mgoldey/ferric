@@ -48,7 +48,7 @@
 //! DIAMETER. These predictions differ, so the sweep can distinguish them.
 
 use ferric_scf::PreparedAux;
-use ndarray::{Array2, Array3, ArrayView2, Axis};
+use ndarray::{s, Array2, Array3, ArrayView2, Axis, ShapeBuilder};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -409,6 +409,17 @@ pub struct DirectStats {
     pub t_pairs_s: f64,
     /// Stage-5 pair-domain groups (one V_DD Cholesky each).
     pub n_pair_groups: usize,
+    /// Stage-5 thread-seconds summed over this rank's domain groups, by part:
+    /// `[gather V_DD, Cholesky, whiten (gather + one triangular solve), pair
+    /// products J_ij = W_iᵀW_j + the Eq-8 mask and Fock screen + PairBlock]`.
+    /// Their sum over the worker count is the group phase's wall time when
+    /// the groups balance.
+    pub pair_fit_thread_s: [f64; 4],
+    /// Longest wall seconds of one stage-5 domain group (the load-balance
+    /// counter: compare with `group_work_mean_s`).
+    pub group_work_max_s: f64,
+    /// Mean wall seconds of one stage-5 domain group.
+    pub group_work_mean_s: f64,
     /// Mean distinct occupieds over a group's pairs (each is whitened once
     /// per group, `W_k = L⁻¹ A_k`, instead of once per pair).
     pub n_distinct_occ_per_group: f64,
@@ -430,9 +441,9 @@ pub struct DirectStats {
     /// read (the candidate union of i's pairs in the group whose domain is
     /// exactly D_i), and dropped if no such group exists. 0 when not kept.
     pub own_w_bytes_held: usize,
-    /// Largest single-group scratch, bytes: `8·(2d² + Σ_k d·|C_k|)` (V_DD,
-    /// its Cholesky factor, and one whitened `W_k` per distinct occupied k
-    /// over its candidate union C_k). Each rayon worker holds one group's
+    /// Largest single-group scratch, bytes: `8·(d² + Σ_k d·|C_k|)` (the
+    /// Cholesky factor, computed in V_DD's buffer, and one whitened `W_k` per
+    /// distinct occupied k over its candidate union C_k). Each rayon worker holds one group's
     /// scratch at a time, so the co-resident group scratch is at most
     /// (worker threads) × this; it is NOT under `scratch_budget_bytes`.
     pub group_scratch_bytes_max: usize,
@@ -840,6 +851,10 @@ fn eval_metric_blocks(
 
 /// Gather the dense V_DD metric block for a sorted aux-shell list from the
 /// sparse per-shell-pair block map (upper-triangle keys, sp >= sq).
+///
+/// Column-major: V_DD is symmetric, so this is the same matrix, and LAPACK
+/// then factors it in place ([`chol_lower`]) and solves against the factor
+/// ([`whiten`]) with no transposed copy of either.
 fn gather_vdd(
     dsh: &[usize],
     dims_df: &[usize],
@@ -847,15 +862,20 @@ fn gather_vdd(
     ctx: &str,
 ) -> Result<Array2<f64>, FerricError> {
     let d: usize = dsh.iter().map(|&sh| dims_df[sh]).sum();
-    let mut vdd = Array2::<f64>::zeros((d, d));
     let mut loc_off = Vec::with_capacity(dsh.len());
     let mut acc = 0usize;
     for &sh in dsh {
         loc_off.push(acc);
         acc += dims_df[sh];
     }
+    // Raw column-major buffer: the blocks are tiny (one aux shell pair
+    // each, ~10⁵ per domain), so a per-block ndarray slice costs more than
+    // its copy. Each lower block (bx ≥ by) is written once into column
+    // block `by` and once, mirrored, into column block `bx`, both with
+    // contiguous inner runs.
+    let mut buf = vec![0.0f64; d * d];
     for (bx, &sp) in dsh.iter().enumerate() {
-        for (by, &sq) in dsh.iter().enumerate() {
+        for (by, &sq) in dsh.iter().enumerate().take(bx + 1) {
             let (key, transposed) = if sp >= sq {
                 ((sp, sq), false)
             } else {
@@ -866,15 +886,49 @@ fn gather_vdd(
                     "lmp2_direct: metric block ({sp},{sq}) missing for {ctx}"
                 ))
             })?;
-            for p in 0..dims_df[sp] {
-                for q in 0..dims_df[sq] {
-                    let v = if transposed { blk[(q, p)] } else { blk[(p, q)] };
-                    vdd[(loc_off[bx] + p, loc_off[by] + q)] = v;
-                }
+            let at = (dims_df[sp], dims_df[sq], loc_off[bx], loc_off[by]);
+            copy_metric_block(&mut buf, d, blk, transposed, at, bx != by);
+        }
+    }
+    Ok(Array2::from_shape_vec((d, d).f(), buf).expect("d·d buffer"))
+}
+
+/// Copy one aux-shell-pair metric block into the column-major `d × d`
+/// buffer at `V[r0 + p, c0 + q]`, `at = (dp, dq, r0, c0)` (`blk` is stored
+/// `(dq, dp)` when `transposed`), and with `mirror` its transpose at
+/// `V[c0 + q, r0 + p]`. Both inner loops run down a column.
+fn copy_metric_block(
+    buf: &mut [f64],
+    d: usize,
+    blk: &Array2<f64>,
+    transposed: bool,
+    at: (usize, usize, usize, usize),
+    mirror: bool,
+) {
+    let (dp, dq, r0, c0) = at;
+    let blk = blk.as_standard_layout();
+    let b = blk.as_slice().expect("standard layout");
+    let val = |p: usize, q: usize| {
+        if transposed {
+            b[q * dp + p]
+        } else {
+            b[p * dq + q]
+        }
+    };
+    for q in 0..dq {
+        let col = (c0 + q) * d + r0;
+        for p in 0..dp {
+            buf[col + p] = val(p, q);
+        }
+    }
+    if mirror {
+        for p in 0..dp {
+            let col = (r0 + p) * d + c0;
+            for q in 0..dq {
+                buf[col + q] = val(p, q);
             }
         }
     }
-    Ok(vdd)
 }
 
 /// Function ids of a sorted shell list.
@@ -888,24 +942,27 @@ fn shell_funcs(prep: &PreparedBasis, shells: &[usize]) -> Vec<usize> {
     out
 }
 
-/// `L` with `V = L Lᵀ` (lower Cholesky factor) of a gathered `V_DD`.
-fn chol_lower(vdd: &Array2<f64>, what: &str) -> Result<Array2<f64>, FerricError> {
-    use ndarray_linalg::{Cholesky, UPLO};
-    vdd.cholesky(UPLO::Lower)
+/// `L` with `V = L Lᵀ` (lower Cholesky factor) of a gathered `V_DD`,
+/// factored in place in `vdd`'s own buffer and layout.
+fn chol_lower(vdd: Array2<f64>, what: &str) -> Result<Array2<f64>, FerricError> {
+    use ndarray_linalg::{CholeskyInto, UPLO};
+    vdd.cholesky_into(UPLO::Lower)
         .map_err(|e| FerricError::General(format!("lmp2_direct V_DD Cholesky ({what}): {e}")))
 }
 
-/// `W = L⁻¹ A` (one triangular solve with many right-hand sides).
-fn whiten(l: &Array2<f64>, a: &Array2<f64>, what: &str) -> Result<Array2<f64>, FerricError> {
-    use ndarray_linalg::{Diag, SolveTriangular, UPLO};
-    l.solve_triangular(UPLO::Lower, Diag::NonUnit, a)
+/// `W = L⁻¹ A` (one triangular solve with many right-hand sides), in place
+/// in `a`. With `l` and `a` both column-major (as [`gather_vdd`] and
+/// [`gather_strip`] build them) LAPACK reads and writes them directly; a
+/// row-major operand would be transposed into a copy first.
+fn whiten(l: &Array2<f64>, a: Array2<f64>, what: &str) -> Result<Array2<f64>, FerricError> {
+    use ndarray_linalg::{Diag, SolveTriangularInto, UPLO};
+    l.solve_triangular_into(UPLO::Lower, Diag::NonUnit, a)
         .map_err(|e| FerricError::General(format!("lmp2_direct triangular solve ({what}): {e}")))
 }
 
 /// Rows `dfuncs` of occupied `k`'s strip, over the global virtuals `cols`
-/// (`None`: every strip column, in strip order). A row or column missing
-/// from the strip is a construction bug (the extended domains must cover
-/// every pair domain and candidate set) and errors loudly.
+/// (`None`: every strip column, in strip order), as a column-major matrix
+/// ready for [`whiten`]. See [`gather_strip_into`].
 fn gather_strip(
     strips: &[Strip],
     k: usize,
@@ -913,10 +970,27 @@ fn gather_strip(
     cols: Option<&[usize]>,
     what: &str,
 ) -> Result<Array2<f64>, FerricError> {
+    let ncols = cols.map_or(strips[k].cols.len(), <[usize]>::len);
+    let mut a = Array2::<f64>::zeros((dfuncs.len(), ncols).f());
+    gather_strip_into(strips, k, dfuncs, cols, what, a.view_mut())?;
+    Ok(a)
+}
+
+/// [`gather_strip`] into a caller-owned `dfuncs.len() × |cols|` block (a
+/// column range of a group's batched right-hand side). A row or column
+/// missing from the strip is a construction bug (the extended domains must
+/// cover every pair domain and candidate set) and errors loudly.
+fn gather_strip_into(
+    strips: &[Strip],
+    k: usize,
+    dfuncs: &[usize],
+    cols: Option<&[usize]>,
+    what: &str,
+    mut out: ndarray::ArrayViewMut2<f64>,
+) -> Result<(), FerricError> {
     let st = &strips[k];
-    let ncols = cols.map_or(st.cols.len(), <[usize]>::len);
-    let mut a = Array2::<f64>::zeros((dfuncs.len(), ncols));
-    for (r, &gp) in dfuncs.iter().enumerate() {
+    let mut srs = Vec::with_capacity(dfuncs.len());
+    for &gp in dfuncs {
         let sr = st.row_pos[gp];
         if sr == usize::MAX {
             return Err(FerricError::General(format!(
@@ -924,22 +998,30 @@ fn gather_strip(
                  not cover the fit domain (construction bug)"
             )));
         }
-        match cols {
-            None => a.row_mut(r).assign(&st.b.row(sr)),
-            Some(cols) => {
-                for (c, &av) in cols.iter().enumerate() {
-                    let sc = st.col_pos[av];
-                    if sc == usize::MAX {
-                        return Err(FerricError::General(format!(
-                            "lmp2_direct: strip {k} missing virtual {av} for {what}"
-                        )));
-                    }
-                    a[(r, c)] = st.b[(sr, sc)];
+        srs.push(sr);
+    }
+    let scs: Vec<usize> = match cols {
+        None => (0..st.cols.len()).collect(),
+        Some(cols) => {
+            let mut scs = Vec::with_capacity(cols.len());
+            for &av in cols {
+                let sc = st.col_pos[av];
+                if sc == usize::MAX {
+                    return Err(FerricError::General(format!(
+                        "lmp2_direct: strip {k} missing virtual {av} for {what}"
+                    )));
                 }
+                scs.push(sc);
             }
+            scs
+        }
+    };
+    for (mut col, &sc) in out.columns_mut().into_iter().zip(&scs) {
+        for (x, &sr) in col.iter_mut().zip(&srs) {
+            *x = st.b[(sr, sc)];
         }
     }
-    Ok(a)
+    Ok(())
 }
 
 /// The κ-screen inputs from one whitening per occupied over its OWN
@@ -986,8 +1068,8 @@ fn whiten_own_domains(
             }
             let what = format!("occupied {i} Schwarz diagonal");
             let vdd = gather_vdd(&aux_dom[i], dims_df, metric_blocks, &what)?;
-            let l = chol_lower(&vdd, &what)?;
-            let w = whiten(&l, &gather_strip(strips, i, &dfuncs, None, &what)?, &what)?;
+            let l = chol_lower(vdd, &what)?;
+            let w = whiten(&l, gather_strip(strips, i, &dfuncs, None, &what)?, &what)?;
             let q: Vec<f64> = w
                 .columns()
                 .into_iter()
@@ -1090,8 +1172,11 @@ struct GroupCounts {
     n_trsm: usize,
     /// Distinct occupieds whose `W` came from the own-domain κ whitening.
     n_reused: usize,
-    /// This group's scratch bytes, `8·(2d² + Σ_k d·|C_k|)`.
+    /// This group's scratch bytes, `8·(d² + Σ_k d·|C_k|)`.
     scratch_bytes: usize,
+    /// Wall seconds of this group's parts, in [`DirectStats::pair_fit_thread_s`]
+    /// order.
+    t: [f64; 4],
 }
 
 /// Borrowed context for [`fit_domain_group`] — everything stage 5's group
@@ -1135,15 +1220,62 @@ struct GroupW {
 impl GroupW {
     /// Columns of `w` for the sorted subset `cij ⊆ cols`.
     fn select(&self, cij: &[usize]) -> Array2<f64> {
-        let pos: Vec<usize> = cij
-            .iter()
-            .map(|a| {
-                self.cols
-                    .binary_search(a)
-                    .expect("C_ij inside the group column union (construction)")
+        self.w.select(Axis(1), &col_positions(&self.cols, cij, 0))
+    }
+}
+
+/// Positions of the sorted subset `cij ⊆ cols` inside `cols`, shifted by
+/// `off` (the first column of `cols` in the matrix that holds it).
+fn col_positions(cols: &[usize], cij: &[usize], off: usize) -> Vec<usize> {
+    cij.iter()
+        .map(|a| {
+            off + cols
+                .binary_search(a)
+                .expect("C_ij inside the group column union (construction)")
+        })
+        .collect()
+}
+
+/// Where one whitened occupied of a group lives.
+enum WSrc {
+    /// Columns `off..off + |cols|` of [`GroupWs::solved`].
+    Solved(usize),
+    /// Taken from the κ screen's own-domain `W` (no solve).
+    Reused(Array2<f64>),
+}
+
+/// The whitened occupieds `W_k` of one domain group, each over the sorted
+/// union `C_k` of its pairs' candidate sets. The solved ones sit side by
+/// side in ONE matrix, the result of a single multi-right-hand-side
+/// triangular solve against the group's factor (one BLAS-3 call per group
+/// instead of one per occupied; the columns do not interact, so this is
+/// the per-occupied solve up to the solver's blocking).
+struct GroupWs {
+    solved: Array2<f64>,
+    at: HashMap<usize, (Vec<usize>, WSrc)>,
+}
+
+impl GroupWs {
+    /// `W_k` over the sorted subset `cij ⊆ C_k`.
+    fn select(&self, k: usize, cij: &[usize]) -> Array2<f64> {
+        let (cols, src) = &self.at[&k];
+        match src {
+            WSrc::Solved(off) => self.solved.select(Axis(1), &col_positions(cols, cij, *off)),
+            WSrc::Reused(w) => w.select(Axis(1), &col_positions(cols, cij, 0)),
+        }
+    }
+
+    /// Bytes held: the solved matrix and every reused `W_k`.
+    fn bytes(&self) -> usize {
+        let reused: usize = self
+            .at
+            .values()
+            .map(|(_, src)| match src {
+                WSrc::Reused(w) => w.len(),
+                WSrc::Solved(_) => 0,
             })
-            .collect();
-        self.w.select(Axis(1), &pos)
+            .sum();
+        8 * (self.solved.len() + reused)
     }
 }
 
@@ -1174,27 +1306,21 @@ fn mask_pair(
 }
 
 /// Whitened strips `W_k = L⁻¹ A_k[D, C_k]` for every distinct occupied `k`
-/// of a group, over the union `C_k` of its pairs' candidate sets. A `k`
-/// whose own domain D_k IS the group domain takes the columns of its
-/// κ-screen `W` instead of a new solve.
+/// of a group, over the union `C_k` of its pairs' candidate sets: every
+/// `A_k` is gathered into its column range of one column-major right-hand
+/// side, whitened by one triangular solve. A `k` whose own domain D_k IS the
+/// group domain takes the columns of its κ-screen `W` instead.
 fn whiten_group_occupieds(
     ctx: &PairFitCtx<'_>,
     dsh: &[usize],
     dfuncs: &[usize],
     l: &Array2<f64>,
     pxs: &[usize],
-) -> Result<(HashMap<usize, GroupW>, GroupCounts), FerricError> {
-    let mut want: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
-    for &px in pxs.iter().filter(|&&px| !ctx.pair_cands[px].is_empty()) {
-        let (i, j) = ctx.unique[px];
-        for k in [i, j] {
-            want.entry(k)
-                .or_default()
-                .extend(ctx.pair_cands[px].iter().copied());
-        }
-    }
+) -> Result<(GroupWs, GroupCounts), FerricError> {
+    let want = group_cand_unions(pxs, ctx.unique, ctx.pair_cands);
     let mut counts = GroupCounts::default();
-    let mut ws = HashMap::with_capacity(want.len());
+    let mut at = HashMap::with_capacity(want.len());
+    let mut to_solve: Vec<(usize, Vec<usize>)> = Vec::new();
     for (k, cols) in want {
         let cols: Vec<usize> = cols.into_iter().collect();
         counts.n_occ += 1;
@@ -1202,34 +1328,90 @@ fn whiten_group_occupieds(
             Some(own) if ctx.aux_dom[k] == dsh => own[k].as_ref(),
             _ => None,
         };
-        let w = match reuse {
+        match reuse {
             Some(gw) => {
                 counts.n_reused += 1;
-                gw.select(&cols)
+                let w = gw.select(&cols);
+                at.insert(k, (cols, WSrc::Reused(w)));
             }
-            None => {
-                counts.n_trsm += 1;
-                let what = format!("occupied {k} in a group of {} pairs", pxs.len());
-                whiten(
-                    l,
-                    &gather_strip(ctx.strips, k, dfuncs, Some(&cols), &what)?,
-                    &what,
-                )?
-            }
-        };
-        counts.scratch_bytes += 8 * w.len();
-        ws.insert(k, GroupW { cols, w });
-    }
-    #[cfg(test)]
-    if let Some((first, rel)) = ctx.w_mutant {
-        if pxs[0] == first {
-            let k = ctx.unique[first].0;
-            if let Some(gw) = ws.get_mut(&k) {
-                gw.w.mapv_inplace(|x| x * (1.0 + rel));
-            }
+            None => to_solve.push((k, cols)),
         }
     }
+    counts.n_trsm += to_solve.len();
+    let solved = solve_group_rhs(ctx, dfuncs, l, pxs.len(), to_solve, &mut at)?;
+    #[allow(unused_mut)]
+    let mut ws = GroupWs { solved, at };
+    counts.scratch_bytes += ws.bytes();
+    #[cfg(test)]
+    apply_w_mutant(ctx, pxs, &mut ws);
     Ok((ws, counts))
+}
+
+/// Each distinct occupied `k` of a group's pairs → the union `C_k` of its
+/// pairs' (nonempty) candidate sets.
+fn group_cand_unions(
+    pxs: &[usize],
+    unique: &[(usize, usize)],
+    pair_cands: &[Vec<usize>],
+) -> BTreeMap<usize, BTreeSet<usize>> {
+    let mut want: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+    for &px in pxs.iter().filter(|&&px| !pair_cands[px].is_empty()) {
+        let (i, j) = unique[px];
+        for k in [i, j] {
+            want.entry(k)
+                .or_default()
+                .extend(pair_cands[px].iter().copied());
+        }
+    }
+    want
+}
+
+/// The group's batched whitening: each `A_k[D, C_k]` of `to_solve` gathered
+/// into its column range of one column-major right-hand side (recorded in
+/// `at` as [`WSrc::Solved`]), then one triangular solve against `l` in place.
+fn solve_group_rhs(
+    ctx: &PairFitCtx<'_>,
+    dfuncs: &[usize],
+    l: &Array2<f64>,
+    n_pairs: usize,
+    to_solve: Vec<(usize, Vec<usize>)>,
+    at: &mut HashMap<usize, (Vec<usize>, WSrc)>,
+) -> Result<Array2<f64>, FerricError> {
+    let width: usize = to_solve.iter().map(|(_, c)| c.len()).sum();
+    let mut rhs = Array2::<f64>::zeros((dfuncs.len(), width).f());
+    let mut off = 0usize;
+    for (k, cols) in to_solve {
+        let what = format!("occupied {k} in a group of {n_pairs} pairs");
+        let block = rhs.slice_mut(s![.., off..off + cols.len()]);
+        gather_strip_into(ctx.strips, k, dfuncs, Some(&cols), &what, block)?;
+        let n = cols.len();
+        at.insert(k, (cols, WSrc::Solved(off)));
+        off += n;
+    }
+    match width {
+        0 => Ok(rhs),
+        _ => whiten(l, rhs, &format!("a group of {n_pairs} pairs")),
+    }
+}
+
+/// Test-only `W` mutant (see `PairFitCtx::w_mutant`): in the group whose
+/// first pair is `first`, scale that pair's i-occupied `W` by `1 + rel`.
+#[cfg(test)]
+fn apply_w_mutant(ctx: &PairFitCtx<'_>, pxs: &[usize], ws: &mut GroupWs) {
+    let Some((first, rel)) = ctx.w_mutant else {
+        return;
+    };
+    if pxs[0] != first {
+        return;
+    }
+    match ws.at.get_mut(&ctx.unique[first].0) {
+        Some((cols, WSrc::Solved(off))) => ws
+            .solved
+            .slice_mut(s![.., *off..*off + cols.len()])
+            .mapv_inplace(|x| x * (1.0 + rel)),
+        Some((_, WSrc::Reused(w))) => w.mapv_inplace(|x| x * (1.0 + rel)),
+        None => {}
+    }
 }
 
 /// One domain group's pair fits: `L = chol(V_DD)` once, `W_k = L⁻¹ A_k`
@@ -1251,10 +1433,14 @@ fn fit_domain_group(
         )));
     }
     let what = format!("group of pair ({i0},{j0})");
+    let mut clock = Instant::now();
     let vdd = gather_vdd(dsh, ctx.dims_df, ctx.metric_blocks, &what)?;
-    let l = chol_lower(&vdd, &what)?;
+    let t_gather = lap(&mut clock);
+    let l = chol_lower(vdd, &what)?;
+    let t_chol = lap(&mut clock);
     let (ws, mut counts) = whiten_group_occupieds(ctx, dsh, &dfuncs, &l, pxs)?;
-    counts.scratch_bytes += 8 * (vdd.len() + l.len());
+    counts.t = [t_gather, t_chol, lap(&mut clock), 0.0];
+    counts.scratch_bytes += 8 * l.len();
     let mut out_group: SlotOut = Vec::with_capacity(pxs.len());
     for &px in pxs {
         let (i, j) = ctx.unique[px];
@@ -1263,15 +1449,23 @@ fn fit_domain_group(
             out_group.push((px, Vec::new()));
             continue;
         }
-        let w_i = ws[&i].select(cij);
+        let w_i = ws.select(i, cij);
         let g = if i == j {
             w_i.t().dot(&w_i)
         } else {
-            w_i.t().dot(&ws[&j].select(cij))
+            w_i.t().dot(&ws.select(j, cij))
         };
         out_group.push((px, mask_pair(ctx, i, j, g, cij)));
     }
+    counts.t[3] = lap(&mut clock);
     Ok((out_group, counts))
+}
+
+/// Seconds since `clock`, which restarts.
+fn lap(clock: &mut Instant) -> f64 {
+    let t = clock.elapsed().as_secs_f64();
+    *clock = Instant::now();
+    t
 }
 
 /// Cauchy–Schwarz factors for the stage-3 batch triple cut, same-op
@@ -2998,17 +3192,15 @@ fn pair_candidates(
 }
 
 /// Upper bound on one domain group's scratch in [`fit_domain_group`],
-/// counted from its allocations. Held for the whole group: `V_DD` and its
-/// Cholesky factor (`2d²`) and one whitened `W_k` per distinct occupied over
-/// its candidate union (`Σ_k d·|C_k|`). On top of that, the larger of the
-/// two phases' transients:
-///
-/// - whitening occupied `k` ([`whiten`]): the gathered strip `A_k` and the
-///   transposed right-hand side LAPACK's row-major wrapper copies
-///   (`2·d·|C_k|`; the owned copy it solves into IS `W_k`), plus the
-///   transposed `L` it copies per call (`d²`);
-/// - the pair fits: the widest pair's two column selections, `J_ij` and its
-///   transpose (`2·d·n + 2·n²`), and with the Fock-propagated screen on
+/// counted from its allocations. Held for the whole group: the Cholesky
+/// factor, computed in `V_DD`'s own buffer (`d²`), and one whitened `W_k`
+/// per distinct occupied over its candidate union (`Σ_k d·|C_k|`). The
+/// whitening has no transient: every `A_k` is gathered straight into its
+/// column range of one column-major right-hand side, which the triangular
+/// solve overwrites with the `W_k` ([`whiten_group_occupieds`]). On top of
+/// that, the pair fits' transient: the widest pair's two column selections,
+/// `J_ij` and its transpose (`2·d·n + 2·n²`), and with the Fock-propagated
+/// screen on
 ///   (`screen_on`) the gate scratch of
 ///   [`crate::ragged::pair_blocks_screened`] (`F'`, `t⁰`, `F't⁰`, the `t⁰F'`
 ///   temporary, the gate and its transpose,
@@ -3032,25 +3224,15 @@ fn group_scratch_bound(
         .map(|&px| pair_cands[px].len())
         .max()
         .unwrap_or(0);
-    let mut want: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
-    for &px in pxs.iter().filter(|&&px| !pair_cands[px].is_empty()) {
-        let (i, j) = unique[px];
-        for k in [i, j] {
-            want.entry(k)
-                .or_default()
-                .extend(pair_cands[px].iter().copied());
-        }
-    }
+    let want = group_cand_unions(pxs, unique, pair_cands);
     let w: usize = want.values().map(|c| d * c.len()).sum();
-    let c_max = want.values().map(BTreeSet::len).max().unwrap_or(0);
-    let whiten = d * d + 2 * d * c_max;
     let screen = if screen_on {
         FOCK_SCREEN_SCRATCH_MATRICES * n_max * n_max
     } else {
         0
     };
     let fits = 2 * d * n_max + 2 * n_max * n_max + screen;
-    8 * (2 * d * d + w + whiten.max(fits))
+    8 * (d * d + w + fits)
 }
 
 /// Upper bound on the pair blocks one domain group builds: each pair's
@@ -3530,11 +3712,18 @@ fn slots_from_groups(
         stats.n_trsm += counts.n_trsm;
         stats.n_w_reused += counts.n_reused;
         stats.group_scratch_bytes_max = stats.group_scratch_bytes_max.max(counts.scratch_bytes);
+        for (acc, t) in stats.pair_fit_thread_s.iter_mut().zip(counts.t) {
+            *acc += t;
+        }
+        let wall: f64 = counts.t.iter().sum();
+        stats.group_work_max_s = stats.group_work_max_s.max(wall);
+        stats.group_work_mean_s += wall;
         for (px, blocks) in slot_out {
             slots[px] = Some(blocks);
         }
     }
     if stats.n_pair_groups > 0 {
+        stats.group_work_mean_s /= stats.n_pair_groups as f64;
         stats.n_distinct_occ_per_group = n_occ as f64 / stats.n_pair_groups as f64;
     }
     Ok(slots)

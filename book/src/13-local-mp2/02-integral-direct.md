@@ -116,7 +116,8 @@ one-sided argument of @sec:amplitude-lmp2-amplitude-equations-energy does not co
 
 **The code.** `ferric-mp2/src/lmp2_direct.rs::fit_domain_group` handles all
 pairs that share one domain $D_{ij}$. It factors $V_{DD}$ once, whitens
-each distinct occupied of the group once with a triangular solve, and then
+every distinct occupied of the group with one triangular solve (their
+strips side by side as the right-hand sides), and then
 forms one product per pair, with no explicit inverse. The product is the
 whole of the pair step. The excerpt is copied unchanged:
 
@@ -125,21 +126,26 @@ whole of the pair step. The excerpt is copied unchanged:
 let g = if i == j {
     w_i.t().dot(&w_i)
 } else {
-    w_i.t().dot(&ws[&j].select(cij))
+    w_i.t().dot(&ws.select(j, cij))
 };
 ```
 
 | Code | Equation |
 |---|---|
 | `w_i` | $W_i$ restricted to the candidate columns $C_{ij}$ |
-| `ws[&j].select(cij)` | $W_j$ on the same columns |
+| `ws.select(j, cij)` | $W_j$ on the same columns |
 | `g` | $J_{ia,jb}$ over $a,b\in C_{ij}$, passed to the $\varepsilon$ mask of section @sec:amplitude-lmp2 (`mask_pair`) |
 
 Grouping by domain pays because pairs repeat domains, so one Cholesky
 factor serves several pairs (`fit_pairs`). On C20–C48 there were 6–9 times
 more surviving pairs than distinct pair domains, measured 2026-09-05 at the
-earlier maps (virtual radius 12 Bohr, AO tail $10^{-3}$, pair gate on). The
-ratio has not been re-measured at the current defaults.
+earlier maps (virtual radius 12 Bohr, AO tail $10^{-3}$, pair gate on). At
+the current defaults (pair gate off, so every pair is fitted) the ratio is
+smaller and falls with length: 1891 pairs in 251 groups on C20 and 4753 in
+1031 on C32 (6-31G, cc-pVDZ-RI, $\varepsilon = 10^{-4}$, measured
+2026-11-24). On C32, 778 of those groups, 79% of the stage's thread time,
+produce no pair block at all: every element of their pairs falls under the
+mask.
 
 ## The algorithm and what each map truncates {#integral-direct-algorithm-each-map-truncates}
 

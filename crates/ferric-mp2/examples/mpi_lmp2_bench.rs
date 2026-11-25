@@ -61,9 +61,11 @@
 //! ## Output
 //!
 //! Per rank, one JSON line on stdout (everything else goes to stderr):
-//! rank, size, rayon threads, `e_corr` (12 decimals), `lmp2_wall_s` (the whole
+//! rank, size, rayon threads, `e_corr` (12 decimals; `e_corr_bits` at 17 significant digits), `lmp2_wall_s` (the whole
 //! LMP2 call), the `DirectStats` stage timers (`t_maps_s`, `t_eri3_s` with its
-//! thread-second parts, `t_metric_s`, `t_pairs_s`, `t_loc_s`), the
+//! thread-second parts, `t_metric_s`, `t_pairs_s` with its thread-second
+//! parts `pair_fit_thread_s` = [gather V_DD, Cholesky, whiten, pair products]
+//! and the group balance `group_work_max_s`/`group_work_mean_s`, `t_loc_s`), the
 //! `StageTimings` (`t_spaces_s`, `t_loc_s`, `t_assembly_s`, `t_solve_s`),
 //! the stage-3 slab count, largest slab and slab cap (`n_eri3_slabs`,
 //! `eri3_slab_bytes_max`, `stage3_scratch_bytes`),
@@ -78,6 +80,9 @@
 //! node's core count and CPU model, and the MPI implementation and version.
 //! `*_thread_s` timers are summed over a rank's workers, not wall time, and
 //! the eval/scatter split is `null` (it is off in the production maps).
+
+// the stats `json!` literal outgrew the default macro recursion limit
+#![recursion_limit = "256"]
 
 use std::time::Instant;
 
@@ -272,6 +277,7 @@ fn run(ctx: &ParallelContext, args: &Args) -> bool {
         "eps": args.eps,
         "frozen_core": frozen_core,
         "e_corr": format!("{:.12}", res.e_corr),
+        "e_corr_bits": format!("{:.17e}", res.e_corr),
         "lmp2_wall_s": wall,
         "direct": {
             "t_maps_s": st.t_maps_s,
@@ -286,6 +292,9 @@ fn run(ctx: &ParallelContext, args: &Args) -> bool {
             "t_eri3_scatter_thread_s": st.t_eri3_scatter_thread_s,
             "t_metric_s": st.t_metric_s,
             "t_pairs_s": st.t_pairs_s,
+            "pair_fit_thread_s": st.pair_fit_thread_s,
+            "group_work_max_s": st.group_work_max_s,
+            "group_work_mean_s": st.group_work_mean_s,
             "t_loc_s": st.t_loc_s,
             "eri3_pass": format!("{:?}", maps.eri3_pass),
             "batch_merge": maps.batch_merge,
