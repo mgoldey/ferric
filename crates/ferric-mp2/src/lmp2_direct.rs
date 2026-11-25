@@ -145,7 +145,7 @@ pub struct DirectConfig {
     /// each worker slabs under `cap / n_workers`. Under a rank stripe
     /// ([`Self::mpi`]) each rank takes `1 / (ranks on this node)` of it, so
     /// the node's slabs do not multiply by the rank count (see
-    /// [`batch_slab_cap`]). It is further capped by
+    /// `batch_slab_cap`). It is further capped by
     /// [`Self::scratch_budget_bytes`] and by what the memory budget leaves
     /// beside the strips. It changes how many slabs a batch is cut into, and
     /// the strips only at round-off (the virtual GEMM's row count follows the

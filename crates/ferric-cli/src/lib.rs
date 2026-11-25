@@ -2642,6 +2642,7 @@ fn lmp2_timings_json(
             group_scratch_bound_bytes,
             group_in_flight_peak,
             n_group_waves,
+            eri3_slab_bytes_max,
         } = d;
         let mut out = serde_json::json!({
             "strip_rows_mean": strip_rows_mean,
@@ -2691,6 +2692,7 @@ fn lmp2_timings_json(
             "group_scratch_bound_bytes": group_scratch_bound_bytes,
             "group_in_flight_peak": group_in_flight_peak,
             "n_group_waves": n_group_waves,
+            "eri3_slab_bytes_max": eri3_slab_bytes_max,
             "memory_strips_bytes": memory.strips_bytes,
             "memory_metric_bytes": memory.metric_bytes,
             "memory_stage3_scratch_bytes": memory.stage3_scratch_bytes,
@@ -8800,6 +8802,7 @@ mod local_printout_tests {
             group_scratch_bound_bytes: 56,
             group_in_flight_peak: 57,
             n_group_waves: 58,
+            eri3_slab_bytes_max: 59,
         };
         let stage: &[(&str, f64)] = &[
             ("t_spaces_s", 1.5),
@@ -8851,6 +8854,7 @@ mod local_printout_tests {
             ("group_scratch_bound_bytes", 56.0),
             ("group_in_flight_peak", 57.0),
             ("n_group_waves", 58.0),
+            ("eri3_slab_bytes_max", 59.0),
             ("memory_strips_bytes", 50.0),
             ("memory_metric_bytes", 51.0),
             ("memory_stage3_scratch_bytes", 52.0),

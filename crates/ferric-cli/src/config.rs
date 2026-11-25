@@ -1704,6 +1704,21 @@ impl LocalModel {
 }
 
 impl LocalCfg {
+    /// `(lambda_boys, fock_screen)` with every key the user left out taken
+    /// from the library's production model
+    /// (`AmplitudeLmp2Config::production`, the single source of the
+    /// defaults). `fock_screen = true` asks for the production κ.
+    fn model_defaults(&self, eps: f64) -> (f64, Option<f64>) {
+        use ferric_mp2::lmp2_amplitude::{AmplitudeLmp2Config, FOCK_SCREEN_KAPPA_DEFAULT};
+        let prod = AmplitudeLmp2Config::production(eps, 0, None);
+        let fock_screen = match self.fock_screen {
+            None => prod.fock_screen,
+            Some(true) => prod.fock_screen.or(Some(FOCK_SCREEN_KAPPA_DEFAULT)),
+            Some(false) => None,
+        };
+        (self.lambda_boys.unwrap_or(prod.lambda_boys), fock_screen)
+    }
+
     fn sets_direct_knobs(&self) -> bool {
         self.aux_radius.is_some()
             || self.virt_radius.is_some()
@@ -1915,13 +1930,10 @@ impl LocalCfg {
             }
             None
         };
-        // Every model default comes from the library's production config
-        // (the single source): a key the user left out takes its value there.
-        let prod = ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config::production(eps[0], 0, None);
         let virtual_space = self.virtual_space()?;
-        let lambda_boys = self.lambda_boys.unwrap_or(prod.lambda_boys);
+        let (lambda_boys, fock_screen) = self.model_defaults(eps[0]);
         ferric_mp2::boys::check_lambda_boys(lambda_boys).map_err(|e| format!("[local] {e}"))?;
-        let fock_on = self.fock_screen.unwrap_or(prod.fock_screen.is_some());
+        let fock_on = fock_screen.is_some();
         refuse_kappa_under_fock_screen(fock_on, direct.as_ref())?;
         Ok(Some(LocalModel {
             eps,
@@ -1930,12 +1942,7 @@ impl LocalCfg {
             direct,
             virtual_space,
             lambda_boys,
-            fock_screen: if fock_on {
-                prod.fock_screen
-                    .or(Some(ferric_mp2::lmp2_amplitude::FOCK_SCREEN_KAPPA_DEFAULT))
-            } else {
-                None
-            },
+            fock_screen,
         }))
     }
 }

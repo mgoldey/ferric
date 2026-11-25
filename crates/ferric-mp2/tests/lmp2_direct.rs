@@ -903,6 +903,7 @@ fn bench_direct_alkane_series() {
         // pinned: the auto budget (0.8×RAM) ignores the bench's cgroup cap
         // and memcg-OOMs the C32 reference — the budget-vs-enforcement trap
         scratch_budget_bytes: 1usize << 30,
+        slab_budget_bytes: DirectConfig::production().slab_budget_bytes,
         // OFF here: the sweep measures the distance-map configuration the
         // §28-§29 rows were recorded with (screen rows get their own sweep)
         virt_schwarz_kappa: None,

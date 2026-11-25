@@ -92,6 +92,7 @@ fn lmp2_signature(
         schwarz_skip: 1e-5,
         batch_merge: 4,
         scratch_budget_bytes: 1usize << 30,
+        slab_budget_bytes: DirectConfig::production().slab_budget_bytes,
         virt_schwarz_kappa: None,
         split_eri3_timers: false,
         eri3_pass: Default::default(),
