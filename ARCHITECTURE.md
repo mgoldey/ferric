@@ -1086,8 +1086,17 @@ Done:
    (`gc_kernel/tests.rs`), `ferric-scf/tests/gc_kernel.rs` (J/K and SCF
    energies against the libint walk, the probe `gc_kernel::kernel_probe`,
    bitwise off / segmented / unrotated / legacy, thread identity), the
-   checkpoint identity tests. Follow-ups: flip the default to `auto` after
-   a release (and re-measure on a quiet box); the pooled builds
+   checkpoint identity tests, mutation-checked (Boys argument, a
+   contraction coefficient, the same-group fold, an HRR index, the pure-p
+   order, the cache key, a stale cache across buckets, a skipped digest:
+   each fails a test). Measured (book, "The shared-primitive kernel"; 2
+   threads, shared box): per build 1.22× on octane cc-pVDZ (paired range
+   1.19–1.28), 1.12× butane aug-cc-pVDZ, 1.03× butane cc-pVTZ, def2-SVP
+   unchanged (the kernel never runs); 1.43 quartets per group evaluation
+   on octane, as in a one-group walk (the bucket partition loses no reuse).
+   UHF/ROHF share the wiring (`build_uhf`). Follow-ups: flip the default
+   to `auto` after a release (and re-measure on a quiet box: the projection
+   from the prototype was 1.28× / 1.19× / 1.06×); the pooled builds
    (`rhf::build_jk_with_pool`: Newton, stability, CPHF, Z-vector) and
    `DirectJ` / `DirectK` stay on libint and could take the same cache;
    b2-full (p and d classes) needs a kernel that beats libint there, which

@@ -489,7 +489,33 @@ in-core store, the gradients and every other operator keep libint. For the
 higher classes the hand-written recursion is slower than libint (0.3 to 0.9
 times its speed in the prototype), so they keep libint too.
 
-GCK_TABLE_PLACEHOLDER
+Measured runs, not tests: RHF, `eri = "direct"`, `gc_rotation = "auto"`,
+`energy_conv` 1e-10 and `density_conv` 1e-8 (every build full), 2 rayon
+threads, `FERRIC_TIMING=1`, `gc_kernel` `off` and `auto` run alternately (off
+first, then auto first, and so on), five or six pairs per system, on a 4-core
+box shared with another job (1-minute load 3.0–4.1 during the octane cc-pVDZ
+runs, 2.6–7.3 during the others). Per-build figures are medians over the
+builds of each run after the first (a smaller start build), then over the
+runs; the ratio is the median of the
+paired off/auto ratios, with its range.
+
+| System (functions) | Per-build wall, off → auto (s) | Paired ratio | Group thread-s, off → auto | libint thread-s, off → auto | Kernel thread-s | SCF wall, off → auto (s) |
+|---|---|---|---|---|---|---|
+| octane / cc-pVDZ (202) | 4.98 → 4.01 | 1.22 (1.19–1.28) | 9.82 → 7.92 | 8.16 → 4.79 | 1.48 | 66.5 → 53.5 |
+| butane / aug-cc-pVDZ (182) | 3.06 → 2.78 | 1.12 (1.08–1.30) | 6.02 → 5.47 | 4.69 → 3.41 | 0.74 | 37.6 → 34.7 |
+| butane / cc-pVTZ (260) | 7.52 → 7.11 | 1.03 (0.91–1.25) | 14.80 → 13.98 | 11.75 → 10.35 | 0.65 | 93.3 → 87.6 |
+| octane / def2-SVP (202) | 4.16 → 3.85 | 1.04 (0.92–1.27) | 8.16 → 7.56 | 6.02 → 5.61 | 0 | 51.2 → 47.9 |
+
+def2-SVP has nothing to rotate, so the kernel never runs there and both
+settings run the same code; its spread (and its median away from 1) is the
+noise of the shared box, and the process CPU time of the two settings agrees
+to 1.007. On octane / cc-pVDZ the kernel serves 3.30 M of the 8.13 M quartets
+per build from 2.30 M group quartets (1.43 quartets per evaluation; 3.60 M
+column quartets computed, 9% more than the survivors), the same counts as a
+single-threaded walk in one reduction group, so the bucket partition loses no
+reuse. The setup of the pair data took 3 ms per geometry. The converged
+energies agree to the printed digits on octane (−313.4518384570778 Ha both),
+and to 2.3e-13 Ha (aug-cc-pVDZ) and 5.7e-14 Ha (cc-pVTZ) on butane.
 
 ## When the incremental build runs {#direct-and-incremental-incremental-build-runs}
 
