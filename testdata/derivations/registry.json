@@ -1667,11 +1667,13 @@
         "book/src/13-local-mp2/05-combined-truncation.md#amplitude-lmp2-combined-truncation",
         "book/src/13-local-mp2/01-amplitude-lmp2.md#amplitude-lmp2-lambda-boys",
         "book/src/13-local-mp2/02-integral-direct.md#integral-direct-map-errors-eps0",
-        "book/src/13-local-mp2/02-integral-direct.md#integral-direct-domain-local-fit"
+        "book/src/13-local-mp2/02-integral-direct.md#integral-direct-domain-local-fit",
+        "book/src/13-local-mp2/02-integral-direct.md#integral-direct-pair-skip"
       ],
       "scripts": [
         "scripts/lmp2_combined_sympy.py",
         "scripts/lmp2_direct_maps_sympy.py",
+        "scripts/lmp2_attenuated_pair_skip_sympy.py",
         "scripts/lmp2_lambda_boys_sympy.py",
         "scripts/lmp2_fock_screen_sympy.py",
         "scripts/lmp2_hylleraas_vs_wshg23_sympy.py",

@@ -96,6 +96,7 @@ fn lmp2_signature(
         virt_schwarz_kappa: None,
         split_eri3_timers: false,
         eri3_pass: Default::default(),
+        pair_skip: Default::default(),
         mpi: None,
     };
     let (r, st) =

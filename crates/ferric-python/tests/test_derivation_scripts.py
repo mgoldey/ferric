@@ -1424,6 +1424,47 @@ CASES = [
         ],
     ),
     (
+        "lmp2_attenuated_pair_skip_sympy.py",
+        30,
+        [
+            (
+                "neumann = I2 - X + X * X * (I2 + X).inv()",
+                "neumann = I2 - X",
+                "claim 1: split",
+            ),
+            (
+                "S = m22 - m12 * m12 / m11",
+                "S = m22 + m12 * m12 / m11",
+                "claim 2: Schur",
+            ),
+            (
+                "rem = g * g / (1.0 - g) * np.hypot(uA, uB) * np.hypot(vA, vB)",
+                "rem = 0.0",
+                "claim 4: bound",
+            ),
+            (
+                "lam_lb = 1.0 / np.sum(Linv * Linv)",
+                "lam_lb = np.linalg.eigvalsh(V).max()",
+                "claim 5: floor",
+            ),
+            (
+                "wv = (np.abs(Fp) / D[None, :]).sum(axis=1)",
+                "wv = 0.0 * (np.abs(Fp) / D[None, :]).sum(axis=1)",
+                "claim 6: dressed",
+            ),
+            (
+                "np.linalg.cholesky(V - (sigma + c) * np.eye(d))",
+                "np.linalg.cholesky(V + (sigma + c) * np.eye(d))",
+                "claim 7: an unverified shift",
+            ),
+            (
+                "shellwise = sum(c[k] * np.linalg.norm(x[shells[k]]) for k in Bsh)",
+                "shellwise = sum(c[k] * np.linalg.norm(x[shells[k]]) ** 2 for k in Bsh)",
+                "claim 8: shell-wise triangle",
+            ),
+        ],
+    ),
+    (
         "lmp2_direct_maps_sympy.py",
         10,
         [

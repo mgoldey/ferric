@@ -2646,6 +2646,16 @@ fn lmp2_timings_json(
             pair_fit_thread_s,
             group_work_max_s,
             group_work_mean_s,
+            pair_skip,
+            n_pair_skip_bounded,
+            n_pairs_proved_empty,
+            n_pair_groups_skipped,
+            n_pairs_empty,
+            t_pair_skip_s,
+            pair_skip_audit_n,
+            pair_skip_audit_max_ratio,
+            pair_skip_audit_gate_max_ratio,
+            pair_skip_audit_violations,
         } = d;
         let mut out = serde_json::json!({
             "strip_rows_mean": strip_rows_mean,
@@ -2707,8 +2717,22 @@ fn lmp2_timings_json(
             "memory_exact": memory.exact,
             "memory_resident_peak_bytes": memory.resident_peak(),
         });
-        if let (Some(o), serde_json::Value::Object(g)) = (out.as_object_mut(), gate) {
-            o.extend(g);
+        let skip = serde_json::json!({
+            "pair_skip": pair_skip.as_config_str(),
+            "n_pair_skip_bounded": n_pair_skip_bounded,
+            "n_pairs_proved_empty": n_pairs_proved_empty,
+            "n_pair_groups_skipped": n_pair_groups_skipped,
+            "n_pairs_empty": n_pairs_empty,
+            "t_pair_skip_s": t_pair_skip_s,
+            "pair_skip_audit_n": pair_skip_audit_n,
+            "pair_skip_audit_max_ratio": pair_skip_audit_max_ratio,
+            "pair_skip_audit_gate_max_ratio": pair_skip_audit_gate_max_ratio,
+            "pair_skip_audit_violations": pair_skip_audit_violations,
+        });
+        for extra in [gate, skip] {
+            if let (Some(o), serde_json::Value::Object(g)) = (out.as_object_mut(), extra) {
+                o.extend(g);
+            }
         }
         out
     });
@@ -2844,7 +2868,8 @@ fn run_rimp2_local(
     if let Some((d, _)) = &maps {
         println!(
             "  locality maps         = r_aux {} Bohr, r_virt {} Bohr, ao_tail {:.0e}, \
-             schwarz_skip {:.0e}, eri3_pass {}, batch_merge {}, gate_cal {}, virt_schwarz_kappa {}",
+             schwarz_skip {:.0e}, eri3_pass {}, batch_merge {}, gate_cal {}, virt_schwarz_kappa {}, \
+             pair_skip {}",
             d.aux_radius,
             d.virt_radius,
             d.ao_tail,
@@ -2854,6 +2879,7 @@ fn run_rimp2_local(
             d.gate_cal.map_or("off".to_string(), |c| format!("{c}")),
             d.virt_schwarz_kappa
                 .map_or("off".to_string(), |k| format!("{k}")),
+            d.pair_skip.as_config_str(),
         );
     }
     println!(
@@ -8800,6 +8826,16 @@ mod local_printout_tests {
             pair_fit_thread_s: [60.5, 61.5, 62.5, 63.5],
             group_work_max_s: 64.5,
             group_work_mean_s: 65.5,
+            pair_skip: ferric_mp2::lmp2_direct::PairSkip::Audit,
+            n_pair_skip_bounded: 66,
+            n_pairs_proved_empty: 67,
+            n_pair_groups_skipped: 68,
+            n_pairs_empty: 69,
+            t_pair_skip_s: 70.5,
+            pair_skip_audit_n: 71,
+            pair_skip_audit_max_ratio: 0.725,
+            pair_skip_audit_gate_max_ratio: 0.735,
+            pair_skip_audit_violations: 74,
         }
     }
 
@@ -8872,6 +8908,15 @@ mod local_printout_tests {
             ("eri3_slab_bytes_max", 59.0),
             ("group_work_max_s", 64.5),
             ("group_work_mean_s", 65.5),
+            ("n_pair_skip_bounded", 66.0),
+            ("n_pairs_proved_empty", 67.0),
+            ("n_pair_groups_skipped", 68.0),
+            ("n_pairs_empty", 69.0),
+            ("t_pair_skip_s", 70.5),
+            ("pair_skip_audit_n", 71.0),
+            ("pair_skip_audit_max_ratio", 0.725),
+            ("pair_skip_audit_gate_max_ratio", 0.735),
+            ("pair_skip_audit_violations", 74.0),
             ("memory_strips_bytes", 50.0),
             ("memory_metric_bytes", 51.0),
             ("memory_stage3_scratch_bytes", 52.0),
@@ -8889,8 +8934,9 @@ mod local_printout_tests {
             assert_eq!(j[*k].as_f64(), Some(*v), "{k}: {j}");
         }
         let dj = j["direct"].as_object().unwrap();
-        assert_eq!(dj.len(), direct.len() + 3, "{j}");
+        assert_eq!(dj.len(), direct.len() + 4, "{j}");
         assert_eq!(dj["memory_exact"], true, "{j}");
+        assert_eq!(dj["pair_skip"], "audit", "{j}");
         assert_eq!(
             dj["pair_fit_thread_s"],
             serde_json::json!([60.5, 61.5, 62.5, 63.5]),

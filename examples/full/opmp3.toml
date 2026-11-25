@@ -108,6 +108,7 @@ scheme = "none"  # none | amplitude-threshold
 # eri3_pass: not read here: only with integral_direct = true
 # gate_cal: not read here: only with integral_direct = true
 # virt_schwarz_kappa: not read here: only with integral_direct = true
+# pair_skip: not read here: only with integral_direct = true
 # fock_screen: not read here: only with scheme = "amplitude-threshold" (rimp2, att-rimp2, opmp3)
 # virtual_space: not read here: only with scheme = "amplitude-threshold" (rimp2, att-rimp2, opmp3)
 # virtual_tau: not read here: only with virtual_space = "local"

@@ -24,12 +24,16 @@
 //! --frozen-core N --aux-radius BOHR --virt-radius BOHR|none --ao-tail X
 //! --schwarz-skip X --batch-merge N --kappa X|none --slab-mib N --scratch-mib N
 //! --eri3-pass batches|aux-major --split-eri3-timers true|false
-//! --gate-cal X|none`
+//! --gate-cal X|none --operator coulomb|erfc:W|terfc:R0|terfc:R0:W
+//! --pair-skip auto|on|off|audit`
 //! (`--gate-cal` overrides the production pair-gate calibration
 //! `AmplitudeLmp2Config::pair_gate_cal`; `none` turns the gate off;
 //! `--slab-mib`/`--scratch-mib` set `DirectConfig::slab_budget_bytes` and
 //! `scratch_budget_bytes` in MiB; `--eri3-pass aux-major` needs
-//! `--batch-merge 1`).
+//! `--batch-merge 1`). `--operator` is the CORRELATION kernel, in Bohr units
+//! (W in Bohr⁻¹, R0 in Bohr; default coulomb); the RHF reference is always
+//! Coulomb, as on the CLI's att-rimp2. `--pair-skip` is
+//! `DirectConfig::pair_skip` (default auto).
 //!
 //! Each rank's pool has `RAYON_NUM_THREADS` threads if that is set, otherwise
 //! `ParallelContext::rayon_threads()` (physical cores per local rank). Set
@@ -114,6 +118,30 @@ struct Args {
     /// `None`: the production calibration; `Some(c)`: `--gate-cal` (`Some(None)` = off).
     gate_cal: Option<Option<f64>>,
     maps: DirectConfig,
+    op: Operator,
+}
+
+/// Strict `--operator` spelling (Bohr units): `coulomb`, `erfc:W`,
+/// `terfc:R0` (the curvature-constrained ω) or `terfc:R0:W`.
+fn parse_operator(v: &str) -> Operator {
+    let num = |x: &str| -> f64 {
+        let y: f64 = x
+            .parse()
+            .unwrap_or_else(|_| panic!("--operator: cannot parse {x:?} in {v:?}"));
+        assert!(
+            y.is_finite() && y > 0.0,
+            "--operator: {x:?} must be finite and > 0"
+        );
+        y
+    };
+    let parts: Vec<&str> = v.split(':').collect();
+    match parts.as_slice() {
+        ["coulomb"] => Operator::coulomb(),
+        ["erfc", w] => Operator::erfc(num(w)),
+        ["terfc", r0] => Operator::terfc(num(r0)),
+        ["terfc", r0, w] => Operator::terfc_with_omega(num(r0), num(w)),
+        _ => panic!("--operator: expected coulomb, erfc:W, terfc:R0 or terfc:R0:W, not {v:?}"),
+    }
 }
 
 fn parse_opt<T: std::str::FromStr>(flag: &str, v: &str) -> T {
@@ -138,6 +166,7 @@ fn parse_args() -> Args {
         frozen_core: None,
         gate_cal: None,
         maps: DirectConfig::production(),
+        op: Operator::coulomb(),
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -167,6 +196,11 @@ fn parse_args() -> Args {
             }
             "--gate-cal" => a.gate_cal = Some(parse_some(&flag, &v)),
             "--split-eri3-timers" => a.maps.split_eri3_timers = parse_opt(&flag, &v),
+            "--operator" => a.op = parse_operator(&v),
+            "--pair-skip" => {
+                a.maps.pair_skip = ferric_mp2::lmp2_direct::PairSkip::parse_config_str(&v)
+                    .unwrap_or_else(|e| panic!("--pair-skip: {e}"))
+            }
             _ => panic!("unknown flag {flag} (see the module doc)"),
         }
     }
@@ -221,6 +255,7 @@ fn run(ctx: &ParallelContext, args: &Args) -> bool {
     let obs = PreparedBasis::new(&mol, &obs_bs).expect("obs basis");
     let dfbs = PreparedBasis::new(&mol, &basis::bundled(&args.aux).expect("aux")).expect("aux");
     let op = Operator::coulomb();
+    let corr_op = args.op;
     let frozen_core = args.frozen_core.unwrap_or_else(|| mol.auto_frozen_core());
     let bounds = SchwarzBounds::compute(op, &obs).expect("schwarz");
 
@@ -252,6 +287,7 @@ fn run(ctx: &ParallelContext, args: &Args) -> bool {
     if ctx.is_root() {
         eprintln!(
             "mpi_lmp2_bench: {} {}/{} eps {:e} frozen_core {frozen_core} gate_cal {:?} nbas {} naux {} ranks {}; \
+             correlation operator {corr_op:?}; \
              reference RHF solved serially on every rank ({t_scf:.1} s, excluded from LMP2 timings); \
              maps {:?}",
             args.xyz,
@@ -271,8 +307,8 @@ fn run(ctx: &ParallelContext, args: &Args) -> bool {
     let budget = ferric_mp2::rimp2::eri3_budget_bytes(cfg.eri3_budget_bytes);
     reset_hwm();
     let t0 = Instant::now();
-    let (res, st) =
-        amplitude_lmp2_direct(&mol, &obs, &obs_bs, &dfbs, op, &rhf, &cfg, &maps).expect("lmp2");
+    let (res, st) = amplitude_lmp2_direct(&mol, &obs, &obs_bs, &dfbs, corr_op, &rhf, &cfg, &maps)
+        .expect("lmp2");
     let wall = t0.elapsed().as_secs_f64();
     let hwm = vm_hwm();
     let tm = &res.timings;
@@ -286,6 +322,9 @@ fn run(ctx: &ParallelContext, args: &Args) -> bool {
         "basis": args.basis,
         "aux": args.aux,
         "eps": args.eps,
+        "operator": format!("{:?}", corr_op.kind),
+        "omega_bohr_inv": corr_op.omega,
+        "r0_bohr": corr_op.distance,
         "frozen_core": frozen_core,
         "gate_cal": cfg.pair_gate_cal,
         "n_pairs_gated": res.n_pairs_gated,
@@ -328,6 +367,16 @@ fn run(ctx: &ParallelContext, args: &Args) -> bool {
             "aux_major_task_bytes_max": st.aux_major_task_bytes_max,
             "aux_major_concurrency": st.aux_major_concurrency,
             "aux_major_in_flight_peak": st.aux_major_in_flight_peak,
+            "pair_skip": st.pair_skip.as_config_str(),
+            "n_pair_skip_bounded": st.n_pair_skip_bounded,
+            "n_pairs_proved_empty": st.n_pairs_proved_empty,
+            "n_pair_groups_skipped": st.n_pair_groups_skipped,
+            "n_pairs_empty": st.n_pairs_empty,
+            "t_pair_skip_s": st.t_pair_skip_s,
+            "pair_skip_audit_n": st.pair_skip_audit_n,
+            "pair_skip_audit_max_ratio": st.pair_skip_audit_max_ratio,
+            "pair_skip_audit_gate_max_ratio": st.pair_skip_audit_gate_max_ratio,
+            "pair_skip_audit_violations": st.pair_skip_audit_violations,
         },
         "stage": {
             "t_spaces_s": tm.t_spaces_s,

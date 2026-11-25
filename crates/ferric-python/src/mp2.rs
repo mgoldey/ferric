@@ -210,6 +210,10 @@ pub(crate) fn set_direct_stats(
     d.set_item("n_distinct_occ_per_group", st.n_distinct_occ_per_group)?;
     d.set_item("n_trsm", st.n_trsm)?;
     d.set_item("n_w_reused", st.n_w_reused)?;
+    d.set_item("pair_skip", st.pair_skip.as_config_str())?;
+    d.set_item("n_pairs_proved_empty", st.n_pairs_proved_empty)?;
+    d.set_item("n_pairs_empty", st.n_pairs_empty)?;
+    d.set_item("t_pair_skip_s", st.t_pair_skip_s)?;
     d.set_item("t_loc_s", st.t_loc_s)
 }
 
@@ -411,7 +415,8 @@ pub(crate) fn local_correlation_operator(
 /// integral-direct local MP2, which never forms the global 3-index tensor;
 /// its locality maps are `aux_radius` (Bohr, default 10.0), `virt_radius`
 /// (Bohr, 20.0), `ao_tail` (1e-4), `schwarz_skip` (1e-5; 0 disables the cut), `eri3_pass` (`"aux-major"`, or `"batches"`), `batch_merge` (1 under aux-major, which rejects larger values; 4 under batches), `gate_cal` (pair gate, off) and
-/// `virt_schwarz_kappa` (off), the same names and defaults as the CLI's
+/// `virt_schwarz_kappa` (off), plus `pair_skip` (`"auto"`: the provable-empty
+/// pair skip, on for an attenuated operator; `"on"`, `"off"`, `"audit"`), the same names and defaults as the CLI's
 /// `[local]` keys. On both the in-core and the integral-direct path,
 /// `fock_screen` (default true) runs the Fock-propagated mask screen, κ = 1;
 /// false keeps the plain integral mask. The rules are the CLI's: every local kwarg is a
@@ -475,7 +480,7 @@ pub(crate) fn local_correlation_operator(
 /// place of the solve (`crate::reference_file`; shared with `run_ccsd` and
 /// `run_ccsd_t`).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, eri3_pass=None, gate_cal=None, virt_schwarz_kappa=None, fock_screen=None, att_operator=None, omega=None, att_r0=None, att_omega=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, virtual_space=None, virtual_tau=None, virtual_tau_loose=None, virtual_solve_radius=None, virtual_boys_tau=None, with_gradient=false, scf_eri=None, lambda_boys=None, save_reference=None, read_reference=None, read_reference_other_build=false))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, eri3_pass=None, gate_cal=None, virt_schwarz_kappa=None, pair_skip=None, fock_screen=None, att_operator=None, omega=None, att_r0=None, att_omega=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, virtual_space=None, virtual_tau=None, virtual_tau_loose=None, virtual_solve_radius=None, virtual_boys_tau=None, with_gradient=false, scf_eri=None, lambda_boys=None, save_reference=None, read_reference=None, read_reference_other_build=false))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_rimp2(
     py: Python<'_>,
@@ -498,6 +503,7 @@ pub(crate) fn run_rimp2(
     eri3_pass: Option<String>,
     gate_cal: Option<f64>,
     virt_schwarz_kappa: Option<f64>,
+    pair_skip: Option<String>,
     fock_screen: Option<bool>,
     att_operator: Option<String>,
     omega: Option<f64>,
@@ -554,6 +560,7 @@ pub(crate) fn run_rimp2(
             eri3_pass,
             gate_cal,
             virt_schwarz_kappa,
+            pair_skip,
             fock_screen,
             virtual_space,
             virtual_tau,

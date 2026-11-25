@@ -1549,6 +1549,12 @@ pub struct LocalCfg {
     /// Omitted = off. It bounds the plain Eq-8 mask only, so it needs
     /// `fock_screen = false` (an error otherwise).
     pub virt_schwarz_kappa: Option<f64>,
+    /// Integral-direct only: the provable-empty pair skip (book
+    /// §lmp2-direct-pair-skip), `"auto"` (default: on for an attenuated
+    /// positive-definite kernel, off for Coulomb), `"on"`, `"off"` or
+    /// `"audit"` (evaluate the bound on every pair, skip nothing, record
+    /// the bound/actual ratios).
+    pub pair_skip: Option<String>,
     /// `kind = "rimp2"` / `"att-rimp2"` (in-core and integral-direct) and
     /// `"opmp3"` only: the Fock-propagated screen of the amplitude mask (book
     /// §amplitude-lmp2-fock-screen), κ =
@@ -1604,6 +1610,8 @@ pub struct LocalDirectKnobs {
     /// `[local] virt_schwarz_kappa`: ε-linked Schwarz virtual-candidate
     /// screen κ (> 0); `None` disables the screen.
     pub virt_schwarz_kappa: Option<f64>,
+    /// `[local] pair_skip`: the provable-empty pair skip. Default auto.
+    pub pair_skip: ferric_mp2::lmp2_direct::PairSkip,
 }
 
 /// `virt_schwarz_kappa` bounds the bare integrals (the plain Eq-8 mask) and
@@ -1704,6 +1712,7 @@ impl LocalModel {
                 batch_merge: d.batch_merge,
                 eri3_pass: d.eri3_pass,
                 virt_schwarz_kappa: d.virt_schwarz_kappa,
+                pair_skip: d.pair_skip,
                 ..ferric_mp2::lmp2_direct::DirectConfig::production()
             });
         (lcfg, dcfg)
@@ -1761,13 +1770,18 @@ impl LocalCfg {
                 eri3_pass,
                 gate_cal: opt_pos("gate_cal", self.gate_cal)?,
                 virt_schwarz_kappa: opt_pos("virt_schwarz_kappa", self.virt_schwarz_kappa)?,
+                pair_skip: match self.pair_skip.as_deref() {
+                    None => prod.pair_skip,
+                    Some(v) => ferric_mp2::lmp2_direct::PairSkip::parse_config_str(v)
+                        .map_err(|e| format!("[local] pair_skip: {e}"))?,
+                },
             }))
         } else {
             if self.sets_direct_knobs() {
                 return Err(
                     "[local] aux_radius / virt_radius / ao_tail / schwarz_skip / \
-                        batch_merge / eri3_pass / gate_cal / virt_schwarz_kappa are the \
-                        integral-direct \
+                        batch_merge / eri3_pass / gate_cal / virt_schwarz_kappa / pair_skip are \
+                        the integral-direct \
                         locality maps and are read only with integral_direct = true; \
                         without it they would be silently ignored"
                         .to_string(),
@@ -1801,6 +1815,7 @@ impl LocalCfg {
             || self.eri3_pass.is_some()
             || self.gate_cal.is_some()
             || self.virt_schwarz_kappa.is_some()
+            || self.pair_skip.is_some()
     }
 
     fn sets_virtual_thresholds(&self) -> bool {
@@ -1877,6 +1892,7 @@ impl LocalCfg {
                 ("eri3_pass", self.eri3_pass.is_some()),
                 ("gate_cal", self.gate_cal.is_some()),
                 ("virt_schwarz_kappa", self.virt_schwarz_kappa.is_some()),
+                ("pair_skip", self.pair_skip.is_some()),
                 ("fock_screen", self.fock_screen.is_some()),
                 ("virtual_space", self.virtual_space.is_some()),
                 ("virtual_tau", self.virtual_tau.is_some()),
@@ -7205,6 +7221,7 @@ mod compat_guard_tests {
                 d.scratch_budget_bytes,
                 d.slab_budget_bytes,
                 d.eri3_pass,
+                d.pair_skip,
             ),
             (
                 p.aux_radius_bohr,
@@ -7216,6 +7233,7 @@ mod compat_guard_tests {
                 p.scratch_budget_bytes,
                 p.slab_budget_bytes,
                 p.eri3_pass,
+                p.pair_skip,
             )
         );
         // The production values themselves (a change here is a model change).
@@ -7400,6 +7418,7 @@ mod compat_guard_tests {
                 eri3_pass: ferric_mp2::lmp2_direct::Eri3Pass::AuxMajor,
                 gate_cal: None,
                 virt_schwarz_kappa: None,
+                pair_skip: ferric_mp2::lmp2_direct::PairSkip::Auto,
             })
         );
         // The Fock screen is on by default on both paths; fock_screen = false

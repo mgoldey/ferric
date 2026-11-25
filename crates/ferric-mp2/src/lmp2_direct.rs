@@ -65,6 +65,7 @@ use crate::lmp2_amplitude::{
     checked_vvhv_with, localized_spaces_lambda, pair_gate_keep, solve_and_count,
     AmplitudeLmp2Config, AmplitudeLmp2Result, LocalizedSpaces, StageTimings, VvHv,
 };
+pub use crate::lmp2_pair_skip::PairSkip;
 use crate::ragged::{pair_blocks_screened, PairBlock, Ragged};
 use crate::rimp2::{ri_mp2, RiMp2Config};
 
@@ -195,6 +196,14 @@ pub struct DirectConfig {
     /// owner of each group is computed on every rank from them. Stage-3 and
     /// stage-5 counters, timers and strip sizes describe this rank's share.
     pub mpi: Option<ferric_core::parallel::ParallelContext>,
+    /// Stage-5 provable-empty pair skip ([`crate::lmp2_pair_skip`]): a pair
+    /// whose fitted retention test is bounded below ε without its own fit is
+    /// not fitted. Energies are unchanged (bitwise: a skipped pair is one
+    /// whose blocks the mask would drop, and the groups' whitening is the
+    /// same). [`PairSkip::Off`] is the anchor limit; production is
+    /// [`PairSkip::Auto`] (on for erfc / terfc, off for Coulomb, where the
+    /// bound never reaches a pair).
+    pub pair_skip: PairSkip,
 }
 
 impl DirectConfig {
@@ -219,6 +228,7 @@ impl DirectConfig {
             batch_merge: 1,
             eri3_pass: Eri3Pass::AuxMajor,
             virt_schwarz_kappa: None,
+            pair_skip: PairSkip::Auto,
             ..Self::default()
         }
     }
@@ -303,6 +313,7 @@ impl Default for DirectConfig {
             split_eri3_timers: false,
             eri3_pass: Eri3Pass::Batches,
             mpi: None,
+            pair_skip: PairSkip::Off,
         }
     }
 }
@@ -469,6 +480,31 @@ pub struct DirectStats {
     /// single group included), more when the budget split the groups; 0
     /// before stage 5.
     pub n_group_waves: usize,
+    /// The pair-skip mode this run used ([`PairSkip::resolve`]d for the
+    /// operator: `Off`, `On` or `Audit`).
+    pub pair_skip: PairSkip,
+    /// Off-diagonal pairs whose bound is finite (`γ < 1`); 0 when off.
+    pub n_pair_skip_bounded: usize,
+    /// Pairs the bound proves empty: skipped under `On`, still fitted under
+    /// `Audit`.
+    pub n_pairs_proved_empty: usize,
+    /// Domain groups not fitted because every pair in them was skipped.
+    pub n_pair_groups_skipped: usize,
+    /// Fitted pairs whose Eq-8 mask (and Fock screen) kept nothing.
+    pub n_pairs_empty: usize,
+    /// Wall seconds of the skip proof: the own-domain eigenvalue floors, the
+    /// strip and metric norm tables and the per-pair bounds (0 when off).
+    pub t_pair_skip_s: f64,
+    /// `Audit`: bounded pairs compared with their fit.
+    pub pair_skip_audit_n: usize,
+    /// `Audit`: largest `max|g| / bound` over bounded fitted pairs (must be
+    /// ≤ 1; 0 unless audit).
+    pub pair_skip_audit_max_ratio: f64,
+    /// `Audit`: largest `max(|g|, |g̃|/κ) / gate bound` (must be ≤ 1; 0
+    /// unless audit).
+    pub pair_skip_audit_gate_max_ratio: f64,
+    /// `Audit`: pairs proved empty whose fit kept a block (must be 0).
+    pub pair_skip_audit_violations: usize,
 }
 
 /// Byte accounting of the direct LMP2 path, computed from the locality maps
@@ -1035,7 +1071,8 @@ fn gather_strip_into(
 /// passes `keep_w = false` over it; otherwise each `W_i` is dropped as soon
 /// as its q is taken (one worker's `W` at a time). Under a rank stripe
 /// `needed` marks the occupieds with a strip here; the others get an empty
-/// q and `qmax = 0`.
+/// q and `qmax = 0`. With `floor`, each occupied also gets its
+/// [`OwnFloor`] (the pair skip's eigenvalue floor, from `L_i⁻¹`).
 #[allow(clippy::too_many_arguments)]
 fn whiten_own_domains(
     no: usize,
@@ -1048,51 +1085,160 @@ fn whiten_own_domains(
     aux_radius_bohr: f64,
     keep_w: bool,
     needed: Option<&[bool]>,
+    floor: bool,
 ) -> Result<OwnWhitened, FerricError> {
     use rayon::prelude::*;
     let sq = scale.abs().sqrt();
-    type PerI = (Vec<f64>, f64, Option<Array2<f64>>);
-    let per_i: Vec<Result<PerI, FerricError>> = (0..no)
+    let inputs = OwnInputs {
+        aux_dom,
+        strips,
+        dims_df,
+        metric_blocks,
+        dfbs,
+        aux_radius_bohr,
+    };
+    let per_i: Vec<Result<OwnPerI, FerricError>> = (0..no)
         .into_par_iter()
         .map(|i| {
             if needed.is_some_and(|n| !n[i]) {
                 // no strip on this rank, and none of its pairs asks for q_i
-                return Ok((Vec::new(), 0.0, keep_w.then(|| Array2::zeros((0, 0)))));
+                return Ok((Vec::new(), 0.0, keep_w.then(|| Array2::zeros((0, 0))), None));
             }
-            let dfuncs = shell_funcs(dfbs, &aux_dom[i]);
-            if dfuncs.is_empty() {
-                return Err(FerricError::General(format!(
-                    "lmp2_direct: empty aux domain for occupied {i} at radius {aux_radius_bohr} \
-                     Bohr (virt_schwarz_kappa needs a nonempty D_i)"
-                )));
-            }
-            let what = format!("occupied {i} Schwarz diagonal");
-            let vdd = gather_vdd(&aux_dom[i], dims_df, metric_blocks, &what)?;
-            let l = chol_lower(vdd, &what)?;
-            let w = whiten(&l, gather_strip(strips, i, &dfuncs, None, &what)?, &what)?;
-            let q: Vec<f64> = w
-                .columns()
-                .into_iter()
-                .map(|c| sq * c.dot(&c).sqrt())
-                .collect();
-            let qm = q.iter().copied().fold(0.0f64, f64::max);
-            Ok((q, qm, keep_w.then_some(w)))
+            whiten_one_own(&inputs, i, sq, keep_w, floor)
         })
         .collect();
     let mut out = OwnWhitened {
         q: Vec::with_capacity(no),
         qmax: Vec::with_capacity(no),
         w: keep_w.then(|| Vec::with_capacity(no)),
+        floor: Vec::with_capacity(if floor { no } else { 0 }),
     };
     for r in per_i {
-        let (q, qm, w) = r?;
+        let (q, qm, w, f) = r?;
         out.q.push(q);
         out.qmax.push(qm);
         if let (Some(ws), Some(w)) = (out.w.as_mut(), w) {
             ws.push(w);
         }
+        if floor {
+            out.floor.push(f);
+        }
     }
     Ok(out)
+}
+
+/// One occupied's own-domain whitening ([`whiten_own_domains`]): `(q_i,
+/// max q_i, W_i if kept, its [`OwnFloor`] if asked)`.
+type OwnPerI = (Vec<f64>, f64, Option<Array2<f64>>, Option<OwnFloor>);
+
+/// The shared inputs of [`whiten_one_own`].
+struct OwnInputs<'a> {
+    aux_dom: &'a [Vec<usize>],
+    strips: &'a [Strip],
+    dims_df: &'a [usize],
+    metric_blocks: &'a MetricBlocks,
+    dfbs: &'a PreparedBasis,
+    aux_radius_bohr: f64,
+}
+
+/// Occupied `i` of [`whiten_own_domains`]: `L_i = chol(V_{D_i D_i})`,
+/// `W_i = L_i⁻¹ B_i[D_i, :]`, `q_ia = sq·‖W_i[:, a]‖`, and with `floor` the
+/// pair skip's [`OwnFloor`] from the same `L_i`.
+fn whiten_one_own(
+    w: &OwnInputs,
+    i: usize,
+    sq: f64,
+    keep_w: bool,
+    floor: bool,
+) -> Result<OwnPerI, FerricError> {
+    let dom = &w.aux_dom[i];
+    let dfuncs = shell_funcs(w.dfbs, dom);
+    if dfuncs.is_empty() {
+        return Err(FerricError::General(format!(
+            "lmp2_direct: empty aux domain for occupied {i} at radius {} \
+             Bohr (virt_schwarz_kappa needs a nonempty D_i)",
+            w.aux_radius_bohr
+        )));
+    }
+    let what = format!("occupied {i} Schwarz diagonal");
+    let vdd = gather_vdd(dom, w.dims_df, w.metric_blocks, &what)?;
+    let vfloor = floor.then(|| vdd.clone());
+    let l = chol_lower(vdd, &what)?;
+    let own = vfloor
+        .map(|v| own_floor(&v, &l, (dom, w.dims_df, w.dfbs.nshells()), &what))
+        .transpose()?;
+    let wi = whiten(&l, gather_strip(w.strips, i, &dfuncs, None, &what)?, &what)?;
+    let q: Vec<f64> = wi
+        .columns()
+        .into_iter()
+        .map(|c| sq * c.dot(&c).sqrt())
+        .collect();
+    let qm = q.iter().copied().fold(0.0f64, f64::max);
+    Ok((q, qm, keep_w.then_some(wi), own))
+}
+
+/// One occupied's own-domain metric data for the pair skip
+/// ([`crate::lmp2_pair_skip`]): `λ ≤ λ_min(V_{D_i D_i})` (`None`: too ill
+/// conditioned to trust the computed inverse), the inflation that bounds the
+/// exact own-domain norm by the computed one
+/// ([`crate::lmp2_pair_skip::norm_inflation`]), `‖V_{D_i D_i}‖_F` and the
+/// domain's function count.
+#[derive(Debug, Clone)]
+struct OwnFloor {
+    lam: Option<f64>,
+    qinfl: f64,
+    vfro: f64,
+    d: usize,
+    /// Per GLOBAL aux shell `P`: `‖L⁻¹[:, P]‖_F` (times `qinfl`) for `P` in
+    /// the domain, NaN outside it. `‖L⁻¹x‖ ≤ Σ_P c_P ‖x_P‖` is the shell-wise
+    /// bound [`pair_g_bound`] compares with `‖x‖/√λ`.
+    col: Vec<f64>,
+}
+
+/// [`OwnFloor`] from the own-domain metric `v` and its Cholesky factor:
+/// `L⁻¹` by one triangular solve against the identity, `λ` the larger of
+/// the trace floor `eigen_floor(‖L⁻¹‖_F², ‖V‖_F, d)` and the shift-verified
+/// floor (`crate::lmp2_pair_skip::verified_floor`), both proved below
+/// `λ_min(V)`. The verified one is only tried when the trace floor exists
+/// (the computed `L⁻¹` is trusted).
+fn own_floor(
+    v: &Array2<f64>,
+    l: &Array2<f64>,
+    (dom, dims_df, nsh): (&[usize], &[usize], usize),
+    what: &str,
+) -> Result<OwnFloor, FerricError> {
+    use crate::lmp2_pair_skip::{eigen_floor, norm_inflation, verified_floor};
+    let d = l.nrows();
+    let vfro = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let mut eye = Array2::<f64>::zeros((d, d).f());
+    eye.diag_mut().fill(1.0);
+    let linv = whiten(l, eye, what)?;
+    let fro2: f64 = linv.iter().map(|x| x * x).sum();
+    let lam = eigen_floor(fro2, vfro, d).map(|t| verified_floor(v, &linv).map_or(t, |s| s.max(t)));
+    let qinfl = norm_inflation(fro2, vfro, d);
+    // the computed L⁻¹ is off by at most (qinfl − 1)·‖L⁻¹‖_F in any column
+    // block (normwise backward stability), so each block norm gets that
+    // absolute allowance on top
+    let col_err = (qinfl - 1.0) * fro2.sqrt();
+    let mut col = vec![f64::NAN; nsh];
+    let mut c0 = 0usize;
+    for &sh in dom {
+        let c1 = c0 + dims_df[sh];
+        let f2: f64 = linv
+            .slice(ndarray::s![.., c0..c1])
+            .iter()
+            .map(|x| x * x)
+            .sum();
+        col[sh] = qinfl * f2.sqrt() + col_err;
+        c0 = c1;
+    }
+    Ok(OwnFloor {
+        lam,
+        qinfl,
+        vfro,
+        d,
+        col,
+    })
 }
 
 /// Bytes of the full own-domain `W` store [`whiten_own_domains`] would keep:
@@ -1111,6 +1257,9 @@ struct OwnWhitened {
     q: Vec<Vec<f64>>,
     qmax: Vec<f64>,
     w: Option<Vec<Array2<f64>>>,
+    /// Per occupied (empty unless requested): the pair skip's [`OwnFloor`],
+    /// `None` for an occupied without a strip on this rank.
+    floor: Vec<Option<OwnFloor>>,
 }
 
 /// Trim the kept own-domain `W_i` (strip-column order) to the columns its
@@ -1177,6 +1326,8 @@ struct GroupCounts {
     /// Wall seconds of this group's parts, in [`DirectStats::pair_fit_thread_s`]
     /// order.
     t: [f64; 4],
+    /// Every pair of the group was proved empty: nothing was fitted.
+    skipped: bool,
 }
 
 /// Borrowed context for [`fit_domain_group`] — everything stage 5's group
@@ -1204,6 +1355,12 @@ struct PairFitCtx<'a> {
     /// reusable columns (`None` when the screen is off or over budget;
     /// `Some(None)` entries where no group has domain exactly D_i).
     own_w: Option<&'a [Option<GroupW>]>,
+    /// Per unique pair: proved empty by the pair skip, so not fitted (`None`:
+    /// the skip is off or auditing).
+    skip: Option<&'a [bool]>,
+    /// [`PairSkip::Audit`]: every fitted pair's `(index, max|g|, max gate)`
+    /// (scaled), for the comparison with its bound.
+    audit: Option<&'a Mutex<Vec<(usize, f64, f64)>>>,
     /// Test-only mutant: in the group whose first pair index is `.0`,
     /// scale the first pair's i-occupied `W` by `1 + .1`.
     #[cfg(test)]
@@ -1445,7 +1602,7 @@ fn fit_domain_group(
     for &px in pxs {
         let (i, j) = ctx.unique[px];
         let cij = &ctx.pair_cands[px];
-        if cij.is_empty() {
+        if cij.is_empty() || ctx.skip.is_some_and(|sk| sk[px]) {
             out_group.push((px, Vec::new()));
             continue;
         }
@@ -1455,10 +1612,284 @@ fn fit_domain_group(
         } else {
             w_i.t().dot(&ws.select(j, cij))
         };
+        if let Some(audit) = ctx.audit {
+            record_audit(ctx, audit, px, &g, cij);
+        }
         out_group.push((px, mask_pair(ctx, i, j, g, cij)));
     }
     counts.t[3] = lap(&mut clock);
     Ok((out_group, counts))
+}
+
+/// [`PairSkip::Audit`]: record pair `px`'s scaled `max|g|` and the largest
+/// value its retention test reads (`max(|g|, |g̃|/κ)` with the Fock screen,
+/// else `max|g|`).
+fn record_audit(
+    ctx: &PairFitCtx<'_>,
+    audit: &Mutex<Vec<(usize, f64, f64)>>,
+    px: usize,
+    g: &Array2<f64>,
+    cij: &[usize],
+) {
+    let (i, j) = ctx.unique[px];
+    let gs = g.mapv(|x| ctx.scale * x);
+    let gmax = gs.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+    let gate_max = match ctx.fock_screen {
+        Some(kappa) if ctx.eps > 0.0 => crate::ragged::fock_dressed_gate(
+            &gs, cij, ctx.f_vv, ctx.fo[i], ctx.fo[j], ctx.fv, kappa,
+        )
+        .iter()
+        .fold(0.0f64, |m, x| m.max(x.abs())),
+        _ => gmax,
+    };
+    if let Ok(mut v) = audit.lock() {
+        v.push((px, gmax, gate_max));
+    }
+}
+
+/// Stage 5b's output ([`prove_empty_pairs`]).
+struct SkipProof {
+    /// Per unique pair: proved empty.
+    empty: Vec<bool>,
+    /// Per unique pair: the scaled bound on `max|g|` (NaN: none).
+    g_bound: Vec<f64>,
+    /// The dressing the proof used: `Some((κ, w_max))` with the Fock screen.
+    fock: Option<(f64, f64)>,
+}
+
+/// `‖block‖_F²` of every evaluated metric shell pair, `(sp ≥ sq)` through a
+/// dense `nsh²` table; NaN where the block was never evaluated (a bound that
+/// reads one is not finite, so nothing is proved from it).
+struct MetricFro2 {
+    nsh: usize,
+    fro2: Vec<f64>,
+}
+
+impl MetricFro2 {
+    fn new(mb: &MetricBlocks) -> Self {
+        let fro2 = mb
+            .id
+            .iter()
+            .map(|&k| match k {
+                u32::MAX => f64::NAN,
+                k => mb.blocks[k as usize].iter().map(|x| x * x).sum(),
+            })
+            .collect();
+        Self { nsh: mb.nsh, fro2 }
+    }
+
+    fn get(&self, p: usize, q: usize) -> f64 {
+        let (a, b) = if p >= q { (p, q) } else { (q, p) };
+        self.fro2[a * self.nsh + b]
+    }
+}
+
+/// Per aux shell `P` of occupied `i`'s strip, `max_a Σ_{p∈P} B_i[p, a]²` over
+/// every strip column (a superset of each pair's candidates); NaN for a
+/// shell the strip has no rows of.
+fn row_shell_maxsq(st: &Strip, func_shell: &[usize], nsh: usize) -> Vec<f64> {
+    let mut t = vec![f64::NAN; nsh];
+    let ncols = st.cols.len();
+    let mut r0 = 0usize;
+    while r0 < st.rows.len() {
+        let sh = func_shell[st.rows[r0]];
+        let mut r1 = r0 + 1;
+        while r1 < st.rows.len() && func_shell[st.rows[r1]] == sh {
+            r1 += 1;
+        }
+        let mut m = 0.0f64;
+        for c in 0..ncols {
+            let s: f64 = (r0..r1).map(|r| st.b[(r, c)] * st.b[(r, c)]).sum();
+            m = m.max(s);
+        }
+        t[sh] = m;
+        r0 = r1;
+    }
+    t
+}
+
+/// What every pair bound of [`pair_g_bound`] reads.
+struct SkipTables<'a> {
+    aux_dom: &'a [Vec<usize>],
+    dims_df: &'a [usize],
+    own: &'a OwnWhitened,
+    t: &'a [Vec<f64>],
+    fro2: &'a MetricFro2,
+    /// Test-only weakened bound: scales every factor and γ.
+    #[cfg(test)]
+    mutant: f64,
+}
+
+/// The scaled upper bound on `max_ab |g_ab|` of pair `(i, j)`, `i ≠ j`
+/// ([`crate::lmp2_pair_skip::fitted_bound`] with `A = D_i`,
+/// `B = D_j \ D_i`, plus the floating-point allowance), or `None` when
+/// nothing is proved. With `cutoff`, returns `None` as soon as the
+/// γ-free terms alone reach it (the pair cannot be proved empty).
+fn pair_g_bound(
+    tb: &SkipTables<'_>,
+    i: usize,
+    j: usize,
+    scale: f64,
+    cutoff: Option<f64>,
+) -> Option<f64> {
+    use crate::lmp2_pair_skip::{fitted_bound, roundoff_allowance, PairNorms};
+    let (fi, fj) = (tb.own.floor[i].as_ref()?, tb.own.floor[j].as_ref()?);
+    let (li, lj) = (fi.lam?, fj.lam?);
+    let (di, dj) = (&tb.aux_dom[i], &tb.aux_dom[j]);
+    let b: Vec<usize> = dj
+        .iter()
+        .copied()
+        .filter(|sh| di.binary_search(sh).is_err())
+        .collect();
+    let sa: f64 = di.iter().map(|&p| tb.t[j][p]).sum();
+    let sb: f64 = b.iter().map(|&p| tb.t[i][p]).sum();
+    // computed own-domain norms, inflated to bound the exact ones
+    let (u_a, v_b) = (tb.own.qmax[i] * fi.qinfl, tb.own.qmax[j] * fj.qinfl);
+    // ‖V_BB^{-1/2} a_B‖ ≤ ‖L_j⁻¹ (a_B, 0)‖ (Schur monotonicity), bounded
+    // either by ‖a_B‖/√λ_j or shell by shell; likewise β_A with L_i
+    let shellwise = |c: &[f64], t: &[f64], dom: &[usize]| -> f64 {
+        dom.iter().map(|&p| c[p] * t[p].sqrt()).sum()
+    };
+    let u_b = (sb / lj).sqrt().min(shellwise(&fj.col, &tb.t[i], &b));
+    let v_a = (sa / li).sqrt().min(shellwise(&fi.col, &tb.t[j], di));
+    let sc = scale.abs();
+    #[cfg(test)]
+    let sc = sc * tb.mutant;
+    if cutoff.is_some_and(|c| sc * (u_a * v_a + u_b * v_b) >= c) {
+        return None;
+    }
+    // ‖V_{P,B}‖_F² per shell P of A, and ‖V_{A,Q}‖_F² per shell Q of B
+    let row2: Vec<f64> = di
+        .iter()
+        .map(|&p| b.iter().map(|&q| tb.fro2.get(p, q)).sum::<f64>())
+        .collect();
+    let vab2: f64 = row2.iter().sum();
+    let col2: Vec<f64> = b
+        .iter()
+        .map(|&q| di.iter().map(|&p| tb.fro2.get(p, q)).sum::<f64>())
+        .collect();
+    // γ = ‖V_AA^{-1/2} V_AB V_BB^{-1/2}‖₂ ≤ ‖V_AB‖_F/√(λ_iλ_j), or one side
+    // whitened shell by shell (the other side by its floor)
+    let side_a: f64 = di
+        .iter()
+        .zip(&row2)
+        .map(|(&p, r)| fi.col[p] * r.sqrt())
+        .sum();
+    let side_b: f64 = b
+        .iter()
+        .zip(&col2)
+        .map(|(&q, c)| fj.col[q] * c.sqrt())
+        .sum();
+    let gamma = (vab2 / (li * lj))
+        .sqrt()
+        .min(side_a / lj.sqrt())
+        .min(side_b / li.sqrt());
+    #[cfg(test)]
+    let gamma = gamma * tb.mutant;
+    let n = PairNorms {
+        u_a,
+        u_b,
+        v_a,
+        v_b,
+        gamma,
+    };
+    let g = fitted_bound(&n)?;
+    let d = fi.d + b.iter().map(|&q| tb.dims_df[q]).sum::<usize>();
+    let vfro_d = (fi.vfro * fi.vfro + fj.vfro * fj.vfro + 2.0 * vab2).sqrt();
+    let ro = roundoff_allowance(d, vfro_d, li.min(lj), &n);
+    // relative slack for the rounding of the norms and of the dressed gate
+    Some(sc * (g + ro) * (1.0 + 1e-9)).filter(|x| x.is_finite())
+}
+
+/// Stage 5b, the provable-empty pair skip ([`crate::lmp2_pair_skip`]): the
+/// own-domain fitted norms and eigenvalue floors (one Cholesky, one inverse
+/// and one whitening per occupied), the per-shell strip and metric norm
+/// tables, then one bound per off-diagonal pair of this rank. `None` when
+/// the skip is off, at ε = 0, or when the Fock screen is on and its
+/// denominators admit no bound.
+#[allow(clippy::too_many_arguments)]
+fn prove_empty_pairs(
+    pre: &StripsAndMetric,
+    dfbs: &PreparedBasis,
+    spaces: &LocalizedSpaces,
+    unique: &[(usize, usize)],
+    mine: Option<&[bool]>,
+    (scale, eps): (f64, f64),
+    fock_screen: Option<f64>,
+    (fo, fv): (&[f64], &[f64]),
+    aux_radius_bohr: f64,
+) -> Result<Option<SkipProof>, FerricError> {
+    use crate::lmp2_pair_skip::{gate_bound, proved_empty, unit_fock_weight};
+    use rayon::prelude::*;
+    if !pre.pair_skip.evaluates() || !(eps > 0.0) {
+        return Ok(None);
+    }
+    let fock = match fock_screen {
+        None => None,
+        Some(k) => match unit_fock_weight(&spaces.f_vv, fo, fv) {
+            Some(w) => Some((k, w)),
+            None => return Ok(None),
+        },
+    };
+    let (no, nsh) = (spaces.no, dfbs.nshells());
+    let dims_df = dfbs.shell_dims();
+    let needed = pre.stripe.as_ref().map(|s| s.needed.as_slice());
+    let own = whiten_own_domains(
+        no,
+        1.0,
+        &pre.aux_dom,
+        &pre.strips,
+        dims_df,
+        &pre.metric_blocks,
+        dfbs,
+        aux_radius_bohr,
+        false,
+        needed,
+        true,
+    )?;
+    let mut func_shell = vec![0usize; dfbs.nbasis()];
+    for (sh, (&off, &dim)) in dfbs.shell_offsets().iter().zip(dims_df).enumerate() {
+        func_shell[off..off + dim].fill(sh);
+    }
+    let t: Vec<Vec<f64>> = (0..no)
+        .into_par_iter()
+        .map(|i| match needed {
+            Some(n) if !n[i] => Vec::new(),
+            _ => row_shell_maxsq(&pre.strips[i], &func_shell, nsh),
+        })
+        .collect();
+    let fro2 = MetricFro2::new(&pre.metric_blocks);
+    let tb = SkipTables {
+        aux_dom: &pre.aux_dom,
+        dims_df,
+        own: &own,
+        t: &t,
+        fro2: &fro2,
+        #[cfg(test)]
+        mutant: pre.bound_mutant,
+    };
+    // Under `On`, a pair whose γ-free terms already reach ε through the
+    // dressing cannot be proved empty: stop before the metric sum.
+    let cutoff = (pre.pair_skip == PairSkip::On).then(|| eps / gate_bound(1.0, fock));
+    let g_bound: Vec<f64> = unique
+        .par_iter()
+        .enumerate()
+        .map(|(px, &(i, j))| {
+            if i == j || mine.is_some_and(|m| !m[px]) {
+                return f64::NAN;
+            }
+            pair_g_bound(&tb, i, j, scale, cutoff).unwrap_or(f64::NAN)
+        })
+        .collect();
+    let empty = g_bound
+        .iter()
+        .map(|&g| proved_empty(g, eps, fock))
+        .collect();
+    Ok(Some(SkipProof {
+        empty,
+        g_bound,
+        fock,
+    }))
 }
 
 /// Seconds since `clock`, which restarts.
@@ -2881,6 +3312,12 @@ struct StripsAndMetric {
     /// occupied outside `stripe.needed`, and the built ones cover this
     /// rank's pairs only.
     stripe: Option<RankStripe>,
+    /// [`DirectConfig::pair_skip`] resolved for the operator (never `Auto`).
+    pair_skip: PairSkip,
+    /// Test-only mutant: every pair bound is multiplied by this (1 = the
+    /// real bound; below 1 weakens it, which the anchor and audit must see).
+    #[cfg(test)]
+    bound_mutant: f64,
 }
 
 /// Stages 1–4 of [`assemble_ragged_direct_local`]: gate and maps
@@ -2902,6 +3339,10 @@ fn strips_and_metric(
 ) -> Result<StripsAndMetric, FerricError> {
     use rayon::prelude::*;
     let no = spaces.no;
+    let pair_skip = dcfg
+        .pair_skip
+        .resolve(&op)
+        .map_err(|e| FerricError::General(format!("lmp2_direct: {e}")))?;
     let t0 = Instant::now();
     let maps = build_locality_maps(mol, obs, dfbs, spaces, eps, pair_gate_cal, dcfg);
     let need = metric_need_pairs(&maps.aux_ext, dfbs.nshells());
@@ -3027,6 +3468,9 @@ fn strips_and_metric(
         strips,
         metric_blocks,
         stripe,
+        pair_skip,
+        #[cfg(test)]
+        bound_mutant: 1.0,
     })
 }
 
@@ -3179,7 +3623,7 @@ fn schwarz_screen(
             let (aux_dom, strips) = (&pre.aux_dom, &pre.strips);
             let needed = pre.stripe.as_ref().map(|s| s.needed.as_slice());
             let o = whiten_own_domains(
-                no, scale, aux_dom, strips, dims_df, mb, dfbs, r, keep, needed,
+                no, scale, aux_dom, strips, dims_df, mb, dfbs, r, keep, needed, false,
             )?;
             Ok((Some((o.q, o.qmax)), o.w))
         }
@@ -3498,6 +3942,34 @@ fn fit_pair_slots(
         stats.virt_cand_mean /= n_fitted as f64;
     }
 
+    let t_skip = Instant::now();
+    stats.pair_skip = pre.pair_skip;
+    let proof = match path.triangular() {
+        true => prove_empty_pairs(
+            pre,
+            dfbs,
+            spaces,
+            &unique,
+            mine,
+            (scale, eps),
+            fock_screen,
+            (&fo, &fv),
+            dcfg.aux_radius_bohr,
+        )?,
+        false => None,
+    };
+    if let Some(p) = &proof {
+        stats.n_pair_skip_bounded = p.g_bound.iter().filter(|g| g.is_finite()).count();
+        stats.n_pairs_proved_empty = p.empty.iter().filter(|&&e| e).count();
+    }
+    let skip: Option<&[bool]> = proof
+        .as_ref()
+        .filter(|_| pre.pair_skip == PairSkip::On)
+        .map(|p| p.empty.as_slice());
+    let audit_out =
+        (pre.pair_skip == PairSkip::Audit && proof.is_some()).then(|| Mutex::new(Vec::new()));
+    stats.t_pair_skip_s = t_skip.elapsed().as_secs_f64();
+
     let pair_dom = pair_domains(&unique, &pre.aux_dom);
     let own_w: Option<Vec<Option<GroupW>>> = own_w.map(|w| {
         trim_own_w(
@@ -3533,6 +4005,8 @@ fn fit_pair_slots(
         dfbs,
         aux_dom: &pre.aux_dom,
         own_w: own_w.as_deref(),
+        skip,
+        audit: audit_out.as_ref(),
         #[cfg(test)]
         w_mutant: match path {
             FitPath::MutantW(first, rel) => Some((first, rel)),
@@ -3565,6 +4039,15 @@ fn fit_pair_slots(
     let run_group = |(dsh, pxs): &(Vec<usize>, Vec<usize>)| -> GroupResult {
         if charge.as_ref().is_some_and(BlockCharge::is_tripped) {
             return Ok((Vec::new(), GroupCounts::default()));
+        }
+        if skip.is_some_and(|sk| pxs.iter().all(|&px| sk[px])) {
+            // every pair proved empty: no Cholesky, no whitening, no fit
+            let out = pxs.iter().map(|&px| (px, Vec::new())).collect();
+            let counts = GroupCounts {
+                skipped: true,
+                ..GroupCounts::default()
+            };
+            return Ok((out, counts));
         }
         let now = in_flight.fetch_add(1, Ordering::Relaxed) + 1;
         in_flight_peak.fetch_max(now, Ordering::Relaxed);
@@ -3632,7 +4115,64 @@ fn fit_pair_slots(
         return Err(FerricError::MemoryExhausted(msg));
     }
     let slots = slots_from_groups(unique.len(), group_out, stats)?;
+    stats.n_pairs_empty = slots
+        .iter()
+        .enumerate()
+        .filter(|(px, slot)| {
+            !skip.is_some_and(|sk| sk[*px]) && slot.as_ref().is_some_and(|b| b.is_empty())
+        })
+        .count();
+    if let (Some(p), Some(a)) = (&proof, audit_out) {
+        let rows = a.into_inner().unwrap_or_default();
+        audit_pair_skip(p, &rows, &slots, &unique, spaces, stats);
+    }
     Ok((slots, base_bytes))
+}
+
+/// [`PairSkip::Audit`]: compare every bounded fitted pair with its bound
+/// (`DirectStats::pair_skip_audit_*`); with `FERRIC_LMP2_PAIR_SKIP_DUMP` set,
+/// one `PAIRSKIP i j R g_bound gate_bound max|g| max_gate kept proved` line
+/// per fitted pair on stderr (the measurement's raw data).
+fn audit_pair_skip(
+    p: &SkipProof,
+    rows: &[(usize, f64, f64)],
+    slots: &[crate::ragged_transport::Slot],
+    unique: &[(usize, usize)],
+    spaces: &LocalizedSpaces,
+    stats: &mut DirectStats,
+) {
+    let dump = std::env::var_os("FERRIC_LMP2_PAIR_SKIP_DUMP").is_some();
+    let (mut ratio, mut gate_ratio) = (0.0f64, 0.0f64);
+    let (mut n, mut violations) = (0usize, 0usize);
+    for &(px, gmax, gate_max) in rows {
+        let kept = slots[px].as_ref().is_some_and(|b| !b.is_empty());
+        let gb = p.g_bound[px];
+        let gate_b = crate::lmp2_pair_skip::gate_bound(gb, p.fock);
+        if gb.is_finite() {
+            n += 1;
+            ratio = ratio.max(gmax / gb);
+            gate_ratio = gate_ratio.max(gate_max / gate_b);
+        }
+        if p.empty[px] && kept {
+            violations += 1;
+        }
+        if dump {
+            let (i, j) = unique[px];
+            let r: f64 = (0..3)
+                .map(|x| (spaces.occ_centers[(i, x)] - spaces.occ_centers[(j, x)]).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            eprintln!(
+                "PAIRSKIP {i} {j} {r:.6} {gb:.6e} {gate_b:.6e} {gmax:.6e} {gate_max:.6e} {} {}",
+                u8::from(kept),
+                u8::from(p.empty[px])
+            );
+        }
+    }
+    stats.pair_skip_audit_n = n;
+    stats.pair_skip_audit_max_ratio = ratio;
+    stats.pair_skip_audit_gate_max_ratio = gate_ratio;
+    stats.pair_skip_audit_violations = violations;
 }
 
 /// Stage 5 after the fits: the slots become the ragged system. Under a rank
@@ -3751,10 +4291,15 @@ fn slots_from_groups(
     stats: &mut DirectStats,
 ) -> Result<Vec<crate::ragged_transport::Slot>, FerricError> {
     stats.n_pair_groups = group_out.len();
+    stats.n_pair_groups_skipped = 0;
     let mut n_occ = 0usize;
     let mut slots: Vec<crate::ragged_transport::Slot> = (0..n_unique).map(|_| None).collect();
     for r in group_out {
         let (slot_out, counts) = r?;
+        if counts.skipped {
+            stats.n_pair_groups -= 1;
+            stats.n_pair_groups_skipped += 1;
+        }
         n_occ += counts.n_occ;
         stats.n_trsm += counts.n_trsm;
         stats.n_w_reused += counts.n_reused;
@@ -6040,6 +6585,7 @@ mod stage_c_tests {
                 10.0,
                 false,
                 None,
+                false,
             )
             .unwrap();
             (o.q, o.qmax)
@@ -6166,6 +6712,7 @@ mod stage_c_tests {
                             dcfg.aux_radius_bohr,
                             false,
                             None,
+                            false,
                         )
                         .unwrap();
                         let (q_old, _) = inverse_oracle::schwarz_virtual_q_inverse_oracle(
@@ -6343,6 +6890,129 @@ mod stage_c_tests {
         );
         assert!(reused > 0);
         assert!((e_new - e_old).abs() <= 1e-10, "dE {:.3e}", e_new - e_old);
+    }
+
+    /// Stage 5 of `pre` under its pair-skip mode, with the Fock screen on.
+    fn fit_skip(
+        su: &Setup,
+        pre: &StripsAndMetric,
+        eps: f64,
+        dcfg: &DirectConfig,
+    ) -> (Ragged, DirectStats) {
+        let mut st = DirectStats::default();
+        let r = fit_pairs(
+            pre,
+            &su.dfbs,
+            &su.spaces,
+            eps,
+            1.0,
+            dcfg,
+            FitPath::Cholesky,
+            None,
+            Some(DIRECT_FOCK_SCREEN_KAPPA),
+            &mut st,
+        )
+        .unwrap();
+        (r, st)
+    }
+
+    fn same_ragged(a: &Ragged, b: &Ragged) -> bool {
+        a.pairs.len() == b.pairs.len()
+            && a.pairs
+                .iter()
+                .zip(&b.pairs)
+                .all(|(x, y)| block_diff(x, y) == 0.0)
+    }
+
+    /// The pair skip under an attenuated kernel (exactness anchor + rigor
+    /// audit, CLAUDE.md protocol). Octane, short aux radius so the bound
+    /// reaches pairs at this size, gate off (every pair fitted), Fock screen
+    /// on. `On` skips pairs AND builds the bit-identical ragged system of
+    /// `Off`; `Audit` finds every fitted pair below its bound (ratio ≤ 1) and
+    /// no proved-empty pair with a block; the weakened-bound mutant breaks
+    /// both.
+    #[test]
+    fn pair_skip_is_bitwise_and_its_audit_holds_under_erfc() {
+        let su = setup("alkane_8.xyz", 8);
+        // octane is short (pair distances up to ~19 Bohr), so the anchor runs
+        // at a loose eps where the bound reaches pairs; production reach is
+        // measured on C20-C48 (wiki/notes/lmp2-attenuated-pair-skip-2026-11-24)
+        for (op, eps) in [(Operator::erfc(2.0), 1e-2), (Operator::erfc(1.0), 1e-2)] {
+            let dcfg = DirectConfig {
+                aux_radius_bohr: 4.0,
+                ..production_maps(None)
+            };
+            let (mut pre, _) = pre_with(&su, op, eps, None, &dcfg);
+            pre.pair_skip = PairSkip::Off;
+            let (r_off, s_off) = fit_skip(&su, &pre, eps, &dcfg);
+            pre.pair_skip = PairSkip::Audit;
+            let (r_aud, s_aud) = fit_skip(&su, &pre, eps, &dcfg);
+            pre.pair_skip = PairSkip::On;
+            let (r_on, s_on) = fit_skip(&su, &pre, eps, &dcfg);
+            let w = op.omega;
+            assert!(
+                same_ragged(&r_off, &r_aud),
+                "w={w}: audit changed the system"
+            );
+            assert!(same_ragged(&r_off, &r_on), "w={w}: skip changed the system");
+            assert!(
+                s_on.n_pairs_proved_empty > 0,
+                "w={w}: the skip reaches no pair (vacuous)"
+            );
+            assert_eq!(s_on.n_pairs_proved_empty, s_aud.n_pairs_proved_empty);
+            assert!(
+                s_on.n_pairs_proved_empty <= s_off.n_pairs_empty,
+                "w={w}: more proved than empty"
+            );
+            assert!(s_aud.pair_skip_audit_n > 0);
+            assert_eq!(s_aud.pair_skip_audit_violations, 0, "w={w}");
+            assert!(
+                s_aud.pair_skip_audit_max_ratio <= 1.0,
+                "w={w}: {}",
+                s_aud.pair_skip_audit_max_ratio
+            );
+            assert!(s_aud.pair_skip_audit_gate_max_ratio <= 1.0, "w={w}");
+            assert!(s_aud.pair_skip_audit_max_ratio > 0.0);
+            // mutant: every factor and gamma 1e6 too small. The audit must
+            // see computed elements above the bound; the anchor breaks only
+            // if a nonempty pair is bounded at all (octane's close pairs
+            // have gamma >= 1 or an unbounded floor, so it may not)
+            pre.bound_mutant = 1e-6;
+            pre.pair_skip = PairSkip::On;
+            let (r_mut, _) = fit_skip(&su, &pre, eps, &dcfg);
+            let anchor_caught = !same_ragged(&r_off, &r_mut);
+            pre.pair_skip = PairSkip::Audit;
+            let (_, s_mut) = fit_skip(&su, &pre, eps, &dcfg);
+            assert!(
+                s_mut.pair_skip_audit_max_ratio > 1.0,
+                "w={w}: weakened bound not caught by the audit (anchor caught: {anchor_caught})"
+            );
+            assert!(
+                !anchor_caught || s_mut.pair_skip_audit_violations > 0,
+                "w={w}: the anchor broke but the audit saw no violation"
+            );
+            pre.bound_mutant = 1.0;
+        }
+    }
+
+    /// Coulomb: the bound still holds (audit) but proves nothing at octane.
+    #[test]
+    fn pair_skip_audit_holds_for_coulomb() {
+        let su = setup("alkane_8.xyz", 8);
+        let eps = 1e-4;
+        let dcfg = DirectConfig {
+            aux_radius_bohr: 4.0,
+            ..production_maps(None)
+        };
+        let (mut pre, _) = pre_with(&su, Operator::coulomb(), eps, None, &dcfg);
+        pre.pair_skip = PairSkip::Audit;
+        let (_, st) = fit_skip(&su, &pre, eps, &dcfg);
+        assert_eq!(st.pair_skip_audit_violations, 0);
+        assert!(
+            st.pair_skip_audit_max_ratio <= 1.0,
+            "{}",
+            st.pair_skip_audit_max_ratio
+        );
     }
 }
 

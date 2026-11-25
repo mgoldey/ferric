@@ -5543,6 +5543,7 @@ def run_rimp2(
     eri3_pass: str | None = None,
     gate_cal: float | None = None,
     virt_schwarz_kappa: float | None = None,
+    pair_skip: str | None = None,
     fock_screen: bool | None = None,
     att_operator: str | None = None,
     omega: float | None = None,
@@ -5589,7 +5590,11 @@ def run_rimp2(
     eri3_pass ("aux-major" default, or "batches"), batch_merge (only with
     eri3_pass="batches", default 4 there; larger than 1 with aux-major is a
     ValueError), gate_cal and virt_schwarz_kappa (which needs
-    fock_screen=False; it bounds the plain integral mask only). On both paths
+    fock_screen=False; it bounds the plain integral mask only) and pair_skip
+    ("auto" default: skip by proof every pair whose retained set is provably
+    empty, on for an attenuated operator, off for Coulomb; "on", "off", or
+    "audit", which evaluates the bound everywhere and skips nothing; the
+    energy is bitwise the same either way). On both paths
     `fock_screen` (default True) runs the Fock-propagated mask screen,
     kappa = 1; False keeps the plain integral mask. Same rules as the CLI
     `[local]` section: every local kwarg is a ValueError on the exact method,

@@ -36,7 +36,7 @@ definitions, not equations, and the trivial-limit tests check them.
 | Entry point | Location |
 |---|---|
 | Rust | `ferric-mp2/src/lmp2_direct.rs::amplitude_lmp2_direct`, `ferric-mp2/src/lmp2_direct.rs::assemble_ragged_direct_local` |
-| CLI | `[local] scheme = "amplitude-threshold"`, `eps`, `integral_direct = true`, with `aux_radius`, `virt_radius`, `ao_tail`, `schwarz_skip`, `eri3_pass`, `batch_merge`, `gate_cal`, `virt_schwarz_kappa`, `fock_screen` (`examples/alkane8-rimp2-local-direct.toml`) |
+| CLI | `[local] scheme = "amplitude-threshold"`, `eps`, `integral_direct = true`, with `aux_radius`, `virt_radius`, `ao_tail`, `schwarz_skip`, `eri3_pass`, `batch_merge`, `gate_cal`, `virt_schwarz_kappa`, `pair_skip`, `fock_screen` (`examples/alkane8-rimp2-local-direct.toml`) |
 | Python | `run_rimp2(..., local="amplitude-threshold", eps=..., integral_direct=True)` |
 
 ## The domain-local fit {#integral-direct-domain-local-fit}
@@ -448,6 +448,220 @@ extra error is $+0.9$ to $+3.2\times10^{-6}$ Ha from C12 to C20 (section
 size-extensive error must, and three sizes are too few to test whether the
 amount per CH$_2$ is constant.
 
+## Proving a pair empty {#integral-direct-pair-skip}
+
+With an attenuated operator most distant pairs end empty: every element of
+the fitted $J_{ij}$ falls below $\varepsilon$, the mask keeps nothing, and the
+pair adds nothing to the energy. Stage 5 still fits them. A pair costs its
+share of the group's Cholesky and whitening and one Gram product, and the
+product is thrown away. The skip removes those pairs before the fit, by
+proof: it bounds every element the retention test reads from data stage 5
+already holds, and drops the pair only when the bound is below the
+threshold. A skipped pair is one whose blocks the mask would have removed,
+so the energy is bitwise the energy without the skip.
+
+**What has to be bounded.** The retention test of a pair reads
+$g = s\,J_{ia,jb}$ for $a,b\in C_{ij}$, with $s$ the spin-scale of the mask,
+and, with the Fock screen on, the dressed gate $\tilde g$ of section
+@sec:amplitude-lmp2-fock-screen, compared with $\kappa\varepsilon$. The $J$
+it reads is the computed one. Write
+$a = A_i[D, a]$ and $b = A_j[D, b]$ for the strip columns on
+$D = D_{ij}$, as stage 3 produced them, and $V = V_{DD}$ for the metric
+block. Then $J_{ab} = a^{\mathsf T}V^{-1}b$. The strips already carry the
+AO tail and the Schwarz skip, so a bound on this product covers both maps
+with no tail term of its own: nothing below treats a strip column as the
+integral of a function.
+
+**Splitting the domain.** Split $D$ into $A = D_i$ and $B = D_j\setminus
+D_i$. Scale each block by its own metric, $\alpha = \mathrm{diag}(V_{AA},
+V_{BB})^{-1/2}a$ and likewise $\beta$, so that
+
+$$ V = \mathrm{diag}(V_{AA},V_{BB})^{1/2}\,(I + X)\,\mathrm{diag}(V_{AA},V_{BB})^{1/2},\qquad X = \begin{pmatrix}0 & Y\\ Y^{\mathsf T} & 0\end{pmatrix},\qquad Y = V_{AA}^{-1/2}V_{AB}V_{BB}^{-1/2}. $$
+
+Then $J = \alpha^{\mathsf T}(I+X)^{-1}\beta$. Expand the inverse once,
+$(I+X)^{-1} = I - X + X^2(I+X)^{-1}$, which is an identity for any $X$
+with $I+X$ invertible:
+
+$$ J = \alpha_A\!\cdot\beta_A + \alpha_B\!\cdot\beta_B - \bigl(\alpha_A^{\mathsf T}Y\beta_B + \alpha_B^{\mathsf T}Y^{\mathsf T}\beta_A\bigr) + \alpha^{\mathsf T}X^2(I+X)^{-1}\beta . $$
+
+The eigenvalues of $X$ are $\pm$ the singular values of $Y$, so with
+$\gamma = \lVert Y\rVert_2 < 1$ the last term is at most
+$\gamma^2/(1-\gamma)\,\lVert\alpha\rVert\lVert\beta\rVert$. Take
+$u_A\ge\lVert\alpha_A\rVert$, $u_B\ge\lVert\alpha_B\rVert$ and likewise
+$v_A$, $v_B$, all maximised over the columns. Every element obeys
+
+$$ \lvert J_{ab}\rvert \le u_Av_A + u_Bv_B + \gamma\,(u_Av_B + u_Bv_A) + \frac{\gamma^2}{1-\gamma}\sqrt{u_A^2+u_B^2}\,\sqrt{v_A^2+v_B^2}. \label{eq:lmp2-pair-skip-bound} $$
+
+Check the limit $V_{AB} = 0$: $\gamma = 0$, the fit separates, and the
+bound is $u_Av_A + u_Bv_B$, the Cauchy–Schwarz bound on each block.
+
+**Where each factor comes from.** None of them needs the pair's own
+Cholesky.
+
+- $u_A$ is $\max_a\lVert V_{D_iD_i}^{-1/2}a_{D_i}\rVert$, occupied $i$'s
+  fitted norm on its own domain, which the κ screen already computes.
+- $v_B$ is $j$'s own-domain norm. It bounds $\lVert V_{BB}^{-1/2}b_B\rVert$
+  because $B\subseteq D_j$ and a fit on fewer functions has the smaller
+  diagonal (@eq:lmp2-aux-restriction).
+- $u_B$ bounds $\lVert V_{BB}^{-1/2}a_B\rVert$. Pad $a_B$ with zeros to
+  all of $D_j$; by the same monotonicity its fitted norm on $D_j$ is at
+  least as large, $\lVert L_j^{-1}(a_B, 0)\rVert$, with $L_j$ the Cholesky
+  factor of $V_{D_jD_j}$. Two bounds on that are cheap: $\lVert
+  a_B\rVert/\sqrt{\lambda_j}$, and the shell-by-shell triangle inequality
+  $\sum_{P\in B}\lVert L_j^{-1}[:,P]\rVert_F\,\lVert a_P\rVert$. The code
+  takes the smaller. $v_A$ is the same with $L_i$ and $j$'s strip rows on
+  $D_i$.
+- $\gamma \le \lVert V_{AB}\rVert_F/\sqrt{\lambda_i\lambda_j}$, or with one
+  side whitened shell by shell, $\gamma\le\sum_{P\in A}\lVert
+  L_i^{-1}[:,P]\rVert_F\lVert V_{PB}\rVert_F/\sqrt{\lambda_j}$ and its
+  mirror. The code takes the smallest of the three.
+- $\lambda_k$ floors $\lambda_{\min}(V_{D_kD_k})$, and by Cauchy interlacing
+  every principal sub-block, $A = D_i$ and $B\subseteq D_j$ among them. Two
+  floors are proved and the larger is used. The trace floor
+  $\tfrac12/\lVert L_k^{-1}\rVert_F^2$ follows from
+  $\operatorname{tr}V^{-1} = \lVert L^{-1}\rVert_F^2 \ge 1/\lambda_{\min}$;
+  the $\tfrac12$ covers the rounding of the computed $L^{-1}$, and the
+  floor is refused (nothing is proved for that occupied) when $16\,d\,u\,\kappa
+  > \tfrac14$, with $u$ the unit round-off and $\kappa\le\lVert
+  V\rVert_F\lVert L^{-1}\rVert_F^2$. The trace counts every small
+  eigenvalue, so it can sit a factor $d$ below $\lambda_{\min}$. The
+  second floor is tighter: power iteration on $V^{-1}$ estimates
+  $\lambda_{\min}$ from above, and $\sigma = \lambda_{\mathrm{est}}/2$
+  (then $/10$) is accepted only if the Cholesky of $V - (\sigma + c)I$
+  succeeds, with $c = 2\,(\gamma_{d+1}/(1-\gamma_{d+1})\operatorname{tr}V
+  + 4u\max_k v_{kk})$. By Rump's theorem (BIT 46 (2006) 433) a completed
+  floating-point Cholesky of $M - cI$ proves $M$ positive definite, so
+  $\lambda_{\min}(V) > \sigma$.
+
+The norms $\lVert a_B\rVert$, $\lVert b_A\rVert$ and $\lVert
+V_{AB}\rVert_F$ come from per-shell tables: the squared strip norm of each
+occupied on each auxiliary shell, and the squared Frobenius norm of each
+metric shell block. A shell block that stage 4 never computed has no table
+entry, and a pair that would need one is not bounded.
+
+**The computed $J$.** Stage 5 forms $J$ in floating point. Its Cholesky
+has backward error of order $d\,u\,\lVert V\rVert$, so the computed product
+differs from the exact one by at most
+$16\,d\,u\,\kappa_D\,\lVert u\rVert\lVert v\rVert/(1-\gamma)$, with $\kappa_D
+\le \lVert V_{DD}\rVert_F/((1-\gamma)\lambda_{\min})$. The code adds this
+allowance, and a relative slack of $10^{-9}$, to (@eq:lmp2-pair-skip-bound)
+before it compares. The own-domain norms $u_A$ and $v_B$ are themselves
+computed through a Cholesky factor, so each is multiplied by
+$1 + 16\,d_k\,u\,\kappa_k$ before it enters the bound
+(`ferric-mp2/src/lmp2_pair_skip.rs::norm_inflation`); each shell block norm
+of $L_k^{-1}$ gets the same factor plus the absolute allowance
+$16\,d_k\,u\,\kappa_k\lVert L_k^{-1}\rVert_F$. The exact quantity
+bounded is the one stage 5 would form from the stored strips and metric
+blocks; those are the same arrays the fit reads.
+
+**The Fock-dressed gate.** If every element obeys $\lvert g_{cb}\rvert\le
+G$, the dressed gate $\tilde g = g + F't_0 + t_0F'$ with $t_0 = -g/\Delta$
+obeys $\lvert\tilde g_{ab}\rvert \le G(1 + w_a + w_b) \le G(1 + 2w_{\max})$,
+where $w_a = \sum_{c\neq a}\max(\lvert F_{ac}\rvert,\lvert
+F_{ca}\rvert)/D_c$ over the full virtual space and $D_c = f_{cc} + \min
+f_{vv} - 2\max f_{oo}$. These are the weights of
+`ferric-mp2/src/ragged.rs::fock_bound_weights` at a unit Schwarz factor,
+and the test is `ferric-mp2/src/ragged.rs::fock_bound_keeps` on a constant
+factor $\sqrt G$, the same function the κ screen uses. A pair is skipped
+when $G\le\varepsilon$ and $G(1+2w_{\max})\le\kappa\varepsilon$.
+
+**The code.** `ferric-mp2/src/lmp2_pair_skip.rs::fitted_bound` evaluates
+(@eq:lmp2-pair-skip-bound). The excerpt is copied with the field
+destructuring removed:
+
+<!-- excerpt: ferric-mp2/src/lmp2_pair_skip.rs::fitted_bound -->
+```rust
+let finite = [u_a, u_b, v_a, v_b, gamma].iter().all(|x| x.is_finite());
+if !finite || !(gamma < 1.0) {
+    return None; // no convergent remainder: nothing is proved
+}
+// gamma^2/(1-gamma) ||u|| ||v||
+let rem = gamma * gamma / (1.0 - gamma) * u_a.hypot(u_b) * v_a.hypot(v_b);
+// uA vA + uB vB + gamma (uA vB + uB vA) + remainder
+Some(u_a * v_a + u_b * v_b + gamma * (u_a * v_b + u_b * v_a) + rem)
+```
+
+- `ferric-mp2/src/lmp2_direct.rs::prove_empty_pairs` builds the tables and
+  the floors once per occupied and evaluates the bound for every pair
+  before stage 5. Per occupied it costs one $L^{-1}$, one shifted
+  Cholesky, forty power-iteration steps and one whitening of the whole
+  strip; per pair, sums over the shells of the two domains.
+- A skipped pair keeps its place in its group and pushes an empty block.
+  The group's union of candidates and its whitening are unchanged, so the
+  pairs that remain get bit-identical $J$. A group whose pairs are all
+  skipped is not fitted at all.
+- `pair_skip = "audit"` evaluates the bound on every pair, skips nothing,
+  and records for each fitted pair the ratio of the largest computed
+  element to the bound.
+
+**Why only attenuated operators.** The bound holds for any
+positive-definite kernel. For erfc the Fourier transform
+$4\pi(1-e^{-k^2/4\omega^2})/k^2$ is positive, so the metric is positive
+definite and the fit is a projection (claim 3 of the proof); terfc keeps
+that property, terf does not and is refused. The bound proves a pair only
+when $\gamma < 1$, which needs the metric coupling between the two
+domains to be small next to the domains' smallest eigenvalues. With
+Coulomb, $V_{AB}$ decays as a power of the distance and $\gamma$ stays
+above 1 at chemical sizes. `pair_skip = "auto"`, the default, therefore
+turns the skip on for erfc and terfc and off for Coulomb.
+
+> **Verified equation @eq:lmp2-pair-skip-bound** · the provable-empty pair bound
+>
+> The block-Neumann split in symbols on a $1+1$ block (claim 1); Schur
+> monotonicity, which makes $v_B$ a bound (claim 2); the erfc Fourier
+> transform is positive (claim 3); the bound against a direct dense solve
+> on random and adversarial SPD instances, where the adversarial one needs
+> the $\gamma^2$ remainder (claim 4); the eigenvalue floor (claim 5); and
+> the dressed-gate bound on random Fock matrices (claim 6); the
+> shift-verified eigenvalue floor (claim 7); and the shell-wise
+> alternatives for $u_B$, $v_A$ and $\gamma$ (claim 8).
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/lmp2_attenuated_pair_skip_sympy.py`, claims 1 to 8 |
+> | Negative control | the runner drops the $\gamma^2$ remainder (claim 4 fails), and six more mutations |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-mp2/src/lmp2_pair_skip.rs::{fitted_bound,eigen_floor,verified_floor,proved_empty}` |
+> | Code test | `pair_skip_is_bitwise_and_its_audit_holds_under_erfc` in `crates/ferric-mp2/src/lmp2_direct.rs` |
+>
+> <!-- verified: id=lmp2.pair-skip; script=scripts/lmp2_attenuated_pair_skip_sympy.py; claim=4; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/lmp2_pair_skip.rs::{fitted_bound,eigen_floor,verified_floor,proved_empty}; registry=local-mp2 -->
+
+**What is measured.** On n-alkanes with 6-31G / cc-pVDZ-RI, $\varepsilon =
+10^{-4}$, the production maps, the Fock screen on and erfc at $\omega =
+0.2223$ Bohr$^{-1}$ (0.42 Å$^{-1}$, the CLI default), measured 2026-11-25 on
+one node with 6 threads (provisional; raw data and drivers in the wiki note
+`lmp2-attenuated-pair-skip-2026-11-24`):
+
+| alkane | pairs | empty | proved empty | LMP2 wall, skip off → on | stage 5, off → on |
+|---|---|---|---|---|---|
+| C$_{20}$ | 1891 | 971 | 13 | 6.65 → 7.10 s | 3.83 → 4.33 s |
+| C$_{32}$ | 4753 | 3197 | 835 | 28.4 → 26.4 s | 19.6 → 17.5 s |
+| C$_{48}$ | 10585 | 8181 | 3931 | 92.6 → 66.8 s | 61.8 → 36.0 s |
+
+Each entry is the mean of two runs; the correlation energy has the same bits
+with the skip on and off in every run. At $\omega = 1$ Bohr$^{-1}$ (one run
+each) the skip proves 1025 of 3514 empty pairs at C$_{32}$ and 4329 of 8690
+at C$_{48}$, where the LMP2 wall drops from 92.3 to 59.9 s. The bound itself
+costs 0.5 s at C$_{20}$ and 1.5 to 1.8 s at C$_{48}$; at C$_{20}$, where it
+proves almost nothing, that is a 7% loss.
+
+Pairs end empty from about 10 Bohr between the Boys centroids, and every
+pair past 20 Bohr is empty. The proof starts near 42 Bohr (37 Bohr at
+$\omega = 1$). Between 30 and 45 Bohr the bound is finite but held up by
+the cross terms $u_Av_A$ and $u_Bv_B$: a strip's rows on the other
+occupied's domain, against an own-domain norm of about 0.4. Past 55 Bohr
+the floating-point allowance dominates it.
+
+The audit mode measured the bound against the computed elements on alkanes
+C$_8$ to C$_{32}$, the water, methane and ethylene dimers, naphthalene, an
+all-trans C$_{32}$H$_{34}$ polyene, and the water dimer and octane in
+aug-cc-pVDZ / aug-cc-pVDZ-RI, at both $\omega$. Over those 22 runs the
+largest ratio of a computed element to its bound is $4.75\times10^{-3}$, and
+no pair proved empty kept a block. Among pairs whose bound is within a
+factor 10 of $\varepsilon$, the largest ratio is $1.65\times10^{-4}$. The
+aug-cc-pVDZ runs are too small for the skip to prove anything, so its reach
+with diffuse functions is not measured.
+
 ## Memory and determinism {#integral-direct-memory-determinism}
 
 - The peak three-index working set is the strips. It is reported as
@@ -485,6 +699,7 @@ amount per CH$_2$ is constant.
 | `fock_screen` | `false` (plain Eq-8 mask) | `true` (κ = 1) | the Fock-propagated screen of section @sec:amplitude-lmp2-fock-screen; inert at $\varepsilon = 0$ |
 | `batch_merge` | 1 | 1 (aux-major); 4 if `eri3_pass = "batches"` | batches merged per integral pass; only the batches pass has batches |
 | `eri3_pass` | batches | aux-major | stage-3 integral pass |
+| `pair_skip` | `"off"` | `"auto"` (on for erfc and terfc, off for Coulomb) | skips, by proof, pairs whose retained set is empty (section @sec:integral-direct-pair-skip); the energy is bitwise unchanged, so it changes the cost, never the equation |
 
 The first six rows, `batch_merge` and `eri3_pass` are fields of
 `ferric-mp2/src/lmp2_direct.rs::DirectConfig`. `gate_cal` and `fock_screen`
@@ -552,6 +767,9 @@ makes no scaling claim. The measurement runs the CLI (`rimp2` and
 | `crates/ferric-mp2/tests/lmp2_map_ablation.rs` (`probe_map_ablation`), measured 2026-11-17 | the per-map $\varepsilon = 0$ errors |
 | `scripts/local_mp2_fit_pno_sympy.py`, claims L1, L2, L6 | verified equations @eq:lmp2-domain-fit and @eq:lmp2-aux-restriction |
 | `scripts/lmp2_direct_maps_sympy.py`, claims 1 to 3 | verified equations @eq:lmp2-map-pattern, @eq:lmp2-map-value, @eq:lmp2-map-both |
+| `scripts/lmp2_attenuated_pair_skip_sympy.py`, claims 1 to 8 | verified equation @eq:lmp2-pair-skip-bound |
+| `crates/ferric-mp2/src/lmp2_pair_skip.rs`, `crates/ferric-mp2/src/lmp2_direct.rs::prove_empty_pairs` | the pair skip and its audit |
+| S. M. Rump, "Verification of positive definiteness", BIT Numer. Math. 46 (2006) 433 | the shifted-Cholesky eigenvalue floor |
 | `crates/ferric-mp2/tests/lmp2_map_ablation.rs` | the $\varepsilon = 0$ anchors at octane and C$_{20}$H$_{42}$ size, and the ablation probes |
 | `site/src/methods/mp2.md`, "Exact and local MP2" | the user-facing description and the measured scaling |
 | `site/src/reference/input.md`, `[local]` | the CLI defaults |
