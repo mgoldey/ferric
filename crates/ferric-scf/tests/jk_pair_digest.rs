@@ -758,46 +758,71 @@ fn consumers(digest: Option<JkDigest>) -> Consumers {
 
 /// `p` with the phases of `l`'s MO rows and columns: `p ≈ R l C` with `R`,
 /// `C` diagonal signs (an orbital's sign is arbitrary), read off the
-/// elements above 1e-6 of `max|l|` by propagating from the largest one,
-/// then undone. A single sign-reversed element does not fit `R l C`, so it
+/// elements above 1e-6 of `max|l|` by propagating from the largest one of
+/// each connected component, then undone. A single sign-reversed element does not fit `R l C`, so it
 /// still shows in the comparison.
 fn align_phases(p: &Array2<f64>, l: &Array2<f64>) -> Array2<f64> {
     let (nr, nc) = l.dim();
     let big = l.iter().fold(0.0f64, |m, v| m.max(v.abs()));
-    let i0 = (0..nr * nc)
-        .max_by(|&x, &y| {
-            l[(x / nc, x % nc)]
-                .abs()
-                .total_cmp(&l[(y / nc, y % nc)].abs())
-        })
-        .map_or(0, |x| x / nc);
+    let sig = |i: usize, j: usize| l[(i, j)].abs() > 1e-6 * big;
     let (mut r, mut c) = (vec![0.0f64; nr], vec![0.0f64; nc]);
-    if nr > 0 {
-        r[i0] = 1.0;
-    }
+    // One connected component of significant elements at a time: seed its
+    // row of the largest unassigned element, propagate, repeat.
     loop {
-        let mut changed = false;
-        for i in 0..nr {
-            for j in 0..nc {
-                if l[(i, j)].abs() <= 1e-6 * big {
-                    continue;
-                }
-                let s = (p[(i, j)] * l[(i, j)]).signum();
-                if r[i] != 0.0 && c[j] == 0.0 {
-                    c[j] = s * r[i];
-                    changed = true;
-                } else if c[j] != 0.0 && r[i] == 0.0 {
-                    r[i] = s * c[j];
-                    changed = true;
+        let seed = (0..nr * nc)
+            .filter(|&x| r[x / nc] == 0.0 && sig(x / nc, x % nc))
+            .max_by(|&x, &y| {
+                l[(x / nc, x % nc)]
+                    .abs()
+                    .total_cmp(&l[(y / nc, y % nc)].abs())
+            });
+        let Some(x) = seed else {
+            break;
+        };
+        r[x / nc] = 1.0;
+        loop {
+            let mut changed = false;
+            for i in 0..nr {
+                for j in 0..nc {
+                    if !sig(i, j) {
+                        continue;
+                    }
+                    let s = (p[(i, j)] * l[(i, j)]).signum();
+                    if r[i] != 0.0 && c[j] == 0.0 {
+                        c[j] = s * r[i];
+                        changed = true;
+                    } else if c[j] != 0.0 && r[i] == 0.0 {
+                        r[i] = s * c[j];
+                        changed = true;
+                    }
                 }
             }
-        }
-        if !changed {
-            break;
+            if !changed {
+                break;
+            }
         }
     }
     let unit = |v: f64| if v == 0.0 { 1.0 } else { v };
     Array2::from_shape_fn((nr, nc), |(i, j)| p[(i, j)] * unit(r[i]) * unit(c[j]))
+}
+
+/// `align_phases` aligns every connected component of significant
+/// elements, not only the largest element's, and leaves a sign-reversed
+/// element that does not fit `R l C` visible.
+#[test]
+fn align_phases_aligns_every_component() {
+    let l = Array2::from_diag(&ndarray::arr1(&[1.0, 0.5]));
+    let p = Array2::from_diag(&ndarray::arr1(&[1.0, -0.5]));
+    assert_eq!(align_phases(&p, &l), l);
+    let l = ndarray::arr2(&[[1.0, 0.2, 0.0], [0.3, 0.4, 0.0], [0.0, 0.0, 0.7]]);
+    // R l C with R = diag(1, −1, 1), C = diag(−1, 1, −1): two components.
+    let phased = ndarray::arr2(&[[-1.0, 0.2, 0.0], [0.3, -0.4, 0.0], [0.0, 0.0, -0.7]]);
+    assert_eq!(align_phases(&phased, &l), l);
+    let one_flipped = ndarray::arr2(&[[1.0, -0.2, 0.0], [0.3, 0.4, 0.0], [0.0, 0.0, 0.7]]);
+    assert!(
+        align_phases(&one_flipped, &l) != l,
+        "a single sign-reversed element must stay visible"
+    );
 }
 
 /// The consumers' bits from a child process of this binary with an unset
