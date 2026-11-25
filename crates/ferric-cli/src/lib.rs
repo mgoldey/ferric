@@ -1125,6 +1125,12 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
                 "k_builder": jk_route.k_builder.map(ferric_scf::options::KBuilderKind::as_str),
                 "scf_jk": jk_route.mode,
                 "jk_aux": jk_route.j_aux,
+                // `[scf] jk_digest` as requested (`null` = unset) and the
+                // digest the direct four-centre builds run (the key, else
+                // `FERRIC_JK_DIGEST`, else `pair`; read only on a
+                // four-centre J or K route).
+                "jk_digest": rhf_config.jk_digest.map(|d| d.as_str()),
+                "jk_digest_resolved": ferric_scf::quartet_scatter::JkDigest::resolved_label(rhf_config.jk_digest),
                 "level_shift": rhf_config.level_shift,
                 // The RESOLVED budget in bytes, not the raw `[memory]` key:
                 // an omitted budget auto-detects, and the number actually used
@@ -7595,10 +7601,22 @@ fn task_reference_certificate_from(
 /// The reference route `[scf] jk` resolved to (`apply_scf_jk`) for the
 /// RI-MP2 / SCS-MP2 optimize or frequency run of `kind`: four-centre or RI-JK, the SCF its
 /// analytic gradient differentiates; any other route is an error.
+///
+/// `[scf] jk_digest` is refused here: the gradient re-solves its reference
+/// at each geometry from the route alone (`ScfJk`), so the key would be
+/// dropped silently. `FERRIC_JK_DIGEST` reaches those builds.
 fn rimp2_gradient_scf_jk(
     kind: &str,
     rhf_config: &ferric_scf::rhf::RhfConfig,
 ) -> Result<ferric_scf::scf_jk::ScfJk, String> {
+    if let Some(d) = rhf_config.jk_digest {
+        return Err(format!(
+            "[scf] jk_digest = \"{d}\" is not read by method.kind = \"{kind}\" with task = \
+             \"optimize\" or \"frequencies\": its gradient solves the reference SCF at each \
+             geometry from the J/K route alone. Remove it; FERRIC_JK_DIGEST selects the digest \
+             of those builds"
+        ));
+    }
     let route = ferric_scf::scf_jk::effective_jk(rhf_config);
     match route.mode {
         "exact" => Ok(ferric_mp2::gradient::exact_scf_jk()),
@@ -9531,6 +9549,24 @@ mod scf_config_lowering_tests {
             .scf
             .validate()
             .is_ok());
+    }
+
+    /// The RI-MP2 family's geometry gradient cannot honour `[scf]
+    /// jk_digest` (it re-solves its reference from the J/K route alone), so
+    /// the key is refused there rather than dropped.
+    #[test]
+    fn rimp2_geometry_refuses_jk_digest() {
+        use ferric_scf::quartet_scatter::JkDigest;
+        let mut c = ferric_scf::rhf::RhfConfig::default();
+        assert!(rimp2_gradient_scf_jk("rimp2", &c).is_ok());
+        for d in [JkDigest::Pair, JkDigest::Legacy] {
+            c.jk_digest = Some(d);
+            let e = rimp2_gradient_scf_jk("scs-mp2", &c).unwrap_err();
+            assert!(
+                e.contains("[scf] jk_digest") && e.contains("scs-mp2"),
+                "{e}"
+            );
+        }
     }
 
     /// `[scf] jk_digest` reaches `RhfConfig::jk_digest`; unset leaves it

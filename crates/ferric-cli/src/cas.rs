@@ -422,6 +422,10 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) -> Result<(), CliError> {
                 "density_conv": plan.scf.density_conv,
                 "gc_rotation": plan.scf.gc_rotation.map(|g| g.as_str()),
                 "jk_digest": plan.scf.jk_digest.map(|g| g.as_str()),
+                // The digest the direct builds run (the key, else
+                // `FERRIC_JK_DIGEST`, else `pair`), as the checkpoint
+                // identity records it.
+                "jk_digest_resolved": ferric_scf::quartet_scatter::JkDigest::resolved_label(plan.scf.jk_digest),
                 "memory_budget_bytes": resolution.bytes,
                 "openblas_num_threads": std::env::var("OPENBLAS_NUM_THREADS").ok(),
                 "rayon_num_threads": rayon::current_num_threads(),

@@ -293,8 +293,8 @@ cases take a factor ½:
 
 | Case | Weight | Why |
 |---|---|---|
-| $s_1 = s_2$ | ½ on the bra block in $J^{\rm h}$ | the block holds both $(\mu\nu|\cdot)$ and $(\nu\mu|\cdot)$ |
-| $s_3 = s_4$ | ½ on the ket block in $J^{\rm h}$ | likewise for $(\cdot|\lambda\sigma)$ |
+| $s_1 = s_2$ | ½ on the bra block in $J^{\rm h}$ | the block holds both $(\mu\nu\vert\cdot)$ and $(\nu\mu\vert\cdot)$ |
+| $s_3 = s_4$ | ½ on the ket block in $J^{\rm h}$ | likewise for $(\cdot\vert\lambda\sigma)$ |
 | $(s_3,s_4) = (s_1,s_2)$ | $w = ½$ on $K^{\rm b}$ | there are no swapped images to supply |
 
 A density that is not symmetric takes the general form instead. The swapped
@@ -318,7 +318,12 @@ change, so the result still does not depend on the thread count. Only the
 bracketing of each element's sum differs from the scatter, by about
 $10^{-14}$ relative in $J$ and $K$ and $10^{-12}$ Ha in SCF energies
 (`crates/ferric-scf/tests/jk_pair_digest.rs`). `jk_digest = "legacy"`, or
-`FERRIC_JK_DIGEST=legacy`, restores the scatter bit for bit. The innermost
+`FERRIC_JK_DIGEST=legacy`, restores the scatter bit for bit. The UHF and
+ROHF guess Fock always runs the scatter: on a linear open shell its
+degenerate $\pi$ pair is split only by the last bits of $J$ and $K$, which
+choose the hole orientation the SCF keeps, so a guess that followed the
+digest could start the SCF in the other orientation (up to about
+$10^{-6}$ Ha away on a DFT grid). The innermost
 loop is specialised at compile time for ket shells of 1, 3 and 5 functions
 (`ferric-scf/src/quartet_scatter.rs::pair_quartet`).
 
