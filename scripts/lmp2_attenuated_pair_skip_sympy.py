@@ -58,7 +58,20 @@ crates/ferric-python/tests/test_derivation_scripts.py):
     lambda_min is accepted (marker "claim 7");
   - square the shell norms in the shell-wise bound (marker "claim 8");
   - inflate the prefilter's lower bound a hundredfold, past u_A v_A
-    (marker "claim 9").
+    (marker "claim 9");
+  - drop the Cholesky term delta from the rounding allowance (marker
+    "claim 10").
+
+Claim 10 (worst-case rounding). Higham's model: Cholesky L^ L^T = V + dV
+with |dV| <= g_{d+1}|L^||L^T|, so ||dV|| <= eta = g_{d+1}/(1-g_{d+1}) tr V;
+each solve column (L^ + dL) x^ = a, |dL| <= g_{2d}|L^|, moves x by
+rho = theta/(1-theta), theta = g_{2d} sqrt(tr V/(1-g_{d+1})) ||L^-1||;
+each product adds g_{2d} |x|.|y|. Then
+|J^ - a^T V^-1 b| <= N_a N_b [delta + (1+rho)^2 (1+g_{2d}) - 1]/(1-delta),
+delta = eta/lambda; the trace floor is (1-rho)^2/||Z||_F^2 - eta; the
+own-norm inflation is sqrt(1+delta)/(1-rho). Checked with every
+perturbation applied at its largest allowed size (an artificial unit
+roundoff 1e-7), the Cholesky one along the lowest eigenvector.
 
 Claim 9 (the prefilter). The code only attempts a pair whose cheap lower
 bound sqrt(max_P t_i[P] / F_i) * min(sqrt(sum_P t_j[P] / m_i),
@@ -390,5 +403,86 @@ for trial in range(200):
     worst9 = max(worst9, lb / (uA * vA))
 print(f"prefilter lower bound holds on 200 trials; max lb/(u_A v_A) = {worst9:.3f}")
 assert worst9 > 1e-3, "claim 9: prefilter bound never approached (test is vacuous)"
+
+# ---------------------------------------------------------------------------
+# Claim 10: the worst-case rounding allowances (Higham's error model)
+# ---------------------------------------------------------------------------
+section("claim 10: worst-case Cholesky / solve / product allowances")
+# Every modelled perturbation is applied explicitly at its largest allowed
+# size, with an artificial unit roundoff U so that the perturbations dwarf
+# float64's own rounding. The formulas are those of lmp2_pair_skip.rs.
+U = 1e-7
+
+
+def gam(n):
+    return n * U / (1 - n * U)
+
+
+def chol_eta(d, tr):
+    return gam(d + 1) / (1 - gam(d + 1)) * tr
+
+
+def solve_theta(d, tr, inv2):
+    th = gam(2 * d) * np.sqrt(tr / (1 - gam(d + 1)) * inv2)
+    return th if th <= 0.25 else None
+
+
+def allowance(d, tr, lam_d, na_nb):
+    eta = chol_eta(d, tr)
+    delta = eta / lam_d  # claim 10: delta
+    th = solve_theta(d, tr, 1.0 / (lam_d - eta))
+    r = th / (1 - th)
+    return na_nb * (delta + (1 + r) ** 2 * (1 + gam(2 * d)) - 1) / (1 - delta)
+
+
+def perturbed_solve(Lh, rhs, g):
+    """(Lh + dL) x = rhs with |dL| = g |Lh| and random signs (lower)."""
+    sgn = np.tril(rng.choice([-1.0, 1.0], size=Lh.shape))
+    return np.linalg.solve(Lh + g * sgn * np.abs(Lh), rhs)
+
+
+worst10 = 0.0
+for trial in range(120):
+    d = int(rng.integers(5, 40))
+    V = spd(d, 10.0 ** rng.uniform(1, 3.5))
+    w, Q = np.linalg.eigh(V)
+    lam = w[0]
+    tr = np.trace(V)
+    # (a) eta bounds ||dV|| for any |dV| <= g |Lh||Lh^T|
+    Lh = np.linalg.cholesky(V)
+    E = gam(d + 1) * rng.choice([-1.0, 1.0], size=(d, d)) * (np.abs(Lh) @ np.abs(Lh).T)
+    E = np.triu(E) + np.triu(E, 1).T
+    Vx = Lh @ Lh.T - E  # the exact matrix whose computed factor is Lh
+    assert np.linalg.norm(E, 2) <= chol_eta(d, np.trace(Vx)) * (1 + 1e-9), "claim 10: eta FAILED"
+    # (b) the J allowance, adversarial: dV = -eta v v^T along lambda_min
+    eta = chol_eta(d, tr)
+    if eta / lam >= 0.5 or solve_theta(d, tr, 1.0 / (lam - eta)) is None:
+        continue
+    v0 = Q[:, 0]
+    Lh = np.linalg.cholesky(V - eta * np.outer(v0, v0))
+    a = v0 + 0.1 * rng.standard_normal(d)
+    b = v0 + 0.1 * rng.standard_normal(d)
+    exact = a @ np.linalg.solve(V, b)
+    xa = perturbed_solve(Lh, a, gam(2 * d))
+    xb = perturbed_solve(Lh, b, gam(2 * d))
+    J = xa @ xb + gam(2 * d) * (np.abs(xa) @ np.abs(xb)) * np.sign(xa @ xb - exact or 1.0)
+    na = np.sqrt(a @ np.linalg.solve(V, a))
+    nb = np.sqrt(b @ np.linalg.solve(V, b))
+    R = allowance(d, tr, lam, na * nb)
+    assert abs(J - exact) <= R * (1 + 1e-9), "claim 10: J allowance FAILED"
+    worst10 = max(worst10, abs(J - exact) / R)
+    # (c) the trace floor from a perturbed inverse factor
+    Z = np.column_stack([perturbed_solve(Lh, e, gam(2 * d)) for e in np.eye(d)])
+    f2 = np.sum(Z * Z)
+    th = solve_theta(d, tr, 2.25 * f2)
+    if th is not None:
+        r = th / (1 - th)
+        floor = (1 - r) ** 2 / f2 - eta
+        assert floor <= lam * (1 + 1e-12), "claim 10: floor FAILED"
+        # (d) the norm inflation (floor lam: the exact one is allowed)
+        infl = np.sqrt(1 + eta / lam) / (1 - r)
+        assert na <= infl * np.linalg.norm(xa) * (1 + 1e-12), "claim 10: inflation FAILED"
+print(f"rounding allowances hold; max |J error|/allowance = {worst10:.3f}")
+assert worst10 > 0.3, "claim 10: allowance never approached (test is vacuous)"
 
 print("\nall claims hold")

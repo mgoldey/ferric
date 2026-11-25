@@ -517,19 +517,19 @@ Cholesky.
   mirror. The code takes the smallest of the three.
 - $\lambda_k$ floors $\lambda_{\min}(V_{D_kD_k})$, and by Cauchy interlacing
   every principal sub-block, $A = D_i$ and $B\subseteq D_j$ among them. Two
-  floors are proved and the larger is used. The trace floor
-  $\tfrac12/\lVert L_k^{-1}\rVert_F^2$ follows from
-  $\operatorname{tr}V^{-1} = \lVert L^{-1}\rVert_F^2 \ge 1/\lambda_{\min}$;
-  the $\tfrac12$ covers the rounding of the computed $L^{-1}$, and the
-  floor is refused (nothing is proved for that occupied) when $16\,d\,u\,\kappa
-  > \tfrac14$, with $u$ the unit round-off and $\kappa\le\lVert
-  V\rVert_F\lVert L^{-1}\rVert_F^2$. The trace counts every small
-  eigenvalue, so it can sit a factor $d$ below $\lambda_{\min}$. The
+  floors are proved and the larger is used. The trace floor follows from
+  $\operatorname{tr}V^{-1} = \lVert L^{-1}\rVert_F^2 \ge 1/\lambda_{\min}$,
+  applied to the computed factor with the worst-case rounding of the next
+  paragraph:
+  $\lambda_k = (1-\rho)^2/\big((1+\gamma_{d^2+1})\lVert\hat
+  Z\rVert_F^2\big) - \eta$, with $\hat Z$ the computed $L^{-1}$. It is
+  refused (nothing is proved for that occupied) when it is not positive
+  or $\theta > \tfrac14$. The trace counts every small eigenvalue, so it
+  can sit a factor $d$ below $\lambda_{\min}$. The
   second floor is tighter: power iteration on $V^{-1}$ estimates
   $\lambda_{\min}$ from above, and $\sigma = \lambda_{\mathrm{est}}/2$
   (then $/10$) is accepted only if the Cholesky of $V - (\sigma + c)I$
-  succeeds, with $c = 2\,(\gamma_{d+1}/(1-\gamma_{d+1})\operatorname{tr}V
-  + 4u\max_k v_{kk})$. By Rump's theorem (BIT 46 (2006) 433) a completed
+  succeeds, with $c = 2\,(\eta + 4u\max_k v_{kk})$. By Rump's theorem (BIT 46 (2006) 433) a completed
   floating-point Cholesky of $M - cI$ proves $M$ positive definite, so
   $\lambda_{\min}(V) > \sigma$.
 
@@ -539,20 +539,62 @@ occupied on each auxiliary shell, and the squared Frobenius norm of each
 metric shell block. A shell block that stage 4 never computed has no table
 entry, and a pair that would need one is not bounded.
 
-**The computed $J$.** Stage 5 forms $J$ in floating point. Its Cholesky
-has backward error of order $d\,u\,\lVert V\rVert$, so the computed product
-differs from the exact one by at most
-$16\,d\,u\,\kappa_D\,\lVert u\rVert\lVert v\rVert/(1-\gamma)$, with $\kappa_D
-\le \lVert V_{DD}\rVert_F/((1-\gamma)\lambda_{\min})$. The code adds this
-allowance, and a relative slack of $10^{-9}$, to (@eq:lmp2-pair-skip-bound)
-before it compares. The own-domain norms $u_A$ and $v_B$ are themselves
-computed through a Cholesky factor, so each is multiplied by
-$1 + 16\,d_k\,u\,\kappa_k$ before it enters the bound
-(`ferric-mp2/src/lmp2_pair_skip.rs::norm_inflation`); each shell block norm
-of $L_k^{-1}$ gets the same factor plus the absolute allowance
-$16\,d_k\,u\,\kappa_k\lVert L_k^{-1}\rVert_F$. The exact quantity
-bounded is the one stage 5 would form from the stored strips and metric
-blocks; those are the same arrays the fit reads.
+**The computed $J$.** Stage 5 forms $J$ in floating point, and the
+allowance for that is worst case, to all orders, in the standard model
+of Higham (*Accuracy and Stability of Numerical Algorithms*, 2nd ed.),
+with $u = 2^{-53}$ and $\gamma_n = nu/(1-nu)$. Let $V$ be a $d\times d$
+block with $\lambda \le \lambda_{\min}(V)$.
+
+- Cholesky (Thm 10.3): $\hat L\hat L^{\mathsf T} = V + \Delta V$ with
+  $\lvert\Delta V\rvert \le \gamma_{d+1}\lvert\hat L\rvert\lvert\hat
+  L^{\mathsf T}\rvert$. Then $\lVert\Delta V\rVert_2 \le
+  \gamma_{d+1}\lVert\hat L\rVert_F^2$ and $\lVert\hat L\rVert_F^2 =
+  \operatorname{tr}(V+\Delta V) \le \operatorname{tr}V +
+  \gamma_{d+1}\lVert\hat L\rVert_F^2$, so
+  $\lVert\Delta V\rVert_2 \le \eta = \gamma_{d+1}\operatorname{tr}V/(1-\gamma_{d+1})$.
+  The trace, not $\lVert V\rVert_F$, is the right scale: $\operatorname{tr}V$
+  can reach $\sqrt d\,\lVert V\rVert_F$. Write $\delta = \eta/\lambda$.
+- Triangular solves (Thm 8.5): each column obeys $(\hat L + \delta L)\hat
+  x = a$, $\lvert\delta L\rvert \le \gamma_{2d}\lvert\hat L\rvert$ ($\gamma_{2d}$
+  rather than $\gamma_d$, for blocked BLAS). With $\theta =
+  \gamma_{2d}\lVert\hat L\rVert_F\lVert\hat L^{-1}\rVert_2 \le \tfrac14$,
+  $\lVert\hat x - \hat L^{-1}a\rVert \le \rho\lVert\hat L^{-1}a\rVert$,
+  $\rho = \theta/(1-\theta)$.
+- Products and sums: a length-$n$ dot product is off by at most
+  $\gamma_n\lvert x\rvert^{\mathsf T}\lvert y\rvert$.
+
+Then, with $N_a = \lVert V^{-1/2}a\rVert \le \lVert u\rVert/\sqrt{1-\gamma}$
+and the same for $N_b$, $\lambda = (1-\gamma)\min(\lambda_i,\lambda_j)$
+for the union block, and $\operatorname{tr}V_{DD} \le
+\operatorname{tr}V_{D_iD_i} + \operatorname{tr}V_{D_jD_j}$,
+$$
+\lvert\hat J - a^{\mathsf T}V^{-1}b\rvert \le N_aN_b\,
+\frac{\delta + (1+\rho)^2(1+\gamma_{2d}) - 1}{1-\delta}.
+$$
+The Cholesky term is $\lvert a^{\mathsf T}(V+\Delta V)^{-1}b -
+a^{\mathsf T}V^{-1}b\rvert \le N_aN_b\,\delta/(1-\delta)$, and
+$\lVert\hat L^{-1}a\rVert \le N_a/\sqrt{1-\delta}$; the solves move each
+column by the factor $1+\rho$; the product adds $\gamma_{2d}$. Nothing is
+proved when $\delta \ge \tfrac12$ or $\theta > \tfrac14$. The code adds
+this allowance, and a relative slack of $10^{-9}$, to
+(@eq:lmp2-pair-skip-bound) before it compares
+(`ferric-mp2/src/lmp2_pair_skip.rs::roundoff_allowance`).
+
+The own-domain norms $u_A$ and $v_B$ are themselves computed through a
+Cholesky factor. Since $V \succeq \lambda I$ and $\Delta V \preceq \eta I$,
+$V + \Delta V \preceq (1+\delta)V$, so $a^{\mathsf T}V^{-1}a \le
+(1+\delta)\lVert\hat L^{-1}a\rVert^2$, and the solve gives
+$\lVert\hat L^{-1}a\rVert \le \lVert\hat x\rVert/(1-\rho)$. Each computed
+norm, and each computed shell block norm of $\hat L_k^{-1}$, is therefore
+multiplied by $\sqrt{1+\delta}\,(1+\gamma_{d^2+2})/(1-\rho)$
+(`ferric-mp2/src/lmp2_pair_skip.rs::norm_inflation`). The sums that build
+$u_B$, $v_A$ and $\gamma$ from the tables are multiplied by
+$1+\gamma_{d^2+4}$. The exact quantity bounded is the one stage 5 would
+form from the stored strips and metric blocks; those are the same arrays
+the fit reads. Claim 10 of the proof applies every one of these
+perturbations at its largest allowed size, the Cholesky one along the
+lowest eigenvector, and checks the allowance, the floor and the
+inflation against them.
 
 **The Fock-dressed gate.** If every element obeys $\lvert g_{cb}\rvert\le
 G$, the dressed gate $\tilde g = g + F't_0 + t_0F'$ with $t_0 = -g/\Delta$
@@ -615,12 +657,13 @@ turns the skip on for erfc and terfc and off for Coulomb.
 > the dressed-gate bound on random Fock matrices (claim 6); the
 > shift-verified eigenvalue floor (claim 7); and the shell-wise
 > alternatives for $u_B$, $v_A$ and $\gamma$ (claim 8); and the prefilter's
-> lower bound on $u_Av_A$ (claim 9).
+> lower bound on $u_Av_A$ (claim 9); and the worst-case rounding
+> allowances (claim 10).
 >
 > | | |
 > |---|---|
-> | Proof | `scripts/lmp2_attenuated_pair_skip_sympy.py`, claims 1 to 9 |
-> | Negative control | the runner drops the $\gamma^2$ remainder (claim 4 fails), and seven more mutations |
+> | Proof | `scripts/lmp2_attenuated_pair_skip_sympy.py`, claims 1 to 10 |
+> | Negative control | the runner drops the $\gamma^2$ remainder (claim 4 fails), and eight more mutations |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-mp2/src/lmp2_pair_skip.rs::{fitted_bound,eigen_floor,verified_floor,proved_empty}` |
 > | Code test | `pair_skip_is_bitwise_and_its_audit_holds_under_erfc` in `crates/ferric-mp2/src/lmp2_direct.rs` |
@@ -658,6 +701,21 @@ before, so a wrong cut can lose a skip but never cause one. Claim 9 of
 the proof checks the lower bound. In code, an inverted cut must prove
 nothing, and the filtered and unfiltered runs must prove the same pairs.
 The audit mode does not prefilter.
+
+A mutation of the bound itself has to be checked differently. A mutant
+that drops the $\gamma$-free terms $u_Av_A + u_Bv_B$ from the bound AND
+from the prefilter's cut is self-consistent: filtered and audit runs
+prove the same pairs, so the proved-count check cannot see it. The code
+test runs it on octane at $\varepsilon = 10^{-5}$, where it proves kept
+pairs empty: the ragged system must change and the audit must count
+violations (21 at each of $\omega = 1, 2$).
+
+**Where the skip can run.** terfc needs the interpolation tables at
+`FERRIC_TERF_TABLE_DIR`; without them the run errors before the skip
+starts. `schwarz_skip` is refused for terfc outside the box where its
+Schwarz bound was validated, $r_0\in[0.3, 2.5]$ Å and $r_0\omega \le 8.9$
+(`ferric-integrals/src/schwarz.rs::TERFC_SCHWARZ_R0_ANG`), so a terfc run
+with $r_0 < 0.3$ Å needs `schwarz_skip = 0`.
 
 **What is measured.** On n-alkanes with 6-31G / cc-pVDZ-RI, $\varepsilon =
 10^{-4}$, the production maps, the Fock screen on and erfc at $\omega =
@@ -806,7 +864,7 @@ makes no scaling claim. The measurement runs the CLI (`rimp2` and
 | `crates/ferric-mp2/tests/lmp2_map_ablation.rs` (`probe_map_ablation`), measured 2026-11-17 | the per-map $\varepsilon = 0$ errors |
 | `scripts/local_mp2_fit_pno_sympy.py`, claims L1, L2, L6 | verified equations @eq:lmp2-domain-fit and @eq:lmp2-aux-restriction |
 | `scripts/lmp2_direct_maps_sympy.py`, claims 1 to 3 | verified equations @eq:lmp2-map-pattern, @eq:lmp2-map-value, @eq:lmp2-map-both |
-| `scripts/lmp2_attenuated_pair_skip_sympy.py`, claims 1 to 8 | verified equation @eq:lmp2-pair-skip-bound |
+| `scripts/lmp2_attenuated_pair_skip_sympy.py`, claims 1 to 10 | verified equation @eq:lmp2-pair-skip-bound |
 | `crates/ferric-mp2/src/lmp2_pair_skip.rs`, `crates/ferric-mp2/src/lmp2_direct.rs::prove_empty_pairs` | the pair skip and its audit |
 | S. M. Rump, "Verification of positive definiteness", BIT Numer. Math. 46 (2006) 433 | the shifted-Cholesky eigenvalue floor |
 | `crates/ferric-mp2/tests/lmp2_map_ablation.rs` | the $\varepsilon = 0$ anchors at octane and C$_{20}$H$_{42}$ size, and the ablation probes |

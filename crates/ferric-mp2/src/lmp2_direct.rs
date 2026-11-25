@@ -1195,45 +1195,51 @@ fn whiten_one_own(
 /// ([`crate::lmp2_pair_skip`]): `λ ≤ λ_min(V_{D_i D_i})` (`None`: too ill
 /// conditioned to trust the computed inverse), the inflation that bounds the
 /// exact own-domain norm by the computed one
-/// ([`crate::lmp2_pair_skip::norm_inflation`]), `‖V_{D_i D_i}‖_F` and the
-/// domain's function count.
+/// ([`crate::lmp2_pair_skip::norm_inflation`]), an upper bound on
+/// `tr V_{D_i D_i}` and the domain's function count.
 #[derive(Debug, Clone)]
 struct OwnFloor {
     lam: Option<f64>,
     qinfl: f64,
-    vfro: f64,
+    trace: f64,
     d: usize,
-    /// Per GLOBAL aux shell `P`: `‖L⁻¹[:, P]‖_F` (times `qinfl`) for `P` in
-    /// the domain, NaN outside it. `‖L⁻¹x‖ ≤ Σ_P c_P ‖x_P‖` is the shell-wise
-    /// bound [`pair_g_bound`] compares with `‖x‖/√λ`.
+    /// Per GLOBAL aux shell `P`: the computed `‖L̂⁻¹[:, P]‖_F` times `qinfl`
+    /// for `P` in the domain, NaN outside it, so that `‖V^{-1/2}x‖ ≤ Σ_P c_P
+    /// ‖x_P‖`: the shell-wise bound [`pair_g_bound`] compares with
+    /// `‖x‖/√λ`.
     col: Vec<f64>,
 }
 
 /// [`OwnFloor`] from the own-domain metric `v` and its Cholesky factor:
 /// `L⁻¹` by one triangular solve against the identity, `λ` the larger of
-/// the trace floor `eigen_floor(‖L⁻¹‖_F², ‖V‖_F, d)` and the shift-verified
+/// the trace floor `eigen_floor(‖L̂⁻¹‖_F², tr V, d)` and the shift-verified
 /// floor (`crate::lmp2_pair_skip::verified_floor`), both proved below
-/// `λ_min(V)`. The verified one is only tried when the trace floor exists
-/// (the computed `L⁻¹` is trusted).
+/// `λ_min(V)` with worst-case rounding. No floor (`lam = None`) when neither
+/// exists or the computed inverse is not trusted (no inflation).
 fn own_floor(
     v: &Array2<f64>,
     l: &Array2<f64>,
     (dom, dims_df, nsh): (&[usize], &[usize], usize),
     what: &str,
 ) -> Result<OwnFloor, FerricError> {
+    use crate::lmp2_pair_skip::gamma_n;
     use crate::lmp2_pair_skip::{eigen_floor, norm_inflation, verified_floor};
     let d = l.nrows();
-    let vfro = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+    // the rounded diagonal sum, inflated to bound tr V from above
+    let trace = v.diag().sum() * (1.0 + gamma_n(d));
     let mut eye = Array2::<f64>::zeros((d, d).f());
     eye.diag_mut().fill(1.0);
     let linv = whiten(l, eye, what)?;
     let fro2: f64 = linv.iter().map(|x| x * x).sum();
-    let lam = eigen_floor(fro2, vfro, d).map(|t| verified_floor(v, &linv).map_or(t, |s| s.max(t)));
-    let qinfl = norm_inflation(fro2, vfro, d);
-    // the computed L⁻¹ is off by at most (qinfl − 1)·‖L⁻¹‖_F in any column
-    // block (normwise backward stability), so each block norm gets that
-    // absolute allowance on top
-    let col_err = (qinfl - 1.0) * fro2.sqrt();
+    let lam = match (eigen_floor(fro2, trace, d), verified_floor(v, &linv)) {
+        (Some(t), Some(s)) => Some(t.max(s)),
+        (t, s) => t.or(s),
+    };
+    let qinfl = lam.and_then(|lam| norm_inflation(fro2, trace, lam, d));
+    let (lam, qinfl) = match qinfl {
+        Some(q) => (lam, q),
+        None => (None, f64::NAN),
+    };
     let mut col = vec![f64::NAN; nsh];
     let mut c0 = 0usize;
     for &sh in dom {
@@ -1243,13 +1249,13 @@ fn own_floor(
             .iter()
             .map(|x| x * x)
             .sum();
-        col[sh] = qinfl * f2.sqrt() + col_err;
+        col[sh] = qinfl * f2.sqrt();
         c0 = c1;
     }
     Ok(OwnFloor {
         lam,
         qinfl,
-        vfro,
+        trace,
         d,
         col,
     })
@@ -1857,6 +1863,10 @@ struct SkipTables<'a> {
     /// Test-only weakened bound: scales every factor and γ.
     #[cfg(test)]
     mutant: f64,
+    /// Test-only mutant: drop the γ-free terms `u_A v_A + u_B v_B` from both
+    /// the `On` cutoff and the bound.
+    #[cfg(test)]
+    drop_free: bool,
 }
 
 /// The scaled upper bound on `max_ab |g_ab|` of pair `(i, j)`, `i ≠ j`
@@ -1871,7 +1881,7 @@ fn pair_g_bound(
     scale: f64,
     cutoff: Option<f64>,
 ) -> Option<f64> {
-    use crate::lmp2_pair_skip::{fitted_bound, roundoff_allowance, PairNorms};
+    use crate::lmp2_pair_skip::{fitted_bound, gamma_n, roundoff_allowance, PairNorms};
     let (fi, fj) = (tb.own.floor[i].as_ref()?, tb.own.floor[j].as_ref()?);
     let (li, lj) = (fi.lam?, fj.lam?);
     let (di, dj) = (&tb.aux_dom[i], &tb.aux_dom[j]);
@@ -1880,6 +1890,10 @@ fn pair_g_bound(
         .copied()
         .filter(|sh| di.binary_search(sh).is_err())
         .collect();
+    let d = fi.d + b.iter().map(|&q| tb.dims_df[q]).sum::<usize>();
+    // every sum below has at most d² + 4 rounded terms: inflate the norms
+    // built from them (u_B, v_A, γ) by 1 + γ_{d²+4}
+    let fsum = 1.0 + gamma_n(d * d + 4);
     let sa: f64 = di.iter().map(|&p| tb.t[j][p]).sum();
     let sb: f64 = b.iter().map(|&p| tb.t[i][p]).sum();
     // computed own-domain norms, inflated to bound the exact ones
@@ -1889,12 +1903,16 @@ fn pair_g_bound(
     let shellwise = |c: &[f64], t: &[f64], dom: &[usize]| -> f64 {
         dom.iter().map(|&p| c[p] * t[p].sqrt()).sum()
     };
-    let u_b = (sb / lj).sqrt().min(shellwise(&fj.col, &tb.t[i], &b));
-    let v_a = (sa / li).sqrt().min(shellwise(&fi.col, &tb.t[j], di));
+    let u_b = fsum * (sb / lj).sqrt().min(shellwise(&fj.col, &tb.t[i], &b));
+    let v_a = fsum * (sa / li).sqrt().min(shellwise(&fi.col, &tb.t[j], di));
     let sc = scale.abs();
     #[cfg(test)]
     let sc = sc * tb.mutant;
-    if cutoff.is_some_and(|c| sc * (u_a * v_a + u_b * v_b) >= c) {
+    // the γ-free terms (a test mutant drops them here AND in the bound)
+    let free = u_a * v_a + u_b * v_b;
+    #[cfg(test)]
+    let free = if tb.drop_free { 0.0 } else { free };
+    if cutoff.is_some_and(|c| sc * free >= c) {
         return None;
     }
     // ‖V_{P,B}‖_F² per shell P of A, and ‖V_{A,Q}‖_F² per shell Q of B
@@ -1919,10 +1937,11 @@ fn pair_g_bound(
         .zip(&col2)
         .map(|(&q, c)| fj.col[q] * c.sqrt())
         .sum();
-    let gamma = (vab2 / (li * lj))
-        .sqrt()
-        .min(side_a / lj.sqrt())
-        .min(side_b / li.sqrt());
+    let gamma = fsum
+        * (vab2 / (li * lj))
+            .sqrt()
+            .min(side_a / lj.sqrt())
+            .min(side_b / li.sqrt());
     #[cfg(test)]
     let gamma = gamma * tb.mutant;
     let n = PairNorms {
@@ -1933,9 +1952,14 @@ fn pair_g_bound(
         gamma,
     };
     let g = fitted_bound(&n)?;
-    let d = fi.d + b.iter().map(|&q| tb.dims_df[q]).sum::<usize>();
-    let vfro_d = (fi.vfro * fi.vfro + fj.vfro * fj.vfro + 2.0 * vab2).sqrt();
-    let ro = roundoff_allowance(d, vfro_d, li.min(lj), &n);
+    #[cfg(test)]
+    let g = if tb.drop_free {
+        g - (u_a * v_a + u_b * v_b)
+    } else {
+        g
+    };
+    // tr V_DD ≤ tr V_{D_iD_i} + tr V_{D_jD_j}, since B ⊆ D_j
+    let ro = roundoff_allowance(d, fi.trace + fj.trace, li.min(lj), &n);
     // relative slack for the rounding of the norms and of the dressed gate
     Some(sc * (g + ro) * (1.0 + 1e-9)).filter(|x| x.is_finite())
 }
@@ -2055,6 +2079,8 @@ fn prove_empty_pairs(
         fro2: &fro2,
         #[cfg(test)]
         mutant: pre.bound_mutant,
+        #[cfg(test)]
+        drop_free: pre.drop_free_mutant,
     };
     let g_bound: Vec<f64> = unique
         .par_iter()
@@ -3503,6 +3529,10 @@ struct StripsAndMetric {
     /// real bound; below 1 weakens it, which the anchor and audit must see).
     #[cfg(test)]
     bound_mutant: f64,
+    /// Test-only mutant: drop the γ-free terms from the cutoff and the bound
+    /// alike ([`SkipTables`]).
+    #[cfg(test)]
+    drop_free_mutant: bool,
     /// Test-only prefilter mutant ([`skip_prefilter`]): `Normal`, or one
     /// that attempts nothing, inverts the cut, or attempts every pair.
     #[cfg(test)]
@@ -3670,6 +3700,8 @@ fn strips_and_metric(
         pair_skip,
         #[cfg(test)]
         bound_mutant: 1.0,
+        #[cfg(test)]
+        drop_free_mutant: false,
         #[cfg(test)]
         prefilter_mutant: PrefilterMutant::Normal,
     })
@@ -7190,6 +7222,39 @@ mod stage_c_tests {
                 }
             }
             pre.prefilter_mutant = PrefilterMutant::Normal;
+            // a mutant that weakens the bound CONSISTENTLY: drop the γ-free
+            // terms u_A v_A + u_B v_B from the On cutoff and from the bound.
+            // What is left (the γ terms) sits ~1e5 below the fit on the
+            // nearest bounded pairs (R ≈ 2.3 Bohr, max|g| ~ 5e-3, mutant
+            // bound ~ 1e-7), so at eps 1e-5 it "proves" kept pairs empty:
+            // On must change the system and the audit must count them
+            let eps_m = 1e-5;
+            let (mut pm, _) = pre_with(&su, op, eps_m, None, &dcfg);
+            pm.pair_skip = PairSkip::Off;
+            let (r0, _) = fit_skip(&su, &pm, eps_m, &dcfg);
+            pm.pair_skip = PairSkip::Audit;
+            let (_, s0) = fit_skip(&su, &pm, eps_m, &dcfg);
+            assert_eq!(s0.pair_skip_audit_violations, 0, "w={w} eps 1e-5");
+            assert!(s0.pair_skip_audit_max_ratio <= 1.0, "w={w} eps 1e-5");
+            pm.drop_free_mutant = true;
+            pm.prefilter_mutant = PrefilterMutant::AttemptAll;
+            pm.pair_skip = PairSkip::On;
+            let (rm, _) = fit_skip(&su, &pm, eps_m, &dcfg);
+            pm.pair_skip = PairSkip::Audit;
+            let (_, sm) = fit_skip(&su, &pm, eps_m, &dcfg);
+            let differs = !same_ragged(&r0, &rm);
+            eprintln!(
+                "w={w}: drop-free mutant: ragged differs {differs}, audit violations {}, \
+                 max ratio {:.3e} (unmutated {:.3e})",
+                sm.pair_skip_audit_violations,
+                sm.pair_skip_audit_max_ratio,
+                s0.pair_skip_audit_max_ratio
+            );
+            assert!(
+                differs && sm.pair_skip_audit_violations > 0,
+                "w={w}: the drop-free mutant was not caught"
+            );
+            assert!(sm.pair_skip_audit_max_ratio > 1.0);
             assert!(
                 s_on.n_pairs_proved_empty <= s_off.n_pairs_empty,
                 "w={w}: more proved than empty"

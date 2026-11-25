@@ -1467,6 +1467,11 @@ CASES = [
                 "lb = np.sqrt(1e4 * max(ti) / F) * v_lb  # claim 9: prefilter",
                 "claim 9: prefilter lower bound",
             ),
+            (
+                "    delta = eta / lam_d  # claim 10: delta",
+                "    delta = 0.0  # claim 10: delta",
+                "claim 10: J allowance",
+            ),
         ],
     ),
     (

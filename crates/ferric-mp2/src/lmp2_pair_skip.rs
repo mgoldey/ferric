@@ -24,7 +24,7 @@
 //! * `uB = ‖a_B‖ / √λ_j`, `vA = ‖b_A‖ / √λ_i`, from the raw strip rows of
 //!   the OTHER occupied's domain;
 //! * `γ ≤ ‖V_AB‖_F / √(λ_i λ_j)`;
-//! * `λ_k ≤ λ_min(V_{D_k D_k})` ([`eigen_floor`]), which by Cauchy
+//! * `λ_k ≤ λ_min(V_{D_k D_k})` ([`eigen_floor`], [`verified_floor`]), which by Cauchy
 //!   interlacing also floors every principal sub-block (`A = D_i`, `B ⊆ D_j`).
 //!
 //! The bound needs a positive-definite kernel (the fit is then a projection
@@ -133,10 +133,47 @@ pub fn is_pd_kernel(op: &Operator) -> bool {
         )
 }
 
-/// Constant `c` of the floating-point allowance `c·d·u·κ` (Cholesky backward
-/// error `|ΔV| ≤ γ_{d+1}|L||Lᵀ|`, triangular solves and the Gram product, each
-/// a small multiple of `d·u`, summed with room to spare).
-pub const ROUNDOFF_C: f64 = 16.0;
+/// `γ_n = n·u/(1 − n·u)` (Higham, *Accuracy and Stability of Numerical
+/// Algorithms*, 2nd ed., §3.1), `u = 2⁻⁵³` the unit roundoff; `∞` when
+/// `n·u ≥ 1`. Every rounding allowance of the pair skip is built from it,
+/// worst case and to all orders: Cholesky `L̂L̂ᵀ = V + ΔV`, `|ΔV| ≤
+/// γ_{d+1}|L̂||L̂ᵀ|` (Thm 10.3); each triangular-solve column `(L̂ + δL)x̂ =
+/// a`, `|δL| ≤ γ_d|L̂|` (Thm 8.5); each dot product of length `n`,
+/// `|fl(xᵀy) − xᵀy| ≤ γ_n|x|ᵀ|y|` (§3.1). The level-3 BLAS the fit calls
+/// are taken at `γ_{2d}` (twice the classical constant, for blocked
+/// kernels; Strassen-like products are not used by OpenBLAS's dgemm/dtrsm).
+pub fn gamma_n(n: usize) -> f64 {
+    let nu = n as f64 * f64::EPSILON / 2.0;
+    if nu < 1.0 {
+        nu / (1.0 - nu)
+    } else {
+        f64::INFINITY
+    }
+}
+
+/// `η ≥ ‖ΔV‖₂` for the computed Cholesky factor of a `d × d` SPD block whose
+/// trace is at most `trace`: `‖ΔV‖₂ ≤ γ_{d+1}‖|L̂||L̂ᵀ|‖₂ ≤ γ_{d+1}‖L̂‖_F²`
+/// and `‖L̂‖_F² = tr(V + ΔV) ≤ trace + γ_{d+1}‖L̂‖_F²`, so `η =
+/// γ_{d+1}/(1 − γ_{d+1})·trace`.
+pub fn chol_eta(d: usize, trace: f64) -> f64 {
+    let g = gamma_n(d + 1);
+    g / (1.0 - g) * trace
+}
+
+/// `θ ≥ ‖L̂⁻¹ δL‖₂` for any triangular-solve column of a `d × d` factor,
+/// given `‖L̂⁻¹‖₂² ≤ inv2`: `‖δL‖₂ ≤ γ_{2d}‖L̂‖_F ≤ γ_{2d}√(trace/(1 −
+/// γ_{d+1}))`. Then a computed column `x̂` and the exact `L̂⁻¹a` obey
+/// `‖x̂ − L̂⁻¹a‖ ≤ ρ‖L̂⁻¹a‖`, `ρ = θ/(1 − θ)`. `None` unless `θ ≤ 1/4`.
+pub fn solve_theta(d: usize, trace: f64, inv2: f64) -> Option<f64> {
+    let g = gamma_n(d + 1);
+    let theta = gamma_n(2 * d) * (trace / (1.0 - g) * inv2).sqrt();
+    (theta.is_finite() && theta <= 0.25).then_some(theta)
+}
+
+/// `ρ = θ/(1 − θ)`.
+fn rho_of(theta: f64) -> f64 {
+    theta / (1.0 - theta)
+}
 
 /// The five factors of [`fitted_bound`] (unscaled, see the module doc).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -172,30 +209,55 @@ pub fn fitted_bound(n: &PairNorms) -> Option<f64> {
     Some(u_a * v_a + u_b * v_b + gamma * (u_a * v_b + u_b * v_a) + rem)
 }
 
-/// The floating-point allowance on the COMPUTED `J` of a `d`-function domain
-/// whose metric has Frobenius norm `≤ vfro_d` and smallest eigenvalue
-/// `≥ (1−γ)·lam_min`: `c·d·u·κ_D·‖u‖‖v‖/(1−γ)`, the first-order effect of the
-/// backward error `‖ΔV‖ ≤ c·d·u·‖V‖` on `aᵀV⁻¹b` with
-/// `aᵀV⁻¹a ≤ ‖u‖²/(1−γ)` (likewise b).
-pub fn roundoff_allowance(d: usize, vfro_d: f64, lam_min: f64, n: &PairNorms) -> f64 {
+/// The floating-point allowance on the COMPUTED `J` of a `d`-function union
+/// domain, worst case and to all orders. `trace` bounds `tr V_DD` from
+/// above and `lam_min` floors both own-domain blocks, so `λ_D = (1 − γ)·
+/// lam_min ≤ λ_min(V_DD)`. With `N_a = ‖V^{-1/2}a‖ ≤ ‖u‖/√(1−γ)` (likewise
+/// `N_b`), `δ = η/λ_D` ([`chol_eta`]), `θ` from [`solve_theta`] with
+/// `‖L̂⁻¹‖₂² ≤ 1/(λ_D − η)` and `ρ = θ/(1 − θ)`:
+///
+/// ```text
+/// |Ĵ − aᵀV⁻¹b| ≤ N_a N_b [δ + (1 + ρ)²(1 + γ_{2d}) − 1] / (1 − δ)
+/// ```
+///
+/// (Cholesky: `|aᵀ(V+ΔV)⁻¹b − aᵀV⁻¹b| ≤ δ/(1−δ)·N_aN_b`, `‖L̂⁻¹a‖ ≤
+/// N_a/√(1−δ)`; the solves move each column by `ρ`; the product adds
+/// `γ_{2d}‖x̂‖‖ŷ‖`). `∞` when `δ ≥ 1/2` or `θ > 1/4`: nothing is proved.
+pub fn roundoff_allowance(d: usize, trace: f64, lam_min: f64, n: &PairNorms) -> f64 {
     let lam_d = (1.0 - n.gamma) * lam_min;
-    let kappa = vfro_d / lam_d;
-    ROUNDOFF_C * d as f64 * f64::EPSILON * kappa * n.u_a.hypot(n.u_b) * n.v_a.hypot(n.v_b)
-        / (1.0 - n.gamma)
+    let eta = chol_eta(d, trace);
+    let delta = eta / lam_d;
+    if !(delta.is_finite() && delta < 0.5) {
+        return f64::INFINITY;
+    }
+    let Some(theta) = solve_theta(d, trace, 1.0 / (lam_d - eta)) else {
+        return f64::INFINITY;
+    };
+    let r = rho_of(theta);
+    let na_nb = n.u_a.hypot(n.u_b) * n.v_a.hypot(n.v_b) / (1.0 - n.gamma);
+    na_nb * (delta + (1.0 + r) * (1.0 + r) * (1.0 + gamma_n(2 * d)) - 1.0) / (1.0 - delta)
 }
 
-/// A rigorous floor `λ ≤ λ_min(V)` of a `d × d` SPD metric block from its
-/// computed inverse Cholesky factor: `trace(V⁻¹) = ‖L⁻¹‖_F² ≥ 1/λ_min`, so
-/// `1/‖L⁻¹‖_F²` floors `λ_min`. Halved to cover the floating-point error of
-/// the computed `L⁻¹`, whose relative size is at most `c·d·u·κ`; `None`
-/// (no floor, nothing proved for this occupied) when that exceeds 1/4, with
-/// `κ ≤ ‖V‖_F ‖L⁻¹‖_F²`.
-pub fn eigen_floor(linv_fro2: f64, vfro: f64, d: usize) -> Option<f64> {
-    if !(linv_fro2.is_finite() && linv_fro2 > 0.0 && vfro.is_finite()) {
+/// A rigorous floor `λ ≤ λ_min(V)` of a `d × d` SPD block (trace at most
+/// `trace`) from the computed inverse factor `Ẑ ≈ L̂⁻¹` with `‖Ẑ‖_F² =
+/// linv_fro2` (as computed). Each column of `Ẑ` is a triangular solve, so
+/// `‖L̂⁻¹e_k‖ ≤ ‖ẑ_k‖/(1 − ρ)`, and `tr((V + ΔV)⁻¹) = ‖L̂⁻¹‖_F² ≥ 1/λ_min(V
+/// + ΔV) ≥ 1/(λ_min(V) + η)`; hence `λ_min(V) ≥ (1 − ρ)²/((1 + γ_{d²})
+/// linv_fro2) − η` (the factor `1 + γ_{d²}` covers the rounded sum of
+/// squares). `θ` uses `‖L̂⁻¹‖₂ ≤ ‖L̂⁻¹‖_F ≤ ‖Ẑ‖_F/(1 − ρ)`, which is
+/// self-consistent while `θ ≤ 1/4` (a continuity argument from `δL = 0`).
+/// `None` when that fails or the floor is not positive.
+pub fn eigen_floor(linv_fro2: f64, trace: f64, d: usize) -> Option<f64> {
+    if !(linv_fro2.is_finite() && linv_fro2 > 0.0 && trace.is_finite()) {
         return None;
     }
-    let kappa = vfro * linv_fro2;
-    (ROUNDOFF_C * d as f64 * f64::EPSILON * kappa <= 0.25).then(|| 0.5 / linv_fro2)
+    let f2 = linv_fro2 * (1.0 + gamma_n(d * d + 1));
+    // ‖L̂⁻¹‖_F² ≤ f2/(1−ρ)² and 1/(1−ρ) ≤ 3/2 at θ ≤ 1/4: bound inv2 by
+    // (9/4)·f2, then θ from it (≤ 1/4 keeps that a priori bound valid)
+    let theta = solve_theta(d, trace, 2.25 * f2)?;
+    let r = rho_of(theta);
+    let lam = (1.0 - r) * (1.0 - r) / f2 - chol_eta(d, trace);
+    (lam.is_finite() && lam > 0.0).then_some(lam)
 }
 
 /// The diagonal shift `c` of Rump's positive-definiteness test (S. M. Rump,
@@ -207,8 +269,7 @@ pub fn eigen_floor(linv_fro2: f64, vfro: f64, d: usize) -> Option<f64> {
 /// doubled for room (the underflow term of the theorem is far below either).
 pub fn rump_shift(d: usize, trace: f64, diag_max: f64) -> f64 {
     let u = f64::EPSILON / 2.0;
-    let g = (d + 1) as f64 * u / (1.0 - (d + 1) as f64 * u);
-    2.0 * (g / (1.0 - g) * trace + 4.0 * u * diag_max)
+    2.0 * (chol_eta(d, trace) + 4.0 * u * diag_max)
 }
 
 /// A floor `σ ≤ λ_min(V)` of an SPD block, PROVED by a shifted Cholesky:
@@ -251,14 +312,22 @@ pub fn verified_floor(v: &Array2<f64>, linv: &Array2<f64>) -> Option<f64> {
     })
 }
 
-/// The factor `1 + c·d·u·κ` that turns a COMPUTED own-domain fitted norm
-/// `‖L̂⁻¹a‖` into an upper bound on the exact `‖V^{-1/2}a‖` of the same
-/// strip column: Cholesky and the triangular solve are backward stable with
-/// `|ΔV| ≤ c·d·u·‖V‖`, which moves the norm by a relative `c·d·u·κ` at most
-/// (`κ ≤ ‖V‖_F ‖L⁻¹‖_F²`). Only meaningful where [`eigen_floor`] is `Some`
-/// (that guard keeps the factor below 1.25).
-pub fn norm_inflation(linv_fro2: f64, vfro: f64, d: usize) -> f64 {
-    1.0 + ROUNDOFF_C * d as f64 * f64::EPSILON * vfro * linv_fro2
+/// The factor that turns a COMPUTED own-domain fitted norm `fl(‖x̂‖)`, `x̂`
+/// a triangular-solve column of the computed factor, into an upper bound
+/// on the exact `‖V^{-1/2}a‖`, and a computed column-block norm
+/// `fl(‖Ẑ[:, P]‖_F)` into one on `‖L̂⁻¹[:, P]‖_F` times the same
+/// `√(1+δ)` (what the shell-wise bound needs, since `‖V^{-1/2}x‖ ≤
+/// √(1+δ)‖L̂⁻¹x‖`). `V ⪰ λI` and `ΔV ⪯ ηI` give `V + ΔV ⪯ (1 + δ)V`,
+/// `δ = η/λ`, so `aᵀV⁻¹a ≤ (1 + δ)‖L̂⁻¹a‖²`; the solve gives `‖L̂⁻¹a‖ ≤
+/// ‖x̂‖/(1 − ρ)`; `1 + γ_{d²+2}` covers the rounded norms. `lam` must be a
+/// proved floor of `λ_min(V)` and `linv_fro2` the computed `‖Ẑ‖_F²`.
+/// `None` when [`solve_theta`] refuses.
+pub fn norm_inflation(linv_fro2: f64, trace: f64, lam: f64, d: usize) -> Option<f64> {
+    let f2 = linv_fro2 * (1.0 + gamma_n(d * d + 1));
+    let r = rho_of(solve_theta(d, trace, 2.25 * f2)?);
+    let delta = chol_eta(d, trace) / lam;
+    let q = (1.0 + delta).sqrt() * (1.0 + gamma_n(d * d + 2)) / (1.0 - r);
+    q.is_finite().then_some(q)
 }
 
 /// The Fock-dressed gate's worst-case weight `w_max = max_a Σ_{c≠a}
@@ -334,7 +403,7 @@ mod tests {
     fn floor_of(v: &Array2<f64>) -> f64 {
         let l = v.cholesky(UPLO::Lower).unwrap();
         let li = l.inv().unwrap();
-        eigen_floor(li.iter().map(|x| x * x).sum(), v.norm_l2(), v.nrows()).unwrap()
+        eigen_floor(li.iter().map(|x| x * x).sum(), v.diag().sum(), v.nrows()).unwrap()
     }
 
     fn own_norm(v: &Array2<f64>, x: &Array1<f64>) -> f64 {
@@ -413,6 +482,8 @@ mod tests {
         }
         // kappa so large the computed inverse is not trusted: no floor
         assert!(eigen_floor(1e20, 1.0, 1000).is_none());
+        // a floor below the Cholesky error eta: none
+        assert!(eigen_floor(1e15, 1.0, 1000).is_none());
     }
 
     /// The shift-verified floor sits below λ_min, within a factor 10 of it,
@@ -431,7 +502,7 @@ mod tests {
             );
             assert!(s >= 0.1 * lam * 0.99, "cond {cond}: floor {s} vs {lam}");
             assert!(
-                s > 2.0 * floor_of(&v),
+                s > floor_of(&v),
                 "cond {cond}: no gain over the trace floor"
             );
         }
