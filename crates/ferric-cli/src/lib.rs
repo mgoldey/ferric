@@ -6061,8 +6061,8 @@ fn gw_open_shell_reference_label(cfg: &Config) -> Result<&'static str, String> {
 }
 
 /// The MO diagonal of the KS reference's `V_xc` for GW (default grids), its
-/// exact exchange built under the run's `[scf] jk_digest` (the reference
-/// SCF's J/K digest).
+/// exact exchange built under the run's `[scf] gc_rotation` and `jk_digest`
+/// (the reference SCF's direct J/K settings).
 fn gw_vxc_diagonal(
     cfg: &Config,
     mol: &ferric_core::mol::Molecule,
@@ -6078,7 +6078,7 @@ fn gw_vxc_diagonal(
         &ferric_dft::grid::AtomicGridConfig::production(),
         &ferric_dft::grid::AtomicGridConfig::default_nlc(),
         ferric_gw::vxc_mo::JkRoute {
-            gc_rotation: None,
+            gc_rotation: cfg.scf.gc_rotation_resolved().map_err(CliError::msg)?,
             jk_digest: cfg.scf.jk_digest_resolved().map_err(CliError::msg)?,
         },
     )
