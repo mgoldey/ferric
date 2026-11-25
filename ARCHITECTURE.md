@@ -1019,7 +1019,23 @@ Done:
    the GW exact exchange (`vxc_diagonal_mo_on_grids`) take it, and the CLI
    passes `[scf] jk_digest` to all three (the CLI GW now also passes
    `[scf] gc_rotation`, which its docs already promised; GW takes both as
-   `vxc_mo::JkRoute`). In the checkpoint identity as `jk_digest`, the
+   `vxc_mo::JkRoute`). The two gradient routes that re-solve their
+   reference at each geometry from reduced settings carry it too: the
+   RI-MP2 family's `ScfJk::jk_digest` (built with `ScfJk::exact()` /
+   `ScfJk::rijk(aux)` / `with_jk_digest`; `solve_rhf_reference` and the
+   open-shell `solve_reference` write it into the reference's config,
+   whose SCF records it on the bounds the response reuses) and the
+   PDEP-RPA gradient's `RpaGradientRoute` (`total_rpa_gradient_by` and
+   `optimize_geometry_rpa` take `impl Into<RpaGradientRoute>`, so a bare
+   `RpaGradientMethod` still means "unset"; the reference, every displaced
+   finite-difference RHF and the analytic Z-vector follow it). The CLI
+   fills both from `[scf] jk_digest` (PR #717 refused the key there);
+   Python leaves them unset. Tests:
+   `ferric-mp2/tests/rimp2_gradient_jk_digest.rs`,
+   `ferric-rpa/tests/rpa_gradient_jk_digest.rs` and
+   `ferric-cli/tests/jk_digest_gradient_routes_cli.rs` (runs on a memory
+   budget below the in-core store, so the reference builds direct).
+   In the checkpoint identity as `jk_digest`, the
    resolved digest (Route; the variable is folded in, so it has no
    `ENV_SWITCHES` entry); a file written before the field reads it as
    `legacy`, so a skip from such a file is refused only by a run that uses
@@ -1039,7 +1055,28 @@ Done:
    response build (`build_spin_jk_with_pool_homogeneous`) and the
    block-CPHF `Multi` mode (lanes), LinK's K-only loop (same row
    structure), and packed shell-pair-blocked D/J layouts for the `E34`
-   gather.
+   gather. The rest of `[scf]` on the two re-solving gradient routes:
+   the RI-MP2-family and PDEP-RPA `optimize` / `frequencies` gradients
+   still do not carry `gc_rotation`, `k_builder`, `screening` or `eri`
+   to the reference they re-solve (it is `RhfConfig::gradient_reference`
+   plus the J/K route and the digest), and the CLI does not refuse them
+   there.
+   Carrying them means replacing `ScfJk::jk_digest` and
+   `RpaGradientRoute::jk_digest` by one reference-settings bundle (say
+   `ReferenceScf { gc_rotation, k_builder, screening, eri, jk_digest }`,
+   applied to the per-geometry `RhfConfig` by one method, the same
+   bundle in both crates) and checking each key's consumers on these
+   routes: `screening` must reach `SchwarzBounds::compute_for_screening`
+   where the drivers now call `compute`, which also changes the response
+   and the two-electron derivative terms that reuse those bounds;
+   `k_builder` needs a decision per builder (COSX is already refused on
+   these gradient tasks; a LinK reference would meet the four-centre
+   `ResponseJk`, equal only to LinK's screening threshold, so it needs
+   its own consistency bar or a refusal); `gc_rotation` reaches the
+   response through `GcSlot` once the SCF records it; `eri = "incore"` needs the store's budget, which
+   the exact route takes from the environment, not `[memory]`. Each
+   carried key wants a config-vs-variable bitwise test like the digest's,
+   and the CLI should refuse what stays uncarried rather than drop it.
 
 Next, each as its own PR following the patterns above:
 
