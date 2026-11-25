@@ -425,6 +425,39 @@ where
     )
 }
 
+/// [`ordered_stream_sum_pair`] for any number of matrices per group: group
+/// `g`'s partials `make(g)[i]` are folded onto `accs[i]` in ascending group
+/// order, so the result is bit-identical across thread counts and budgets
+/// (the half partials of the pair J/K digest,
+/// `quartet_scatter::PairSpec`). `make` must return `accs.len()` matrices.
+pub fn ordered_stream_sum_many<F>(
+    accs: &mut [Array2<f64>],
+    n_groups: usize,
+    nbf: usize,
+    band_bytes: usize,
+    make: F,
+    times: Option<&mut StreamTimes>,
+) -> Result<(), FerricError>
+where
+    F: Fn(usize) -> Result<Vec<Array2<f64>>, FerricError> + Sync,
+{
+    let window = band_width(nbf, band_bytes / accs.len().max(1));
+    let mut acc = accs;
+    ordered_stream_sum(
+        &mut acc,
+        n_groups,
+        window,
+        make,
+        |a, parts| {
+            debug_assert_eq!(a.len(), parts.len(), "one partial per accumulator");
+            for (x, p) in a.iter_mut().zip(&parts) {
+                *x += p;
+            }
+        },
+        times,
+    )
+}
+
 /// The engine of [`ordered_stream_sum_pair`]: `fold(acc, make(g))` for
 /// `g = 0, 1, …, n_groups-1` in that order, with the `make` calls run in
 /// parallel and at most `window` partials live at once.
@@ -472,7 +505,23 @@ where
     let advanced = Condvar::new();
     let lock = || state.lock().unwrap_or_else(|e| e.into_inner());
 
-    let worker = || loop {
+    // A panic in `make` or `fold` unwinds its worker without folding its
+    // group, so peers parked on `advanced` for a window behind that group
+    // would wait for ever, and the scope (which re-raises the panic once
+    // every worker has returned) would never end. While unwinding, the
+    // guard stops them as an `Err` does (under the lock, so no waiter misses
+    // the wake-up). A normal exit does nothing: a peer may still hold a
+    // claimed group to fold.
+    struct WakeOnUnwind<W: Fn()>(W);
+    impl<W: Fn()> Drop for WakeOnUnwind<W> {
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                (self.0)();
+            }
+        }
+    }
+
+    let worker_loop = || loop {
         if abort.load(Ordering::Relaxed) {
             return;
         }
@@ -525,6 +574,14 @@ where
             advanced.notify_all();
         }
         st.folding = false;
+    };
+    let worker = || {
+        let _wake = WakeOnUnwind(|| {
+            let _st = lock();
+            abort.store(true, Ordering::Relaxed);
+            advanced.notify_all();
+        });
+        worker_loop()
     };
     let workers = rayon::current_num_threads().clamp(1, n_groups.max(1));
     rayon::scope(|s| {
@@ -1017,6 +1074,54 @@ mod tests {
         let (mut a, mut b) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
         let r = ordered_stream_sum_pair(&mut a, &mut b, 40, n, 2 * 2 * per, make, None);
         assert!(r.is_err());
+    }
+
+    /// A panic in a group (`make`) or in a fold reaches the caller and
+    /// leaves no worker waiting for the group it stopped: with a window of
+    /// one, every other worker parks behind group 0, which panics. Run on a
+    /// thread with a deadline, so a regression fails instead of hanging.
+    #[test]
+    fn streamed_fold_propagates_a_panic_without_hanging() {
+        for in_fold in [false, true] {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(4)
+                    .build()
+                    .unwrap();
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    pool.install(|| {
+                        let mut acc = 0usize;
+                        ordered_stream_sum(
+                            &mut acc,
+                            16,
+                            1,
+                            |g| {
+                                if g == 0 {
+                                    std::thread::sleep(std::time::Duration::from_millis(50));
+                                    if !in_fold {
+                                        panic!("group 0");
+                                    }
+                                }
+                                Ok(g)
+                            },
+                            |a, p| {
+                                if in_fold && p == 0 {
+                                    panic!("fold of group 0");
+                                }
+                                *a += p;
+                            },
+                            None,
+                        )
+                    })
+                }));
+                let _ = tx.send(r.is_err());
+            });
+            let panicked = rx
+                .recv_timeout(std::time::Duration::from_secs(60))
+                .unwrap_or_else(|_| panic!("in_fold = {in_fold}: the streamed fold hung"));
+            assert!(panicked, "in_fold = {in_fold}: the panic was swallowed");
+        }
     }
 
     #[test]

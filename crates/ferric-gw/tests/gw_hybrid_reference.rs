@@ -39,7 +39,7 @@ use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_dft::grid::AtomicGridConfig;
-use ferric_gw::vxc_mo::vxc_diagonal_mo_on_grids;
+use ferric_gw::vxc_mo::{vxc_diagonal_mo_on_grids, JkRoute};
 use ferric_gw::{run_gw, GwConfig, GwMethod};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
@@ -214,7 +214,7 @@ fn hybrid_case(block: &str, exact_k: bool, bars: Bars) {
         &scf,
         &AtomicGridConfig::default(),
         &AtomicGridConfig::default_nlc(),
-        None,
+        JkRoute::default(),
     )
     .unwrap();
     assert_eq!(
@@ -376,8 +376,16 @@ fn pure_functional_has_no_k_term() {
     )
     .unwrap();
     let nlc = AtomicGridConfig::default_nlc();
-    let (v, _) =
-        vxc_diagonal_mo_on_grids(&sys.mol, &sys.obs_bs, "pbe", &scf, &grid, &nlc, None).unwrap();
+    let (v, _) = vxc_diagonal_mo_on_grids(
+        &sys.mol,
+        &sys.obs_bs,
+        "pbe",
+        &scf,
+        &grid,
+        &nlc,
+        JkRoute::default(),
+    )
+    .unwrap();
     let ks = KsXc::new(&sys.mol, &sys.obs_bs, "pbe", &grid, &nlc).unwrap();
     let d = 2.0 * &scf.density_alpha;
     let mut vao = ndarray::Array2::<f64>::zeros(d.raw_dim());

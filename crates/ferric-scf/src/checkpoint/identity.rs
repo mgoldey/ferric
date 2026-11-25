@@ -325,6 +325,7 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         screening,
         eri,
         gc_rotation,
+        jk_digest,
         // Which converged state the iteration lands in: see `StateSelecting`. Only
         // `use_sad_guess` and `trah_trigger` have a measured difference. The rest
         // are here because nothing shows them to be path-only.
@@ -419,6 +420,13 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         // The direct J/K builder's contraction rotation moves cc-pVXZ
         // energies by up to ~1e-11 Ha (screening noise; `tests/gc_rotation.rs`).
         ("gc_rotation", format!("{gc_rotation:?}")),
+        // The direct J/K digest moves energies by about 1e-12 Ha (summation
+        // order; `quartet_scatter::JkDigest`). Recorded resolved (config,
+        // then `FERRIC_JK_DIGEST`, then `pair`), so an unset key and `pair`
+        // are one identity and the variable needs no entry of its own. A
+        // file written before the field existed ran the legacy digest
+        // (`ABSENT_IN_OLDER_FILES`).
+        ("jk_digest", jk_digest_value(*jk_digest)),
     ];
     let state_selecting = [
         ("use_sad_guess", format!("{use_sad_guess:?}")),
@@ -457,6 +465,19 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
     (*energy_conv, *density_conv)
 }
 
+/// The recorded `jk_digest`: the digest the run's direct builds use
+/// ([`crate::quartet_scatter::JkDigest::resolve`]: the config's, else
+/// `FERRIC_JK_DIGEST`, else `pair`), canonically spelled. A malformed
+/// variable keeps its raw text (the SCF itself refuses it).
+fn jk_digest_value(config: Option<crate::quartet_scatter::JkDigest>) -> String {
+    crate::quartet_scatter::JkDigest::resolved_label(config)
+}
+
+/// Fields a file written before they existed lacks, with the value that file
+/// was computed under: the comparison reads the absent field as that value.
+/// `jk_digest`: every earlier build ran the 8-fold scatter, `legacy`.
+const ABSENT_IN_OLDER_FILES: [(&str, &str); 1] = [("jk_digest", "legacy")];
+
 /// Environment switches an SCF reads directly, with raw values compared. None has
 /// a measured effect on the answer here, so they are in on suspicion: a false
 /// refusal costs a rerun, and a false accept costs a wrong number. `1` and `on`
@@ -480,6 +501,8 @@ const ENV_SWITCHES: [(&str, FieldClass); 11] = [
     // The k-panel width of the mixed-precision GEMM: it moves the last digits
     // of a mixed result (`ferric_core::gpu::precision`).
     ("FERRIC_GPU_MIXED_K_PANEL", FieldClass::Route),
+    // `FERRIC_JK_DIGEST` is not here: the config field `jk_digest` is
+    // recorded resolved, the variable included.
 ];
 
 /// The recorded value of one [`ENV_SWITCHES`] entry: the raw text, except
@@ -722,12 +745,20 @@ fn compare_fields(file: &ScfIdentity, current: &ScfIdentity) -> Vec<Mismatch> {
         .filter_map(|name| {
             let (a, b) = (file_by_name.get(name), current_by_name.get(name));
             let class = b.or(a).map(|f| f.class)?;
-            let differs = a.map(|f| &f.value) != b.map(|f| &f.value);
-            differs.then(|| Mismatch {
+            // An older file's missing field reads as the value it ran under.
+            let implied = || {
+                ABSENT_IN_OLDER_FILES
+                    .iter()
+                    .find(|(n, _)| *n == name)
+                    .map(|(_, v)| (*v).to_string())
+            };
+            let file_value = a.map(|f| f.value.clone()).or_else(implied);
+            let current_value = b.map(|f| f.value.clone());
+            (file_value != current_value).then(|| Mismatch {
                 name: name.to_string(),
                 class,
-                file: a.map(|f| f.value.clone()),
-                current: b.map(|f| f.value.clone()),
+                file: file_value,
+                current: current_value,
             })
         })
         .collect()

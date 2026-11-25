@@ -555,6 +555,13 @@ pub struct RhfConfig {
     /// Changes energies at the screening-noise level (~1e-11 Ha), not
     /// bitwise; `Off` is the unrotated builder.
     pub gc_rotation: Option<crate::direct_jk::GcRotate>,
+    /// How the direct four-centre J/K builds digest each quartet block
+    /// ([`crate::quartet_scatter::JkDigest`]): the SCF's, and, through the
+    /// record the SCF leaves on its bounds, the Newton, stability and
+    /// response builds that follow. `None` (the default) leaves it to
+    /// `FERRIC_JK_DIGEST`, then `pair`. `Legacy` is the 8-fold scatter of
+    /// earlier releases bit for bit; `Pair` moves energies by about 1e-12 Ha.
+    pub jk_digest: Option<crate::quartet_scatter::JkDigest>,
     /// `[scf] relativistic`: the relativistic core Hamiltonian
     /// ([`crate::x2c::Relativistic`]), built once before the loop in place of
     /// `T + V` (see [`crate::x2c::reference_hcore`]). `None` (default) is the
@@ -635,6 +642,7 @@ impl Default for RhfConfig {
             eri: crate::incore_jk::EriMode::Auto,
             eri_route: Default::default(),
             gc_rotation: None,
+            jk_digest: None,
             relativistic: None,
         }
     }
@@ -2316,6 +2324,8 @@ fn solve_rhf_impl(
     // The response, Newton and stability builds on these bounds follow the
     // SCF's contraction rotation (`direct_jk::gc_rotation::GcSlot`).
     bounds.gc.set_request(config.gc_rotation);
+    // ... and its J/K digest (`quartet_scatter::DigestSlot`).
+    bounds.digest.set(config.jk_digest);
     // Split the injection: (S, h, V_nn) go to the shared env builder, the J/K
     // builders are driven in the iteration loop. All `None` on the molecular
     // path.
@@ -4407,6 +4417,11 @@ pub fn build_jk(
     j: &mut Array2<f64>,
     k: &mut Array2<f64>,
 ) -> Result<usize, FerricError> {
+    crate::quartet_scatter::check_nbf_shapes(
+        "build_jk",
+        prep.nbasis(),
+        &[("d", d.dim()), ("j", j.dim()), ("k", k.dim())],
+    )?;
     if let Some(store) = crate::incore_jk::store_for(bounds, prep)? {
         store.add_jk(d, j, k)?;
         return Ok(store.quartets());
@@ -4468,10 +4483,16 @@ pub fn build_jk_with_pool(
     band_bytes: usize,
 ) -> Result<usize, FerricError> {
     use crate::quartet_scatter::{
-        build_d_max_shell, canonical_bra_pairs, scatter_bra_pair, DensityScreen, JkMode,
+        build_d_max_shell, canonical_bra_pairs, scatter_bra_pair, DensityScreen, JkDigest, JkMode,
+        PairSpec, SymScale,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    crate::quartet_scatter::check_nbf_shapes(
+        "build_jk_with_pool",
+        prep.nbasis(),
+        &[("d", d.dim()), ("j", j.dim()), ("k", k.dim())],
+    )?;
     ctx.check_interrupted()?;
     if let Some(store) = crate::incore_jk::store_for(bounds, prep)? {
         store.add_jk(d, j, k)?;
@@ -4526,56 +4547,72 @@ pub fn build_jk_with_pool(
     let group_size = crate::reduce::deterministic_group_size(n_pairs);
     let n_groups = n_pairs.div_ceil(group_size.max(1)).max(1);
 
-    let mut total_j = Array2::<f64>::zeros((nbf, nbf));
-    let mut total_k = Array2::<f64>::zeros((nbf, nbf));
     // `band_bytes` is now an explicit parameter (see doc above): callers with
     // a solver-resolved `ooc_budget` pass `reduce::resolve_band_bytes(ooc_budget)`;
     // the plain `build_jk` wrapper and other no-budget callers pass
     // `reduce::default_band_bytes()` (env/auto-resolved), preserving the old
     // behavior byte-for-byte.
     let screen = DensityScreen::SixPair(&d_max_shell);
-    crate::reduce::grouped_deterministic_sum_pair(
-        &mut total_j,
-        &mut total_k,
-        n_groups,
-        nbf,
-        band_bytes,
-        |g| {
-            let lo = g * group_size;
-            let hi = (lo + group_size).min(n_pairs);
-            let mut mode = JkMode::new_both(nbf);
-            let mut local_count = 0usize;
-            for &(s1, s2) in &shell_pairs[lo..hi] {
-                if ferric_core::INTERRUPT.load(std::sync::atomic::Ordering::Relaxed) {
-                    continue;
-                }
-                pool.with(|engine| {
-                    local_count += scatter_bra_pair(
-                        engine,
-                        prep,
-                        dims,
-                        offs,
-                        &bounds.q,
-                        bounds.csb_m.as_ref(),
-                        bounds.csam_x.as_ref(),
-                        &screen,
-                        thresh,
-                        d,
-                        s1,
-                        s2,
-                        &mut mode,
-                        true,
-                    );
-                });
+    // One group's bra pairs scattered into `mode`.
+    let run = |g: usize, mode: &mut JkMode<'_>| {
+        let lo = g * group_size;
+        let hi = (lo + group_size).min(n_pairs);
+        let mut local_count = 0usize;
+        for &(s1, s2) in &shell_pairs[lo..hi] {
+            if ferric_core::INTERRUPT.load(std::sync::atomic::Ordering::Relaxed) {
+                continue;
             }
-            let (local_j, local_k) = match mode {
-                JkMode::Both(j, k) => (j, k),
-                _ => unreachable!("build_jk_with_pool always uses JkMode::Both"),
-            };
-            computed_quartets.fetch_add(local_count, std::sync::atomic::Ordering::Relaxed);
-            Ok((local_j, local_k))
-        },
-    )?;
+            pool.with(|engine| {
+                local_count += scatter_bra_pair(
+                    engine,
+                    prep,
+                    dims,
+                    offs,
+                    &bounds.q,
+                    bounds.csb_m.as_ref(),
+                    bounds.csam_x.as_ref(),
+                    &screen,
+                    thresh,
+                    d,
+                    s1,
+                    s2,
+                    mode,
+                    true,
+                );
+            });
+        }
+        computed_quartets.fetch_add(local_count, std::sync::atomic::Ordering::Relaxed);
+    };
+    let (mut total_j, mut total_k) = match bounds.digest.mode_collective(ctx)? {
+        JkDigest::Legacy => {
+            let mut total_j = Array2::<f64>::zeros((nbf, nbf));
+            let mut total_k = Array2::<f64>::zeros((nbf, nbf));
+            crate::reduce::grouped_deterministic_sum_pair(
+                &mut total_j,
+                &mut total_k,
+                n_groups,
+                nbf,
+                band_bytes,
+                |g| {
+                    let mut mode = JkMode::new_both(nbf);
+                    run(g, &mut mode);
+                    match mode {
+                        JkMode::Both(j, k) => Ok((j, k)),
+                        _ => unreachable!("build_jk_with_pool's legacy walk uses JkMode::Both"),
+                    }
+                },
+            )?;
+            (total_j, total_k)
+        }
+        JkDigest::Pair => {
+            let mut out = PairSpec::both(nbf, dims, d, SymScale::Own)
+                .sum_groups(ctx, n_groups, band_bytes, None, run)?;
+            (
+                out.j.take().expect("the J+K pair digest builds J"),
+                out.k.pop().expect("the J+K pair digest builds K"),
+            )
+        }
+    };
 
     // MPI: reduce the rank-LOCAL partials, THEN accumulate. This function
     // ACCUMULATES onto `j`/`k` without zeroing them, so an Allreduce of the

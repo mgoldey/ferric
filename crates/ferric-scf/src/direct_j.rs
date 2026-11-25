@@ -95,10 +95,15 @@ impl<'a> DirectJ<'a> {
 
 impl<'a> JBuilder for DirectJ<'a> {
     fn build(&mut self, d: &Array2<f64>, j: &mut Array2<f64>) -> Result<usize, FerricError> {
+        crate::quartet_scatter::check_nbf_shapes(
+            "DirectJ::build",
+            self.prep.nbasis(),
+            &[("d", d.dim()), ("j", j.dim())],
+        )?;
         if let Some(computed) = self.build_rotated(d, j)? {
             return Ok(computed);
         }
-        use crate::quartet_scatter::{scatter_bra_pair, DensityScreen, JkMode};
+        use crate::quartet_scatter::{scatter_bra_pair, DensityScreen, JkDigest, JkMode, PairSpec};
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         let nsh = self.prep.nshells();
@@ -185,11 +190,10 @@ impl<'a> JBuilder for DirectJ<'a> {
         // GREEN at -np 2. So there is no regression test standing behind this
         // ordering here — it is correct-by-construction only. Do not "simplify"
         // it back on the grounds that the tests still pass; they cannot see it.
-        let mut total_j = Array2::<f64>::zeros((nbf, nbf));
-        crate::reduce::grouped_deterministic_sum(&mut total_j, n_groups, nbf, band_bytes, |g| {
+        // One group's bra pairs scattered into `mode`.
+        let run = |g: usize, mode: &mut JkMode<'_>| {
             let lo = g * group_size;
             let hi = (lo + group_size).min(n_pairs);
-            let mut mode = JkMode::new_j(nbf);
             let mut local_count = 0usize;
             for &(s1, s2) in &shell_pairs[lo..hi] {
                 if ferric_core::INTERRUPT.load(Ordering::Relaxed) {
@@ -198,17 +202,36 @@ impl<'a> JBuilder for DirectJ<'a> {
                 pool.with(|engine| {
                     local_count += scatter_bra_pair(
                         engine, prep, dims, offs, q_table, m_table, x_table, &screen, thresh, d,
-                        s1, s2, &mut mode, true,
+                        s1, s2, mode, true,
                     );
                 });
             }
-            let local_j = match mode {
-                JkMode::JOnly(j) => j,
-                _ => unreachable!("DirectJ::build always uses JkMode::JOnly"),
-            };
             computed_quartets.fetch_add(local_count, Ordering::Relaxed);
-            Ok(local_j)
-        })?;
+        };
+        let mut total_j = match self.bounds.digest.mode_collective(self.ctx)? {
+            JkDigest::Legacy => {
+                let mut total_j = Array2::<f64>::zeros((nbf, nbf));
+                crate::reduce::grouped_deterministic_sum(
+                    &mut total_j,
+                    n_groups,
+                    nbf,
+                    band_bytes,
+                    |g| {
+                        let mut mode = JkMode::new_j(nbf);
+                        run(g, &mut mode);
+                        match mode {
+                            JkMode::JOnly(j) => Ok(j),
+                            _ => unreachable!("DirectJ::build's legacy walk uses JkMode::JOnly"),
+                        }
+                    },
+                )?;
+                total_j
+            }
+            JkDigest::Pair => PairSpec::j_only(nbf, dims, d)
+                .sum_groups(self.ctx, n_groups, band_bytes, None, run)?
+                .j
+                .expect("the J-only pair digest builds J"),
+        };
 
         crate::reduce::reduce_partial_across_ranks(self.ctx, &mut total_j);
         *j += &total_j;

@@ -63,6 +63,7 @@ check_stability = false                # diagnostic orbital-Hessian check of the
 # ri_j_precision: RI-J tensor storage precision: f32 | f64 (omitted: f32 for energy, f64 for optimize/frequencies/md); not read here: only with RI-J
 # ri_k_precision: RI-K tensor storage precision: f64 | f32; not read here: only with RI-K
 # gc_rotation: direct J/K contraction rotation: auto | rot1 | off (unset: FERRIC_GC_ROTATE, then auto); unset by default: FERRIC_GC_ROTATE, then auto
+# jk_digest: direct J/K quartet digest: pair | legacy (unset: FERRIC_JK_DIGEST, then pair); unset by default: FERRIC_JK_DIGEST, then pair
 # relativistic: x2c1e: spin-free X2C-1e core Hamiltonian (energy only); unset by default: nonrelativistic
 # cosx_grid: COSX SCF grid; not read here: only with k_builder = "cosx" or jk = "rijcosx"
 # cosx_final_pass: COSX final pass on a larger grid; not read here: only with k_builder = "cosx" or jk = "rijcosx"

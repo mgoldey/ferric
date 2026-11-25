@@ -116,6 +116,11 @@ impl Run {
 /// Run the binary on `toml` (the molecule written to `target/cas_<tag>.xyz`
 /// from `xyz` and substituted for `{xyz}`).
 fn run_cli(tag: &str, xyz: &str, toml: &str) -> Run {
+    run_cli_env(tag, xyz, toml, &[])
+}
+
+/// [`run_cli`] with `env` set on the binary (`None`: removed).
+fn run_cli_env(tag: &str, xyz: &str, toml: &str, env: &[(&str, Option<&str>)]) -> Run {
     let root = workspace_root();
     let xyz_path = root.join("target").join(format!("cas_{tag}.xyz"));
     let toml_path = root.join("target").join(format!("cas_{tag}.toml"));
@@ -124,15 +129,20 @@ fn run_cli(tag: &str, xyz: &str, toml: &str) -> Run {
     std::fs::write(&xyz_path, xyz).expect("write xyz");
     let body = toml.replace("{xyz}", &xyz_path.display().to_string());
     std::fs::write(&toml_path, body).expect("write toml");
-    let out = Command::new(ferric_cli_bin())
-        .arg(&toml_path)
+    let mut cmd = Command::new(ferric_cli_bin());
+    cmd.arg(&toml_path)
         .arg("--json")
         .arg(&log_path)
         .current_dir(&root)
         .env("OPENBLAS_NUM_THREADS", "1")
-        .env("RAYON_NUM_THREADS", CLI_THREADS.to_string())
-        .output()
-        .expect("failed to run ferric-cli");
+        .env("RAYON_NUM_THREADS", CLI_THREADS.to_string());
+    for (k, v) in env {
+        match v {
+            Some(v) => cmd.env(k, v),
+            None => cmd.env_remove(k),
+        };
+    }
+    let out = cmd.output().expect("failed to run ferric-cli");
     let log = std::fs::read_to_string(&log_path)
         .unwrap_or_default()
         .lines()
@@ -685,4 +695,61 @@ fn scf_gc_rotation_is_read() {
     );
     assert!(!bad.ok);
     assert!(bad.stderr.contains("gc_rotation"), "{}", bad.stderr);
+}
+
+/// `[scf] jk_digest` is read by the CAS kinds like `gc_rotation` (the RHF
+/// start and the direct CASSCF J/K follow it), recorded in the run log as
+/// requested and as resolved (`FERRIC_JK_DIGEST` deciding an unset key),
+/// and the two digests agree to rounding; a value of another case is
+/// refused at load.
+#[test]
+fn scf_jk_digest_is_read() {
+    let (xyz, _) = h2o();
+    let cas = "n_active = 4\nn_elec_active = [2, 2]\nintegrals = \"direct\"\n";
+    let unset = [("FERRIC_JK_DIGEST", None)];
+    let base = run_cli_env(
+        "jkd_default",
+        &xyz,
+        &toml_for("casscf", "6-31g", cas),
+        &unset,
+    );
+    assert!(base.ok, "{}", base.stderr);
+    let e0 = base.result()["total"].as_f64().unwrap();
+    let start = &base.record("run_start")["config"];
+    assert!(start["jk_digest"].is_null());
+    assert_eq!(start["jk_digest_resolved"], "pair");
+    let by_env = run_cli_env(
+        "jkd_env",
+        &xyz,
+        &toml_for("casscf", "6-31g", cas),
+        &[("FERRIC_JK_DIGEST", Some("legacy"))],
+    );
+    assert!(by_env.ok, "{}", by_env.stderr);
+    let start = &by_env.record("run_start")["config"];
+    assert!(start["jk_digest"].is_null());
+    assert_eq!(start["jk_digest_resolved"], "legacy");
+    for v in ["pair", "legacy"] {
+        let r = run_cli_ok(
+            &format!("jkd_{v}"),
+            &xyz,
+            &format!(
+                "{}\n[scf]\njk_digest = \"{v}\"\n",
+                toml_for("casscf", "6-31g", cas)
+            ),
+        );
+        assert_eq!(r.record("run_start")["config"]["jk_digest"], v);
+        assert_eq!(r.record("run_start")["config"]["jk_digest_resolved"], v);
+        let e = r.result()["total"].as_f64().unwrap();
+        assert!((e - e0).abs() < 1e-10, "{v}: {e} vs default {e0}");
+    }
+    let bad = run_cli(
+        "jkd_bad",
+        &xyz,
+        &format!(
+            "{}\n[scf]\njk_digest = \"LEGACY\"\n",
+            toml_for("nevpt2", "6-31g", cas)
+        ),
+    );
+    assert!(!bad.ok);
+    assert!(bad.stderr.contains("jk_digest"), "{}", bad.stderr);
 }
