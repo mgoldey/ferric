@@ -990,9 +990,10 @@ jobs:
           # `--profile wheel` (Cargo.toml) is release plus fat LTO in one
           # codegen unit, with opt-level "s" for the cold crates (CLI, config
           # parsing, export, the Python glue). Measured 2026-11-24 on the
-          # extension alone: 22.91 -> 20.82 MB deflated (-2.09 MB); octane
-          # cc-pVDZ direct RHF 21.9 -> 20.7 s and DF-MP2 14.6 -> 14.2 s, energies
-          # bitwise identical. Costs about 3 more minutes of build.
+          # extension alone: 22.91 -> 20.82 MB deflated (-2.09 MB). Octane
+          # cc-pVDZ, one thread, three interleaved pairs (medians): direct RHF
+          # 79.9 -> 78.8 s, DF-MP2 54.4 -> 52.5 s, energies bitwise identical.
+          # Costs about 3 more minutes of build (fat LTO link).
           args: --profile wheel --strip --out dist --features abi3 -i python3.10
           # Runs BEFORE the build, INSIDE THE SAME SHELL SCRIPT that then
           # invokes `maturin build` (maturin-action concatenates
