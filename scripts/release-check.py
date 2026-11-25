@@ -30,7 +30,8 @@ What ``check`` asserts, for every file:
   ``manylinux_2_28_x86_64`` platform; its METADATA says ``Name: ferric`` and
   ``Version: <version>``; its WHEEL file has no ``Build:`` line; it bundles no
   libint2 shared library (the small libint2 is static); its extension module
-  has no ``.symtab`` section (built with ``maturin build --strip``); it is
+  has no ``.symtab`` section (built with ``maturin build --strip``), nor does
+  any ELF it vendors in ``ferric.libs/`` (stripped before the repair); it is
   under PyPI's 100 MiB per-file limit. Exactly one sdist, ``ferric-<version>.tar.gz``,
   whose PKG-INFO says the same version, also under 100 MiB. No file name
   contains ``mpi``.
@@ -180,11 +181,15 @@ def elf_section_names(fh) -> list[str] | None:
 
 
 def check_extension_stripped(rep: Report, path: Path) -> None:
-    """A Linux wheel's extension module must not carry ``.symtab``.
+    """A Linux wheel's extension module and vendored libraries must not carry ``.symtab``.
 
     The symbol table is 13 MB of the unpacked extension (about 3 MB of the zipped
     wheel) and nothing at run time reads it; the PyPI wheel sits close to the
-    100 MiB limit.
+    100 MiB limit. The shared libraries the repair vendors into
+    ``ferric.libs/`` (OpenBLAS, libgfortran, libquadmath) are stripped with
+    ``strip --strip-unneeded`` before the repair copies them (wheels.yml,
+    ``before-script-linux``); checking them here proves the copies in the
+    wheel are the stripped ones. A wheel with no ``ferric.libs/`` passes.
     """
     try:
         with zipfile.ZipFile(path) as zf:
@@ -201,6 +206,11 @@ def check_extension_stripped(rep: Report, path: Path) -> None:
                 return
             with zf.open(members[0]) as fh:
                 names = elf_section_names(fh)
+            libs = {}
+            for n in zf.namelist():
+                if re.fullmatch(rf"{NAME}\.libs/[^/]+", n):
+                    with zf.open(n) as fh:
+                        libs[n] = elf_section_names(fh)
     except zipfile.BadZipFile:
         return  # already reported by check_wheel
     if names is None:
@@ -210,6 +220,14 @@ def check_extension_stripped(rep: Report, path: Path) -> None:
             f"{path.name}: {members[0]} still has a .symtab section; "
             "build the wheel with `maturin build --strip`"
         )
+    for lib, lib_names in sorted(libs.items()):
+        # A non-ELF member is not this check's business (none is expected).
+        if lib_names is not None and ".symtab" in lib_names:
+            rep.error(
+                f"{path.name}: vendored {lib} still has a .symtab section; "
+                "strip --strip-unneeded it before the repair copies it "
+                "(wheels.yml before-script-linux)"
+            )
 
 
 def check_wheel(
