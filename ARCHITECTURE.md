@@ -987,14 +987,24 @@ Done:
    runtime otherwise, on J, the number of exchange channels and the
    general-density form) and `PairSpec::finish` (`J = Jh + Jhᵀ`,
    `K = Kb + Kbᵀ`, or `Kb + Ktᵀ` for a density not symmetric to roundoff:
-   `max|D − Dᵀ| ≤ 1e-14 · max(max|D|, 1)`, symmetrised explicitly when it
-   passes; UHF checks each spin and runs both on the general form if
-   either fails). `scatter_bra_pair_probed` calls `begin` / `quartet` /
-   `end` in place of its three digest branches; screening, counting and
-   interrupts are shared. Half partials are summed in the usual group
-   order (`reduce::ordered_stream_sum_many`), then finished, reduced
-   across ranks and added into the caller's J/K (the add-into contract of
-   `build_incremental`). Wired into `DirectJK` (closed and open shell; the
+   `max|D − Dᵀ| ≤ 1e-14 · max|D|`, non-finite never symmetric, except
+   that an incremental `ΔD` is judged against the last full build's
+   `max|D|` per channel, which `DirectJK` keeps (`SymScale::Delta`);
+   symmetrised explicitly when it passes; UHF checks each spin and runs
+   both on the general form if either fails). `scatter_bra_pair_probed`
+   calls `begin` / `quartet` / `end` in place of its three digest
+   branches; screening, counting and interrupts are shared.
+   `PairSpec::sum_groups` is the one pair branch of every builder: half
+   partials summed in the usual group order
+   (`reduce::ordered_stream_sum_many`), then finished; the caller reduces
+   across ranks and adds into its J/K (the add-into contract of
+   `build_incremental`). It charges the density copies and half
+   accumulators to the memory pool (`gc_rotation::reserve_collective`, on
+   every rank or none). The legacy branches stay verbatim per builder:
+   they differ in mode, extraction and reduction function
+   (`grouped_deterministic_sum*` against `ordered_stream_sum_*`), and a
+   generic helper over them would change which reduction a builder calls
+   for no gain. Wired into `DirectJK` (closed and open shell; the
    rotated walk follows because its rotated bounds share the parent's
    record), `DirectJ`, `DirectK` and `rhf::build_jk_with_pool`. Switch:
    `JkDigest` (`pair` default | `legacy`, the 8-fold scatter bit for bit),
@@ -1008,11 +1018,24 @@ Done:
    the CASSCF direct backend (`CasScfConfig::jk_digest`, `ScfStart`) and
    the GW exact exchange (`vxc_diagonal_mo_on_grids`) take it, and the CLI
    passes `[scf] jk_digest` to all three (the CLI GW now also passes
-   `[scf] gc_rotation`, which its docs already promised). In the
-   checkpoint identity as `jk_digest` and `FERRIC_JK_DIGEST` (Route).
-   Python: the variable only. Tests: `ferric-scf/tests/jk_pair_digest.rs`
-   (pair against legacy, all builders and bases, symmetric and not) and
-   the unit tests in `quartet_scatter.rs`. Follow-ups: the open-shell
+   `[scf] gc_rotation`, which its docs already promised; GW takes both as
+   `vxc_mo::JkRoute`). In the checkpoint identity as `jk_digest`, the
+   resolved digest (Route; the variable is folded in, so it has no
+   `ENV_SWITCHES` entry); a file written before the field reads it as
+   `legacy`, so a skip from such a file is refused only by a run that uses
+   `pair`. Python: the variable only. Tests:
+   `ferric-scf/tests/jk_pair_digest.rs` (pair against legacy, all builders
+   and bases, symmetric and not, incremental, whole SCF, the config
+   reaching the consumers bitwise; each comparison checks through the
+   test probe `quartet_scatter::pair_probe` that the pair kernel ran, on
+   the expected kernel) and the unit tests in `quartet_scatter.rs`.
+   `FERRIC_TIMING` names the K kernel on the `direct-jk build` line and
+   reports the serial density preparation and finish on their own line.
+   The legacy kernel stays for at least one release after this one, for
+   exact reproduction of earlier results and A/B debugging; remove it
+   (with `JkDigest`, the switch and the identity field's `legacy` reading)
+   once no consumer needs bitwise reproduction of pre-pair results.
+   Follow-ups: the open-shell
    response build (`build_spin_jk_with_pool_homogeneous`) and the
    block-CPHF `Multi` mode (lanes), LinK's K-only loop (same row
    structure), and packed shell-pair-blocked D/J layouts for the `E34`
