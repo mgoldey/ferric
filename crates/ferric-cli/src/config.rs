@@ -3942,16 +3942,17 @@ impl OmittedJk {
 
 impl ScfCfg {
     /// The first `[scf]` key set that only the four-centre route reads
-    /// (`k_builder`, `eri`, `gc_rotation`, `jk_digest`, `screening`, `df_increments`,
-    /// `df_guess = true`,
-    /// `df_guess_aux`): with one of them an omitted `jk` stays exact, so an
-    /// input that worked on the four-centre default keeps working unchanged.
+    /// (`k_builder`, `eri`, `gc_rotation`, `screening`, `df_increments`,
+    /// `df_guess = true`, `df_guess_aux`): with one of them an omitted `jk`
+    /// stays exact, so an input that worked on the four-centre default keeps
+    /// working unchanged. Not `jk_digest`: it changes only the last bits of
+    /// whatever four-centre builds the route runs (and is inert on a fitted
+    /// one), so it must not move an omitted `jk` off the RI-JK default.
     fn exact_route_key(&self) -> Option<&'static str> {
         [
             ("k_builder", self.k_builder.is_some()),
             ("eri", self.eri.is_some()),
             ("gc_rotation", self.gc_rotation.is_some()),
-            ("jk_digest", self.jk_digest.is_some()),
             ("screening", self.screening.is_some()),
             ("df_increments", self.df_increments),
             ("df_guess", self.df_guess == Some(true)),
@@ -6759,6 +6760,18 @@ mod compat_guard_tests {
         }
         let energy = open("energy").unwrap().unwrap();
         assert_eq!((energy.mode, energy.aux), (ScfJkMode::Exact, None));
+        // `jk_digest` does not move an omitted jk: the RI-MP2 optimize and
+        // energy resolve the same fitted route with or without it.
+        for task in ["energy", "optimize", "frequencies"] {
+            let none = choice("rimp2", task, "").unwrap().unwrap();
+            assert_eq!(none.mode, ScfJkMode::RiJk, "{task}");
+            for d in ["pair", "legacy"] {
+                let with = choice("rimp2", task, &format!("jk_digest = \"{d}\"\n"))
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(with, none, "{task} jk_digest = {d}");
+            }
+        }
         // A key only the four-centre route reads keeps an omitted jk exact.
         for key in [
             "k_builder = \"link\"",

@@ -10,12 +10,19 @@
 //! The four-centre reference of a small molecule normally runs on the
 //! in-core ERI store, which no digest reaches, so every run gets a memory
 //! budget (`FERRIC_MEM_BUDGET_GB`, about 107 kB) whose quarter the store of
-//! water / 6-31G (33 kB) exceeds; `[memory] budget_gb` gives the correlation
-//! part its own. `rimp2` names `jk = "exact"`: an omitted `jk` is RI-JK
-//! unless a four-centre key such as `jk_digest` is set, which would compare
-//! two routes. Dropping the CLI's lowering on either route makes the
-//! per-geometry SCFs of config `legacy` run `pair`, and the first assert
-//! fails.
+//! water / 6-31G (33 kB) exceeds, and `eri = "auto"` builds J/K direct.
+//! This couples the test to the auto rule's budget fraction
+//! (`incore_jk::AUTO_BUDGET_DIVISOR`) and to that store size: should either
+//! change so the store fits, the pair and legacy runs would become bitwise
+//! one and the "config pair is bitwise legacy" assert would say so.
+//! `[memory] budget_gb` gives the correlation part its own budget.
+//!
+//! `rimp2` names `jk = "exact"` so its gradient route is four-centre (an
+//! omitted `jk` is RI-JK, on which the digest is inert); the last test
+//! checks that `jk_digest` does not move an omitted `jk` off that RI-JK
+//! default. Dropping the CLI's lowering on either route makes the
+//! per-geometry SCFs of config `legacy` run `pair`, and the first assert of
+//! `check` fails.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -46,8 +53,8 @@ fn input(kind: &str, scf: &str) -> String {
 }
 
 /// Run `body` with `FERRIC_JK_DIGEST = env` (unset when `None`) and return
-/// the energy of every `scf_iter` record of the run log, in order.
-fn scf_energies(tag: &str, body: &str, env: Option<&str>) -> Vec<f64> {
+/// the run log's records.
+fn run(tag: &str, body: &str, env: Option<&str>) -> Vec<serde_json::Value> {
     let root = workspace_root();
     let dir = root.join("target");
     std::fs::create_dir_all(&dir).expect("create target/");
@@ -74,15 +81,27 @@ fn scf_energies(tag: &str, body: &str, env: Option<&str>) -> Vec<f64> {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    let energies: Vec<f64> = std::fs::read_to_string(&log)
+    std::fs::read_to_string(&log)
         .expect("run log")
         .lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .collect()
+}
+
+/// The energy of every `scf_iter` record of `records`, in order.
+fn scf_energies_of(tag: &str, records: &[serde_json::Value]) -> Vec<f64> {
+    let energies: Vec<f64> = records
+        .iter()
         .filter(|r| r["record"] == "scf_iter")
         .map(|r| r["energy"].as_f64().expect("scf_iter energy"))
         .collect();
     assert!(!energies.is_empty(), "{tag}: no scf_iter records");
     energies
+}
+
+/// [`run`], then [`scf_energies_of`].
+fn scf_energies(tag: &str, body: &str, env: Option<&str>) -> Vec<f64> {
+    scf_energies_of(tag, &run(tag, body, env))
 }
 
 fn check(kind: &str, exact: &str) {
@@ -139,4 +158,40 @@ fn jk_digest_reaches_the_rimp2_optimize_scfs() {
 #[test]
 fn jk_digest_reaches_the_pdep_rpa_optimize_scfs() {
     check("pdep-rpa", "");
+}
+
+/// `jk_digest` does not change the J/K route: an `rimp2` optimize with `jk`
+/// omitted logs the RI-JK default (`scf_jk = "rijk"` on the matched set)
+/// with and without the key, and since every J/K build of that route is
+/// fitted the digest is inert there: the SCF energies are bitwise one run.
+#[test]
+fn jk_digest_keeps_the_omitted_rijk_route() {
+    let unset = run("rimp2_rijk_unset", &input("rimp2", ""), None);
+    let set = run(
+        "rimp2_rijk_pair",
+        &input("rimp2", "jk_digest = \"pair\"\n"),
+        None,
+    );
+    let route = |r: &[serde_json::Value]| {
+        let start = r
+            .iter()
+            .find(|x| x["record"] == "run_start")
+            .expect("run_start");
+        (
+            start["config"]["scf_jk"].clone(),
+            start["config"]["jk_aux"].clone(),
+        )
+    };
+    assert_eq!(
+        route(&unset),
+        ("rijk".into(), "def2-universal-jkfit".into())
+    );
+    assert_eq!(route(&set), route(&unset));
+    let bits = |tag, r: &[serde_json::Value]| {
+        scf_energies_of(tag, r)
+            .iter()
+            .map(|x| x.to_bits())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(bits("set", &set), bits("unset", &unset));
 }
