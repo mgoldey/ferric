@@ -92,12 +92,19 @@ inherits = "release"
 lto = "fat"
 codegen-units = 1
 
-# Cold code: input parsing, file export, the Python glue. Size over speed.
+# Cold leaf crates: input parsing, file export, TOML/JSON/Python-literal
+# parsers. Size over speed. Only LEAF crates may go here, never the crate
+# being linked: with fat LTO the merged whole-program pipeline runs at the
+# ROOT crate's opt-level, so an "s" on ferric-python (the cdylib) turned loop
+# and SLP vectorisation off for all of the Rust numerics (packed-double
+# arithmetic in ferric.abi3.so fell from 19,133 to 1,549 instructions). For
+# the same reason this profile must not be used to build the `ferric` /
+# `ferric-cli` binaries (ferric-cli is their root); nothing does, they are
+# built with `release`. Inside the wheel ferric-cli is a library under
+# ferric-python, so the "s" there only shapes its own pre-LTO code.
 [profile.wheel.package.ferric-cli]
 opt-level = "s"
 [profile.wheel.package.ferric-export]
-opt-level = "s"
-[profile.wheel.package.ferric-python]
 opt-level = "s"
 [profile.wheel.package.toml_edit]
 opt-level = "s"
