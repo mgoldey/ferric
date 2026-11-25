@@ -9531,6 +9531,31 @@ mod scf_config_lowering_tests {
             .is_ok());
     }
 
+    /// `[scf] jk_digest` reaches `RhfConfig::jk_digest`; unset leaves it
+    /// `None`; a value outside pair | legacy (another case included) is
+    /// refused by key name, at load time and at lowering.
+    #[test]
+    fn jk_digest_key_reaches_the_config() {
+        use ferric_scf::quartet_scatter::JkDigest;
+        for (value, want) in [("pair", JkDigest::Pair), ("legacy", JkDigest::Legacy)] {
+            let cfg = parse(&header("rhf", &format!("[scf]\njk_digest = \"{value}\"\n")));
+            let c = new_lowering(&cfg, "energy", false, None).unwrap().unwrap();
+            assert_eq!(c.jk_digest, Some(want), "{value}");
+        }
+        let cfg = parse(&header("rhf", ""));
+        let c = new_lowering(&cfg, "energy", false, None).unwrap().unwrap();
+        assert_eq!(c.jk_digest, None);
+        for bad in ["Legacy", "PAIR", " pair", "8fold"] {
+            let cfg = parse(&header("rhf", &format!("[scf]\njk_digest = \"{bad}\"\n")));
+            let e = cfg.scf.validate().unwrap_err();
+            assert!(e.contains("[scf] jk_digest"), "{bad:?}: {e}");
+            let e = new_lowering(&cfg, "energy", false, None)
+                .unwrap()
+                .unwrap_err();
+            assert!(e.to_string().contains("[scf] jk_digest"), "{e}");
+        }
+    }
+
     /// The task / `[gpu]` combinations that change the CLI policy: the RI-J
     /// task class (energy vs the geometry tasks) and the COSX fp64 router.
     const TASKS: &[&str] = &["energy", "optimize", "frequencies", "md"];

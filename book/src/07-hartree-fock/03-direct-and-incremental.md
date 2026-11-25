@@ -317,10 +317,14 @@ $10^{-14}$ relative in $J$ and $K$ and $10^{-12}$ Ha in SCF energies
 loop is specialised at compile time for ket shells of 1, 3 and 5 functions
 (`ferric-scf/src/quartet_scatter.rs::pair_quartet`).
 
-On octane at 2 threads the digest's thread-seconds fall by the factors
-recorded in the change that introduced it. In a single-thread benchmark
-that stored the integrals, the digest ran 3.1–4.1× faster than the scatter,
-and the whole walk with libint in the loop ran 1.24–1.44× faster.
+Measured runs, not tests (octane, RHF, `eri = "direct"`, 2 threads,
+`FERRIC_TIMING=1`, mean of 10 builds over two runs each, interleaved, on a
+shared 4-core box):
+
+| Basis | digest thread-s per build, legacy → pair | J/K build wall, legacy → pair | SCF energy shift |
+|---|---|---|---|
+| cc-pVDZ (rotated) | 2.54 → 0.86 (2.9×) | 5.40 → 4.28 s (1.26×) | −5.7e-13 Ha |
+| def2-SVP | 2.24 → 0.85 (2.6×) | 3.44 → 2.83 s (1.22×) | −1.1e-13 Ha |
 
 ## Generally contracted bases {#direct-and-incremental-general-contraction}
 

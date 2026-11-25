@@ -686,3 +686,39 @@ fn scf_gc_rotation_is_read() {
     assert!(!bad.ok);
     assert!(bad.stderr.contains("gc_rotation"), "{}", bad.stderr);
 }
+
+/// `[scf] jk_digest` is read by the CAS kinds like `gc_rotation` (the RHF
+/// start and the direct CASSCF J/K follow it), recorded in the run log, and
+/// the two digests agree to rounding; a value of another case is refused at
+/// load.
+#[test]
+fn scf_jk_digest_is_read() {
+    let (xyz, _) = h2o();
+    let cas = "n_active = 4\nn_elec_active = [2, 2]\nintegrals = \"direct\"\n";
+    let base = run_cli_ok("jkd_default", &xyz, &toml_for("casscf", "6-31g", cas));
+    let e0 = base.result()["total"].as_f64().unwrap();
+    assert!(base.record("run_start")["config"]["jk_digest"].is_null());
+    for v in ["pair", "legacy"] {
+        let r = run_cli_ok(
+            &format!("jkd_{v}"),
+            &xyz,
+            &format!(
+                "{}\n[scf]\njk_digest = \"{v}\"\n",
+                toml_for("casscf", "6-31g", cas)
+            ),
+        );
+        assert_eq!(r.record("run_start")["config"]["jk_digest"], v);
+        let e = r.result()["total"].as_f64().unwrap();
+        assert!((e - e0).abs() < 1e-10, "{v}: {e} vs default {e0}");
+    }
+    let bad = run_cli(
+        "jkd_bad",
+        &xyz,
+        &format!(
+            "{}\n[scf]\njk_digest = \"LEGACY\"\n",
+            toml_for("nevpt2", "6-31g", cas)
+        ),
+    );
+    assert!(!bad.ok);
+    assert!(bad.stderr.contains("jk_digest"), "{}", bad.stderr);
+}
