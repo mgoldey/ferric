@@ -45,12 +45,13 @@
 //!
 //! # Layout
 //!
-//! [`GcKernelBasis::eval`] writes a group quartet as
-//! `out[(ab · nf_ab + f_ab) · (m_cd · nf_cd) + cd · nf_cd + f_cd]`, with
+//! [`eval`](crate::gc_kernel::GcKernelBasis::eval) writes a group quartet
+//! as `out[(ab · nf_ab + f_ab) · (m_cd · nf_cd) + cd · nf_cd + f_cd]`, with
 //! `ab = c_a · m_b + c_b` the bra column pair, `f_ab = f_a · n_b + f_b` its
 //! Cartesian function pair (p as x, y, z), and the same on the ket.
-//! [`GcKernelBasis::gather`] copies one column quartet out of it in
-//! libint's layout and function order (pure p as y, z, x).
+//! [`gather`](crate::gc_kernel::GcKernelBasis::gather) copies one column
+//! quartet out of it in libint's layout and function order (pure p as y, z,
+//! x).
 
 use crate::basis_bridge::PreparedBasis;
 use crate::contraction_rotation::RotatedBasis;

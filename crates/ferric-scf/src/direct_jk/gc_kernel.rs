@@ -15,14 +15,14 @@
 //!   the production order) of an ordered bra group pair with `l1 + l2 <= 1`
 //!   pulls the other members of that group pair in right after it, so the
 //!   kernel blocks of a bra group pair are evaluated once and reused by all
-//!   its bra pairs ([`group_first`]);
+//!   its bra pairs (`group_first`);
 //! * the deterministic group partition, and the MPI striping, take such a
 //!   run of members (a *bucket*) as one unit, so no reduction group and no
-//!   rank splits a bucket ([`Partition`]); both stay pure functions of the
+//!   rank splits a bucket (`Partition`); both stay pure functions of the
 //!   bra-pair list;
 //! * in the ket loop the screen is unchanged (per column quartet); the
 //!   group block is computed on the bucket's first survivor in that ket
-//!   group pair and cached for the rest of the bucket ([`KernelCache`]);
+//!   group pair and cached for the rest of the bucket (`KernelCache`);
 //!   each surviving column quartet is gathered into libint's layout and
 //!   digested by the same pair digest, in the same canonical `(s3, s4)`
 //!   order; everything else goes to libint unchanged.
