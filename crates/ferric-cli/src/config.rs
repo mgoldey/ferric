@@ -3958,8 +3958,11 @@ impl Config {
     /// `optimize` / `frequencies` run, each of `gc_rotation`, `k_builder`,
     /// `screening`, `eri` (set) and `integral_thresh` (other than the
     /// default; an explicit default value is indistinguishable and harmless).
-    /// The run's initial SCF honours them; the SCFs the gradient solves at
-    /// each geometry do not. Empty on every other run.
+    /// These runs solve no shared SCF before the gradient loop: the
+    /// SCFs the gradient solves at each geometry run without these keys, so
+    /// the energies, gradients and frequencies do not see them; only the
+    /// reference SCF the certificate solves at the final (or, for
+    /// frequencies, the input) geometry does. Empty on every other run.
     pub fn uncarried_gradient_scf_keys(&self) -> Vec<&'static str> {
         if !RESOLVING_GRADIENT_KINDS.contains(&self.method.kind.as_str())
             || !is_gradient_task(&self.method.task)
@@ -3995,29 +3998,33 @@ impl Config {
             .collect::<Vec<_>>()
             .join(", ");
         Some(format!(
-            "{list} reach{} only the initial SCF of method.kind = \"{}\" with task = \"{}\": \
-             the gradient re-solves its reference SCF at each geometry from the J/K route and \
-             [scf] jk_digest alone, so those SCFs run the defaults",
-            if keys.len() == 1 { "es" } else { "" },
+            "{list} {} not reach the SCFs of method.kind = \"{}\" with task = \"{}\": its \
+             gradient re-solves the reference SCF at each geometry from the J/K route \
+             ([scf] jk / jk_aux) and [scf] jk_digest alone, so the energies and gradients run \
+             with the defaults; only the certificate's reference SCF (final or input geometry) \
+             reads {}",
+            if keys.len() == 1 { "does" } else { "do" },
             self.method.kind,
-            self.method.task
+            self.method.task,
+            if keys.len() == 1 { "it" } else { "them" },
         ))
     }
 }
 
 impl ScfCfg {
     /// The first `[scf]` key set that only the four-centre route reads
-    /// (`k_builder`, `eri`, `gc_rotation`, `screening`, `df_increments`,
-    /// `df_guess = true`, `df_guess_aux`): with one of them an omitted `jk`
-    /// stays exact, so an input that worked on the four-centre default keeps
-    /// working unchanged. Not `jk_digest`: it changes only the last bits of
-    /// whatever four-centre builds the route runs (and is inert on a fitted
-    /// one), so it must not move an omitted `jk` off the RI-JK default.
+    /// (`k_builder`, `eri`, `screening`, `df_increments`, `df_guess = true`,
+    /// `df_guess_aux`): with one of them an omitted `jk` stays exact, so an
+    /// input that worked on the four-centre default keeps working unchanged.
+    /// Not `jk_digest` or `gc_rotation`: they change only the last bits of
+    /// whatever four-centre builds the route runs (and are inert on a
+    /// fitted one), so they must not move an omitted `jk` off the RI-JK
+    /// default (a `gc_rotation` with no four-centre build to act on warns,
+    /// `gc_rotation_route_warning`).
     fn exact_route_key(&self) -> Option<&'static str> {
         [
             ("k_builder", self.k_builder.is_some()),
             ("eri", self.eri.is_some()),
-            ("gc_rotation", self.gc_rotation.is_some()),
             ("screening", self.screening.is_some()),
             ("df_increments", self.df_increments),
             ("df_guess", self.df_guess == Some(true)),
@@ -6825,16 +6832,29 @@ mod compat_guard_tests {
         }
         let energy = open("energy").unwrap().unwrap();
         assert_eq!((energy.mode, energy.aux), (ScfJkMode::Exact, None));
-        // `jk_digest` does not move an omitted jk: the RI-MP2 optimize and
-        // energy resolve the same fitted route with or without it.
-        for task in ["energy", "optimize", "frequencies"] {
-            let none = choice("rimp2", task, "").unwrap().unwrap();
-            assert_eq!(none.mode, ScfJkMode::RiJk, "{task}");
-            for d in ["pair", "legacy"] {
-                let with = choice("rimp2", task, &format!("jk_digest = \"{d}\"\n"))
-                    .unwrap()
-                    .unwrap();
-                assert_eq!(with, none, "{task} jk_digest = {d}");
+        // `jk_digest` and `gc_rotation` do not move an omitted jk: the
+        // MP2 kinds resolve the same fitted route with or without them.
+        for (kind, task) in [
+            ("rimp2", "energy"),
+            ("rimp2", "optimize"),
+            ("rimp2", "frequencies"),
+            ("scs-mp2", "energy"),
+            ("scs-mp2", "optimize"),
+            ("att-rimp2", "optimize"),
+            ("oo-rimp2", "optimize"),
+            ("mp2-v", "energy"),
+        ] {
+            let none = choice(kind, task, "").unwrap().unwrap();
+            assert_eq!(none.mode, ScfJkMode::RiJk, "{kind} {task}");
+            for key in [
+                "jk_digest = \"pair\"",
+                "jk_digest = \"legacy\"",
+                "gc_rotation = \"off\"",
+                "gc_rotation = \"auto\"",
+                "gc_rotation = \"rot1\"",
+            ] {
+                let with = choice(kind, task, &format!("{key}\n")).unwrap().unwrap();
+                assert_eq!(with, none, "{kind} {task} {key}");
             }
         }
         // A key only the four-centre route reads keeps an omitted jk exact.
@@ -11365,7 +11385,7 @@ json = [1, 2]
                 assert!(one
                     .uncarried_gradient_scf_warning()
                     .unwrap()
-                    .starts_with("[scf] eri reaches only the initial SCF"));
+                    .starts_with("[scf] eri does not reach the SCFs"));
                 let quiet = cfg(kind, task, "jk_digest = \"pair\"\n");
                 assert!(quiet.uncarried_gradient_scf_keys().is_empty());
                 assert_eq!(quiet.uncarried_gradient_scf_warning(), None);

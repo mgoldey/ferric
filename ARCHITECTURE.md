@@ -1049,10 +1049,13 @@ Done:
    the analytic Z-vector follow it). The CLI fills both from
    `[scf] jk_digest` (PR #717 refused the key there) and warns about the
    `[scf]` keys those routes do not carry (`uncarried_gradient_scf_keys`,
-   see 16 under Next); Python leaves them unset. `jk_digest` is not an
-   `exact_route_key`: it no longer moves an omitted `[scf] jk` off the
-   RI-JK default, so it changes only the last bits of whatever four-centre
-   builds a route runs. Tests:
+   see 16 under Next); Python leaves them unset. Neither `jk_digest` nor
+   `gc_rotation` is an `exact_route_key` any more: they no longer move an
+   omitted `[scf] jk` off the RI-JK default (#714 and #717 had added
+   them), so they change only the last bits of whatever four-centre builds
+   a route runs. A `gc_rotation` on an SCF with no four-centre direct J or
+   K build (RI-JK, RIJCOSX, a pure functional on RI-J) warns that it has
+   no effect (`gc_rotation_route_warning`). Tests:
    `ferric-mp2/tests/rimp2_gradient_jk_digest.rs`,
    `ferric-rpa/tests/rpa_gradient_jk_digest.rs` and
    `ferric-cli/tests/jk_digest_gradient_routes_cli.rs` (runs on a memory
@@ -1324,11 +1327,16 @@ Next, each as its own PR following the patterns above:
     RI-MP2-family (`rimp2`, `scs-mp2`, `att-rimp2`, `scs-mp2-2terfc`) and
     `pdep-rpa` `optimize` / `frequencies` gradients re-solve their
     reference at each geometry from `RhfConfig::gradient_reference` plus
-    the J/K route and `jk_digest`, so `gc_rotation`, `k_builder`,
-    `screening`, `eri` and `integral_thresh` reach only the run's initial
-    SCF; so do the convergence and stabilisation settings (`max_iter`,
-    `energy_conv`, `level_shift`, DIIS and guess options; `density_conv`
-    is the fixed 1e-9 of the gradient reference). Today the CLI warns about
+    the J/K route (`jk` / `jk_aux` for the RI-MP2 family; `pdep-rpa` is
+    always four-centre) and `jk_digest`. These runs solve no shared SCF
+    before the gradient loop (`try_run` dispatches to `run_optimize` /
+    `run_frequencies` first), so `gc_rotation`, `k_builder`, `screening`,
+    `eri` and `integral_thresh` reach only the certificate's reference SCF
+    at the final geometry (`task_reference_certificate`), never the
+    energies and gradients; so do the
+    convergence and stabilisation settings (`max_iter`, `energy_conv`,
+    `level_shift`, DIIS and guess options; `density_conv` is the fixed
+    1e-9 of the gradient reference). Today the CLI warns about
     the five J/K keys (`uncarried_gradient_scf_keys`). Carrying them means
     replacing `ScfJk::jk_digest` and `RpaGradientRoute::jk_digest` by one
     reference-settings bundle (say `ReferenceScf { gc_rotation, k_builder,

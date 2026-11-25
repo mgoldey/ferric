@@ -291,6 +291,67 @@ fn warn_uncarried_gradient_scf_keys(cfg: &Config) {
     }
 }
 
+/// The warning for an explicit `[scf] gc_rotation` on an SCF whose J/K
+/// route has no four-centre direct build for it to rotate: J fitted
+/// (RI-J), and exchange fitted, COSX or not consumed (RI-JK, RIJCOSX, a
+/// pure functional on RI-J). (LinK runs only next to four-centre J.) `None` when the key is unset, when
+/// either half is a four-centre direct build (e.g. `DirectJ` next to
+/// RI-K), or when the route cannot be resolved (the SCF reports that).
+/// `open_shell` picks the unrestricted resolution (no auto-default fit).
+fn gc_rotation_route_warning(
+    gc_rotation_set: bool,
+    rhf_config: &RhfConfig,
+    open_shell: bool,
+) -> Option<String> {
+    if !gc_rotation_set {
+        return None;
+    }
+    let spin = if open_shell {
+        ferric_scf::Spin::Unrestricted
+    } else {
+        ferric_scf::Spin::Restricted
+    };
+    let exchange = ferric_scf::JkExchange::from_config(rhf_config);
+    let route = ferric_scf::resolve_jk_route(rhf_config, exchange, spin).ok()?;
+    let direct_j = route.j_aux.is_none();
+    let direct_k = route.k_consumed
+        && route.omega <= 0.0
+        && route.k_aux.is_none()
+        && !route.cosx_k
+        && route.pluggable_k(rhf_config.k_builder).is_none();
+    if direct_j || direct_k {
+        return None;
+    }
+    Some(
+        "[scf] gc_rotation has no effect on this run: its SCF builds no four-centre J or K \
+         (J is density-fitted and exchange is density-fitted, COSX or not used), and the \
+         contraction rotation acts only on the direct four-centre builds. Set [scf] jk = \
+         \"exact\" if a four-centre reference was intended"
+            .into(),
+    )
+}
+
+/// Print [`gc_rotation_route_warning`] and write it to the run log as a
+/// `warning` note.
+fn warn_gc_rotation_without_four_centre(cfg: &Config, rhf_config: &RhfConfig, open_shell: bool) {
+    let Some(text) =
+        gc_rotation_route_warning(cfg.scf.gc_rotation.is_some(), rhf_config, open_shell)
+    else {
+        return;
+    };
+    eprintln!("warning: {text}");
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.note(
+            "warning",
+            serde_json::json!({
+                "kind": "gc_rotation_without_four_centre",
+                "keys": ["gc_rotation"],
+                "text": text,
+            }),
+        );
+    }
+}
+
 /// Real entry point for the standalone `ferric`/`ferric-cli` binaries. Reads
 /// the live process argv, which for a native binary is exactly
 /// `[program_name, ...user_args]` -- `run()` below expects that same shape,
@@ -1175,6 +1236,7 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
         );
     }
     warn_uncarried_gradient_scf_keys(&cfg);
+    warn_gc_rotation_without_four_centre(&cfg, &rhf_config, mol.multiplicity > 1);
 
     // Resolve/validate [scf] df_guess_aux up front (config-honesty: a knob
     // that would silently do nothing under df_guess = false is a hard error)
@@ -9528,6 +9590,51 @@ mod scf_config_lowering_tests {
         a.guess_basis = None;
         b.guess_basis = None;
         assert_eq!(format!("{a:#?}"), format!("{b:#?}"), "{msg}");
+    }
+
+    /// `gc_rotation_route_warning`: an explicit `gc_rotation` warns only
+    /// when the SCF's route has no four-centre direct J or K build: RI-JK
+    /// (closed and open shell), RIJCOSX, and a pure functional on RI-J; not
+    /// four-centre HF, RI-J next to four-centre K, a hybrid's auto RI-JK
+    /// opted out with `""`, or an unset key.
+    #[test]
+    fn gc_rotation_warns_only_without_a_four_centre_build() {
+        use ferric_scf::options::KBuilderKind;
+        let hf = RhfConfig::default();
+        let rijk = RhfConfig::default()
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
+        let rij_direct_k = RhfConfig::default().with_df_j_aux("def2-universal-jkfit");
+        let rijcosx = RhfConfig::default()
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_k_builder(KBuilderKind::Cosx);
+        let pbe = RhfConfig::default().with_xc("PBE");
+        let pbe0 = RhfConfig::default().with_xc("PBE0");
+        let pbe0_exact = RhfConfig::default()
+            .with_xc("PBE0")
+            .with_df_j_aux("")
+            .with_df_k_aux("");
+        for (name, c, open, warns) in [
+            ("hf", &hf, false, false),
+            ("rijk", &rijk, false, true),
+            ("rijk open", &rijk, true, true),
+            ("ri-j + direct K", &rij_direct_k, false, false),
+            ("rijcosx", &rijcosx, false, true),
+            ("pbe (auto RI-J, no K)", &pbe, false, true),
+            ("pbe open (four-centre J)", &pbe, true, false),
+            ("pbe0 (auto RI-JK)", &pbe0, false, true),
+            ("pbe0 opted out", &pbe0_exact, false, false),
+        ] {
+            let w = gc_rotation_route_warning(true, c, open);
+            assert_eq!(w.is_some(), warns, "{name}: {w:?}");
+            if let Some(w) = w {
+                assert!(
+                    w.contains("[scf] gc_rotation") && w.contains("jk = \"exact\""),
+                    "{w}"
+                );
+            }
+            assert_eq!(gc_rotation_route_warning(false, c, open), None, "{name}");
+        }
     }
 
     /// `[scf] gc_rotation` reaches `RhfConfig::gc_rotation`; unset leaves it
