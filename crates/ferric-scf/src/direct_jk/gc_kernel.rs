@@ -537,6 +537,64 @@ mod tests {
         assert_eq!(c.mode_collective(&ctx).unwrap(), GcKernel::Auto);
     }
 
+    /// The block cache against a fresh evaluation, bitwise, for every
+    /// covered quartet of a rotated cc-pVDZ basis, with the bra pairs in
+    /// shell order so the bucket changes between most of them: a stale
+    /// block (one cached for another bra bucket) or a ket key that aliases
+    /// another ket group pair would differ.
+    #[test]
+    fn cache_serves_the_block_of_the_current_bucket() {
+        use ferric_integrals::basis_bridge::PreparedBasis;
+        use ferric_integrals::contraction_rotation::{RotatedBasis, RotationLevel};
+        let mol =
+            ferric_core::mol::Molecule::load_xyz("../../testdata/molecules/c2h4.xyz").unwrap();
+        let parent =
+            PreparedBasis::new(&mol, &ferric_core::basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let rot = RotatedBasis::detect_prepared(&parent, RotationLevel::Ogc)
+            .unwrap()
+            .unwrap();
+        let kb = GcKernelBasis::for_rotated(&rot, 1e-20).unwrap();
+        let nsh = rot.prep.nshells();
+        let mut cache = KernelCache::new(&kb);
+        let mut scratch = KernelScratch::default();
+        let (mut block, mut want) = (Vec::new(), [0.0; 3]);
+        let (mut served, mut switches, mut last) = (0usize, 0usize, None);
+        for s1 in 0..nsh {
+            for s2 in 0..=s1 {
+                let Some((bra, l12)) = cache.begin(s1, s2) else {
+                    continue;
+                };
+                if last != Some(bra) {
+                    switches += 1;
+                    last = Some(bra);
+                }
+                for s3 in 0..nsh {
+                    for s4 in 0..nsh {
+                        if !cache.covers(l12, s3, s4) {
+                            continue;
+                        }
+                        let Some(n) = cache.gather(bra, [s1, s2, s3, s4]) else {
+                            continue;
+                        };
+                        let PairKind::Data(ket) = kb.pair_of(s3, s4) else {
+                            unreachable!("gather served a ket without data");
+                        };
+                        block.resize(kb.block_len(bra, ket), 0.0);
+                        kb.eval(bra, ket, &mut block, &mut scratch);
+                        assert_eq!(kb.gather(&block, bra, ket, [s1, s2, s3, s4], &mut want), n);
+                        for (x, y) in cache.q[..n].iter().zip(&want[..n]) {
+                            assert_eq!(x.to_bits(), y.to_bits(), "({s1} {s2}|{s3} {s4})");
+                        }
+                        served += 1;
+                    }
+                }
+            }
+        }
+        assert!(served > 1000 && switches > 50, "{served} {switches}");
+        assert_eq!(cache.counts.quartets, served);
+        assert!(cache.counts.evals < served, "no block was reused");
+    }
+
     /// The unit partition never splits a unit, covers the list in order and
     /// fills each group (but the last) to the even partition's size.
     #[test]
