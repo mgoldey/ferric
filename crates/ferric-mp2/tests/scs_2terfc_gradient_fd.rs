@@ -39,7 +39,7 @@ use ferric_mp2::scs_2terfc_gradient::{
     scs_mp2_2terfc_gradient_analytical, total_scs_mp2_2terfc_gradient_on,
 };
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
-use ferric_scf::scf_jk::{ScfJk, ScfJkMode};
+use ferric_scf::scf_jk::ScfJk;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::warm_start::ScfWarmStart;
 use ferric_scf::ScfResult;
@@ -79,10 +79,7 @@ fn ensure_tables() {
 }
 
 fn rijk() -> ScfJk {
-    ScfJk {
-        mode: ScfJkMode::RiJk,
-        aux: Some("def2-universal-jkfit".to_string()),
-    }
+    ScfJk::rijk("def2-universal-jkfit")
 }
 
 struct Point {

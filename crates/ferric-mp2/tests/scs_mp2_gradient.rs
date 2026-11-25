@@ -69,7 +69,7 @@ use ferric_mp2::gradient::{
 use ferric_mp2::rimp2::RiMp2Config;
 use ferric_mp2::scs::{scs_mp2, ScsMp2Config};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
-use ferric_scf::scf_jk::{ScfJk, ScfJkMode};
+use ferric_scf::scf_jk::ScfJk;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::warm_start::ScfWarmStart;
 use ferric_scf::ScfResult;
@@ -98,10 +98,7 @@ fn scs_config(scaling: (f64, f64), frozen_core: usize) -> ScsMp2Config {
 }
 
 fn rijk() -> ScfJk {
-    ScfJk {
-        mode: ScfJkMode::RiJk,
-        aux: Some("def2-universal-jkfit".to_string()),
-    }
+    ScfJk::rijk("def2-universal-jkfit")
 }
 
 /// One geometry's prepared bases, bounds and tight RHF on `jk`.

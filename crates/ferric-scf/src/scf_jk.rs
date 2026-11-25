@@ -117,7 +117,16 @@ pub const OO_BUILDS_EXACT_OR_RIJK: &str = "orbital-optimised MP2 rebuilds J/K at
      would change only the starting orbitals while the result claimed it";
 
 /// A resolved `scf_jk` choice: the mode plus the JK-fitting basis it uses
-/// (`None` exactly when the mode is [`ScfJkMode::Exact`]).
+/// (`None` exactly when the mode is [`ScfJkMode::Exact`]), and the J/K
+/// digest of the direct four-centre builds.
+///
+/// The correlated gradient drivers re-solve their reference SCF at each
+/// geometry from this choice alone, so it also carries the reference's
+/// `jk_digest` ([`RhfConfig::jk_digest`], CLI `[scf] jk_digest`): those
+/// drivers write it into the reference's config, whose SCF records it on
+/// the Schwarz bounds the SCF and its response builds share. Build one with
+/// [`ScfJk::exact`], [`ScfJk::rijk`] or [`ScfJk::resolve`] (each leaves the
+/// digest unset) and [`ScfJk::with_jk_digest`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScfJk {
     /// How J and K are built.
@@ -125,9 +134,42 @@ pub struct ScfJk {
     /// JK-fitting basis name; `None` exactly when `mode` is
     /// [`ScfJkMode::Exact`].
     pub aux: Option<String>,
+    /// The digest of the reference's direct four-centre J/K builds
+    /// ([`RhfConfig::jk_digest`]): `None` leaves it to `FERRIC_JK_DIGEST`,
+    /// then `pair`. Read only by the drivers that build their reference
+    /// from this choice (the RI-MP2-family gradients); [`Self::apply`]
+    /// leaves the config's own value alone.
+    pub jk_digest: Option<crate::quartet_scatter::JkDigest>,
 }
 
 impl ScfJk {
+    /// The four-centre reference (`"exact"`), digest unset.
+    pub fn exact() -> Self {
+        Self {
+            mode: ScfJkMode::Exact,
+            aux: None,
+            jk_digest: None,
+        }
+    }
+
+    /// RI-J + RI-K on the JK-fitting basis `aux` (`"rijk"`), digest unset.
+    /// The name is taken as given (see [`Self::resolve`] for the checked
+    /// spelling).
+    pub fn rijk(aux: impl Into<String>) -> Self {
+        Self {
+            mode: ScfJkMode::RiJk,
+            aux: Some(aux.into()),
+            jk_digest: None,
+        }
+    }
+
+    /// This choice with the reference's J/K digest `digest` (`None`:
+    /// `FERRIC_JK_DIGEST`, then `pair`).
+    pub fn with_jk_digest(mut self, digest: Option<crate::quartet_scatter::JkDigest>) -> Self {
+        self.jk_digest = digest;
+        self
+    }
+
     /// Resolve the user's `scf_jk` / `jk_aux` into one choice, checking the
     /// `k_builder` spelling next to them (`k_builder` as the user typed it,
     /// so a conflict quotes it; the frontend parses it into the config's
@@ -167,7 +209,11 @@ impl ScfJk {
             (_, None) => Some(DEFAULT_SCF_JK_AUX.to_string()),
             (_, Some(a)) => Some(checked_aux(mode, a, keys)?),
         };
-        Ok(Self { mode, aux })
+        Ok(Self {
+            mode,
+            aux,
+            jk_digest: None,
+        })
     }
 
     /// Does this choice density-fit the reference SCF at all?

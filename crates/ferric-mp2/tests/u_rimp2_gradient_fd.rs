@@ -49,7 +49,7 @@ use ferric_integrals::operator::Operator;
 use ferric_mp2::rimp2::RiMp2Config;
 use ferric_mp2::u_rimp2_gradient::{total_u_rimp2_energy_with, total_u_rimp2_gradient_with};
 use ferric_scf::rhf::RhfConfig;
-use ferric_scf::scf_jk::{ScfJk, ScfJkMode};
+use ferric_scf::scf_jk::ScfJk;
 use ferric_scf::warm_start::ScfWarmStart;
 use ndarray::Array2;
 
@@ -67,15 +67,9 @@ fn tight() -> RhfConfig {
 
 fn route(fit: bool) -> ScfJk {
     if fit {
-        ScfJk {
-            mode: ScfJkMode::RiJk,
-            aux: Some("def2-universal-jkfit".into()),
-        }
+        ScfJk::rijk("def2-universal-jkfit")
     } else {
-        ScfJk {
-            mode: ScfJkMode::Exact,
-            aux: None,
-        }
+        ScfJk::exact()
     }
 }
 

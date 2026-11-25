@@ -6839,7 +6839,7 @@ fn run_frequencies_correlated(
                         m, bs, &aux_bs, op, &rpa_cfg, gradient, warm,
                     )
                 }),
-                gradient.certificate_label_with(fallback.as_deref()),
+                gradient.method.certificate_label_with(fallback.as_deref()),
             )
         }
         "rimp2" => {
@@ -7602,39 +7602,32 @@ fn task_reference_certificate_from(
 /// RI-MP2 / SCS-MP2 optimize or frequency run of `kind`: four-centre or RI-JK, the SCF its
 /// analytic gradient differentiates; any other route is an error.
 ///
-/// `[scf] jk_digest` is refused here: the gradient re-solves its reference
-/// at each geometry from the route alone (`ScfJk`), so the key would be
-/// dropped silently. `FERRIC_JK_DIGEST` reaches those builds.
+/// The route carries `[scf] jk_digest` (`ScfJk::jk_digest`): the gradient
+/// re-solves its reference at each geometry from this choice alone, and its
+/// drivers write the digest into that reference's config.
 fn rimp2_gradient_scf_jk(
     kind: &str,
     rhf_config: &ferric_scf::rhf::RhfConfig,
 ) -> Result<ferric_scf::scf_jk::ScfJk, String> {
-    if let Some(d) = rhf_config.jk_digest {
-        return Err(format!(
-            "[scf] jk_digest = \"{d}\" is not read by method.kind = \"{kind}\" with task = \
-             \"optimize\" or \"frequencies\": its gradient solves the reference SCF at each \
-             geometry from the J/K route alone. Remove it; FERRIC_JK_DIGEST selects the digest \
-             of those builds"
-        ));
-    }
     let route = ferric_scf::scf_jk::effective_jk(rhf_config);
-    match route.mode {
-        "exact" => Ok(ferric_mp2::gradient::exact_scf_jk()),
-        "rijk" => Ok(ferric_scf::scf_jk::ScfJk {
-            mode: ferric_scf::scf_jk::ScfJkMode::RiJk,
-            aux: route.j_aux,
-        }),
-        other => Err(format!(
-            "method.kind = \"{kind}\", task = \"optimize\" or \"frequencies\" differentiates a \
-             four-centre or an RI-JK reference ([scf] jk = \"exact\" | \"rijk\"); the [scf] fields give the J/K \
-             route \"{other}\""
-        )),
-    }
+    let jk = match (route.mode, route.j_aux) {
+        ("exact", _) => ferric_scf::scf_jk::ScfJk::exact(),
+        ("rijk", Some(aux)) => ferric_scf::scf_jk::ScfJk::rijk(aux),
+        (other, _) => {
+            return Err(format!(
+                "method.kind = \"{kind}\", task = \"optimize\" or \"frequencies\" differentiates a \
+                 four-centre or an RI-JK reference ([scf] jk = \"exact\" | \"rijk\"); the [scf] fields give the J/K \
+                 route \"{other}\""
+            ))
+        }
+    };
+    Ok(jk.with_jk_digest(rhf_config.jk_digest))
 }
 
 /// The `[rpa]` pieces of an RI-dRPA gradient run (`task = "optimize"` or
 /// `"frequencies"`): the RI basis, the RPA configuration, the gradient
-/// method (`[rpa] gradient`, else `resolve_default`) and the reason for a
+/// route (the method, `[rpa] gradient`, else `resolve_default`, and the
+/// reference RHF's `[scf] jk_digest`) and the reason for a
 /// finite-difference fallback. Exits 1 on a bad `[rpa]` value.
 fn rpa_gradient_setup(
     cfg: &Config,
@@ -7645,7 +7638,7 @@ fn rpa_gradient_setup(
     (
         BasisSet,
         PdepRpaConfig,
-        ferric_rpa::gradient::RpaGradientMethod,
+        ferric_rpa::gradient::RpaGradientRoute,
         Option<String>,
     ),
     CliError,
@@ -7698,7 +7691,11 @@ fn rpa_gradient_setup(
     if let Some(why) = &fallback {
         eprintln!("note: [rpa] gradient unset; using finite differences ({why})");
     }
-    Ok((aux_bs, rpa_cfg, gradient, fallback))
+    // The gradient re-solves its reference RHF at each geometry from the
+    // route alone: `[scf] jk_digest` travels with it.
+    let route = ferric_rpa::gradient::RpaGradientRoute::from(gradient)
+        .with_jk_digest(cfg.scf.jk_digest_resolved().map_err(CliError::msg)?);
+    Ok((aux_bs, rpa_cfg, route, fallback))
 }
 
 /// `task.method = "optimize"` dispatch. Extracted verbatim from the former
@@ -7845,7 +7842,7 @@ fn run_optimize(
                 None,
                 (opt_result.converged, opt_result.steps, opt_result.energy),
                 opt_result.search,
-                &gradient.certificate_label_with(fallback.as_deref()),
+                &gradient.method.certificate_label_with(fallback.as_deref()),
             )?;
         }
         "rimp2" => run_optimize_rimp2(
@@ -9551,21 +9548,62 @@ mod scf_config_lowering_tests {
             .is_ok());
     }
 
-    /// The RI-MP2 family's geometry gradient cannot honour `[scf]
-    /// jk_digest` (it re-solves its reference from the J/K route alone), so
-    /// the key is refused there rather than dropped.
+    /// The RI-MP2 family's geometry gradient carries `[scf] jk_digest` on
+    /// its J/K route (`ScfJk::jk_digest`), four-centre and RI-JK alike; an
+    /// unset key leaves the route's digest unset (the variable decides) and
+    /// the route otherwise unchanged.
     #[test]
-    fn rimp2_geometry_refuses_jk_digest() {
+    fn rimp2_geometry_route_carries_jk_digest() {
         use ferric_scf::quartet_scatter::JkDigest;
-        let mut c = ferric_scf::rhf::RhfConfig::default();
-        assert!(rimp2_gradient_scf_jk("rimp2", &c).is_ok());
-        for d in [JkDigest::Pair, JkDigest::Legacy] {
-            c.jk_digest = Some(d);
-            let e = rimp2_gradient_scf_jk("scs-mp2", &c).unwrap_err();
-            assert!(
-                e.contains("[scf] jk_digest") && e.contains("scs-mp2"),
-                "{e}"
-            );
+        use ferric_scf::scf_jk::ScfJk;
+        let fitted = |c: &mut ferric_scf::rhf::RhfConfig| {
+            c.df_j_aux = Some("def2-universal-jkfit".into());
+            c.df_k_aux = Some("def2-universal-jkfit".into());
+        };
+        for (fit, want) in [
+            (false, ScfJk::exact()),
+            (true, ScfJk::rijk("def2-universal-jkfit")),
+        ] {
+            let mut c = ferric_scf::rhf::RhfConfig::default();
+            if fit {
+                fitted(&mut c);
+            }
+            assert_eq!(rimp2_gradient_scf_jk("rimp2", &c), Ok(want.clone()));
+            for d in [JkDigest::Pair, JkDigest::Legacy] {
+                c.jk_digest = Some(d);
+                for kind in ["rimp2", "scs-mp2", "att-rimp2", "scs-mp2-2terfc"] {
+                    assert_eq!(
+                        rimp2_gradient_scf_jk(kind, &c),
+                        Ok(want.clone().with_jk_digest(Some(d))),
+                        "{kind} fit={fit}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The `pdep-rpa` gradient route (`optimize` and `frequencies` share
+    /// `rpa_gradient_setup`) carries `[scf] jk_digest`; unset leaves it
+    /// unset, and the method is the one the key does not touch.
+    #[test]
+    fn pdep_rpa_gradient_route_carries_jk_digest() {
+        use ferric_scf::quartet_scatter::JkDigest;
+        let mol = Molecule::parse_xyz("2\nh2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let route = |extra: &str| {
+            let cfg = parse(&header(
+                "pdep-rpa",
+                &format!("task = \"optimize\"\n{extra}"),
+            ));
+            rpa_gradient_setup(&cfg, &mol, Operator::coulomb(), None)
+                .unwrap()
+                .2
+        };
+        let unset = route("");
+        assert_eq!(unset.jk_digest, None);
+        for (value, want) in [("pair", JkDigest::Pair), ("legacy", JkDigest::Legacy)] {
+            let r = route(&format!("[scf]\njk_digest = \"{value}\"\n"));
+            assert_eq!(r.jk_digest, Some(want), "{value}");
+            assert_eq!(r.method, unset.method, "{value}");
         }
     }
 

@@ -1505,11 +1505,8 @@ fn mp2_gradient_scf_jk(
     use ferric_scf::scf_jk::{ScfJk, ScfJkMode};
     let jk = optimize_scf_jk(k, basis_name)?;
     match jk.mode {
-        ScfJkMode::Exact => Ok(ferric_mp2::gradient::exact_scf_jk()),
-        ScfJkMode::RiJk => Ok(ScfJk {
-            mode: ScfJkMode::RiJk,
-            aux: jk.aux.clone(),
-        }),
+        ScfJkMode::Exact => Ok(ScfJk::exact()),
+        ScfJkMode::RiJk => Ok(jk),
         _ => Err(value_error(format!(
             "run_optimize: method=\"{who}\" differentiates a four-centre or an RI-JK \
              reference (scf_jk=\"exact\" | \"rijk\"); got scf_jk={:?}",
