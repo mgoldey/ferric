@@ -2643,6 +2643,9 @@ fn lmp2_timings_json(
             group_in_flight_peak,
             n_group_waves,
             eri3_slab_bytes_max,
+            pair_fit_thread_s,
+            group_work_max_s,
+            group_work_mean_s,
         } = d;
         let mut out = serde_json::json!({
             "strip_rows_mean": strip_rows_mean,
@@ -2693,6 +2696,9 @@ fn lmp2_timings_json(
             "group_in_flight_peak": group_in_flight_peak,
             "n_group_waves": n_group_waves,
             "eri3_slab_bytes_max": eri3_slab_bytes_max,
+            "pair_fit_thread_s": pair_fit_thread_s,
+            "group_work_max_s": group_work_max_s,
+            "group_work_mean_s": group_work_mean_s,
             "memory_strips_bytes": memory.strips_bytes,
             "memory_metric_bytes": memory.metric_bytes,
             "memory_stage3_scratch_bytes": memory.stage3_scratch_bytes,
@@ -8734,24 +8740,11 @@ mod local_printout_tests {
         assert_eq!(j["keep_fraction"], 0.023);
         assert_eq!(j["integral_direct"], true);
     }
-
-    /// The run-log `timings` object carries every StageTimings field and,
-    /// on the direct path, every DirectStats field, each with its own value
-    /// (distinct per field, so a swapped key fails), and `direct: null` on
-    /// the in-core path. A NaN timer is logged as `null`.
-    #[test]
-    fn lmp2_timings_json_carries_every_field() {
-        use super::lmp2_timings_json;
-        use ferric_mp2::lmp2_amplitude::StageTimings;
+    /// Every `DirectStats` field set to a distinct value, for the JSON
+    /// round-trip test.
+    fn direct_stats_fixture() -> ferric_mp2::lmp2_direct::DirectStats {
         use ferric_mp2::lmp2_direct::DirectStats;
-        let t = StageTimings {
-            t_spaces_s: 1.5,
-            t_loc_s: 5.5,
-            t_assembly_s: 2.5,
-            t_solve_s: 3.5,
-            t_reference_s: 4.5,
-        };
-        let d = DirectStats {
+        DirectStats {
             strip_rows_mean: 10.5,
             strip_rows_max: 11,
             strip_cols_mean: 12.5,
@@ -8804,7 +8797,28 @@ mod local_printout_tests {
             group_in_flight_peak: 57,
             n_group_waves: 58,
             eri3_slab_bytes_max: 59,
+            pair_fit_thread_s: [60.5, 61.5, 62.5, 63.5],
+            group_work_max_s: 64.5,
+            group_work_mean_s: 65.5,
+        }
+    }
+
+    /// The run-log `timings` object carries every StageTimings field and,
+    /// on the direct path, every DirectStats field, each with its own value
+    /// (distinct per field, so a swapped key fails), and `direct: null` on
+    /// the in-core path. A NaN timer is logged as `null`.
+    #[test]
+    fn lmp2_timings_json_carries_every_field() {
+        use super::lmp2_timings_json;
+        use ferric_mp2::lmp2_amplitude::StageTimings;
+        let t = StageTimings {
+            t_spaces_s: 1.5,
+            t_loc_s: 5.5,
+            t_assembly_s: 2.5,
+            t_solve_s: 3.5,
+            t_reference_s: 4.5,
         };
+        let d = direct_stats_fixture();
         let stage: &[(&str, f64)] = &[
             ("t_spaces_s", 1.5),
             ("t_loc_s", 5.5),
@@ -8856,6 +8870,8 @@ mod local_printout_tests {
             ("group_in_flight_peak", 57.0),
             ("n_group_waves", 58.0),
             ("eri3_slab_bytes_max", 59.0),
+            ("group_work_max_s", 64.5),
+            ("group_work_mean_s", 65.5),
             ("memory_strips_bytes", 50.0),
             ("memory_metric_bytes", 51.0),
             ("memory_stage3_scratch_bytes", 52.0),
@@ -8873,8 +8889,13 @@ mod local_printout_tests {
             assert_eq!(j[*k].as_f64(), Some(*v), "{k}: {j}");
         }
         let dj = j["direct"].as_object().unwrap();
-        assert_eq!(dj.len(), direct.len() + 2, "{j}");
+        assert_eq!(dj.len(), direct.len() + 3, "{j}");
         assert_eq!(dj["memory_exact"], true, "{j}");
+        assert_eq!(
+            dj["pair_fit_thread_s"],
+            serde_json::json!([60.5, 61.5, 62.5, 63.5]),
+            "{j}"
+        );
         for (k, v) in direct {
             assert_eq!(j["direct"][*k].as_f64(), Some(*v), "{k}: {j}");
         }
