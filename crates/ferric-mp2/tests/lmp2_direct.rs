@@ -27,22 +27,41 @@ struct Setup {
 /// FERRIC_LMP2_BENCH_RHF_CACHE=<dir> reuses the RHF across processes; see
 /// `common/bench_rhf_cache.rs`. No bench stage timer covers this function.
 fn setup(xyz: &str) -> Setup {
-    let xyz_path = format!(
+    let xyz_path = testdata_molecule(xyz);
+    let mol = Molecule::load_xyz(&xyz_path).unwrap();
+    setup_with(mol, |mol, obs, obs_bs, aux_bs| {
+        bench_rhf_cache::setup_rhf(
+            &xyz_path,
+            mol,
+            obs,
+            ("6-31g", obs_bs),
+            ("cc-pvdz-ri", aux_bs),
+        )
+    })
+}
+
+fn testdata_molecule(xyz: &str) -> String {
+    format!(
         "{}/../../testdata/molecules/{xyz}",
         env!("CARGO_MANIFEST_DIR")
-    );
-    let mol = Molecule::load_xyz(&xyz_path).unwrap();
+    )
+}
+
+/// 6-31G / cc-pvdz-ri bases on `mol` and the RHF from `rhf_of`.
+fn setup_with(
+    mol: Molecule,
+    rhf_of: impl FnOnce(
+        &Molecule,
+        &PreparedBasis,
+        &basis::BasisSet,
+        &basis::BasisSet,
+    ) -> ferric_scf::result::ScfResult,
+) -> Setup {
     let obs_bs = basis::bundled("6-31g").unwrap();
     let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
     let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
     let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
-    let rhf = bench_rhf_cache::setup_rhf(
-        &xyz_path,
-        &mol,
-        &obs,
-        ("6-31g", &obs_bs),
-        ("cc-pvdz-ri", &aux_bs),
-    );
+    let rhf = rhf_of(&mol, &obs, &obs_bs, &aux_bs);
     Setup {
         mol,
         obs,
@@ -2864,4 +2883,69 @@ fn production_schwarz_cut_is_harmless_in_a_diffuse_basis() {
         d.abs() < 1e-5,
         "production Schwarz cut moved the energy by {d:.3e} Ha"
     );
+}
+
+/// S22 T-shaped benzene dimer, 6-31G, production integral-direct LMP2 at
+/// ε = 1e-4. The λ-Boys maximum has a soft mode (Hessian eigenvalue
+/// −8.2e-5 against ≥ 3.6 for the others, measured 2026-11-25): the Jacobi
+/// sweeps stall near max |gradient| 1e-6 (the pre-Newton optimiser errored
+/// at its 2000-sweep cap), and a stop on the gradient alone left E_corr
+/// 2.5e-6 Ha off. Production must converge, the energy must not depend on
+/// where the optimiser started (sweeps then Newton, or Newton from the Boys
+/// orbitals), and ε = 0 with inert maps must give canonical RI-MP2.
+#[test]
+fn production_lambda_boys_converges_on_the_s22_benzene_dimer() {
+    use ferric_mp2::boys::{LambdaBoysSolver, LAMBDA_BOYS_SOLVER, LAMBDA_BOYS_STEP_TOL};
+    let su = setup("s22/benzene_dimer_T.xyz");
+    let fc = su.mol.auto_frozen_core();
+    let run = |cfg: &AmplitudeLmp2Config, dcfg: &DirectConfig| {
+        amplitude_lmp2_direct(
+            &su.mol,
+            &su.obs,
+            &su.obs_bs,
+            &su.dfbs,
+            Operator::coulomb(),
+            &su.rhf,
+            cfg,
+            dcfg,
+        )
+        .unwrap()
+        .0
+    };
+    let prod = AmplitudeLmp2Config::production(1e-4, fc, None);
+    let a = run(&prod, &DirectConfig::production());
+    let lb = &a.lambda_boys;
+    eprintln!(
+        "T dimer production: E_corr {:.12} lambda-Boys {lb:?}",
+        a.e_corr
+    );
+    assert!(lb.newton_iters >= 1, "the sweeps alone converged: {lb:?}");
+    assert!(lb.newton_step < LAMBDA_BOYS_STEP_TOL, "{lb:?}");
+    // a second entry point into the same maximum
+    let from_boys = AmplitudeLmp2Config {
+        lambda_boys_solver: LambdaBoysSolver {
+            jacobi_sweeps: 0,
+            newton_iters: 60,
+            ..LAMBDA_BOYS_SOLVER
+        },
+        ..prod.clone()
+    };
+    let b = run(&from_boys, &DirectConfig::production());
+    let d = (a.e_corr - b.e_corr).abs();
+    eprintln!("Newton from Boys: E_corr {:.12} |diff| {d:.2e}", b.e_corr);
+    assert!(
+        d < 1e-9,
+        "E_corr depends on the optimiser's entry point: {d:.2e}"
+    );
+    // ε = 0, inert maps: canonical RI-MP2
+    let anchor = AmplitudeLmp2Config {
+        eps: 0.0,
+        compute_reference: true,
+        fock_screen: None,
+        ..prod
+    };
+    let z = run(&anchor, &trivial_maps());
+    let dz = (z.e_corr - z.e_corr_canonical_ri).abs();
+    eprintln!("eps 0 anchor: |E - canonical| {dz:.2e}");
+    assert!(dz < 1e-9, "eps = 0 vs canonical: {dz:.2e}");
 }

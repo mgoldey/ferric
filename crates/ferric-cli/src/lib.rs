@@ -2531,29 +2531,34 @@ fn lmp2_local_json_with_vs(
             obj.insert(k.to_string(), cert_value_json(&v));
         }
         let lb = &r.lambda_boys;
-        obj.insert("lambda_boys".to_string(), serde_json::json!(lb.lambda));
-        obj.insert(
-            "lambda_boys_sweeps".to_string(),
-            serde_json::json!(lb.sweeps),
-        );
-        obj.insert(
-            "lambda_boys_max_grad".to_string(),
-            serde_json::json!(lb.max_grad),
-        );
-        obj.insert("lambda_boys_t_s".to_string(), serde_json::json!(lb.t_s));
+        for (k, v) in [
+            ("lambda_boys", serde_json::json!(lb.lambda)),
+            ("lambda_boys_sweeps", serde_json::json!(lb.sweeps)),
+            (
+                "lambda_boys_newton_iters",
+                serde_json::json!(lb.newton_iters),
+            ),
+            ("lambda_boys_max_grad", serde_json::json!(lb.max_grad)),
+            ("lambda_boys_newton_step", serde_json::json!(lb.newton_step)),
+            ("lambda_boys_t_s", serde_json::json!(lb.t_s)),
+        ] {
+            obj.insert(k.to_string(), v);
+        }
     }
     j
 }
 
 /// The printout's occupied-localization line: plain Boys at λ = 0, else λ,
-/// sweeps, final gradient and wall time of the λ-Boys stage.
+/// Jacobi sweeps, Newton iterations, final gradient, last Newton step and
+/// wall time of the λ-Boys stage.
 fn lambda_boys_line(lb: &ferric_mp2::boys::LambdaBoysReport) -> String {
     if lb.lambda == 0.0 {
         "Boys (lambda_boys = 0)".to_string()
     } else {
         format!(
-            "lambda-Boys, lambda_boys = {} ({} sweeps, max |grad| {:.1e}, {:.2} s)",
-            lb.lambda, lb.sweeps, lb.max_grad, lb.t_s
+            "lambda-Boys, lambda_boys = {} ({} sweeps + {} Newton, max |grad| {:.1e}, \
+             step {:.1e}, {:.2} s)",
+            lb.lambda, lb.sweeps, lb.newton_iters, lb.max_grad, lb.newton_step, lb.t_s
         )
     }
 }

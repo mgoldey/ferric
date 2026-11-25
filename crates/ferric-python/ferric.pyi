@@ -5626,8 +5626,10 @@ def run_rimp2(
     10.0) is the weight of sum_i F_ii^2 in the lambda-Boys occupied
     localization, started from the converged Boys orbitals; 0.0 is plain
     Boys. It does not change the eps=0 energy. A ValueError on the exact
-    method. `result.local["lambda_boys"]`, `["lambda_boys_sweeps"]`,
-    `["lambda_boys_max_grad"]` and `["lambda_boys_t_s"]` record it.
+    method. `result.local["lambda_boys"]`, `["lambda_boys_sweeps"]` (Jacobi
+    sweeps), `["lambda_boys_newton_iters"]`, `["lambda_boys_max_grad"]`,
+    `["lambda_boys_newton_step"]` (last Newton step, the predicted distance
+    to the maximum in radians) and `["lambda_boys_t_s"]` record it.
 
     `scf_jk` sets how the reference SCF builds J/K: "exact" (default,
     four-centre), "rijk" (RI-J + RI-K) or "rijcosx" (RI-J + COSX K), fitted on

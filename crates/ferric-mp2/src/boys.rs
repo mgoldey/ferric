@@ -200,8 +200,75 @@ pub const LAMBDA_BOYS_PLAIN: f64 = 0.0;
 /// gradient `|∂G/∂κ_pq|` (Bohr², the units of the Boys term) after a sweep.
 pub const LAMBDA_BOYS_GRAD_TOL: f64 = 1e-8;
 
-/// Jacobi-sweep cap of the λ-Boys optimiser in the LMP2 drivers.
-pub const LAMBDA_BOYS_MAX_SWEEPS: usize = 2000;
+/// Convergence target of the predicted distance to the λ-Boys maximum: the
+/// largest entry `|κ_pq|` (radians) of the Newton step at the returned
+/// orbitals ([`LambdaBoysSolver::step_tol`]).
+pub const LAMBDA_BOYS_STEP_TOL: f64 = 1e-8;
+
+/// How the λ-Boys optimiser runs: Jacobi sweeps first, then Newton steps
+/// on the antisymmetric generator ([`lambda_boys_newton`]), which take no
+/// iteration when the sweeps already meet both targets.
+///
+/// Jacobi sweeps are a coordinate ascent: their per-sweep contraction is
+/// set by the ratio of the softest curvature of `G` to the pair
+/// curvatures. Near-D6h benzene rings have one near-flat direction (an
+/// exact zero mode in an isolated D6h ring, curvature 1e-7 to 1e-2 Bohr² in
+/// a distorted ring, a ghost basis or a dimer, against 3.6 to 1e3 for the
+/// other modes), and the sweeps then need 1e4 to beyond 5e4 sweeps or
+/// stall. The Newton step resolves that mode in two to six iterations
+/// (measured 2026-11-25; book section `amplitude-lmp2-lambda-boys-newton`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LambdaBoysSolver {
+    /// The target `max_{p<q} |∂G/∂θ_pq|` (Bohr²), for both stages.
+    pub grad_tol: f64,
+    /// The target `max_{p<q} |κ_pq|` (radians) of the Newton step at the
+    /// result: the predicted distance to the maximum, which bounds how far
+    /// the orbitals (and every map built from them) are from the optimum.
+    pub step_tol: f64,
+    /// Jacobi sweeps before the Newton stage takes over.
+    pub jacobi_sweeps: usize,
+    /// Newton iterations; missing the target after them is an error.
+    pub newton_iters: usize,
+}
+
+/// The production λ-Boys solver: [`LAMBDA_BOYS_GRAD_TOL`] and
+/// [`LAMBDA_BOYS_STEP_TOL`], 100 Jacobi
+/// sweeps, 30 Newton iterations. Measured 2026-11-25 (6-31G, λ = 10): the
+/// n-alkanes C12, C20 meet both targets in 7 sweeps, take no Newton
+/// iteration and keep the Jacobi result bit for bit; sulfamethoxazole
+/// meets the gradient target in 39 sweeps and takes one Newton iteration;
+/// the S22 benzene pieces that stall take three to six.
+pub const LAMBDA_BOYS_SOLVER: LambdaBoysSolver = LambdaBoysSolver {
+    grad_tol: LAMBDA_BOYS_GRAD_TOL,
+    step_tol: LAMBDA_BOYS_STEP_TOL,
+    jacobi_sweeps: 100,
+    newton_iters: 30,
+};
+
+impl Default for LambdaBoysSolver {
+    fn default() -> Self {
+        LAMBDA_BOYS_SOLVER
+    }
+}
+
+/// The occupied localization of the LMP2 drivers: λ (`0` = plain Boys) and
+/// the λ-Boys solver. A bare `f64` converts with [`LAMBDA_BOYS_SOLVER`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LambdaBoysSpec {
+    /// λ (Bohr²/Ha²).
+    pub lambda: f64,
+    /// The optimiser settings.
+    pub solver: LambdaBoysSolver,
+}
+
+impl From<f64> for LambdaBoysSpec {
+    fn from(lambda: f64) -> Self {
+        Self {
+            lambda,
+            solver: LAMBDA_BOYS_SOLVER,
+        }
+    }
+}
 
 /// What a λ-Boys localization did, recorded on every LMP2 result.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -211,6 +278,11 @@ pub struct LambdaBoysReport {
     pub lambda: f64,
     /// Jacobi sweeps the λ-Boys optimiser ran (0 at λ = 0).
     pub sweeps: usize,
+    /// Newton iterations after the sweeps (0 when the sweeps converged).
+    pub newton_iters: usize,
+    /// `max |κ_pq|` of the Newton step at the returned orbitals (radians;
+    /// 0 at λ = 0): the predicted distance to the maximum.
+    pub newton_step: f64,
     /// Largest pair gradient at the returned orbitals (0 at λ = 0).
     pub max_grad: f64,
     /// `G` at the Boys start and at the returned orbitals.
@@ -309,6 +381,12 @@ pub struct LambdaBoysRotation {
     pub max_grad: f64,
     /// Whether `max_grad < grad_tol` was reached within `max_sweeps`.
     pub converged: bool,
+    /// Newton iterations after the sweeps ([`lambda_boys_solve`]; 0 from
+    /// [`lambda_boys_rotation`] itself).
+    pub newton_iters: usize,
+    /// `max |κ_pq|` of the Newton step at the result ([`lambda_boys_solve`];
+    /// NaN from [`lambda_boys_rotation`], which does not compute it).
+    pub newton_step: f64,
     /// `G` before and after.
     pub objective_start: f64,
     /// `G` at the returned rotation.
@@ -370,9 +448,419 @@ pub fn lambda_boys_rotation(
         sweeps,
         max_grad,
         converged: max_grad < grad_tol,
+        newton_iters: 0,
+        newton_step: f64::NAN,
         objective_start,
         objective_end: lambda_boys_objective(&x, &f, lambda),
     })
+}
+
+// ---------------------------------------------------------------------------
+// Second-order stage: Newton on the antisymmetric generator κ, U = U₀ exp(κ)
+// (book section `amplitude-lmp2-lambda-boys-newton`)
+// ---------------------------------------------------------------------------
+
+/// `(X, w_X)`: the three dipole matrices with weight 1 and `f` with λ.
+fn lambda_boys_terms<'a>(
+    x: &'a [Array2<f64>; 3],
+    f: &'a Array2<f64>,
+    lambda: f64,
+) -> impl Iterator<Item = (&'a Array2<f64>, f64)> {
+    x.iter()
+        .map(|m| (m, 1.0))
+        .chain(std::iter::once((f, lambda)))
+}
+
+/// `[D, Y]` with `D` diagonal (given by its entries `d`): `(d_p − d_q) Y_pq`.
+fn diag_comm(d: &[f64], y: &Array2<f64>) -> Array2<f64> {
+    Array2::from_shape_fn(y.dim(), |(p, q)| (d[p] - d[q]) * y[(p, q)])
+}
+
+/// `Mᵀ − M`: the antisymmetric matrix whose `(p, q)` entry is
+/// `∂ tr(Mκ)/∂κ_pq` for `κ` antisymmetric with independent `κ_pq`, `p < q`.
+fn antisym_part(m: &Array2<f64>) -> Array2<f64> {
+    &m.t() - m
+}
+
+/// Gradient of `G(U exp(κ))` at `κ = 0` with respect to the independent
+/// entries `κ_pq` (`p < q`, `κ_qp = −κ_pq`), as the antisymmetric matrix
+/// `γ = Γᵀ − Γ`, `Γ = 2 Σ_X w_X [D_X, X]`, `D_X = diag(X)`. Entry `(p, q)` is
+/// `−4 Σ_X w_X (X_pp − X_qq) X_pq`, minus [`lambda_boys_pair_gradient`]
+/// (book eq `lmp2-lambda-boys-newton`).
+pub fn lambda_boys_generator_gradient(
+    x: &[Array2<f64>; 3],
+    f: &Array2<f64>,
+    lambda: f64,
+) -> Array2<f64> {
+    let n = f.nrows();
+    let mut gam = Array2::<f64>::zeros((n, n));
+    for (m, w) in lambda_boys_terms(x, f, lambda) {
+        let d: Vec<f64> = m.diag().to_vec();
+        gam.scaled_add(2.0 * w, &diag_comm(&d, m));
+    }
+    antisym_part(&gam)
+}
+
+/// Hessian of `G(U exp(κ))` at `κ = 0` applied to the antisymmetric `eta`,
+/// in the coordinates of [`lambda_boys_generator_gradient`]:
+/// `Hη = Mᵀ − M`, `M = Σ_X w_X (2[V_X, X] + [E_X, X] + [D_X, A_X])` with
+/// `A_X = [X, η]`, `V_X = diag(A_X)`, `E_X = [η, D_X]` (book eq
+/// `lmp2-lambda-boys-newton`).
+pub fn lambda_boys_hessian_vec(
+    x: &[Array2<f64>; 3],
+    f: &Array2<f64>,
+    lambda: f64,
+    eta: &Array2<f64>,
+) -> Array2<f64> {
+    let n = f.nrows();
+    let mut m_acc = Array2::<f64>::zeros((n, n));
+    for (m, w) in lambda_boys_terms(x, f, lambda) {
+        let d: Vec<f64> = m.diag().to_vec();
+        let a = m.dot(eta) - eta.dot(m);
+        let v: Vec<f64> = a.diag().to_vec();
+        // E = [η, D] = −[D, η]
+        let e = -diag_comm(&d, eta);
+        let ex = e.dot(m) - m.dot(&e);
+        let term = diag_comm(&v, m) * 2.0 + ex + diag_comm(&d, &a);
+        m_acc.scaled_add(w, &term);
+    }
+    antisym_part(&m_acc)
+}
+
+/// Diagonal of `−H` in the same coordinates: `16 a_pq`,
+/// `a_pq = Σ_X w_X (d_X² − c_X²)` (the in-plane `−G''(0)`, eq
+/// `lmp2-lambda-boys-stationarity`), floored at `1e-3 · max` so it is a
+/// positive preconditioner away from the maximum too.
+fn lambda_boys_neg_hessian_diag(x: &[Array2<f64>; 3], f: &Array2<f64>, lambda: f64) -> Array2<f64> {
+    let n = f.nrows();
+    let mut h = Array2::<f64>::zeros((n, n));
+    for (m, w) in lambda_boys_terms(x, f, lambda) {
+        for p in 0..n {
+            for q in 0..n {
+                let d = 0.5 * (m[(p, p)] - m[(q, q)]);
+                let c = m[(p, q)];
+                h[(p, q)] += 16.0 * w * (d * d - c * c);
+            }
+        }
+    }
+    let top = h.iter().fold(0.0f64, |a, &b| a.max(b));
+    let floor = (1e-3 * top).max(f64::MIN_POSITIVE);
+    h.mapv_inplace(|v| v.max(floor));
+    h
+}
+
+/// `Σ_{p<q} A_pq B_pq` for antisymmetric `A`, `B`.
+fn antisym_dot(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
+    0.5 * (a * b).sum()
+}
+
+fn max_abs(a: &Array2<f64>) -> f64 {
+    a.iter().fold(0.0f64, |m, &v| m.max(v.abs()))
+}
+
+/// Rounding noise of the generator gradient at the rotation `u`: the
+/// difference between `γ` from `Uᵀ(XU)` and from `(UᵀX)U`, as a 2-norm
+/// over `p < q`, times 10. Below it, a gradient component, and the step
+/// it would drive along a near-flat mode, is not determined.
+fn lambda_boys_grad_noise(
+    x0: &[Array2<f64>; 3],
+    f0: &Array2<f64>,
+    lambda: f64,
+    u: &Array2<f64>,
+    gam: &Array2<f64>,
+) -> f64 {
+    let x: [Array2<f64>; 3] = std::array::from_fn(|k| u.t().dot(&x0[k]).dot(u));
+    let f = u.t().dot(f0).dot(u);
+    let d = lambda_boys_generator_gradient(&x, &f, lambda) - gam;
+    10.0 * antisym_dot(&d, &d).sqrt()
+}
+
+/// Largest step entry `|κ_pq|` (radians) a Newton iteration may take.
+const NEWTON_MAX_STEP: f64 = 0.3;
+/// A search direction whose curvature `|pᵀ(−H)p| / pᵀp` is below this
+/// fraction of the largest pair curvature `16 a_pq` is flat: an exact
+/// symmetry of `G` (measured 2026-11-25: 2e-15 relative for the zero mode of
+/// a D6h benzene ring), not a soft mode to resolve (the softest measured,
+/// S22 benzene B with ghost A in STO-3G, is 1.4e-9 relative).
+const NEWTON_FLAT_REL: f64 = 1e-11;
+/// Most flat directions [`NewtonSystem::step`] deflates.
+const NEWTON_MAX_FLAT: usize = 8;
+/// Relative residual of the inner PCG solve `(−H) κ = γ` for a Newton move.
+const NEWTON_CG_RTOL: f64 = 1e-3;
+/// Relative residual of the PCG solve that measures the distance to the
+/// maximum for the convergence test. A loose solve cannot: along a mode of
+/// curvature `h` it leaves a step error `‖r‖/h`, and with `h` ~ 1e-7 (the
+/// S22 benzene B + ghost A in STO-3G) `1e-3 ‖γ‖` is a 1e-6 rad error.
+const NEWTON_CG_RTOL_FINAL: f64 = 1e-12;
+
+/// The Newton system `(−H) κ = γ` at one point, with its preconditioner
+/// ([`lambda_boys_neg_hessian_diag`]) and its flat-curvature threshold.
+struct NewtonSystem<'a> {
+    x: &'a [Array2<f64>; 3],
+    f: &'a Array2<f64>,
+    lambda: f64,
+    prec: Array2<f64>,
+    h_flat: f64,
+}
+
+impl<'a> NewtonSystem<'a> {
+    fn new(x: &'a [Array2<f64>; 3], f: &'a Array2<f64>, lambda: f64) -> Self {
+        let prec = lambda_boys_neg_hessian_diag(x, f, lambda);
+        let h_flat = NEWTON_FLAT_REL * prec.iter().fold(0.0f64, |m, &v| m.max(v));
+        Self {
+            x,
+            f,
+            lambda,
+            prec,
+            h_flat,
+        }
+    }
+
+    /// `(−H) p`
+    fn apply(&self, p: &Array2<f64>) -> Array2<f64> {
+        -lambda_boys_hessian_vec(self.x, self.f, self.lambda, p)
+    }
+
+    /// `p` with its components along the orthonormal `flat` removed.
+    fn deflate(p: &Array2<f64>, flat: &[Array2<f64>]) -> Array2<f64> {
+        let mut out = p.clone();
+        for v in flat {
+            out.scaled_add(-antisym_dot(v, &out), v);
+        }
+        out
+    }
+
+    /// PCG on `(−H) κ = γ` in the complement of `flat`, to the residual
+    /// 2-norm `r_target`. Negative curvature along a search direction (a
+    /// saddle region) ends it with a step to the cap along that direction
+    /// (Steihaug). Returns `(κ, cg iterations)`.
+    fn pcg(&self, gam: &Array2<f64>, r_target: f64, flat: &[Array2<f64>]) -> (Array2<f64>, usize) {
+        let n = self.f.nrows();
+        let max_cg = (n * n.saturating_sub(1) / 2).max(1);
+        let mut kap = Array2::<f64>::zeros((n, n));
+        let mut r = Self::deflate(gam, flat);
+        if antisym_dot(&r, &r).sqrt() <= r_target {
+            return (kap, 0);
+        }
+        let mut z = Self::deflate(&(&r / &self.prec), flat);
+        let mut p = z.clone();
+        let mut rz = antisym_dot(&r, &z);
+        let mut it = 0;
+        while it < max_cg {
+            let ap = Self::deflate(&self.apply(&p), flat);
+            let curv = antisym_dot(&p, &ap);
+            it += 1;
+            if curv <= 0.0 {
+                // G is convex along p: both signs raise its quadratic part,
+                // the sign of ⟨r, p⟩ raises the linear one. Go to the step
+                // cap (Steihaug); the caller's backtracking bounds the move.
+                let sgn = if antisym_dot(&r, &p) < 0.0 { -1.0 } else { 1.0 };
+                let tau = sgn * NEWTON_MAX_STEP / max_abs(&p).max(f64::MIN_POSITIVE);
+                kap.scaled_add(tau, &p);
+                break;
+            }
+            let alpha = rz / curv;
+            kap.scaled_add(alpha, &p);
+            r.scaled_add(-alpha, &ap);
+            if antisym_dot(&r, &r).sqrt() <= r_target {
+                break;
+            }
+            z = Self::deflate(&(&r / &self.prec), flat);
+            let rz_new = antisym_dot(&r, &z);
+            p = &z + &(&p * (rz_new / rz));
+            rz = rz_new;
+        }
+        (kap, it)
+    }
+
+    /// Inexact Newton step for the maximum, [`Self::pcg`] with flat
+    /// directions removed: a step whose curvature `κᵀ(−H)κ / κᵀκ` is below
+    /// `h_flat` ([`NEWTON_FLAT_REL`]) lies along an exact symmetry of `G`,
+    /// where every point is equally a maximum. Its direction is deflated
+    /// and the solve repeated (at most [`NEWTON_MAX_FLAT`] times). Returns
+    /// `(κ, cg iterations)`.
+    fn step(&self, gam: &Array2<f64>, r_target: f64) -> (Array2<f64>, usize) {
+        let mut flat: Vec<Array2<f64>> = Vec::new();
+        let mut cg_total = 0;
+        loop {
+            let (kap, cg) = self.pcg(gam, r_target, &flat);
+            cg_total += cg;
+            let kk = antisym_dot(&kap, &kap);
+            if kk == 0.0 || flat.len() == NEWTON_MAX_FLAT {
+                return (kap, cg_total);
+            }
+            let rayleigh = antisym_dot(&kap, &self.apply(&kap)) / kk;
+            if rayleigh.abs() > self.h_flat {
+                return (kap, cg_total);
+            }
+            let v = Self::deflate(&kap, &flat);
+            let vv = antisym_dot(&v, &v).sqrt();
+            if vv == 0.0 {
+                return (kap, cg_total);
+            }
+            flat.push(v / vv);
+        }
+    }
+}
+
+/// Cayley retraction `(1 − κ/2)⁻¹ (1 + κ/2)`: orthogonal for antisymmetric
+/// `κ`, equal to `exp(κ)` through second order.
+fn cayley(k: &Array2<f64>) -> Result<Array2<f64>, ferric_core::FerricError> {
+    use ndarray_linalg::Solve;
+    let n = k.nrows();
+    let eye = Array2::<f64>::eye(n);
+    let lhs = &eye - &(k * 0.5);
+    let rhs = &eye + &(k * 0.5);
+    let mut out = Array2::<f64>::zeros((n, n));
+    for j in 0..n {
+        let col = lhs.solve(&rhs.column(j).to_owned()).map_err(|e| {
+            ferric_core::FerricError::Lapack(format!("lambda-Boys Cayley retraction: {e}"))
+        })?;
+        out.column_mut(j).assign(&col);
+    }
+    Ok(out)
+}
+
+/// `Uᵀ M U` for each matrix.
+fn rotate_all(
+    x0: &[Array2<f64>; 3],
+    f0: &Array2<f64>,
+    u: &Array2<f64>,
+) -> ([Array2<f64>; 3], Array2<f64>) {
+    let x: [Array2<f64>; 3] = std::array::from_fn(|k| u.t().dot(&x0[k].dot(u)));
+    (x, u.t().dot(&f0.dot(u)))
+}
+
+/// Result of [`lambda_boys_newton`].
+#[derive(Debug, Clone)]
+#[must_use]
+pub struct LambdaBoysNewton {
+    /// The rotation, in the basis of the input matrices.
+    pub u: Array2<f64>,
+    /// Newton iterations run.
+    pub iters: usize,
+    /// PCG iterations over all Newton iterations.
+    pub cg_iters: usize,
+    /// Largest `|γ_pq|` at the returned rotation (the same quantity as
+    /// [`LambdaBoysRotation::max_grad`]).
+    pub max_grad: f64,
+    /// `max |κ_pq|` of the Newton step at the returned rotation (radians):
+    /// the predicted distance to the maximum.
+    pub step: f64,
+    /// Whether `max_grad < grad_tol` and `step < step_tol`.
+    pub converged: bool,
+}
+
+/// Newton maximization of the λ-Boys objective from the rotation `u0` of
+/// the orbitals in which `x0` and `f0` are expressed. At each point it
+/// solves `(−H) κ = γ` inexactly (preconditioned CG); it stops,
+/// converged, when `max |γ_pq| < solver.grad_tol` and `max |κ_pq| <
+/// solver.step_tol`, and otherwise (up to `solver.newton_iters` times) caps
+/// `max |κ_pq|` at 0.3 rad and backtracks (halving, at most 30 times) until
+/// `G` rises or, within rounding of `G`, the gradient falls. A step that does
+/// neither is a `Convergence` error. Serial and in a fixed order:
+/// thread-count independent.
+pub fn lambda_boys_newton(
+    x0: &[Array2<f64>; 3],
+    f0: &Array2<f64>,
+    lambda: f64,
+    u0: &Array2<f64>,
+    solver: &LambdaBoysSolver,
+) -> Result<LambdaBoysNewton, ferric_core::FerricError> {
+    check_lambda_boys(lambda)?;
+    let mut u = u0.clone();
+    let (mut x, mut f) = rotate_all(x0, f0, &u);
+    let mut gam = lambda_boys_generator_gradient(&x, &f, lambda);
+    let mut g_max = max_abs(&gam);
+    let mut obj = lambda_boys_objective(&x, &f, lambda);
+    let (mut iters, mut cg_iters) = (0, 0);
+    let mut converged = false;
+    let step = loop {
+        // The Newton step at the current point: its size is the predicted
+        // distance to the maximum, which the gradient alone does not bound
+        // along a soft mode. PCG never resolves the step below the
+        // gradient's rounding noise (a flat direction stays put).
+        let noise = lambda_boys_grad_noise(x0, f0, lambda, &u, &gam);
+        let g2 = antisym_dot(&gam, &gam).sqrt();
+        let system = NewtonSystem::new(&x, &f, lambda);
+        let (mut kap, cg) = system.step(&gam, (NEWTON_CG_RTOL * g2).max(noise));
+        cg_iters += cg;
+        let mut step = max_abs(&kap);
+        if g_max < solver.grad_tol && step < solver.step_tol {
+            // converged if an accurate solve confirms the distance
+            let (k_fine, cg) = system.step(&gam, (NEWTON_CG_RTOL_FINAL * g2).max(noise));
+            cg_iters += cg;
+            step = max_abs(&k_fine);
+            if step < solver.step_tol {
+                converged = true;
+                break step;
+            }
+            kap = k_fine;
+        }
+        if iters == solver.newton_iters {
+            break step;
+        }
+        iters += 1;
+        let big = max_abs(&kap);
+        if big > NEWTON_MAX_STEP {
+            kap *= NEWTON_MAX_STEP / big;
+        }
+        let obj_round = 64.0 * f64::EPSILON * obj.abs().max(1.0);
+        let mut accepted = false;
+        for _ in 0..=30 {
+            let u_try = u.dot(&cayley(&kap)?);
+            let (x_t, f_t) = rotate_all(x0, f0, &u_try);
+            let obj_t = lambda_boys_objective(&x_t, &f_t, lambda);
+            let gam_t = lambda_boys_generator_gradient(&x_t, &f_t, lambda);
+            let g_t = max_abs(&gam_t);
+            if obj_t > obj + obj_round || (obj_t >= obj - obj_round && g_t < g_max) {
+                (u, x, f, gam, g_max, obj) = (u_try, x_t, f_t, gam_t, g_t, obj_t);
+                accepted = true;
+                break;
+            }
+            kap *= 0.5;
+        }
+        if !accepted {
+            return Err(ferric_core::FerricError::Convergence(format!(
+                "lambda-Boys Newton iteration {iters} found no step that raises the \
+                 objective (max |gradient| {g_max:.2e}); lambda_boys = 0 (plain Boys) \
+                 avoids this optimiser"
+            )));
+        }
+    };
+    Ok(LambdaBoysNewton {
+        u,
+        iters,
+        cg_iters,
+        max_grad: g_max,
+        step,
+        converged,
+    })
+}
+
+/// The λ-Boys optimiser of the LMP2 drivers: [`lambda_boys_rotation`] for
+/// at most `solver.jacobi_sweeps` sweeps, then [`lambda_boys_newton`] from
+/// the Jacobi rotation. When the sweeps leave both the gradient and the
+/// Newton step below their targets, the Newton stage takes no iteration and
+/// the result is the Jacobi rotation bit for bit.
+pub fn lambda_boys_solve(
+    x: &[Array2<f64>; 3],
+    f: &Array2<f64>,
+    lambda: f64,
+    solver: &LambdaBoysSolver,
+) -> Result<LambdaBoysRotation, ferric_core::FerricError> {
+    let mut rot = lambda_boys_rotation(x, f, lambda, solver.grad_tol, solver.jacobi_sweeps)?;
+    let nt = lambda_boys_newton(x, f, lambda, &rot.u, solver)?;
+    rot.newton_iters = nt.iters;
+    rot.newton_step = nt.step;
+    rot.converged = nt.converged;
+    if nt.iters > 0 {
+        let (xr, fr) = rotate_all(x, f, &nt.u);
+        rot.objective_end = lambda_boys_objective(&xr, &fr, lambda);
+        rot.u = nt.u;
+        rot.max_grad = nt.max_grad;
+    }
+    Ok(rot)
 }
 
 /// λ must be finite and ≥ 0 (0 = plain Boys).
@@ -391,17 +879,17 @@ pub fn check_lambda_boys(lambda: f64) -> Result<(), ferric_core::FerricError> {
 /// orbitals with `f_ao` the AO Fock matrix.
 ///
 /// `lambda = 0` returns the Boys result unchanged, bit for bit (the
-/// optimiser is not run). A λ-Boys optimiser that misses
-/// [`LAMBDA_BOYS_GRAD_TOL`] in `max_sweeps` is a `Convergence` error, the
-/// same rule as the Boys refusal: the orbitals would still span the
-/// occupied space, but every locality map built from them would differ.
+/// optimiser is not run). Otherwise the optimiser is [`lambda_boys_solve`]
+/// with `solver`; one that misses `solver.grad_tol` is a `Convergence`
+/// error, the same rule as the Boys refusal: the orbitals would still span
+/// the occupied space, but every locality map built from them would differ.
 pub fn lambda_boys_localize_checked(
     c_occ: &Array2<f64>,
     dip: &[Array2<f64>; 3],
     f_ao: &Array2<f64>,
     lambda: f64,
     boys_max_sweeps: usize,
-    max_sweeps: usize,
+    solver: &LambdaBoysSolver,
 ) -> Result<(BoysResult, LambdaBoysReport), ferric_core::FerricError> {
     check_lambda_boys(lambda)?;
     let boys = boys_localize_checked(c_occ, dip, boys_max_sweeps)?;
@@ -418,13 +906,19 @@ pub fn lambda_boys_localize_checked(
     let c = &boys.c_loc;
     let x: [Array2<f64>; 3] = std::array::from_fn(|k| c.t().dot(&dip[k].dot(c)));
     let f = c.t().dot(&f_ao.dot(c));
-    let rot = lambda_boys_rotation(&x, &f, lambda, LAMBDA_BOYS_GRAD_TOL, max_sweeps)?;
+    let rot = lambda_boys_solve(&x, &f, lambda, solver)?;
     if !rot.converged {
         return Err(ferric_core::FerricError::Convergence(format!(
             "lambda-Boys localization (lambda = {lambda}) did not converge in {} sweeps \
-             (max |gradient| {:.2e} >= {LAMBDA_BOYS_GRAD_TOL:.0e}); the local truncation \
-             needs converged localized orbitals",
-            rot.sweeps, rot.max_grad
+             and {} Newton iterations (max |gradient| {:.2e}, target {:.0e}; Newton step \
+             {:.2e} rad, target {:.0e}); the local truncation needs converged localized \
+             orbitals. lambda_boys = 0 (plain Boys) avoids this optimiser",
+            rot.sweeps,
+            rot.newton_iters,
+            rot.max_grad,
+            solver.grad_tol,
+            rot.newton_step,
+            solver.step_tol
         )));
     }
     let c_loc = c.dot(&rot.u).as_standard_layout().into_owned();
@@ -439,6 +933,8 @@ pub fn lambda_boys_localize_checked(
     let report = LambdaBoysReport {
         lambda,
         sweeps: rot.sweeps,
+        newton_iters: rot.newton_iters,
+        newton_step: rot.newton_step,
         max_grad: rot.max_grad,
         objective_start: rot.objective_start,
         objective_end: rot.objective_end,
@@ -851,20 +1347,27 @@ mod tests {
         let c_occ = rhf.mos_r().slice(s![.., 1..5]).to_owned();
         let dip = dipole(&prep, [0.0, 0.0, 0.0]).unwrap();
         let f_ao = rhf.fock_r().clone();
+        // a solver that stops after one sweep, with no Newton stage
+        let one_sweep = LambdaBoysSolver {
+            jacobi_sweeps: 1,
+            newton_iters: 0,
+            ..LAMBDA_BOYS_SOLVER
+        };
         // λ = 0: the Boys orbitals bit for bit, optimiser not run.
         let boys = boys_localize_checked(&c_occ, &dip, 200).unwrap();
-        let (b0, rep0) = lambda_boys_localize_checked(&c_occ, &dip, &f_ao, 0.0, 200, 1).unwrap();
+        let (b0, rep0) =
+            lambda_boys_localize_checked(&c_occ, &dip, &f_ao, 0.0, 200, &one_sweep).unwrap();
         assert_eq!(b0.c_loc, boys.c_loc);
         assert_eq!(b0.centers, boys.centers);
         assert_eq!(rep0.sweeps, 0);
         // λ = 10 with a one-sweep cap: refused; with the production cap: ok.
-        let e = lambda_boys_localize_checked(&c_occ, &dip, &f_ao, 10.0, 200, 1);
+        let e = lambda_boys_localize_checked(&c_occ, &dip, &f_ao, 10.0, 200, &one_sweep);
         assert!(
             matches!(e, Err(ferric_core::FerricError::Convergence(_))),
             "{e:?}"
         );
         let (b10, rep10) =
-            lambda_boys_localize_checked(&c_occ, &dip, &f_ao, 10.0, 200, LAMBDA_BOYS_MAX_SWEEPS)
+            lambda_boys_localize_checked(&c_occ, &dip, &f_ao, 10.0, 200, &LAMBDA_BOYS_SOLVER)
                 .unwrap();
         assert!(rep10.max_grad < LAMBDA_BOYS_GRAD_TOL && rep10.sweeps >= 1);
         // still orthonormal occupied orbitals spanning the same space
@@ -1119,5 +1622,222 @@ mod tests {
                 maxerr / scale
             );
         }
+    }
+
+    /// Antisymmetric matrix from deterministic pseudo-random upper entries.
+    fn antisym_model(n: usize, seed: u64) -> Array2<f64> {
+        let mut st = seed;
+        let mut k = Array2::<f64>::zeros((n, n));
+        for p in 0..n {
+            for q in p + 1..n {
+                st ^= st << 13;
+                st ^= st >> 7;
+                st ^= st << 17;
+                let v = (st >> 11) as f64 / (1u64 << 53) as f64 - 0.5;
+                k[(p, q)] = v;
+                k[(q, p)] = -v;
+            }
+        }
+        k
+    }
+
+    /// `G(U₀ exp(κ))` through the Cayley retraction, which equals `exp`
+    /// through second order, so its first and second derivatives at 0 are
+    /// those of the book's parametrization.
+    fn g_along(x: &[Array2<f64>; 3], f: &Array2<f64>, lam: f64, k: &Array2<f64>) -> f64 {
+        let (xr, fr) = rotate_all(x, f, &cayley(k).unwrap());
+        lambda_boys_objective(&xr, &fr, lam)
+    }
+
+    /// The generator gradient and the Hessian-vector product against
+    /// central differences of `G` itself (no pair formula), at a point that
+    /// is NOT stationary, at λ = 50: `⟨γ, η⟩ = dG/ds`, and
+    /// `⟨η, Hζ⟩ = ∂²G/∂s∂t` by the polarization identity; the diagonal of
+    /// `−H` is `16 a_pq`, and `γ_pq` is minus the pair gradient.
+    #[test]
+    fn lambda_boys_generator_gradient_and_hessian_match_finite_differences() {
+        let (x, f) = lambda_boys_model(6);
+        let lam = 50.0;
+        let gam = lambda_boys_generator_gradient(&x, &f, lam);
+        for p in 0..6 {
+            for q in p + 1..6 {
+                let pg = lambda_boys_pair_gradient(&x, &f, lam, p, q);
+                assert!((gam[(p, q)] + pg).abs() < 1e-12 * pg.abs().max(1.0));
+            }
+        }
+        let (eta, zeta) = (antisym_model(6, 7), antisym_model(6, 99));
+        let h = 1e-4;
+        let fd_g =
+            (g_along(&x, &f, lam, &(&eta * h)) - g_along(&x, &f, lam, &(&eta * -h))) / (2.0 * h);
+        let an_g = antisym_dot(&gam, &eta);
+        assert!((fd_g - an_g).abs() < 1e-6 * an_g.abs(), "{fd_g} vs {an_g}");
+        let hz = lambda_boys_hessian_vec(&x, &f, lam, &zeta);
+        let an_h = antisym_dot(&eta, &hz);
+        let hh = 1e-3;
+        let gk = |a: f64, b: f64| g_along(&x, &f, lam, &(&(&eta * a) + &(&zeta * b)));
+        let fd_h = (gk(hh, hh) - gk(hh, -hh) - gk(-hh, hh) + gk(-hh, -hh)) / (4.0 * hh * hh);
+        assert!(
+            (fd_h - an_h).abs() < 1e-5 * an_h.abs().max(1.0),
+            "{fd_h} vs {an_h}"
+        );
+        // symmetric
+        let he = lambda_boys_hessian_vec(&x, &f, lam, &eta);
+        assert!((antisym_dot(&zeta, &he) - an_h).abs() < 1e-10 * an_h.abs().max(1.0));
+        // the diagonal of −H is 16 a_pq (before the preconditioner's floor)
+        for (p, q) in [(0, 1), (2, 5), (3, 4)] {
+            let mut e = Array2::<f64>::zeros((6, 6));
+            e[(p, q)] = 1.0;
+            e[(q, p)] = -1.0;
+            let hpp = -lambda_boys_hessian_vec(&x, &f, lam, &e)[(p, q)];
+            let a: f64 = lambda_boys_terms(&x, &f, lam)
+                .map(|(m, w)| {
+                    let d = 0.5 * (m[(p, p)] - m[(q, q)]);
+                    w * (d * d - m[(p, q)] * m[(p, q)])
+                })
+                .sum();
+            assert!((hpp - 16.0 * a).abs() < 1e-10 * hpp.abs().max(1.0));
+        }
+    }
+
+    /// RHF/STO-3G, converged Boys on the occupieds above `n_core`, and the
+    /// dipole matrices and occupied Fock block in the Boys orbitals.
+    fn boys_dipoles_and_fock(mol: &Molecule, n_core: usize) -> ([Array2<f64>; 3], Array2<f64>) {
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::for_rank(0, 1);
+        let rhf = solve_rhf(&ctx, mol, &prep, op, &bounds, &RhfConfig::default()).unwrap();
+        let nocc = mol.nelec() as usize / 2;
+        let c = rhf.mos_r().slice(s![.., n_core..nocc]).to_owned();
+        let dip = dipole(&prep, [0.0; 3]).unwrap();
+        let boys = boys_localize_checked(&c, &dip, 10_000).unwrap();
+        let cl = &boys.c_loc;
+        let x: [Array2<f64>; 3] = std::array::from_fn(|k| cl.t().dot(&dip[k].dot(cl)));
+        let f = cl.t().dot(&rhf.fock_r().dot(cl));
+        (x, f)
+    }
+
+    /// An exactly D6h benzene (testdata/molecules/benzene.xyz), STO-3G,
+    /// λ = 10: the λ-Boys maximum lies on a flat curve (Hessian eigenvalue
+    /// ~1e-13, 2e-15 of the largest; measured 2026-11-25), where every
+    /// point is a maximum. The sweeps converge, the Newton stage deflates
+    /// the flat direction instead of wandering along it, and the result is
+    /// the Jacobi rotation bit for bit. Without the deflation the solver
+    /// took 7 Newton iterations along the flat curve (seen, 2026-11-25).
+    #[test]
+    fn lambda_boys_leaves_the_flat_mode_of_a_d6h_benzene_alone() {
+        let mol = Molecule::load_xyz("../../testdata/molecules/benzene.xyz").unwrap();
+        let (x, f) = boys_dipoles_and_fock(&mol, 6);
+        let lam = LAMBDA_BOYS_DEFAULT;
+        let jac = lambda_boys_rotation(&x, &f, lam, LAMBDA_BOYS_GRAD_TOL, 100).unwrap();
+        assert!(jac.converged);
+        let r = lambda_boys_solve(&x, &f, lam, &LAMBDA_BOYS_SOLVER).unwrap();
+        assert!(r.converged && r.newton_iters == 0, "{r:?}");
+        assert!(r.newton_step < LAMBDA_BOYS_STEP_TOL);
+        assert_eq!(r.u, jac.u);
+    }
+
+    /// S22 benzene B with ghost A, STO-3G, λ = 10: the λ-Boys maximum has a
+    /// soft mode (Hessian eigenvalue ≈ −4e-7 against ≈ −3.6 for the next
+    /// one; an isolated D6h ring has an exact zero mode here, measured
+    /// 2026-11-25), on which Jacobi sweeps stall. Checks:
+    /// * the pre-Newton optimiser (2000 sweeps to the 1e-8 gradient, no
+    ///   step test) fails, and the production solver converges through the
+    ///   Newton stage;
+    /// * the result is a maximum: the dense Hessian is negative definite;
+    /// * the result is within the step target of the maximum by the dense
+    ///   Newton step (an eigensolve, not the PCG). Without the step test the
+    ///   solver stops at the 1e-8 gradient 3.6e-4 rad from it (seen to fail,
+    ///   2026-11-25);
+    /// * invariance: entering the Newton stage after 100 sweeps or straight
+    ///   from the Boys orbitals gives the same orbitals to 1e-7 and the same
+    ///   `G`.
+    #[test]
+    fn lambda_boys_newton_converges_and_is_entry_point_invariant_on_a_soft_benzene() {
+        let dimer =
+            std::fs::read_to_string("../../testdata/molecules/s22/benzene_dimer_T.xyz").unwrap();
+        let atoms: Vec<&str> = dimer
+            .lines()
+            .skip(2)
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+        let mut xyz = format!("{}\nS22 benzene B + ghost A\n", atoms.len());
+        for (i, l) in atoms.iter().enumerate() {
+            xyz.push_str(&if i < 12 {
+                format!("@{}\n", l.trim())
+            } else {
+                format!("{l}\n")
+            });
+        }
+        let mol = Molecule::parse_xyz(&xyz, 0, 1).unwrap();
+        let (x, f) = boys_dipoles_and_fock(&mol, 6);
+        let lam = LAMBDA_BOYS_DEFAULT;
+        let old = LambdaBoysSolver {
+            step_tol: f64::INFINITY,
+            jacobi_sweeps: 2000,
+            newton_iters: 0,
+            ..LAMBDA_BOYS_SOLVER
+        };
+        assert!(
+            !lambda_boys_rotation(&x, &f, lam, old.grad_tol, old.jacobi_sweeps)
+                .unwrap()
+                .converged
+        );
+        let a = lambda_boys_solve(&x, &f, lam, &LAMBDA_BOYS_SOLVER).unwrap();
+        assert!(a.converged && a.newton_iters >= 1, "{a:?}");
+        // the other entry point: Newton straight from the Boys orbitals
+        let late = LambdaBoysSolver {
+            jacobi_sweeps: 0,
+            ..LAMBDA_BOYS_SOLVER
+        };
+        let b = lambda_boys_solve(&x, &f, lam, &late).unwrap();
+        assert!(b.converged, "{b:?}");
+        assert!((a.objective_end - b.objective_end).abs() < 1e-10);
+        // same orbitals up to order and sign: match each column of Ua to the
+        // column of Ub it overlaps most, and compare the coefficients (an
+        // error linear in the rotation angle, unlike 1 − |overlap|)
+        let o = a.u.t().dot(&b.u);
+        let n = o.nrows();
+        let mut worst = 0.0f64;
+        for i in 0..n {
+            let j = (0..n)
+                .max_by(|&j1, &j2| o[(i, j1)].abs().total_cmp(&o[(i, j2)].abs()))
+                .unwrap();
+            let sg = o[(i, j)].signum();
+            for k in 0..n {
+                worst = worst.max((a.u[(k, i)] - sg * b.u[(k, j)]).abs());
+            }
+        }
+        assert!(worst < 1e-7, "entry points disagree by {worst:.2e} in U");
+        // a maximum: the dense Hessian at the result is negative definite
+        let (xa, fa) = rotate_all(&x, &f, &a.u);
+        let pairs: Vec<(usize, usize)> = (0..n)
+            .flat_map(|p| (p + 1..n).map(move |q| (p, q)))
+            .collect();
+        let mut hm = Array2::<f64>::zeros((pairs.len(), pairs.len()));
+        for (j, &(p, q)) in pairs.iter().enumerate() {
+            let mut e = Array2::<f64>::zeros((n, n));
+            e[(p, q)] = 1.0;
+            e[(q, p)] = -1.0;
+            let col = lambda_boys_hessian_vec(&xa, &fa, lam, &e);
+            for (i, &(r, t)) in pairs.iter().enumerate() {
+                hm[(i, j)] = col[(r, t)];
+            }
+        }
+        use ndarray_linalg::{Eigh, UPLO};
+        let (ev, evec) = hm.eigh(UPLO::Lower).unwrap();
+        let top = ev[ev.len() - 1];
+        assert!(top < 0.0 && top > -1e-5, "softest curvature {top:.3e}");
+        // distance to the maximum by the dense Newton step −H⁻¹γ (an
+        // eigensolve, independent of the PCG): within the step target
+        let ga = lambda_boys_generator_gradient(&xa, &fa, lam);
+        let gv: ndarray::Array1<f64> = pairs.iter().map(|&(p, q)| ga[(p, q)]).collect();
+        let dense_step = evec.dot(&(&evec.t().dot(&gv) / &ev));
+        let dist = dense_step.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        assert!(
+            dist < LAMBDA_BOYS_STEP_TOL,
+            "dense Newton step {dist:.2e} rad"
+        );
     }
 }

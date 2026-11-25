@@ -173,6 +173,10 @@ pub struct AmplitudeLmp2Config {
     /// with [`AmplitudeLmp2Config::plain_boys`] (`0.0`). Invisible at ε = 0 (the energy is invariant under
     /// occupied rotations); at finite ε it changes the mask.
     pub lambda_boys: f64,
+    /// How the λ-Boys optimiser runs (Jacobi sweeps, then Newton;
+    /// [`crate::boys::LambdaBoysSolver`]). Default and production:
+    /// [`crate::boys::LAMBDA_BOYS_SOLVER`]. Unused at `lambda_boys = 0`.
+    pub lambda_boys_solver: crate::boys::LambdaBoysSolver,
 }
 
 /// κ of the Fock-propagated screen ([`AmplitudeLmp2Config::fock_screen`])
@@ -203,11 +207,20 @@ impl Default for AmplitudeLmp2Config {
             virtual_space: crate::vvhv_local::VirtualSpace::Dense,
             fock_screen: None,
             lambda_boys: crate::boys::LAMBDA_BOYS_DEFAULT,
+            lambda_boys_solver: crate::boys::LAMBDA_BOYS_SOLVER,
         }
     }
 }
 
 impl AmplitudeLmp2Config {
+    /// [`Self::lambda_boys`] with [`Self::lambda_boys_solver`].
+    pub fn lambda_boys_spec(&self) -> crate::boys::LambdaBoysSpec {
+        crate::boys::LambdaBoysSpec {
+            lambda: self.lambda_boys,
+            solver: self.lambda_boys_solver,
+        }
+    }
+
     /// THE production local-MP2 model: what the CLI (`kind = "rimp2"` with
     /// `[local] scheme = "amplitude-threshold"`), the Python binding and
     /// every benchmark run when no model key is given. `eps`, `frozen_core`
@@ -230,6 +243,7 @@ impl AmplitudeLmp2Config {
             eri3_budget_bytes,
             fock_screen: Some(FOCK_SCREEN_KAPPA_DEFAULT),
             lambda_boys: crate::boys::LAMBDA_BOYS_DEFAULT,
+            lambda_boys_solver: crate::boys::LAMBDA_BOYS_SOLVER,
             virtual_space: crate::vvhv_local::VirtualSpace::Dense,
             ..Default::default()
         }
@@ -1435,7 +1449,7 @@ pub fn localized_spaces_lambda(
     rhf: &ScfResult,
     frozen_core: usize,
     vvhv: &VvHv,
-    lambda_boys: f64,
+    lambda_boys: impl Into<crate::boys::LambdaBoysSpec>,
 ) -> Result<LocalizedSpaces, FerricError> {
     localized_spaces_with_fock(mol, obs, rhf, rhf.fock_r(), frozen_core, vvhv, lambda_boys)
 }
@@ -1452,7 +1466,7 @@ pub fn localized_spaces_with_fock(
     f_ao: &Array2<f64>,
     frozen_core: usize,
     vvhv: &VvHv,
-    lambda_boys: f64,
+    lambda_boys: impl Into<crate::boys::LambdaBoysSpec>,
 ) -> Result<LocalizedSpaces, FerricError> {
     localized_spaces_capped(
         mol,
@@ -1462,7 +1476,7 @@ pub fn localized_spaces_with_fock(
         frozen_core,
         vvhv,
         LMP2_BOYS_MAX_SWEEPS,
-        lambda_boys,
+        lambda_boys.into(),
     )
 }
 
@@ -1490,7 +1504,7 @@ pub(crate) fn localized_spaces_capped(
     frozen_core: usize,
     vvhv: &VvHv,
     boys_max_sweeps: usize,
-    lambda_boys: f64,
+    lambda_boys: crate::boys::LambdaBoysSpec,
 ) -> Result<LocalizedSpaces, FerricError> {
     let nocc_total = (mol.nelec() as usize) / 2;
     let no = active_occ(nocc_total, frozen_core)?;
@@ -1501,9 +1515,9 @@ pub(crate) fn localized_spaces_capped(
         &c_occ_can,
         &dip,
         f_ao,
-        lambda_boys,
+        lambda_boys.lambda,
         boys_max_sweeps,
-        crate::boys::LAMBDA_BOYS_MAX_SWEEPS,
+        &lambda_boys.solver,
     )
     .map_err(|e| boys_error("occupieds", e))?;
     let c_locc = boys.c_loc;
@@ -1553,7 +1567,7 @@ pub fn assemble_basis(
     vvhv: &VvHv,
 ) -> Result<LocalizedBasis, FerricError> {
     let t_loc0 = std::time::Instant::now();
-    let sp = localized_spaces_lambda(mol, obs, rhf, cfg.frozen_core, vvhv, cfg.lambda_boys)?;
+    let sp = localized_spaces_lambda(mol, obs, rhf, cfg.frozen_core, vvhv, cfg.lambda_boys_spec())?;
     let t_loc_s = t_loc0.elapsed().as_secs_f64();
     let LocalizedSpaces {
         c_locc,
@@ -2824,7 +2838,7 @@ mod tests {
     fn unconverged_occupied_boys_is_an_error() {
         let (mol, obs, bs, rhf) = c4_631g();
         let vvhv = build_vvhv(&mol, &obs, &bs, &rhf).unwrap();
-        let err = localized_spaces_capped(&mol, &obs, &rhf, rhf.fock_r(), 4, &vvhv, 1, 0.0)
+        let err = localized_spaces_capped(&mol, &obs, &rhf, rhf.fock_r(), 4, &vvhv, 1, 0.0.into())
             .expect_err("a one-sweep Boys localization must be refused");
         let msg = err.to_string();
         assert!(
@@ -2839,7 +2853,7 @@ mod tests {
             4,
             &vvhv,
             LMP2_BOYS_MAX_SWEEPS,
-            0.0
+            0.0.into()
         )
         .is_ok());
     }

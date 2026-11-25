@@ -284,7 +284,7 @@ pub fn local_opmp3_on(
         f_hf,
         config.frozen_core,
         &vvhv,
-        local.lambda_boys,
+        local.lambda_boys_spec(),
     )?;
     let (no, nv) = (sp.no, sp.nv);
     // the residual reads no orbital energy; the Fock diagonals are recorded

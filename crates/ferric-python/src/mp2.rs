@@ -942,6 +942,8 @@ pub(crate) fn run_rimp2_local(
     d.set_item("lambda_boys", r.lambda_boys.lambda)?;
     d.set_item("lambda_boys_sweeps", r.lambda_boys.sweeps)?;
     d.set_item("lambda_boys_max_grad", r.lambda_boys.max_grad)?;
+    d.set_item("lambda_boys_newton_iters", r.lambda_boys.newton_iters)?;
+    d.set_item("lambda_boys_newton_step", r.lambda_boys.newton_step)?;
     d.set_item("lambda_boys_t_s", r.lambda_boys.t_s)?;
     if let Some(st) = st {
         d.set_item("n_pairs_gated", r.n_pairs_gated)?;

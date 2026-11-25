@@ -1539,7 +1539,7 @@ CASES = [
     ),
     (
         "lmp2_lambda_boys_sympy.py",
-        10,
+        25,
         [
             (
                 "pair_grad = sum(4 * w * (X[p, p] - X[q, q]) * X[p, q]",
@@ -1560,6 +1560,16 @@ CASES = [
                 "    return sp.atan2(-Bb_, Ab_) / 4",
                 "    return sp.atan2(Bb_, Ab_) / 4",
                 "S4: Boys",
+            ),
+            (
+                "M += w * (2 * comm(diagm(A_), X)",
+                "M += w * (comm(diagm(A_), X)",
+                "S5: Hessian",
+            ),
+            (
+                "return to_mat(np.linalg.solve(-H, gamma_num(Xm, Fm, lam_v)[iu]))",
+                "return to_mat(np.linalg.solve(H, gamma_num(Xm, Fm, lam_v)[iu]))",
+                "S6: Newton",
             ),
         ],
     ),

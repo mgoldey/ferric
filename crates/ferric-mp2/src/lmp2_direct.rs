@@ -5159,7 +5159,8 @@ pub fn amplitude_lmp2_direct_with_virtuals(
 ) -> Result<(AmplitudeLmp2Result, DirectStats), FerricError> {
     crate::lmp2_amplitude::require_hf_reference(rhf, "lmp2_direct")?;
     let t0 = Instant::now();
-    let spaces = localized_spaces_lambda(mol, obs, rhf, cfg.frozen_core, vvhv, cfg.lambda_boys)?;
+    let spaces =
+        localized_spaces_lambda(mol, obs, rhf, cfg.frozen_core, vvhv, cfg.lambda_boys_spec())?;
     let t_loc_s = t0.elapsed().as_secs_f64();
     mem_trace("localized", &[]);
     let (no, nv) = (spaces.no, spaces.nv);
@@ -7451,7 +7452,7 @@ mod memory_gate_tests {
     fn ungated(c: &Case, eps: f64) -> (Ragged, f64) {
         pinned(|| {
             // the production localization (λ-Boys at the config's λ)
-            let lam = lcfg(c, eps, AMPLE).lambda_boys;
+            let lam = lcfg(c, eps, AMPLE).lambda_boys_spec();
             let spaces =
                 localized_spaces_lambda(&c.mol, &c.obs, &c.rhf, c.nc, &c.vvhv, lam).unwrap();
             let (rg, _, _) = assemble_ragged_direct_local(

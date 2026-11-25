@@ -1,8 +1,10 @@
 """Sympy proof: the lambda-Boys occupied localization of amplitude-threshold LMP2.
 
-Book: book/src/13-local-mp2/01-amplitude-lmp2.md#amplitude-lmp2-lambda-boys.
+Book: book/src/13-local-mp2/01-amplitude-lmp2.md#amplitude-lmp2-lambda-boys
+and #amplitude-lmp2-lambda-boys-newton.
 Code: crates/ferric-mp2/src/boys.rs (lambda_boys_rotation,
-lambda_boys_pair_gradient, lambda_boys_pair_angle, rotate_sym_pair).
+lambda_boys_pair_gradient, lambda_boys_pair_angle, rotate_sym_pair;
+lambda_boys_generator_gradient, lambda_boys_hessian_vec, lambda_boys_newton).
 
 Objective, over orthogonal rotations of the occupied orbitals,
 
@@ -32,6 +34,25 @@ S4 (lambda = 0 is Boys). With lambda = 0 the step is the step of the plain
    Boys code (boys.rs::boys_localize, rotation x' = c x - s y, angle
    atan2(-B, A)/4 with A = a, B = b): the two rotate orbitals identically.
 
+S5 (generator gradient and Hessian). In the coordinates U -> U exp(kappa),
+   kappa antisymmetric with independent entries kappa_pq (p < q), the
+   rotated matrices are X(kappa) = exp(-kappa) X exp(kappa). With
+   D_X = diag(X) the gradient at kappa = 0 is gamma = Gamma^T - Gamma,
+   Gamma = 2 sum_X w_X [D_X, X], so gamma_pq = -4 sum_X w_X (X_pp - X_qq)
+   X_pq, minus the pair gradient of S1 (kappa_pq = -theta_pq). The Hessian
+   applied to eta is H eta = M^T - M,
+   M = sum_X w_X (2 [V_X, X] + [E_X, X] + [D_X, A_X]), A_X = [X, eta],
+   V_X = diag(A_X), E_X = [eta, D_X] (lambda_boys_generator_gradient,
+   lambda_boys_hessian_vec). Its diagonal is -16 a_pq, minus the in-plane
+   curvature of S2, which the Newton solver uses as its preconditioner.
+S6 (Newton step). On the quadratic model G(kappa) ~ G + <gamma, kappa> +
+   <kappa, H kappa>/2 the maximum is at kappa* = (-H)^{-1} gamma, so near a
+   maximum |kappa*| measures the distance to it, which the gradient alone
+   does not along a soft mode (|kappa*| ~ |gamma| / h_soft). Numerically:
+   Newton iterates of the model converge quadratically to the Jacobi
+   optimum of S3, and on a model with a soft mode the gradient is small
+   long before the step is (lambda_boys_newton's step_tol criterion).
+
 Numerical cross-check, by an independent route: the analytic antisymmetric
 gradient matrix is compared against a finite difference of G along random
 directions through the matrix exponential (no plane rotation, no pair
@@ -44,7 +65,9 @@ Mutations (crates/ferric-python/tests/test_derivation_scripts.py):
   - drop the factor 4 from the pair gradient (marker "S1: gradient");
   - take the in-plane minimum branch, atan2(-b, -a) (marker "S2: maximum");
   - drop the lambda term from the Jacobi angle (marker "S3: stationarity");
-  - flip the sign of the Boys-code angle in S4 (marker "S4: Boys").
+  - flip the sign of the Boys-code angle in S4 (marker "S4: Boys");
+  - drop the factor 2 of 2 [V_X, X] in the Hessian (marker "S5: Hessian");
+  - step along +H^{-1} gamma, a minimum-seeking step (marker "S6: Newton").
 """
 
 import numpy as np
@@ -284,4 +307,169 @@ print(
 off = lambda M: np.sqrt((M**2).sum() - (np.diag(M) ** 2).sum())  # noqa: E731
 _, F_boys, _, _ = jacobi(X0, F0, 0.0)
 print(f"||F_offdiag||: Boys {off(F_boys):.4f}, lambda-Boys(10) {off(Fc):.4f}")
+
+# ---------------------------------------------------------------------------
+section("S5 (symbolic): generator gradient and Hessian-vector product")
+
+
+def comm(P, Q):
+    return P * Q - Q * P
+
+
+def diagm(M):
+    return sp.diag(*[M[i, i] for i in range(M.shape[0])])
+
+
+k01, k02, k12, t = sp.symbols("k01 k02 k12 t", real=True)
+Kap = sp.Matrix([[0, k01, k02], [-k01, 0, k12], [-k02, -k12, 0]])
+Xs5 = [sym3("x"), sym3("f")]
+ws5 = [1, lam]
+# exp(t kappa) through second order in t: enough for gradient and Hessian
+E2 = sp.eye(3) + t * Kap + t**2 * Kap * Kap / 2
+E2m = sp.eye(3) - t * Kap + t**2 * Kap * Kap / 2
+G5 = sum(
+    w * sum(((E2m * X * E2)[i, i]) ** 2 for i in range(3)) for w, X in zip(ws5, Xs5)
+)
+G5 = sp.expand(G5)
+G5_2 = sum(G5.coeff(t, k) * t**k for k in range(3)).subs(t, 1)
+kv = [k01, k02, k12]
+pairs = [(0, 1), (0, 2), (1, 2)]
+zero = {k: 0 for k in kv}
+grad_auto = [sp.diff(G5_2, k).subs(zero) for k in kv]
+Hess_auto = [[sp.diff(G5_2, a, b).subs(zero) for b in kv] for a in kv]
+
+
+def gamma_formula(Xl, wl):
+    Gam = sp.zeros(3, 3)
+    for X, w in zip(Xl, wl):
+        Gam += 2 * w * comm(diagm(X), X)
+    return Gam.T - Gam
+
+
+def hess_vec_formula(Xl, wl, eta):
+    M = sp.zeros(3, 3)
+    for X, w in zip(Xl, wl):
+        A_ = comm(X, eta)
+        M += w * (2 * comm(diagm(A_), X) + comm(comm(eta, diagm(X)), X) + comm(diagm(X), A_))
+    return M.T - M
+
+
+gam = gamma_formula(Xs5, ws5)
+for (pp, qq), ga in zip(pairs, grad_auto):
+    assert sp.expand(gam[pp, qq] - ga) == 0, "S5: gradient FAILED"
+    pg = sum(4 * w * (X[pp, pp] - X[qq, qq]) * X[pp, qq] for w, X in zip(ws5, Xs5))
+    assert sp.expand(gam[pp, qq] + pg) == 0, "S5: gradient FAILED (not minus S1)"
+for b_i, (pb, qb) in enumerate(pairs):
+    eta = sp.zeros(3, 3)
+    eta[pb, qb], eta[qb, pb] = 1, -1
+    hv = hess_vec_formula(Xs5, ws5, eta)
+    for a_i, (pa, qa) in enumerate(pairs):
+        assert sp.expand(hv[pa, qa] - Hess_auto[a_i][b_i]) == 0, "S5: Hessian FAILED"
+# diagonal = -16 a_pq
+for a_i, (pa, qa) in enumerate(pairs):
+    a_pq = sum(
+        w * (((X[pa, pa] - X[qa, qa]) / 2) ** 2 - X[pa, qa] ** 2) for w, X in zip(ws5, Xs5)
+    )
+    assert sp.expand(Hess_auto[a_i][a_i] + 16 * a_pq) == 0, "S5: Hessian FAILED (diagonal)"
+print("gamma = Gamma^T - Gamma = -(S1 pair gradient); H eta = M^T - M; diag H = -16 a_pq")
+
+# ---------------------------------------------------------------------------
+section("S6 (numerical): Newton on the generator, distance vs gradient")
+
+
+def gamma_num(Xm, Fm, lam_v):
+    Gam = np.zeros((n, n))
+    for X, w in [(X, 1.0) for X in Xm] + [(Fm, lam_v)]:
+        d = np.diag(X)
+        Gam += 2 * w * (d[:, None] - d[None, :]) * X
+    return Gam.T - Gam
+
+
+def hv_num(Xm, Fm, lam_v, eta):
+    M = np.zeros((n, n))
+    for X, w in [(X, 1.0) for X in Xm] + [(Fm, lam_v)]:
+        d = np.diag(X)
+        A_ = X @ eta - eta @ X
+        v = np.diag(A_)
+        E_ = -(d[:, None] - d[None, :]) * eta
+        M += w * (
+            2 * (v[:, None] - v[None, :]) * X + (E_ @ X - X @ E_) + (d[:, None] - d[None, :]) * A_
+        )
+    return M.T - M
+
+
+iu = np.triu_indices(n, 1)
+
+
+def to_mat(vec):
+    K = np.zeros((n, n))
+    K[iu] = vec
+    return K - K.T
+
+
+def dense_H(Xm, Fm, lam_v):
+    m = len(iu[0])
+    H = np.zeros((m, m))
+    for j in range(m):
+        e = np.zeros(m)
+        e[j] = 1.0
+        H[:, j] = hv_num(Xm, Fm, lam_v, to_mat(e))[iu]
+    return H
+
+
+# FD cross-check of H along random directions (polarization), independent of S5
+for _ in range(3):
+    K1 = to_mat(rng.normal(size=len(iu[0])))
+    K2 = to_mat(rng.normal(size=len(iu[0])))
+    h = 2e-4
+
+    def g2(K):
+        return G_along(K, h, X0, F0) + G_along(K, -h, X0, F0)
+
+    fd = (g2(K1 + K2) - g2(K1 - K2)) / (4 * h**2)
+    an = (K1[iu] * hv_num(X0, F0, lam_v, K2)[iu]).sum()
+    assert abs(fd - an) < 1e-4 * max(1.0, abs(an)), f"S5: Hessian FAILED (FD {fd} vs {an})"
+
+
+def newton_step(Xm, Fm, lam_v):
+    """kappa* = (-H)^{-1} gamma on the quadratic model."""
+    H = dense_H(Xm, Fm, lam_v)
+    return to_mat(np.linalg.solve(-H, gamma_num(Xm, Fm, lam_v)[iu]))
+
+
+# Newton from a perturbation of the Jacobi optimum lands on it, quadratically
+Kp = to_mat(rng.normal(size=len(iu[0])) * 2e-2)
+Up = expm_antisym(Kp)
+Xn, Fn = [Up.T @ X @ Up for X in Xc], Up.T @ Fc @ Up
+steps = []
+for _ in range(6):
+    kap = newton_step(Xn, Fn, lam_v)
+    steps.append(np.abs(kap).max())
+    if steps[-1] < 1e-13:
+        break
+    Ue = expm_antisym(kap)
+    Xn, Fn = [Ue.T @ X @ Ue for X in Xn], Ue.T @ Fn @ Ue
+assert steps[-1] < 1e-12, f"S6: Newton FAILED (steps {steps})"
+assert steps[2] < 10 * steps[1] ** 2 + 1e-14, f"S6: Newton FAILED (not quadratic: {steps})"
+assert abs(G_num(Xn, Fn, lam_v) - G_num(Xc, Fc, lam_v)) < 1e-10, "S6: Newton FAILED (G)"
+# the step predicts the distance to the maximum, the gradient does not:
+# soften one mode of the quadratic model and compare |gamma| and |kappa*|
+H0 = dense_H(Xc, Fc, lam_v)
+w_h, V_h = np.linalg.eigh(H0)
+assert w_h.max() < 0, "S6: Newton FAILED (Jacobi optimum not a maximum)"
+w_soft = w_h.copy()
+w_soft[-1] = -1e-6  # one soft mode, as in the S22 benzene monomers
+H_soft = (V_h * w_soft) @ V_h.T
+dist = 1e-3 * V_h[:, -1]  # a point 1e-3 rad from the maximum along it
+g_soft = H_soft @ dist  # gradient of the model there (pointing back)
+kap_soft = np.linalg.solve(-H_soft, g_soft)
+assert np.abs(g_soft).max() < 1e-8, "S6: Newton FAILED (gradient not small)"
+assert abs(np.abs(kap_soft).max() - np.abs(dist).max()) < 1e-12, (
+    "S6: Newton FAILED (step != distance)"
+)
+print(
+    f"Newton steps from a 2e-2 kick: {', '.join(f'{x:.1e}' for x in steps)}; "
+    f"soft mode: |gamma| {np.abs(g_soft).max():.1e} at distance {np.abs(dist).max():.1e} "
+    f"= |kappa*| {np.abs(kap_soft).max():.1e}"
+)
 print("ALL CHECKS PASSED")

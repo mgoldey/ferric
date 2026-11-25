@@ -1305,12 +1305,14 @@ max_grad = lambda_boys_max_grad(&x, &f, lambda);
   rotated once at the end, $C_{\mathrm{locc}} = C_{\mathrm{Boys}}U$.
 - The pair order is fixed and the loop is serial, so the result does not
   depend on the thread count.
-- The stop is $\max_{p<q}\lvert 4b_{pq}\rvert < 10^{-8}$ $\text{Bohr}^2$
-  (`LAMBDA_BOYS_GRAD_TOL`), evaluated after a whole sweep. A run that does
-  not reach it within `LAMBDA_BOYS_MAX_SWEEPS` sweeps is a `Convergence`
-  error, the same rule as for Boys: the orbitals would still span the
-  occupied space, but the pair gate, the domains and the mask are built
-  from them.
+- The sweeps stop on $\max_{p<q}\lvert 4b_{pq}\rvert < 10^{-8}$
+  $\text{Bohr}^2$ (`LAMBDA_BOYS_GRAD_TOL`), evaluated after a whole sweep,
+  or after 100 sweeps (`LAMBDA_BOYS_SOLVER`). A Newton stage follows
+  (section @sec:amplitude-lmp2-lambda-boys-newton) and adds a second
+  target on the Newton step. A run that does not reach both targets is a
+  `Convergence` error, the same rule as for Boys: the orbitals would still
+  span the occupied space, but the pair gate, the domains and the mask are
+  built from them.
 - At $\lambda = 0$ the optimiser is not called and the Boys orbitals are
   returned bit for bit.
 
@@ -1383,6 +1385,144 @@ of $t_{\mathrm{corr}}$.
 > | Code | `ferric-mp2/src/boys.rs::lambda_boys_rotation` |
 >
 > <!-- verified: id=lmp2.lambda-boys; script=scripts/lmp2_lambda_boys_sympy.py; claim=S3: stationarity; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/boys.rs::{lambda_boys_rotation,lambda_boys_pair_gradient,lambda_boys_pair_angle}; rust_test=ferric-mp2/src/boys.rs::lambda_boys_pair_gradient_matches_central_difference; registry=local-mp2 -->
+
+### The Newton stage {#amplitude-lmp2-lambda-boys-newton}
+
+A benzene ring has six C–C σ bonds and three π bonds, and in an exact
+$D_{6h}$ ring the π localization can turn around the ring without changing
+$G$: the maximum is a curve, not a point. Break the symmetry a little, by
+the slightly distorted monomer geometry of the S22 T-shaped dimer, by the
+ghost basis of a partner in a counterpoise run, or by the partner molecule
+itself, and the curve tilts into a maximum with one very flat direction.
+Jacobi sweeps rotate one pair at a time, and along a direction that
+couples many pairs weakly they creep: on S22 monomer A in 6-31G they need
+about $10^4$ sweeps, and in the dimer they stall near a gradient of
+$10^{-6}$. A Newton step uses the curvature of all pairs at once and lands
+on the maximum in a few iterations.
+
+**Generator coordinates.** Rotate the localized orbitals as
+$U \to U e^{\kappa}$ with $\kappa$ antisymmetric and independent entries
+$\kappa_{pq}$, $p<q$. Then $X \to e^{-\kappa} X e^{\kappa} = X + [X,\kappa]
++ \tfrac12[[X,\kappa],\kappa] + \dots$ for each $X \in \{r^x, r^y, r^z, f\}$
+with weight $w_X$. Write $D_X = \operatorname{diag}(X)$. The first-order
+change of $\sum_i X_{ii}^2$ is $2\operatorname{tr}(D_X[X,\kappa]) =
+2\operatorname{tr}([D_X,X]\kappa)$, and differentiating
+$\operatorname{tr}(M\kappa)$ by $\kappa_{pq}$ with $\kappa_{qp} =
+-\kappa_{pq}$ gives $(M^{\mathsf T} - M)_{pq}$. The second order of the
+same expansion gives the Hessian applied to an antisymmetric $\eta$:
+
+$$ \gamma = \Gamma^{\mathsf T} - \Gamma,\quad \Gamma = 2\sum_X w_X [D_X, X]; \qquad H\eta = M^{\mathsf T} - M,\quad M = \sum_X w_X\bigl(2[V_X, X] + [E_X, X] + [D_X, A_X]\bigr), \label{eq:lmp2-lambda-boys-newton} $$
+
+with $A_X = [X,\eta]$, $V_X = \operatorname{diag}(A_X)$ and $E_X =
+[\eta, D_X]$. Two checks against (@eq:lmp2-lambda-boys-stationarity):
+$\gamma_{pq} = -4\sum_X w_X (X_{pp}-X_{qq})X_{pq} = -4b_{pq}$, the pair
+gradient with the sign of $\kappa_{pq} = -\theta_{pq}$; and the diagonal of
+$H$ is $-16a_{pq}$, the in-plane curvature at $\theta = 0$. The Newton step
+for the maximum solves $(-H)\kappa = \gamma$. On a quadratic model its
+length is the distance to the maximum, so near a maximum with a mode of
+curvature $h$ a gradient $g$ along that mode leaves the orbitals $g/h$ away
+from it.
+
+**Why the step is a convergence target.** The gradient alone does not
+bound that distance. On the T dimer ($h = -8.2\times10^{-5}$) the Newton
+iteration stopped by the gradient target alone ($3.6\times10^{-9}$) left
+the orbitals $2.8\times10^{-5}$ rad from the maximum, and the integral mask,
+which is a step function of the orbitals, moved $E_{\mathrm{corr}}$ by
+$2.5\times10^{-6}$ Ha. So the solver stops when the gradient is below
+`LAMBDA_BOYS_GRAD_TOL` and the step below `LAMBDA_BOYS_STEP_TOL`, $10^{-8}$
+rad. The step is measured with a second, tight solve (relative residual
+$10^{-12}$), because the loose solve of a Newton move ($10^{-3}$) leaves an
+error of $\lVert r\rVert/h$ along the flat mode.
+
+**The code.** `ferric-mp2/src/boys.rs::lambda_boys_solve` runs at most 100
+sweeps and then `ferric-mp2/src/boys.rs::lambda_boys_newton`. Its test and
+move, with the backtracking line search removed:
+
+<!-- excerpt: ferric-mp2/src/boys.rs::lambda_boys_newton -->
+```rust
+let noise = lambda_boys_grad_noise(x0, f0, lambda, &u, &gam);
+let g2 = antisym_dot(&gam, &gam).sqrt();
+let system = NewtonSystem::new(&x, &f, lambda);
+// κ = (−H)⁻¹ γ by PCG, preconditioned by 16 a_pq
+let (mut kap, cg) = system.step(&gam, (NEWTON_CG_RTOL * g2).max(noise));
+cg_iters += cg;
+let mut step = max_abs(&kap);
+if g_max < solver.grad_tol && step < solver.step_tol {
+    // converged if an accurate solve confirms the distance
+    let (k_fine, cg) = system.step(&gam, (NEWTON_CG_RTOL_FINAL * g2).max(noise));
+    cg_iters += cg;
+    step = max_abs(&k_fine);
+    if step < solver.step_tol {
+        converged = true;
+        break step;
+    }
+    kap = k_fine;
+}
+```
+
+- The Newton system works on $n_o\times n_o$ matrices, like the sweeps.
+  One product $H\eta$ costs a few $n_o^3$ matrix products, and no Hessian
+  is stored.
+- When the sweeps converge on both targets (every alkane measured), the
+  Newton stage takes no iteration and the sweep result is returned bit for
+  bit.
+- Negative curvature along a PCG direction (a saddle region far from the
+  maximum) ends the solve with a step to the cap, 0.3 rad, along it. The
+  move is accepted only if $G$ rises, or stays level within rounding while
+  the gradient falls; after 30 halvings without that, the run is a
+  `Convergence` error.
+- The gradient's rounding noise, measured as the difference of $\gamma$
+  formed in two association orders, sets the floor of every PCG residual.
+
+**Flat directions.** In an exact $D_{6h}$ ring the curve of maxima is a
+zero mode of $H$ (measured $|h| \sim 10^{-13}$, $2\times10^{-15}$ of the
+largest pair curvature). A Newton step along it is rounding noise divided
+by rounding noise. `NewtonSystem::step` deflates any step direction whose
+curvature is below $10^{-11}$ of the largest $16a_{pq}$
+(`NEWTON_FLAT_REL`) and solves again, so the optimiser does not move along
+a symmetry. The softest real mode measured, S22 benzene B with a ghost A
+in STO-3G, is $1.4\times10^{-9}$ of the largest, and is resolved. On the
+flat curve itself the λ-Boys orbitals are not unique, and neither is
+$E_{\mathrm{corr}}$ at finite $\varepsilon$: from the Boys orbitals the
+Newton iteration reaches a different point of the curve than the sweeps
+and moves $E_{\mathrm{corr}}$ of $D_{6h}$ benzene by $1.5\times10^{-5}$ Ha.
+The production solver runs the sweeps first, so on these molecules it
+returns the point the sweeps alone always returned.
+
+**Measured 2026-11-25, provisional** (6-31G, cc-pvdz-ri, $\varepsilon =
+10^{-4}$, frozen core, production integral-direct maps; one run each).
+$\Delta$ is $E_{\mathrm{corr}}$ minus the production value. The sweeps-only
+optimiser (2000 sweeps) failed on all four systems:
+
+| System | softest mode $h$ | production | Newton from Boys, $\Delta$ (Ha) | sweeps only to $\lvert g\rvert < 10^{-4}$, $\Delta$ (Ha) |
+|---|---|---|---|---|
+| monomer A | $-1.2\times10^{-2}$ | 100 sweeps + 3 Newton | 0 | $8.0\times10^{-7}$ (4895 sweeps) |
+| monomer A + ghost B | $-1.9\times10^{-2}$ | 100 + 4 | 0 | $6.5\times10^{-7}$ (3302 sweeps) |
+| monomer B + ghost A | $-1.3\times10^{-4}$ | 100 + 3 | 0 | $-8.0\times10^{-7}$ (stalls above $10^{-6}$) |
+| T dimer | $-8.2\times10^{-5}$ | 100 + 4 | $< 10^{-13}$ | $-4.6\times10^{-6}$ (stalls above $10^{-6}$) |
+
+A Newton stop at a step of $10^{-5}$ rad moved $E_{\mathrm{corr}}$ by at
+most $10^{-9}$ Ha on these systems, so the $10^{-8}$ rad target leaves a
+margin of about three orders. With $\varepsilon = 0$ and inert maps all
+four reproduce canonical RI-MP2 to $4\times10^{-12}$ Ha.
+
+> **Verified equation @eq:lmp2-lambda-boys-newton** · the λ-Boys generator gradient, Hessian-vector product and Newton step
+>
+> The gradient and Hessian in the coordinates $U e^{\kappa}$ against the
+> second-order expansion of $G$, the identities $\gamma = -4b$ and
+> $\operatorname{diag} H = -16a$, symbolically; numerically, $H\eta$
+> against a finite difference of $G$ along $\exp(sK)$, quadratic Newton
+> convergence to the Jacobi optimum, and a soft mode on which the gradient
+> is $10^{-9}$ while the step equals the $10^{-3}$ rad distance.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/lmp2_lambda_boys_sympy.py`, S5 and S6 |
+> | Negative control | the runner drops the factor 2 of $2[V_X, X]$ ("S5: Hessian") and steps along $+H^{-1}\gamma$ ("S6: Newton") |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-mp2/src/boys.rs::lambda_boys_hessian_vec` |
+>
+> <!-- verified: id=lmp2.lambda-boys-newton; script=scripts/lmp2_lambda_boys_sympy.py; claim=S5: Hessian; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/boys.rs::{lambda_boys_generator_gradient,lambda_boys_hessian_vec,lambda_boys_newton}; rust_test=ferric-mp2/src/boys.rs::lambda_boys_generator_gradient_and_hessian_match_finite_differences; registry=local-mp2 -->
 
 ## Reproducibility and memory {#amplitude-lmp2-reproducibility-memory}
 

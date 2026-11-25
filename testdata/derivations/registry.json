@@ -1666,6 +1666,7 @@
         "book/src/13-local-mp2/01-amplitude-lmp2.md#amplitude-lmp2-fock-screen",
         "book/src/13-local-mp2/05-combined-truncation.md#amplitude-lmp2-combined-truncation",
         "book/src/13-local-mp2/01-amplitude-lmp2.md#amplitude-lmp2-lambda-boys",
+        "book/src/13-local-mp2/01-amplitude-lmp2.md#amplitude-lmp2-lambda-boys-newton",
         "book/src/13-local-mp2/02-integral-direct.md#integral-direct-map-errors-eps0",
         "book/src/13-local-mp2/02-integral-direct.md#integral-direct-domain-local-fit",
         "book/src/13-local-mp2/02-integral-direct.md#integral-direct-pair-skip"
