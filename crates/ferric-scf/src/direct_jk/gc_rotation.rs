@@ -218,12 +218,21 @@ pub struct RotatedJk {
     pool: std::sync::Mutex<Option<(PoolKey, Arc<EnginePool>)>>,
     /// The shared-primitive kernel's groups and pair data on the rotated
     /// shells (`[scf] gc_kernel`), keyed by the primitive-pair precision.
-    kernel: std::sync::Mutex<Option<(u64, Arc<GcKernelBasis>)>>,
+    /// The reservation charges its bytes to the memory pool while cached.
+    kernel: std::sync::Mutex<Option<KernelEntry>>,
     /// Wall seconds of the detection and the rotated bounds.
     pub(crate) setup_seconds: f64,
 }
 
 type PoolKey = (ferric_integrals::operator::Operator, u64, usize);
+
+/// A cached kernel basis: its precision bits, the basis and its memory
+/// reservation.
+type KernelEntry = (
+    u64,
+    Arc<GcKernelBasis>,
+    ferric_core::memory::pool::Reservation,
+);
 
 impl std::fmt::Debug for RotatedJk {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -329,7 +338,9 @@ impl RotatedJk {
     /// The shared-primitive kernel data of the rotated shells, its primitive
     /// pairs screened at `precision`: built once per precision and shared
     /// (`direct_jk::gc_kernel`). Coulomb only: the caller checks the
-    /// operator.
+    /// operator. Its bytes are charged to the memory pool for as long as it
+    /// is cached; a refused reservation is an error (nothing is cached), and
+    /// the walk then runs libint (`Walk::kernel`).
     pub(crate) fn kernel_basis(&self, precision: f64) -> Result<Arc<GcKernelBasis>, FerricError> {
         let key = precision.to_bits();
         let lock = || {
@@ -337,15 +348,19 @@ impl RotatedJk {
                 .lock()
                 .map_err(|_| FerricError::General("gc kernel: cache lock poisoned".into()))
         };
-        if let Some((k, b)) = lock()?.as_ref() {
+        if let Some((k, b, _)) = lock()?.as_ref() {
             if *k == key {
                 return Ok(b.clone());
             }
         }
         let t0 = std::time::Instant::now();
         let built = Arc::new(GcKernelBasis::for_rotated(&self.basis, precision)?);
+        let charge = ferric_core::memory::pool::reserve_global(
+            &format!("direct J/K gc kernel pair data (n={})", self.basis.nbasis()),
+            built.bytes(),
+        )?;
         let mut g = lock()?;
-        if let Some((k, b)) = g.as_ref() {
+        if let Some((k, b, _)) = g.as_ref() {
             if *k == key {
                 return Ok(b.clone());
             }
@@ -359,7 +374,7 @@ impl RotatedJk {
                 t0.elapsed().as_secs_f64()
             );
         }
-        *g = Some((key, built.clone()));
+        *g = Some((key, built.clone(), charge));
         Ok(built)
     }
 
@@ -928,7 +943,7 @@ mod tests {
         let want = ferric_integrals::engine_pool::eri_precision();
         let first = {
             let g = r.kernel.lock().unwrap();
-            let (key, kb) = g.as_ref().expect("the build made the kernel data");
+            let (key, kb, _) = g.as_ref().expect("the build made the kernel data");
             assert_eq!(*key, want.to_bits());
             assert_eq!(kb.precision().to_bits(), want.to_bits());
             kb.clone()

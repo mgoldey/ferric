@@ -630,8 +630,22 @@ impl Walk<'_> {
         {
             return Ok(None);
         }
-        r.kernel_basis(ferric_integrals::engine_pool::eri_precision())
-            .map(Some)
+        // The kernel data is charged to the memory pool; a rank whose
+        // reservation is refused runs libint, and so does every other rank
+        // (the kernel changes the work list and its striping, which the
+        // ranks must share).
+        let kb = r.kernel_basis(ferric_integrals::engine_pool::eri_precision());
+        if !gc_rotation::all_ranks_agree(self.ctx, kb.is_ok()) {
+            eprintln!(
+                "note: direct J/K gc kernel off for this build: {}",
+                match &kb {
+                    Err(e) => e.to_string(),
+                    Ok(_) => "the kernel data was refused on another MPI rank".into(),
+                }
+            );
+            return Ok(None);
+        }
+        kb.map(Some)
     }
 
     /// Record a rotated pair-digest build's kernel counts for the test probe.

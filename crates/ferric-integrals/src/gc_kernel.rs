@@ -277,8 +277,13 @@ struct PairData {
     /// Surviving primitive pairs.
     n: usize,
     p: Vec<f64>,
-    pc: Vec<[f64; 3]>,
-    /// `P − A`.
+    /// `A`, the centre of the first group: every position of the pair is
+    /// kept relative to it, so `P − Q` between two pairs is the anchor
+    /// difference plus the local offsets, never a difference of large
+    /// absolute coordinates (a one-centre quartet far from the origin then
+    /// has `P − Q = 0` exactly, and its parity-zero integrals vanish).
+    anchor: [f64; 3],
+    /// `P − A = (b / p)(B − A)`.
     pa: Vec<[f64; 3]>,
     /// `√2 π^{5/4} exp(−μ r²) / p`.
     u: Vec<f64>,
@@ -311,7 +316,7 @@ impl PairData {
             mb,
             n: 0,
             p: vec![],
-            pc: vec![],
+            anchor: a,
             pa: vec![],
             u: vec![],
             cw: vec![],
@@ -327,14 +332,10 @@ impl PairData {
                 if ca[i].ln() + cb[j].ln() - mu * r2 < ln_eps {
                     continue;
                 }
-                let pc = [
-                    (ea * a[0] + eb * b[0]) / p,
-                    (ea * a[1] + eb * b[1]) / p,
-                    (ea * a[2] + eb * b[2]) / p,
-                ];
+                // P − A = (b / p)(B − A), with AB = A − B.
+                let f = eb / p;
                 pr.p.push(p);
-                pr.pc.push(pc);
-                pr.pa.push([pc[0] - a[0], pc[1] - a[1], pc[2] - a[2]]);
+                pr.pa.push([-f * ab[0], -f * ab[1], -f * ab[2]]);
                 pr.u.push(pref * (-mu * r2).exp() / p);
                 for c1 in 0..ma {
                     for c2 in 0..mb {
@@ -641,6 +642,35 @@ impl GcKernelBasis {
         self.pairs.len()
     }
 
+    /// Heap bytes this basis holds (groups, per-shell tables, the pair
+    /// index and the pair data), for the memory-pool charge of its owner.
+    pub fn bytes(&self) -> usize {
+        use std::mem::size_of;
+        let f = size_of::<f64>();
+        let groups: usize = self
+            .groups
+            .iter()
+            .map(|g| {
+                size_of::<KernelGroup>()
+                    + (g.exponents.len() + g.coefficients.len()) * f
+                    + g.shells.len() * size_of::<usize>()
+            })
+            .sum();
+        let shells =
+            self.slot.len() * (size_of::<Slot>() + size_of::<i32>() + 2 * size_of::<u32>() + 1);
+        let pairs: usize = self
+            .pairs
+            .iter()
+            .map(|p| {
+                size_of::<PairData>()
+                    + (p.p.len() + p.u.len() + p.cw.len()) * f
+                    + p.pa.len() * 3 * f
+                    + p.hrr.len() * size_of::<HrrTerm>()
+            })
+            .sum();
+        groups + shells + self.pidx.len() * size_of::<u32>() + pairs
+    }
+
     /// Number of AOs of the basis it was built for.
     pub fn nbasis(&self) -> usize {
         self.nbasis
@@ -739,6 +769,18 @@ impl GcKernelBasis {
 // Kernels
 // ---------------------------------------------------------------------------
 
+/// `A_bra − A_ket`, the anchor difference of two pairs.
+#[inline(always)]
+fn anchor_difference(bra: &PairData, ket: &PairData) -> [f64; 3] {
+    let (a, c) = (bra.anchor, ket.anchor);
+    [a[0] - c[0], a[1] - c[1], a[2] - c[2]]
+}
+
+#[inline(always)]
+fn add3(x: [f64; 3], y: [f64; 3]) -> [f64; 3] {
+    [x[0] + y[0], x[1] + y[1], x[2] + y[2]]
+}
+
 /// `(ss|ss)` for every column quartet of a group quartet:
 /// `out[ab · m_cd + cd]`.
 #[inline(never)]
@@ -756,13 +798,15 @@ fn kernel_ssss(
         scratch.a.resize(mcd, 0.0);
     }
     let t = &mut scratch.a[..mcd];
+    let da = anchor_difference(bra, ket);
     for ij in 0..bra.n {
         let p = bra.p[ij];
-        let pc = bra.pc[ij];
+        // P relative to the ket's anchor.
+        let pc = add3(da, bra.pa[ij]);
         t.fill(0.0);
         for kl in 0..ket.n {
             let q = ket.p[kl];
-            let qc = ket.pc[kl];
+            let qc = ket.pa[kl];
             let pq = p + q;
             let rho = p * q / pq;
             let dx = pc[0] - qc[0];
@@ -838,14 +882,16 @@ fn kernel_l1<const LAB: usize, const LCD: usize>(
     let acc = &mut scratch.b[..mab * mcd * nef];
     acc.fill(0.0);
     let mut v = [0.0f64; 4];
+    let da = anchor_difference(bra, ket);
     for ij in 0..bra.n {
         let p = bra.p[ij];
-        let pc = bra.pc[ij];
         let pa = bra.pa[ij];
+        // P relative to the ket's anchor.
+        let pc = add3(da, pa);
         h.fill(0.0);
         for kl in 0..ket.n {
             let q = ket.p[kl];
-            let qc = ket.pc[kl];
+            let qc = ket.pa[kl];
             let pq = p + q;
             let rho = p * q / pq;
             let d = [pc[0] - qc[0], pc[1] - qc[1], pc[2] - qc[2]];

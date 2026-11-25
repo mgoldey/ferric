@@ -371,6 +371,9 @@ pub struct KernelCounts {
     pub buckets: usize,
     /// Group accumulators whose cache started at least one bucket.
     pub caches: usize,
+    /// Covered quartets handed back to libint because their block would
+    /// have taken the cache's arena past its cap.
+    pub fallbacks: usize,
 }
 
 impl KernelCounts {
@@ -380,8 +383,16 @@ impl KernelCounts {
         self.columns += o.columns;
         self.buckets += o.buckets;
         self.caches += o.caches;
+        self.fallbacks += o.fallbacks;
     }
 }
+
+/// Cap of one block cache's arena, in doubles (8 MiB). Measured use is
+/// about 0.5 MB on octane cc-pVDZ; beyond the cap a bucket's further ket
+/// group pairs fall back to libint (deterministically: the arena's fill is a
+/// function of the work list, never of the thread count). At most one cache
+/// per worker thread is alive at a time.
+pub(crate) const ARENA_CAP: usize = 1 << 20;
 
 /// The kernel blocks of one bucket (the current bra group pair), owned by a
 /// group accumulator of the pair digest: keyed by the ket group pair,
@@ -396,6 +407,9 @@ pub(crate) struct KernelCache<'k> {
     /// often share the ket group pair).
     last: Option<(u32, usize)>,
     arena: Vec<f64>,
+    /// Most doubles `arena` may hold ([`ARENA_CAP`]); a block that would
+    /// pass it is not computed, and libint serves the quartet.
+    cap: usize,
     scratch: KernelScratch,
     /// The gathered column quartet (at most 3 integrals).
     pub(crate) q: [f64; 3],
@@ -419,6 +433,7 @@ impl<'k> KernelCache<'k> {
             map: HashMap::default(),
             last: None,
             arena: Vec::new(),
+            cap: ARENA_CAP,
             scratch: KernelScratch::default(),
             q: [0.0; 3],
             counts: KernelCounts::default(),
@@ -450,7 +465,8 @@ impl<'k> KernelCache<'k> {
     /// Gather column quartet `(s1 s2|s3 s4)` of bucket `bra` into
     /// [`q`](Self::q), evaluating its group block on first use; `None`
     /// (libint serves it) when the kernel has no data for the ket group
-    /// pair. The number of integrals otherwise.
+    /// pair, or when its block would take the arena past its cap. The
+    /// number of integrals otherwise.
     pub(crate) fn gather(&mut self, bra: PairId, s: [usize; 4]) -> Option<usize> {
         let PairKind::Data(ket) = self.kb.pair_of(s[2], s[3]) else {
             return None;
@@ -465,6 +481,10 @@ impl<'k> KernelCache<'k> {
             None => {
                 let o = self.arena.len();
                 let len = self.kb.block_len(bra, ket);
+                if o + len > self.cap {
+                    self.counts.fallbacks += 1;
+                    return None;
+                }
                 self.arena.resize(o + len, 0.0);
                 self.kb
                     .eval(bra, ket, &mut self.arena[o..], &mut self.scratch);
@@ -601,6 +621,63 @@ mod tests {
         assert!(served > 1000 && switches > 50, "{served} {switches}");
         assert_eq!(cache.counts.quartets, served);
         assert!(cache.counts.evals < served, "no block was reused");
+    }
+
+    /// A cache whose arena cap is reached hands the further ket group pairs
+    /// of the bucket back (`None`, counted as fallbacks) and still serves the
+    /// cached ones correctly; a new bucket starts from an empty arena.
+    #[test]
+    fn arena_cap_falls_back_to_libint() {
+        use ferric_integrals::basis_bridge::PreparedBasis;
+        use ferric_integrals::contraction_rotation::{RotatedBasis, RotationLevel};
+        let mol =
+            ferric_core::mol::Molecule::load_xyz("../../testdata/molecules/c2h4.xyz").unwrap();
+        let parent =
+            PreparedBasis::new(&mol, &ferric_core::basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let rot = RotatedBasis::detect_prepared(&parent, RotationLevel::Ogc)
+            .unwrap()
+            .unwrap();
+        let kb = GcKernelBasis::for_rotated(&rot, 1e-20).unwrap();
+        let nsh = rot.prep.nshells();
+        let mut cache = KernelCache::new(&kb);
+        cache.cap = 40;
+        let mut scratch = KernelScratch::default();
+        let (mut block, mut want) = (Vec::new(), [0.0; 3]);
+        let mut served = 0;
+        for s1 in 0..nsh {
+            for s2 in 0..=s1 {
+                let Some((bra, l12)) = cache.begin(s1, s2) else {
+                    continue;
+                };
+                for s3 in 0..nsh {
+                    for s4 in 0..nsh {
+                        if !cache.covers(l12, s3, s4) {
+                            continue;
+                        }
+                        let Some(n) = cache.gather(bra, [s1, s2, s3, s4]) else {
+                            continue;
+                        };
+                        assert!(cache.arena.len() <= 40);
+                        let PairKind::Data(ket) = kb.pair_of(s3, s4) else {
+                            unreachable!();
+                        };
+                        block.resize(kb.block_len(bra, ket), 0.0);
+                        kb.eval(bra, ket, &mut block, &mut scratch);
+                        kb.gather(&block, bra, ket, [s1, s2, s3, s4], &mut want);
+                        for (x, y) in cache.q[..n].iter().zip(&want[..n]) {
+                            assert_eq!(x.to_bits(), y.to_bits());
+                        }
+                        served += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            served > 0 && cache.counts.fallbacks > 0,
+            "{served} {:?}",
+            cache.counts
+        );
+        assert_eq!(cache.counts.quartets, served);
     }
 
     /// The unit partition never splits a unit, covers the list in order and

@@ -1435,13 +1435,15 @@ Next, each as its own PR following the patterns above:
 17. Flip `[scf] gc_kernel` to `auto` by default (the shared-primitive
     `(ss|ss)` / `(ss|sp)` kernel of the rotated direct walk; see "Done").
     Prerequisites, each its own change first:
-    - Memory: cap the per-accumulator block-cache arena and charge it to
-      the memory pool (it grows with the ket group pairs one bra bucket
-      touches, ~0.5 MB on octane, unbounded in principle); make `pidx`
-      sparse (it is `n_sp_groups²` `u32`s, 16 MB at 2000 s/p groups); build
-      pair data only for group pairs that hold a significant shell pair
-      (today every ordered s/p group pair is set up, most of them empty for
-      a large molecule).
+    - Memory: the kernel data is charged to the memory pool while cached
+      (`GcKernelBasis::bytes`; a refused reservation runs libint on every
+      rank), and each block-cache arena is capped at 8 MiB with a libint
+      fallback beyond it (`gc_kernel::ARENA_CAP`; ~0.5 MB used on octane);
+      the arenas themselves (at most one live per worker thread) are not
+      charged. Still to do: make `pidx` sparse (it is `n_sp_groups²`
+      `u32`s, 16 MB at 2000 s/p groups); build pair data only for group
+      pairs that hold a significant shell pair (today every ordered s/p
+      group pair is set up, most of them empty for a large molecule).
     - A speed measurement on heavy atoms and pseudopotential bases (cc-pVTZ
       Cl/Br, cc-pVDZ-PP on Ag/I), paired against `off`: the measured gains
       are alkanes only.

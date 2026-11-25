@@ -597,7 +597,7 @@ the in-core store off, on water, methane and hexane in cc-pVDZ
 | `[scf] eri = "incore"` / `"auto"` | stores the integrals once and builds $J$, $K$ by matrix products (`crates/ferric-scf/src/incore_jk.rs`) |
 | `[scf] gc_rotation` (or `FERRIC_GC_ROTATE`) = `auto` (default) / `rot1` / `off` | the internal contraction rotation of generally contracted bases (@sec:direct-and-incremental-general-contraction); `off` is the unrotated builder |
 | `[scf] jk_digest` (or `FERRIC_JK_DIGEST`) = `pair` (default) / `legacy` | how each computed block is contracted into $J$ and $K$ (@sec:direct-and-incremental-pair-digest); `legacy` is the 8-fold scatter bit for bit |
-| `[scf] gc_kernel` (or `FERRIC_GC_KERNEL`) = `auto` / `off` (default) | the `(ss|ss)` and `(ss|sp)` quartets of the rotated walk from the shared-primitive kernel (@sec:direct-and-incremental-shared-primitive-kernel); `off` is libint bit for bit |
+| `[scf] gc_kernel` (or `FERRIC_GC_KERNEL`) = `auto` / `off` (default) | the `(ss\|ss)` and `(ss\|sp)` quartets of the rotated walk from the shared-primitive kernel (@sec:direct-and-incremental-shared-primitive-kernel); `off` is libint bit for bit |
 
 ## Sources
 

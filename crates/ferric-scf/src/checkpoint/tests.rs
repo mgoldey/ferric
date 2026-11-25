@@ -2324,6 +2324,7 @@ fn child(test: &str, envs: &[(&str, &str)]) -> Vec<String> {
     cmd.env_remove("FERRIC_DFK_METRIC");
     cmd.env_remove("FERRIC_GC_ROTATE");
     cmd.env_remove("FERRIC_JK_DIGEST");
+    cmd.env_remove("FERRIC_GC_KERNEL");
     for (k, v) in envs {
         cmd.env(k, v);
     }

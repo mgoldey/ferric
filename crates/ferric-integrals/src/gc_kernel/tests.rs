@@ -13,7 +13,15 @@ use std::collections::HashMap;
 /// the largest |libint| integral, per class (`0`: (ss|ss), `1`: one p).
 /// Every shell order is visited, so the p sits in each of the four
 /// positions.
-fn compare(prep: &PreparedBasis, kb: &GcKernelBasis) -> [(f64, f64, usize); 2] {
+///
+/// `arbitrated`: the shell quartets (any permutation) where libint is known
+/// to be the less accurate side ([`arbitrate`]); empty for every fixture but
+/// HCl cc-pVTZ.
+fn compare(
+    prep: &PreparedBasis,
+    kb: &GcKernelBasis,
+    arbitrated: &[[usize; 4]],
+) -> [(f64, f64, usize); 2] {
     let mut eng = Engine::new_2e(Operator::coulomb(), prep, ERI_PRECISION).unwrap();
     let nsh = prep.nshells();
     let mut scratch = KernelScratch::default();
@@ -41,12 +49,21 @@ fn compare(prep: &PreparedBasis, kb: &GcKernelBasis) -> [(f64, f64, usize); 2] {
                     block.resize(kb.block_len(b, k), 0.0);
                     kb.eval(b, k, &mut block, &mut scratch);
                     let n = kb.gather(&block, b, k, [s1, s2, s3, s4], &mut col);
+                    assert!(
+                        col[..n].iter().all(|x| x.is_finite()),
+                        "({s1} {s2}|{s3} {s4}): non-finite kernel value {:?}",
+                        &col[..n]
+                    );
                     let lib = eng.compute_quartet(prep, s1, s2, s3, s4);
                     let c = &mut out[l as usize];
                     c.2 += 1;
                     match lib {
                         Some(q) => {
                             assert_eq!(q.len(), n);
+                            assert!(
+                                q.iter().all(|y| y.is_finite()),
+                                "({s1} {s2}|{s3} {s4}): non-finite libint value {q:?}"
+                            );
                             for (x, y) in col[..n].iter().zip(q) {
                                 let err = (x - y).abs();
                                 c.0 = c.0.max(err);
@@ -54,13 +71,27 @@ fn compare(prep: &PreparedBasis, kb: &GcKernelBasis) -> [(f64, f64, usize); 2] {
                                 // Per integral: relative where it is not
                                 // tiny, absolute where it is.
                                 if err > 1e-13 * y.abs() + 1e-15 {
+                                    let mut key = [s1, s2, s3, s4];
+                                    key.sort_unstable();
+                                    assert!(
+                                        arbitrated.contains(&key),
+                                        "({s1} {s2}|{s3} {s4}): kernel {x:e} vs libint {y:e} \
+                                         beyond 1e-13·|I| + 1e-15"
+                                    );
                                     arbitrate(prep, [s1, s2, s3, s4], *x, *y);
                                 }
                             }
                         }
                         None => {
+                            // libint screened the quartet to zero: the
+                            // kernel's values must be zero to the same
+                            // per-integral bar.
                             for x in &col[..n] {
                                 c.0 = c.0.max(x.abs());
+                                assert!(
+                                    x.abs() <= 1e-15,
+                                    "({s1} {s2}|{s3} {s4}): libint screened it, kernel {x:e}"
+                                );
                             }
                         }
                     }
@@ -73,7 +104,8 @@ fn compare(prep: &PreparedBasis, kb: &GcKernelBasis) -> [(f64, f64, usize); 2] {
 
 /// Where the kernel and libint differ by more than the per-integral bar
 /// `1e-13·|I| + 1e-15`, decide who is right against an independent
-/// reference. Only a one-centre `(ss|ss)` quartet is accepted: there the
+/// reference. Only the quartets the caller lists for its fixture reach
+/// here, and each must be a one-centre `(ss|ss)` quartet: there the
 /// integral has the closed form `Σ c c c c · 2π^{5/2} / (p q √(p+q))`,
 /// summed here with Neumaier compensation (relative error ~1e-15), and the
 /// kernel must match it to 5e-14 (these columns mix signs, so the sum
@@ -157,7 +189,18 @@ fn atom_l_parts(prep: &PreparedBasis) -> Vec<Vec<usize>> {
 }
 
 fn check(prep: &PreparedBasis, kb: &GcKernelBasis, what: &str) {
-    let r = compare(prep, kb);
+    check_arbitrated(prep, kb, what, &[]);
+}
+
+/// [`check`] with the shell quartets (sorted shell indices) where libint is
+/// known to miss the per-integral bar ([`arbitrate`]).
+fn check_arbitrated(
+    prep: &PreparedBasis,
+    kb: &GcKernelBasis,
+    what: &str,
+    arbitrated: &[[usize; 4]],
+) {
+    let r = compare(prep, kb, arbitrated);
     for (class, (err, scale, n)) in r.iter().enumerate() {
         assert!(*n > 0, "{what}: class {class} has no quartets");
         assert!(
@@ -190,11 +233,24 @@ fn kernel_matches_libint_on_correlation_consistent_shells() {
             .expect("cc basis rotates");
         let kb = GcKernelBasis::for_rotated(&rot, ERI_PRECISION).unwrap();
         assert!(kb.groups().iter().any(|g| g.ncols() > 1));
-        check(&rot.prep, &kb, &format!("{mol} {basis} rotated"));
+        // The two Cl cc-pVTZ s-column quartets where libint misses the
+        // per-integral bar ([`arbitrate`]); none elsewhere.
+        let hcl = mol == "hcl" && basis == "cc-pvtz";
+        let (rot_known, unrot_known): (&[[usize; 4]], &[[usize; 4]]) = if hcl {
+            (&[[0, 1, 1, 2]], &[[0, 1, 1, 3]])
+        } else {
+            (&[], &[])
+        };
+        check_arbitrated(&rot.prep, &kb, &format!("{mol} {basis} rotated"), rot_known);
         let kb =
             GcKernelBasis::from_groups(&parent, &atom_l_parts(&parent), ERI_PRECISION).unwrap();
         assert!(kb.groups().iter().any(|g| g.ncols() >= 3));
-        check(&parent, &kb, &format!("{mol} {basis} unrotated"));
+        check_arbitrated(
+            &parent,
+            &kb,
+            &format!("{mol} {basis} unrotated"),
+            unrot_known,
+        );
     }
 }
 
@@ -379,4 +435,84 @@ fn bad_partitions_are_refused() {
     assert!(GcKernelBasis::from_groups(&prep, &parts, ERI_PRECISION).is_err());
     let all: Vec<Vec<usize>> = vec![(0..prep.nshells()).collect()];
     assert!(GcKernelBasis::from_groups(&prep, &all, ERI_PRECISION).is_err());
+}
+
+/// A one-centre group far from the origin (about 1e8 Bohr on each axis):
+/// every position is kept relative to the pair's own centre, so `P − Q`
+/// and `P − A` are exactly zero and the parity-zero `(ss|sp)` integrals are
+/// exactly 0, and the `(ss|ss)` integrals equal those of the same atom at
+/// the origin to rounding.
+#[test]
+fn one_centre_quartets_far_from_the_origin_keep_parity() {
+    let mut bs = BasisSet {
+        name: "gc-kernel-far".into(),
+        shells: HashMap::new(),
+        ecps: HashMap::new(),
+    };
+    bs.shells.insert(
+        1,
+        vec![
+            Shell {
+                l: 0,
+                pure: true,
+                exponents: vec![3.0, 0.9, 0.2],
+                coefficients: vec![0.2, 0.5, 0.6],
+            },
+            Shell {
+                l: 0,
+                pure: true,
+                exponents: vec![0.9, 0.2],
+                coefficients: vec![-0.3, 1.0],
+            },
+            Shell {
+                l: 1,
+                pure: false,
+                exponents: vec![0.7],
+                coefficients: vec![1.0],
+            },
+        ],
+    );
+    let blocks = |x: f64| {
+        let m = Molecule::parse_xyz(&format!("1\nH\nH {x} {x} {x}\n"), 0, 2).unwrap();
+        let prep = PreparedBasis::new(&m, &bs).unwrap();
+        let kb = GcKernelBasis::from_groups(&prep, &atom_l_parts(&prep), ERI_PRECISION).unwrap();
+        let mut scratch = KernelScratch::default();
+        let (mut out, mut col) = (Vec::new(), [0.0; 3]);
+        let mut vals: Vec<(i32, f64)> = Vec::new();
+        for s in [
+            [0, 0, 1, 1],
+            [0, 1, 0, 1],
+            [1, 0, 2, 0],
+            [2, 0, 1, 1],
+            [0, 0, 0, 2],
+        ] {
+            let (PairKind::Data(b), PairKind::Data(k)) =
+                (kb.pair_of(s[0], s[1]), kb.pair_of(s[2], s[3]))
+            else {
+                panic!("{s:?} has no pair data");
+            };
+            out.resize(kb.block_len(b, k), 0.0);
+            kb.eval(b, k, &mut out, &mut scratch);
+            let n = kb.gather(&out, b, k, s, &mut col);
+            let l = s.iter().map(|&x| kb.shell_l(x)).sum::<i32>();
+            vals.extend(col[..n].iter().map(|&v| (l, v)));
+        }
+        vals
+    };
+    // 5.3e7 Angstrom is about 1e8 Bohr.
+    let (near, far) = (blocks(0.0), blocks(5.3e7));
+    for ((l, a), (_, b)) in near.iter().zip(&far) {
+        if *l == 1 {
+            assert_eq!(*b, 0.0, "a parity-zero one-centre integral far out: {b:e}");
+            assert_eq!(
+                *a, 0.0,
+                "a parity-zero one-centre integral at the origin: {a:e}"
+            );
+        } else {
+            assert!(
+                *a != 0.0 && (a - b).abs() <= 1e-15 * a.abs(),
+                "{a:e} vs {b:e}"
+            );
+        }
+    }
 }

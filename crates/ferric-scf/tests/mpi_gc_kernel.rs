@@ -99,10 +99,15 @@ fn sum_ranks(ctx: &ParallelContext, v: u64) -> u64 {
     v
 }
 
+/// Largest |a − b|; a non-finite difference fails (`f64::max` would skip a
+/// NaN and pass any bar).
 fn max_abs(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    a.iter()
-        .zip(b)
-        .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()))
+    assert_eq!(a.dim(), b.dim());
+    a.iter().zip(b).fold(0.0f64, |m, (x, y)| {
+        let d = (x - y).abs();
+        assert!(d.is_finite(), "non-finite difference: {x} vs {y}");
+        m.max(d)
+    })
 }
 
 #[test]
