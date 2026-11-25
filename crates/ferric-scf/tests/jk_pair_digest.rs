@@ -960,8 +960,10 @@ fn open_shell_guess_builds_do_not_follow_the_digest() {
 }
 
 /// A density or output that is not `nbf × nbf` is an error at each public
-/// direct builder's entry, before the density screen (which indexes it
-/// unchecked) or the kernel runs, under either digest; never a panic.
+/// direct builder's entry (`DirectJK`'s four, `DirectJ`, `DirectK`,
+/// `LinkK`, `build_jk`, `build_jk_with_pool`), before the density screen
+/// (which indexes it unchecked) or the kernel runs, under either digest;
+/// never a panic.
 #[test]
 fn wrong_shape_is_an_error_at_every_builder_entry() {
     use ferric_scf::engine_pool::EnginePool;
@@ -982,6 +984,17 @@ fn wrong_shape_is_an_error_at_every_builder_entry() {
                     let mut djk = DirectJK::new(&ctx, &prep, &b, THRESH, usize::MAX / 4);
                     let mut dj = DirectJ::new(&ctx, &prep, &b, THRESH, usize::MAX / 4);
                     let mut dk = DirectK::new(&ctx, &prep, &b, THRESH, usize::MAX / 4);
+                    // LinK keeps its own digest; it runs under each bounds
+                    // all the same (its density pairs are built lazily in
+                    // `build`, after the entry check).
+                    let mut link = ferric_scf::link_k::LinkK::new(
+                        &ctx,
+                        &prep,
+                        &b,
+                        b.op,
+                        THRESH,
+                        usize::MAX / 4,
+                    );
                     vec![
                         ("DirectJK::build", djk.build(d, &mut j, &mut k)),
                         (
@@ -998,6 +1011,7 @@ fn wrong_shape_is_an_error_at_every_builder_entry() {
                         ),
                         ("DirectJ", JBuilder::build(&mut dj, d, &mut j)),
                         ("DirectK", KBuilder::build(&mut dk, d, &mut k)),
+                        ("LinkK", KBuilder::build(&mut link, d, &mut k)),
                         (
                             "build_jk",
                             ferric_scf::rhf::build_jk(&ctx, &prep, &b, THRESH, d, &mut j, &mut k),
