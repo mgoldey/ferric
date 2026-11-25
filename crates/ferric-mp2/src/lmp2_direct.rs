@@ -374,7 +374,9 @@ pub struct DirectStats {
     pub t_eri3_setup_s: f64,
     /// Integral slabs filled, over all batches.
     pub n_eri3_slabs: usize,
-    /// Largest single stage-3 slab with its occupied half-transform, bytes
+    /// Largest single stage-3 slab with every buffer its transform holds
+    /// beside it (the occupied half-transform, one occupied's selected rows
+    /// and their product, the index maps), measured on the buffers, bytes
     /// (batch pass; 0 on the aux-major pass). Up to one such slab per batch
     /// worker is resident at once.
     pub eri3_slab_bytes_max: usize,
@@ -723,7 +725,8 @@ struct BatchTimers {
     transform_flops_own_support: f64,
     n_integrals: u64,
     n_null_blocks: u64,
-    /// Largest slab (`8·nps·nsf·nnf`) this worker allocated.
+    /// Largest live slab this worker held, measured on the buffers
+    /// themselves ([`SlabDims::live_bytes`] bounds it).
     slab_bytes_max: usize,
 }
 
@@ -2548,24 +2551,55 @@ fn transform_slab(
     (c_occ, c_virt): (&Array2<f64>, &[Array2<f64>]),
     p_local: &[usize],
     t_slab: &Array3<f64>,
-) {
+) -> usize {
     let h = occ_half_transform(c_occ, t_slab);
+    let mut per_occ_peak = 0usize;
     for (k, &i) in is.iter().enumerate() {
         let (pls, gps) = slab_rows(ctx, i, p_local);
         if pls.is_empty() {
             continue;
         }
         let g = h.index_axis(Axis(1), k).select(Axis(0), &pls);
-        assign_strip_rows(&mut strips[k], &gps, &g.dot(&c_virt[k]));
+        let rows = g.dot(&c_virt[k]);
+        per_occ_peak = per_occ_peak.max(8 * (g.len() + rows.len() + pls.len() + gps.len()));
+        assign_strip_rows(&mut strips[k], &gps, &rows);
     }
+    8 * h.len() + per_occ_peak
 }
 
-/// Bytes a batch slab of `nps` aux functions holds while it is transformed:
-/// the triples `t_slab` (`nps·nsf·nnf`) and, beside them, the occupied
-/// half-transform `H` of [`occ_half_transform`] (`nps·|is|·nnf`). The slab
-/// is sized by this, so `H` stays inside the worker's budget.
-fn slab_live_bytes(nps: usize, nsf: usize, nnf: usize, n_occ: usize) -> usize {
-    8 * nps * nnf * (nsf + n_occ)
+/// The dimensions a batch slab's live bytes depend on: the batch's AO axes
+/// (`nsf`, `nnf`), its occupied count, the widest virtual block of any of
+/// them (`max_cols`) and the aux basis size (the slab's `p_local` map).
+#[derive(Debug, Clone, Copy)]
+struct SlabDims {
+    nsf: usize,
+    nnf: usize,
+    n_occ: usize,
+    max_cols: usize,
+    naux: usize,
+}
+
+impl SlabDims {
+    /// Bytes a batch slab of `nps` aux functions holds at its peak, while
+    /// one occupied's rows are transformed: the `p_local` map (`naux`), the
+    /// triples `t_slab` (`nps·nsf·nnf`), the occupied half-transform `H` of
+    /// [`occ_half_transform`] (`nps·|is|·nnf`) and, for that occupied, its
+    /// selected `H` rows (`≤ nps·nnf`), their product with its virtual block
+    /// (`≤ nps·max_cols`) and the two row-index lists (`≤ 2·nps`). The slab
+    /// is sized by this, so all of them stay inside the worker's budget.
+    fn live_bytes(&self, nps: usize) -> usize {
+        8 * self.naux + nps * self.row_bytes()
+    }
+
+    /// Bytes each slab aux function adds to [`Self::live_bytes`].
+    fn row_bytes(&self) -> usize {
+        8 * (self.nnf * (self.nsf + self.n_occ) + self.nnf + self.max_cols + 2)
+    }
+
+    /// Most aux functions a slab may hold under `budget` (at least one).
+    fn max_funcs(&self, budget: usize) -> usize {
+        (budget.saturating_sub(self.live_bytes(0)) / self.row_bytes()).max(1)
+    }
 }
 
 /// `H[(pl, k, n)] = Σ_s c_occ[(k, s)] · t_slab[(pl, s, n)]`: one GEMM per aux
@@ -2665,8 +2699,14 @@ fn eval_batch(ctx: &BatchCtx<'_>, is: &[usize], fill: FillFn) -> BatchOut {
         tm.transform_flops += full * n_rows;
         tm.transform_flops_own_support += own * n_rows;
     }
-    let per_func = slab_live_bytes(1, ax.nsf.max(1), ax.nnf.max(1), is.len());
-    let max_funcs = (ctx.worker_budget / per_func).max(1);
+    let dims = SlabDims {
+        nsf: ax.nsf.max(1),
+        nnf: ax.nnf.max(1),
+        n_occ: is.len(),
+        max_cols: c_virt.iter().map(|cv| cv.ncols()).max().unwrap_or(0),
+        naux,
+    };
+    let max_funcs = dims.max_funcs(ctx.worker_budget);
     let mut slab_start = 0usize;
     while slab_start < p_shells.len() {
         let end = slab_end(&p_shells, dims_df, slab_start, max_funcs);
@@ -2680,9 +2720,6 @@ fn eval_batch(ctx: &BatchCtx<'_>, is: &[usize], fill: FillFn) -> BatchOut {
             }
         }
         let mut t_slab = Array3::<f64>::zeros((nps, ax.nsf, ax.nnf));
-        tm.slab_bytes_max = tm
-            .slab_bytes_max
-            .max(slab_live_bytes(nps, ax.nsf, ax.nnf, is.len()));
         let (nt, ns) = fill(
             ctx,
             &ax,
@@ -2697,8 +2734,11 @@ fn eval_batch(ctx: &BatchCtx<'_>, is: &[usize], fill: FillFn) -> BatchOut {
         n_skipped += ns;
         tm.n_slabs += 1;
         let tt = Instant::now();
-        transform_slab(ctx, is, &mut strips, (&c_occ, &c_virt), &p_local, &t_slab);
+        let transform_bytes =
+            transform_slab(ctx, is, &mut strips, (&c_occ, &c_virt), &p_local, &t_slab);
         tm.transform_s += tt.elapsed().as_secs_f64();
+        let live = 8 * (p_local.len() + t_slab.len()) + transform_bytes;
+        tm.slab_bytes_max = tm.slab_bytes_max.max(live);
         slab_start = end;
     }
     tm.total_s = t_start.elapsed().as_secs_f64();
@@ -5565,21 +5605,33 @@ mod stage_b_tests {
         }
     }
 
-    /// The batch slab is sized with the occupied half-transform `H` that
-    /// sits beside it (PR #716 review): 2 MiB per worker, `nsf = nnf = 64`,
-    /// 16 occupieds. Sized on the triples alone, 64 functions fit and `H`
-    /// adds 0.5 MiB over the budget; with `H` counted the slab and `H`
-    /// together stay inside it.
+    /// The batch slab is sized with every buffer beside it (PR #716
+    /// review): 2 MiB per worker, `nsf = nnf = 64`, 16 occupieds, 64
+    /// virtual columns. Triples and `H` alone let 51 functions in and leave
+    /// 8,192 B, while one occupied's selected `H` rows over all 51 need
+    /// 26,112 B; counted in full, the slab and all its buffers fit.
     #[test]
-    fn batch_slab_and_its_half_transform_fit_the_worker_budget() {
-        let (budget, nsf, nnf, n_occ) = (2usize << 20, 64, 64, 16);
-        let funcs = budget / slab_live_bytes(1, nsf, nnf, n_occ);
+    fn batch_slab_and_its_buffers_fit_the_worker_budget() {
+        let budget = 2usize << 20;
+        let d = SlabDims {
+            nsf: 64,
+            nnf: 64,
+            n_occ: 16,
+            max_cols: 64,
+            naux: 1000,
+        };
+        let funcs = d.max_funcs(budget);
         assert!(funcs > 1, "the example must block");
-        assert!(slab_live_bytes(funcs, nsf, nnf, n_occ) <= budget);
-        assert!(slab_live_bytes(funcs + 1, nsf, nnf, n_occ) > budget);
-        // the triples-only sizing of the earlier code overran by H
-        let old = budget / (8 * nsf * nnf);
-        assert!(slab_live_bytes(old, nsf, nnf, n_occ) - budget == 8 * old * n_occ * nnf);
+        assert!(d.live_bytes(funcs) <= budget);
+        assert!(d.live_bytes(funcs + 1) > budget);
+        // the triples + H sizing of the earlier code: 51 functions, and the
+        // selected rows alone overrun what it left
+        let old_row = 8 * d.nnf * (d.nsf + d.n_occ);
+        let old = budget / old_row;
+        assert_eq!(old, 51);
+        assert_eq!(budget - old * old_row, 8192);
+        assert_eq!(8 * old * d.nnf, 26_112);
+        assert!(d.live_bytes(old) > budget);
     }
 
     /// The batch pass's strips do not depend on the slab cap beyond rounding:
@@ -6100,47 +6152,92 @@ mod stage_b_tests {
     /// slabs per batch), the Q-sorted pair list with the binary-searched
     /// cut evaluates exactly the oracle's triples (same evaluated and
     /// skipped counts per batch) and builds bitwise-identical strips.
+    /// Butane's (6-31G, cc-pVDZ-RI, Coulomb) stage-3 batch inputs: the
+    /// locality maps (merge 2) and the Schwarz factors of the triple cut.
+    struct BatchFixture {
+        c: AuxCase,
+        maps: LocalityMaps,
+        qpair: Option<(Array2<f64>, Vec<f64>)>,
+        schwarz_skip: f64,
+    }
+
+    impl BatchFixture {
+        fn butane() -> Self {
+            let c = aux_case(4);
+            let dcfg = DirectConfig {
+                aux_radius_bohr: 10.0,
+                virt_radius_bohr: Some(12.0),
+                ao_tail: 1e-3,
+                schwarz_skip: 1e-5,
+                batch_merge: 2,
+                ..Default::default()
+            };
+            let maps =
+                build_locality_maps(&c.mol, &c.obs, &c.dfbs, &c.spaces, 1e-4, Some(0.7), &dcfg);
+            let op = Operator::coulomb();
+            let qpair =
+                schwarz_triple_factors(op, &c.obs, &c.dfbs, &c.spaces, dcfg.schwarz_skip).unwrap();
+            Self {
+                c,
+                maps,
+                qpair,
+                schwarz_skip: dcfg.schwarz_skip,
+            }
+        }
+
+        fn ctx(&self, worker_budget: usize) -> BatchCtx<'_> {
+            BatchCtx {
+                op: Operator::coulomb(),
+                obs: &self.c.obs,
+                dfbs: &self.c.dfbs,
+                spaces: &self.c.spaces,
+                aux_ext: &self.maps.aux_ext,
+                virt_ext: &self.maps.virt_ext,
+                occ_supp: &self.maps.occ_supp,
+                virt_supp: &self.maps.virt_supp,
+                qpair: self.qpair.as_ref(),
+                schwarz_skip: self.schwarz_skip,
+                worker_budget,
+                split_timers: false,
+            }
+        }
+    }
+
+    /// The batch worker's MEASURED peak (every buffer live while a slab is
+    /// transformed: `p_local`, the triples, `H`, one occupied's selected
+    /// rows, their product and its index lists) stays inside the worker
+    /// budget (PR #716 review). Each batch gets the budget at which the
+    /// earlier sizing, triples and `H` only, would take every aux function
+    /// in one slab: exactly full, so the rows, product and maps beside it
+    /// overran. The control is that this budget still blocks the batch.
+    #[test]
+    fn batch_transform_live_bytes_fit_the_worker_budget() {
+        let fx = BatchFixture::butane();
+        let dims_df = fx.c.dfbs.shell_dims();
+        let mut n_blocked = 0usize;
+        for (_, is) in &fx.maps.batches {
+            let probe = fx.ctx(usize::MAX);
+            let virts = sorted_union(is.iter().map(|&i| probe.virt_ext[i].iter().copied()));
+            let ax = BatchAxes::new(&probe, is, &virts);
+            let p_shells = sorted_union(is.iter().map(|&i| probe.aux_ext[i].iter().copied()));
+            let nps: usize = p_shells.iter().map(|&sp| dims_df[sp]).sum();
+            let budget = 8 * nps * ax.nnf * (ax.nsf + is.len());
+            let (_, _, _, tm) = eval_batch(&fx.ctx(budget), is, fill_slab);
+            assert!(
+                tm.slab_bytes_max <= budget,
+                "batch {is:?}: live {} B over the {budget} B worker budget",
+                tm.slab_bytes_max
+            );
+            n_blocked += usize::from(tm.n_slabs > 1);
+        }
+        assert!(n_blocked > 0, "no batch blocked: the test is vacuous");
+    }
+
     #[test]
     fn sorted_pair_list_matches_unsorted_scan() {
-        let mol = Molecule::load_xyz(&format!(
-            "{}/../../testdata/molecules/alkane_4.xyz",
-            env!("CARGO_MANIFEST_DIR")
-        ))
-        .unwrap();
-        let obs_bs = ferric_core::basis::bundled("6-31g").unwrap();
-        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
-        let dfbs =
-            PreparedBasis::new(&mol, &ferric_core::basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
-        let op = Operator::coulomb();
-        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let cfg = RhfConfig::default().with_energy_conv(1e-10);
-        let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
-        let (vvhv, _) = checked_vvhv(&mol, &obs, &obs_bs, &rhf, "test").unwrap();
-        let spaces = localized_spaces(&mol, &obs, &rhf, 4, &vvhv).unwrap();
-        let dcfg = DirectConfig {
-            aux_radius_bohr: 10.0,
-            virt_radius_bohr: Some(12.0),
-            ao_tail: 1e-3,
-            schwarz_skip: 1e-5,
-            batch_merge: 2,
-            ..Default::default()
-        };
-        let maps = build_locality_maps(&mol, &obs, &dfbs, &spaces, 1e-4, Some(0.7), &dcfg);
-        let qpair = schwarz_triple_factors(op, &obs, &dfbs, &spaces, dcfg.schwarz_skip).unwrap();
-        let ctx = BatchCtx {
-            op,
-            obs: &obs,
-            dfbs: &dfbs,
-            spaces: &spaces,
-            aux_ext: &maps.aux_ext,
-            virt_ext: &maps.virt_ext,
-            occ_supp: &maps.occ_supp,
-            virt_supp: &maps.virt_supp,
-            qpair: qpair.as_ref(),
-            schwarz_skip: dcfg.schwarz_skip,
-            worker_budget: 2 << 20,
-            split_timers: false,
-        };
+        let fx = BatchFixture::butane();
+        let maps = &fx.maps;
+        let ctx = fx.ctx(2 << 20);
         let (mut tot_trip, mut tot_skip) = (0u64, 0u64);
         for (_, is) in &maps.batches {
             let (sa, ta, ka, _) = eval_batch(&ctx, is, fill_slab);
