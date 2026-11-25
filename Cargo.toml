@@ -87,8 +87,9 @@ opt-level = 2
 
 # The PyPI wheels (.github/workflows/wheels.yml and wheels-macwin.yml:
 # `maturin build --profile wheel`). Release plus whole-program LTO in one
-# codegen unit. Measured 2026-11-25 (local build, libint2/libxc linked dynamically) against
-# `release` of the same tree: 0.46 MB smaller deflated, and single-thread
+# codegen unit. Measured 2026-11-25 (local build, libint2/libxc linked
+# dynamically) against `release` of the same tree: 0.46 MB smaller deflated,
+# and single-thread
 # KS-DFT/TDA/CCSD/RHF CPU time within run-to-run noise (ABBA pairs; the
 # numbers are next to the maturin args in wheels.yml), energies bitwise
 # identical.
@@ -106,7 +107,8 @@ codegen-units = 1
 # the same reason this profile must not be used to build the `ferric` /
 # `ferric-cli` binaries (ferric-cli is their root); nothing does, they are
 # built with `release`. Inside the wheel ferric-cli is a library under
-# ferric-python, so the "s" there only shapes its own pre-LTO code.
+# ferric-python, so its "s" covers only its own functions (rustc marks them
+# optsize, and LTO keeps that), not the numerics it calls.
 [profile.wheel.package.ferric-cli]
 opt-level = "s"
 [profile.wheel.package.ferric-export]
