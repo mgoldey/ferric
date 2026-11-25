@@ -210,8 +210,11 @@ leaves every kept $J$ value alone, or it changes the $J$ values.
     where $c^{o}$ and $c^{v}$ are the largest $\lvert C\rvert$ on the shell
     over the active occupieds and over the virtuals. A stored triple enters
     $(P\vert ia)$ as $(C_{\mu i}C_{\nu a} + C_{\nu i}C_{\mu a})(P\vert\mu\nu)$,
-    so the cut bounds each skipped triple's contribution to every
-    transformed entry, not only the raw integral. The aux factor is the
+    so the cut bounds each skipped function triple's contribution to
+    every transformed entry, not only the raw integral. The bound is per
+    function pair: a skipped shell block adds up to $n_\mu n_\nu$ such
+    terms to one entry, and the sum over all skipped triples is not
+    bounded, so the threshold is calibrated by measurement. The aux factor is the
     maximum over the shell, so the cut stays conservative at shell
     granularity. The floor at 1 keeps the cut no looser than a cut on the
     raw integral.
@@ -606,6 +609,10 @@ f_{vv} - 2\max f_{oo}$. These are the weights of
 and the test is `ferric-mp2/src/ragged.rs::fock_bound_keeps` on a constant
 factor $\sqrt G$, the same function the κ screen uses. A pair is skipped
 when $G\le\varepsilon$ and $G(1+2w_{\max})\le\kappa\varepsilon$.
+The computed $D_c$ is the smaller of the two rounding orders the two gate
+builders use for $f_{aa}+f_{cc}-f_{ii}-f_{jj}$, so it is never above the
+denominator either gate computes. The orders differ by a factor of 2 only
+when the gap is at the rounding scale.
 
 **The code.** `ferric-mp2/src/lmp2_pair_skip.rs::fitted_bound` evaluates
 (@eq:lmp2-pair-skip-bound). The excerpt is copied with the field
@@ -634,7 +641,11 @@ Some(u_a * v_a + u_b * v_b + gamma * (u_a * v_b + u_b * v_a) + rem)
   skipped is not fitted at all.
 - `pair_skip = "audit"` evaluates the bound on every pair, skips nothing,
   and records for each fitted pair the ratio of the largest computed
-  element to the bound.
+  element to the bound. Only off-diagonal pairs with a finite bound enter
+  that comparison: diagonal pairs get no bound, and a pair whose bound
+  is refused ($\gamma\ge 1$) has none. Zero violations therefore means
+  something only when `pair_skip_audit_n`, the number of pairs compared,
+  is not zero.
 
 **Why only attenuated operators.** The bound holds for any
 positive-definite kernel. For erfc the Fourier transform

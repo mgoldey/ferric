@@ -516,8 +516,11 @@ pub fn fock_bound_weights(
     assert_eq!(q.len(), no * nv, "fock_bound_weights: q is not no·nv");
     let fv_min = fv.iter().cloned().fold(f64::INFINITY, f64::min);
     let fo_max = fo.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    let d: Vec<f64> = fv.iter().map(|&f| f + fv_min - 2.0 * fo_max).collect();
-    if d.iter().any(|&x| !(x > 0.0)) {
+    let d: Vec<f64> = fv
+        .iter()
+        .map(|&f| gate_denominator_floor(f, fv_min, fo_max))
+        .collect();
+    if d.iter().any(|&x| !(x > 0.0 && x.is_finite())) {
         return None;
     }
     let fabs = Array2::from_shape_fn((nv, nv), |(a, c)| {
@@ -542,6 +545,20 @@ pub fn fock_bound_weights(
         }
     }
     Some((w, wmax))
+}
+
+/// A floor on every COMPUTED denominator the dressed gates divide by, for
+/// virtual `c`: the two gates round `f_a + f_c − f_i − f_j` in different
+/// orders ([`fock_dressed_gate`]: `((f_a + f_c) − f_i) − f_j`;
+/// [`fock_dressed_gate_rect`]: `(f_a + f_c) − (f_i + f_j)`). Rounding to
+/// nearest is monotone in each operand, so each order evaluated at
+/// `f_a = fv_min` and `f_i = f_j = fo_max` floors that gate's computed
+/// value, and the min floors both. The two orders can differ by a factor 2
+/// when the gap is at the rounding scale (`f_o = 1 − 2⁻⁵³`, `f_v = 1`:
+/// `2⁻⁵³` against `2⁻⁵²`); at any physical gap they agree to an ulp.
+fn gate_denominator_floor(fv_c: f64, fv_min: f64, fo_max: f64) -> f64 {
+    let vv = fv_c + fv_min;
+    ((vv - fo_max) - fo_max).min(vv - (fo_max + fo_max))
 }
 
 /// Whether virtual `a` can index a retained element of pair (i, j) under

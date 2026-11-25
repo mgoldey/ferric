@@ -26,7 +26,8 @@
 //! share of the cores, e.g. `RAYON_NUM_THREADS=3 mpirun --bind-to none -np 2 <bin>
 //! --ignored --nocapture --test-threads=1`; `FERRIC_MPI_LMP2_ALKANE` picks
 //! the chain length (default 20), `FERRIC_MPI_LMP2_SCRATCH_MIB` the stage-3
-//! slab budget (`DirectConfig::slab_budget_bytes`, MiB per node), and `FERRIC_MEM_TRACE=1` prints RSS per stage.
+//! scratch of the production aux-major pass (`DirectConfig::scratch_budget_bytes`,
+//! MiB per process), and `FERRIC_MEM_TRACE=1` prints RSS per stage.
 
 #![cfg(feature = "mpi")]
 
@@ -77,14 +78,15 @@ struct Case {
     start_striped: usize,
 }
 
-/// [`DirectConfig::production`], with the stage-3 batch-pass slab cap
-/// (`slab_budget_bytes`, per node) taken from `FERRIC_MPI_LMP2_SCRATCH_MIB`
-/// when it is set (a measurement knob).
+/// [`DirectConfig::production`], with the stage-3 scratch of its aux-major
+/// pass (`scratch_budget_bytes`, per process) taken from
+/// `FERRIC_MPI_LMP2_SCRATCH_MIB` when it is set (a measurement knob; the
+/// batch pass's `slab_budget_bytes` is not read by this pass).
 fn production_maps() -> DirectConfig {
     let base = DirectConfig::production();
     match std::env::var("FERRIC_MPI_LMP2_SCRATCH_MIB") {
         Ok(v) => DirectConfig {
-            slab_budget_bytes: v.parse::<usize>().expect("slab MiB") << 20,
+            scratch_budget_bytes: v.parse::<usize>().expect("scratch MiB") << 20,
             ..base
         },
         Err(_) => base,

@@ -533,6 +533,33 @@ mod tests {
         assert!(!proved_empty(0.0, 0.0, None), "eps = 0 keeps everything");
     }
 
+    /// CodeRabbit's near-degenerate toy (PR #716 review): `f_o = 1 − 2⁻⁵³`
+    /// for both occupieds, `f_v = 1` for both virtuals, `F_01 = −2⁻⁵⁴`,
+    /// κ = 1, a constant fitted block `g = 2⁻²⁰`. The square gate rounds
+    /// its denominator to `2⁻⁵³` and keeps the block at `ε = 1.75 g` (its
+    /// value is `2g`); a weight built on the other rounding order (`2⁻⁵²`)
+    /// would bound it by `1.5 g` and skip a pair `Off` fits.
+    #[test]
+    fn proof_never_skips_a_pair_the_gate_keeps_at_a_rounding_scale_gap() {
+        use crate::ragged::fock_dressed_gate;
+        let fo_e = 1.0 - f64::EPSILON / 2.0;
+        let (fo, fv) = ([fo_e, fo_e], [1.0, 1.0]);
+        let f = -(2.0f64).powi(-54);
+        let f_vv = Array2::from_shape_vec((2, 2), vec![1.0, f, f, 1.0]).unwrap();
+        let g_max = (2.0f64).powi(-20);
+        let eps = 1.75 * g_max;
+        let g = Array2::from_elem((2, 2), g_max);
+        let gate = fock_dressed_gate(&g, &[0, 1], &f_vv, fo[0], fo[1], &fv, 1.0);
+        let kept = gate.iter().any(|&x| x > eps);
+        assert!(kept, "toy is vacuous: the gate keeps nothing ({gate:?})");
+        let w = unit_fock_weight(&f_vv, &fo, &fv).expect("a positive floor");
+        assert!(
+            !proved_empty(g_max, eps, Some((1.0, w))),
+            "the proof skips a block the gate keeps: w = {w}, gate max {:.3e}",
+            gate.fold(0.0f64, |m, &x| m.max(x))
+        );
+    }
+
     #[test]
     fn pair_skip_parses_strictly_and_resolves_per_kernel() {
         for m in [PairSkip::Off, PairSkip::Auto, PairSkip::On, PairSkip::Audit] {

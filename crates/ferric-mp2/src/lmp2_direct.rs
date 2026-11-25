@@ -374,8 +374,9 @@ pub struct DirectStats {
     pub t_eri3_setup_s: f64,
     /// Integral slabs filled, over all batches.
     pub n_eri3_slabs: usize,
-    /// Largest single stage-3 slab, bytes (batch pass; 0 on the aux-major
-    /// pass). Up to one such slab per batch worker is resident at once.
+    /// Largest single stage-3 slab with its occupied half-transform, bytes
+    /// (batch pass; 0 on the aux-major pass). Up to one such slab per batch
+    /// worker is resident at once.
     pub eri3_slab_bytes_max: usize,
     /// Half-transform floating-point operations actually done
     /// (`Σ_i Σ_{P∈slab} 2·nsf·nnf + 2·nnf·|V_i|`, batch-union axes), and what
@@ -434,9 +435,11 @@ pub struct DirectStats {
     /// Mean distinct occupieds over a group's pairs (each is whitened once
     /// per group, `W_k = L⁻¹ A_k`, instead of once per pair).
     pub n_distinct_occ_per_group: f64,
-    /// Stage-5 triangular solves (multi-RHS): one per occupied for the κ
-    /// screen when it is on, plus one per (group, distinct occupied) not
-    /// reused from it.
+    /// Stage-5 whitenings by triangular solve, counted per occupied right-
+    /// hand side (not per LAPACK call: a group batches its occupieds into
+    /// one solve): one per occupied for the κ screen when it is on, plus
+    /// one per (group, distinct occupied) not reused from it, so that
+    /// `n_trsm + n_w_reused` is every (group, occupied) whitening.
     pub n_trsm: usize,
     /// (group, occupied) whitenings taken from the κ screen's own-domain
     /// `W` (pair (i,i)'s group has domain exactly D_i) instead of a solve.
@@ -615,17 +618,11 @@ fn ranks_sharing_node(world: usize, launcher_local: Option<usize>) -> usize {
     launcher_local.map_or(world, |l| l.clamp(1, world))
 }
 
-/// The launcher's node-local rank count, `None` when no variable that
-/// [`ferric_core::parallel::local_ranks_per_node_with`] reads is set (its own
-/// fallback of 1 would otherwise be indistinguishable from one rank per node).
+/// The launcher's node-local rank count, `None` when no launcher variable
+/// parses as a positive count (unset, or Slurm's `"4,2"`): the world-size
+/// fallback of [`ranks_sharing_node`] then applies, never a guessed 1.
 fn launcher_local_ranks() -> Option<usize> {
-    let seen = std::cell::Cell::new(false);
-    let n = ferric_core::parallel::local_ranks_per_node_with(|k| {
-        let v = std::env::var(k).ok();
-        seen.set(seen.get() || v.is_some());
-        v
-    });
-    seen.get().then_some(n)
+    ferric_core::parallel::local_ranks_hint_with(|k| std::env::var(k).ok())
 }
 
 /// This process's batch-pass slab cap: [`DirectConfig::slab_budget_bytes`]
@@ -1976,6 +1973,29 @@ struct SkipGate<'a> {
     fv: &'a [f64],
 }
 
+/// Peak bytes [`prove_empty_pairs`] allocates beside the resident strips,
+/// metric and held `W`: the per-shell-pair metric norms (`8·nsh²`), per
+/// occupied the strip row-shell table and the floor's column norms (`16·nsh`),
+/// per pair its bound and verdict, and per concurrent worker the
+/// largest own-domain workspace (`V_DD`, its copy, `L`, `L⁻¹` and the
+/// shifted test matrix, `5·d²`, plus the gathered and whitened strip,
+/// `2·d·cols`).
+fn pair_proof_bytes(pre: &StripsAndMetric, dims_df: &[usize], n_pairs: usize) -> usize {
+    let (no, nsh) = (pre.aux_dom.len(), pre.metric_blocks.nsh);
+    let worker = pre
+        .aux_dom
+        .iter()
+        .zip(&pre.strips)
+        .map(|(dom, st)| {
+            let d: usize = dom.iter().map(|&sh| dims_df[sh]).sum();
+            8 * (5 * d * d + 2 * d * st.cols.len())
+        })
+        .max()
+        .unwrap_or(0);
+    let workers = rayon::current_num_threads().clamp(1, no.max(1));
+    8 * nsh * nsh + 16 * no * nsh + 9 * n_pairs + workers * worker
+}
+
 /// Stage 5b, the provable-empty pair skip ([`crate::lmp2_pair_skip`]): the
 /// own-domain fitted norms and eigenvalue floors (one Cholesky, one inverse
 /// and one whitening per occupied), the per-shell strip and metric norm
@@ -2137,9 +2157,13 @@ fn lap(clock: &mut Instant) -> f64 {
 ///
 /// The returned pair factor is `Q(μν) · w(μν)`, where `w` bounds the
 /// orbital coefficients the triple is transformed with (see
-/// [`coefficient_pair_weights`]): the cut then drops a triple only when its
-/// contribution to every TRANSFORMED entry `(P|ia)` is below
-/// `schwarz_skip`, not just its raw value. A bound on the raw `(P|μν)`
+/// [`coefficient_pair_weights`]): the cut then drops a shell triple only
+/// when each of its FUNCTION triples contributes below `schwarz_skip` to
+/// every TRANSFORMED entry `(P|ia)`, not just when its raw value is small.
+/// It is a per-function-triple bound: the dropped shell block's summed
+/// contribution to one `(P|ia)` can reach `n_μ n_ν` times it (the shell
+/// sizes), and nothing bounds the sum over all dropped triples; the cut's
+/// error is calibrated by measurement, as the raw cut's was. A bound on the raw `(P|μν)`
 /// alone is not a bound on what it feeds: in a near-linearly-dependent
 /// basis the localized virtuals carry |C| ~ 10² (aug-cc-pVDZ n-C12H26:
 /// max |C_v| 119), and the raw cut at 1e-5 moved E_corr by -91 mHa, to
@@ -2185,8 +2209,10 @@ fn shell_coeff_max(prep: &PreparedBasis, c: &Array2<f64>) -> Vec<f64> {
 /// the per-shell max |C| of the active occupieds / the virtuals: one stored
 /// triple `(P|μν)` enters `(P|ia) = Σ_μν C_μi C_νa (P|μν)` through both
 /// orientations, `(C_μi C_νa + C_νi C_μa)(P|μν)`, so
-/// `√(P|P)·Q(μν)·w(μν) < skip` bounds the dropped triple's contribution to
-/// every transformed entry by `skip`. The floor at 1 keeps the cut never
+/// `√(P|P)·Q(μν)·w(μν) < skip` bounds each dropped FUNCTION triple's
+/// contribution to every transformed entry by `skip` (the shell block sums
+/// up to `n_μ n_ν` of them; `schwarz_cut_bounds_the_transformed_entries`
+/// checks the function-level claim). The floor at 1 keeps the cut never
 /// LOOSER than the raw-value cut it replaces: without it the small
 /// coefficients of a compact basis drop more triples (C20/6-31G moved
 /// +2.7 µHa from the no-cut energy, vs -0.2 µHa for the raw cut, same RHF),
@@ -2534,6 +2560,14 @@ fn transform_slab(
     }
 }
 
+/// Bytes a batch slab of `nps` aux functions holds while it is transformed:
+/// the triples `t_slab` (`nps·nsf·nnf`) and, beside them, the occupied
+/// half-transform `H` of [`occ_half_transform`] (`nps·|is|·nnf`). The slab
+/// is sized by this, so `H` stays inside the worker's budget.
+fn slab_live_bytes(nps: usize, nsf: usize, nnf: usize, n_occ: usize) -> usize {
+    8 * nps * nnf * (nsf + n_occ)
+}
+
 /// `H[(pl, k, n)] = Σ_s c_occ[(k, s)] · t_slab[(pl, s, n)]`: one GEMM per aux
 /// function, so each `H_P` is a contiguous `(|is|, nnf)` block.
 fn occ_half_transform(c_occ: &Array2<f64>, t_slab: &Array3<f64>) -> Array3<f64> {
@@ -2631,7 +2665,7 @@ fn eval_batch(ctx: &BatchCtx<'_>, is: &[usize], fill: FillFn) -> BatchOut {
         tm.transform_flops += full * n_rows;
         tm.transform_flops_own_support += own * n_rows;
     }
-    let per_func = ax.nsf.max(1) * ax.nnf.max(1) * 8;
+    let per_func = slab_live_bytes(1, ax.nsf.max(1), ax.nnf.max(1), is.len());
     let max_funcs = (ctx.worker_budget / per_func).max(1);
     let mut slab_start = 0usize;
     while slab_start < p_shells.len() {
@@ -2646,7 +2680,9 @@ fn eval_batch(ctx: &BatchCtx<'_>, is: &[usize], fill: FillFn) -> BatchOut {
             }
         }
         let mut t_slab = Array3::<f64>::zeros((nps, ax.nsf, ax.nnf));
-        tm.slab_bytes_max = tm.slab_bytes_max.max(8 * t_slab.len());
+        tm.slab_bytes_max = tm
+            .slab_bytes_max
+            .max(slab_live_bytes(nps, ax.nsf, ax.nnf, is.len()));
         let (nt, ns) = fill(
             ctx,
             &ax,
@@ -4194,7 +4230,21 @@ fn fit_pair_slots(
 
     let t_skip = Instant::now();
     stats.pair_skip = pre.pair_skip;
-    let proof = match path.triangular() {
+    // The proof's tables and workers must fit what the budget leaves beside
+    // the resident set; if not, every pair is fitted (the result of `Off`).
+    let proof_fits = gate.is_none_or(|g| {
+        let held = stats.memory.strips_bytes
+            + stats.memory.metric_bytes
+            + own_w.iter().flatten().map(|w| 8 * w.len()).sum::<usize>();
+        held + pair_proof_bytes(pre, dfbs.shell_dims(), unique.len()) <= g.budget_bytes
+    });
+    if !proof_fits && pre.pair_skip.evaluates() && eps > 0.0 {
+        eprintln!(
+            "lmp2_direct: pair-skip proof does not fit the memory budget beside the strips; \
+             fitting every pair"
+        );
+    }
+    let proof = match path.triangular() && proof_fits {
         true => prove_empty_pairs(
             pre,
             dfbs,
@@ -4209,7 +4259,14 @@ fn fit_pair_slots(
                 fv: &fv,
             },
             dcfg.aux_radius_bohr,
-        )?,
+        )
+        .unwrap_or_else(|e| {
+            // The skip is optional and rank-local: an inconclusive proof
+            // fits every pair (the result `Off` gives), so this rank still
+            // reaches the gather collectives the other ranks wait in.
+            eprintln!("lmp2_direct: pair-skip proof inconclusive ({e}); fitting every pair");
+            None
+        }),
         false => None,
     };
     if let Some(p) = &proof {
@@ -5506,6 +5563,23 @@ mod stage_b_tests {
             assert_eq!(st.aux_major_concurrency, want);
             assert_eq!(strip_rel_diff(&base, &s), 0.0, "t={threads} b={budget}");
         }
+    }
+
+    /// The batch slab is sized with the occupied half-transform `H` that
+    /// sits beside it (PR #716 review): 2 MiB per worker, `nsf = nnf = 64`,
+    /// 16 occupieds. Sized on the triples alone, 64 functions fit and `H`
+    /// adds 0.5 MiB over the budget; with `H` counted the slab and `H`
+    /// together stay inside it.
+    #[test]
+    fn batch_slab_and_its_half_transform_fit_the_worker_budget() {
+        let (budget, nsf, nnf, n_occ) = (2usize << 20, 64, 64, 16);
+        let funcs = budget / slab_live_bytes(1, nsf, nnf, n_occ);
+        assert!(funcs > 1, "the example must block");
+        assert!(slab_live_bytes(funcs, nsf, nnf, n_occ) <= budget);
+        assert!(slab_live_bytes(funcs + 1, nsf, nnf, n_occ) > budget);
+        // the triples-only sizing of the earlier code overran by H
+        let old = budget / (8 * nsf * nnf);
+        assert!(slab_live_bytes(old, nsf, nnf, n_occ) - budget == 8 * old * n_occ * nnf);
     }
 
     /// The batch pass's strips do not depend on the slab cap beyond rounding:
@@ -7171,12 +7245,22 @@ mod stage_c_tests {
         (r, st)
     }
 
+    /// Bit-for-bit equality of two ragged systems: pair identity, index
+    /// lists and masks, then every array's shape and the `to_bits` of every
+    /// element, so `-0.0` against `0.0` or a NaN differs.
     fn same_ragged(a: &Ragged, b: &Ragged) -> bool {
+        let same_bits = |x: &Array2<f64>, y: &Array2<f64>| {
+            x.dim() == y.dim() && x.iter().zip(y).all(|(p, q)| p.to_bits() == q.to_bits())
+        };
         a.pairs.len() == b.pairs.len()
-            && a.pairs
-                .iter()
-                .zip(&b.pairs)
-                .all(|(x, y)| block_diff(x, y) == 0.0)
+            && a.pairs.iter().zip(&b.pairs).all(|(x, y)| {
+                (x.i, x.j, &x.da, &x.db, &x.pos_da, &x.pos_db, &x.pat)
+                    == (y.i, y.j, &y.da, &y.db, &y.pos_da, &y.pos_db, &y.pat)
+                    && same_bits(&x.fvv_aa, &y.fvv_aa)
+                    && same_bits(&x.fvv_bb, &y.fvv_bb)
+                    && same_bits(&x.j_blk, &y.j_blk)
+                    && same_bits(&x.denom, &y.denom)
+            })
     }
 
     /// The pair skip under an attenuated kernel (exactness anchor + rigor
@@ -7309,6 +7393,73 @@ mod stage_c_tests {
             );
             pre.bound_mutant = 1.0;
         }
+    }
+
+    /// A proof that does not fit the memory budget beside the resident set
+    /// is not attempted: the run fits every pair and builds `Off`'s system
+    /// bit for bit. With the same budget plus the proof's own bytes the
+    /// proof runs (the control: the refusal is the budget, not the setup).
+    #[test]
+    fn pair_skip_proof_over_the_budget_fits_every_pair() {
+        let su = setup("alkane_8.xyz", 8);
+        let (op, eps) = (Operator::erfc(2.0), 1e-2);
+        let dcfg = DirectConfig {
+            aux_radius_bohr: 4.0,
+            ..production_maps(None)
+        };
+        let (mut pre, _) = pre_with(&su, op, eps, None, &dcfg);
+        pre.pair_skip = PairSkip::Off;
+        let (r_off, s_off) = fit_skip(&su, &pre, eps, &dcfg);
+        pre.pair_skip = PairSkip::On;
+        let n_pairs = kept_pairs(&pre.keep, su.spaces.no).len();
+        let proof = pair_proof_bytes(&pre, su.dfbs.shell_dims(), n_pairs);
+        // fit_skip's stats carry no stage-3 estimate, so nothing is resident
+        // in the gate's accounting and the proof's own bytes decide
+        let held = s_off.memory.strips_bytes + s_off.memory.metric_bytes;
+        assert_eq!(held, 0);
+        let blocks: usize = r_off
+            .pairs
+            .iter()
+            .map(|b| 8 * (b.fvv_aa.len() + b.fvv_bb.len() + b.j_blk.len() + b.denom.len()))
+            .sum();
+        let room = 1usize << 30;
+        eprintln!(
+            "proof {proof} B, blocks {blocks} B, group scratch {} B",
+            s_off.group_scratch_bound_bytes
+        );
+        let run = |budget_bytes: usize| {
+            let mut st = DirectStats::default();
+            let gate = Some(SolveGate { budget_bytes });
+            let r = fit_pairs(
+                &pre,
+                &su.dfbs,
+                &su.spaces,
+                eps,
+                1.0,
+                &dcfg,
+                FitPath::Cholesky,
+                gate,
+                Some(DIRECT_FOCK_SCREEN_KAPPA),
+                &mut st,
+            )
+            .unwrap();
+            (r, st)
+        };
+        let (r_fit, s_fit) = run(held + proof + room);
+        assert!(
+            s_fit.n_pairs_proved_empty > 0,
+            "control: the proof did not run"
+        );
+        assert!(same_ragged(&r_off, &r_fit));
+        let (r_over, s_over) = run(held + proof - 1);
+        assert_eq!(
+            s_over.n_pair_skip_bounded, 0,
+            "the proof ran over the budget"
+        );
+        assert!(
+            same_ragged(&r_off, &r_over),
+            "the refused proof changed the system"
+        );
     }
 
     /// Coulomb: the bound still holds (audit) but proves nothing at octane.
