@@ -30,7 +30,8 @@ What ``check`` asserts, for every file:
   ``manylinux_2_28_x86_64`` platform; its METADATA says ``Name: ferric`` and
   ``Version: <version>``; its WHEEL file has no ``Build:`` line; it bundles no
   libint2 shared library (the small libint2 is static); its extension module
-  has no ``.symtab`` section (built with ``maturin build --strip``); it is
+  has no ``.symtab`` section (built with ``maturin build --strip``), nor does
+  any ELF it vendors in ``ferric.libs/`` (stripped before the repair); it is
   under PyPI's 100 MiB per-file limit. Exactly one sdist, ``ferric-<version>.tar.gz``,
   whose PKG-INFO says the same version, also under 100 MiB. No file name
   contains ``mpi``.
