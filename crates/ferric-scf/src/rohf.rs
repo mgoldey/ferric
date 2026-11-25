@@ -791,6 +791,8 @@ fn solve_rohf_impl(
     // The response, Newton and stability builds on these bounds follow the
     // SCF's contraction rotation (`direct_jk::gc_rotation::GcSlot`).
     bounds.gc.set_request(config.gc_rotation);
+    // ... and its J/K digest (`quartet_scatter::DigestSlot`).
+    bounds.digest.set(config.jk_digest);
 
     // Split the injection: (S, h, V_nn) go to the shared env builder, the J/K
     // (and XC) builders are driven in the loop.
@@ -2189,9 +2191,9 @@ fn rohf_guess_mos(
     let d_b = &d_total * (nocc_b as f64 / nelec as f64);
 
     // F_σ = h + J[D_α + D_β] − K[D_σ], matching this file's own assembly.
-    // Unrotated builds (`SchwarzBounds::unrotated`): the guess does not
-    // follow the SCF's contraction rotation.
-    let bounds = &bounds.unrotated();
+    // The guess's own builds (`SchwarzBounds::for_guess`): unrotated and on
+    // the legacy digest, whatever the SCF's contraction rotation and digest.
+    let bounds = &bounds.for_guess();
     let mut j = Array2::<f64>::zeros((n, n));
     let mut k_scratch = Array2::<f64>::zeros((n, n));
     if let Err(e) = crate::rhf::build_jk(

@@ -123,6 +123,11 @@ impl<'a, B: Bound> LinkK<'a, B> {
 
 impl<'a, B: Bound + Sync> KBuilder for LinkK<'a, B> {
     fn build(&mut self, d: &Array2<f64>, k: &mut Array2<f64>) -> Result<usize, FerricError> {
+        crate::quartet_scatter::check_nbf_shapes(
+            "LinkK::build",
+            self.prep.nbasis(),
+            &[("d", d.dim()), ("k", k.dim())],
+        )?;
         self.ctx.check_interrupted()?;
 
         // One engine per rayon thread (see engine_pool) — the fold init below

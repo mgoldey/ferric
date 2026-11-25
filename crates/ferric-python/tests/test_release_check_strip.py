@@ -1,8 +1,10 @@
-"""release-check rejects a Linux wheel whose extension still has a .symtab.
+"""release-check rejects a Linux wheel whose extension or vendored libs still have a .symtab.
 
 The PyPI wheel is close to PyPI's 100 MiB limit, and the unstripped extension
 carries 13 MB of symbol table (about 3 MB zipped). ``scripts/release-check.py``
-reads the ELF section names of ``ferric/ferric.*.so`` straight from the wheel.
+reads the ELF section names of ``ferric/ferric.*.so`` and of every
+``ferric.libs/`` member straight from the wheel; a wheel without
+``ferric.libs/`` passes.
 
 The extensions here are hand-built ELF64 files (header, section names, section
 header table), so the test needs no compiler. One test also runs the system
@@ -59,18 +61,24 @@ def make_elf(section_names):
     return bytes(header) + strtab + bytes(table)
 
 
-def make_wheel(tmp_path, payload):
+def make_wheel(tmp_path, payload, libs=None):
     path = tmp_path / "ferric-0.1.0-cp311-cp311-manylinux_2_28_x86_64.whl"
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(EXT, payload)
+        for name, data in (libs or {}).items():
+            zf.writestr(f"ferric.libs/{name}", data)
     return path
 
 
-def run_check(tmp_path, payload):
+def run_check(tmp_path, payload, libs=None):
     rc = _load()
     rep = rc.Report()
-    rc.check_extension_stripped(rep, make_wheel(tmp_path, payload))
+    rc.check_extension_stripped(rep, make_wheel(tmp_path, payload, libs))
     return rep.errors
+
+
+STRIPPED = make_elf([".text", ".dynsym", ".dynstr"])
+UNSTRIPPED = make_elf([".text", ".symtab", ".strtab"])
 
 
 def test_section_names_round_trip():
@@ -94,6 +102,34 @@ def test_wheel_with_symtab_is_an_error(tmp_path):
 
 def test_stripped_wheel_passes(tmp_path):
     assert run_check(tmp_path, make_elf([".text", ".dynsym", ".dynstr"])) == []
+
+
+def test_stripped_vendored_libs_pass(tmp_path):
+    libs = {
+        "libopenblas-ab12cd34.so.0": STRIPPED,
+        "libgfortran-ab12cd34.so.5": STRIPPED,
+    }
+    assert run_check(tmp_path, STRIPPED, libs) == []
+
+
+def test_unstripped_vendored_lib_is_an_error(tmp_path):
+    libs = {
+        "libopenblas-ab12cd34.so.0": UNSTRIPPED,
+        "libquadmath-ab12cd34.so.0": STRIPPED,
+    }
+    errors = run_check(tmp_path, STRIPPED, libs)
+    assert len(errors) == 1
+    assert "ferric.libs/libopenblas-ab12cd34.so.0" in errors[0]
+    assert "--strip-unneeded" in errors[0]
+
+
+def test_unstripped_extension_and_lib_are_two_errors(tmp_path):
+    libs = {"libgfortran-ab12cd34.so.5": UNSTRIPPED}
+    assert len(run_check(tmp_path, UNSTRIPPED, libs)) == 2
+
+
+def test_non_elf_vendored_member_is_ignored(tmp_path):
+    assert run_check(tmp_path, STRIPPED, {"README.txt": b"not elf"}) == []
 
 
 def test_non_elf_extension_is_an_error(tmp_path):

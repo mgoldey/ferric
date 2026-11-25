@@ -370,7 +370,7 @@ fn free_atom_density(
                 ri_j_precision: Some(crate::df_j::RiJPrecision::F64),
                 // Any four-centre build of the guess solve (its own guess
                 // Fock, say) stays unrotated (`direct_jk::gc_rotation`), as
-                // the molecular guess Fock does (`SchwarzBounds::unrotated`):
+                // the molecular guess Fock does (`SchwarzBounds::for_guess`):
                 // the guess is the same whatever the SCF's rotation.
                 gc_rotation: Some(crate::direct_jk::GcRotate::Off),
                 ..Default::default()
@@ -396,7 +396,7 @@ fn free_atom_density(
                 ri_j_precision: Some(crate::df_j::RiJPrecision::F64),
                 // Any four-centre build of the guess solve (its own guess
                 // Fock, say) stays unrotated (`direct_jk::gc_rotation`), as
-                // the molecular guess Fock does (`SchwarzBounds::unrotated`):
+                // the molecular guess Fock does (`SchwarzBounds::for_guess`):
                 // the guess is the same whatever the SCF's rotation.
                 gc_rotation: Some(crate::direct_jk::GcRotate::Off),
                 ..Default::default()

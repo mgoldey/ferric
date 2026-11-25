@@ -91,11 +91,16 @@ impl<'a> DirectK<'a> {
 
 impl<'a> KBuilder for DirectK<'a> {
     fn build(&mut self, d: &Array2<f64>, k: &mut Array2<f64>) -> Result<usize, FerricError> {
+        crate::quartet_scatter::check_nbf_shapes(
+            "DirectK::build",
+            self.prep.nbasis(),
+            &[("d", d.dim()), ("k", k.dim())],
+        )?;
         if let Some(computed) = self.build_rotated(d, k)? {
             return Ok(computed);
         }
         use crate::quartet_scatter::{
-            canonical_bra_pairs, scatter_bra_pair, DensityScreen, JkMode,
+            canonical_bra_pairs, scatter_bra_pair, DensityScreen, JkDigest, JkMode, PairSpec,
         };
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -153,11 +158,10 @@ impl<'a> KBuilder for DirectK<'a> {
         // Every in-tree caller zeroes `k` first, so the carry-over is zero;
         // mutation-testing confirmed that reverting this ordering leaves the MPI
         // suite GREEN at -np 2. Correct-by-construction only — no test covers it.
-        let mut total_k = Array2::<f64>::zeros((nbf, nbf));
-        crate::reduce::grouped_deterministic_sum(&mut total_k, n_groups, nbf, band_bytes, |g| {
+        // One group's bra pairs scattered into `mode`.
+        let run = |g: usize, mode: &mut JkMode<'_>| {
             let lo = g * group_size;
             let hi = (lo + group_size).min(n_pairs);
-            let mut mode = JkMode::new_k(nbf);
             let mut local_count = 0usize;
             for &(s1, s2) in &pairs[lo..hi] {
                 if ferric_core::INTERRUPT.load(Ordering::Relaxed) {
@@ -177,18 +181,38 @@ impl<'a> KBuilder for DirectK<'a> {
                         d,
                         s1,
                         s2,
-                        &mut mode,
+                        mode,
                         true,
                     );
                 });
             }
-            let local_k = match mode {
-                JkMode::KOnly(k) => k,
-                _ => unreachable!("DirectK::build always uses JkMode::KOnly"),
-            };
             computed_quartets.fetch_add(local_count, Ordering::Relaxed);
-            Ok(local_k)
-        })?;
+        };
+        let mut total_k = match self.bounds.digest.mode_collective(self.ctx)? {
+            JkDigest::Legacy => {
+                let mut total_k = Array2::<f64>::zeros((nbf, nbf));
+                crate::reduce::grouped_deterministic_sum(
+                    &mut total_k,
+                    n_groups,
+                    nbf,
+                    band_bytes,
+                    |g| {
+                        let mut mode = JkMode::new_k(nbf);
+                        run(g, &mut mode);
+                        match mode {
+                            JkMode::KOnly(k) => Ok(k),
+                            _ => unreachable!("DirectK::build's legacy walk uses JkMode::KOnly"),
+                        }
+                    },
+                )?;
+                total_k
+            }
+            JkDigest::Pair => PairSpec::k_only(nbf, dims, d)
+                .sum_groups(self.ctx, n_groups, band_bytes, None, run)?
+                .k
+                .pop()
+                .expect("the K-only pair digest builds K"),
+        };
 
         crate::reduce::reduce_partial_across_ranks(self.ctx, &mut total_k);
         *k += &total_k;

@@ -290,6 +290,7 @@ impl IntegralBackend {
         route: CasScfIntegrals,
         budget_bytes: usize,
         gc_rotation: Option<ferric_scf::direct_jk::GcRotate>,
+        jk_digest: Option<ferric_scf::quartet_scatter::JkDigest>,
     ) -> Result<Self, FerricError> {
         route.validate()?;
         match route {
@@ -309,6 +310,7 @@ impl IntegralBackend {
                 // (`CasScfConfig::gc_rotation`, `direct_jk::gc_rotation`).
                 let bounds = SchwarzBounds::compute(op, prep)?;
                 bounds.gc.set_request(gc_rotation);
+                bounds.digest.set(jk_digest);
                 Ok(IntegralBackend::Direct {
                     bounds: Box::new(bounds),
                     pool: Box::new(EnginePool::new(

@@ -45,6 +45,13 @@ curl -sSfL -o "$PREFIX/licenses/eigen-COPYING.MPL2.txt" \
   "https://gitlab.com/libeigen/eigen/-/raw/3.4.0/COPYING.MPL2"
 
 # --- libxc: shared on macOS (delocate bundles it), static on Windows ---
+# -DDISABLE_KXC=ON, as on Linux (wheels.yml build-native-deps): ferric calls
+# only xc_*_exc_vxc and xc_*_fxc (crates/ferric-dft/src/libxc.rs, whose
+# tests forbid a kxc/lxc declaration), and the third-derivative code is
+# about 60% of libxc's bytes (-17.4 MB deflated in the Linux wheel, where
+# exc/vxc/fxc were verified bitwise identical over all 1358 functional/spin
+# pairs). Editing this file changes the blas-xc cache key (its hash is part
+# of it, native-cache-key.sh), so the cached KXC-on libxc is not reused.
 curl -sSfL -o libxc.tgz "https://gitlab.com/libxc/libxc/-/archive/${LIBXC_VERSION}/libxc-${LIBXC_VERSION}.tar.gz"
 echo "${LIBXC_SHA256}  libxc.tgz" | { sha256sum -c - 2>/dev/null || shasum -a 256 -c -; }
 # Two doc symlinks (ChangeLog, README) that Git-for-Windows tar cannot create.
@@ -53,7 +60,7 @@ if [ "$OS" = Darwin ]; then XC_SHARED=ON; else XC_SHARED=OFF; fi
 cmake -S "libxc-${LIBXC_VERSION}" -B build-xc -G Ninja \
   -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_LIBDIR=lib \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-  -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DDISABLE_KXC=OFF \
+  -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DDISABLE_KXC=ON \
   -DBUILD_SHARED_LIBS=$XC_SHARED
 cmake --build build-xc > build-xc.log 2>&1 || { tail -60 build-xc.log; exit 1; }
 cmake --install build-xc > /dev/null

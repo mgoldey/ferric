@@ -296,6 +296,7 @@ pub fn solve_rhf_with_df_increments(
 
     // ---- Stage 2: ONE exact full build at D0, retained as F_ex(D0) ------
     bounds.gc.set_request(base.gc_rotation);
+    bounds.digest.set(base.jk_digest);
     let mut direct_jk = DirectJK::new(ctx, prep, bounds, base.integral_thresh, ooc_budget)
         .with_gc_request(base.gc_rotation);
     let mut exact_builds = 0usize;
