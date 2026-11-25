@@ -353,22 +353,21 @@ impl<'a> DirectJK<'a> {
         k_a: &mut Array2<f64>,
         k_b: &mut Array2<f64>,
     ) -> Result<usize, FerricError> {
-        self.build_uhf_with(d_total, d_a, d_b, j, k_a, k_b, false)
+        self.build_uhf_with([d_total, d_a, d_b], j, k_a, k_b, false)
     }
 
     /// [`build_uhf`](Self::build_uhf) on full densities, or on the deltas of
-    /// [`build_uhf_incremental`](Self::build_uhf_incremental).
-    #[allow(clippy::too_many_arguments)]
+    /// [`build_uhf_incremental`](Self::build_uhf_incremental). `d` is
+    /// `[D_total, D_α, D_β]` (or their deltas).
     fn build_uhf_with(
         &mut self,
-        d_total: &Array2<f64>,
-        d_a: &Array2<f64>,
-        d_b: &Array2<f64>,
+        d: [&Array2<f64>; 3],
         j: &mut Array2<f64>,
         k_a: &mut Array2<f64>,
         k_b: &mut Array2<f64>,
         incremental: bool,
     ) -> Result<usize, FerricError> {
+        let [d_total, d_a, d_b] = d;
         self.ctx.check_interrupted()?;
         if let Some(store) = crate::incore_jk::store_for(self.bounds, self.prep)? {
             store.add_uhf(d_total, d_a, d_b, j, k_a, k_b)?;
@@ -380,13 +379,13 @@ impl<'a> DirectJK<'a> {
         let sym = sym_scale(incremental, reference.as_deref());
         let computed = if !self.rotated() {
             self.walk()
-                .build_uhf(d_total, d_a, d_b, j, k_a, k_b, sym, &mut scales)
+                .build_uhf([d_total, d_a, d_b], j, k_a, k_b, sym, &mut scales)
         } else {
             self.run_rotated(&[d_total, d_a, d_b], &mut [j, k_a, k_b], |mut w, d, x| {
                 let [jr, kar, kbr] = x else {
                     unreachable!("three outputs")
                 };
-                w.build_uhf(&d[0], &d[1], &d[2], jr, kar, kbr, sym, &mut scales)
+                w.build_uhf([&d[0], &d[1], &d[2]], jr, kar, kbr, sym, &mut scales)
             })
         };
         self.sym_ref = if incremental { reference } else { scales };
@@ -430,7 +429,7 @@ impl<'a> DirectJK<'a> {
         // deltas (without the caller zeroing) IS the incremental update — the
         // same relationship `build_incremental` has to `build` (the symmetry
         // reference included).
-        self.build_uhf_with(delta_total, delta_a, delta_b, j, k_a, k_b, true)
+        self.build_uhf_with([delta_total, delta_a, delta_b], j, k_a, k_b, true)
     }
 
     /// Build J and K matrices simultaneously from a single pass over shell quartets.
@@ -618,12 +617,10 @@ impl Walk<'_> {
 
     /// The open-shell walk. `sym` is the pair digest's symmetry scale;
     /// `scales` receives its per-spin `max|D|` when the pair digest ran.
-    #[allow(clippy::too_many_arguments)]
+    /// `d` is `[D_total, D_α, D_β]`.
     fn build_uhf(
         &mut self,
-        d_total: &Array2<f64>,
-        d_a: &Array2<f64>,
-        d_b: &Array2<f64>,
+        d: [&Array2<f64>; 3],
         j: &mut Array2<f64>,
         k_a: &mut Array2<f64>,
         k_b: &mut Array2<f64>,
@@ -635,6 +632,7 @@ impl Walk<'_> {
         };
         use std::sync::atomic::{AtomicUsize, Ordering};
 
+        let [d_total, d_a, d_b] = d;
         let dims = self.prep.shell_dims();
         let offs = self.prep.shell_offsets();
         let thresh = self.thresh;
