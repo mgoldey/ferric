@@ -1476,10 +1476,22 @@ fn lap(clock: &mut Instant) -> f64 {
 /// off. Schwarz bounds exist for Coulomb/erf/erfc/terfc only, so the error
 /// names the `schwarz_skip = 0.0` fix; terfc factors carry the table-error
 /// inflation of `schwarz::bound_inflation`.
+///
+/// The returned pair factor is `Q(μν) · w(μν)`, where `w` bounds the
+/// orbital coefficients the triple is transformed with (see
+/// [`coefficient_pair_weights`]): the cut then drops a triple only when its
+/// contribution to every TRANSFORMED entry `(P|ia)` is below
+/// `schwarz_skip`, not just its raw value. A bound on the raw `(P|μν)`
+/// alone is not a bound on what it feeds: in a near-linearly-dependent
+/// basis the localized virtuals carry |C| ~ 10² (aug-cc-pVDZ n-C12H26:
+/// max |C_v| 119), and the raw cut at 1e-5 moved E_corr by -91 mHa, to
+/// 79 mHa below canonical RI-MP2 (C10: -7.3 mHa; measured 2026-11-25,
+/// `production_schwarz_cut_is_harmless_in_a_diffuse_basis`).
 fn schwarz_triple_factors(
     op: Operator,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
+    spaces: &LocalizedSpaces,
     schwarz_skip: f64,
 ) -> Result<Option<(Array2<f64>, Vec<f64>)>, FerricError> {
     if schwarz_skip <= 0.0 {
@@ -1495,7 +1507,42 @@ fn schwarz_triple_factors(
     // The aux factor is the library's validated per-shell table (floored,
     // terfc-inflated), not a private copy.
     let qp_shell = ferric_integrals::schwarz::schwarz3_aux(op, dfbs)?;
-    Ok(Some((sb.q, qp_shell)))
+    let w = coefficient_pair_weights(obs, &spaces.c_locc, &spaces.c_vloc);
+    Ok(Some((sb.q * w, qp_shell)))
+}
+
+/// Largest |C_μk| over the functions μ of each obs shell and every column k.
+fn shell_coeff_max(prep: &PreparedBasis, c: &Array2<f64>) -> Vec<f64> {
+    let (dims, offs) = (prep.shell_dims(), prep.shell_offsets());
+    (0..prep.nshells())
+        .map(|sh| {
+            c.slice(s![offs[sh]..offs[sh] + dims[sh], ..])
+                .iter()
+                .fold(0.0f64, |m, x| m.max(x.abs()))
+        })
+        .collect()
+}
+
+/// `w(μν) = max(1, cᵒ_μ cᵛ_ν + cᵒ_ν cᵛ_μ)` per shell pair, with `cᵒ`/`cᵛ`
+/// the per-shell max |C| of the active occupieds / the virtuals: one stored
+/// triple `(P|μν)` enters `(P|ia) = Σ_μν C_μi C_νa (P|μν)` through both
+/// orientations, `(C_μi C_νa + C_νi C_μa)(P|μν)`, so
+/// `√(P|P)·Q(μν)·w(μν) < skip` bounds the dropped triple's contribution to
+/// every transformed entry by `skip`. The floor at 1 keeps the cut never
+/// LOOSER than the raw-value cut it replaces: without it the small
+/// coefficients of a compact basis drop more triples (C20/6-31G moved
+/// +2.7 µHa from the no-cut energy, vs -0.2 µHa for the raw cut, same RHF),
+/// because the per-triple bound says nothing about the sum over the triples
+/// dropped. The raw cut's calibration (C12-C48 6-31G) therefore still holds
+/// wherever every `w ≤ 1`.
+fn coefficient_pair_weights(
+    obs: &PreparedBasis,
+    c_occ: &Array2<f64>,
+    c_vir: &Array2<f64>,
+) -> Array2<f64> {
+    let (co, cv) = (shell_coeff_max(obs, c_occ), shell_coeff_max(obs, c_vir));
+    let n = obs.nshells();
+    Array2::from_shape_fn((n, n), |(a, b)| (co[a] * cv[b] + co[b] * cv[a]).max(1.0))
 }
 
 /// Borrowed, read-only context of the stage-3 batch workers. Extracted from
@@ -2922,7 +2969,7 @@ fn strips_and_metric(
         )));
     }
     Engine::new_3center(op, obs, dfbs, 1e-14)?; // surface construction errors serially
-    let qpair = schwarz_triple_factors(op, obs, dfbs, dcfg.schwarz_skip)?;
+    let qpair = schwarz_triple_factors(op, obs, dfbs, spaces, dcfg.schwarz_skip)?;
     stats.t_eri3_setup_s = t0.elapsed().as_secs_f64();
     let n_workers = rayon::current_num_threads()
         .max(1)
@@ -4900,7 +4947,7 @@ mod stage_b_tests {
                 ("coul", Operator::coulomb(), 0.7),
                 ("erfc1", Operator::erfc(1.0), 0.02),
             ] {
-                let qpair = schwarz_triple_factors(op, &obs, &dfbs, dcfg.schwarz_skip)
+                let qpair = schwarz_triple_factors(op, &obs, &dfbs, &spaces, dcfg.schwarz_skip)
                     .unwrap()
                     .unwrap();
                 for eps in [1e-3, 1e-4] {
@@ -5032,6 +5079,124 @@ mod stage_b_tests {
         );
     }
 
+    /// REGRESSION (2026-11-25, aug-cc-pVDZ n-C12H26 91 mHa below canonical):
+    /// the production Schwarz cut must bound what a dropped triple does to
+    /// the TRANSFORMED entries, not only its raw value. For every triple the
+    /// production factors drop, each function pair's contribution to any
+    /// `(P|ia)`, `|(P|μν)|·(|C_μi||C_νa| + |C_νi||C_μa|)` with
+    /// function-level (not shell-level) coefficient maxima, must stay below
+    /// the skip, and no triple the raw-value cut keeps may be dropped (the
+    /// weight's floor at 1). A cut on `|(P|μν)|` alone fails the first
+    /// wherever |C| > 1
+    /// (mutation: drop the coefficient weight in `schwarz_triple_factors`).
+    /// n-C4H10 / aug-cc-pVDZ keeps it CI-sized (water is too compact: the
+    /// cut drops nothing there); its diffuse virtuals have max |C| ~ 69.
+    #[test]
+    fn schwarz_cut_bounds_the_transformed_entries() {
+        let mol = Molecule::load_xyz(&format!(
+            "{}/../../testdata/molecules/alkane_4.xyz",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        let obs_bs = ferric_core::basis::bundled("aug-cc-pvdz").unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let dfbs = PreparedBasis::new(
+            &mol,
+            &ferric_core::basis::bundled("aug-cc-pvdz-ri").unwrap(),
+        )
+        .unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let cfg = RhfConfig::default().with_energy_conv(1e-10);
+        let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
+        let (vvhv, _) = checked_vvhv(&mol, &obs, &obs_bs, &rhf, "test").unwrap();
+        let spaces = localized_spaces(&mol, &obs, &rhf, 4, &vvhv).unwrap();
+        let fmax = |c: &Array2<f64>| -> Vec<f64> {
+            c.rows()
+                .into_iter()
+                .map(|r| r.iter().fold(0.0f64, |m, x| m.max(x.abs())))
+                .collect()
+        };
+        let (co, cv) = (fmax(&spaces.c_locc), fmax(&spaces.c_vloc));
+        // The production skip, and a looser one: the bound must hold at any
+        // skip, and at C4 the production skip drops only nearby triples (the
+        // raw-value cut passes there; it broke at C10-C12, where the large
+        // coefficients sit on distant diffuse shells).
+        for skip in [DIRECT_DEFAULT_SCHWARZ_SKIP, 1e-3] {
+            let (q, qp) = schwarz_triple_factors(op, &obs, &dfbs, &spaces, skip)
+                .unwrap()
+                .unwrap();
+            let (n_dropped, n_looser, worst) =
+                dropped_transformed_worst(&obs, &dfbs, op, &bounds.q, &q, &qp, &co, &cv, skip);
+            eprintln!(
+                "transformed Schwarz bound: skip {skip:.0e}: {n_dropped} triples dropped, worst \
+                 dropped contribution {worst:.3e}; max |C_v| {:.2}",
+                cv.iter().fold(0.0f64, |m, &x| m.max(x))
+            );
+            assert!(
+                n_dropped > 100,
+                "cut dropped only {n_dropped} triples — test vacuous"
+            );
+            assert_eq!(
+                n_looser, 0,
+                "{n_looser} triples dropped that the raw-value cut keeps (weight floor lost)"
+            );
+            assert!(
+                worst <= skip,
+                "a dropped triple moves a transformed (P|ia) by {worst:.3e} > skip {skip:.0e}"
+            );
+        }
+    }
+
+    /// For the triples `(qp, q)` drop at `skip`: (count, count the raw-value
+    /// factors `q_raw` keep, worst function-level transformed contribution
+    /// `|(P|μν)|·(cᵒ_μ cᵛ_ν + cᵒ_ν cᵛ_μ)`).
+    #[allow(clippy::too_many_arguments)]
+    fn dropped_transformed_worst(
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        op: Operator,
+        q_raw: &Array2<f64>,
+        q: &Array2<f64>,
+        qp: &[f64],
+        co: &[f64],
+        cv: &[f64],
+        skip: f64,
+    ) -> (usize, usize, f64) {
+        let (dobs, oobs) = (obs.shell_dims(), obs.shell_offsets());
+        let mut eng = Engine::new_3center(op, obs, dfbs, 1e-14).unwrap();
+        let (mut n_dropped, mut n_looser, mut worst) = (0usize, 0usize, 0.0f64);
+        for sp in 0..dfbs.nshells() {
+            let np = dfbs.shell_dims()[sp];
+            for ua in 0..obs.nshells() {
+                for ub in 0..=ua {
+                    if qp[sp] * q[(ua, ub)] >= skip {
+                        continue;
+                    }
+                    if qp[sp] * q_raw[(ua, ub)] >= skip {
+                        n_looser += 1;
+                    }
+                    n_dropped += 1;
+                    let Some(block) = eng.compute_eri3(obs, dfbs, sp, ua, ub) else {
+                        continue;
+                    };
+                    let (n1, n2) = (dobs[ua], dobs[ub]);
+                    for p in 0..np {
+                        for fa in 0..n1 {
+                            let mu = oobs[ua] + fa;
+                            for fb in 0..n2 {
+                                let nu = oobs[ub] + fb;
+                                let w = co[mu] * cv[nu] + co[nu] * cv[mu];
+                                worst = worst.max(block[(p * n1 + fa) * n2 + fb].abs() * w);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        (n_dropped, n_looser, worst)
+    }
+
     /// B4 anchor: on C4/6-31G with production maps (gate on, Schwarz cut
     /// 1e-5, merged batches, a scratch share small enough to force several
     /// slabs per batch), the Q-sorted pair list with the binary-searched
@@ -5063,7 +5228,7 @@ mod stage_b_tests {
             ..Default::default()
         };
         let maps = build_locality_maps(&mol, &obs, &dfbs, &spaces, 1e-4, Some(0.7), &dcfg);
-        let qpair = schwarz_triple_factors(op, &obs, &dfbs, dcfg.schwarz_skip).unwrap();
+        let qpair = schwarz_triple_factors(op, &obs, &dfbs, &spaces, dcfg.schwarz_skip).unwrap();
         let ctx = BatchCtx {
             op,
             obs: &obs,

@@ -2798,3 +2798,68 @@ fn bound_constants_are_pinned_on_a_dense_system() {
         assert!(de <= bound, "dE {de:.3e} > bound {bound:.3e}");
     }
 }
+
+/// REGRESSION (2026-11-25): n-C10H22 / aug-cc-pVDZ / aug-cc-pVDZ-RI under the
+/// PRODUCTION model and maps. The stage-3 Schwarz cut used to bound only the
+/// raw `(P|μν)`; the diffuse localized virtuals (max |C| ~ 10²) amplified
+/// the dropped triples into the transformed `(P|ia)`, moving C10 by
+/// -7.25 mHa and C12 by -91 mHa (79 mHa BELOW canonical). The fixed cut
+/// (coefficient-weighted, `schwarz_triple_factors`) moved C10 by 0.5 µHa.
+/// Bar: the cut's energy effect stays below 1e-5 Ha (eps 1e-4).
+/// Release, ~6 min cold (RHF ~5 min; FERRIC_LMP2_BENCH_RHF_CACHE=<dir>
+/// reuses it):
+///   OPENBLAS_NUM_THREADS=1 cargo test -p ferric-mp2 --release --test \
+///     lmp2_direct -- --ignored --nocapture production_schwarz_cut_is_harmless_in_a_diffuse_basis
+#[ignore = "release only, ~6 min (aug-cc-pVDZ C10 RHF)"]
+#[test]
+fn production_schwarz_cut_is_harmless_in_a_diffuse_basis() {
+    let xyz_path = format!(
+        "{}/../../testdata/molecules/alkane_10.xyz",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let mol = Molecule::load_xyz(&xyz_path).unwrap();
+    let obs_bs = basis::bundled("aug-cc-pvdz").unwrap();
+    let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+    let aux_bs = basis::bundled("aug-cc-pvdz-ri").unwrap();
+    let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+    let rhf = bench_rhf_cache::setup_rhf(
+        &xyz_path,
+        &mol,
+        &obs,
+        ("aug-cc-pvdz", &obs_bs),
+        ("aug-cc-pvdz-ri", &aux_bs),
+    );
+    let cfg = AmplitudeLmp2Config::production(1e-4, mol.auto_frozen_core(), None);
+    let run = |maps: &DirectConfig| {
+        amplitude_lmp2_direct(
+            &mol,
+            &obs,
+            &obs_bs,
+            &dfbs,
+            Operator::coulomb(),
+            &rhf,
+            &cfg,
+            maps,
+        )
+        .unwrap()
+    };
+    let (cut, st) = run(&DirectConfig::production());
+    let (nocut, _) = run(&DirectConfig {
+        schwarz_skip: 0.0,
+        ..DirectConfig::production()
+    });
+    let d = cut.e_corr - nocut.e_corr;
+    eprintln!(
+        "C10/aug production Schwarz cut: E(cut) {:.12} E(no cut) {:.12} diff {d:.3e} \
+         ({} of {} triples skipped)",
+        cut.e_corr,
+        nocut.e_corr,
+        st.n_eri3_skipped,
+        st.n_eri3_shell_triples + st.n_eri3_skipped
+    );
+    assert!(st.n_eri3_skipped > 0, "the cut skipped nothing — vacuous");
+    assert!(
+        d.abs() < 1e-5,
+        "production Schwarz cut moved the energy by {d:.3e} Ha"
+    );
+}

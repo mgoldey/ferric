@@ -202,12 +202,28 @@ leaves every kept $J$ value alone, or it changes the $J$ values.
     shell out is the same as setting those coefficients to zero in the half
     transform, applied alike to both strips of a pair. The Fock blocks are
     untouched.
-  - The triple cut (`schwarz_skip`). A batch triple is skipped when its
-    Cauchy–Schwarz bound $\sqrt{\max(P\vert P)}\,Q(\mu\nu)$ falls below the
-    threshold, with $Q(\mu\nu) = \sqrt{(\mu\nu\vert\mu\nu)}$ and both
-    factors from the run's operator. The bound is rigorous for each skipped
-    raw integral $(\mu\nu\vert P)$; the aux factor is the maximum over the
-    shell, so the cut stays conservative at shell granularity.
+  - The triple cut (`schwarz_skip`). A batch triple is skipped when
+    $\sqrt{\max(P\vert P)}\,Q(\mu\nu)\,w(\mu\nu)$ falls below the
+    threshold, with $Q(\mu\nu) = \sqrt{(\mu\nu\vert\mu\nu)}$, both
+    factors from the run's operator, and
+    $w(\mu\nu) = \max\bigl(1,\ c^{o}_{\mu} c^{v}_{\nu} + c^{o}_{\nu} c^{v}_{\mu}\bigr)$,
+    where $c^{o}$ and $c^{v}$ are the largest $\lvert C\rvert$ on the shell
+    over the active occupieds and over the virtuals. A stored triple enters
+    $(P\vert ia)$ as $(C_{\mu i}C_{\nu a} + C_{\nu i}C_{\mu a})(P\vert\mu\nu)$,
+    so the cut bounds each skipped triple's contribution to every
+    transformed entry, not only the raw integral. The aux factor is the
+    maximum over the shell, so the cut stays conservative at shell
+    granularity. The floor at 1 keeps the cut no looser than a cut on the
+    raw integral.
+
+    A cut on the raw integral alone ($w = 1$) is not a bound on what the
+    integral feeds. In a near-linearly-dependent basis the localized
+    virtuals carry large, cancelling coefficients: in n-C$_{12}$H$_{26}$ /
+    aug-cc-pVDZ the largest $\lvert C_v\rvert$ is 119, and that cut moved
+    $E_\text{corr}$ by $-91$ mHa, to 79 mHa below canonical RI-MP2. With
+    the weight it moves $E_\text{corr}$ by about $10^{-6}$ Ha (measured
+    2026-11-25; `schwarz_cut_bounds_the_transformed_entries`,
+    `production_schwarz_cut_is_harmless_in_a_diffuse_basis`).
 
 The pair candidates of stage 5 come from `ferric-mp2/src/lmp2_direct.rs::pair_candidates`.
 The body of its per-pair closure, unchanged except for the
@@ -353,7 +369,7 @@ limit, error against canonical RI-MP2 in Ha:
 | `ao_tail` $10^{-3}$ | $-1.4\times10^{-4}$ | $+9.4\times10^{-5}$ | $-4.55\times10^{-5}$ |
 | `virt_radius` 12 Bohr | $+9.7\times10^{-5}$ | $+2.5\times10^{-5}$ | |
 | `aux_radius` 10 Bohr | about $10^{-6}$ | | |
-| `schwarz_skip` $10^{-5}$ | about $10^{-7}$ | | |
+| `schwarz_skip` $10^{-5}$ (unweighted cut, before 2026-11-25) | about $10^{-7}$ | | |
 
 `virt_radius`, a pattern map, is positive in every column, as
 (@eq:lmp2-map-pattern) requires. `ao_tail`, a value map, changes sign with
@@ -463,7 +479,7 @@ amount per CH$_2$ is constant.
 | `aux_radius` | at least $10^5$ Bohr (global fit) | 10.0 Bohr | auxiliary fit domain |
 | `virt_radius` | all virtuals | 20.0 Bohr | virtual domain on dipole centroids |
 | `ao_tail` | 0.0 keeps every shell | 1e-4 | AO-shell support threshold |
-| `schwarz_skip` | 0.0 evaluates every triple (bit-identical to a run without the cut) | 1e-5 | Cauchy–Schwarz cut on batch triples, $\sqrt{\max(P\vert P)}\,Q(\mu\nu) <$ the threshold, with both factors from the run's operator |
+| `schwarz_skip` | 0.0 evaluates every triple (bit-identical to a run without the cut) | 1e-5 | Cauchy–Schwarz cut on batch triples, $\sqrt{\max(P\vert P)}\,Q(\mu\nu)\,w(\mu\nu) <$ the threshold, with both factors from the run's operator and $w$ the orbital-coefficient weight above |
 | `gate_cal` | none (gate off) | none | the pair gate of equation @eq:amplitude-lmp2-4 |
 | `virt_schwarz_kappa` | none (off) | none | $\varepsilon$-linked virtual-candidate screen: keep $a$ if $q_{ia}q^{\max}_j \ge \kappa\varepsilon$ or the mirror |
 | `fock_screen` | `false` (plain Eq-8 mask) | `true` (κ = 1) | the Fock-propagated screen of section @sec:amplitude-lmp2-fock-screen; inert at $\varepsilon = 0$ |

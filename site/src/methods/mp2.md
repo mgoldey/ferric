@@ -568,13 +568,19 @@ to be linear, and it is not measured on 3-D or diffuse systems.
 
 **Schwarz triple cut (`schwarz_skip`, default `1e-5`)** applies to the Coulomb, erfc and
 terfc kernels alike. A shell triple is skipped when
-`sqrt(max (P|P)) * sqrt(max (ab|ab)) < schwarz_skip`, both factors from the run's own
-operator; `schwarz_skip = 0` evaluates every triple. For terfc the factors come from the
+`sqrt(max (P|P)) * sqrt(max (ab|ab)) * w(ab) < schwarz_skip`, both factors from the run's own
+operator, where `w(ab) = max(1, c_occ(a) c_vir(b) + c_occ(b) c_vir(a))` and `c_occ`, `c_vir`
+are the largest orbital coefficients on each shell. The weight bounds what a skipped triple
+does to the transformed `(P|ia)`, not only its raw value; before 2026-11-25 the cut had no
+weight, and in diffuse bases (aug-cc-pVDZ n-C12H26, virtual coefficients up to 119) it
+put the energy 79 mHa below canonical RI-MP2. `schwarz_skip = 0` evaluates every triple. For terfc the factors come from the
 table engine's own diagonals and carry a 1e-5 relative inflation for table error, and the
 cut is only available inside the checked box: orbital shells up to g, r0 between 0.3 and
 2.5 Å and r0·ω ≤ 8.9 (outside it the run errors and names `schwarz_skip = 0.0`). Measured
 for terfc (n-alkanes, 6-31G with cc-pVDZ-RI, `eps = 5e-5`, default maps, plain Schwarz,
-2026-10-11, a loaded machine so ratios only, order alternated, two repeats):
+2026-10-11, a loaded machine so ratios only, order alternated, two repeats; measured with
+the unweighted cut, which the weight can only make tighter, so these speedups are upper bounds
+until re-measured):
 
 | System | operator | wall vs `schwarz_skip = 0` at `1e-6` | at `1e-5` | energy change at `1e-5` |
 |---|---|---|---|---|
