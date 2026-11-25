@@ -1458,8 +1458,8 @@ CASES = [
                 "claim 7: an unverified shift",
             ),
             (
-                "shellwise = sum(c[k] * np.linalg.norm(x[shells[k]]) for k in Bsh)",
-                "shellwise = sum(c[k] * np.linalg.norm(x[shells[k]]) ** 2 for k in Bsh)",
+                "c[k] * np.linalg.norm(x[shells[k]]) for k in Bsh",
+                "c[k] * np.linalg.norm(x[shells[k]]) ** 2 for k in Bsh",
                 "claim 8: shell-wise triangle",
             ),
             (
@@ -1562,8 +1562,8 @@ CASES = [
                 "S4: Boys",
             ),
             (
-                "M += w * (2 * comm(diagm(A_), X)",
-                "M += w * (comm(diagm(A_), X)",
+                "2 * comm(diagm(A_), X) + comm(comm(eta",
+                "comm(diagm(A_), X) + comm(comm(eta",
                 "S5: Hessian",
             ),
             (

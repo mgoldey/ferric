@@ -147,7 +147,9 @@ print("difference is r^2 / S with S > 0 for SPD M: the sub-block norm is smaller
 # ---------------------------------------------------------------------------
 section("claim 3: FT[erfc(w r)/r] = 4 pi (1 - exp(-k^2/4w^2))/k^2 > 0")
 rr, k, w = sp.symbols("r k w", positive=True)
-ft = sp.integrate(4 * sp.pi * rr**2 * sp.erfc(w * rr) / rr * sp.sin(k * rr) / (k * rr), (rr, 0, sp.oo))
+ft = sp.integrate(
+    4 * sp.pi * rr**2 * sp.erfc(w * rr) / rr * sp.sin(k * rr) / (k * rr), (rr, 0, sp.oo)
+)
 ft = sp.simplify(ft)
 target = 4 * sp.pi * (1 - sp.exp(-(k**2) / (4 * w**2))) / k**2
 assert sp.simplify(ft - target) == 0, f"claim 3: FT FAILED: {ft}"
@@ -214,7 +216,9 @@ for trial in range(400):
     lam_i, lam_j = lam_floor(VAA), lam_floor(Vjj)
     assert lam_i <= np.linalg.eigvalsh(VAA).min() * (1 + 1e-12), "claim 5: floor FAILED"
     # interlacing: B is a sub-block of D_j, so lambda_min(V_BB) >= lam_j
-    assert np.linalg.eigvalsh(VBB).min() >= lam_j * (1 - 1e-12), "claim 5: interlacing FAILED"
+    assert np.linalg.eigvalsh(VBB).min() >= lam_j * (1 - 1e-12), (
+        "claim 5: interlacing FAILED"
+    )
     if adv:
         # align alpha_A, beta_B with Y's top singular pair (worst case)
         Wa = np.linalg.inv(np.linalg.cholesky(VAA))
@@ -237,7 +241,9 @@ for trial in range(400):
         g = sv[0]
     G = bound(uA, uB, vA, vB_own, g)
     if np.isfinite(G):
-        assert abs(J) <= G * (1 + 1e-9), f"claim 4: bound FAILED trial {trial}: {J} > {G}"
+        assert abs(J) <= G * (1 + 1e-9), (
+            f"claim 4: bound FAILED trial {trial}: {J} > {G}"
+        )
         worst = max(worst, abs(J) / G)
 print(f"bound holds on every finite-gamma trial; max |J|/bound = {worst:.3f}")
 assert worst > 0.9, "claim 4: bound never approached (test is vacuous)"
@@ -320,8 +326,10 @@ for trial in range(60):
     bad, _ = verified_floor(V, shifts=(2.0,))
     assert bad is None or bad <= lam, "claim 7: an unverified shift was accepted"
     gain.append(sigma / lam_floor(V))
-print(f"verified floors: {n_ok}/60 found, all <= lambda_min; "
-      f"gain over the trace floor: min {min(gain):.1f}, median {np.median(gain):.1f}")
+print(
+    f"verified floors: {n_ok}/60 found, all <= lambda_min; "
+    f"gain over the trace floor: min {min(gain):.1f}, median {np.median(gain):.1f}"
+)
 assert n_ok >= 50, "claim 7: the shifted Cholesky almost never verifies (vacuous)"
 
 # ---------------------------------------------------------------------------
@@ -350,7 +358,9 @@ for trial in range(200):
     x[B] = rng.standard_normal(B.size) * 10.0 ** rng.uniform(-6, 0, B.size)
     exact = np.linalg.norm(np.linalg.solve(np.linalg.cholesky(Vj[np.ix_(B, B)]), x[B]))
     padded = np.linalg.norm(Lj_inv @ x)  # Schur monotonicity, zero padding
-    shellwise = sum(c[k] * np.linalg.norm(x[shells[k]]) for k in Bsh)  # claim 8: shellwise
+    shellwise = sum(
+        c[k] * np.linalg.norm(x[shells[k]]) for k in Bsh
+    )  # claim 8: shellwise
     assert exact <= padded * (1 + 1e-10), "claim 8: zero-padded monotonicity FAILED"
     assert padded <= shellwise * (1 + 1e-10), "claim 8: shell-wise triangle FAILED"
     worst8 = max(worst8, exact / shellwise)
@@ -364,7 +374,11 @@ for trial in range(200):
     VBB_mh = (U / np.sqrt(w)) @ U.T
     g_exact = np.linalg.norm(VAA_mh @ VAB @ VBB_mh, 2)
     LA_inv = np.linalg.inv(np.linalg.cholesky(VAA))
-    ash = shell_split(na, int(rng.integers(1, min(na, 4) + 1))) if na > 1 else [np.arange(na)]
+    ash = (
+        shell_split(na, int(rng.integers(1, min(na, 4) + 1)))
+        if na > 1
+        else [np.arange(na)]
+    )
     side = sum(np.linalg.norm(LA_inv[:, sh]) * np.linalg.norm(VAB[sh, :]) for sh in ash)
     g_side = side / np.sqrt(np.linalg.eigvalsh(VBB)[0])
     assert g_exact <= g_side * (1 + 1e-10), "claim 8: one-sided gamma FAILED"
@@ -453,7 +467,9 @@ for trial in range(120):
     E = gam(d + 1) * rng.choice([-1.0, 1.0], size=(d, d)) * (np.abs(Lh) @ np.abs(Lh).T)
     E = np.triu(E) + np.triu(E, 1).T
     Vx = Lh @ Lh.T - E  # the exact matrix whose computed factor is Lh
-    assert np.linalg.norm(E, 2) <= chol_eta(d, np.trace(Vx)) * (1 + 1e-9), "claim 10: eta FAILED"
+    assert np.linalg.norm(E, 2) <= chol_eta(d, np.trace(Vx)) * (1 + 1e-9), (
+        "claim 10: eta FAILED"
+    )
     # (b) the J allowance, adversarial: dV = -eta v v^T along lambda_min
     eta = chol_eta(d, tr)
     if eta / lam >= 0.5 or solve_theta(d, tr, 1.0 / (lam - eta)) is None:
@@ -465,7 +481,9 @@ for trial in range(120):
     exact = a @ np.linalg.solve(V, b)
     xa = perturbed_solve(Lh, a, gam(2 * d))
     xb = perturbed_solve(Lh, b, gam(2 * d))
-    J = xa @ xb + gam(2 * d) * (np.abs(xa) @ np.abs(xb)) * np.sign(xa @ xb - exact or 1.0)
+    J = xa @ xb + gam(2 * d) * (np.abs(xa) @ np.abs(xb)) * np.sign(
+        xa @ xb - exact or 1.0
+    )
     na = np.sqrt(a @ np.linalg.solve(V, a))
     nb = np.sqrt(b @ np.linalg.solve(V, b))
     R = allowance(d, tr, lam, na * nb)
@@ -481,7 +499,9 @@ for trial in range(120):
         assert floor <= lam * (1 + 1e-12), "claim 10: floor FAILED"
         # (d) the norm inflation (floor lam: the exact one is allowed)
         infl = np.sqrt(1 + eta / lam) / (1 - r)
-        assert na <= infl * np.linalg.norm(xa) * (1 + 1e-12), "claim 10: inflation FAILED"
+        assert na <= infl * np.linalg.norm(xa) * (1 + 1e-12), (
+            "claim 10: inflation FAILED"
+        )
 print(f"rounding allowances hold; max |J error|/allowance = {worst10:.3f}")
 assert worst10 > 0.3, "claim 10: allowance never approached (test is vacuous)"
 

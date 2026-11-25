@@ -350,7 +350,9 @@ def hess_vec_formula(Xl, wl, eta):
     M = sp.zeros(3, 3)
     for X, w in zip(Xl, wl):
         A_ = comm(X, eta)
-        M += w * (2 * comm(diagm(A_), X) + comm(comm(eta, diagm(X)), X) + comm(diagm(X), A_))
+        M += w * (
+            2 * comm(diagm(A_), X) + comm(comm(eta, diagm(X)), X) + comm(diagm(X), A_)
+        )
     return M.T - M
 
 
@@ -368,10 +370,15 @@ for b_i, (pb, qb) in enumerate(pairs):
 # diagonal = -16 a_pq
 for a_i, (pa, qa) in enumerate(pairs):
     a_pq = sum(
-        w * (((X[pa, pa] - X[qa, qa]) / 2) ** 2 - X[pa, qa] ** 2) for w, X in zip(ws5, Xs5)
+        w * (((X[pa, pa] - X[qa, qa]) / 2) ** 2 - X[pa, qa] ** 2)
+        for w, X in zip(ws5, Xs5)
     )
-    assert sp.expand(Hess_auto[a_i][a_i] + 16 * a_pq) == 0, "S5: Hessian FAILED (diagonal)"
-print("gamma = Gamma^T - Gamma = -(S1 pair gradient); H eta = M^T - M; diag H = -16 a_pq")
+    assert sp.expand(Hess_auto[a_i][a_i] + 16 * a_pq) == 0, (
+        "S5: Hessian FAILED (diagonal)"
+    )
+print(
+    "gamma = Gamma^T - Gamma = -(S1 pair gradient); H eta = M^T - M; diag H = -16 a_pq"
+)
 
 # ---------------------------------------------------------------------------
 section("S6 (numerical): Newton on the generator, distance vs gradient")
@@ -393,7 +400,9 @@ def hv_num(Xm, Fm, lam_v, eta):
         v = np.diag(A_)
         E_ = -(d[:, None] - d[None, :]) * eta
         M += w * (
-            2 * (v[:, None] - v[None, :]) * X + (E_ @ X - X @ E_) + (d[:, None] - d[None, :]) * A_
+            2 * (v[:, None] - v[None, :]) * X
+            + (E_ @ X - X @ E_)
+            + (d[:, None] - d[None, :]) * A_
         )
     return M.T - M
 
@@ -428,7 +437,9 @@ for _ in range(3):
 
     fd = (g2(K1 + K2) - g2(K1 - K2)) / (4 * h**2)
     an = (K1[iu] * hv_num(X0, F0, lam_v, K2)[iu]).sum()
-    assert abs(fd - an) < 1e-4 * max(1.0, abs(an)), f"S5: Hessian FAILED (FD {fd} vs {an})"
+    assert abs(fd - an) < 1e-4 * max(1.0, abs(an)), (
+        f"S5: Hessian FAILED (FD {fd} vs {an})"
+    )
 
 
 def newton_step(Xm, Fm, lam_v):
@@ -450,7 +461,9 @@ for _ in range(6):
     Ue = expm_antisym(kap)
     Xn, Fn = [Ue.T @ X @ Ue for X in Xn], Ue.T @ Fn @ Ue
 assert steps[-1] < 1e-12, f"S6: Newton FAILED (steps {steps})"
-assert steps[2] < 10 * steps[1] ** 2 + 1e-14, f"S6: Newton FAILED (not quadratic: {steps})"
+assert steps[2] < 10 * steps[1] ** 2 + 1e-14, (
+    f"S6: Newton FAILED (not quadratic: {steps})"
+)
 assert abs(G_num(Xn, Fn, lam_v) - G_num(Xc, Fc, lam_v)) < 1e-10, "S6: Newton FAILED (G)"
 # the step predicts the distance to the maximum, the gradient does not:
 # soften one mode of the quadratic model and compare |gamma| and |kappa*|
