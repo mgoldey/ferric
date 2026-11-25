@@ -805,6 +805,8 @@ fn solve_uhf_impl(
     // The response, Newton and stability builds on these bounds follow the
     // SCF's contraction rotation (`direct_jk::gc_rotation::GcSlot`).
     bounds.gc.set_request(config.gc_rotation);
+    // ... and its J/K digest (`quartet_scatter::DigestSlot`).
+    bounds.digest.set(config.jk_digest);
 
     // Split the injection: (S, h, V_nn) go to the shared env builder, the J/K
     // builders are driven in the iteration loop. All `None` on the molecular
@@ -3240,10 +3242,11 @@ fn uhf_guess_mos(
     };
 
     // Split the spin-summed guess density evenly and build F_α = F_β at it,
-    // with unrotated builds (`SchwarzBounds::unrotated`): the guess does not
-    // follow the SCF's contraction rotation.
+    // with the guess's own builds (`SchwarzBounds::for_guess`): unrotated and
+    // on the legacy digest, whatever the SCF's contraction rotation and
+    // digest.
     let d_spin = &d_total * 0.5;
-    let bounds = &bounds.unrotated();
+    let bounds = &bounds.for_guess();
     let mut j = Array2::<f64>::zeros((n, n));
     let mut k = Array2::<f64>::zeros((n, n));
     if let Err(e) = crate::rhf::build_jk(

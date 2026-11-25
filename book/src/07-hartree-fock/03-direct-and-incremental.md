@@ -259,6 +259,83 @@ if sym1234 {                              // δbk: (μν) ↔ (λσ)
 - Blocks of 16 or more integrals go through the blocked `digest_j` and
   `digest_k`, which apply the same images as matrix operations.
 
+## The bra-pair-local digest {#direct-and-incremental-pair-digest}
+
+The scatter above writes every element to up to 16 places scattered over
+$J$ and $K$. The default digest (`[scf] jk_digest = "pair"`,
+`ferric-scf/src/quartet_scatter.rs::PairSpec`) computes the same sums with
+writes that stay near the bra pair. For one bra pair $(s_1, s_2)$ it keeps
+three accumulators: a bra Coulomb block, a half Coulomb matrix
+$J^{\rm h}$ and a bra-row exchange matrix $K^{\rm b}$.
+
+- **Bra Coulomb block.** For every computed ket pair, each bra element
+  gets a dot product with $E^{34}_{\lambda\sigma} = D_{\lambda\sigma} +
+  \delta_{34} D_{\sigma\lambda}$. The block goes into $J^{\rm h}$ once,
+  after the last ket pair.
+- **Ket Coulomb block.** For a distinct bra and ket ($\delta_{\rm bk}$),
+  the ket block $\sum_{\mu\nu} v\, E^{12}_{\mu\nu}$, with $E^{12} =
+  D_{\mu\nu} + \delta_{12} D_{\nu\mu}$, goes into $J^{\rm h}$ once per
+  quartet.
+- **Exchange.** Only the four bra-row images are written:
+  $K^{\rm b}_{\mu\lambda} \mathrel{+}= w\, v D_{\nu\sigma}$, and the
+  $\delta_{12}$, $\delta_{34}$ images, all in rows $\mu \in s_1$ and $\nu
+  \in s_2$. The working set is the $n_1 + n_2$ rows of $D$ and $K^{\rm b}$.
+
+Once per build, after the group partials are summed in their usual order,
+
+$$ J = J^{\rm h} + (J^{\rm h})^{\mathsf T}, \qquad K = K^{\rm b} + (K^{\rm b})^{\mathsf T}. $$
+
+For a symmetric $D$ the four bra–ket-swapped exchange images, $K_{\lambda\mu}
+\mathrel{+}= v D_{\sigma\nu}$ and the rest, are the transposes of the
+bra-row images. So the transpose in the last step supplies them. The
+transpose also doubles anything that is its own image, so three degenerate
+cases take a factor ½:
+
+| Case | Weight | Why |
+|---|---|---|
+| $s_1 = s_2$ | ½ on the bra block in $J^{\rm h}$ | the block holds both $(\mu\nu\vert\cdot)$ and $(\nu\mu\vert\cdot)$ |
+| $s_3 = s_4$ | ½ on the ket block in $J^{\rm h}$ | likewise for $(\cdot\vert\lambda\sigma)$ |
+| $(s_3,s_4) = (s_1,s_2)$ | $w = ½$ on $K^{\rm b}$ | there are no swapped images to supply |
+
+A density that is not symmetric takes the general form instead. The swapped
+images are accumulated, transposed, into a second bra-row matrix $K^{\rm t}$
+against $D^{\mathsf T}$, and $K = K^{\rm b} + (K^{\rm t})^{\mathsf T}$ with
+$w = 1$ everywhere. Each build checks its exchange densities once:
+$\max|D - D^{\mathsf T}| \le 10^{-14} \max|D|$ counts as symmetric, and such
+a density is symmetrised explicitly to $\frac12(D + D^{\mathsf T})$, so $K$
+comes out exactly symmetric. A density with a NaN or infinite element is not
+symmetric. The test is relative, so an antisymmetric part is kept at any
+absolute size. The one exception is the incremental build's $\Delta D$,
+which is judged against $\max(\max|\Delta D|, \max|D_{\rm full}|)$, with
+$D_{\rm full}$ the density of the builder's last full build: a difference
+of two densities carries their absolute rounding asymmetry, which is large
+relative to a small $\Delta D$, and symmetrising it moves $K$ by that much of
+the full $K$. UHF checks each spin, and if either is not symmetric both run
+the general form.
+
+The integrals, the screen, the work partition and the fold order do not
+change, so the result still does not depend on the thread count. Only the
+bracketing of each element's sum differs from the scatter, by about
+$10^{-14}$ relative in $J$ and $K$ and $10^{-12}$ Ha in SCF energies
+(`crates/ferric-scf/tests/jk_pair_digest.rs`). `jk_digest = "legacy"`, or
+`FERRIC_JK_DIGEST=legacy`, restores the scatter bit for bit. The UHF and
+ROHF guess Fock always runs the scatter: on a linear open shell its
+degenerate $\pi$ pair is split only by the last bits of $J$ and $K$, which
+choose the hole orientation the SCF keeps, so a guess that followed the
+digest could start the SCF in the other orientation (up to about
+$10^{-6}$ Ha away on a DFT grid). The innermost
+loop is specialised at compile time for ket shells of 1, 3 and 5 functions
+(`ferric-scf/src/quartet_scatter.rs::pair_quartet`).
+
+Measured runs, not tests (octane, RHF, `eri = "direct"`, 2 threads,
+`FERRIC_TIMING=1`, mean of 10 builds over two runs each, interleaved, on a
+shared 4-core box):
+
+| Basis | digest thread-s per build, legacy → pair | J/K build wall, legacy → pair | SCF energy shift |
+|---|---|---|---|
+| cc-pVDZ (rotated) | 2.54 → 0.86 (2.9×) | 5.40 → 4.28 s (1.26×) | −5.7e-13 Ha |
+| def2-SVP | 2.24 → 0.85 (2.6×) | 3.44 → 2.83 s (1.22×) | −1.1e-13 Ha |
+
 ## Generally contracted bases {#direct-and-incremental-general-contraction}
 
 libint takes one segmented shell per contraction column, and stock libint
@@ -430,6 +507,7 @@ the in-core store off, on water, methane and hexane in cc-pVDZ
 | `[scf] screening = "csam"` | the Schwarz product times $\max(X_{13}X_{24}, X_{14}X_{23})^{1/2}$; an estimate, not a bound |
 | `[scf] eri = "incore"` / `"auto"` | stores the integrals once and builds $J$, $K$ by matrix products (`crates/ferric-scf/src/incore_jk.rs`) |
 | `[scf] gc_rotation` (or `FERRIC_GC_ROTATE`) = `auto` (default) / `rot1` / `off` | the internal contraction rotation of generally contracted bases (@sec:direct-and-incremental-general-contraction); `off` is the unrotated builder |
+| `[scf] jk_digest` (or `FERRIC_JK_DIGEST`) = `pair` (default) / `legacy` | how each computed block is contracted into $J$ and $K$ (@sec:direct-and-incremental-pair-digest); `legacy` is the 8-fold scatter bit for bit |
 
 ## Sources
 

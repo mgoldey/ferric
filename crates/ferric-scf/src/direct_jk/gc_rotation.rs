@@ -253,6 +253,8 @@ impl RotatedJk {
         // The rotated shells are never rotated again (a stage-1 basis still
         // has long columns sharing an exponent list).
         rbounds.gc = GcSlot::inert();
+        // The rotated walk runs the parent's J/K digest: share its record.
+        rbounds.digest = bounds.digest.clone();
         let forward = basis.ao_transpose(DerivRotMutant::None);
         Ok(Some(Self {
             basis,
@@ -357,9 +359,29 @@ impl RotatedJk {
     }
 }
 
+/// `bytes` charged to the memory pool under `label` while the guard lives,
+/// on every MPI rank or on none: a rank whose reservation failed makes the
+/// others fail too, so no rank enters a build's collectives alone.
+pub(crate) fn reserve_collective(
+    ctx: &ferric_core::parallel::ParallelContext,
+    label: &str,
+    bytes: usize,
+) -> Result<ferric_core::memory::pool::Reservation, FerricError> {
+    let local = ferric_core::memory::pool::reserve_global(label, bytes);
+    if all_ranks_agree(ctx, local.is_ok()) {
+        return local;
+    }
+    match local {
+        Err(e) => Err(e),
+        Ok(_) => Err(FerricError::General(format!(
+            "{label}: the reservation failed on another MPI rank, so no rank runs the build"
+        ))),
+    }
+}
+
 /// Whether `local` holds on every MPI rank of `ctx` (a min all-reduce;
 /// `local` itself at one rank or without the `mpi` feature).
-fn all_ranks_agree(ctx: &ferric_core::parallel::ParallelContext, local: bool) -> bool {
+pub(crate) fn all_ranks_agree(ctx: &ferric_core::parallel::ParallelContext, local: bool) -> bool {
     #[cfg(feature = "mpi")]
     if let Some(world) = ctx.world() {
         use mpi::traits::CommunicatorCollectives;
@@ -434,7 +456,7 @@ impl std::fmt::Debug for GcSlot {
 impl GcSlot {
     /// A slot for the same geometry with nothing recorded and nothing
     /// cached: builds on bounds carrying it run unrotated
-    /// ([`SchwarzBounds::unrotated`]).
+    /// ([`SchwarzBounds::for_guess`]).
     pub(crate) fn detached(&self) -> GcSlot {
         GcSlot(Arc::new(GcSlotInner {
             inert: self.0.inert,

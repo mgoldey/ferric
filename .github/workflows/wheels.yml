@@ -219,7 +219,8 @@ jobs:
       # it isn't a source input like OPENBLAS_VERSION/LIBXC_VERSION/etc, and
       # it's only ever read by this job's own cache key (both occurrences,
       # restore and save, below).
-      NATIVE_DEPS_CACHE_VERSION: v2
+      # v3: libxc built with -DDISABLE_KXC=ON (2026-11-24).
+      NATIVE_DEPS_CACHE_VERSION: v3
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -241,10 +242,10 @@ jobs:
       # The skip now lives at the WORKFLOW level instead: `cache-hit` from
       # this restore step gates the docker-build step below via `if:`.
       #
-      # native-deps-v2, not v1: deliberately a DIFFERENT namespace than the
-      # pre-#16 cache key (which was native-deps-${{ NATIVE_DEPS_CACHE_VERSION
-      # == v1 }}-...), so a stale entry from before this job existed can never
-      # get restored here by coincidence.
+      # The key starts native-deps-<NATIVE_DEPS_CACHE_VERSION>- (v3 since the
+      # no-KXC libxc; see the job env above). Each bump is a new namespace:
+      # v2 kept this job apart from the pre-#16 v1 entries, and v3 keeps the
+      # KXC-on libxc builds of v2 from ever being restored here.
       #
       # This key's NAME never collides with ci.yml's (`libint-*`, `cargo-v3-*`
       # -- disjoint prefixes), but GitHub Actions caches are budgeted PER
@@ -397,7 +398,15 @@ jobs:
             NUM_THREADS="$OPENBLAS_MAX_THREADS"
           make PREFIX="$PREFIX" install
 
-          # --- libxc (dynamic; ferric-dft/build.rs: `cargo:rustc-link-lib=xc`) ---
+          # --- libxc (static: BUILD_SHARED_LIBS defaults OFF, so the .a is
+          # linked into ferric.abi3.so; ferric-dft/build.rs: `cargo:rustc-link-lib=xc`) ---
+          # -DDISABLE_KXC=ON: ferric calls only xc_*_exc_vxc and xc_*_fxc
+          # (crates/ferric-dft/src/libxc.rs), never a third derivative, and the
+          # kxc code was ~60% of libxc's bytes: measured 2026-11-24 (gcc 13,
+          # this exact configure line, local build) it takes -17.4 MB off the
+          # deflated extension. exc/vxc/fxc are bitwise identical with and without it
+          # (all 1358 functional/spin pairs, both spins, hashed raw outputs),
+          # and so are KS-DFT and TDDFT energies.
           cd /tmp
           wget -q https://gitlab.com/libxc/libxc/-/archive/${LIBXC_VERSION}/libxc-${LIBXC_VERSION}.tar.gz
           echo "${{ env.LIBXC_SHA256 }}  libxc-${LIBXC_VERSION}.tar.gz" | sha256sum -c -
@@ -417,7 +426,7 @@ jobs:
           cmake .. -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_LIBDIR=lib \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DDISABLE_KXC=OFF
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DDISABLE_KXC=ON
           make -j"$NPROC"
           make install
 
@@ -978,7 +987,23 @@ jobs:
           # `--strip` removes .symtab/.strtab from the extension (13.4 MB raw,
           # about 3 MB of the zipped wheel); only debuggers and symbolised Rust
           # backtraces read them. release-check fails a Linux PyPI wheel that still carries .symtab.
-          args: --release --strip --out dist --features abi3 -i python3.10
+          # `--profile wheel` (Cargo.toml) is release plus fat LTO in one
+          # codegen unit, with opt-level "s" only on cold leaf crates (CLI and
+          # config parsing, export, the TOML/JSON/Python-literal parsers),
+          # never on ferric-python, whose opt-level the whole LTO pipeline
+          # takes. Measured 2026-11-25 against `--release` of the same tree,
+          # both local builds with libint2 and libxc linked dynamically so the
+          # extension is Rust plus the small C++ integral shim: ferric.abi3.so 22.81 -> 22.35 MB deflated
+          # (-0.46 MB); packed-double arithmetic instructions 16,715 -> 18,997
+          # (vectorisation kept). Single-thread CPU time (RAYON/OPENBLAS
+          # threads 1), ABBA-ordered pairs, median wheel/release ratio [range]:
+          # octane cc-pVDZ B3LYP 0.996 [0.967-1.054] (14 pairs), r2SCAN 0.975
+          # [0.953-1.001] (6), benzene B3LYP TDA 0.972 [0.925-1.054] (6),
+          # dimethyl ether CCSD 0.995 [0.959-1.041] (14), butane direct
+          # RHF 0.991 [0.962-1.016] (6): no regression beyond run-to-run
+          # noise, and every energy bitwise identical. The fat LTO link adds
+          # a few minutes of build (465 s vs 377 s locally, 2 jobs).
+          args: --profile wheel --strip --out dist --features abi3 -i python3.10
           # Runs BEFORE the build, INSIDE THE SAME SHELL SCRIPT that then
           # invokes `maturin build` (maturin-action concatenates
           # before-script-linux and the build command into one generated
@@ -1019,7 +1044,99 @@ jobs:
             export LD_LIBRARY_PATH="$LIBINT2_PREFIX/lib:$NATIVE_PREFIX/lib:$NATIVE_PREFIX/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
             export LIBRARY_PATH="$LIBINT2_PREFIX/lib:$NATIVE_PREFIX/lib:$NATIVE_PREFIX/lib64${LIBRARY_PATH:+:$LIBRARY_PATH}"
             export CPATH="$NATIVE_PREFIX/include${CPATH:+:$CPATH}"
+            # Strip the shared libraries the repair will copy into
+            # ferric.libs/ (OpenBLAS, libgfortran, libquadmath) BEFORE it
+            # copies and patches them: stripping after the repair's patchelf
+            # rewrite is the order patchelf warns against. --strip-unneeded
+            # keeps the dynamic symbol table, so linking and loading are
+            # unchanged. Both are throwaway copies (this job's native-deps
+            # download and the --rm container's /usr/lib64).
+            for lib in $(readlink -f "$NATIVE_PREFIX"/lib/libopenblas*.so* /usr/lib64/libgfortran.so.5 /usr/lib64/libquadmath.so.0 | sort -u); do
+              before=$(stat -c %s "$lib")
+              strip --strip-unneeded "$lib"
+              echo "strip --strip-unneeded $lib: $before -> $(stat -c %s "$lib") bytes"
+            done
 
+      # pypi only: rewrite every member with advzip -3 (7-Zip's deflate
+      # encoder). Not the strongest deflate there is: -4 (zopfli) is, but on
+      # a 60 MB slice of the libint2 code it saved only a further 0.2%
+      # (20.04 -> 20.00 MB) for about three times the CPU time, so -3 was
+      # chosen for cost. Only the compressed streams change: each member's
+      # bytes, CRC and the RECORD hashes stay exactly what the build produced,
+      # which the check below proves before the wheel is used. Measured
+      # locally 2026-11-24: about 6% off the libint2 code and 2% off the Rust
+      # code, roughly 5 MB of the PyPI wheel; a few minutes of runner time
+      # (estimated from local timings, not measured on a runner).
+      - name: Repack the wheel with advzip -3 (pypi)
+        if: matrix.variant == 'pypi'
+        run: |
+          set -euo pipefail
+          # Ubuntu's advancecomp (2.x on 22.04). apt mirrors flake, so retry;
+          # log the installed version so a size change can be traced to it.
+          for attempt in 1 2 3; do
+            if sudo apt-get update -q >/dev/null && sudo apt-get install -y -q advancecomp >/dev/null; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::error::apt-get install advancecomp failed 3 times"
+              exit 1
+            fi
+            sleep $((attempt * 20))
+          done
+          echo "advancecomp $(dpkg-query -W -f='${Version}' advancecomp)"
+          whl="$(ls dist/*.whl)"
+          before=$(stat -c %s "$whl")
+          members="$RUNNER_TEMP/members-before.txt"
+          python3 -I - "$whl" > "$members" << 'PY'
+          import sys, zipfile
+          for i in zipfile.ZipFile(sys.argv[1]).infolist():
+              print(i.filename, i.CRC, i.file_size, i.external_attr, i.date_time)
+          PY
+          advzip --recompress -3 "$whl"
+          python3 -I - "$whl" "$members" << 'PY'
+          import base64, csv, hashlib, io, sys, zipfile
+          whl, before = sys.argv[1], open(sys.argv[2]).read().splitlines()
+          z = zipfile.ZipFile(whl)
+          after = [f"{i.filename} {i.CRC} {i.file_size} {i.external_attr} {i.date_time}" for i in z.infolist()]
+          if after != before:
+              sys.exit("::error::advzip changed the wheel's member list, sizes, CRCs or attributes")
+          bad = z.testzip()
+          if bad:
+              sys.exit(f"::error::{bad} fails its CRC after the repack")
+          record = next(n for n in z.namelist() if n.endswith(".dist-info/RECORD"))
+          for path, digest, size in csv.reader(io.StringIO(z.read(record).decode())):
+              if not digest:
+                  continue
+              algo, want = digest.split("=", 1)
+              got = base64.urlsafe_b64encode(hashlib.new(algo, z.read(path)).digest()).rstrip(b"=").decode()
+              if got != want or int(size) != z.getinfo(path).file_size:
+                  sys.exit(f"::error::{path} no longer matches RECORD after the repack")
+          print("repacked wheel: members, CRCs and RECORD hashes unchanged")
+          PY
+          echo "repack: $before -> $(stat -c %s "$whl") bytes"
+
+      # Wheel-size note: what the PyPI wheel's bytes are (nightly 45485448068,
+      # 2026-11-24: 105,346,503 bytes, before the profile/strip/repack work).
+      # ferric.abi3.so (283.7 MB raw) is about 93% of it: the static small
+      # libint2 (the second-derivative integral code; ~47 MB deflated by
+      # subtraction), static libxc, then ~23 MB deflated of Rust, of which
+      # libint2's Yukawa/Slater Chebyshev table (TennoGmEval, 7.8 MB of
+      # doubles that do not compress) is the largest single object.
+      # OpenBLAS + libgfortran + libquadmath are ~7 MB. The bundled basis
+      # sets are 0.6 MB (crates/ferric-core/build.rs). Rust growth lands
+      # here at ~0.4 MB deflated per 1 MB raw; that is what pushed the
+      # 2026-11-22..24 nightlies over the cap (+3.2 MB raw). The levers
+      # already pulled: --strip, the small libint2 export, libxc without kxc
+      # (build-native-deps), Cargo's `wheel` profile, stripping the vendored
+      # libraries, the advzip repack. Their effects, each measured locally
+      # (2026-11-24/25), as deltas: libxc without kxc -17.4 MB; the `wheel`
+      # profile -0.46 MB; stripping the vendored libraries a few hundred KB
+      # (OpenBLAS -0.14 MB); advzip -3 about -4.5 MB. Applied to the
+      # 105.3 MB nightly that is about 83 MB. That figure is an arithmetic
+      # projection from local builds of a different configuration (dynamic
+      # libint2/libxc, gcc 13, a different libint2 build), not a
+      # CI-equivalent build; the first nightly after the merge is the real
+      # number.
       - name: Wheel size / contents sanity check
         env:
           VARIANT: ${{ matrix.variant }}
@@ -1045,12 +1162,27 @@ jobs:
           fi
           for whl in dist/*.whl; do
             echo "--- $whl ---"
-            python3 -m zipfile -l "$whl" | grep -iE '\.so|openblas|libxc|libint' || true
+            # Top 15 members by compressed size, so growth can be attributed
+            # by diffing two runs' logs.
+            python3 -I - "$whl" << 'PY'
+          import sys, zipfile
+          infos = sorted(zipfile.ZipFile(sys.argv[1]).infolist(), key=lambda i: -i.compress_size)
+          print(f"{'compressed':>12} {'raw':>12}  member")
+          for i in infos[:15]:
+              print(f"{i.compress_size:>12} {i.file_size:>12}  {i.filename}")
+          rest = infos[15:]
+          print(f"{sum(i.compress_size for i in rest):>12} {sum(i.file_size for i in rest):>12}  ({len(rest)} more)")
+          PY
             size=$(stat -c %s "$whl")
             echo "size: $size bytes ($((size * 100 / limit))% of $where limit)"
             if [ "$size" -ge "$limit" ]; then
               echo "::error::$whl is $size bytes, over $where $limit-byte limit"
               exit 1
+            fi
+            # Warn from 95% of the cap (99,614,720 bytes for PyPI) so drift
+            # shows on the nightly's summary weeks before it fails a tag.
+            if [ "$((size * 100))" -ge "$((limit * 95))" ]; then
+              echo "::warning::$whl is $size bytes, $((size * 100 / limit))% of $where $limit-byte limit (warning from 95%); see the wheel-size note at this step"
             fi
             # Which libint2 is inside: the pypi wheel links the small one
             # statically, so NO bundled libint2; the largeam wheel must carry
@@ -1416,7 +1548,7 @@ jobs:
           esac
           grep -qxF "$want" /tmp/version.txt || { echo "::error::ferric --version lacks the line: $want"; exit 1; }
 
-      - name: Smoke test -- import + RHF energy on the built wheel
+      - name: Smoke test -- import, RHF, KS-DFT and TDA on the built wheel
         run: |
           set -euo pipefail
           source /tmp/smoke-venv/bin/activate
@@ -1486,6 +1618,44 @@ jobs:
               "the wheel's libint2 lacks second derivatives"
           )
           assert len(freq.frequencies) == 3
+
+          # KS-DFT and linear response through the libxc this wheel ships
+          # (7.0.0, built with -DDISABLE_KXC=ON in build-native-deps):
+          # exc/vxc in the B3LYP and r2SCAN SCFs, fxc in the TDA kernel. A
+          # libxc missing an entry point ferric needs, or a miscompiled one,
+          # fails here rather than in a user's first DFT run. Water/cc-pVDZ
+          # at testdata/molecules/water.xyz. References: the wheel-profile
+          # extension linked against libxc 7.0.0 built with this workflow's
+          # exact configure line (2026-11-25, local gcc 13). OpenBLAS kernel
+          # changes (OPENBLAS_CORETYPE Haswell/SkylakeX/Prescott) and libxc
+          # 5.2 vs 7.0 moved them by at most 2e-13; 1e-8 is that margin with
+          # room for compiler differences, and still far below any change of
+          # functional or kernel. About 5 s.
+          water_ref = ferric.Molecule.from_xyz_string(
+              "3\nwater\n"
+              "O   0.000000   0.000000   0.117790\n"
+              "H   0.000000   0.755453  -0.471161\n"
+              "H   0.000000  -0.755453  -0.471161\n",
+              charge=0, multiplicity=1,
+          )
+          dz = ferric.BasisSet.bundled("cc-pvdz")
+          for functional, ref in (("b3lyp", -76.420410867969), ("r2scan", -76.381419872775)):
+              ks = ferric.run_ksdft(water_ref, dz, functional=functional)
+              print(f"{functional}/cc-pVDZ water energy: {ks.energy:.12f} (reference {ref:.12f})")
+              assert ks.converged, f"{functional} SCF did not converge"
+              assert abs(ks.energy - ref) < 1e-8, (
+                  f"{functional} energy {ks.energy:.12f} differs from {ref:.12f} by "
+                  f"{abs(ks.energy - ref):.1e} -- suspect the bundled libxc"
+              )
+          td = ferric.run_tddft(
+              water_ref, dz, ferric.BasisSet.bundled("cc-pvdz-ri"), functional="b3lyp", n_roots=1
+          )
+          root, ref = float(td.excitation_energies[0]), 0.279961936169
+          print(f"B3LYP TDA first root: {root:.12f} Ha (reference {ref:.12f})")
+          assert abs(root - ref) < 1e-8, (
+              f"TDA root {root:.12f} differs from {ref:.12f} by {abs(root - ref):.1e} "
+              "-- suspect the bundled libxc's fxc"
+          )
 
           print("Smoke test PASSED.")
           PYEOF
@@ -1584,10 +1754,11 @@ jobs:
   #      OIDC token PyPI's Trusted Publishers API exchanges for upload
   #      credentials, scoped to this one job run only.
   #   3. Wheel size is checked against PyPI's 100 MiB default per-file cap
-  #      in build-wheels and again here. The margin is THIN: nightly run
-  #      40364679793 measured 101,670,503 bytes (97.0% of 104,857,600), rc7
-  #      was 98,746,566, and the wheel has been growing ~1 MB/week. The size
-  #      table in release-check's step summary is the current number.
+  #      in build-wheels and again here. Nightly 45485448068 (2026-11-24)
+  #      failed at 105,346,503 bytes; the wheel had been growing ~1 MB/week.
+  #      build-wheels now warns from 95% of the cap and logs the top 15
+  #      members (see the wheel-size note there). The size table in
+  #      release-check's step summary is the current number.
   #
   # =====================================================================
   # OpenMPI-linked wheel variant. SEPARATE PACKAGE, NEVER PUBLISHED HERE.

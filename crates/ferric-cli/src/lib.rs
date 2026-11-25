@@ -629,6 +629,7 @@ fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig
     config.cosmo = cfg.cosmo.clone();
     config.polarizable = polarizable;
     config.gc_rotation = s.gc_rotation_resolved().map_err(CliError::msg)?;
+    config.jk_digest = s.jk_digest_resolved().map_err(CliError::msg)?;
     Ok(config)
 }
 
@@ -1124,6 +1125,12 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
                 "k_builder": jk_route.k_builder.map(ferric_scf::options::KBuilderKind::as_str),
                 "scf_jk": jk_route.mode,
                 "jk_aux": jk_route.j_aux,
+                // `[scf] jk_digest` as requested (`null` = unset) and the
+                // digest the direct four-centre builds run (the key, else
+                // `FERRIC_JK_DIGEST`, else `pair`; read only on a
+                // four-centre J or K route).
+                "jk_digest": rhf_config.jk_digest.map(|d| d.as_str()),
+                "jk_digest_resolved": ferric_scf::quartet_scatter::JkDigest::resolved_label(rhf_config.jk_digest),
                 "level_shift": rhf_config.level_shift,
                 // The RESOLVED budget in bytes, not the raw `[memory]` key:
                 // an omitted budget auto-detects, and the number actually used
@@ -6099,6 +6106,31 @@ fn gw_open_shell_reference_label(cfg: &Config) -> Result<&'static str, String> {
     })
 }
 
+/// The MO diagonal of the KS reference's `V_xc` for GW (default grids), its
+/// exact exchange built under the run's `[scf] gc_rotation` and `jk_digest`
+/// (the reference SCF's direct J/K settings).
+fn gw_vxc_diagonal(
+    cfg: &Config,
+    mol: &ferric_core::mol::Molecule,
+    bs: &BasisSet,
+    xc_name: &str,
+    scf: &ferric_scf::result::ScfResult,
+) -> Result<(ndarray::Array1<f64>, ndarray::Array1<f64>), CliError> {
+    ferric_gw::vxc_mo::vxc_diagonal_mo_on_grids(
+        mol,
+        bs,
+        xc_name,
+        scf,
+        &ferric_dft::grid::AtomicGridConfig::production(),
+        &ferric_dft::grid::AtomicGridConfig::default_nlc(),
+        ferric_gw::vxc_mo::JkRoute {
+            gc_rotation: cfg.scf.gc_rotation_resolved().map_err(CliError::msg)?,
+            jk_digest: cfg.scf.jk_digest_resolved().map_err(CliError::msg)?,
+        },
+    )
+    .map_err(|e| CliError::msg(format!("vxc_diagonal_mo failed: {e}")))
+}
+
 fn run_gw(
     cfg: &Config,
     sys: &PreparedSystem,
@@ -6191,9 +6223,7 @@ fn run_gw(
         let result_u = ferric_scf::semicanonical::unrestricted_reference(mol, result)?;
         let vxc_diag = match cfg.rpa.xc.as_deref() {
             Some(xc_name) => {
-                let (diag_a, diag_b) =
-                    ferric_gw::vxc_mo::vxc_diagonal_mo(mol, bs, xc_name, &result_u)
-                        .map_err(|e| CliError::msg(format!("vxc_diagonal_mo failed: {e}")))?;
+                let (diag_a, diag_b) = gw_vxc_diagonal(cfg, mol, bs, xc_name, &result_u)?;
                 Some((diag_a, diag_b))
             }
             None => None,
@@ -6314,8 +6344,7 @@ fn run_gw(
     // contract.
     let vxc_diag = match cfg.rpa.xc.as_deref() {
         Some(xc_name) => {
-            let (diag, _beta) = ferric_gw::vxc_mo::vxc_diagonal_mo(mol, bs, xc_name, result)
-                .map_err(|e| CliError::msg(format!("vxc_diagonal_mo failed: {e}")))?;
+            let (diag, _beta) = gw_vxc_diagonal(cfg, mol, bs, xc_name, result)?;
             Some(diag)
         }
         None => None,
@@ -7612,10 +7641,22 @@ fn task_reference_certificate_from(
 /// The reference route `[scf] jk` resolved to (`apply_scf_jk`) for the
 /// RI-MP2 / SCS-MP2 optimize or frequency run of `kind`: four-centre or RI-JK, the SCF its
 /// analytic gradient differentiates; any other route is an error.
+///
+/// `[scf] jk_digest` is refused here: the gradient re-solves its reference
+/// at each geometry from the route alone (`ScfJk`), so the key would be
+/// dropped silently. `FERRIC_JK_DIGEST` reaches those builds.
 fn rimp2_gradient_scf_jk(
     kind: &str,
     rhf_config: &ferric_scf::rhf::RhfConfig,
 ) -> Result<ferric_scf::scf_jk::ScfJk, String> {
+    if let Some(d) = rhf_config.jk_digest {
+        return Err(format!(
+            "[scf] jk_digest = \"{d}\" is not read by method.kind = \"{kind}\" with task = \
+             \"optimize\" or \"frequencies\": its gradient solves the reference SCF at each \
+             geometry from the J/K route alone. Remove it; FERRIC_JK_DIGEST selects the digest \
+             of those builds"
+        ));
+    }
     let route = ferric_scf::scf_jk::effective_jk(rhf_config);
     match route.mode {
         "exact" => Ok(ferric_mp2::gradient::exact_scf_jk()),
@@ -9587,6 +9628,49 @@ mod scf_config_lowering_tests {
             .scf
             .validate()
             .is_ok());
+    }
+
+    /// The RI-MP2 family's geometry gradient cannot honour `[scf]
+    /// jk_digest` (it re-solves its reference from the J/K route alone), so
+    /// the key is refused there rather than dropped.
+    #[test]
+    fn rimp2_geometry_refuses_jk_digest() {
+        use ferric_scf::quartet_scatter::JkDigest;
+        let mut c = ferric_scf::rhf::RhfConfig::default();
+        assert!(rimp2_gradient_scf_jk("rimp2", &c).is_ok());
+        for d in [JkDigest::Pair, JkDigest::Legacy] {
+            c.jk_digest = Some(d);
+            let e = rimp2_gradient_scf_jk("scs-mp2", &c).unwrap_err();
+            assert!(
+                e.contains("[scf] jk_digest") && e.contains("scs-mp2"),
+                "{e}"
+            );
+        }
+    }
+
+    /// `[scf] jk_digest` reaches `RhfConfig::jk_digest`; unset leaves it
+    /// `None`; a value outside pair | legacy (another case included) is
+    /// refused by key name, at load time and at lowering.
+    #[test]
+    fn jk_digest_key_reaches_the_config() {
+        use ferric_scf::quartet_scatter::JkDigest;
+        for (value, want) in [("pair", JkDigest::Pair), ("legacy", JkDigest::Legacy)] {
+            let cfg = parse(&header("rhf", &format!("[scf]\njk_digest = \"{value}\"\n")));
+            let c = new_lowering(&cfg, "energy", false, None).unwrap().unwrap();
+            assert_eq!(c.jk_digest, Some(want), "{value}");
+        }
+        let cfg = parse(&header("rhf", ""));
+        let c = new_lowering(&cfg, "energy", false, None).unwrap().unwrap();
+        assert_eq!(c.jk_digest, None);
+        for bad in ["Legacy", "PAIR", " pair", "8fold"] {
+            let cfg = parse(&header("rhf", &format!("[scf]\njk_digest = \"{bad}\"\n")));
+            let e = cfg.scf.validate().unwrap_err();
+            assert!(e.contains("[scf] jk_digest"), "{bad:?}: {e}");
+            let e = new_lowering(&cfg, "energy", false, None)
+                .unwrap()
+                .unwrap_err();
+            assert!(e.to_string().contains("[scf] jk_digest"), "{e}");
+        }
     }
 
     /// The task / `[gpu]` combinations that change the CLI policy: the RI-J

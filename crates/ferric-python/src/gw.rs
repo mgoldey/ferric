@@ -261,7 +261,7 @@ pub(crate) fn run_gw(
                 &scf,
                 &grids.main,
                 &grids.nlc,
-                cfg.gc_rotation,
+                ferric_gw::vxc_mo::JkRoute::of(&cfg),
             )
             .map_err(make_err)?
         };
@@ -561,7 +561,7 @@ pub(crate) fn run_u_gw(
                 &scf,
                 &grids.main,
                 &grids.nlc,
-                cfg.gc_rotation,
+                ferric_gw::vxc_mo::JkRoute::of(&cfg),
             )
             .map_err(make_err)?
         };

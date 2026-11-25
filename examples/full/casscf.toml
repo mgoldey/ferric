@@ -40,55 +40,56 @@ task = "energy"  # energy | optimize | frequencies | md
 max_iter = 200       # SCF iteration cap
 energy_conv = 1e-3   # energy-change bound, a sanity bound and not the convergence signal
 density_conv = 1e-6  # density-change threshold, the convergence signal
-# diis_size: DIIS subspace size; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# diis: pulay | adiis | ediis; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# diis_switch_thresh: error level where ADIIS/EDIIS hand over to Pulay; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# smearing_sigma: Fermi-Dirac smearing width, Hartree; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# guess: minao | sad (alias of minao) | hcore; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# guess_basis: secondary-basis guess: converge in this basis first, then project; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# guess_projection: fock | overlap; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# soscf: second-order (Newton) step in the SCF tail; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# aurora: AURORA auxiliary-curvature accelerator; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# trah_trigger: DIIS error below which the TRAH solver takes over; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# integral_thresh: integral screening threshold; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# eri_precision: libint primitive-screening precision, 0 to 1e-8 (omitted: FERRIC_ERI_PRECISION, else 1e-20); not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# jk_storage: RI tensor storage: auto | memory | disk | direct | split; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# ri_j_precision: RI-J tensor storage precision: f32 | f64 (omitted: f32 for energy, f64 for optimize/frequencies/md); not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# ri_k_precision: RI-K tensor storage precision: f64 | f32; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# k_builder: exchange builder: direct | link | cosx; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# screening: four-centre screening: schwarz | csb | csam; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# eri: four-centre J/K build: auto | direct | incore; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
+# diis_size: DIIS subspace size; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# diis: pulay | adiis | ediis; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# diis_switch_thresh: error level where ADIIS/EDIIS hand over to Pulay; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# smearing_sigma: Fermi-Dirac smearing width, Hartree; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# guess: minao | sad (alias of minao) | hcore; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# guess_basis: secondary-basis guess: converge in this basis first, then project; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# guess_projection: fock | overlap; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# soscf: second-order (Newton) step in the SCF tail; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# aurora: AURORA auxiliary-curvature accelerator; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# trah_trigger: DIIS error below which the TRAH solver takes over; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# integral_thresh: integral screening threshold; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# eri_precision: libint primitive-screening precision, 0 to 1e-8 (omitted: FERRIC_ERI_PRECISION, else 1e-20); not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# jk_storage: RI tensor storage: auto | memory | disk | direct | split; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# ri_j_precision: RI-J tensor storage precision: f32 | f64 (omitted: f32 for energy, f64 for optimize/frequencies/md); not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# ri_k_precision: RI-K tensor storage precision: f64 | f32; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# k_builder: exchange builder: direct | link | cosx; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# screening: four-centre screening: schwarz | csb | csam; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# eri: four-centre J/K build: auto | direct | incore; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
 # gc_rotation: direct J/K contraction rotation: auto | rot1 | off (unset: FERRIC_GC_ROTATE, then auto); unset by default: FERRIC_GC_ROTATE, then auto
-# relativistic: x2c1e: spin-free X2C-1e core Hamiltonian (energy only); not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# cosx_grid: COSX SCF grid; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# cosx_final_pass: COSX final pass on a larger grid; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# cosx_final_grid: COSX final-pass grid; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# cosx_grid_schedule: coarse-then-production COSX grid; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# cosx_overlap_fit: COSX overlap fitting; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# cosx_backend: COSX kernel; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# cosx_screen_thresh: COSX screen; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# cosx_half_transform: COSX half transform; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# cosx_fp64_multiplier: COSX precision-router threshold; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# df_j_aux: RI-J auxiliary basis; "" is exact J; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# df_k_aux: RI-K auxiliary basis; "" is exact K; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# jk: reference J/K route of the MP2 family: exact | rijk | rijcosx; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# jk_aux: JK-fit basis of jk = rijk/rijcosx; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# level_shift: virtual-block level shift, Hartree; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# mom_after_iter: maximum-overlap pinning after this many iterations; 0 = aufbau; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# mom_reference: previous | initial; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# verbose: one line per SCF iteration; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# df_guess: two-stage SCF: DF first, then exact; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# df_guess_aux: aux basis of the DF-guess pre-stage; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# df_increments: DF-corrected incremental Fock SCF; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# df_increments_aux: aux basis of df_increments; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# check_stability: diagnostic orbital-Hessian check of the converged SCF; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# stability_descent: follow a downhill mode at a saddle and re-converge; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# symmetry: point-group-blocked closed-shell RHF/RKS; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# irrep_nelec: electrons per irrep; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# save_reference: write the converged reference SCF to this file; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# read_reference: read the reference SCF from a save_reference file instead of solving it; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# read_reference_other_build: accept a read_reference file written by another build; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
-# ladder: [[scf.ladder]] convergence-ladder rungs; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv and gc_rotation
+# jk_digest: direct J/K quartet digest: pair | legacy (unset: FERRIC_JK_DIGEST, then pair); unset by default: FERRIC_JK_DIGEST, then pair
+# relativistic: x2c1e: spin-free X2C-1e core Hamiltonian (energy only); not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# cosx_grid: COSX SCF grid; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# cosx_final_pass: COSX final pass on a larger grid; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# cosx_final_grid: COSX final-pass grid; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# cosx_grid_schedule: coarse-then-production COSX grid; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# cosx_overlap_fit: COSX overlap fitting; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# cosx_backend: COSX kernel; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# cosx_screen_thresh: COSX screen; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# cosx_half_transform: COSX half transform; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# cosx_fp64_multiplier: COSX precision-router threshold; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# df_j_aux: RI-J auxiliary basis; "" is exact J; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# df_k_aux: RI-K auxiliary basis; "" is exact K; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# jk: reference J/K route of the MP2 family: exact | rijk | rijcosx; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# jk_aux: JK-fit basis of jk = rijk/rijcosx; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# level_shift: virtual-block level shift, Hartree; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# mom_after_iter: maximum-overlap pinning after this many iterations; 0 = aufbau; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# mom_reference: previous | initial; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# verbose: one line per SCF iteration; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# df_guess: two-stage SCF: DF first, then exact; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# df_guess_aux: aux basis of the DF-guess pre-stage; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# df_increments: DF-corrected incremental Fock SCF; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# df_increments_aux: aux basis of df_increments; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# check_stability: diagnostic orbital-Hessian check of the converged SCF; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# stability_descent: follow a downhill mode at a saddle and re-converge; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# symmetry: point-group-blocked closed-shell RHF/RKS; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# irrep_nelec: electrons per irrep; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# save_reference: write the converged reference SCF to this file; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# read_reference: read the reference SCF from a save_reference file instead of solving it; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# read_reference_other_build: accept a read_reference file written by another build; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
+# ladder: [[scf.ladder]] convergence-ladder rungs; not read here: refused: this kind runs its own reference SCF, which reads only max_iter, energy_conv, density_conv, gc_rotation and jk_digest
 
 [cas]
 n_active = 4            # active spatial orbitals (required) [minimal input]
