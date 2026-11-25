@@ -421,8 +421,12 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         // energies by up to ~1e-11 Ha (screening noise; `tests/gc_rotation.rs`).
         ("gc_rotation", format!("{gc_rotation:?}")),
         // The direct J/K digest moves energies by about 1e-12 Ha (summation
-        // order; `quartet_scatter::JkDigest`).
-        ("jk_digest", format!("{jk_digest:?}")),
+        // order; `quartet_scatter::JkDigest`). Recorded resolved (config,
+        // then `FERRIC_JK_DIGEST`, then `pair`), so an unset key and `pair`
+        // are one identity and the variable needs no entry of its own. A
+        // file written before the field existed ran the legacy digest
+        // (`ABSENT_IN_OLDER_FILES`).
+        ("jk_digest", jk_digest_value(*jk_digest)),
     ];
     let state_selecting = [
         ("use_sad_guess", format!("{use_sad_guess:?}")),
@@ -461,6 +465,25 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
     (*energy_conv, *density_conv)
 }
 
+/// The recorded `jk_digest`: the digest the run's direct builds use
+/// ([`crate::quartet_scatter::JkDigest::resolve`]: the config's, else
+/// `FERRIC_JK_DIGEST`, else `pair`), canonically spelled. A malformed
+/// variable keeps its raw text (the SCF itself refuses it).
+fn jk_digest_value(config: Option<crate::quartet_scatter::JkDigest>) -> String {
+    match crate::quartet_scatter::JkDigest::resolve(config) {
+        Ok(d) => d.as_str().to_string(),
+        Err(_) => format!(
+            "unresolved {:?}",
+            std::env::var(crate::quartet_scatter::JK_DIGEST_ENV).ok()
+        ),
+    }
+}
+
+/// Fields a file written before they existed lacks, with the value that file
+/// was computed under: the comparison reads the absent field as that value.
+/// `jk_digest`: every earlier build ran the 8-fold scatter, `legacy`.
+const ABSENT_IN_OLDER_FILES: [(&str, &str); 1] = [("jk_digest", "legacy")];
+
 /// Environment switches an SCF reads directly, with raw values compared. None has
 /// a measured effect on the answer here, so they are in on suspicion: a false
 /// refusal costs a rerun, and a false accept costs a wrong number. `1` and `on`
@@ -468,7 +491,7 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
 ///
 /// Left out on purpose: thread counts and memory budgets (unchecked by design),
 /// trace toggles, MPI band sizes, and `FERRIC_TEST_*`.
-const ENV_SWITCHES: [(&str, FieldClass); 12] = [
+const ENV_SWITCHES: [(&str, FieldClass); 11] = [
     ("FERRIC_SCF_INCREMENTAL", FieldClass::Route),
     ("FERRIC_SCF_UHF_INCREMENTAL", FieldClass::Route),
     ("FERRIC_SCF_COMBINED_JK", FieldClass::Route),
@@ -484,8 +507,8 @@ const ENV_SWITCHES: [(&str, FieldClass); 12] = [
     // The k-panel width of the mixed-precision GEMM: it moves the last digits
     // of a mixed result (`ferric_core::gpu::precision`).
     ("FERRIC_GPU_MIXED_K_PANEL", FieldClass::Route),
-    // Recorded parsed; the config field `jk_digest`, when set, wins over it.
-    ("FERRIC_JK_DIGEST", FieldClass::Route),
+    // `FERRIC_JK_DIGEST` is not here: the config field `jk_digest` is
+    // recorded resolved, the variable included.
 ];
 
 /// The recorded value of one [`ENV_SWITCHES`] entry: the raw text, except
@@ -500,11 +523,6 @@ fn env_switch_value(name: &str) -> Option<String> {
     }
     if name == crate::direct_jk::GC_ROTATE_ENV {
         if let Ok(setting) = crate::direct_jk::GcRotate::env_setting() {
-            return Some(setting.as_str().to_string());
-        }
-    }
-    if name == crate::quartet_scatter::JK_DIGEST_ENV {
-        if let Ok(setting) = crate::quartet_scatter::JkDigest::env_setting() {
             return Some(setting.as_str().to_string());
         }
     }
@@ -733,12 +751,20 @@ fn compare_fields(file: &ScfIdentity, current: &ScfIdentity) -> Vec<Mismatch> {
         .filter_map(|name| {
             let (a, b) = (file_by_name.get(name), current_by_name.get(name));
             let class = b.or(a).map(|f| f.class)?;
-            let differs = a.map(|f| &f.value) != b.map(|f| &f.value);
-            differs.then(|| Mismatch {
+            // An older file's missing field reads as the value it ran under.
+            let implied = || {
+                ABSENT_IN_OLDER_FILES
+                    .iter()
+                    .find(|(n, _)| *n == name)
+                    .map(|(_, v)| (*v).to_string())
+            };
+            let file_value = a.map(|f| f.value.clone()).or_else(implied);
+            let current_value = b.map(|f| f.value.clone());
+            (file_value != current_value).then(|| Mismatch {
                 name: name.to_string(),
                 class,
-                file: a.map(|f| f.value.clone()),
-                current: b.map(|f| f.value.clone()),
+                file: file_value,
+                current: current_value,
             })
         })
         .collect()

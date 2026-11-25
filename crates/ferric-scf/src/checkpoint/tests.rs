@@ -82,7 +82,7 @@ fn fixed_process() -> ProcessSettings {
         gpu_mode: "Off".to_string(),
         libint_version: "2.7.2".to_string(),
         cargo_features: "mpi=false gpu=false cfmm-incomplete=false".to_string(),
-        env: vec![None; 12],
+        env: vec![None; 11],
     }
 }
 
@@ -979,9 +979,6 @@ fn identity_table() -> Vec<(&'static str, FieldClass, Mutator)> {
         ("FERRIC_GPU_MIXED_K_PANEL", Route, |s| {
             s.process.env[10] = Some("1000000000".to_string());
         }),
-        ("FERRIC_JK_DIGEST", Route, |s| {
-            s.process.env[11] = Some("legacy".to_string());
-        }),
         ("use_sad_guess", StateSelecting, |s| {
             s.config.use_sad_guess = false;
         }),
@@ -1314,6 +1311,74 @@ fn every_identity_field_has_a_row() {
     // Covered by its own test: it moves with the basis in any real change.
     rows.insert("nao".to_string());
     assert_eq!(fields, rows);
+}
+
+/// `jk_digest` is recorded resolved: an unset key is the digest the run
+/// uses (`FERRIC_JK_DIGEST`, then `pair`), so unset and that value are one
+/// identity, and the canonical spelling is what is stored.
+#[test]
+fn jk_digest_identity_is_the_resolved_digest() {
+    use crate::quartet_scatter::JkDigest;
+    let identity = |d: Option<JkDigest>| {
+        let mut s = Scenario::water(Spin::Restricted);
+        s.config.jk_digest = d;
+        s.identity()
+    };
+    let field = |id: &ScfIdentity| {
+        id.fields
+            .iter()
+            .find(|f| f.name == "jk_digest")
+            .unwrap()
+            .value
+            .clone()
+    };
+    let env = JkDigest::env_setting().unwrap();
+    assert_eq!(identity(None), identity(Some(env)));
+    assert_eq!(field(&identity(Some(JkDigest::Pair))), "pair");
+    assert_eq!(field(&identity(Some(JkDigest::Legacy))), "legacy");
+}
+
+/// A checkpoint written before `jk_digest` existed (the field absent) ran
+/// the legacy digest, and compares as `legacy`: a skip into a `legacy` run
+/// is accepted, a skip into a `pair` run is refused naming `jk_digest`
+/// (`file legacy vs current pair`), and a guess into it only logs (Route).
+#[test]
+fn a_file_without_jk_digest_compares_as_legacy() {
+    use crate::quartet_scatter::JkDigest;
+    let current = |d: JkDigest| {
+        let mut s = Scenario::water(Spin::Restricted);
+        s.config.jk_digest = Some(d);
+        s.identity()
+    };
+    let mut ck = final_ck(Spin::Restricted);
+    ck.identity = current(JkDigest::Legacy);
+    ck.identity.fields.retain(|f| f.name != "jk_digest");
+    let build = clean_build();
+    let ok = ck
+        .check(&current(JkDigest::Legacy), &build, CLASSES_SKIP)
+        .unwrap();
+    assert!(ok.warnings.is_empty() && ok.logged.is_empty());
+    let err = ck
+        .check(&current(JkDigest::Pair), &build, CLASSES_SKIP)
+        .unwrap_err();
+    let CheckpointError::Identity(found) = &err else {
+        panic!("{err}");
+    };
+    assert_eq!(found.len(), 1, "{err}");
+    assert_eq!(found[0].name, "jk_digest");
+    assert_eq!(found[0].file.as_deref(), Some("legacy"));
+    assert_eq!(found[0].current.as_deref(), Some("pair"));
+    let guess = ck
+        .check(&current(JkDigest::Pair), &build, ReadMode::Guess)
+        .unwrap();
+    expect_guess(FieldClass::Route, &guess, "jk_digest");
+    // A field absent from the CURRENT side is not filled in (only an older
+    // file's gap is): a newer file against an identity without it differs.
+    let mut ck2 = final_ck(Spin::Restricted);
+    ck2.identity = current(JkDigest::Legacy);
+    let mut older_current = current(JkDigest::Legacy);
+    older_current.fields.retain(|f| f.name != "jk_digest");
+    assert!(ck2.check(&older_current, &build, CLASSES_SKIP).is_err());
 }
 
 /// The `k_builder` identity value is the spelling's `Debug` text, exactly
@@ -1867,7 +1932,8 @@ fn each_process_setting_reaches_the_identity_from_the_environment() {
             "1000000000",
             "FERRIC_GPU_MIXED_K_PANEL",
         ),
-        ("FERRIC_JK_DIGEST", "legacy", "FERRIC_JK_DIGEST"),
+        // Recorded through the resolved config field.
+        ("FERRIC_JK_DIGEST", "legacy", "jk_digest"),
     ] {
         let changed = key(&[(variable, value)]);
         let moved: Vec<&str> = changed
@@ -1908,7 +1974,9 @@ fn each_process_setting_reaches_the_identity_from_the_environment() {
         .find(|f| f.name == "FERRIC_GC_ROTATE")
         .unwrap();
     assert_eq!(gc.value, format!("{:?}", Some("none")));
-    // FERRIC_JK_DIGEST is recorded parsed too: unset and `pair` are one identity.
+    // FERRIC_JK_DIGEST is recorded through the resolved `jk_digest`: unset
+    // and `pair` are one identity, and the variable's `legacy` is the
+    // config's.
     for value in ["pair", " PAIR "] {
         assert_eq!(
             key(&[("FERRIC_JK_DIGEST", value)]).fields,
@@ -1916,6 +1984,16 @@ fn each_process_setting_reaches_the_identity_from_the_environment() {
             "FERRIC_JK_DIGEST={value:?}"
         );
     }
+    let digest = |id: &ScfIdentity| {
+        id.fields
+            .iter()
+            .find(|f| f.name == "jk_digest")
+            .unwrap()
+            .value
+            .clone()
+    };
+    assert_eq!(digest(&base), "pair");
+    assert_eq!(digest(&key(&[("FERRIC_JK_DIGEST", "legacy")])), "legacy");
     let field = |name: &str| base.fields.iter().find(|f| f.name == name).unwrap();
     assert_eq!(
         field("libint_version").value,
