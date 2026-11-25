@@ -51,6 +51,31 @@ mod prod_digest;
 #[path = "../../src/quartet_scatter.rs"]
 mod real_scatter;
 
+/// Shim for `crate::direct_jk::gc_rotation` (one rank): `quartet_scatter`'s
+/// pair digest (#717) reaches it through `crate::`.
+mod direct_jk {
+    pub mod gc_rotation {
+        use ferric_core::memory::pool::{reserve_global, Reservation};
+        use ferric_core::parallel::ParallelContext;
+        use ferric_core::FerricError;
+        pub fn all_ranks_agree(_ctx: &ParallelContext, local: bool) -> bool {
+            local
+        }
+        pub fn reserve_collective(
+            _ctx: &ParallelContext,
+            label: &str,
+            bytes: usize,
+        ) -> Result<Reservation, FerricError> {
+            reserve_global(label, bytes)
+        }
+    }
+}
+
+/// Shim for `crate::reduce`.
+mod reduce {
+    pub use ferric_scf::reduce::*;
+}
+
 const THRESH: f64 = 1e-12;
 /// Integrals held per chunk (8 B each): 1.2e8 = 0.96 GB.
 const CHUNK_DOUBLES: usize = 120_000_000;

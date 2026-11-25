@@ -28,8 +28,23 @@
 //!   quartets the production walk computes, both per group quartet and per
 //!   shell quartet (no sharing). Ends with a hybrid walk: the kernel for
 //!   (ss|ss) and (ss|sp), libint for every other survivor.
+//! * `hybrid <xyz> <basis> <dens.bin> <rot|off> [pairs]` (perf5f): the whole
+//!   walk, single thread, digested by the production bra-pair-local digest
+//!   (`[scf] jk_digest = "pair"`). `A` is the real code: `PairSpec::both` +
+//!   `sum_groups` (one group) around the real `scatter_bra_pair`, compiled in
+//!   from `src/quartet_scatter.rs`. `A'` and `B` run a copy of the pair
+//!   digest's closed-shell symmetric kernel (checked bitwise against `A` on
+//!   the production bra-pair order) on a group-first bra-pair order: `A'`
+//!   with libint for every survivor, `B` with the shared-primitive kernel
+//!   for every surviving quartet with l1+l2+l3+l4 <= 1 ((ss|ss), (ss|sp) in
+//!   any position), evaluated once per group quartet (lazily, on the first
+//!   surviving member, cached for the bra group pair's member bra pairs)
+//!   and libint for the rest. Only surviving column quartets are digested.
+//!   Timed interleaved (A A' B B A' A per pair), with the pair-data setup,
+//!   a probed stage breakdown and J/K accuracy against `A`.
 //!
-//! Run with `RAYON_NUM_THREADS` set; timings in `kernel` are single-thread.
+//! Run with `RAYON_NUM_THREADS` set; timings in `kernel` and `hybrid` are
+//! single-thread.
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -49,6 +64,36 @@ use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
 use rayon::prelude::*;
 
+// The production J/K scatter and pair digest, compiled in as is. Its few
+// `crate::` paths resolve to the shims below (serial, no MPI).
+#[allow(dead_code, unused_imports, clippy::all)]
+#[path = "../src/quartet_scatter.rs"]
+mod real_scatter;
+
+/// Shim for `crate::direct_jk::gc_rotation` (one rank).
+mod direct_jk {
+    pub mod gc_rotation {
+        use ferric_core::memory::pool::{reserve_global, Reservation};
+        use ferric_core::parallel::ParallelContext;
+        use ferric_core::FerricError;
+        pub fn all_ranks_agree(_ctx: &ParallelContext, local: bool) -> bool {
+            local
+        }
+        pub fn reserve_collective(
+            _ctx: &ParallelContext,
+            label: &str,
+            bytes: usize,
+        ) -> Result<Reservation, FerricError> {
+            reserve_global(label, bytes)
+        }
+    }
+}
+
+/// Shim for `crate::reduce`.
+mod reduce {
+    pub use ferric_scf::reduce::*;
+}
+
 const THRESH: f64 = 1e-12;
 
 fn load_mol(path: &str) -> Molecule {
@@ -62,6 +107,13 @@ fn main() {
         Some("density") => density(&a[2], &a[3], &a[4]),
         Some("profile") => profile(&a[2], &a[3], &a[4], a[5] == "rot"),
         Some("kernel") => kernel(&a[2], &a[3], &a[4], a[5] == "rot"),
+        Some("hybrid") => hybrid(
+            &a[2],
+            &a[3],
+            &a[4],
+            a[5] == "rot",
+            a.get(6).map_or(5, |s| s.parse().unwrap()),
+        ),
         _ => eprintln!("usage: density|profile|kernel ... (see the module doc)"),
     }
 }
@@ -100,6 +152,8 @@ fn read_density(path: &str, n: usize) -> Array2<f64> {
 /// shell-blocked max |D|.
 struct Setup {
     prep: PreparedBasis,
+    /// The density in the walk's basis.
+    d: Array2<f64>,
     q: Array2<f64>,
     dmax: Array2<f64>,
     pairs: Vec<(usize, usize)>,
@@ -128,19 +182,8 @@ fn setup(xyz: &str, name: &str, dens: &str, rot: bool) -> Setup {
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
     let q = bounds.q.clone();
     let nsh = prep.nshells();
-    let (dims, offs) = (prep.shell_dims().to_vec(), prep.shell_offsets().to_vec());
-    let mut dmax = Array2::<f64>::zeros((nsh, nsh));
-    for a in 0..nsh {
-        for b in 0..nsh {
-            let mut m = 0.0f64;
-            for i in 0..dims[a] {
-                for j in 0..dims[b] {
-                    m = m.max(d[(offs[a] + i, offs[b] + j)].abs());
-                }
-            }
-            dmax[(a, b)] = m;
-        }
-    }
+    // The production shell-blocked max |D| (the same table `DirectJK` screens with).
+    let dmax = real_scatter::build_d_max_shell(&prep, &d);
     let max_d = dmax.iter().cloned().fold(0.0f64, f64::max);
     let max_q = q.iter().cloned().fold(0.0f64, f64::max);
     let bra_thresh = THRESH / (max_q * max_d.max(1e-30));
@@ -217,6 +260,7 @@ fn setup(xyz: &str, name: &str, dens: &str, rot: bool) -> Setup {
         .collect();
     Setup {
         prep,
+        d,
         q,
         dmax,
         pairs,
@@ -1271,4 +1315,680 @@ fn run_class(
         t_lib / t_grp
     );
     (t_lib, t_grp)
+}
+
+// ---------------------------------------------------------------------------
+// perf5f: the hybrid walk with the production pair digest (`hybrid` mode).
+
+/// `Σ a[i] b[i]` over `N` (or, for `N = 0`, `n`) entries (copy of the pair
+/// digest's `dotp`).
+#[inline(always)]
+unsafe fn dotp<const N: usize>(a: *const f64, b: *const f64, n: usize) -> f64 {
+    let n = if N > 0 { N } else { n };
+    let mut s = 0.0;
+    for i in 0..n {
+        s += *a.add(i) * *b.add(i);
+    }
+    s
+}
+
+/// `y[i] += a x[i]` (copy of the pair digest's `axpyp`).
+#[inline(always)]
+unsafe fn axpyp<const N: usize>(y: *mut f64, a: f64, x: *const f64, n: usize) {
+    let n = if N > 0 { N } else { n };
+    for i in 0..n {
+        *y.add(i) += a * *x.add(i);
+    }
+}
+
+/// A copy of the production pair digest's closed-shell symmetric kernel
+/// (`PairJk::{begin, quartet, end}` with J, one exchange channel and
+/// `GEN = false`; `pair_quartet::<N4, true, 1, false>`), on the symmetrised
+/// density. The copy exists only because those methods are private to
+/// `quartet_scatter`; every `hybrid` run checks it bitwise against the real
+/// `PairSpec::sum_groups` + `scatter_bra_pair` on the production order.
+struct PairCopy {
+    n: usize,
+    /// `½(D + Dᵀ)` (what `PairSpec::materialize` makes for a density
+    /// symmetric to roundoff); also the Coulomb density (`Channel0`).
+    ds: Array2<f64>,
+    jh: Array2<f64>,
+    kb: Array2<f64>,
+    jb: Vec<f64>,
+    e12: Vec<f64>,
+    e34: Vec<f64>,
+    s34: Vec<f64>,
+    bn: [usize; 2],
+    bo: [usize; 2],
+    bs: [usize; 2],
+    sym12: bool,
+    quartets: usize,
+}
+
+impl PairCopy {
+    fn new(d: &Array2<f64>, max_dim: usize) -> Self {
+        let n = d.nrows();
+        let mut ds = Array2::<f64>::zeros((n, n));
+        for i in 0..n {
+            for j in 0..=i {
+                let (a, b) = (d[(i, j)], d[(j, i)]);
+                let s = a + b;
+                let v = if s.is_finite() {
+                    0.5 * s
+                } else {
+                    0.5 * a + 0.5 * b
+                };
+                ds[(i, j)] = v;
+                ds[(j, i)] = v;
+            }
+        }
+        let m = max_dim * max_dim;
+        PairCopy {
+            n,
+            ds,
+            jh: Array2::zeros((n, n)),
+            kb: Array2::zeros((n, n)),
+            jb: vec![0.0; m],
+            e12: vec![0.0; m],
+            e34: vec![0.0; m],
+            s34: vec![0.0; m],
+            bn: [0; 2],
+            bo: [0; 2],
+            bs: [0; 2],
+            sym12: false,
+            quartets: 0,
+        }
+    }
+
+    fn begin(&mut self, dims: &[usize], offs: &[usize], s1: usize, s2: usize) {
+        let (n1, n2) = (dims[s1], dims[s2]);
+        let (o1, o2) = (offs[s1], offs[s2]);
+        let sym12 = s1 != s2;
+        self.bn = [n1, n2];
+        self.bo = [o1, o2];
+        self.bs = [s1, s2];
+        self.sym12 = sym12;
+        self.jb[..n1 * n2].fill(0.0);
+        for a in 0..n1 {
+            for b in 0..n2 {
+                let mut v = self.ds[(o1 + a, o2 + b)];
+                if sym12 {
+                    v += self.ds[(o2 + b, o1 + a)];
+                }
+                self.e12[a * n2 + b] = v;
+            }
+        }
+    }
+
+    fn end(&mut self) {
+        let [n1, n2] = self.bn;
+        let [o1, o2] = self.bo;
+        let w12 = if self.sym12 { 1.0 } else { 0.5 };
+        for a in 0..n1 {
+            for b in 0..n2 {
+                self.jh[(o1 + a, o2 + b)] += w12 * self.jb[a * n2 + b];
+            }
+        }
+    }
+
+    fn quartet(&mut self, q: &[f64], dims: &[usize], offs: &[usize], s3: usize, s4: usize) {
+        self.quartets += 1;
+        let [n1, n2] = self.bn;
+        let (n3, n4) = (dims[s3], dims[s4]);
+        assert!(q.len() >= n1 * n2 * n3 * n4, "pair digest: short block");
+        // SAFETY: every index is inside its shell block of an n × n matrix,
+        // the scratch holds max_dim² entries, q holds n1·n2·n3·n4 integrals.
+        unsafe {
+            match n4 {
+                1 => self.quartet_t::<1>(q.as_ptr(), dims, offs, s3, s4),
+                3 => self.quartet_t::<3>(q.as_ptr(), dims, offs, s3, s4),
+                5 => self.quartet_t::<5>(q.as_ptr(), dims, offs, s3, s4),
+                _ => self.quartet_t::<0>(q.as_ptr(), dims, offs, s3, s4),
+            }
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn quartet_t<const N4: usize>(
+        &mut self,
+        q: *const f64,
+        dims: &[usize],
+        offs: &[usize],
+        s3: usize,
+        s4: usize,
+    ) {
+        let [n1, n2] = self.bn;
+        let (n3, n4) = (dims[s3], dims[s4]);
+        let [o1, o2] = self.bo;
+        let (o3, o4) = (offs[s3], offs[s4]);
+        let sym12 = self.sym12;
+        let sym34 = s3 != s4;
+        let sym1234 = (self.bs[0], self.bs[1]) != (s3, s4);
+        let n4 = if N4 > 0 { N4 } else { n4 };
+        let n = self.n;
+        let n34 = n3 * n4;
+        let jd = self.ds.as_ptr();
+        let dk = jd;
+        let jh = self.jh.as_mut_ptr();
+        let kb = self.kb.as_mut_ptr();
+        let e34 = self.e34.as_mut_ptr();
+        let s34 = self.s34.as_mut_ptr();
+        let e12p = self.e12.as_ptr();
+        let jbp = self.jb.as_mut_ptr();
+        for c in 0..n3 {
+            for dd in 0..n4 {
+                let mut v = *jd.add((o3 + c) * n + o4 + dd);
+                if sym34 {
+                    v += *jd.add((o4 + dd) * n + o3 + c);
+                }
+                *e34.add(c * n4 + dd) = v;
+            }
+        }
+        if sym1234 {
+            for i in 0..n34 {
+                *s34.add(i) = 0.0;
+            }
+        }
+        let w = if sym1234 { 1.0 } else { 0.5 };
+        for a in 0..n1 {
+            let mu = o1 + a;
+            for b in 0..n2 {
+                let nu = o2 + b;
+                let ab = a * n2 + b;
+                let e12 = *e12p.add(ab);
+                let mut jacc = 0.0;
+                for c in 0..n3 {
+                    let la = o3 + c;
+                    let r = q.add((ab * n3 + c) * n4);
+                    jacc += dotp::<N4>(r, e34.add(c * n4), n4);
+                    if sym1234 {
+                        axpyp::<N4>(s34.add(c * n4), e12, r, n4);
+                    }
+                    let (dmu, dnu) = (dk.add(mu * n), dk.add(nu * n));
+                    let (kmu, knu) = (kb.add(mu * n), kb.add(nu * n));
+                    *kmu.add(la) += w * dotp::<N4>(r, dnu.add(o4), n4);
+                    if sym12 {
+                        *knu.add(la) += w * dotp::<N4>(r, dmu.add(o4), n4);
+                    }
+                    if sym34 {
+                        axpyp::<N4>(kmu.add(o4), w * *dnu.add(la), r, n4);
+                        if sym12 {
+                            axpyp::<N4>(knu.add(o4), w * *dmu.add(la), r, n4);
+                        }
+                    }
+                }
+                *jbp.add(ab) += jacc;
+            }
+        }
+        if sym1234 {
+            let w34 = if sym34 { 1.0 } else { 0.5 };
+            for c in 0..n3 {
+                for dd in 0..n4 {
+                    *jh.add((o3 + c) * n + o4 + dd) += w34 * *s34.add(c * n4 + dd);
+                }
+            }
+        }
+    }
+}
+
+/// Counters and (probed) stage times of one copy walk.
+#[derive(Default, Debug, Clone)]
+struct HybStats {
+    survivors: u64,
+    libint_calls: u64,
+    libint_digested: u64,
+    kernel_quartets: u64,
+    kernel_group_evals: u64,
+    kernel_column_quartets: u64,
+    t_lib: f64,
+    t_ker: f64,
+    t_dig: f64,
+}
+
+/// Everything a copy walk needs besides the engine.
+struct Hyb<'a> {
+    st: &'a Setup,
+    slot: &'a [(usize, usize)],
+    boys: &'a Boys,
+    ng: usize,
+    /// Pair data index per ordered group pair (`u32::MAX`: none, l_a+l_b > 1).
+    pidx: Vec<u32>,
+    pairs: Vec<Pair>,
+    pure_p: bool,
+    max_dim: usize,
+}
+
+/// Bra pairs of the walk in a group-first order: production order, except
+/// that the first bra pair with l1 + l2 <= 1 of an ordered bra group pair
+/// pulls in all the other members of that group pair right after it.
+fn group_first_order(st: &Setup) -> Vec<(usize, usize)> {
+    let gid = |s: usize| st.info[s].3;
+    let l = |s: usize| st.info[s].0;
+    let mut members: HashMap<(usize, usize), Vec<(usize, usize)>> = HashMap::new();
+    for &(s1, s2) in &st.pairs {
+        if l(s1) + l(s2) <= 1 {
+            members
+                .entry((gid(s1), gid(s2)))
+                .or_default()
+                .push((s1, s2));
+        }
+    }
+    let mut out = Vec::with_capacity(st.pairs.len());
+    for &(s1, s2) in &st.pairs {
+        if l(s1) + l(s2) <= 1 {
+            if let Some(m) = members.remove(&(gid(s1), gid(s2))) {
+                out.extend(m);
+            }
+        } else {
+            out.push((s1, s2));
+        }
+    }
+    assert_eq!(out.len(), st.pairs.len());
+    out
+}
+
+/// The real production pair-digest walk: `PairSpec::both` +
+/// `sum_groups` (one group) around the real `scatter_bra_pair`.
+fn walk_real(
+    st: &Setup,
+    eng: &std::sync::Mutex<Engine>,
+    order: &[(usize, usize)],
+) -> (Array2<f64>, Array2<f64>) {
+    let prep = &st.prep;
+    let n = prep.nbasis();
+    let (dims, offs) = (prep.shell_dims(), prep.shell_offsets());
+    let screen = real_scatter::DensityScreen::SixPair(&st.dmax);
+    let ctx = ParallelContext::default();
+    let mut spec = real_scatter::PairSpec::both(n, dims, &st.d, real_scatter::SymScale::Own);
+    assert_eq!(spec.kernel_label(), "symmetric");
+    let out = spec
+        .sum_groups(&ctx, 1, 1 << 30, None, |_, mode| {
+            let mut e = eng.lock().unwrap();
+            for &(s1, s2) in order {
+                real_scatter::scatter_bra_pair(
+                    &mut e, prep, dims, offs, &st.q, None, None, &screen, THRESH, &st.d, s1, s2,
+                    mode, false,
+                );
+            }
+        })
+        .unwrap();
+    (out.j.unwrap(), out.k.into_iter().next().unwrap())
+}
+
+/// The copy walk: `KERNEL = false` is `A'` (libint everywhere), `true` is
+/// `B` (the shared-primitive kernel for every surviving quartet with
+/// l1+l2+l3+l4 <= 1). `PROBE` adds stage clocks.
+fn walk_copy<const KERNEL: bool, const PROBE: bool>(
+    h: &Hyb,
+    eng: &mut Engine,
+    order: &[(usize, usize)],
+    stats: &mut HybStats,
+) -> (Array2<f64>, Array2<f64>) {
+    let st = h.st;
+    let prep = &st.prep;
+    let n = prep.nbasis();
+    let (dims, offs) = (prep.shell_dims(), prep.shell_offsets());
+    let screen = real_scatter::DensityScreen::SixPair(&st.dmax);
+    let mut pc = PairCopy::new(&st.d, h.max_dim);
+    let ng = h.ng;
+    let gid = |s: usize| st.info[s].3;
+    let lv = |s: usize| st.info[s].0 as usize;
+    // Kernel cache: one output block per ordered ket group pair, valid for
+    // the current bra group pair (generation stamp).
+    let mut stamp: Vec<u32> = if KERNEL { vec![0; ng * ng] } else { Vec::new() };
+    let mut cache: Vec<Vec<f64>> = if KERNEL {
+        vec![Vec::new(); ng * ng]
+    } else {
+        Vec::new()
+    };
+    let mut gen = 0u32;
+    let mut cur_bra = usize::MAX;
+    let mut tmp = vec![0.0; 1 << 12];
+    let mut prim = Vec::new();
+    let mut qbuf = [0.0f64; 3];
+    let pmap = |f: usize| if h.pure_p { [1, 2, 0][f] } else { f };
+    for &(s1, s2) in order {
+        let l12 = lv(s1) + lv(s2);
+        let kbra = KERNEL && l12 <= 1;
+        let bkey = gid(s1) * ng + gid(s2);
+        if kbra && bkey != cur_bra {
+            cur_bra = bkey;
+            gen += 1;
+        }
+        let t = PROBE.then(Instant::now);
+        pc.begin(dims, offs, s1, s2);
+        if let Some(t) = t {
+            stats.t_dig += t.elapsed().as_secs_f64();
+        }
+        let b12 = st.q[(s1, s2)];
+        let (c1, c2) = (h.slot[s1].1, h.slot[s2].1);
+        for s3 in 0..=s1 {
+            let s4max = if s3 == s1 { s2 } else { s3 };
+            for s4 in 0..=s4max {
+                let b34 = st.q[(s3, s4)];
+                let dmax = screen.dmax(s1, s2, s3, s4);
+                let bound = b12 * b34;
+                if bound * dmax < THRESH {
+                    continue;
+                }
+                stats.survivors += 1;
+                if kbra && l12 + lv(s3) + lv(s4) <= 1 {
+                    let key = gid(s3) * ng + gid(s4);
+                    let pb = &h.pairs[h.pidx[bkey] as usize];
+                    let pk = &h.pairs[h.pidx[key] as usize];
+                    let out = &mut cache[key];
+                    if stamp[key] != gen {
+                        stamp[key] = gen;
+                        let t = PROBE.then(Instant::now);
+                        let len = pb.ma * pb.mb * pk.ma * pk.mb * pb.hrr.len() * pk.hrr.len();
+                        if out.len() < len {
+                            out.resize(len, 0.0);
+                        }
+                        if l12 == 0 && lv(s3) + lv(s4) == 0 {
+                            kernel_ssss(h.boys, pb, pk, out, &mut tmp);
+                        } else {
+                            kernel_l1(h.boys, pb, pk, out, &mut prim);
+                        }
+                        stats.kernel_group_evals += 1;
+                        stats.kernel_column_quartets += (pb.ma * pb.mb * pk.ma * pk.mb) as u64;
+                        if let Some(t) = t {
+                            stats.t_ker += t.elapsed().as_secs_f64();
+                        }
+                    }
+                    // Gather the column quartet in libint's layout.
+                    let (c3, c4) = (h.slot[s3].1, h.slot[s4].1);
+                    let ab = c1 * pb.mb + c2;
+                    let cd = c3 * pk.mb + c4;
+                    let (nfab, nfcd) = (pb.hrr.len(), pk.hrr.len());
+                    let mcd = pk.ma * pk.mb;
+                    let d = [dims[s1], dims[s2], dims[s3], dims[s4]];
+                    let mut li = 0;
+                    for i0 in 0..d[0] {
+                        for i1 in 0..d[1] {
+                            for i2 in 0..d[2] {
+                                for i3 in 0..d[3] {
+                                    let fa = if d[0] == 3 { pmap(i0) } else { 0 };
+                                    let fb = if d[1] == 3 { pmap(i1) } else { 0 };
+                                    let fc = if d[2] == 3 { pmap(i2) } else { 0 };
+                                    let fd = if d[3] == 3 { pmap(i3) } else { 0 };
+                                    let fab = fa * d[1] + fb;
+                                    let fcd = fc * d[3] + fd;
+                                    qbuf[li] =
+                                        out[(ab * nfab + fab) * (mcd * nfcd) + cd * nfcd + fcd];
+                                    li += 1;
+                                }
+                            }
+                        }
+                    }
+                    stats.kernel_quartets += 1;
+                    let t = PROBE.then(Instant::now);
+                    pc.quartet(&qbuf[..li], dims, offs, s3, s4);
+                    if let Some(t) = t {
+                        stats.t_dig += t.elapsed().as_secs_f64();
+                    }
+                } else {
+                    let t = PROBE.then(Instant::now);
+                    let block = eng.compute_quartet(prep, s1, s2, s3, s4);
+                    let t2 = PROBE.then(Instant::now);
+                    if let (Some(a), Some(b)) = (t, t2) {
+                        stats.t_lib += (b - a).as_secs_f64();
+                    }
+                    stats.libint_calls += 1;
+                    if let Some(q) = block {
+                        stats.libint_digested += 1;
+                        pc.quartet(q, dims, offs, s3, s4);
+                        if let Some(t) = t2 {
+                            stats.t_dig += t.elapsed().as_secs_f64();
+                        }
+                    }
+                }
+            }
+        }
+        let t = PROBE.then(Instant::now);
+        pc.end();
+        if let Some(t) = t {
+            stats.t_dig += t.elapsed().as_secs_f64();
+        }
+    }
+    // The real finish (J = Jh + Jhᵀ, K = Kb + Kbᵀ).
+    let spec = real_scatter::PairSpec::both(n, dims, &st.d, real_scatter::SymScale::Own);
+    let (j, mut k) = spec.finish(vec![pc.jh, pc.kb]);
+    (j.unwrap(), k.remove(0))
+}
+
+fn bitwise_eq(a: &Array2<f64>, b: &Array2<f64>) -> bool {
+    // `==` (±0 equal): the real path adds the group partial onto zeros.
+    a.iter().zip(b.iter()).all(|(x, y)| x == y)
+}
+
+fn maxabs(a: &Array2<f64>) -> f64 {
+    a.iter().fold(0.0f64, |m, x| m.max(x.abs()))
+}
+
+fn median(v: &[f64]) -> f64 {
+    if v.is_empty() {
+        return f64::NAN;
+    }
+    let mut v = v.to_vec();
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let n = v.len();
+    if n % 2 == 1 {
+        v[n / 2]
+    } else {
+        0.5 * (v[n / 2 - 1] + v[n / 2])
+    }
+}
+
+fn loadavg() -> String {
+    std::fs::read_to_string("/proc/loadavg")
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+fn hybrid(xyz: &str, name: &str, dens: &str, rot: bool, npairs: usize) {
+    let st = setup(xyz, name, dens, rot);
+    let boys = Boys::new();
+    let (groups, slot) = build_groups(&st);
+    let ng = groups.len();
+    let prep = &st.prep;
+    let max_dim = prep.shell_dims().iter().copied().max().unwrap();
+    // Pair data for every ordered group pair with l_a + l_b <= 1, once per
+    // geometry.
+    let tp = Instant::now();
+    let mut pidx = vec![u32::MAX; ng * ng];
+    let mut pairs = Vec::new();
+    for x in 0..ng {
+        for y in 0..ng {
+            if groups[x].l + groups[y].l <= 1 {
+                pidx[x * ng + y] = pairs.len() as u32;
+                pairs.push(make_pair(&groups[x], &groups[y], x == y));
+            }
+        }
+    }
+    let pair_s = tp.elapsed().as_secs_f64();
+    let pure_p = prep.located_shells().iter().any(|s| s.l == 1 && s.pure);
+    let h = Hyb {
+        st: &st,
+        slot: &slot,
+        boys: &boys,
+        ng,
+        pidx,
+        pairs,
+        pure_p,
+        max_dim,
+    };
+    println!(
+        "basis {name} rot {rot}: nbf {} shells {} groups {ng} bra pairs {}; pair data for {} \
+         group pairs (l_a+l_b <= 1) in {pair_s:.4} s (once per geometry)",
+        prep.nbasis(),
+        prep.nshells(),
+        st.pairs.len(),
+        h.pairs.len()
+    );
+    let eng =
+        std::sync::Mutex::new(Engine::new_2e(Operator::coulomb(), prep, ERI_PRECISION).unwrap());
+    let gorder = group_first_order(&st);
+
+    // 1. The copy against the real pair digest, production order: bitwise.
+    let t0 = Instant::now();
+    let (ja, ka) = walk_real(&st, &eng, &st.pairs);
+    let ta0 = t0.elapsed().as_secs_f64();
+    let mut s0 = HybStats::default();
+    let (jc, kc) = walk_copy::<false, false>(&h, &mut eng.lock().unwrap(), &st.pairs, &mut s0);
+    println!(
+        "copy (libint, production order) vs real PairSpec::sum_groups + scatter_bra_pair: \
+         J bitwise {} K bitwise {} ({} survivors, {} digested; real walk {ta0:.2} s)",
+        bitwise_eq(&ja, &jc),
+        bitwise_eq(&ka, &kc),
+        s0.survivors,
+        s0.libint_digested
+    );
+
+    // 2. Probed stage breakdown (one run each; clocks add overhead).
+    let mut sp_a = HybStats::default();
+    let t0 = Instant::now();
+    let (ja2, ka2) = walk_copy::<false, true>(&h, &mut eng.lock().unwrap(), &gorder, &mut sp_a);
+    let tpa = t0.elapsed().as_secs_f64();
+    let mut sp_b = HybStats::default();
+    let t0 = Instant::now();
+    let (jb, kb) = walk_copy::<true, true>(&h, &mut eng.lock().unwrap(), &gorder, &mut sp_b);
+    let tpb = t0.elapsed().as_secs_f64();
+    for (lab, s, t) in [("A' probed", &sp_a, tpa), ("B  probed", &sp_b, tpb)] {
+        println!(
+            "[{lab}] walk {t:.3} s = libint {:.3} + kernel {:.3} + digest {:.3} + rest \
+             (loop/screen/lookup/gather) {:.3} | survivors {} libint calls {} (digested {}) \
+             kernel quartets {} group evals {} column quartets computed {}",
+            s.t_lib,
+            s.t_ker,
+            s.t_dig,
+            t - s.t_lib - s.t_ker - s.t_dig,
+            s.survivors,
+            s.libint_calls,
+            s.libint_digested,
+            s.kernel_quartets,
+            s.kernel_group_evals,
+            s.kernel_column_quartets
+        );
+    }
+
+    // 3. Accuracy: B and A' (group-first order) against A.
+    let ea = 0.5
+        * st.d
+            .iter()
+            .zip(ja.iter().zip(ka.iter()))
+            .map(|(d, (j, k))| d * (j - 0.5 * k))
+            .sum::<f64>();
+    for (lab, j, k) in [("A' (order only)", &ja2, &ka2), ("B (kernel)", &jb, &kb)] {
+        let dj = j - &ja;
+        let dk = k - &ka;
+        let de = 0.5
+            * st.d
+                .iter()
+                .zip(dj.iter().zip(dk.iter()))
+                .map(|(d, (j, k))| d * (j - 0.5 * k))
+                .sum::<f64>();
+        println!(
+            "[accuracy {lab} vs A] max|J| {:.3} max|dJ| {:.2e} (rel {:.2e}) max|K| {:.3} \
+             max|dK| {:.2e} (rel {:.2e}) | dE2 (1st order) {de:.2e} Ha of E2 {ea:.6}",
+            maxabs(&ja),
+            maxabs(&dj),
+            maxabs(&dj) / maxabs(&ja),
+            maxabs(&ka),
+            maxabs(&dk),
+            maxabs(&dk) / maxabs(&ka)
+        );
+    }
+
+    // 4. Timing, single thread, interleaved A A' B B A' A per pair.
+    println!(
+        "timing: {npairs} pairs of (A A' B B A' A), load {}",
+        loadavg()
+    );
+    let (mut ta, mut tc, mut tb) = (Vec::new(), Vec::new(), Vec::new());
+    let mut ratio_ab = Vec::new();
+    let mut ratio_cb = Vec::new();
+    for rep in 0..npairs {
+        let (mut pa, mut pcc, mut pb) = (0.0, 0.0, 0.0);
+        for v in [0u8, 1, 2, 2, 1, 0] {
+            let t0 = Instant::now();
+            match v {
+                0 => {
+                    std::hint::black_box(walk_real(&st, &eng, &st.pairs));
+                }
+                1 => {
+                    let mut s = HybStats::default();
+                    std::hint::black_box(walk_copy::<false, false>(
+                        &h,
+                        &mut eng.lock().unwrap(),
+                        &gorder,
+                        &mut s,
+                    ));
+                }
+                _ => {
+                    let mut s = HybStats::default();
+                    std::hint::black_box(walk_copy::<true, false>(
+                        &h,
+                        &mut eng.lock().unwrap(),
+                        &gorder,
+                        &mut s,
+                    ));
+                }
+            }
+            let t = t0.elapsed().as_secs_f64();
+            match v {
+                0 => {
+                    ta.push(t);
+                    pa += t;
+                }
+                1 => {
+                    tc.push(t);
+                    pcc += t;
+                }
+                _ => {
+                    tb.push(t);
+                    pb += t;
+                }
+            }
+        }
+        ratio_ab.push(pa / pb);
+        ratio_cb.push(pcc / pb);
+        println!(
+            "  pair {rep}: A {:.3} {:.3} | A' {:.3} {:.3} | B {:.3} {:.3} | A/B {:.3} A'/B {:.3} | load {}",
+            ta[2 * rep],
+            ta[2 * rep + 1],
+            tc[2 * rep],
+            tc[2 * rep + 1],
+            tb[2 * rep],
+            tb[2 * rep + 1],
+            pa / pb,
+            pcc / pb,
+            loadavg()
+        );
+    }
+    let mm = |v: &[f64]| {
+        (
+            median(v),
+            v.iter().cloned().fold(f64::INFINITY, f64::min),
+            v.iter().cloned().fold(0.0f64, f64::max),
+        )
+    };
+    for (lab, v) in [
+        ("A  (real, prod order)", &ta),
+        ("A' (copy, group-first)", &tc),
+        ("B  (kernel)", &tb),
+    ] {
+        let (m, lo, hi) = mm(v);
+        println!("[{lab}] walk s: median {m:.3} min {lo:.3} max {hi:.3}");
+    }
+    let (m, lo, hi) = mm(&ratio_ab);
+    println!("[A/B per pair] median {m:.3} min {lo:.3} max {hi:.3}");
+    let (m, lo, hi) = mm(&ratio_cb);
+    println!("[A'/B per pair] median {m:.3} min {lo:.3} max {hi:.3}");
+    println!(
+        "saved per walk (median A - median B): {:.3} s; pair setup {pair_s:.4} s once per \
+         geometry; load {}",
+        median(&ta) - median(&tb),
+        loadavg()
+    );
 }
