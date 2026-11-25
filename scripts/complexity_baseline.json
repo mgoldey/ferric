@@ -25353,7 +25353,7 @@
   },
   "crates/ferric-integrals/src/engine_pool.rs::impl:EnginePool#1::new": {
     "cc": 3.0,
-    "mi": 106.660125612044
+    "mi": 100.82905877600354
   },
   "crates/ferric-integrals/src/engine_pool.rs::impl:EnginePool#1::with": {
     "cc": 1.0,
@@ -66180,8 +66180,8 @@
     "mi": 67.56649033254507
   },
   "crates/ferric-scf/src/gradient.rs::twoelectron_gradient": {
-    "cc": 3.0,
-    "mi": 94.53494410740372
+    "cc": 5.0,
+    "mi": 88.98520224401231
   },
   "crates/ferric-scf/src/gradient.rs::twoelectron_gradient::<anonymous>": {
     "cc": 1.0,
@@ -66192,8 +66192,8 @@
     "mi": 130.8981283451008
   },
   "crates/ferric-scf/src/gradient.rs::twoelectron_gradient_bilinear": {
-    "cc": 4.0,
-    "mi": 88.1797437344021
+    "cc": 6.0,
+    "mi": 79.69080903702073
   },
   "crates/ferric-scf/src/gradient.rs::twoelectron_gradient_bilinear::<anonymous>": {
     "cc": 1.0,
@@ -66208,8 +66208,8 @@
     "mi": 118.93736531141951
   },
   "crates/ferric-scf/src/gradient.rs::twoelectron_gradient_uhf": {
-    "cc": 3.0,
-    "mi": 96.81922590006886
+    "cc": 5.0,
+    "mi": 84.62695964713052
   },
   "crates/ferric-scf/src/gradient.rs::twoelectron_gradient_uhf::<anonymous>": {
     "cc": 1.0,
@@ -66220,8 +66220,8 @@
     "mi": 129.59523696173764
   },
   "crates/ferric-scf/src/gradient.rs::twoelectron_j_gradient": {
-    "cc": 3.0,
-    "mi": 100.2438838317124
+    "cc": 5.0,
+    "mi": 93.67623344399377
   },
   "crates/ferric-scf/src/gradient.rs::twoelectron_j_gradient::<anonymous>": {
     "cc": 1.0,
@@ -66232,8 +66232,8 @@
     "mi": 129.59523696173764
   },
   "crates/ferric-scf/src/gradient.rs::twoelectron_j_gradient_with_response": {
-    "cc": 4.0,
-    "mi": 91.97421270166953
+    "cc": 6.0,
+    "mi": 82.25599075514418
   },
   "crates/ferric-scf/src/gradient.rs::twoelectron_j_gradient_with_response::<anonymous>": {
     "cc": 1.0,
@@ -70308,8 +70308,8 @@
     "mi": 160.0060069647112
   },
   "crates/ferric-scf/src/ks_gradient.rs::twoelectron_gradient_scaled_k": {
-    "cc": 3.0,
-    "mi": 97.4110589886341
+    "cc": 5.0,
+    "mi": 91.48416405852535
   },
   "crates/ferric-scf/src/ks_gradient.rs::twoelectron_gradient_scaled_k::<anonymous>": {
     "cc": 1.0,
@@ -70320,8 +70320,8 @@
     "mi": 126.3279828915982
   },
   "crates/ferric-scf/src/ks_gradient.rs::twoelectron_gradient_uhf_scaled_k": {
-    "cc": 3.0,
-    "mi": 90.48003183944863
+    "cc": 5.0,
+    "mi": 80.0099100096047
   },
   "crates/ferric-scf/src/ks_gradient.rs::twoelectron_gradient_uhf_scaled_k::<anonymous>": {
     "cc": 1.0,
@@ -70332,8 +70332,8 @@
     "mi": 113.30798582781063
   },
   "crates/ferric-scf/src/ks_gradient.rs::twoelectron_k_gradient": {
-    "cc": 3.0,
-    "mi": 98.27053822763952
+    "cc": 5.0,
+    "mi": 92.10268361895615
   },
   "crates/ferric-scf/src/ks_gradient.rs::twoelectron_k_gradient::<anonymous>": {
     "cc": 1.0,
@@ -70344,8 +70344,8 @@
     "mi": 128.69295702099862
   },
   "crates/ferric-scf/src/ks_gradient.rs::twoelectron_k_gradient_uhf": {
-    "cc": 3.0,
-    "mi": 94.0850962515812
+    "cc": 5.0,
+    "mi": 83.02003016070276
   },
   "crates/ferric-scf/src/ks_gradient.rs::twoelectron_k_gradient_uhf::<anonymous>": {
     "cc": 1.0,
@@ -73100,8 +73100,8 @@
     "mi": 157.8484854211024
   },
   "crates/ferric-scf/src/rhf.rs::build_jk": {
-    "cc": 2.0,
-    "mi": 86.41178777885236
+    "cc": 7.0,
+    "mi": 74.51148229256832
   },
   "crates/ferric-scf/src/rhf.rs::build_jk_bit_identical_across_thread_counts": {
     "cc": 7.0,
@@ -73116,8 +73116,8 @@
     "mi": 109.77170497207618
   },
   "crates/ferric-scf/src/rhf.rs::build_jk_with_pool": {
-    "cc": 9.0,
-    "mi": 49.77398142776207
+    "cc": 16.0,
+    "mi": 45.00414396097497
   },
   "crates/ferric-scf/src/rhf.rs::build_jk_with_pool::<anonymous>": {
     "cc": 6.0,
@@ -73136,8 +73136,8 @@
     "mi": 153.362447374354
   },
   "crates/ferric-scf/src/rhf.rs::build_multi_jk_with_pool_homogeneous": {
-    "cc": 17.0,
-    "mi": 46.8909609796989
+    "cc": 30.0,
+    "mi": 36.403448749587284
   },
   "crates/ferric-scf/src/rhf.rs::build_multi_jk_with_pool_homogeneous::<anonymous>": {
     "cc": 5.0,
@@ -73168,8 +73168,8 @@
     "mi": 153.362447374354
   },
   "crates/ferric-scf/src/rhf.rs::build_spin_jk_with_pool_homogeneous": {
-    "cc": 19.0,
-    "mi": 49.68168552935171
+    "cc": 30.0,
+    "mi": 42.29506675356075
   },
   "crates/ferric-scf/src/rhf.rs::build_spin_jk_with_pool_homogeneous::<anonymous>": {
     "cc": 1.0,
@@ -78392,8 +78392,8 @@
     "mi": 72.98215522144659
   },
   "crates/ferric-scf/src/zvector_ks.rs::impl:ResponseFock<'a>::new": {
-    "cc": 11.0,
-    "mi": 65.35647636682353
+    "cc": 14.0,
+    "mi": 60.16014228000057
   },
   "crates/ferric-scf/src/zvector_ks.rs::impl:ResponseFock<'a>::new::<anonymous>": {
     "cc": 1.0,
