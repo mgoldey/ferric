@@ -480,7 +480,7 @@ pub(crate) fn local_correlation_operator(
 /// place of the solve (`crate::reference_file`; shared with `run_ccsd` and
 /// `run_ccsd_t`).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, eri3_pass=None, gate_cal=None, virt_schwarz_kappa=None, pair_skip=None, fock_screen=None, att_operator=None, omega=None, att_r0=None, att_omega=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, virtual_space=None, virtual_tau=None, virtual_tau_loose=None, virtual_solve_radius=None, virtual_boys_tau=None, with_gradient=false, scf_eri=None, lambda_boys=None, save_reference=None, read_reference=None, read_reference_other_build=false))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None, fock_screen=None, att_operator=None, omega=None, att_r0=None, att_omega=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, virtual_space=None, virtual_tau=None, virtual_tau_loose=None, virtual_solve_radius=None, virtual_boys_tau=None, with_gradient=false, scf_eri=None, lambda_boys=None, save_reference=None, read_reference=None, read_reference_other_build=false, eri3_pass=None, pair_skip=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_rimp2(
     py: Python<'_>,
@@ -500,10 +500,8 @@ pub(crate) fn run_rimp2(
     ao_tail: Option<f64>,
     schwarz_skip: Option<f64>,
     batch_merge: Option<usize>,
-    eri3_pass: Option<String>,
     gate_cal: Option<f64>,
     virt_schwarz_kappa: Option<f64>,
-    pair_skip: Option<String>,
     fock_screen: Option<bool>,
     att_operator: Option<String>,
     omega: Option<f64>,
@@ -526,6 +524,8 @@ pub(crate) fn run_rimp2(
     save_reference: Option<String>,
     read_reference: Option<String>,
     read_reference_other_build: bool,
+    eri3_pass: Option<String>,
+    pair_skip: Option<String>,
 ) -> PyResult<PyRiMp2Result> {
     let reference_file = ReferenceFile::new(
         "run_rimp2",

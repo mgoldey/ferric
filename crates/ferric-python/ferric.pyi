@@ -5540,10 +5540,8 @@ def run_rimp2(
     ao_tail: float | None = None,
     schwarz_skip: float | None = None,
     batch_merge: int | None = None,
-    eri3_pass: str | None = None,
     gate_cal: float | None = None,
     virt_schwarz_kappa: float | None = None,
-    pair_skip: str | None = None,
     fock_screen: bool | None = None,
     att_operator: str | None = None,
     omega: float | None = None,
@@ -5566,6 +5564,8 @@ def run_rimp2(
     save_reference: str | None = None,
     read_reference: str | None = None,
     read_reference_other_build: bool = False,
+    eri3_pass: str | None = None,
+    pair_skip: str | None = None,
 ) -> RiMp2Result:
     """Resolution-of-identity (density-fitted) MP2. Exact by default.
     with_gradient=True adds the analytic gradient of total_energy
