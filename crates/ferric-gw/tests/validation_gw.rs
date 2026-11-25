@@ -217,7 +217,7 @@ use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_dft::grid::AtomicGridConfig;
-use ferric_gw::vxc_mo::vxc_diagonal_mo_on_grids;
+use ferric_gw::vxc_mo::{vxc_diagonal_mo_on_grids, JkRoute};
 use ferric_gw::{run_gw, run_u_gw, GwConfig, GwMethod, GwResult, UGwResult};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
@@ -804,8 +804,7 @@ fn vxc_diagonal_mo(
         scf,
         &AtomicGridConfig::default(),
         &AtomicGridConfig::default_nlc(),
-        None,
-        None,
+        JkRoute::default(),
     )
 }
 
@@ -1589,8 +1588,7 @@ fn u_gw_at_uks(
         scf,
         &uks_grid(sys),
         &AtomicGridConfig::default_nlc(),
-        None,
-        None,
+        JkRoute::default(),
     )
     .unwrap_or_else(|e| panic!("{}: vxc_diagonal_mo: {e:?}", sys.label));
     let res = run_u_gw(

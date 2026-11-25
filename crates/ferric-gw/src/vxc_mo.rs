@@ -30,6 +30,30 @@ use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::{ScfResult, Spin};
 use ndarray::{Array1, Array2};
 
+/// How the exact exchange's four-centre K is built: the reference SCF's
+/// direct J/K settings, so the K term is the one that entered its Fock
+/// matrix (to rounding). `Default` is an unset config (each from its
+/// variable, then its default).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct JkRoute {
+    /// `RhfConfig::gc_rotation` (`ferric_scf::direct_jk::gc_rotation`;
+    /// `None`: `FERRIC_GC_ROTATE`, then `auto`).
+    pub gc_rotation: Option<ferric_scf::direct_jk::GcRotate>,
+    /// `RhfConfig::jk_digest` (`ferric_scf::quartet_scatter::JkDigest`;
+    /// `None`: `FERRIC_JK_DIGEST`, then `pair`).
+    pub jk_digest: Option<ferric_scf::quartet_scatter::JkDigest>,
+}
+
+impl JkRoute {
+    /// The direct J/K settings of the reference SCF's config.
+    pub fn of(config: &ferric_scf::rhf::RhfConfig) -> Self {
+        JkRoute {
+            gc_rotation: config.gc_rotation,
+            jk_digest: config.jk_digest,
+        }
+    }
+}
+
 /// Diagonal of the KS mean-field potential v_mf (semilocal V_xc + VV10 +
 /// the hybrid's exact-exchange term) in the MO basis.
 /// Returns (vxc_diag_α, vxc_diag_β), each of length `nmo` (equal for a
@@ -45,11 +69,11 @@ use ndarray::{Array1, Array2};
 /// eagerly-materialized).
 ///
 /// For an SCF on the default grids (`AtomicGridConfig::production()` and
-/// `default_nlc()`) and the default `RhfConfig::gc_rotation` (unset); a
-/// reference SCF on other grids or with another `gc_rotation` must use
-/// [`vxc_diagonal_mo_on_grids`] with them, or V_xc is not the potential that
-/// entered its Fock matrix (to the grid's accuracy, and to rounding for the
-/// rotation).
+/// `default_nlc()`) and the default `RhfConfig::gc_rotation` and
+/// `jk_digest` (unset); a reference SCF on other grids or with other direct
+/// J/K settings must use [`vxc_diagonal_mo_on_grids`] with them, or V_xc is
+/// not the potential that entered its Fock matrix (to the grid's accuracy,
+/// and to rounding for the J/K settings).
 pub fn vxc_diagonal_mo(
     mol: &Molecule,
     bs: &BasisSet,
@@ -63,18 +87,13 @@ pub fn vxc_diagonal_mo(
         scf,
         &AtomicGridConfig::production(),
         &AtomicGridConfig::default_nlc(),
-        None,
-        None,
+        JkRoute::default(),
     )
 }
 
 /// [`vxc_diagonal_mo`] on the reference SCF's own main and VV10 grids, with
 /// the exact exchange's four-centre K built under the reference SCF's
-/// `RhfConfig::gc_rotation` (`ferric_scf::direct_jk::gc_rotation`; `None` =
-/// unset: `FERRIC_GC_ROTATE`, then `auto`) and `RhfConfig::jk_digest`
-/// (`ferric_scf::quartet_scatter::JkDigest`; `None` = `FERRIC_JK_DIGEST`,
-/// then `pair`).
-#[allow(clippy::too_many_arguments)]
+/// direct J/K settings ([`JkRoute`]).
 pub fn vxc_diagonal_mo_on_grids(
     mol: &Molecule,
     bs: &BasisSet,
@@ -82,8 +101,7 @@ pub fn vxc_diagonal_mo_on_grids(
     scf: &ScfResult,
     main_grid: &AtomicGridConfig,
     nlc_grid: &AtomicGridConfig,
-    gc_rotation: Option<ferric_scf::direct_jk::GcRotate>,
-    jk_digest: Option<ferric_scf::quartet_scatter::JkDigest>,
+    route: JkRoute,
 ) -> Result<(Array1<f64>, Array1<f64>), FerricError> {
     if matches!(scf.spin, Spin::Restricted) {
         // Full closed-shell density: solve_rhf stores density_alpha = 0.5·D_full,
@@ -98,8 +116,7 @@ pub fn vxc_diagonal_mo_on_grids(
             mol,
             bs,
             ks_xc.k_mix(),
-            gc_rotation,
-            jk_digest,
+            route,
             &mut [(&scf.density_alpha, &mut vxc_ao)],
         )?;
         let diag = mo_diagonal(&vxc_ao, scf.mos_r());
@@ -125,8 +142,7 @@ pub fn vxc_diagonal_mo_on_grids(
         mol,
         bs,
         ks_xc.k_mix(),
-        gc_rotation,
-        jk_digest,
+        route,
         &mut [(d_a, &mut vxc_a), (d_b, &mut vxc_b)],
     )?;
 
@@ -146,8 +162,7 @@ fn add_exact_exchange(
     mol: &Molecule,
     bs: &BasisSet,
     k_mix: KMix,
-    gc_rotation: Option<ferric_scf::direct_jk::GcRotate>,
-    jk_digest: Option<ferric_scf::quartet_scatter::JkDigest>,
+    route: JkRoute,
     pairs: &mut [(&Array2<f64>, &mut Array2<f64>)],
 ) -> Result<(), FerricError> {
     let terms: Vec<(Operator, f64)> = if k_mix.omega > 0.0 {
@@ -169,9 +184,9 @@ fn add_exact_exchange(
     for (op, c) in terms {
         let bounds = SchwarzBounds::compute(op, &prep)?;
         // The reference SCF's contraction rotation.
-        bounds.gc.set_request(gc_rotation);
+        bounds.gc.set_request(route.gc_rotation);
         // ... and its J/K digest.
-        bounds.digest.set(jk_digest);
+        bounds.digest.set(route.jk_digest);
         for (d, v) in pairs.iter_mut() {
             let n = d.nrows();
             let (mut j, mut k) = (Array2::<f64>::zeros((n, n)), Array2::<f64>::zeros((n, n)));
