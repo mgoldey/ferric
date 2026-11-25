@@ -791,6 +791,8 @@ fn solve_rohf_impl(
     // The response, Newton and stability builds on these bounds follow the
     // SCF's contraction rotation (`direct_jk::gc_rotation::GcSlot`).
     bounds.gc.set_request(config.gc_rotation);
+    // ... and its J/K digest (`quartet_scatter::DigestSlot`).
+    bounds.digest.set(config.jk_digest);
 
     // Split the injection: (S, h, V_nn) go to the shared env builder, the J/K
     // (and XC) builders are driven in the loop.

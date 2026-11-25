@@ -215,6 +215,7 @@ fn hybrid_case(block: &str, exact_k: bool, bars: Bars) {
         &AtomicGridConfig::default(),
         &AtomicGridConfig::default_nlc(),
         None,
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -377,7 +378,8 @@ fn pure_functional_has_no_k_term() {
     .unwrap();
     let nlc = AtomicGridConfig::default_nlc();
     let (v, _) =
-        vxc_diagonal_mo_on_grids(&sys.mol, &sys.obs_bs, "pbe", &scf, &grid, &nlc, None).unwrap();
+        vxc_diagonal_mo_on_grids(&sys.mol, &sys.obs_bs, "pbe", &scf, &grid, &nlc, None, None)
+            .unwrap();
     let ks = KsXc::new(&sys.mol, &sys.obs_bs, "pbe", &grid, &nlc).unwrap();
     let d = 2.0 * &scf.density_alpha;
     let mut vao = ndarray::Array2::<f64>::zeros(d.raw_dim());

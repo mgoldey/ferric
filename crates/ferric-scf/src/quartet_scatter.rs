@@ -31,10 +31,10 @@
 //! (direct_jk.rs) and `build_jk_bit_identical_across_thread_counts` (rhf.rs)
 //! for the regression gate.
 
+use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
-use ferric_core::FerricError;
-use ndarray::{Array2, Array3, CowArray};
+use ndarray::{Array2, Array3};
 use std::sync::{Arc, RwLock};
 
 /// What a single quartet-scatter pass accumulates. Each variant carries a
@@ -147,6 +147,15 @@ impl<'d> JkMode<'d> {
             jd,
             kd,
         }))
+    }
+
+    /// The half partials of a [`JkMode::Pair`], in [`PairSpec::n_partials`]
+    /// order. Panics on any other mode.
+    pub(crate) fn into_pair_partials(self) -> Vec<Array2<f64>> {
+        match self {
+            JkMode::Pair(p) => p.mats,
+            other => unreachable!("a pair-digest walk got JkMode::{}", other.label()),
+        }
     }
 
     /// Whether this mode accumulates a Coulomb matrix.
@@ -1398,7 +1407,10 @@ impl PairDensity {
             dd.assign(d);
             let mut dt = Array2::<f64>::zeros((d.ncols(), n));
             dt.assign(&d.t());
-            PairDensity { d: dd, dt: Some(dt) }
+            PairDensity {
+                d: dd,
+                dt: Some(dt),
+            }
         }
     }
 
@@ -1413,9 +1425,9 @@ impl PairDensity {
 /// group. [`PairSpec::mode`] makes a group's [`JkMode::Pair`] and
 /// [`PairSpec::finish`] turns the summed half partials into J and K.
 #[derive(Debug)]
-pub(crate) struct PairSpec<'d> {
+pub(crate) struct PairSpec {
     /// Coulomb density (standard layout), `None` for K only.
-    jd: Option<CowArray<'d, f64, ndarray::Ix2>>,
+    jd: Option<Array2<f64>>,
     /// Exchange densities (0, 1 or 2).
     kd: Vec<PairDensity>,
     /// Every exchange channel runs the general kernel (some density was not
@@ -1426,20 +1438,10 @@ pub(crate) struct PairSpec<'d> {
     max_dim: usize,
 }
 
-impl<'d> PairSpec<'d> {
-    fn new(
-        nbf: usize,
-        dims: &[usize],
-        jd: Option<&'d Array2<f64>>,
-        kd: &[&Array2<f64>],
-    ) -> Self {
-        let jd = jd.map(|d| {
-            if d.is_standard_layout() {
-                CowArray::from(d.view())
-            } else {
-                CowArray::from(d.as_standard_layout().into_owned())
-            }
-        });
+impl PairSpec {
+    fn new(nbf: usize, dims: &[usize], jd: Option<&Array2<f64>>, kd: &[&Array2<f64>]) -> Self {
+        // An O(n²) standard-layout copy per build: the kernel reads raw rows.
+        let jd = jd.map(|d| d.as_standard_layout().into_owned());
         let kd: Vec<PairDensity> = kd.iter().map(|d| PairDensity::prepare(d)).collect();
         let general = kd.iter().any(PairDensity::is_general);
         // A general spec re-prepares any symmetric channel's transpose so
@@ -1450,7 +1452,10 @@ impl<'d> PairSpec<'d> {
                     Some(_) => p,
                     None => {
                         let dt = p.d.clone();
-                        PairDensity { d: p.d, dt: Some(dt) }
+                        PairDensity {
+                            d: p.d,
+                            dt: Some(dt),
+                        }
                     }
                 })
                 .collect()
@@ -1467,7 +1472,7 @@ impl<'d> PairSpec<'d> {
     }
 
     /// Closed-shell J and K of `d` (`JkMode::Both`'s job).
-    pub(crate) fn both(nbf: usize, dims: &[usize], d: &'d Array2<f64>) -> Self {
+    pub(crate) fn both(nbf: usize, dims: &[usize], d: &Array2<f64>) -> Self {
         Self::new(nbf, dims, Some(d), &[d])
     }
 
@@ -1477,7 +1482,7 @@ impl<'d> PairSpec<'d> {
     pub(crate) fn uhf(
         nbf: usize,
         dims: &[usize],
-        d_total: &'d Array2<f64>,
+        d_total: &Array2<f64>,
         d_a: &Array2<f64>,
         d_b: &Array2<f64>,
     ) -> Self {
@@ -1485,7 +1490,7 @@ impl<'d> PairSpec<'d> {
     }
 
     /// J of `d` only.
-    pub(crate) fn j_only(nbf: usize, dims: &[usize], d: &'d Array2<f64>) -> Self {
+    pub(crate) fn j_only(nbf: usize, dims: &[usize], d: &Array2<f64>) -> Self {
         Self::new(nbf, dims, Some(d), &[])
     }
 
@@ -1495,6 +1500,7 @@ impl<'d> PairSpec<'d> {
     }
 
     /// Whether the exchange channels run the general kernel.
+    #[cfg(test)]
     pub(crate) fn is_general(&self) -> bool {
         self.general
     }
@@ -1591,7 +1597,7 @@ struct PairBra {
 /// scratch.
 #[derive(Debug)]
 pub(crate) struct PairJk<'d> {
-    spec: &'d PairSpec<'d>,
+    spec: &'d PairSpec,
     mats: Vec<Array2<f64>>,
     /// Bra J accumulator `J_bra[μν]`, written once per bra pair.
     jb: Vec<f64>,
@@ -1605,11 +1611,6 @@ pub(crate) struct PairJk<'d> {
 }
 
 impl PairJk<'_> {
-    /// The half partials, in [`PairSpec::n_partials`] order.
-    pub(crate) fn into_partials(self) -> Vec<Array2<f64>> {
-        self.mats
-    }
-
     /// Start bra pair `(s1, s2)`: zero the bra J accumulator and form `E12`.
     fn begin(&mut self, dims: &[usize], offs: &[usize], s1: usize, s2: usize) {
         let (n1, n2) = (dims[s1], dims[s2]);
@@ -1667,7 +1668,9 @@ impl PairJk<'_> {
             (false, 1, true) => self.quartet_t::<false, 1, true>(q, dims, offs, s3, s4),
             (false, 2, false) => self.quartet_t::<false, 2, false>(q, dims, offs, s3, s4),
             (false, 2, true) => self.quartet_t::<false, 2, true>(q, dims, offs, s3, s4),
-            (j, nk, g) => unreachable!("pair digest: no kernel for J={j} channels={nk} general={g}"),
+            (j, nk, g) => {
+                unreachable!("pair digest: no kernel for J={j} channels={nk} general={g}")
+            }
         }
     }
 
@@ -2015,6 +2018,7 @@ mod tests {
                 JkMode::JOnly(j) | JkMode::Both(j, _) | JkMode::Uhf(j, ..) => j[(0, 0)] != 0.0,
                 JkMode::Multi(m) => m.j.iter().any(|&x| x != 0.0),
                 JkMode::KOnly(_) => false,
+                JkMode::Pair(_) => unreachable!("not in this list"),
             };
             assert_eq!(
                 flag, wrote_j,
@@ -2022,6 +2026,148 @@ mod tests {
                  FourPairK guard in scatter_bra_pair depends on this predicate being exact."
             );
         }
+    }
+
+    // ---------------------------------------------------------------- pair
+
+    #[test]
+    fn jk_digest_spelling_is_strict() {
+        assert_eq!(JkDigest::parse_str("pair"), Ok(JkDigest::Pair));
+        assert_eq!(JkDigest::parse_str("legacy"), Ok(JkDigest::Legacy));
+        for bad in ["Pair", " pair", "LEGACY", "off", "", "8fold"] {
+            assert!(JkDigest::parse_str(bad).is_err(), "{bad:?} accepted");
+        }
+        assert_eq!(JkDigest::default(), JkDigest::Pair);
+        // The variable ignores case and blanks, like the other switches.
+        let get = |v: &'static str| move |_: &str| Some(v.to_string());
+        let r = |v| JK_DIGEST.resolve(None, get(v)).map(|r| r.value);
+        assert_eq!(r(" LEGACY "), Ok(JkDigest::Legacy));
+        assert_eq!(r("pair"), Ok(JkDigest::Pair));
+        assert!(r("none").is_err());
+        // A config value wins over the variable.
+        let cfg = JK_DIGEST.resolve(Some(JkDigest::Pair), get("legacy"));
+        assert_eq!(cfg.map(|r| r.value), Ok(JkDigest::Pair));
+    }
+
+    #[test]
+    fn digest_slot_is_shared_by_clones_and_copied() {
+        let a = DigestSlot::default();
+        assert_eq!(a.recorded(), None);
+        let b = a.clone();
+        a.set(Some(JkDigest::Legacy));
+        assert_eq!(b.recorded(), Some(JkDigest::Legacy));
+        assert_eq!(b.mode().unwrap(), JkDigest::Legacy);
+        let c = DigestSlot::default();
+        c.copy_from(&b);
+        assert_eq!(c.recorded(), Some(JkDigest::Legacy));
+        a.set(None);
+        assert_eq!(b.recorded(), None);
+        assert_eq!(c.recorded(), Some(JkDigest::Legacy), "a copy is not shared");
+    }
+
+    fn sym_matrix(n: usize, seed: u64) -> Array2<f64> {
+        let mut s = seed;
+        let mut d = Array2::from_shape_fn((n, n), |_| {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (s >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        });
+        d = &d + &d.t();
+        d
+    }
+
+    /// The density check: roundoff skew passes (also on a small `ΔD`, the
+    /// floor), a real skew fails at any size above the floor, so an
+    /// over-loose threshold would show here.
+    #[test]
+    fn symmetry_check_is_at_the_roundoff_level() {
+        let d = sym_matrix(9, 1);
+        assert!(is_symmetric_to_roundoff(&d));
+        let mut e = d.clone();
+        e[(2, 5)] += 4e-16; // roundoff of an O(1) density
+        assert!(is_symmetric_to_roundoff(&e));
+        // A ΔD of size 1e-7 with the same absolute roundoff skew: floor.
+        let mut small = 1e-7 * &d;
+        small[(2, 5)] += 4e-16;
+        assert!(is_symmetric_to_roundoff(&small));
+        // Genuine skews.
+        for skew in [1e-13, 1e-10, 1e-6, 1e-2] {
+            let mut x = d.clone();
+            x[(3, 1)] += skew;
+            assert!(!is_symmetric_to_roundoff(&x), "skew {skew:e} passed");
+        }
+        // Relative above the floor: a big density with a 1e-13 relative skew.
+        let mut big = 1e3 * &d;
+        big[(0, 4)] += 1e3 * 1e-13 * 2.0;
+        assert!(!is_symmetric_to_roundoff(&big));
+        let mut nan = d.clone();
+        nan[(1, 1)] = f64::NAN;
+        assert!(!is_symmetric_to_roundoff(&nan));
+        assert!(!is_symmetric_to_roundoff(&Array2::zeros((2, 3))));
+    }
+
+    #[test]
+    fn pair_density_symmetrises_or_keeps_the_transpose() {
+        let mut d = sym_matrix(6, 2);
+        d[(1, 4)] += 1e-17;
+        let p = PairDensity::prepare(&d);
+        assert!(!p.is_general());
+        assert!(
+            p.d == p.d.t(),
+            "symmetrised density must be exactly symmetric"
+        );
+        d[(1, 4)] += 1e-3;
+        let p = PairDensity::prepare(&d);
+        assert!(p.is_general());
+        assert_eq!(p.d, d);
+        assert_eq!(p.dt.as_ref().unwrap(), &d.t());
+    }
+
+    /// One non-symmetric spin sends both channels to the general kernel, and
+    /// the partial layout follows (`Jh`, `Kb` per channel, `Kt` per channel).
+    #[test]
+    fn pair_spec_layout_and_kernel_choice() {
+        let dims = [1usize, 3, 5];
+        let (s, a) = (sym_matrix(9, 3), sym_matrix(9, 4));
+        let mut g = a.clone();
+        g[(0, 8)] += 1e-4;
+        let t = &s + &g;
+        assert!(!PairSpec::both(9, &dims, &s).is_general());
+        assert_eq!(PairSpec::both(9, &dims, &s).n_partials(), 2);
+        let both_g = PairSpec::both(9, &dims, &g);
+        assert!(both_g.is_general());
+        assert_eq!(both_g.n_partials(), 3);
+        assert_eq!(PairSpec::uhf(9, &dims, &(&s + &a), &s, &a).n_partials(), 3);
+        let uhf_g = PairSpec::uhf(9, &dims, &t, &s, &g);
+        assert!(uhf_g.is_general());
+        assert_eq!(uhf_g.n_partials(), 5);
+        assert_eq!(PairSpec::j_only(9, &dims, &g).n_partials(), 1);
+        assert!(!PairSpec::j_only(9, &dims, &g).is_general());
+        assert_eq!(PairSpec::k_only(9, &dims, &g).n_partials(), 2);
+        let k_spec = PairSpec::k_only(9, &dims, &s);
+        let m = k_spec.mode();
+        assert!(!m.accumulates_j());
+        assert_eq!(m.label(), "Pair");
+        assert!(PairSpec::j_only(9, &dims, &s).mode().accumulates_j());
+    }
+
+    /// `finish`: `J = Jh + Jhᵀ`, `K = Kb + Kbᵀ` (symmetric) or `Kb + Ktᵀ`.
+    #[test]
+    fn pair_finish_forms_the_full_matrices() {
+        let dims = [3usize];
+        let s = sym_matrix(3, 5);
+        let mut g = s.clone();
+        g[(0, 2)] += 1.0;
+        let h = Array2::from_shape_fn((3, 3), |(i, j)| (3 * i + j) as f64);
+        let k2 = Array2::from_shape_fn((3, 3), |(i, j)| (i as f64) - 2.0 * j as f64);
+        let spec = PairSpec::both(3, &dims, &s);
+        let (j, k) = spec.finish(vec![h.clone(), k2.clone()]);
+        assert_eq!(j.unwrap(), &h + &h.t());
+        assert_eq!(k[0], &k2 + &k2.t());
+        let spec = PairSpec::both(3, &dims, &g);
+        let (_, k) = spec.finish(vec![h.clone(), k2.clone(), h.clone()]);
+        assert_eq!(k[0], &k2 + &h.t());
     }
 
     /// The guard must actually FIRE on the invalid combination.

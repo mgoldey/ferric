@@ -629,6 +629,7 @@ fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig
     config.cosmo = cfg.cosmo.clone();
     config.polarizable = polarizable;
     config.gc_rotation = s.gc_rotation_resolved().map_err(CliError::msg)?;
+    config.jk_digest = s.jk_digest_resolved().map_err(CliError::msg)?;
     Ok(config)
 }
 
@@ -6059,6 +6060,29 @@ fn gw_open_shell_reference_label(cfg: &Config) -> Result<&'static str, String> {
     })
 }
 
+/// The MO diagonal of the KS reference's `V_xc` for GW (default grids), its
+/// exact exchange built under the run's `[scf] gc_rotation` and `jk_digest`
+/// (the reference SCF's direct J/K settings).
+fn gw_vxc_diagonal(
+    cfg: &Config,
+    mol: &ferric_core::mol::Molecule,
+    bs: &BasisSet,
+    xc_name: &str,
+    scf: &ferric_scf::result::ScfResult,
+) -> Result<(ndarray::Array1<f64>, ndarray::Array1<f64>), CliError> {
+    ferric_gw::vxc_mo::vxc_diagonal_mo_on_grids(
+        mol,
+        bs,
+        xc_name,
+        scf,
+        &ferric_dft::grid::AtomicGridConfig::production(),
+        &ferric_dft::grid::AtomicGridConfig::default_nlc(),
+        cfg.scf.gc_rotation_resolved().map_err(CliError::msg)?,
+        cfg.scf.jk_digest_resolved().map_err(CliError::msg)?,
+    )
+    .map_err(|e| CliError::msg(format!("vxc_diagonal_mo failed: {e}")))
+}
+
 fn run_gw(
     cfg: &Config,
     sys: &PreparedSystem,
@@ -6151,9 +6175,7 @@ fn run_gw(
         let result_u = ferric_scf::semicanonical::unrestricted_reference(mol, result)?;
         let vxc_diag = match cfg.rpa.xc.as_deref() {
             Some(xc_name) => {
-                let (diag_a, diag_b) =
-                    ferric_gw::vxc_mo::vxc_diagonal_mo(mol, bs, xc_name, &result_u)
-                        .map_err(|e| CliError::msg(format!("vxc_diagonal_mo failed: {e}")))?;
+                let (diag_a, diag_b) = gw_vxc_diagonal(cfg, mol, bs, xc_name, &result_u)?;
                 Some((diag_a, diag_b))
             }
             None => None,
@@ -6274,8 +6296,7 @@ fn run_gw(
     // contract.
     let vxc_diag = match cfg.rpa.xc.as_deref() {
         Some(xc_name) => {
-            let (diag, _beta) = ferric_gw::vxc_mo::vxc_diagonal_mo(mol, bs, xc_name, result)
-                .map_err(|e| CliError::msg(format!("vxc_diagonal_mo failed: {e}")))?;
+            let (diag, _beta) = gw_vxc_diagonal(cfg, mol, bs, xc_name, result)?;
             Some(diag)
         }
         None => None,

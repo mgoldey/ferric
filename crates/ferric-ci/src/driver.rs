@@ -40,6 +40,10 @@ pub struct ScfStart {
     /// Pass the same value as `CasScfConfig::gc_rotation` so the CASSCF
     /// direct builds follow the start.
     pub gc_rotation: Option<ferric_scf::direct_jk::GcRotate>,
+    /// `RhfConfig::jk_digest` of the start (the direct J/K digest,
+    /// `ferric_scf::quartet_scatter::JkDigest`); `None` = unset. Pass the
+    /// same value as `CasScfConfig::jk_digest`.
+    pub jk_digest: Option<ferric_scf::quartet_scatter::JkDigest>,
 }
 
 /// The exact-J/K Coulomb RHF of `sys` (its molecule with the basis set's
@@ -70,6 +74,7 @@ fn start_config(
         energy_conv,
         density_conv,
         gc_rotation,
+        jk_digest,
     } = start;
     let mut cfg = ferric_scf::options::ScfOptions {
         max_iter,
@@ -81,6 +86,7 @@ fn start_config(
     }
     .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)?;
     cfg.gc_rotation = gc_rotation;
+    cfg.jk_digest = jk_digest;
     Ok(cfg)
 }
 
@@ -258,6 +264,7 @@ mod tests {
             cfg.density_conv = start.density_conv.unwrap_or(cfg.density_conv);
             cfg.screening = screening;
             cfg.gc_rotation = start.gc_rotation;
+            cfg.jk_digest = start.jk_digest;
             cfg
         };
         let all = ScfStart {
@@ -265,6 +272,7 @@ mod tests {
             energy_conv: Some(1e-9),
             density_conv: Some(3e-8),
             gc_rotation: Some(ferric_scf::direct_jk::GcRotate::Off),
+            jk_digest: Some(ferric_scf::quartet_scatter::JkDigest::Legacy),
         };
         for (start, budget, screening) in [
             (ScfStart::default(), None, ScreeningKind::default()),

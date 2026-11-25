@@ -64,13 +64,16 @@ pub fn vxc_diagonal_mo(
         &AtomicGridConfig::production(),
         &AtomicGridConfig::default_nlc(),
         None,
+        None,
     )
 }
 
 /// [`vxc_diagonal_mo`] on the reference SCF's own main and VV10 grids, with
 /// the exact exchange's four-centre K built under the reference SCF's
 /// `RhfConfig::gc_rotation` (`ferric_scf::direct_jk::gc_rotation`; `None` =
-/// unset: `FERRIC_GC_ROTATE`, then `auto`).
+/// unset: `FERRIC_GC_ROTATE`, then `auto`) and `RhfConfig::jk_digest`
+/// (`ferric_scf::quartet_scatter::JkDigest`; `None` = `FERRIC_JK_DIGEST`,
+/// then `pair`).
 pub fn vxc_diagonal_mo_on_grids(
     mol: &Molecule,
     bs: &BasisSet,
@@ -79,6 +82,7 @@ pub fn vxc_diagonal_mo_on_grids(
     main_grid: &AtomicGridConfig,
     nlc_grid: &AtomicGridConfig,
     gc_rotation: Option<ferric_scf::direct_jk::GcRotate>,
+    jk_digest: Option<ferric_scf::quartet_scatter::JkDigest>,
 ) -> Result<(Array1<f64>, Array1<f64>), FerricError> {
     if matches!(scf.spin, Spin::Restricted) {
         // Full closed-shell density: solve_rhf stores density_alpha = 0.5·D_full,
@@ -94,6 +98,7 @@ pub fn vxc_diagonal_mo_on_grids(
             bs,
             ks_xc.k_mix(),
             gc_rotation,
+            jk_digest,
             &mut [(&scf.density_alpha, &mut vxc_ao)],
         )?;
         let diag = mo_diagonal(&vxc_ao, scf.mos_r());
@@ -120,6 +125,7 @@ pub fn vxc_diagonal_mo_on_grids(
         bs,
         ks_xc.k_mix(),
         gc_rotation,
+        jk_digest,
         &mut [(d_a, &mut vxc_a), (d_b, &mut vxc_b)],
     )?;
 
@@ -140,6 +146,7 @@ fn add_exact_exchange(
     bs: &BasisSet,
     k_mix: KMix,
     gc_rotation: Option<ferric_scf::direct_jk::GcRotate>,
+    jk_digest: Option<ferric_scf::quartet_scatter::JkDigest>,
     pairs: &mut [(&Array2<f64>, &mut Array2<f64>)],
 ) -> Result<(), FerricError> {
     let terms: Vec<(Operator, f64)> = if k_mix.omega > 0.0 {
@@ -162,6 +169,8 @@ fn add_exact_exchange(
         let bounds = SchwarzBounds::compute(op, &prep)?;
         // The reference SCF's contraction rotation.
         bounds.gc.set_request(gc_rotation);
+        // ... and its J/K digest.
+        bounds.digest.set(jk_digest);
         for (d, v) in pairs.iter_mut() {
             let n = d.nrows();
             let (mut j, mut k) = (Array2::<f64>::zeros((n, n)), Array2::<f64>::zeros((n, n)));

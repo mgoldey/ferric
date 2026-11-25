@@ -611,7 +611,7 @@ impl Walk<'_> {
 
         let band_bytes = crate::reduce::resolve_band_bytes(self.mem_budget);
         // One group's bra pairs scattered into `mode`.
-        let run = |g: usize, mut mode: JkMode<'_>| {
+        let run = |g: usize, mode: &mut JkMode<'_>| {
             let lo = g * group_size;
             let hi = (lo + group_size).min(n_pairs);
             let mut local_count = 0usize;
@@ -622,12 +622,11 @@ impl Walk<'_> {
                 pool.with(|engine| {
                     local_count += scatter_bra_pair(
                         engine, prep, dims, offs, q_table, m_table, x_table, &screen, thresh,
-                        d_total, s1, s2, &mut mode, true,
+                        d_total, s1, s2, mode, true,
                     );
                 });
             }
             computed_quartets.fetch_add(local_count, Ordering::Relaxed);
-            mode
         };
         let (mut total_j, mut total_k_a, mut total_k_b) = match self.bounds.digest.mode()? {
             JkDigest::Legacy => {
@@ -641,9 +640,13 @@ impl Walk<'_> {
                     n_groups,
                     nbf,
                     band_bytes,
-                    |g| match run(g, JkMode::new_uhf(nbf, d_a, d_b)) {
-                        JkMode::Uhf(j, ka, kb, _, _) => Ok((j, ka, kb)),
-                        _ => unreachable!("DirectJK::build_uhf's legacy walk uses JkMode::Uhf"),
+                    |g| {
+                        let mut mode = JkMode::new_uhf(nbf, d_a, d_b);
+                        run(g, &mut mode);
+                        match mode {
+                            JkMode::Uhf(j, ka, kb, _, _) => Ok((j, ka, kb)),
+                            _ => unreachable!("DirectJK::build_uhf's legacy walk uses JkMode::Uhf"),
+                        }
                     },
                 )?;
                 (total_j, total_k_a, total_k_b)
@@ -656,7 +659,11 @@ impl Walk<'_> {
                     n_groups,
                     nbf,
                     band_bytes,
-                    |g| Ok(pair_partials(run(g, spec.mode()))),
+                    |g| {
+                        let mut mode = spec.mode();
+                        run(g, &mut mode);
+                        Ok(mode.into_pair_partials())
+                    },
                     None,
                 )?;
                 let (j, k) = spec.finish(halves);
@@ -789,8 +796,7 @@ impl Walk<'_> {
                     |g| {
                         let lo = g * group_size;
                         let pairs = &shell_pairs[lo..(lo + group_size).min(n_pairs)];
-                        let (mode, n) =
-                            job.run(pairs, profile.as_ref(), JkMode::new_both(nbf));
+                        let (mode, n) = job.run(pairs, profile.as_ref(), JkMode::new_both(nbf));
                         computed_quartets.fetch_add(n, Ordering::Relaxed);
                         match mode {
                             JkMode::Both(j, k) => Ok((j, k)),
@@ -816,7 +822,7 @@ impl Walk<'_> {
                         let pairs = &shell_pairs[lo..(lo + group_size).min(n_pairs)];
                         let (mode, n) = job.run(pairs, profile.as_ref(), spec.mode());
                         computed_quartets.fetch_add(n, Ordering::Relaxed);
-                        Ok(pair_partials(mode))
+                        Ok(mode.into_pair_partials())
                     },
                     profile.as_ref().map(|_| &mut band_times),
                 )?;
@@ -904,14 +910,6 @@ impl GroupJob<'_> {
             p.record_group(t_group, &times);
         }
         (mode, count)
-    }
-}
-
-/// The half partials of a [`JkMode::Pair`](crate::quartet_scatter::JkMode::Pair).
-fn pair_partials(mode: crate::quartet_scatter::JkMode<'_>) -> Vec<Array2<f64>> {
-    match mode {
-        crate::quartet_scatter::JkMode::Pair(p) => p.into_partials(),
-        other => unreachable!("a pair-digest walk got JkMode::{}", other.label()),
     }
 }
 

@@ -82,7 +82,7 @@ fn fixed_process() -> ProcessSettings {
         gpu_mode: "Off".to_string(),
         libint_version: "2.7.2".to_string(),
         cargo_features: "mpi=false gpu=false cfmm-incomplete=false".to_string(),
-        env: vec![None; 11],
+        env: vec![None; 12],
     }
 }
 
@@ -979,6 +979,9 @@ fn identity_table() -> Vec<(&'static str, FieldClass, Mutator)> {
         ("FERRIC_GPU_MIXED_K_PANEL", Route, |s| {
             s.process.env[10] = Some("1000000000".to_string());
         }),
+        ("FERRIC_JK_DIGEST", Route, |s| {
+            s.process.env[11] = Some("legacy".to_string());
+        }),
         ("use_sad_guess", StateSelecting, |s| {
             s.config.use_sad_guess = false;
         }),
@@ -1102,6 +1105,9 @@ fn identity_table() -> Vec<(&'static str, FieldClass, Mutator)> {
         }),
         ("gc_rotation", Route, |s| {
             s.config.gc_rotation = Some(crate::direct_jk::GcRotate::Off);
+        }),
+        ("jk_digest", Route, |s| {
+            s.config.jk_digest = Some(crate::quartet_scatter::JkDigest::Legacy);
         }),
         ("relativistic", Method, |s| {
             s.config.relativistic = Some(crate::x2c::Relativistic::X2c1e);
@@ -1861,6 +1867,7 @@ fn each_process_setting_reaches_the_identity_from_the_environment() {
             "1000000000",
             "FERRIC_GPU_MIXED_K_PANEL",
         ),
+        ("FERRIC_JK_DIGEST", "legacy", "FERRIC_JK_DIGEST"),
     ] {
         let changed = key(&[(variable, value)]);
         let moved: Vec<&str> = changed
@@ -1901,6 +1908,14 @@ fn each_process_setting_reaches_the_identity_from_the_environment() {
         .find(|f| f.name == "FERRIC_GC_ROTATE")
         .unwrap();
     assert_eq!(gc.value, format!("{:?}", Some("none")));
+    // FERRIC_JK_DIGEST is recorded parsed too: unset and `pair` are one identity.
+    for value in ["pair", " PAIR "] {
+        assert_eq!(
+            key(&[("FERRIC_JK_DIGEST", value)]).fields,
+            base.fields,
+            "FERRIC_JK_DIGEST={value:?}"
+        );
+    }
     let field = |name: &str| base.fields.iter().find(|f| f.name == name).unwrap();
     assert_eq!(
         field("libint_version").value,
@@ -2154,6 +2169,7 @@ fn child(test: &str, envs: &[(&str, &str)]) -> Vec<String> {
     // An inherited debug route switch would move the unset baseline.
     cmd.env_remove("FERRIC_DFK_METRIC");
     cmd.env_remove("FERRIC_GC_ROTATE");
+    cmd.env_remove("FERRIC_JK_DIGEST");
     for (k, v) in envs {
         cmd.env(k, v);
     }

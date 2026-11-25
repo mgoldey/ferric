@@ -325,6 +325,7 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         screening,
         eri,
         gc_rotation,
+        jk_digest,
         // Which converged state the iteration lands in: see `StateSelecting`. Only
         // `use_sad_guess` and `trah_trigger` have a measured difference. The rest
         // are here because nothing shows them to be path-only.
@@ -419,6 +420,9 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         // The direct J/K builder's contraction rotation moves cc-pVXZ
         // energies by up to ~1e-11 Ha (screening noise; `tests/gc_rotation.rs`).
         ("gc_rotation", format!("{gc_rotation:?}")),
+        // The direct J/K digest moves energies by about 1e-12 Ha (summation
+        // order; `quartet_scatter::JkDigest`).
+        ("jk_digest", format!("{jk_digest:?}")),
     ];
     let state_selecting = [
         ("use_sad_guess", format!("{use_sad_guess:?}")),
@@ -464,7 +468,7 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
 ///
 /// Left out on purpose: thread counts and memory budgets (unchecked by design),
 /// trace toggles, MPI band sizes, and `FERRIC_TEST_*`.
-const ENV_SWITCHES: [(&str, FieldClass); 11] = [
+const ENV_SWITCHES: [(&str, FieldClass); 12] = [
     ("FERRIC_SCF_INCREMENTAL", FieldClass::Route),
     ("FERRIC_SCF_UHF_INCREMENTAL", FieldClass::Route),
     ("FERRIC_SCF_COMBINED_JK", FieldClass::Route),
@@ -480,6 +484,8 @@ const ENV_SWITCHES: [(&str, FieldClass); 11] = [
     // The k-panel width of the mixed-precision GEMM: it moves the last digits
     // of a mixed result (`ferric_core::gpu::precision`).
     ("FERRIC_GPU_MIXED_K_PANEL", FieldClass::Route),
+    // Recorded parsed; the config field `jk_digest`, when set, wins over it.
+    ("FERRIC_JK_DIGEST", FieldClass::Route),
 ];
 
 /// The recorded value of one [`ENV_SWITCHES`] entry: the raw text, except
@@ -494,6 +500,11 @@ fn env_switch_value(name: &str) -> Option<String> {
     }
     if name == crate::direct_jk::GC_ROTATE_ENV {
         if let Ok(setting) = crate::direct_jk::GcRotate::env_setting() {
+            return Some(setting.as_str().to_string());
+        }
+    }
+    if name == crate::quartet_scatter::JK_DIGEST_ENV {
+        if let Ok(setting) = crate::quartet_scatter::JkDigest::env_setting() {
             return Some(setting.as_str().to_string());
         }
     }

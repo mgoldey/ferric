@@ -3434,6 +3434,16 @@ pub struct ScfCfg {
     /// the GW exact exchange); energies move at the screening-noise level.
     /// Any other value, another case included, is an error.
     pub gc_rotation: Option<String>,
+    /// How the direct four-centre J/K builds digest each computed quartet
+    /// block: `"pair"` (the bra-pair-local digest, the default) or
+    /// `"legacy"` (the 8-fold image scatter of earlier releases, bit for
+    /// bit). Unset leaves it to `FERRIC_JK_DIGEST`, then `"pair"`. The two
+    /// agree to ~1e-14 relative in J and K (~1e-12 Ha in energies). The
+    /// direct builds of the run follow it (the SCF's builders, the
+    /// Newton/stability/response J/K on the same geometry, the KS Z-vector
+    /// response, `[cas] integrals = "direct"` and the GW exact exchange). Any
+    /// other value, another case included, is an error.
+    pub jk_digest: Option<String>,
     /// Relativistic core Hamiltonian: `"x2c1e"` (spin-free X2C-1e, as PySCF
     /// `sfx2c1e()`), or unset for the nonrelativistic one. Energies only
     /// (`task = "energy"`), for the kinds in `X2C_KINDS`; all-electron bases
@@ -3728,6 +3738,7 @@ impl Default for ScfCfg {
             screening: None,
             eri: None,
             gc_rotation: None,
+            jk_digest: None,
             relativistic: None,
             cosx_grid: None,
             cosx_final_pass: None,
@@ -3931,7 +3942,8 @@ impl OmittedJk {
 
 impl ScfCfg {
     /// The first `[scf]` key set that only the four-centre route reads
-    /// (`k_builder`, `eri`, `gc_rotation`, `screening`, `df_increments`, `df_guess = true`,
+    /// (`k_builder`, `eri`, `gc_rotation`, `jk_digest`, `screening`, `df_increments`,
+    /// `df_guess = true`,
     /// `df_guess_aux`): with one of them an omitted `jk` stays exact, so an
     /// input that worked on the four-centre default keeps working unchanged.
     fn exact_route_key(&self) -> Option<&'static str> {
@@ -3939,6 +3951,7 @@ impl ScfCfg {
             ("k_builder", self.k_builder.is_some()),
             ("eri", self.eri.is_some()),
             ("gc_rotation", self.gc_rotation.is_some()),
+            ("jk_digest", self.jk_digest.is_some()),
             ("screening", self.screening.is_some()),
             ("df_increments", self.df_increments),
             ("df_guess", self.df_guess == Some(true)),
@@ -4319,6 +4332,19 @@ impl ScfCfg {
             .map_err(|e| format!("[scf] gc_rotation: {e}"))
     }
 
+    /// `[scf] jk_digest` parsed: `None` when omitted (the variable and the
+    /// default decide), an error naming the key for a value outside
+    /// pair | legacy.
+    pub fn jk_digest_resolved(
+        &self,
+    ) -> Result<Option<ferric_scf::quartet_scatter::JkDigest>, String> {
+        self.jk_digest
+            .as_deref()
+            .map(ferric_scf::quartet_scatter::JkDigest::parse_str)
+            .transpose()
+            .map_err(|e| format!("[scf] jk_digest: {e}"))
+    }
+
     /// Post-parse validation of the `[scf]` string knobs whose resolution is
     /// otherwise deferred to the point of use. Called from [`load_config`] so
     /// every entry point (CLI and `ferric-batch`) fails before any integral is
@@ -4332,6 +4358,7 @@ impl ScfCfg {
         self.mom_reference_resolved()?;
         self.relativistic_resolved()?;
         self.gc_rotation_resolved()?;
+        self.jk_digest_resolved()?;
         if let Some(p) = self.eri_precision {
             (ferric_integrals::engine_pool::ERI_PRECISION_VAR.validate)(&p)
                 .map_err(|e| format!("[scf] eri_precision {p:e}: {e}"))?;

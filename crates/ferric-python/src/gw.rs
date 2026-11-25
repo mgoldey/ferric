@@ -262,6 +262,7 @@ pub(crate) fn run_gw(
                 &grids.main,
                 &grids.nlc,
                 cfg.gc_rotation,
+                cfg.jk_digest,
             )
             .map_err(make_err)?
         };
@@ -562,6 +563,7 @@ pub(crate) fn run_u_gw(
                 &grids.main,
                 &grids.nlc,
                 cfg.gc_rotation,
+                cfg.jk_digest,
             )
             .map_err(make_err)?
         };
