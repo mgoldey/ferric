@@ -307,10 +307,14 @@ fn tiny_antisymmetric_density_takes_the_general_kernel() {
     // J of an antisymmetric density is zero; K is not.
     let (kp, kl) = (&p.out[1], &l.out[1]);
     assert!(scale(kl) > 1e-17, "vacuous: max|K| {:e}", scale(kl));
-    let diff = kp
-        .iter()
-        .zip(kl.iter())
-        .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()));
+    let diff = kp.iter().zip(kl.iter()).fold(0.0f64, |m, (x, y)| {
+        let d = (x - y).abs();
+        assert!(
+            d.is_finite(),
+            "antisymmetric K: non-finite difference {x} vs {y}"
+        );
+        m.max(d)
+    });
     assert!(
         diff <= 1e-13 * scale(kl),
         "antisymmetric K: max|pair - legacy| {diff:e}, max|K| {:e}",
@@ -668,20 +672,37 @@ fn hash_bits<'a>(arrays: impl IntoIterator<Item = &'a Array2<f64>>) -> u64 {
 /// Set in the environment of the child runs.
 const CHILD: &str = "FERRIC_TEST_JK_DIGEST_CHILD";
 
+/// One consumer output: its name, the matrix, and whether it is in the MO
+/// basis (its rows and columns then carry the SCF's orbital phases).
+struct Output {
+    name: String,
+    x: Array2<f64>,
+    mo: bool,
+}
+
+/// The consumers' outputs, with the pair-digest builds each consumer step
+/// recorded (`(step, builds)`).
+struct Consumers {
+    out: Vec<Output>,
+    builds: Vec<(String, usize)>,
+}
+
 /// An SCF whose config carries `digest`, then the consumers that follow
 /// its bounds' record: water / cc-pVDZ PBE0 on the direct route (SCF,
 /// analytic KS gradient, KS Z-vector relaxation gradient and `Z`, pooled
 /// J/K), and water / 6-31G wB97X (its SCF and Z-vector: the
 /// range-separated response builds make fresh bounds per operator, which
 /// copy the record). Returned as matrices (energies as 1×1) for bitwise
-/// comparison.
-fn consumers(digest: Option<JkDigest>) -> Vec<Array2<f64>> {
+/// comparison, with the pair-digest builds of each step.
+fn consumers(digest: Option<JkDigest>) -> Consumers {
     use ferric_scf::ks_gradient::ks_gradient_closed;
     use ferric_scf::zvector_ks::relaxation_gradient_closed;
     let ctx = ParallelContext::default();
     let mol = load("water.xyz", 1);
     let op = Operator::coulomb();
     let mut out = Vec::new();
+    let mut builds = Vec::new();
+    let mut push = |name: String, x: Array2<f64>, mo: bool| out.push(Output { name, x, mo });
     for (xc, basis_name) in [("PBE0", "cc-pvdz"), ("HYB_GGA_XC_WB97X", "6-31g")] {
         let bs = basis::bundled(basis_name).unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
@@ -701,85 +722,214 @@ fn consumers(digest: Option<JkDigest>) -> Vec<Array2<f64>> {
         }
         cfg.eri = EriMode::Direct;
         cfg.jk_digest = digest;
-        let res = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
+        let res = probed(|| solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap());
+        builds.push((format!("{xc} SCF"), res.builds.len()));
+        let res = res.out;
         assert!(res.converged, "{xc}: SCF not converged");
-        out.push(Array2::from_elem((1, 1), res.energy));
-        out.push(res.density_alpha.clone());
+        push(
+            format!("{xc} energy"),
+            Array2::from_elem((1, 1), res.energy),
+            false,
+        );
+        push(format!("{xc} density"), res.density_alpha.clone(), false);
         let n = prep.nbasis();
         let v = density(n, 3, true);
-        let z = relaxation_gradient_closed(&ctx, &mol, &prep, &bs, op, &bounds, &cfg, &res, &v)
-            .unwrap();
-        out.push(z.gradient);
-        out.push(z.z);
+        let z = probed(|| {
+            relaxation_gradient_closed(&ctx, &mol, &prep, &bs, op, &bounds, &cfg, &res, &v).unwrap()
+        });
+        builds.push((format!("{xc} Z-vector"), z.builds.len()));
+        push(format!("{xc} Z-vector gradient"), z.out.gradient, false);
+        push(format!("{xc} Z"), z.out.z, true);
         if xc == "PBE0" {
             let g = ks_gradient_closed(&mol, &prep, &bs, op, &bounds, xc, &res, None).unwrap();
-            out.push(g);
+            push(format!("{xc} KS gradient"), g, false);
             let d = density(n, 2, true);
             let (mut j, mut k) = (zeros(n), zeros(n));
-            ferric_scf::rhf::build_jk(&ctx, &prep, &bounds, THRESH, &d, &mut j, &mut k).unwrap();
-            out.push(j);
-            out.push(k);
+            let pooled = probed(|| {
+                ferric_scf::rhf::build_jk(&ctx, &prep, &bounds, THRESH, &d, &mut j, &mut k).unwrap()
+            });
+            builds.push((format!("{xc} pooled J/K"), pooled.builds.len()));
+            push(format!("{xc} pooled J"), j, false);
+            push(format!("{xc} pooled K"), k, false);
         }
     }
-    out
+    Consumers { out, builds }
+}
+
+/// `p` with the phases of `l`'s MO rows and columns: `p ≈ R l C` with `R`,
+/// `C` diagonal signs (an orbital's sign is arbitrary), read off the
+/// elements above 1e-6 of `max|l|` by propagating from the largest one,
+/// then undone. A single sign-reversed element does not fit `R l C`, so it
+/// still shows in the comparison.
+fn align_phases(p: &Array2<f64>, l: &Array2<f64>) -> Array2<f64> {
+    let (nr, nc) = l.dim();
+    let big = l.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+    let i0 = (0..nr * nc)
+        .max_by(|&x, &y| {
+            l[(x / nc, x % nc)]
+                .abs()
+                .total_cmp(&l[(y / nc, y % nc)].abs())
+        })
+        .map_or(0, |x| x / nc);
+    let (mut r, mut c) = (vec![0.0f64; nr], vec![0.0f64; nc]);
+    if nr > 0 {
+        r[i0] = 1.0;
+    }
+    loop {
+        let mut changed = false;
+        for i in 0..nr {
+            for j in 0..nc {
+                if l[(i, j)].abs() <= 1e-6 * big {
+                    continue;
+                }
+                let s = (p[(i, j)] * l[(i, j)]).signum();
+                if r[i] != 0.0 && c[j] == 0.0 {
+                    c[j] = s * r[i];
+                    changed = true;
+                } else if c[j] != 0.0 && r[i] == 0.0 {
+                    r[i] = s * c[j];
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let unit = |v: f64| if v == 0.0 { 1.0 } else { v };
+    Array2::from_shape_fn((nr, nc), |(i, j)| p[(i, j)] * unit(r[i]) * unit(c[j]))
+}
+
+/// The consumers' bits from a child process of this binary with an unset
+/// config `jk_digest` and `FERRIC_JK_DIGEST=legacy`: `(hash, name)` per
+/// output, in order.
+fn child_bits() -> Vec<(u64, String)> {
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["child_prints_unset_config_bits", "--exact", "--nocapture"])
+        .env(CHILD, "1")
+        .env("FERRIC_JK_DIGEST", "legacy")
+        .output()
+        .expect("spawn the child");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "child failed: {stdout}");
+    // One `JK_DIGEST_BITS <hash> <name>` line per output.
+    stdout
+        .lines()
+        .filter_map(|l| l.strip_prefix("JK_DIGEST_BITS "))
+        .map(|l| {
+            let (h, name) = l.split_once(' ').expect("hash and name");
+            (u64::from_str_radix(h, 16).unwrap(), name.trim().to_string())
+        })
+        .collect()
 }
 
 /// The config value reaches the J/K the consumers use: config `legacy` is
 /// bitwise an unset config under `FERRIC_JK_DIGEST=legacy` (a child process
 /// of this binary with the variable set; no test mutates its own
 /// environment), over the SCF, the KS gradient, the Z-vector (PBE0 and the
-/// range-separated wB97X) and pooled J/K. Config `pair` is not bitwise
-/// legacy (so the comparison can see the switch), and agrees with it
-/// within 1e-8 relative (the Z-vector gradient, the loosest, measured at
-/// about 2e-9).
+/// range-separated wB97X) and pooled J/K, output by output. Each step that
+/// runs direct builds (the SCFs, the Z-vectors, pooled J/K) went through
+/// the pair digest under config `pair` and never under `legacy`, so a step
+/// that dropped the setting is named. Config `pair` is not bitwise legacy,
+/// and agrees with it within 1e-8 relative, signed (the Z-vector gradient,
+/// the loosest, measured at about 2e-9; `Z` after aligning the MO phases).
 #[test]
 fn legacy_config_reaches_the_consumers_bitwise() {
     let legacy = consumers(Some(JkDigest::Legacy));
-    let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
-    cmd.args(["child_prints_unset_config_bits", "--exact", "--nocapture"])
-        .env(CHILD, "1")
-        .env("FERRIC_JK_DIGEST", "legacy");
-    let out = cmd.output().expect("spawn the child");
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "child failed: {stdout}");
-    let child = stdout
-        .lines()
-        .find_map(|l| l.strip_prefix("JK_DIGEST_BITS "))
-        .unwrap_or_else(|| panic!("no JK_DIGEST_BITS line: {stdout}"));
-    assert_eq!(
-        u64::from_str_radix(child.trim(), 16).unwrap(),
-        hash_bits(&legacy),
-        "config legacy is not the unset config under FERRIC_JK_DIGEST=legacy"
+    let child = child_bits();
+    assert_eq!(child.len(), legacy.out.len(), "child outputs: {child:?}");
+    let differ: Vec<&str> = child
+        .iter()
+        .zip(&legacy.out)
+        .filter(|((h, _), o)| *h != hash_bits([&o.x]))
+        .map(|((_, name), _)| name.as_str())
+        .collect();
+    assert!(
+        differ.is_empty(),
+        "config legacy is not the unset config under FERRIC_JK_DIGEST=legacy: {differ:?}"
     );
     let pair = consumers(Some(JkDigest::Pair));
+    for ((step, np), (_, nl)) in pair.builds.iter().zip(&legacy.builds) {
+        eprintln!("{step}: {np} pair-digest builds under pair, {nl} under legacy");
+        assert!(
+            *np > 0,
+            "{step}: config pair did not reach its direct builds"
+        );
+        assert_eq!(*nl, 0, "{step}: config legacy ran the pair digest");
+    }
     assert_ne!(
-        hash_bits(&pair),
-        hash_bits(&legacy),
+        hash_bits(pair.out.iter().map(|o| &o.x)),
+        hash_bits(legacy.out.iter().map(|o| &o.x)),
         "config pair is bitwise legacy: the switch did not reach the builds"
     );
-    // Element magnitudes: `Z` is in the MO basis, and the two SCFs may pick
-    // different signs for an orbital.
-    for (i, (p, l)) in pair.iter().zip(&legacy).enumerate() {
-        let e = p
-            .iter()
-            .zip(l.iter())
-            .fold(0.0f64, |m, (x, y)| m.max((x.abs() - y.abs()).abs()));
-        let scale = l.iter().fold(0.0f64, |m, v| m.max(v.abs()));
-        eprintln!("consumer [{i}]: pair vs legacy max|d| {e:.2e} (max|X| {scale:.2e})");
-        assert!(
-            e <= 1e-8 * scale.max(1.0),
-            "consumer [{i}]: pair vs legacy {e:e}"
-        );
+    for (p, l) in pair.out.iter().zip(&legacy.out) {
+        let name = &p.name;
+        let px = if p.mo {
+            align_phases(&p.x, &l.x)
+        } else {
+            p.x.clone()
+        };
+        let e = px.iter().zip(l.x.iter()).fold(0.0f64, |m, (x, y)| {
+            let d = (x - y).abs();
+            assert!(d.is_finite(), "{name}: non-finite difference {x} vs {y}");
+            m.max(d)
+        });
+        let scale = l.x.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        eprintln!("{name}: pair vs legacy max|d| {e:.2e} (max|X| {scale:.2e})");
+        assert!(e <= 1e-8 * scale.max(1.0), "{name}: pair vs legacy {e:e}");
     }
 }
 
-/// Child entry point of `legacy_config_reaches_the_consumers_bitwise`: the
-/// consumers of an SCF whose config left `jk_digest` unset, their bits
-/// printed. A no-op outside the child.
+/// Child entry point of `legacy_config_reaches_the_consumers_bitwise`
+/// ([`child_bits`]): the consumers of an SCF whose config left `jk_digest`
+/// unset, each output's bits printed. A no-op outside the child.
 #[test]
 fn child_prints_unset_config_bits() {
     if std::env::var_os(CHILD).is_none() {
         return;
     }
-    println!("JK_DIGEST_BITS {:016x}", hash_bits(&consumers(None)));
+    for o in consumers(None).out {
+        println!("JK_DIGEST_BITS {:016x} {}", hash_bits([&o.x]), o.name);
+    }
+}
+
+/// The open-shell guess Fock builds run the legacy digest whatever the
+/// SCF's (`SchwarzBounds::for_guess`): on fitted J and K the guess's are
+/// the only direct builds, so ROHF and UHF on config `pair` and `legacy`
+/// are bitwise one run, and none of their builds went through the pair
+/// digest. (The guess Fock of a linear open shell has a degenerate π pair
+/// whose last bits pick the hole orientation; see `for_guess`.)
+#[test]
+fn open_shell_guess_builds_do_not_follow_the_digest() {
+    let mol = load("oh.xyz", 2);
+    let prep = setup("oh.xyz", "6-31g*", 2);
+    let op = Operator::coulomb();
+    let ctx = ParallelContext::default();
+    for rohf in [true, false] {
+        let run = |digest: JkDigest| {
+            probed(|| {
+                let b = SchwarzBounds::compute(op, &prep).unwrap();
+                let mut c = RhfConfig::default();
+                c.df_j_aux = Some("def2-universal-jkfit".into());
+                c.df_k_aux = Some("def2-universal-jkfit".into());
+                c.jk_digest = Some(digest);
+                let r = if rohf {
+                    ferric_scf::rohf::solve_rohf(&ctx, &mol, &prep, op, &b, &c).unwrap()
+                } else {
+                    ferric_scf::uhf::solve_uhf(&ctx, &mol, &prep, &b, &c).unwrap()
+                };
+                assert!(r.converged);
+                (r.energy, r.density_total().to_owned())
+            })
+        };
+        let (p, l) = (run(JkDigest::Pair), run(JkDigest::Legacy));
+        let what = if rohf { "ROHF" } else { "UHF" };
+        assert!(
+            p.builds.is_empty() && l.builds.is_empty(),
+            "{what}: a guess build ran the pair digest: {:?}",
+            p.builds
+        );
+        assert_eq!(p.out.0.to_bits(), l.out.0.to_bits(), "{what} energy");
+        assert!(p.out.1 == l.out.1, "{what}: densities differ");
+    }
 }

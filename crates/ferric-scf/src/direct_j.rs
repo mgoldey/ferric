@@ -203,7 +203,7 @@ impl<'a> JBuilder for DirectJ<'a> {
             }
             computed_quartets.fetch_add(local_count, Ordering::Relaxed);
         };
-        let mut total_j = match self.bounds.digest.mode()? {
+        let mut total_j = match self.bounds.digest.mode_collective(self.ctx)? {
             JkDigest::Legacy => {
                 let mut total_j = Array2::<f64>::zeros((nbf, nbf));
                 crate::reduce::grouped_deterministic_sum(

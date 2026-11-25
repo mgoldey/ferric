@@ -470,13 +470,7 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
 /// `FERRIC_JK_DIGEST`, else `pair`), canonically spelled. A malformed
 /// variable keeps its raw text (the SCF itself refuses it).
 fn jk_digest_value(config: Option<crate::quartet_scatter::JkDigest>) -> String {
-    match crate::quartet_scatter::JkDigest::resolve(config) {
-        Ok(d) => d.as_str().to_string(),
-        Err(_) => format!(
-            "unresolved {:?}",
-            std::env::var(crate::quartet_scatter::JK_DIGEST_ENV).ok()
-        ),
-    }
+    crate::quartet_scatter::JkDigest::resolved_label(config)
 }
 
 /// Fields a file written before they existed lacks, with the value that file

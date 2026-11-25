@@ -183,7 +183,7 @@ impl<'a> KBuilder for DirectK<'a> {
             }
             computed_quartets.fetch_add(local_count, Ordering::Relaxed);
         };
-        let mut total_k = match self.bounds.digest.mode()? {
+        let mut total_k = match self.bounds.digest.mode_collective(self.ctx)? {
             JkDigest::Legacy => {
                 let mut total_k = Array2::<f64>::zeros((nbf, nbf));
                 crate::reduce::grouped_deterministic_sum(

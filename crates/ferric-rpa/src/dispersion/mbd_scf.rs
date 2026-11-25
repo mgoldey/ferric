@@ -819,6 +819,9 @@ pub fn mbd_rsscs_for_scf(
     })?;
     let prep = PreparedBasis::new(mol, bs)?;
     let bounds = SchwarzBounds::compute_for_screening(op, &prep, rhf_config.screening)?;
+    // The Z-vector's direct J/K follow the SCF's `jk_digest`, as on the
+    // SCF's own bounds (`quartet_scatter::DigestSlot`).
+    bounds.digest.set(rhf_config.jk_digest);
     let (relax, null_mode) = match result.spin {
         ferric_scf::Spin::Unrestricted => {
             let r = ferric_scf::zvector_ks::relaxation_gradient_unrestricted(

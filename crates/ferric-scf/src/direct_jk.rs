@@ -388,7 +388,7 @@ impl<'a> DirectJK<'a> {
                 w.build_uhf([&d[0], &d[1], &d[2]], jr, kar, kbr, sym, &mut scales)
             })
         };
-        self.sym_ref = if incremental { reference } else { scales };
+        self.sym_ref = next_sym_ref(incremental, computed.is_ok(), reference, scales);
         computed
     }
 
@@ -475,7 +475,7 @@ impl<'a> DirectJK<'a> {
                 w.build(&d[0], jr, kr, sym, &mut scales)
             })
         };
-        self.sym_ref = if incremental { reference } else { scales };
+        self.sym_ref = next_sym_ref(incremental, computed.is_ok(), reference, scales);
         computed
     }
 
@@ -538,6 +538,23 @@ fn sym_scale(incremental: bool, reference: Option<&[f64]>) -> crate::quartet_sca
     match (incremental, reference) {
         (true, Some(r)) => SymScale::Delta(r),
         _ => SymScale::Own,
+    }
+}
+
+/// The symmetry reference a builder keeps after a build: a successful full
+/// build's own scales (`None` when it ran the legacy digest); else, for an
+/// incremental build or a full build that failed, the reference it had (so
+/// a failed full build leaves the last successful one's in place).
+fn next_sym_ref(
+    incremental: bool,
+    ok: bool,
+    reference: Option<Vec<f64>>,
+    scales: Option<Vec<f64>>,
+) -> Option<Vec<f64>> {
+    if !incremental && ok {
+        scales
+    } else {
+        reference
     }
 }
 
@@ -693,44 +710,47 @@ impl Walk<'_> {
             }
             computed_quartets.fetch_add(local_count, Ordering::Relaxed);
         };
-        let (mut total_j, mut total_k_a, mut total_k_b) = match self.bounds.digest.mode()? {
-            JkDigest::Legacy => {
-                let mut total_j = Array2::<f64>::zeros((nbf, nbf));
-                let mut total_k_a = Array2::<f64>::zeros((nbf, nbf));
-                let mut total_k_b = Array2::<f64>::zeros((nbf, nbf));
-                crate::reduce::ordered_stream_sum_triple(
-                    &mut total_j,
-                    &mut total_k_a,
-                    &mut total_k_b,
-                    n_groups,
-                    nbf,
-                    band_bytes,
-                    |g| {
-                        let mut mode = JkMode::new_uhf(nbf, d_a, d_b);
-                        run(g, &mut mode);
-                        match mode {
-                            JkMode::Uhf(j, ka, kb, _, _) => Ok((j, ka, kb)),
-                            _ => unreachable!("DirectJK::build_uhf's legacy walk uses JkMode::Uhf"),
-                        }
-                    },
-                )?;
-                (total_j, total_k_a, total_k_b)
-            }
-            JkDigest::Pair => {
-                let spec = PairSpec::uhf(nbf, dims, d_total, d_a, d_b, sym);
-                let out = spec.sum_groups(self.ctx, n_groups, band_bytes, None, run)?;
-                *scales = Some(spec.scales());
-                let [k_a, k_b]: [Array2<f64>; 2] = out
-                    .k
-                    .try_into()
-                    .unwrap_or_else(|_| unreachable!("two spin K matrices"));
-                (
-                    out.j.expect("the open-shell pair digest builds J"),
-                    k_a,
-                    k_b,
-                )
-            }
-        };
+        let (mut total_j, mut total_k_a, mut total_k_b) =
+            match self.bounds.digest.mode_collective(self.ctx)? {
+                JkDigest::Legacy => {
+                    let mut total_j = Array2::<f64>::zeros((nbf, nbf));
+                    let mut total_k_a = Array2::<f64>::zeros((nbf, nbf));
+                    let mut total_k_b = Array2::<f64>::zeros((nbf, nbf));
+                    crate::reduce::ordered_stream_sum_triple(
+                        &mut total_j,
+                        &mut total_k_a,
+                        &mut total_k_b,
+                        n_groups,
+                        nbf,
+                        band_bytes,
+                        |g| {
+                            let mut mode = JkMode::new_uhf(nbf, d_a, d_b);
+                            run(g, &mut mode);
+                            match mode {
+                                JkMode::Uhf(j, ka, kb, _, _) => Ok((j, ka, kb)),
+                                _ => unreachable!(
+                                    "DirectJK::build_uhf's legacy walk uses JkMode::Uhf"
+                                ),
+                            }
+                        },
+                    )?;
+                    (total_j, total_k_a, total_k_b)
+                }
+                JkDigest::Pair => {
+                    let mut spec = PairSpec::uhf(nbf, dims, d_total, d_a, d_b, sym);
+                    let out = spec.sum_groups(self.ctx, n_groups, band_bytes, None, run)?;
+                    *scales = Some(spec.scales());
+                    let [k_a, k_b]: [Array2<f64>; 2] = out
+                        .k
+                        .try_into()
+                        .unwrap_or_else(|_| unreachable!("two spin K matrices"));
+                    (
+                        out.j.expect("the open-shell pair digest builds J"),
+                        k_a,
+                        k_b,
+                    )
+                }
+            };
 
         // MPI: reduce the rank-LOCAL partials, THEN accumulate. Reducing `j`/`k_a`/
         // `k_b` instead would also sum the caller's pre-existing contents, which on
@@ -832,7 +852,7 @@ impl Walk<'_> {
         let screen = DensityScreen::SixPair(&d_max_shell);
 
         let band_bytes = crate::reduce::resolve_band_bytes(self.mem_budget);
-        let digest = self.bounds.digest.mode()?;
+        let digest = self.bounds.digest.mode_collective(self.ctx)?;
         let profile = profile_t0.map(|t0| BuildProfile::new(t0, n_pairs, n_groups, digest));
         let job = GroupJob {
             pool,
@@ -874,7 +894,7 @@ impl Walk<'_> {
             JkDigest::Pair => {
                 // Half partials summed in group order, then `finish` (linear,
                 // so it commutes with the rank reduction below).
-                let spec = PairSpec::both(nbf, prep.shell_dims(), d, sym);
+                let mut spec = PairSpec::both(nbf, prep.shell_dims(), d, sym);
                 let mut out = spec.sum_groups(
                     self.ctx,
                     n_groups,
@@ -1108,6 +1128,19 @@ mod tests {
     use ferric_core::basis;
     use ferric_core::mol::Molecule;
     use ferric_integrals::operator::Operator;
+
+    /// A full build replaces the symmetry reference only when it succeeds;
+    /// an incremental build, or a full build that failed, keeps it.
+    #[test]
+    fn a_failed_full_build_keeps_the_symmetry_reference() {
+        let prev = Some(vec![2.0]);
+        let new = Some(vec![3.0]);
+        assert_eq!(next_sym_ref(false, true, prev.clone(), new.clone()), new);
+        assert_eq!(next_sym_ref(false, true, prev.clone(), None), None);
+        assert_eq!(next_sym_ref(false, false, prev.clone(), None), prev);
+        assert_eq!(next_sym_ref(true, true, prev.clone(), None), prev);
+        assert_eq!(next_sym_ref(true, false, prev.clone(), None), prev);
+    }
 
     /// Regression guard for the grouped deterministic reduction: J and K from
     /// the direct builders (DirectJK combined, DirectJ, DirectK) must be

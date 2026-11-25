@@ -606,9 +606,13 @@ pub(crate) fn scatter_bra_pair_probed<const PROBE: bool>(
     );
 
     let mut local_count = 0usize;
+    // The legacy digests' tile scratch; the pair digest has its own
+    // (`PairJk`) and never reads this one.
     let mut scratch = DigestScratch::default();
-    scratch.ensure(dims.iter().copied().max().unwrap_or(1));
-    scratch.prepare(mode, d, offs, dims, s1, s2);
+    if !matches!(mode, JkMode::Pair(_)) {
+        scratch.ensure(dims.iter().copied().max().unwrap_or(1));
+        scratch.prepare(mode, d, offs, dims, s1, s2);
+    }
     let b12 = q_table[(s1, s2)];
     let (n1, n2) = (dims[s1], dims[s2]);
     let (o1, o2) = (offs[s1], offs[s2]);
@@ -1243,7 +1247,8 @@ pub const JK_DIGEST_ENV: &str = "FERRIC_JK_DIGEST";
 /// (`DirectJK`, `DirectJ`, `DirectK`, `rhf::build_jk_with_pool`) follow it.
 /// The block-CPHF multi-density build, the open-shell response build, the
 /// in-core store, LinK, CFMM, density fitting and the gradients keep their
-/// own digests.
+/// own digests; the open-shell guess Fock always runs `Legacy`
+/// ([`SchwarzBounds::for_guess`](crate::screening::SchwarzBounds)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum JkDigest {
     /// The bra-pair-local digest. The default.
@@ -1294,6 +1299,17 @@ impl JkDigest {
             .resolve(explicit, ferric_core::config::env_lookup)
             .map(|r| r.value)
             .map_err(|e| FerricError::General(format!("{JK_DIGEST_ENV}: {e}")))
+    }
+
+    /// [`resolve`](Self::resolve) for a record (a run log, a checkpoint
+    /// identity): the canonical spelling of the digest the builds run, or,
+    /// for a malformed variable, `unresolved` with its raw text (the builds
+    /// themselves refuse it).
+    pub fn resolved_label(explicit: Option<JkDigest>) -> String {
+        match Self::resolve(explicit) {
+            Ok(d) => d.as_str().to_string(),
+            Err(_) => format!("unresolved {:?}", std::env::var(JK_DIGEST_ENV).ok()),
+        }
     }
 
     /// The parsed `FERRIC_JK_DIGEST` of this process (unset = `pair`).
@@ -1354,6 +1370,33 @@ impl DigestSlot {
     /// the record).
     pub fn mode(&self) -> Result<JkDigest, FerricError> {
         JkDigest::resolve(self.recorded())
+    }
+
+    /// [`mode`](Self::mode) agreed across the MPI ranks of `ctx`: every
+    /// rank runs the same digest, or every rank returns an error, before
+    /// the build's first collective (the pair digest reserves its memory
+    /// with one, the legacy digest does not, so ranks on different digests
+    /// would issue different collectives). A rank whose own resolution
+    /// failed returns that error; the others name the disagreement. Without
+    /// MPI, or at one rank, this is `mode`.
+    pub(crate) fn mode_collective(
+        &self,
+        ctx: &ferric_core::parallel::ParallelContext,
+    ) -> Result<JkDigest, FerricError> {
+        use crate::direct_jk::gc_rotation::all_ranks_agree;
+        let local = self.mode();
+        // Two collectives on every rank, whatever it resolved.
+        let all_pair = all_ranks_agree(ctx, matches!(local, Ok(JkDigest::Pair)));
+        let all_legacy = all_ranks_agree(ctx, matches!(local, Ok(JkDigest::Legacy)));
+        match local {
+            Ok(d) if all_pair || all_legacy => Ok(d),
+            Ok(d) => Err(FerricError::General(format!(
+                "J/K digest: this rank resolved {d}, another MPI rank a different digest \
+                 or none ({JK_DIGEST_ENV} differs between ranks); set [scf] jk_digest, \
+                 or the variable alike on every rank"
+            ))),
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -1451,6 +1494,15 @@ impl<'a> PairMat<'a> {
         }
     }
 
+    /// Doubles [`PairMat::standard`] copies for `d`.
+    fn standard_len(d: &Array2<f64>) -> usize {
+        if d.is_standard_layout() {
+            0
+        } else {
+            d.len()
+        }
+    }
+
     fn get(&self) -> &Array2<f64> {
         match self {
             PairMat::Borrowed(d) => d,
@@ -1459,6 +1511,7 @@ impl<'a> PairMat<'a> {
     }
 
     /// Doubles held beyond the caller's matrix.
+    #[cfg(test)]
     fn owned_len(&self) -> usize {
         match self {
             PairMat::Borrowed(_) => 0,
@@ -1467,63 +1520,101 @@ impl<'a> PairMat<'a> {
     }
 }
 
-/// One exchange density of the pair digest, prepared once per build.
+/// One exchange density of the pair digest.
+///
+/// Planned when its [`PairSpec`] is made (the symmetry check and `max|D|`,
+/// no allocation), prepared ([`PairDensity::materialize`]) once the build
+/// has reserved the memory of its copies ([`PairSpec::sum_groups`]).
 #[derive(Debug)]
 pub(crate) struct PairDensity<'a> {
+    /// The caller's density.
+    src: &'a Array2<f64>,
+    /// `src` is not symmetric to roundoff: the general kernel.
+    general: bool,
     /// The density the kernel reads, standard layout: `½(D + Dᵀ)` (exactly
     /// symmetric, owned) when `D` is symmetric to roundoff, else `D` itself
-    /// (borrowed when it is already in standard layout).
+    /// (borrowed when it is already in standard layout). `src` until
+    /// materialized.
     d: PairMat<'a>,
-    /// `Dᵀ` in standard layout for a non-symmetric `D`; `None` otherwise
-    /// (the general kernel then reads `d` for `Dᵀ`, which it equals).
+    /// `Dᵀ` in standard layout for a non-symmetric `D` once materialized;
+    /// `None` otherwise (the general kernel then reads `d` for `Dᵀ`, which
+    /// it equals).
     dt: Option<Array2<f64>>,
     /// `max|D|` (finite elements; the symmetry check's own scale).
     scale: f64,
 }
 
 impl<'a> PairDensity<'a> {
-    /// `d` prepared: symmetrised explicitly when it is symmetric to roundoff
-    /// ([`is_symmetric_to_roundoff`] against `reference`), so the result does
-    /// not depend on which triangle the kernel reads and K comes out exactly
-    /// symmetric; kept as is, with its transpose, otherwise (the general
-    /// kernel).
-    pub(crate) fn prepare(d: &'a Array2<f64>, reference: Option<f64>) -> Self {
+    /// `d` planned: symmetric to roundoff ([`is_symmetric_to_roundoff`]
+    /// against `reference`) or not, and its scale. Allocates nothing.
+    fn plan(d: &'a Array2<f64>, reference: Option<f64>) -> Self {
+        PairDensity {
+            src: d,
+            general: !is_symmetric_to_roundoff(d, reference),
+            d: PairMat::Borrowed(d),
+            dt: None,
+            scale: symmetry_stats(d).map_or(0.0, |s| s.1),
+        }
+    }
+
+    /// The planned density prepared: symmetrised explicitly when it is
+    /// symmetric to roundoff, so the result does not depend on which
+    /// triangle the kernel reads and K comes out exactly symmetric; kept as
+    /// is, with its transpose, otherwise (the general kernel).
+    fn materialize(&mut self) {
+        let d = self.src;
         let n = d.nrows();
-        let scale = symmetry_stats(d).map_or(0.0, |s| s.1);
-        if is_symmetric_to_roundoff(d, reference) {
+        if self.general {
+            let mut dt = Array2::<f64>::zeros((d.ncols(), n));
+            dt.assign(&d.t());
+            self.d = PairMat::standard(d);
+            self.dt = Some(dt);
+        } else {
             let mut s = Array2::<f64>::zeros((n, n));
             for i in 0..n {
                 for j in 0..=i {
-                    let v = 0.5 * (d[(i, j)] + d[(j, i)]);
+                    let v = midpoint(d[(i, j)], d[(j, i)]);
                     s[(i, j)] = v;
                     s[(j, i)] = v;
                 }
             }
-            PairDensity {
-                d: PairMat::Owned(s),
-                dt: None,
-                scale,
-            }
-        } else {
-            let mut dt = Array2::<f64>::zeros((d.ncols(), n));
-            dt.assign(&d.t());
-            PairDensity {
-                d: PairMat::standard(d),
-                dt: Some(dt),
-                scale,
-            }
+            self.d = PairMat::Owned(s);
         }
+    }
+
+    /// [`plan`](Self::plan) then [`materialize`](Self::materialize).
+    #[cfg(test)]
+    pub(crate) fn prepare(d: &'a Array2<f64>, reference: Option<f64>) -> Self {
+        let mut p = Self::plan(d, reference);
+        p.materialize();
+        p
     }
 
     /// Whether this density is not symmetric to roundoff.
     pub(crate) fn is_general(&self) -> bool {
-        self.dt.is_some()
+        self.general
     }
 
-    /// Doubles this density holds beyond its input (the symmetrised copy,
-    /// a standard-layout copy, the transpose).
+    /// Doubles this density holds beyond its input once materialized (the
+    /// symmetrised copy, or a standard-layout copy and the transpose).
     fn owned_len(&self) -> usize {
-        self.d.owned_len() + self.dt.as_ref().map_or(0, |t| t.len())
+        if self.general {
+            PairMat::standard_len(self.src) + self.src.len()
+        } else {
+            self.src.len()
+        }
+    }
+}
+
+/// `½(a + b)` of two finite values, finite whenever the midpoint is:
+/// `0.5 · (a + b)` (exact but for the one rounding of the sum), else, when
+/// the sum overflows, `0.5·a + 0.5·b` (equal values stay as they are).
+fn midpoint(a: f64, b: f64) -> f64 {
+    let s = a + b;
+    if s.is_finite() {
+        0.5 * s
+    } else {
+        0.5 * a + 0.5 * b
     }
 }
 
@@ -1532,8 +1623,12 @@ impl<'a> PairDensity<'a> {
 enum PairJd<'a> {
     /// K only.
     None,
-    /// Its own (borrowed when the input is in standard layout).
-    Own(PairMat<'a>),
+    /// Its own: the caller's `src`, read as `mat` (borrowed when `src` is
+    /// in standard layout, else a copy made when the spec is materialized).
+    Own {
+        src: &'a Array2<f64>,
+        mat: PairMat<'a>,
+    },
     /// The first exchange density (the closed-shell job: J of the
     /// symmetrised density equals J of `D`, whose symmetric part is all J
     /// reads, and a non-symmetric `D` is read as it is).
@@ -1557,6 +1652,8 @@ pub(crate) struct PairSpec<'a> {
     max_dim: usize,
     /// Quartets the kernel digested (summed from the group accumulators).
     quartets: std::sync::atomic::AtomicUsize,
+    /// The densities are prepared ([`PairSpec::materialize`]).
+    prepared: bool,
     /// Time spent preparing the densities (`FERRIC_TIMING`).
     prep_ns: u64,
 }
@@ -1589,12 +1686,15 @@ impl<'a> PairSpec<'a> {
         let kd: Vec<PairDensity<'a>> = kd
             .iter()
             .enumerate()
-            .map(|(c, d)| PairDensity::prepare(d, sym.reference(c)))
+            .map(|(c, d)| PairDensity::plan(d, sym.reference(c)))
             .collect();
         let general = kd.iter().any(PairDensity::is_general);
         let jd = match jd {
             None => PairJd::None,
-            Some(d) => PairJd::Own(PairMat::standard(d)),
+            Some(d) => PairJd::Own {
+                src: d,
+                mat: PairMat::Borrowed(d),
+            },
         };
         PairSpec {
             jd,
@@ -1603,8 +1703,49 @@ impl<'a> PairSpec<'a> {
             nbf,
             max_dim: dims.iter().copied().max().unwrap_or(1),
             quartets: std::sync::atomic::AtomicUsize::new(0),
+            prepared: false,
             prep_ns: ns_since(t0),
         }
+    }
+
+    /// Prepare the planned densities (the copies [`charged_bytes`]
+    /// counts): after the build's reservation, so a refused one allocates
+    /// none of them. Idempotent.
+    ///
+    /// [`charged_bytes`]: Self::charged_bytes
+    fn materialize(&mut self) {
+        if self.prepared {
+            return;
+        }
+        let t0 = std::time::Instant::now();
+        for p in &mut self.kd {
+            p.materialize();
+        }
+        if let PairJd::Own { src, mat } = &mut self.jd {
+            *mat = PairMat::standard(src);
+        }
+        self.prepared = true;
+        self.prep_ns += ns_since(t0);
+    }
+
+    /// Every density this spec contracts is `nbf × nbf`; else the kernel,
+    /// which indexes them with stride `nbf`, would read past the matrix.
+    fn check_shapes(&self) -> Result<(), FerricError> {
+        let want = (self.nbf, self.nbf);
+        let jd = match &self.jd {
+            PairJd::Own { src, .. } => Some(*src),
+            _ => None,
+        };
+        for d in jd.into_iter().chain(self.kd.iter().map(|p| p.src)) {
+            if d.dim() != want {
+                return Err(FerricError::General(format!(
+                    "direct J/K (pair digest): density shape {:?}, expected {want:?} \
+                     (prep.nbasis())",
+                    d.dim()
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Closed-shell J and K of `d` (`JkMode::Both`'s job). J reads the
@@ -1678,7 +1819,7 @@ impl<'a> PairSpec<'a> {
     fn jd(&self) -> Option<&Array2<f64>> {
         match &self.jd {
             PairJd::None => None,
-            PairJd::Own(d) => Some(d.get()),
+            PairJd::Own { mat, .. } => Some(mat.get()),
             PairJd::Channel0 => Some(self.kd[0].d.get()),
         }
     }
@@ -1691,10 +1832,11 @@ impl<'a> PairSpec<'a> {
     }
 
     /// Bytes this build holds beyond the legacy digest's: the prepared
-    /// density copies and the half accumulators.
+    /// density copies and the half accumulators (from the plan, so known
+    /// before any is allocated).
     fn charged_bytes(&self) -> usize {
         let own_j = match &self.jd {
-            PairJd::Own(d) => d.owned_len(),
+            PairJd::Own { src, .. } => PairMat::standard_len(src),
             _ => 0,
         };
         let own: usize = own_j + self.kd.iter().map(PairDensity::owned_len).sum::<usize>();
@@ -1709,8 +1851,9 @@ impl<'a> PairSpec<'a> {
             .collect()
     }
 
-    /// A fresh group accumulator.
+    /// A fresh group accumulator (on a materialized spec).
     pub(crate) fn mode(&self) -> JkMode<'_> {
+        debug_assert!(self.prepared, "pair digest: mode() before materialize()");
         JkMode::Pair(Box::new(PairJk {
             spec: self,
             mats: self.zeros(),
@@ -1730,9 +1873,10 @@ impl<'a> PairSpec<'a> {
     /// ([`PairSpec::finish`]; linear, so it commutes with the rank
     /// reduction the caller applies next). The density copies and
     /// accumulators are charged to the memory pool for the build (on every
-    /// rank or none).
+    /// rank or none) before any of them is allocated, and held through the
+    /// fold. A density that is not `nbf × nbf` is an error.
     pub(crate) fn sum_groups<F>(
-        &self,
+        &mut self,
         ctx: &ferric_core::parallel::ParallelContext,
         n_groups: usize,
         band_bytes: usize,
@@ -1742,6 +1886,7 @@ impl<'a> PairSpec<'a> {
     where
         F: Fn(usize, &mut JkMode<'_>) + Sync,
     {
+        self.check_shapes()?;
         let _charge = crate::direct_jk::gc_rotation::reserve_collective(
             ctx,
             &format!(
@@ -1750,6 +1895,7 @@ impl<'a> PairSpec<'a> {
             ),
             self.charged_bytes(),
         )?;
+        self.materialize();
         let mut halves = self.zeros();
         crate::reduce::ordered_stream_sum_many(
             &mut halves,
@@ -2515,11 +2661,14 @@ mod tests {
             "none (J only)"
         );
         assert_eq!(PairSpec::k_only(9, &dims, &g).n_partials(), 2);
-        let k_spec = PairSpec::k_only(9, &dims, &s);
+        let mut k_spec = PairSpec::k_only(9, &dims, &s);
+        k_spec.materialize();
         let m = k_spec.mode();
         assert!(!m.accumulates_j());
         assert_eq!(m.label(), "Pair");
-        assert!(PairSpec::j_only(9, &dims, &s).mode().accumulates_j());
+        let mut j_spec = PairSpec::j_only(9, &dims, &s);
+        j_spec.materialize();
+        assert!(j_spec.mode().accumulates_j());
         // The closed-shell J reads the prepared exchange density: no copy.
         let both = PairSpec::both(9, &dims, &g, own);
         assert!(std::ptr::eq(both.jd().unwrap().as_ptr(), g.as_ptr()));
@@ -2535,8 +2684,111 @@ mod tests {
             "½(D+Dᵀ) and two partials"
         );
         // The open-shell J of a standard-layout total is borrowed.
-        let uhf = PairSpec::uhf(9, &dims, &sa, &s, &a, own);
+        let mut uhf = PairSpec::uhf(9, &dims, &sa, &s, &a, own);
+        uhf.materialize();
         assert!(std::ptr::eq(uhf.jd().unwrap().as_ptr(), sa.as_ptr()));
+    }
+
+    /// The copies [`PairSpec::charged_bytes`] counts are made only by
+    /// `materialize` (after the build's reservation): a planned spec holds
+    /// none, and the charge read before agrees with what is held after.
+    #[test]
+    fn pair_spec_allocates_its_copies_only_when_materialized() {
+        let dims = [1usize, 3, 5];
+        let own = SymScale::Own;
+        let s = sym_matrix(9, 3);
+        let mut g = s.clone();
+        g[(0, 8)] += 1e-4;
+        let f = s.t().to_owned();
+        assert!(!f.is_standard_layout());
+        let held = |spec: &PairSpec<'_>| {
+            let j = match &spec.jd {
+                PairJd::Own { mat, .. } => mat.owned_len(),
+                _ => 0,
+            };
+            j + spec
+                .kd
+                .iter()
+                .map(|p| p.d.owned_len() + p.dt.as_ref().map_or(0, |t| t.len()))
+                .sum::<usize>()
+        };
+        for mut spec in [
+            PairSpec::both(9, &dims, &s, own),
+            PairSpec::both(9, &dims, &g, own),
+            PairSpec::uhf(9, &dims, &f, &s, &g, own),
+            PairSpec::j_only(9, &dims, &f),
+            PairSpec::k_only(9, &dims, &f),
+        ] {
+            assert_eq!(held(&spec), 0, "a planned spec holds no copy");
+            let charged = spec.charged_bytes();
+            spec.materialize();
+            assert_eq!(
+                (held(&spec) + spec.n_partials() * 81) * 8,
+                charged,
+                "{}",
+                spec.kernel_label()
+            );
+        }
+    }
+
+    /// Without MPI the rank agreement is the slot's own resolution.
+    #[test]
+    fn digest_mode_collective_is_mode_at_one_rank() {
+        let ctx = ferric_core::parallel::ParallelContext::default();
+        let slot = DigestSlot::default();
+        for d in [JkDigest::Pair, JkDigest::Legacy] {
+            slot.set(Some(d));
+            assert_eq!(slot.mode_collective(&ctx).unwrap(), d);
+        }
+        slot.set(None);
+        assert_eq!(
+            slot.mode_collective(&ctx).ok(),
+            JkDigest::env_setting().ok()
+        );
+    }
+
+    /// A density that is not `nbf × nbf` is refused before the kernel
+    /// (which indexes it with stride `nbf`) or any allocation.
+    #[test]
+    fn pair_spec_refuses_a_density_of_the_wrong_shape() {
+        let ctx = ferric_core::parallel::ParallelContext::default();
+        let dims = [1usize, 1, 1];
+        let run = |_: usize, _: &mut JkMode<'_>| unreachable!("no group runs");
+        let bad = Array2::<f64>::zeros((2, 3));
+        let ok = sym_matrix(3, 1);
+        let wide = Array2::<f64>::zeros((3, 4));
+        for mut spec in [
+            PairSpec::both(3, &dims, &bad, SymScale::Own),
+            PairSpec::k_only(3, &dims, &wide),
+            PairSpec::j_only(3, &dims, &bad),
+            PairSpec::uhf(3, &dims, &bad, &ok, &ok, SymScale::Own),
+            PairSpec::uhf(3, &dims, &ok, &ok, &wide, SymScale::Own),
+            PairSpec::both(2, &[1, 1], &ok, SymScale::Own),
+        ] {
+            let e = spec.sum_groups(&ctx, 1, 1 << 20, None, run).unwrap_err();
+            assert!(e.to_string().contains("density shape"), "{e}");
+            assert!(!spec.prepared);
+        }
+    }
+
+    /// The symmetrised density of a finite matrix stays finite where the
+    /// plain `½(a + b)` would overflow, and is that expression bit for bit
+    /// wherever the sum is finite.
+    #[test]
+    fn symmetrising_does_not_overflow() {
+        let d = Array2::from_elem((1, 1), 1e308);
+        let p = PairDensity::prepare(&d, None);
+        assert_eq!(p.d.get()[(0, 0)], 1e308);
+        let mut d = Array2::from_elem((2, 2), f64::MAX);
+        d[(0, 1)] = f64::MAX * (1.0 - 1e-15);
+        d[(1, 0)] = f64::MAX;
+        let p = PairDensity::prepare(&d, None);
+        assert!(!p.is_general());
+        assert!(p.d.get().iter().all(|v| v.is_finite()));
+        assert_eq!(p.d.get()[(0, 0)], f64::MAX);
+        for (a, b) in [(0.1, 0.3), (1e-300, 3e-310), (-2.5, 7.0), (5e-324, 5e-324)] {
+            assert_eq!(midpoint(a, b).to_bits(), (0.5 * (a + b)).to_bits());
+        }
     }
 
     /// `finish`: `J = Jh + Jhᵀ`, `K = Kb + Kbᵀ` (symmetric) or `Kb + Ktᵀ`.

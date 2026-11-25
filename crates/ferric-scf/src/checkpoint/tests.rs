@@ -1104,7 +1104,13 @@ fn identity_table() -> Vec<(&'static str, FieldClass, Mutator)> {
             s.config.gc_rotation = Some(crate::direct_jk::GcRotate::Off);
         }),
         ("jk_digest", Route, |s| {
-            s.config.jk_digest = Some(crate::quartet_scatter::JkDigest::Legacy);
+            // The digest the unset baseline does not resolve to, whatever
+            // `FERRIC_JK_DIGEST` this process inherited.
+            use crate::quartet_scatter::JkDigest;
+            s.config.jk_digest = Some(match JkDigest::env_setting() {
+                Ok(JkDigest::Legacy) => JkDigest::Pair,
+                _ => JkDigest::Legacy,
+            });
         }),
         ("relativistic", Method, |s| {
             s.config.relativistic = Some(crate::x2c::Relativistic::X2c1e);

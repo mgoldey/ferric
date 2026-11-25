@@ -4573,7 +4573,7 @@ pub fn build_jk_with_pool(
         }
         computed_quartets.fetch_add(local_count, std::sync::atomic::Ordering::Relaxed);
     };
-    let (mut total_j, mut total_k) = match bounds.digest.mode()? {
+    let (mut total_j, mut total_k) = match bounds.digest.mode_collective(ctx)? {
         JkDigest::Legacy => {
             let mut total_j = Array2::<f64>::zeros((nbf, nbf));
             let mut total_k = Array2::<f64>::zeros((nbf, nbf));
