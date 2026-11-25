@@ -31,7 +31,23 @@ use std::process::Command;
 mod cli_bin;
 use cli_bin::ferric_cli_bin;
 
+/// The workspace root at RUN time: the nearest ancestor of the current
+/// directory that looks like it (a relocated nextest archive runs from an
+/// extracted copy, where the compile-time `CARGO_MANIFEST_DIR` does not
+/// exist), else the compile-time path (as `full_examples_anchor` does).
 fn workspace_root() -> PathBuf {
+    let looks_like_root = |p: &Path| {
+        p.join("Cargo.toml").is_file() && p.join("examples").is_dir() && p.join("testdata").is_dir()
+    };
+    if let Ok(cwd) = std::env::current_dir() {
+        let mut here: Option<&Path> = Some(cwd.as_path());
+        while let Some(p) = here {
+            if looks_like_root(p) {
+                return p.to_path_buf();
+            }
+            here = p.parent();
+        }
+    }
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
