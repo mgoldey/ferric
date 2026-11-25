@@ -409,3 +409,43 @@ fn kernel_scf_is_bitwise_across_thread_counts() {
         assert_eq!(e.to_bits(), e1.to_bits(), "{t} threads: {e} vs {e1}");
     }
 }
+
+/// The kernel's MPI work split, without MPI: the builds of ranks 0 and 1 of
+/// two (`ParallelContext::for_rank`; the rank reduction is the caller's sum
+/// here) add up to the one-rank J and K, serve the same quartets, and
+/// evaluate exactly as many group quartets (the striping never splits a
+/// bra bucket across ranks, so no group block is computed twice).
+#[test]
+fn two_rank_split_sums_to_the_one_rank_build() {
+    let mol = load("c2h4", 1);
+    let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+    let on = bounds(&prep, ScreeningKind::Schwarz, Some(GcKernel::Auto), None);
+    let n = prep.nbasis();
+    let d = density(n, 0);
+    let run = |ctx: &ParallelContext| {
+        let mut djk =
+            DirectJK::new(ctx, &prep, &on, THRESH, usize::MAX).with_gc_rotation(GcRotate::Auto);
+        let (mut j, mut k) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
+        kernel_probe::start();
+        djk.build(&d, &mut j, &mut k).unwrap();
+        let c = kernel_probe::take();
+        assert_eq!(c.len(), 1);
+        (j, k, c[0])
+    };
+    let (j1, k1, c1) = run(&ParallelContext::default());
+    let (ja, ka, ca) = run(&ParallelContext::for_rank(0, 2));
+    let (jb, kb, cb) = run(&ParallelContext::for_rank(1, 2));
+    assert!(
+        ca.quartets > 0 && cb.quartets > 0,
+        "both ranks ran the kernel"
+    );
+    assert_eq!(ca.quartets + cb.quartets, c1.quartets);
+    assert_eq!(
+        ca.evals + cb.evals,
+        c1.evals,
+        "a bucket was split across ranks"
+    );
+    let (ej, ek) = (max_abs(&(&ja + &jb), &j1), max_abs(&(&ka + &kb), &k1));
+    eprintln!("two ranks: max|dJ| {ej:.2e} max|dK| {ek:.2e}; {ca:?} + {cb:?} = {c1:?}");
+    assert!(ej <= JK_TOL && ek <= JK_TOL, "{ej:e} {ek:e}");
+}
