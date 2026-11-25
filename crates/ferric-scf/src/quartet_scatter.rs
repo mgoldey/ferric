@@ -157,6 +157,13 @@ impl<'d> JkMode<'d> {
                 p.spec
                     .quartets
                     .fetch_add(p.quartets, std::sync::atomic::Ordering::Relaxed);
+                if let Some(c) = &p.gck {
+                    if let Ok(mut k) = p.spec.kernel.lock() {
+                        let mut mine = c.counts;
+                        mine.caches = usize::from(mine.buckets > 0);
+                        k.add(&mine);
+                    }
+                }
                 p.mats
             }
             other => unreachable!("a pair-digest walk got JkMode::{}", other.label()),
@@ -540,6 +547,9 @@ pub(crate) struct ScatterTimes {
     pub(crate) libint_ns: u64,
     /// Contracting the returned block into J/K (the 8-fold digestion).
     pub(crate) digest_ns: u64,
+    /// The shared-primitive kernel (`[scf] gc_kernel`): group-block
+    /// evaluation and the gather of each column quartet.
+    pub(crate) kernel_ns: u64,
     /// Quartets that passed the screen (computed or zero-screened by libint2).
     pub(crate) survivors: u64,
     /// `(s3, s4)` candidates the screen looked at.
@@ -551,6 +561,7 @@ impl ScatterTimes {
     pub(crate) fn add(&mut self, other: &ScatterTimes) {
         self.libint_ns += other.libint_ns;
         self.digest_ns += other.digest_ns;
+        self.kernel_ns += other.kernel_ns;
         self.survivors += other.survivors;
         self.candidates += other.candidates;
     }
@@ -647,9 +658,15 @@ pub(crate) fn scatter_bra_pair_probed<const PROBE: bool>(
     });
 
     // The pair digest's per-bra-pair start (its `end` follows the loop).
+    // With the shared-primitive kernel (`direct_jk::gc_kernel`), the bra
+    // pair's bucket when the kernel serves its `l <= 1` kets.
+    let mut kbra = None;
     if let JkMode::Pair(p) = mode {
         let t = PROBE.then(std::time::Instant::now);
         p.begin(dims, offs, s1, s2);
+        if let Some(c) = p.gck.as_mut() {
+            kbra = c.begin(s1, s2);
+        }
         if let Some(t) = t {
             times.digest_ns += ns_since(t);
         }
@@ -726,6 +743,14 @@ pub(crate) fn scatter_bra_pair_probed<const PROBE: bool>(
 
             if PROBE {
                 times.survivors += 1;
+            }
+            // The shared-primitive kernel: the column quartet from its
+            // group block, digested like a libint block.
+            if let (Some((bra, l12)), JkMode::Pair(p)) = (kbra, &mut *mode) {
+                if p.kernel_quartet::<PROBE>(bra, l12, [s1, s2, s3, s4], dims, offs, times) {
+                    local_count += 1;
+                    continue;
+                }
             }
             let t_lib = PROBE.then(std::time::Instant::now);
             let block = engine.compute_quartet(prep, s1, s2, s3, s4);
@@ -1671,6 +1696,11 @@ pub(crate) struct PairSpec<'a> {
     max_dim: usize,
     /// Quartets the kernel digested (summed from the group accumulators).
     quartets: std::sync::atomic::AtomicUsize,
+    /// The shared-primitive kernel of a rotated walk (`[scf] gc_kernel`):
+    /// every group accumulator serves the `l <= 1` quartets from it.
+    gck: Option<&'a ferric_integrals::gc_kernel::GcKernelBasis>,
+    /// Its counts, summed from the group accumulators.
+    kernel: std::sync::Mutex<crate::direct_jk::gc_kernel::KernelCounts>,
     /// The densities are prepared ([`PairSpec::materialize`]).
     prepared: bool,
     /// Time spent preparing the densities (`FERRIC_TIMING`).
@@ -1722,6 +1752,8 @@ impl<'a> PairSpec<'a> {
             nbf,
             max_dim: dims.iter().copied().max().unwrap_or(1),
             quartets: std::sync::atomic::AtomicUsize::new(0),
+            gck: None,
+            kernel: Default::default(),
             prepared: false,
             prep_ns: ns_since(t0),
         }
@@ -1797,6 +1829,21 @@ impl<'a> PairSpec<'a> {
     /// K of `d` only.
     pub(crate) fn k_only(nbf: usize, dims: &[usize], d: &'a Array2<f64>) -> Self {
         Self::new(nbf, dims, None, &[d], SymScale::Own)
+    }
+
+    /// Serve the `l1 + l2 + l3 + l4 <= 1` quartets of the walk from the
+    /// shared-primitive kernel `kb` (built for the walk's basis).
+    pub(crate) fn with_gc_kernel(
+        mut self,
+        kb: Option<&'a ferric_integrals::gc_kernel::GcKernelBasis>,
+    ) -> Self {
+        self.gck = kb;
+        self
+    }
+
+    /// The kernel's counts over the build (zero without the kernel).
+    pub(crate) fn kernel_counts(&self) -> crate::direct_jk::gc_kernel::KernelCounts {
+        self.kernel.lock().map(|k| *k).unwrap_or_default()
     }
 
     /// Whether the exchange channels run the general kernel.
@@ -1882,6 +1929,9 @@ impl<'a> PairSpec<'a> {
             s34: vec![0.0; self.max_dim * self.max_dim],
             bra: PairBra::default(),
             quartets: 0,
+            gck: self
+                .gck
+                .map(|kb| Box::new(crate::direct_jk::gc_kernel::KernelCache::new(kb))),
         }))
     }
 
@@ -2067,6 +2117,8 @@ pub(crate) struct PairJk<'d> {
     bra: PairBra,
     /// Quartets digested (added to the spec's count when the group ends).
     quartets: usize,
+    /// The shared-primitive kernel's block cache (`[scf] gc_kernel`).
+    gck: Option<Box<crate::direct_jk::gc_kernel::KernelCache<'d>>>,
 }
 
 impl PairJk<'_> {
@@ -2112,6 +2164,43 @@ impl PairJk<'_> {
                 unsafe { *jh.uget_mut((o1 + a, o2 + b)) += w12 * self.jb[a * n2 + b] };
             }
         }
+    }
+
+    /// Serve quartet `s` (of the current bra pair, bucket `bra` with
+    /// `l1 + l2 = l12`) from the shared-primitive kernel and digest it;
+    /// `false` (nothing done) when the kernel does not cover it.
+    #[inline]
+    fn kernel_quartet<const PROBE: bool>(
+        &mut self,
+        bra: ferric_integrals::gc_kernel::PairId,
+        l12: i32,
+        s: [usize; 4],
+        dims: &[usize],
+        offs: &[usize],
+        times: &mut ScatterTimes,
+    ) -> bool {
+        let Some(mut c) = self.gck.take() else {
+            return false;
+        };
+        if !c.covers(l12, s[2], s[3]) {
+            self.gck = Some(c);
+            return false;
+        }
+        let t = PROBE.then(std::time::Instant::now);
+        let Some(n) = c.gather(bra, s) else {
+            self.gck = Some(c);
+            return false;
+        };
+        let t_dig = PROBE.then(std::time::Instant::now);
+        if let (Some(a), Some(b)) = (t, t_dig) {
+            times.kernel_ns += u64::try_from((b - a).as_nanos()).unwrap_or(u64::MAX);
+        }
+        self.quartet(&c.q[..n], dims, offs, s[2], s[3]);
+        if let Some(t) = t_dig {
+            times.digest_ns += ns_since(t);
+        }
+        self.gck = Some(c);
+        true
     }
 
     /// Digest one computed block `(s1 s2|s3 s4)` of the current bra pair.

@@ -95,6 +95,12 @@ pub struct SchwarzBounds {
     /// `FERRIC_JK_DIGEST`, then `pair`). Clones share it, and so do the
     /// rotated bounds of the contraction rotation.
     pub digest: crate::quartet_scatter::DigestSlot,
+    /// The shared-primitive kernel setting a config recorded for the
+    /// rotated direct builds on these bounds
+    /// ([`crate::direct_jk::gc_kernel::GcKernelSlot`]; unrecorded:
+    /// `FERRIC_GC_KERNEL`, then `off`). Clones share it, and so do the
+    /// rotated bounds of the contraction rotation.
+    pub gc_kernel: crate::direct_jk::gc_kernel::GcKernelSlot,
 }
 
 impl SchwarzBounds {
@@ -116,6 +122,9 @@ impl SchwarzBounds {
         b.gc = self.gc.detached();
         b.digest = crate::quartet_scatter::DigestSlot::default();
         b.digest.set(Some(crate::quartet_scatter::JkDigest::Legacy));
+        b.gc_kernel = Default::default();
+        b.gc_kernel
+            .set(Some(crate::direct_jk::gc_kernel::GcKernel::Off));
         b
     }
 
@@ -146,6 +155,7 @@ impl SchwarzBounds {
                 prep, op,
             )),
             digest: Default::default(),
+            gc_kernel: Default::default(),
         })
     }
 

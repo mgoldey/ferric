@@ -18,6 +18,8 @@ use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::rimp2::RiMp2Config;
+use ferric_scf::direct_jk::gc_kernel::kernel_probe;
+use ferric_scf::direct_jk::GcKernel;
 use ferric_scf::quartet_scatter::{pair_probe, JkDigest};
 use ferric_scf::scf_jk::ScfJk;
 use ferric_scf::warm_start::ScfWarmStart;
@@ -40,12 +42,14 @@ const CASES: [&str; 2] = ["closed", "open"];
 struct Run {
     case: String,
     builds: usize,
+    /// Quartets the shared-primitive kernel served (`gc_kernel`).
+    kernel: usize,
     values: Vec<f64>,
 }
 
 /// The energy and gradient of `case` under the config value `digest`, with
 /// the pair-digest builds of the whole run.
-fn run(case: &str, digest: Option<JkDigest>) -> Run {
+fn run(case: &str, digest: Option<JkDigest>, gck: Option<GcKernel>) -> Run {
     let (xyz, mult) = match case {
         "closed" => (
             "3\nwater\nO 0.02 -0.01 0.117790\nH 0.0 0.785453 -0.451161\nH 0.03 -0.735453 -0.491161\n",
@@ -61,10 +65,11 @@ fn run(case: &str, digest: Option<JkDigest>) -> Run {
         memory_budget_bytes: Some(2 << 30),
         ..Default::default()
     };
-    let jk = ScfJk::exact().with_jk_digest(digest);
+    let jk = ScfJk::exact().with_jk_digest(digest).with_gc_kernel(gck);
     let mut warm = ScfWarmStart::new(false);
     let op = Operator::coulomb();
     pair_probe::start();
+    kernel_probe::start();
     let (e, g) = if case == "closed" {
         ferric_mp2::gradient::total_rimp2_gradient_on(
             &mol, &obs, &aux, op, &cfg, None, &jk, &mut warm,
@@ -76,11 +81,13 @@ fn run(case: &str, digest: Option<JkDigest>) -> Run {
     }
     .unwrap();
     let builds = pair_probe::take().len();
+    let kernel = kernel_probe::take().iter().map(|c| c.quartets).sum();
     let mut values = vec![e];
     values.extend(g.iter().copied());
     Run {
         case: case.into(),
         builds,
+        kernel,
         values,
     }
 }
@@ -93,31 +100,51 @@ fn child_prints_rimp2_gradient_bits() {
     let Some(value) = std::env::var_os(CHILD) else {
         return;
     };
-    let digest = match value.to_str().unwrap() {
+    let (digest, gck) = value.to_str().unwrap().split_once('/').unwrap();
+    let digest = match digest {
         "unset" => None,
         v => Some(JkDigest::parse_str(v).unwrap()),
     };
+    let gck = match gck {
+        "unset" => None,
+        v => Some(GcKernel::parse_str(v).unwrap()),
+    };
     for case in CASES {
-        let r = run(case, digest);
+        let r = run(case, digest, gck);
         let bits: Vec<String> = r
             .values
             .iter()
             .map(|v| format!("{:016x}", v.to_bits()))
             .collect();
-        println!("RIMP2_DIGEST {} {} {}", r.case, r.builds, bits.join(" "));
+        println!(
+            "RIMP2_DIGEST {} {} {} {}",
+            r.case,
+            r.builds,
+            r.kernel,
+            bits.join(" ")
+        );
     }
 }
 
 /// Run every case in a child with the config value `config` and, when
 /// given, `FERRIC_JK_DIGEST = env`.
 fn child(config: &str, env: Option<&str>) -> Vec<Run> {
+    let envs: Vec<(&str, &str)> = env.map(|v| ("FERRIC_JK_DIGEST", v)).into_iter().collect();
+    child_with(&format!("{config}/unset"), &envs)
+}
+
+/// Run every case in a child with the config values `config`
+/// (`<jk_digest>/<gc_kernel>`, each a value or `unset`) and the variables
+/// `envs` (`FERRIC_JK_DIGEST` and `FERRIC_GC_KERNEL` unset unless named).
+fn child_with(config: &str, envs: &[(&str, &str)]) -> Vec<Run> {
     let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
     cmd.args(["child_prints_rimp2_gradient_bits", "--exact", "--nocapture"])
         .env(CHILD, config)
         .env("FERRIC_MEM_BUDGET_GB", BUDGET_GB)
-        .env_remove("FERRIC_JK_DIGEST");
-    if let Some(v) = env {
-        cmd.env("FERRIC_JK_DIGEST", v);
+        .env_remove("FERRIC_JK_DIGEST")
+        .env_remove("FERRIC_GC_KERNEL");
+    for (k, v) in envs {
+        cmd.env(k, v);
     }
     let out = cmd.output().expect("spawn the child");
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -133,12 +160,14 @@ fn child(config: &str, env: Option<&str>) -> Vec<Run> {
             let mut it = l.split_whitespace();
             let case = it.next().unwrap().to_string();
             let builds = it.next().unwrap().parse().unwrap();
+            let kernel = it.next().unwrap().parse().unwrap();
             let values = it
                 .map(|h| f64::from_bits(u64::from_str_radix(h, 16).unwrap()))
                 .collect();
             Run {
                 case,
                 builds,
+                kernel,
                 values,
             }
         })
@@ -200,5 +229,40 @@ fn config_digest_reaches_the_rimp2_gradient_builds() {
             "{case}: pair vs legacy |dE| {:.2e}, max|dG| {dmax:.2e} (max|G| {scale:.2e})",
             (p.values[0] - l.values[0]).abs()
         );
+    }
+}
+
+/// `gc_kernel` (`ScfJk::gc_kernel`) reaches the reference builds the
+/// same way: config `auto` is bitwise an unset config under
+/// `FERRIC_GC_KERNEL=auto` and served kernel quartets; config `off` served
+/// none, and agrees with `auto` to roundoff (the bars of the digest test).
+#[test]
+fn config_gc_kernel_reaches_the_rimp2_gradient_builds() {
+    let auto = child_with("unset/auto", &[]);
+    let env_auto = child_with("unset/unset", &[("FERRIC_GC_KERNEL", "auto")]);
+    let off = child_with("unset/off", &[]);
+    for ((a, e), o) in auto.iter().zip(&env_auto).zip(&off) {
+        let case = &a.case;
+        assert_eq!(
+            a.values.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            e.values.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            "{case}: config auto is not the unset config under FERRIC_GC_KERNEL=auto"
+        );
+        eprintln!("{case}: {} kernel quartets under config auto", a.kernel);
+        assert!(
+            a.kernel > 0 && e.kernel == a.kernel,
+            "{case}: auto did not reach the builds"
+        );
+        assert_eq!(o.kernel, 0, "{case}: config off ran the kernel");
+        let scale = o.values.iter().skip(1).fold(0.0f64, |m, v| m.max(v.abs()));
+        for (i, (x, y)) in a.values.iter().zip(&o.values).enumerate() {
+            assert!(x.is_finite() && y.is_finite(), "{case}[{i}]: {x} vs {y}");
+            let bar = if i == 0 {
+                1e-10 * y.abs()
+            } else {
+                1e-9 * scale
+            };
+            assert!((x - y).abs() <= bar, "{case}[{i}]: auto {x:e} vs off {y:e}");
+        }
     }
 }

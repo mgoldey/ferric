@@ -2145,7 +2145,8 @@ jobs:
             --test mpi_direct_jk_correctness \
             --test mpi_sad_guess_correctness \
             --test mpi_direct_jk_incremental_carryover \
-            --test mpi_guess_collective_ordering
+            --test mpi_guess_collective_ordering \
+            --test mpi_gc_kernel
           build -p ferric-rpa --test mpi_rpa_freq_banding
           build -p ferric-gw  --test mpi_gw_qp_banding
           build -p ferric-mp2 --test mpi_rimp2_banding
@@ -2160,21 +2161,22 @@ jobs:
                  | "\(.target.name) \(.executable)"' \
             /tmp/mpi-artifacts.json | sort -u > /tmp/mpi-bins.txt
           cat /tmp/mpi-bins.txt
-          # Exactly the eight binaries below must be present. A missing line
+          # Exactly the nine binaries below must be present. A missing line
           # means a --test target was renamed or its build silently produced
           # no executable, and the run step would then skip it in silence.
           for stem in mpi_dfjk_banding mpi_direct_jk_correctness \
                       mpi_sad_guess_correctness \
                       mpi_direct_jk_incremental_carryover \
-                      mpi_guess_collective_ordering mpi_rpa_freq_banding \
-                      mpi_gw_qp_banding mpi_rimp2_banding; do
+                      mpi_guess_collective_ordering mpi_gc_kernel \
+                      mpi_rpa_freq_banding mpi_gw_qp_banding \
+                      mpi_rimp2_banding; do
             n=$(awk -v s="$stem" '$1 == s {c++} END {print c + 0}' /tmp/mpi-bins.txt)
             if [ "$n" -ne 1 ]; then
               echo "::error::expected exactly 1 built test binary for $stem, cargo reported $n"
               exit 1
             fi
           done
-          echo "OK: 8 MPI test binaries located from cargo's own artifact records"
+          echo "OK: 9 MPI test binaries located from cargo's own artifact records"
 
       # THE POINT OF THIS JOB. Runs each cross-rank test binary under 1, 2 and
       # 3 ranks and requires every rank of every run to pass. At -np 2 the aux
@@ -2461,6 +2463,7 @@ jobs:
           run_ranks mpi_sad_guess_correctness              1 mpi_sad_guess_direct_rhf_water_sto3g 1
           run_ranks mpi_direct_jk_incremental_carryover    1 '' 6
           run_ranks mpi_guess_collective_ordering          1 minao_guess_is_collective_order_safe_across_ranks 1
+          run_ranks mpi_gc_kernel                          1 mpi_gc_kernel_ 2
           run_ranks mpi_rpa_freq_banding                   1 _water 2
           run_ranks mpi_gw_qp_banding                      1 _water_g0w0 2
 
@@ -2473,6 +2476,7 @@ jobs:
           run_ranks mpi_sad_guess_correctness              2 mpi_sad_guess_direct_rhf_water_sto3g 1
           run_ranks mpi_direct_jk_incremental_carryover    2 '' 6
           run_ranks mpi_guess_collective_ordering          2 minao_guess_is_collective_order_safe_across_ranks 1
+          run_ranks mpi_gc_kernel                          2 mpi_gc_kernel_ 2
           run_ranks mpi_rpa_freq_banding                   2 _water 2
           run_ranks mpi_gw_qp_banding                      2 _water_g0w0 2
 
@@ -2485,6 +2489,7 @@ jobs:
           run_ranks mpi_sad_guess_correctness              3 mpi_sad_guess_direct_rhf_water_sto3g 1
           run_ranks mpi_direct_jk_incremental_carryover    3 '' 6
           run_ranks mpi_guess_collective_ordering          3 minao_guess_is_collective_order_safe_across_ranks 1
+          run_ranks mpi_gc_kernel                          3 mpi_gc_kernel_ 2
           run_ranks mpi_rpa_freq_banding                   3 _water 2
           run_ranks mpi_gw_qp_banding                      3 _water_g0w0 2
 

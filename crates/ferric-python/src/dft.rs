@@ -512,7 +512,7 @@ pub(crate) fn run_double_hybrid(
     diis_size=None, integral_thresh=None, eri=None, guess=None,
     smeared_charges=None, solvent=None, pcm_lebedev_order=None,
     stability_descent=None, aurora=None, trah_trigger=None,
-    gc_rotation=None,
+    gc_rotation=None, gc_kernel=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_dft(
@@ -562,6 +562,7 @@ pub(crate) fn run_dft(
     aurora: Option<bool>,
     trah_trigger: Option<f64>,
     gc_rotation: Option<&str>,
+    gc_kernel: Option<&str>,
 ) -> PyResult<PyObject> {
     refuse_dm0_with_guess("run_dft", dm0.is_some(), guess, guess_basis)?;
     let hook = crate::scf::parse_fock_hook("run_dft", fock_hook, fock_hook_grad, with_gradient)?;
@@ -672,6 +673,7 @@ pub(crate) fn run_dft(
         .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
         .py()?;
     cfg.gc_rotation = crate::scf::parse_gc_rotation(gc_rotation)?;
+    cfg.gc_kernel = crate::scf::parse_gc_kernel(gc_kernel)?;
     if cfg.symmetry {
         return solve_symmetric_outcome(py, "run_dft", &sys, &cfg);
     }
@@ -1133,6 +1135,7 @@ pub(crate) fn run_ksdft(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -1201,6 +1204,7 @@ struct OpenKsKwargs<'a, 'py> {
     fock_hook: Option<&'a Bound<'py, PyAny>>,
     fock_hook_grad: Option<&'a Bound<'py, PyAny>>,
     gc_rotation: Option<&'a str>,
+    gc_kernel: Option<&'a str>,
 }
 
 /// Shared body of [`run_uks`] / [`run_roks`]: the KS-DFT SCF config of
@@ -1259,6 +1263,7 @@ fn run_open_ks(
         fock_hook,
         fock_hook_grad,
         gc_rotation,
+        gc_kernel,
     } = kw;
     refuse_dm0_with_guess(who, dm0.is_some(), guess, guess_basis)?;
     let use_sad_guess = parse_guess(guess)?;
@@ -1338,6 +1343,7 @@ fn run_open_ks(
         .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
         .py()?;
     config.gc_rotation = crate::scf::parse_gc_rotation(gc_rotation)?;
+    config.gc_kernel = crate::scf::parse_gc_kernel(gc_kernel)?;
     let (solver, gradient_kind) = match kind {
         OpenKs::Uks => (blocks::OpenShell::Uhf, ScfGradientKind::Uhf),
         OpenKs::Roks => (blocks::OpenShell::Rohf, ScfGradientKind::Rohf),
@@ -1426,7 +1432,7 @@ fn run_open_ks(
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
     trah_trigger=None, guess_basis=None, guess_projection=None, mom_reference=None,
     fock_hook=None, fock_hook_grad=None,
-    gc_rotation=None,
+    gc_rotation=None, gc_kernel=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_uks<'py>(
@@ -1474,6 +1480,7 @@ pub(crate) fn run_uks<'py>(
     fock_hook: Option<&Bound<'py, PyAny>>,
     fock_hook_grad: Option<&Bound<'py, PyAny>>,
     gc_rotation: Option<&str>,
+    gc_kernel: Option<&str>,
 ) -> PyResult<PyUhfResult> {
     let kw = OpenKsKwargs {
         functional,
@@ -1517,6 +1524,7 @@ pub(crate) fn run_uks<'py>(
         fock_hook,
         fock_hook_grad,
         gc_rotation,
+        gc_kernel,
     };
     run_open_ks(py, OpenKs::Uks, mol, basis_set, kw)
 }
@@ -1545,7 +1553,7 @@ pub(crate) fn run_uks<'py>(
     smeared_charges=None, solvent=None, pcm_lebedev_order=None,
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
     guess_basis=None, guess_projection=None, fock_hook=None, fock_hook_grad=None,
-    gc_rotation=None,
+    gc_rotation=None, gc_kernel=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_roks<'py>(
@@ -1590,6 +1598,7 @@ pub(crate) fn run_roks<'py>(
     fock_hook: Option<&Bound<'py, PyAny>>,
     fock_hook_grad: Option<&Bound<'py, PyAny>>,
     gc_rotation: Option<&str>,
+    gc_kernel: Option<&str>,
 ) -> PyResult<PyUhfResult> {
     let kw = OpenKsKwargs {
         functional,
@@ -1633,6 +1642,7 @@ pub(crate) fn run_roks<'py>(
         fock_hook,
         fock_hook_grad,
         gc_rotation,
+        gc_kernel,
     };
     run_open_ks(py, OpenKs::Roks, mol, basis_set, kw)
 }

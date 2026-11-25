@@ -5,8 +5,8 @@
 //! The run is the exact-J/K Coulomb RHF start with the library defaults, then
 //! the CAS step, so the CLI reads only `[cas]` (active space and orbital
 //! optimization), `[cas.ci]` (the CI eigensolver), `[scf]` `max_iter` /
-//! `energy_conv` / `density_conv` / `gc_rotation` / `jk_digest` (read by the
-//! RHF start and the direct CASSCF J/K alike), `[memory]`, `[parallel]` and `[output]`.
+//! `energy_conv` / `density_conv` / `gc_rotation` / `jk_digest` / `gc_kernel`
+//! (read by the RHF start and the direct CASSCF J/K alike), `[memory]`, `[parallel]` and `[output]`.
 //! [`resolve_plan`] refuses every other section and key at load time, so no
 //! key is read by one surface and ignored by the other.
 
@@ -120,6 +120,7 @@ pub(crate) const READ_SCF_KEYS: &[&str] = &[
     "density_conv",
     "gc_rotation",
     "jk_digest",
+    "gc_kernel",
 ];
 
 fn positive(name: &str, v: Option<f64>) -> Result<(), String> {
@@ -315,6 +316,7 @@ pub fn resolve_plan(cfg: &Config, text: &str) -> Result<Option<CasPlan>, String>
             // rotation.
             gc_rotation: cfg.scf.gc_rotation_resolved()?,
             jk_digest: cfg.scf.jk_digest_resolved()?,
+            gc_kernel: cfg.scf.gc_kernel_resolved()?,
             ..d
         },
         scf: ScfStart {
@@ -323,6 +325,7 @@ pub fn resolve_plan(cfg: &Config, text: &str) -> Result<Option<CasPlan>, String>
             density_conv: scf_key("density_conv").then_some(cfg.scf.density_conv),
             gc_rotation: cfg.scf.gc_rotation_resolved()?,
             jk_digest: cfg.scf.jk_digest_resolved()?,
+            gc_kernel: cfg.scf.gc_kernel_resolved()?,
         },
     }))
 }
@@ -426,6 +429,8 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) -> Result<(), CliError> {
                 // `FERRIC_JK_DIGEST`, else `pair`), as the checkpoint
                 // identity records it.
                 "jk_digest_resolved": ferric_scf::quartet_scatter::JkDigest::resolved_label(plan.scf.jk_digest),
+                "gc_kernel": plan.scf.gc_kernel.map(|g| g.as_str()),
+                "gc_kernel_resolved": ferric_scf::direct_jk::GcKernel::resolved_label(plan.scf.gc_kernel),
                 "memory_budget_bytes": resolution.bytes,
                 "openblas_num_threads": std::env::var("OPENBLAS_NUM_THREADS").ok(),
                 "rayon_num_threads": rayon::current_num_threads(),

@@ -822,6 +822,7 @@ pub fn mbd_rsscs_for_scf(
     // The Z-vector's direct J/K follow the SCF's `jk_digest`, as on the
     // SCF's own bounds (`quartet_scatter::DigestSlot`).
     bounds.digest.set(rhf_config.jk_digest);
+    bounds.gc_kernel.set(rhf_config.gc_kernel);
     let (relax, null_mode) = match result.spin {
         ferric_scf::Spin::Unrestricted => {
             let r = ferric_scf::zvector_ks::relaxation_gradient_unrestricted(

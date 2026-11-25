@@ -1034,6 +1034,10 @@ pub(crate) fn solve_reference(
     if scf_jk.jk_digest.is_some() {
         cfg.jk_digest = scf_jk.jk_digest;
     }
+    // ... and its shared-primitive kernel setting, likewise.
+    if scf_jk.gc_kernel.is_some() {
+        cfg.gc_kernel = scf_jk.gc_kernel;
+    }
     if let (ScfJkMode::RiJk, Some(aux)) = (scf_jk.mode, scf_jk.aux.as_deref()) {
         let budget = ferric_core::memory::resolve_budget_bytes(mp2_config.memory_budget_bytes);
         let shape = crate::gradient_memory::UnrestrictedFittedGradientShape::new(

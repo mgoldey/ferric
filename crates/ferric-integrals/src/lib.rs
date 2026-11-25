@@ -57,6 +57,9 @@ pub mod engine;
 pub mod engine_pool;
 /// Raw C-ABI bindings to the libint2 shim (`shim/shim.cc`).
 pub mod ffi;
+/// Shared-primitive Coulomb kernel for the `(ss|ss)` and `(ss|sp)` classes of
+/// generally contracted groups (the direct J/K builder's `[scf] gc_kernel`).
+pub mod gc_kernel;
 /// From-scratch McMurchie-Davidson 3-center-1-electron kernel producing the
 /// same `A^g` blocks as `cosx_a` for a BATCH of grid points, grid axis innermost.
 pub mod md3c1e;

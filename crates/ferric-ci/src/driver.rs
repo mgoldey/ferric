@@ -44,6 +44,10 @@ pub struct ScfStart {
     /// `ferric_scf::quartet_scatter::JkDigest`); `None` = unset. Pass the
     /// same value as `CasScfConfig::jk_digest`.
     pub jk_digest: Option<ferric_scf::quartet_scatter::JkDigest>,
+    /// `RhfConfig::gc_kernel` of the start (the rotated direct walk's
+    /// shared-primitive kernel, `ferric_scf::direct_jk::gc_kernel`); `None`
+    /// = unset. Pass the same value as `CasScfConfig::gc_kernel`.
+    pub gc_kernel: Option<ferric_scf::direct_jk::GcKernel>,
 }
 
 /// The exact-J/K Coulomb RHF of `sys` (its molecule with the basis set's
@@ -75,6 +79,7 @@ fn start_config(
         density_conv,
         gc_rotation,
         jk_digest,
+        gc_kernel,
     } = start;
     let mut cfg = ferric_scf::options::ScfOptions {
         max_iter,
@@ -87,6 +92,7 @@ fn start_config(
     .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)?;
     cfg.gc_rotation = gc_rotation;
     cfg.jk_digest = jk_digest;
+    cfg.gc_kernel = gc_kernel;
     Ok(cfg)
 }
 
@@ -265,6 +271,7 @@ mod tests {
             cfg.screening = screening;
             cfg.gc_rotation = start.gc_rotation;
             cfg.jk_digest = start.jk_digest;
+            cfg.gc_kernel = start.gc_kernel;
             cfg
         };
         let all = ScfStart {
@@ -273,6 +280,7 @@ mod tests {
             density_conv: Some(3e-8),
             gc_rotation: Some(ferric_scf::direct_jk::GcRotate::Off),
             jk_digest: Some(ferric_scf::quartet_scatter::JkDigest::Legacy),
+            gc_kernel: Some(ferric_scf::direct_jk::GcKernel::Auto),
         };
         for (start, budget, screening) in [
             (ScfStart::default(), None, ScreeningKind::default()),

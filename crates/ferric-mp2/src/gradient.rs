@@ -1248,6 +1248,10 @@ pub(crate) fn solve_rhf_reference(
     if scf_jk.jk_digest.is_some() {
         rhf_cfg.jk_digest = scf_jk.jk_digest;
     }
+    // ... and its shared-primitive kernel setting, likewise.
+    if scf_jk.gc_kernel.is_some() {
+        rhf_cfg.gc_kernel = scf_jk.gc_kernel;
+    }
     if let (ScfJkMode::RiJk, Some(aux)) = (scf_jk.mode, scf_jk.aux.as_deref()) {
         // The fitted route keeps the reference's RI-J/RI-K tensors through
         // the gradient: check the whole peak before any integral, and size

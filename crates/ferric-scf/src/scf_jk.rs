@@ -126,7 +126,8 @@ pub const OO_BUILDS_EXACT_OR_RIJK: &str = "orbital-optimised MP2 rebuilds J/K at
 /// drivers write it into the reference's config, whose SCF records it on
 /// its Schwarz bounds (which the closed-shell response reuses). Build one with
 /// [`ScfJk::exact`], [`ScfJk::rijk`] or [`ScfJk::resolve`] (each leaves the
-/// digest unset) and [`ScfJk::with_jk_digest`].
+/// digest unset) and [`ScfJk::with_jk_digest`]; the same holds for the
+/// reference's `gc_kernel` ([`ScfJk::with_gc_kernel`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ScfJk {
@@ -141,6 +142,11 @@ pub struct ScfJk {
     /// from this choice (the RI-MP2-family gradients); [`Self::apply`]
     /// leaves the config's own value alone.
     pub jk_digest: Option<crate::quartet_scatter::JkDigest>,
+    /// The shared-primitive kernel of the reference's rotated direct J/K
+    /// walk ([`RhfConfig::gc_kernel`]), carried like `jk_digest`: `None`
+    /// leaves the reference config's own value (unset: `FERRIC_GC_KERNEL`,
+    /// then `off`).
+    pub gc_kernel: Option<crate::direct_jk::GcKernel>,
 }
 
 impl ScfJk {
@@ -150,6 +156,7 @@ impl ScfJk {
             mode: ScfJkMode::Exact,
             aux: None,
             jk_digest: None,
+            gc_kernel: None,
         }
     }
 
@@ -161,6 +168,7 @@ impl ScfJk {
             mode: ScfJkMode::RiJk,
             aux: Some(aux.into()),
             jk_digest: None,
+            gc_kernel: None,
         }
     }
 
@@ -168,6 +176,13 @@ impl ScfJk {
     /// `FERRIC_JK_DIGEST`, then `pair`).
     pub fn with_jk_digest(mut self, digest: Option<crate::quartet_scatter::JkDigest>) -> Self {
         self.jk_digest = digest;
+        self
+    }
+
+    /// This choice with the reference's shared-primitive kernel setting
+    /// `kernel` (`None`: `FERRIC_GC_KERNEL`, then `off`).
+    pub fn with_gc_kernel(mut self, kernel: Option<crate::direct_jk::GcKernel>) -> Self {
+        self.gc_kernel = kernel;
         self
     }
 
@@ -214,6 +229,7 @@ impl ScfJk {
             mode,
             aux,
             jk_digest: None,
+            gc_kernel: None,
         })
     }
 

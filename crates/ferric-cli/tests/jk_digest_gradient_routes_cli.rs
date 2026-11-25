@@ -17,6 +17,11 @@
 //! one and the "config pair is bitwise legacy" assert would say so.
 //! `[memory] budget_gb` gives the correlation part its own budget.
 //!
+//! The same holds for `[scf] gc_kernel` (`ScfJk::gc_kernel`,
+//! `RpaGradientRoute::gc_kernel`), checked in cc-pVDZ, whose reference runs
+//! the contraction-rotated walk the kernel acts on (water / cc-pVDZ's store,
+//! 361 kB, also exceeds the budget's quarter).
+//!
 //! `rimp2` names `jk = "exact"` so its gradient route is four-centre (an
 //! omitted `jk` is RI-JK, on which the digest is inert); the last test
 //! checks that `jk_digest` does not move an omitted `jk` off that RI-JK
@@ -55,14 +60,19 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// The input of `kind` with `[scf]` body `scf`.
+/// The input of `kind` with `[scf]` body `scf`, in 6-31G.
 fn input(kind: &str, scf: &str) -> String {
+    input_in(kind, scf, "6-31g")
+}
+
+/// The input of `kind` with `[scf]` body `scf`, in `basis`.
+fn input_in(kind: &str, scf: &str, basis: &str) -> String {
     let section = match kind {
         "rimp2" => "[mp2]\nauxbasis = \"cc-pvdz-ri\"\n",
         _ => "[rpa]\nauxbasis = \"cc-pvdz-ri\"\nn_quad = 4\n",
     };
     format!(
-        "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n[basis]\nname = \"6-31g\"\n\
+        "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n[basis]\nname = \"{basis}\"\n\
          [method]\nkind = \"{kind}\"\ntask = \"optimize\"\n[scf]\n{scf}{section}\
          [memory]\nbudget_gb = 2\n[optimize]\nmax_steps = 2\n"
     )
@@ -71,6 +81,15 @@ fn input(kind: &str, scf: &str) -> String {
 /// Run `body` with `FERRIC_JK_DIGEST = env` (unset when `None`) and return
 /// the run log's records.
 fn run(tag: &str, body: &str, env: Option<&str>) -> Vec<serde_json::Value> {
+    match env {
+        Some(v) => run_env(tag, body, &[("FERRIC_JK_DIGEST", v)]),
+        None => run_env(tag, body, &[]),
+    }
+}
+
+/// Run `body` with the variables `envs` (`FERRIC_JK_DIGEST` and
+/// `FERRIC_GC_KERNEL` unset unless named) and return the run log's records.
+fn run_env(tag: &str, body: &str, envs: &[(&str, &str)]) -> Vec<serde_json::Value> {
     let root = workspace_root();
     let dir = root.join("target");
     std::fs::create_dir_all(&dir).expect("create target/");
@@ -86,9 +105,10 @@ fn run(tag: &str, body: &str, env: Option<&str>) -> Vec<serde_json::Value> {
         .env("OPENBLAS_NUM_THREADS", "1")
         .env("RAYON_NUM_THREADS", "2")
         .env("FERRIC_MEM_BUDGET_GB", "0.0001")
-        .env_remove("FERRIC_JK_DIGEST");
-    if let Some(v) = env {
-        cmd.env("FERRIC_JK_DIGEST", v);
+        .env_remove("FERRIC_JK_DIGEST")
+        .env_remove("FERRIC_GC_KERNEL");
+    for (k, v) in envs {
+        cmd.env(k, v);
     }
     let out = cmd.output().expect("failed to run ferric-cli");
     assert!(
@@ -164,6 +184,62 @@ fn check(kind: &str, exact: &str) {
             "{kind}[{i}]: pair {a:e} vs legacy {b:e}"
         );
     }
+}
+
+/// `[scf] gc_kernel` reaches every SCF of the run the same way (the
+/// cc-pVDZ reference runs the rotated walk the kernel acts on): config
+/// `auto` logs bitwise the SCF energies of an unset config under
+/// `FERRIC_GC_KERNEL=auto`, config `off` (the default) logs different last
+/// bits that agree to roundoff.
+fn check_kernel(kind: &str, exact: &str) {
+    let body = |v: &str| input_in(kind, &format!("{exact}{v}"), "cc-pvdz");
+    let tag = |t: &str| format!("{kind}_gck_{t}");
+    let auto = scf_energies_of(
+        &tag("auto"),
+        &run_env(&tag("auto"), &body("gc_kernel = \"auto\"\n"), &[]),
+    );
+    let env_auto = scf_energies_of(
+        &tag("env_auto"),
+        &run_env(&tag("env_auto"), &body(""), &[("FERRIC_GC_KERNEL", "auto")]),
+    );
+    let off = scf_energies_of(
+        &tag("off"),
+        &run_env(&tag("off"), &body("gc_kernel = \"off\"\n"), &[]),
+    );
+    let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    assert_eq!(
+        bits(&auto),
+        bits(&env_auto),
+        "{kind}: config auto is not the unset config under FERRIC_GC_KERNEL=auto"
+    );
+    assert_eq!(off.len(), auto.len(), "{kind}: SCF iteration counts differ");
+    let differ = off
+        .iter()
+        .zip(&auto)
+        .filter(|(a, b)| a.to_bits() != b.to_bits())
+        .count();
+    eprintln!(
+        "{kind}: {differ} of {} SCF energies differ between gc_kernel auto and off",
+        off.len()
+    );
+    assert!(differ > 0, "{kind}: config auto is bitwise off");
+    for (i, (a, b)) in auto.iter().zip(&off).enumerate() {
+        assert!(a.is_finite(), "{kind}[{i}]: {a}");
+        assert!(
+            (a - b).abs() <= 1e-10 * b.abs(),
+            "{kind}[{i}]: auto {a:e} vs off {b:e}"
+        );
+    }
+}
+
+#[test]
+fn gc_kernel_reaches_the_rimp2_optimize_scfs() {
+    check_kernel("rimp2", "jk = \"exact\"\n");
+}
+
+#[test]
+fn gc_kernel_reaches_the_pdep_rpa_optimize_scfs() {
+    check_kernel("pdep-rpa", "");
 }
 
 #[test]

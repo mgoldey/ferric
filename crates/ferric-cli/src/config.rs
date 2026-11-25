@@ -3492,6 +3492,16 @@ pub struct ScfCfg {
     /// response, `[cas] integrals = "direct"` and the GW exact exchange). Any
     /// other value, another case included, is an error.
     pub jk_digest: Option<String>,
+    /// Shared-primitive kernel of the contraction-rotated direct J/K walk:
+    /// `"auto"` (the `(ss|ss)` and `(ss|sp)` quartets of generally
+    /// contracted groups from one pass over their union primitives) or
+    /// `"off"` (libint for every quartet, bit for bit). Unset leaves it to
+    /// `FERRIC_GC_KERNEL`, then `"off"`. Effective only where the rotated
+    /// walk runs (`gc_rotation` not `"off"`, a generally contracted basis)
+    /// with `jk_digest = "pair"`; energies move by about 1e-12 Ha. The
+    /// SCF's closed- and open-shell direct builds follow it. Any other value,
+    /// another case included, is an error.
+    pub gc_kernel: Option<String>,
     /// Relativistic core Hamiltonian: `"x2c1e"` (spin-free X2C-1e, as PySCF
     /// `sfx2c1e()`), or unset for the nonrelativistic one. Energies only
     /// (`task = "energy"`), for the kinds in `X2C_KINDS`; all-electron bases
@@ -3787,6 +3797,7 @@ impl Default for ScfCfg {
             eri: None,
             gc_rotation: None,
             jk_digest: None,
+            gc_kernel: None,
             relativistic: None,
             cosx_grid: None,
             cosx_final_pass: None,
@@ -3989,8 +4000,8 @@ impl OmittedJk {
 }
 
 /// The kinds whose `optimize` / `frequencies` gradient re-solves its
-/// reference SCF at each geometry from reduced settings (the J/K route and
-/// `[scf] jk_digest`; `ferric_mp2::gradient::solve_rhf_reference`,
+/// reference SCF at each geometry from reduced settings (the J/K route,
+/// `[scf] jk_digest` and `[scf] gc_kernel`; `ferric_mp2::gradient::solve_rhf_reference`,
 /// `ferric_rpa::gradient::RpaGradientRoute`).
 pub const RESOLVING_GRADIENT_KINDS: [&str; 5] = [
     "rimp2",
@@ -4048,7 +4059,8 @@ impl Config {
         Some(format!(
             "{list} {} not reach the SCFs of method.kind = \"{}\" with task = \"{}\": its \
              gradient re-solves the reference SCF at each geometry from the J/K route \
-             ([scf] jk / jk_aux) and [scf] jk_digest alone, so the energies and gradients run \
+             ([scf] jk / jk_aux), [scf] jk_digest and [scf] gc_kernel alone, so the energies \
+             and gradients run \
              with the defaults; only the certificate's reference SCF (final or input geometry) \
              reads {}",
             if keys.len() == 1 { "does" } else { "do" },
@@ -4064,11 +4076,11 @@ impl ScfCfg {
     /// (`k_builder`, `eri`, `screening`, `df_increments`, `df_guess = true`,
     /// `df_guess_aux`): with one of them an omitted `jk` stays exact, so an
     /// input that worked on the four-centre default keeps working unchanged.
-    /// Not `jk_digest` or `gc_rotation`: they change only the last bits of
-    /// whatever four-centre builds the route runs (and are inert on a
-    /// fitted one), so they must not move an omitted `jk` off the RI-JK
-    /// default (a `gc_rotation` with no four-centre build to act on warns,
-    /// `gc_rotation_route_warning`).
+    /// Not `jk_digest`, `gc_rotation` or `gc_kernel`: they change only the
+    /// last bits of whatever four-centre builds the route runs (and are inert
+    /// on a fitted one), so they must not move an omitted `jk` off the RI-JK
+    /// default (a `gc_rotation` or `gc_kernel` with no four-centre build to
+    /// act on warns, `gc_rotation_route_warning`).
     fn exact_route_key(&self) -> Option<&'static str> {
         [
             ("k_builder", self.k_builder.is_some()),
@@ -4467,6 +4479,17 @@ impl ScfCfg {
             .map_err(|e| format!("[scf] jk_digest: {e}"))
     }
 
+    /// `[scf] gc_kernel` parsed: `None` when omitted (the variable and the
+    /// default decide), an error naming the key for a value outside
+    /// auto | off.
+    pub fn gc_kernel_resolved(&self) -> Result<Option<ferric_scf::direct_jk::GcKernel>, String> {
+        self.gc_kernel
+            .as_deref()
+            .map(ferric_scf::direct_jk::GcKernel::parse_str)
+            .transpose()
+            .map_err(|e| format!("[scf] gc_kernel: {e}"))
+    }
+
     /// Post-parse validation of the `[scf]` string knobs whose resolution is
     /// otherwise deferred to the point of use. Called from [`load_config`] so
     /// every entry point (CLI and `ferric-batch`) fails before any integral is
@@ -4481,6 +4504,7 @@ impl ScfCfg {
         self.relativistic_resolved()?;
         self.gc_rotation_resolved()?;
         self.jk_digest_resolved()?;
+        self.gc_kernel_resolved()?;
         if let Some(p) = self.eri_precision {
             (ferric_integrals::engine_pool::ERI_PRECISION_VAR.validate)(&p)
                 .map_err(|e| format!("[scf] eri_precision {p:e}: {e}"))?;
@@ -6881,7 +6905,7 @@ mod compat_guard_tests {
         }
         let energy = open("energy").unwrap().unwrap();
         assert_eq!((energy.mode, energy.aux), (ScfJkMode::Exact, None));
-        // `jk_digest` and `gc_rotation` do not move an omitted jk: the
+        // `jk_digest`, `gc_rotation` and `gc_kernel` do not move an omitted jk: the
         // MP2 kinds resolve the same fitted route with or without them.
         for (kind, task) in [
             ("rimp2", "energy"),
@@ -6901,6 +6925,8 @@ mod compat_guard_tests {
                 "gc_rotation = \"off\"",
                 "gc_rotation = \"auto\"",
                 "gc_rotation = \"rot1\"",
+                "gc_kernel = \"auto\"",
+                "gc_kernel = \"off\"",
             ] {
                 let with = choice(kind, task, &format!("{key}\n")).unwrap().unwrap();
                 assert_eq!(with, none, "{kind} {task} {key}");

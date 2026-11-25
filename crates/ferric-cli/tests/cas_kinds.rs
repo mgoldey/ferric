@@ -753,3 +753,60 @@ fn scf_jk_digest_is_read() {
     assert!(!bad.ok);
     assert!(bad.stderr.contains("jk_digest"), "{}", bad.stderr);
 }
+
+/// `[scf] gc_kernel` is read by the CAS kinds like `jk_digest`: it switches
+/// the RHF start's rotated cc-pVDZ walk, and is passed to the direct CASSCF
+/// backend, whose pooled J/K builds keep libint (so it changes nothing
+/// there). Recorded in the run log as requested and as resolved
+/// (`FERRIC_GC_KERNEL` deciding an unset key, default `off`); the two
+/// settings agree to rounding; a value of another case is refused at load.
+#[test]
+fn scf_gc_kernel_is_read() {
+    let (xyz, _) = h2o();
+    let cas = "n_active = 4\nn_elec_active = [2, 2]\nintegrals = \"direct\"\n";
+    let base = run_cli_env(
+        "gck_default",
+        &xyz,
+        &toml_for("casscf", "cc-pvdz", cas),
+        &[("FERRIC_GC_KERNEL", None)],
+    );
+    assert!(base.ok, "{}", base.stderr);
+    let e0 = base.result()["total"].as_f64().unwrap();
+    let start = &base.record("run_start")["config"];
+    assert!(start["gc_kernel"].is_null());
+    assert_eq!(start["gc_kernel_resolved"], "off");
+    let by_env = run_cli_env(
+        "gck_env",
+        &xyz,
+        &toml_for("casscf", "cc-pvdz", cas),
+        &[("FERRIC_GC_KERNEL", Some("auto"))],
+    );
+    assert!(by_env.ok, "{}", by_env.stderr);
+    let start = &by_env.record("run_start")["config"];
+    assert!(start["gc_kernel"].is_null());
+    assert_eq!(start["gc_kernel_resolved"], "auto");
+    for v in ["auto", "off"] {
+        let r = run_cli_ok(
+            &format!("gck_{v}"),
+            &xyz,
+            &format!(
+                "{}\n[scf]\ngc_kernel = \"{v}\"\n",
+                toml_for("casscf", "cc-pvdz", cas)
+            ),
+        );
+        assert_eq!(r.record("run_start")["config"]["gc_kernel"], v);
+        assert_eq!(r.record("run_start")["config"]["gc_kernel_resolved"], v);
+        let e = r.result()["total"].as_f64().unwrap();
+        assert!((e - e0).abs() < 1e-10, "{v}: {e} vs default {e0}");
+    }
+    let bad = run_cli(
+        "gck_bad",
+        &xyz,
+        &format!(
+            "{}\n[scf]\ngc_kernel = \"AUTO\"\n",
+            toml_for("nevpt2", "6-31g", cas)
+        ),
+    );
+    assert!(!bad.ok);
+    assert!(bad.stderr.contains("gc_kernel"), "{}", bad.stderr);
+}

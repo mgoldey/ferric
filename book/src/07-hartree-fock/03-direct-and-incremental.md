@@ -438,6 +438,95 @@ geometry, in 7 ms, and shared by the SCF and all the stability builds. In the
 same session the per-build SCF wall went from 5.49 s to 2.51 s on hexane and
 from 13.5 s to 5.6 s on octane.
 
+### The shared-primitive kernel {#direct-and-incremental-shared-primitive-kernel}
+
+After the rotation, the columns of one atom and $l$ that still share
+primitives form a group: cc-pVDZ carbon's core and valence s columns are one
+group of 2 columns over 8 union primitives, and its diffuse s column is a
+group of its own. libint still evaluates each column quartet from its own
+primitives, so a primitive the two columns share is recomputed per column.
+For the lowest classes libint's cost is mostly per call: on octane /
+cc-pVDZ, `(ss|ss)` and `(ss|sp)` (the p in any position) took about 40% of
+the libint time.
+
+With `[scf] gc_kernel = "auto"` the rotated walk takes those classes from
+`ferric-integrals/src/gc_kernel.rs::GcKernelBasis` instead. For an ordered
+group pair it keeps the surviving primitive pairs (libint's own primitive-pair
+screen at the engine precision, with the largest coefficient over the
+group's columns; a same-group s pair folds $(j,i)$ into $(i,j)$), their
+$P$, $P - A$ and prefactor $\sqrt{2}\,\pi^{5/4} e^{-\mu R_{AB}^2}/p$, and the
+products of the columns' libint-normalised coefficients. A group quartet is
+then one pass over the primitive quartets: for `(ss|ss)` one
+$F_0(\rho R_{PQ}^2)$ each, contracted into every ket column pair and then
+every bra column pair; for one p, the Obara–Saika recursion for $[e0|f0]$
+with $|e| + |f| = 1$, the same contraction, and the horizontal recursion
+$(a|b + 1_i) = (a + 1_i|b) + (A - B)_i (a|b)$ once per contracted column
+quartet. $F_m$ comes from a seventh-order Taylor table on a 0.1 grid
+($|{\rm error}| \le 6 \times 10^{-17}$) and the asymptotic form from
+$T = 40$.
+
+The walk keeps everything per column quartet
+(`ferric-scf/src/direct_jk/gc_kernel.rs::group_first`). The bra-pair list is
+reordered so that the bra pairs of one ordered bra group pair (a bucket) are
+consecutive, and the reduction groups and the MPI striping take whole
+buckets. Each surviving quartet is still screened on its own Schwarz and
+density bound, gathered from its group block into libint's layout and
+digested by the same pair digest in the same order. The group block is
+computed on the bucket's first survivor in that ket group pair and cached
+for the rest of the bucket. The cached blocks depend only on the group
+quartet, and the order and partition only on the bra-pair list, so the
+result is bitwise identical across thread counts. The kernel's integrals
+differ from libint's by at most $10^{-14}$ of the class's largest integral
+(`crates/ferric-integrals/src/gc_kernel/tests.rs`), so $J$ and $K$ move by
+about $10^{-14}$ relative and energies by about $10^{-12}$ Ha
+(`crates/ferric-scf/tests/gc_kernel.rs`).
+
+The kernel runs only on the rotated walk of the SCF's `DirectJK`, with the
+pair digest and the Coulomb operator; `off`, the default for this release,
+is the walk without it bit for bit. Segmented bases never enter the rotated
+walk. The pooled builds that follow the SCF (Newton, stability, CPHF), the
+in-core store, the gradients and every other operator keep libint. For the
+higher classes the hand-written recursion is slower than libint (0.3 to 0.9
+times its speed in the prototype), so they keep libint too.
+
+Measured runs, not tests: RHF, `eri = "direct"`, `gc_rotation = "auto"`,
+`energy_conv` 1e-10 and `density_conv` 1e-8 (every build full), 2 rayon
+threads, `FERRIC_TIMING=1`, `gc_kernel` `off` and `auto` run alternately (off
+first, then auto first, and so on), five or six pairs per system, on a 4-core
+box shared with another job (1-minute load 3.0–4.1 during the octane cc-pVDZ
+runs, 2.6–7.3 during the others). Per-build figures are medians over the
+builds of each run after the first (a smaller start build), then over the
+runs; the ratio is the median of the
+paired off/auto ratios, with its range.
+
+| System (functions) | Per-build wall, off → auto (s) | Paired ratio | Group thread-s, off → auto | libint thread-s, off → auto | Kernel thread-s | SCF wall, off → auto (s) |
+|---|---|---|---|---|---|---|
+| octane / cc-pVDZ (202) | 4.98 → 4.01 | 1.22 (1.19–1.28) | 9.82 → 7.92 | 8.16 → 4.79 | 1.48 | 66.5 → 53.5 |
+| butane / aug-cc-pVDZ (182) | 3.06 → 2.78 | 1.12 (1.08–1.30) | 6.02 → 5.47 | 4.69 → 3.41 | 0.74 | 37.6 → 34.7 |
+| butane / cc-pVTZ (260) | 7.52 → 7.11 | 1.03 (0.91–1.25), within noise | 14.80 → 13.98 | 11.75 → 10.35 | 0.65 | 93.3 → 87.6 |
+| octane / def2-SVP (202) | 4.16 → 3.85 | 1.04 (0.92–1.27) | 8.16 → 7.56 | 6.02 → 5.61 | 0 | 51.2 → 47.9 |
+
+def2-SVP has nothing to rotate, so the kernel never runs there and both
+settings run the same code; its spread (and its median away from 1) is the
+noise of the shared box, and the process CPU time of the two settings agrees
+to 1.007. On octane / cc-pVDZ the kernel serves 3.30 M of the 8.13 M quartets
+per build from 2.30 M group quartets (1.43 quartets per evaluation; 3.60 M
+column quartets computed, 9% more than the survivors), the same counts as a
+single-threaded walk in one reduction group, so the bucket partition loses no
+reuse. The setup of the pair data took 3 ms per geometry. The converged
+energies agree to the printed digits on octane (−313.4518384570778 Ha both),
+and to 2.3e-13 Ha (aug-cc-pVDZ) and 5.7e-14 Ha (cc-pVTZ) on butane.
+
+The cc-pVTZ gain is within the noise: the def2-SVP control, where both
+settings run the same code, spread from 0.92 to 1.27. The measurement before
+the kernel was written (a single-threaded replay of the walk with the kernel
+spliced in) projected 1.28× for octane / cc-pVDZ. That figure is the pooled
+median of two rounds on a loaded box whose round medians were 1.22 and 1.31;
+its own kernel-only comparison was 1.26×. A rerun of the production build on
+a quiet box gave 1.21× with `off` at the speed of the build without the
+kernel, so the production wiring adds no measurable overhead and 1.22× is the
+gain to expect.
+
 ## When the incremental build runs {#direct-and-incremental-incremental-build-runs}
 
 The incremental build is closed-shell, direct-only and conditional:
@@ -508,6 +597,7 @@ the in-core store off, on water, methane and hexane in cc-pVDZ
 | `[scf] eri = "incore"` / `"auto"` | stores the integrals once and builds $J$, $K$ by matrix products (`crates/ferric-scf/src/incore_jk.rs`) |
 | `[scf] gc_rotation` (or `FERRIC_GC_ROTATE`) = `auto` (default) / `rot1` / `off` | the internal contraction rotation of generally contracted bases (@sec:direct-and-incremental-general-contraction); `off` is the unrotated builder |
 | `[scf] jk_digest` (or `FERRIC_JK_DIGEST`) = `pair` (default) / `legacy` | how each computed block is contracted into $J$ and $K$ (@sec:direct-and-incremental-pair-digest); `legacy` is the 8-fold scatter bit for bit |
+| `[scf] gc_kernel` (or `FERRIC_GC_KERNEL`) = `auto` / `off` (default) | the `(ss\|ss)` and `(ss\|sp)` quartets of the rotated walk from the shared-primitive kernel (@sec:direct-and-incremental-shared-primitive-kernel); `off` is libint bit for bit |
 
 ## Sources
 
@@ -518,3 +608,5 @@ the in-core store off, on water, methane and hexane in cc-pVDZ
 | `crates/ferric-scf/src/direct_jk.rs` | the incremental gates and the open-shell measurement note |
 | `crates/ferric-integrals/src/contraction_rotation.rs`, `crates/ferric-scf/src/direct_jk/gc_rotation.rs` | the contraction rotation and its use in the direct builder |
 | `crates/ferric-scf/tests/gc_rotation.rs` | rotated against unrotated $J$, $K$ and energies; bitwise checks |
+| `crates/ferric-integrals/src/gc_kernel.rs`, `crates/ferric-scf/src/direct_jk/gc_kernel.rs` | the shared-primitive kernel and its place in the rotated walk |
+| `crates/ferric-scf/tests/gc_kernel.rs` | the kernel's $J$, $K$ and energies against the libint walk; bitwise checks |

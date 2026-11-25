@@ -284,19 +284,28 @@ pub fn rpa_analytic_gradient_warm(
     cfg: &PdepRpaConfig,
     warm: &mut ScfWarmStart,
 ) -> Result<RpaAnalyticGradient, FerricError> {
-    analytic_gradient_warm(mol, obs_basis, aux_basis, op, cfg, None, warm)
+    analytic_gradient_warm(
+        mol,
+        obs_basis,
+        aux_basis,
+        op,
+        cfg,
+        crate::gradient::ReferenceJk::default(),
+        warm,
+    )
 }
 
-/// [`rpa_analytic_gradient_warm`] with the reference RHF's J/K digest
-/// `jk_digest` ([`crate::gradient::RpaGradientRoute::jk_digest`]): the SCF
-/// records it on the bounds the Z-vector response reuses.
+/// [`rpa_analytic_gradient_warm`] with the reference RHF's direct J/K
+/// settings `jk` (`crate::gradient::RpaGradientRoute`'s `jk_digest` and
+/// `gc_kernel`): the SCF records them on the bounds the Z-vector response
+/// reuses.
 pub(crate) fn analytic_gradient_warm(
     mol: &Molecule,
     obs_basis: &BasisSet,
     aux_basis: &BasisSet,
     op: Operator,
     cfg: &PdepRpaConfig,
-    jk_digest: Option<ferric_scf::quartet_scatter::JkDigest>,
+    jk: crate::gradient::ReferenceJk,
     warm: &mut ScfWarmStart,
 ) -> Result<RpaAnalyticGradient, FerricError> {
     check_analytic_scope(cfg, op)?;
@@ -304,7 +313,7 @@ pub(crate) fn analytic_gradient_warm(
     let obs = PreparedBasis::new(mol, obs_basis)?;
     let dfbs = PreparedBasis::new(mol, aux_basis)?;
     let bounds = SchwarzBounds::compute(op, &obs)?;
-    let rhf_cfg = crate::gradient::reference_config(jk_digest);
+    let rhf_cfg = crate::gradient::reference_config(jk);
     let rhf = solve_rhf_warm(&ctx, mol, &obs, op, &bounds, &rhf_cfg, warm)?;
     if !rhf.converged {
         return Err(FerricError::ScfConvergence {

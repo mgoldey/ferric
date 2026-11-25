@@ -348,6 +348,7 @@ impl<'a> ResponseFock<'a> {
             let b = SchwarzBounds::compute(coul_op, prep)?;
             b.gc.copy_request_from(&scf_bounds.gc);
             b.digest.copy_from(&scf_bounds.digest);
+            b.gc_kernel.copy_from(&scf_bounds.gc_kernel);
             b
         };
         let coul = (coul_bounds, EnginePool::new(coul_op, prep, precision)?);
@@ -361,6 +362,7 @@ impl<'a> ResponseFock<'a> {
                     let b = SchwarzBounds::compute(op, prep)?;
                     b.gc.copy_request_from(&scf_bounds.gc);
                     b.digest.copy_from(&scf_bounds.digest);
+                    b.gc_kernel.copy_from(&scf_bounds.gc_kernel);
                     exch.push((b, EnginePool::new(op, prep, precision)?, c));
                 }
             }

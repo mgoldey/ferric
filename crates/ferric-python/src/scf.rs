@@ -593,6 +593,17 @@ pub(crate) fn parse_gc_rotation(
         .map_err(|e| crate::errors::input_err(format!("gc_rotation: {e}")))
 }
 
+/// Strict parse of a `gc_kernel` kwarg (exactly `"auto"` or `"off"`, as
+/// `[scf] gc_kernel`); `None` leaves `RhfConfig::gc_kernel` unset
+/// (`FERRIC_GC_KERNEL`, then `"off"`), the library default.
+pub(crate) fn parse_gc_kernel(
+    s: Option<&str>,
+) -> PyResult<Option<ferric_scf::direct_jk::GcKernel>> {
+    s.map(ferric_scf::direct_jk::GcKernel::parse_str)
+        .transpose()
+        .map_err(|e| crate::errors::input_err(format!("gc_kernel: {e}")))
+}
+
 /// Strict parse of a `relativistic` kwarg (`"x2c1e"`); `None` is the
 /// nonrelativistic Hamiltonian.
 pub(crate) fn parse_relativistic(
@@ -618,7 +629,7 @@ pub(crate) fn parse_relativistic(
     fock_hook=None,
     guess_basis=None, guess_projection=None, ri_j_precision=None, dm0=None,
     with_gradient=false, eri=None, relativistic=None, fock_hook_grad=None,
-    gc_rotation=None,
+    gc_rotation=None, gc_kernel=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_rhf(
@@ -665,6 +676,7 @@ pub(crate) fn run_rhf(
     relativistic: Option<&str>,
     fock_hook_grad: Option<&Bound<'_, PyAny>>,
     gc_rotation: Option<&str>,
+    gc_kernel: Option<&str>,
 ) -> PyResult<PyObject> {
     refuse_dm0_with_guess("run_rhf", dm0.is_some(), guess, guess_basis)?;
     let hook = parse_fock_hook("run_rhf", fock_hook, fock_hook_grad, with_gradient)?;
@@ -742,6 +754,7 @@ pub(crate) fn run_rhf(
         .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
         .py()?;
     config.gc_rotation = parse_gc_rotation(gc_rotation)?;
+    config.gc_kernel = parse_gc_kernel(gc_kernel)?;
     if with_gradient {
         config = scf_gradient_config("run_rhf", ScfGradientKind::Rhf, &config, fock_hook)?;
         if hook.as_ref().is_some_and(FockHook::lacks_grad) {
@@ -1521,7 +1534,7 @@ impl PyUhfResult {
     dm0=None, with_gradient=false, mom_reference=None, eri=None, relativistic=None,
     fock_hook_grad=None,
     soscf=None, smeared_charges=None, solvent=None, pcm_lebedev_order=None,
-    gc_rotation=None,
+    gc_rotation=None, gc_kernel=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_uhf(
@@ -1564,6 +1577,7 @@ pub(crate) fn run_uhf(
     solvent: Option<&Bound<'_, PyAny>>,
     pcm_lebedev_order: Option<usize>,
     gc_rotation: Option<&str>,
+    gc_kernel: Option<&str>,
 ) -> PyResult<PyUhfResult> {
     refuse_dm0_with_guess("run_uhf", dm0.is_some(), guess, guess_basis)?;
     let hook = parse_fock_hook("run_uhf", fock_hook, fock_hook_grad, with_gradient)?;
@@ -1634,6 +1648,7 @@ pub(crate) fn run_uhf(
         .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
         .py()?;
     config.gc_rotation = parse_gc_rotation(gc_rotation)?;
+    config.gc_kernel = parse_gc_kernel(gc_kernel)?;
     solve_open_shell_entry(
         py,
         blocks::OpenShell::Uhf,
@@ -1682,7 +1697,7 @@ pub(crate) fn run_uhf(
     with_gradient=false, eri=None, relativistic=None, fock_hook_grad=None,
     guess=None, soscf=None, smeared_charges=None, solvent=None, pcm_lebedev_order=None,
     cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
-    gc_rotation=None,
+    gc_rotation=None, gc_kernel=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_rohf(
@@ -1722,6 +1737,7 @@ pub(crate) fn run_rohf(
     cosx_final_grid: Option<&Bound<'_, PyAny>>,
     cosx_overlap_fit: Option<bool>,
     gc_rotation: Option<&str>,
+    gc_kernel: Option<&str>,
 ) -> PyResult<PyUhfResult> {
     refuse_dm0_with_guess("run_rohf", dm0.is_some(), guess, guess_basis)?;
     let hook = parse_fock_hook("run_rohf", fock_hook, fock_hook_grad, with_gradient)?;
@@ -1783,6 +1799,7 @@ pub(crate) fn run_rohf(
         .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
         .py()?;
     config.gc_rotation = parse_gc_rotation(gc_rotation)?;
+    config.gc_kernel = parse_gc_kernel(gc_kernel)?;
     solve_open_shell_entry(
         py,
         blocks::OpenShell::Rohf,

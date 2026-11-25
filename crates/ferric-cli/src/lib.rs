@@ -291,7 +291,8 @@ fn warn_uncarried_gradient_scf_keys(cfg: &Config) {
     }
 }
 
-/// The warning for an explicit `[scf] gc_rotation` on a run whose reference
+/// The warning for an explicit `[scf] gc_rotation` or `[scf] gc_kernel`
+/// (`keys`: those set; `None` when empty) on a run whose reference
 /// SCF has no four-centre direct build for it to rotate: J fitted (RI-J),
 /// and exchange fitted, COSX or not consumed (RI-JK, RIJCOSX, a pure
 /// functional on RI-J; LinK runs only next to four-centre J). `None` when
@@ -306,12 +307,12 @@ fn warn_uncarried_gradient_scf_keys(cfg: &Config) {
 /// else `df_j_aux = ""` / `df_k_aux = ""` (and no COSX `k_builder`).
 /// `open_shell` picks the unrestricted resolution (no auto-default fit).
 fn gc_rotation_route_warning(
-    gc_rotation_set: bool,
+    keys: &[&str],
     rhf_config: &RhfConfig,
     open_shell: bool,
     (kind, task): (&str, &str),
 ) -> Option<String> {
-    if !gc_rotation_set {
+    if keys.is_empty() {
         return None;
     }
     let spin = if open_shell {
@@ -343,19 +344,32 @@ fn gc_rotation_route_warning(
         };
         format!("set [scf] df_j_aux = \"\" and df_k_aux = \"\"{cosx}")
     };
+    let list = keys
+        .iter()
+        .map(|k| format!("[scf] {k}"))
+        .collect::<Vec<_>>()
+        .join(" and ");
     Some(format!(
-        "[scf] gc_rotation does not affect this run's reference SCF: it builds no four-centre \
-         J or K (J is density-fitted and exchange is density-fitted, COSX or not used), and \
-         the contraction rotation acts only on direct four-centre builds. If a four-centre \
-         reference was intended, {advice}"
+        "{list} {} not affect this run's reference SCF: it builds no four-centre J or K (J is \
+         density-fitted and exchange is density-fitted, COSX or not used), and the \
+         contraction rotation and its shared-primitive kernel act only on direct four-centre \
+         builds. If a four-centre reference was intended, {advice}",
+        if keys.len() == 1 { "does" } else { "do" }
     ))
 }
 
 /// Print [`gc_rotation_route_warning`] and write it to the run log as a
 /// `warning` note.
 fn warn_gc_rotation_without_four_centre(cfg: &Config, rhf_config: &RhfConfig, open_shell: bool) {
+    let keys: Vec<&str> = [
+        ("gc_rotation", cfg.scf.gc_rotation.is_some()),
+        ("gc_kernel", cfg.scf.gc_kernel.is_some()),
+    ]
+    .into_iter()
+    .filter_map(|(k, set)| set.then_some(k))
+    .collect();
     let Some(text) = gc_rotation_route_warning(
-        cfg.scf.gc_rotation.is_some(),
+        &keys,
         rhf_config,
         open_shell,
         (&cfg.method.kind, &cfg.method.task),
@@ -368,7 +382,7 @@ fn warn_gc_rotation_without_four_centre(cfg: &Config, rhf_config: &RhfConfig, op
             "warning",
             serde_json::json!({
                 "kind": "gc_rotation_without_four_centre",
-                "keys": ["gc_rotation"],
+                "keys": keys,
                 "text": text,
             }),
         );
@@ -735,6 +749,7 @@ fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig
     config.polarizable = polarizable;
     config.gc_rotation = s.gc_rotation_resolved().map_err(CliError::msg)?;
     config.jk_digest = s.jk_digest_resolved().map_err(CliError::msg)?;
+    config.gc_kernel = s.gc_kernel_resolved().map_err(CliError::msg)?;
     Ok(config)
 }
 
@@ -1236,6 +1251,11 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
                 // four-centre J or K route).
                 "jk_digest": rhf_config.jk_digest.map(|d| d.as_str()),
                 "jk_digest_resolved": ferric_scf::quartet_scatter::JkDigest::resolved_label(rhf_config.jk_digest),
+                // `[scf] gc_kernel` likewise (the rotated direct walk's
+                // shared-primitive kernel: the key, else `FERRIC_GC_KERNEL`,
+                // else `off`).
+                "gc_kernel": rhf_config.gc_kernel.map(|d| d.as_str()),
+                "gc_kernel_resolved": ferric_scf::direct_jk::GcKernel::resolved_label(rhf_config.gc_kernel),
                 "level_shift": rhf_config.level_shift,
                 // The RESOLVED budget in bytes, not the raw `[memory]` key:
                 // an omitted budget auto-detects, and the number actually used
@@ -6233,6 +6253,7 @@ fn gw_vxc_diagonal(
         ferric_gw::vxc_mo::JkRoute {
             gc_rotation: cfg.scf.gc_rotation_resolved().map_err(CliError::msg)?,
             jk_digest: cfg.scf.jk_digest_resolved().map_err(CliError::msg)?,
+            gc_kernel: cfg.scf.gc_kernel_resolved().map_err(CliError::msg)?,
         },
     )
     .map_err(|e| CliError::msg(format!("vxc_diagonal_mo failed: {e}")))
@@ -7749,9 +7770,10 @@ fn task_reference_certificate_from(
 /// RI-MP2 / SCS-MP2 optimize or frequency run of `kind`: four-centre or RI-JK, the SCF its
 /// analytic gradient differentiates; any other route is an error.
 ///
-/// The route carries `[scf] jk_digest` (`ScfJk::jk_digest`): the gradient
-/// re-solves its reference at each geometry from this choice alone, and its
-/// drivers write the digest into that reference's config.
+/// The route carries `[scf] jk_digest` and `[scf] gc_kernel`
+/// (`ScfJk::jk_digest`, `ScfJk::gc_kernel`): the gradient re-solves its
+/// reference at each geometry from this choice alone, and its drivers write
+/// both into that reference's config.
 fn rimp2_gradient_scf_jk(
     kind: &str,
     rhf_config: &ferric_scf::rhf::RhfConfig,
@@ -7768,13 +7790,16 @@ fn rimp2_gradient_scf_jk(
             ))
         }
     };
-    Ok(jk.with_jk_digest(rhf_config.jk_digest))
+    Ok(jk
+        .with_jk_digest(rhf_config.jk_digest)
+        .with_gc_kernel(rhf_config.gc_kernel))
 }
 
 /// The `[rpa]` pieces of an RI-dRPA gradient run (`task = "optimize"` or
 /// `"frequencies"`): the RI basis, the RPA configuration, the gradient
 /// route (the method, `[rpa] gradient`, else `resolve_default`, and the
-/// reference RHF's `[scf] jk_digest`) and the reason for a
+/// reference RHF's `[scf] jk_digest` and `[scf] gc_kernel`) and the reason
+/// for a
 /// finite-difference fallback. Exits 1 on a bad `[rpa]` value.
 fn rpa_gradient_setup(
     cfg: &Config,
@@ -7839,9 +7864,10 @@ fn rpa_gradient_setup(
         eprintln!("note: [rpa] gradient unset; using finite differences ({why})");
     }
     // The gradient re-solves its reference RHF at each geometry from the
-    // route alone: `[scf] jk_digest` travels with it.
+    // route alone: `[scf] jk_digest` and `[scf] gc_kernel` travel with it.
     let route = ferric_rpa::gradient::RpaGradientRoute::from(gradient)
-        .with_jk_digest(cfg.scf.jk_digest_resolved().map_err(CliError::msg)?);
+        .with_jk_digest(cfg.scf.jk_digest_resolved().map_err(CliError::msg)?)
+        .with_gc_kernel(cfg.scf.gc_kernel_resolved().map_err(CliError::msg)?);
     Ok((aux_bs, rpa_cfg, route, fallback))
 }
 
@@ -9746,16 +9772,25 @@ mod scf_config_lowering_tests {
                 true,
             ),
         ] {
-            let w = gc_rotation_route_warning(true, c, open, run);
+            let w = gc_rotation_route_warning(&["gc_rotation"], c, open, run);
             assert_eq!(w.is_some(), warns, "{name}: {w:?}");
             if let Some(w) = w {
-                assert!(w.contains("[scf] gc_rotation"), "{w}");
+                assert!(w.contains("[scf] gc_rotation does not"), "{w}");
             }
-            assert_eq!(
-                gc_rotation_route_warning(false, c, open, run),
-                None,
-                "{name}"
-            );
+            // `gc_kernel` alone, and both, warn the same way.
+            let w = gc_rotation_route_warning(&["gc_kernel"], c, open, run);
+            assert_eq!(w.is_some(), warns, "{name} gc_kernel: {w:?}");
+            if let Some(w) = w {
+                assert!(w.contains("[scf] gc_kernel does not"), "{w}");
+            }
+            let w = gc_rotation_route_warning(&["gc_rotation", "gc_kernel"], c, open, run);
+            if let Some(w) = w {
+                assert!(
+                    w.contains("[scf] gc_rotation and [scf] gc_kernel do not"),
+                    "{w}"
+                );
+            }
+            assert_eq!(gc_rotation_route_warning(&[], c, open, run), None, "{name}");
         }
         // The advice is the opt-out the kind accepts: `jk = "exact"` where
         // `[scf] jk` is read, the df_*_aux opt-out (and no COSX) elsewhere.
@@ -9773,10 +9808,11 @@ mod scf_config_lowering_tests {
             (&pbe0, ("ksdft", "optimize"), df, jk),
             (&pbe, ("gw", "energy"), df, jk),
         ] {
-            let w = gc_rotation_route_warning(true, c, false, run).unwrap();
+            let w = gc_rotation_route_warning(&["gc_rotation"], c, false, run).unwrap();
             assert!(w.ends_with(want) && !w.contains(not), "{run:?}: {w}");
         }
-        let w = gc_rotation_route_warning(true, &rijcosx, false, ("rhf", "energy")).unwrap();
+        let w = gc_rotation_route_warning(&["gc_rotation"], &rijcosx, false, ("rhf", "energy"))
+            .unwrap();
         assert!(w.ends_with("and drop k_builder = \"cosx\""), "{w}");
     }
 
@@ -9826,6 +9862,7 @@ mod scf_config_lowering_tests {
     /// the route otherwise unchanged.
     #[test]
     fn rimp2_geometry_route_carries_jk_digest() {
+        use ferric_scf::direct_jk::GcKernel;
         use ferric_scf::quartet_scatter::JkDigest;
         use ferric_scf::scf_jk::ScfJk;
         let fitted = |c: &mut ferric_scf::rhf::RhfConfig| {
@@ -9851,6 +9888,20 @@ mod scf_config_lowering_tests {
                     );
                 }
             }
+            // `[scf] gc_kernel` travels the same way.
+            for g in [GcKernel::Auto, GcKernel::Off] {
+                c.gc_kernel = Some(g);
+                for kind in ["rimp2", "scs-mp2", "att-rimp2", "scs-mp2-2terfc"] {
+                    assert_eq!(
+                        rimp2_gradient_scf_jk(kind, &c),
+                        Ok(want
+                            .clone()
+                            .with_jk_digest(c.jk_digest)
+                            .with_gc_kernel(Some(g))),
+                        "{kind} fit={fit} {g}"
+                    );
+                }
+            }
         }
     }
 
@@ -9872,9 +9923,16 @@ mod scf_config_lowering_tests {
         };
         let unset = route("");
         assert_eq!(unset.jk_digest, None);
+        assert_eq!(unset.gc_kernel, None);
         for (value, want) in [("pair", JkDigest::Pair), ("legacy", JkDigest::Legacy)] {
             let r = route(&format!("[scf]\njk_digest = \"{value}\"\n"));
             assert_eq!(r.jk_digest, Some(want), "{value}");
+            assert_eq!(r.method, unset.method, "{value}");
+        }
+        use ferric_scf::direct_jk::GcKernel;
+        for (value, want) in [("auto", GcKernel::Auto), ("off", GcKernel::Off)] {
+            let r = route(&format!("[scf]\ngc_kernel = \"{value}\"\n"));
+            assert_eq!(r.gc_kernel, Some(want), "{value}");
             assert_eq!(r.method, unset.method, "{value}");
         }
     }
@@ -9901,6 +9959,30 @@ mod scf_config_lowering_tests {
                 .unwrap()
                 .unwrap_err();
             assert!(e.to_string().contains("[scf] jk_digest"), "{e}");
+        }
+    }
+
+    /// `[scf] gc_kernel` reaches `RhfConfig::gc_kernel` (unset: `None`) and
+    /// is refused by key name outside auto | off.
+    #[test]
+    fn gc_kernel_key_reaches_the_config() {
+        use ferric_scf::direct_jk::GcKernel;
+        for (value, want) in [("auto", GcKernel::Auto), ("off", GcKernel::Off)] {
+            let cfg = parse(&header("rhf", &format!("[scf]\ngc_kernel = \"{value}\"\n")));
+            let c = new_lowering(&cfg, "energy", false, None).unwrap().unwrap();
+            assert_eq!(c.gc_kernel, Some(want), "{value}");
+        }
+        let cfg = parse(&header("rhf", ""));
+        let c = new_lowering(&cfg, "energy", false, None).unwrap().unwrap();
+        assert_eq!(c.gc_kernel, None);
+        for bad in ["Auto", "OFF", " auto", "on"] {
+            let cfg = parse(&header("rhf", &format!("[scf]\ngc_kernel = \"{bad}\"\n")));
+            let e = cfg.scf.validate().unwrap_err();
+            assert!(e.contains("[scf] gc_kernel"), "{bad:?}: {e}");
+            let e = new_lowering(&cfg, "energy", false, None)
+                .unwrap()
+                .unwrap_err();
+            assert!(e.to_string().contains("[scf] gc_kernel"), "{e}");
         }
     }
 

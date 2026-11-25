@@ -326,6 +326,7 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         eri,
         gc_rotation,
         jk_digest,
+        gc_kernel,
         // Which converged state the iteration lands in: see `StateSelecting`. Only
         // `use_sad_guess` and `trah_trigger` have a measured difference. The rest
         // are here because nothing shows them to be path-only.
@@ -427,6 +428,15 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         // file written before the field existed ran the legacy digest
         // (`ABSENT_IN_OLDER_FILES`).
         ("jk_digest", jk_digest_value(*jk_digest)),
+        // The rotated walk's shared-primitive kernel moves energies by about
+        // 1e-12 Ha (other integrals for the low-l classes;
+        // `direct_jk::gc_kernel`). Recorded resolved (config, then
+        // `FERRIC_GC_KERNEL`, then `off`); a file written before the field
+        // existed ran without it (`ABSENT_IN_OLDER_FILES`).
+        (
+            "gc_kernel",
+            crate::direct_jk::GcKernel::resolved_label(*gc_kernel),
+        ),
     ];
     let state_selecting = [
         ("use_sad_guess", format!("{use_sad_guess:?}")),
@@ -475,8 +485,9 @@ fn jk_digest_value(config: Option<crate::quartet_scatter::JkDigest>) -> String {
 
 /// Fields a file written before they existed lacks, with the value that file
 /// was computed under: the comparison reads the absent field as that value.
-/// `jk_digest`: every earlier build ran the 8-fold scatter, `legacy`.
-const ABSENT_IN_OLDER_FILES: [(&str, &str); 1] = [("jk_digest", "legacy")];
+/// `jk_digest`: every earlier build ran the 8-fold scatter, `legacy`;
+/// `gc_kernel`: every earlier build ran libint throughout, `off`.
+const ABSENT_IN_OLDER_FILES: [(&str, &str); 2] = [("jk_digest", "legacy"), ("gc_kernel", "off")];
 
 /// Environment switches an SCF reads directly, with raw values compared. None has
 /// a measured effect on the answer here, so they are in on suspicion: a false
@@ -501,8 +512,9 @@ const ENV_SWITCHES: [(&str, FieldClass); 11] = [
     // The k-panel width of the mixed-precision GEMM: it moves the last digits
     // of a mixed result (`ferric_core::gpu::precision`).
     ("FERRIC_GPU_MIXED_K_PANEL", FieldClass::Route),
-    // `FERRIC_JK_DIGEST` is not here: the config field `jk_digest` is
-    // recorded resolved, the variable included.
+    // `FERRIC_JK_DIGEST` and `FERRIC_GC_KERNEL` are not here: the config
+    // fields `jk_digest` and `gc_kernel` are recorded resolved, the variable
+    // included.
 ];
 
 /// The recorded value of one [`ENV_SWITCHES`] entry: the raw text, except

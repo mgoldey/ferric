@@ -1068,6 +1068,80 @@ Done:
    structure), and packed shell-pair-blocked D/J layouts for the `E34`
    gather.
 
+-  Shared-primitive `(ss|ss)` / `(ss|sp)` kernel on the rotated walk
+   (perf5 phase 3, "b2-s"). `ferric-integrals/src/gc_kernel.rs`
+   (`GcKernelBasis`): the groups of a `RotatedBasis` (its rotation groups,
+   `RotatedBasis::groups`, split into runs of columns sharing a nonzero
+   exponent), libint-normalised `n_union × m` coefficient matrices, per
+   ordered group pair with `l_a + l_b ≤ 1` the primitive-pair data
+   (libint's `Original` screen at the walk's engine precision, the
+   same-group s fold), a 7th-order Taylor Boys table, the `(ss|ss)` F0
+   kernel and the `l_ab + l_cd = 1` VRR/HRR kernel; `gather` copies one
+   column quartet out in libint's layout and function order. Coulomb only
+   (the walk checks the bounds' operator). Wiring
+   (`ferric-scf/src/direct_jk/gc_kernel.rs`): on the rotated walk of
+   `DirectJK` only (`Walk::kernel`: rotated, pair digest, Coulomb, setting
+   `auto`), closed and open shell, full and incremental. The bra-pair list
+   is reordered group first (`group_first`: the first member of an ordered
+   bra group pair pulls the others in after it), striped across MPI ranks
+   by whole buckets and partitioned by whole buckets (`Partition::Units`,
+   at least `deterministic_group_size` pairs per group), all pure functions
+   of the list. `PairSpec::with_gc_kernel` gives every group accumulator a
+   `KernelCache` (blocks keyed by the ket group pair, dropped when the bra
+   bucket changes); `scatter_bra_pair_probed` asks it for every survivor
+   with `l1+l2+l3+l4 ≤ 1` (`PairJk::kernel_quartet`): the group block is
+   evaluated on the bucket's first survivor in that ket group pair, the
+   column quartet gathered and digested by the same `PairJk::quartet`, in
+   the same canonical order; everything else goes to libint unchanged.
+   Screening, counting and the reduction are unchanged, so thread-count
+   bit-identity holds by construction. Switch: `GcKernel` (`auto` | `off`,
+   default `off` for this release), `RhfConfig::gc_kernel` /
+   `[scf] gc_kernel` / `FERRIC_GC_KERNEL`, resolved config > env > default
+   from a `GcKernelSlot` on `SchwarzBounds` (field `gc_kernel`, shared by
+   clones and the rotated bounds, like `digest`), agreed across MPI ranks
+   (`GcKernelSlot::mode_collective`); `off` is the walk without the kernel
+   bit for bit, its bra-pair order and partition included. Recorded by the
+   SCF drivers and `df_increments`, copied by the KS Z-vector, taken by the
+   CASSCF direct backend (`CasScfConfig::gc_kernel`, `ScfStart`), GW
+   (`JkRoute`) and `mbd_scf`, passed by the CLI, and carried like
+   `jk_digest` by the re-solving gradient routes (`ScfJk::gc_kernel` for
+   the RI-MP2 family, `RpaGradientRoute::gc_kernel` for `pdep-rpa`, through
+   `ferric_rpa::gradient::ReferenceJk` to every displaced and analytic
+   reference). It does not move an omitted `jk`, and an explicit key on a
+   route with no four-centre build warns with `gc_rotation`'s warning. In the
+   checkpoint identity as `gc_kernel`, resolved (Route); a file without it
+   reads as `off`. Python: `gc_kernel=` on the entries that take
+   `gc_rotation=`. `FERRIC_TIMING` adds the kernel's thread-seconds to the
+   group line and a line with its quartets, group evaluations and reuse.
+   Tests: the kernel against libint integral by integral
+   (`gc_kernel/tests.rs`), `ferric-scf/tests/gc_kernel.rs` (J/K and SCF
+   energies against the libint walk, the probe `gc_kernel::kernel_probe`,
+   bitwise off / segmented / unrotated / legacy, thread identity), the
+   checkpoint identity tests, `tests/mpi_gc_kernel.rs` in the CI `mpirun`
+   matrix, the gradient-route tests of the CLI, ferric-mp2 and ferric-rpa;
+   the J/K and thread-identity tests also run with 6 reduction groups
+   (`reduce::with_target_groups`) so each block cache crosses several bra
+   buckets. Mutation-checked (Boys argument, a contraction coefficient, a
+   duplicated exponent, the same-group fold, an HRR index and sign, the
+   pure-p order, the cache key, a stale cache or `last` memo across
+   buckets, a skipped digest, a skipped per-column screen, digesting
+   non-surviving column quartets: each fails a test). Measured (book, "The shared-primitive kernel"; 2
+   threads, shared box): per build 1.22× on octane cc-pVDZ (paired range
+   1.19–1.28), 1.12× butane aug-cc-pVDZ, 1.03× butane cc-pVTZ, def2-SVP
+   unchanged (the kernel never runs); 1.43 quartets per group evaluation
+   on octane, as in a one-group walk (the bucket partition loses no reuse).
+   UHF/ROHF share the wiring (`build_uhf`). The 1.28× projected from the
+   prototype was the pooled median of two noisy rounds (1.22 and 1.31); a
+   quiet-box rerun of production gave 1.21× with `off` at main's speed.
+   Follow-ups: flipping the default to `auto` is item 17 below, with its
+   prerequisites; the pooled builds
+   (`rhf::build_jk_with_pool`: Newton, stability, CPHF, Z-vector) and
+   `DirectJ` / `DirectK` stay on libint and could take the same cache;
+   b2-full (p and d classes) needs a kernel that beats libint there, which
+   the prototype's generic VRR does not (0.3–0.9×); the per-survivor
+   lookup (group and pair indirections, a hash probe) could be hoisted
+   per ket group pair.
+
 Next, each as its own PR following the patterns above:
 
 8d. (rest) What 8c and the first part of 8d left loose: (b) the ferric-scf
@@ -1330,7 +1404,7 @@ Next, each as its own PR following the patterns above:
     `pdep-rpa` `optimize` / `frequencies` gradients re-solve their
     reference at each geometry from `RhfConfig::gradient_reference` plus
     the J/K route (`jk` / `jk_aux` for the RI-MP2 family; `pdep-rpa` is
-    always four-centre) and `jk_digest`. These runs solve no shared SCF
+    always four-centre), `jk_digest` and `gc_kernel`. These runs solve no shared SCF
     before the gradient loop (`try_run` dispatches to `run_optimize` /
     `run_frequencies` first), so `gc_rotation`, `k_builder`, `screening`,
     `eri` and `integral_thresh` reach only the certificate's reference SCF
@@ -1340,9 +1414,9 @@ Next, each as its own PR following the patterns above:
     `level_shift`, DIIS and guess options; `density_conv` is the fixed
     1e-9 of the gradient reference). Today the CLI warns about
     the five J/K keys (`uncarried_gradient_scf_keys`). Carrying them means
-    replacing `ScfJk::jk_digest` and `RpaGradientRoute::jk_digest` by one
+    replacing `ScfJk::{jk_digest, gc_kernel}` and `RpaGradientRoute`'s two (`ReferenceJk`) by one
     reference-settings bundle (say `ReferenceScf { gc_rotation, k_builder,
-    screening, eri, integral_thresh, jk_digest, .. }`, applied to the
+    screening, eri, integral_thresh, jk_digest, gc_kernel, .. }`, applied to the
     per-geometry `RhfConfig` by one method, the same bundle in both
     crates) and checking each key's consumers on these routes:
     `screening` must reach `SchwarzBounds::compute_for_screening` where the
@@ -1357,3 +1431,26 @@ Next, each as its own PR following the patterns above:
     `[memory]`; `integral_thresh` changes the response's screening too.
     Each carried key wants a config-vs-variable bitwise test like the
     digest's, and the warning goes once every key is carried (or refused).
+
+17. Flip `[scf] gc_kernel` to `auto` by default (the shared-primitive
+    `(ss|ss)` / `(ss|sp)` kernel of the rotated direct walk; see "Done").
+    Prerequisites, each its own change first:
+    - Memory: the kernel data is charged to the memory pool while cached
+      (`GcKernelBasis::bytes`; a refused reservation runs libint on every
+      rank), and each block-cache arena is capped at 8 MiB with a libint
+      fallback beyond it (`gc_kernel::ARENA_CAP`; ~0.5 MB used on octane);
+      the arenas themselves (at most one live per worker thread) are not
+      charged. Still to do: make `pidx` sparse (it is `n_sp_groups²`
+      `u32`s, 16 MB at 2000 s/p groups); build pair data only for group
+      pairs that hold a significant shell pair (today every ordered s/p
+      group pair is set up, most of them empty for a large molecule).
+    - A speed measurement on heavy atoms and pseudopotential bases (cc-pVTZ
+      Cl/Br, cc-pVDZ-PP on Ag/I), paired against `off`: the measured gains
+      are alkanes only.
+    - Re-measure the cc-pVDZ / aug-cc-pVDZ / cc-pVTZ table on a quiet box.
+    Deferred with it, not blocking: the libint-layout helpers (pure-p
+    order, function maps) duplicated between `gc_kernel.rs` and the
+    digest's layout code could share one place; and the public surface of
+    `ferric_integrals::gc_kernel` (`KernelGroup` fields, `PairKind`,
+    `boys_for_tests`) can shrink to `pub(crate)` plus what `ferric-scf`
+    uses.

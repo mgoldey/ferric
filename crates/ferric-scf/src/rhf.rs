@@ -562,6 +562,18 @@ pub struct RhfConfig {
     /// `FERRIC_JK_DIGEST`, then `pair`. `Legacy` is the 8-fold scatter of
     /// earlier releases bit for bit; `Pair` moves energies by about 1e-12 Ha.
     pub jk_digest: Option<crate::quartet_scatter::JkDigest>,
+    /// The shared-primitive kernel of the rotated direct J/K walk
+    /// ([`crate::direct_jk::GcKernel`]; `crate::direct_jk::gc_kernel`):
+    /// `(ss|ss)` and `(ss|sp)` quartets of generally contracted groups from
+    /// one pass over their union primitives. Only the SCF's own `DirectJK`
+    /// builds (closed and open shell, full and incremental) use it; the
+    /// record the SCF leaves on its bounds reaches the Newton, stability and
+    /// response builds that follow, but those run `build_jk_with_pool`,
+    /// which stays on libint. `None` (the default) leaves it to
+    /// `FERRIC_GC_KERNEL`, then `off`. Effective only where the rotated walk
+    /// runs with the pair digest; `Off` is that walk bit for bit, `Auto`
+    /// moves energies by about 1e-12 Ha.
+    pub gc_kernel: Option<crate::direct_jk::GcKernel>,
     /// `[scf] relativistic`: the relativistic core Hamiltonian
     /// ([`crate::x2c::Relativistic`]), built once before the loop in place of
     /// `T + V` (see [`crate::x2c::reference_hcore`]). `None` (default) is the
@@ -643,6 +655,7 @@ impl Default for RhfConfig {
             eri_route: Default::default(),
             gc_rotation: None,
             jk_digest: None,
+            gc_kernel: None,
             relativistic: None,
         }
     }
@@ -2326,6 +2339,8 @@ fn solve_rhf_impl(
     bounds.gc.set_request(config.gc_rotation);
     // ... and its J/K digest (`quartet_scatter::DigestSlot`).
     bounds.digest.set(config.jk_digest);
+    // ... and its shared-primitive kernel (`direct_jk::gc_kernel`).
+    bounds.gc_kernel.set(config.gc_kernel);
     // Split the injection: (S, h, V_nn) go to the shared env builder, the J/K
     // builders are driven in the iteration loop. All `None` on the molecular
     // path.

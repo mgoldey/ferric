@@ -4373,6 +4373,7 @@ def run_rhf(
     relativistic: Literal["x2c1e"] | None = None,
     fock_hook_grad: FockHookGrad | None = None,
     gc_rotation: Literal["auto", "rot1", "off"] | None = None,
+    gc_kernel: Literal["auto", "off"] | None = None,
 ) -> RhfResult:
     """Closed-shell Restricted Hartree-Fock.
 
@@ -4396,6 +4397,18 @@ def run_rhf(
     AO basis; a basis with nothing to rotate (def2, Pople, STO-3G) is
     unaffected. Same kwarg on run_uhf, run_rohf, run_dft, run_uks and
     run_roks (not run_ksdft); any other value raises ValueError.
+
+    gc_kernel="auto" | "off" (default None: FERRIC_GC_KERNEL, then "off"; the
+    CLI's [scf] gc_kernel) lets the rotated direct J/K walk take its (ss|ss)
+    and (ss|sp) quartets from a shared-primitive kernel: each group of
+    columns sharing primitives is evaluated once per group quartet from one
+    pass over the union primitives instead of one libint call per column
+    quartet. It runs only where the rotation is active (gc_rotation not
+    "off", a generally contracted basis) with the pair J/K digest, in the
+    SCF's closed- and open-shell direct builds; "off" is the libint walk bit
+    for bit. Energies move by about 1e-12 Ha. Same kwarg on run_uhf,
+    run_rohf, run_dft, run_uks and run_roks; any other value raises
+    ValueError.
 
     with_gradient=True (default False) also returns the analytic nuclear
     gradient of the reported energy in result.gradient() (natoms x 3,
@@ -4571,6 +4584,7 @@ def run_rhf(
     relativistic: Literal["x2c1e"] | None = None,
     fock_hook_grad: None = None,
     gc_rotation: Literal["auto", "rot1", "off"] | None = None,
+    gc_kernel: Literal["auto", "off"] | None = None,
 ) -> SymmetricRhfResult: ...
 def run_uhf(
     mol: Molecule,
@@ -4611,6 +4625,7 @@ def run_uhf(
     solvent: float | str | None = None,
     pcm_lebedev_order: int | None = None,
     gc_rotation: Literal["auto", "rot1", "off"] | None = None,
+    gc_kernel: Literal["auto", "off"] | None = None,
 ) -> UhfResult:
     """Unrestricted Hartree-Fock (open-shell). with_gradient=True: the
     analytic gradient in result.gradient() under run_rhf's rules (a
@@ -4700,6 +4715,7 @@ def run_rohf(
     cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
     cosx_overlap_fit: bool | None = None,
     gc_rotation: Literal["auto", "rot1", "off"] | None = None,
+    gc_kernel: Literal["auto", "off"] | None = None,
 ) -> UhfResult:
     """Restricted Open-Shell Hartree-Fock. with_gradient=True: the analytic
     gradient in result.gradient() under run_rhf's rules (a fock_hook needs
@@ -4768,6 +4784,7 @@ def run_uks(
     fock_hook: SpinFockHook | None = None,
     fock_hook_grad: SpinFockHookGrad | None = None,
     gc_rotation: Literal["auto", "rot1", "off"] | None = None,
+    gc_kernel: Literal["auto", "off"] | None = None,
 ) -> UhfResult:
     """Unrestricted Kohn-Sham (open-shell DFT): solve_uhf with RhfConfig.xc set,
     the route the CLI takes for kind="ksdft" on an open-shell molecule.
@@ -4842,6 +4859,7 @@ def run_roks(
     fock_hook: SpinFockHook | None = None,
     fock_hook_grad: SpinFockHookGrad | None = None,
     gc_rotation: Literal["auto", "rot1", "off"] | None = None,
+    gc_kernel: Literal["auto", "off"] | None = None,
 ) -> UhfResult:
     """Restricted open-shell Kohn-Sham: solve_rohf with RhfConfig.xc set, the
     route the CLI takes for kind="rohf" with [dft] functional.
@@ -6158,6 +6176,7 @@ def run_dft(
     aurora: bool | None = None,
     trah_trigger: float | None = None,
     gc_rotation: Literal["auto", "rot1", "off"] | None = None,
+    gc_kernel: Literal["auto", "off"] | None = None,
 ) -> DftResult:
     """Kohn-Sham DFT (closed-shell). fock_hook: as for run_rhf; with a
     hook every convergence-ladder rung runs with the hook applied and SOSCF
@@ -6326,6 +6345,7 @@ def run_dft(
     aurora: bool | None = None,
     trah_trigger: float | None = None,
     gc_rotation: Literal["auto", "rot1", "off"] | None = None,
+    gc_kernel: Literal["auto", "off"] | None = None,
 ) -> SymmetricRhfResult:
     """Point-group-blocked closed-shell RKS (see the ``symmetry=True``
     paragraph of the DftResult overload). Same density-fitting defaults:
@@ -6415,6 +6435,7 @@ def run_dft(
     aurora: bool | None = None,
     trah_trigger: float | None = None,
     gc_rotation: Literal["auto", "rot1", "off"] | None = None,
+    gc_kernel: Literal["auto", "off"] | None = None,
 ) -> DftResult | SymmetricRhfResult: ...
 def dft_grid_point_count(
     mol: Molecule,
