@@ -270,6 +270,125 @@ fn warn_if_epistemically_unproven(method: &str) {
     }
 }
 
+/// Warn (stderr and the run log's `warning` note) about the `[scf]` J/K keys
+/// a re-solving gradient route does not carry to its per-geometry reference
+/// ([`Config::uncarried_gradient_scf_keys`]). Interim, until those routes
+/// carry them (ARCHITECTURE.md, Next 16).
+fn warn_uncarried_gradient_scf_keys(cfg: &Config) {
+    let Some(text) = cfg.uncarried_gradient_scf_warning() else {
+        return;
+    };
+    eprintln!("warning: {text}");
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.note(
+            "warning",
+            serde_json::json!({
+                "kind": "uncarried_gradient_scf_keys",
+                "keys": cfg.uncarried_gradient_scf_keys(),
+                "text": text,
+            }),
+        );
+    }
+}
+
+/// The warning for an explicit `[scf] gc_rotation` or `[scf] gc_kernel`
+/// (`keys`: those set; `None` when empty) on a run whose reference
+/// SCF has no four-centre direct build for it to rotate: J fitted (RI-J),
+/// and exchange fitted, COSX or not consumed (RI-JK, RIJCOSX, a pure
+/// functional on RI-J; LinK runs only next to four-centre J). `None` when
+/// the key is unset, when either half is a four-centre direct build (e.g.
+/// `DirectJ` next to RI-K), when the route cannot be resolved (the SCF
+/// reports that), and for `gw` on a hybrid or range-separated reference
+/// (`[rpa] xc`), whose exact-exchange diagonal is built four-centre under
+/// the run's `gc_rotation` (`vxc_mo::JkRoute`). The text is scoped to the
+/// reference SCF: a later step that builds its own four-centre J/K still
+/// follows the key. The advice is the opt-out `kind` / `task` accepts:
+/// `[scf] jk = "exact"` where `jk` is read (`config::scf_jk_governs`),
+/// else `df_j_aux = ""` / `df_k_aux = ""` (and no COSX `k_builder`).
+/// `open_shell` picks the unrestricted resolution (no auto-default fit).
+fn gc_rotation_route_warning(
+    keys: &[&str],
+    rhf_config: &RhfConfig,
+    open_shell: bool,
+    (kind, task): (&str, &str),
+) -> Option<String> {
+    if keys.is_empty() {
+        return None;
+    }
+    let spin = if open_shell {
+        ferric_scf::Spin::Unrestricted
+    } else {
+        ferric_scf::Spin::Restricted
+    };
+    let exchange = ferric_scf::JkExchange::from_config(rhf_config);
+    if kind == "gw" && exchange.functional && exchange.k_consumed() {
+        return None;
+    }
+    let route = ferric_scf::resolve_jk_route(rhf_config, exchange, spin).ok()?;
+    let direct_j = route.j_aux.is_none();
+    let direct_k = route.k_consumed
+        && route.omega <= 0.0
+        && route.k_aux.is_none()
+        && !route.cosx_k
+        && route.pluggable_k(rhf_config.k_builder).is_none();
+    if direct_j || direct_k {
+        return None;
+    }
+    let advice = if config::scf_jk_governs(kind, task) {
+        "set [scf] jk = \"exact\"".to_string()
+    } else {
+        let cosx = if route.cosx_k {
+            " and drop k_builder = \"cosx\""
+        } else {
+            ""
+        };
+        format!("set [scf] df_j_aux = \"\" and df_k_aux = \"\"{cosx}")
+    };
+    let list = keys
+        .iter()
+        .map(|k| format!("[scf] {k}"))
+        .collect::<Vec<_>>()
+        .join(" and ");
+    Some(format!(
+        "{list} {} not affect this run's reference SCF: it builds no four-centre J or K (J is \
+         density-fitted and exchange is density-fitted, COSX or not used), and the \
+         contraction rotation and its shared-primitive kernel act only on direct four-centre \
+         builds. If a four-centre reference was intended, {advice}",
+        if keys.len() == 1 { "does" } else { "do" }
+    ))
+}
+
+/// Print [`gc_rotation_route_warning`] and write it to the run log as a
+/// `warning` note.
+fn warn_gc_rotation_without_four_centre(cfg: &Config, rhf_config: &RhfConfig, open_shell: bool) {
+    let keys: Vec<&str> = [
+        ("gc_rotation", cfg.scf.gc_rotation.is_some()),
+        ("gc_kernel", cfg.scf.gc_kernel.is_some()),
+    ]
+    .into_iter()
+    .filter_map(|(k, set)| set.then_some(k))
+    .collect();
+    let Some(text) = gc_rotation_route_warning(
+        &keys,
+        rhf_config,
+        open_shell,
+        (&cfg.method.kind, &cfg.method.task),
+    ) else {
+        return;
+    };
+    eprintln!("warning: {text}");
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.note(
+            "warning",
+            serde_json::json!({
+                "kind": "gc_rotation_without_four_centre",
+                "keys": keys,
+                "text": text,
+            }),
+        );
+    }
+}
+
 /// Real entry point for the standalone `ferric`/`ferric-cli` binaries. Reads
 /// the live process argv, which for a native binary is exactly
 /// `[program_name, ...user_args]` -- `run()` below expects that same shape,
@@ -1159,6 +1278,8 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
             }),
         );
     }
+    warn_uncarried_gradient_scf_keys(&cfg);
+    warn_gc_rotation_without_four_centre(&cfg, &rhf_config, mol.multiplicity > 1);
 
     // Resolve/validate [scf] df_guess_aux up front (config-honesty: a knob
     // that would silently do nothing under df_guess = false is a hard error)
@@ -2544,29 +2665,34 @@ fn lmp2_local_json_with_vs(
             obj.insert(k.to_string(), cert_value_json(&v));
         }
         let lb = &r.lambda_boys;
-        obj.insert("lambda_boys".to_string(), serde_json::json!(lb.lambda));
-        obj.insert(
-            "lambda_boys_sweeps".to_string(),
-            serde_json::json!(lb.sweeps),
-        );
-        obj.insert(
-            "lambda_boys_max_grad".to_string(),
-            serde_json::json!(lb.max_grad),
-        );
-        obj.insert("lambda_boys_t_s".to_string(), serde_json::json!(lb.t_s));
+        for (k, v) in [
+            ("lambda_boys", serde_json::json!(lb.lambda)),
+            ("lambda_boys_sweeps", serde_json::json!(lb.sweeps)),
+            (
+                "lambda_boys_newton_iters",
+                serde_json::json!(lb.newton_iters),
+            ),
+            ("lambda_boys_max_grad", serde_json::json!(lb.max_grad)),
+            ("lambda_boys_newton_step", serde_json::json!(lb.newton_step)),
+            ("lambda_boys_t_s", serde_json::json!(lb.t_s)),
+        ] {
+            obj.insert(k.to_string(), v);
+        }
     }
     j
 }
 
 /// The printout's occupied-localization line: plain Boys at λ = 0, else λ,
-/// sweeps, final gradient and wall time of the λ-Boys stage.
+/// Jacobi sweeps, Newton iterations, final gradient, last Newton step and
+/// wall time of the λ-Boys stage.
 fn lambda_boys_line(lb: &ferric_mp2::boys::LambdaBoysReport) -> String {
     if lb.lambda == 0.0 {
         "Boys (lambda_boys = 0)".to_string()
     } else {
         format!(
-            "lambda-Boys, lambda_boys = {} ({} sweeps, max |grad| {:.1e}, {:.2} s)",
-            lb.lambda, lb.sweeps, lb.max_grad, lb.t_s
+            "lambda-Boys, lambda_boys = {} ({} sweeps + {} Newton, max |grad| {:.1e}, \
+             step {:.1e}, {:.2} s)",
+            lb.lambda, lb.sweeps, lb.newton_iters, lb.max_grad, lb.newton_step, lb.t_s
         )
     }
 }
@@ -2655,6 +2781,20 @@ fn lmp2_timings_json(
             group_scratch_bound_bytes,
             group_in_flight_peak,
             n_group_waves,
+            eri3_slab_bytes_max,
+            pair_fit_thread_s,
+            group_work_max_s,
+            group_work_mean_s,
+            pair_skip,
+            n_pair_skip_bounded,
+            n_pairs_proved_empty,
+            n_pair_groups_skipped,
+            n_pairs_empty,
+            t_pair_skip_s,
+            pair_skip_audit_n,
+            pair_skip_audit_max_ratio,
+            pair_skip_audit_gate_max_ratio,
+            pair_skip_audit_violations,
         } = d;
         let mut out = serde_json::json!({
             "strip_rows_mean": strip_rows_mean,
@@ -2704,6 +2844,10 @@ fn lmp2_timings_json(
             "group_scratch_bound_bytes": group_scratch_bound_bytes,
             "group_in_flight_peak": group_in_flight_peak,
             "n_group_waves": n_group_waves,
+            "eri3_slab_bytes_max": eri3_slab_bytes_max,
+            "pair_fit_thread_s": pair_fit_thread_s,
+            "group_work_max_s": group_work_max_s,
+            "group_work_mean_s": group_work_mean_s,
             "memory_strips_bytes": memory.strips_bytes,
             "memory_metric_bytes": memory.metric_bytes,
             "memory_stage3_scratch_bytes": memory.stage3_scratch_bytes,
@@ -2712,8 +2856,22 @@ fn lmp2_timings_json(
             "memory_exact": memory.exact,
             "memory_resident_peak_bytes": memory.resident_peak(),
         });
-        if let (Some(o), serde_json::Value::Object(g)) = (out.as_object_mut(), gate) {
-            o.extend(g);
+        let skip = serde_json::json!({
+            "pair_skip": pair_skip.as_config_str(),
+            "n_pair_skip_bounded": n_pair_skip_bounded,
+            "n_pairs_proved_empty": n_pairs_proved_empty,
+            "n_pair_groups_skipped": n_pair_groups_skipped,
+            "n_pairs_empty": n_pairs_empty,
+            "t_pair_skip_s": t_pair_skip_s,
+            "pair_skip_audit_n": pair_skip_audit_n,
+            "pair_skip_audit_max_ratio": pair_skip_audit_max_ratio,
+            "pair_skip_audit_gate_max_ratio": pair_skip_audit_gate_max_ratio,
+            "pair_skip_audit_violations": pair_skip_audit_violations,
+        });
+        for extra in [gate, skip] {
+            if let (Some(o), serde_json::Value::Object(g)) = (out.as_object_mut(), extra) {
+                o.extend(g);
+            }
         }
         out
     });
@@ -2849,15 +3007,18 @@ fn run_rimp2_local(
     if let Some((d, _)) = &maps {
         println!(
             "  locality maps         = r_aux {} Bohr, r_virt {} Bohr, ao_tail {:.0e}, \
-             schwarz_skip {:.0e}, batch_merge {}, gate_cal {}, virt_schwarz_kappa {}",
+             schwarz_skip {:.0e}, eri3_pass {}, batch_merge {}, gate_cal {}, virt_schwarz_kappa {}, \
+             pair_skip {}",
             d.aux_radius,
             d.virt_radius,
             d.ao_tail,
             d.schwarz_skip,
+            d.eri3_pass.as_config_str(),
             d.batch_merge,
             d.gate_cal.map_or("off".to_string(), |c| format!("{c}")),
             d.virt_schwarz_kappa
                 .map_or("off".to_string(), |k| format!("{k}")),
+            d.pair_skip.as_config_str(),
         );
     }
     println!(
@@ -6846,7 +7007,7 @@ fn run_frequencies_correlated(
                         m, bs, &aux_bs, op, &rpa_cfg, gradient, warm,
                     )
                 }),
-                gradient.certificate_label_with(fallback.as_deref()),
+                gradient.method.certificate_label_with(fallback.as_deref()),
             )
         }
         "rimp2" => {
@@ -7609,47 +7770,36 @@ fn task_reference_certificate_from(
 /// RI-MP2 / SCS-MP2 optimize or frequency run of `kind`: four-centre or RI-JK, the SCF its
 /// analytic gradient differentiates; any other route is an error.
 ///
-/// `[scf] jk_digest` is refused here: the gradient re-solves its reference
-/// at each geometry from the route alone (`ScfJk`), so the key would be
-/// dropped silently. `FERRIC_JK_DIGEST` reaches those builds.
+/// The route carries `[scf] jk_digest` and `[scf] gc_kernel`
+/// (`ScfJk::jk_digest`, `ScfJk::gc_kernel`): the gradient re-solves its
+/// reference at each geometry from this choice alone, and its drivers write
+/// both into that reference's config.
 fn rimp2_gradient_scf_jk(
     kind: &str,
     rhf_config: &ferric_scf::rhf::RhfConfig,
 ) -> Result<ferric_scf::scf_jk::ScfJk, String> {
-    if let Some(d) = rhf_config.jk_digest {
-        return Err(format!(
-            "[scf] jk_digest = \"{d}\" is not read by method.kind = \"{kind}\" with task = \
-             \"optimize\" or \"frequencies\": its gradient solves the reference SCF at each \
-             geometry from the J/K route alone. Remove it; FERRIC_JK_DIGEST selects the digest \
-             of those builds"
-        ));
-    }
-    if let Some(g) = rhf_config.gc_kernel {
-        return Err(format!(
-            "[scf] gc_kernel = \"{g}\" is not read by method.kind = \"{kind}\" with task = \
-             \"optimize\" or \"frequencies\": its gradient solves the reference SCF at each \
-             geometry from the J/K route alone. Remove it; FERRIC_GC_KERNEL selects the kernel \
-             of those builds"
-        ));
-    }
     let route = ferric_scf::scf_jk::effective_jk(rhf_config);
-    match route.mode {
-        "exact" => Ok(ferric_mp2::gradient::exact_scf_jk()),
-        "rijk" => Ok(ferric_scf::scf_jk::ScfJk {
-            mode: ferric_scf::scf_jk::ScfJkMode::RiJk,
-            aux: route.j_aux,
-        }),
-        other => Err(format!(
-            "method.kind = \"{kind}\", task = \"optimize\" or \"frequencies\" differentiates a \
-             four-centre or an RI-JK reference ([scf] jk = \"exact\" | \"rijk\"); the [scf] fields give the J/K \
-             route \"{other}\""
-        )),
-    }
+    let jk = match (route.mode, route.j_aux) {
+        ("exact", _) => ferric_scf::scf_jk::ScfJk::exact(),
+        ("rijk", Some(aux)) => ferric_scf::scf_jk::ScfJk::rijk(aux),
+        (other, _) => {
+            return Err(format!(
+                "method.kind = \"{kind}\", task = \"optimize\" or \"frequencies\" differentiates a \
+                 four-centre or an RI-JK reference ([scf] jk = \"exact\" | \"rijk\"); the [scf] fields give the J/K \
+                 route \"{other}\""
+            ))
+        }
+    };
+    Ok(jk
+        .with_jk_digest(rhf_config.jk_digest)
+        .with_gc_kernel(rhf_config.gc_kernel))
 }
 
 /// The `[rpa]` pieces of an RI-dRPA gradient run (`task = "optimize"` or
 /// `"frequencies"`): the RI basis, the RPA configuration, the gradient
-/// method (`[rpa] gradient`, else `resolve_default`) and the reason for a
+/// route (the method, `[rpa] gradient`, else `resolve_default`, and the
+/// reference RHF's `[scf] jk_digest` and `[scf] gc_kernel`) and the reason
+/// for a
 /// finite-difference fallback. Exits 1 on a bad `[rpa]` value.
 fn rpa_gradient_setup(
     cfg: &Config,
@@ -7660,7 +7810,7 @@ fn rpa_gradient_setup(
     (
         BasisSet,
         PdepRpaConfig,
-        ferric_rpa::gradient::RpaGradientMethod,
+        ferric_rpa::gradient::RpaGradientRoute,
         Option<String>,
     ),
     CliError,
@@ -7713,7 +7863,12 @@ fn rpa_gradient_setup(
     if let Some(why) = &fallback {
         eprintln!("note: [rpa] gradient unset; using finite differences ({why})");
     }
-    Ok((aux_bs, rpa_cfg, gradient, fallback))
+    // The gradient re-solves its reference RHF at each geometry from the
+    // route alone: `[scf] jk_digest` and `[scf] gc_kernel` travel with it.
+    let route = ferric_rpa::gradient::RpaGradientRoute::from(gradient)
+        .with_jk_digest(cfg.scf.jk_digest_resolved().map_err(CliError::msg)?)
+        .with_gc_kernel(cfg.scf.gc_kernel_resolved().map_err(CliError::msg)?);
+    Ok((aux_bs, rpa_cfg, route, fallback))
 }
 
 /// `task.method = "optimize"` dispatch. Extracted verbatim from the former
@@ -7860,7 +8015,7 @@ fn run_optimize(
                 None,
                 (opt_result.converged, opt_result.steps, opt_result.energy),
                 opt_result.search,
-                &gradient.certificate_label_with(fallback.as_deref()),
+                &gradient.method.certificate_label_with(fallback.as_deref()),
             )?;
         }
         "rimp2" => run_optimize_rimp2(
@@ -8787,24 +8942,11 @@ mod local_printout_tests {
         assert_eq!(j["keep_fraction"], 0.023);
         assert_eq!(j["integral_direct"], true);
     }
-
-    /// The run-log `timings` object carries every StageTimings field and,
-    /// on the direct path, every DirectStats field, each with its own value
-    /// (distinct per field, so a swapped key fails), and `direct: null` on
-    /// the in-core path. A NaN timer is logged as `null`.
-    #[test]
-    fn lmp2_timings_json_carries_every_field() {
-        use super::lmp2_timings_json;
-        use ferric_mp2::lmp2_amplitude::StageTimings;
+    /// Every `DirectStats` field set to a distinct value, for the JSON
+    /// round-trip test.
+    fn direct_stats_fixture() -> ferric_mp2::lmp2_direct::DirectStats {
         use ferric_mp2::lmp2_direct::DirectStats;
-        let t = StageTimings {
-            t_spaces_s: 1.5,
-            t_loc_s: 5.5,
-            t_assembly_s: 2.5,
-            t_solve_s: 3.5,
-            t_reference_s: 4.5,
-        };
-        let d = DirectStats {
+        DirectStats {
             strip_rows_mean: 10.5,
             strip_rows_max: 11,
             strip_cols_mean: 12.5,
@@ -8856,7 +8998,39 @@ mod local_printout_tests {
             group_scratch_bound_bytes: 56,
             group_in_flight_peak: 57,
             n_group_waves: 58,
+            eri3_slab_bytes_max: 59,
+            pair_fit_thread_s: [60.5, 61.5, 62.5, 63.5],
+            group_work_max_s: 64.5,
+            group_work_mean_s: 65.5,
+            pair_skip: ferric_mp2::lmp2_direct::PairSkip::Audit,
+            n_pair_skip_bounded: 66,
+            n_pairs_proved_empty: 67,
+            n_pair_groups_skipped: 68,
+            n_pairs_empty: 69,
+            t_pair_skip_s: 70.5,
+            pair_skip_audit_n: 71,
+            pair_skip_audit_max_ratio: 0.725,
+            pair_skip_audit_gate_max_ratio: 0.735,
+            pair_skip_audit_violations: 74,
+        }
+    }
+
+    /// The run-log `timings` object carries every StageTimings field and,
+    /// on the direct path, every DirectStats field, each with its own value
+    /// (distinct per field, so a swapped key fails), and `direct: null` on
+    /// the in-core path. A NaN timer is logged as `null`.
+    #[test]
+    fn lmp2_timings_json_carries_every_field() {
+        use super::lmp2_timings_json;
+        use ferric_mp2::lmp2_amplitude::StageTimings;
+        let t = StageTimings {
+            t_spaces_s: 1.5,
+            t_loc_s: 5.5,
+            t_assembly_s: 2.5,
+            t_solve_s: 3.5,
+            t_reference_s: 4.5,
         };
+        let d = direct_stats_fixture();
         let stage: &[(&str, f64)] = &[
             ("t_spaces_s", 1.5),
             ("t_loc_s", 5.5),
@@ -8907,6 +9081,18 @@ mod local_printout_tests {
             ("group_scratch_bound_bytes", 56.0),
             ("group_in_flight_peak", 57.0),
             ("n_group_waves", 58.0),
+            ("eri3_slab_bytes_max", 59.0),
+            ("group_work_max_s", 64.5),
+            ("group_work_mean_s", 65.5),
+            ("n_pair_skip_bounded", 66.0),
+            ("n_pairs_proved_empty", 67.0),
+            ("n_pair_groups_skipped", 68.0),
+            ("n_pairs_empty", 69.0),
+            ("t_pair_skip_s", 70.5),
+            ("pair_skip_audit_n", 71.0),
+            ("pair_skip_audit_max_ratio", 0.725),
+            ("pair_skip_audit_gate_max_ratio", 0.735),
+            ("pair_skip_audit_violations", 74.0),
             ("memory_strips_bytes", 50.0),
             ("memory_metric_bytes", 51.0),
             ("memory_stage3_scratch_bytes", 52.0),
@@ -8924,8 +9110,14 @@ mod local_printout_tests {
             assert_eq!(j[*k].as_f64(), Some(*v), "{k}: {j}");
         }
         let dj = j["direct"].as_object().unwrap();
-        assert_eq!(dj.len(), direct.len() + 2, "{j}");
+        assert_eq!(dj.len(), direct.len() + 4, "{j}");
         assert_eq!(dj["memory_exact"], true, "{j}");
+        assert_eq!(dj["pair_skip"], "audit", "{j}");
+        assert_eq!(
+            dj["pair_fit_thread_s"],
+            serde_json::json!([60.5, 61.5, 62.5, 63.5]),
+            "{j}"
+        );
         for (k, v) in direct {
             assert_eq!(j["direct"][*k].as_f64(), Some(*v), "{k}: {j}");
         }
@@ -8962,6 +9154,7 @@ mod local_printout_tests {
                 ao_tail: 1e-3,
                 schwarz_skip: 1e-5,
                 batch_merge: 4,
+                eri3_pass: "batches",
                 virt_schwarz_kappa: None,
             }),
             pair_fit: Some(PairFitCounters {
@@ -9020,6 +9213,7 @@ mod local_printout_tests {
         assert!(back["maps"]["virt_schwarz_kappa"].is_null());
         assert_eq!(back["fock_screen"], 1.0);
         assert_eq!(back["maps"]["batch_merge"], 4);
+        assert_eq!(back["maps"]["eri3_pass"], "batches");
         assert_eq!(back["pair_fit"]["n_trsm"], 93);
         assert_eq!(back["build_commit"], ferric_build_info::COMMIT);
         assert_eq!(
@@ -9526,6 +9720,102 @@ mod scf_config_lowering_tests {
         assert_eq!(format!("{a:#?}"), format!("{b:#?}"), "{msg}");
     }
 
+    /// `gc_rotation_route_warning`: an explicit `gc_rotation` warns only
+    /// when the SCF's route has no four-centre direct J or K build: RI-JK
+    /// (closed and open shell), RIJCOSX, and a pure functional on RI-J; not
+    /// four-centre HF, RI-J next to four-centre K, a hybrid's auto RI-JK
+    /// opted out with `""`, or an unset key.
+    #[test]
+    fn gc_rotation_warns_only_without_a_four_centre_build() {
+        use ferric_scf::options::KBuilderKind;
+        let hf = RhfConfig::default();
+        let rijk = RhfConfig::default()
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
+        let rij_direct_k = RhfConfig::default().with_df_j_aux("def2-universal-jkfit");
+        let rijcosx = RhfConfig::default()
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_k_builder(KBuilderKind::Cosx);
+        let pbe = RhfConfig::default().with_xc("PBE");
+        let pbe0 = RhfConfig::default().with_xc("PBE0");
+        let wb97x = RhfConfig::default().with_xc("HYB_GGA_XC_WB97X");
+        let pbe0_exact = RhfConfig::default()
+            .with_xc("PBE0")
+            .with_df_j_aux("")
+            .with_df_k_aux("");
+        let rimp2 = ("rimp2", "optimize");
+        let ksdft = ("ksdft", "energy");
+        for (name, c, open, run, warns) in [
+            ("hf", &hf, false, ("rhf", "energy"), false),
+            ("rijk", &rijk, false, rimp2, true),
+            ("rijk open", &rijk, true, rimp2, true),
+            (
+                "ri-j + direct K",
+                &rij_direct_k,
+                false,
+                ("rhf", "energy"),
+                false,
+            ),
+            ("rijcosx", &rijcosx, false, ("rhf", "energy"), true),
+            ("pbe (auto RI-J, no K)", &pbe, false, ksdft, true),
+            ("pbe open (four-centre J)", &pbe, true, ksdft, false),
+            ("pbe0 (auto RI-JK)", &pbe0, false, ksdft, true),
+            ("pbe0 opted out", &pbe0_exact, false, ksdft, false),
+            // GW's exact-exchange diagonal is four-centre under gc_rotation.
+            ("gw@pbe0", &pbe0, false, ("gw", "energy"), false),
+            ("gw@wb97x", &wb97x, false, ("gw", "energy"), false),
+            (
+                "gw@pbe (no exact exchange)",
+                &pbe,
+                false,
+                ("gw", "energy"),
+                true,
+            ),
+        ] {
+            let w = gc_rotation_route_warning(&["gc_rotation"], c, open, run);
+            assert_eq!(w.is_some(), warns, "{name}: {w:?}");
+            if let Some(w) = w {
+                assert!(w.contains("[scf] gc_rotation does not"), "{w}");
+            }
+            // `gc_kernel` alone, and both, warn the same way.
+            let w = gc_rotation_route_warning(&["gc_kernel"], c, open, run);
+            assert_eq!(w.is_some(), warns, "{name} gc_kernel: {w:?}");
+            if let Some(w) = w {
+                assert!(w.contains("[scf] gc_kernel does not"), "{w}");
+            }
+            let w = gc_rotation_route_warning(&["gc_rotation", "gc_kernel"], c, open, run);
+            if let Some(w) = w {
+                assert!(
+                    w.contains("[scf] gc_rotation and [scf] gc_kernel do not"),
+                    "{w}"
+                );
+            }
+            assert_eq!(gc_rotation_route_warning(&[], c, open, run), None, "{name}");
+        }
+        // The advice is the opt-out the kind accepts: `jk = "exact"` where
+        // `[scf] jk` is read, the df_*_aux opt-out (and no COSX) elsewhere.
+        let jk = "set [scf] jk = \"exact\"";
+        let df = "set [scf] df_j_aux = \"\" and df_k_aux = \"\"";
+        for (c, run, want, not) in [
+            (&rijk, ("rimp2", "optimize"), jk, df),
+            (&rijk, ("rimp2", "frequencies"), jk, df),
+            (&rijk, ("scs-mp2-2terfc", "optimize"), jk, df),
+            (&rijk, ("rimp2", "energy"), jk, df),
+            (&rijk, ("oo-rimp2", "optimize"), jk, df),
+            (&rijk, ("pdep-rpa", "optimize"), df, jk),
+            (&rijk, ("pdep-rpa", "energy"), df, jk),
+            (&rijk, ("rhf", "energy"), df, jk),
+            (&pbe0, ("ksdft", "optimize"), df, jk),
+            (&pbe, ("gw", "energy"), df, jk),
+        ] {
+            let w = gc_rotation_route_warning(&["gc_rotation"], c, false, run).unwrap();
+            assert!(w.ends_with(want) && !w.contains(not), "{run:?}: {w}");
+        }
+        let w = gc_rotation_route_warning(&["gc_rotation"], &rijcosx, false, ("rhf", "energy"))
+            .unwrap();
+        assert!(w.ends_with("and drop k_builder = \"cosx\""), "{w}");
+    }
+
     /// `[scf] gc_rotation` reaches `RhfConfig::gc_rotation`; unset leaves it
     /// `None`; a value outside auto | rot1 | off (another case included) is
     /// refused by key name.
@@ -9566,21 +9856,84 @@ mod scf_config_lowering_tests {
             .is_ok());
     }
 
-    /// The RI-MP2 family's geometry gradient cannot honour `[scf]
-    /// jk_digest` (it re-solves its reference from the J/K route alone), so
-    /// the key is refused there rather than dropped.
+    /// The RI-MP2 family's geometry gradient carries `[scf] jk_digest` on
+    /// its J/K route (`ScfJk::jk_digest`), four-centre and RI-JK alike; an
+    /// unset key leaves the route's digest unset (the variable decides) and
+    /// the route otherwise unchanged.
     #[test]
-    fn rimp2_geometry_refuses_jk_digest() {
+    fn rimp2_geometry_route_carries_jk_digest() {
+        use ferric_scf::direct_jk::GcKernel;
         use ferric_scf::quartet_scatter::JkDigest;
-        let mut c = ferric_scf::rhf::RhfConfig::default();
-        assert!(rimp2_gradient_scf_jk("rimp2", &c).is_ok());
-        for d in [JkDigest::Pair, JkDigest::Legacy] {
-            c.jk_digest = Some(d);
-            let e = rimp2_gradient_scf_jk("scs-mp2", &c).unwrap_err();
-            assert!(
-                e.contains("[scf] jk_digest") && e.contains("scs-mp2"),
-                "{e}"
-            );
+        use ferric_scf::scf_jk::ScfJk;
+        let fitted = |c: &mut ferric_scf::rhf::RhfConfig| {
+            c.df_j_aux = Some("def2-universal-jkfit".into());
+            c.df_k_aux = Some("def2-universal-jkfit".into());
+        };
+        for (fit, want) in [
+            (false, ScfJk::exact()),
+            (true, ScfJk::rijk("def2-universal-jkfit")),
+        ] {
+            let mut c = ferric_scf::rhf::RhfConfig::default();
+            if fit {
+                fitted(&mut c);
+            }
+            assert_eq!(rimp2_gradient_scf_jk("rimp2", &c), Ok(want.clone()));
+            for d in [JkDigest::Pair, JkDigest::Legacy] {
+                c.jk_digest = Some(d);
+                for kind in ["rimp2", "scs-mp2", "att-rimp2", "scs-mp2-2terfc"] {
+                    assert_eq!(
+                        rimp2_gradient_scf_jk(kind, &c),
+                        Ok(want.clone().with_jk_digest(Some(d))),
+                        "{kind} fit={fit}"
+                    );
+                }
+            }
+            // `[scf] gc_kernel` travels the same way.
+            for g in [GcKernel::Auto, GcKernel::Off] {
+                c.gc_kernel = Some(g);
+                for kind in ["rimp2", "scs-mp2", "att-rimp2", "scs-mp2-2terfc"] {
+                    assert_eq!(
+                        rimp2_gradient_scf_jk(kind, &c),
+                        Ok(want
+                            .clone()
+                            .with_jk_digest(c.jk_digest)
+                            .with_gc_kernel(Some(g))),
+                        "{kind} fit={fit} {g}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The `pdep-rpa` gradient route (`optimize` and `frequencies` share
+    /// `rpa_gradient_setup`) carries `[scf] jk_digest`; unset leaves it
+    /// unset, and the method is the one the key does not touch.
+    #[test]
+    fn pdep_rpa_gradient_route_carries_jk_digest() {
+        use ferric_scf::quartet_scatter::JkDigest;
+        let mol = Molecule::parse_xyz("2\nh2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let route = |extra: &str| {
+            let cfg = parse(&header(
+                "pdep-rpa",
+                &format!("task = \"optimize\"\n{extra}"),
+            ));
+            rpa_gradient_setup(&cfg, &mol, Operator::coulomb(), None)
+                .unwrap()
+                .2
+        };
+        let unset = route("");
+        assert_eq!(unset.jk_digest, None);
+        assert_eq!(unset.gc_kernel, None);
+        for (value, want) in [("pair", JkDigest::Pair), ("legacy", JkDigest::Legacy)] {
+            let r = route(&format!("[scf]\njk_digest = \"{value}\"\n"));
+            assert_eq!(r.jk_digest, Some(want), "{value}");
+            assert_eq!(r.method, unset.method, "{value}");
+        }
+        use ferric_scf::direct_jk::GcKernel;
+        for (value, want) in [("auto", GcKernel::Auto), ("off", GcKernel::Off)] {
+            let r = route(&format!("[scf]\ngc_kernel = \"{value}\"\n"));
+            assert_eq!(r.gc_kernel, Some(want), "{value}");
+            assert_eq!(r.method, unset.method, "{value}");
         }
     }
 
@@ -9609,9 +9962,8 @@ mod scf_config_lowering_tests {
         }
     }
 
-    /// `[scf] gc_kernel` reaches `RhfConfig::gc_kernel` (unset: `None`), is
-    /// refused by key name outside auto | off, and is refused by the RI-MP2
-    /// family's geometry gradient like `jk_digest`.
+    /// `[scf] gc_kernel` reaches `RhfConfig::gc_kernel` (unset: `None`) and
+    /// is refused by key name outside auto | off.
     #[test]
     fn gc_kernel_key_reaches_the_config() {
         use ferric_scf::direct_jk::GcKernel;
@@ -9619,10 +9971,6 @@ mod scf_config_lowering_tests {
             let cfg = parse(&header("rhf", &format!("[scf]\ngc_kernel = \"{value}\"\n")));
             let c = new_lowering(&cfg, "energy", false, None).unwrap().unwrap();
             assert_eq!(c.gc_kernel, Some(want), "{value}");
-            let mut r = ferric_scf::rhf::RhfConfig::default();
-            r.gc_kernel = Some(want);
-            let e = rimp2_gradient_scf_jk("rimp2", &r).unwrap_err();
-            assert!(e.contains("[scf] gc_kernel"), "{e}");
         }
         let cfg = parse(&header("rhf", ""));
         let c = new_lowering(&cfg, "energy", false, None).unwrap().unwrap();

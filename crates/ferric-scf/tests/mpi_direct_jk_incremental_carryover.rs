@@ -51,7 +51,8 @@
 //! mpirun -np 2 --oversubscribe <bin> --nocapture --test-threads=1
 //! ```
 //!
-//! ferric never calls `MPI_Finalize`, so `mpirun` exits non-zero even when every
+//! The libtest harness owns `main`, so nothing here can call
+//! `ferric_core::parallel::finalize_mpi`: `mpirun` exits non-zero even when every
 //! test passes — assert on one `test result: ok.` per rank, never on `$?`.
 //!
 //! Without `--features mpi` (or at `-np 1`) `ParallelContext::world()` is `None`

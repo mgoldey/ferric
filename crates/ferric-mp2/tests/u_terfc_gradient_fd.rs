@@ -61,7 +61,7 @@ use ferric_mp2::scs_2terfc_gradient::{
     total_u_scs_mp2_2terfc_energy_with, total_u_scs_mp2_2terfc_gradient_with,
 };
 use ferric_scf::rhf::RhfConfig;
-use ferric_scf::scf_jk::{ScfJk, ScfJkMode};
+use ferric_scf::scf_jk::ScfJk;
 use ferric_scf::warm_start::ScfWarmStart;
 use ferric_scf::ScfResult;
 use ndarray::Array2;
@@ -106,15 +106,9 @@ fn tight() -> RhfConfig {
 
 fn route(fit: bool) -> ScfJk {
     if fit {
-        ScfJk {
-            mode: ScfJkMode::RiJk,
-            aux: Some("def2-universal-jkfit".into()),
-        }
+        ScfJk::rijk("def2-universal-jkfit")
     } else {
-        ScfJk {
-            mode: ScfJkMode::Exact,
-            aux: None,
-        }
+        ScfJk::exact()
     }
 }
 

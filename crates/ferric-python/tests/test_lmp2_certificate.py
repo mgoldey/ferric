@@ -44,6 +44,7 @@ MAP_KEYS = [
     "virt_radius",
     "ao_tail",
     "schwarz_skip",
+    "eri3_pass",
     "batch_merge",
     "virt_schwarz_kappa",
 ]
@@ -73,6 +74,7 @@ def test_certificate_fields_round_trip_direct(water):
         integral_direct=True,
         gate_cal=0.7,
         batch_merge=2,
+        eri3_pass="batches",
     )
     loc = r.local
     for k in CERT_KEYS:
@@ -97,6 +99,7 @@ def test_certificate_fields_round_trip_direct(water):
     assert isinstance(loc["n_pairs_gated"], int)
     assert sorted(loc["maps"]) == sorted(MAP_KEYS)
     assert loc["maps"]["batch_merge"] == 2
+    assert loc["maps"]["eri3_pass"] == "batches"
     assert loc["maps"]["virt_schwarz_kappa"] is None
     # unset maps take the CLI [local] defaults (shared parser)
     assert loc["maps"]["virt_radius"] == 20.0 and loc["maps"]["ao_tail"] == 1e-4

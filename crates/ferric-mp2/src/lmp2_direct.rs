@@ -48,7 +48,7 @@
 //! DIAMETER. These predictions differ, so the sweep can distinguish them.
 
 use ferric_scf::PreparedAux;
-use ndarray::{Array1, Array2, Array3, ArrayView2, Axis};
+use ndarray::{s, Array2, Array3, ArrayView2, Axis, ShapeBuilder};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -65,6 +65,7 @@ use crate::lmp2_amplitude::{
     checked_vvhv_with, localized_spaces_lambda, pair_gate_keep, solve_and_count,
     AmplitudeLmp2Config, AmplitudeLmp2Result, LocalizedSpaces, StageTimings, VvHv,
 };
+pub use crate::lmp2_pair_skip::PairSkip;
 use crate::ragged::{pair_blocks_screened, PairBlock, Ragged};
 use crate::rimp2::{ri_mp2, RiMp2Config};
 
@@ -87,8 +88,19 @@ pub const DIRECT_DEFAULT_VIRT_RADIUS_BOHR: f64 = 20.0;
 pub const DIRECT_DEFAULT_AO_TAIL: f64 = 1e-4;
 /// Production default of [`DirectConfig::schwarz_skip`].
 pub const DIRECT_DEFAULT_SCHWARZ_SKIP: f64 = 1e-5;
-/// Production default of [`DirectConfig::batch_merge`].
+/// Default of [`DirectConfig::batch_merge`] when the user picks the
+/// [`Eri3Pass::Batches`] pass (the production pass is [`Eri3Pass::AuxMajor`],
+/// which has no batches and runs at `batch_merge = 1`).
 pub const DIRECT_DEFAULT_BATCH_MERGE: usize = 4;
+/// Default of [`DirectConfig::scratch_budget_bytes`]: 2 GiB.
+pub const DIRECT_DEFAULT_SCRATCH_BUDGET_BYTES: usize = 2usize << 30;
+/// Default of [`DirectConfig::slab_budget_bytes`]: 64 MiB per node. Measured
+/// (release, 1 rank x 6 threads unbound, 6-31G / cc-pVDZ-RI, eps 1e-4,
+/// production maps, two runs at the deciding caps): the alkane_20 stage-3
+/// wall did not depend on the cap (4.9-5.9 s from 1 MiB to 2 GiB, 4.9/5.3 s
+/// at 64 MiB, 5.6/5.9 s at 2 GiB), while the stage-3 peak resident set fell
+/// from 2.3 GB at 2 GiB to 0.35 GB at 64 MiB.
+pub const DIRECT_DEFAULT_SLAB_BUDGET_BYTES: usize = 64usize << 20;
 
 /// Locality knobs of the integral-direct path. Every knob has a trivial
 /// limit in which it is a no-op (the exactness-anchor configuration).
@@ -123,12 +135,26 @@ pub struct DirectConfig {
     /// float-reassociation floor (anchored ≤1e-10), not bit-identically —
     /// the per-occupied transform runs over the larger batch union.
     pub batch_merge: usize,
-    /// GLOBAL integral-slab scratch cap (bytes), shared across all
-    /// concurrently-running batch workers — each worker slabs under
-    /// budget/n_workers, so the co-resident scratch never exceeds this
-    /// (the ferric-batch N×-overcommit lesson: a per-worker budget is a
-    /// budget on nothing).
+    /// GLOBAL scratch cap (bytes) of the stage-3 aux-major pass (it sizes the
+    /// tasks in flight), the κ screen's own-domain `W` store (kept only when
+    /// it fits), and the per-group scratch of the fitted-pair assembly. Every
+    /// user splits it over its concurrent workers, so the co-resident scratch
+    /// never exceeds it (the ferric-batch N×-overcommit lesson: a per-worker
+    /// budget is a budget on nothing). It also bounds
+    /// [`Self::slab_budget_bytes`] from above.
     pub scratch_budget_bytes: usize,
+    /// Integral-slab scratch cap (bytes) of the stage-3 batch pass
+    /// ([`Eri3Pass::Batches`]), per node and shared across the batch workers:
+    /// each worker slabs under `cap / n_workers`. Under a rank stripe
+    /// ([`Self::mpi`]) each rank takes `1 / (ranks on this node)` of it, so
+    /// the node's slabs do not multiply by the rank count (see
+    /// `batch_slab_cap`). It is further capped by
+    /// [`Self::scratch_budget_bytes`] and by what the memory budget leaves
+    /// beside the strips. It changes how many slabs a batch is cut into, and
+    /// the strips only at round-off (the virtual GEMM's row count follows the
+    /// slab). Default
+    /// [`DIRECT_DEFAULT_SLAB_BUDGET_BYTES`].
+    pub slab_budget_bytes: usize,
     /// ε-linked Schwarz virtual-candidate screen (prototype-validated GO,
     /// WIKI-APPEND-eps-linked-maps.md): with `Some(kappa)` and ε > 0, the
     /// pair candidate set C_ij = V_i ∪ V_j keeps virtual `a` iff
@@ -170,13 +196,26 @@ pub struct DirectConfig {
     /// owner of each group is computed on every rank from them. Stage-3 and
     /// stage-5 counters, timers and strip sizes describe this rank's share.
     pub mpi: Option<ferric_core::parallel::ParallelContext>,
+    /// Stage-5 provable-empty pair skip ([`crate::lmp2_pair_skip`]): a pair
+    /// whose fitted retention test is bounded below ε without its own fit is
+    /// not fitted. Energies are unchanged (bitwise: a skipped pair is one
+    /// whose blocks the mask would drop, and the groups' whitening is the
+    /// same). [`PairSkip::Off`] is the anchor limit; production is
+    /// [`PairSkip::Auto`] (on for erfc / terfc, off for Coulomb, where the
+    /// bound never reaches a pair).
+    pub pair_skip: PairSkip,
 }
 
 impl DirectConfig {
     /// The locality maps the user-facing integral-direct entry points run
     /// when no map key is given: aux radius 10 Bohr, virtual radius 20 Bohr,
-    /// AO tail 1e-4, Schwarz skip 1e-5, batch merge 4, no ε-linked virtual
-    /// screen. ([`Default`] is instead the exactness-anchor configuration,
+    /// AO tail 1e-4, Schwarz skip 1e-5, the aux-major stage-3 pass
+    /// ([`Eri3Pass::AuxMajor`], `batch_merge = 1`), no ε-linked virtual
+    /// screen. Measured against the batches pass at merge 4 (release, 6
+    /// cores, 6-31G / cc-pVDZ-RI, eps 1e-4, energies identical to 12
+    /// digits): stage 3 1.35 -> 0.27 s (C12), 5.17 -> 1.19 s (C20),
+    /// 15.6 -> 5.6 s (C32); shell triples 11.2M -> 1.2M, 41.8M -> 3.4M,
+    /// 122M -> 8.9M; peak RSS unchanged. ([`Default`] is instead the exactness-anchor configuration,
     /// every map at or near its no-op limit.) The pair gate, the Fock screen
     /// (on, κ = [`DIRECT_FOCK_SCREEN_KAPPA`]) and λ-Boys live on
     /// [`AmplitudeLmp2Config`], not here.
@@ -186,9 +225,38 @@ impl DirectConfig {
             virt_radius_bohr: Some(DIRECT_DEFAULT_VIRT_RADIUS_BOHR),
             ao_tail: DIRECT_DEFAULT_AO_TAIL,
             schwarz_skip: DIRECT_DEFAULT_SCHWARZ_SKIP,
-            batch_merge: DIRECT_DEFAULT_BATCH_MERGE,
+            batch_merge: 1,
+            eri3_pass: Eri3Pass::AuxMajor,
             virt_schwarz_kappa: None,
+            pair_skip: PairSkip::Auto,
             ..Self::default()
+        }
+    }
+
+    /// The ONE place a user-facing (pass, batch_merge) pair is resolved, for
+    /// the CLI and Python alike. `pass`: `None` = the production pass
+    /// (aux-major), else [`Eri3Pass::parse_config_str`]. `batch_merge`:
+    /// `None` = the pass's default (1 for aux-major, [`DIRECT_DEFAULT_BATCH_MERGE`]
+    /// for batches). An explicit `batch_merge > 1` with aux-major is an
+    /// error, as is `batch_merge = 0`.
+    pub fn resolve_pass(
+        pass: Option<&str>,
+        batch_merge: Option<usize>,
+    ) -> Result<(Eri3Pass, usize), String> {
+        let pass = match pass {
+            None => Self::production().eri3_pass,
+            Some(s) => Eri3Pass::parse_config_str(s)?,
+        };
+        if batch_merge == Some(0) {
+            return Err("batch_merge must be >= 1".to_string());
+        }
+        match (pass, batch_merge) {
+            (Eri3Pass::AuxMajor, Some(m)) if m > 1 => Err(format!(
+                "batch_merge = {m} needs the batches pass: the aux-major pass \
+                 (the default) has no batches; set eri3_pass = \"batches\" or drop batch_merge"
+            )),
+            (Eri3Pass::AuxMajor, _) => Ok((pass, 1)),
+            (Eri3Pass::Batches, m) => Ok((pass, m.unwrap_or(DIRECT_DEFAULT_BATCH_MERGE))),
         }
     }
 }
@@ -205,8 +273,30 @@ pub enum Eri3Pass {
     Batches,
     /// One task per aux shell, over the union of the supports of the occupieds
     /// that need that shell: each needed triple is evaluated once. Rejects
-    /// `batch_merge > 1`, which has no meaning here.
+    /// `batch_merge > 1`, which has no meaning here. The production pass.
     AuxMajor,
+}
+
+impl Eri3Pass {
+    /// Strict parser for the user-facing spelling: `"aux-major"` or
+    /// `"batches"`; anything else (case, underscores, empty) is an error.
+    pub fn parse_config_str(s: &str) -> Result<Self, String> {
+        match s {
+            "aux-major" => Ok(Self::AuxMajor),
+            "batches" => Ok(Self::Batches),
+            other => Err(format!(
+                "unknown eri3_pass {other:?}: expected \"aux-major\" or \"batches\""
+            )),
+        }
+    }
+
+    /// The user-facing spelling ([`Self::parse_config_str`] round-trips it).
+    pub fn as_config_str(self) -> &'static str {
+        match self {
+            Self::AuxMajor => "aux-major",
+            Self::Batches => "batches",
+        }
+    }
 }
 
 impl Default for DirectConfig {
@@ -217,11 +307,13 @@ impl Default for DirectConfig {
             ao_tail: 0.0,
             schwarz_skip: 0.0,
             batch_merge: 1,
-            scratch_budget_bytes: 2usize << 30,
+            scratch_budget_bytes: DIRECT_DEFAULT_SCRATCH_BUDGET_BYTES,
+            slab_budget_bytes: DIRECT_DEFAULT_SLAB_BUDGET_BYTES,
             virt_schwarz_kappa: None,
             split_eri3_timers: false,
             eri3_pass: Eri3Pass::Batches,
             mpi: None,
+            pair_skip: PairSkip::Off,
         }
     }
 }
@@ -282,6 +374,12 @@ pub struct DirectStats {
     pub t_eri3_setup_s: f64,
     /// Integral slabs filled, over all batches.
     pub n_eri3_slabs: usize,
+    /// Largest single stage-3 slab with every buffer its transform holds
+    /// beside it (the occupied half-transform, one occupied's selected rows
+    /// and their product, the index maps), measured on the buffers, bytes
+    /// (batch pass; 0 on the aux-major pass). Up to one such slab per batch
+    /// worker is resident at once.
+    pub eri3_slab_bytes_max: usize,
     /// Half-transform floating-point operations actually done
     /// (`Σ_i Σ_{P∈slab} 2·nsf·nnf + 2·nnf·|V_i|`, batch-union axes), and what
     /// the same contraction would cost restricted to i's OWN occupied and
@@ -325,12 +423,25 @@ pub struct DirectStats {
     pub t_pairs_s: f64,
     /// Stage-5 pair-domain groups (one V_DD Cholesky each).
     pub n_pair_groups: usize,
+    /// Stage-5 thread-seconds summed over this rank's domain groups, by part:
+    /// `[gather V_DD, Cholesky, whiten (gather + one triangular solve), pair
+    /// products J_ij = W_iᵀW_j + the Eq-8 mask and Fock screen + PairBlock]`.
+    /// Their sum over the worker count is the group phase's wall time when
+    /// the groups balance.
+    pub pair_fit_thread_s: [f64; 4],
+    /// Longest wall seconds of one stage-5 domain group (the load-balance
+    /// counter: compare with `group_work_mean_s`).
+    pub group_work_max_s: f64,
+    /// Mean wall seconds of one stage-5 domain group.
+    pub group_work_mean_s: f64,
     /// Mean distinct occupieds over a group's pairs (each is whitened once
     /// per group, `W_k = L⁻¹ A_k`, instead of once per pair).
     pub n_distinct_occ_per_group: f64,
-    /// Stage-5 triangular solves (multi-RHS): one per occupied for the κ
-    /// screen when it is on, plus one per (group, distinct occupied) not
-    /// reused from it.
+    /// Stage-5 whitenings by triangular solve, counted per occupied right-
+    /// hand side (not per LAPACK call: a group batches its occupieds into
+    /// one solve): one per occupied for the κ screen when it is on, plus
+    /// one per (group, distinct occupied) not reused from it, so that
+    /// `n_trsm + n_w_reused` is every (group, occupied) whitening.
     pub n_trsm: usize,
     /// (group, occupied) whitenings taken from the κ screen's own-domain
     /// `W` (pair (i,i)'s group has domain exactly D_i) instead of a solve.
@@ -346,9 +457,9 @@ pub struct DirectStats {
     /// read (the candidate union of i's pairs in the group whose domain is
     /// exactly D_i), and dropped if no such group exists. 0 when not kept.
     pub own_w_bytes_held: usize,
-    /// Largest single-group scratch, bytes: `8·(2d² + Σ_k d·|C_k|)` (V_DD,
-    /// its Cholesky factor, and one whitened `W_k` per distinct occupied k
-    /// over its candidate union C_k). Each rayon worker holds one group's
+    /// Largest single-group scratch, bytes: `8·(d² + Σ_k d·|C_k|)` (the
+    /// Cholesky factor, computed in V_DD's buffer, and one whitened `W_k` per
+    /// distinct occupied k over its candidate union C_k). Each rayon worker holds one group's
     /// scratch at a time, so the co-resident group scratch is at most
     /// (worker threads) × this; it is NOT under `scratch_budget_bytes`.
     pub group_scratch_bytes_max: usize,
@@ -374,6 +485,31 @@ pub struct DirectStats {
     /// single group included), more when the budget split the groups; 0
     /// before stage 5.
     pub n_group_waves: usize,
+    /// The pair-skip mode this run used ([`PairSkip::resolve`]d for the
+    /// operator: `Off`, `On` or `Audit`).
+    pub pair_skip: PairSkip,
+    /// Off-diagonal pairs whose bound is finite (`γ < 1`); 0 when off.
+    pub n_pair_skip_bounded: usize,
+    /// Pairs the bound proves empty: skipped under `On`, still fitted under
+    /// `Audit`.
+    pub n_pairs_proved_empty: usize,
+    /// Domain groups not fitted because every pair in them was skipped.
+    pub n_pair_groups_skipped: usize,
+    /// Fitted pairs whose Eq-8 mask (and Fock screen) kept nothing.
+    pub n_pairs_empty: usize,
+    /// Wall seconds of the skip proof: the own-domain eigenvalue floors, the
+    /// strip and metric norm tables and the per-pair bounds (0 when off).
+    pub t_pair_skip_s: f64,
+    /// `Audit`: bounded pairs compared with their fit.
+    pub pair_skip_audit_n: usize,
+    /// `Audit`: largest `max|g| / bound` over bounded fitted pairs (must be
+    /// ≤ 1; 0 unless audit).
+    pub pair_skip_audit_max_ratio: f64,
+    /// `Audit`: largest `max(|g|, |g̃|/κ) / gate bound` (must be ≤ 1; 0
+    /// unless audit).
+    pub pair_skip_audit_gate_max_ratio: f64,
+    /// `Audit`: pairs proved empty whose fit kept a block (must be 0).
+    pub pair_skip_audit_violations: usize,
 }
 
 /// Byte accounting of the direct LMP2 path, computed from the locality maps
@@ -402,8 +538,10 @@ pub struct DirectMemoryEstimate {
     pub strips_bytes: usize,
     /// Domain-restricted 2-center metric blocks.
     pub metric_bytes: usize,
-    /// Stage-3 integral-slab scratch cap actually used (the configured
-    /// `scratch_budget_bytes`, lowered to what the budget leaves beside `S`).
+    /// Stage-3 scratch cap actually used by this process: on the batch pass
+    /// the slab cap ([`DirectConfig::slab_budget_bytes`] over the ranks on
+    /// the node), on the aux-major pass `scratch_budget_bytes`; either one
+    /// lowered to what the budget leaves beside `S`.
     pub stage3_scratch_bytes: usize,
     /// The ragged pair system, `R`.
     pub pair_block_bytes: usize,
@@ -468,6 +606,36 @@ struct SolveGate {
 /// one aux shell at a time).
 fn stage3_scratch(configured: usize, budget: usize, strips: usize) -> usize {
     configured.min(budget.saturating_sub(strips).max(1))
+}
+
+/// Ranks of a `world`-rank stripe that share this node, given the launcher's
+/// node-local rank count (`None`: no recognised launcher variable). An
+/// unrecognised launcher counts every rank as local: that over-divides the
+/// slab budget on a multi-node run (more, smaller slabs) rather than
+/// over-committing the node.
+fn ranks_sharing_node(world: usize, launcher_local: Option<usize>) -> usize {
+    if world <= 1 {
+        return 1;
+    }
+    launcher_local.map_or(world, |l| l.clamp(1, world))
+}
+
+/// The launcher's node-local rank count, `None` when no launcher variable
+/// parses as a positive count (unset, or Slurm's `"4,2"`): the world-size
+/// fallback of [`ranks_sharing_node`] then applies, never a guessed 1.
+fn launcher_local_ranks() -> Option<usize> {
+    ferric_core::parallel::local_ranks_hint_with(|k| std::env::var(k).ok())
+}
+
+/// This process's batch-pass slab cap: [`DirectConfig::slab_budget_bytes`]
+/// over the ranks sharing the node (1 without a multi-rank stripe), never
+/// above `scratch` (the stage-3 scratch after the memory gate), at least one
+/// byte (one aux shell per slab).
+fn batch_slab_cap(dcfg: &DirectConfig, scratch: usize) -> usize {
+    let ranks = dcfg
+        .mpi
+        .map_or(1, |c| ranks_sharing_node(c.size, launcher_local_ranks()));
+    (dcfg.slab_budget_bytes / ranks).min(scratch).max(1)
 }
 
 /// The typed refusal: names the estimate, the budget and the knobs.
@@ -557,6 +725,9 @@ struct BatchTimers {
     transform_flops_own_support: f64,
     n_integrals: u64,
     n_null_blocks: u64,
+    /// Largest live slab this worker held, measured on the buffers
+    /// themselves ([`SlabDims::live_bytes`] bounds it).
+    slab_bytes_max: usize,
 }
 
 /// One batch's output: its strips, evaluated/skipped triple counts and
@@ -598,7 +769,7 @@ fn sorted_union(lists: impl IntoIterator<Item = impl IntoIterator<Item = usize>>
 
 /// `FERRIC_MEM_TRACE` line at a stage boundary: current and peak RSS beside
 /// the byte counts this module accounts for there. Informational only.
-fn mem_trace(stage: &str, fields: &[(&str, usize)]) {
+pub(crate) fn mem_trace(stage: &str, fields: &[(&str, usize)]) {
     if !ferric_core::memory::trace_enabled() {
         return;
     }
@@ -716,6 +887,10 @@ fn eval_metric_blocks(
 
 /// Gather the dense V_DD metric block for a sorted aux-shell list from the
 /// sparse per-shell-pair block map (upper-triangle keys, sp >= sq).
+///
+/// Column-major: V_DD is symmetric, so this is the same matrix, and LAPACK
+/// then factors it in place ([`chol_lower`]) and solves against the factor
+/// ([`whiten`]) with no transposed copy of either.
 fn gather_vdd(
     dsh: &[usize],
     dims_df: &[usize],
@@ -723,15 +898,20 @@ fn gather_vdd(
     ctx: &str,
 ) -> Result<Array2<f64>, FerricError> {
     let d: usize = dsh.iter().map(|&sh| dims_df[sh]).sum();
-    let mut vdd = Array2::<f64>::zeros((d, d));
     let mut loc_off = Vec::with_capacity(dsh.len());
     let mut acc = 0usize;
     for &sh in dsh {
         loc_off.push(acc);
         acc += dims_df[sh];
     }
+    // Raw column-major buffer: the blocks are tiny (one aux shell pair
+    // each, ~10⁵ per domain), so a per-block ndarray slice costs more than
+    // its copy. Each lower block (bx ≥ by) is written once into column
+    // block `by` and once, mirrored, into column block `bx`, both with
+    // contiguous inner runs.
+    let mut buf = vec![0.0f64; d * d];
     for (bx, &sp) in dsh.iter().enumerate() {
-        for (by, &sq) in dsh.iter().enumerate() {
+        for (by, &sq) in dsh.iter().enumerate().take(bx + 1) {
             let (key, transposed) = if sp >= sq {
                 ((sp, sq), false)
             } else {
@@ -742,15 +922,49 @@ fn gather_vdd(
                     "lmp2_direct: metric block ({sp},{sq}) missing for {ctx}"
                 ))
             })?;
-            for p in 0..dims_df[sp] {
-                for q in 0..dims_df[sq] {
-                    let v = if transposed { blk[(q, p)] } else { blk[(p, q)] };
-                    vdd[(loc_off[bx] + p, loc_off[by] + q)] = v;
-                }
+            let at = (dims_df[sp], dims_df[sq], loc_off[bx], loc_off[by]);
+            copy_metric_block(&mut buf, d, blk, transposed, at, bx != by);
+        }
+    }
+    Ok(Array2::from_shape_vec((d, d).f(), buf).expect("d·d buffer"))
+}
+
+/// Copy one aux-shell-pair metric block into the column-major `d × d`
+/// buffer at `V[r0 + p, c0 + q]`, `at = (dp, dq, r0, c0)` (`blk` is stored
+/// `(dq, dp)` when `transposed`), and with `mirror` its transpose at
+/// `V[c0 + q, r0 + p]`. Both inner loops run down a column.
+fn copy_metric_block(
+    buf: &mut [f64],
+    d: usize,
+    blk: &Array2<f64>,
+    transposed: bool,
+    at: (usize, usize, usize, usize),
+    mirror: bool,
+) {
+    let (dp, dq, r0, c0) = at;
+    let blk = blk.as_standard_layout();
+    let b = blk.as_slice().expect("standard layout");
+    let val = |p: usize, q: usize| {
+        if transposed {
+            b[q * dp + p]
+        } else {
+            b[p * dq + q]
+        }
+    };
+    for q in 0..dq {
+        let col = (c0 + q) * d + r0;
+        for p in 0..dp {
+            buf[col + p] = val(p, q);
+        }
+    }
+    if mirror {
+        for p in 0..dp {
+            let col = (r0 + p) * d + c0;
+            for q in 0..dq {
+                buf[col + q] = val(p, q);
             }
         }
     }
-    Ok(vdd)
 }
 
 /// Function ids of a sorted shell list.
@@ -764,24 +978,27 @@ fn shell_funcs(prep: &PreparedBasis, shells: &[usize]) -> Vec<usize> {
     out
 }
 
-/// `L` with `V = L Lᵀ` (lower Cholesky factor) of a gathered `V_DD`.
-fn chol_lower(vdd: &Array2<f64>, what: &str) -> Result<Array2<f64>, FerricError> {
-    use ndarray_linalg::{Cholesky, UPLO};
-    vdd.cholesky(UPLO::Lower)
+/// `L` with `V = L Lᵀ` (lower Cholesky factor) of a gathered `V_DD`,
+/// factored in place in `vdd`'s own buffer and layout.
+fn chol_lower(vdd: Array2<f64>, what: &str) -> Result<Array2<f64>, FerricError> {
+    use ndarray_linalg::{CholeskyInto, UPLO};
+    vdd.cholesky_into(UPLO::Lower)
         .map_err(|e| FerricError::General(format!("lmp2_direct V_DD Cholesky ({what}): {e}")))
 }
 
-/// `W = L⁻¹ A` (one triangular solve with many right-hand sides).
-fn whiten(l: &Array2<f64>, a: &Array2<f64>, what: &str) -> Result<Array2<f64>, FerricError> {
-    use ndarray_linalg::{Diag, SolveTriangular, UPLO};
-    l.solve_triangular(UPLO::Lower, Diag::NonUnit, a)
+/// `W = L⁻¹ A` (one triangular solve with many right-hand sides), in place
+/// in `a`. With `l` and `a` both column-major (as [`gather_vdd`] and
+/// [`gather_strip`] build them) LAPACK reads and writes them directly; a
+/// row-major operand would be transposed into a copy first.
+fn whiten(l: &Array2<f64>, a: Array2<f64>, what: &str) -> Result<Array2<f64>, FerricError> {
+    use ndarray_linalg::{Diag, SolveTriangularInto, UPLO};
+    l.solve_triangular_into(UPLO::Lower, Diag::NonUnit, a)
         .map_err(|e| FerricError::General(format!("lmp2_direct triangular solve ({what}): {e}")))
 }
 
 /// Rows `dfuncs` of occupied `k`'s strip, over the global virtuals `cols`
-/// (`None`: every strip column, in strip order). A row or column missing
-/// from the strip is a construction bug (the extended domains must cover
-/// every pair domain and candidate set) and errors loudly.
+/// (`None`: every strip column, in strip order), as a column-major matrix
+/// ready for [`whiten`]. See [`gather_strip_into`].
 fn gather_strip(
     strips: &[Strip],
     k: usize,
@@ -789,10 +1006,27 @@ fn gather_strip(
     cols: Option<&[usize]>,
     what: &str,
 ) -> Result<Array2<f64>, FerricError> {
+    let ncols = cols.map_or(strips[k].cols.len(), <[usize]>::len);
+    let mut a = Array2::<f64>::zeros((dfuncs.len(), ncols).f());
+    gather_strip_into(strips, k, dfuncs, cols, what, a.view_mut())?;
+    Ok(a)
+}
+
+/// [`gather_strip`] into a caller-owned `dfuncs.len() × |cols|` block (a
+/// column range of a group's batched right-hand side). A row or column
+/// missing from the strip is a construction bug (the extended domains must
+/// cover every pair domain and candidate set) and errors loudly.
+fn gather_strip_into(
+    strips: &[Strip],
+    k: usize,
+    dfuncs: &[usize],
+    cols: Option<&[usize]>,
+    what: &str,
+    mut out: ndarray::ArrayViewMut2<f64>,
+) -> Result<(), FerricError> {
     let st = &strips[k];
-    let ncols = cols.map_or(st.cols.len(), <[usize]>::len);
-    let mut a = Array2::<f64>::zeros((dfuncs.len(), ncols));
-    for (r, &gp) in dfuncs.iter().enumerate() {
+    let mut srs = Vec::with_capacity(dfuncs.len());
+    for &gp in dfuncs {
         let sr = st.row_pos[gp];
         if sr == usize::MAX {
             return Err(FerricError::General(format!(
@@ -800,36 +1034,47 @@ fn gather_strip(
                  not cover the fit domain (construction bug)"
             )));
         }
-        match cols {
-            None => a.row_mut(r).assign(&st.b.row(sr)),
-            Some(cols) => {
-                for (c, &av) in cols.iter().enumerate() {
-                    let sc = st.col_pos[av];
-                    if sc == usize::MAX {
-                        return Err(FerricError::General(format!(
-                            "lmp2_direct: strip {k} missing virtual {av} for {what}"
-                        )));
-                    }
-                    a[(r, c)] = st.b[(sr, sc)];
+        srs.push(sr);
+    }
+    let scs: Vec<usize> = match cols {
+        None => (0..st.cols.len()).collect(),
+        Some(cols) => {
+            let mut scs = Vec::with_capacity(cols.len());
+            for &av in cols {
+                let sc = st.col_pos[av];
+                if sc == usize::MAX {
+                    return Err(FerricError::General(format!(
+                        "lmp2_direct: strip {k} missing virtual {av} for {what}"
+                    )));
                 }
+                scs.push(sc);
             }
+            scs
+        }
+    };
+    for (mut col, &sc) in out.columns_mut().into_iter().zip(&scs) {
+        for (x, &sr) in col.iter_mut().zip(&srs) {
+            *x = st.b[(sr, sc)];
         }
     }
-    Ok(a)
+    Ok(())
 }
 
 /// The κ-screen inputs from one whitening per occupied over its OWN
 /// distance domain D_i (stage 5a): `W_i = L_i⁻¹ B_i[D_i, all strip cols]`
 /// with `L_i = chol(V_{D_i D_i})`, so `q_ia = √scale · ‖W_i[:, a]‖ =
 /// √(scale · b_iaᵀ V⁻¹ b_ia)` with no explicit inverse. Returns
-/// `(q per i, qmax per i, W_i per i)`. With `keep_w`, `W_i` is kept because
+/// `(q per i, qmax per i, W_i per i)`; without `keep.q` only `qmax` is
+/// kept (q per i left empty). With `keep.w`, `W_i` is kept because
 /// pair (i,i)'s domain group has domain exactly D_i: [`fit_domain_group`]
 /// reuses its columns there instead of re-solving. The caller pre-flights
 /// the full store (`8·Σ_i |D_i|·|cols_i|`) against the scratch budget and
-/// passes `keep_w = false` over it; otherwise each `W_i` is dropped as soon
+/// passes `keep.w = false` over it; otherwise each `W_i` is dropped as soon
 /// as its q is taken (one worker's `W` at a time). Under a rank stripe
 /// `needed` marks the occupieds with a strip here; the others get an empty
-/// q and `qmax = 0`.
+/// q and `qmax = 0`. `floor` ([`FloorMode`]) adds each occupied's
+/// [`OwnFloor`] (the pair skip's eigenvalue floor, from `L_i⁻¹`), or computes
+/// only that.
 #[allow(clippy::too_many_arguments)]
 fn whiten_own_domains(
     no: usize,
@@ -840,53 +1085,191 @@ fn whiten_own_domains(
     metric_blocks: &MetricBlocks,
     dfbs: &PreparedBasis,
     aux_radius_bohr: f64,
-    keep_w: bool,
+    keep: OwnKeep,
     needed: Option<&[bool]>,
+    floor: FloorMode,
 ) -> Result<OwnWhitened, FerricError> {
     use rayon::prelude::*;
     let sq = scale.abs().sqrt();
-    type PerI = (Vec<f64>, f64, Option<Array2<f64>>);
-    let per_i: Vec<Result<PerI, FerricError>> = (0..no)
+    let inputs = OwnInputs {
+        aux_dom,
+        strips,
+        dims_df,
+        metric_blocks,
+        dfbs,
+        aux_radius_bohr,
+    };
+    let per_i: Vec<Result<OwnPerI, FerricError>> = (0..no)
         .into_par_iter()
         .map(|i| {
             if needed.is_some_and(|n| !n[i]) {
                 // no strip on this rank, and none of its pairs asks for q_i
-                return Ok((Vec::new(), 0.0, keep_w.then(|| Array2::zeros((0, 0)))));
+                return Ok((Vec::new(), 0.0, keep.w.then(|| Array2::zeros((0, 0))), None));
             }
-            let dfuncs = shell_funcs(dfbs, &aux_dom[i]);
-            if dfuncs.is_empty() {
-                return Err(FerricError::General(format!(
-                    "lmp2_direct: empty aux domain for occupied {i} at radius {aux_radius_bohr} \
-                     Bohr (virt_schwarz_kappa needs a nonempty D_i)"
-                )));
-            }
-            let what = format!("occupied {i} Schwarz diagonal");
-            let vdd = gather_vdd(&aux_dom[i], dims_df, metric_blocks, &what)?;
-            let l = chol_lower(&vdd, &what)?;
-            let w = whiten(&l, &gather_strip(strips, i, &dfuncs, None, &what)?, &what)?;
-            let q: Vec<f64> = w
-                .columns()
-                .into_iter()
-                .map(|c| sq * c.dot(&c).sqrt())
-                .collect();
-            let qm = q.iter().copied().fold(0.0f64, f64::max);
-            Ok((q, qm, keep_w.then_some(w)))
+            whiten_one_own(&inputs, i, sq, keep, floor)
         })
         .collect();
     let mut out = OwnWhitened {
         q: Vec::with_capacity(no),
         qmax: Vec::with_capacity(no),
-        w: keep_w.then(|| Vec::with_capacity(no)),
+        w: keep.w.then(|| Vec::with_capacity(no)),
+        floor: Vec::with_capacity(if floor == FloorMode::No { 0 } else { no }),
     };
     for r in per_i {
-        let (q, qm, w) = r?;
+        let (q, qm, w, f) = r?;
         out.q.push(q);
         out.qmax.push(qm);
         if let (Some(ws), Some(w)) = (out.w.as_mut(), w) {
             ws.push(w);
         }
+        if floor != FloorMode::No {
+            out.floor.push(f);
+        }
     }
     Ok(out)
+}
+
+/// What [`whiten_own_domains`] keeps beside `qmax`: the per-column `q`
+/// (the κ screen reads it; the pair skip reads only `qmax`) and the
+/// whitened strips `W`.
+#[derive(Debug, Clone, Copy)]
+struct OwnKeep {
+    q: bool,
+    w: bool,
+}
+
+/// Whether [`whiten_own_domains`] also computes the pair skip's
+/// [`OwnFloor`]: `No`, `Also` (with q), or `Only` (q left empty, `qmax = 0`;
+/// for occupieds whose q an earlier pass already holds).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FloorMode {
+    No,
+    Also,
+    Only,
+}
+
+/// One occupied's own-domain whitening ([`whiten_own_domains`]): `(q_i,
+/// max q_i, W_i if kept, its [`OwnFloor`] if asked)`.
+type OwnPerI = (Vec<f64>, f64, Option<Array2<f64>>, Option<OwnFloor>);
+
+/// The shared inputs of [`whiten_one_own`].
+struct OwnInputs<'a> {
+    aux_dom: &'a [Vec<usize>],
+    strips: &'a [Strip],
+    dims_df: &'a [usize],
+    metric_blocks: &'a MetricBlocks,
+    dfbs: &'a PreparedBasis,
+    aux_radius_bohr: f64,
+}
+
+/// Occupied `i` of [`whiten_own_domains`]: `L_i = chol(V_{D_i D_i})`,
+/// `W_i = L_i⁻¹ B_i[D_i, :]`, `q_ia = sq·‖W_i[:, a]‖`, and per `floor` the
+/// pair skip's [`OwnFloor`] from the same `L_i`.
+fn whiten_one_own(
+    w: &OwnInputs,
+    i: usize,
+    sq: f64,
+    keep: OwnKeep,
+    floor: FloorMode,
+) -> Result<OwnPerI, FerricError> {
+    let dom = &w.aux_dom[i];
+    let dfuncs = shell_funcs(w.dfbs, dom);
+    if dfuncs.is_empty() {
+        return Err(FerricError::General(format!(
+            "lmp2_direct: empty aux domain for occupied {i} at radius {} \
+             Bohr (virt_schwarz_kappa needs a nonempty D_i)",
+            w.aux_radius_bohr
+        )));
+    }
+    let what = format!("occupied {i} Schwarz diagonal");
+    let vdd = gather_vdd(dom, w.dims_df, w.metric_blocks, &what)?;
+    let vfloor = (floor != FloorMode::No).then(|| vdd.clone());
+    let l = chol_lower(vdd, &what)?;
+    let own = vfloor
+        .map(|v| own_floor(&v, &l, (dom, w.dims_df, w.dfbs.nshells()), &what))
+        .transpose()?;
+    if floor == FloorMode::Only {
+        return Ok((Vec::new(), 0.0, None, own));
+    }
+    let wi = whiten(&l, gather_strip(w.strips, i, &dfuncs, None, &what)?, &what)?;
+    let q: Vec<f64> = wi
+        .columns()
+        .into_iter()
+        .map(|c| sq * c.dot(&c).sqrt())
+        .collect();
+    let qm = q.iter().copied().fold(0.0f64, f64::max);
+    let q = if keep.q { q } else { Vec::new() };
+    Ok((q, qm, keep.w.then_some(wi), own))
+}
+
+/// One occupied's own-domain metric data for the pair skip
+/// ([`crate::lmp2_pair_skip`]): `λ ≤ λ_min(V_{D_i D_i})` (`None`: too ill
+/// conditioned to trust the computed inverse), the inflation that bounds the
+/// exact own-domain norm by the computed one
+/// ([`crate::lmp2_pair_skip::norm_inflation`]), an upper bound on
+/// `tr V_{D_i D_i}` and the domain's function count.
+#[derive(Debug, Clone)]
+struct OwnFloor {
+    lam: Option<f64>,
+    qinfl: f64,
+    trace: f64,
+    d: usize,
+    /// Per GLOBAL aux shell `P`: the computed `‖L̂⁻¹[:, P]‖_F` times `qinfl`
+    /// for `P` in the domain, NaN outside it, so that `‖V^{-1/2}x‖ ≤ Σ_P c_P
+    /// ‖x_P‖`: the shell-wise bound [`pair_g_bound`] compares with
+    /// `‖x‖/√λ`.
+    col: Vec<f64>,
+}
+
+/// [`OwnFloor`] from the own-domain metric `v` and its Cholesky factor:
+/// `L⁻¹` by one triangular solve against the identity, `λ` the larger of
+/// the trace floor `eigen_floor(‖L̂⁻¹‖_F², tr V, d)` and the shift-verified
+/// floor (`crate::lmp2_pair_skip::verified_floor`), both proved below
+/// `λ_min(V)` with worst-case rounding. No floor (`lam = None`) when neither
+/// exists or the computed inverse is not trusted (no inflation).
+fn own_floor(
+    v: &Array2<f64>,
+    l: &Array2<f64>,
+    (dom, dims_df, nsh): (&[usize], &[usize], usize),
+    what: &str,
+) -> Result<OwnFloor, FerricError> {
+    use crate::lmp2_pair_skip::gamma_n;
+    use crate::lmp2_pair_skip::{eigen_floor, norm_inflation, verified_floor};
+    let d = l.nrows();
+    // the rounded diagonal sum, inflated to bound tr V from above
+    let trace = v.diag().sum() * (1.0 + gamma_n(d));
+    let mut eye = Array2::<f64>::zeros((d, d).f());
+    eye.diag_mut().fill(1.0);
+    let linv = whiten(l, eye, what)?;
+    let fro2: f64 = linv.iter().map(|x| x * x).sum();
+    let lam = match (eigen_floor(fro2, trace, d), verified_floor(v, &linv)) {
+        (Some(t), Some(s)) => Some(t.max(s)),
+        (t, s) => t.or(s),
+    };
+    let qinfl = lam.and_then(|lam| norm_inflation(fro2, trace, lam, d));
+    let (lam, qinfl) = match qinfl {
+        Some(q) => (lam, q),
+        None => (None, f64::NAN),
+    };
+    let mut col = vec![f64::NAN; nsh];
+    let mut c0 = 0usize;
+    for &sh in dom {
+        let c1 = c0 + dims_df[sh];
+        let f2: f64 = linv
+            .slice(ndarray::s![.., c0..c1])
+            .iter()
+            .map(|x| x * x)
+            .sum();
+        col[sh] = qinfl * f2.sqrt();
+        c0 = c1;
+    }
+    Ok(OwnFloor {
+        lam,
+        qinfl,
+        trace,
+        d,
+        col,
+    })
 }
 
 /// Bytes of the full own-domain `W` store [`whiten_own_domains`] would keep:
@@ -905,6 +1288,34 @@ struct OwnWhitened {
     q: Vec<Vec<f64>>,
     qmax: Vec<f64>,
     w: Option<Vec<Array2<f64>>>,
+    /// Per occupied (empty unless requested): the pair skip's [`OwnFloor`],
+    /// `None` for an occupied without a strip on this rank.
+    floor: Vec<Option<OwnFloor>>,
+}
+
+#[cfg(test)]
+impl OwnWhitened {
+    /// Heap bytes held: the per-occupied slots and every buffer behind them.
+    fn heap_bytes(&self) -> usize {
+        use std::mem::size_of;
+        let q: usize = self
+            .q
+            .iter()
+            .map(|v| size_of::<Vec<f64>>() + 8 * v.len())
+            .sum();
+        let w: usize = self
+            .w
+            .iter()
+            .flatten()
+            .map(|a| size_of::<Array2<f64>>() + 8 * a.len())
+            .sum();
+        let floor: usize = self
+            .floor
+            .iter()
+            .map(|f| size_of::<Option<OwnFloor>>() + f.as_ref().map_or(0, |f| 8 * f.col.len()))
+            .sum();
+        q + 8 * self.qmax.len() + w + floor
+    }
 }
 
 /// Trim the kept own-domain `W_i` (strip-column order) to the columns its
@@ -966,8 +1377,13 @@ struct GroupCounts {
     n_trsm: usize,
     /// Distinct occupieds whose `W` came from the own-domain κ whitening.
     n_reused: usize,
-    /// This group's scratch bytes, `8·(2d² + Σ_k d·|C_k|)`.
+    /// This group's scratch bytes, `8·(d² + Σ_k d·|C_k|)`.
     scratch_bytes: usize,
+    /// Wall seconds of this group's parts, in [`DirectStats::pair_fit_thread_s`]
+    /// order.
+    t: [f64; 4],
+    /// Every pair of the group was proved empty: nothing was fitted.
+    skipped: bool,
 }
 
 /// Borrowed context for [`fit_domain_group`] — everything stage 5's group
@@ -995,6 +1411,12 @@ struct PairFitCtx<'a> {
     /// reusable columns (`None` when the screen is off or over budget;
     /// `Some(None)` entries where no group has domain exactly D_i).
     own_w: Option<&'a [Option<GroupW>]>,
+    /// Per unique pair: proved empty by the pair skip, so not fitted (`None`:
+    /// the skip is off or auditing).
+    skip: Option<&'a [bool]>,
+    /// [`PairSkip::Audit`]: every fitted pair's `(index, max|g|, max gate)`
+    /// (scaled), for the comparison with its bound.
+    audit: Option<&'a Mutex<Vec<(usize, f64, f64)>>>,
     /// Test-only mutant: in the group whose first pair index is `.0`,
     /// scale the first pair's i-occupied `W` by `1 + .1`.
     #[cfg(test)]
@@ -1011,15 +1433,62 @@ struct GroupW {
 impl GroupW {
     /// Columns of `w` for the sorted subset `cij ⊆ cols`.
     fn select(&self, cij: &[usize]) -> Array2<f64> {
-        let pos: Vec<usize> = cij
-            .iter()
-            .map(|a| {
-                self.cols
-                    .binary_search(a)
-                    .expect("C_ij inside the group column union (construction)")
+        self.w.select(Axis(1), &col_positions(&self.cols, cij, 0))
+    }
+}
+
+/// Positions of the sorted subset `cij ⊆ cols` inside `cols`, shifted by
+/// `off` (the first column of `cols` in the matrix that holds it).
+fn col_positions(cols: &[usize], cij: &[usize], off: usize) -> Vec<usize> {
+    cij.iter()
+        .map(|a| {
+            off + cols
+                .binary_search(a)
+                .expect("C_ij inside the group column union (construction)")
+        })
+        .collect()
+}
+
+/// Where one whitened occupied of a group lives.
+enum WSrc {
+    /// Columns `off..off + |cols|` of [`GroupWs::solved`].
+    Solved(usize),
+    /// Taken from the κ screen's own-domain `W` (no solve).
+    Reused(Array2<f64>),
+}
+
+/// The whitened occupieds `W_k` of one domain group, each over the sorted
+/// union `C_k` of its pairs' candidate sets. The solved ones sit side by
+/// side in ONE matrix, the result of a single multi-right-hand-side
+/// triangular solve against the group's factor (one BLAS-3 call per group
+/// instead of one per occupied; the columns do not interact, so this is
+/// the per-occupied solve up to the solver's blocking).
+struct GroupWs {
+    solved: Array2<f64>,
+    at: HashMap<usize, (Vec<usize>, WSrc)>,
+}
+
+impl GroupWs {
+    /// `W_k` over the sorted subset `cij ⊆ C_k`.
+    fn select(&self, k: usize, cij: &[usize]) -> Array2<f64> {
+        let (cols, src) = &self.at[&k];
+        match src {
+            WSrc::Solved(off) => self.solved.select(Axis(1), &col_positions(cols, cij, *off)),
+            WSrc::Reused(w) => w.select(Axis(1), &col_positions(cols, cij, 0)),
+        }
+    }
+
+    /// Bytes held: the solved matrix and every reused `W_k`.
+    fn bytes(&self) -> usize {
+        let reused: usize = self
+            .at
+            .values()
+            .map(|(_, src)| match src {
+                WSrc::Reused(w) => w.len(),
+                WSrc::Solved(_) => 0,
             })
-            .collect();
-        self.w.select(Axis(1), &pos)
+            .sum();
+        8 * (self.solved.len() + reused)
     }
 }
 
@@ -1050,27 +1519,21 @@ fn mask_pair(
 }
 
 /// Whitened strips `W_k = L⁻¹ A_k[D, C_k]` for every distinct occupied `k`
-/// of a group, over the union `C_k` of its pairs' candidate sets. A `k`
-/// whose own domain D_k IS the group domain takes the columns of its
-/// κ-screen `W` instead of a new solve.
+/// of a group, over the union `C_k` of its pairs' candidate sets: every
+/// `A_k` is gathered into its column range of one column-major right-hand
+/// side, whitened by one triangular solve. A `k` whose own domain D_k IS the
+/// group domain takes the columns of its κ-screen `W` instead.
 fn whiten_group_occupieds(
     ctx: &PairFitCtx<'_>,
     dsh: &[usize],
     dfuncs: &[usize],
     l: &Array2<f64>,
     pxs: &[usize],
-) -> Result<(HashMap<usize, GroupW>, GroupCounts), FerricError> {
-    let mut want: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
-    for &px in pxs.iter().filter(|&&px| !ctx.pair_cands[px].is_empty()) {
-        let (i, j) = ctx.unique[px];
-        for k in [i, j] {
-            want.entry(k)
-                .or_default()
-                .extend(ctx.pair_cands[px].iter().copied());
-        }
-    }
+) -> Result<(GroupWs, GroupCounts), FerricError> {
+    let want = group_cand_unions(pxs, ctx.unique, ctx.pair_cands);
     let mut counts = GroupCounts::default();
-    let mut ws = HashMap::with_capacity(want.len());
+    let mut at = HashMap::with_capacity(want.len());
+    let mut to_solve: Vec<(usize, Vec<usize>)> = Vec::new();
     for (k, cols) in want {
         let cols: Vec<usize> = cols.into_iter().collect();
         counts.n_occ += 1;
@@ -1078,34 +1541,90 @@ fn whiten_group_occupieds(
             Some(own) if ctx.aux_dom[k] == dsh => own[k].as_ref(),
             _ => None,
         };
-        let w = match reuse {
+        match reuse {
             Some(gw) => {
                 counts.n_reused += 1;
-                gw.select(&cols)
+                let w = gw.select(&cols);
+                at.insert(k, (cols, WSrc::Reused(w)));
             }
-            None => {
-                counts.n_trsm += 1;
-                let what = format!("occupied {k} in a group of {} pairs", pxs.len());
-                whiten(
-                    l,
-                    &gather_strip(ctx.strips, k, dfuncs, Some(&cols), &what)?,
-                    &what,
-                )?
-            }
-        };
-        counts.scratch_bytes += 8 * w.len();
-        ws.insert(k, GroupW { cols, w });
-    }
-    #[cfg(test)]
-    if let Some((first, rel)) = ctx.w_mutant {
-        if pxs[0] == first {
-            let k = ctx.unique[first].0;
-            if let Some(gw) = ws.get_mut(&k) {
-                gw.w.mapv_inplace(|x| x * (1.0 + rel));
-            }
+            None => to_solve.push((k, cols)),
         }
     }
+    counts.n_trsm += to_solve.len();
+    let solved = solve_group_rhs(ctx, dfuncs, l, pxs.len(), to_solve, &mut at)?;
+    #[allow(unused_mut)]
+    let mut ws = GroupWs { solved, at };
+    counts.scratch_bytes += ws.bytes();
+    #[cfg(test)]
+    apply_w_mutant(ctx, pxs, &mut ws);
     Ok((ws, counts))
+}
+
+/// Each distinct occupied `k` of a group's pairs → the union `C_k` of its
+/// pairs' (nonempty) candidate sets.
+fn group_cand_unions(
+    pxs: &[usize],
+    unique: &[(usize, usize)],
+    pair_cands: &[Vec<usize>],
+) -> BTreeMap<usize, BTreeSet<usize>> {
+    let mut want: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+    for &px in pxs.iter().filter(|&&px| !pair_cands[px].is_empty()) {
+        let (i, j) = unique[px];
+        for k in [i, j] {
+            want.entry(k)
+                .or_default()
+                .extend(pair_cands[px].iter().copied());
+        }
+    }
+    want
+}
+
+/// The group's batched whitening: each `A_k[D, C_k]` of `to_solve` gathered
+/// into its column range of one column-major right-hand side (recorded in
+/// `at` as [`WSrc::Solved`]), then one triangular solve against `l` in place.
+fn solve_group_rhs(
+    ctx: &PairFitCtx<'_>,
+    dfuncs: &[usize],
+    l: &Array2<f64>,
+    n_pairs: usize,
+    to_solve: Vec<(usize, Vec<usize>)>,
+    at: &mut HashMap<usize, (Vec<usize>, WSrc)>,
+) -> Result<Array2<f64>, FerricError> {
+    let width: usize = to_solve.iter().map(|(_, c)| c.len()).sum();
+    let mut rhs = Array2::<f64>::zeros((dfuncs.len(), width).f());
+    let mut off = 0usize;
+    for (k, cols) in to_solve {
+        let what = format!("occupied {k} in a group of {n_pairs} pairs");
+        let block = rhs.slice_mut(s![.., off..off + cols.len()]);
+        gather_strip_into(ctx.strips, k, dfuncs, Some(&cols), &what, block)?;
+        let n = cols.len();
+        at.insert(k, (cols, WSrc::Solved(off)));
+        off += n;
+    }
+    match width {
+        0 => Ok(rhs),
+        _ => whiten(l, rhs, &format!("a group of {n_pairs} pairs")),
+    }
+}
+
+/// Test-only `W` mutant (see `PairFitCtx::w_mutant`): in the group whose
+/// first pair is `first`, scale that pair's i-occupied `W` by `1 + rel`.
+#[cfg(test)]
+fn apply_w_mutant(ctx: &PairFitCtx<'_>, pxs: &[usize], ws: &mut GroupWs) {
+    let Some((first, rel)) = ctx.w_mutant else {
+        return;
+    };
+    if pxs[0] != first {
+        return;
+    }
+    match ws.at.get_mut(&ctx.unique[first].0) {
+        Some((cols, WSrc::Solved(off))) => ws
+            .solved
+            .slice_mut(s![.., *off..*off + cols.len()])
+            .mapv_inplace(|x| x * (1.0 + rel)),
+        Some((_, WSrc::Reused(w))) => w.mapv_inplace(|x| x * (1.0 + rel)),
+        None => {}
+    }
 }
 
 /// One domain group's pair fits: `L = chol(V_DD)` once, `W_k = L⁻¹ A_k`
@@ -1127,27 +1646,579 @@ fn fit_domain_group(
         )));
     }
     let what = format!("group of pair ({i0},{j0})");
+    let mut clock = Instant::now();
     let vdd = gather_vdd(dsh, ctx.dims_df, ctx.metric_blocks, &what)?;
-    let l = chol_lower(&vdd, &what)?;
+    let t_gather = lap(&mut clock);
+    let l = chol_lower(vdd, &what)?;
+    let t_chol = lap(&mut clock);
     let (ws, mut counts) = whiten_group_occupieds(ctx, dsh, &dfuncs, &l, pxs)?;
-    counts.scratch_bytes += 8 * (vdd.len() + l.len());
+    counts.t = [t_gather, t_chol, lap(&mut clock), 0.0];
+    counts.scratch_bytes += 8 * l.len();
     let mut out_group: SlotOut = Vec::with_capacity(pxs.len());
     for &px in pxs {
         let (i, j) = ctx.unique[px];
         let cij = &ctx.pair_cands[px];
-        if cij.is_empty() {
+        if cij.is_empty() || ctx.skip.is_some_and(|sk| sk[px]) {
             out_group.push((px, Vec::new()));
             continue;
         }
-        let w_i = ws[&i].select(cij);
+        let w_i = ws.select(i, cij);
         let g = if i == j {
             w_i.t().dot(&w_i)
         } else {
-            w_i.t().dot(&ws[&j].select(cij))
+            w_i.t().dot(&ws.select(j, cij))
         };
+        if let Some(audit) = ctx.audit {
+            record_audit(ctx, audit, px, &g, cij);
+        }
         out_group.push((px, mask_pair(ctx, i, j, g, cij)));
     }
+    counts.t[3] = lap(&mut clock);
     Ok((out_group, counts))
+}
+
+/// [`PairSkip::Audit`]: record pair `px`'s scaled `max|g|` and the largest
+/// value its retention test reads (`max(|g|, |g̃|/κ)` with the Fock screen,
+/// else `max|g|`).
+fn record_audit(
+    ctx: &PairFitCtx<'_>,
+    audit: &Mutex<Vec<(usize, f64, f64)>>,
+    px: usize,
+    g: &Array2<f64>,
+    cij: &[usize],
+) {
+    let (i, j) = ctx.unique[px];
+    let gs = g.mapv(|x| ctx.scale * x);
+    let gmax = gs.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+    let gate_max = match ctx.fock_screen {
+        Some(kappa) if ctx.eps > 0.0 => crate::ragged::fock_dressed_gate(
+            &gs, cij, ctx.f_vv, ctx.fo[i], ctx.fo[j], ctx.fv, kappa,
+        )
+        .iter()
+        .fold(0.0f64, |m, x| m.max(x.abs())),
+        _ => gmax,
+    };
+    if let Ok(mut v) = audit.lock() {
+        v.push((px, gmax, gate_max));
+    }
+}
+
+/// Stage 5b's output ([`prove_empty_pairs`]).
+struct SkipProof {
+    /// Per unique pair: proved empty.
+    empty: Vec<bool>,
+    /// Per unique pair: the scaled bound on `max|g|` (NaN: none).
+    g_bound: Vec<f64>,
+    /// The dressing the proof used: `Some((κ, w_max))` with the Fock screen.
+    fock: Option<(f64, f64)>,
+    /// Heap bytes of the whitening outputs at their peak, measured
+    /// ([`proof_whitening_bytes`] bounds it).
+    #[cfg(test)]
+    whitening_bytes: usize,
+}
+
+/// `‖block‖_F²` of every evaluated metric shell pair, `(sp ≥ sq)` through a
+/// dense `nsh²` table; NaN where the block was never evaluated (a bound that
+/// reads one is not finite, so nothing is proved from it).
+struct MetricFro2 {
+    nsh: usize,
+    fro2: Vec<f64>,
+}
+
+impl MetricFro2 {
+    fn new(mb: &MetricBlocks) -> Self {
+        let fro2 = mb
+            .id
+            .iter()
+            .map(|&k| match k {
+                u32::MAX => f64::NAN,
+                k => mb.blocks[k as usize].iter().map(|x| x * x).sum(),
+            })
+            .collect();
+        Self { nsh: mb.nsh, fro2 }
+    }
+
+    fn get(&self, p: usize, q: usize) -> f64 {
+        let (a, b) = if p >= q { (p, q) } else { (q, p) };
+        self.fro2[a * self.nsh + b]
+    }
+}
+
+/// Per aux shell `P` of occupied `i`'s strip, `max_a Σ_{p∈P} B_i[p, a]²` over
+/// every strip column (a superset of each pair's candidates); NaN for a
+/// shell the strip has no rows of.
+fn row_shell_maxsq(st: &Strip, func_shell: &[usize], nsh: usize) -> Vec<f64> {
+    let mut t = vec![f64::NAN; nsh];
+    let ncols = st.cols.len();
+    let mut r0 = 0usize;
+    while r0 < st.rows.len() {
+        let sh = func_shell[st.rows[r0]];
+        let mut r1 = r0 + 1;
+        while r1 < st.rows.len() && func_shell[st.rows[r1]] == sh {
+            r1 += 1;
+        }
+        let mut m = 0.0f64;
+        for c in 0..ncols {
+            let s: f64 = (r0..r1).map(|r| st.b[(r, c)] * st.b[(r, c)]).sum();
+            m = m.max(s);
+        }
+        t[sh] = m;
+        r0 = r1;
+    }
+    t
+}
+
+/// What [`skip_prefilter`] reads: data stage 5 already holds.
+struct PrefilterIn<'a> {
+    aux_dom: &'a [Vec<usize>],
+    dims_df: &'a [usize],
+    fro2: &'a MetricFro2,
+    t: &'a [Vec<f64>],
+    scale: f64,
+}
+
+/// The pair skip's cost-only prefilter: per unique pair, whether
+/// [`pair_g_bound`] is worth evaluating under `On`. It never decides a skip;
+/// a pair it leaves out is fitted as before. Its cut is a lower bound on the
+/// γ-free terms `|scale|·(u_A v_A + u_B v_B)` that [`pair_g_bound`] compares
+/// with the same `cutoff`, from the strip-norm table `t` and the metric
+/// shell-block norms. With `f_P = ‖V_PP‖_F²` and `F_i = ‖V_{D_iD_i}‖_F ≥
+/// λ_max`, the own-domain norms obey `u_A ≥ √(max_{P∈D_i} t_i[P] / F_i)`
+/// (likewise `v_B` with `j`). Every diagonal element of `V_PP` is at most
+/// `√f_P`, so `λ ≤ λ_min ≤ m = min_P √f_P` and `‖L⁻¹[:, P]‖_F² = Σ_{k∈P}
+/// (V⁻¹)_kk ≥ dim_P/√f_P`; hence the cross norm `v_A ≥ min(√(Σ_{P∈D_i}
+/// t_j[P] / m_i), Σ_{P∈D_i} √(dim_P t_j[P] / √f_P))`, one term per
+/// alternative of [`pair_g_bound`], and `u_B` likewise over `B` with `m_j`.
+/// With `stage2 = Some((kept, qmax))`, only the pairs stage 1 kept are
+/// re-tested and the own norms are the computed `qmax` (at most `u_A`,
+/// since the inflation is ≥ 1). A pair whose lower bound (times 0.999
+/// against the rounding of these sums) reaches the cutoff fails the cutoff
+/// in [`pair_g_bound`] too (book `#integral-direct-pair-skip`).
+fn skip_prefilter(
+    pf: &PrefilterIn,
+    unique: &[(usize, usize)],
+    mine: Option<&[bool]>,
+    cutoff: f64,
+    stage2: Option<(&[bool], &[f64])>,
+) -> Vec<bool> {
+    use rayon::prelude::*;
+    let no = pf.aux_dom.len();
+    // per occupied: lower bound on its own-domain norm, and m_i
+    let own: Vec<(f64, f64)> = (0..no)
+        .into_par_iter()
+        .map(|i| {
+            let (ti, dom) = (&pf.t[i], &pf.aux_dom[i]);
+            if ti.is_empty() {
+                return (f64::NAN, f64::NAN);
+            }
+            let m = dom
+                .iter()
+                .map(|&p| pf.fro2.get(p, p).sqrt())
+                .fold(f64::INFINITY, f64::min);
+            let u = match stage2 {
+                Some((_, qmax)) => qmax[i],
+                None => {
+                    let tq = dom.iter().map(|&p| ti[p]).fold(0.0f64, f64::max);
+                    let vf2: f64 = dom
+                        .iter()
+                        .map(|&p| dom.iter().map(|&q| pf.fro2.get(p, q)).sum::<f64>())
+                        .sum();
+                    (tq / vf2.sqrt()).sqrt()
+                }
+            };
+            (u, m)
+        })
+        .collect();
+    // lower bound on the cross norm of strip `x` over `shells`, whitened by
+    // the occupied whose diagonal floor bound is `m`
+    let cross = |x: &[f64], shells: &mut dyn Iterator<Item = usize>, m: f64| -> f64 {
+        let (mut s, mut w) = (0.0f64, 0.0f64);
+        for p in shells {
+            s += x[p];
+            w += (pf.dims_df[p] as f64 * x[p] / pf.fro2.get(p, p).sqrt()).sqrt();
+        }
+        (s / m).sqrt().min(w)
+    };
+    let sc = pf.scale.abs();
+    unique
+        .par_iter()
+        .enumerate()
+        .map(|(px, &(i, j))| {
+            if i == j
+                || mine.is_some_and(|m| !m[px])
+                || pf.t[i].is_empty()
+                || pf.t[j].is_empty()
+                || stage2.is_some_and(|(kept, _)| !kept[px])
+            {
+                return false;
+            }
+            let (di, dj) = (&pf.aux_dom[i], &pf.aux_dom[j]);
+            let ((u_a, m_i), (v_b, m_j)) = (own[i], own[j]);
+            let v_a = cross(&pf.t[j], &mut di.iter().copied(), m_i);
+            let mut b = dj.iter().copied().filter(|q| di.binary_search(q).is_err());
+            let u_b = cross(&pf.t[i], &mut b, m_j);
+            // NaN (a block or a strip row missing) fails the comparison too
+            0.999 * sc * (u_a * v_a + u_b * v_b) < cutoff
+        })
+        .collect()
+}
+
+/// The occupieds the pairs marked in `a` read.
+fn occupieds_of(no: usize, unique: &[(usize, usize)], a: &[bool]) -> Vec<bool> {
+    let mut f = vec![false; no];
+    for (&(i, j), _) in unique.iter().zip(a).filter(|(_, &x)| x) {
+        f[i] = true;
+        f[j] = true;
+    }
+    f
+}
+
+/// Test-only replacement of the prefilter's cut ([`PrefilterMutant`]).
+#[cfg(test)]
+fn prefilter_mutate(
+    a: Vec<bool>,
+    unique: &[(usize, usize)],
+    mine: Option<&[bool]>,
+    m: PrefilterMutant,
+) -> Vec<bool> {
+    let ok = |px: usize| unique[px].0 != unique[px].1 && mine.is_none_or(|v| v[px]);
+    a.into_iter()
+        .enumerate()
+        .map(|(px, x)| match m {
+            PrefilterMutant::Normal => x,
+            PrefilterMutant::RejectAll => false,
+            PrefilterMutant::Invert => !x && ok(px),
+            PrefilterMutant::AttemptAll => ok(px),
+        })
+        .collect()
+}
+
+/// What every pair bound of [`pair_g_bound`] reads.
+struct SkipTables<'a> {
+    aux_dom: &'a [Vec<usize>],
+    dims_df: &'a [usize],
+    own: &'a OwnWhitened,
+    t: &'a [Vec<f64>],
+    fro2: &'a MetricFro2,
+    /// Test-only weakened bound: scales every factor and γ.
+    #[cfg(test)]
+    mutant: f64,
+    /// Test-only mutant: drop the γ-free terms `u_A v_A + u_B v_B` from both
+    /// the `On` cutoff and the bound.
+    #[cfg(test)]
+    drop_free: bool,
+}
+
+/// The scaled upper bound on `max_ab |g_ab|` of pair `(i, j)`, `i ≠ j`
+/// ([`crate::lmp2_pair_skip::fitted_bound`] with `A = D_i`,
+/// `B = D_j \ D_i`, plus the floating-point allowance), or `None` when
+/// nothing is proved. With `cutoff`, returns `None` as soon as the
+/// γ-free terms alone reach it (the pair cannot be proved empty).
+fn pair_g_bound(
+    tb: &SkipTables<'_>,
+    i: usize,
+    j: usize,
+    scale: f64,
+    cutoff: Option<f64>,
+) -> Option<f64> {
+    use crate::lmp2_pair_skip::{fitted_bound, gamma_n, roundoff_allowance, PairNorms};
+    let (fi, fj) = (tb.own.floor[i].as_ref()?, tb.own.floor[j].as_ref()?);
+    let (li, lj) = (fi.lam?, fj.lam?);
+    let (di, dj) = (&tb.aux_dom[i], &tb.aux_dom[j]);
+    let b: Vec<usize> = dj
+        .iter()
+        .copied()
+        .filter(|sh| di.binary_search(sh).is_err())
+        .collect();
+    let d = fi.d + b.iter().map(|&q| tb.dims_df[q]).sum::<usize>();
+    // every sum below has at most d² + 4 rounded terms: inflate the norms
+    // built from them (u_B, v_A, γ) by 1 + γ_{d²+4}
+    let fsum = 1.0 + gamma_n(d * d + 4);
+    let sa: f64 = di.iter().map(|&p| tb.t[j][p]).sum();
+    let sb: f64 = b.iter().map(|&p| tb.t[i][p]).sum();
+    // computed own-domain norms, inflated to bound the exact ones
+    let (u_a, v_b) = (tb.own.qmax[i] * fi.qinfl, tb.own.qmax[j] * fj.qinfl);
+    // ‖V_BB^{-1/2} a_B‖ ≤ ‖L_j⁻¹ (a_B, 0)‖ (Schur monotonicity), bounded
+    // either by ‖a_B‖/√λ_j or shell by shell; likewise β_A with L_i
+    let shellwise = |c: &[f64], t: &[f64], dom: &[usize]| -> f64 {
+        dom.iter().map(|&p| c[p] * t[p].sqrt()).sum()
+    };
+    let u_b = fsum * (sb / lj).sqrt().min(shellwise(&fj.col, &tb.t[i], &b));
+    let v_a = fsum * (sa / li).sqrt().min(shellwise(&fi.col, &tb.t[j], di));
+    let sc = scale.abs();
+    #[cfg(test)]
+    let sc = sc * tb.mutant;
+    // the γ-free terms (a test mutant drops them here AND in the bound)
+    let free = u_a * v_a + u_b * v_b;
+    #[cfg(test)]
+    let free = if tb.drop_free { 0.0 } else { free };
+    if cutoff.is_some_and(|c| sc * free >= c) {
+        return None;
+    }
+    // ‖V_{P,B}‖_F² per shell P of A, and ‖V_{A,Q}‖_F² per shell Q of B
+    let row2: Vec<f64> = di
+        .iter()
+        .map(|&p| b.iter().map(|&q| tb.fro2.get(p, q)).sum::<f64>())
+        .collect();
+    let vab2: f64 = row2.iter().sum();
+    let col2: Vec<f64> = b
+        .iter()
+        .map(|&q| di.iter().map(|&p| tb.fro2.get(p, q)).sum::<f64>())
+        .collect();
+    // γ = ‖V_AA^{-1/2} V_AB V_BB^{-1/2}‖₂ ≤ ‖V_AB‖_F/√(λ_iλ_j), or one side
+    // whitened shell by shell (the other side by its floor)
+    let side_a: f64 = di
+        .iter()
+        .zip(&row2)
+        .map(|(&p, r)| fi.col[p] * r.sqrt())
+        .sum();
+    let side_b: f64 = b
+        .iter()
+        .zip(&col2)
+        .map(|(&q, c)| fj.col[q] * c.sqrt())
+        .sum();
+    let gamma = fsum
+        * (vab2 / (li * lj))
+            .sqrt()
+            .min(side_a / lj.sqrt())
+            .min(side_b / li.sqrt());
+    #[cfg(test)]
+    let gamma = gamma * tb.mutant;
+    let n = PairNorms {
+        u_a,
+        u_b,
+        v_a,
+        v_b,
+        gamma,
+    };
+    let g = fitted_bound(&n)?;
+    #[cfg(test)]
+    let g = if tb.drop_free {
+        g - (u_a * v_a + u_b * v_b)
+    } else {
+        g
+    };
+    // tr V_DD ≤ tr V_{D_iD_i} + tr V_{D_jD_j}, since B ⊆ D_j
+    let ro = roundoff_allowance(d, fi.trace + fj.trace, li.min(lj), &n);
+    // relative slack for the rounding of the norms and of the dressed gate
+    Some(sc * (g + ro) * (1.0 + 1e-9)).filter(|x| x.is_finite())
+}
+
+/// The retention test [`prove_empty_pairs`] proves pairs against: the
+/// fitted-integral scale and `ε`, the Fock screen's `κ` (`None`: plain Eq-8
+/// mask) and the occupied and virtual orbital energies.
+#[derive(Clone, Copy)]
+struct SkipGate<'a> {
+    scale: f64,
+    eps: f64,
+    fock_screen: Option<f64>,
+    fo: &'a [f64],
+    fv: &'a [f64],
+}
+
+/// Peak bytes [`prove_empty_pairs`] allocates beside the resident strips,
+/// metric and held `W`: the per-shell-pair metric norms (`8·nsh²`), the aux
+/// function-to-shell map (`8·naux`), per occupied the strip row-shell table
+/// (`8·nsh` and its slot), the prefilter's two bounds and four occupied masks,
+/// per pair its bound, verdict and two attempt masks, the whitening outputs
+/// ([`proof_whitening_bytes`]), and per concurrent worker the larger of the
+/// own-domain workspace (`V_DD`, its copy, `L`, `L⁻¹` and the shifted test
+/// matrix, `5·d²`, plus the gathered and whitened strip, `2·d·cols`) and a
+/// pair bound's three shell lists (`3·nsh`).
+fn pair_proof_bytes(pre: &StripsAndMetric, dims_df: &[usize], n_pairs: usize) -> usize {
+    let (no, nsh) = (pre.aux_dom.len(), pre.metric_blocks.nsh);
+    let naux: usize = dims_df.iter().sum();
+    let worker = pre
+        .aux_dom
+        .iter()
+        .zip(&pre.strips)
+        .map(|(dom, st)| {
+            let d: usize = dom.iter().map(|&sh| dims_df[sh]).sum();
+            8 * (5 * d * d + 2 * d * st.cols.len())
+        })
+        .fold(24 * nsh, usize::max);
+    let workers = rayon::current_num_threads().clamp(1, no.max(1));
+    let tables = 8 * nsh * nsh
+        + 8 * naux
+        + no * (std::mem::size_of::<Vec<f64>>() + 8 * nsh + 16 + 4)
+        + 11 * n_pairs;
+    tables + proof_whitening_bytes(no, nsh) + workers * worker
+}
+
+/// Bytes of the [`OwnWhitened`] stores [`prove_empty_pairs`] holds at once
+/// (no `q` and no `W` kept): up to three (the stage-2 `qmax`, the floor
+/// pass and its complement), each with per occupied a `qmax`, an empty `q`
+/// slot and a floor slot, and one floor column table (`8·nsh`) per occupied
+/// over all of them (the complement's floors are moved, not copied).
+fn proof_whitening_bytes(no: usize, nsh: usize) -> usize {
+    use std::mem::size_of;
+    3 * no * (8 + size_of::<Vec<f64>>() + size_of::<Option<OwnFloor>>()) + 8 * no * nsh
+}
+
+/// Stage 5b, the provable-empty pair skip ([`crate::lmp2_pair_skip`]): the
+/// own-domain fitted norms and eigenvalue floors (one Cholesky, one inverse
+/// and one whitening per occupied), the per-shell strip and metric norm
+/// tables, then one bound per off-diagonal pair of this rank. `None` when
+/// the skip is off, at ε = 0, or when the Fock screen is on and its
+/// denominators admit no bound.
+fn prove_empty_pairs(
+    pre: &StripsAndMetric,
+    dfbs: &PreparedBasis,
+    spaces: &LocalizedSpaces,
+    unique: &[(usize, usize)],
+    mine: Option<&[bool]>,
+    gate: SkipGate<'_>,
+    aux_radius_bohr: f64,
+) -> Result<Option<SkipProof>, FerricError> {
+    use crate::lmp2_pair_skip::{gate_bound, proved_empty, unit_fock_weight};
+    use rayon::prelude::*;
+    let SkipGate {
+        scale,
+        eps,
+        fock_screen,
+        fo,
+        fv,
+    } = gate;
+    if !pre.pair_skip.evaluates() || !(eps > 0.0) {
+        return Ok(None);
+    }
+    let fock = match fock_screen {
+        None => None,
+        Some(k) => match unit_fock_weight(&spaces.f_vv, fo, fv) {
+            Some(w) => Some((k, w)),
+            None => return Ok(None),
+        },
+    };
+    let (no, nsh) = (spaces.no, dfbs.nshells());
+    let dims_df = dfbs.shell_dims();
+    let needed = pre.stripe.as_ref().map(|s| s.needed.as_slice());
+    let mut func_shell = vec![0usize; dfbs.nbasis()];
+    for (sh, (&off, &dim)) in dfbs.shell_offsets().iter().zip(dims_df).enumerate() {
+        func_shell[off..off + dim].fill(sh);
+    }
+    let t: Vec<Vec<f64>> = (0..no)
+        .into_par_iter()
+        .map(|i| match needed {
+            Some(n) if !n[i] => Vec::new(),
+            _ => row_shell_maxsq(&pre.strips[i], &func_shell, nsh),
+        })
+        .collect();
+    // Under `On`, a pair whose γ-free terms already reach ε through the
+    // dressing cannot be proved empty: stop before the metric sum.
+    let cutoff = (pre.pair_skip == PairSkip::On).then(|| eps / gate_bound(1.0, fock));
+    // Under `On`, the cost-only prefilter ([`skip_prefilter`]): a pair whose
+    // lower bound on the γ-free terms already reaches the cutoff is not
+    // attempted, and an occupied no attempted pair reads gets no floor (its
+    // pairs are fitted as before). Stage 1 uses norm tables only; stage 2
+    // adds the computed own-domain norms of the occupieds stage 1 keeps.
+    let fro2 = MetricFro2::new(&pre.metric_blocks);
+    let whiten_for = |need: Option<&[bool]>, floor: FloorMode| {
+        whiten_own_domains(
+            no,
+            1.0,
+            &pre.aux_dom,
+            &pre.strips,
+            dims_df,
+            &pre.metric_blocks,
+            dfbs,
+            aux_radius_bohr,
+            OwnKeep { q: false, w: false },
+            need,
+            floor,
+        )
+    };
+    let attempt: Option<(Vec<bool>, Vec<bool>, OwnWhitened)> = match cutoff {
+        None => None,
+        Some(c) => {
+            let pf = PrefilterIn {
+                aux_dom: &pre.aux_dom,
+                dims_df,
+                fro2: &fro2,
+                t: &t,
+                scale,
+            };
+            let a1 = skip_prefilter(&pf, unique, mine, c, None);
+            let had_q = occupieds_of(no, unique, &a1);
+            let q = whiten_for(Some(&had_q), FloorMode::No)?;
+            let a2 = skip_prefilter(&pf, unique, mine, c, Some((&a1, &q.qmax)));
+            #[cfg(test)]
+            let a2 = prefilter_mutate(a2, unique, mine, pre.prefilter_mutant);
+            Some((a2, had_q, q))
+        }
+    };
+    // the whitening outputs' heap bytes at their peak (all live together)
+    #[cfg(test)]
+    let whitening_bytes;
+    let own = match &attempt {
+        None => {
+            let own = whiten_for(needed, FloorMode::Also)?;
+            #[cfg(test)]
+            {
+                whitening_bytes = own.heap_bytes();
+            }
+            own
+        }
+        Some((a, had_q, q)) => {
+            // floors for the attempted pairs' occupieds, reusing stage 2's
+            // q; an occupied without one (only a test mutant attempts such
+            // a pair) gets it now, never a zero qmax
+            let want = occupieds_of(no, unique, a);
+            let only: Vec<bool> = want.iter().zip(had_q).map(|(&w, &h)| w && h).collect();
+            let rest: Vec<bool> = want.iter().zip(had_q).map(|(&w, &h)| w && !h).collect();
+            let mut own = whiten_for(Some(&only), FloorMode::Only)?;
+            let mut fresh = whiten_for(Some(&rest), FloorMode::Also)?;
+            #[cfg(test)]
+            {
+                whitening_bytes = q.heap_bytes() + own.heap_bytes() + fresh.heap_bytes();
+            }
+            own.qmax.clone_from(&q.qmax);
+            for i in (0..no).filter(|&i| rest[i]) {
+                own.qmax[i] = fresh.qmax[i];
+                own.floor[i] = fresh.floor[i].take();
+            }
+            own
+        }
+    };
+    let attempt = attempt.map(|(a, _, _)| a);
+    let tb = SkipTables {
+        aux_dom: &pre.aux_dom,
+        dims_df,
+        own: &own,
+        t: &t,
+        fro2: &fro2,
+        #[cfg(test)]
+        mutant: pre.bound_mutant,
+        #[cfg(test)]
+        drop_free: pre.drop_free_mutant,
+    };
+    let g_bound: Vec<f64> = unique
+        .par_iter()
+        .enumerate()
+        .map(|(px, &(i, j))| {
+            if i == j || mine.is_some_and(|m| !m[px]) || attempt.as_ref().is_some_and(|a| !a[px]) {
+                return f64::NAN;
+            }
+            pair_g_bound(&tb, i, j, scale, cutoff).unwrap_or(f64::NAN)
+        })
+        .collect();
+    let empty = g_bound
+        .iter()
+        .map(|&g| proved_empty(g, eps, fock))
+        .collect();
+    Ok(Some(SkipProof {
+        empty,
+        g_bound,
+        fock,
+        #[cfg(test)]
+        whitening_bytes,
+    }))
+}
+
+/// Seconds since `clock`, which restarts.
+fn lap(clock: &mut Instant) -> f64 {
+    let t = clock.elapsed().as_secs_f64();
+    *clock = Instant::now();
+    t
 }
 
 /// Cauchy–Schwarz factors for the stage-3 batch triple cut, same-op
@@ -1158,10 +2229,26 @@ fn fit_domain_group(
 /// off. Schwarz bounds exist for Coulomb/erf/erfc/terfc only, so the error
 /// names the `schwarz_skip = 0.0` fix; terfc factors carry the table-error
 /// inflation of `schwarz::bound_inflation`.
+///
+/// The returned pair factor is `Q(μν) · w(μν)`, where `w` bounds the
+/// orbital coefficients the triple is transformed with (see
+/// [`coefficient_pair_weights`]): the cut then drops a shell triple only
+/// when each of its FUNCTION triples contributes below `schwarz_skip` to
+/// every TRANSFORMED entry `(P|ia)`, not just when its raw value is small.
+/// It is a per-function-triple bound: the dropped shell block's summed
+/// contribution to one `(P|ia)` can reach `n_μ n_ν` times it (the shell
+/// sizes), and nothing bounds the sum over all dropped triples; the cut's
+/// error is calibrated by measurement, as the raw cut's was. A bound on the raw `(P|μν)`
+/// alone is not a bound on what it feeds: in a near-linearly-dependent
+/// basis the localized virtuals carry |C| ~ 10² (aug-cc-pVDZ n-C12H26:
+/// max |C_v| 119), and the raw cut at 1e-5 moved E_corr by -91 mHa, to
+/// 79 mHa below canonical RI-MP2 (C10: -7.3 mHa; measured 2026-11-25,
+/// `production_schwarz_cut_is_harmless_in_a_diffuse_basis`).
 fn schwarz_triple_factors(
     op: Operator,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
+    spaces: &LocalizedSpaces,
     schwarz_skip: f64,
 ) -> Result<Option<(Array2<f64>, Vec<f64>)>, FerricError> {
     if schwarz_skip <= 0.0 {
@@ -1177,7 +2264,44 @@ fn schwarz_triple_factors(
     // The aux factor is the library's validated per-shell table (floored,
     // terfc-inflated), not a private copy.
     let qp_shell = ferric_integrals::schwarz::schwarz3_aux(op, dfbs)?;
-    Ok(Some((sb.q, qp_shell)))
+    let w = coefficient_pair_weights(obs, &spaces.c_locc, &spaces.c_vloc);
+    Ok(Some((sb.q * w, qp_shell)))
+}
+
+/// Largest |C_μk| over the functions μ of each obs shell and every column k.
+fn shell_coeff_max(prep: &PreparedBasis, c: &Array2<f64>) -> Vec<f64> {
+    let (dims, offs) = (prep.shell_dims(), prep.shell_offsets());
+    (0..prep.nshells())
+        .map(|sh| {
+            c.slice(s![offs[sh]..offs[sh] + dims[sh], ..])
+                .iter()
+                .fold(0.0f64, |m, x| m.max(x.abs()))
+        })
+        .collect()
+}
+
+/// `w(μν) = max(1, cᵒ_μ cᵛ_ν + cᵒ_ν cᵛ_μ)` per shell pair, with `cᵒ`/`cᵛ`
+/// the per-shell max |C| of the active occupieds / the virtuals: one stored
+/// triple `(P|μν)` enters `(P|ia) = Σ_μν C_μi C_νa (P|μν)` through both
+/// orientations, `(C_μi C_νa + C_νi C_μa)(P|μν)`, so
+/// `√(P|P)·Q(μν)·w(μν) < skip` bounds each dropped FUNCTION triple's
+/// contribution to every transformed entry by `skip` (the shell block sums
+/// up to `n_μ n_ν` of them; `schwarz_cut_bounds_the_transformed_entries`
+/// checks the function-level claim). The floor at 1 keeps the cut never
+/// LOOSER than the raw-value cut it replaces: without it the small
+/// coefficients of a compact basis drop more triples (C20/6-31G moved
+/// +2.7 µHa from the no-cut energy, vs -0.2 µHa for the raw cut, same RHF),
+/// because the per-triple bound says nothing about the sum over the triples
+/// dropped. The raw cut's calibration (C12-C48 6-31G) therefore still holds
+/// wherever every `w ≤ 1`.
+fn coefficient_pair_weights(
+    obs: &PreparedBasis,
+    c_occ: &Array2<f64>,
+    c_vir: &Array2<f64>,
+) -> Array2<f64> {
+    let (co, cv) = (shell_coeff_max(obs, c_occ), shell_coeff_max(obs, c_vir));
+    let n = obs.nshells();
+    Array2::from_shape_fn((n, n), |(a, b)| (co[a] * cv[b] + co[b] * cv[a]).max(1.0))
 }
 
 /// Borrowed, read-only context of the stage-3 batch workers. Extracted from
@@ -1196,7 +2320,8 @@ struct BatchCtx<'a> {
     /// triple cut is on.
     qpair: Option<&'a (Array2<f64>, Vec<f64>)>,
     schwarz_skip: f64,
-    /// Per-worker share of the GLOBAL scratch budget, bytes.
+    /// Per-worker share of the process's batch-pass slab cap
+    /// ([`batch_slab_cap`]), bytes.
     worker_budget: usize,
     /// [`DirectConfig::split_eri3_timers`].
     split_timers: bool,
@@ -1257,27 +2382,24 @@ impl BatchAxes {
 }
 
 /// Per-occupied support-masked coefficients on the batch's compact axes:
-/// the occupied column on `s`, and the (nnf, |virt_ext_i|) virtual block.
+/// the occupied columns as the rows of one `(|is|, nsf)` matrix, and each
+/// occupied's (nnf, |virt_ext_i|) virtual block.
 fn batch_coefficients(
     ctx: &BatchCtx<'_>,
     ax: &BatchAxes,
     is: &[usize],
-) -> (Vec<Array1<f64>>, Vec<Array2<f64>>) {
+) -> (Array2<f64>, Vec<Array2<f64>>) {
     let dims_obs = ctx.obs.shell_dims();
     let offs_obs = ctx.obs.shell_offsets();
-    let c_occ: Vec<Array1<f64>> = is
-        .iter()
-        .map(|&i| {
-            let mut c = Array1::<f64>::zeros(ax.nsf);
-            for &sh in &ctx.occ_supp[i] {
-                for f in 0..dims_obs[sh] {
-                    let g = offs_obs[sh] + f;
-                    c[ax.s_pos[g]] = ctx.spaces.c_locc[(g, i)];
-                }
+    let mut c_occ = Array2::<f64>::zeros((is.len(), ax.nsf));
+    for (k, &i) in is.iter().enumerate() {
+        for &sh in &ctx.occ_supp[i] {
+            for f in 0..dims_obs[sh] {
+                let g = offs_obs[sh] + f;
+                c_occ[(k, ax.s_pos[g])] = ctx.spaces.c_locc[(g, i)];
             }
-            c
-        })
-        .collect();
+        }
+    }
     let c_virt: Vec<Array2<f64>> = is
         .iter()
         .map(|&i| {
@@ -1487,38 +2609,102 @@ type FillFn = fn(
 ) -> (u64, u64);
 
 /// Half-transform one slab's rows into each batch occupied's strip:
-/// row P of strip i is `c_occ_iᵀ · T_P · C_virt_i`.
-#[allow(clippy::too_many_arguments)]
+/// row P of strip i is `c_occ_iᵀ · T_P · C_virt_i`. Two BLAS3 steps: per aux
+/// function one GEMM over every batch occupied, `H_P = C_occ · T_P`
+/// ((|is|, nsf)·(nsf, nnf)), so each `T_P` is read once rather than once per
+/// occupied; then per occupied one GEMM of the `H` rows it needs with its
+/// virtual block. An `H` row an occupied does not need
+/// (its aux shell is outside that occupied's `aux_ext`) is computed and
+/// dropped: cheaper than the per-occupied GEMVs it replaces.
 fn transform_slab(
     ctx: &BatchCtx<'_>,
     is: &[usize],
     strips: &mut [Strip],
-    c_occ: &[Array1<f64>],
-    c_virt: &[Array2<f64>],
+    (c_occ, c_virt): (&Array2<f64>, &[Array2<f64>]),
     p_local: &[usize],
     t_slab: &Array3<f64>,
-) {
+) -> usize {
+    let h = occ_half_transform(c_occ, t_slab);
+    let mut per_occ_peak = 0usize;
+    for (k, &i) in is.iter().enumerate() {
+        let (pls, gps) = slab_rows(ctx, i, p_local);
+        if pls.is_empty() {
+            continue;
+        }
+        let g = h.index_axis(Axis(1), k).select(Axis(0), &pls);
+        let rows = g.dot(&c_virt[k]);
+        per_occ_peak = per_occ_peak.max(8 * (g.len() + rows.len() + pls.len() + gps.len()));
+        assign_strip_rows(&mut strips[k], &gps, &rows);
+    }
+    8 * h.len() + per_occ_peak
+}
+
+/// The dimensions a batch slab's live bytes depend on: the batch's AO axes
+/// (`nsf`, `nnf`), its occupied count, the widest virtual block of any of
+/// them (`max_cols`) and the aux basis size (the slab's `p_local` map).
+#[derive(Debug, Clone, Copy)]
+struct SlabDims {
+    nsf: usize,
+    nnf: usize,
+    n_occ: usize,
+    max_cols: usize,
+    naux: usize,
+}
+
+impl SlabDims {
+    /// Bytes a batch slab of `nps` aux functions holds at its peak, while
+    /// one occupied's rows are transformed: the `p_local` map (`naux`), the
+    /// triples `t_slab` (`nps·nsf·nnf`), the occupied half-transform `H` of
+    /// [`occ_half_transform`] (`nps·|is|·nnf`) and, for that occupied, its
+    /// selected `H` rows (`≤ nps·nnf`), their product with its virtual block
+    /// (`≤ nps·max_cols`) and the two row-index lists (`≤ 2·nps`). The slab
+    /// is sized by this, so all of them stay inside the worker's budget.
+    fn live_bytes(&self, nps: usize) -> usize {
+        8 * self.naux + nps * self.row_bytes()
+    }
+
+    /// Bytes each slab aux function adds to [`Self::live_bytes`].
+    fn row_bytes(&self) -> usize {
+        8 * (self.nnf * (self.nsf + self.n_occ) + self.nnf + self.max_cols + 2)
+    }
+
+    /// Most aux functions a slab may hold under `budget` (at least one).
+    fn max_funcs(&self, budget: usize) -> usize {
+        (budget.saturating_sub(self.live_bytes(0)) / self.row_bytes()).max(1)
+    }
+}
+
+/// `H[(pl, k, n)] = Σ_s c_occ[(k, s)] · t_slab[(pl, s, n)]`: one GEMM per aux
+/// function, so each `H_P` is a contiguous `(|is|, nnf)` block.
+fn occ_half_transform(c_occ: &Array2<f64>, t_slab: &Array3<f64>) -> Array3<f64> {
+    let (nps, _, nnf) = t_slab.dim();
+    let mut h = Array3::<f64>::zeros((nps, c_occ.nrows(), nnf));
+    for (t_p, mut h_p) in t_slab.outer_iter().zip(h.outer_iter_mut()) {
+        ndarray::linalg::general_mat_mul(1.0, c_occ, &t_p, 0.0, &mut h_p);
+    }
+    h
+}
+
+/// Occupied `i`'s aux functions present in this slab: their slab positions and
+/// global ids, in `aux_ext[i]` order.
+fn slab_rows(ctx: &BatchCtx<'_>, i: usize, p_local: &[usize]) -> (Vec<usize>, Vec<usize>) {
     let dims_df = ctx.dfbs.shell_dims();
     let offs_df = ctx.dfbs.shell_offsets();
-    for (k, &i) in is.iter().enumerate() {
-        let strip = &mut strips[k];
-        let ci = &c_occ[k];
-        let cv = &c_virt[k];
-        for &sp in &ctx.aux_ext[i] {
-            let p0 = offs_df[sp];
-            if p_local[p0] == usize::MAX {
-                continue; // shell not in this slab
-            }
-            for f in 0..dims_df[sp] {
-                let gp = p0 + f;
-                let pl = p_local[gp];
-                let tv = t_slab.index_axis(Axis(0), pl);
-                let t1 = ci.dot(&tv); // (nnf)
-                let row = t1.dot(cv); // (ncols_i)
-                let r = strip.row_pos[gp];
-                strip.b.row_mut(r).assign(&row);
-            }
-        }
+    let gps: Vec<usize> = ctx.aux_ext[i]
+        .iter()
+        .filter(|&&sp| p_local[offs_df[sp]] != usize::MAX) // shell in this slab
+        .flat_map(|&sp| offs_df[sp]..offs_df[sp] + dims_df[sp])
+        .collect();
+    let pls = gps.iter().map(|&gp| p_local[gp]).collect();
+    (pls, gps)
+}
+
+/// Store half-transformed rows in a strip: `rows` row `j` is the strip row of
+/// global aux function `gps[j]`.
+fn assign_strip_rows(strip: &mut Strip, gps: &[usize], rows: &Array2<f64>) {
+    for (row, &gp) in rows.outer_iter().zip(gps) {
+        let r = strip.row_pos[gp];
+        strip.b.row_mut(r).assign(&row);
     }
 }
 
@@ -1585,8 +2771,14 @@ fn eval_batch(ctx: &BatchCtx<'_>, is: &[usize], fill: FillFn) -> BatchOut {
         tm.transform_flops += full * n_rows;
         tm.transform_flops_own_support += own * n_rows;
     }
-    let per_func = ax.nsf.max(1) * ax.nnf.max(1) * 8;
-    let max_funcs = (ctx.worker_budget / per_func).max(1);
+    let dims = SlabDims {
+        nsf: ax.nsf.max(1),
+        nnf: ax.nnf.max(1),
+        n_occ: is.len(),
+        max_cols: c_virt.iter().map(|cv| cv.ncols()).max().unwrap_or(0),
+        naux,
+    };
+    let max_funcs = dims.max_funcs(ctx.worker_budget);
     let mut slab_start = 0usize;
     while slab_start < p_shells.len() {
         let end = slab_end(&p_shells, dims_df, slab_start, max_funcs);
@@ -1614,8 +2806,11 @@ fn eval_batch(ctx: &BatchCtx<'_>, is: &[usize], fill: FillFn) -> BatchOut {
         n_skipped += ns;
         tm.n_slabs += 1;
         let tt = Instant::now();
-        transform_slab(ctx, is, &mut strips, &c_occ, &c_virt, &p_local, &t_slab);
+        let transform_bytes =
+            transform_slab(ctx, is, &mut strips, (&c_occ, &c_virt), &p_local, &t_slab);
         tm.transform_s += tt.elapsed().as_secs_f64();
+        let live = 8 * (p_local.len() + t_slab.len()) + transform_bytes;
+        tm.slab_bytes_max = tm.slab_bytes_max.max(live);
         slab_start = end;
     }
     tm.total_s = t_start.elapsed().as_secs_f64();
@@ -1877,6 +3072,7 @@ fn transform_aux_slab(
     let t = ArrayView2::from_shape((ax.nsf, np * ax.nnf), &w.slab[..ax.nsf * np * ax.nnf])
         .expect("aux slab shape");
     let h = c_occ.dot(&t);
+    let gps: Vec<usize> = (off_p..off_p + np).collect();
     for (k, &i) in is.iter().enumerate() {
         let o = &own[i];
         let mut g_block = Array2::<f64>::zeros((np, o.n_funcs.len()));
@@ -1892,10 +3088,7 @@ fn transform_aux_slab(
         }
         let rows = g_block.dot(&o.c_virt);
         let mut strip = strips[i].lock().expect("strip lock");
-        for p in 0..np {
-            let r = strip.row_pos[off_p + p];
-            strip.b.row_mut(r).assign(&rows.row(p));
-        }
+        assign_strip_rows(&mut strip, &gps, &rows);
     }
     tm.transform_flops += 2.0 * (is.len() * ax.nsf * np * ax.nnf) as f64
         + is.iter()
@@ -2460,6 +3653,18 @@ fn assemble_gated(
         fock_screen,
     };
     let (slots, _) = fit_pair_slots(input, &mut stats)?;
+    mem_trace(
+        "fits",
+        &[(
+            "own_blocks",
+            slots
+                .iter()
+                .flatten()
+                .flatten()
+                .map(PairBlock::heap_bytes)
+                .sum(),
+        )],
+    );
     // The fits were the last readers of the strips and the metric: drop them
     // before the ranks exchange blocks, so a rank never holds its strips
     // beside the whole ragged system.
@@ -2482,6 +3687,30 @@ struct StripsAndMetric {
     /// occupied outside `stripe.needed`, and the built ones cover this
     /// rank's pairs only.
     stripe: Option<RankStripe>,
+    /// [`DirectConfig::pair_skip`] resolved for the operator (never `Auto`).
+    pair_skip: PairSkip,
+    /// Test-only mutant: every pair bound is multiplied by this (1 = the
+    /// real bound; below 1 weakens it, which the anchor and audit must see).
+    #[cfg(test)]
+    bound_mutant: f64,
+    /// Test-only mutant: drop the γ-free terms from the cutoff and the bound
+    /// alike ([`SkipTables`]).
+    #[cfg(test)]
+    drop_free_mutant: bool,
+    /// Test-only prefilter mutant ([`skip_prefilter`]): `Normal`, or one
+    /// that attempts nothing, inverts the cut, or attempts every pair.
+    #[cfg(test)]
+    prefilter_mutant: PrefilterMutant,
+}
+
+/// Test-only replacements for [`skip_prefilter`]'s cut.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrefilterMutant {
+    Normal,
+    RejectAll,
+    Invert,
+    AttemptAll,
 }
 
 /// Stages 1–4 of [`assemble_ragged_direct_local`]: gate and maps
@@ -2503,6 +3732,10 @@ fn strips_and_metric(
 ) -> Result<StripsAndMetric, FerricError> {
     use rayon::prelude::*;
     let no = spaces.no;
+    let pair_skip = dcfg
+        .pair_skip
+        .resolve(&op)
+        .map_err(|e| FerricError::General(format!("lmp2_direct: {e}")))?;
     let t0 = Instant::now();
     let maps = build_locality_maps(mol, obs, dfbs, spaces, eps, pair_gate_cal, dcfg);
     let need = metric_need_pairs(&maps.aux_ext, dfbs.nshells());
@@ -2510,13 +3743,17 @@ fn strips_and_metric(
     let mut scratch_budget_bytes = dcfg.scratch_budget_bytes;
     if let Some(g) = gate {
         // Stage 3 holds the strips beside the slab scratch: the scratch gets
-        // what the budget leaves. Strips are bitwise independent of the slab
-        // partition (each aux row is transformed on its own), so this only
-        // changes how many slabs run.
+        // what the budget leaves. Strips depend on the slab partition only at
+        // round-off (the per-occupied virtual GEMM's row count follows the
+        // slab), so this only changes how many slabs run.
         scratch_budget_bytes =
             stage3_scratch(scratch_budget_bytes, g.budget_bytes, est.strips_bytes);
     }
-    est.stage3_scratch_bytes = scratch_budget_bytes;
+    let slab_cap = batch_slab_cap(dcfg, scratch_budget_bytes);
+    est.stage3_scratch_bytes = match dcfg.eri3_pass {
+        Eri3Pass::Batches => slab_cap,
+        Eri3Pass::AuxMajor => scratch_budget_bytes,
+    };
     stats.memory = est;
     mem_trace(
         "preflight",
@@ -2566,7 +3803,7 @@ fn strips_and_metric(
         )));
     }
     Engine::new_3center(op, obs, dfbs, 1e-14)?; // surface construction errors serially
-    let qpair = schwarz_triple_factors(op, obs, dfbs, dcfg.schwarz_skip)?;
+    let qpair = schwarz_triple_factors(op, obs, dfbs, spaces, dcfg.schwarz_skip)?;
     stats.t_eri3_setup_s = t0.elapsed().as_secs_f64();
     let n_workers = rayon::current_num_threads()
         .max(1)
@@ -2582,7 +3819,7 @@ fn strips_and_metric(
         virt_supp: &virt_supp,
         qpair: qpair.as_ref(),
         schwarz_skip: dcfg.schwarz_skip,
-        worker_budget: dcfg.scratch_budget_bytes / n_workers,
+        worker_budget: slab_cap / n_workers,
         split_timers: dcfg.split_eri3_timers,
     };
     let batch_out: Vec<BatchOut> = match dcfg.eri3_pass {
@@ -2595,6 +3832,15 @@ fn strips_and_metric(
     let needed = stripe.as_ref().map(|s| s.needed.as_slice());
     let strips = collect_strips(no, batch_out, dcfg.split_eri3_timers, needed, stats)?;
     stats.t_eri3_s = t0.elapsed().as_secs_f64();
+    mem_trace(
+        "stage3",
+        &[
+            ("strips", stats.strip_bytes_total),
+            ("scratch_cap", stats.memory.stage3_scratch_bytes),
+            ("slab_max", stats.eri3_slab_bytes_max),
+            ("workers_x_slab_max", n_workers * stats.eri3_slab_bytes_max),
+        ],
+    );
 
     let t0 = Instant::now();
     stats.n_metric_shell_pairs = need.len();
@@ -2615,6 +3861,13 @@ fn strips_and_metric(
         strips,
         metric_blocks,
         stripe,
+        pair_skip,
+        #[cfg(test)]
+        bound_mutant: 1.0,
+        #[cfg(test)]
+        drop_free_mutant: false,
+        #[cfg(test)]
+        prefilter_mutant: PrefilterMutant::Normal,
     })
 }
 
@@ -2648,6 +3901,7 @@ fn collect_strips(
         stats.transform_flops_own_support += tm.transform_flops_own_support;
         stats.n_eri3_integrals += tm.n_integrals;
         stats.n_eri3_null_blocks += tm.n_null_blocks;
+        stats.eri3_slab_bytes_max = stats.eri3_slab_bytes_max.max(tm.slab_bytes_max);
         stats.batch_work_max_s = stats.batch_work_max_s.max(tm.total_s);
         stats.batch_work_mean_s += tm.total_s;
         for (i, st) in batch_strips {
@@ -2762,11 +4016,13 @@ fn schwarz_screen(
         }
         FitPath::Cholesky => {
             stats.own_w_bytes = own_w_store_bytes(&pre.aux_dom, &pre.strips, dims_df);
-            let keep = stats.own_w_bytes <= dcfg.scratch_budget_bytes;
+            let w = stats.own_w_bytes <= dcfg.scratch_budget_bytes;
+            let keep = OwnKeep { q: true, w };
             let (aux_dom, strips) = (&pre.aux_dom, &pre.strips);
             let needed = pre.stripe.as_ref().map(|s| s.needed.as_slice());
+            let nf = FloorMode::No;
             let o = whiten_own_domains(
-                no, scale, aux_dom, strips, dims_df, mb, dfbs, r, keep, needed,
+                no, scale, aux_dom, strips, dims_df, mb, dfbs, r, keep, needed, nf,
             )?;
             Ok((Some((o.q, o.qmax)), o.w))
         }
@@ -2826,17 +4082,15 @@ fn pair_candidates(
 }
 
 /// Upper bound on one domain group's scratch in [`fit_domain_group`],
-/// counted from its allocations. Held for the whole group: `V_DD` and its
-/// Cholesky factor (`2d²`) and one whitened `W_k` per distinct occupied over
-/// its candidate union (`Σ_k d·|C_k|`). On top of that, the larger of the
-/// two phases' transients:
-///
-/// - whitening occupied `k` ([`whiten`]): the gathered strip `A_k` and the
-///   transposed right-hand side LAPACK's row-major wrapper copies
-///   (`2·d·|C_k|`; the owned copy it solves into IS `W_k`), plus the
-///   transposed `L` it copies per call (`d²`);
-/// - the pair fits: the widest pair's two column selections, `J_ij` and its
-///   transpose (`2·d·n + 2·n²`), and with the Fock-propagated screen on
+/// counted from its allocations. Held for the whole group: the Cholesky
+/// factor, computed in `V_DD`'s own buffer (`d²`), and one whitened `W_k`
+/// per distinct occupied over its candidate union (`Σ_k d·|C_k|`). The
+/// whitening has no transient: every `A_k` is gathered straight into its
+/// column range of one column-major right-hand side, which the triangular
+/// solve overwrites with the `W_k` ([`whiten_group_occupieds`]). On top of
+/// that, the pair fits' transient: the widest pair's two column selections,
+/// `J_ij` and its transpose (`2·d·n + 2·n²`), and with the Fock-propagated
+/// screen on
 ///   (`screen_on`) the gate scratch of
 ///   [`crate::ragged::pair_blocks_screened`] (`F'`, `t⁰`, `F't⁰`, the `t⁰F'`
 ///   temporary, the gate and its transpose,
@@ -2860,25 +4114,15 @@ fn group_scratch_bound(
         .map(|&px| pair_cands[px].len())
         .max()
         .unwrap_or(0);
-    let mut want: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
-    for &px in pxs.iter().filter(|&&px| !pair_cands[px].is_empty()) {
-        let (i, j) = unique[px];
-        for k in [i, j] {
-            want.entry(k)
-                .or_default()
-                .extend(pair_cands[px].iter().copied());
-        }
-    }
+    let want = group_cand_unions(pxs, unique, pair_cands);
     let w: usize = want.values().map(|c| d * c.len()).sum();
-    let c_max = want.values().map(BTreeSet::len).max().unwrap_or(0);
-    let whiten = d * d + 2 * d * c_max;
     let screen = if screen_on {
         FOCK_SCREEN_SCRATCH_MATRICES * n_max * n_max
     } else {
         0
     };
     let fits = 2 * d * n_max + 2 * n_max * n_max + screen;
-    8 * (2 * d * d + w + whiten.max(fits))
+    8 * (d * d + w + fits)
 }
 
 /// Upper bound on the pair blocks one domain group builds: each pair's
@@ -3097,6 +4341,69 @@ fn fit_pair_slots(
         stats.virt_cand_mean /= n_fitted as f64;
     }
 
+    let t_skip = Instant::now();
+    stats.pair_skip = pre.pair_skip;
+    // The proof's tables and workers must fit what the budget leaves beside
+    // the resident set; if not, every pair is fitted (the result of `Off`).
+    // Resident beside the proof: strips, metric, held `W`, every pair's
+    // candidate list and (κ screen) the per-occupied `q` vectors.
+    let proof_fits = gate.is_none_or(|g| {
+        let qvirt_bytes = qvirt.as_ref().map_or(0, |(q, qmax)| {
+            8 * (q.iter().map(Vec::len).sum::<usize>() + qmax.len())
+        });
+        let held = stats.memory.strips_bytes
+            + stats.memory.metric_bytes
+            + own_w.iter().flatten().map(|w| 8 * w.len()).sum::<usize>()
+            + pair_cands
+                .iter()
+                .map(|c| std::mem::size_of::<usize>() * c.len())
+                .sum::<usize>()
+            + qvirt_bytes;
+        held + pair_proof_bytes(pre, dfbs.shell_dims(), unique.len()) <= g.budget_bytes
+    });
+    if !proof_fits && pre.pair_skip.evaluates() && eps > 0.0 {
+        eprintln!(
+            "lmp2_direct: pair-skip proof does not fit the memory budget beside the strips; \
+             fitting every pair"
+        );
+    }
+    let proof = match path.triangular() && proof_fits {
+        true => prove_empty_pairs(
+            pre,
+            dfbs,
+            spaces,
+            &unique,
+            mine,
+            SkipGate {
+                scale,
+                eps,
+                fock_screen,
+                fo: &fo,
+                fv: &fv,
+            },
+            dcfg.aux_radius_bohr,
+        )
+        .unwrap_or_else(|e| {
+            // The skip is optional and rank-local: an inconclusive proof
+            // fits every pair (the result `Off` gives), so this rank still
+            // reaches the gather collectives the other ranks wait in.
+            eprintln!("lmp2_direct: pair-skip proof inconclusive ({e}); fitting every pair");
+            None
+        }),
+        false => None,
+    };
+    if let Some(p) = &proof {
+        stats.n_pair_skip_bounded = p.g_bound.iter().filter(|g| g.is_finite()).count();
+        stats.n_pairs_proved_empty = p.empty.iter().filter(|&&e| e).count();
+    }
+    let skip: Option<&[bool]> = proof
+        .as_ref()
+        .filter(|_| pre.pair_skip == PairSkip::On)
+        .map(|p| p.empty.as_slice());
+    let audit_out =
+        (pre.pair_skip == PairSkip::Audit && proof.is_some()).then(|| Mutex::new(Vec::new()));
+    stats.t_pair_skip_s = t_skip.elapsed().as_secs_f64();
+
     let pair_dom = pair_domains(&unique, &pre.aux_dom);
     let own_w: Option<Vec<Option<GroupW>>> = own_w.map(|w| {
         trim_own_w(
@@ -3132,6 +4439,8 @@ fn fit_pair_slots(
         dfbs,
         aux_dom: &pre.aux_dom,
         own_w: own_w.as_deref(),
+        skip,
+        audit: audit_out.as_ref(),
         #[cfg(test)]
         w_mutant: match path {
             FitPath::MutantW(first, rel) => Some((first, rel)),
@@ -3164,6 +4473,15 @@ fn fit_pair_slots(
     let run_group = |(dsh, pxs): &(Vec<usize>, Vec<usize>)| -> GroupResult {
         if charge.as_ref().is_some_and(BlockCharge::is_tripped) {
             return Ok((Vec::new(), GroupCounts::default()));
+        }
+        if skip.is_some_and(|sk| pxs.iter().all(|&px| sk[px])) {
+            // every pair proved empty: no Cholesky, no whitening, no fit
+            let out = pxs.iter().map(|&px| (px, Vec::new())).collect();
+            let counts = GroupCounts {
+                skipped: true,
+                ..GroupCounts::default()
+            };
+            return Ok((out, counts));
         }
         let now = in_flight.fetch_add(1, Ordering::Relaxed) + 1;
         in_flight_peak.fetch_max(now, Ordering::Relaxed);
@@ -3231,7 +4549,64 @@ fn fit_pair_slots(
         return Err(FerricError::MemoryExhausted(msg));
     }
     let slots = slots_from_groups(unique.len(), group_out, stats)?;
+    stats.n_pairs_empty = slots
+        .iter()
+        .enumerate()
+        .filter(|(px, slot)| {
+            !skip.is_some_and(|sk| sk[*px]) && slot.as_ref().is_some_and(|b| b.is_empty())
+        })
+        .count();
+    if let (Some(p), Some(a)) = (&proof, audit_out) {
+        let rows = a.into_inner().unwrap_or_default();
+        audit_pair_skip(p, &rows, &slots, &unique, spaces, stats);
+    }
     Ok((slots, base_bytes))
+}
+
+/// [`PairSkip::Audit`]: compare every bounded fitted pair with its bound
+/// (`DirectStats::pair_skip_audit_*`); with `FERRIC_LMP2_PAIR_SKIP_DUMP` set,
+/// one `PAIRSKIP i j R g_bound gate_bound max|g| max_gate kept proved` line
+/// per fitted pair on stderr (the measurement's raw data).
+fn audit_pair_skip(
+    p: &SkipProof,
+    rows: &[(usize, f64, f64)],
+    slots: &[crate::ragged_transport::Slot],
+    unique: &[(usize, usize)],
+    spaces: &LocalizedSpaces,
+    stats: &mut DirectStats,
+) {
+    let dump = std::env::var_os("FERRIC_LMP2_PAIR_SKIP_DUMP").is_some();
+    let (mut ratio, mut gate_ratio) = (0.0f64, 0.0f64);
+    let (mut n, mut violations) = (0usize, 0usize);
+    for &(px, gmax, gate_max) in rows {
+        let kept = slots[px].as_ref().is_some_and(|b| !b.is_empty());
+        let gb = p.g_bound[px];
+        let gate_b = crate::lmp2_pair_skip::gate_bound(gb, p.fock);
+        if gb.is_finite() {
+            n += 1;
+            ratio = ratio.max(gmax / gb);
+            gate_ratio = gate_ratio.max(gate_max / gate_b);
+        }
+        if p.empty[px] && kept {
+            violations += 1;
+        }
+        if dump {
+            let (i, j) = unique[px];
+            let r: f64 = (0..3)
+                .map(|x| (spaces.occ_centers[(i, x)] - spaces.occ_centers[(j, x)]).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            eprintln!(
+                "PAIRSKIP {i} {j} {r:.6} {gb:.6e} {gate_b:.6e} {gmax:.6e} {gate_max:.6e} {} {}",
+                u8::from(kept),
+                u8::from(p.empty[px])
+            );
+        }
+    }
+    stats.pair_skip_audit_n = n;
+    stats.pair_skip_audit_max_ratio = ratio;
+    stats.pair_skip_audit_gate_max_ratio = gate_ratio;
+    stats.pair_skip_audit_violations = violations;
 }
 
 /// Stage 5 after the fits: the slots become the ragged system. Under a rank
@@ -3350,19 +4725,31 @@ fn slots_from_groups(
     stats: &mut DirectStats,
 ) -> Result<Vec<crate::ragged_transport::Slot>, FerricError> {
     stats.n_pair_groups = group_out.len();
+    stats.n_pair_groups_skipped = 0;
     let mut n_occ = 0usize;
     let mut slots: Vec<crate::ragged_transport::Slot> = (0..n_unique).map(|_| None).collect();
     for r in group_out {
         let (slot_out, counts) = r?;
+        if counts.skipped {
+            stats.n_pair_groups -= 1;
+            stats.n_pair_groups_skipped += 1;
+        }
         n_occ += counts.n_occ;
         stats.n_trsm += counts.n_trsm;
         stats.n_w_reused += counts.n_reused;
         stats.group_scratch_bytes_max = stats.group_scratch_bytes_max.max(counts.scratch_bytes);
+        for (acc, t) in stats.pair_fit_thread_s.iter_mut().zip(counts.t) {
+            *acc += t;
+        }
+        let wall: f64 = counts.t.iter().sum();
+        stats.group_work_max_s = stats.group_work_max_s.max(wall);
+        stats.group_work_mean_s += wall;
         for (px, blocks) in slot_out {
             slots[px] = Some(blocks);
         }
     }
     if stats.n_pair_groups > 0 {
+        stats.group_work_mean_s /= stats.n_pair_groups as f64;
         stats.n_distinct_occ_per_group = n_occ as f64 / stats.n_pair_groups as f64;
     }
     Ok(slots)
@@ -3925,8 +5312,10 @@ pub fn amplitude_lmp2_direct(
     dcfg: &DirectConfig,
 ) -> Result<(AmplitudeLmp2Result, DirectStats), FerricError> {
     crate::lmp2_amplitude::require_hf_reference(rhf, "lmp2_direct")?;
+    mem_trace("entry", &[]);
     let (vvhv, t_spaces_s, report) =
         checked_vvhv_with(mol, obs, obs_bs, rhf, "lmp2_direct", &cfg.virtual_space)?;
+    mem_trace("vvhv", &[]);
     let (mut r, st) =
         amplitude_lmp2_direct_with_virtuals(mol, obs, dfbs, op, rhf, cfg, dcfg, &vvhv)?;
     r.timings.t_spaces_s = t_spaces_s;
@@ -3950,8 +5339,10 @@ pub fn amplitude_lmp2_direct_with_virtuals(
 ) -> Result<(AmplitudeLmp2Result, DirectStats), FerricError> {
     crate::lmp2_amplitude::require_hf_reference(rhf, "lmp2_direct")?;
     let t0 = Instant::now();
-    let spaces = localized_spaces_lambda(mol, obs, rhf, cfg.frozen_core, vvhv, cfg.lambda_boys)?;
+    let spaces =
+        localized_spaces_lambda(mol, obs, rhf, cfg.frozen_core, vvhv, cfg.lambda_boys_spec())?;
     let t_loc_s = t0.elapsed().as_secs_f64();
+    mem_trace("localized", &[]);
     let (no, nv) = (spaces.no, spaces.nv);
     let budget_bytes = crate::rimp2::eri3_budget_bytes(cfg.eri3_budget_bytes);
     let (rg, n_pairs_gated, mut dstats) = assemble_gated(
@@ -4297,6 +5688,125 @@ mod stage_b_tests {
         }
     }
 
+    /// The batch slab is sized with every buffer beside it (PR #716
+    /// review): 2 MiB per worker, `nsf = nnf = 64`, 16 occupieds, 64
+    /// virtual columns. Triples and `H` alone let 51 functions in and leave
+    /// 8,192 B, while one occupied's selected `H` rows over all 51 need
+    /// 26,112 B; counted in full, the slab and all its buffers fit.
+    #[test]
+    fn batch_slab_and_its_buffers_fit_the_worker_budget() {
+        let budget = 2usize << 20;
+        let d = SlabDims {
+            nsf: 64,
+            nnf: 64,
+            n_occ: 16,
+            max_cols: 64,
+            naux: 1000,
+        };
+        let funcs = d.max_funcs(budget);
+        assert!(funcs > 1, "the example must block");
+        assert!(d.live_bytes(funcs) <= budget);
+        assert!(d.live_bytes(funcs + 1) > budget);
+        // the triples + H sizing of the earlier code: 51 functions, and the
+        // selected rows alone overrun what it left
+        let old_row = 8 * d.nnf * (d.nsf + d.n_occ);
+        let old = budget / old_row;
+        assert_eq!(old, 51);
+        assert_eq!(budget - old * old_row, 8192);
+        assert_eq!(8 * old * d.nnf, 26_112);
+        assert!(d.live_bytes(old) > budget);
+    }
+
+    /// The batch pass's strips do not depend on the slab cap beyond rounding:
+    /// an ample cap (one slab per batch), the production default, a cap a few
+    /// slabs wide and a one-byte cap (one aux shell per slab) give the same
+    /// strips, through strictly more slabs as the cap shrinks. Not bitwise:
+    /// the virtual GEMM's row count follows the slab, so BLAS blocks the
+    /// k-sums differently (measured here: at most a few 1e-16 relative,
+    /// printed below); 1e-13 is the aux-major-vs-batches bar of
+    /// `aux_major_strips_match_batches`, and a misplaced row or a lost slab
+    /// is O(1). The scratch cap bounds the slab cap from above, so a
+    /// one-byte scratch cap is a one-byte slab cap too.
+    #[test]
+    fn batch_strips_ignore_the_slab_cap() {
+        let c = aux_case(4);
+        let op = Operator::coulomb();
+        let run = |slab: usize, scratch: usize| {
+            let dcfg = DirectConfig {
+                slab_budget_bytes: slab,
+                scratch_budget_bytes: scratch,
+                ..production(Eri3Pass::Batches, 4)
+            };
+            aux_strips(&c, op, 0.7, &dcfg)
+        };
+        let ample = 1usize << 40;
+        let (base, s_ample) = run(ample, ample);
+        assert_eq!(s_ample.n_eri3_slabs, s_ample.n_batches);
+        let workers = rayon::current_num_threads().min(s_ample.n_batches).max(1);
+        let few = workers * s_ample.eri3_slab_bytes_max / 3;
+        let mut prev = s_ample.n_eri3_slabs;
+        for (slab, scratch) in [
+            (DIRECT_DEFAULT_SLAB_BUDGET_BYTES, ample),
+            (few, ample),
+            (1, ample),
+            (ample, 1),
+        ] {
+            let (s, st) = run(slab, scratch);
+            let rel = strip_rel_diff(&base, &s);
+            eprintln!(
+                "slab {slab} scratch {scratch}: {} slabs, rel {rel:.2e}",
+                st.n_eri3_slabs
+            );
+            assert!(rel <= 1e-13, "slab {slab} scratch {scratch}: rel {rel:e}");
+            assert!(
+                st.n_eri3_slabs >= prev,
+                "slab {slab}: {} slabs",
+                st.n_eri3_slabs
+            );
+            if slab == few || slab == 1 {
+                assert!(
+                    st.n_eri3_slabs > prev,
+                    "slab {slab}: blocking never engaged"
+                );
+            }
+            prev = st.n_eri3_slabs;
+        }
+    }
+
+    /// The node's slab budget is split over the ranks sharing the node: the
+    /// launcher's local count when it sets one, every rank otherwise.
+    #[test]
+    fn slab_budget_splits_over_ranks_on_the_node() {
+        assert_eq!(ranks_sharing_node(1, None), 1);
+        assert_eq!(ranks_sharing_node(1, Some(4)), 1);
+        assert_eq!(ranks_sharing_node(4, None), 4);
+        assert_eq!(ranks_sharing_node(4, Some(2)), 2);
+        assert_eq!(ranks_sharing_node(4, Some(8)), 4);
+        assert_eq!(ranks_sharing_node(4, Some(0)), 1);
+        let dcfg = |size: usize| DirectConfig {
+            slab_budget_bytes: 1200,
+            mpi: Some(ParallelContext::for_rank(0, size)),
+            ..DirectConfig::default()
+        };
+        // one rank, or no context: the whole budget, capped by the scratch
+        assert_eq!(batch_slab_cap(&dcfg(1), usize::MAX), 1200);
+        assert_eq!(
+            batch_slab_cap(
+                &DirectConfig {
+                    mpi: None,
+                    ..dcfg(1)
+                },
+                500
+            ),
+            500
+        );
+        let local = launcher_local_ranks();
+        assert_eq!(
+            batch_slab_cap(&dcfg(3), usize::MAX),
+            1200 / ranks_sharing_node(3, local)
+        );
+    }
+
     /// The budget limits the tasks really in flight, not just the number the
     /// pass computes. The ample run must exceed one task, or this test could not
     /// see a limit being ignored.
@@ -4328,6 +5838,57 @@ mod stage_b_tests {
             "{}",
             two.aux_major_in_flight_peak
         );
+    }
+
+    #[test]
+    fn eri3_pass_parser_is_strict() {
+        assert_eq!(
+            Eri3Pass::parse_config_str("aux-major"),
+            Ok(Eri3Pass::AuxMajor)
+        );
+        assert_eq!(Eri3Pass::parse_config_str("batches"), Ok(Eri3Pass::Batches));
+        for bad in ["", "Aux-Major", "aux_major", "auxmajor", "batch", "BATCHES"] {
+            assert!(Eri3Pass::parse_config_str(bad).is_err(), "{bad:?}");
+        }
+        for p in [Eri3Pass::AuxMajor, Eri3Pass::Batches] {
+            assert_eq!(Eri3Pass::parse_config_str(p.as_config_str()), Ok(p));
+        }
+    }
+
+    #[test]
+    fn production_is_aux_major_and_resolution_follows_it() {
+        let p = DirectConfig::production();
+        assert_eq!((p.eri3_pass, p.batch_merge), (Eri3Pass::AuxMajor, 1));
+        // The exactness-anchor config is unchanged.
+        let d = DirectConfig::default();
+        assert_eq!((d.eri3_pass, d.batch_merge), (Eri3Pass::Batches, 1));
+        assert_eq!(
+            DirectConfig::resolve_pass(None, None),
+            Ok((Eri3Pass::AuxMajor, 1))
+        );
+        assert_eq!(
+            DirectConfig::resolve_pass(Some("aux-major"), Some(1)),
+            Ok((Eri3Pass::AuxMajor, 1))
+        );
+        assert_eq!(
+            DirectConfig::resolve_pass(Some("batches"), None),
+            Ok((Eri3Pass::Batches, DIRECT_DEFAULT_BATCH_MERGE))
+        );
+        assert_eq!(DIRECT_DEFAULT_BATCH_MERGE, 4);
+        assert_eq!(
+            DirectConfig::resolve_pass(Some("batches"), Some(2)),
+            Ok((Eri3Pass::Batches, 2))
+        );
+        assert!(DirectConfig::resolve_pass(Some("bogus"), None).is_err());
+        assert!(DirectConfig::resolve_pass(Some("batches"), Some(0)).is_err());
+    }
+
+    #[test]
+    fn resolve_pass_rejects_batch_merge_with_aux_major() {
+        for pass in [None, Some("aux-major")] {
+            let e = DirectConfig::resolve_pass(pass, Some(4)).unwrap_err();
+            assert!(e.contains("eri3_pass = \"batches\""), "{e}");
+        }
     }
 
     #[test]
@@ -4395,7 +5956,7 @@ mod stage_b_tests {
                 ("coul", Operator::coulomb(), 0.7),
                 ("erfc1", Operator::erfc(1.0), 0.02),
             ] {
-                let qpair = schwarz_triple_factors(op, &obs, &dfbs, dcfg.schwarz_skip)
+                let qpair = schwarz_triple_factors(op, &obs, &dfbs, &spaces, dcfg.schwarz_skip)
                     .unwrap()
                     .unwrap();
                 for eps in [1e-3, 1e-4] {
@@ -4527,52 +6088,239 @@ mod stage_b_tests {
         );
     }
 
-    /// B4 anchor: on C4/6-31G with production maps (gate on, Schwarz cut
-    /// 1e-5, merged batches, a scratch share small enough to force several
-    /// slabs per batch), the Q-sorted pair list with the binary-searched
-    /// cut evaluates exactly the oracle's triples (same evaluated and
-    /// skipped counts per batch) and builds bitwise-identical strips.
+    /// REGRESSION (2026-11-25, aug-cc-pVDZ n-C12H26 91 mHa below canonical):
+    /// the production Schwarz cut must bound what a dropped triple does to
+    /// the TRANSFORMED entries, not only its raw value. For every triple the
+    /// production factors drop, each function pair's contribution to any
+    /// `(P|ia)`, `|(P|μν)|·(|C_μi||C_νa| + |C_νi||C_μa|)` with
+    /// function-level (not shell-level) coefficient maxima, must stay below
+    /// the skip, and no triple the raw-value cut keeps may be dropped (the
+    /// weight's floor at 1). A cut on `|(P|μν)|` alone fails the first
+    /// wherever |C| > 1
+    /// (mutation: drop the coefficient weight in `schwarz_triple_factors`).
+    /// n-C4H10 / aug-cc-pVDZ keeps it CI-sized (water is too compact: the
+    /// cut drops nothing there); its diffuse virtuals have max |C| ~ 69.
     #[test]
-    fn sorted_pair_list_matches_unsorted_scan() {
+    fn schwarz_cut_bounds_the_transformed_entries() {
         let mol = Molecule::load_xyz(&format!(
             "{}/../../testdata/molecules/alkane_4.xyz",
             env!("CARGO_MANIFEST_DIR")
         ))
         .unwrap();
-        let obs_bs = ferric_core::basis::bundled("6-31g").unwrap();
+        let obs_bs = ferric_core::basis::bundled("aug-cc-pvdz").unwrap();
         let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
-        let dfbs =
-            PreparedBasis::new(&mol, &ferric_core::basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(
+            &mol,
+            &ferric_core::basis::bundled("aug-cc-pvdz-ri").unwrap(),
+        )
+        .unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let cfg = RhfConfig::default().with_energy_conv(1e-10);
         let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
         let (vvhv, _) = checked_vvhv(&mol, &obs, &obs_bs, &rhf, "test").unwrap();
         let spaces = localized_spaces(&mol, &obs, &rhf, 4, &vvhv).unwrap();
-        let dcfg = DirectConfig {
-            aux_radius_bohr: 10.0,
-            virt_radius_bohr: Some(12.0),
-            ao_tail: 1e-3,
-            schwarz_skip: 1e-5,
-            batch_merge: 2,
-            ..Default::default()
+        let fmax = |c: &Array2<f64>| -> Vec<f64> {
+            c.rows()
+                .into_iter()
+                .map(|r| r.iter().fold(0.0f64, |m, x| m.max(x.abs())))
+                .collect()
         };
-        let maps = build_locality_maps(&mol, &obs, &dfbs, &spaces, 1e-4, Some(0.7), &dcfg);
-        let qpair = schwarz_triple_factors(op, &obs, &dfbs, dcfg.schwarz_skip).unwrap();
-        let ctx = BatchCtx {
-            op,
-            obs: &obs,
-            dfbs: &dfbs,
-            spaces: &spaces,
-            aux_ext: &maps.aux_ext,
-            virt_ext: &maps.virt_ext,
-            occ_supp: &maps.occ_supp,
-            virt_supp: &maps.virt_supp,
-            qpair: qpair.as_ref(),
-            schwarz_skip: dcfg.schwarz_skip,
-            worker_budget: 2 << 20,
-            split_timers: false,
-        };
+        let (co, cv) = (fmax(&spaces.c_locc), fmax(&spaces.c_vloc));
+        // The production skip, and a looser one: the bound must hold at any
+        // skip, and at C4 the production skip drops only nearby triples (the
+        // raw-value cut passes there; it broke at C10-C12, where the large
+        // coefficients sit on distant diffuse shells).
+        for skip in [DIRECT_DEFAULT_SCHWARZ_SKIP, 1e-3] {
+            let (q, qp) = schwarz_triple_factors(op, &obs, &dfbs, &spaces, skip)
+                .unwrap()
+                .unwrap();
+            let (n_dropped, n_looser, worst) = dropped_transformed_worst(
+                &obs,
+                &dfbs,
+                op,
+                &CutFactors {
+                    q_raw: &bounds.q,
+                    q: &q,
+                    qp: &qp,
+                    co: &co,
+                    cv: &cv,
+                },
+                skip,
+            );
+            eprintln!(
+                "transformed Schwarz bound: skip {skip:.0e}: {n_dropped} triples dropped, worst \
+                 dropped contribution {worst:.3e}; max |C_v| {:.2}",
+                cv.iter().fold(0.0f64, |m, &x| m.max(x))
+            );
+            assert!(
+                n_dropped > 100,
+                "cut dropped only {n_dropped} triples — test vacuous"
+            );
+            assert_eq!(
+                n_looser, 0,
+                "{n_looser} triples dropped that the raw-value cut keeps (weight floor lost)"
+            );
+            assert!(
+                worst <= skip,
+                "a dropped triple moves a transformed (P|ia) by {worst:.3e} > skip {skip:.0e}"
+            );
+        }
+    }
+
+    /// For the triples `(qp, q)` drop at `skip`: (count, count the raw-value
+    /// factors `q_raw` keep, worst function-level transformed contribution
+    /// `|(P|μν)|·(cᵒ_μ cᵛ_ν + cᵒ_ν cᵛ_μ)`).
+    /// The cut factors `dropped_transformed_worst` compares: the old raw
+    /// pair factors, the new weighted ones, the aux factors, and the
+    /// per-function largest occupied / virtual coefficients.
+    struct CutFactors<'a> {
+        q_raw: &'a Array2<f64>,
+        q: &'a Array2<f64>,
+        qp: &'a [f64],
+        co: &'a [f64],
+        cv: &'a [f64],
+    }
+
+    fn dropped_transformed_worst(
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        op: Operator,
+        f: &CutFactors,
+        skip: f64,
+    ) -> (usize, usize, f64) {
+        let CutFactors {
+            q_raw,
+            q,
+            qp,
+            co,
+            cv,
+        } = *f;
+        let (dobs, oobs) = (obs.shell_dims(), obs.shell_offsets());
+        let mut eng = Engine::new_3center(op, obs, dfbs, 1e-14).unwrap();
+        let (mut n_dropped, mut n_looser, mut worst) = (0usize, 0usize, 0.0f64);
+        for sp in 0..dfbs.nshells() {
+            let np = dfbs.shell_dims()[sp];
+            for ua in 0..obs.nshells() {
+                for ub in 0..=ua {
+                    if qp[sp] * q[(ua, ub)] >= skip {
+                        continue;
+                    }
+                    if qp[sp] * q_raw[(ua, ub)] >= skip {
+                        n_looser += 1;
+                    }
+                    n_dropped += 1;
+                    let Some(block) = eng.compute_eri3(obs, dfbs, sp, ua, ub) else {
+                        continue;
+                    };
+                    let (n1, n2) = (dobs[ua], dobs[ub]);
+                    for p in 0..np {
+                        for fa in 0..n1 {
+                            let mu = oobs[ua] + fa;
+                            for fb in 0..n2 {
+                                let nu = oobs[ub] + fb;
+                                let w = co[mu] * cv[nu] + co[nu] * cv[mu];
+                                worst = worst.max(block[(p * n1 + fa) * n2 + fb].abs() * w);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        (n_dropped, n_looser, worst)
+    }
+
+    /// B4 anchor: on C4/6-31G with production maps (gate on, Schwarz cut
+    /// 1e-5, merged batches, a scratch share small enough to force several
+    /// slabs per batch), the Q-sorted pair list with the binary-searched
+    /// cut evaluates exactly the oracle's triples (same evaluated and
+    /// skipped counts per batch) and builds bitwise-identical strips.
+    /// Butane's (6-31G, cc-pVDZ-RI, Coulomb) stage-3 batch inputs: the
+    /// locality maps (merge 2) and the Schwarz factors of the triple cut.
+    struct BatchFixture {
+        c: AuxCase,
+        maps: LocalityMaps,
+        qpair: Option<(Array2<f64>, Vec<f64>)>,
+        schwarz_skip: f64,
+    }
+
+    impl BatchFixture {
+        fn butane() -> Self {
+            let c = aux_case(4);
+            let dcfg = DirectConfig {
+                aux_radius_bohr: 10.0,
+                virt_radius_bohr: Some(12.0),
+                ao_tail: 1e-3,
+                schwarz_skip: 1e-5,
+                batch_merge: 2,
+                ..Default::default()
+            };
+            let maps =
+                build_locality_maps(&c.mol, &c.obs, &c.dfbs, &c.spaces, 1e-4, Some(0.7), &dcfg);
+            let op = Operator::coulomb();
+            let qpair =
+                schwarz_triple_factors(op, &c.obs, &c.dfbs, &c.spaces, dcfg.schwarz_skip).unwrap();
+            Self {
+                c,
+                maps,
+                qpair,
+                schwarz_skip: dcfg.schwarz_skip,
+            }
+        }
+
+        fn ctx(&self, worker_budget: usize) -> BatchCtx<'_> {
+            BatchCtx {
+                op: Operator::coulomb(),
+                obs: &self.c.obs,
+                dfbs: &self.c.dfbs,
+                spaces: &self.c.spaces,
+                aux_ext: &self.maps.aux_ext,
+                virt_ext: &self.maps.virt_ext,
+                occ_supp: &self.maps.occ_supp,
+                virt_supp: &self.maps.virt_supp,
+                qpair: self.qpair.as_ref(),
+                schwarz_skip: self.schwarz_skip,
+                worker_budget,
+                split_timers: false,
+            }
+        }
+    }
+
+    /// The batch worker's MEASURED peak (every buffer live while a slab is
+    /// transformed: `p_local`, the triples, `H`, one occupied's selected
+    /// rows, their product and its index lists) stays inside the worker
+    /// budget (PR #716 review). Each batch gets the budget at which the
+    /// earlier sizing, triples and `H` only, would take every aux function
+    /// in one slab: exactly full, so the rows, product and maps beside it
+    /// overran. The control is that this budget still blocks the batch.
+    #[test]
+    fn batch_transform_live_bytes_fit_the_worker_budget() {
+        let fx = BatchFixture::butane();
+        let dims_df = fx.c.dfbs.shell_dims();
+        let mut n_blocked = 0usize;
+        for (_, is) in &fx.maps.batches {
+            let probe = fx.ctx(usize::MAX);
+            let virts = sorted_union(is.iter().map(|&i| probe.virt_ext[i].iter().copied()));
+            let ax = BatchAxes::new(&probe, is, &virts);
+            let p_shells = sorted_union(is.iter().map(|&i| probe.aux_ext[i].iter().copied()));
+            let nps: usize = p_shells.iter().map(|&sp| dims_df[sp]).sum();
+            let budget = 8 * nps * ax.nnf * (ax.nsf + is.len());
+            let (_, _, _, tm) = eval_batch(&fx.ctx(budget), is, fill_slab);
+            assert!(
+                tm.slab_bytes_max <= budget,
+                "batch {is:?}: live {} B over the {budget} B worker budget",
+                tm.slab_bytes_max
+            );
+            n_blocked += usize::from(tm.n_slabs > 1);
+        }
+        assert!(n_blocked > 0, "no batch blocked: the test is vacuous");
+    }
+
+    #[test]
+    fn sorted_pair_list_matches_unsorted_scan() {
+        let fx = BatchFixture::butane();
+        let maps = &fx.maps;
+        let ctx = fx.ctx(2 << 20);
         let (mut tot_trip, mut tot_skip) = (0u64, 0u64);
         for (_, is) in &maps.batches {
             let (sa, ta, ka, _) = eval_batch(&ctx, is, fill_slab);
@@ -5075,6 +6823,43 @@ mod stage_c_tests {
         assert!(ea.0 < -0.1, "a real correlation energy, got {}", ea.0);
     }
 
+    /// The planned counterpart: with an ample budget a share owning every
+    /// block builds the plan (of the same size) and solves bit for bit as
+    /// the plain system, Hylleraas energy and true residual included.
+    #[test]
+    fn a_share_owning_every_block_is_the_plain_planned_solve() {
+        use crate::lmp2_amplitude::hylleraas_energy_and_residual;
+        use crate::ragged::{solve_ragged_budgeted_with, MatvecPath, RaggedShare};
+        use ferric_core::parallel::ParallelContext;
+        let su = setup("alkane_4.xyz", 4);
+        let eps = 1e-4;
+        let pre = pre_of(&su, Operator::coulomb(), eps, 0.7);
+        let dcfg = production_maps(None);
+        let (plain, _) = fit(&su, &pre, eps, &dcfg, FitPath::Cholesky);
+        let mut shared = plain.clone();
+        shared.share = Some(RaggedShare {
+            ctx: ParallelContext::for_rank(0, 1),
+            owned: vec![true; shared.pairs.len()],
+        });
+        let f_oo = &su.spaces.f_oo;
+        let a = solve_ragged_budgeted_with(&plain, f_oo, 1e-9, 200, usize::MAX, 0.0);
+        let b = solve_ragged_budgeted_with(&shared, f_oo, 1e-9, 200, usize::MAX, 0.0);
+        assert_eq!(a.decision.path, MatvecPath::Planned);
+        assert_eq!(b.decision.path, MatvecPath::Planned);
+        assert_eq!(a.decision.plan_bytes, b.decision.plan_bytes);
+        assert!(a.solve.converged && a.solve.iterations > 3);
+        assert_eq!(a.solve.iterations, b.solve.iterations);
+        assert_eq!(a.solve.relres.to_bits(), b.solve.relres.to_bits());
+        for (x, y) in a.solve.t.iter().zip(&b.solve.t) {
+            assert!(x.iter().zip(y).all(|(u, v)| u.to_bits() == v.to_bits()));
+        }
+        let ea = hylleraas_energy_and_residual(&plain, f_oo, a.plan(), &a.solve.t).unwrap();
+        let eb = hylleraas_energy_and_residual(&shared, f_oo, b.plan(), &b.solve.t).unwrap();
+        assert_eq!(ea.0.to_bits(), eb.0.to_bits());
+        assert_eq!(ea.1.to_bits(), eb.1.to_bits());
+        assert!(ea.0 < -0.1, "a real correlation energy, got {}", ea.0);
+    }
+
     /// A chain of `no` occupieds one Bohr apart whose aux domain is the
     /// `2·reach + 1` shells around it (one function per shell), every pair
     /// kept: the integral-free inputs of [`rank_stripe`].
@@ -5307,8 +7092,9 @@ mod stage_c_tests {
                 &pre.metric_blocks,
                 dfbs,
                 10.0,
-                false,
+                OwnKeep { q: true, w: false },
                 None,
+                FloorMode::No,
             )
             .unwrap();
             (o.q, o.qmax)
@@ -5433,8 +7219,9 @@ mod stage_c_tests {
                             &pre.metric_blocks,
                             &su.dfbs,
                             dcfg.aux_radius_bohr,
-                            false,
+                            OwnKeep { q: true, w: false },
                             None,
+                            FloorMode::No,
                         )
                         .unwrap();
                         let (q_old, _) = inverse_oracle::schwarz_virtual_q_inverse_oracle(
@@ -5613,6 +7400,319 @@ mod stage_c_tests {
         assert!(reused > 0);
         assert!((e_new - e_old).abs() <= 1e-10, "dE {:.3e}", e_new - e_old);
     }
+
+    /// Stage 5 of `pre` under its pair-skip mode, with the Fock screen on.
+    fn fit_skip(
+        su: &Setup,
+        pre: &StripsAndMetric,
+        eps: f64,
+        dcfg: &DirectConfig,
+    ) -> (Ragged, DirectStats) {
+        let mut st = DirectStats::default();
+        let r = fit_pairs(
+            pre,
+            &su.dfbs,
+            &su.spaces,
+            eps,
+            1.0,
+            dcfg,
+            FitPath::Cholesky,
+            None,
+            Some(DIRECT_FOCK_SCREEN_KAPPA),
+            &mut st,
+        )
+        .unwrap();
+        (r, st)
+    }
+
+    /// Bit-for-bit equality of two ragged systems: pair identity, index
+    /// lists and masks, then every array's shape and the `to_bits` of every
+    /// element, so `-0.0` against `0.0` or a NaN differs.
+    fn same_ragged(a: &Ragged, b: &Ragged) -> bool {
+        let same_bits = |x: &Array2<f64>, y: &Array2<f64>| {
+            x.dim() == y.dim() && x.iter().zip(y).all(|(p, q)| p.to_bits() == q.to_bits())
+        };
+        a.pairs.len() == b.pairs.len()
+            && a.pairs.iter().zip(&b.pairs).all(|(x, y)| {
+                (x.i, x.j, &x.da, &x.db, &x.pos_da, &x.pos_db, &x.pat)
+                    == (y.i, y.j, &y.da, &y.db, &y.pos_da, &y.pos_db, &y.pat)
+                    && same_bits(&x.fvv_aa, &y.fvv_aa)
+                    && same_bits(&x.fvv_bb, &y.fvv_bb)
+                    && same_bits(&x.j_blk, &y.j_blk)
+                    && same_bits(&x.denom, &y.denom)
+            })
+    }
+
+    /// The pair skip under an attenuated kernel (exactness anchor + rigor
+    /// audit, CLAUDE.md protocol). Octane, short aux radius so the bound
+    /// reaches pairs at this size, gate off (every pair fitted), Fock screen
+    /// on. `On` skips pairs AND builds the bit-identical ragged system of
+    /// `Off`; `Audit` finds every fitted pair below its bound (ratio ≤ 1) and
+    /// no proved-empty pair with a block; the weakened-bound mutant breaks
+    /// both.
+    #[test]
+    fn pair_skip_is_bitwise_and_its_audit_holds_under_erfc() {
+        let su = setup("alkane_8.xyz", 8);
+        // octane is short (pair distances up to ~19 Bohr), so the anchor runs
+        // at a loose eps where the bound reaches pairs; production reach is
+        // measured on C20-C48 (wiki/notes/lmp2-attenuated-pair-skip-2026-11-24)
+        for (op, eps) in [(Operator::erfc(2.0), 1e-2), (Operator::erfc(1.0), 1e-2)] {
+            let dcfg = DirectConfig {
+                aux_radius_bohr: 4.0,
+                ..production_maps(None)
+            };
+            let (mut pre, _) = pre_with(&su, op, eps, None, &dcfg);
+            pre.pair_skip = PairSkip::Off;
+            let (r_off, s_off) = fit_skip(&su, &pre, eps, &dcfg);
+            pre.pair_skip = PairSkip::Audit;
+            let (r_aud, s_aud) = fit_skip(&su, &pre, eps, &dcfg);
+            pre.pair_skip = PairSkip::On;
+            let (r_on, s_on) = fit_skip(&su, &pre, eps, &dcfg);
+            let w = op.omega;
+            assert!(
+                same_ragged(&r_off, &r_aud),
+                "w={w}: audit changed the system"
+            );
+            assert!(same_ragged(&r_off, &r_on), "w={w}: skip changed the system");
+            assert!(
+                s_on.n_pairs_proved_empty > 0,
+                "w={w}: the skip reaches no pair (vacuous)"
+            );
+            // the prefilter (On only) prunes nothing the proof would take
+            assert_eq!(s_on.n_pairs_proved_empty, s_aud.n_pairs_proved_empty);
+            assert!(
+                s_on.n_pair_skip_bounded < s_aud.n_pair_skip_bounded,
+                "w={w}: the prefilter pruned no attempt ({} vs {})",
+                s_on.n_pair_skip_bounded,
+                s_aud.n_pair_skip_bounded
+            );
+            // prefilter mutants: it only removes attempts, so whatever it
+            // decides, the system keeps its bits and nothing new is proved
+            for m in [
+                PrefilterMutant::RejectAll,
+                PrefilterMutant::Invert,
+                PrefilterMutant::AttemptAll,
+            ] {
+                pre.prefilter_mutant = m;
+                let (r_m, s_m) = fit_skip(&su, &pre, eps, &dcfg);
+                assert!(same_ragged(&r_off, &r_m), "w={w}: {m:?} changed the system");
+                assert!(s_m.n_pairs_proved_empty <= s_aud.n_pairs_proved_empty);
+                match m {
+                    PrefilterMutant::RejectAll => assert_eq!(s_m.n_pairs_proved_empty, 0),
+                    PrefilterMutant::Invert => assert_eq!(
+                        s_m.n_pairs_proved_empty, 0,
+                        "w={w}: a pair the cut rejects was proved (the cut is not a lower bound)"
+                    ),
+                    _ => assert_eq!(s_m.n_pairs_proved_empty, s_aud.n_pairs_proved_empty),
+                }
+            }
+            pre.prefilter_mutant = PrefilterMutant::Normal;
+            // a mutant that weakens the bound CONSISTENTLY: drop the γ-free
+            // terms u_A v_A + u_B v_B from the On cutoff and from the bound.
+            // What is left (the γ terms) sits ~1e5 below the fit on the
+            // nearest bounded pairs (R ≈ 2.3 Bohr, max|g| ~ 5e-3, mutant
+            // bound ~ 1e-7), so at eps 1e-5 it "proves" kept pairs empty:
+            // On must change the system and the audit must count them
+            let eps_m = 1e-5;
+            let (mut pm, _) = pre_with(&su, op, eps_m, None, &dcfg);
+            pm.pair_skip = PairSkip::Off;
+            let (r0, _) = fit_skip(&su, &pm, eps_m, &dcfg);
+            pm.pair_skip = PairSkip::Audit;
+            let (_, s0) = fit_skip(&su, &pm, eps_m, &dcfg);
+            assert_eq!(s0.pair_skip_audit_violations, 0, "w={w} eps 1e-5");
+            assert!(s0.pair_skip_audit_max_ratio <= 1.0, "w={w} eps 1e-5");
+            pm.drop_free_mutant = true;
+            pm.prefilter_mutant = PrefilterMutant::AttemptAll;
+            pm.pair_skip = PairSkip::On;
+            let (rm, _) = fit_skip(&su, &pm, eps_m, &dcfg);
+            pm.pair_skip = PairSkip::Audit;
+            let (_, sm) = fit_skip(&su, &pm, eps_m, &dcfg);
+            let differs = !same_ragged(&r0, &rm);
+            eprintln!(
+                "w={w}: drop-free mutant: ragged differs {differs}, audit violations {}, \
+                 max ratio {:.3e} (unmutated {:.3e})",
+                sm.pair_skip_audit_violations,
+                sm.pair_skip_audit_max_ratio,
+                s0.pair_skip_audit_max_ratio
+            );
+            assert!(
+                differs && sm.pair_skip_audit_violations > 0,
+                "w={w}: the drop-free mutant was not caught"
+            );
+            assert!(sm.pair_skip_audit_max_ratio > 1.0);
+            assert!(
+                s_on.n_pairs_proved_empty <= s_off.n_pairs_empty,
+                "w={w}: more proved than empty"
+            );
+            assert!(s_aud.pair_skip_audit_n > 0);
+            assert_eq!(s_aud.pair_skip_audit_violations, 0, "w={w}");
+            assert!(
+                s_aud.pair_skip_audit_max_ratio <= 1.0,
+                "w={w}: {}",
+                s_aud.pair_skip_audit_max_ratio
+            );
+            assert!(s_aud.pair_skip_audit_gate_max_ratio <= 1.0, "w={w}");
+            assert!(s_aud.pair_skip_audit_max_ratio > 0.0);
+            // mutant: every factor and gamma 1e6 too small. The audit must
+            // see computed elements above the bound; the anchor breaks only
+            // if a nonempty pair is bounded at all (octane's close pairs
+            // have gamma >= 1 or an unbounded floor, so it may not)
+            pre.bound_mutant = 1e-6;
+            pre.pair_skip = PairSkip::On;
+            let (r_mut, _) = fit_skip(&su, &pre, eps, &dcfg);
+            let anchor_caught = !same_ragged(&r_off, &r_mut);
+            pre.pair_skip = PairSkip::Audit;
+            let (_, s_mut) = fit_skip(&su, &pre, eps, &dcfg);
+            assert!(
+                s_mut.pair_skip_audit_max_ratio > 1.0,
+                "w={w}: weakened bound not caught by the audit (anchor caught: {anchor_caught})"
+            );
+            assert!(
+                !anchor_caught || s_mut.pair_skip_audit_violations > 0,
+                "w={w}: the anchor broke but the audit saw no violation"
+            );
+            pre.bound_mutant = 1.0;
+        }
+    }
+
+    /// A proof that does not fit the memory budget beside the resident set
+    /// is not attempted: the run fits every pair and builds `Off`'s system
+    /// bit for bit. With the same budget plus the proof's own bytes the
+    /// proof runs (the control: the refusal is the budget, not the setup).
+    #[test]
+    fn pair_skip_proof_over_the_budget_fits_every_pair() {
+        let su = setup("alkane_8.xyz", 8);
+        let (op, eps) = (Operator::erfc(2.0), 1e-2);
+        let dcfg = DirectConfig {
+            aux_radius_bohr: 4.0,
+            ..production_maps(None)
+        };
+        let (mut pre, _) = pre_with(&su, op, eps, None, &dcfg);
+        pre.pair_skip = PairSkip::Off;
+        let (r_off, s_off) = fit_skip(&su, &pre, eps, &dcfg);
+        pre.pair_skip = PairSkip::On;
+        let unique = kept_pairs(&pre.keep, su.spaces.no);
+        let proof = pair_proof_bytes(&pre, su.dfbs.shell_dims(), unique.len());
+        // every pair's candidate list stays resident beside the proof
+        let cands: usize = pair_candidates(&unique, &pre.virt_dom, &pre.strips, None, None, None)
+            .iter()
+            .map(|c| std::mem::size_of::<usize>() * c.len())
+            .sum();
+        assert!(cands > 0);
+        // fit_skip's stats carry no stage-3 estimate, so nothing is resident
+        // in the gate's accounting and the proof's own bytes decide
+        let held = s_off.memory.strips_bytes + s_off.memory.metric_bytes;
+        assert_eq!(held, 0);
+        let blocks: usize = r_off
+            .pairs
+            .iter()
+            .map(|b| 8 * (b.fvv_aa.len() + b.fvv_bb.len() + b.j_blk.len() + b.denom.len()))
+            .sum();
+        let room = 1usize << 30;
+        eprintln!(
+            "proof {proof} B, blocks {blocks} B, group scratch {} B",
+            s_off.group_scratch_bound_bytes
+        );
+        let run = |budget_bytes: usize| {
+            let mut st = DirectStats::default();
+            let gate = Some(SolveGate { budget_bytes });
+            let r = fit_pairs(
+                &pre,
+                &su.dfbs,
+                &su.spaces,
+                eps,
+                1.0,
+                &dcfg,
+                FitPath::Cholesky,
+                gate,
+                Some(DIRECT_FOCK_SCREEN_KAPPA),
+                &mut st,
+            )
+            .unwrap();
+            (r, st)
+        };
+        let (r_fit, s_fit) = run(held + cands + proof + room);
+        assert!(
+            s_fit.n_pairs_proved_empty > 0,
+            "control: the proof did not run"
+        );
+        assert!(same_ragged(&r_off, &r_fit));
+        // one byte short once the candidate lists are counted (PR #716
+        // review): uncounted, this budget would let the proof run
+        let (r_over, s_over) = run(held + cands + proof - 1);
+        assert_eq!(
+            s_over.n_pair_skip_bounded, 0,
+            "the proof ran over the budget"
+        );
+        assert!(
+            same_ragged(&r_off, &r_over),
+            "the refused proof changed the system"
+        );
+    }
+
+    /// The whitening outputs the proof holds at once, MEASURED, fit what
+    /// [`pair_proof_bytes`] reserves for them (PR #716 review): the proof
+    /// reads only `qmax`, so no per-occupied `q` vector is kept. `Audit`
+    /// whitens every occupied in one pass; `On` holds its three passes
+    /// together. Both must prove a pair (the control: the proof ran).
+    #[test]
+    fn pair_skip_proof_whitening_fits_its_reserved_bytes() {
+        let su = setup("alkane_8.xyz", 8);
+        let (op, eps) = (Operator::erfc(2.0), 1e-2);
+        let dcfg = DirectConfig {
+            aux_radius_bohr: 4.0,
+            ..production_maps(None)
+        };
+        let (mut pre, _) = pre_with(&su, op, eps, None, &dcfg);
+        let no = su.spaces.no;
+        let unique = kept_pairs(&pre.keep, no);
+        let fo: Vec<f64> = (0..no).map(|i| su.spaces.f_oo[(i, i)]).collect();
+        let fv: Vec<f64> = (0..su.spaces.nv).map(|a| su.spaces.f_vv[(a, a)]).collect();
+        let reserved = proof_whitening_bytes(no, su.dfbs.nshells());
+        for mode in [PairSkip::Audit, PairSkip::On] {
+            pre.pair_skip = mode;
+            let gate = SkipGate {
+                scale: 1.0,
+                eps,
+                fock_screen: Some(DIRECT_FOCK_SCREEN_KAPPA),
+                fo: &fo,
+                fv: &fv,
+            };
+            let proof = prove_empty_pairs(&pre, &su.dfbs, &su.spaces, &unique, None, gate, 4.0)
+                .unwrap()
+                .expect("the proof ran");
+            eprintln!(
+                "{mode:?}: whitening {} B, reserved {reserved} B",
+                proof.whitening_bytes
+            );
+            assert!(proof.empty.iter().any(|&e| e), "{mode:?}: nothing proved");
+            assert!(
+                proof.whitening_bytes <= reserved,
+                "{mode:?}: whitening holds {} B over the {reserved} B reserved",
+                proof.whitening_bytes
+            );
+        }
+    }
+
+    /// Coulomb: the bound still holds (audit) but proves nothing at octane.
+    #[test]
+    fn pair_skip_audit_holds_for_coulomb() {
+        let su = setup("alkane_8.xyz", 8);
+        let eps = 1e-4;
+        let dcfg = DirectConfig {
+            aux_radius_bohr: 4.0,
+            ..production_maps(None)
+        };
+        let (mut pre, _) = pre_with(&su, Operator::coulomb(), eps, None, &dcfg);
+        pre.pair_skip = PairSkip::Audit;
+        let (_, st) = fit_skip(&su, &pre, eps, &dcfg);
+        assert_eq!(st.pair_skip_audit_violations, 0);
+        assert!(
+            st.pair_skip_audit_max_ratio <= 1.0,
+            "{}",
+            st.pair_skip_audit_max_ratio
+        );
+    }
 }
 
 /// The memory gate of the direct LMP2 path: the pre-flight is exact at ε = 0,
@@ -5682,6 +7782,18 @@ mod memory_gate_tests {
         }
     }
 
+    /// [`maps`] with a 1 MiB stage-3 slab cap. Under a gate the slab cap is
+    /// also bounded by what the budget leaves beside the strips, and slab
+    /// blocking changes the strips at round-off; a cap below every budget
+    /// these tests use keeps the stage-3 blocking, and so the bits, the same
+    /// across budgets, so a bit-identity check isolates the stage-5 schedule.
+    fn fixed_slab_maps() -> DirectConfig {
+        DirectConfig {
+            slab_budget_bytes: 1 << 20,
+            ..maps()
+        }
+    }
+
     fn lcfg(c: &Case, eps: f64, budget: usize) -> AmplitudeLmp2Config {
         AmplitudeLmp2Config {
             eps,
@@ -5723,7 +7835,7 @@ mod memory_gate_tests {
     fn ungated(c: &Case, eps: f64) -> (Ragged, f64) {
         pinned(|| {
             // the production localization (λ-Boys at the config's λ)
-            let lam = lcfg(c, eps, AMPLE).lambda_boys;
+            let lam = lcfg(c, eps, AMPLE).lambda_boys_spec();
             let spaces =
                 localized_spaces_lambda(&c.mol, &c.obs, &c.rhf, c.nc, &c.vvhv, lam).unwrap();
             let (rg, _, _) = assemble_ragged_direct_local(
@@ -5817,7 +7929,7 @@ mod memory_gate_tests {
     #[test]
     fn finite_eps_charge_gate_refuses_only_the_true_overshoot() {
         let c = case(6);
-        let (r0, st) = run(&c, 1e-3, AMPLE, &maps()).unwrap();
+        let (r0, st) = run(&c, 1e-3, AMPLE, &fixed_slab_maps()).unwrap();
         let est = st.memory;
         assert!(!est.exact);
         let base = est.strips_bytes + est.metric_bytes + st.own_w_bytes_held;
@@ -5830,7 +7942,7 @@ mod memory_gate_tests {
              to reach the charge gate",
             est.resident_peak()
         );
-        let (r1, s1) = run(&c, 1e-3, truth, &maps()).unwrap();
+        let (r1, s1) = run(&c, 1e-3, truth, &fixed_slab_maps()).unwrap();
         assert_eq!(r1.e_corr.to_bits(), r0.e_corr.to_bits());
         // The candidate bound does not fit beside two groups' scratch: stage
         // 5 ran in budget-sized waves, with the same blocks.
@@ -5842,7 +7954,7 @@ mod memory_gate_tests {
         );
         let solve_only = r0.solve_resident_bytes;
         let tight = base.max(solve_only / 2);
-        let msg = exhausted(run(&c, 1e-3, tight, &maps()));
+        let msg = exhausted(run(&c, 1e-3, tight, &fixed_slab_maps()));
         assert!(msg.contains("during the pair fits"), "{msg}");
     }
 
@@ -5905,7 +8017,7 @@ mod memory_gate_tests {
     #[test]
     fn finite_eps_groups_run_concurrently_under_the_candidate_bound() {
         let c = case(6);
-        let (r0, st) = run(&c, 1e-3, AMPLE, &maps()).unwrap();
+        let (r0, st) = run(&c, 1e-3, AMPLE, &fixed_slab_maps()).unwrap();
         assert_eq!(st.group_concurrency, 2);
         assert_eq!(st.n_group_waves, 1);
         let est = st.memory;
@@ -5915,7 +8027,7 @@ mod memory_gate_tests {
         let budget = base + est.pair_block_bytes + g;
         // what a schedule that reserves the whole bound would have left
         assert!(budget - base - est.pair_block_bytes < 2 * g);
-        let (r1, s1) = run(&c, 1e-3, budget, &maps()).unwrap();
+        let (r1, s1) = run(&c, 1e-3, budget, &fixed_slab_maps()).unwrap();
         assert_eq!(r1.e_corr.to_bits(), r0.e_corr.to_bits());
         // The bound does not fit beside the scratch, so the schedule ran in
         // waves, and none of them was cut to one group.

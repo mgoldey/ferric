@@ -41,7 +41,7 @@ use ferric_core::mol::Molecule;
 use ferric_mp2::att_rimp2_gradient::total_u_att_rimp2_gradient_with;
 use ferric_mp2::attenuated::{AttenuatedMp2Config, BOHR_INV_PER_ANG_INV};
 use ferric_scf::rhf::RhfConfig;
-use ferric_scf::scf_jk::{ScfJk, ScfJkMode};
+use ferric_scf::scf_jk::ScfJk;
 use ferric_scf::warm_start::ScfWarmStart;
 use ferric_testkit::reference::num;
 use serde_json::Value;
@@ -111,10 +111,7 @@ fn check(system: &str) {
         &basis::bundled("cc-pvdz-ri").unwrap(),
         &config,
         None,
-        &ScfJk {
-            mode: ScfJkMode::Exact,
-            aux: None,
-        },
+        &ScfJk::exact(),
         &mut ScfWarmStart::new(false),
         RhfConfig::default()
             .with_density_conv(1e-12)

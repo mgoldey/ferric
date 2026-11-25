@@ -71,7 +71,7 @@ use ferric_mp2::att_rimp2_gradient::{
 use ferric_mp2::attenuated::AttenuatedMp2Config;
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
-use ferric_scf::scf_jk::{ScfJk, ScfJkMode};
+use ferric_scf::scf_jk::ScfJk;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::warm_start::ScfWarmStart;
 use ferric_scf::ScfResult;
@@ -125,10 +125,7 @@ fn ri(frozen_core: usize) -> RiMp2Config {
 }
 
 fn rijk() -> ScfJk {
-    ScfJk {
-        mode: ScfJkMode::RiJk,
-        aux: Some("def2-universal-jkfit".to_string()),
-    }
+    ScfJk::rijk("def2-universal-jkfit")
 }
 
 /// One geometry's prepared bases, Coulomb bounds and tight RHF on `jk`.
@@ -348,7 +345,7 @@ fn terfc_driver_energy_is_the_terfc_energy() {
         case.op,
         &case.ri,
         None,
-        &ferric_mp2::gradient::exact_scf_jk(),
+        &ferric_scf::scf_jk::ScfJk::exact(),
         &mut ScfWarmStart::new(false),
     )
     .unwrap();

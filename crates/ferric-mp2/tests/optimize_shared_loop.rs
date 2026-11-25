@@ -23,12 +23,13 @@
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_integrals::operator::Operator;
-use ferric_mp2::gradient::{exact_scf_jk, total_rimp2_gradient_on};
+use ferric_mp2::gradient::total_rimp2_gradient_on;
 use ferric_mp2::optimize::{
     optimize_geometry_rimp2, optimize_geometry_scs_mp2_on, RiMp2OptimizeResult,
 };
 use ferric_mp2::rimp2::RiMp2Config;
 use ferric_scf::optimize::{CoordSystem, InitialHessian, OptimizeConfig, TrustUpdate};
+use ferric_scf::scf_jk::ScfJk;
 use ferric_scf::warm_start::ScfWarmStart;
 use ndarray::Array2;
 use ndarray_linalg::{Eigh, UPLO};
@@ -147,7 +148,7 @@ fn scs_cartesian_path_matches_the_recorded_path_water() {
         &ferric_mp2::scs::ScsMp2Config::default(),
         &legacy(),
         None,
-        &ferric_mp2::gradient::exact_scf_jk(),
+        &ferric_scf::scf_jk::ScfJk::exact(),
     )
     .unwrap();
     dump("scs-water", &r);
@@ -175,7 +176,7 @@ fn grad(mol: &Molecule) -> Array2<f64> {
         Operator::coulomb(),
         &RiMp2Config::default(),
         None,
-        &exact_scf_jk(),
+        &ScfJk::exact(),
         &mut warm,
     )
     .unwrap()

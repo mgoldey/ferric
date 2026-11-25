@@ -85,6 +85,8 @@ pub struct DirectMaps {
     pub schwarz_skip: f64,
     /// [`DirectConfig::batch_merge`].
     pub batch_merge: usize,
+    /// [`DirectConfig::eri3_pass`], in its user-facing spelling.
+    pub eri3_pass: &'static str,
     /// [`DirectConfig::virt_schwarz_kappa`].
     pub virt_schwarz_kappa: Option<f64>,
 }
@@ -97,6 +99,7 @@ impl From<&DirectConfig> for DirectMaps {
             ao_tail: d.ao_tail,
             schwarz_skip: d.schwarz_skip,
             batch_merge: d.batch_merge,
+            eri3_pass: d.eri3_pass.as_config_str(),
             virt_schwarz_kappa: d.virt_schwarz_kappa,
         }
     }
@@ -357,6 +360,7 @@ impl Lmp2Certificate {
                 ("ao_tail", V::F64(m.ao_tail)),
                 ("schwarz_skip", V::F64(m.schwarz_skip)),
                 ("batch_merge", V::Usize(m.batch_merge)),
+                ("eri3_pass", V::Str(m.eri3_pass.to_string())),
                 ("virt_schwarz_kappa", m.virt_schwarz_kappa.into()),
             ])
         });

@@ -330,7 +330,6 @@ mod tests {
     use ferric_core::basis;
     use ferric_core::units::ANGSTROM_TO_BOHR;
     use ferric_scf::rhf::solve_rhf;
-    use ferric_scf::scf_jk::ScfJkMode;
     use ferric_scf::Spin;
     use ferric_testkit::compare::{max_abs, max_abs_diff};
     use std::path::Path;
@@ -376,11 +375,7 @@ mod tests {
             .with_max_iter(300)
             .for_geometry_task();
         if fit {
-            ScfJk {
-                mode: ScfJkMode::RiJk,
-                aux: Some("def2-universal-jkfit".to_string()),
-            }
-            .apply(&mut cfg);
+            ScfJk::rijk("def2-universal-jkfit").apply(&mut cfg);
         }
         cfg
     }

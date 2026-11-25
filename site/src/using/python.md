@@ -883,7 +883,7 @@ the same rules, raised as `ValueError` before any SCF:
   removes any cost saving.
 - `run_rimp2(integral_direct=True, ...)` selects the integral-direct local
   MP2, with its locality maps `aux_radius`, `virt_radius` (Bohr), `ao_tail`,
-  `schwarz_skip`, `batch_merge`, `gate_cal` and `virt_schwarz_kappa`, with
+  `schwarz_skip`, `eri3_pass` (`"aux-major"`, the default, or `"batches"`), `batch_merge` (only with `eri3_pass="batches"`, default 4 there), `gate_cal`, `virt_schwarz_kappa` and `pair_skip` (`"auto"`, `"on"`, `"off"`, `"audit"`), with
   the CLI names and defaults. They are errors without `integral_direct=True`.
   `fock_screen` (default `True`, the Fock-propagated mask screen; `False` keeps
   the plain integral mask) applies to the local MP2 on both paths, in core and

@@ -40,7 +40,7 @@ use ferric_mp2::rimp2::RiMp2Config;
 use ferric_mp2::scs::ScsMp2TerfcConfig;
 use ferric_mp2::scs_2terfc_gradient::total_scs_mp2_2terfc_gradient_on;
 use ferric_scf::rhf::RhfConfig;
-use ferric_scf::scf_jk::{ScfJk, ScfJkMode};
+use ferric_scf::scf_jk::ScfJk;
 use ferric_scf::warm_start::ScfWarmStart;
 use ndarray::Array2;
 use std::path::Path;
@@ -75,17 +75,11 @@ fn ensure_tables() {
 }
 
 fn exact() -> ScfJk {
-    ScfJk {
-        mode: ScfJkMode::Exact,
-        aux: None,
-    }
+    ScfJk::exact()
 }
 
 fn rijk() -> ScfJk {
-    ScfJk {
-        mode: ScfJkMode::RiJk,
-        aux: Some("def2-universal-jkfit".into()),
-    }
+    ScfJk::rijk("def2-universal-jkfit")
 }
 
 fn bs(name: &str) -> BasisSet {

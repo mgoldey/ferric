@@ -1536,8 +1536,12 @@ pub struct LocalCfg {
     /// stream. Default 1e-5.
     pub schwarz_skip: Option<f64>,
     /// Integral-direct only: nearest-atom batches merged per integral pass
-    /// (>= 1). Default 4.
+    /// (>= 1). Only meaningful with `eri3_pass = "batches"` (default 4
+    /// there); the default aux-major pass runs at 1 and rejects larger values.
     pub batch_merge: Option<usize>,
+    /// Integral-direct only: stage-3 integral pass, `"aux-major"` (default)
+    /// or `"batches"`.
+    pub eri3_pass: Option<String>,
     /// Integral-direct only: R⁻⁶ pair-gate calibration constant. Omitted =
     /// gate off (every pair kept).
     pub gate_cal: Option<f64>,
@@ -1545,6 +1549,12 @@ pub struct LocalCfg {
     /// Omitted = off. It bounds the plain Eq-8 mask only, so it needs
     /// `fock_screen = false` (an error otherwise).
     pub virt_schwarz_kappa: Option<f64>,
+    /// Integral-direct only: the provable-empty pair skip (book
+    /// §lmp2-direct-pair-skip), `"auto"` (default: on for an attenuated
+    /// positive-definite kernel, off for Coulomb), `"on"`, `"off"` or
+    /// `"audit"` (evaluate the bound on every pair, skip nothing, record
+    /// the bound/actual ratios).
+    pub pair_skip: Option<String>,
     /// `kind = "rimp2"` / `"att-rimp2"` (in-core and integral-direct) and
     /// `"opmp3"` only: the Fock-propagated screen of the amplitude mask (book
     /// §amplitude-lmp2-fock-screen), κ =
@@ -1590,14 +1600,18 @@ pub struct LocalDirectKnobs {
     /// integral stream, >= 0. Default 1e-5.
     pub schwarz_skip: f64,
     /// `[local] batch_merge`: nearest-atom batches merged per integral pass,
-    /// >= 1. Default 4.
+    /// >= 1 (1 under the aux-major pass, 4 by default under batches).
     pub batch_merge: usize,
+    /// `[local] eri3_pass`: the stage-3 integral pass. Default aux-major.
+    pub eri3_pass: ferric_mp2::lmp2_direct::Eri3Pass,
     /// `[local] gate_cal`: R⁻⁶ pair-gate calibration constant (> 0); `None`
     /// keeps every pair.
     pub gate_cal: Option<f64>,
     /// `[local] virt_schwarz_kappa`: ε-linked Schwarz virtual-candidate
     /// screen κ (> 0); `None` disables the screen.
     pub virt_schwarz_kappa: Option<f64>,
+    /// `[local] pair_skip`: the provable-empty pair skip. Default auto.
+    pub pair_skip: ferric_mp2::lmp2_direct::PairSkip,
 }
 
 /// `virt_schwarz_kappa` bounds the bare integrals (the plain Eq-8 mask) and
@@ -1656,13 +1670,14 @@ impl LocalModel {
         eri3_budget_bytes: Option<usize>,
     ) -> ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config {
         ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config {
-            eps: self.eps[0],
-            frozen_core,
-            eri3_budget_bytes,
             fock_screen: self.fock_screen,
             virtual_space: self.virtual_space.clone(),
             lambda_boys: self.lambda_boys,
-            ..Default::default()
+            ..ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config::production(
+                self.eps[0],
+                frozen_core,
+                eri3_budget_bytes,
+            )
         }
     }
 
@@ -1695,7 +1710,9 @@ impl LocalModel {
                 ao_tail: d.ao_tail,
                 schwarz_skip: d.schwarz_skip,
                 batch_merge: d.batch_merge,
+                eri3_pass: d.eri3_pass,
                 virt_schwarz_kappa: d.virt_schwarz_kappa,
+                pair_skip: d.pair_skip,
                 ..ferric_mp2::lmp2_direct::DirectConfig::production()
             });
         (lcfg, dcfg)
@@ -1703,14 +1720,102 @@ impl LocalModel {
 }
 
 impl LocalCfg {
+    /// The integral-direct locality maps: `None` unless `integral_direct = true`
+    /// (and an error if a map key is set without it).
+    fn direct_knobs(&self) -> Result<Option<LocalDirectKnobs>, String> {
+        if self.integral_direct == Some(true) {
+            let pos = |k: &str, v: Option<f64>, d: f64| -> Result<f64, String> {
+                let x = v.unwrap_or(d);
+                if x.is_finite() && x > 0.0 {
+                    Ok(x)
+                } else {
+                    Err(format!("[local] {k} must be finite and > 0 (got {x})"))
+                }
+            };
+            let nonneg = |k: &str, v: Option<f64>, d: f64| -> Result<f64, String> {
+                let x = v.unwrap_or(d);
+                if x.is_finite() && x >= 0.0 {
+                    Ok(x)
+                } else {
+                    Err(format!("[local] {k} must be finite and >= 0 (got {x})"))
+                }
+            };
+            let opt_pos = |k: &str, v: Option<f64>| -> Result<Option<f64>, String> {
+                match v {
+                    Some(x) if !(x.is_finite() && x > 0.0) => {
+                        Err(format!("[local] {k} must be finite and > 0 (got {x})"))
+                    }
+                    other => Ok(other),
+                }
+            };
+            let (eri3_pass, batch_merge) = ferric_mp2::lmp2_direct::DirectConfig::resolve_pass(
+                self.eri3_pass.as_deref(),
+                self.batch_merge,
+            )
+            .map_err(|e| format!("[local] {e}"))?;
+            // The defaults have one home, shared with every other entry
+            // point: `ferric_mp2::lmp2_direct::DirectConfig::production`.
+            let prod = ferric_mp2::lmp2_direct::DirectConfig::production();
+            Ok(Some(LocalDirectKnobs {
+                aux_radius: pos("aux_radius", self.aux_radius, prod.aux_radius_bohr)?,
+                virt_radius: pos(
+                    "virt_radius",
+                    self.virt_radius,
+                    prod.virt_radius_bohr
+                        .expect("production maps carry a virtual radius"),
+                )?,
+                ao_tail: nonneg("ao_tail", self.ao_tail, prod.ao_tail)?,
+                schwarz_skip: nonneg("schwarz_skip", self.schwarz_skip, prod.schwarz_skip)?,
+                batch_merge,
+                eri3_pass,
+                gate_cal: opt_pos("gate_cal", self.gate_cal)?,
+                virt_schwarz_kappa: opt_pos("virt_schwarz_kappa", self.virt_schwarz_kappa)?,
+                pair_skip: match self.pair_skip.as_deref() {
+                    None => prod.pair_skip,
+                    Some(v) => ferric_mp2::lmp2_direct::PairSkip::parse_config_str(v)
+                        .map_err(|e| format!("[local] pair_skip: {e}"))?,
+                },
+            }))
+        } else {
+            if self.sets_direct_knobs() {
+                return Err(
+                    "[local] aux_radius / virt_radius / ao_tail / schwarz_skip / \
+                        batch_merge / eri3_pass / gate_cal / virt_schwarz_kappa / pair_skip are \
+                        the integral-direct \
+                        locality maps and are read only with integral_direct = true; \
+                        without it they would be silently ignored"
+                        .to_string(),
+                );
+            }
+            Ok(None)
+        }
+    }
+
+    /// `(lambda_boys, fock_screen)` with every key the user left out taken
+    /// from the library's production model
+    /// (`AmplitudeLmp2Config::production`, the single source of the
+    /// defaults). `fock_screen = true` asks for the production κ.
+    fn model_defaults(&self, eps: f64) -> (f64, Option<f64>) {
+        use ferric_mp2::lmp2_amplitude::{AmplitudeLmp2Config, FOCK_SCREEN_KAPPA_DEFAULT};
+        let prod = AmplitudeLmp2Config::production(eps, 0, None);
+        let fock_screen = match self.fock_screen {
+            None => prod.fock_screen,
+            Some(true) => prod.fock_screen.or(Some(FOCK_SCREEN_KAPPA_DEFAULT)),
+            Some(false) => None,
+        };
+        (self.lambda_boys.unwrap_or(prod.lambda_boys), fock_screen)
+    }
+
     fn sets_direct_knobs(&self) -> bool {
         self.aux_radius.is_some()
             || self.virt_radius.is_some()
             || self.ao_tail.is_some()
             || self.schwarz_skip.is_some()
             || self.batch_merge.is_some()
+            || self.eri3_pass.is_some()
             || self.gate_cal.is_some()
             || self.virt_schwarz_kappa.is_some()
+            || self.pair_skip.is_some()
     }
 
     fn sets_virtual_thresholds(&self) -> bool {
@@ -1784,8 +1889,10 @@ impl LocalCfg {
                 ("ao_tail", self.ao_tail.is_some()),
                 ("schwarz_skip", self.schwarz_skip.is_some()),
                 ("batch_merge", self.batch_merge.is_some()),
+                ("eri3_pass", self.eri3_pass.is_some()),
                 ("gate_cal", self.gate_cal.is_some()),
                 ("virt_schwarz_kappa", self.virt_schwarz_kappa.is_some()),
+                ("pair_skip", self.pair_skip.is_some()),
                 ("fock_screen", self.fock_screen.is_some()),
                 ("virtual_space", self.virtual_space.is_some()),
                 ("virtual_tau", self.virtual_tau.is_some()),
@@ -1856,70 +1963,11 @@ impl LocalCfg {
                 (s, true)
             }
         };
-        let direct = if self.integral_direct == Some(true) {
-            let pos = |k: &str, v: Option<f64>, d: f64| -> Result<f64, String> {
-                let x = v.unwrap_or(d);
-                if x.is_finite() && x > 0.0 {
-                    Ok(x)
-                } else {
-                    Err(format!("[local] {k} must be finite and > 0 (got {x})"))
-                }
-            };
-            let nonneg = |k: &str, v: Option<f64>, d: f64| -> Result<f64, String> {
-                let x = v.unwrap_or(d);
-                if x.is_finite() && x >= 0.0 {
-                    Ok(x)
-                } else {
-                    Err(format!("[local] {k} must be finite and >= 0 (got {x})"))
-                }
-            };
-            let opt_pos = |k: &str, v: Option<f64>| -> Result<Option<f64>, String> {
-                match v {
-                    Some(x) if !(x.is_finite() && x > 0.0) => {
-                        Err(format!("[local] {k} must be finite and > 0 (got {x})"))
-                    }
-                    other => Ok(other),
-                }
-            };
-            if self.batch_merge == Some(0) {
-                return Err("[local] batch_merge must be >= 1".to_string());
-            }
-            // The defaults have one home, shared with every other entry
-            // point: `ferric_mp2::lmp2_direct::DirectConfig::production`.
-            let prod = ferric_mp2::lmp2_direct::DirectConfig::production();
-            Some(LocalDirectKnobs {
-                aux_radius: pos("aux_radius", self.aux_radius, prod.aux_radius_bohr)?,
-                virt_radius: pos(
-                    "virt_radius",
-                    self.virt_radius,
-                    prod.virt_radius_bohr
-                        .expect("production maps carry a virtual radius"),
-                )?,
-                ao_tail: nonneg("ao_tail", self.ao_tail, prod.ao_tail)?,
-                schwarz_skip: nonneg("schwarz_skip", self.schwarz_skip, prod.schwarz_skip)?,
-                batch_merge: self.batch_merge.unwrap_or(prod.batch_merge),
-                gate_cal: opt_pos("gate_cal", self.gate_cal)?,
-                virt_schwarz_kappa: opt_pos("virt_schwarz_kappa", self.virt_schwarz_kappa)?,
-            })
-        } else {
-            if self.sets_direct_knobs() {
-                return Err(
-                    "[local] aux_radius / virt_radius / ao_tail / schwarz_skip / \
-                            batch_merge / gate_cal / virt_schwarz_kappa are the \
-                            integral-direct \
-                            locality maps and are read only with integral_direct = true; \
-                            without it they would be silently ignored"
-                        .to_string(),
-                );
-            }
-            None
-        };
+        let direct = self.direct_knobs()?;
         let virtual_space = self.virtual_space()?;
-        let lambda_boys = self
-            .lambda_boys
-            .unwrap_or(ferric_mp2::boys::LAMBDA_BOYS_DEFAULT);
+        let (lambda_boys, fock_screen) = self.model_defaults(eps[0]);
         ferric_mp2::boys::check_lambda_boys(lambda_boys).map_err(|e| format!("[local] {e}"))?;
-        let fock_on = self.fock_screen.unwrap_or(true);
+        let fock_on = fock_screen.is_some();
         refuse_kappa_under_fock_screen(fock_on, direct.as_ref())?;
         Ok(Some(LocalModel {
             eps,
@@ -1928,7 +1976,7 @@ impl LocalCfg {
             direct,
             virtual_space,
             lambda_boys,
-            fock_screen: fock_on.then_some(ferric_mp2::lmp2_amplitude::FOCK_SCREEN_KAPPA_DEFAULT),
+            fock_screen,
         }))
     }
 }
@@ -3897,7 +3945,7 @@ fn is_gradient_task(task: &str) -> bool {
 /// optimizations and the OO-RI-MP2 optimize, whose analytic gradients
 /// differentiate an exact or an RI-JK reference
 /// (`ferric_mp2::oo_rimp2_gradient::oo_ri_mp2_gradient` for OO-RI-MP2).
-fn scf_jk_governs(kind: &str, task: &str) -> bool {
+pub(crate) fn scf_jk_governs(kind: &str, task: &str) -> bool {
     let mp2_optimize = (MP2_GRADIENT_OPTIMIZE_KINDS.contains(&kind) || kind == "oo-rimp2")
         && is_gradient_task(task);
     SCF_JK_KINDS.contains(&kind) && (task == "energy" || mp2_optimize)
@@ -3951,20 +3999,92 @@ impl OmittedJk {
     }
 }
 
+/// The kinds whose `optimize` / `frequencies` gradient re-solves its
+/// reference SCF at each geometry from reduced settings (the J/K route,
+/// `[scf] jk_digest` and `[scf] gc_kernel`; `ferric_mp2::gradient::solve_rhf_reference`,
+/// `ferric_rpa::gradient::RpaGradientRoute`).
+pub const RESOLVING_GRADIENT_KINDS: [&str; 5] = [
+    "rimp2",
+    "scs-mp2",
+    "att-rimp2",
+    "scs-mp2-2terfc",
+    "pdep-rpa",
+];
+
+impl Config {
+    /// The `[scf]` J/K keys this run sets explicitly that its per-geometry
+    /// gradient reference does not carry: on a [`RESOLVING_GRADIENT_KINDS`]
+    /// `optimize` / `frequencies` run, each of `gc_rotation`, `k_builder`,
+    /// `screening`, `eri` (set) and `integral_thresh` (other than the
+    /// default; an explicit default value is indistinguishable and harmless).
+    /// These runs solve no shared SCF before the gradient loop: the
+    /// SCFs the gradient solves at each geometry run without these keys, so
+    /// the energies, gradients and frequencies do not see them; only the
+    /// reference SCF the certificate solves at the final (or, for
+    /// frequencies, the input) geometry does. Empty on every other run.
+    pub fn uncarried_gradient_scf_keys(&self) -> Vec<&'static str> {
+        if !RESOLVING_GRADIENT_KINDS.contains(&self.method.kind.as_str())
+            || !is_gradient_task(&self.method.task)
+        {
+            return Vec::new();
+        }
+        let s = &self.scf;
+        [
+            ("gc_rotation", s.gc_rotation.is_some()),
+            ("k_builder", s.k_builder.is_some()),
+            ("screening", s.screening.is_some()),
+            ("eri", s.eri.is_some()),
+            (
+                "integral_thresh",
+                s.integral_thresh != default_integral_thresh(),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(key, set)| set.then_some(key))
+        .collect()
+    }
+
+    /// The warning for [`Self::uncarried_gradient_scf_keys`], `None` when
+    /// there is nothing to say.
+    pub fn uncarried_gradient_scf_warning(&self) -> Option<String> {
+        let keys = self.uncarried_gradient_scf_keys();
+        if keys.is_empty() {
+            return None;
+        }
+        let list = keys
+            .iter()
+            .map(|k| format!("[scf] {k}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Some(format!(
+            "{list} {} not reach the SCFs of method.kind = \"{}\" with task = \"{}\": its \
+             gradient re-solves the reference SCF at each geometry from the J/K route \
+             ([scf] jk / jk_aux), [scf] jk_digest and [scf] gc_kernel alone, so the energies \
+             and gradients run \
+             with the defaults; only the certificate's reference SCF (final or input geometry) \
+             reads {}",
+            if keys.len() == 1 { "does" } else { "do" },
+            self.method.kind,
+            self.method.task,
+            if keys.len() == 1 { "it" } else { "them" },
+        ))
+    }
+}
+
 impl ScfCfg {
     /// The first `[scf]` key set that only the four-centre route reads
-    /// (`k_builder`, `eri`, `gc_rotation`, `jk_digest`, `gc_kernel`, `screening`,
-    /// `df_increments`,
-    /// `df_guess = true`,
+    /// (`k_builder`, `eri`, `screening`, `df_increments`, `df_guess = true`,
     /// `df_guess_aux`): with one of them an omitted `jk` stays exact, so an
     /// input that worked on the four-centre default keeps working unchanged.
+    /// Not `jk_digest`, `gc_rotation` or `gc_kernel`: they change only the
+    /// last bits of whatever four-centre builds the route runs (and are inert
+    /// on a fitted one), so they must not move an omitted `jk` off the RI-JK
+    /// default (a `gc_rotation` or `gc_kernel` with no four-centre build to
+    /// act on warns, `gc_rotation_route_warning`).
     fn exact_route_key(&self) -> Option<&'static str> {
         [
             ("k_builder", self.k_builder.is_some()),
             ("eri", self.eri.is_some()),
-            ("gc_rotation", self.gc_rotation.is_some()),
-            ("jk_digest", self.jk_digest.is_some()),
-            ("gc_kernel", self.gc_kernel.is_some()),
             ("screening", self.screening.is_some()),
             ("df_increments", self.df_increments),
             ("df_guess", self.df_guess == Some(true)),
@@ -4070,7 +4190,8 @@ impl ScfCfg {
                 return Err(format!(
                     "[scf] jk / jk_aux are wired for task = \"energy\" with method.kind = {} \
                      and for method.kind = \"rimp2\" / \"scs-mp2\" / \"att-rimp2\" / \
-                     \"oo-rimp2\" with task = \"optimize\" or \"frequencies\" only; got \
+                     \"scs-mp2-2terfc\" / \"oo-rimp2\" with task = \"optimize\" or \
+                     \"frequencies\" only; got \
                      kind = \"{kind}\", task = \"{task}\". Use [scf] df_j_aux / df_k_aux / \
                      k_builder there",
                     SCF_JK_KINDS.join(", ")
@@ -5295,7 +5416,6 @@ impl Config {
         self.scf.validate()?;
         self.check_ri_j_precision_against_mixed_kernels()?;
         self.validate_guess_basis_keys()?;
-        self.validate_jk_digest_key()?;
         self.mp2.linlccd_variant()?;
         self.cc_ladder()?;
         self.local_model()?;
@@ -5451,43 +5571,6 @@ impl Config {
                  it, or use task = \"energy\"",
                 self.method.task
             ));
-        }
-        Ok(())
-    }
-
-    /// `[scf] jk_digest` on a PDEP-RPA geometry run (`task = "optimize"` or
-    /// `"frequencies"`): its gradient (`total_rpa_gradient_by`) solves the
-    /// reference at each geometry without the caller's `RhfConfig`, so the
-    /// key would be silently ignored; refused, as `guess_basis` is. (The
-    /// RI-MP2 family refuses it where its gradient route is resolved,
-    /// `rimp2_gradient_scf_jk`.)
-    /// The same for `[scf] gc_kernel` (`FERRIC_GC_KERNEL` reaches those
-    /// builds).
-    fn validate_jk_digest_key(&self) -> Result<(), String> {
-        let (kind, task) = (self.method.kind.as_str(), self.method.task.as_str());
-        if kind != "pdep-rpa" || !is_gradient_task(task) {
-            return Ok(());
-        }
-        for (key, set, var) in [
-            (
-                "jk_digest",
-                self.scf.jk_digest.is_some(),
-                "FERRIC_JK_DIGEST selects the digest",
-            ),
-            (
-                "gc_kernel",
-                self.scf.gc_kernel.is_some(),
-                "FERRIC_GC_KERNEL selects the kernel",
-            ),
-        ] {
-            if set {
-                return Err(format!(
-                    "[scf] {key} is not read by method.kind = \"{kind}\" with task = \
-                     \"{task}\": its gradient solves the reference SCF at each geometry \
-                     without the [scf] settings, so it would be silently ignored. Remove it; \
-                     {var} of those builds"
-                ));
-            }
         }
         Ok(())
     }
@@ -6822,6 +6905,33 @@ mod compat_guard_tests {
         }
         let energy = open("energy").unwrap().unwrap();
         assert_eq!((energy.mode, energy.aux), (ScfJkMode::Exact, None));
+        // `jk_digest`, `gc_rotation` and `gc_kernel` do not move an omitted jk: the
+        // MP2 kinds resolve the same fitted route with or without them.
+        for (kind, task) in [
+            ("rimp2", "energy"),
+            ("rimp2", "optimize"),
+            ("rimp2", "frequencies"),
+            ("scs-mp2", "energy"),
+            ("scs-mp2", "optimize"),
+            ("att-rimp2", "optimize"),
+            ("oo-rimp2", "optimize"),
+            ("mp2-v", "energy"),
+        ] {
+            let none = choice(kind, task, "").unwrap().unwrap();
+            assert_eq!(none.mode, ScfJkMode::RiJk, "{kind} {task}");
+            for key in [
+                "jk_digest = \"pair\"",
+                "jk_digest = \"legacy\"",
+                "gc_rotation = \"off\"",
+                "gc_rotation = \"auto\"",
+                "gc_rotation = \"rot1\"",
+                "gc_kernel = \"auto\"",
+                "gc_kernel = \"off\"",
+            ] {
+                let with = choice(kind, task, &format!("{key}\n")).unwrap().unwrap();
+                assert_eq!(with, none, "{kind} {task} {key}");
+            }
+        }
         // A key only the four-centre route reads keeps an omitted jk exact.
         for key in [
             "k_builder = \"link\"",
@@ -7261,7 +7371,9 @@ mod compat_guard_tests {
                 d.batch_merge,
                 d.virt_schwarz_kappa,
                 d.scratch_budget_bytes,
+                d.slab_budget_bytes,
                 d.eri3_pass,
+                d.pair_skip,
             ),
             (
                 p.aux_radius_bohr,
@@ -7271,7 +7383,9 @@ mod compat_guard_tests {
                 p.batch_merge,
                 p.virt_schwarz_kappa,
                 p.scratch_budget_bytes,
+                p.slab_budget_bytes,
                 p.eri3_pass,
+                p.pair_skip,
             )
         );
         // The production values themselves (a change here is a model change).
@@ -7281,10 +7395,24 @@ mod compat_guard_tests {
                 p.virt_radius_bohr,
                 p.ao_tail,
                 p.schwarz_skip,
-                p.batch_merge
+                p.batch_merge,
+                p.eri3_pass,
             ),
-            (10.0, Some(20.0), 1e-4, 1e-5, 4)
+            (
+                10.0,
+                Some(20.0),
+                1e-4,
+                1e-5,
+                1,
+                ferric_mp2::lmp2_direct::Eri3Pass::AuxMajor
+            )
         );
+        // No drift, field for field: a keyless `[local]` section resolves to
+        // the library's production configs exactly. Debug covers every field,
+        // so a field added later is compared without touching this test.
+        let lib = ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config::production(1e-4, 3, Some(123));
+        assert_eq!(format!("{l:?}"), format!("{lib:?}"));
+        assert_eq!(format!("{d:?}"), format!("{p:?}"));
         assert_eq!(l.eps, 1e-4);
         assert_eq!(l.frozen_core, 3);
         assert_eq!(l.eri3_budget_bytes, Some(123));
@@ -7305,6 +7433,38 @@ mod compat_guard_tests {
         assert!(d.is_none());
         assert_eq!(l.fock_screen, Some(DIRECT_FOCK_SCREEN_KAPPA));
         assert_eq!(l.lambda_boys, ferric_mp2::boys::LAMBDA_BOYS_DEFAULT);
+    }
+
+    #[test]
+    fn local_eri3_pass_resolution_is_strict() {
+        let model = |body: &str| cfg("drpa", "energy", &format!("[local]\n{body}")).local_model();
+        // eri3_pass: aux-major by default (batch_merge 1); an explicit
+        // batch_merge > 1 with it is a hard error naming eri3_pass = "batches";
+        // picking batches defaults batch_merge to 4.
+        {
+            use ferric_mp2::lmp2_direct::Eri3Pass;
+            let pre = "scheme = \"amplitude-threshold\"\neps = 1e-4\nintegral_direct = true\n";
+            for extra in [
+                "batch_merge = 4",
+                "eri3_pass = \"aux-major\"\nbatch_merge = 2",
+            ] {
+                let e = model(&format!("{pre}{extra}")).unwrap_err();
+                assert!(e.contains("eri3_pass = \"batches\""), "{extra}: {e}");
+            }
+            let d = |extra: &str| {
+                model(&format!("{pre}{extra}"))
+                    .unwrap()
+                    .unwrap()
+                    .direct
+                    .unwrap()
+            };
+            let a = d("eri3_pass = \"aux-major\"\nbatch_merge = 1");
+            assert_eq!((a.eri3_pass, a.batch_merge), (Eri3Pass::AuxMajor, 1));
+            let b = d("eri3_pass = \"batches\"");
+            assert_eq!((b.eri3_pass, b.batch_merge), (Eri3Pass::Batches, 4));
+            let b2 = d("eri3_pass = \"batches\"\nbatch_merge = 2");
+            assert_eq!((b2.eri3_pass, b2.batch_merge), (Eri3Pass::Batches, 2));
+        }
     }
 
     #[test]
@@ -7383,6 +7543,7 @@ mod compat_guard_tests {
             ("ao_tail", "1e-3"),
             ("schwarz_skip", "1e-5"),
             ("batch_merge", "4"),
+            ("eri3_pass", "\"batches\""),
             ("gate_cal", "0.7"),
             ("virt_schwarz_kappa", "1.0"),
         ] {
@@ -7405,9 +7566,11 @@ mod compat_guard_tests {
                 virt_radius: 20.0,
                 ao_tail: 1e-4,
                 schwarz_skip: 1e-5,
-                batch_merge: 4,
+                batch_merge: 1,
+                eri3_pass: ferric_mp2::lmp2_direct::Eri3Pass::AuxMajor,
                 gate_cal: None,
                 virt_schwarz_kappa: None,
+                pair_skip: ferric_mp2::lmp2_direct::PairSkip::Auto,
             })
         );
         // The Fock screen is on by default on both paths; fock_screen = false
@@ -7452,6 +7615,9 @@ mod compat_guard_tests {
             "ao_tail = -1e-3",
             "schwarz_skip = nan",
             "batch_merge = 0",
+            "eri3_pass = \"batches\"\nbatch_merge = 0",
+            "eri3_pass = \"Batches\"",
+            "eri3_pass = \"aux_major\"",
             "gate_cal = 0.0",
             "virt_schwarz_kappa = -1.0",
         ] {
@@ -11313,10 +11479,64 @@ json = [1, 2]
         }
     }
 
-    /// `[scf] jk_digest` on a PDEP-RPA geometry run is refused (its gradient
-    /// never reads it); its energy, and the SCF kinds' geometry runs, keep it.
+    /// The `[scf]` J/K keys the re-solving gradient routes do not carry are
+    /// named (in a fixed order) on their `optimize` / `frequencies` runs
+    /// only; `jk_digest`, an unset key and a default `integral_thresh` are
+    /// not, and nothing is said for the energy or for other kinds.
     #[test]
-    fn jk_digest_is_refused_by_the_pdep_rpa_gradient_tasks() {
+    fn uncarried_gradient_scf_keys_are_named_on_the_resolving_gradient_runs() {
+        let cfg = |kind: &str, task: &str, scf: &str| {
+            let src = format!(
+                "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n[basis]\nname = \"sto-3g\"\n\
+                 [method]\nkind = \"{kind}\"\ntask = \"{task}\"\n[scf]\n{scf}"
+            );
+            toml::from_str::<Config>(&src).expect("test config must parse")
+        };
+        let all = "gc_rotation = \"off\"\nk_builder = \"link\"\nscreening = \"csam\"\n\
+                   eri = \"direct\"\nintegral_thresh = 1e-11\njk_digest = \"legacy\"\n";
+        let named = [
+            "gc_rotation",
+            "k_builder",
+            "screening",
+            "eri",
+            "integral_thresh",
+        ];
+        for kind in RESOLVING_GRADIENT_KINDS {
+            for task in ["optimize", "frequencies"] {
+                let c = cfg(kind, task, all);
+                assert_eq!(c.uncarried_gradient_scf_keys(), named, "{kind} {task}");
+                let w = c.uncarried_gradient_scf_warning().unwrap();
+                for key in named {
+                    assert!(w.contains(&format!("[scf] {key}")), "{w}");
+                }
+                assert!(!w.contains("[scf] jk_digest,"), "{w}");
+                assert!(w.contains(kind) && w.contains(task), "{w}");
+                let one = cfg(kind, task, "eri = \"direct\"\n");
+                assert_eq!(one.uncarried_gradient_scf_keys(), ["eri"]);
+                assert!(one
+                    .uncarried_gradient_scf_warning()
+                    .unwrap()
+                    .starts_with("[scf] eri does not reach the SCFs"));
+                let quiet = cfg(kind, task, "jk_digest = \"pair\"\n");
+                assert!(quiet.uncarried_gradient_scf_keys().is_empty());
+                assert_eq!(quiet.uncarried_gradient_scf_warning(), None);
+            }
+            assert!(cfg(kind, "energy", all)
+                .uncarried_gradient_scf_keys()
+                .is_empty());
+        }
+        for kind in ["rhf", "oo-rimp2", "uhf"] {
+            assert!(cfg(kind, "optimize", all)
+                .uncarried_gradient_scf_keys()
+                .is_empty());
+        }
+    }
+
+    /// `[scf] jk_digest` passes validation on every geometry run that
+    /// reads it, the `pdep-rpa` and RI-MP2-family gradients included (their
+    /// gradient routes carry it to the reference they re-solve).
+    #[test]
+    fn jk_digest_is_accepted_by_the_correlated_gradient_tasks() {
         let cfg = |kind: &str, task: &str| {
             let src = format!(
                 "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n[basis]\nname = \"sto-3g\"\n\
@@ -11324,28 +11544,19 @@ json = [1, 2]
             );
             toml::from_str::<Config>(&src).expect("test config must parse")
         };
-        for task in ["optimize", "frequencies"] {
-            let e = cfg("pdep-rpa", task)
-                .validate_jk_digest_key()
-                .expect_err("jk_digest must be refused on this gradient run");
-            assert!(
-                e.contains("[scf] jk_digest") && e.contains("pdep-rpa") && e.contains(task),
-                "{e}"
-            );
-        }
-        assert_eq!(cfg("pdep-rpa", "energy").validate_jk_digest_key(), Ok(()));
-        let gck = toml::from_str::<Config>(
-            "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n[basis]\nname = \"sto-3g\"\n\
-             [method]\nkind = \"pdep-rpa\"\ntask = \"optimize\"\n[scf]\ngc_kernel = \"auto\"\n",
-        )
-        .expect("test config must parse");
-        let e = gck.validate_jk_digest_key().unwrap_err();
-        assert!(
-            e.contains("[scf] gc_kernel") && e.contains("pdep-rpa"),
-            "{e}"
-        );
-        for kind in ["rhf", "uhf"] {
-            assert_eq!(cfg(kind, "optimize").validate_jk_digest_key(), Ok(()));
+        for kind in [
+            "pdep-rpa",
+            "rimp2",
+            "scs-mp2",
+            "att-rimp2",
+            "scs-mp2-2terfc",
+            "rhf",
+        ] {
+            for task in ["energy", "optimize", "frequencies"] {
+                if let Err(e) = cfg(kind, task).validate_loaded_values() {
+                    assert!(!e.contains("jk_digest"), "{kind} {task}: {e}");
+                }
+            }
         }
     }
 

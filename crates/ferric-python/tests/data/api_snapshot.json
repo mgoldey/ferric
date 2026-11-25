@@ -9622,6 +9622,16 @@
     "default": "False",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "read_reference_other_build"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "eri3_pass"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "pair_skip"
    }
   ],
   "run_rks_gamma": [

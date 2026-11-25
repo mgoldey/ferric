@@ -10,8 +10,9 @@
 # checks BOTH that the guess completes AND that every rank's density is
 # bit-identical, so a silently-mismatched reduce fails too.
 #
-# NOTE: ferric never calls MPI_Finalize (handoff §6), so mpirun's exit status
-# is unusable. We assert on OUTPUT CONTENT, not $?.
+# NOTE: the binary is a libtest harness, which cannot call
+# ferric_core::parallel::finalize_mpi, so mpirun's exit status is unusable.
+# We assert on OUTPUT CONTENT, not $?.
 #
 # Usage: mpi_rate_proof.sh <binary> <np> <nruns> <label>
 set -u

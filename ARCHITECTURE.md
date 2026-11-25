@@ -1035,6 +1035,33 @@ Done:
    exact reproduction of earlier results and A/B debugging; remove it
    (with `JkDigest`, the switch and the identity field's `legacy` reading)
    once no consumer needs bitwise reproduction of pre-pair results.
+   The two gradient routes that re-solve their reference at each geometry
+   from reduced settings carry it too: the RI-MP2 family's
+   `ScfJk::jk_digest` (built with `ScfJk::exact()` / `ScfJk::rijk(aux)` /
+   `with_jk_digest`; `solve_rhf_reference` and the open-shell
+   `solve_reference` write it into the reference's config when it is set,
+   and the SCF records it on its bounds, which the closed-shell Z-vector
+   response reuses; the open-shell response build keeps the legacy
+   digest) and the PDEP-RPA gradient's `RpaGradientRoute`
+   (`total_rpa_gradient_by` and `optimize_geometry_rpa` take
+   `impl Into<RpaGradientRoute>`, so a bare `RpaGradientMethod` still
+   means "unset"; the reference, every displaced finite-difference RHF and
+   the analytic Z-vector follow it). The CLI fills both from
+   `[scf] jk_digest` (PR #717 refused the key there) and warns about the
+   `[scf]` keys those routes do not carry (`uncarried_gradient_scf_keys`,
+   see 16 under Next); Python leaves them unset. Neither `jk_digest` nor
+   `gc_rotation` is an `exact_route_key` any more: they no longer move an
+   omitted `[scf] jk` off the RI-JK default (#714 and #717 had added
+   them), so they change only the last bits of whatever four-centre builds
+   a route runs. A `gc_rotation` on an SCF with no four-centre direct J or
+   K build (RI-JK, RIJCOSX, a pure functional on RI-J) warns that it does
+   not affect the reference SCF, with the opt-out the kind accepts (`jk =
+   "exact"` or `df_*_aux = ""`; not for `gw` on a hybrid, whose exchange
+   diagonal is four-centre; `gc_rotation_route_warning`). Tests:
+   `ferric-mp2/tests/rimp2_gradient_jk_digest.rs`,
+   `ferric-rpa/tests/rpa_gradient_jk_digest.rs` and
+   `ferric-cli/tests/jk_digest_gradient_routes_cli.rs` (runs on a memory
+   budget below the in-core store, so the reference builds direct).
    Follow-ups: the open-shell
    response build (`build_spin_jk_with_pool_homogeneous`) and the
    block-CPHF `Multi` mode (lanes), LinK's K-only loop (same row
@@ -1076,8 +1103,12 @@ Done:
    bit for bit, its bra-pair order and partition included. Recorded by the
    SCF drivers and `df_increments`, copied by the KS Z-vector, taken by the
    CASSCF direct backend (`CasScfConfig::gc_kernel`, `ScfStart`), GW
-   (`JkRoute`) and `mbd_scf`, passed by the CLI (and refused, like
-   `jk_digest`, by the RI-MP2-family and `pdep-rpa` gradient tasks). In the
+   (`JkRoute`) and `mbd_scf`, passed by the CLI, and carried like
+   `jk_digest` by the re-solving gradient routes (`ScfJk::gc_kernel` for
+   the RI-MP2 family, `RpaGradientRoute::gc_kernel` for `pdep-rpa`, through
+   `ferric_rpa::gradient::ReferenceJk` to every displaced and analytic
+   reference). It does not move an omitted `jk`, and an explicit key on a
+   route with no four-centre build warns with `gc_rotation`'s warning. In the
    checkpoint identity as `gc_kernel`, resolved (Route); a file without it
    reads as `off`. Python: `gc_kernel=` on the entries that take
    `gc_rotation=`. `FERRIC_TIMING` adds the kernel's thread-seconds to the
@@ -1086,10 +1117,15 @@ Done:
    (`gc_kernel/tests.rs`), `ferric-scf/tests/gc_kernel.rs` (J/K and SCF
    energies against the libint walk, the probe `gc_kernel::kernel_probe`,
    bitwise off / segmented / unrotated / legacy, thread identity), the
-   checkpoint identity tests, mutation-checked (Boys argument, a
-   contraction coefficient, the same-group fold, an HRR index, the pure-p
-   order, the cache key, a stale cache across buckets, a skipped digest:
-   each fails a test). Measured (book, "The shared-primitive kernel"; 2
+   checkpoint identity tests, `tests/mpi_gc_kernel.rs` in the CI `mpirun`
+   matrix, the gradient-route tests of the CLI, ferric-mp2 and ferric-rpa;
+   the J/K and thread-identity tests also run with 6 reduction groups
+   (`reduce::with_target_groups`) so each block cache crosses several bra
+   buckets. Mutation-checked (Boys argument, a contraction coefficient, a
+   duplicated exponent, the same-group fold, an HRR index and sign, the
+   pure-p order, the cache key, a stale cache or `last` memo across
+   buckets, a skipped digest, a skipped per-column screen, digesting
+   non-surviving column quartets: each fails a test). Measured (book, "The shared-primitive kernel"; 2
    threads, shared box): per build 1.22× on octane cc-pVDZ (paired range
    1.19–1.28), 1.12× butane aug-cc-pVDZ, 1.03× butane cc-pVTZ, def2-SVP
    unchanged (the kernel never runs); 1.43 quartets per group evaluation
@@ -1097,7 +1133,7 @@ Done:
    UHF/ROHF share the wiring (`build_uhf`). The 1.28× projected from the
    prototype was the pooled median of two noisy rounds (1.22 and 1.31); a
    quiet-box rerun of production gave 1.21× with `off` at main's speed.
-   Follow-ups: flipping the default to `auto` is item 16 below, with its
+   Follow-ups: flipping the default to `auto` is item 17 below, with its
    prerequisites; the pooled builds
    (`rhf::build_jk_with_pool`: Newton, stability, CPHF, Z-vector) and
    `DirectJ` / `DirectK` stay on libint and could take the same cache;
@@ -1363,7 +1399,40 @@ Next, each as its own PR following the patterns above:
       `stability_descent`); typing them needs an overload per refusal or
       `None`-typed parameters, checked against the binding.
 
-16. Flip `[scf] gc_kernel` to `auto` by default (the shared-primitive
+16. The rest of `[scf]` on the two re-solving gradient routes. The
+    RI-MP2-family (`rimp2`, `scs-mp2`, `att-rimp2`, `scs-mp2-2terfc`) and
+    `pdep-rpa` `optimize` / `frequencies` gradients re-solve their
+    reference at each geometry from `RhfConfig::gradient_reference` plus
+    the J/K route (`jk` / `jk_aux` for the RI-MP2 family; `pdep-rpa` is
+    always four-centre), `jk_digest` and `gc_kernel`. These runs solve no shared SCF
+    before the gradient loop (`try_run` dispatches to `run_optimize` /
+    `run_frequencies` first), so `gc_rotation`, `k_builder`, `screening`,
+    `eri` and `integral_thresh` reach only the certificate's reference SCF
+    at the final geometry (`task_reference_certificate`), never the
+    energies and gradients; so do the
+    convergence and stabilisation settings (`max_iter`, `energy_conv`,
+    `level_shift`, DIIS and guess options; `density_conv` is the fixed
+    1e-9 of the gradient reference). Today the CLI warns about
+    the five J/K keys (`uncarried_gradient_scf_keys`). Carrying them means
+    replacing `ScfJk::{jk_digest, gc_kernel}` and `RpaGradientRoute`'s two (`ReferenceJk`) by one
+    reference-settings bundle (say `ReferenceScf { gc_rotation, k_builder,
+    screening, eri, integral_thresh, jk_digest, gc_kernel, .. }`, applied to the
+    per-geometry `RhfConfig` by one method, the same bundle in both
+    crates) and checking each key's consumers on these routes:
+    `screening` must reach `SchwarzBounds::compute_for_screening` where the
+    drivers now call `compute`, which also changes the response and the
+    two-electron derivative terms that reuse those bounds; `k_builder`
+    needs a decision per builder (COSX is already refused on these
+    gradient tasks; a LinK reference would meet the four-centre
+    `ResponseJk`, equal only to LinK's screening threshold, so it needs its
+    own consistency bar or a refusal); `gc_rotation` reaches the response
+    through `GcSlot` once the SCF records it; `eri = "incore"` needs the
+    store's budget, which the exact route takes from the environment, not
+    `[memory]`; `integral_thresh` changes the response's screening too.
+    Each carried key wants a config-vs-variable bitwise test like the
+    digest's, and the warning goes once every key is carried (or refused).
+
+17. Flip `[scf] gc_kernel` to `auto` by default (the shared-primitive
     `(ss|ss)` / `(ss|sp)` kernel of the rotated direct walk; see "Done").
     Prerequisites, each its own change first:
     - Memory: cap the per-accumulator block-cache arena and charge it to

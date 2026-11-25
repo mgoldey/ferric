@@ -10,10 +10,11 @@
 //! ```text
 //! OPENBLAS_NUM_THREADS=1 cargo test -p ferric-mp2 --features mpi \
 //!     --test mpi_lmp2_direct --no-run
-//! mpirun -np 2 <bin> --nocapture --test-threads=1
+//! mpirun --bind-to none -np 2 <bin> --nocapture --test-threads=1
 //! ```
 //!
-//! ferric never calls `MPI_Finalize`, so `mpirun` exits non-zero even when
+//! The libtest harness owns `main`, so nothing here can call
+//! `ferric_core::parallel::finalize_mpi`: `mpirun` exits non-zero even when
 //! every rank's tests pass; read the `test result:` lines.
 //!
 //! What a run at `-np 1` shows: the striped path with one rank is the serial
@@ -22,9 +23,11 @@
 //!
 //! The ignored `..._memory_alkane` case prints each rank's strip bytes and
 //! peak resident set for the striped and the serial run. Give each rank its
-//! share of the cores, e.g. `RAYON_NUM_THREADS=3 mpirun -np 2 <bin>
+//! share of the cores, e.g. `RAYON_NUM_THREADS=3 mpirun --bind-to none -np 2 <bin>
 //! --ignored --nocapture --test-threads=1`; `FERRIC_MPI_LMP2_ALKANE` picks
-//! the chain length (default 20).
+//! the chain length (default 20), `FERRIC_MPI_LMP2_SCRATCH_MIB` the stage-3
+//! scratch of the production aux-major pass (`DirectConfig::scratch_budget_bytes`,
+//! MiB per process), and `FERRIC_MEM_TRACE=1` prints RSS per stage.
 
 #![cfg(feature = "mpi")]
 
@@ -38,34 +41,25 @@ use ferric_mp2::lmp2_direct::{amplitude_lmp2_direct, DirectConfig};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 
-/// Largest and smallest `value` over the ranks.
-fn rank_extremes(ctx: &ParallelContext, value: f64) -> (f64, f64) {
-    use mpi::collective::SystemOperation;
-    use mpi::traits::CommunicatorCollectives;
-    let (mut hi, mut lo) = (value, value);
-    if let Some(world) = ctx.world() {
-        world.all_reduce_into(
-            std::slice::from_ref(&value),
-            std::slice::from_mut(&mut hi),
-            SystemOperation::max(),
-        );
-        world.all_reduce_into(
-            std::slice::from_ref(&value),
-            std::slice::from_mut(&mut lo),
-            SystemOperation::min(),
-        );
-    }
-    (hi, lo)
+/// A `/proc/self/status` field in bytes.
+fn status_bytes(field: &str) -> usize {
+    let status = std::fs::read_to_string("/proc/self/status").expect("/proc/self/status");
+    ferric_core::memory::sys::parse_status_kb_field(&status, field).expect(field)
 }
 
 /// Peak resident set of this process since the last [`reset_hwm`], bytes.
 fn vm_hwm() -> usize {
-    let status = std::fs::read_to_string("/proc/self/status").expect("/proc/self/status");
-    ferric_core::memory::sys::parse_status_kb_field(&status, "VmHWM").expect("VmHWM")
+    status_bytes("VmHWM")
 }
 
-fn reset_hwm() {
+/// Resets the high-water mark to the current resident set and returns it.
+/// The two runs share a process, so the second starts on whatever the
+/// allocator kept from the first (measured: ~1.7 GB after a one-rank run
+/// whose solve built the gather plan); its peak is only comparable as a
+/// rise above this start.
+fn reset_hwm() -> usize {
     std::fs::write("/proc/self/clear_refs", "5").expect("clear_refs");
+    status_bytes("VmRSS")
 }
 
 /// What one rank saw: the two runs' counters and peak resident sets.
@@ -79,6 +73,24 @@ struct Case {
     strips_striped: usize,
     hwm_serial: usize,
     hwm_striped: usize,
+    /// Resident set when each run started (the high-water mark's reset).
+    start_serial: usize,
+    start_striped: usize,
+}
+
+/// [`DirectConfig::production`], with the stage-3 scratch of its aux-major
+/// pass (`scratch_budget_bytes`, per process) taken from
+/// `FERRIC_MPI_LMP2_SCRATCH_MIB` when it is set (a measurement knob; the
+/// batch pass's `slab_budget_bytes` is not read by this pass).
+fn production_maps() -> DirectConfig {
+    let base = DirectConfig::production();
+    match std::env::var("FERRIC_MPI_LMP2_SCRATCH_MIB") {
+        Ok(v) => DirectConfig {
+            scratch_budget_bytes: v.parse::<usize>().expect("scratch MiB") << 20,
+            ..base
+        },
+        Err(_) => base,
+    }
 }
 
 /// `alkane_<n>` / 6-31G / cc-pVDZ-RI at eps = 1e-4 with the production maps,
@@ -100,21 +112,18 @@ fn run_alkane(n: usize) -> Case {
     let rhf = solve_rhf(&serial_ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
     assert!(rhf.converged, "rank {}: RHF must converge", ctx.rank);
 
-    let cfg = AmplitudeLmp2Config {
-        eps: 1e-4,
-        frozen_core: n,
-        ..Default::default()
-    };
+    // The production model (Fock screen on), as the CLI runs it.
+    let cfg = AmplitudeLmp2Config::production(1e-4, n, None);
     let striped_maps = DirectConfig {
         mpi: Some(ctx),
-        ..DirectConfig::production()
+        ..production_maps()
     };
-    reset_hwm();
+    let start_striped = reset_hwm();
     let (striped, st_striped) =
         amplitude_lmp2_direct(&mol, &obs, &obs_bs, &dfbs, op, &rhf, &cfg, &striped_maps).unwrap();
     let hwm_striped = vm_hwm();
-    reset_hwm();
-    let serial_maps = DirectConfig::production();
+    let start_serial = reset_hwm();
+    let serial_maps = production_maps();
     let (serial, st_serial) =
         amplitude_lmp2_direct(&mol, &obs, &obs_bs, &dfbs, op, &rhf, &cfg, &serial_maps).unwrap();
     let hwm_serial = vm_hwm();
@@ -128,11 +137,27 @@ fn run_alkane(n: usize) -> Case {
         strips_striped: st_striped.strip_bytes_total,
         hwm_serial,
         hwm_striped,
+        start_serial,
+        start_striped,
     };
     let mb = |b: usize| b as f64 / (1 << 20) as f64;
+    for (label, r) in [("striped", &striped), ("serial", &serial)] {
+        eprintln!(
+            "[alkane_{n}] rank {}/{} {label} solve: {} matvec, {} iters, {:.3} s, plan {:.1} MiB, \
+             resident {:.1} MiB",
+            ctx.rank,
+            ctx.size,
+            r.matvec_path.as_str(),
+            r.cg_iterations,
+            r.timings.t_solve_s,
+            mb(r.solve_plan_bytes),
+            mb(r.solve_resident_bytes),
+        );
+    }
     eprintln!(
         "[alkane_{n}] rank {}/{}: e_corr serial {:.15} striped {:.15} diff {:.3e} | groups \
-         {}/{} | strips {:.1}/{:.1} MiB | peak RSS {:.0}/{:.0} MiB (striped/serial)",
+         {}/{} | strips {:.1}/{:.1} MiB | peak RSS {:.0}/{:.0} MiB, rise above start \
+         {:.0}/{:.0} MiB (striped/serial)",
         ctx.rank,
         ctx.size,
         case.e_serial,
@@ -144,6 +169,8 @@ fn run_alkane(n: usize) -> Case {
         mb(case.strips_serial),
         mb(case.hwm_striped),
         mb(case.hwm_serial),
+        mb(case.hwm_striped - case.start_striped),
+        mb(case.hwm_serial - case.start_serial),
     );
     case
 }
@@ -187,7 +214,7 @@ fn check(case: &Case) {
         assert_eq!(case.strips_striped, case.strips_serial);
         assert_eq!(case.e_striped.to_bits(), case.e_serial.to_bits());
     }
-    let (hi, lo) = rank_extremes(&ctx, case.e_striped);
+    let (hi, lo) = ctx.all_reduce_extremes(case.e_striped);
     if ctx.is_root() {
         eprintln!("cross-rank spread over {} ranks: {:.3e}", ctx.size, hi - lo);
     }
@@ -223,7 +250,7 @@ fn mpi_lmp2_direct_striped_memory_alkane() {
         });
     let case = run_alkane(n);
     check(&case);
-    let (hi, lo) = rank_extremes(&case.ctx, case.strips_striped as f64);
+    let (hi, lo) = case.ctx.all_reduce_extremes(case.strips_striped as f64);
     if case.ctx.is_root() {
         eprintln!(
             "[alkane_{n}] strip bytes over {} ranks: largest {:.3}, smallest {:.3} of serial",

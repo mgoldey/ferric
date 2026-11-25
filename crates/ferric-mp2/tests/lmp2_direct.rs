@@ -27,22 +27,41 @@ struct Setup {
 /// FERRIC_LMP2_BENCH_RHF_CACHE=<dir> reuses the RHF across processes; see
 /// `common/bench_rhf_cache.rs`. No bench stage timer covers this function.
 fn setup(xyz: &str) -> Setup {
-    let xyz_path = format!(
+    let xyz_path = testdata_molecule(xyz);
+    let mol = Molecule::load_xyz(&xyz_path).unwrap();
+    setup_with(mol, |mol, obs, obs_bs, aux_bs| {
+        bench_rhf_cache::setup_rhf(
+            &xyz_path,
+            mol,
+            obs,
+            ("6-31g", obs_bs),
+            ("cc-pvdz-ri", aux_bs),
+        )
+    })
+}
+
+fn testdata_molecule(xyz: &str) -> String {
+    format!(
         "{}/../../testdata/molecules/{xyz}",
         env!("CARGO_MANIFEST_DIR")
-    );
-    let mol = Molecule::load_xyz(&xyz_path).unwrap();
+    )
+}
+
+/// 6-31G / cc-pvdz-ri bases on `mol` and the RHF from `rhf_of`.
+fn setup_with(
+    mol: Molecule,
+    rhf_of: impl FnOnce(
+        &Molecule,
+        &PreparedBasis,
+        &basis::BasisSet,
+        &basis::BasisSet,
+    ) -> ferric_scf::result::ScfResult,
+) -> Setup {
     let obs_bs = basis::bundled("6-31g").unwrap();
     let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
     let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
     let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
-    let rhf = bench_rhf_cache::setup_rhf(
-        &xyz_path,
-        &mol,
-        &obs,
-        ("6-31g", &obs_bs),
-        ("cc-pvdz-ri", &aux_bs),
-    );
+    let rhf = rhf_of(&mol, &obs, &obs_bs, &aux_bs);
     Setup {
         mol,
         obs,
@@ -903,11 +922,14 @@ fn bench_direct_alkane_series() {
         // pinned: the auto budget (0.8×RAM) ignores the bench's cgroup cap
         // and memcg-OOMs the C32 reference — the budget-vs-enforcement trap
         scratch_budget_bytes: 1usize << 30,
+        slab_budget_bytes: DirectConfig::production().slab_budget_bytes,
         // OFF here: the sweep measures the distance-map configuration the
         // §28-§29 rows were recorded with (screen rows get their own sweep)
         virt_schwarz_kappa: None,
         split_eri3_timers: bench_split_eri3(bench_env("FERRIC_LMP2_BENCH_SPLIT_ERI3").as_deref()),
         eri3_pass,
+        // the bench measures the fit itself; the skip has its own bench
+        pair_skip: Default::default(),
         mpi: None,
     };
     println!(
@@ -1091,6 +1113,66 @@ fn production_maps_error_is_subdominant_to_eps_truncation() {
     // run), so shrinkage/saturation is a SWEEP observable on the alkane
     // series (protocol: do not declare below the onset), while the energy
     // sub-dominance above is size-independent and is the assertion.
+}
+
+/// PAIR-GATE TRIVIAL LIMIT on the production integral-direct model: the
+/// gate code runs (`pair_gate_cal = Some`) but keeps every pair, and the run
+/// must be BIT-identical to the gate-off run (`None`). Two inert limits:
+/// (a) ε = 1e-4 with a calibration so large that every estimate clears
+/// θ = 1e-2·ε, (b) ε = 0 (θ = 0) at an aggressive calibration. The liveness arm
+/// shows the comparison is not vacuous: at the live calibration and
+/// ε = 1e-4 the gate removes pairs and moves the energy.
+#[test]
+fn pair_gate_trivial_limit_is_bitwise_gate_off() {
+    let run = |su: &Setup, fc: usize, eps: f64, cal: Option<f64>| {
+        let cfg = AmplitudeLmp2Config {
+            pair_gate_cal: cal,
+            ..AmplitudeLmp2Config::production(eps, fc, None)
+        };
+        amplitude_lmp2_direct(
+            &su.mol,
+            &su.obs,
+            &su.obs_bs,
+            &su.dfbs,
+            Operator::coulomb(),
+            &su.rhf,
+            &cfg,
+            &DirectConfig::production(),
+        )
+        .unwrap()
+        .0
+    };
+    // The Coulomb calibration of the 2026-08-14 rig (book §amplitude-lmp2-algorithm step 5).
+    let live = 0.7;
+    let c12 = setup("alkane_12.xyz");
+    // ε = 0 keeps every element, so its arm runs on the smaller C8, at a
+    // calibration (1e-6) that would gate nearly every pair at any θ > 0:
+    // θ = 0 alone must keep them (a floored θ fails this arm; a live
+    // calibration gates nothing on C8 even at θ ~ 1e-8 and would not).
+    let c8 = setup("alkane_8.xyz");
+    for (su, fc, eps, cal) in [(&c12, 12, 1e-4, 1e30), (&c8, 8, 0.0, 1e-6)] {
+        let off = run(su, fc, eps, None);
+        let on = run(su, fc, eps, Some(cal));
+        assert_eq!(on.n_pairs_gated, 0, "eps {eps:e} cal {cal:e}");
+        assert_eq!(on.n_pairs_unique, off.n_pairs_unique, "eps {eps:e}");
+        assert_eq!(
+            on.e_corr.to_bits(),
+            off.e_corr.to_bits(),
+            "eps {eps:e} cal {cal:e}: gate-on {:.15} vs gate-off {:.15}",
+            on.e_corr,
+            off.e_corr
+        );
+    }
+    let off = run(&c12, 12, 1e-4, None);
+    let on = run(&c12, 12, 1e-4, Some(live));
+    eprintln!(
+        "C12 eps 1e-4 cal {live}: gated {} of {} pairs, dE {:.3e} Ha",
+        on.n_pairs_gated,
+        off.n_pairs_unique,
+        on.e_corr - off.e_corr
+    );
+    assert!(on.n_pairs_gated > 0, "the live gate removed nothing on C12");
+    assert_ne!(on.e_corr.to_bits(), off.e_corr.to_bits());
 }
 
 /// SCHWARZ VIRTUAL-CANDIDATE SCREEN (`virt_schwarz_kappa`, prototype GO in
@@ -2736,4 +2818,134 @@ fn bound_constants_are_pinned_on_a_dense_system() {
         assert!((de / exact - 1.0).abs() < 1e-6, "{de:.6e} vs {exact:.6e}");
         assert!(de <= bound, "dE {de:.3e} > bound {bound:.3e}");
     }
+}
+
+/// REGRESSION (2026-11-25): n-C10H22 / aug-cc-pVDZ / aug-cc-pVDZ-RI under the
+/// PRODUCTION model and maps. The stage-3 Schwarz cut used to bound only the
+/// raw `(P|μν)`; the diffuse localized virtuals (max |C| ~ 10²) amplified
+/// the dropped triples into the transformed `(P|ia)`, moving C10 by
+/// -7.25 mHa and C12 by -91 mHa (79 mHa BELOW canonical). The fixed cut
+/// (coefficient-weighted, `schwarz_triple_factors`) moved C10 by 0.5 µHa.
+/// Bar: the cut's energy effect stays below 1e-5 Ha (eps 1e-4).
+/// Release, ~6 min cold (RHF ~5 min; FERRIC_LMP2_BENCH_RHF_CACHE=<dir>
+/// reuses it):
+///   OPENBLAS_NUM_THREADS=1 cargo test -p ferric-mp2 --release --test \
+///     lmp2_direct -- --ignored --nocapture production_schwarz_cut_is_harmless_in_a_diffuse_basis
+#[ignore = "release only, ~6 min (aug-cc-pVDZ C10 RHF)"]
+#[test]
+fn production_schwarz_cut_is_harmless_in_a_diffuse_basis() {
+    let xyz_path = format!(
+        "{}/../../testdata/molecules/alkane_10.xyz",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let mol = Molecule::load_xyz(&xyz_path).unwrap();
+    let obs_bs = basis::bundled("aug-cc-pvdz").unwrap();
+    let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+    let aux_bs = basis::bundled("aug-cc-pvdz-ri").unwrap();
+    let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
+    let rhf = bench_rhf_cache::setup_rhf(
+        &xyz_path,
+        &mol,
+        &obs,
+        ("aug-cc-pvdz", &obs_bs),
+        ("aug-cc-pvdz-ri", &aux_bs),
+    );
+    let cfg = AmplitudeLmp2Config::production(1e-4, mol.auto_frozen_core(), None);
+    let run = |maps: &DirectConfig| {
+        amplitude_lmp2_direct(
+            &mol,
+            &obs,
+            &obs_bs,
+            &dfbs,
+            Operator::coulomb(),
+            &rhf,
+            &cfg,
+            maps,
+        )
+        .unwrap()
+    };
+    let (cut, st) = run(&DirectConfig::production());
+    let (nocut, _) = run(&DirectConfig {
+        schwarz_skip: 0.0,
+        ..DirectConfig::production()
+    });
+    let d = cut.e_corr - nocut.e_corr;
+    eprintln!(
+        "C10/aug production Schwarz cut: E(cut) {:.12} E(no cut) {:.12} diff {d:.3e} \
+         ({} of {} triples skipped)",
+        cut.e_corr,
+        nocut.e_corr,
+        st.n_eri3_skipped,
+        st.n_eri3_shell_triples + st.n_eri3_skipped
+    );
+    assert!(st.n_eri3_skipped > 0, "the cut skipped nothing — vacuous");
+    assert!(
+        d.abs() < 1e-5,
+        "production Schwarz cut moved the energy by {d:.3e} Ha"
+    );
+}
+
+/// S22 T-shaped benzene dimer, 6-31G, production integral-direct LMP2 at
+/// ε = 1e-4. The λ-Boys maximum has a soft mode (Hessian eigenvalue
+/// −8.2e-5 against ≥ 3.6 for the others, measured 2026-11-25): the Jacobi
+/// sweeps stall near max |gradient| 1e-6 (the pre-Newton optimiser errored
+/// at its 2000-sweep cap), and a stop on the gradient alone left E_corr
+/// 2.5e-6 Ha off. Production must converge, the energy must not depend on
+/// where the optimiser started (sweeps then Newton, or Newton from the Boys
+/// orbitals), and ε = 0 with inert maps must give canonical RI-MP2.
+#[test]
+fn production_lambda_boys_converges_on_the_s22_benzene_dimer() {
+    use ferric_mp2::boys::{LambdaBoysSolver, LAMBDA_BOYS_SOLVER, LAMBDA_BOYS_STEP_TOL};
+    let su = setup("s22/benzene_dimer_T.xyz");
+    let fc = su.mol.auto_frozen_core();
+    let run = |cfg: &AmplitudeLmp2Config, dcfg: &DirectConfig| {
+        amplitude_lmp2_direct(
+            &su.mol,
+            &su.obs,
+            &su.obs_bs,
+            &su.dfbs,
+            Operator::coulomb(),
+            &su.rhf,
+            cfg,
+            dcfg,
+        )
+        .unwrap()
+        .0
+    };
+    let prod = AmplitudeLmp2Config::production(1e-4, fc, None);
+    let a = run(&prod, &DirectConfig::production());
+    let lb = &a.lambda_boys;
+    eprintln!(
+        "T dimer production: E_corr {:.12} lambda-Boys {lb:?}",
+        a.e_corr
+    );
+    assert!(lb.newton_iters >= 1, "the sweeps alone converged: {lb:?}");
+    assert!(lb.newton_step < LAMBDA_BOYS_STEP_TOL, "{lb:?}");
+    // a second entry point into the same maximum
+    let from_boys = AmplitudeLmp2Config {
+        lambda_boys_solver: LambdaBoysSolver {
+            jacobi_sweeps: 0,
+            newton_iters: 60,
+            ..LAMBDA_BOYS_SOLVER
+        },
+        ..prod.clone()
+    };
+    let b = run(&from_boys, &DirectConfig::production());
+    let d = (a.e_corr - b.e_corr).abs();
+    eprintln!("Newton from Boys: E_corr {:.12} |diff| {d:.2e}", b.e_corr);
+    assert!(
+        d < 1e-9,
+        "E_corr depends on the optimiser's entry point: {d:.2e}"
+    );
+    // ε = 0, inert maps: canonical RI-MP2
+    let anchor = AmplitudeLmp2Config {
+        eps: 0.0,
+        compute_reference: true,
+        fock_screen: None,
+        ..prod
+    };
+    let z = run(&anchor, &trivial_maps());
+    let dz = (z.e_corr - z.e_corr_canonical_ri).abs();
+    eprintln!("eps 0 anchor: |E - canonical| {dz:.2e}");
+    assert!(dz < 1e-9, "eps = 0 vs canonical: {dz:.2e}");
 }
