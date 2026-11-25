@@ -403,8 +403,8 @@ jobs:
           # -DDISABLE_KXC=ON: ferric calls only xc_*_exc_vxc and xc_*_fxc
           # (crates/ferric-dft/src/libxc.rs), never a third derivative, and the
           # kxc code was ~60% of libxc's bytes: measured 2026-11-24 (gcc 13,
-          # this exact configure line) the extension went from 49.2 to 31.8 MB
-          # deflated. exc/vxc/fxc are bitwise identical with and without it
+          # this exact configure line, local build) it takes -17.4 MB off the
+          # deflated extension. exc/vxc/fxc are bitwise identical with and without it
           # (all 1358 functional/spin pairs, both spins, hashed raw outputs),
           # and so are KS-DFT and TDDFT energies.
           cd /tmp
@@ -988,12 +988,21 @@ jobs:
           # about 3 MB of the zipped wheel); only debuggers and symbolised Rust
           # backtraces read them. release-check fails a Linux PyPI wheel that still carries .symtab.
           # `--profile wheel` (Cargo.toml) is release plus fat LTO in one
-          # codegen unit, with opt-level "s" for the cold crates (CLI, config
-          # parsing, export, the Python glue). Measured 2026-11-24 on the
-          # extension alone: 22.91 -> 20.82 MB deflated (-2.09 MB). Octane
-          # cc-pVDZ, one thread, three interleaved pairs (medians): direct RHF
-          # 79.9 -> 78.8 s, DF-MP2 54.4 -> 52.5 s, energies bitwise identical.
-          # Costs about 3 more minutes of build (fat LTO link).
+          # codegen unit, with opt-level "s" only on cold leaf crates (CLI and
+          # config parsing, export, the TOML/JSON/Python-literal parsers),
+          # never on ferric-python, whose opt-level the whole LTO pipeline
+          # takes. Measured 2026-11-25 against `--release` of the same tree,
+          # both local builds with libint2 and libxc linked dynamically so the
+          # extension is Rust plus the small C++ integral shim: ferric.abi3.so 22.81 -> 22.35 MB deflated
+          # (-0.46 MB); packed-double arithmetic instructions 16,715 -> 18,997
+          # (vectorisation kept). Single-thread CPU time (RAYON/OPENBLAS
+          # threads 1), ABBA-ordered pairs, median wheel/release ratio [range]:
+          # octane cc-pVDZ B3LYP 0.996 [0.967-1.054] (14 pairs), r2SCAN 0.975
+          # [0.953-1.001] (6), benzene B3LYP TDA 0.972 [0.925-1.054] (6),
+          # dimethyl ether CCSD 0.995 [0.959-1.041] (14), butane direct
+          # RHF 0.991 [0.962-1.016] (6): no regression beyond run-to-run
+          # noise, and every energy bitwise identical. The fat LTO link adds
+          # a few minutes of build (465 s vs 377 s locally, 2 jobs).
           args: --profile wheel --strip --out dist --features abi3 -i python3.10
           # Runs BEFORE the build, INSIDE THE SAME SHELL SCRIPT that then
           # invokes `maturin build` (maturin-action concatenates
@@ -1106,22 +1115,28 @@ jobs:
           PY
           echo "repack: $before -> $(stat -c %s "$whl") bytes"
 
-      # Wheel-size note: what the PyPI wheel's bytes are (2026-11-24, 105.3 MB
-      # nightly before the profile/strip/repack work). ferric.abi3.so is
-      # about 92% of it: the static small libint2 (~181 MB raw, the second-
-      # derivative integral code) and static libxc dominate, then ~23 MB
-      # deflated of Rust, of which libint2's Yukawa/Slater Chebyshev table
-      # (TennoGmEval, 7.8 MB of doubles that do not compress) is the largest
-      # single object. OpenBLAS + libgfortran + libquadmath are ~7 MB. The
-      # bundled basis sets are 0.6 MB (crates/ferric-core/build.rs). Rust
-      # growth lands here at ~0.4 MB deflated per 1 MB raw; that is what
-      # pushed the 2026-11-22..24 nightlies over the cap (+3.2 MB raw). The
-      # levers already pulled: --strip, the small libint2 export, libxc
-      # without kxc (build-native-deps), Cargo's `wheel` profile, stripping
-      # the vendored libraries, the advzip repack. Measured 2026-11-24 with a
-      # local build of this configuration, those last four took the
-      # extension plus libs from about 105 MB to about 82 MB (projection;
-      # the first nightly after the merge is the real number).
+      # Wheel-size note: what the PyPI wheel's bytes are (nightly 45485448068,
+      # 2026-11-24: 105,346,503 bytes, before the profile/strip/repack work).
+      # ferric.abi3.so (283.7 MB raw) is about 93% of it: the static small
+      # libint2 (the second-derivative integral code; ~47 MB deflated by
+      # subtraction), static libxc, then ~23 MB deflated of Rust, of which
+      # libint2's Yukawa/Slater Chebyshev table (TennoGmEval, 7.8 MB of
+      # doubles that do not compress) is the largest single object.
+      # OpenBLAS + libgfortran + libquadmath are ~7 MB. The bundled basis
+      # sets are 0.6 MB (crates/ferric-core/build.rs). Rust growth lands
+      # here at ~0.4 MB deflated per 1 MB raw; that is what pushed the
+      # 2026-11-22..24 nightlies over the cap (+3.2 MB raw). The levers
+      # already pulled: --strip, the small libint2 export, libxc without kxc
+      # (build-native-deps), Cargo's `wheel` profile, stripping the vendored
+      # libraries, the advzip repack. Their effects, each measured locally
+      # (2026-11-24/25), as deltas: libxc without kxc -17.4 MB; the `wheel`
+      # profile -0.46 MB; stripping the vendored libraries a few hundred KB
+      # (OpenBLAS -0.14 MB); advzip -3 about -4.5 MB. Applied to the
+      # 105.3 MB nightly that is about 83 MB. That figure is an arithmetic
+      # projection from local builds of a different configuration (dynamic
+      # libint2/libxc, gcc 13, a different libint2 build), not a
+      # CI-equivalent build; the first nightly after the merge is the real
+      # number.
       - name: Wheel size / contents sanity check
         env:
           VARIANT: ${{ matrix.variant }}
