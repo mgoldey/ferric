@@ -703,24 +703,6 @@ impl<'a> NewtonSystem<'a> {
     }
 }
 
-/// Cayley retraction `(1 − κ/2)⁻¹ (1 + κ/2)`: orthogonal for antisymmetric
-/// `κ`, equal to `exp(κ)` through second order.
-fn cayley(k: &Array2<f64>) -> Result<Array2<f64>, ferric_core::FerricError> {
-    use ndarray_linalg::Solve;
-    let n = k.nrows();
-    let eye = Array2::<f64>::eye(n);
-    let lhs = &eye - &(k * 0.5);
-    let rhs = &eye + &(k * 0.5);
-    let mut out = Array2::<f64>::zeros((n, n));
-    for j in 0..n {
-        let col = lhs.solve(&rhs.column(j).to_owned()).map_err(|e| {
-            ferric_core::FerricError::Lapack(format!("lambda-Boys Cayley retraction: {e}"))
-        })?;
-        out.column_mut(j).assign(&col);
-    }
-    Ok(out)
-}
-
 /// `Uᵀ M U` for each matrix.
 fn rotate_all(
     x0: &[Array2<f64>; 3],
@@ -775,59 +757,64 @@ pub fn lambda_boys_newton(
     let mut obj = lambda_boys_objective(&x, &f, lambda);
     let (mut iters, mut cg_iters) = (0, 0);
     let mut converged = false;
-    let step = loop {
-        // The Newton step at the current point: its size is the predicted
-        // distance to the maximum, which the gradient alone does not bound
-        // along a soft mode. PCG never resolves the step below the
-        // gradient's rounding noise (a flat direction stays put).
-        let noise = lambda_boys_grad_noise(x0, f0, lambda, &u, &gam);
-        let g2 = antisym_dot(&gam, &gam).sqrt();
-        let system = NewtonSystem::new(&x, &f, lambda);
-        let (mut kap, cg) = system.step(&gam, (NEWTON_CG_RTOL * g2).max(noise));
-        cg_iters += cg;
-        let mut step = max_abs(&kap);
-        if g_max < solver.grad_tol && step < solver.step_tol {
-            // converged if an accurate solve confirms the distance
-            let (k_fine, cg) = system.step(&gam, (NEWTON_CG_RTOL_FINAL * g2).max(noise));
+    let step =
+        loop {
+            // The Newton step at the current point: its size is the predicted
+            // distance to the maximum, which the gradient alone does not bound
+            // along a soft mode. PCG never resolves the step below the
+            // gradient's rounding noise (a flat direction stays put).
+            let noise = lambda_boys_grad_noise(x0, f0, lambda, &u, &gam);
+            let g2 = antisym_dot(&gam, &gam).sqrt();
+            let system = NewtonSystem::new(&x, &f, lambda);
+            let (mut kap, cg) = system.step(&gam, (NEWTON_CG_RTOL * g2).max(noise));
             cg_iters += cg;
-            step = max_abs(&k_fine);
-            if step < solver.step_tol {
-                converged = true;
+            let mut step = max_abs(&kap);
+            if g_max < solver.grad_tol && step < solver.step_tol {
+                // converged if an accurate solve confirms the distance
+                let (k_fine, cg) = system.step(&gam, (NEWTON_CG_RTOL_FINAL * g2).max(noise));
+                cg_iters += cg;
+                step = max_abs(&k_fine);
+                if step < solver.step_tol {
+                    converged = true;
+                    break step;
+                }
+                kap = k_fine;
+            }
+            if iters == solver.newton_iters {
                 break step;
             }
-            kap = k_fine;
-        }
-        if iters == solver.newton_iters {
-            break step;
-        }
-        iters += 1;
-        let big = max_abs(&kap);
-        if big > NEWTON_MAX_STEP {
-            kap *= NEWTON_MAX_STEP / big;
-        }
-        let obj_round = 64.0 * f64::EPSILON * obj.abs().max(1.0);
-        let mut accepted = false;
-        for _ in 0..=30 {
-            let u_try = u.dot(&cayley(&kap)?);
-            let (x_t, f_t) = rotate_all(x0, f0, &u_try);
-            let obj_t = lambda_boys_objective(&x_t, &f_t, lambda);
-            let gam_t = lambda_boys_generator_gradient(&x_t, &f_t, lambda);
-            let g_t = max_abs(&gam_t);
-            if obj_t > obj + obj_round || (obj_t >= obj - obj_round && g_t < g_max) {
-                (u, x, f, gam, g_max, obj) = (u_try, x_t, f_t, gam_t, g_t, obj_t);
-                accepted = true;
-                break;
+            iters += 1;
+            let big = max_abs(&kap);
+            if big > NEWTON_MAX_STEP {
+                kap *= NEWTON_MAX_STEP / big;
             }
-            kap *= 0.5;
-        }
-        if !accepted {
-            return Err(ferric_core::FerricError::Convergence(format!(
-                "lambda-Boys Newton iteration {iters} found no step that raises the \
+            let obj_round = 64.0 * f64::EPSILON * obj.abs().max(1.0);
+            let mut accepted = false;
+            for _ in 0..=30 {
+                // Cayley retraction (1 − κ/2)⁻¹(1 + κ/2): orthogonal for
+                // antisymmetric κ, exp(κ) through second order
+                let u_try = u.dot(&crate::orbital_rotation::cayley_rotation(&kap).map_err(
+                    |e| ferric_core::FerricError::Lapack(format!("lambda-Boys Newton step: {e}")),
+                )?);
+                let (x_t, f_t) = rotate_all(x0, f0, &u_try);
+                let obj_t = lambda_boys_objective(&x_t, &f_t, lambda);
+                let gam_t = lambda_boys_generator_gradient(&x_t, &f_t, lambda);
+                let g_t = max_abs(&gam_t);
+                if obj_t > obj + obj_round || (obj_t >= obj - obj_round && g_t < g_max) {
+                    (u, x, f, gam, g_max, obj) = (u_try, x_t, f_t, gam_t, g_t, obj_t);
+                    accepted = true;
+                    break;
+                }
+                kap *= 0.5;
+            }
+            if !accepted {
+                return Err(ferric_core::FerricError::Convergence(format!(
+                    "lambda-Boys Newton iteration {iters} found no step that raises the \
                  objective (max |gradient| {g_max:.2e}); lambda_boys = 0 (plain Boys) \
                  avoids this optimiser"
-            )));
-        }
-    };
+                )));
+            }
+        };
     Ok(LambdaBoysNewton {
         u,
         iters,
@@ -1645,7 +1632,7 @@ mod tests {
     /// through second order, so its first and second derivatives at 0 are
     /// those of the book's parametrization.
     fn g_along(x: &[Array2<f64>; 3], f: &Array2<f64>, lam: f64, k: &Array2<f64>) -> f64 {
-        let (xr, fr) = rotate_all(x, f, &cayley(k).unwrap());
+        let (xr, fr) = rotate_all(x, f, &crate::orbital_rotation::cayley_rotation(k).unwrap());
         lambda_boys_objective(&xr, &fr, lam)
     }
 
