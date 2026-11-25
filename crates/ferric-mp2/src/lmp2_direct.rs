@@ -6224,6 +6224,18 @@ mod memory_gate_tests {
         }
     }
 
+    /// [`maps`] with a 1 MiB stage-3 slab cap. Under a gate the slab cap is
+    /// also bounded by what the budget leaves beside the strips, and slab
+    /// blocking changes the strips at round-off; a cap below every budget
+    /// these tests use keeps the stage-3 blocking, and so the bits, the same
+    /// across budgets, so a bit-identity check isolates the stage-5 schedule.
+    fn fixed_slab_maps() -> DirectConfig {
+        DirectConfig {
+            slab_budget_bytes: 1 << 20,
+            ..maps()
+        }
+    }
+
     fn lcfg(c: &Case, eps: f64, budget: usize) -> AmplitudeLmp2Config {
         AmplitudeLmp2Config {
             eps,
@@ -6359,7 +6371,7 @@ mod memory_gate_tests {
     #[test]
     fn finite_eps_charge_gate_refuses_only_the_true_overshoot() {
         let c = case(6);
-        let (r0, st) = run(&c, 1e-3, AMPLE, &maps()).unwrap();
+        let (r0, st) = run(&c, 1e-3, AMPLE, &fixed_slab_maps()).unwrap();
         let est = st.memory;
         assert!(!est.exact);
         let base = est.strips_bytes + est.metric_bytes + st.own_w_bytes_held;
@@ -6372,7 +6384,7 @@ mod memory_gate_tests {
              to reach the charge gate",
             est.resident_peak()
         );
-        let (r1, s1) = run(&c, 1e-3, truth, &maps()).unwrap();
+        let (r1, s1) = run(&c, 1e-3, truth, &fixed_slab_maps()).unwrap();
         assert_eq!(r1.e_corr.to_bits(), r0.e_corr.to_bits());
         // The candidate bound does not fit beside two groups' scratch: stage
         // 5 ran in budget-sized waves, with the same blocks.
@@ -6384,7 +6396,7 @@ mod memory_gate_tests {
         );
         let solve_only = r0.solve_resident_bytes;
         let tight = base.max(solve_only / 2);
-        let msg = exhausted(run(&c, 1e-3, tight, &maps()));
+        let msg = exhausted(run(&c, 1e-3, tight, &fixed_slab_maps()));
         assert!(msg.contains("during the pair fits"), "{msg}");
     }
 
@@ -6447,7 +6459,7 @@ mod memory_gate_tests {
     #[test]
     fn finite_eps_groups_run_concurrently_under_the_candidate_bound() {
         let c = case(6);
-        let (r0, st) = run(&c, 1e-3, AMPLE, &maps()).unwrap();
+        let (r0, st) = run(&c, 1e-3, AMPLE, &fixed_slab_maps()).unwrap();
         assert_eq!(st.group_concurrency, 2);
         assert_eq!(st.n_group_waves, 1);
         let est = st.memory;
@@ -6457,7 +6469,7 @@ mod memory_gate_tests {
         let budget = base + est.pair_block_bytes + g;
         // what a schedule that reserves the whole bound would have left
         assert!(budget - base - est.pair_block_bytes < 2 * g);
-        let (r1, s1) = run(&c, 1e-3, budget, &maps()).unwrap();
+        let (r1, s1) = run(&c, 1e-3, budget, &fixed_slab_maps()).unwrap();
         assert_eq!(r1.e_corr.to_bits(), r0.e_corr.to_bits());
         // The bound does not fit beside the scratch, so the schedule ran in
         // waves, and none of them was cut to one group.
