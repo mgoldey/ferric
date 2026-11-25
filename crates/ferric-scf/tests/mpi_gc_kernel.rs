@@ -37,8 +37,17 @@ use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
 
 fn setup() -> (PreparedBasis, Array2<f64>) {
-    let text = std::fs::read_to_string("../../testdata/molecules/c2h4.xyz").unwrap();
-    let mol = Molecule::parse_xyz(&text, 0, 1).unwrap();
+    // Inline (testdata/molecules/c2h4.xyz): the CI mpirun job runs the
+    // test binary from the workspace root, not from this crate's directory,
+    // so a crate-relative path does not resolve there.
+    const C2H4: &str = "6\nethylene D2h (rCC=1.339, rCH=1.086, HCH=117.4)\n\
+        C 0.000000 0.000000 0.669500\n\
+        C 0.000000 0.000000 -0.669500\n\
+        H 0.000000 0.922832 1.237695\n\
+        H 0.000000 -0.922832 1.237695\n\
+        H 0.000000 0.922832 -1.237695\n\
+        H 0.000000 -0.922832 -1.237695\n";
+    let mol = Molecule::parse_xyz(C2H4, 0, 1).unwrap();
     let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let n = prep.nbasis();
     let d = Array2::from_shape_fn((n, n), |(i, j)| {
