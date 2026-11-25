@@ -1367,11 +1367,14 @@ pub(crate) fn is_symmetric_to_roundoff(d: &Array2<f64>) -> bool {
     for i in 0..n {
         for j in 0..=i {
             let (a, b) = (d[(i, j)], d[(j, i)]);
+            if a.is_nan() || b.is_nan() {
+                // `f64::max` would drop it: a NaN density is not symmetric.
+                return false;
+            }
             asym = asym.max((a - b).abs());
             big = big.max(a.abs()).max(b.abs());
         }
     }
-    // A NaN anywhere fails the test (the comparison is false).
     asym <= PAIR_SYMMETRY_TOL * big.max(1.0)
 }
 

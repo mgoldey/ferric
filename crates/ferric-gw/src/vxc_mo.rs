@@ -74,6 +74,7 @@ pub fn vxc_diagonal_mo(
 /// unset: `FERRIC_GC_ROTATE`, then `auto`) and `RhfConfig::jk_digest`
 /// (`ferric_scf::quartet_scatter::JkDigest`; `None` = `FERRIC_JK_DIGEST`,
 /// then `pair`).
+#[allow(clippy::too_many_arguments)]
 pub fn vxc_diagonal_mo_on_grids(
     mol: &Molecule,
     bs: &BasisSet,
