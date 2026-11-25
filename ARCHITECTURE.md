@@ -1054,8 +1054,10 @@ Done:
    omitted `[scf] jk` off the RI-JK default (#714 and #717 had added
    them), so they change only the last bits of whatever four-centre builds
    a route runs. A `gc_rotation` on an SCF with no four-centre direct J or
-   K build (RI-JK, RIJCOSX, a pure functional on RI-J) warns that it has
-   no effect (`gc_rotation_route_warning`). Tests:
+   K build (RI-JK, RIJCOSX, a pure functional on RI-J) warns that it does
+   not affect the reference SCF, with the opt-out the kind accepts (`jk =
+   "exact"` or `df_*_aux = ""`; not for `gw` on a hybrid, whose exchange
+   diagonal is four-centre; `gc_rotation_route_warning`). Tests:
    `ferric-mp2/tests/rimp2_gradient_jk_digest.rs`,
    `ferric-rpa/tests/rpa_gradient_jk_digest.rs` and
    `ferric-cli/tests/jk_digest_gradient_routes_cli.rs` (runs on a memory

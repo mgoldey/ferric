@@ -3886,7 +3886,7 @@ fn is_gradient_task(task: &str) -> bool {
 /// optimizations and the OO-RI-MP2 optimize, whose analytic gradients
 /// differentiate an exact or an RI-JK reference
 /// (`ferric_mp2::oo_rimp2_gradient::oo_ri_mp2_gradient` for OO-RI-MP2).
-fn scf_jk_governs(kind: &str, task: &str) -> bool {
+pub(crate) fn scf_jk_governs(kind: &str, task: &str) -> bool {
     let mp2_optimize = (MP2_GRADIENT_OPTIMIZE_KINDS.contains(&kind) || kind == "oo-rimp2")
         && is_gradient_task(task);
     SCF_JK_KINDS.contains(&kind) && (task == "energy" || mp2_optimize)
@@ -4130,7 +4130,8 @@ impl ScfCfg {
                 return Err(format!(
                     "[scf] jk / jk_aux are wired for task = \"energy\" with method.kind = {} \
                      and for method.kind = \"rimp2\" / \"scs-mp2\" / \"att-rimp2\" / \
-                     \"oo-rimp2\" with task = \"optimize\" or \"frequencies\" only; got \
+                     \"scs-mp2-2terfc\" / \"oo-rimp2\" with task = \"optimize\" or \
+                     \"frequencies\" only; got \
                      kind = \"{kind}\", task = \"{task}\". Use [scf] df_j_aux / df_k_aux / \
                      k_builder there",
                     SCF_JK_KINDS.join(", ")

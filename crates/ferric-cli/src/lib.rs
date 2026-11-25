@@ -291,17 +291,25 @@ fn warn_uncarried_gradient_scf_keys(cfg: &Config) {
     }
 }
 
-/// The warning for an explicit `[scf] gc_rotation` on an SCF whose J/K
-/// route has no four-centre direct build for it to rotate: J fitted
-/// (RI-J), and exchange fitted, COSX or not consumed (RI-JK, RIJCOSX, a
-/// pure functional on RI-J). (LinK runs only next to four-centre J.) `None` when the key is unset, when
-/// either half is a four-centre direct build (e.g. `DirectJ` next to
-/// RI-K), or when the route cannot be resolved (the SCF reports that).
+/// The warning for an explicit `[scf] gc_rotation` on a run whose reference
+/// SCF has no four-centre direct build for it to rotate: J fitted (RI-J),
+/// and exchange fitted, COSX or not consumed (RI-JK, RIJCOSX, a pure
+/// functional on RI-J; LinK runs only next to four-centre J). `None` when
+/// the key is unset, when either half is a four-centre direct build (e.g.
+/// `DirectJ` next to RI-K), when the route cannot be resolved (the SCF
+/// reports that), and for `gw` on a hybrid or range-separated reference
+/// (`[rpa] xc`), whose exact-exchange diagonal is built four-centre under
+/// the run's `gc_rotation` (`vxc_mo::JkRoute`). The text is scoped to the
+/// reference SCF: a later step that builds its own four-centre J/K still
+/// follows the key. The advice is the opt-out `kind` / `task` accepts:
+/// `[scf] jk = "exact"` where `jk` is read (`config::scf_jk_governs`),
+/// else `df_j_aux = ""` / `df_k_aux = ""` (and no COSX `k_builder`).
 /// `open_shell` picks the unrestricted resolution (no auto-default fit).
 fn gc_rotation_route_warning(
     gc_rotation_set: bool,
     rhf_config: &RhfConfig,
     open_shell: bool,
+    (kind, task): (&str, &str),
 ) -> Option<String> {
     if !gc_rotation_set {
         return None;
@@ -312,6 +320,9 @@ fn gc_rotation_route_warning(
         ferric_scf::Spin::Restricted
     };
     let exchange = ferric_scf::JkExchange::from_config(rhf_config);
+    if kind == "gw" && exchange.functional && exchange.k_consumed() {
+        return None;
+    }
     let route = ferric_scf::resolve_jk_route(rhf_config, exchange, spin).ok()?;
     let direct_j = route.j_aux.is_none();
     let direct_k = route.k_consumed
@@ -322,21 +333,33 @@ fn gc_rotation_route_warning(
     if direct_j || direct_k {
         return None;
     }
-    Some(
-        "[scf] gc_rotation has no effect on this run: its SCF builds no four-centre J or K \
-         (J is density-fitted and exchange is density-fitted, COSX or not used), and the \
-         contraction rotation acts only on the direct four-centre builds. Set [scf] jk = \
-         \"exact\" if a four-centre reference was intended"
-            .into(),
-    )
+    let advice = if config::scf_jk_governs(kind, task) {
+        "set [scf] jk = \"exact\"".to_string()
+    } else {
+        let cosx = if route.cosx_k {
+            " and drop k_builder = \"cosx\""
+        } else {
+            ""
+        };
+        format!("set [scf] df_j_aux = \"\" and df_k_aux = \"\"{cosx}")
+    };
+    Some(format!(
+        "[scf] gc_rotation does not affect this run's reference SCF: it builds no four-centre \
+         J or K (J is density-fitted and exchange is density-fitted, COSX or not used), and \
+         the contraction rotation acts only on direct four-centre builds. If a four-centre \
+         reference was intended, {advice}"
+    ))
 }
 
 /// Print [`gc_rotation_route_warning`] and write it to the run log as a
 /// `warning` note.
 fn warn_gc_rotation_without_four_centre(cfg: &Config, rhf_config: &RhfConfig, open_shell: bool) {
-    let Some(text) =
-        gc_rotation_route_warning(cfg.scf.gc_rotation.is_some(), rhf_config, open_shell)
-    else {
+    let Some(text) = gc_rotation_route_warning(
+        cfg.scf.gc_rotation.is_some(),
+        rhf_config,
+        open_shell,
+        (&cfg.method.kind, &cfg.method.task),
+    ) else {
         return;
     };
     eprintln!("warning: {text}");
@@ -9610,31 +9633,72 @@ mod scf_config_lowering_tests {
             .with_k_builder(KBuilderKind::Cosx);
         let pbe = RhfConfig::default().with_xc("PBE");
         let pbe0 = RhfConfig::default().with_xc("PBE0");
+        let wb97x = RhfConfig::default().with_xc("HYB_GGA_XC_WB97X");
         let pbe0_exact = RhfConfig::default()
             .with_xc("PBE0")
             .with_df_j_aux("")
             .with_df_k_aux("");
-        for (name, c, open, warns) in [
-            ("hf", &hf, false, false),
-            ("rijk", &rijk, false, true),
-            ("rijk open", &rijk, true, true),
-            ("ri-j + direct K", &rij_direct_k, false, false),
-            ("rijcosx", &rijcosx, false, true),
-            ("pbe (auto RI-J, no K)", &pbe, false, true),
-            ("pbe open (four-centre J)", &pbe, true, false),
-            ("pbe0 (auto RI-JK)", &pbe0, false, true),
-            ("pbe0 opted out", &pbe0_exact, false, false),
+        let rimp2 = ("rimp2", "optimize");
+        let ksdft = ("ksdft", "energy");
+        for (name, c, open, run, warns) in [
+            ("hf", &hf, false, ("rhf", "energy"), false),
+            ("rijk", &rijk, false, rimp2, true),
+            ("rijk open", &rijk, true, rimp2, true),
+            (
+                "ri-j + direct K",
+                &rij_direct_k,
+                false,
+                ("rhf", "energy"),
+                false,
+            ),
+            ("rijcosx", &rijcosx, false, ("rhf", "energy"), true),
+            ("pbe (auto RI-J, no K)", &pbe, false, ksdft, true),
+            ("pbe open (four-centre J)", &pbe, true, ksdft, false),
+            ("pbe0 (auto RI-JK)", &pbe0, false, ksdft, true),
+            ("pbe0 opted out", &pbe0_exact, false, ksdft, false),
+            // GW's exact-exchange diagonal is four-centre under gc_rotation.
+            ("gw@pbe0", &pbe0, false, ("gw", "energy"), false),
+            ("gw@wb97x", &wb97x, false, ("gw", "energy"), false),
+            (
+                "gw@pbe (no exact exchange)",
+                &pbe,
+                false,
+                ("gw", "energy"),
+                true,
+            ),
         ] {
-            let w = gc_rotation_route_warning(true, c, open);
+            let w = gc_rotation_route_warning(true, c, open, run);
             assert_eq!(w.is_some(), warns, "{name}: {w:?}");
             if let Some(w) = w {
-                assert!(
-                    w.contains("[scf] gc_rotation") && w.contains("jk = \"exact\""),
-                    "{w}"
-                );
+                assert!(w.contains("[scf] gc_rotation"), "{w}");
             }
-            assert_eq!(gc_rotation_route_warning(false, c, open), None, "{name}");
+            assert_eq!(
+                gc_rotation_route_warning(false, c, open, run),
+                None,
+                "{name}"
+            );
         }
+        // The advice is the opt-out the kind accepts: `jk = "exact"` where
+        // `[scf] jk` is read, the df_*_aux opt-out (and no COSX) elsewhere.
+        let jk = "set [scf] jk = \"exact\"";
+        let df = "set [scf] df_j_aux = \"\" and df_k_aux = \"\"";
+        for (c, run, want, not) in [
+            (&rijk, ("rimp2", "optimize"), jk, df),
+            (&rijk, ("rimp2", "frequencies"), jk, df),
+            (&rijk, ("scs-mp2-2terfc", "optimize"), jk, df),
+            (&rijk, ("rimp2", "energy"), jk, df),
+            (&rijk, ("oo-rimp2", "optimize"), jk, df),
+            (&rijk, ("pdep-rpa", "optimize"), df, jk),
+            (&rijk, ("pdep-rpa", "energy"), df, jk),
+            (&rijk, ("rhf", "energy"), df, jk),
+            (&pbe0, ("ksdft", "optimize"), df, jk),
+            (&pbe, ("gw", "energy"), df, jk),
+        ] {
+            let w = gc_rotation_route_warning(true, c, false, run).unwrap();
+            assert!(w.ends_with(want) && !w.contains(not), "{run:?}: {w}");
+        }
+        let w = gc_rotation_route_warning(true, &rijcosx, false, ("rhf", "energy")).unwrap();
+        assert!(w.ends_with("and drop k_builder = \"cosx\""), "{w}");
     }
 
     /// `[scf] gc_rotation` reaches `RhfConfig::gc_rotation`; unset leaves it
