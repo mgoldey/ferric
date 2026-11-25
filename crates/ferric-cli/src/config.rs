@@ -3444,6 +3444,16 @@ pub struct ScfCfg {
     /// response, `[cas] integrals = "direct"` and the GW exact exchange). Any
     /// other value, another case included, is an error.
     pub jk_digest: Option<String>,
+    /// Shared-primitive kernel of the contraction-rotated direct J/K walk:
+    /// `"auto"` (the `(ss|ss)` and `(ss|sp)` quartets of generally
+    /// contracted groups from one pass over their union primitives) or
+    /// `"off"` (libint for every quartet, bit for bit). Unset leaves it to
+    /// `FERRIC_GC_KERNEL`, then `"off"`. Effective only where the rotated
+    /// walk runs (`gc_rotation` not `"off"`, a generally contracted basis)
+    /// with `jk_digest = "pair"`; energies move by about 1e-12 Ha. The
+    /// SCF's closed- and open-shell direct builds follow it. Any other value,
+    /// another case included, is an error.
+    pub gc_kernel: Option<String>,
     /// Relativistic core Hamiltonian: `"x2c1e"` (spin-free X2C-1e, as PySCF
     /// `sfx2c1e()`), or unset for the nonrelativistic one. Energies only
     /// (`task = "energy"`), for the kinds in `X2C_KINDS`; all-electron bases
@@ -3739,6 +3749,7 @@ impl Default for ScfCfg {
             eri: None,
             gc_rotation: None,
             jk_digest: None,
+            gc_kernel: None,
             relativistic: None,
             cosx_grid: None,
             cosx_final_pass: None,
@@ -3942,7 +3953,8 @@ impl OmittedJk {
 
 impl ScfCfg {
     /// The first `[scf]` key set that only the four-centre route reads
-    /// (`k_builder`, `eri`, `gc_rotation`, `jk_digest`, `screening`, `df_increments`,
+    /// (`k_builder`, `eri`, `gc_rotation`, `jk_digest`, `gc_kernel`, `screening`,
+    /// `df_increments`,
     /// `df_guess = true`,
     /// `df_guess_aux`): with one of them an omitted `jk` stays exact, so an
     /// input that worked on the four-centre default keeps working unchanged.
@@ -3952,6 +3964,7 @@ impl ScfCfg {
             ("eri", self.eri.is_some()),
             ("gc_rotation", self.gc_rotation.is_some()),
             ("jk_digest", self.jk_digest.is_some()),
+            ("gc_kernel", self.gc_kernel.is_some()),
             ("screening", self.screening.is_some()),
             ("df_increments", self.df_increments),
             ("df_guess", self.df_guess == Some(true)),
@@ -4345,6 +4358,17 @@ impl ScfCfg {
             .map_err(|e| format!("[scf] jk_digest: {e}"))
     }
 
+    /// `[scf] gc_kernel` parsed: `None` when omitted (the variable and the
+    /// default decide), an error naming the key for a value outside
+    /// auto | off.
+    pub fn gc_kernel_resolved(&self) -> Result<Option<ferric_scf::direct_jk::GcKernel>, String> {
+        self.gc_kernel
+            .as_deref()
+            .map(ferric_scf::direct_jk::GcKernel::parse_str)
+            .transpose()
+            .map_err(|e| format!("[scf] gc_kernel: {e}"))
+    }
+
     /// Post-parse validation of the `[scf]` string knobs whose resolution is
     /// otherwise deferred to the point of use. Called from [`load_config`] so
     /// every entry point (CLI and `ferric-batch`) fails before any integral is
@@ -4359,6 +4383,7 @@ impl ScfCfg {
         self.relativistic_resolved()?;
         self.gc_rotation_resolved()?;
         self.jk_digest_resolved()?;
+        self.gc_kernel_resolved()?;
         if let Some(p) = self.eri_precision {
             (ferric_integrals::engine_pool::ERI_PRECISION_VAR.validate)(&p)
                 .map_err(|e| format!("[scf] eri_precision {p:e}: {e}"))?;
@@ -5436,15 +5461,33 @@ impl Config {
     /// key would be silently ignored; refused, as `guess_basis` is. (The
     /// RI-MP2 family refuses it where its gradient route is resolved,
     /// `rimp2_gradient_scf_jk`.)
+    /// The same for `[scf] gc_kernel` (`FERRIC_GC_KERNEL` reaches those
+    /// builds).
     fn validate_jk_digest_key(&self) -> Result<(), String> {
         let (kind, task) = (self.method.kind.as_str(), self.method.task.as_str());
-        if self.scf.jk_digest.is_some() && kind == "pdep-rpa" && is_gradient_task(task) {
-            return Err(format!(
-                "[scf] jk_digest is not read by method.kind = \"{kind}\" with task = \
-                 \"{task}\": its gradient solves the reference SCF at each geometry without \
-                 the [scf] settings, so it would be silently ignored. Remove it; \
-                 FERRIC_JK_DIGEST selects the digest of those builds"
-            ));
+        if kind != "pdep-rpa" || !is_gradient_task(task) {
+            return Ok(());
+        }
+        for (key, set, var) in [
+            (
+                "jk_digest",
+                self.scf.jk_digest.is_some(),
+                "FERRIC_JK_DIGEST selects the digest",
+            ),
+            (
+                "gc_kernel",
+                self.scf.gc_kernel.is_some(),
+                "FERRIC_GC_KERNEL selects the kernel",
+            ),
+        ] {
+            if set {
+                return Err(format!(
+                    "[scf] {key} is not read by method.kind = \"{kind}\" with task = \
+                     \"{task}\": its gradient solves the reference SCF at each geometry \
+                     without the [scf] settings, so it would be silently ignored. Remove it; \
+                     {var} of those builds"
+                ));
+            }
         }
         Ok(())
     }
@@ -11291,6 +11334,16 @@ json = [1, 2]
             );
         }
         assert_eq!(cfg("pdep-rpa", "energy").validate_jk_digest_key(), Ok(()));
+        let gck = toml::from_str::<Config>(
+            "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n[basis]\nname = \"sto-3g\"\n\
+             [method]\nkind = \"pdep-rpa\"\ntask = \"optimize\"\n[scf]\ngc_kernel = \"auto\"\n",
+        )
+        .expect("test config must parse");
+        let e = gck.validate_jk_digest_key().unwrap_err();
+        assert!(
+            e.contains("[scf] gc_kernel") && e.contains("pdep-rpa"),
+            "{e}"
+        );
         for kind in ["rhf", "uhf"] {
             assert_eq!(cfg(kind, "optimize").validate_jk_digest_key(), Ok(()));
         }

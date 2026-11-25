@@ -116,6 +116,7 @@ use ferric_integrals::contraction_rotation::{
     AoTranspose, DerivRotMutant, RotatedBasis, RotationLevel,
 };
 use ferric_integrals::engine_pool::EnginePool;
+use ferric_integrals::gc_kernel::GcKernelBasis;
 use ndarray::Array2;
 use std::sync::Arc;
 
@@ -215,6 +216,9 @@ pub struct RotatedJk {
     /// `(operator, precision, rayon thread count)` of the pool the caller
     /// handed in.
     pool: std::sync::Mutex<Option<(PoolKey, Arc<EnginePool>)>>,
+    /// The shared-primitive kernel's groups and pair data on the rotated
+    /// shells (`[scf] gc_kernel`), keyed by the primitive-pair precision.
+    kernel: std::sync::Mutex<Option<(u64, Arc<GcKernelBasis>)>>,
     /// Wall seconds of the detection and the rotated bounds.
     pub(crate) setup_seconds: f64,
 }
@@ -255,12 +259,15 @@ impl RotatedJk {
         rbounds.gc = GcSlot::inert();
         // The rotated walk runs the parent's J/K digest: share its record.
         rbounds.digest = bounds.digest.clone();
+        // ... and its shared-primitive kernel setting.
+        rbounds.gc_kernel = bounds.gc_kernel.clone();
         let forward = basis.ao_transpose(DerivRotMutant::None);
         Ok(Some(Self {
             basis,
             bounds: rbounds,
             forward,
             pool: std::sync::Mutex::new(None),
+            kernel: std::sync::Mutex::new(None),
             setup_seconds: t0.elapsed().as_secs_f64(),
         }))
     }
@@ -314,6 +321,43 @@ impl RotatedJk {
             if *k == key {
                 return Ok(p.clone());
             }
+        }
+        *g = Some((key, built.clone()));
+        Ok(built)
+    }
+
+    /// The shared-primitive kernel data of the rotated shells, its primitive
+    /// pairs screened at `precision`: built once per precision and shared
+    /// (`direct_jk::gc_kernel`). Coulomb only: the caller checks the
+    /// operator.
+    pub(crate) fn kernel_basis(&self, precision: f64) -> Result<Arc<GcKernelBasis>, FerricError> {
+        let key = precision.to_bits();
+        let lock = || {
+            self.kernel
+                .lock()
+                .map_err(|_| FerricError::General("gc kernel: cache lock poisoned".into()))
+        };
+        if let Some((k, b)) = lock()?.as_ref() {
+            if *k == key {
+                return Ok(b.clone());
+            }
+        }
+        let t0 = std::time::Instant::now();
+        let built = Arc::new(GcKernelBasis::for_rotated(&self.basis, precision)?);
+        let mut g = lock()?;
+        if let Some((k, b)) = g.as_ref() {
+            if *k == key {
+                return Ok(b.clone());
+            }
+        }
+        if ferric_core::timing::enabled() {
+            eprintln!(
+                "[timing] direct-jk gc kernel: {} groups, pair data of {} group pairs in {:.4} s, \
+                 once per geometry",
+                built.groups().len(),
+                built.n_pairs(),
+                t0.elapsed().as_secs_f64()
+            );
         }
         *g = Some((key, built.clone()));
         Ok(built)

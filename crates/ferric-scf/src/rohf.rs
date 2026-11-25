@@ -793,6 +793,8 @@ fn solve_rohf_impl(
     bounds.gc.set_request(config.gc_rotation);
     // ... and its J/K digest (`quartet_scatter::DigestSlot`).
     bounds.digest.set(config.jk_digest);
+    // ... and its shared-primitive kernel (`direct_jk::gc_kernel`).
+    bounds.gc_kernel.set(config.gc_kernel);
 
     // Split the injection: (S, h, V_nn) go to the shared env builder, the J/K
     // (and XC) builders are driven in the loop.

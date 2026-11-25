@@ -7,7 +7,9 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::Array2;
 
+pub mod gc_kernel;
 pub mod gc_rotation;
+pub use gc_kernel::{GcKernel, GC_KERNEL_ENV};
 pub use gc_rotation::{GcRotate, GC_ROTATE_ENV};
 use gc_rotation::{GcState, RotatedJk};
 
@@ -282,6 +284,7 @@ impl<'a> DirectJK<'a> {
             thresh: self.thresh,
             mem_budget: self.mem_budget,
             pool: &mut self.pool,
+            rot: None,
         }
     }
 
@@ -530,6 +533,7 @@ impl<'a> DirectJK<'a> {
                 thresh,
                 mem_budget,
                 pool: &mut self.rot_pool,
+                rot: Some(r),
             },
             &dr,
             &mut xr,
@@ -600,9 +604,43 @@ struct Walk<'w> {
     thresh: f64,
     mem_budget: usize,
     pool: &'w mut Option<crate::engine_pool::EnginePool>,
+    /// The rotation this walk runs on (`None`: the unrotated walk); the
+    /// shared-primitive kernel ([`gc_kernel`]) runs only on a rotated walk.
+    rot: Option<&'w RotatedJk>,
 }
 
 impl Walk<'_> {
+    /// The shared-primitive kernel this build runs ([`gc_kernel`]): on a
+    /// rotated walk with the pair digest and the Coulomb operator, when the
+    /// bounds' setting (agreed across the MPI ranks) is `auto`; `None`
+    /// otherwise.
+    fn kernel(
+        &self,
+        digest: JkDigest,
+    ) -> Result<Option<std::sync::Arc<ferric_integrals::gc_kernel::GcKernelBasis>>, FerricError>
+    {
+        let Some(r) = self.rot else {
+            return Ok(None);
+        };
+        // Every rank runs the same walk, so every rank votes here.
+        let mode = self.bounds.gc_kernel.mode_collective(self.ctx)?;
+        if mode == GcKernel::Off
+            || digest != JkDigest::Pair
+            || self.bounds.op != ferric_integrals::operator::Operator::coulomb()
+        {
+            return Ok(None);
+        }
+        r.kernel_basis(ferric_integrals::engine_pool::eri_precision())
+            .map(Some)
+    }
+
+    /// Record a rotated pair-digest build's kernel counts for the test probe.
+    fn probe_kernel(&self, digest: JkDigest, counts: gc_kernel::KernelCounts) {
+        if self.rot.is_some() && digest == JkDigest::Pair {
+            gc_kernel::kernel_probe::record(counts);
+        }
+    }
+
     /// The screened canonical bra-pair work list for a given shell-blocked
     /// density-max table, plus the lazily-constructed engine pool.
     ///
@@ -611,10 +649,17 @@ impl Walk<'_> {
     /// pre-filter, the MPI rank striping, and the one-engine-per-rayon-thread
     /// pool hoist. Keeping it in one place is what makes the open-shell path
     /// screen exactly as tightly as the closed-shell one instead of drifting.
+    ///
+    /// With the shared-primitive kernel `kernel`, the list is in its
+    /// group-first order, striped by whole buckets, and partitioned by whole
+    /// buckets ([`gc_kernel::work_list`]); without it, the production order,
+    /// the round-robin stripe and the even partition, as before the kernel
+    /// existed.
     fn screened_bra_pairs(
         &mut self,
         d_max_shell: &ndarray::Array2<f64>,
-    ) -> Result<Vec<(usize, usize)>, FerricError> {
+        kernel: Option<&ferric_integrals::gc_kernel::GcKernelBasis>,
+    ) -> Result<(Vec<(usize, usize)>, gc_kernel::Partition), FerricError> {
         let nsh = self.prep.nshells();
         let max_d = d_max_shell.iter().cloned().fold(0.0f64, f64::max);
         let max_q: f64 = self.bounds.q.iter().cloned().fold(0.0f64, f64::max);
@@ -634,7 +679,14 @@ impl Walk<'_> {
         }
         // MPI rank striping (see `ParallelContext::stripe` doc; size == 1
         // keeps the full list unchanged).
-        let shell_pairs: Vec<(usize, usize)> = self.ctx.stripe(shell_pairs);
+        let (shell_pairs, partition) = match kernel {
+            None => {
+                let local: Vec<(usize, usize)> = self.ctx.stripe(shell_pairs);
+                let p = gc_kernel::Partition::even(local.len());
+                (local, p)
+            }
+            Some(kb) => gc_kernel::work_list(self.ctx, &shell_pairs, kb),
+        };
 
         // One engine per rayon thread (see engine_pool): constructing it in the
         // fold init below would fire once per work-chunk and storm the global
@@ -646,7 +698,7 @@ impl Walk<'_> {
                 ferric_integrals::engine_pool::eri_precision(),
             )?);
         }
-        Ok(shell_pairs)
+        Ok((shell_pairs, partition))
     }
 
     /// The open-shell walk. `sym` is the pair digest's symmetry scale;
@@ -673,7 +725,9 @@ impl Walk<'_> {
         let computed_quartets = AtomicUsize::new(0);
 
         let d_max_shell = build_d_max_shell_spin_sum(self.prep, d_a, d_b);
-        let shell_pairs = self.screened_bra_pairs(&d_max_shell)?;
+        let digest = self.bounds.digest.mode_collective(self.ctx)?;
+        let kernel = self.kernel(digest)?;
+        let (shell_pairs, partition) = self.screened_bra_pairs(&d_max_shell, kernel.as_deref())?;
 
         let q_table = &self.bounds.q;
         // CSB `M` table when `[scf] screening = "csb"` selected it; `None`
@@ -703,18 +757,14 @@ impl Walk<'_> {
             .as_ref()
             .expect("pool initialized by screened_bra_pairs");
 
-        let n_pairs = shell_pairs.len();
-        let group_size = crate::reduce::deterministic_group_size(n_pairs);
-        let n_groups = n_pairs.div_ceil(group_size.max(1)).max(1);
+        let n_groups = partition.n_groups();
         let screen = DensityScreen::SixPair(&d_max_shell);
 
         let band_bytes = crate::reduce::resolve_band_bytes(self.mem_budget);
         // One group's bra pairs scattered into `mode`.
         let run = |g: usize, mode: &mut JkMode<'_>| {
-            let lo = g * group_size;
-            let hi = (lo + group_size).min(n_pairs);
             let mut local_count = 0usize;
-            for &(s1, s2) in &shell_pairs[lo..hi] {
+            for &(s1, s2) in &shell_pairs[partition.range(g)] {
                 if ferric_core::INTERRUPT.load(Ordering::Relaxed) {
                     continue;
                 }
@@ -727,47 +777,46 @@ impl Walk<'_> {
             }
             computed_quartets.fetch_add(local_count, Ordering::Relaxed);
         };
-        let (mut total_j, mut total_k_a, mut total_k_b) =
-            match self.bounds.digest.mode_collective(self.ctx)? {
-                JkDigest::Legacy => {
-                    let mut total_j = Array2::<f64>::zeros((nbf, nbf));
-                    let mut total_k_a = Array2::<f64>::zeros((nbf, nbf));
-                    let mut total_k_b = Array2::<f64>::zeros((nbf, nbf));
-                    crate::reduce::ordered_stream_sum_triple(
-                        &mut total_j,
-                        &mut total_k_a,
-                        &mut total_k_b,
-                        n_groups,
-                        nbf,
-                        band_bytes,
-                        |g| {
-                            let mut mode = JkMode::new_uhf(nbf, d_a, d_b);
-                            run(g, &mut mode);
-                            match mode {
-                                JkMode::Uhf(j, ka, kb, _, _) => Ok((j, ka, kb)),
-                                _ => unreachable!(
-                                    "DirectJK::build_uhf's legacy walk uses JkMode::Uhf"
-                                ),
-                            }
-                        },
-                    )?;
-                    (total_j, total_k_a, total_k_b)
-                }
-                JkDigest::Pair => {
-                    let mut spec = PairSpec::uhf(nbf, dims, d_total, d_a, d_b, sym);
-                    let out = spec.sum_groups(self.ctx, n_groups, band_bytes, None, run)?;
-                    *scales = Some(spec.scales());
-                    let [k_a, k_b]: [Array2<f64>; 2] = out
-                        .k
-                        .try_into()
-                        .unwrap_or_else(|_| unreachable!("two spin K matrices"));
-                    (
-                        out.j.expect("the open-shell pair digest builds J"),
-                        k_a,
-                        k_b,
-                    )
-                }
-            };
+        let (mut total_j, mut total_k_a, mut total_k_b) = match digest {
+            JkDigest::Legacy => {
+                let mut total_j = Array2::<f64>::zeros((nbf, nbf));
+                let mut total_k_a = Array2::<f64>::zeros((nbf, nbf));
+                let mut total_k_b = Array2::<f64>::zeros((nbf, nbf));
+                crate::reduce::ordered_stream_sum_triple(
+                    &mut total_j,
+                    &mut total_k_a,
+                    &mut total_k_b,
+                    n_groups,
+                    nbf,
+                    band_bytes,
+                    |g| {
+                        let mut mode = JkMode::new_uhf(nbf, d_a, d_b);
+                        run(g, &mut mode);
+                        match mode {
+                            JkMode::Uhf(j, ka, kb, _, _) => Ok((j, ka, kb)),
+                            _ => unreachable!("DirectJK::build_uhf's legacy walk uses JkMode::Uhf"),
+                        }
+                    },
+                )?;
+                (total_j, total_k_a, total_k_b)
+            }
+            JkDigest::Pair => {
+                let mut spec = PairSpec::uhf(nbf, dims, d_total, d_a, d_b, sym)
+                    .with_gc_kernel(kernel.as_deref());
+                let out = spec.sum_groups(self.ctx, n_groups, band_bytes, None, run)?;
+                *scales = Some(spec.scales());
+                self.probe_kernel(digest, spec.kernel_counts());
+                let [k_a, k_b]: [Array2<f64>; 2] = out
+                    .k
+                    .try_into()
+                    .unwrap_or_else(|_| unreachable!("two spin K matrices"));
+                (
+                    out.j.expect("the open-shell pair digest builds J"),
+                    k_a,
+                    k_b,
+                )
+            }
+        };
 
         // MPI: reduce the rank-LOCAL partials, THEN accumulate. Reducing `j`/`k_a`/
         // `k_b` instead would also sum the caller's pre-existing contents, which on
@@ -822,7 +871,9 @@ impl Walk<'_> {
         // uses with this reduction, and moves the screening work onto the
         // rayon workers. Shared verbatim with `build_uhf` via
         // `screened_bra_pairs` (which also hoists the engine pool).
-        let shell_pairs = self.screened_bra_pairs(&d_max_shell)?;
+        let digest = self.bounds.digest.mode_collective(self.ctx)?;
+        let kernel = self.kernel(digest)?;
+        let (shell_pairs, partition) = self.screened_bra_pairs(&d_max_shell, kernel.as_deref())?;
 
         let q_table = &self.bounds.q;
         // CSB `M` table when `[scf] screening = "csb"` selected it; `None`
@@ -864,12 +915,10 @@ impl Walk<'_> {
         // the per-group folds, so a thread-dependent partition would break
         // bit-identity across RAYON_NUM_THREADS.
         let n_pairs = shell_pairs.len();
-        let group_size = crate::reduce::deterministic_group_size(n_pairs);
-        let n_groups = n_pairs.div_ceil(group_size.max(1)).max(1);
+        let n_groups = partition.n_groups();
         let screen = DensityScreen::SixPair(&d_max_shell);
 
         let band_bytes = crate::reduce::resolve_band_bytes(self.mem_budget);
-        let digest = self.bounds.digest.mode_collective(self.ctx)?;
         let profile = profile_t0.map(|t0| BuildProfile::new(t0, n_pairs, n_groups, digest));
         let job = GroupJob {
             pool,
@@ -883,6 +932,7 @@ impl Walk<'_> {
         };
         let mut band_times = crate::reduce::StreamTimes::default();
         let mut pair_report = None;
+        let mut kernel_counts = None;
         let (mut total_j, mut total_k) = match digest {
             JkDigest::Legacy => {
                 let mut total_j = Array2::<f64>::zeros((nbf, nbf));
@@ -894,8 +944,7 @@ impl Walk<'_> {
                     nbf,
                     band_bytes,
                     |g| {
-                        let lo = g * group_size;
-                        let pairs = &shell_pairs[lo..(lo + group_size).min(n_pairs)];
+                        let pairs = &shell_pairs[partition.range(g)];
                         let mut mode = JkMode::new_both(nbf);
                         let n = job.run(pairs, profile.as_ref(), &mut mode);
                         computed_quartets.fetch_add(n, Ordering::Relaxed);
@@ -911,20 +960,22 @@ impl Walk<'_> {
             JkDigest::Pair => {
                 // Half partials summed in group order, then `finish` (linear,
                 // so it commutes with the rank reduction below).
-                let mut spec = PairSpec::both(nbf, prep.shell_dims(), d, sym);
+                let mut spec = PairSpec::both(nbf, prep.shell_dims(), d, sym)
+                    .with_gc_kernel(kernel.as_deref());
                 let mut out = spec.sum_groups(
                     self.ctx,
                     n_groups,
                     band_bytes,
                     profile.as_ref().map(|_| &mut band_times),
                     |g, mode| {
-                        let lo = g * group_size;
-                        let pairs = &shell_pairs[lo..(lo + group_size).min(n_pairs)];
+                        let pairs = &shell_pairs[partition.range(g)];
                         let n = job.run(pairs, profile.as_ref(), mode);
                         computed_quartets.fetch_add(n, Ordering::Relaxed);
                     },
                 )?;
                 *scales = Some(spec.scales());
+                kernel_counts = Some(spec.kernel_counts());
+                self.probe_kernel(digest, spec.kernel_counts());
                 let k = out.k.pop().expect("the J+K pair digest builds K");
                 let j = out.j.take().expect("the J+K pair digest builds J");
                 pair_report = Some(out);
@@ -951,6 +1002,7 @@ impl Walk<'_> {
                 computed,
                 &band_times,
                 pair_report.as_ref(),
+                kernel.is_some().then_some(kernel_counts).flatten(),
             );
         }
         Ok(computed)
@@ -1077,6 +1129,7 @@ impl BuildProfile {
         computed: usize,
         bands: &crate::reduce::StreamTimes,
         pair: Option<&crate::quartet_scatter::PairOut>,
+        gck: Option<gc_kernel::KernelCounts>,
     ) {
         let wall = self.t0.elapsed().as_secs_f64();
         let groups = self.groups.lock().map(|g| g.clone()).unwrap_or_default();
@@ -1094,7 +1147,7 @@ impl BuildProfile {
         let fold = s(bands.fold_ns);
         let setup = wall - produce;
         let idle = threads as f64 * produce - s(group_ns);
-        let loop_screen = s(group_ns) - s(sum.libint_ns) - s(sum.digest_ns);
+        let loop_screen = s(group_ns) - s(sum.libint_ns) - s(sum.digest_ns) - s(sum.kernel_ns);
         let (bmin, bmax) = busy
             .values()
             .fold((u64::MAX, 0u64), |(a, b), &v| (a.min(v), b.max(v)));
@@ -1108,13 +1161,29 @@ impl BuildProfile {
             "[timing] direct-jk   wall {wall:.3} s = setup {setup:.3} + groups and folds \
              {produce:.3} (in-order folds {fold:.3}, overlapping the groups)"
         );
+        let kernel_part = if gck.is_some() {
+            format!(" + gc kernel {:.3}", s(sum.kernel_ns))
+        } else {
+            String::new()
+        };
         eprintln!(
-            "[timing] direct-jk   thread-seconds: groups {:.3} = libint {:.3} + digest {:.3} \
-             + loop/screen/alloc {loop_screen:.3}; outside groups (folds, waits) {idle:.3}",
+            "[timing] direct-jk   thread-seconds: groups {:.3} = libint {:.3} + digest \
+             {:.3}{kernel_part} + loop/screen/alloc {loop_screen:.3}; outside groups (folds, \
+             waits) {idle:.3}",
             s(group_ns),
             s(sum.libint_ns),
             s(sum.digest_ns),
         );
+        if let Some(k) = gck {
+            eprintln!(
+                "[timing] direct-jk   gc kernel: {} quartets from {} group quartets ({} column \
+                 quartets computed; {:.2} quartets per group quartet)",
+                k.quartets,
+                k.evals,
+                k.columns,
+                k.quartets as f64 / (k.evals.max(1)) as f64
+            );
+        }
         if let Some(p) = pair {
             // Serial, outside the groups: in `setup` (the preparation) and
             // after the groups (the finish), not in the digest above.

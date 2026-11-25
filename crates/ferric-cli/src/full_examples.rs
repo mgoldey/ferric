@@ -226,7 +226,8 @@ macro_rules! key {
 const OWN_START: &str = "refused: this kind runs its own reference SCF, which reads only \
                          max_iter, energy_conv and density_conv";
 const OWN_START_CAS: &str = "refused: this kind runs its own reference SCF, which reads only \
-                             max_iter, energy_conv, density_conv, gc_rotation and jk_digest";
+                             max_iter, energy_conv, density_conv, gc_rotation, jk_digest and \
+                             gc_kernel";
 const COSX: &str = "only with k_builder = \"cosx\" or jk = \"rijcosx\"";
 const FOUR_CENTRE: &str = "only on a four-centre exchange route; this run fits K";
 /// The direct J/K digest is read by a four-centre J build too (`DirectJ`
@@ -277,6 +278,7 @@ fn keys() -> Vec<Key> {
         key!("scf", "eri", "four-centre J/K build: auto | direct | incore", |c| if c.exact_k() { s("auto") } else { Off(FOUR_CENTRE) }),
         key!("scf", "gc_rotation", "direct J/K contraction rotation: auto | rot1 | off (unset: FERRIC_GC_ROTATE, then auto)", |c| if c.exact_k() || c.is(&["casscf", "nevpt2"]) { Unset("FERRIC_GC_ROTATE, then auto") } else { Off(FOUR_CENTRE) }),
         key!("scf", "jk_digest", "direct J/K quartet digest: pair | legacy (unset: FERRIC_JK_DIGEST, then pair)", |c| if c.exact_k() || c.is(&["casscf", "nevpt2"]) { Unset("FERRIC_JK_DIGEST, then pair") } else { Off(FOUR_CENTRE_JK) }),
+        key!("scf", "gc_kernel", "shared-primitive (ss|ss)/(ss|sp) kernel of the rotated direct J/K walk: auto | off (unset: FERRIC_GC_KERNEL, then off)", |c| if c.exact_k() || c.is(&["casscf", "nevpt2"]) { Unset("FERRIC_GC_KERNEL, then off") } else { Off(FOUR_CENTRE) }),
         key!("scf", "relativistic", "x2c1e: spin-free X2C-1e core Hamiltonian (energy only)", |c| {
             if c.energy() && X2C_KINDS.contains(&c.kind.as_str()) { Unset("nonrelativistic") } else { Off("energies of the X2C kinds only") }
         }),

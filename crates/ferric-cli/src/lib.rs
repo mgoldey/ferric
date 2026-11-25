@@ -630,6 +630,7 @@ fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig
     config.polarizable = polarizable;
     config.gc_rotation = s.gc_rotation_resolved().map_err(CliError::msg)?;
     config.jk_digest = s.jk_digest_resolved().map_err(CliError::msg)?;
+    config.gc_kernel = s.gc_kernel_resolved().map_err(CliError::msg)?;
     Ok(config)
 }
 
@@ -1131,6 +1132,11 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
                 // four-centre J or K route).
                 "jk_digest": rhf_config.jk_digest.map(|d| d.as_str()),
                 "jk_digest_resolved": ferric_scf::quartet_scatter::JkDigest::resolved_label(rhf_config.jk_digest),
+                // `[scf] gc_kernel` likewise (the rotated direct walk's
+                // shared-primitive kernel: the key, else `FERRIC_GC_KERNEL`,
+                // else `off`).
+                "gc_kernel": rhf_config.gc_kernel.map(|d| d.as_str()),
+                "gc_kernel_resolved": ferric_scf::direct_jk::GcKernel::resolved_label(rhf_config.gc_kernel),
                 "level_shift": rhf_config.level_shift,
                 // The RESOLVED budget in bytes, not the raw `[memory]` key:
                 // an omitted budget auto-detects, and the number actually used
@@ -6086,6 +6092,7 @@ fn gw_vxc_diagonal(
         ferric_gw::vxc_mo::JkRoute {
             gc_rotation: cfg.scf.gc_rotation_resolved().map_err(CliError::msg)?,
             jk_digest: cfg.scf.jk_digest_resolved().map_err(CliError::msg)?,
+            gc_kernel: cfg.scf.gc_kernel_resolved().map_err(CliError::msg)?,
         },
     )
     .map_err(|e| CliError::msg(format!("vxc_diagonal_mo failed: {e}")))
@@ -7614,6 +7621,14 @@ fn rimp2_gradient_scf_jk(
             "[scf] jk_digest = \"{d}\" is not read by method.kind = \"{kind}\" with task = \
              \"optimize\" or \"frequencies\": its gradient solves the reference SCF at each \
              geometry from the J/K route alone. Remove it; FERRIC_JK_DIGEST selects the digest \
+             of those builds"
+        ));
+    }
+    if let Some(g) = rhf_config.gc_kernel {
+        return Err(format!(
+            "[scf] gc_kernel = \"{g}\" is not read by method.kind = \"{kind}\" with task = \
+             \"optimize\" or \"frequencies\": its gradient solves the reference SCF at each \
+             geometry from the J/K route alone. Remove it; FERRIC_GC_KERNEL selects the kernel \
              of those builds"
         ));
     }
@@ -9591,6 +9606,35 @@ mod scf_config_lowering_tests {
                 .unwrap()
                 .unwrap_err();
             assert!(e.to_string().contains("[scf] jk_digest"), "{e}");
+        }
+    }
+
+    /// `[scf] gc_kernel` reaches `RhfConfig::gc_kernel` (unset: `None`), is
+    /// refused by key name outside auto | off, and is refused by the RI-MP2
+    /// family's geometry gradient like `jk_digest`.
+    #[test]
+    fn gc_kernel_key_reaches_the_config() {
+        use ferric_scf::direct_jk::GcKernel;
+        for (value, want) in [("auto", GcKernel::Auto), ("off", GcKernel::Off)] {
+            let cfg = parse(&header("rhf", &format!("[scf]\ngc_kernel = \"{value}\"\n")));
+            let c = new_lowering(&cfg, "energy", false, None).unwrap().unwrap();
+            assert_eq!(c.gc_kernel, Some(want), "{value}");
+            let mut r = ferric_scf::rhf::RhfConfig::default();
+            r.gc_kernel = Some(want);
+            let e = rimp2_gradient_scf_jk("rimp2", &r).unwrap_err();
+            assert!(e.contains("[scf] gc_kernel"), "{e}");
+        }
+        let cfg = parse(&header("rhf", ""));
+        let c = new_lowering(&cfg, "energy", false, None).unwrap().unwrap();
+        assert_eq!(c.gc_kernel, None);
+        for bad in ["Auto", "OFF", " auto", "on"] {
+            let cfg = parse(&header("rhf", &format!("[scf]\ngc_kernel = \"{bad}\"\n")));
+            let e = cfg.scf.validate().unwrap_err();
+            assert!(e.contains("[scf] gc_kernel"), "{bad:?}: {e}");
+            let e = new_lowering(&cfg, "energy", false, None)
+                .unwrap()
+                .unwrap_err();
+            assert!(e.to_string().contains("[scf] gc_kernel"), "{e}");
         }
     }
 

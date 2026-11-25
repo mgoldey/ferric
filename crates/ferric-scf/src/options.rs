@@ -1784,6 +1784,7 @@ mod tests {
             eri: _,                       // lowered
             gc_rotation: _,               // default (not an entry-point knob)
             jk_digest: _,                 // default (not an entry-point knob)
+            gc_kernel: _,                 // default (not an entry-point knob)
             eri_route: _,                 // default (solver output)
             relativistic: _,              // lowered
         } = RhfConfig::default();

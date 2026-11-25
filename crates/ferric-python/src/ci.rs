@@ -150,6 +150,7 @@ fn run_casci(
         density_conv: scf_density_conv,
         gc_rotation: None,
         jk_digest: None,
+        gc_kernel: None,
     };
     let rhf = py
         .allow_threads(|| rhf_start(&sys, start, budget))
@@ -359,6 +360,7 @@ fn run_casscf(
         density_conv: scf_density_conv,
         gc_rotation: None,
         jk_digest: None,
+        gc_kernel: None,
     };
     let rhf = py
         .allow_threads(|| rhf_start(&sys, start, budget))
@@ -583,6 +585,7 @@ fn run_nevpt2(
         density_conv: scf_density_conv,
         gc_rotation: None,
         jk_digest: None,
+        gc_kernel: None,
     };
     let rhf = py
         .allow_threads(|| rhf_start(&sys, start, budget))

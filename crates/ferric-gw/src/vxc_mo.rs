@@ -42,6 +42,9 @@ pub struct JkRoute {
     /// `RhfConfig::jk_digest` (`ferric_scf::quartet_scatter::JkDigest`;
     /// `None`: `FERRIC_JK_DIGEST`, then `pair`).
     pub jk_digest: Option<ferric_scf::quartet_scatter::JkDigest>,
+    /// `RhfConfig::gc_kernel` (`ferric_scf::direct_jk::gc_kernel`; `None`:
+    /// `FERRIC_GC_KERNEL`, then `off`).
+    pub gc_kernel: Option<ferric_scf::direct_jk::GcKernel>,
 }
 
 impl JkRoute {
@@ -50,6 +53,7 @@ impl JkRoute {
         JkRoute {
             gc_rotation: config.gc_rotation,
             jk_digest: config.jk_digest,
+            gc_kernel: config.gc_kernel,
         }
     }
 }
@@ -187,6 +191,8 @@ fn add_exact_exchange(
         bounds.gc.set_request(route.gc_rotation);
         // ... and its J/K digest.
         bounds.digest.set(route.jk_digest);
+        // ... and its shared-primitive kernel.
+        bounds.gc_kernel.set(route.gc_kernel);
         for (d, v) in pairs.iter_mut() {
             let n = d.nrows();
             let (mut j, mut k) = (Array2::<f64>::zeros((n, n)), Array2::<f64>::zeros((n, n)));

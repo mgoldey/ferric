@@ -6348,6 +6348,11 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "gc_rotation"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "gc_kernel"
    }
   ],
   "run_double_hybrid": [
@@ -9246,6 +9251,11 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "gc_rotation"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "gc_kernel"
    }
   ],
   "run_rhf_gamma": [
@@ -10002,6 +10012,11 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "gc_rotation"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "gc_kernel"
    }
   ],
   "run_rohf_gamma": [
@@ -10378,6 +10393,11 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "gc_rotation"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "gc_kernel"
    }
   ],
   "run_roks_gamma": [
@@ -11465,6 +11485,11 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "gc_rotation"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "gc_kernel"
    }
   ],
   "run_uhf_gamma": [
@@ -11856,6 +11881,11 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "gc_rotation"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "gc_kernel"
    }
   ],
   "run_uks_gamma": [

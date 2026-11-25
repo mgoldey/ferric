@@ -1041,6 +1041,60 @@ Done:
    structure), and packed shell-pair-blocked D/J layouts for the `E34`
    gather.
 
+-  Shared-primitive `(ss|ss)` / `(ss|sp)` kernel on the rotated walk
+   (perf5 phase 3, "b2-s"). `ferric-integrals/src/gc_kernel.rs`
+   (`GcKernelBasis`): the groups of a `RotatedBasis` (its rotation groups,
+   `RotatedBasis::groups`, split into runs of columns sharing a nonzero
+   exponent), libint-normalised `n_union × m` coefficient matrices, per
+   ordered group pair with `l_a + l_b ≤ 1` the primitive-pair data
+   (libint's `Original` screen at the walk's engine precision, the
+   same-group s fold), a 7th-order Taylor Boys table, the `(ss|ss)` F0
+   kernel and the `l_ab + l_cd = 1` VRR/HRR kernel; `gather` copies one
+   column quartet out in libint's layout and function order. Coulomb only
+   (the walk checks the bounds' operator). Wiring
+   (`ferric-scf/src/direct_jk/gc_kernel.rs`): on the rotated walk of
+   `DirectJK` only (`Walk::kernel`: rotated, pair digest, Coulomb, setting
+   `auto`), closed and open shell, full and incremental. The bra-pair list
+   is reordered group first (`group_first`: the first member of an ordered
+   bra group pair pulls the others in after it), striped across MPI ranks
+   by whole buckets and partitioned by whole buckets (`Partition::Units`,
+   at least `deterministic_group_size` pairs per group), all pure functions
+   of the list. `PairSpec::with_gc_kernel` gives every group accumulator a
+   `KernelCache` (blocks keyed by the ket group pair, dropped when the bra
+   bucket changes); `scatter_bra_pair_probed` asks it for every survivor
+   with `l1+l2+l3+l4 ≤ 1` (`PairJk::kernel_quartet`): the group block is
+   evaluated on the bucket's first survivor in that ket group pair, the
+   column quartet gathered and digested by the same `PairJk::quartet`, in
+   the same canonical order; everything else goes to libint unchanged.
+   Screening, counting and the reduction are unchanged, so thread-count
+   bit-identity holds by construction. Switch: `GcKernel` (`auto` | `off`,
+   default `off` for this release), `RhfConfig::gc_kernel` /
+   `[scf] gc_kernel` / `FERRIC_GC_KERNEL`, resolved config > env > default
+   from a `GcKernelSlot` on `SchwarzBounds` (field `gc_kernel`, shared by
+   clones and the rotated bounds, like `digest`), agreed across MPI ranks
+   (`GcKernelSlot::mode_collective`); `off` is the walk without the kernel
+   bit for bit, its bra-pair order and partition included. Recorded by the
+   SCF drivers and `df_increments`, copied by the KS Z-vector, taken by the
+   CASSCF direct backend (`CasScfConfig::gc_kernel`, `ScfStart`), GW
+   (`JkRoute`) and `mbd_scf`, passed by the CLI (and refused, like
+   `jk_digest`, by the RI-MP2-family and `pdep-rpa` gradient tasks). In the
+   checkpoint identity as `gc_kernel`, resolved (Route); a file without it
+   reads as `off`. Python: `gc_kernel=` on the entries that take
+   `gc_rotation=`. `FERRIC_TIMING` adds the kernel's thread-seconds to the
+   group line and a line with its quartets, group evaluations and reuse.
+   Tests: the kernel against libint integral by integral
+   (`gc_kernel/tests.rs`), `ferric-scf/tests/gc_kernel.rs` (J/K and SCF
+   energies against the libint walk, the probe `gc_kernel::kernel_probe`,
+   bitwise off / segmented / unrotated / legacy, thread identity), the
+   checkpoint identity tests. Follow-ups: flip the default to `auto` after
+   a release (and re-measure on a quiet box); the pooled builds
+   (`rhf::build_jk_with_pool`: Newton, stability, CPHF, Z-vector) and
+   `DirectJ` / `DirectK` stay on libint and could take the same cache;
+   b2-full (p and d classes) needs a kernel that beats libint there, which
+   the prototype's generic VRR does not (0.3–0.9×); the per-survivor
+   lookup (group and pair indirections, a hash probe) could be hoisted
+   per ket group pair.
+
 Next, each as its own PR following the patterns above:
 
 8d. (rest) What 8c and the first part of 8d left loose: (b) the ferric-scf

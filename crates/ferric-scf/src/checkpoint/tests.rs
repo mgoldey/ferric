@@ -1112,6 +1112,15 @@ fn identity_table() -> Vec<(&'static str, FieldClass, Mutator)> {
                 _ => JkDigest::Legacy,
             });
         }),
+        ("gc_kernel", Route, |s| {
+            // The setting the unset baseline does not resolve to, whatever
+            // `FERRIC_GC_KERNEL` this process inherited.
+            use crate::direct_jk::GcKernel;
+            s.config.gc_kernel = Some(match GcKernel::env_setting() {
+                Ok(GcKernel::Auto) => GcKernel::Off,
+                _ => GcKernel::Auto,
+            });
+        }),
         ("relativistic", Method, |s| {
             s.config.relativistic = Some(crate::x2c::Relativistic::X2c1e);
         }),
@@ -1385,6 +1394,66 @@ fn a_file_without_jk_digest_compares_as_legacy() {
     let mut older_current = current(JkDigest::Legacy);
     older_current.fields.retain(|f| f.name != "jk_digest");
     assert!(ck2.check(&older_current, &build, CLASSES_SKIP).is_err());
+}
+
+/// `gc_kernel` is recorded resolved: an unset key is the setting the run
+/// uses (`FERRIC_GC_KERNEL`, then `off`), in its canonical spelling.
+#[test]
+fn gc_kernel_identity_is_the_resolved_setting() {
+    use crate::direct_jk::GcKernel;
+    let identity = |g: Option<GcKernel>| {
+        let mut s = Scenario::water(Spin::Restricted);
+        s.config.gc_kernel = g;
+        s.identity()
+    };
+    let field = |id: &ScfIdentity| {
+        id.fields
+            .iter()
+            .find(|f| f.name == "gc_kernel")
+            .unwrap()
+            .value
+            .clone()
+    };
+    let env = GcKernel::env_setting().unwrap();
+    assert_eq!(identity(None), identity(Some(env)));
+    assert_eq!(field(&identity(Some(GcKernel::Auto))), "auto");
+    assert_eq!(field(&identity(Some(GcKernel::Off))), "off");
+}
+
+/// A checkpoint written before `gc_kernel` existed (the field absent) ran
+/// libint throughout and compares as `off`: a skip into an `off` run is
+/// accepted, a skip into an `auto` run is refused naming `gc_kernel`, and a
+/// guess into it only logs (Route).
+#[test]
+fn a_file_without_gc_kernel_compares_as_off() {
+    use crate::direct_jk::GcKernel;
+    let current = |g: GcKernel| {
+        let mut s = Scenario::water(Spin::Restricted);
+        s.config.gc_kernel = Some(g);
+        s.identity()
+    };
+    let mut ck = final_ck(Spin::Restricted);
+    ck.identity = current(GcKernel::Off);
+    ck.identity.fields.retain(|f| f.name != "gc_kernel");
+    let build = clean_build();
+    let ok = ck
+        .check(&current(GcKernel::Off), &build, CLASSES_SKIP)
+        .unwrap();
+    assert!(ok.warnings.is_empty() && ok.logged.is_empty());
+    let err = ck
+        .check(&current(GcKernel::Auto), &build, CLASSES_SKIP)
+        .unwrap_err();
+    let CheckpointError::Identity(found) = &err else {
+        panic!("{err}");
+    };
+    assert_eq!(found.len(), 1, "{err}");
+    assert_eq!(found[0].name, "gc_kernel");
+    assert_eq!(found[0].file.as_deref(), Some("off"));
+    assert_eq!(found[0].current.as_deref(), Some("auto"));
+    let guess = ck
+        .check(&current(GcKernel::Auto), &build, ReadMode::Guess)
+        .unwrap();
+    expect_guess(FieldClass::Route, &guess, "gc_kernel");
 }
 
 /// The `k_builder` identity value is the spelling's `Debug` text, exactly
@@ -1940,6 +2009,7 @@ fn each_process_setting_reaches_the_identity_from_the_environment() {
         ),
         // Recorded through the resolved config field.
         ("FERRIC_JK_DIGEST", "legacy", "jk_digest"),
+        ("FERRIC_GC_KERNEL", "auto", "gc_kernel"),
     ] {
         let changed = key(&[(variable, value)]);
         let moved: Vec<&str> = changed
