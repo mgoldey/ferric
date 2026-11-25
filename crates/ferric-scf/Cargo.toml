@@ -19,6 +19,8 @@ ndarray = { workspace = true }
 ndarray-linalg = { workspace = true }
 # npz only: checkpoints are Stored-only (checkpoint/format.rs), so the default
 # compressed_npz (zip deflate + zopfli) is dead code in the wheel.
+# default-features = false also drops the other default, num-complex-0_4
+# (complex-element .npy read/write); nothing here stores complex arrays.
 ndarray-npy = { version = "0.9", default-features = false, features = ["npz"] }
 openblas-src = { workspace = true }
 rayon = { workspace = true }

@@ -242,10 +242,10 @@ jobs:
       # The skip now lives at the WORKFLOW level instead: `cache-hit` from
       # this restore step gates the docker-build step below via `if:`.
       #
-      # native-deps-v2, not v1: deliberately a DIFFERENT namespace than the
-      # pre-#16 cache key (which was native-deps-${{ NATIVE_DEPS_CACHE_VERSION
-      # == v1 }}-...), so a stale entry from before this job existed can never
-      # get restored here by coincidence.
+      # The key starts native-deps-<NATIVE_DEPS_CACHE_VERSION>- (v3 since the
+      # no-KXC libxc; see the job env above). Each bump is a new namespace:
+      # v2 kept this job apart from the pre-#16 v1 entries, and v3 keeps the
+      # KXC-on libxc builds of v2 from ever being restored here.
       #
       # This key's NAME never collides with ci.yml's (`libint-*`, `cargo-v3-*`
       # -- disjoint prefixes), but GitHub Actions caches are budgeted PER

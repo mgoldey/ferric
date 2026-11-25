@@ -13,6 +13,8 @@ ferric-dft = { path = "../ferric-dft" }
 ferric-integrals = { path = "../ferric-integrals" }
 ndarray = { workspace = true }
 # Writes Stored npz only (NpzWriter::new); no deflate/zopfli in the wheel.
+# default-features = false also drops the other default, num-complex-0_4
+# (complex-element .npy read/write); every exported array is real.
 ndarray-npy = { version = "0.9", default-features = false, features = ["npz"] }
 thiserror = { workspace = true }
 rayon = { workspace = true }
