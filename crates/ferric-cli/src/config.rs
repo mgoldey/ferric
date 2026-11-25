@@ -5270,6 +5270,7 @@ impl Config {
         self.scf.validate()?;
         self.check_ri_j_precision_against_mixed_kernels()?;
         self.validate_guess_basis_keys()?;
+        self.validate_jk_digest_key()?;
         self.mp2.linlccd_variant()?;
         self.cc_ladder()?;
         self.local_model()?;
@@ -5424,6 +5425,25 @@ impl Config {
                  geometry and never reads guess_basis, so it would be silently ignored. Remove \
                  it, or use task = \"energy\"",
                 self.method.task
+            ));
+        }
+        Ok(())
+    }
+
+    /// `[scf] jk_digest` on a PDEP-RPA geometry run (`task = "optimize"` or
+    /// `"frequencies"`): its gradient (`total_rpa_gradient_by`) solves the
+    /// reference at each geometry without the caller's `RhfConfig`, so the
+    /// key would be silently ignored; refused, as `guess_basis` is. (The
+    /// RI-MP2 family refuses it where its gradient route is resolved,
+    /// `rimp2_gradient_scf_jk`.)
+    fn validate_jk_digest_key(&self) -> Result<(), String> {
+        let (kind, task) = (self.method.kind.as_str(), self.method.task.as_str());
+        if self.scf.jk_digest.is_some() && kind == "pdep-rpa" && is_gradient_task(task) {
+            return Err(format!(
+                "[scf] jk_digest is not read by method.kind = \"{kind}\" with task = \
+                 \"{task}\": its gradient solves the reference SCF at each geometry without \
+                 the [scf] settings, so it would be silently ignored. Remove it; \
+                 FERRIC_JK_DIGEST selects the digest of those builds"
             ));
         }
         Ok(())
@@ -11247,6 +11267,32 @@ json = [1, 2]
         }
         for kind in ["rhf", "ksdft", "uhf", "rohf"] {
             assert_eq!(cfg(kind, "optimize").validate_guess_basis_keys(), Ok(()));
+        }
+    }
+
+    /// `[scf] jk_digest` on a PDEP-RPA geometry run is refused (its gradient
+    /// never reads it); its energy, and the SCF kinds' geometry runs, keep it.
+    #[test]
+    fn jk_digest_is_refused_by_the_pdep_rpa_gradient_tasks() {
+        let cfg = |kind: &str, task: &str| {
+            let src = format!(
+                "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n[basis]\nname = \"sto-3g\"\n\
+                 [method]\nkind = \"{kind}\"\ntask = \"{task}\"\n[scf]\njk_digest = \"legacy\"\n"
+            );
+            toml::from_str::<Config>(&src).expect("test config must parse")
+        };
+        for task in ["optimize", "frequencies"] {
+            let e = cfg("pdep-rpa", task)
+                .validate_jk_digest_key()
+                .expect_err("jk_digest must be refused on this gradient run");
+            assert!(
+                e.contains("[scf] jk_digest") && e.contains("pdep-rpa") && e.contains(task),
+                "{e}"
+            );
+        }
+        assert_eq!(cfg("pdep-rpa", "energy").validate_jk_digest_key(), Ok(()));
+        for kind in ["rhf", "uhf"] {
+            assert_eq!(cfg(kind, "optimize").validate_jk_digest_key(), Ok(()));
         }
     }
 
