@@ -366,6 +366,11 @@ pub struct KernelCounts {
     pub evals: usize,
     /// Column quartets those evaluations computed (surviving or not).
     pub columns: usize,
+    /// Bra buckets the block caches started (a cache drops its blocks at
+    /// each).
+    pub buckets: usize,
+    /// Group accumulators whose cache started at least one bucket.
+    pub caches: usize,
 }
 
 impl KernelCounts {
@@ -373,6 +378,8 @@ impl KernelCounts {
         self.quartets += o.quartets;
         self.evals += o.evals;
         self.columns += o.columns;
+        self.buckets += o.buckets;
+        self.caches += o.caches;
     }
 }
 
@@ -426,6 +433,7 @@ impl<'k> KernelCache<'k> {
         let b = bucket(self.kb, s1, s2)?;
         if self.bra != Some(b) {
             self.bra = Some(b);
+            self.counts.buckets += 1;
             self.map.clear();
             self.last = None;
             self.arena.clear();

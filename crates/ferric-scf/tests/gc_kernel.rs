@@ -2,7 +2,7 @@
 //! (`[scf] gc_kernel`, `ferric_scf::direct_jk::gc_kernel`).
 //!
 //! * Tolerance: J and K with the kernel on against the libint walk (kernel
-//!   off), both rotated, at a fixed density: max |Δ| ≤ 1e-12 (closed and open
+//!   off), both rotated, at a fixed density: max |Δ| ≤ 1e-13 (closed and open
 //!   shell, full and incremental, Schwarz and CSB screening, cc-pVDZ /
 //!   aug-cc-pVDZ / cc-pVTZ, a Cartesian basis, a ghost atom, a mixed basis,
 //!   an ECP basis). SCF energies (RHF, UHF, ROHF) within 1e-10 Ha.
@@ -34,7 +34,7 @@ use ferric_scf::uhf::solve_uhf;
 use ndarray::Array2;
 
 const THRESH: f64 = 1e-12;
-const JK_TOL: f64 = 1e-12;
+const JK_TOL: f64 = 1e-13;
 const E_TOL: f64 = 1e-10;
 
 fn load(stem: &str, multiplicity: usize) -> Molecule {
@@ -98,16 +98,45 @@ fn jk(
     d2: Option<&Array2<f64>>,
     rot: GcRotate,
 ) -> (Array2<f64>, Array2<f64>, Vec<KernelCounts>) {
+    let (j, k, c, _) = jk_counted(prep, b, d, d2, rot);
+    (j, k, c)
+}
+
+/// [`jk`] and the quartets the builds report computed.
+fn jk_counted(
+    prep: &PreparedBasis,
+    b: &SchwarzBounds,
+    d: &Array2<f64>,
+    d2: Option<&Array2<f64>>,
+    rot: GcRotate,
+) -> (Array2<f64>, Array2<f64>, Vec<KernelCounts>, usize) {
     let ctx = ParallelContext::default();
     let n = prep.nbasis();
     let mut djk = DirectJK::new(&ctx, prep, b, THRESH, usize::MAX).with_gc_rotation(rot);
     let (mut j, mut k) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
     kernel_probe::start();
-    djk.build(d, &mut j, &mut k).unwrap();
+    let mut computed = djk.build(d, &mut j, &mut k).unwrap();
     if let Some(d2) = d2 {
-        djk.build_incremental(&(d2 - d), &mut j, &mut k).unwrap();
+        computed += djk.build_incremental(&(d2 - d), &mut j, &mut k).unwrap();
     }
-    (j, k, kernel_probe::take())
+    (j, k, kernel_probe::take(), computed)
+}
+
+/// Reduction groups per walk in the multi-bucket runs
+/// (`reduce::with_target_groups`): few enough that every group holds
+/// several bra buckets, so a block cache crosses bucket boundaries.
+const FEW_GROUPS: usize = 6;
+
+/// The kernel's caches started at least four buckets each on average.
+fn assert_multi_bucket(c: &[KernelCounts], what: &str) {
+    for x in c {
+        assert!(
+            x.caches > 0 && x.buckets >= 4 * x.caches,
+            "{what}: {} buckets over {} caches",
+            x.buckets,
+            x.caches
+        );
+    }
 }
 
 /// Open-shell J, K_α, K_β, and the probe's counts.
@@ -164,6 +193,8 @@ fn cases() -> Vec<(String, Molecule, BasisSet, ScreeningKind)> {
         ("c2h4", "cc-pvdz", ScreeningKind::Csb),
         ("c2h4", "aug-cc-pvdz", ScreeningKind::Schwarz),
         ("ch3oh", "cc-pvtz", ScreeningKind::Schwarz),
+        // A heavier all-electron atom: Cl cc-pVTZ (5 s, 4 p columns).
+        ("hcl", "cc-pvtz", ScreeningKind::Schwarz),
     ] {
         v.push((format!("{stem}/{name}"), load(stem, 1), b(name), kind));
     }
@@ -195,40 +226,60 @@ fn cases() -> Vec<(String, Molecule, BasisSet, ScreeningKind)> {
 }
 
 /// Kernel on against the libint walk, both rotated: closed shell (full and
-/// incremental) and open shell, within 1e-12; the probe sees the kernel
-/// serve quartets with `auto` and none with `off`.
+/// incremental) and open shell, within 1e-13; the same quartets computed;
+/// the probe sees the kernel serve quartets with `auto` and none with
+/// `off`. Each case runs with the production partition (one bra pair per
+/// reduction group on these sizes) and with [`FEW_GROUPS`] groups, where
+/// every group's block cache crosses several bra buckets.
 #[test]
 fn kernel_jk_matches_the_libint_walk() {
-    for (label, mol, bs, kind) in cases() {
-        let prep = PreparedBasis::new(&mol, &bs).unwrap();
-        let n = prep.nbasis();
-        let (d, d2) = (density(n, 0), density(n, 3));
-        let off = bounds(&prep, kind, Some(GcKernel::Off), None);
-        let on = bounds(&prep, kind, Some(GcKernel::Auto), None);
-        let (j0, k0, c0) = jk(&prep, &off, &d, Some(&d2), GcRotate::Auto);
-        let (j1, k1, c1) = jk(&prep, &on, &d, Some(&d2), GcRotate::Auto);
-        assert_eq!(c0.len(), 2, "{label}: two rotated pair-digest builds");
-        assert_eq!(served(&c0), 0, "{label}: off served quartets");
-        assert!(served(&c1) > 0, "{label}: the kernel never ran");
-        let (ej, ek) = (max_abs(&j1, &j0), max_abs(&k1, &k0));
-        eprintln!(
-            "{label} {kind:?} RHF: max|dJ| {ej:.2e} max|dK| {ek:.2e}; kernel {:?}",
-            c1[0]
-        );
-        assert!(ej <= JK_TOL && ek <= JK_TOL, "{label}: {ej:e} {ek:e}");
-        // Exactly symmetric, as the libint walk's.
-        assert!(bits_equal(&j1, &j1.t().to_owned()), "{label} J");
-        assert!(bits_equal(&k1, &k1.t().to_owned()), "{label} K");
-        let (d_a, d_b) = (density(n, 1), density(n, 2));
-        let (u0, c0) = jk_uhf(&prep, &off, &d_a, &d_b, GcRotate::Auto);
-        let (u1, c1) = jk_uhf(&prep, &on, &d_a, &d_b, GcRotate::Auto);
-        assert_eq!(served(&c0), 0, "{label} UHF");
-        assert!(served(&c1) > 0, "{label} UHF: the kernel never ran");
-        for (x, (a, b)) in ["J", "Ka", "Kb"].iter().zip(u1.iter().zip(&u0)) {
-            let e = max_abs(a, b);
-            eprintln!("{label} {kind:?} UHF: max|d{x}| {e:.2e}");
-            assert!(e <= JK_TOL, "{label} UHF {x}: {e:e}");
+    for groups in [None, Some(FEW_GROUPS)] {
+        for case in cases() {
+            match groups {
+                None => compare_case(case, false),
+                Some(g) => ferric_scf::reduce::with_target_groups(g, || compare_case(case, true)),
+            }
         }
+    }
+}
+
+fn compare_case((label, mol, bs, kind): (String, Molecule, BasisSet, ScreeningKind), multi: bool) {
+    let label = format!("{label}{}", if multi { " (few groups)" } else { "" });
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let n = prep.nbasis();
+    let (d, d2) = (density(n, 0), density(n, 3));
+    let off = bounds(&prep, kind, Some(GcKernel::Off), None);
+    let on = bounds(&prep, kind, Some(GcKernel::Auto), None);
+    let (j0, k0, c0, n0) = jk_counted(&prep, &off, &d, Some(&d2), GcRotate::Auto);
+    let (j1, k1, c1, n1) = jk_counted(&prep, &on, &d, Some(&d2), GcRotate::Auto);
+    assert_eq!(c0.len(), 2, "{label}: two rotated pair-digest builds");
+    assert_eq!(served(&c0), 0, "{label}: off served quartets");
+    assert!(served(&c1) > 0, "{label}: the kernel never ran");
+    assert_eq!(n1, n0, "{label}: the kernel changed the computed quartets");
+    if multi {
+        assert_multi_bucket(&c1, &label);
+    }
+    let (ej, ek) = (max_abs(&j1, &j0), max_abs(&k1, &k0));
+    eprintln!(
+        "{label} {kind:?} RHF: max|dJ| {ej:.2e} max|dK| {ek:.2e}; kernel {:?}",
+        c1[0]
+    );
+    assert!(ej <= JK_TOL && ek <= JK_TOL, "{label}: {ej:e} {ek:e}");
+    // Exactly symmetric, as the libint walk's.
+    assert!(bits_equal(&j1, &j1.t().to_owned()), "{label} J");
+    assert!(bits_equal(&k1, &k1.t().to_owned()), "{label} K");
+    let (d_a, d_b) = (density(n, 1), density(n, 2));
+    let (u0, c0) = jk_uhf(&prep, &off, &d_a, &d_b, GcRotate::Auto);
+    let (u1, c1) = jk_uhf(&prep, &on, &d_a, &d_b, GcRotate::Auto);
+    assert_eq!(served(&c0), 0, "{label} UHF");
+    assert!(served(&c1) > 0, "{label} UHF: the kernel never ran");
+    if multi {
+        assert_multi_bucket(&c1, &format!("{label} UHF"));
+    }
+    for (x, (a, b)) in ["J", "Ka", "Kb"].iter().zip(u1.iter().zip(&u0)) {
+        let e = max_abs(a, b);
+        eprintln!("{label} {kind:?} UHF: max|d{x}| {e:.2e}");
+        assert!(e <= JK_TOL, "{label} UHF {x}: {e:e}");
     }
 }
 
@@ -303,38 +354,55 @@ fn off_and_inapplicable_cases_are_bitwise() {
 }
 
 /// With the kernel on, J and K (closed and open shell) are bitwise
-/// identical at 1, 2 and 4 threads.
+/// identical at 1, 2 and 4 threads, with the production partition and with
+/// [`FEW_GROUPS`] groups (several bra buckets per block cache).
 #[test]
 fn kernel_jk_is_bitwise_across_thread_counts() {
-    for (stem, name) in [("c2h4", "cc-pvdz"), ("water", "aug-cc-pvdz")] {
-        let mol = load(stem, 1);
-        let prep = PreparedBasis::new(&mol, &basis::bundled(name).unwrap()).unwrap();
-        let on = bounds(&prep, ScreeningKind::Schwarz, Some(GcKernel::Auto), None);
-        let n = prep.nbasis();
-        let (d_a, d_b) = (density(n, 1), density(n, 2));
-        let run = |threads: usize| {
-            let pool = rayon::ThreadPoolBuilder::new()
-                .num_threads(threads)
-                .build()
-                .unwrap();
-            pool.install(|| {
-                let (j, k, _) = jk(&prep, &on, &d_a, Some(&d_b), GcRotate::Auto);
-                let (u, _) = jk_uhf(&prep, &on, &d_a, &d_b, GcRotate::Auto);
-                (j, k, u)
-            })
-        };
-        let (j1, k1, u1) = run(1);
-        for threads in [2, 4] {
-            let (j, k, u) = run(threads);
-            assert!(
-                bits_equal(&j, &j1) && bits_equal(&k, &k1),
-                "{stem}/{name} {threads} threads"
-            );
-            assert!(
-                u.iter().zip(&u1).all(|(x, y)| bits_equal(x, y)),
-                "{stem}/{name} {threads} threads UHF"
-            );
+    for groups in [None, Some(FEW_GROUPS)] {
+        for (stem, name) in [("c2h4", "cc-pvdz"), ("water", "aug-cc-pvdz")] {
+            thread_identity(stem, name, groups);
         }
+    }
+}
+
+fn thread_identity(stem: &str, name: &str, groups: Option<usize>) {
+    let mol = load(stem, 1);
+    let prep = PreparedBasis::new(&mol, &basis::bundled(name).unwrap()).unwrap();
+    let on = bounds(&prep, ScreeningKind::Schwarz, Some(GcKernel::Auto), None);
+    let n = prep.nbasis();
+    let (d_a, d_b) = (density(n, 1), density(n, 2));
+    let run = |threads: usize| {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            let go = || {
+                let (j, k, c) = jk(&prep, &on, &d_a, Some(&d_b), GcRotate::Auto);
+                let (u, cu) = jk_uhf(&prep, &on, &d_a, &d_b, GcRotate::Auto);
+                if groups.is_some() {
+                    assert_multi_bucket(&c, "thread identity");
+                    assert_multi_bucket(&cu, "thread identity UHF");
+                }
+                (j, k, u)
+            };
+            match groups {
+                None => go(),
+                Some(g) => ferric_scf::reduce::with_target_groups(g, go),
+            }
+        })
+    };
+    let (j1, k1, u1) = run(1);
+    for threads in [2, 4] {
+        let (j, k, u) = run(threads);
+        assert!(
+            bits_equal(&j, &j1) && bits_equal(&k, &k1),
+            "{stem}/{name} {threads} threads"
+        );
+        assert!(
+            u.iter().zip(&u1).all(|(x, y)| bits_equal(x, y)),
+            "{stem}/{name} {threads} threads UHF"
+        );
     }
 }
 

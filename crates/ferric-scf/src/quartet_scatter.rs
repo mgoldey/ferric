@@ -159,7 +159,9 @@ impl<'d> JkMode<'d> {
                     .fetch_add(p.quartets, std::sync::atomic::Ordering::Relaxed);
                 if let Some(c) = &p.gck {
                     if let Ok(mut k) = p.spec.kernel.lock() {
-                        k.add(&c.counts);
+                        let mut mine = c.counts;
+                        mine.caches = usize::from(mine.buckets > 0);
+                        k.add(&mine);
                     }
                 }
                 p.mats

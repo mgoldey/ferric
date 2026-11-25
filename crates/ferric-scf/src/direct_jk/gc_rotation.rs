@@ -908,6 +908,34 @@ mod tests {
         assert!(ps.iter().all(|p| Arc::ptr_eq(p, &ps[0])));
     }
 
+    /// A rotated build with the shared-primitive kernel on builds the kernel
+    /// data at the precision of the walk's engines
+    /// (`engine_pool::eri_precision`), and caches it once.
+    #[test]
+    fn kernel_data_uses_the_walk_precision() {
+        use crate::direct_jk::{DirectJK, GcKernel};
+        let (_, prep) = water(0.1);
+        let b = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+        b.gc_kernel.set(Some(GcKernel::Auto));
+        let ctx = ferric_core::parallel::ParallelContext::default();
+        let n = prep.nbasis();
+        let d = Array2::from_shape_fn((n, n), |(i, j)| 0.1 / (1.0 + (i + j) as f64));
+        let (mut j, mut k) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
+        let mut djk =
+            DirectJK::new(&ctx, &prep, &b, 1e-12, usize::MAX).with_gc_rotation(GcRotate::Auto);
+        djk.build(&d, &mut j, &mut k).unwrap();
+        let r = b.gc.rotation(&prep, &b, GcRotate::Auto).unwrap().unwrap();
+        let want = ferric_integrals::engine_pool::eri_precision();
+        let first = {
+            let g = r.kernel.lock().unwrap();
+            let (key, kb) = g.as_ref().expect("the build made the kernel data");
+            assert_eq!(*key, want.to_bits());
+            assert_eq!(kb.precision().to_bits(), want.to_bits());
+            kb.clone()
+        };
+        assert!(Arc::ptr_eq(&first, &r.kernel_basis(want).unwrap()));
+    }
+
     #[test]
     fn parse_is_strict_and_canonical() {
         assert_eq!(GcRotate::parse_str("auto"), Ok(GcRotate::Auto));

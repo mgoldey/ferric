@@ -185,10 +185,39 @@ pub fn band_bytes_after_worker_scratch(
 /// per-group nbf² partial allocation over many work items.
 pub const TARGET_GROUPS: usize = 1024;
 
+thread_local! {
+    /// [`with_target_groups`]'s override of [`TARGET_GROUPS`] on this thread.
+    static TARGET_GROUPS_OVERRIDE: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Run `f` with [`deterministic_group_size`] on THIS thread splitting into at
+/// most `target` groups instead of [`TARGET_GROUPS`]: a test knob, so a small
+/// molecule's work list gets several work units per reduction group (the
+/// production count leaves one bra pair per group below 1024 pairs). The
+/// partition stays a pure function of the work list; the builders compute it
+/// on the thread that calls them, so set it inside a `pool.install` closure,
+/// not around it. Restored when `f` returns or unwinds. Not part of the API.
+#[doc(hidden)]
+pub fn with_target_groups<R>(target: usize, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<usize>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TARGET_GROUPS_OVERRIDE.with(|c| c.set(self.0));
+        }
+    }
+    let _restore = Restore(TARGET_GROUPS_OVERRIDE.with(|c| c.replace(Some(target.max(1)))));
+    f()
+}
+
 /// Thread-count-independent group size for `n_items` work items: `n_items`
-/// split into at most [`TARGET_GROUPS`] equal groups (each ≥ 1 item).
+/// split into at most [`TARGET_GROUPS`] equal groups (each ≥ 1 item), or
+/// the count a test set with [`with_target_groups`].
 pub fn deterministic_group_size(n_items: usize) -> usize {
-    n_items.div_ceil(TARGET_GROUPS).max(1)
+    let target = TARGET_GROUPS_OVERRIDE
+        .with(|c| c.get())
+        .unwrap_or(TARGET_GROUPS);
+    n_items.div_ceil(target).max(1)
 }
 
 /// Deterministic, memory-bounded parallel accumulation.
