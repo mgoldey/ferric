@@ -961,6 +961,14 @@ impl RotatedBasis {
         })
     }
 
+    /// The rotation groups: shells (ascending) of one atom and `l` whose
+    /// parent columns share an exponent list, a partition of all shells, in
+    /// order of their first member. A shell nothing rotates is its own
+    /// group or shares one with its exponent-list siblings.
+    pub fn groups(&self) -> &[Vec<usize>] {
+        &self.groups
+    }
+
     /// Number of AO functions (parent and rotated alike).
     pub fn nbasis(&self) -> usize {
         self.nbasis
