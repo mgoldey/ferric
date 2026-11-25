@@ -124,10 +124,11 @@ pub const OO_BUILDS_EXACT_OR_RIJK: &str = "orbital-optimised MP2 rebuilds J/K at
 /// geometry from this choice alone, so it also carries the reference's
 /// `jk_digest` ([`RhfConfig::jk_digest`], CLI `[scf] jk_digest`): those
 /// drivers write it into the reference's config, whose SCF records it on
-/// the Schwarz bounds the SCF and its response builds share. Build one with
+/// its Schwarz bounds (which the closed-shell response reuses). Build one with
 /// [`ScfJk::exact`], [`ScfJk::rijk`] or [`ScfJk::resolve`] (each leaves the
 /// digest unset) and [`ScfJk::with_jk_digest`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ScfJk {
     /// How J and K are built.
     pub mode: ScfJkMode,
@@ -135,8 +136,8 @@ pub struct ScfJk {
     /// [`ScfJkMode::Exact`].
     pub aux: Option<String>,
     /// The digest of the reference's direct four-centre J/K builds
-    /// ([`RhfConfig::jk_digest`]): `None` leaves it to `FERRIC_JK_DIGEST`,
-    /// then `pair`. Read only by the drivers that build their reference
+    /// ([`RhfConfig::jk_digest`]): `None` leaves the reference config's own
+    /// value (unset: `FERRIC_JK_DIGEST`, then `pair`). Read only by the drivers that build their reference
     /// from this choice (the RI-MP2-family gradients); [`Self::apply`]
     /// leaves the config's own value alone.
     pub jk_digest: Option<crate::quartet_scatter::JkDigest>,

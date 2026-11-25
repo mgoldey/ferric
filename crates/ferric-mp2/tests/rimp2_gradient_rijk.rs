@@ -44,7 +44,7 @@ use ferric_core::basis::{self, BasisSet};
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_mp2::gradient::{exact_scf_jk, total_rimp2_gradient_on};
+use ferric_mp2::gradient::total_rimp2_gradient_on;
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::scf_jk::ScfJk;
@@ -140,7 +140,7 @@ fn check(label: &str, xyz: &str, cfg: &RiMp2Config) {
             worst = worst.max(d);
         }
     }
-    let (e_ex, g_ex) = analytic(&mol, &obs, &aux, cfg, &exact_scf_jk());
+    let (e_ex, g_ex) = analytic(&mol, &obs, &aux, cfg, &ScfJk::exact());
     let dg = (&g_fit - &g_ex).iter().fold(0.0f64, |m, v| m.max(v.abs()));
     eprintln!(
         "{label}: max |analytic - FD| = {worst:.3e} (bar {BAR:.0e}); RI-JK fit error: \

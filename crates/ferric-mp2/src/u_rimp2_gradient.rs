@@ -1028,9 +1028,12 @@ pub(crate) fn solve_reference(
     let dfbs = PreparedBasis::new(mol, aux_basis)?;
     let mut cfg = scf_base.for_geometry_task();
     scf_jk.apply(&mut cfg);
-    // The route's J/K digest: the SCF records it on `bounds`, which the
-    // response builds reuse.
-    cfg.jk_digest = scf_jk.jk_digest;
+    // The route's J/K digest, when it names one (unset keeps `scf_base`'s):
+    // the UHF records it on `bounds`. Its direct J/K builds follow it; the
+    // open-shell response build keeps the legacy digest.
+    if scf_jk.jk_digest.is_some() {
+        cfg.jk_digest = scf_jk.jk_digest;
+    }
     if let (ScfJkMode::RiJk, Some(aux)) = (scf_jk.mode, scf_jk.aux.as_deref()) {
         let budget = ferric_core::memory::resolve_budget_bytes(mp2_config.memory_budget_bytes);
         let shape = crate::gradient_memory::UnrestrictedFittedGradientShape::new(

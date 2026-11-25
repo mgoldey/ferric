@@ -1069,13 +1069,14 @@ pub fn total_rimp2_gradient_warm(
         op,
         mp2_config,
         ext,
-        &exact_scf_jk(),
+        &ScfJk::exact(),
         warm,
     )
 }
 
 /// The four-centre reference: [`ScfJk`] `"exact"` with the direct exchange
 /// builder.
+#[deprecated(note = "use ferric_scf::scf_jk::ScfJk::exact()")]
 pub fn exact_scf_jk() -> ScfJk {
     ScfJk::exact()
 }
@@ -1241,9 +1242,12 @@ pub(crate) fn solve_rhf_reference(
     // the four-centre route).
     let mut rhf_cfg = RhfConfig::gradient_reference(ext.cloned()).for_geometry_task();
     scf_jk.apply(&mut rhf_cfg);
-    // The route's J/K digest: the SCF records it on `bounds`, which the
-    // Z-vector response reuses.
-    rhf_cfg.jk_digest = scf_jk.jk_digest;
+    // The route's J/K digest, when it names one (unset keeps the base
+    // config's): the SCF records it on `bounds`, which the Z-vector
+    // response reuses.
+    if scf_jk.jk_digest.is_some() {
+        rhf_cfg.jk_digest = scf_jk.jk_digest;
+    }
     if let (ScfJkMode::RiJk, Some(aux)) = (scf_jk.mode, scf_jk.aux.as_deref()) {
         // The fitted route keeps the reference's RI-J/RI-K tensors through
         // the gradient: check the whole peak before any integral, and size
@@ -1415,7 +1419,7 @@ mod tests {
             ),
         ];
         for (op, scaling) in cases {
-            let jk = exact_scf_jk();
+            let jk = ScfJk::exact();
             let (e_drv, _) = total_mp2_gradient_scaled_on(
                 &mol,
                 &obs_bs,
@@ -1479,7 +1483,7 @@ mod tests {
             Operator::coulomb(),
             &cfg,
             None,
-            &exact_scf_jk(),
+            &ScfJk::exact(),
             &mut ScfWarmStart::new(false),
         )
         .unwrap();

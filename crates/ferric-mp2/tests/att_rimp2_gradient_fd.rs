@@ -329,7 +329,7 @@ fn att_driver_energy_is_the_attenuated_energy() {
         &case.aux,
         &case.config,
         None,
-        &ferric_mp2::gradient::exact_scf_jk(),
+        &ferric_scf::scf_jk::ScfJk::exact(),
         &mut ScfWarmStart::new(false),
     )
     .unwrap();

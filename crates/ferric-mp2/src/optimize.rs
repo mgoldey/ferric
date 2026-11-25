@@ -12,7 +12,7 @@
 //! `total_u_terfc_rimp2_gradient_on`), SCS-MP2(2terfc)
 //! (`scs_2terfc_gradient`), and the OO-RI-MP2 zero-response gradient.
 
-use crate::gradient::{exact_scf_jk, total_rimp2_gradient_on, total_scs_mp2_gradient_on};
+use crate::gradient::{total_rimp2_gradient_on, total_scs_mp2_gradient_on};
 use crate::rimp2::RiMp2Config;
 use ferric_core::basis::BasisSet;
 use ferric_core::external_potential::ExternalPotential;
@@ -68,7 +68,7 @@ pub fn optimize_geometry_rimp2(
         mp2_config,
         opt_config,
         ext,
-        &exact_scf_jk(),
+        &ScfJk::exact(),
     )
 }
 

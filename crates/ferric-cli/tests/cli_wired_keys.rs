@@ -905,7 +905,7 @@ fn terfc_gradient_frequencies_match_the_library() {
     let aux = basis::bundled("cc-pvdz-ri").unwrap();
     let sto = basis::bundled("sto-3g").unwrap();
     let g631 = basis::bundled("6-31g").unwrap();
-    let jk = ferric_mp2::gradient::exact_scf_jk();
+    let jk = ferric_scf::scf_jk::ScfJk::exact();
     let scs = |fc: usize| ScsMp2TerfcConfig {
         r0_bonded: 0.8 * a2b,
         r0_nonbonded: 1.2 * a2b,

@@ -388,6 +388,7 @@ impl RpaGradientMethod {
 /// reference's J/K digest (CLI `[scf] jk_digest`). A bare
 /// [`RpaGradientMethod`] converts with the digest unset.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct RpaGradientRoute {
     /// How the gradient is evaluated.
     pub method: RpaGradientMethod,

@@ -345,7 +345,7 @@ fn terfc_driver_energy_is_the_terfc_energy() {
         case.op,
         &case.ri,
         None,
-        &ferric_mp2::gradient::exact_scf_jk(),
+        &ferric_scf::scf_jk::ScfJk::exact(),
         &mut ScfWarmStart::new(false),
     )
     .unwrap();
