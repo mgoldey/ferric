@@ -4345,10 +4345,20 @@ fn fit_pair_slots(
     stats.pair_skip = pre.pair_skip;
     // The proof's tables and workers must fit what the budget leaves beside
     // the resident set; if not, every pair is fitted (the result of `Off`).
+    // Resident beside the proof: strips, metric, held `W`, every pair's
+    // candidate list and (κ screen) the per-occupied `q` vectors.
     let proof_fits = gate.is_none_or(|g| {
+        let qvirt_bytes = qvirt.as_ref().map_or(0, |(q, qmax)| {
+            8 * (q.iter().map(Vec::len).sum::<usize>() + qmax.len())
+        });
         let held = stats.memory.strips_bytes
             + stats.memory.metric_bytes
-            + own_w.iter().flatten().map(|w| 8 * w.len()).sum::<usize>();
+            + own_w.iter().flatten().map(|w| 8 * w.len()).sum::<usize>()
+            + pair_cands
+                .iter()
+                .map(|c| std::mem::size_of::<usize>() * c.len())
+                .sum::<usize>()
+            + qvirt_bytes;
         held + pair_proof_bytes(pre, dfbs.shell_dims(), unique.len()) <= g.budget_bytes
     });
     if !proof_fits && pre.pair_skip.evaluates() && eps > 0.0 {
@@ -7581,8 +7591,14 @@ mod stage_c_tests {
         pre.pair_skip = PairSkip::Off;
         let (r_off, s_off) = fit_skip(&su, &pre, eps, &dcfg);
         pre.pair_skip = PairSkip::On;
-        let n_pairs = kept_pairs(&pre.keep, su.spaces.no).len();
-        let proof = pair_proof_bytes(&pre, su.dfbs.shell_dims(), n_pairs);
+        let unique = kept_pairs(&pre.keep, su.spaces.no);
+        let proof = pair_proof_bytes(&pre, su.dfbs.shell_dims(), unique.len());
+        // every pair's candidate list stays resident beside the proof
+        let cands: usize = pair_candidates(&unique, &pre.virt_dom, &pre.strips, None, None, None)
+            .iter()
+            .map(|c| std::mem::size_of::<usize>() * c.len())
+            .sum();
+        assert!(cands > 0);
         // fit_skip's stats carry no stage-3 estimate, so nothing is resident
         // in the gate's accounting and the proof's own bytes decide
         let held = s_off.memory.strips_bytes + s_off.memory.metric_bytes;
@@ -7615,13 +7631,15 @@ mod stage_c_tests {
             .unwrap();
             (r, st)
         };
-        let (r_fit, s_fit) = run(held + proof + room);
+        let (r_fit, s_fit) = run(held + cands + proof + room);
         assert!(
             s_fit.n_pairs_proved_empty > 0,
             "control: the proof did not run"
         );
         assert!(same_ragged(&r_off, &r_fit));
-        let (r_over, s_over) = run(held + proof - 1);
+        // one byte short once the candidate lists are counted (PR #716
+        // review): uncounted, this budget would let the proof run
+        let (r_over, s_over) = run(held + cands + proof - 1);
         assert_eq!(
             s_over.n_pair_skip_bounded, 0,
             "the proof ran over the budget"
