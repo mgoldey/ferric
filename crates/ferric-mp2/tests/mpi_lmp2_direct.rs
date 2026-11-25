@@ -13,7 +13,8 @@
 //! mpirun --bind-to none -np 2 <bin> --nocapture --test-threads=1
 //! ```
 //!
-//! ferric never calls `MPI_Finalize`, so `mpirun` exits non-zero even when
+//! The libtest harness owns `main`, so nothing here can call
+//! `ferric_core::parallel::finalize_mpi`: `mpirun` exits non-zero even when
 //! every rank's tests pass; read the `test result:` lines.
 //!
 //! What a run at `-np 1` shows: the striped path with one rank is the serial

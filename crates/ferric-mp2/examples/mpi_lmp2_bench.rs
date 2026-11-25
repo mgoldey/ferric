@@ -53,10 +53,10 @@
 //!     -x RAYON_NUM_THREADS=k -x OPENBLAS_NUM_THREADS=1 $BIN
 //! ```
 //!
-//! ferric never calls `MPI_Finalize`, so `mpirun` exits non-zero even when
-//! every rank finished; judge the run by the output below, not by `$?`. The
-//! binary itself exits non-zero (and says why) if the ranks' `e_corr` differ
-//! by more than 1e-12 Ha.
+//! Every rank calls `ferric_core::parallel::finalize_mpi` before exiting, so
+//! `mpirun` exits 0 when the run succeeded and 1 (the binary says why) when
+//! the ranks' `e_corr` differ by more than 1e-12 Ha. A panic on any rank
+//! skips the finalize and `mpirun` reports an abnormal termination.
 //!
 //! ## Output
 //!
@@ -192,7 +192,11 @@ fn main() {
     ferric_core::blas_threads::init_threading();
     let args = parse_args();
     let ctx = ParallelContext::default();
-    if !in_rank_pool(&ctx, || run(&ctx, &args)) {
+    let agree = in_rank_pool(&ctx, || run(&ctx, &args));
+    // Every rank reaches this point with the same verdict (it follows a
+    // reduction), so all of them finalize; `mpirun` then exits 0 or 1.
+    ferric_core::parallel::finalize_mpi();
+    if !agree {
         std::process::exit(1);
     }
 }
