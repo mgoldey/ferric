@@ -66,6 +66,7 @@ check_stability = false                # diagnostic orbital-Hessian check of the
 # eri: four-centre J/K build: auto | direct | incore; not read here: only on a four-centre exchange route; this run fits K
 # gc_rotation: direct J/K contraction rotation: auto | rot1 | off (unset: FERRIC_GC_ROTATE, then auto); not read here: only on a four-centre exchange route; this run fits K
 # jk_digest: direct J/K quartet digest: pair | legacy (unset: FERRIC_JK_DIGEST, then pair); not read here: only on a four-centre J or K route; this run fits both
+# gc_kernel: shared-primitive (ss|ss)/(ss|sp) kernel of the rotated direct J/K walk: auto | off (unset: FERRIC_GC_KERNEL, then off); not read here: only on a four-centre exchange route; this run fits K
 # relativistic: x2c1e: spin-free X2C-1e core Hamiltonian (energy only); not read here: energies of the X2C kinds only
 # cosx_grid: COSX SCF grid; not read here: only with k_builder = "cosx" or jk = "rijcosx"
 # cosx_final_pass: COSX final pass on a larger grid; not read here: only with k_builder = "cosx" or jk = "rijcosx"

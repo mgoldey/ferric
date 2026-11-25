@@ -64,6 +64,7 @@ stability_descent = false   # follow a downhill mode at a saddle and re-converge
 # ri_k_precision: RI-K tensor storage precision: f64 | f32; not read here: only with RI-K
 # gc_rotation: direct J/K contraction rotation: auto | rot1 | off (unset: FERRIC_GC_ROTATE, then auto); unset by default: FERRIC_GC_ROTATE, then auto
 # jk_digest: direct J/K quartet digest: pair | legacy (unset: FERRIC_JK_DIGEST, then pair); unset by default: FERRIC_JK_DIGEST, then pair
+# gc_kernel: shared-primitive (ss|ss)/(ss|sp) kernel of the rotated direct J/K walk: auto | off (unset: FERRIC_GC_KERNEL, then off); unset by default: FERRIC_GC_KERNEL, then off
 # relativistic: x2c1e: spin-free X2C-1e core Hamiltonian (energy only); unset by default: nonrelativistic
 # cosx_grid: COSX SCF grid; not read here: only with k_builder = "cosx" or jk = "rijcosx"
 # cosx_final_pass: COSX final pass on a larger grid; not read here: only with k_builder = "cosx" or jk = "rijcosx"
