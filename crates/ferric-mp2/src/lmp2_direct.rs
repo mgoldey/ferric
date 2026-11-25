@@ -1071,8 +1071,9 @@ fn gather_strip_into(
 /// passes `keep_w = false` over it; otherwise each `W_i` is dropped as soon
 /// as its q is taken (one worker's `W` at a time). Under a rank stripe
 /// `needed` marks the occupieds with a strip here; the others get an empty
-/// q and `qmax = 0`. With `floor`, each occupied also gets its
-/// [`OwnFloor`] (the pair skip's eigenvalue floor, from `L_i⁻¹`).
+/// q and `qmax = 0`. `floor` ([`FloorMode`]) adds each occupied's
+/// [`OwnFloor`] (the pair skip's eigenvalue floor, from `L_i⁻¹`), or computes
+/// only that.
 #[allow(clippy::too_many_arguments)]
 fn whiten_own_domains(
     no: usize,
@@ -1085,7 +1086,7 @@ fn whiten_own_domains(
     aux_radius_bohr: f64,
     keep_w: bool,
     needed: Option<&[bool]>,
-    floor: bool,
+    floor: FloorMode,
 ) -> Result<OwnWhitened, FerricError> {
     use rayon::prelude::*;
     let sq = scale.abs().sqrt();
@@ -1111,7 +1112,7 @@ fn whiten_own_domains(
         q: Vec::with_capacity(no),
         qmax: Vec::with_capacity(no),
         w: keep_w.then(|| Vec::with_capacity(no)),
-        floor: Vec::with_capacity(if floor { no } else { 0 }),
+        floor: Vec::with_capacity(if floor == FloorMode::No { 0 } else { no }),
     };
     for r in per_i {
         let (q, qm, w, f) = r?;
@@ -1120,11 +1121,21 @@ fn whiten_own_domains(
         if let (Some(ws), Some(w)) = (out.w.as_mut(), w) {
             ws.push(w);
         }
-        if floor {
+        if floor != FloorMode::No {
             out.floor.push(f);
         }
     }
     Ok(out)
+}
+
+/// Whether [`whiten_own_domains`] also computes the pair skip's
+/// [`OwnFloor`]: `No`, `Also` (with q), or `Only` (q left empty, `qmax = 0`;
+/// for occupieds whose q an earlier pass already holds).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FloorMode {
+    No,
+    Also,
+    Only,
 }
 
 /// One occupied's own-domain whitening ([`whiten_own_domains`]): `(q_i,
@@ -1142,14 +1153,14 @@ struct OwnInputs<'a> {
 }
 
 /// Occupied `i` of [`whiten_own_domains`]: `L_i = chol(V_{D_i D_i})`,
-/// `W_i = L_i⁻¹ B_i[D_i, :]`, `q_ia = sq·‖W_i[:, a]‖`, and with `floor` the
+/// `W_i = L_i⁻¹ B_i[D_i, :]`, `q_ia = sq·‖W_i[:, a]‖`, and per `floor` the
 /// pair skip's [`OwnFloor`] from the same `L_i`.
 fn whiten_one_own(
     w: &OwnInputs,
     i: usize,
     sq: f64,
     keep_w: bool,
-    floor: bool,
+    floor: FloorMode,
 ) -> Result<OwnPerI, FerricError> {
     let dom = &w.aux_dom[i];
     let dfuncs = shell_funcs(w.dfbs, dom);
@@ -1162,11 +1173,14 @@ fn whiten_one_own(
     }
     let what = format!("occupied {i} Schwarz diagonal");
     let vdd = gather_vdd(dom, w.dims_df, w.metric_blocks, &what)?;
-    let vfloor = floor.then(|| vdd.clone());
+    let vfloor = (floor != FloorMode::No).then(|| vdd.clone());
     let l = chol_lower(vdd, &what)?;
     let own = vfloor
         .map(|v| own_floor(&v, &l, (dom, w.dims_df, w.dfbs.nshells()), &what))
         .transpose()?;
+    if floor == FloorMode::Only {
+        return Ok((Vec::new(), 0.0, None, own));
+    }
     let wi = whiten(&l, gather_strip(w.strips, i, &dfuncs, None, &what)?, &what)?;
     let q: Vec<f64> = wi
         .columns()
@@ -1708,6 +1722,131 @@ fn row_shell_maxsq(st: &Strip, func_shell: &[usize], nsh: usize) -> Vec<f64> {
     t
 }
 
+/// What [`skip_prefilter`] reads: data stage 5 already holds.
+struct PrefilterIn<'a> {
+    aux_dom: &'a [Vec<usize>],
+    dims_df: &'a [usize],
+    fro2: &'a MetricFro2,
+    t: &'a [Vec<f64>],
+    scale: f64,
+}
+
+/// The pair skip's cost-only prefilter: per unique pair, whether
+/// [`pair_g_bound`] is worth evaluating under `On`. It never decides a skip;
+/// a pair it leaves out is fitted as before. Its cut is a lower bound on the
+/// γ-free terms `|scale|·(u_A v_A + u_B v_B)` that [`pair_g_bound`] compares
+/// with the same `cutoff`, from the strip-norm table `t` and the metric
+/// shell-block norms. With `f_P = ‖V_PP‖_F²` and `F_i = ‖V_{D_iD_i}‖_F ≥
+/// λ_max`, the own-domain norms obey `u_A ≥ √(max_{P∈D_i} t_i[P] / F_i)`
+/// (likewise `v_B` with `j`). Every diagonal element of `V_PP` is at most
+/// `√f_P`, so `λ ≤ λ_min ≤ m = min_P √f_P` and `‖L⁻¹[:, P]‖_F² = Σ_{k∈P}
+/// (V⁻¹)_kk ≥ dim_P/√f_P`; hence the cross norm `v_A ≥ min(√(Σ_{P∈D_i}
+/// t_j[P] / m_i), Σ_{P∈D_i} √(dim_P t_j[P] / √f_P))`, one term per
+/// alternative of [`pair_g_bound`], and `u_B` likewise over `B` with `m_j`.
+/// With `stage2 = Some((kept, qmax))`, only the pairs stage 1 kept are
+/// re-tested and the own norms are the computed `qmax` (at most `u_A`,
+/// since the inflation is ≥ 1). A pair whose lower bound (times 0.999
+/// against the rounding of these sums) reaches the cutoff fails the cutoff
+/// in [`pair_g_bound`] too (book `#integral-direct-pair-skip`).
+fn skip_prefilter(
+    pf: &PrefilterIn,
+    unique: &[(usize, usize)],
+    mine: Option<&[bool]>,
+    cutoff: f64,
+    stage2: Option<(&[bool], &[f64])>,
+) -> Vec<bool> {
+    use rayon::prelude::*;
+    let no = pf.aux_dom.len();
+    // per occupied: lower bound on its own-domain norm, and m_i
+    let own: Vec<(f64, f64)> = (0..no)
+        .into_par_iter()
+        .map(|i| {
+            let (ti, dom) = (&pf.t[i], &pf.aux_dom[i]);
+            if ti.is_empty() {
+                return (f64::NAN, f64::NAN);
+            }
+            let m = dom
+                .iter()
+                .map(|&p| pf.fro2.get(p, p).sqrt())
+                .fold(f64::INFINITY, f64::min);
+            let u = match stage2 {
+                Some((_, qmax)) => qmax[i],
+                None => {
+                    let tq = dom.iter().map(|&p| ti[p]).fold(0.0f64, f64::max);
+                    let vf2: f64 = dom
+                        .iter()
+                        .map(|&p| dom.iter().map(|&q| pf.fro2.get(p, q)).sum::<f64>())
+                        .sum();
+                    (tq / vf2.sqrt()).sqrt()
+                }
+            };
+            (u, m)
+        })
+        .collect();
+    // lower bound on the cross norm of strip `x` over `shells`, whitened by
+    // the occupied whose diagonal floor bound is `m`
+    let cross = |x: &[f64], shells: &mut dyn Iterator<Item = usize>, m: f64| -> f64 {
+        let (mut s, mut w) = (0.0f64, 0.0f64);
+        for p in shells {
+            s += x[p];
+            w += (pf.dims_df[p] as f64 * x[p] / pf.fro2.get(p, p).sqrt()).sqrt();
+        }
+        (s / m).sqrt().min(w)
+    };
+    let sc = pf.scale.abs();
+    unique
+        .par_iter()
+        .enumerate()
+        .map(|(px, &(i, j))| {
+            if i == j
+                || mine.is_some_and(|m| !m[px])
+                || pf.t[i].is_empty()
+                || pf.t[j].is_empty()
+                || stage2.is_some_and(|(kept, _)| !kept[px])
+            {
+                return false;
+            }
+            let (di, dj) = (&pf.aux_dom[i], &pf.aux_dom[j]);
+            let ((u_a, m_i), (v_b, m_j)) = (own[i], own[j]);
+            let v_a = cross(&pf.t[j], &mut di.iter().copied(), m_i);
+            let mut b = dj.iter().copied().filter(|q| di.binary_search(q).is_err());
+            let u_b = cross(&pf.t[i], &mut b, m_j);
+            // NaN (a block or a strip row missing) fails the comparison too
+            0.999 * sc * (u_a * v_a + u_b * v_b) < cutoff
+        })
+        .collect()
+}
+
+/// The occupieds the pairs marked in `a` read.
+fn occupieds_of(no: usize, unique: &[(usize, usize)], a: &[bool]) -> Vec<bool> {
+    let mut f = vec![false; no];
+    for (&(i, j), _) in unique.iter().zip(a).filter(|(_, &x)| x) {
+        f[i] = true;
+        f[j] = true;
+    }
+    f
+}
+
+/// Test-only replacement of the prefilter's cut ([`PrefilterMutant`]).
+#[cfg(test)]
+fn prefilter_mutate(
+    a: Vec<bool>,
+    unique: &[(usize, usize)],
+    mine: Option<&[bool]>,
+    m: PrefilterMutant,
+) -> Vec<bool> {
+    let ok = |px: usize| unique[px].0 != unique[px].1 && mine.is_none_or(|v| v[px]);
+    a.into_iter()
+        .enumerate()
+        .map(|(px, x)| match m {
+            PrefilterMutant::Normal => x,
+            PrefilterMutant::RejectAll => false,
+            PrefilterMutant::Invert => !x && ok(px),
+            PrefilterMutant::AttemptAll => ok(px),
+        })
+        .collect()
+}
+
 /// What every pair bound of [`pair_g_bound`] reads.
 struct SkipTables<'a> {
     aux_dom: &'a [Vec<usize>],
@@ -1834,19 +1973,6 @@ fn prove_empty_pairs(
     let (no, nsh) = (spaces.no, dfbs.nshells());
     let dims_df = dfbs.shell_dims();
     let needed = pre.stripe.as_ref().map(|s| s.needed.as_slice());
-    let own = whiten_own_domains(
-        no,
-        1.0,
-        &pre.aux_dom,
-        &pre.strips,
-        dims_df,
-        &pre.metric_blocks,
-        dfbs,
-        aux_radius_bohr,
-        false,
-        needed,
-        true,
-    )?;
     let mut func_shell = vec![0usize; dfbs.nbasis()];
     for (sh, (&off, &dim)) in dfbs.shell_offsets().iter().zip(dims_df).enumerate() {
         func_shell[off..off + dim].fill(sh);
@@ -1858,7 +1984,69 @@ fn prove_empty_pairs(
             _ => row_shell_maxsq(&pre.strips[i], &func_shell, nsh),
         })
         .collect();
+    // Under `On`, a pair whose γ-free terms already reach ε through the
+    // dressing cannot be proved empty: stop before the metric sum.
+    let cutoff = (pre.pair_skip == PairSkip::On).then(|| eps / gate_bound(1.0, fock));
+    // Under `On`, the cost-only prefilter ([`skip_prefilter`]): a pair whose
+    // lower bound on the γ-free terms already reaches the cutoff is not
+    // attempted, and an occupied no attempted pair reads gets no floor (its
+    // pairs are fitted as before). Stage 1 uses norm tables only; stage 2
+    // adds the computed own-domain norms of the occupieds stage 1 keeps.
     let fro2 = MetricFro2::new(&pre.metric_blocks);
+    let whiten_for = |need: Option<&[bool]>, floor: FloorMode| {
+        whiten_own_domains(
+            no,
+            1.0,
+            &pre.aux_dom,
+            &pre.strips,
+            dims_df,
+            &pre.metric_blocks,
+            dfbs,
+            aux_radius_bohr,
+            false,
+            need,
+            floor,
+        )
+    };
+    let attempt: Option<(Vec<bool>, Vec<bool>, OwnWhitened)> = match cutoff {
+        None => None,
+        Some(c) => {
+            let pf = PrefilterIn {
+                aux_dom: &pre.aux_dom,
+                dims_df,
+                fro2: &fro2,
+                t: &t,
+                scale,
+            };
+            let a1 = skip_prefilter(&pf, unique, mine, c, None);
+            let had_q = occupieds_of(no, unique, &a1);
+            let q = whiten_for(Some(&had_q), FloorMode::No)?;
+            let a2 = skip_prefilter(&pf, unique, mine, c, Some((&a1, &q.qmax)));
+            #[cfg(test)]
+            let a2 = prefilter_mutate(a2, unique, mine, pre.prefilter_mutant);
+            Some((a2, had_q, q))
+        }
+    };
+    let own = match &attempt {
+        None => whiten_for(needed, FloorMode::Also)?,
+        Some((a, had_q, q)) => {
+            // floors for the attempted pairs' occupieds, reusing stage 2's
+            // q; an occupied without one (only a test mutant attempts such
+            // a pair) gets it now, never a zero qmax
+            let want = occupieds_of(no, unique, a);
+            let only: Vec<bool> = want.iter().zip(had_q).map(|(&w, &h)| w && h).collect();
+            let rest: Vec<bool> = want.iter().zip(had_q).map(|(&w, &h)| w && !h).collect();
+            let mut own = whiten_for(Some(&only), FloorMode::Only)?;
+            let fresh = whiten_for(Some(&rest), FloorMode::Also)?;
+            own.qmax.clone_from(&q.qmax);
+            for i in (0..no).filter(|&i| rest[i]) {
+                own.qmax[i] = fresh.qmax[i];
+                own.floor[i] = fresh.floor[i].clone();
+            }
+            own
+        }
+    };
+    let attempt = attempt.map(|(a, _, _)| a);
     let tb = SkipTables {
         aux_dom: &pre.aux_dom,
         dims_df,
@@ -1868,14 +2056,11 @@ fn prove_empty_pairs(
         #[cfg(test)]
         mutant: pre.bound_mutant,
     };
-    // Under `On`, a pair whose γ-free terms already reach ε through the
-    // dressing cannot be proved empty: stop before the metric sum.
-    let cutoff = (pre.pair_skip == PairSkip::On).then(|| eps / gate_bound(1.0, fock));
     let g_bound: Vec<f64> = unique
         .par_iter()
         .enumerate()
         .map(|(px, &(i, j))| {
-            if i == j || mine.is_some_and(|m| !m[px]) {
+            if i == j || mine.is_some_and(|m| !m[px]) || attempt.as_ref().is_some_and(|a| !a[px]) {
                 return f64::NAN;
             }
             pair_g_bound(&tb, i, j, scale, cutoff).unwrap_or(f64::NAN)
@@ -3318,6 +3503,20 @@ struct StripsAndMetric {
     /// real bound; below 1 weakens it, which the anchor and audit must see).
     #[cfg(test)]
     bound_mutant: f64,
+    /// Test-only prefilter mutant ([`skip_prefilter`]): `Normal`, or one
+    /// that attempts nothing, inverts the cut, or attempts every pair.
+    #[cfg(test)]
+    prefilter_mutant: PrefilterMutant,
+}
+
+/// Test-only replacements for [`skip_prefilter`]'s cut.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrefilterMutant {
+    Normal,
+    RejectAll,
+    Invert,
+    AttemptAll,
 }
 
 /// Stages 1–4 of [`assemble_ragged_direct_local`]: gate and maps
@@ -3471,6 +3670,8 @@ fn strips_and_metric(
         pair_skip,
         #[cfg(test)]
         bound_mutant: 1.0,
+        #[cfg(test)]
+        prefilter_mutant: PrefilterMutant::Normal,
     })
 }
 
@@ -3622,8 +3823,9 @@ fn schwarz_screen(
             let keep = stats.own_w_bytes <= dcfg.scratch_budget_bytes;
             let (aux_dom, strips) = (&pre.aux_dom, &pre.strips);
             let needed = pre.stripe.as_ref().map(|s| s.needed.as_slice());
+            let nf = FloorMode::No;
             let o = whiten_own_domains(
-                no, scale, aux_dom, strips, dims_df, mb, dfbs, r, keep, needed, false,
+                no, scale, aux_dom, strips, dims_df, mb, dfbs, r, keep, needed, nf,
             )?;
             Ok((Some((o.q, o.qmax)), o.w))
         }
@@ -6585,7 +6787,7 @@ mod stage_c_tests {
                 10.0,
                 false,
                 None,
-                false,
+                FloorMode::No,
             )
             .unwrap();
             (o.q, o.qmax)
@@ -6712,7 +6914,7 @@ mod stage_c_tests {
                             dcfg.aux_radius_bohr,
                             false,
                             None,
-                            false,
+                            FloorMode::No,
                         )
                         .unwrap();
                         let (q_old, _) = inverse_oracle::schwarz_virtual_q_inverse_oracle(
@@ -6959,7 +7161,35 @@ mod stage_c_tests {
                 s_on.n_pairs_proved_empty > 0,
                 "w={w}: the skip reaches no pair (vacuous)"
             );
+            // the prefilter (On only) prunes nothing the proof would take
             assert_eq!(s_on.n_pairs_proved_empty, s_aud.n_pairs_proved_empty);
+            assert!(
+                s_on.n_pair_skip_bounded < s_aud.n_pair_skip_bounded,
+                "w={w}: the prefilter pruned no attempt ({} vs {})",
+                s_on.n_pair_skip_bounded,
+                s_aud.n_pair_skip_bounded
+            );
+            // prefilter mutants: it only removes attempts, so whatever it
+            // decides, the system keeps its bits and nothing new is proved
+            for m in [
+                PrefilterMutant::RejectAll,
+                PrefilterMutant::Invert,
+                PrefilterMutant::AttemptAll,
+            ] {
+                pre.prefilter_mutant = m;
+                let (r_m, s_m) = fit_skip(&su, &pre, eps, &dcfg);
+                assert!(same_ragged(&r_off, &r_m), "w={w}: {m:?} changed the system");
+                assert!(s_m.n_pairs_proved_empty <= s_aud.n_pairs_proved_empty);
+                match m {
+                    PrefilterMutant::RejectAll => assert_eq!(s_m.n_pairs_proved_empty, 0),
+                    PrefilterMutant::Invert => assert_eq!(
+                        s_m.n_pairs_proved_empty, 0,
+                        "w={w}: a pair the cut rejects was proved (the cut is not a lower bound)"
+                    ),
+                    _ => assert_eq!(s_m.n_pairs_proved_empty, s_aud.n_pairs_proved_empty),
+                }
+            }
+            pre.prefilter_mutant = PrefilterMutant::Normal;
             assert!(
                 s_on.n_pairs_proved_empty <= s_off.n_pairs_empty,
                 "w={w}: more proved than empty"

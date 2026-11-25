@@ -614,17 +614,50 @@ turns the skip on for erfc and terfc and off for Coulomb.
 > the $\gamma^2$ remainder (claim 4); the eigenvalue floor (claim 5); and
 > the dressed-gate bound on random Fock matrices (claim 6); the
 > shift-verified eigenvalue floor (claim 7); and the shell-wise
-> alternatives for $u_B$, $v_A$ and $\gamma$ (claim 8).
+> alternatives for $u_B$, $v_A$ and $\gamma$ (claim 8); and the prefilter's
+> lower bound on $u_Av_A$ (claim 9).
 >
 > | | |
 > |---|---|
-> | Proof | `scripts/lmp2_attenuated_pair_skip_sympy.py`, claims 1 to 8 |
-> | Negative control | the runner drops the $\gamma^2$ remainder (claim 4 fails), and six more mutations |
+> | Proof | `scripts/lmp2_attenuated_pair_skip_sympy.py`, claims 1 to 9 |
+> | Negative control | the runner drops the $\gamma^2$ remainder (claim 4 fails), and seven more mutations |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-mp2/src/lmp2_pair_skip.rs::{fitted_bound,eigen_floor,verified_floor,proved_empty}` |
 > | Code test | `pair_skip_is_bitwise_and_its_audit_holds_under_erfc` in `crates/ferric-mp2/src/lmp2_direct.rs` |
 >
 > <!-- verified: id=lmp2.pair-skip; script=scripts/lmp2_attenuated_pair_skip_sympy.py; claim=4; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/lmp2_pair_skip.rs::{fitted_bound,eigen_floor,verified_floor,proved_empty}; registry=local-mp2 -->
+
+**A cost-only prefilter.** Under `on` the bound is not evaluated for every
+pair. The $\gamma$-free terms $|s|(u_Av_A + u_Bv_B)$ already decide most
+pairs: once they reach $\varepsilon$ divided by the dressing, no value of
+$\gamma$ can prove the pair. The prefilter bounds those terms from below
+with data stage 5 already holds, the strip table $t$ and the metric
+shell-block norms. Write $f_P = \lVert V_{PP}\rVert_F^2$, $F_i = \lVert
+V_{D_iD_i}\rVert_F \ge \lambda_{\max}$ and $m_i = \min_{P\in D_i}\sqrt{f_P}$.
+Every diagonal element of $V_{PP}$ is at most $\sqrt{f_P}$, so $\lambda \le
+\lambda_{\min} \le m_i$, and $\lVert L^{-1}[:,P]\rVert_F^2 = \sum_{k\in P}
+(V^{-1})_{kk} \ge \dim P/\sqrt{f_P}$. Then
+
+- the own-domain norm satisfies $u_A \ge \sqrt{\max_{P\in D_i} t_i[P]/F_i}$;
+- both alternatives for the cross norm give $v_A \ge
+  \min\big(\sqrt{\sum_{P\in D_i} t_j[P]/m_i},\ \sum_{P\in D_i}\sqrt{\dim P\,
+  t_j[P]/\sqrt{f_P}}\big)$;
+- $v_B$ and $u_B$ follow with $i$ and $j$ exchanged, over $B$.
+
+The prefilter runs in two stages. Stage 1 uses these table bounds alone.
+Stage 2 whitens the occupieds that stage 1 keeps, which is the cheap part
+of the own-domain work, and replaces the bounds on $u_A$ and $v_B$ by the
+computed own norms; the norm inflation is at least 1. Only the occupieds
+of pairs that survive stage 2 get the eigenvalue floor, the Cholesky
+inverse and the power iteration, about three quarters of the bound's
+cost. A pair whose lower bound, times 0.999, reaches the cutoff is not
+attempted.
+
+The prefilter decides cost only. A pair it leaves out is fitted as
+before, so a wrong cut can lose a skip but never cause one. Claim 9 of
+the proof checks the lower bound. In code, an inverted cut must prove
+nothing, and the filtered and unfiltered runs must prove the same pairs.
+The audit mode does not prefilter.
 
 **What is measured.** On n-alkanes with 6-31G / cc-pVDZ-RI, $\varepsilon =
 10^{-4}$, the production maps, the Fock screen on and erfc at $\omega =
@@ -641,9 +674,15 @@ one node with 6 threads (provisional; raw data and drivers in the wiki note
 Each entry is the mean of two runs; the correlation energy has the same bits
 with the skip on and off in every run. At $\omega = 1$ Bohr$^{-1}$ (one run
 each) the skip proves 1025 of 3514 empty pairs at C$_{32}$ and 4329 of 8690
-at C$_{48}$, where the LMP2 wall drops from 92.3 to 59.9 s. The bound itself
-costs 0.5 s at C$_{20}$ and 1.5 to 1.8 s at C$_{48}$; at C$_{20}$, where it
-proves almost nothing, that is a 7% loss.
+at C$_{48}$, where the LMP2 wall drops from 92.3 to 59.9 s. The table was
+measured without the prefilter; the bound itself then cost 0.5 s at
+C$_{20}$ and 1.5 to 1.8 s at C$_{48}$, and at C$_{20}$, where it proves
+almost nothing, that was a 7% loss. With the prefilter (same settings, two
+runs each) the bound costs 0.2 s at C$_{20}$, 1.0 s at C$_{32}$ and 1.8 s at
+C$_{48}$, and proves the same pairs. C$_{20}$ is still slower than with the
+skip off: stage 5 takes 0.33 s longer on average, because the 22 occupieds
+the proof needs still get their floors. At C$_{32}$ the LMP2 wall goes from
+29.4 to 25.9 s, and at C$_{48}$ from 93.0 to 67.4 s.
 
 Pairs end empty from about 10 Bohr between the Boys centroids, and every
 pair past 20 Bohr is empty. The proof starts near 42 Bohr (37 Bohr at

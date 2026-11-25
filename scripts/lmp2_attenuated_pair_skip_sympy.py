@@ -56,7 +56,17 @@ crates/ferric-python/tests/test_derivation_scripts.py):
   - drop the Fock weights from the dressed bound (marker "claim 6: dressed");
   - verify V + (sigma + c) I instead of V - (sigma + c) I, so a shift past
     lambda_min is accepted (marker "claim 7");
-  - square the shell norms in the shell-wise bound (marker "claim 8").
+  - square the shell norms in the shell-wise bound (marker "claim 8");
+  - inflate the prefilter's lower bound a hundredfold, past u_A v_A
+    (marker "claim 9").
+
+Claim 9 (the prefilter). The code only attempts a pair whose cheap lower
+bound sqrt(max_P t_i[P] / F_i) * min(sqrt(sum_P t_j[P] / m_i),
+sum_P sqrt(dim_P t_j[P] / sqrt(f_P))) on u_A v_A stays below the cutoff, with
+f_P = ||V_PP||_F^2, F_i = ||V||_F >= lambda_max and m_i = min_P sqrt(f_P) >=
+min diag >= lambda_min; (V^-1)_kk >= 1/V_kk >= 1/sqrt(f_P) for k in P. It
+decides cost only (a pair left out is fitted), so a wrong cut can lose a
+skip but never cause one; the check confirms it loses none.
 
 Claim 7 (the shift-verified floor). Rump's theorem: for symmetric M with
 trace t, if the floating-point Cholesky of fl(M - cI) completes with
@@ -347,5 +357,38 @@ for trial in range(200):
     assert g_exact <= g_side * (1 + 1e-10), "claim 8: one-sided gamma FAILED"
 print(f"shell-wise bounds hold on 200 trials; max exact/shell-wise = {worst8:.3f}")
 assert worst8 > 0.3, "claim 8: shell-wise bound never approached (test is vacuous)"
+
+# ---------------------------------------------------------------------------
+# Claim 9: the cost-only prefilter's lower bound on the gamma-free term
+# ---------------------------------------------------------------------------
+section("claim 9: prefilter lower bound on u_A and v_A")
+worst9 = 0.0
+for trial in range(200):
+    n = int(rng.integers(6, 30))
+    V = spd(n, 10.0 ** rng.uniform(1, 8)) * 10.0 ** rng.uniform(-2, 2)  # V_{D_i D_i}
+    shells = shell_split(n, int(rng.integers(2, min(n, 8))))
+    f = [np.sum(V[np.ix_(sh, sh)] ** 2) for sh in shells]  # ||V_PP||_F^2
+    F = np.linalg.norm(V)  # ||V||_F >= lambda_max
+    m = min(np.sqrt(fp) for fp in f)  # >= min diag >= lambda_min
+    ncol = int(rng.integers(1, 6))
+    Bi = rng.standard_normal((n, ncol)) * 10.0 ** rng.uniform(-6, 0, (n, 1))
+    bj = rng.standard_normal(n) * 10.0 ** rng.uniform(-6, 0, n)
+    ti = [max(np.sum(Bi[sh, a] ** 2) for a in range(ncol)) for sh in shells]
+    tj = [np.sum(bj[sh] ** 2) for sh in shells]
+    L = np.linalg.cholesky(V)
+    Linv = np.linalg.inv(L)
+    uA = max(np.linalg.norm(np.linalg.solve(L, Bi[:, a])) for a in range(ncol))
+    lam = np.linalg.eigvalsh(V)[0]
+    c = [np.linalg.norm(Linv[:, sh]) for sh in shells]
+    vA = min(np.sqrt(sum(tj) / lam), sum(ck * np.sqrt(t) for ck, t in zip(c, tj)))
+    v_lb = min(
+        np.sqrt(sum(tj) / m),
+        sum(np.sqrt(len(sh) * t / np.sqrt(fp)) for sh, t, fp in zip(shells, tj, f)),
+    )
+    lb = np.sqrt(max(ti) / F) * v_lb  # claim 9: prefilter
+    assert lb <= uA * vA * (1 + 1e-10), "claim 9: prefilter lower bound FAILED"
+    worst9 = max(worst9, lb / (uA * vA))
+print(f"prefilter lower bound holds on 200 trials; max lb/(u_A v_A) = {worst9:.3f}")
+assert worst9 > 1e-3, "claim 9: prefilter bound never approached (test is vacuous)"
 
 print("\nall claims hold")

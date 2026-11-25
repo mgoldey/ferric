@@ -1462,6 +1462,11 @@ CASES = [
                 "shellwise = sum(c[k] * np.linalg.norm(x[shells[k]]) ** 2 for k in Bsh)",
                 "claim 8: shell-wise triangle",
             ),
+            (
+                "lb = np.sqrt(max(ti) / F) * v_lb  # claim 9: prefilter",
+                "lb = np.sqrt(1e4 * max(ti) / F) * v_lb  # claim 9: prefilter",
+                "claim 9: prefilter lower bound",
+            ),
         ],
     ),
     (
