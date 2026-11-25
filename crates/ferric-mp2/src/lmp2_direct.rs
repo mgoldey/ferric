@@ -5126,8 +5126,19 @@ mod stage_b_tests {
             let (q, qp) = schwarz_triple_factors(op, &obs, &dfbs, &spaces, skip)
                 .unwrap()
                 .unwrap();
-            let (n_dropped, n_looser, worst) =
-                dropped_transformed_worst(&obs, &dfbs, op, &bounds.q, &q, &qp, &co, &cv, skip);
+            let (n_dropped, n_looser, worst) = dropped_transformed_worst(
+                &obs,
+                &dfbs,
+                op,
+                &CutFactors {
+                    q_raw: &bounds.q,
+                    q: &q,
+                    qp: &qp,
+                    co: &co,
+                    cv: &cv,
+                },
+                skip,
+            );
             eprintln!(
                 "transformed Schwarz bound: skip {skip:.0e}: {n_dropped} triples dropped, worst \
                  dropped contribution {worst:.3e}; max |C_v| {:.2}",
@@ -5151,18 +5162,31 @@ mod stage_b_tests {
     /// For the triples `(qp, q)` drop at `skip`: (count, count the raw-value
     /// factors `q_raw` keep, worst function-level transformed contribution
     /// `|(P|μν)|·(cᵒ_μ cᵛ_ν + cᵒ_ν cᵛ_μ)`).
-    #[allow(clippy::too_many_arguments)]
+    /// The cut factors `dropped_transformed_worst` compares: the old raw
+    /// pair factors, the new weighted ones, the aux factors, and the
+    /// per-function largest occupied / virtual coefficients.
+    struct CutFactors<'a> {
+        q_raw: &'a Array2<f64>,
+        q: &'a Array2<f64>,
+        qp: &'a [f64],
+        co: &'a [f64],
+        cv: &'a [f64],
+    }
+
     fn dropped_transformed_worst(
         obs: &PreparedBasis,
         dfbs: &PreparedBasis,
         op: Operator,
-        q_raw: &Array2<f64>,
-        q: &Array2<f64>,
-        qp: &[f64],
-        co: &[f64],
-        cv: &[f64],
+        f: &CutFactors,
         skip: f64,
     ) -> (usize, usize, f64) {
+        let CutFactors {
+            q_raw,
+            q,
+            qp,
+            co,
+            cv,
+        } = *f;
         let (dobs, oobs) = (obs.shell_dims(), obs.shell_offsets());
         let mut eng = Engine::new_3center(op, obs, dfbs, 1e-14).unwrap();
         let (mut n_dropped, mut n_looser, mut worst) = (0usize, 0usize, 0.0f64);
