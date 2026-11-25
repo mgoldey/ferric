@@ -6,7 +6,7 @@
 //! of E_RHF + E_c^RPA, or the analytic gradient, per
 //! [`RpaGradientMethod`](crate::gradient::RpaGradientMethod)).
 
-use crate::gradient::{total_rpa_gradient_by, RpaGradientMethod};
+use crate::gradient::{total_rpa_gradient_by, RpaGradientRoute};
 use crate::PdepRpaConfig;
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
@@ -41,7 +41,8 @@ pub struct RpaOptimizeResult {
 
 /// Optimize a molecular geometry on the RPA PES, the gradient from
 /// `gradient` (a central finite difference of the total RPA energy with a
-/// fresh RHF + PDEP-RPA at every displaced point, or the analytic gradient).
+/// fresh RHF + PDEP-RPA at every displaced point, or the analytic gradient;
+/// an [`RpaGradientRoute`] also carries the reference RHF's J/K digest).
 ///
 /// The search is [`ferric_scf::optimize::optimize_geometry_with_energy_gradient`]:
 /// the energy and gradient at a geometry are the closure below, and
@@ -54,8 +55,9 @@ pub fn optimize_geometry_rpa(
     op: Operator,
     rpa_config: &PdepRpaConfig,
     opt_config: &OptimizeConfig,
-    gradient: RpaGradientMethod,
+    gradient: impl Into<RpaGradientRoute>,
 ) -> Result<RpaOptimizeResult, FerricError> {
+    let gradient = gradient.into();
     // Each step's reference RHF starts from the previous step's, and the
     // displaced RHFs of its finite-difference gradient from that reference
     // (`opt_config.scf_warm_start`, see `ferric_scf::warm_start`).

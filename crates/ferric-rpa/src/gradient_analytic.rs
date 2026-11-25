@@ -28,7 +28,6 @@ use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::{Operator, OperatorKind};
 use ferric_mp2::rimp2::{compute_rpa_intermediates, Mp2Intermediates, RiMp2Config};
 use ferric_scf::result::ScfResult;
-use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::warm_start::{solve_rhf_warm, ScfWarmStart};
 use ferric_scf::PreparedAux;
@@ -285,12 +284,27 @@ pub fn rpa_analytic_gradient_warm(
     cfg: &PdepRpaConfig,
     warm: &mut ScfWarmStart,
 ) -> Result<RpaAnalyticGradient, FerricError> {
+    analytic_gradient_warm(mol, obs_basis, aux_basis, op, cfg, None, warm)
+}
+
+/// [`rpa_analytic_gradient_warm`] with the reference RHF's J/K digest
+/// `jk_digest` ([`crate::gradient::RpaGradientRoute::jk_digest`]): the SCF
+/// records it on the bounds the Z-vector response reuses.
+pub(crate) fn analytic_gradient_warm(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    op: Operator,
+    cfg: &PdepRpaConfig,
+    jk_digest: Option<ferric_scf::quartet_scatter::JkDigest>,
+    warm: &mut ScfWarmStart,
+) -> Result<RpaAnalyticGradient, FerricError> {
     check_analytic_scope(cfg, op)?;
     let ctx = ParallelContext::default();
     let obs = PreparedBasis::new(mol, obs_basis)?;
     let dfbs = PreparedBasis::new(mol, aux_basis)?;
     let bounds = SchwarzBounds::compute(op, &obs)?;
-    let rhf_cfg = RhfConfig::gradient_reference(None);
+    let rhf_cfg = crate::gradient::reference_config(jk_digest);
     let rhf = solve_rhf_warm(&ctx, mol, &obs, op, &bounds, &rhf_cfg, warm)?;
     if !rhf.converged {
         return Err(FerricError::ScfConvergence {
