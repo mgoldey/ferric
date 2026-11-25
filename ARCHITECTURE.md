@@ -980,6 +980,44 @@ Done:
    thread count), and phase 3 of the design (a shared-primitive kernel or
    libcint for the remaining ~1.9x to def2-SVP).
 
+-  Bra-pair-local J/K digest (perf5d). `quartet_scatter.rs`: `JkMode::Pair`
+   (one variant for the J+K, open-shell, J-only and K-only jobs, made by a
+   `PairSpec` that prepares the densities once per build), the kernel
+   `pair_quartet` (const-generic on the ket shell width n4 ∈ {1, 3, 5},
+   runtime otherwise, on J, the number of exchange channels and the
+   general-density form) and `PairSpec::finish` (`J = Jh + Jhᵀ`,
+   `K = Kb + Kbᵀ`, or `Kb + Ktᵀ` for a density not symmetric to roundoff:
+   `max|D − Dᵀ| ≤ 1e-14 · max(max|D|, 1)`, symmetrised explicitly when it
+   passes; UHF checks each spin and runs both on the general form if
+   either fails). `scatter_bra_pair_probed` calls `begin` / `quartet` /
+   `end` in place of its three digest branches; screening, counting and
+   interrupts are shared. Half partials are summed in the usual group
+   order (`reduce::ordered_stream_sum_many`), then finished, reduced
+   across ranks and added into the caller's J/K (the add-into contract of
+   `build_incremental`). Wired into `DirectJK` (closed and open shell; the
+   rotated walk follows because its rotated bounds share the parent's
+   record), `DirectJ`, `DirectK` and `rhf::build_jk_with_pool`. Switch:
+   `JkDigest` (`pair` default | `legacy`, the 8-fold scatter bit for bit),
+   `RhfConfig::jk_digest` / `[scf] jk_digest` / `FERRIC_JK_DIGEST`,
+   resolved config > env > default per build from a `DigestSlot` on
+   `SchwarzBounds` (field `digest`, shared by clones and by the rotated
+   bounds). Simpler than `GcSlot`: unrecorded bounds follow the variable
+   (there is no "never on fresh bounds" state), so `FERRIC_JK_DIGEST`
+   reaches every build in the process. The SCF drivers and
+   `df_increments` record the config's value; the KS Z-vector copies it,
+   the CASSCF direct backend (`CasScfConfig::jk_digest`, `ScfStart`) and
+   the GW exact exchange (`vxc_diagonal_mo_on_grids`) take it, and the CLI
+   passes `[scf] jk_digest` to all three (the CLI GW now also passes
+   `[scf] gc_rotation`, which its docs already promised). In the
+   checkpoint identity as `jk_digest` and `FERRIC_JK_DIGEST` (Route).
+   Python: the variable only. Tests: `ferric-scf/tests/jk_pair_digest.rs`
+   (pair against legacy, all builders and bases, symmetric and not) and
+   the unit tests in `quartet_scatter.rs`. Follow-ups: the open-shell
+   response build (`build_spin_jk_with_pool_homogeneous`) and the
+   block-CPHF `Multi` mode (lanes), LinK's K-only loop (same row
+   structure), and packed shell-pair-blocked D/J layouts for the `E34`
+   gather.
+
 Next, each as its own PR following the patterns above:
 
 8d. (rest) What 8c and the first part of 8d left loose: (b) the ferric-scf

@@ -168,29 +168,48 @@ fn pair_matches_legacy_cc_pvtz_f_shells() {
     check_closed("water/cc-pVTZ", &prep, 6);
 }
 
-/// The incremental build's `ΔD`: small, and only roundoff-asymmetric, takes
-/// the symmetric kernel (see `quartet_scatter::is_symmetric_to_roundoff`) and
-/// still matches.
+/// The incremental build's `ΔD`: small. Exactly symmetric, both digests
+/// agree to rounding relative to its own size; with a roundoff-size skew it
+/// still takes the symmetric kernel (the absolute floor of
+/// `quartet_scatter::is_symmetric_to_roundoff`), which moves K by at most the
+/// skew times a sum of integrals, far below the integral screen.
 #[test]
 fn pair_matches_legacy_on_a_small_delta_density() {
     let prep = setup("water.xyz", "cc-pvdz", 1);
     let n = prep.nbasis();
-    let a = density(n, 7, true);
-    let b = &a + &(1e-7 * &density(n, 8, true));
-    // A difference of two symmetric matrices plus a roundoff-size skew.
-    let mut dd = &b - &a;
-    dd[(0, 1)] += 1e-17;
+    let dd = 1e-7 * &density(n, 8, true);
+    let scale = |x: &Array2<f64>| x.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+    let max_diff = |p: &Array2<f64>, l: &Array2<f64>| {
+        p.iter()
+            .zip(l.iter())
+            .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()))
+    };
     let (jp, kp) = closed(&prep, JkDigest::Pair, &dd);
     let (jl, kl) = closed(&prep, JkDigest::Legacy, &dd);
-    let scale = |x: &Array2<f64>| x.iter().fold(0.0f64, |m, v| m.max(v.abs()));
     for (what, p, l) in [("J", &jp, &jl), ("K", &kp, &kl)] {
-        let diff = p
-            .iter()
-            .zip(l.iter())
-            .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()));
+        let diff = max_diff(p, l);
+        assert!(scale(l) > 1e-9, "ΔD {what}: vacuous");
         assert!(
-            diff <= 1e-12 * scale(l),
+            diff <= 1e-13 * scale(l),
             "ΔD {what}: max|pair - legacy| {diff:e}, max|X| {:e}",
+            scale(l)
+        );
+    }
+    // The same ΔD with a 1e-17 skew (the rounding asymmetry a difference of
+    // two O(1) densities carries).
+    let mut skewed = dd.clone();
+    skewed[(0, 1)] += 1e-17;
+    let (jp, kp) = closed(&prep, JkDigest::Pair, &skewed);
+    let (jl, kl) = closed(&prep, JkDigest::Legacy, &skewed);
+    for (what, p, l) in [("J", &jp, &jl), ("K", &kp, &kl)] {
+        let diff = max_diff(p, l);
+        assert!(
+            diff <= 1e-15,
+            "skewed ΔD {what}: max|pair - legacy| {diff:e}, max|X| {:e}",
+            scale(l)
+        );
+        eprintln!(
+            "skewed ΔD {what}: max|X| {:.3e}, max|pair - legacy| {diff:.2e}",
             scale(l)
         );
     }
