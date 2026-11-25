@@ -359,6 +359,26 @@ impl RotatedJk {
     }
 }
 
+/// `bytes` charged to the memory pool under `label` while the guard lives,
+/// on every MPI rank or on none: a rank whose reservation failed makes the
+/// others fail too, so no rank enters a build's collectives alone.
+pub(crate) fn reserve_collective(
+    ctx: &ferric_core::parallel::ParallelContext,
+    label: &str,
+    bytes: usize,
+) -> Result<ferric_core::memory::pool::Reservation, FerricError> {
+    let local = ferric_core::memory::pool::reserve_global(label, bytes);
+    if all_ranks_agree(ctx, local.is_ok()) {
+        return local;
+    }
+    match local {
+        Err(e) => Err(e),
+        Ok(_) => Err(FerricError::General(format!(
+            "{label}: the reservation failed on another MPI rank, so no rank runs the build"
+        ))),
+    }
+}
+
 /// Whether `local` holds on every MPI rank of `ctx` (a min all-reduce;
 /// `local` itself at one rank or without the `mpi` feature).
 fn all_ranks_agree(ctx: &ferric_core::parallel::ParallelContext, local: bool) -> bool {

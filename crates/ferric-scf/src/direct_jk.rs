@@ -179,6 +179,12 @@ pub struct DirectJK<'a> {
     gc: gc_rotation::GcState,
     /// Engines on the rotated shells, owned like `pool`.
     rot_pool: Option<crate::engine_pool::EnginePool>,
+    /// `max|D|` per exchange channel of the last full build's walk density
+    /// (one entry closed shell, two open shell; `None` before the first
+    /// full build, or when it ran the legacy digest): the reference of the
+    /// pair digest's symmetry check on an incremental build's `ΔD`
+    /// ([`crate::quartet_scatter::SymScale::Delta`]).
+    sym_ref: Option<Vec<f64>>,
 }
 
 impl<'a> std::fmt::Debug for DirectJK<'a> {
@@ -214,6 +220,7 @@ impl<'a> DirectJK<'a> {
             pool: None,
             gc: GcState::Pending(None),
             rot_pool: None,
+            sym_ref: None,
         }
     }
 
@@ -306,8 +313,10 @@ impl<'a> DirectJK<'a> {
         // `build` already accumulates `J(d)`/`K(d)` onto the caller's buffers via
         // `*j += &total_j; *k += &total_k`, and screens with `build_d_max_shell(d)`.
         // Passing `delta_d` (without the caller zeroing) is therefore exactly the
-        // incremental update — no separate kernel needed.
-        self.build(delta_d, j, k)
+        // incremental update — no separate kernel needed. The one difference:
+        // the pair digest judges `ΔD`'s symmetry against the last full
+        // density's scale (`quartet_scatter::is_symmetric_to_roundoff`).
+        self.build_with(delta_d, j, k, true)
     }
 
     /// Open-shell combined build: ONE quartet pass producing `J[D_α+D_β]`,
@@ -344,21 +353,44 @@ impl<'a> DirectJK<'a> {
         k_a: &mut Array2<f64>,
         k_b: &mut Array2<f64>,
     ) -> Result<usize, FerricError> {
+        self.build_uhf_with(d_total, d_a, d_b, j, k_a, k_b, false)
+    }
+
+    /// [`build_uhf`](Self::build_uhf) on full densities, or on the deltas of
+    /// [`build_uhf_incremental`](Self::build_uhf_incremental).
+    #[allow(clippy::too_many_arguments)]
+    fn build_uhf_with(
+        &mut self,
+        d_total: &Array2<f64>,
+        d_a: &Array2<f64>,
+        d_b: &Array2<f64>,
+        j: &mut Array2<f64>,
+        k_a: &mut Array2<f64>,
+        k_b: &mut Array2<f64>,
+        incremental: bool,
+    ) -> Result<usize, FerricError> {
         self.ctx.check_interrupted()?;
         if let Some(store) = crate::incore_jk::store_for(self.bounds, self.prep)? {
             store.add_uhf(d_total, d_a, d_b, j, k_a, k_b)?;
             return Ok(store.quartets());
         }
         self.resolve_gc()?;
-        if !self.rotated() {
-            return self.walk().build_uhf(d_total, d_a, d_b, j, k_a, k_b);
-        }
-        self.run_rotated(&[d_total, d_a, d_b], &mut [j, k_a, k_b], |mut w, d, x| {
-            let [jr, kar, kbr] = x else {
-                unreachable!("three outputs")
-            };
-            w.build_uhf(&d[0], &d[1], &d[2], jr, kar, kbr)
-        })
+        let reference = self.sym_ref.take();
+        let mut scales = None;
+        let sym = sym_scale(incremental, reference.as_deref());
+        let computed = if !self.rotated() {
+            self.walk()
+                .build_uhf(d_total, d_a, d_b, j, k_a, k_b, sym, &mut scales)
+        } else {
+            self.run_rotated(&[d_total, d_a, d_b], &mut [j, k_a, k_b], |mut w, d, x| {
+                let [jr, kar, kbr] = x else {
+                    unreachable!("three outputs")
+                };
+                w.build_uhf(&d[0], &d[1], &d[2], jr, kar, kbr, sym, &mut scales)
+            })
+        };
+        self.sym_ref = if incremental { reference } else { scales };
+        computed
     }
 
     /// Incremental open-shell Fock build: given the per-spin density CHANGES
@@ -396,8 +428,9 @@ impl<'a> DirectJK<'a> {
         // `build_uhf` already ACCUMULATES onto the caller's buffers and screens
         // on the spin sum of whatever densities it is handed, so passing the
         // deltas (without the caller zeroing) IS the incremental update — the
-        // same relationship `build_incremental` has to `build`.
-        self.build_uhf(delta_total, delta_a, delta_b, j, k_a, k_b)
+        // same relationship `build_incremental` has to `build` (the symmetry
+        // reference included).
+        self.build_uhf_with(delta_total, delta_a, delta_b, j, k_a, k_b, true)
     }
 
     /// Build J and K matrices simultaneously from a single pass over shell quartets.
@@ -412,21 +445,39 @@ impl<'a> DirectJK<'a> {
         j: &mut Array2<f64>,
         k: &mut Array2<f64>,
     ) -> Result<usize, FerricError> {
+        self.build_with(d, j, k, false)
+    }
+
+    /// [`build`](Self::build) on a full density, or on the `ΔD` of
+    /// [`build_incremental`](Self::build_incremental).
+    fn build_with(
+        &mut self,
+        d: &Array2<f64>,
+        j: &mut Array2<f64>,
+        k: &mut Array2<f64>,
+        incremental: bool,
+    ) -> Result<usize, FerricError> {
         self.ctx.check_interrupted()?;
         if let Some(store) = crate::incore_jk::store_for(self.bounds, self.prep)? {
             store.add_jk(d, j, k)?;
             return Ok(store.quartets());
         }
         self.resolve_gc()?;
-        if !self.rotated() {
-            return self.walk().build(d, j, k);
-        }
-        self.run_rotated(&[d], &mut [j, k], |mut w, d, x| {
-            let [jr, kr] = x else {
-                unreachable!("two outputs")
-            };
-            w.build(&d[0], jr, kr)
-        })
+        let reference = self.sym_ref.take();
+        let mut scales = None;
+        let sym = sym_scale(incremental, reference.as_deref());
+        let computed = if !self.rotated() {
+            self.walk().build(d, j, k, sym, &mut scales)
+        } else {
+            self.run_rotated(&[d], &mut [j, k], |mut w, d, x| {
+                let [jr, kr] = x else {
+                    unreachable!("two outputs")
+                };
+                w.build(&d[0], jr, kr, sym, &mut scales)
+            })
+        };
+        self.sym_ref = if incremental { reference } else { scales };
+        computed
     }
 
     /// Whether the resolved rotation is active.
@@ -477,6 +528,17 @@ impl<'a> DirectJK<'a> {
             t0.elapsed().as_secs_f64(),
         );
         Ok(computed)
+    }
+}
+
+/// The pair digest's symmetry scale of a build: a full density's own, or
+/// for an incremental `ΔD` the last full build's per-channel `max|D|`
+/// (its own when no full build recorded one).
+fn sym_scale(incremental: bool, reference: Option<&[f64]>) -> crate::quartet_scatter::SymScale<'_> {
+    use crate::quartet_scatter::SymScale;
+    match (incremental, reference) {
+        (true, Some(r)) => SymScale::Delta(r),
+        _ => SymScale::Own,
     }
 }
 
@@ -554,6 +616,9 @@ impl Walk<'_> {
         Ok(shell_pairs)
     }
 
+    /// The open-shell walk. `sym` is the pair digest's symmetry scale;
+    /// `scales` receives its per-spin `max|D|` when the pair digest ran.
+    #[allow(clippy::too_many_arguments)]
     fn build_uhf(
         &mut self,
         d_total: &Array2<f64>,
@@ -562,6 +627,8 @@ impl Walk<'_> {
         j: &mut Array2<f64>,
         k_a: &mut Array2<f64>,
         k_b: &mut Array2<f64>,
+        sym: crate::quartet_scatter::SymScale<'_>,
+        scales: &mut Option<Vec<f64>>,
     ) -> Result<usize, FerricError> {
         use crate::quartet_scatter::{
             build_d_max_shell_spin_sum, scatter_bra_pair, DensityScreen, JkMode, PairSpec,
@@ -652,25 +719,18 @@ impl Walk<'_> {
                 (total_j, total_k_a, total_k_b)
             }
             JkDigest::Pair => {
-                let spec = PairSpec::uhf(nbf, dims, d_total, d_a, d_b);
-                let mut halves = spec.zeros();
-                crate::reduce::ordered_stream_sum_many(
-                    &mut halves,
-                    n_groups,
-                    nbf,
-                    band_bytes,
-                    |g| {
-                        let mut mode = spec.mode();
-                        run(g, &mut mode);
-                        Ok(mode.into_pair_partials())
-                    },
-                    None,
-                )?;
-                let (j, k) = spec.finish(halves);
-                let [k_a, k_b]: [Array2<f64>; 2] = k
+                let spec = PairSpec::uhf(nbf, dims, d_total, d_a, d_b, sym);
+                let out = spec.sum_groups(self.ctx, n_groups, band_bytes, None, run)?;
+                *scales = Some(spec.scales());
+                let [k_a, k_b]: [Array2<f64>; 2] = out
+                    .k
                     .try_into()
                     .unwrap_or_else(|_| unreachable!("two spin K matrices"));
-                (j.expect("the open-shell pair digest builds J"), k_a, k_b)
+                (
+                    out.j.expect("the open-shell pair digest builds J"),
+                    k_a,
+                    k_b,
+                )
             }
         };
 
@@ -692,11 +752,15 @@ impl Walk<'_> {
     }
 
     /// The closed-shell walk of [`DirectJK::build`].
+    /// The closed-shell walk. `sym` is the pair digest's symmetry scale;
+    /// `scales` receives its `max|D|` when the pair digest ran.
     fn build(
         &mut self,
         d: &Array2<f64>,
         j: &mut Array2<f64>,
         k: &mut Array2<f64>,
+        sym: crate::quartet_scatter::SymScale<'_>,
+        scales: &mut Option<Vec<f64>>,
     ) -> Result<usize, FerricError> {
         use crate::quartet_scatter::{build_d_max_shell, DensityScreen, JkMode, PairSpec};
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -783,6 +847,7 @@ impl Walk<'_> {
             d,
         };
         let mut band_times = crate::reduce::StreamTimes::default();
+        let mut pair_report = None;
         let (mut total_j, mut total_k) = match digest {
             JkDigest::Legacy => {
                 let mut total_j = Array2::<f64>::zeros((nbf, nbf));
@@ -796,7 +861,8 @@ impl Walk<'_> {
                     |g| {
                         let lo = g * group_size;
                         let pairs = &shell_pairs[lo..(lo + group_size).min(n_pairs)];
-                        let (mode, n) = job.run(pairs, profile.as_ref(), JkMode::new_both(nbf));
+                        let mut mode = JkMode::new_both(nbf);
+                        let n = job.run(pairs, profile.as_ref(), &mut mode);
                         computed_quartets.fetch_add(n, Ordering::Relaxed);
                         match mode {
                             JkMode::Both(j, k) => Ok((j, k)),
@@ -810,27 +876,24 @@ impl Walk<'_> {
             JkDigest::Pair => {
                 // Half partials summed in group order, then `finish` (linear,
                 // so it commutes with the rank reduction below).
-                let spec = PairSpec::both(nbf, prep.shell_dims(), d);
-                let mut halves = spec.zeros();
-                crate::reduce::ordered_stream_sum_many(
-                    &mut halves,
+                let spec = PairSpec::both(nbf, prep.shell_dims(), d, sym);
+                let mut out = spec.sum_groups(
+                    self.ctx,
                     n_groups,
-                    nbf,
                     band_bytes,
-                    |g| {
+                    profile.as_ref().map(|_| &mut band_times),
+                    |g, mode| {
                         let lo = g * group_size;
                         let pairs = &shell_pairs[lo..(lo + group_size).min(n_pairs)];
-                        let (mode, n) = job.run(pairs, profile.as_ref(), spec.mode());
+                        let n = job.run(pairs, profile.as_ref(), mode);
                         computed_quartets.fetch_add(n, Ordering::Relaxed);
-                        Ok(mode.into_pair_partials())
                     },
-                    profile.as_ref().map(|_| &mut band_times),
                 )?;
-                let (j, mut k) = spec.finish(halves);
-                (
-                    j.expect("the J+K pair digest builds J"),
-                    k.pop().expect("the J+K pair digest builds K"),
-                )
+                *scales = Some(spec.scales());
+                let k = out.k.pop().expect("the J+K pair digest builds K");
+                let j = out.j.take().expect("the J+K pair digest builds J");
+                pair_report = Some(out);
+                (j, k)
             }
         };
 
@@ -847,7 +910,13 @@ impl Walk<'_> {
 
         let computed = computed_quartets.load(Ordering::SeqCst);
         if let Some(p) = profile {
-            p.report(nbf, self.prep.nshells(), computed, &band_times);
+            p.report(
+                nbf,
+                self.prep.nshells(),
+                computed,
+                &band_times,
+                pair_report.as_ref(),
+            );
         }
         Ok(computed)
     }
@@ -868,14 +937,14 @@ struct GroupJob<'g> {
 impl GroupJob<'_> {
     /// The bra pairs `pairs` scattered into `mode` (fresh `nbf × nbf`
     /// partials: `JkMode::Both` for the legacy digest, a `PairSpec`'s mode
-    /// for the pair digest), returned with the number of quartets computed.
+    /// for the pair digest); returns the number of quartets computed.
     /// With `profile`, the group's stage times are recorded into it.
-    fn run<'m>(
+    fn run(
         &self,
         pairs: &[(usize, usize)],
         profile: Option<&BuildProfile>,
-        mut mode: crate::quartet_scatter::JkMode<'m>,
-    ) -> (crate::quartet_scatter::JkMode<'m>, usize) {
+        mode: &mut crate::quartet_scatter::JkMode<'_>,
+    ) -> usize {
         use crate::quartet_scatter::{scatter_bra_pair, scatter_bra_pair_probed};
         use std::sync::atomic::Ordering;
         let t_group = std::time::Instant::now();
@@ -897,11 +966,11 @@ impl GroupJob<'_> {
             self.pool.with(|engine| {
                 count += match profile {
                     Some(_) => scatter_bra_pair_probed::<true>(
-                        engine, prep, dims, offs, q, m, x, scr, t, d, s1, s2, &mut mode, true,
+                        engine, prep, dims, offs, q, m, x, scr, t, d, s1, s2, mode, true,
                         &mut times,
                     ),
                     None => scatter_bra_pair(
-                        engine, prep, dims, offs, q, m, x, scr, t, d, s1, s2, &mut mode, true,
+                        engine, prep, dims, offs, q, m, x, scr, t, d, s1, s2, mode, true,
                     ),
                 };
             });
@@ -909,7 +978,7 @@ impl GroupJob<'_> {
         if let Some(p) = profile {
             p.record_group(t_group, &times);
         }
-        (mode, count)
+        count
     }
 }
 
@@ -921,7 +990,10 @@ impl GroupJob<'_> {
 /// * **setup** — density-max table, bra-pair list and engine pool, from entry
 ///   to the first band;
 /// * **libint** — inside `Engine::compute_quartet` (summed over threads);
-/// * **digest** — contracting each returned block into J and K;
+/// * **digest** — contracting each returned block into J and K (for the
+///   pair digest also its per-bra-pair `begin`/`end`); the pair digest's
+///   serial density preparation and `finish` are on a line of their own
+///   (in the wall's `setup`, which is everything outside the groups);
 /// * **loop+screen** — the rest of each group's wall time: the `(s3, s4)`
 ///   candidate loop, the Schwarz × density test, and the group's two `nbf²`
 ///   partial allocations;
@@ -963,7 +1035,14 @@ impl BuildProfile {
         }
     }
 
-    fn report(&self, nbf: usize, nsh: usize, computed: usize, bands: &crate::reduce::StreamTimes) {
+    fn report(
+        &self,
+        nbf: usize,
+        nsh: usize,
+        computed: usize,
+        bands: &crate::reduce::StreamTimes,
+        pair: Option<&crate::quartet_scatter::PairOut>,
+    ) {
         let wall = self.t0.elapsed().as_secs_f64();
         let groups = self.groups.lock().map(|g| g.clone()).unwrap_or_default();
         let threads = rayon::current_num_threads();
@@ -984,9 +1063,10 @@ impl BuildProfile {
         let (bmin, bmax) = busy
             .values()
             .fold((u64::MAX, 0u64), |(a, b), &v| (a.min(v), b.max(v)));
+        let kernel = pair.map_or(String::new(), |p| format!(" (K kernel {})", p.kernel));
         eprintln!(
             "[timing] direct-jk build: nbf {nbf} nsh {nsh} bra pairs {} groups {} \
-             threads {threads} digest {}",
+             threads {threads} digest {}{kernel}",
             self.n_pairs, self.n_groups, self.digest
         );
         eprintln!(
@@ -1000,6 +1080,15 @@ impl BuildProfile {
             s(sum.libint_ns),
             s(sum.digest_ns),
         );
+        if let Some(p) = pair {
+            // Serial, outside the groups: in `setup` (the preparation) and
+            // after the groups (the finish), not in the digest above.
+            eprintln!(
+                "[timing] direct-jk   pair digest serial: density preparation {:.4} s + \
+                 finish {:.4} s (the per-bra-pair begin/end are in the digest)",
+                p.prep_s, p.finish_s
+            );
+        }
         eprintln!(
             "[timing] direct-jk   per-thread busy min {:.3} max {:.3} s over {} threads; \
              candidates {} survivors {} computed {computed}",

@@ -1,5 +1,5 @@
 //! The bra-pair-local J/K digest (`[scf] jk_digest = "pair"`, the default)
-//! against the 8-fold scatter it replaced (`"legacy"`), at a fixed density.
+//! against the 8-fold scatter it replaced (`"legacy"`).
 //!
 //! # What can move
 //!
@@ -7,23 +7,38 @@
 //! the same group partition; only the bracketing of each element's sum moves
 //! (the pair digest accumulates bra-shell rows and forms `J = Jh + Jhᵀ`,
 //! `K = Kb + Kbᵀ` or `Kb + Ktᵀ` once per build). So every element agrees to
-//! rounding: here `|X_pair − X_legacy| ≤ max(1e-12, 1e-13 · max|X|)`.
+//! rounding: here `|X_pair − X_legacy| ≤ max(1e-12, 1e-13 · max|X|)`, and SCF
+//! energies within 1e-10 Ha.
+//!
+//! # That the pair digest ran
+//!
+//! A tolerance alone would pass if a builder silently fell back to the legacy
+//! scatter. Every comparison therefore also reads the pair digest's probe
+//! (`quartet_scatter::pair_probe`, recorded per finished build on the calling
+//! thread): the pair run must record its builds, each with a positive count
+//! of quartets digested by the pair kernel and on the expected kernel
+//! (symmetric for a density symmetric to roundoff, general otherwise), and
+//! the legacy run must record none.
 //!
 //! # Artifact hypothesis
 //!
 //! A dropped image or a wrong degenerate-case weight (the `½` on `Jh` for
-//! `s1 = s2` or `s3 = s4`, the `½` on K for the self-paired quartet), swapped
-//! bra rows, a skipped `finish`, or the symmetric kernel on a non-symmetric
-//! density moves elements by O(|X|), ten or more orders above the bar. The
-//! mutation runs that confirm each of these fails are recorded in the change
-//! that introduced the digest.
+//! `s1 = s2` or `s3 = s4`, the `½` on K for the self-paired quartet, the
+//! `w = 1` of the general form), swapped bra rows, `D` in place of `Dᵀ` in
+//! the general form, a skipped or untransposed `finish`, or the symmetric
+//! kernel on a non-symmetric density moves elements by O(|X|), ten or more
+//! orders above the bar.
 //!
 //! The bases cover the all-s path (STO-3G), Cartesian d (`6-31G*`, n = 6),
 //! spherical d (cc-pVDZ, n = 5, the const-generic kernel) and f (cc-pVTZ,
 //! n = 7, the runtime kernel); every walk includes `s1 = s2`, `s3 = s4` and
-//! the self-paired quartet. The closed-shell, open-shell, J-only, K-only and
-//! pooled builders are each compared, on symmetric and non-symmetric
-//! densities, and the rotated (contraction-rotation) walk too.
+//! the self-paired quartet. The closed-shell, open-shell, incremental,
+//! J-only, K-only and pooled builders are each compared, on symmetric and
+//! non-symmetric densities, and the rotated (contraction-rotation) walk too.
+//!
+//! The config value reaching the consumers is tested in
+//! [`legacy_config_reaches_the_consumers_bitwise`]: no test sets
+//! `FERRIC_JK_DIGEST` in its own process (only on child processes).
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
@@ -33,7 +48,10 @@ use ferric_scf::direct_j::DirectJ;
 use ferric_scf::direct_jk::{DirectJK, GcRotate};
 use ferric_scf::direct_k::DirectK;
 use ferric_scf::fock::{JBuilder, KBuilder};
+use ferric_scf::incore_jk::EriMode;
+use ferric_scf::quartet_scatter::pair_probe::{self, PairBuild};
 use ferric_scf::quartet_scatter::JkDigest;
+use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
 
@@ -43,11 +61,14 @@ fn testdata(rel: &str) -> String {
     format!("{}/../../testdata/{rel}", env!("CARGO_MANIFEST_DIR"))
 }
 
-fn setup(xyz: &str, basis_name: &str, mult: usize) -> PreparedBasis {
+fn load(xyz: &str, mult: usize) -> Molecule {
     let text = std::fs::read_to_string(testdata(&format!("molecules/{xyz}"))).unwrap();
-    let mol = Molecule::parse_xyz(&text, 0, mult).unwrap();
+    Molecule::parse_xyz(&text, 0, mult).unwrap()
+}
+
+fn setup(xyz: &str, basis_name: &str, mult: usize) -> PreparedBasis {
     let bs = basis::bundled(basis_name).unwrap();
-    PreparedBasis::new(&mol, &bs).unwrap()
+    PreparedBasis::new(&load(xyz, mult), &bs).unwrap()
 }
 
 fn lcg(seed: &mut u64) -> f64 {
@@ -78,18 +99,83 @@ fn bounds(prep: &PreparedBasis, digest: JkDigest) -> SchwarzBounds {
     b
 }
 
+/// Which pair kernel a run must have used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kernel {
+    Symmetric,
+    General,
+}
+
+impl Kernel {
+    fn of(symmetric: bool) -> Self {
+        if symmetric {
+            Kernel::Symmetric
+        } else {
+            Kernel::General
+        }
+    }
+}
+
+/// A run's output with the pair-digest builds it recorded.
+struct Ran<T> {
+    out: T,
+    builds: Vec<PairBuild>,
+}
+
+/// `f` with the pair probe on.
+fn probed<T>(f: impl FnOnce() -> T) -> Ran<T> {
+    pair_probe::start();
+    let out = f();
+    Ran {
+        out,
+        builds: pair_probe::take(),
+    }
+}
+
+/// The pair run recorded `n_builds` builds, each on `kernel` with quartets
+/// digested by the pair kernel; the legacy run recorded none.
+fn assert_ran(
+    what: &str,
+    pair: &[PairBuild],
+    legacy: &[PairBuild],
+    kernel: Kernel,
+    n_builds: usize,
+) {
+    assert!(
+        legacy.is_empty(),
+        "{what}: the legacy run went through the pair digest: {legacy:?}"
+    );
+    assert_eq!(
+        pair.len(),
+        n_builds,
+        "{what}: pair-digest builds recorded {pair:?}"
+    );
+    for b in pair {
+        assert!(
+            b.quartets > 0,
+            "{what}: the pair kernel digested nothing: {b:?}"
+        );
+        assert_eq!(
+            b.general,
+            kernel == Kernel::General,
+            "{what}: expected the {kernel:?} kernel, got {b:?}"
+        );
+    }
+}
+
 /// Largest `|a − b|`, asserting it is under `max(1e-12, 1e-13 · max|b|)` and
 /// that the comparison is not vacuous.
-fn agree(what: &str, a: &Array2<f64>, b: &Array2<f64>) -> f64 {
+fn within(what: &str, a: &Array2<f64>, b: &Array2<f64>) -> f64 {
     let scale = b.iter().fold(0.0f64, |m, v| m.max(v.abs()));
     assert!(
         scale > 1e-3,
         "{what}: max|X| = {scale:e}, a vacuous comparison"
     );
-    let diff = a
-        .iter()
-        .zip(b.iter())
-        .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()));
+    let diff = a.iter().zip(b.iter()).fold(0.0f64, |m, (x, y)| {
+        let d = (x - y).abs();
+        assert!(d.is_finite(), "{what}: non-finite difference {x} vs {y}");
+        m.max(d)
+    });
     let tol = (1e-13 * scale).max(1e-12);
     assert!(
         diff <= tol,
@@ -99,20 +185,49 @@ fn agree(what: &str, a: &Array2<f64>, b: &Array2<f64>) -> f64 {
     diff
 }
 
+/// Pair against legacy for every matrix the two runs returned: within the
+/// rounding bar, and the pair run really ran the pair digest (`n_builds`
+/// builds on `kernel`) while the legacy run did not.
+fn agree(
+    what: &str,
+    pair: &Ran<Vec<Array2<f64>>>,
+    legacy: &Ran<Vec<Array2<f64>>>,
+    kernel: Kernel,
+    n_builds: usize,
+) {
+    assert_ran(what, &pair.builds, &legacy.builds, kernel, n_builds);
+    assert_eq!(pair.out.len(), legacy.out.len());
+    for (i, (p, l)) in pair.out.iter().zip(&legacy.out).enumerate() {
+        within(&format!("{what} [{i}]"), p, l);
+    }
+}
+
 fn zeros(n: usize) -> Array2<f64> {
     Array2::zeros((n, n))
 }
 
-/// `DirectJK::build` (unrotated) under `digest`.
-fn closed(prep: &PreparedBasis, digest: JkDigest, d: &Array2<f64>) -> (Array2<f64>, Array2<f64>) {
-    let n = prep.nbasis();
-    let ctx = ParallelContext::default();
-    let b = bounds(prep, digest);
-    let mut djk =
-        DirectJK::new(&ctx, prep, &b, THRESH, usize::MAX / 4).with_gc_rotation(GcRotate::Off);
-    let (mut j, mut k) = (zeros(n), zeros(n));
-    djk.build(d, &mut j, &mut k).unwrap();
-    (j, k)
+/// `DirectJK::build` (unrotated) under `digest`: `[J, K]`.
+fn closed(prep: &PreparedBasis, digest: JkDigest, d: &Array2<f64>) -> Ran<Vec<Array2<f64>>> {
+    closed_at(prep, digest, d, THRESH)
+}
+
+/// [`closed`] at integral threshold `thresh`.
+fn closed_at(
+    prep: &PreparedBasis,
+    digest: JkDigest,
+    d: &Array2<f64>,
+    thresh: f64,
+) -> Ran<Vec<Array2<f64>>> {
+    probed(|| {
+        let n = prep.nbasis();
+        let ctx = ParallelContext::default();
+        let b = bounds(prep, digest);
+        let mut djk =
+            DirectJK::new(&ctx, prep, &b, thresh, usize::MAX / 4).with_gc_rotation(GcRotate::Off);
+        let (mut j, mut k) = (zeros(n), zeros(n));
+        djk.build(d, &mut j, &mut k).unwrap();
+        vec![j, k]
+    })
 }
 
 /// Closed shell, symmetric and non-symmetric densities.
@@ -120,12 +235,12 @@ fn check_closed(label: &str, prep: &PreparedBasis, seed: u64) {
     let n = prep.nbasis();
     for (sym, tag) in [(true, "sym"), (false, "nonsym")] {
         let d = density(n, seed, sym);
-        let (jp, kp) = closed(prep, JkDigest::Pair, &d);
-        let (jl, kl) = closed(prep, JkDigest::Legacy, &d);
-        agree(&format!("{label} {tag} J"), &jp, &jl);
-        agree(&format!("{label} {tag} K"), &kp, &kl);
+        let p = closed(prep, JkDigest::Pair, &d);
+        let l = closed(prep, JkDigest::Legacy, &d);
+        agree(&format!("{label} {tag} J, K"), &p, &l, Kernel::of(sym), 1);
         if sym {
             // K of a symmetric density comes out exactly symmetric.
+            let kp = &p.out[1];
             assert!(
                 kp == kp.t(),
                 "{label}: pair K of a symmetric density is not symmetric"
@@ -168,51 +283,145 @@ fn pair_matches_legacy_cc_pvtz_f_shells() {
     check_closed("water/cc-pVTZ", &prep, 6);
 }
 
-/// The incremental build's `ΔD`: small. Exactly symmetric, both digests
-/// agree to rounding relative to its own size; with a roundoff-size skew it
-/// still takes the symmetric kernel (the absolute floor of
-/// `quartet_scatter::is_symmetric_to_roundoff`), which moves K by at most the
-/// skew times a sum of integrals, far below the integral screen.
+/// A full build judges symmetry relative to the density itself: a purely
+/// antisymmetric density of absolute size 1e-15 takes the general kernel
+/// (and agrees with legacy relative to its own size), so no absolute floor
+/// symmetrises a genuinely antisymmetric part away. (Integral threshold
+/// 1e-30, so the density screen keeps the quartets of so small a density.)
 #[test]
-fn pair_matches_legacy_on_a_small_delta_density() {
+fn tiny_antisymmetric_density_takes_the_general_kernel() {
     let prep = setup("water.xyz", "cc-pvdz", 1);
     let n = prep.nbasis();
-    let dd = 1e-7 * &density(n, 8, true);
+    let r = density(n, 9, false);
+    let a = 0.5e-15 * (&r - &r.t());
+    let p = closed_at(&prep, JkDigest::Pair, &a, 1e-30);
+    let l = closed_at(&prep, JkDigest::Legacy, &a, 1e-30);
+    assert_ran(
+        "antisymmetric 1e-15",
+        &p.builds,
+        &l.builds,
+        Kernel::General,
+        1,
+    );
     let scale = |x: &Array2<f64>| x.iter().fold(0.0f64, |m, v| m.max(v.abs()));
-    let max_diff = |p: &Array2<f64>, l: &Array2<f64>| {
-        p.iter()
-            .zip(l.iter())
-            .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()))
-    };
-    let (jp, kp) = closed(&prep, JkDigest::Pair, &dd);
-    let (jl, kl) = closed(&prep, JkDigest::Legacy, &dd);
-    for (what, p, l) in [("J", &jp, &jl), ("K", &kp, &kl)] {
-        let diff = max_diff(p, l);
-        assert!(scale(l) > 1e-9, "ΔD {what}: vacuous");
-        assert!(
-            diff <= 1e-13 * scale(l),
-            "ΔD {what}: max|pair - legacy| {diff:e}, max|X| {:e}",
-            scale(l)
-        );
-    }
-    // The same ΔD with a 1e-17 skew (the rounding asymmetry a difference of
-    // two O(1) densities carries).
+    // J of an antisymmetric density is zero; K is not.
+    let (kp, kl) = (&p.out[1], &l.out[1]);
+    assert!(scale(kl) > 1e-17, "vacuous: max|K| {:e}", scale(kl));
+    let diff = kp
+        .iter()
+        .zip(kl.iter())
+        .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()));
+    assert!(
+        diff <= 1e-13 * scale(kl),
+        "antisymmetric K: max|pair - legacy| {diff:e}, max|K| {:e}",
+        scale(kl)
+    );
+    // The symmetric kernel would have returned K of ½(D + Dᵀ) = 0.
+    assert!(scale(kp) > 0.5 * scale(kl));
+}
+
+/// `DirectJK::build(D0)` then `build_incremental(ΔD)` on one builder under
+/// `digest`: `[J, K]` after both.
+fn closed_incremental(
+    prep: &PreparedBasis,
+    digest: JkDigest,
+    d0: &Array2<f64>,
+    dd: &Array2<f64>,
+) -> Ran<Vec<Array2<f64>>> {
+    probed(|| {
+        let n = prep.nbasis();
+        let ctx = ParallelContext::default();
+        let b = bounds(prep, digest);
+        let mut djk =
+            DirectJK::new(&ctx, prep, &b, THRESH, usize::MAX / 4).with_gc_rotation(GcRotate::Off);
+        let (mut j, mut k) = (zeros(n), zeros(n));
+        djk.build(d0, &mut j, &mut k).unwrap();
+        djk.build_incremental(dd, &mut j, &mut k).unwrap();
+        vec![j, k]
+    })
+}
+
+/// The incremental build, pair against legacy: a full build at `D0` then
+/// `ΔD = 1e-7 · (symmetric)` with a 1e-17 skew (the rounding asymmetry a
+/// difference of two O(1) densities carries). Judged against the full
+/// density's scale, `ΔD` stays on the symmetric kernel (both builds
+/// symmetric); a full build of the same `ΔD` alone takes the general one.
+/// A non-symmetric `ΔD` takes the general kernel on the incremental build.
+#[test]
+fn pair_matches_legacy_incremental() {
+    let prep = setup("water.xyz", "cc-pvdz", 1);
+    let n = prep.nbasis();
+    let d0 = density(n, 7, true);
+    let mut dd = 1e-7 * &density(n, 8, true);
+    dd[(0, 1)] += 1e-17;
+    let p = closed_incremental(&prep, JkDigest::Pair, &d0, &dd);
+    let l = closed_incremental(&prep, JkDigest::Legacy, &d0, &dd);
+    agree("incremental ΔD (1e-17 skew)", &p, &l, Kernel::Symmetric, 2);
+    let alone = closed(&prep, JkDigest::Pair, &dd);
+    assert_eq!(alone.builds.len(), 1);
+    assert!(
+        alone.builds[0].general,
+        "a full build of a 1e-7 ΔD with a 1e-17 skew must judge it on its own scale"
+    );
+    // A genuinely non-symmetric ΔD on the incremental path: general there.
     let mut skewed = dd.clone();
-    skewed[(0, 1)] += 1e-17;
-    let (jp, kp) = closed(&prep, JkDigest::Pair, &skewed);
-    let (jl, kl) = closed(&prep, JkDigest::Legacy, &skewed);
-    for (what, p, l) in [("J", &jp, &jl), ("K", &kp, &kl)] {
-        let diff = max_diff(p, l);
-        assert!(
-            diff <= 1e-15,
-            "skewed ΔD {what}: max|pair - legacy| {diff:e}, max|X| {:e}",
-            scale(l)
-        );
-        eprintln!(
-            "skewed ΔD {what}: max|X| {:.3e}, max|pair - legacy| {diff:.2e}",
-            scale(l)
-        );
+    skewed[(2, 9)] += 1e-9;
+    let p = closed_incremental(&prep, JkDigest::Pair, &d0, &skewed);
+    let l = closed_incremental(&prep, JkDigest::Legacy, &d0, &skewed);
+    assert!(
+        l.builds.is_empty(),
+        "legacy incremental went through the pair digest"
+    );
+    assert!(p.builds.iter().all(|b| b.quartets > 0));
+    let kinds: Vec<bool> = p.builds.iter().map(|b| b.general).collect();
+    assert_eq!(
+        kinds,
+        vec![false, true],
+        "full D0 symmetric, skewed ΔD general"
+    );
+    for (i, (x, y)) in p.out.iter().zip(&l.out).enumerate() {
+        within(&format!("incremental skewed ΔD [{i}]"), x, y);
     }
+}
+
+/// `build_uhf(D0)` then `build_uhf_incremental(ΔD)` on one builder.
+fn open_incremental(
+    prep: &PreparedBasis,
+    digest: JkDigest,
+    d0: [&Array2<f64>; 2],
+    dd: [&Array2<f64>; 2],
+) -> Ran<Vec<Array2<f64>>> {
+    probed(|| {
+        let n = prep.nbasis();
+        let ctx = ParallelContext::default();
+        let b = bounds(prep, digest);
+        let mut djk =
+            DirectJK::new(&ctx, prep, &b, THRESH, usize::MAX / 4).with_gc_rotation(GcRotate::Off);
+        let (mut j, mut ka, mut kb) = (zeros(n), zeros(n), zeros(n));
+        djk.build_uhf(&(d0[0] + d0[1]), d0[0], d0[1], &mut j, &mut ka, &mut kb)
+            .unwrap();
+        djk.build_uhf_incremental(&(dd[0] + dd[1]), dd[0], dd[1], &mut j, &mut ka, &mut kb)
+            .unwrap();
+        vec![j, ka, kb]
+    })
+}
+
+/// The open-shell incremental build, pair against legacy, with opposing
+/// spin deltas carrying a 1e-17 skew: both builds on the symmetric kernel
+/// (each spin judged against its own full density's scale).
+#[test]
+fn pair_matches_legacy_uhf_incremental() {
+    let prep = setup("oh.xyz", "cc-pvdz", 2);
+    let n = prep.nbasis();
+    let (da, db) = (density(n, 61, true), density(n, 62, true));
+    let mut dda = 1e-7 * &density(n, 63, true);
+    dda[(1, 3)] += 1e-17;
+    let mut ddb = -1.0 * &dda;
+    ddb[(4, 2)] -= 1e-17;
+    let p = open_incremental(&prep, JkDigest::Pair, [&da, &db], [&dda, &ddb]);
+    let l = open_incremental(&prep, JkDigest::Legacy, [&da, &db], [&dda, &ddb]);
+    agree("UHF incremental", &p, &l, Kernel::Symmetric, 2);
+    assert!(p.builds.iter().all(|b| b.symmetric_inputs == [true, true]));
 }
 
 /// Open shell with α ≠ β: symmetric spins, then one non-symmetric spin (the
@@ -222,25 +431,31 @@ fn pair_matches_legacy_open_shell() {
     let prep = setup("oh.xyz", "cc-pvdz", 2);
     let n = prep.nbasis();
     let ctx = ParallelContext::default();
-    for (tag, da, db) in [
-        ("sym", density(n, 11, true), density(n, 12, true)),
-        ("nonsym", density(n, 13, true), density(n, 14, false)),
+    for (sym, da, db) in [
+        (true, density(n, 11, true), density(n, 12, true)),
+        (false, density(n, 13, true), density(n, 14, false)),
     ] {
         let dt = &da + &db;
         let run = |digest| {
-            let b = bounds(&prep, digest);
-            let mut djk = DirectJK::new(&ctx, &prep, &b, THRESH, usize::MAX / 4)
-                .with_gc_rotation(GcRotate::Off);
-            let (mut j, mut ka, mut kb) = (zeros(n), zeros(n), zeros(n));
-            djk.build_uhf(&dt, &da, &db, &mut j, &mut ka, &mut kb)
-                .unwrap();
-            (j, ka, kb)
+            probed(|| {
+                let b = bounds(&prep, digest);
+                let mut djk = DirectJK::new(&ctx, &prep, &b, THRESH, usize::MAX / 4)
+                    .with_gc_rotation(GcRotate::Off);
+                let (mut j, mut ka, mut kb) = (zeros(n), zeros(n), zeros(n));
+                djk.build_uhf(&dt, &da, &db, &mut j, &mut ka, &mut kb)
+                    .unwrap();
+                vec![j, ka, kb]
+            })
         };
-        let (jp, kap, kbp) = run(JkDigest::Pair);
-        let (jl, kal, kbl) = run(JkDigest::Legacy);
-        agree(&format!("OH UHF {tag} J"), &jp, &jl);
-        agree(&format!("OH UHF {tag} Ka"), &kap, &kal);
-        agree(&format!("OH UHF {tag} Kb"), &kbp, &kbl);
+        let p = run(JkDigest::Pair);
+        agree(
+            &format!("OH UHF sym={sym} J, Ka, Kb"),
+            &p,
+            &run(JkDigest::Legacy),
+            Kernel::of(sym),
+            1,
+        );
+        assert_eq!(p.builds[0].symmetric_inputs, [true, sym]);
     }
 }
 
@@ -250,40 +465,53 @@ fn pair_matches_legacy_j_only_and_k_only() {
     let prep = setup("water.xyz", "cc-pvdz", 1);
     let n = prep.nbasis();
     let ctx = ParallelContext::default();
-    for (sym, tag) in [(true, "sym"), (false, "nonsym")] {
+    for sym in [true, false] {
         let d = density(n, 21, sym);
         let j_of = |digest| {
-            let b = bounds(&prep, digest);
-            let mut x = zeros(n);
-            JBuilder::build(
-                &mut DirectJ::new(&ctx, &prep, &b, THRESH, usize::MAX / 4),
-                &d,
-                &mut x,
-            )
-            .unwrap();
-            x
+            probed(|| {
+                let b = bounds(&prep, digest);
+                let mut x = zeros(n);
+                JBuilder::build(
+                    &mut DirectJ::new(&ctx, &prep, &b, THRESH, usize::MAX / 4),
+                    &d,
+                    &mut x,
+                )
+                .unwrap();
+                vec![x]
+            })
         };
         let k_of = |digest| {
-            let b = bounds(&prep, digest);
-            let mut x = zeros(n);
-            KBuilder::build(
-                &mut DirectK::new(&ctx, &prep, &b, THRESH, usize::MAX / 4),
-                &d,
-                &mut x,
-            )
-            .unwrap();
-            x
+            probed(|| {
+                let b = bounds(&prep, digest);
+                let mut x = zeros(n);
+                KBuilder::build(
+                    &mut DirectK::new(&ctx, &prep, &b, THRESH, usize::MAX / 4),
+                    &d,
+                    &mut x,
+                )
+                .unwrap();
+                vec![x]
+            })
         };
+        // J has no exchange channel, so never the general kernel.
+        let jp = j_of(JkDigest::Pair);
         agree(
-            &format!("DirectJ {tag}"),
-            &j_of(JkDigest::Pair),
+            &format!("DirectJ sym={sym}"),
+            &jp,
             &j_of(JkDigest::Legacy),
+            Kernel::Symmetric,
+            1,
         );
+        assert!(jp.builds[0].coulomb && jp.builds[0].symmetric_inputs.is_empty());
+        let kp = k_of(JkDigest::Pair);
         agree(
-            &format!("DirectK {tag}"),
-            &k_of(JkDigest::Pair),
+            &format!("DirectK sym={sym}"),
+            &kp,
             &k_of(JkDigest::Legacy),
+            Kernel::of(sym),
+            1,
         );
+        assert!(!kp.builds[0].coulomb);
     }
 }
 
@@ -294,25 +522,30 @@ fn pair_matches_legacy_pooled_build() {
     let prep = setup("water.xyz", "6-31g*", 1);
     let n = prep.nbasis();
     let ctx = ParallelContext::default();
-    for (sym, tag) in [(true, "sym"), (false, "nonsym")] {
+    for sym in [true, false] {
         let d = density(n, 31, sym);
         let run = |digest| {
-            let b = bounds(&prep, digest);
-            let (mut j, mut k) = (zeros(n), zeros(n));
-            ferric_scf::rhf::build_jk(&ctx, &prep, &b, THRESH, &d, &mut j, &mut k).unwrap();
-            (j, k)
+            probed(|| {
+                let b = bounds(&prep, digest);
+                let (mut j, mut k) = (zeros(n), zeros(n));
+                ferric_scf::rhf::build_jk(&ctx, &prep, &b, THRESH, &d, &mut j, &mut k).unwrap();
+                vec![j, k]
+            })
         };
-        let (jp, kp) = run(JkDigest::Pair);
-        let (jl, kl) = run(JkDigest::Legacy);
-        agree(&format!("build_jk {tag} J"), &jp, &jl);
-        agree(&format!("build_jk {tag} K"), &kp, &kl);
+        agree(
+            &format!("build_jk sym={sym} J, K"),
+            &run(JkDigest::Pair),
+            &run(JkDigest::Legacy),
+            Kernel::of(sym),
+            1,
+        );
     }
 }
 
 /// The rotated walk (`gc_rotation = auto` on cc-pVDZ) needs no change of its
-/// own: its rotated bounds share the parent's digest record, so the two
-/// digests of the rotated build agree to rounding too, and the legacy
-/// rotated build is not the pair one.
+/// own: its rotated bounds share the parent's digest record, so the rotated
+/// build runs the pair kernel under `pair` and not under `legacy`, and the
+/// two agree to rounding.
 #[test]
 fn pair_matches_legacy_on_the_rotated_walk() {
     let prep = setup("water.xyz", "cc-pvdz", 1);
@@ -320,23 +553,22 @@ fn pair_matches_legacy_on_the_rotated_walk() {
     let ctx = ParallelContext::default();
     let d = density(n, 41, true);
     let run = |digest| {
-        let b = bounds(&prep, digest);
-        let mut djk =
-            DirectJK::new(&ctx, &prep, &b, THRESH, usize::MAX / 4).with_gc_rotation(GcRotate::Auto);
-        let (mut j, mut k) = (zeros(n), zeros(n));
-        djk.build(&d, &mut j, &mut k).unwrap();
-        assert!(djk.gc_rotated_columns().unwrap() > 0, "cc-pVDZ must rotate");
-        (j, k)
+        probed(|| {
+            let b = bounds(&prep, digest);
+            let mut djk = DirectJK::new(&ctx, &prep, &b, THRESH, usize::MAX / 4)
+                .with_gc_rotation(GcRotate::Auto);
+            let (mut j, mut k) = (zeros(n), zeros(n));
+            djk.build(&d, &mut j, &mut k).unwrap();
+            assert!(djk.gc_rotated_columns().unwrap() > 0, "cc-pVDZ must rotate");
+            vec![j, k]
+        })
     };
-    let (jp, kp) = run(JkDigest::Pair);
-    let (jl, kl) = run(JkDigest::Legacy);
-    agree("rotated J", &jp, &jl);
-    agree("rotated K", &kp, &kl);
-    assert!(
-        jp.iter()
-            .zip(jl.iter())
-            .any(|(a, b)| a.to_bits() != b.to_bits()),
-        "the rotated walk ignored the digest record (pair and legacy are bitwise equal)"
+    agree(
+        "rotated J, K",
+        &run(JkDigest::Pair),
+        &run(JkDigest::Legacy),
+        Kernel::Symmetric,
+        1,
     );
 }
 
@@ -356,6 +588,198 @@ fn unrecorded_bounds_follow_the_variable() {
     let mut djk = DirectJK::new(&ctx, &prep, &b, THRESH, usize::MAX / 4);
     let (mut j, mut k) = (zeros(n), zeros(n));
     djk.build(&d, &mut j, &mut k).unwrap();
-    let (jw, kw) = closed(&prep, want, &d);
-    assert!(j == jw && k == kw, "unrecorded bounds did not run {want}");
+    let w = closed(&prep, want, &d);
+    assert!(
+        j == w.out[0] && k == w.out[1],
+        "unrecorded bounds did not run {want}"
+    );
+}
+
+/// Whole SCF on the direct route, pair against legacy: water / cc-pVDZ RHF
+/// (closed-shell incremental builds on, as by default) and OH / 6-31G* UHF.
+/// Energies within 1e-10 Ha. Every build of the pair SCF went through the
+/// pair digest on the symmetric kernel (the incremental `ΔD` builds
+/// included), and the legacy SCF never did.
+#[test]
+fn whole_scf_pair_matches_legacy() {
+    let ctx = ParallelContext::default();
+    for (label, xyz, basis_name, mult) in [
+        ("water/cc-pVDZ RHF", "water.xyz", "cc-pvdz", 1),
+        ("OH/6-31G* UHF", "oh.xyz", "6-31g*", 2),
+    ] {
+        let mol = load(xyz, mult);
+        let prep = setup(xyz, basis_name, mult);
+        let op = Operator::coulomb();
+        let run = |digest: JkDigest| {
+            probed(|| {
+                let b = SchwarzBounds::compute(op, &prep).unwrap();
+                let mut c = RhfConfig::default()
+                    .with_energy_conv(1e-8)
+                    .with_density_conv(1e-8);
+                c.eri = EriMode::Direct;
+                c.jk_digest = Some(digest);
+                let r = if mult == 1 {
+                    solve_rhf(&ctx, &mol, &prep, op, &b, &c).unwrap()
+                } else {
+                    ferric_scf::uhf::solve_uhf(&ctx, &mol, &prep, &b, &c).unwrap()
+                };
+                assert!(r.converged, "{label} {digest}: not converged");
+                (r.energy, r.iterations)
+            })
+        };
+        let p = run(JkDigest::Pair);
+        let l = run(JkDigest::Legacy);
+        assert!(
+            l.builds.is_empty(),
+            "{label}: legacy SCF used the pair digest"
+        );
+        assert!(
+            p.builds.len() >= p.out.1,
+            "{label}: {} pair builds for {} iterations",
+            p.builds.len(),
+            p.out.1
+        );
+        for b in &p.builds {
+            assert!(!b.general && b.quartets > 0, "{label}: {b:?}");
+        }
+        let de = (p.out.0 - l.out.0).abs();
+        eprintln!(
+            "{label}: E pair {:.12} legacy {:.12} |dE| {de:.2e} ({} pair builds)",
+            p.out.0,
+            l.out.0,
+            p.builds.len()
+        );
+        assert!(de <= 1e-10, "{label}: |E_pair - E_legacy| = {de:e}");
+    }
+}
+
+fn hash_bits<'a>(arrays: impl IntoIterator<Item = &'a Array2<f64>>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for a in arrays {
+        a.dim().hash(&mut h);
+        for v in a.iter() {
+            v.to_bits().hash(&mut h);
+        }
+    }
+    h.finish()
+}
+
+/// Set in the environment of the child runs.
+const CHILD: &str = "FERRIC_TEST_JK_DIGEST_CHILD";
+
+/// An SCF whose config carries `digest`, then the consumers that follow
+/// its bounds' record: water / cc-pVDZ PBE0 on the direct route (SCF,
+/// analytic KS gradient, KS Z-vector relaxation gradient and `Z`, pooled
+/// J/K), and water / 6-31G wB97X (its SCF and Z-vector: the
+/// range-separated response builds make fresh bounds per operator, which
+/// copy the record). Returned as matrices (energies as 1×1) for bitwise
+/// comparison.
+fn consumers(digest: Option<JkDigest>) -> Vec<Array2<f64>> {
+    use ferric_scf::ks_gradient::ks_gradient_closed;
+    use ferric_scf::zvector_ks::relaxation_gradient_closed;
+    let ctx = ParallelContext::default();
+    let mol = load("water.xyz", 1);
+    let op = Operator::coulomb();
+    let mut out = Vec::new();
+    for (xc, basis_name) in [("PBE0", "cc-pvdz"), ("HYB_GGA_XC_WB97X", "6-31g")] {
+        let bs = basis::bundled(basis_name).unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let mut cfg = RhfConfig::default()
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8)
+            .with_gc_rotation(GcRotate::Off);
+        cfg.xc = Some(xc.into());
+        // Four-centre J (a functional defaults to RI-JK); four-centre K for
+        // PBE0 (the range-separated SCF builds its K by RI-K only, but its
+        // Z-vector's response K is four-centre, on fresh bounds per
+        // operator).
+        cfg.df_j_aux = Some(String::new());
+        if xc == "PBE0" {
+            cfg.df_k_aux = Some(String::new());
+        }
+        cfg.eri = EriMode::Direct;
+        cfg.jk_digest = digest;
+        let res = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
+        assert!(res.converged, "{xc}: SCF not converged");
+        out.push(Array2::from_elem((1, 1), res.energy));
+        out.push(res.density_alpha.clone());
+        let n = prep.nbasis();
+        let v = density(n, 3, true);
+        let z = relaxation_gradient_closed(&ctx, &mol, &prep, &bs, op, &bounds, &cfg, &res, &v)
+            .unwrap();
+        out.push(z.gradient);
+        out.push(z.z);
+        if xc == "PBE0" {
+            let g = ks_gradient_closed(&mol, &prep, &bs, op, &bounds, xc, &res, None).unwrap();
+            out.push(g);
+            let d = density(n, 2, true);
+            let (mut j, mut k) = (zeros(n), zeros(n));
+            ferric_scf::rhf::build_jk(&ctx, &prep, &bounds, THRESH, &d, &mut j, &mut k).unwrap();
+            out.push(j);
+            out.push(k);
+        }
+    }
+    out
+}
+
+/// The config value reaches the J/K the consumers use: config `legacy` is
+/// bitwise an unset config under `FERRIC_JK_DIGEST=legacy` (a child process
+/// of this binary with the variable set; no test mutates its own
+/// environment), over the SCF, the KS gradient, the Z-vector (PBE0 and the
+/// range-separated wB97X) and pooled J/K. Config `pair` is not bitwise
+/// legacy (so the comparison can see the switch), and agrees with it
+/// within 1e-8 relative (the Z-vector gradient, the loosest, measured at
+/// about 2e-9).
+#[test]
+fn legacy_config_reaches_the_consumers_bitwise() {
+    let legacy = consumers(Some(JkDigest::Legacy));
+    let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+    cmd.args(["child_prints_unset_config_bits", "--exact", "--nocapture"])
+        .env(CHILD, "1")
+        .env("FERRIC_JK_DIGEST", "legacy");
+    let out = cmd.output().expect("spawn the child");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "child failed: {stdout}");
+    let child = stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("JK_DIGEST_BITS "))
+        .unwrap_or_else(|| panic!("no JK_DIGEST_BITS line: {stdout}"));
+    assert_eq!(
+        u64::from_str_radix(child.trim(), 16).unwrap(),
+        hash_bits(&legacy),
+        "config legacy is not the unset config under FERRIC_JK_DIGEST=legacy"
+    );
+    let pair = consumers(Some(JkDigest::Pair));
+    assert_ne!(
+        hash_bits(&pair),
+        hash_bits(&legacy),
+        "config pair is bitwise legacy: the switch did not reach the builds"
+    );
+    // Element magnitudes: `Z` is in the MO basis, and the two SCFs may pick
+    // different signs for an orbital.
+    for (i, (p, l)) in pair.iter().zip(&legacy).enumerate() {
+        let e = p
+            .iter()
+            .zip(l.iter())
+            .fold(0.0f64, |m, (x, y)| m.max((x.abs() - y.abs()).abs()));
+        let scale = l.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        eprintln!("consumer [{i}]: pair vs legacy max|d| {e:.2e} (max|X| {scale:.2e})");
+        assert!(
+            e <= 1e-8 * scale.max(1.0),
+            "consumer [{i}]: pair vs legacy {e:e}"
+        );
+    }
+}
+
+/// Child entry point of `legacy_config_reaches_the_consumers_bitwise`: the
+/// consumers of an SCF whose config left `jk_digest` unset, their bits
+/// printed. A no-op outside the child.
+#[test]
+fn child_prints_unset_config_bits() {
+    if std::env::var_os(CHILD).is_none() {
+        return;
+    }
+    println!("JK_DIGEST_BITS {:016x}", hash_bits(&consumers(None)));
 }

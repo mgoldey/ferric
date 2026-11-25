@@ -153,7 +153,12 @@ impl<'d> JkMode<'d> {
     /// order. Panics on any other mode.
     pub(crate) fn into_pair_partials(self) -> Vec<Array2<f64>> {
         match self {
-            JkMode::Pair(p) => p.mats,
+            JkMode::Pair(p) => {
+                p.spec
+                    .quartets
+                    .fetch_add(p.quartets, std::sync::atomic::Ordering::Relaxed);
+                p.mats
+            }
             other => unreachable!("a pair-digest walk got JkMode::{}", other.label()),
         }
     }
@@ -171,7 +176,7 @@ impl<'d> JkMode<'d> {
         match self {
             JkMode::JOnly(_) | JkMode::Both(..) | JkMode::Uhf(..) => true,
             JkMode::Multi(m) => m.jd.dim().2 > 0,
-            JkMode::Pair(p) => p.spec.jd.is_some(),
+            JkMode::Pair(p) => p.spec.has_j(),
             JkMode::KOnly(_) => false,
         }
     }
@@ -639,7 +644,11 @@ pub(crate) fn scatter_bra_pair_probed<const PROBE: bool>(
 
     // The pair digest's per-bra-pair start (its `end` follows the loop).
     if let JkMode::Pair(p) = mode {
+        let t = PROBE.then(std::time::Instant::now);
         p.begin(dims, offs, s1, s2);
+        if let Some(t) = t {
+            times.digest_ns += ns_since(t);
+        }
     }
 
     for s3 in 0..=s1 {
@@ -850,7 +859,11 @@ pub(crate) fn scatter_bra_pair_probed<const PROBE: bool>(
         }
     }
     if let JkMode::Pair(p) = mode {
+        let t = PROBE.then(std::time::Instant::now);
         p.end();
+        if let Some(t) = t {
+            times.digest_ns += ns_since(t);
+        }
     }
     local_count
 }
@@ -1240,8 +1253,10 @@ pub enum JkDigest {
     Legacy,
 }
 
-/// `FERRIC_JK_DIGEST`: `pair` or `legacy`, case-insensitive, blanks ignored
-/// (the convention of the `FERRIC_*` switches); anything else is refused.
+/// `FERRIC_JK_DIGEST`: `pair` or `legacy`, case-insensitive, surrounding
+/// blanks ignored; anything else, an empty or all-blank value included, is
+/// refused (the convention of the other enumerated `FERRIC_*` switches,
+/// `FERRIC_GC_ROTATE` and `FERRIC_DFK_METRIC`). Unset means `pair`.
 static JK_DIGEST: ferric_core::config::ConfigVar<JkDigest> = ferric_core::config::ConfigVar {
     env_name: JK_DIGEST_ENV,
     default: JkDigest::Pair,
@@ -1349,53 +1364,133 @@ impl DigestSlot {
 /// Relative tolerance of [`is_symmetric_to_roundoff`].
 pub(crate) const PAIR_SYMMETRY_TOL: f64 = 1e-14;
 
-/// Whether `d` is square and symmetric to roundoff:
-/// `max|D − Dᵀ| ≤ PAIR_SYMMETRY_TOL · max(max|D|, 1)`.
-///
-/// The floor of 1 on the scale keeps the incremental `ΔD` builds on the
-/// symmetric kernel: a density difference inherits the absolute rounding
-/// asymmetry of the two O(1) densities it is the difference of (≈1e-16),
-/// which is large RELATIVE to a small `ΔD`. Symmetrising an antisymmetric
-/// part of absolute size ≤ 1e-14 moves each element of K by at most that
-/// times a sum of integrals, below the integral screen.
-pub(crate) fn is_symmetric_to_roundoff(d: &Array2<f64>) -> bool {
+/// What a density's symmetry is judged against
+/// ([`is_symmetric_to_roundoff`]).
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SymScale<'a> {
+    /// A full density: relative to its own `max|D|`.
+    Own,
+    /// The density change `ΔD` of an incremental build: relative to
+    /// `max(max|ΔD|, reference[c])`, where `reference[c]` is `max|D|` of
+    /// exchange channel `c`'s full density at the builder's last full build
+    /// ([`PairSpec::scales`]). A missing entry falls back to [`SymScale::Own`].
+    Delta(&'a [f64]),
+}
+
+impl SymScale<'_> {
+    fn reference(&self, channel: usize) -> Option<f64> {
+        match self {
+            SymScale::Own => None,
+            SymScale::Delta(r) => r.get(channel).copied(),
+        }
+    }
+}
+
+/// `(max|D − Dᵀ|, max|D|)` of a square matrix; `None` when `d` is not
+/// square or holds a non-finite element.
+fn symmetry_stats(d: &Array2<f64>) -> Option<(f64, f64)> {
     let n = d.nrows();
     if d.ncols() != n {
-        return false;
+        return None;
     }
     let (mut asym, mut big) = (0.0f64, 0.0f64);
     for i in 0..n {
         for j in 0..=i {
             let (a, b) = (d[(i, j)], d[(j, i)]);
-            if a.is_nan() || b.is_nan() {
-                // `f64::max` would drop it: a NaN density is not symmetric.
-                return false;
+            if !a.is_finite() || !b.is_finite() {
+                // `f64::max` would drop a NaN, and an infinite element
+                // makes the test meaningless: not symmetric.
+                return None;
             }
             asym = asym.max((a - b).abs());
             big = big.max(a.abs()).max(b.abs());
         }
     }
-    asym <= PAIR_SYMMETRY_TOL * big.max(1.0)
+    Some((asym, big))
+}
+
+/// Whether `d` is square, finite and symmetric to roundoff, which decides
+/// between the symmetric and the general kernel of the pair digest.
+///
+/// The rule: `max|D − Dᵀ| ≤ PAIR_SYMMETRY_TOL · S` with
+///
+/// * `S = max|D|` for a full density (`reference = None`): purely
+///   relative, so an antisymmetric part is kept (general kernel) at any
+///   absolute size once it exceeds 1e-14 of the density;
+/// * `S = max(max|D|, reference)` for the `ΔD` of an incremental build,
+///   with `reference = max|D_full|` of the builder's last full build: a
+///   density difference inherits the absolute rounding asymmetry of the two
+///   full densities it is the difference of (about 1e-16 of `max|D_full|`),
+///   which is large relative to a small `ΔD`, and symmetrising it moves K
+///   by that much of the full K, below the integral screen.
+///
+/// A non-square matrix or one with a NaN or infinite element is not
+/// symmetric (the general kernel then carries it through as it is).
+pub(crate) fn is_symmetric_to_roundoff(d: &Array2<f64>, reference: Option<f64>) -> bool {
+    match symmetry_stats(d) {
+        Some((asym, big)) => asym <= PAIR_SYMMETRY_TOL * reference.map_or(big, |r| big.max(r)),
+        None => false,
+    }
+}
+
+/// A density matrix of the pair digest in standard layout: the caller's
+/// own when it already is, else a copy (a plain reference, so a
+/// [`PairSpec`] stays covariant in its lifetime).
+#[derive(Debug)]
+enum PairMat<'a> {
+    Borrowed(&'a Array2<f64>),
+    Owned(Array2<f64>),
+}
+
+impl<'a> PairMat<'a> {
+    fn standard(d: &'a Array2<f64>) -> Self {
+        if d.is_standard_layout() {
+            PairMat::Borrowed(d)
+        } else {
+            PairMat::Owned(d.as_standard_layout().into_owned())
+        }
+    }
+
+    fn get(&self) -> &Array2<f64> {
+        match self {
+            PairMat::Borrowed(d) => d,
+            PairMat::Owned(d) => d,
+        }
+    }
+
+    /// Doubles held beyond the caller's matrix.
+    fn owned_len(&self) -> usize {
+        match self {
+            PairMat::Borrowed(_) => 0,
+            PairMat::Owned(d) => d.len(),
+        }
+    }
 }
 
 /// One exchange density of the pair digest, prepared once per build.
 #[derive(Debug)]
-pub(crate) struct PairDensity {
+pub(crate) struct PairDensity<'a> {
     /// The density the kernel reads, standard layout: `½(D + Dᵀ)` (exactly
-    /// symmetric) when `D` is symmetric to roundoff, else `D`.
-    d: Array2<f64>,
-    /// `Dᵀ` in standard layout for a non-symmetric `D`; `None` otherwise.
+    /// symmetric, owned) when `D` is symmetric to roundoff, else `D` itself
+    /// (borrowed when it is already in standard layout).
+    d: PairMat<'a>,
+    /// `Dᵀ` in standard layout for a non-symmetric `D`; `None` otherwise
+    /// (the general kernel then reads `d` for `Dᵀ`, which it equals).
     dt: Option<Array2<f64>>,
+    /// `max|D|` (finite elements; the symmetry check's own scale).
+    scale: f64,
 }
 
-impl PairDensity {
+impl<'a> PairDensity<'a> {
     /// `d` prepared: symmetrised explicitly when it is symmetric to roundoff
-    /// ([`is_symmetric_to_roundoff`]), so the result does not depend on which
-    /// triangle the kernel reads and K comes out exactly symmetric; kept
-    /// as is, with its transpose, otherwise (the general kernel).
-    pub(crate) fn prepare(d: &Array2<f64>) -> Self {
+    /// ([`is_symmetric_to_roundoff`] against `reference`), so the result does
+    /// not depend on which triangle the kernel reads and K comes out exactly
+    /// symmetric; kept as is, with its transpose, otherwise (the general
+    /// kernel).
+    pub(crate) fn prepare(d: &'a Array2<f64>, reference: Option<f64>) -> Self {
         let n = d.nrows();
-        if is_symmetric_to_roundoff(d) {
+        let scale = symmetry_stats(d).map_or(0.0, |s| s.1);
+        if is_symmetric_to_roundoff(d, reference) {
             let mut s = Array2::<f64>::zeros((n, n));
             for i in 0..n {
                 for j in 0..=i {
@@ -1404,66 +1499,102 @@ impl PairDensity {
                     s[(j, i)] = v;
                 }
             }
-            PairDensity { d: s, dt: None }
+            PairDensity {
+                d: PairMat::Owned(s),
+                dt: None,
+                scale,
+            }
         } else {
-            let mut dd = Array2::<f64>::zeros(d.raw_dim());
-            dd.assign(d);
             let mut dt = Array2::<f64>::zeros((d.ncols(), n));
             dt.assign(&d.t());
             PairDensity {
-                d: dd,
+                d: PairMat::standard(d),
                 dt: Some(dt),
+                scale,
             }
         }
     }
 
-    /// Whether this density takes the general (non-symmetric) kernel.
+    /// Whether this density is not symmetric to roundoff.
     pub(crate) fn is_general(&self) -> bool {
         self.dt.is_some()
     }
+
+    /// Doubles this density holds beyond its input (the symmetrised copy,
+    /// a standard-layout copy, the transpose).
+    fn owned_len(&self) -> usize {
+        self.d.owned_len() + self.dt.as_ref().map_or(0, |t| t.len())
+    }
+}
+
+/// Where the Coulomb density of a [`PairSpec`] lives.
+#[derive(Debug)]
+enum PairJd<'a> {
+    /// K only.
+    None,
+    /// Its own (borrowed when the input is in standard layout).
+    Own(PairMat<'a>),
+    /// The first exchange density (the closed-shell job: J of the
+    /// symmetrised density equals J of `D`, whose symmetric part is all J
+    /// reads, and a non-symmetric `D` is read as it is).
+    Channel0,
 }
 
 /// What one pair-digest build contracts: an optional Coulomb density and up
 /// to two exchange densities, prepared once per build and shared by every
-/// group. [`PairSpec::mode`] makes a group's [`JkMode::Pair`] and
-/// [`PairSpec::finish`] turns the summed half partials into J and K.
+/// group. [`PairSpec::sum_groups`] runs a walk's groups on it and finishes
+/// J and K.
 #[derive(Debug)]
-pub(crate) struct PairSpec {
-    /// Coulomb density (standard layout), `None` for K only.
-    jd: Option<Array2<f64>>,
+pub(crate) struct PairSpec<'a> {
+    jd: PairJd<'a>,
     /// Exchange densities (0, 1 or 2).
-    kd: Vec<PairDensity>,
+    kd: Vec<PairDensity<'a>>,
     /// Every exchange channel runs the general kernel (some density was not
     /// symmetric to roundoff).
     general: bool,
     nbf: usize,
     /// Largest shell dimension (scratch size).
     max_dim: usize,
+    /// Quartets the kernel digested (summed from the group accumulators).
+    quartets: std::sync::atomic::AtomicUsize,
+    /// Time spent preparing the densities (`FERRIC_TIMING`).
+    prep_ns: u64,
 }
 
-impl PairSpec {
-    fn new(nbf: usize, dims: &[usize], jd: Option<&Array2<f64>>, kd: &[&Array2<f64>]) -> Self {
-        // An O(n²) standard-layout copy per build: the kernel reads raw rows.
-        let jd = jd.map(|d| d.as_standard_layout().into_owned());
-        let kd: Vec<PairDensity> = kd.iter().map(|d| PairDensity::prepare(d)).collect();
+/// J and K of one pair-digest build ([`PairSpec::sum_groups`]), with the
+/// stage times `FERRIC_TIMING` reports.
+#[derive(Debug)]
+pub(crate) struct PairOut {
+    /// `J` (`None` for K only).
+    pub(crate) j: Option<Array2<f64>>,
+    /// `K` per exchange channel.
+    pub(crate) k: Vec<Array2<f64>>,
+    /// Density preparation (`PairSpec` construction), seconds.
+    pub(crate) prep_s: f64,
+    /// `finish` (`J = Jh + Jhᵀ`, `K = Kb + Kbᵀ` or `Kb + Ktᵀ`), seconds.
+    pub(crate) finish_s: f64,
+    /// The kernel per exchange channel ([`PairSpec::kernel_label`]).
+    pub(crate) kernel: String,
+}
+
+impl<'a> PairSpec<'a> {
+    fn new(
+        nbf: usize,
+        dims: &[usize],
+        jd: Option<&'a Array2<f64>>,
+        kd: &[&'a Array2<f64>],
+        sym: SymScale<'_>,
+    ) -> Self {
+        let t0 = std::time::Instant::now();
+        let kd: Vec<PairDensity<'a>> = kd
+            .iter()
+            .enumerate()
+            .map(|(c, d)| PairDensity::prepare(d, sym.reference(c)))
+            .collect();
         let general = kd.iter().any(PairDensity::is_general);
-        // A general spec re-prepares any symmetric channel's transpose so
-        // every channel runs the same kernel.
-        let kd = if general {
-            kd.into_iter()
-                .map(|p| match p.dt {
-                    Some(_) => p,
-                    None => {
-                        let dt = p.d.clone();
-                        PairDensity {
-                            d: p.d,
-                            dt: Some(dt),
-                        }
-                    }
-                })
-                .collect()
-        } else {
-            kd
+        let jd = match jd {
+            None => PairJd::None,
+            Some(d) => PairJd::Own(PairMat::standard(d)),
         };
         PairSpec {
             jd,
@@ -1471,12 +1602,17 @@ impl PairSpec {
             general,
             nbf,
             max_dim: dims.iter().copied().max().unwrap_or(1),
+            quartets: std::sync::atomic::AtomicUsize::new(0),
+            prep_ns: ns_since(t0),
         }
     }
 
-    /// Closed-shell J and K of `d` (`JkMode::Both`'s job).
-    pub(crate) fn both(nbf: usize, dims: &[usize], d: &Array2<f64>) -> Self {
-        Self::new(nbf, dims, Some(d), &[d])
+    /// Closed-shell J and K of `d` (`JkMode::Both`'s job). J reads the
+    /// prepared exchange density (no copy of its own).
+    pub(crate) fn both(nbf: usize, dims: &[usize], d: &'a Array2<f64>, sym: SymScale<'_>) -> Self {
+        let mut s = Self::new(nbf, dims, None, &[d], sym);
+        s.jd = PairJd::Channel0;
+        s
     }
 
     /// Open-shell `J[d_total]`, `K[d_a]`, `K[d_b]` (`JkMode::Uhf`'s job). The
@@ -1485,21 +1621,22 @@ impl PairSpec {
     pub(crate) fn uhf(
         nbf: usize,
         dims: &[usize],
-        d_total: &Array2<f64>,
-        d_a: &Array2<f64>,
-        d_b: &Array2<f64>,
+        d_total: &'a Array2<f64>,
+        d_a: &'a Array2<f64>,
+        d_b: &'a Array2<f64>,
+        sym: SymScale<'_>,
     ) -> Self {
-        Self::new(nbf, dims, Some(d_total), &[d_a, d_b])
+        Self::new(nbf, dims, Some(d_total), &[d_a, d_b], sym)
     }
 
     /// J of `d` only.
-    pub(crate) fn j_only(nbf: usize, dims: &[usize], d: &Array2<f64>) -> Self {
-        Self::new(nbf, dims, Some(d), &[])
+    pub(crate) fn j_only(nbf: usize, dims: &[usize], d: &'a Array2<f64>) -> Self {
+        Self::new(nbf, dims, Some(d), &[], SymScale::Own)
     }
 
     /// K of `d` only.
-    pub(crate) fn k_only(nbf: usize, dims: &[usize], d: &Array2<f64>) -> Self {
-        Self::new(nbf, dims, None, &[d])
+    pub(crate) fn k_only(nbf: usize, dims: &[usize], d: &'a Array2<f64>) -> Self {
+        Self::new(nbf, dims, None, &[d], SymScale::Own)
     }
 
     /// Whether the exchange channels run the general kernel.
@@ -1508,11 +1645,60 @@ impl PairSpec {
         self.general
     }
 
+    /// `max|D|` per exchange channel: the reference a later incremental
+    /// build on the same walk passes as [`SymScale::Delta`].
+    pub(crate) fn scales(&self) -> Vec<f64> {
+        self.kd.iter().map(|p| p.scale).collect()
+    }
+
+    /// The exchange kernel, for `FERRIC_TIMING`: `none` (J only),
+    /// `symmetric`, or `general` with each channel's input (`sym` when that
+    /// spin was symmetric to roundoff and runs the general form only
+    /// because the other did not).
+    pub(crate) fn kernel_label(&self) -> String {
+        if self.kd.is_empty() {
+            return "none (J only)".into();
+        }
+        if !self.general {
+            return "symmetric".into();
+        }
+        let each: Vec<&str> = self
+            .kd
+            .iter()
+            .map(|p| if p.is_general() { "nonsym" } else { "sym" })
+            .collect();
+        format!("general [{}]", each.join(", "))
+    }
+
+    fn has_j(&self) -> bool {
+        !matches!(self.jd, PairJd::None)
+    }
+
+    /// The Coulomb density (standard layout), `None` for K only.
+    fn jd(&self) -> Option<&Array2<f64>> {
+        match &self.jd {
+            PairJd::None => None,
+            PairJd::Own(d) => Some(d.get()),
+            PairJd::Channel0 => Some(self.kd[0].d.get()),
+        }
+    }
+
     /// Number of half partials a group accumulates: `Jh`, one `Kb` per
     /// exchange channel and, for the general kernel, one `Kt` per channel.
     pub(crate) fn n_partials(&self) -> usize {
         let nk = self.kd.len();
-        usize::from(self.jd.is_some()) + nk + if self.general { nk } else { 0 }
+        usize::from(self.has_j()) + nk + if self.general { nk } else { 0 }
+    }
+
+    /// Bytes this build holds beyond the legacy digest's: the prepared
+    /// density copies and the half accumulators.
+    fn charged_bytes(&self) -> usize {
+        let own_j = match &self.jd {
+            PairJd::Own(d) => d.owned_len(),
+            _ => 0,
+        };
+        let own: usize = own_j + self.kd.iter().map(PairDensity::owned_len).sum::<usize>();
+        (own + self.n_partials() * self.nbf * self.nbf) * std::mem::size_of::<f64>()
     }
 
     /// `n_partials` zeroed `nbf × nbf` matrices (an accumulator for the
@@ -1533,7 +1719,66 @@ impl PairSpec {
             e34: vec![0.0; self.max_dim * self.max_dim],
             s34: vec![0.0; self.max_dim * self.max_dim],
             bra: PairBra::default(),
+            quartets: 0,
         }))
+    }
+
+    /// One walk's groups on this spec: `run(g, mode)` scatters group `g`'s
+    /// bra pairs into a fresh accumulator, the half partials are summed in
+    /// ascending group order ([`crate::reduce::ordered_stream_sum_many`]:
+    /// bit-identical across thread counts), then finished
+    /// ([`PairSpec::finish`]; linear, so it commutes with the rank
+    /// reduction the caller applies next). The density copies and
+    /// accumulators are charged to the memory pool for the build (on every
+    /// rank or none).
+    pub(crate) fn sum_groups<F>(
+        &self,
+        ctx: &ferric_core::parallel::ParallelContext,
+        n_groups: usize,
+        band_bytes: usize,
+        times: Option<&mut crate::reduce::StreamTimes>,
+        run: F,
+    ) -> Result<PairOut, FerricError>
+    where
+        F: Fn(usize, &mut JkMode<'_>) + Sync,
+    {
+        let _charge = crate::direct_jk::gc_rotation::reserve_collective(
+            ctx,
+            &format!(
+                "direct J/K pair-digest densities and accumulators (n={})",
+                self.nbf
+            ),
+            self.charged_bytes(),
+        )?;
+        let mut halves = self.zeros();
+        crate::reduce::ordered_stream_sum_many(
+            &mut halves,
+            n_groups,
+            self.nbf,
+            band_bytes,
+            |g| {
+                let mut mode = self.mode();
+                run(g, &mut mode);
+                Ok(mode.into_pair_partials())
+            },
+            times,
+        )?;
+        let t0 = std::time::Instant::now();
+        let (j, k) = self.finish(halves);
+        let finish_s = ns_since(t0) as f64 * 1e-9;
+        pair_probe::record(|| pair_probe::PairBuild {
+            coulomb: self.has_j(),
+            general: self.general,
+            symmetric_inputs: self.kd.iter().map(|p| !p.is_general()).collect(),
+            quartets: self.quartets.load(std::sync::atomic::Ordering::Relaxed),
+        });
+        Ok(PairOut {
+            j,
+            k,
+            prep_s: self.prep_ns as f64 * 1e-9,
+            finish_s,
+            kernel: self.kernel_label(),
+        })
     }
 
     /// The summed half partials as `(J, [K per channel])`: `J = Jh + Jhᵀ`
@@ -1544,7 +1789,7 @@ impl PairSpec {
         mut mats: Vec<Array2<f64>>,
     ) -> (Option<Array2<f64>>, Vec<Array2<f64>>) {
         assert_eq!(mats.len(), self.n_partials(), "pair digest: partial count");
-        let nj = usize::from(self.jd.is_some());
+        let nj = usize::from(self.has_j());
         let nk = self.kd.len();
         let kt = if self.general {
             mats.split_off(nj + nk)
@@ -1586,6 +1831,50 @@ fn add_own_transpose(a: &mut Array2<f64>) {
     }
 }
 
+/// A test probe of the pair digest: which builds ran it and on which
+/// kernel. Off unless [`start`](pair_probe::start)ed, per thread (a build
+/// records on the thread that called it), so production builds pay one
+/// thread-local read. Not part of the API.
+#[doc(hidden)]
+pub mod pair_probe {
+    use std::cell::RefCell;
+
+    /// One finished pair-digest build.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct PairBuild {
+        /// It built a Coulomb matrix.
+        pub coulomb: bool,
+        /// Its exchange channels ran the general (non-symmetric) kernel.
+        pub general: bool,
+        /// Per exchange channel: the input was symmetric to roundoff.
+        pub symmetric_inputs: Vec<bool>,
+        /// Quartets the pair kernel digested.
+        pub quartets: usize,
+    }
+
+    thread_local! {
+        static LOG: RefCell<Option<Vec<PairBuild>>> = const { RefCell::new(None) };
+    }
+
+    /// Start recording this thread's pair-digest builds (clearing any record).
+    pub fn start() {
+        LOG.with(|l| *l.borrow_mut() = Some(Vec::new()));
+    }
+
+    /// The builds recorded since [`start`], and stop recording.
+    pub fn take() -> Vec<PairBuild> {
+        LOG.with(|l| l.borrow_mut().take().unwrap_or_default())
+    }
+
+    pub(crate) fn record(build: impl FnOnce() -> PairBuild) {
+        LOG.with(|l| {
+            if let Some(v) = l.borrow_mut().as_mut() {
+                v.push(build());
+            }
+        });
+    }
+}
+
 /// The current bra pair of a [`PairJk`].
 #[derive(Debug, Default, Clone, Copy)]
 struct PairBra {
@@ -1600,7 +1889,7 @@ struct PairBra {
 /// scratch.
 #[derive(Debug)]
 pub(crate) struct PairJk<'d> {
-    spec: &'d PairSpec,
+    spec: &'d PairSpec<'d>,
     mats: Vec<Array2<f64>>,
     /// Bra J accumulator `J_bra[μν]`, written once per bra pair.
     jb: Vec<f64>,
@@ -1611,6 +1900,8 @@ pub(crate) struct PairJk<'d> {
     /// Ket J block of the current quartet.
     s34: Vec<f64>,
     bra: PairBra,
+    /// Quartets digested (added to the spec's count when the group ends).
+    quartets: usize,
 }
 
 impl PairJk<'_> {
@@ -1625,7 +1916,7 @@ impl PairJk<'_> {
             s: [s1, s2],
             sym12,
         };
-        if let Some(jd) = &self.spec.jd {
+        if let Some(jd) = self.spec.jd() {
             self.jb[..n1 * n2].fill(0.0);
             for a in 0..n1 {
                 for b in 0..n2 {
@@ -1643,7 +1934,7 @@ impl PairJk<'_> {
     /// Flush the bra pair's J into `Jh` (0.5 for `s1 = s2`, whose transpose
     /// image `Jh + Jhᵀ` would otherwise double).
     fn end(&mut self) {
-        if self.spec.jd.is_none() {
+        if !self.spec.has_j() {
             return;
         }
         let [n1, n2] = self.bra.n;
@@ -1660,8 +1951,9 @@ impl PairJk<'_> {
 
     /// Digest one computed block `(s1 s2|s3 s4)` of the current bra pair.
     fn quartet(&mut self, q: &[f64], dims: &[usize], offs: &[usize], s3: usize, s4: usize) {
+        self.quartets += 1;
         let spec = self.spec;
-        match (spec.jd.is_some(), spec.kd.len(), spec.general) {
+        match (spec.has_j(), spec.kd.len(), spec.general) {
             (true, 1, false) => self.quartet_t::<true, 1, false>(q, dims, offs, s3, s4),
             (true, 1, true) => self.quartet_t::<true, 1, true>(q, dims, offs, s3, s4),
             (true, 2, false) => self.quartet_t::<true, 2, false>(q, dims, offs, s3, s4),
@@ -1715,12 +2007,14 @@ impl PairJk<'_> {
             }
         }
         for (c, kd) in spec.kd.iter().enumerate().take(NK) {
-            dk[c] = kd.d.as_ptr();
+            dk[c] = kd.d.get().as_ptr();
             if GEN {
-                dkt[c] = kd.dt.as_ref().map_or(std::ptr::null(), |t| t.as_ptr());
+                // A channel symmetric to roundoff (symmetrised) is its own
+                // transpose.
+                dkt[c] = kd.dt.as_ref().map_or(dk[c], |t| t.as_ptr());
             }
         }
-        let jd = spec.jd.as_ref().map_or(std::ptr::null(), |d| d.as_ptr());
+        let jd = spec.jd().map_or(std::ptr::null(), |d| d.as_ptr());
         let sc = PairScratch {
             jb: self.jb.as_mut_ptr(),
             e12: self.e12.as_ptr(),
@@ -2047,6 +2341,10 @@ mod tests {
         assert_eq!(r(" LEGACY "), Ok(JkDigest::Legacy));
         assert_eq!(r("pair"), Ok(JkDigest::Pair));
         assert!(r("none").is_err());
+        // An empty or all-blank value is refused, as `FERRIC_GC_ROTATE`
+        // refuses it (not read as unset).
+        assert!(r("").is_err());
+        assert!(r("   ").is_err());
         // A config value wins over the variable.
         let cfg = JK_DIGEST.resolve(Some(JkDigest::Pair), get("legacy"));
         assert_eq!(cfg.map(|r| r.value), Ok(JkDigest::Pair));
@@ -2080,51 +2378,108 @@ mod tests {
         d
     }
 
-    /// The density check: roundoff skew passes (also on a small `ΔD`, the
-    /// floor), a real skew fails at any size above the floor, so an
-    /// over-loose threshold would show here.
+    /// The density check, relative for a full density: roundoff skew
+    /// passes, a real skew fails at any size, an antisymmetric part of
+    /// absolute size 1e-15 included (no absolute floor), and a non-finite
+    /// element on either side fails.
     #[test]
     fn symmetry_check_is_at_the_roundoff_level() {
         let d = sym_matrix(9, 1);
-        assert!(is_symmetric_to_roundoff(&d));
+        assert!(is_symmetric_to_roundoff(&d, None));
         let mut e = d.clone();
         e[(2, 5)] += 4e-16; // roundoff of an O(1) density
-        assert!(is_symmetric_to_roundoff(&e));
-        // A ΔD of size 1e-7 with the same absolute roundoff skew: floor.
-        let mut small = 1e-7 * &d;
-        small[(2, 5)] += 4e-16;
-        assert!(is_symmetric_to_roundoff(&small));
+        assert!(is_symmetric_to_roundoff(&e, None));
+        // The tolerance itself: 0.5e-14 relative passes, 2e-14 fails (a
+        // tolerance off by a decade either way flips one of these).
+        let big = d.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        for (rel, want) in [(0.5e-14, true), (2e-14, false)] {
+            let mut x = d.clone();
+            x[(2, 5)] += rel * big;
+            assert_eq!(is_symmetric_to_roundoff(&x, None), want, "skew {rel:e}");
+        }
         // Genuine skews.
         for skew in [1e-13, 1e-10, 1e-6, 1e-2] {
             let mut x = d.clone();
             x[(3, 1)] += skew;
-            assert!(!is_symmetric_to_roundoff(&x), "skew {skew:e} passed");
+            assert!(!is_symmetric_to_roundoff(&x, None), "skew {skew:e} passed");
         }
-        // Relative above the floor: a big density with a 1e-13 relative skew.
+        // A big density with a 1e-13 relative skew.
         let mut big = 1e3 * &d;
         big[(0, 4)] += 1e3 * 1e-13 * 2.0;
-        assert!(!is_symmetric_to_roundoff(&big));
-        let mut nan = d.clone();
-        nan[(1, 1)] = f64::NAN;
-        assert!(!is_symmetric_to_roundoff(&nan));
-        assert!(!is_symmetric_to_roundoff(&Array2::zeros((2, 3))));
+        assert!(!is_symmetric_to_roundoff(&big, None));
+        // Purely antisymmetric, of absolute size 1e-15: kept (general).
+        let a = Array2::from_shape_fn((9, 9), |(i, j)| 1e-15 * (i as f64 - j as f64).signum());
+        assert!(!is_symmetric_to_roundoff(&a, None));
+        assert!(PairDensity::prepare(&a, None).is_general());
+        // Non-finite on one side only, or on both.
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut x = d.clone();
+            x[(1, 4)] = bad;
+            assert!(!is_symmetric_to_roundoff(&x, None), "{bad} on one side");
+            x[(4, 1)] = bad;
+            assert!(!is_symmetric_to_roundoff(&x, None), "{bad} on both sides");
+            assert!(
+                !is_symmetric_to_roundoff(&x, Some(1.0)),
+                "{bad} with a reference"
+            );
+        }
+        assert!(!is_symmetric_to_roundoff(&Array2::zeros((2, 3)), None));
+        assert!(is_symmetric_to_roundoff(&Array2::zeros((3, 3)), None));
+    }
+
+    /// The incremental `ΔD`: against the full density's scale, a 1e-17
+    /// skew on a 1e-7 `ΔD` stays symmetric; on its own scale (a full
+    /// build) it does not; a skew of 1e-13 of the reference does not either.
+    #[test]
+    fn symmetry_check_of_a_delta_density_uses_the_reference() {
+        let d = sym_matrix(9, 7);
+        let reference = d.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        let mut dd = 1e-7 * &d;
+        dd[(2, 5)] += 1e-17;
+        assert!(is_symmetric_to_roundoff(&dd, Some(reference)));
+        assert!(!is_symmetric_to_roundoff(&dd, None));
+        let refs = [reference];
+        let spec = PairSpec::both(9, &[3, 3, 3], &dd, SymScale::Delta(&refs));
+        assert!(!spec.is_general());
+        assert!(PairSpec::both(9, &[3, 3, 3], &dd, SymScale::Own).is_general());
+        // No reference recorded for the channel: its own scale.
+        assert!(PairSpec::both(9, &[3, 3, 3], &dd, SymScale::Delta(&[])).is_general());
+        dd[(2, 5)] += 1e-13 * reference;
+        assert!(!is_symmetric_to_roundoff(&dd, Some(reference)));
+        // The recorded scale is max|D| per channel.
+        assert_eq!(
+            PairSpec::both(9, &[3, 3, 3], &d, SymScale::Own).scales(),
+            vec![reference]
+        );
     }
 
     #[test]
     fn pair_density_symmetrises_or_keeps_the_transpose() {
         let mut d = sym_matrix(6, 2);
         d[(1, 4)] += 1e-17;
-        let p = PairDensity::prepare(&d);
+        let p = PairDensity::prepare(&d, None);
         assert!(!p.is_general());
         assert!(
-            p.d == p.d.t(),
+            p.d.get() == p.d.get().t(),
             "symmetrised density must be exactly symmetric"
         );
         d[(1, 4)] += 1e-3;
-        let p = PairDensity::prepare(&d);
+        let p = PairDensity::prepare(&d, None);
         assert!(p.is_general());
-        assert_eq!(p.d, d);
+        assert_eq!(p.d.get(), &d);
+        assert_eq!(
+            p.d.owned_len(),
+            0,
+            "a standard-layout density is not copied"
+        );
         assert_eq!(p.dt.as_ref().unwrap(), &d.t());
+        assert_eq!(p.owned_len(), 36);
+        // A column-major density is copied into standard layout.
+        let f = d.t().to_owned();
+        assert!(!f.is_standard_layout());
+        let p = PairDensity::prepare(&f, None);
+        assert!(p.d.owned_len() == 36 && p.d.get().is_standard_layout());
+        assert_eq!(p.d.get(), &d.t());
     }
 
     /// One non-symmetric spin sends both channels to the general kernel, and
@@ -2132,27 +2487,56 @@ mod tests {
     #[test]
     fn pair_spec_layout_and_kernel_choice() {
         let dims = [1usize, 3, 5];
+        let own = SymScale::Own;
         let (s, a) = (sym_matrix(9, 3), sym_matrix(9, 4));
         let mut g = a.clone();
         g[(0, 8)] += 1e-4;
         let t = &s + &g;
-        assert!(!PairSpec::both(9, &dims, &s).is_general());
-        assert_eq!(PairSpec::both(9, &dims, &s).n_partials(), 2);
-        let both_g = PairSpec::both(9, &dims, &g);
+        let sa = &s + &a;
+        assert!(!PairSpec::both(9, &dims, &s, own).is_general());
+        assert_eq!(PairSpec::both(9, &dims, &s, own).n_partials(), 2);
+        assert_eq!(
+            PairSpec::both(9, &dims, &s, own).kernel_label(),
+            "symmetric"
+        );
+        let both_g = PairSpec::both(9, &dims, &g, own);
         assert!(both_g.is_general());
         assert_eq!(both_g.n_partials(), 3);
-        assert_eq!(PairSpec::uhf(9, &dims, &(&s + &a), &s, &a).n_partials(), 3);
-        let uhf_g = PairSpec::uhf(9, &dims, &t, &s, &g);
+        assert_eq!(both_g.kernel_label(), "general [nonsym]");
+        assert_eq!(PairSpec::uhf(9, &dims, &sa, &s, &a, own).n_partials(), 3);
+        let uhf_g = PairSpec::uhf(9, &dims, &t, &s, &g, own);
         assert!(uhf_g.is_general());
         assert_eq!(uhf_g.n_partials(), 5);
+        assert_eq!(uhf_g.kernel_label(), "general [sym, nonsym]");
         assert_eq!(PairSpec::j_only(9, &dims, &g).n_partials(), 1);
         assert!(!PairSpec::j_only(9, &dims, &g).is_general());
+        assert_eq!(
+            PairSpec::j_only(9, &dims, &g).kernel_label(),
+            "none (J only)"
+        );
         assert_eq!(PairSpec::k_only(9, &dims, &g).n_partials(), 2);
         let k_spec = PairSpec::k_only(9, &dims, &s);
         let m = k_spec.mode();
         assert!(!m.accumulates_j());
         assert_eq!(m.label(), "Pair");
         assert!(PairSpec::j_only(9, &dims, &s).mode().accumulates_j());
+        // The closed-shell J reads the prepared exchange density: no copy.
+        let both = PairSpec::both(9, &dims, &g, own);
+        assert!(std::ptr::eq(both.jd().unwrap().as_ptr(), g.as_ptr()));
+        assert_eq!(
+            both.charged_bytes(),
+            (81 + 3 * 81) * 8,
+            "Dᵀ and three partials"
+        );
+        let both = PairSpec::both(9, &dims, &s, own);
+        assert_eq!(
+            both.charged_bytes(),
+            (81 + 2 * 81) * 8,
+            "½(D+Dᵀ) and two partials"
+        );
+        // The open-shell J of a standard-layout total is borrowed.
+        let uhf = PairSpec::uhf(9, &dims, &sa, &s, &a, own);
+        assert!(std::ptr::eq(uhf.jd().unwrap().as_ptr(), sa.as_ptr()));
     }
 
     /// `finish`: `J = Jh + Jhᵀ`, `K = Kb + Kbᵀ` (symmetric) or `Kb + Ktᵀ`.
@@ -2164,11 +2548,11 @@ mod tests {
         g[(0, 2)] += 1.0;
         let h = Array2::from_shape_fn((3, 3), |(i, j)| (3 * i + j) as f64);
         let k2 = Array2::from_shape_fn((3, 3), |(i, j)| (i as f64) - 2.0 * j as f64);
-        let spec = PairSpec::both(3, &dims, &s);
+        let spec = PairSpec::both(3, &dims, &s, SymScale::Own);
         let (j, k) = spec.finish(vec![h.clone(), k2.clone()]);
         assert_eq!(j.unwrap(), &h + &h.t());
         assert_eq!(k[0], &k2 + &k2.t());
-        let spec = PairSpec::both(3, &dims, &g);
+        let spec = PairSpec::both(3, &dims, &g, SymScale::Own);
         let (_, k) = spec.finish(vec![h.clone(), k2.clone(), h.clone()]);
         assert_eq!(k[0], &k2 + &h.t());
     }

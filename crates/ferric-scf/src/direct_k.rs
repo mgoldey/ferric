@@ -202,24 +202,11 @@ impl<'a> KBuilder for DirectK<'a> {
                 )?;
                 total_k
             }
-            JkDigest::Pair => {
-                let spec = PairSpec::k_only(nbf, dims, d);
-                let mut halves = spec.zeros();
-                crate::reduce::ordered_stream_sum_many(
-                    &mut halves,
-                    n_groups,
-                    nbf,
-                    band_bytes,
-                    |g| {
-                        let mut mode = spec.mode();
-                        run(g, &mut mode);
-                        Ok(mode.into_pair_partials())
-                    },
-                    None,
-                )?;
-                let (_, mut k) = spec.finish(halves);
-                k.pop().expect("the K-only pair digest builds K")
-            }
+            JkDigest::Pair => PairSpec::k_only(nbf, dims, d)
+                .sum_groups(self.ctx, n_groups, band_bytes, None, run)?
+                .k
+                .pop()
+                .expect("the K-only pair digest builds K"),
         };
 
         crate::reduce::reduce_partial_across_ranks(self.ctx, &mut total_k);

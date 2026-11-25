@@ -4479,7 +4479,7 @@ pub fn build_jk_with_pool(
 ) -> Result<usize, FerricError> {
     use crate::quartet_scatter::{
         build_d_max_shell, canonical_bra_pairs, scatter_bra_pair, DensityScreen, JkDigest, JkMode,
-        PairSpec,
+        PairSpec, SymScale,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -4595,24 +4595,11 @@ pub fn build_jk_with_pool(
             (total_j, total_k)
         }
         JkDigest::Pair => {
-            let spec = PairSpec::both(nbf, dims, d);
-            let mut halves = spec.zeros();
-            crate::reduce::ordered_stream_sum_many(
-                &mut halves,
-                n_groups,
-                nbf,
-                band_bytes,
-                |g| {
-                    let mut mode = spec.mode();
-                    run(g, &mut mode);
-                    Ok(mode.into_pair_partials())
-                },
-                None,
-            )?;
-            let (j, mut k) = spec.finish(halves);
+            let mut out = PairSpec::both(nbf, dims, d, SymScale::Own)
+                .sum_groups(ctx, n_groups, band_bytes, None, run)?;
             (
-                j.expect("the J+K pair digest builds J"),
-                k.pop().expect("the J+K pair digest builds K"),
+                out.j.take().expect("the J+K pair digest builds J"),
+                out.k.pop().expect("the J+K pair digest builds K"),
             )
         }
     };

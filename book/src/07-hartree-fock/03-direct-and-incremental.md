@@ -301,12 +301,17 @@ A density that is not symmetric takes the general form instead. The swapped
 images are accumulated, transposed, into a second bra-row matrix $K^{\rm t}$
 against $D^{\mathsf T}$, and $K = K^{\rm b} + (K^{\rm t})^{\mathsf T}$ with
 $w = 1$ everywhere. Each build checks its exchange densities once:
-$\max|D - D^{\mathsf T}| \le 10^{-14} \max(\max|D|, 1)$ counts as symmetric,
-and such a density is symmetrised explicitly to $\frac12(D + D^{\mathsf
-T})$, so $K$ comes out exactly symmetric. The floor of 1 keeps the
-incremental build's $\Delta D$ on the symmetric form: a difference of two
-$O(1)$ densities carries their absolute rounding asymmetry. UHF checks each
-spin, and if either is not symmetric both run the general form.
+$\max|D - D^{\mathsf T}| \le 10^{-14} \max|D|$ counts as symmetric, and such
+a density is symmetrised explicitly to $\frac12(D + D^{\mathsf T})$, so $K$
+comes out exactly symmetric. A density with a NaN or infinite element is not
+symmetric. The test is relative, so an antisymmetric part is kept at any
+absolute size. The one exception is the incremental build's $\Delta D$,
+which is judged against $\max(\max|\Delta D|, \max|D_{\rm full}|)$, with
+$D_{\rm full}$ the density of the builder's last full build: a difference
+of two densities carries their absolute rounding asymmetry, which is large
+relative to a small $\Delta D$, and symmetrising it moves $K$ by that much of
+the full $K$. UHF checks each spin, and if either is not symmetric both run
+the general form.
 
 The integrals, the screen, the work partition and the fold order do not
 change, so the result still does not depend on the thread count. Only the

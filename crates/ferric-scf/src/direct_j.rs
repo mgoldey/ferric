@@ -222,25 +222,10 @@ impl<'a> JBuilder for DirectJ<'a> {
                 )?;
                 total_j
             }
-            JkDigest::Pair => {
-                let spec = PairSpec::j_only(nbf, dims, d);
-                let mut halves = spec.zeros();
-                crate::reduce::ordered_stream_sum_many(
-                    &mut halves,
-                    n_groups,
-                    nbf,
-                    band_bytes,
-                    |g| {
-                        let mut mode = spec.mode();
-                        run(g, &mut mode);
-                        Ok(mode.into_pair_partials())
-                    },
-                    None,
-                )?;
-                spec.finish(halves)
-                    .0
-                    .expect("the J-only pair digest builds J")
-            }
+            JkDigest::Pair => PairSpec::j_only(nbf, dims, d)
+                .sum_groups(self.ctx, n_groups, band_bytes, None, run)?
+                .j
+                .expect("the J-only pair digest builds J"),
         };
 
         crate::reduce::reduce_partial_across_ranks(self.ctx, &mut total_j);
