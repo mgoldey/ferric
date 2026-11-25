@@ -16,7 +16,14 @@
 #
 # The cmake options match PySCF's libxc build (no Fortran, third derivatives
 # on, fourth off, Fermi-hole-curvature enforcement left at its default ON)
-# and the wheels workflows' (Release, PIC, no test suite).
+# and share Release, PIC and no test suite with the wheels workflows. They
+# differ from the wheels in one place: the PyPI wheels build libxc with
+# -DDISABLE_KXC=ON (wheels.yml build-native-deps, scripts/wheels/
+# build-blas-xc.sh), because ferric calls only exc/vxc/fxc and the kxc code
+# is ~17 MB of the wheel. exc/vxc/fxc are bitwise identical either way. This
+# script keeps kxc on so a development libxc can also serve PySCF-style
+# third-derivative checks; crates/ferric-dft/src/libxc.rs has a test that
+# keeps ferric itself from declaring a kxc/lxc entry point.
 #
 # The install's SONAME is rewritten to the library's absolute path, as
 # scripts/install-libint.sh does for libint2: every executable, test binary

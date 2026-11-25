@@ -38,6 +38,14 @@ mod ffi {
         _private: [u8; 0],
     }
 
+    // Only energies, first and second derivatives (exc/vxc/fxc) may be
+    // declared here. The manylinux PyPI wheel links a libxc configured with
+    // -DDISABLE_KXC=ON (.github/workflows/wheels.yml, build-native-deps,
+    // "libxc" step), which leaves out every third- and fourth-derivative
+    // entry point. A kxc/lxc declaration would still compile and link
+    // against a full libxc, and fail only in the wheel. Needing one means
+    // turning KXC back on in wheels.yml first (about +17 MB in the wheel);
+    // `tests::no_third_or_fourth_derivative_entry_points` enforces this.
     extern "C" {
         /// Allocate an uninitialized libxc functional handle.
         pub fn xc_func_alloc() -> *mut XcFuncOpaque;
@@ -1986,6 +1994,52 @@ fn family_from_component_id(id: &str) -> FunctionalFamily {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The PyPI wheel's libxc is built without kxc/lxc (see the comment on
+    /// the `extern "C"` block): no source file in this crate may name a
+    /// libxc third- or fourth-derivative entry point: any identifier that
+    /// starts with `xc_` and contains `_kxc` or `_lxc` (the lda/gga/mgga
+    /// kxc, lxc and combined exc..kxc functions). Scans every `.rs` file
+    /// under `src/` token by token.
+    #[test]
+    fn no_third_or_fourth_derivative_entry_points() {
+        fn rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("read src dir") {
+                let path = entry.expect("dir entry").path();
+                if path.is_dir() {
+                    rs_files(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        rs_files(&src, &mut files);
+        assert!(
+            files.iter().any(|f| f.ends_with("libxc.rs")),
+            "scan did not reach libxc.rs under {}",
+            src.display()
+        );
+        let banned = ["_kxc", "_lxc"];
+        let mut hits = Vec::new();
+        for file in &files {
+            let text = std::fs::read_to_string(file).expect("read source file");
+            for (lineno, line) in text.lines().enumerate() {
+                for token in line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+                    if token.starts_with("xc_") && banned.iter().any(|b| token.contains(b)) {
+                        hits.push(format!("{}:{}: {token}", file.display(), lineno + 1));
+                    }
+                }
+            }
+        }
+        assert!(
+            hits.is_empty(),
+            "libxc kxc/lxc entry points named in ferric-dft, but the PyPI wheel's libxc is \
+             built with -DDISABLE_KXC=ON (.github/workflows/wheels.yml):\n{}",
+            hits.join("\n")
+        );
+    }
 
     /// The libxc loaded at run time is the pinned major (7;
     /// `scripts/wheels/native-pins.env`). An older libxc still links, since
