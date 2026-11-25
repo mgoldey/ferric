@@ -1,4 +1,5 @@
-//! `finalize_mpi` really finalizes, once, and MPI cannot come back afterwards.
+//! `finalize_mpi` really finalizes, once, on the initializing thread only, and
+//! MPI cannot come back afterwards; MPI runs at `MPI_THREAD_SERIALIZED`.
 //!
 //! Its own test binary: finalizing MPI ends MPI for the whole process, so no
 //! other test may share it. Runs as a singleton (no `mpirun` needed):
@@ -26,6 +27,21 @@ fn finalize_runs_once_and_mpi_cannot_be_reinitialized() {
     let ctx = ParallelContext::new();
     assert_eq!((ctx.rank, ctx.size), (0, 1), "a singleton world");
     assert_eq!(mpi_state(), (true, false));
+    // The collectives run from the rank's rayon pool, so MPI must be up at
+    // MPI_THREAD_SERIALIZED or above, not rsmpi's default Single.
+    let level = mpi::environment::threading_support();
+    assert!(
+        matches!(level, mpi::Threading::Serialized | mpi::Threading::Multiple),
+        "MPI initialized at {level:?}"
+    );
+    // MPI_Finalize belongs to the initializing thread: from another thread
+    // finalize_mpi refuses and MPI stays up for the real call below.
+    let elsewhere = std::thread::spawn(|| std::panic::catch_unwind(finalize_mpi)).join();
+    assert!(
+        matches!(elsewhere, Ok(Err(_))),
+        "finalize_mpi from another thread must panic"
+    );
+    assert_eq!(mpi_state(), (true, false), "a foreign thread finalized MPI");
     finalize_mpi();
     assert_eq!(mpi_state(), (true, true), "finalize_mpi left MPI running");
     // A second call is a no-op, not a double MPI_Finalize (which would abort).

@@ -9,7 +9,8 @@ use mpi::topology::SimpleCommunicator;
 #[cfg(feature = "mpi")]
 use mpi::traits::Communicator;
 
-// MPI is initialized exactly once per process. `mpi::initialize()` returns a
+// MPI is initialized exactly once per process (at MPI_THREAD_SERIALIZED, see
+// `init_world`). rsmpi's initializer returns a
 // `Universe` RAII guard that finalizes MPI on drop; we must keep it alive for
 // the whole process. Crucially, `SimpleCommunicator`/`Universe` embed a raw
 // `*mut ompi_communicator_t`, so they are `!Send + !Sync`. `ParallelContext` is
@@ -34,9 +35,14 @@ static MPI_FINALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 // it behind this wrapper lets us stash it in a `OnceLock` (which requires the
 // contents be `Send + Sync`) without ever moving it across a thread in a way
 // that touches MPI state. The held `Universe` is dropped (MPI_Finalize) only by
-// `finalize_mpi`; a process that never calls it exits without finalizing.
+// `finalize_mpi`, on the thread recorded here (the one that initialized MPI);
+// a process that never calls it exits without finalizing.
 #[cfg(feature = "mpi")]
-struct MpiUniverseHolder(#[allow(dead_code)] mpi::environment::Universe);
+struct MpiUniverseHolder {
+    #[allow(dead_code)]
+    universe: mpi::environment::Universe,
+    init_thread: std::thread::ThreadId,
+}
 #[cfg(feature = "mpi")]
 unsafe impl Send for MpiUniverseHolder {}
 #[cfg(feature = "mpi")]
@@ -67,10 +73,25 @@ pub const MPI_ENABLED: bool = cfg!(feature = "mpi");
 /// invalid MPI use, and a later [`ParallelContext::new`] panics. A rank that
 /// fails mid-run should exit without calling it, so `mpirun` tears the job
 /// down instead of hanging in the finalize of the ranks that did not fail.
+///
+/// MPI requires `MPI_Finalize` on the thread that initialized MPI (the one
+/// whose first [`ParallelContext::new`] ran `MPI_Init`). From any other
+/// thread this panics and leaves MPI initialized.
 pub fn finalize_mpi() {
     #[cfg(feature = "mpi")]
     if let Some(cell) = MPI_UNIVERSE.get() {
-        let universe = cell.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let mut held = cell.lock().unwrap_or_else(|e| e.into_inner());
+        let here = std::thread::current().id();
+        if let Some(h) = held.as_ref() {
+            assert!(
+                h.init_thread == here,
+                "finalize_mpi on {here:?}, but MPI was initialized on {:?}: \
+                 MPI_Finalize must run on the initializing thread",
+                h.init_thread
+            );
+        }
+        let universe = held.take();
+        drop(held);
         if universe.is_some() {
             MPI_FINALIZED.store(true, std::sync::atomic::Ordering::SeqCst);
         }
@@ -88,8 +109,27 @@ fn init_world() -> Option<(usize, usize)> {
         !MPI_FINALIZED.load(std::sync::atomic::Ordering::SeqCst),
         "ParallelContext::new after finalize_mpi: MPI cannot be initialized twice"
     );
-    let cell = MPI_UNIVERSE
-        .get_or_init(|| std::sync::Mutex::new(mpi::initialize().map(MpiUniverseHolder)));
+    let cell = MPI_UNIVERSE.get_or_init(|| {
+        let init_thread = std::thread::current().id();
+        // Serialized, not rsmpi's default Single: the MPI entry points run
+        // their body, collectives included, in the rank's rayon pool
+        // (`with_rank_pool`), i.e. on a worker thread rather than the one
+        // that called MPI_Init. One thread at a time, but not always the
+        // main one, is exactly MPI_THREAD_SERIALIZED.
+        std::sync::Mutex::new(
+            mpi::initialize_with_threading(mpi::Threading::Serialized).map(|(universe, got)| {
+                assert!(
+                    matches!(got, mpi::Threading::Serialized | mpi::Threading::Multiple),
+                    "the MPI library provides thread level {got:?}; ferric issues its \
+                     collectives from a rayon worker and needs MPI_THREAD_SERIALIZED"
+                );
+                MpiUniverseHolder {
+                    universe,
+                    init_thread,
+                }
+            }),
+        )
+    });
     let initialized = cell.lock().unwrap_or_else(|e| e.into_inner()).is_some();
     initialized.then(|| {
         let w = SimpleCommunicator::world();
@@ -432,6 +472,16 @@ pub fn local_ranks_per_node() -> usize {
 /// a `set_var`-based test races every other test in the binary.
 #[doc(hidden)]
 pub fn local_ranks_per_node_with(get: impl Fn(&str) -> Option<String>) -> usize {
+    local_ranks_hint_with(get).unwrap_or(1)
+}
+
+/// The node-local rank count the first launcher variable that parses as a
+/// positive count gives, `None` when none does (unset, or garbage such as
+/// Slurm's heterogeneous `"4,2"`). [`local_ranks_per_node_with`] falls back
+/// to 1 on `None`; a caller that must tell "no hint" from a parsed 1 reads
+/// this instead.
+#[doc(hidden)]
+pub fn local_ranks_hint_with(get: impl Fn(&str) -> Option<String>) -> Option<usize> {
     const LOCAL_SIZE_VARS: [&str; 4] = [
         "OMPI_COMM_WORLD_LOCAL_SIZE",
         "MV2_COMM_WORLD_LOCAL_SIZE",
@@ -449,12 +499,12 @@ pub fn local_ranks_per_node_with(get: impl Fn(&str) -> Option<String>) -> usize 
             // parse fails on that and we fall back to 1 rather than guess.
             if let Ok(n) = v.trim().parse::<usize>() {
                 if n >= 1 {
-                    return n;
+                    return Some(n);
                 }
             }
         }
     }
-    1
+    None
 }
 
 /// Physical core count of this machine (SMT siblings collapsed), falling back
@@ -567,7 +617,8 @@ impl Default for ParallelContext {
 mod tests {
     use super::aux_band_for;
     use super::{
-        local_ranks_per_node_with, physical_cores, physical_cores_from_sysfs, threads_per_rank,
+        local_ranks_hint_with, local_ranks_per_node_with, physical_cores,
+        physical_cores_from_sysfs, threads_per_rank,
     };
 
     /// With nothing to reduce, the array reduction leaves any layout alone:
@@ -772,6 +823,14 @@ mod tests {
             local_ranks_per_node_with(|k| (k == "SLURM_NTASKS_PER_NODE").then(|| "4,2".into())),
             1
         );
+        // The hint keeps "nothing parsed" apart from a parsed 1 (PR #716
+        // review: a "4,2"-only Slurm run must not read as one rank per node).
+        let slurm =
+            |v: &'static str| move |k: &str| (k == "SLURM_NTASKS_PER_NODE").then(|| v.into());
+        assert_eq!(local_ranks_hint_with(slurm("4,2")), None);
+        assert_eq!(local_ranks_hint_with(slurm("0")), None);
+        assert_eq!(local_ranks_hint_with(|_| None), None);
+        assert_eq!(local_ranks_hint_with(slurm("1")), Some(1));
 
         // Unset OMPI + set MPICH: the loop must not stop at the first MISSING
         // var (a `for` that returned on the first key regardless would).
