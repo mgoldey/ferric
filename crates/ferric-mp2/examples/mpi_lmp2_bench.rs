@@ -17,13 +17,17 @@
 //! ## Run (always `OPENBLAS_NUM_THREADS=1`)
 //!
 //! Defaults: `testdata/molecules/alkane_20.xyz`, 6-31g, cc-pvdz-ri, eps 1e-4,
-//! one frozen core per non-hydrogen atom, and the production model the CLI
+//! the small-core frozen core of the real atoms (`Molecule::auto_frozen_core`,
+//! ghosts freeze nothing), and the production model the CLI
 //! runs: `AmplitudeLmp2Config::production` with `DirectConfig::production()`.
 //! Flags (all optional): `--xyz PATH --basis NAME --aux NAME --eps X
 //! --frozen-core N --aux-radius BOHR --virt-radius BOHR|none --ao-tail X
 //! --schwarz-skip X --batch-merge N --kappa X|none --slab-mib N --scratch-mib N
-//! --eri3-pass batches|aux-major --split-eri3-timers true|false`
-//! (`--slab-mib`/`--scratch-mib` set `DirectConfig::slab_budget_bytes` and
+//! --eri3-pass batches|aux-major --split-eri3-timers true|false
+//! --gate-cal X|none`
+//! (`--gate-cal` overrides the production pair-gate calibration
+//! `AmplitudeLmp2Config::pair_gate_cal`; `none` turns the gate off;
+//! `--slab-mib`/`--scratch-mib` set `DirectConfig::slab_budget_bytes` and
 //! `scratch_budget_bytes` in MiB; `--eri3-pass aux-major` needs
 //! `--batch-merge 1`).
 //!
@@ -107,6 +111,8 @@ struct Args {
     aux: String,
     eps: f64,
     frozen_core: Option<usize>,
+    /// `None`: the production calibration; `Some(c)`: `--gate-cal` (`Some(None)` = off).
+    gate_cal: Option<Option<f64>>,
     maps: DirectConfig,
 }
 
@@ -130,6 +136,7 @@ fn parse_args() -> Args {
         aux: "cc-pvdz-ri".into(),
         eps: 1e-4,
         frozen_core: None,
+        gate_cal: None,
         maps: DirectConfig::production(),
     };
     let mut it = std::env::args().skip(1);
@@ -158,6 +165,7 @@ fn parse_args() -> Args {
                     _ => panic!("--eri3-pass: batches or aux-major, not {v:?}"),
                 }
             }
+            "--gate-cal" => a.gate_cal = Some(parse_some(&flag, &v)),
             "--split-eri3-timers" => a.maps.split_eri3_timers = parse_opt(&flag, &v),
             _ => panic!("unknown flag {flag} (see the module doc)"),
         }
@@ -213,9 +221,7 @@ fn run(ctx: &ParallelContext, args: &Args) -> bool {
     let obs = PreparedBasis::new(&mol, &obs_bs).expect("obs basis");
     let dfbs = PreparedBasis::new(&mol, &basis::bundled(&args.aux).expect("aux")).expect("aux");
     let op = Operator::coulomb();
-    let frozen_core = args
-        .frozen_core
-        .unwrap_or_else(|| mol.atoms.iter().filter(|at| at.z > 2).count());
+    let frozen_core = args.frozen_core.unwrap_or_else(|| mol.auto_frozen_core());
     let bounds = SchwarzBounds::compute(op, &obs).expect("schwarz");
 
     // Serial SCF on every rank (`for_rank(0, 1)` has no MPI world): outside
@@ -234,20 +240,25 @@ fn run(ctx: &ParallelContext, args: &Args) -> bool {
     let t_scf = t_scf.elapsed().as_secs_f64();
 
     // The production model, from its single source: what the CLI runs.
-    let cfg = AmplitudeLmp2Config::production(args.eps, frozen_core, None);
+    let prod = AmplitudeLmp2Config::production(args.eps, frozen_core, None);
+    let cfg = AmplitudeLmp2Config {
+        pair_gate_cal: args.gate_cal.unwrap_or(prod.pair_gate_cal),
+        ..prod
+    };
     let maps = DirectConfig {
         mpi: Some(*ctx),
         ..args.maps.clone()
     };
     if ctx.is_root() {
         eprintln!(
-            "mpi_lmp2_bench: {} {}/{} eps {:e} frozen_core {frozen_core} nbas {} naux {} ranks {}; \
+            "mpi_lmp2_bench: {} {}/{} eps {:e} frozen_core {frozen_core} gate_cal {:?} nbas {} naux {} ranks {}; \
              reference RHF solved serially on every rank ({t_scf:.1} s, excluded from LMP2 timings); \
              maps {:?}",
             args.xyz,
             args.basis,
             args.aux,
             args.eps,
+            cfg.pair_gate_cal,
             obs.nbasis(),
             dfbs.nbasis(),
             ctx.size,
@@ -276,6 +287,10 @@ fn run(ctx: &ParallelContext, args: &Args) -> bool {
         "aux": args.aux,
         "eps": args.eps,
         "frozen_core": frozen_core,
+        "gate_cal": cfg.pair_gate_cal,
+        "n_pairs_gated": res.n_pairs_gated,
+        "n_pairs_unique": res.n_pairs_unique,
+        "e_scf": format!("{:.12}", rhf.energy),
         "e_corr": format!("{:.12}", res.e_corr),
         "e_corr_bits": format!("{:.17e}", res.e_corr),
         "lmp2_wall_s": wall,

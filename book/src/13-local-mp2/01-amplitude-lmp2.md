@@ -495,6 +495,84 @@ cannot give a lower energy, so the gate can only raise the energy. The
 estimate itself is calibrated, not a bound: nothing ties the size of the
 gated energy to $\varepsilon$.
 
+**Measured 2026-11-24 (provisional).** The gate stays off by default. A
+fixed geometric constant depends on the physics it stands in for: the
+orbitals' polarizability and gap, the basis diffuseness, the operator and
+$\varepsilon$. The scan below is on the production integral-direct model
+(`AmplitudeLmp2Config::production` with `DirectConfig::production()`,
+Coulomb, 6-31G with cc-pVDZ-RI, frozen carbon cores, $\varepsilon =
+10^{-4}$, one rank with six threads, `crates/ferric-mp2/examples/mpi_lmp2_bench.rs
+--gate-cal`). $\Delta E$ is gated minus ungated $E_{\mathrm{corr}}$ at the
+same size. Times are the median of two runs at C32 to C64 and one run
+below; repeated energies agree to the bit. The anchor
+`crates/ferric-mp2/tests/lmp2_direct.rs::pair_gate_trivial_limit_is_bitwise_gate_off`
+checks that the gate in its inert limits ($\mathrm{cal} = 10^{30}$, and
+$\varepsilon = 0$) reproduces the ungated run bit for bit.
+
+| n-alkane | cal | $\Delta E$ (Ha) | $\Delta E$ per C (Ha) | pairs gated / all (with a block) | LMP2 wall (s) |
+|---|---|---|---|---|---|
+| C32 | off | 0 | 0 | 0 / 4753 (0) | 30.6 |
+| C32 | 0.7 | $3.42\times10^{-5}$ | $1.07\times10^{-6}$ | 3055 / 4753 (427) | 11.4 |
+| C32 | 1.4 | $6.06\times10^{-6}$ | $1.89\times10^{-7}$ | 2875 / 4753 (247) | 10.4 |
+| C32 | 5.6 | 0 (bit-identical) | 0 | 2484 / 4753 (0) | 11.9 |
+| C48 | off | 0 | 0 | 0 / 10585 (0) | 97.9 |
+| C48 | 0.7 | $5.54\times10^{-5}$ | $1.15\times10^{-6}$ | 7959 / 10585 (699) | 18.3 |
+| C48 | 1.4 | $9.88\times10^{-6}$ | $2.06\times10^{-7}$ | 7667 / 10585 (407) | 22.3 |
+| C48 | 5.6 | 0 (bit-identical) | 0 | 7020 / 10585 (0) | 23.3 |
+| C64 | off | 0 | 0 | 0 / 18721 (0) | 215.6 |
+| C64 | 0.7 | $7.65\times10^{-5}$ | $1.19\times10^{-6}$ | 15167 / 18721 (971) | 29.5 |
+| C64 | 1.4 | $1.37\times10^{-5}$ | $2.14\times10^{-7}$ | 14763 / 18721 (567) | 34.8 |
+| C64 | 5.6 | 0 (bit-identical) | 0 | 13860 / 18721 (0) | 37.6 |
+
+"With a block" counts gated pairs that would have kept at least one
+element: the ungated block count minus the gated one. At the ungated
+setting 2628 of C32's pairs, 7260 of C48's and 14196 of C64's (76%) have
+no kept element at all. Over C32 to C64 the ungated wall time grows as
+about $N^{2.8}$ and the gated one as $N^{1.35}$ to $N^{1.75}$ (three
+sizes). At $\varepsilon = 10^{-3}$ (C32, C48, one run) the ungated wall is
+26.0 and 88.9 s, against 6.1 and 12.9 s at cal 5.6 with a bit-identical
+energy.
+
+The counterpoise-corrected correlation part of the interaction energy,
+with each monomer in the full dimer basis, on two stacked all-anti
+n-alkane dimers (the second chain shifted 4.5 Å normal to the carbon
+plane):
+
+| dimer | cal | $\Delta E_{\mathrm{int}}$, correlation (kcal/mol) | error vs ungated (kcal/mol) | relative |
+|---|---|---|---|---|
+| C8 stack | off | $-2.4282$ | 0 | 0 |
+| C8 stack | 0.7 | $-2.4258$ | $+0.0025$ | $1.0\times10^{-3}$ |
+| C8 stack | 1.4 | $-2.4275$ | $+0.0007$ | $3.1\times10^{-4}$ |
+| C16 stack | off | $-5.1288$ | 0 | 0 |
+| C16 stack | 0.7 | $-5.1188$ | $+0.0100$ | $2.0\times10^{-3}$ |
+| C16 stack | 1.4 | $-5.1249$ | $+0.0039$ | $7.6\times10^{-4}$ |
+| C16 stack | 5.6 | $-5.1286$ | $+0.0002$ | $3.3\times10^{-5}$ |
+
+The S22 water, ammonia, methane and ethylene dimers gate no pair at any
+calibration from 0.7 to 5.6, so they do not test the gate. The S22
+T-shaped benzene dimer stops before the gate: λ-Boys at λ = 10 does not
+converge in 2000 sweeps (gradient $1.2\times10^{-6}$ against $10^{-8}$).
+
+What the numbers show, read provisionally:
+
+- On a chain the error is size-extensive and positive. At cal 0.7 each
+  added carbon costs $1.33\times10^{-6}$ Ha from C32 to C48 and
+  $1.32\times10^{-6}$ from C48 to C64. Doubling cal cuts the error about
+  sixfold.
+- The time is in the pairs with no kept element. At cal 5.6 every gated
+  chain pair is one of them and the energy does not move, yet C64 runs in
+  37.6 s instead of 215.6 s. A skip that finds those pairs exactly would
+  give that saving with no error.
+- The same constant is not exact everywhere. On the stacked C16 dimer cal
+  5.6 gates 16 pairs that carry kept elements. The interaction energy
+  takes the gate's error out of proportion to the total: at cal 0.7 the
+  relative error of $\Delta E_{\mathrm{int}}$ is $2.0\times10^{-3}$, about 140
+  times that of the dimer's $E_{\mathrm{corr}}$ ($1.4\times10^{-5}$). The
+  gated pairs are the long-range dispersion pairs that bind the dimer.
+
+Raw results, drivers and the full tables (C12 to C64, cal 0.35 to 5.6)
+are in the untracked notes `wiki/notes/lmp2-pair-gate-scan-2026-11-24/`.
+
 ### Step 6: the integrals and the Eq-8 mask
 
 For each pair that survives the gate, the code needs the block

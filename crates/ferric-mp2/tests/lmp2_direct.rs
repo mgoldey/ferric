@@ -1094,6 +1094,66 @@ fn production_maps_error_is_subdominant_to_eps_truncation() {
     // sub-dominance above is size-independent and is the assertion.
 }
 
+/// PAIR-GATE TRIVIAL LIMIT on the production integral-direct model: the
+/// gate code runs (`pair_gate_cal = Some`) but keeps every pair, and the run
+/// must be BIT-identical to the gate-off run (`None`). Two inert limits:
+/// (a) ε = 1e-4 with a calibration so large that every estimate clears
+/// θ = 1e-2·ε, (b) ε = 0 (θ = 0) at an aggressive calibration. The liveness arm
+/// shows the comparison is not vacuous: at the live calibration and
+/// ε = 1e-4 the gate removes pairs and moves the energy.
+#[test]
+fn pair_gate_trivial_limit_is_bitwise_gate_off() {
+    let run = |su: &Setup, fc: usize, eps: f64, cal: Option<f64>| {
+        let cfg = AmplitudeLmp2Config {
+            pair_gate_cal: cal,
+            ..AmplitudeLmp2Config::production(eps, fc, None)
+        };
+        amplitude_lmp2_direct(
+            &su.mol,
+            &su.obs,
+            &su.obs_bs,
+            &su.dfbs,
+            Operator::coulomb(),
+            &su.rhf,
+            &cfg,
+            &DirectConfig::production(),
+        )
+        .unwrap()
+        .0
+    };
+    // The Coulomb calibration of the 2026-08-14 rig (book §amplitude-lmp2-algorithm step 5).
+    let live = 0.7;
+    let c12 = setup("alkane_12.xyz");
+    // ε = 0 keeps every element, so its arm runs on the smaller C8, at a
+    // calibration (1e-6) that would gate nearly every pair at any θ > 0:
+    // θ = 0 alone must keep them (a floored θ fails this arm; a live
+    // calibration gates nothing on C8 even at θ ~ 1e-8 and would not).
+    let c8 = setup("alkane_8.xyz");
+    for (su, fc, eps, cal) in [(&c12, 12, 1e-4, 1e30), (&c8, 8, 0.0, 1e-6)] {
+        let off = run(su, fc, eps, None);
+        let on = run(su, fc, eps, Some(cal));
+        assert_eq!(on.n_pairs_gated, 0, "eps {eps:e} cal {cal:e}");
+        assert_eq!(on.n_pairs_unique, off.n_pairs_unique, "eps {eps:e}");
+        assert_eq!(
+            on.e_corr.to_bits(),
+            off.e_corr.to_bits(),
+            "eps {eps:e} cal {cal:e}: gate-on {:.15} vs gate-off {:.15}",
+            on.e_corr,
+            off.e_corr
+        );
+    }
+    let off = run(&c12, 12, 1e-4, None);
+    let on = run(&c12, 12, 1e-4, Some(live));
+    eprintln!(
+        "C12 eps 1e-4 cal {live}: gated {} of {} pairs, dE {:.3e} Ha",
+        on.n_pairs_gated,
+        off.n_pairs_unique,
+        on.e_corr - off.e_corr
+    );
+    assert!(on.n_pairs_gated > 0, "the live gate removed nothing on C12");
+    assert_ne!(on.e_corr.to_bits(), off.e_corr.to_bits());
+}
+
 /// SCHWARZ VIRTUAL-CANDIDATE SCREEN (`virt_schwarz_kappa`, prototype GO in
 /// WIKI-APPEND-eps-linked-maps.md) — TRIVIAL LIMIT: a kappa so small that
 /// the threshold kappa*eps passes every candidate must reproduce the

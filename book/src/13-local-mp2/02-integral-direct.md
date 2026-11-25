@@ -145,7 +145,12 @@ smaller and falls with length: 1891 pairs in 251 groups on C20 and 4753 in
 1031 on C32 (6-31G, cc-pVDZ-RI, $\varepsilon = 10^{-4}$, measured
 2026-11-24). On C32, 778 of those groups, 79% of the stage's thread time,
 produce no pair block at all: every element of their pairs falls under the
-mask.
+mask. Over the whole chain the empty pairs dominate: 2628 of 4753 pairs on
+C32 and 14196 of 18721 on C64 keep no element, and fitting them is most of
+the ungated cost. C64 takes 215.6 s ungated and 37.6 s when the pair gate
+at cal 5.6 skips 13860 of them, with a bit-identical energy (2026-11-24,
+provisional; the table and the interaction-energy check are in section
+@sec:amplitude-lmp2-algorithm, step 5). The gate stays off by default.
 
 ## The algorithm and what each map truncates {#integral-direct-algorithm-each-map-truncates}
 
