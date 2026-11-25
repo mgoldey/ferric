@@ -4417,6 +4417,11 @@ pub fn build_jk(
     j: &mut Array2<f64>,
     k: &mut Array2<f64>,
 ) -> Result<usize, FerricError> {
+    crate::quartet_scatter::check_nbf_shapes(
+        "build_jk",
+        prep.nbasis(),
+        &[("d", d.dim()), ("j", j.dim()), ("k", k.dim())],
+    )?;
     if let Some(store) = crate::incore_jk::store_for(bounds, prep)? {
         store.add_jk(d, j, k)?;
         return Ok(store.quartets());
@@ -4483,6 +4488,11 @@ pub fn build_jk_with_pool(
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    crate::quartet_scatter::check_nbf_shapes(
+        "build_jk_with_pool",
+        prep.nbasis(),
+        &[("d", d.dim()), ("j", j.dim()), ("k", k.dim())],
+    )?;
     ctx.check_interrupted()?;
     if let Some(store) = crate::incore_jk::store_for(bounds, prep)? {
         store.add_jk(d, j, k)?;

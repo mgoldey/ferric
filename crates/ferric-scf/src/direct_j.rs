@@ -95,6 +95,11 @@ impl<'a> DirectJ<'a> {
 
 impl<'a> JBuilder for DirectJ<'a> {
     fn build(&mut self, d: &Array2<f64>, j: &mut Array2<f64>) -> Result<usize, FerricError> {
+        crate::quartet_scatter::check_nbf_shapes(
+            "DirectJ::build",
+            self.prep.nbasis(),
+            &[("d", d.dim()), ("j", j.dim())],
+        )?;
         if let Some(computed) = self.build_rotated(d, j)? {
             return Ok(computed);
         }

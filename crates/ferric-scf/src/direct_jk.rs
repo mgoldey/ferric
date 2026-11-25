@@ -368,6 +368,18 @@ impl<'a> DirectJK<'a> {
         incremental: bool,
     ) -> Result<usize, FerricError> {
         let [d_total, d_a, d_b] = d;
+        crate::quartet_scatter::check_nbf_shapes(
+            "DirectJK::build_uhf",
+            self.prep.nbasis(),
+            &[
+                ("d_total", d_total.dim()),
+                ("d_a", d_a.dim()),
+                ("d_b", d_b.dim()),
+                ("j", j.dim()),
+                ("k_a", k_a.dim()),
+                ("k_b", k_b.dim()),
+            ],
+        )?;
         self.ctx.check_interrupted()?;
         if let Some(store) = crate::incore_jk::store_for(self.bounds, self.prep)? {
             store.add_uhf(d_total, d_a, d_b, j, k_a, k_b)?;
@@ -456,6 +468,11 @@ impl<'a> DirectJK<'a> {
         k: &mut Array2<f64>,
         incremental: bool,
     ) -> Result<usize, FerricError> {
+        crate::quartet_scatter::check_nbf_shapes(
+            "DirectJK::build",
+            self.prep.nbasis(),
+            &[("d", d.dim()), ("j", j.dim()), ("k", k.dim())],
+        )?;
         self.ctx.check_interrupted()?;
         if let Some(store) = crate::incore_jk::store_for(self.bounds, self.prep)? {
             store.add_jk(d, j, k)?;

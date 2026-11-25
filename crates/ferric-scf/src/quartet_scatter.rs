@@ -1429,6 +1429,25 @@ impl SymScale<'_> {
     }
 }
 
+/// Every matrix of a direct J/K build (`(name, shape)`) is `n × n`,
+/// `n = prep.nbasis()`: the density screens (`build_d_max_shell`) and the
+/// kernels index them without bounds checks, so a wrong shape is refused at
+/// each builder's entry, before any of them runs.
+pub(crate) fn check_nbf_shapes(
+    who: &str,
+    n: usize,
+    mats: &[(&str, (usize, usize))],
+) -> Result<(), FerricError> {
+    for &(name, dim) in mats {
+        if dim != (n, n) {
+            return Err(FerricError::General(format!(
+                "{who}: {name} has shape {dim:?}, expected ({n}, {n}) (prep.nbasis())"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// `(max|D − Dᵀ|, max|D|)` of a square matrix; `None` when `d` is not
 /// square or holds a non-finite element.
 fn symmetry_stats(d: &Array2<f64>) -> Option<(f64, f64)> {

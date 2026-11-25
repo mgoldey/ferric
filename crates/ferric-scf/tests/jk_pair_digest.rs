@@ -958,3 +958,71 @@ fn open_shell_guess_builds_do_not_follow_the_digest() {
         assert!(p.out.1 == l.out.1, "{what}: densities differ");
     }
 }
+
+/// A density or output that is not `nbf × nbf` is an error at each public
+/// direct builder's entry, before the density screen (which indexes it
+/// unchecked) or the kernel runs, under either digest; never a panic.
+#[test]
+fn wrong_shape_is_an_error_at_every_builder_entry() {
+    use ferric_scf::engine_pool::EnginePool;
+    let prep = setup("water.xyz", "sto-3g", 1);
+    let n = prep.nbasis();
+    let ctx = ParallelContext::default();
+    let good = density(n, 61, true);
+    let small = density(n - 1, 61, true);
+    for digest in [JkDigest::Pair, JkDigest::Legacy] {
+        let b = bounds(&prep, digest);
+        let pool = EnginePool::new(b.op, &prep, 1e-14).unwrap();
+        // (what, density, output dimension)
+        for (what, d, out_n) in [("density", &small, n), ("output", &good, n + 1)] {
+            let errs: Vec<(&str, Result<usize, ferric_core::FerricError>)> =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let o = || Array2::<f64>::zeros((out_n, out_n));
+                    let (mut j, mut k, mut k2) = (o(), o(), o());
+                    let mut djk = DirectJK::new(&ctx, &prep, &b, THRESH, usize::MAX / 4);
+                    let mut dj = DirectJ::new(&ctx, &prep, &b, THRESH, usize::MAX / 4);
+                    let mut dk = DirectK::new(&ctx, &prep, &b, THRESH, usize::MAX / 4);
+                    vec![
+                        ("DirectJK::build", djk.build(d, &mut j, &mut k)),
+                        (
+                            "DirectJK::build_incremental",
+                            djk.build_incremental(d, &mut j, &mut k),
+                        ),
+                        (
+                            "DirectJK::build_uhf",
+                            djk.build_uhf(d, d, d, &mut j, &mut k, &mut k2),
+                        ),
+                        (
+                            "DirectJK::build_uhf_incremental",
+                            djk.build_uhf_incremental(d, d, d, &mut j, &mut k, &mut k2),
+                        ),
+                        ("DirectJ", JBuilder::build(&mut dj, d, &mut j)),
+                        ("DirectK", KBuilder::build(&mut dk, d, &mut k)),
+                        (
+                            "build_jk",
+                            ferric_scf::rhf::build_jk(&ctx, &prep, &b, THRESH, d, &mut j, &mut k),
+                        ),
+                        (
+                            "build_jk_with_pool",
+                            ferric_scf::rhf::build_jk_with_pool(
+                                &ctx,
+                                &prep,
+                                &b,
+                                THRESH,
+                                d,
+                                &mut j,
+                                &mut k,
+                                &pool,
+                                1 << 20,
+                            ),
+                        ),
+                    ]
+                }))
+                .unwrap_or_else(|_| panic!("{digest} {what}: a builder panicked"));
+            for (who, r) in errs {
+                let e = r.expect_err(&format!("{digest} {what}: {who} accepted a wrong shape"));
+                assert!(e.to_string().contains("expected ("), "{who}: {e}");
+            }
+        }
+    }
+}

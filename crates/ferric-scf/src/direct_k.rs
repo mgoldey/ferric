@@ -91,6 +91,11 @@ impl<'a> DirectK<'a> {
 
 impl<'a> KBuilder for DirectK<'a> {
     fn build(&mut self, d: &Array2<f64>, k: &mut Array2<f64>) -> Result<usize, FerricError> {
+        crate::quartet_scatter::check_nbf_shapes(
+            "DirectK::build",
+            self.prep.nbasis(),
+            &[("d", d.dim()), ("k", k.dim())],
+        )?;
         if let Some(computed) = self.build_rotated(d, k)? {
             return Ok(computed);
         }
