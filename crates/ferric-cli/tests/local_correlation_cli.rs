@@ -325,9 +325,27 @@ const DIRECT_KEYS: &[&str] = &[
     "memory_stage3_scratch_bytes",
     "memory_strips_bytes",
     "t_loc_s",
+    "eri3_slab_bytes_max",
+    "group_work_max_s",
+    "group_work_mean_s",
+    "n_pair_groups_skipped",
+    "n_pair_skip_bounded",
+    "n_pairs_empty",
+    "n_pairs_proved_empty",
+    "pair_fit_thread_s",
+    "pair_skip",
+    "pair_skip_audit_gate_max_ratio",
+    "pair_skip_audit_max_ratio",
+    "pair_skip_audit_n",
+    "pair_skip_audit_violations",
+    "t_pair_skip_s",
 ];
 /// Keys whose value is a JSON boolean rather than a number.
 const BOOL_KEYS: &[&str] = &["memory_exact"];
+/// Keys whose value is a JSON string (the resolved `pair_skip` mode).
+const STRING_KEYS: &[&str] = &["pair_skip"];
+/// Keys whose value is an array of finite, non-negative numbers.
+const ARRAY_KEYS: &[&str] = &["pair_fit_thread_s"];
 /// The eval/scatter split of the eri3 fill is only measured with
 /// `DirectConfig::split_eri3_timers`, which the CLI leaves off: NaN in the
 /// library, `null` in the log.
@@ -347,6 +365,21 @@ fn assert_timing_keys(obj: &serde_json::Value, keys: &[&str], extra: &[&str]) {
         }
         if BOOL_KEYS.contains(k) {
             assert!(v.is_boolean(), "{k} is not a bool: {obj}");
+            continue;
+        }
+        if STRING_KEYS.contains(k) {
+            assert!(v.is_string(), "{k} is not a string: {obj}");
+            continue;
+        }
+        if ARRAY_KEYS.contains(k) {
+            let a = v
+                .as_array()
+                .unwrap_or_else(|| panic!("{k} is not an array: {obj}"));
+            assert!(
+                a.iter()
+                    .all(|x| x.as_f64().is_some_and(|x| x.is_finite() && x >= 0.0)),
+                "{k} has a non-finite or negative entry: {obj}"
+            );
             continue;
         }
         let x = v
