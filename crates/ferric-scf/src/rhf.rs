@@ -565,9 +565,11 @@ pub struct RhfConfig {
     /// The shared-primitive kernel of the rotated direct J/K walk
     /// ([`crate::direct_jk::GcKernel`]; `crate::direct_jk::gc_kernel`):
     /// `(ss|ss)` and `(ss|sp)` quartets of generally contracted groups from
-    /// one pass over their union primitives. The SCF's, and, through the
-    /// record the SCF leaves on its bounds, the Newton, stability and
-    /// response direct builds that follow. `None` (the default) leaves it to
+    /// one pass over their union primitives. Only the SCF's own `DirectJK`
+    /// builds (closed and open shell, full and incremental) use it; the
+    /// record the SCF leaves on its bounds reaches the Newton, stability and
+    /// response builds that follow, but those run `build_jk_with_pool`,
+    /// which stays on libint. `None` (the default) leaves it to
     /// `FERRIC_GC_KERNEL`, then `off`. Effective only where the rotated walk
     /// runs with the pair digest; `Off` is that walk bit for bit, `Auto`
     /// moves energies by about 1e-12 Ha.

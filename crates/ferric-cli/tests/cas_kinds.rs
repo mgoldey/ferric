@@ -754,9 +754,10 @@ fn scf_jk_digest_is_read() {
     assert!(bad.stderr.contains("jk_digest"), "{}", bad.stderr);
 }
 
-/// `[scf] gc_kernel` is read by the CAS kinds like `jk_digest` (the RHF
-/// start, whose rotated cc-pVDZ walk it switches, and the direct CASSCF
-/// J/K), recorded in the run log as requested and as resolved
+/// `[scf] gc_kernel` is read by the CAS kinds like `jk_digest`: it switches
+/// the RHF start's rotated cc-pVDZ walk, and is passed to the direct CASSCF
+/// backend, whose pooled J/K builds keep libint (so it changes nothing
+/// there). Recorded in the run log as requested and as resolved
 /// (`FERRIC_GC_KERNEL` deciding an unset key, default `off`); the two
 /// settings agree to rounding; a value of another case is refused at load.
 #[test]

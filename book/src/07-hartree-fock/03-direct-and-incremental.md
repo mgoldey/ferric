@@ -503,7 +503,7 @@ paired off/auto ratios, with its range.
 |---|---|---|---|---|---|---|
 | octane / cc-pVDZ (202) | 4.98 → 4.01 | 1.22 (1.19–1.28) | 9.82 → 7.92 | 8.16 → 4.79 | 1.48 | 66.5 → 53.5 |
 | butane / aug-cc-pVDZ (182) | 3.06 → 2.78 | 1.12 (1.08–1.30) | 6.02 → 5.47 | 4.69 → 3.41 | 0.74 | 37.6 → 34.7 |
-| butane / cc-pVTZ (260) | 7.52 → 7.11 | 1.03 (0.91–1.25) | 14.80 → 13.98 | 11.75 → 10.35 | 0.65 | 93.3 → 87.6 |
+| butane / cc-pVTZ (260) | 7.52 → 7.11 | 1.03 (0.91–1.25), within noise | 14.80 → 13.98 | 11.75 → 10.35 | 0.65 | 93.3 → 87.6 |
 | octane / def2-SVP (202) | 4.16 → 3.85 | 1.04 (0.92–1.27) | 8.16 → 7.56 | 6.02 → 5.61 | 0 | 51.2 → 47.9 |
 
 def2-SVP has nothing to rotate, so the kernel never runs there and both
@@ -516,6 +516,16 @@ single-threaded walk in one reduction group, so the bucket partition loses no
 reuse. The setup of the pair data took 3 ms per geometry. The converged
 energies agree to the printed digits on octane (−313.4518384570778 Ha both),
 and to 2.3e-13 Ha (aug-cc-pVDZ) and 5.7e-14 Ha (cc-pVTZ) on butane.
+
+The cc-pVTZ gain is within the noise: the def2-SVP control, where both
+settings run the same code, spread from 0.92 to 1.27. The measurement before
+the kernel was written (a single-threaded replay of the walk with the kernel
+spliced in) projected 1.28× for octane / cc-pVDZ. That figure is the pooled
+median of two rounds on a loaded box whose round medians were 1.22 and 1.31;
+its own kernel-only comparison was 1.26×. A rerun of the production build on
+a quiet box gave 1.21× with `off` at the speed of the build without the
+kernel, so the production wiring adds no measurable overhead and 1.22× is the
+gain to expect.
 
 ## When the incremental build runs {#direct-and-incremental-incremental-build-runs}
 

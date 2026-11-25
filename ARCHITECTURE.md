@@ -1094,9 +1094,11 @@ Done:
    1.19–1.28), 1.12× butane aug-cc-pVDZ, 1.03× butane cc-pVTZ, def2-SVP
    unchanged (the kernel never runs); 1.43 quartets per group evaluation
    on octane, as in a one-group walk (the bucket partition loses no reuse).
-   UHF/ROHF share the wiring (`build_uhf`). Follow-ups: flip the default
-   to `auto` after a release (and re-measure on a quiet box: the projection
-   from the prototype was 1.28× / 1.19× / 1.06×); the pooled builds
+   UHF/ROHF share the wiring (`build_uhf`). The 1.28× projected from the
+   prototype was the pooled median of two noisy rounds (1.22 and 1.31); a
+   quiet-box rerun of production gave 1.21× with `off` at main's speed.
+   Follow-ups: flipping the default to `auto` is item 16 below, with its
+   prerequisites; the pooled builds
    (`rhf::build_jk_with_pool`: Newton, stability, CPHF, Z-vector) and
    `DirectJ` / `DirectK` stay on libint and could take the same cache;
    b2-full (p and d classes) needs a kernel that beats libint there, which
@@ -1360,3 +1362,24 @@ Next, each as its own PR following the patterns above:
       `solvent`, `smeared_charges`, `k_builder="cosx"`, `aurora`,
       `stability_descent`); typing them needs an overload per refusal or
       `None`-typed parameters, checked against the binding.
+
+16. Flip `[scf] gc_kernel` to `auto` by default (the shared-primitive
+    `(ss|ss)` / `(ss|sp)` kernel of the rotated direct walk; see "Done").
+    Prerequisites, each its own change first:
+    - Memory: cap the per-accumulator block-cache arena and charge it to
+      the memory pool (it grows with the ket group pairs one bra bucket
+      touches, ~0.5 MB on octane, unbounded in principle); make `pidx`
+      sparse (it is `n_sp_groups²` `u32`s, 16 MB at 2000 s/p groups); build
+      pair data only for group pairs that hold a significant shell pair
+      (today every ordered s/p group pair is set up, most of them empty for
+      a large molecule).
+    - A speed measurement on heavy atoms and pseudopotential bases (cc-pVTZ
+      Cl/Br, cc-pVDZ-PP on Ag/I), paired against `off`: the measured gains
+      are alkanes only.
+    - Re-measure the cc-pVDZ / aug-cc-pVDZ / cc-pVTZ table on a quiet box.
+    Deferred with it, not blocking: the libint-layout helpers (pure-p
+    order, function maps) duplicated between `gc_kernel.rs` and the
+    digest's layout code could share one place; and the public surface of
+    `ferric_integrals::gc_kernel` (`KernelGroup` fields, `PairKind`,
+    `boys_for_tests`) can shrink to `pub(crate)` plus what `ferric-scf`
+    uses.
