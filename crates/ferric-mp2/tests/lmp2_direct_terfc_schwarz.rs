@@ -83,6 +83,7 @@ fn maps(skip: f64) -> DirectConfig {
         schwarz_skip: skip,
         // pinned: the auto budget (0.8*RAM) ignores a cgroup cap
         scratch_budget_bytes: 1usize << 30,
+        slab_budget_bytes: ferric_mp2::lmp2_direct::DIRECT_DEFAULT_SLAB_BUDGET_BYTES,
         ..Default::default()
     }
 }

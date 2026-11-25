@@ -2538,29 +2538,34 @@ fn lmp2_local_json_with_vs(
             obj.insert(k.to_string(), cert_value_json(&v));
         }
         let lb = &r.lambda_boys;
-        obj.insert("lambda_boys".to_string(), serde_json::json!(lb.lambda));
-        obj.insert(
-            "lambda_boys_sweeps".to_string(),
-            serde_json::json!(lb.sweeps),
-        );
-        obj.insert(
-            "lambda_boys_max_grad".to_string(),
-            serde_json::json!(lb.max_grad),
-        );
-        obj.insert("lambda_boys_t_s".to_string(), serde_json::json!(lb.t_s));
+        for (k, v) in [
+            ("lambda_boys", serde_json::json!(lb.lambda)),
+            ("lambda_boys_sweeps", serde_json::json!(lb.sweeps)),
+            (
+                "lambda_boys_newton_iters",
+                serde_json::json!(lb.newton_iters),
+            ),
+            ("lambda_boys_max_grad", serde_json::json!(lb.max_grad)),
+            ("lambda_boys_newton_step", serde_json::json!(lb.newton_step)),
+            ("lambda_boys_t_s", serde_json::json!(lb.t_s)),
+        ] {
+            obj.insert(k.to_string(), v);
+        }
     }
     j
 }
 
 /// The printout's occupied-localization line: plain Boys at λ = 0, else λ,
-/// sweeps, final gradient and wall time of the λ-Boys stage.
+/// Jacobi sweeps, Newton iterations, final gradient, last Newton step and
+/// wall time of the λ-Boys stage.
 fn lambda_boys_line(lb: &ferric_mp2::boys::LambdaBoysReport) -> String {
     if lb.lambda == 0.0 {
         "Boys (lambda_boys = 0)".to_string()
     } else {
         format!(
-            "lambda-Boys, lambda_boys = {} ({} sweeps, max |grad| {:.1e}, {:.2} s)",
-            lb.lambda, lb.sweeps, lb.max_grad, lb.t_s
+            "lambda-Boys, lambda_boys = {} ({} sweeps + {} Newton, max |grad| {:.1e}, \
+             step {:.1e}, {:.2} s)",
+            lb.lambda, lb.sweeps, lb.newton_iters, lb.max_grad, lb.newton_step, lb.t_s
         )
     }
 }
@@ -2649,6 +2654,20 @@ fn lmp2_timings_json(
             group_scratch_bound_bytes,
             group_in_flight_peak,
             n_group_waves,
+            eri3_slab_bytes_max,
+            pair_fit_thread_s,
+            group_work_max_s,
+            group_work_mean_s,
+            pair_skip,
+            n_pair_skip_bounded,
+            n_pairs_proved_empty,
+            n_pair_groups_skipped,
+            n_pairs_empty,
+            t_pair_skip_s,
+            pair_skip_audit_n,
+            pair_skip_audit_max_ratio,
+            pair_skip_audit_gate_max_ratio,
+            pair_skip_audit_violations,
         } = d;
         let mut out = serde_json::json!({
             "strip_rows_mean": strip_rows_mean,
@@ -2698,6 +2717,10 @@ fn lmp2_timings_json(
             "group_scratch_bound_bytes": group_scratch_bound_bytes,
             "group_in_flight_peak": group_in_flight_peak,
             "n_group_waves": n_group_waves,
+            "eri3_slab_bytes_max": eri3_slab_bytes_max,
+            "pair_fit_thread_s": pair_fit_thread_s,
+            "group_work_max_s": group_work_max_s,
+            "group_work_mean_s": group_work_mean_s,
             "memory_strips_bytes": memory.strips_bytes,
             "memory_metric_bytes": memory.metric_bytes,
             "memory_stage3_scratch_bytes": memory.stage3_scratch_bytes,
@@ -2706,8 +2729,22 @@ fn lmp2_timings_json(
             "memory_exact": memory.exact,
             "memory_resident_peak_bytes": memory.resident_peak(),
         });
-        if let (Some(o), serde_json::Value::Object(g)) = (out.as_object_mut(), gate) {
-            o.extend(g);
+        let skip = serde_json::json!({
+            "pair_skip": pair_skip.as_config_str(),
+            "n_pair_skip_bounded": n_pair_skip_bounded,
+            "n_pairs_proved_empty": n_pairs_proved_empty,
+            "n_pair_groups_skipped": n_pair_groups_skipped,
+            "n_pairs_empty": n_pairs_empty,
+            "t_pair_skip_s": t_pair_skip_s,
+            "pair_skip_audit_n": pair_skip_audit_n,
+            "pair_skip_audit_max_ratio": pair_skip_audit_max_ratio,
+            "pair_skip_audit_gate_max_ratio": pair_skip_audit_gate_max_ratio,
+            "pair_skip_audit_violations": pair_skip_audit_violations,
+        });
+        for extra in [gate, skip] {
+            if let (Some(o), serde_json::Value::Object(g)) = (out.as_object_mut(), extra) {
+                o.extend(g);
+            }
         }
         out
     });
@@ -2843,15 +2880,18 @@ fn run_rimp2_local(
     if let Some((d, _)) = &maps {
         println!(
             "  locality maps         = r_aux {} Bohr, r_virt {} Bohr, ao_tail {:.0e}, \
-             schwarz_skip {:.0e}, batch_merge {}, gate_cal {}, virt_schwarz_kappa {}",
+             schwarz_skip {:.0e}, eri3_pass {}, batch_merge {}, gate_cal {}, virt_schwarz_kappa {}, \
+             pair_skip {}",
             d.aux_radius,
             d.virt_radius,
             d.ao_tail,
             d.schwarz_skip,
+            d.eri3_pass.as_config_str(),
             d.batch_merge,
             d.gate_cal.map_or("off".to_string(), |c| format!("{c}")),
             d.virt_schwarz_kappa
                 .map_or("off".to_string(), |k| format!("{k}")),
+            d.pair_skip.as_config_str(),
         );
     }
     println!(
@@ -8772,24 +8812,11 @@ mod local_printout_tests {
         assert_eq!(j["keep_fraction"], 0.023);
         assert_eq!(j["integral_direct"], true);
     }
-
-    /// The run-log `timings` object carries every StageTimings field and,
-    /// on the direct path, every DirectStats field, each with its own value
-    /// (distinct per field, so a swapped key fails), and `direct: null` on
-    /// the in-core path. A NaN timer is logged as `null`.
-    #[test]
-    fn lmp2_timings_json_carries_every_field() {
-        use super::lmp2_timings_json;
-        use ferric_mp2::lmp2_amplitude::StageTimings;
+    /// Every `DirectStats` field set to a distinct value, for the JSON
+    /// round-trip test.
+    fn direct_stats_fixture() -> ferric_mp2::lmp2_direct::DirectStats {
         use ferric_mp2::lmp2_direct::DirectStats;
-        let t = StageTimings {
-            t_spaces_s: 1.5,
-            t_loc_s: 5.5,
-            t_assembly_s: 2.5,
-            t_solve_s: 3.5,
-            t_reference_s: 4.5,
-        };
-        let d = DirectStats {
+        DirectStats {
             strip_rows_mean: 10.5,
             strip_rows_max: 11,
             strip_cols_mean: 12.5,
@@ -8841,7 +8868,39 @@ mod local_printout_tests {
             group_scratch_bound_bytes: 56,
             group_in_flight_peak: 57,
             n_group_waves: 58,
+            eri3_slab_bytes_max: 59,
+            pair_fit_thread_s: [60.5, 61.5, 62.5, 63.5],
+            group_work_max_s: 64.5,
+            group_work_mean_s: 65.5,
+            pair_skip: ferric_mp2::lmp2_direct::PairSkip::Audit,
+            n_pair_skip_bounded: 66,
+            n_pairs_proved_empty: 67,
+            n_pair_groups_skipped: 68,
+            n_pairs_empty: 69,
+            t_pair_skip_s: 70.5,
+            pair_skip_audit_n: 71,
+            pair_skip_audit_max_ratio: 0.725,
+            pair_skip_audit_gate_max_ratio: 0.735,
+            pair_skip_audit_violations: 74,
+        }
+    }
+
+    /// The run-log `timings` object carries every StageTimings field and,
+    /// on the direct path, every DirectStats field, each with its own value
+    /// (distinct per field, so a swapped key fails), and `direct: null` on
+    /// the in-core path. A NaN timer is logged as `null`.
+    #[test]
+    fn lmp2_timings_json_carries_every_field() {
+        use super::lmp2_timings_json;
+        use ferric_mp2::lmp2_amplitude::StageTimings;
+        let t = StageTimings {
+            t_spaces_s: 1.5,
+            t_loc_s: 5.5,
+            t_assembly_s: 2.5,
+            t_solve_s: 3.5,
+            t_reference_s: 4.5,
         };
+        let d = direct_stats_fixture();
         let stage: &[(&str, f64)] = &[
             ("t_spaces_s", 1.5),
             ("t_loc_s", 5.5),
@@ -8892,6 +8951,18 @@ mod local_printout_tests {
             ("group_scratch_bound_bytes", 56.0),
             ("group_in_flight_peak", 57.0),
             ("n_group_waves", 58.0),
+            ("eri3_slab_bytes_max", 59.0),
+            ("group_work_max_s", 64.5),
+            ("group_work_mean_s", 65.5),
+            ("n_pair_skip_bounded", 66.0),
+            ("n_pairs_proved_empty", 67.0),
+            ("n_pair_groups_skipped", 68.0),
+            ("n_pairs_empty", 69.0),
+            ("t_pair_skip_s", 70.5),
+            ("pair_skip_audit_n", 71.0),
+            ("pair_skip_audit_max_ratio", 0.725),
+            ("pair_skip_audit_gate_max_ratio", 0.735),
+            ("pair_skip_audit_violations", 74.0),
             ("memory_strips_bytes", 50.0),
             ("memory_metric_bytes", 51.0),
             ("memory_stage3_scratch_bytes", 52.0),
@@ -8909,8 +8980,14 @@ mod local_printout_tests {
             assert_eq!(j[*k].as_f64(), Some(*v), "{k}: {j}");
         }
         let dj = j["direct"].as_object().unwrap();
-        assert_eq!(dj.len(), direct.len() + 2, "{j}");
+        assert_eq!(dj.len(), direct.len() + 4, "{j}");
         assert_eq!(dj["memory_exact"], true, "{j}");
+        assert_eq!(dj["pair_skip"], "audit", "{j}");
+        assert_eq!(
+            dj["pair_fit_thread_s"],
+            serde_json::json!([60.5, 61.5, 62.5, 63.5]),
+            "{j}"
+        );
         for (k, v) in direct {
             assert_eq!(j["direct"][*k].as_f64(), Some(*v), "{k}: {j}");
         }
@@ -8947,6 +9024,7 @@ mod local_printout_tests {
                 ao_tail: 1e-3,
                 schwarz_skip: 1e-5,
                 batch_merge: 4,
+                eri3_pass: "batches",
                 virt_schwarz_kappa: None,
             }),
             pair_fit: Some(PairFitCounters {
@@ -9005,6 +9083,7 @@ mod local_printout_tests {
         assert!(back["maps"]["virt_schwarz_kappa"].is_null());
         assert_eq!(back["fock_screen"], 1.0);
         assert_eq!(back["maps"]["batch_merge"], 4);
+        assert_eq!(back["maps"]["eri3_pass"], "batches");
         assert_eq!(back["pair_fit"]["n_trsm"], 93);
         assert_eq!(back["build_commit"], ferric_build_info::COMMIT);
         assert_eq!(

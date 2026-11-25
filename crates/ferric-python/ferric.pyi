@@ -5564,6 +5564,8 @@ def run_rimp2(
     save_reference: str | None = None,
     read_reference: str | None = None,
     read_reference_other_build: bool = False,
+    eri3_pass: str | None = None,
+    pair_skip: str | None = None,
 ) -> RiMp2Result:
     """Resolution-of-identity (density-fitted) MP2. Exact by default.
     with_gradient=True adds the analytic gradient of total_energy
@@ -5585,8 +5587,14 @@ def run_rimp2(
     amplitude-threshold local MP2 (closed-shell; eps=0 reproduces the exact
     RI-MP2); `integral_direct=True` its integral-direct variant with the
     locality maps aux_radius/virt_radius (Bohr), ao_tail, schwarz_skip,
-    batch_merge, gate_cal and virt_schwarz_kappa (which needs
-    fock_screen=False; it bounds the plain integral mask only). On both paths
+    eri3_pass ("aux-major" default, or "batches"), batch_merge (only with
+    eri3_pass="batches", default 4 there; larger than 1 with aux-major is a
+    ValueError), gate_cal and virt_schwarz_kappa (which needs
+    fock_screen=False; it bounds the plain integral mask only) and pair_skip
+    ("auto" default: skip by proof every pair whose retained set is provably
+    empty, on for an attenuated operator, off for Coulomb; "on", "off", or
+    "audit", which evaluates the bound everywhere and skips nothing; the
+    energy is bitwise the same either way). On both paths
     `fock_screen` (default True) runs the Fock-propagated mask screen,
     kappa = 1; False keeps the plain integral mask. Same rules as the CLI
     `[local]` section: every local kwarg is a ValueError on the exact method,
@@ -5618,8 +5626,10 @@ def run_rimp2(
     10.0) is the weight of sum_i F_ii^2 in the lambda-Boys occupied
     localization, started from the converged Boys orbitals; 0.0 is plain
     Boys. It does not change the eps=0 energy. A ValueError on the exact
-    method. `result.local["lambda_boys"]`, `["lambda_boys_sweeps"]`,
-    `["lambda_boys_max_grad"]` and `["lambda_boys_t_s"]` record it.
+    method. `result.local["lambda_boys"]`, `["lambda_boys_sweeps"]` (Jacobi
+    sweeps), `["lambda_boys_newton_iters"]`, `["lambda_boys_max_grad"]`,
+    `["lambda_boys_newton_step"]` (last Newton step, the predicted distance
+    to the maximum in radians) and `["lambda_boys_t_s"]` record it.
 
     `scf_jk` sets how the reference SCF builds J/K: "exact" (default,
     four-centre), "rijk" (RI-J + RI-K) or "rijcosx" (RI-J + COSX K), fitted on

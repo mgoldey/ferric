@@ -61,6 +61,7 @@ pub mod laplace;
 /// Laplace SOS-MP2 `local`: Boys LMOs x VV-HV localized virtuals with orbital domains.
 pub mod laplace_local;
 pub mod lmp2_direct;
+pub mod lmp2_pair_skip;
 /// Pair natural orbital (PNO) construction and truncation.
 pub mod local_pno;
 /// AO-to-MO integral transformation utilities.
