@@ -1533,7 +1533,7 @@ jobs:
           esac
           grep -qxF "$want" /tmp/version.txt || { echo "::error::ferric --version lacks the line: $want"; exit 1; }
 
-      - name: Smoke test -- import + RHF energy on the built wheel
+      - name: Smoke test -- import, RHF, KS-DFT and TDA on the built wheel
         run: |
           set -euo pipefail
           source /tmp/smoke-venv/bin/activate
@@ -1603,6 +1603,44 @@ jobs:
               "the wheel's libint2 lacks second derivatives"
           )
           assert len(freq.frequencies) == 3
+
+          # KS-DFT and linear response through the libxc this wheel ships
+          # (7.0.0, built with -DDISABLE_KXC=ON in build-native-deps):
+          # exc/vxc in the B3LYP and r2SCAN SCFs, fxc in the TDA kernel. A
+          # libxc missing an entry point ferric needs, or a miscompiled one,
+          # fails here rather than in a user's first DFT run. Water/cc-pVDZ
+          # at testdata/molecules/water.xyz. References: the wheel-profile
+          # extension linked against libxc 7.0.0 built with this workflow's
+          # exact configure line (2026-11-25, local gcc 13). OpenBLAS kernel
+          # changes (OPENBLAS_CORETYPE Haswell/SkylakeX/Prescott) and libxc
+          # 5.2 vs 7.0 moved them by at most 2e-13; 1e-8 is that margin with
+          # room for compiler differences, and still far below any change of
+          # functional or kernel. About 5 s.
+          water_ref = ferric.Molecule.from_xyz_string(
+              "3\nwater\n"
+              "O   0.000000   0.000000   0.117790\n"
+              "H   0.000000   0.755453  -0.471161\n"
+              "H   0.000000  -0.755453  -0.471161\n",
+              charge=0, multiplicity=1,
+          )
+          dz = ferric.BasisSet.bundled("cc-pvdz")
+          for functional, ref in (("b3lyp", -76.420410867969), ("r2scan", -76.381419872775)):
+              ks = ferric.run_ksdft(water_ref, dz, functional=functional)
+              print(f"{functional}/cc-pVDZ water energy: {ks.energy:.12f} (reference {ref:.12f})")
+              assert ks.converged, f"{functional} SCF did not converge"
+              assert abs(ks.energy - ref) < 1e-8, (
+                  f"{functional} energy {ks.energy:.12f} differs from {ref:.12f} by "
+                  f"{abs(ks.energy - ref):.1e} -- suspect the bundled libxc"
+              )
+          td = ferric.run_tddft(
+              water_ref, dz, ferric.BasisSet.bundled("cc-pvdz-ri"), functional="b3lyp", n_roots=1
+          )
+          root, ref = float(td.excitation_energies[0]), 0.279961936169
+          print(f"B3LYP TDA first root: {root:.12f} Ha (reference {ref:.12f})")
+          assert abs(root - ref) < 1e-8, (
+              f"TDA root {root:.12f} differs from {ref:.12f} by {abs(root - ref):.1e} "
+              "-- suspect the bundled libxc's fxc"
+          )
 
           print("Smoke test PASSED.")
           PYEOF

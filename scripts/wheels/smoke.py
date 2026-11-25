@@ -180,6 +180,28 @@ def case_pbe_gradient():
     return f"O z {oz:.9f}"
 
 
+def ks_water_ccpvdz(functional):
+    import ferric
+
+    return lambda: ferric.run_ksdft(mol(WATER), basis("cc-pvdz"), functional=functional)
+
+
+def case_tda_b3lyp():
+    """B3LYP TDA through the bundled libxc's fxc (built without kxc)."""
+    import ferric
+
+    td = ferric.run_tddft(
+        mol(WATER),
+        basis("cc-pvdz"),
+        basis("cc-pvdz-ri"),
+        functional="b3lyp",
+        n_roots=1,
+    )
+    root, ref = float(td.excitation_energies[0]), 0.279961936169
+    assert abs(root - ref) < 1e-6, f"TDA root {root:.12f}, Linux {ref:.12f}"
+    return f"{root:.12f} (|dE| {abs(root - ref):.1e})"
+
+
 def case_cli():
     """The pip-installed `ferric` console script (wheels.yml runs the same)."""
     import shutil
@@ -225,6 +247,14 @@ CASES = {
         dft(functional="PBE", grid_prune="none"), -75.2261677983, 1e-6
     ),
     "lda": energy_case(dft(functional="LDA"), -74.7326093014, 1e-6),
+    # The bundled libxc is built with -DDISABLE_KXC=ON (build-blas-xc.sh):
+    # exc/vxc (B3LYP, r2SCAN) and fxc (TDA) must still match Linux, where
+    # wheels.yml smoke-test pins the same three values at 1e-8.
+    "b3lyp-water-ccpvdz": energy_case(ks_water_ccpvdz("b3lyp"), -76.420410867969, 1e-6),
+    "r2scan-water-ccpvdz": energy_case(
+        ks_water_ccpvdz("r2scan"), -76.381419872775, 1e-6
+    ),
+    "tda-b3lyp-water": case_tda_b3lyp,
     "pbe-gradient": case_pbe_gradient,
     "freq-fd": case_freq_fd,
 }
