@@ -1796,6 +1796,9 @@ where
     let mut e_dir = 0.0;
     let mut e_exx = 0.0;
     for (p, pb) in rg.pairs.iter().enumerate() {
+        if !rg.owns(p) {
+            continue;
+        }
         let nb = pb.db.len();
         for (r, &a) in pb.da.iter().enumerate() {
             for (c, &b) in pb.db.iter().enumerate() {
@@ -1812,7 +1815,7 @@ where
             }
         }
     }
-    2.0 * e_dir - e_exx
+    rg.sum_over_ranks(2.0 * e_dir - e_exx)
 }
 
 /// The stationary Hylleraas energy
@@ -1881,13 +1884,15 @@ pub fn hylleraas_energy_and_residual(
                 .sum::<f64>()
         })
         .sum();
-    Ok((energy, r2.sqrt()))
+    Ok((energy, rg.sum_over_ranks(r2).sqrt()))
 }
 
 /// `‖P J‖`: the 2-norm of the pattern-projected right-hand side over every
 /// block — the `bnorm` the PCG's `relres` is relative to.
 pub fn pattern_rhs_norm(rg: &Ragged) -> f64 {
-    rg.pairs
+    // a hollow block's empty `j_blk` adds nothing
+    let local = rg
+        .pairs
         .iter()
         .map(|pb| {
             pb.j_blk
@@ -1897,8 +1902,8 @@ pub fn pattern_rhs_norm(rg: &Ragged) -> f64 {
                 .map(|(j, _)| j * j)
                 .sum::<f64>()
         })
-        .sum::<f64>()
-        .sqrt()
+        .sum::<f64>();
+    rg.sum_over_ranks(local).sqrt()
 }
 
 /// A rigorous lower bound on λ_min of the pattern-projected PCG operator
