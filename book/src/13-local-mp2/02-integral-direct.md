@@ -631,19 +631,23 @@ Some(u_a * v_a + u_b * v_b + gamma * (u_a * v_b + u_b * v_a) + rem)
 ```
 
 - `ferric-mp2/src/lmp2_direct.rs::prove_empty_pairs` builds the tables and
-  the floors once per occupied and evaluates the bound for every pair
-  before stage 5. Per occupied it costs one $L^{-1}$, one shifted
-  Cholesky, forty power-iteration steps and one whitening of the whole
-  strip; per pair, sums over the shells of the two domains.
+  the floors once per occupied before stage 5. It then attempts the bound
+  for each off-diagonal pair this rank fits; under `on`, only for the
+  pairs the prefilter keeps. A diagonal pair is never attempted, and a
+  pair with $\gamma\ge 1$ gets no bound. Per occupied it costs one
+  $L^{-1}$, one shifted Cholesky, forty power-iteration steps and one
+  whitening of the whole strip; per pair, sums over the shells of the two
+  domains.
 - A skipped pair keeps its place in its group and pushes an empty block.
   The group's union of candidates and its whitening are unchanged, so the
   pairs that remain get bit-identical $J$. A group whose pairs are all
   skipped is not fitted at all.
-- `pair_skip = "audit"` evaluates the bound on every pair, skips nothing,
-  and records for each fitted pair the ratio of the largest computed
-  element to the bound. Only off-diagonal pairs with a finite bound enter
-  that comparison: diagonal pairs get no bound, and a pair whose bound
-  is refused ($\gamma\ge 1$) has none. Zero violations therefore means
+- `pair_skip = "audit"` attempts the bound on every off-diagonal pair
+  this rank fits, with no prefilter, and skips nothing. For each pair that
+  gets a finite bound it records the ratio of the largest computed
+  element to the bound. Diagonal pairs are not attempted, and a pair whose
+  bound is refused ($\gamma\ge 1$) has none, so neither enters the
+  comparison. Zero violations therefore means
   something only when `pair_skip_audit_n`, the number of pairs compared,
   is not zero.
 
@@ -780,7 +784,8 @@ with diffuse functions is not measured.
 - The stage-3 integral slabs of the batch pass have one cap per node
   (`DirectConfig::slab_budget_bytes`, 64 MiB by default), shared by the
   batch workers. Each worker slabs under the cap divided by the number of
-  workers, so the co-resident slabs never exceed it; a per-worker budget
+  workers and counts every buffer the half-transform holds beside the
+  integrals, so the co-resident slabs never exceed it; a per-worker budget
   would not bound the total. Under an MPI stripe each rank takes the cap
   divided by the ranks on its node (all ranks when the launcher does not
   say), so the node's slabs do not grow with the rank count. The slab size
