@@ -49,7 +49,7 @@ use ferric_mp2::att_rimp2_gradient::{
 };
 use ferric_mp2::attenuated::{AttenuatedMp2Config, BOHR_INV_PER_ANG_INV};
 use ferric_scf::rhf::RhfConfig;
-use ferric_scf::scf_jk::{ScfJk, ScfJkMode};
+use ferric_scf::scf_jk::ScfJk;
 use ferric_scf::warm_start::ScfWarmStart;
 use ndarray::Array2;
 
@@ -68,15 +68,9 @@ fn tight() -> RhfConfig {
 
 fn route(fit: bool) -> ScfJk {
     if fit {
-        ScfJk {
-            mode: ScfJkMode::RiJk,
-            aux: Some("def2-universal-jkfit".into()),
-        }
+        ScfJk::rijk("def2-universal-jkfit")
     } else {
-        ScfJk {
-            mode: ScfJkMode::Exact,
-            aux: None,
-        }
+        ScfJk::exact()
     }
 }
 

@@ -3934,7 +3934,7 @@ fn is_gradient_task(task: &str) -> bool {
 /// optimizations and the OO-RI-MP2 optimize, whose analytic gradients
 /// differentiate an exact or an RI-JK reference
 /// (`ferric_mp2::oo_rimp2_gradient::oo_ri_mp2_gradient` for OO-RI-MP2).
-fn scf_jk_governs(kind: &str, task: &str) -> bool {
+pub(crate) fn scf_jk_governs(kind: &str, task: &str) -> bool {
     let mp2_optimize = (MP2_GRADIENT_OPTIMIZE_KINDS.contains(&kind) || kind == "oo-rimp2")
         && is_gradient_task(task);
     SCF_JK_KINDS.contains(&kind) && (task == "energy" || mp2_optimize)
@@ -3988,18 +3988,91 @@ impl OmittedJk {
     }
 }
 
+/// The kinds whose `optimize` / `frequencies` gradient re-solves its
+/// reference SCF at each geometry from reduced settings (the J/K route and
+/// `[scf] jk_digest`; `ferric_mp2::gradient::solve_rhf_reference`,
+/// `ferric_rpa::gradient::RpaGradientRoute`).
+pub const RESOLVING_GRADIENT_KINDS: [&str; 5] = [
+    "rimp2",
+    "scs-mp2",
+    "att-rimp2",
+    "scs-mp2-2terfc",
+    "pdep-rpa",
+];
+
+impl Config {
+    /// The `[scf]` J/K keys this run sets explicitly that its per-geometry
+    /// gradient reference does not carry: on a [`RESOLVING_GRADIENT_KINDS`]
+    /// `optimize` / `frequencies` run, each of `gc_rotation`, `k_builder`,
+    /// `screening`, `eri` (set) and `integral_thresh` (other than the
+    /// default; an explicit default value is indistinguishable and harmless).
+    /// These runs solve no shared SCF before the gradient loop: the
+    /// SCFs the gradient solves at each geometry run without these keys, so
+    /// the energies, gradients and frequencies do not see them; only the
+    /// reference SCF the certificate solves at the final (or, for
+    /// frequencies, the input) geometry does. Empty on every other run.
+    pub fn uncarried_gradient_scf_keys(&self) -> Vec<&'static str> {
+        if !RESOLVING_GRADIENT_KINDS.contains(&self.method.kind.as_str())
+            || !is_gradient_task(&self.method.task)
+        {
+            return Vec::new();
+        }
+        let s = &self.scf;
+        [
+            ("gc_rotation", s.gc_rotation.is_some()),
+            ("k_builder", s.k_builder.is_some()),
+            ("screening", s.screening.is_some()),
+            ("eri", s.eri.is_some()),
+            (
+                "integral_thresh",
+                s.integral_thresh != default_integral_thresh(),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(key, set)| set.then_some(key))
+        .collect()
+    }
+
+    /// The warning for [`Self::uncarried_gradient_scf_keys`], `None` when
+    /// there is nothing to say.
+    pub fn uncarried_gradient_scf_warning(&self) -> Option<String> {
+        let keys = self.uncarried_gradient_scf_keys();
+        if keys.is_empty() {
+            return None;
+        }
+        let list = keys
+            .iter()
+            .map(|k| format!("[scf] {k}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Some(format!(
+            "{list} {} not reach the SCFs of method.kind = \"{}\" with task = \"{}\": its \
+             gradient re-solves the reference SCF at each geometry from the J/K route \
+             ([scf] jk / jk_aux) and [scf] jk_digest alone, so the energies and gradients run \
+             with the defaults; only the certificate's reference SCF (final or input geometry) \
+             reads {}",
+            if keys.len() == 1 { "does" } else { "do" },
+            self.method.kind,
+            self.method.task,
+            if keys.len() == 1 { "it" } else { "them" },
+        ))
+    }
+}
+
 impl ScfCfg {
     /// The first `[scf]` key set that only the four-centre route reads
-    /// (`k_builder`, `eri`, `gc_rotation`, `jk_digest`, `screening`, `df_increments`,
-    /// `df_guess = true`,
+    /// (`k_builder`, `eri`, `screening`, `df_increments`, `df_guess = true`,
     /// `df_guess_aux`): with one of them an omitted `jk` stays exact, so an
     /// input that worked on the four-centre default keeps working unchanged.
+    /// Not `jk_digest` or `gc_rotation`: they change only the last bits of
+    /// whatever four-centre builds the route runs (and are inert on a
+    /// fitted one), so they must not move an omitted `jk` off the RI-JK
+    /// default (a `gc_rotation` with no four-centre build to act on warns,
+    /// `gc_rotation_route_warning`).
     fn exact_route_key(&self) -> Option<&'static str> {
         [
             ("k_builder", self.k_builder.is_some()),
             ("eri", self.eri.is_some()),
-            ("gc_rotation", self.gc_rotation.is_some()),
-            ("jk_digest", self.jk_digest.is_some()),
             ("screening", self.screening.is_some()),
             ("df_increments", self.df_increments),
             ("df_guess", self.df_guess == Some(true)),
@@ -4105,7 +4178,8 @@ impl ScfCfg {
                 return Err(format!(
                     "[scf] jk / jk_aux are wired for task = \"energy\" with method.kind = {} \
                      and for method.kind = \"rimp2\" / \"scs-mp2\" / \"att-rimp2\" / \
-                     \"oo-rimp2\" with task = \"optimize\" or \"frequencies\" only; got \
+                     \"scs-mp2-2terfc\" / \"oo-rimp2\" with task = \"optimize\" or \
+                     \"frequencies\" only; got \
                      kind = \"{kind}\", task = \"{task}\". Use [scf] df_j_aux / df_k_aux / \
                      k_builder there",
                     SCF_JK_KINDS.join(", ")
@@ -5318,7 +5392,6 @@ impl Config {
         self.scf.validate()?;
         self.check_ri_j_precision_against_mixed_kernels()?;
         self.validate_guess_basis_keys()?;
-        self.validate_jk_digest_key()?;
         self.mp2.linlccd_variant()?;
         self.cc_ladder()?;
         self.local_model()?;
@@ -5473,25 +5546,6 @@ impl Config {
                  geometry and never reads guess_basis, so it would be silently ignored. Remove \
                  it, or use task = \"energy\"",
                 self.method.task
-            ));
-        }
-        Ok(())
-    }
-
-    /// `[scf] jk_digest` on a PDEP-RPA geometry run (`task = "optimize"` or
-    /// `"frequencies"`): its gradient (`total_rpa_gradient_by`) solves the
-    /// reference at each geometry without the caller's `RhfConfig`, so the
-    /// key would be silently ignored; refused, as `guess_basis` is. (The
-    /// RI-MP2 family refuses it where its gradient route is resolved,
-    /// `rimp2_gradient_scf_jk`.)
-    fn validate_jk_digest_key(&self) -> Result<(), String> {
-        let (kind, task) = (self.method.kind.as_str(), self.method.task.as_str());
-        if self.scf.jk_digest.is_some() && kind == "pdep-rpa" && is_gradient_task(task) {
-            return Err(format!(
-                "[scf] jk_digest is not read by method.kind = \"{kind}\" with task = \
-                 \"{task}\": its gradient solves the reference SCF at each geometry without \
-                 the [scf] settings, so it would be silently ignored. Remove it; \
-                 FERRIC_JK_DIGEST selects the digest of those builds"
             ));
         }
         Ok(())
@@ -6827,6 +6881,31 @@ mod compat_guard_tests {
         }
         let energy = open("energy").unwrap().unwrap();
         assert_eq!((energy.mode, energy.aux), (ScfJkMode::Exact, None));
+        // `jk_digest` and `gc_rotation` do not move an omitted jk: the
+        // MP2 kinds resolve the same fitted route with or without them.
+        for (kind, task) in [
+            ("rimp2", "energy"),
+            ("rimp2", "optimize"),
+            ("rimp2", "frequencies"),
+            ("scs-mp2", "energy"),
+            ("scs-mp2", "optimize"),
+            ("att-rimp2", "optimize"),
+            ("oo-rimp2", "optimize"),
+            ("mp2-v", "energy"),
+        ] {
+            let none = choice(kind, task, "").unwrap().unwrap();
+            assert_eq!(none.mode, ScfJkMode::RiJk, "{kind} {task}");
+            for key in [
+                "jk_digest = \"pair\"",
+                "jk_digest = \"legacy\"",
+                "gc_rotation = \"off\"",
+                "gc_rotation = \"auto\"",
+                "gc_rotation = \"rot1\"",
+            ] {
+                let with = choice(kind, task, &format!("{key}\n")).unwrap().unwrap();
+                assert_eq!(with, none, "{kind} {task} {key}");
+            }
+        }
         // A key only the four-centre route reads keeps an omitted jk exact.
         for key in [
             "k_builder = \"link\"",
@@ -11374,10 +11453,64 @@ json = [1, 2]
         }
     }
 
-    /// `[scf] jk_digest` on a PDEP-RPA geometry run is refused (its gradient
-    /// never reads it); its energy, and the SCF kinds' geometry runs, keep it.
+    /// The `[scf]` J/K keys the re-solving gradient routes do not carry are
+    /// named (in a fixed order) on their `optimize` / `frequencies` runs
+    /// only; `jk_digest`, an unset key and a default `integral_thresh` are
+    /// not, and nothing is said for the energy or for other kinds.
     #[test]
-    fn jk_digest_is_refused_by_the_pdep_rpa_gradient_tasks() {
+    fn uncarried_gradient_scf_keys_are_named_on_the_resolving_gradient_runs() {
+        let cfg = |kind: &str, task: &str, scf: &str| {
+            let src = format!(
+                "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n[basis]\nname = \"sto-3g\"\n\
+                 [method]\nkind = \"{kind}\"\ntask = \"{task}\"\n[scf]\n{scf}"
+            );
+            toml::from_str::<Config>(&src).expect("test config must parse")
+        };
+        let all = "gc_rotation = \"off\"\nk_builder = \"link\"\nscreening = \"csam\"\n\
+                   eri = \"direct\"\nintegral_thresh = 1e-11\njk_digest = \"legacy\"\n";
+        let named = [
+            "gc_rotation",
+            "k_builder",
+            "screening",
+            "eri",
+            "integral_thresh",
+        ];
+        for kind in RESOLVING_GRADIENT_KINDS {
+            for task in ["optimize", "frequencies"] {
+                let c = cfg(kind, task, all);
+                assert_eq!(c.uncarried_gradient_scf_keys(), named, "{kind} {task}");
+                let w = c.uncarried_gradient_scf_warning().unwrap();
+                for key in named {
+                    assert!(w.contains(&format!("[scf] {key}")), "{w}");
+                }
+                assert!(!w.contains("[scf] jk_digest,"), "{w}");
+                assert!(w.contains(kind) && w.contains(task), "{w}");
+                let one = cfg(kind, task, "eri = \"direct\"\n");
+                assert_eq!(one.uncarried_gradient_scf_keys(), ["eri"]);
+                assert!(one
+                    .uncarried_gradient_scf_warning()
+                    .unwrap()
+                    .starts_with("[scf] eri does not reach the SCFs"));
+                let quiet = cfg(kind, task, "jk_digest = \"pair\"\n");
+                assert!(quiet.uncarried_gradient_scf_keys().is_empty());
+                assert_eq!(quiet.uncarried_gradient_scf_warning(), None);
+            }
+            assert!(cfg(kind, "energy", all)
+                .uncarried_gradient_scf_keys()
+                .is_empty());
+        }
+        for kind in ["rhf", "oo-rimp2", "uhf"] {
+            assert!(cfg(kind, "optimize", all)
+                .uncarried_gradient_scf_keys()
+                .is_empty());
+        }
+    }
+
+    /// `[scf] jk_digest` passes validation on every geometry run that
+    /// reads it, the `pdep-rpa` and RI-MP2-family gradients included (their
+    /// gradient routes carry it to the reference they re-solve).
+    #[test]
+    fn jk_digest_is_accepted_by_the_correlated_gradient_tasks() {
         let cfg = |kind: &str, task: &str| {
             let src = format!(
                 "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n[basis]\nname = \"sto-3g\"\n\
@@ -11385,18 +11518,19 @@ json = [1, 2]
             );
             toml::from_str::<Config>(&src).expect("test config must parse")
         };
-        for task in ["optimize", "frequencies"] {
-            let e = cfg("pdep-rpa", task)
-                .validate_jk_digest_key()
-                .expect_err("jk_digest must be refused on this gradient run");
-            assert!(
-                e.contains("[scf] jk_digest") && e.contains("pdep-rpa") && e.contains(task),
-                "{e}"
-            );
-        }
-        assert_eq!(cfg("pdep-rpa", "energy").validate_jk_digest_key(), Ok(()));
-        for kind in ["rhf", "uhf"] {
-            assert_eq!(cfg(kind, "optimize").validate_jk_digest_key(), Ok(()));
+        for kind in [
+            "pdep-rpa",
+            "rimp2",
+            "scs-mp2",
+            "att-rimp2",
+            "scs-mp2-2terfc",
+            "rhf",
+        ] {
+            for task in ["energy", "optimize", "frequencies"] {
+                if let Err(e) = cfg(kind, task).validate_loaded_values() {
+                    assert!(!e.contains("jk_digest"), "{kind} {task}: {e}");
+                }
+            }
         }
     }
 

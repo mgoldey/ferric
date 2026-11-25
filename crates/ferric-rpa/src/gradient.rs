@@ -21,6 +21,7 @@ use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
+use ferric_scf::quartet_scatter::JkDigest;
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::warm_start::{solve_rhf_warm, ScfWarmStart};
@@ -96,6 +97,47 @@ pub fn rpa_correlation_gradient_warm(
     h: f64,
     warm: &mut ScfWarmStart,
 ) -> Result<Array2<f64>, FerricError> {
+    fd_correlation_gradient(
+        mol,
+        obs_basis,
+        aux_basis,
+        op,
+        rpa_config,
+        FdStep { h, jk_digest: None },
+        warm,
+    )
+}
+
+/// One finite-difference stencil's step and the J/K digest of the RHFs it
+/// solves ([`RpaGradientRoute::jk_digest`]).
+#[derive(Debug, Clone, Copy)]
+struct FdStep {
+    /// Step in Bohr.
+    h: f64,
+    jk_digest: Option<JkDigest>,
+}
+
+/// The reference RHF config of every gradient route (finite difference and
+/// analytic): `density_conv` 1e-9 ([`RhfConfig::gradient_reference`]) and
+/// the route's J/K digest, which the SCF records on the bounds it is solved
+/// on (and the analytic gradient's Z-vector response reuses).
+pub(crate) fn reference_config(jk_digest: Option<JkDigest>) -> RhfConfig {
+    let mut cfg = RhfConfig::gradient_reference(None);
+    cfg.jk_digest = jk_digest;
+    cfg
+}
+
+/// [`rpa_correlation_gradient_warm`] at `step`.
+fn fd_correlation_gradient(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    op: Operator,
+    rpa_config: &PdepRpaConfig,
+    step: FdStep,
+    warm: &mut ScfWarmStart,
+) -> Result<Array2<f64>, FerricError> {
+    let h = step.h;
     if !matches!(rpa_config.chi0_backend, Chi0Backend::Dense) {
         return Err(FerricError::General(
             "rpa_correlation_gradient: only Chi0Backend::Dense is supported (Laplace path is energy-only; see C-grad scope)".into(),
@@ -117,8 +159,24 @@ pub fn rpa_correlation_gradient_warm(
             let mut mol_m = mol.clone();
             apply_displacement(&mut mol_p, atom, coord, h);
             apply_displacement(&mut mol_m, atom, coord, -h);
-            let e_p = rpa_total_energy(&mol_p, obs_basis, aux_basis, op, rpa_config, &mut stencil)?;
-            let e_m = rpa_total_energy(&mol_m, obs_basis, aux_basis, op, rpa_config, &mut stencil)?;
+            let e_p = rpa_total_energy(
+                &mol_p,
+                obs_basis,
+                aux_basis,
+                op,
+                rpa_config,
+                step.jk_digest,
+                &mut stencil,
+            )?;
+            let e_m = rpa_total_energy(
+                &mol_m,
+                obs_basis,
+                aux_basis,
+                op,
+                rpa_config,
+                step.jk_digest,
+                &mut stencil,
+            )?;
             grad[(atom, coord)] = (e_p - e_m) / (2.0 * h);
         }
     }
@@ -144,6 +202,7 @@ fn rpa_total_energy(
     aux_basis: &BasisSet,
     op: Operator,
     rpa_config: &PdepRpaConfig,
+    jk_digest: Option<JkDigest>,
     warm: &mut ScfWarmStart,
 ) -> Result<f64, FerricError> {
     let ctx = ParallelContext::default();
@@ -155,7 +214,7 @@ fn rpa_total_energy(
     // energy_conv is only a loose "not-descending" bound (floors above 1e-10
     // under DF noise), so it is left at the default rather than set to 1e-10 —
     // a tight energy_conv would hang the SCF at MaxIter. See rhf::scf_converged.
-    let rhf_cfg = RhfConfig::gradient_reference(None);
+    let rhf_cfg = reference_config(jk_digest);
     let rhf = solve_rhf_warm(&ctx, mol, &obs, op, &bounds, &rhf_cfg, warm)?;
     if !rhf.converged {
         return Err(FerricError::ScfConvergence {
@@ -203,13 +262,34 @@ pub fn total_rpa_gradient_warm(
     h: f64,
     warm: &mut ScfWarmStart,
 ) -> Result<(f64, Array2<f64>), FerricError> {
+    fd_total_gradient(
+        mol,
+        obs_basis,
+        aux_basis,
+        op,
+        rpa_config,
+        FdStep { h, jk_digest: None },
+        warm,
+    )
+}
+
+/// [`total_rpa_gradient_warm`] at `step`.
+fn fd_total_gradient(
+    mol: &Molecule,
+    obs_basis: &BasisSet,
+    aux_basis: &BasisSet,
+    op: Operator,
+    rpa_config: &PdepRpaConfig,
+    step: FdStep,
+    warm: &mut ScfWarmStart,
+) -> Result<(f64, Array2<f64>), FerricError> {
     let ctx = ParallelContext::default();
     let obs = PreparedBasis::new(mol, obs_basis)?;
     let dfbs = PreparedBasis::new(mol, aux_basis)?;
     let bounds = SchwarzBounds::compute(op, &obs)?;
     // Tight SCF via density_conv (reachable under the ΔP gate); energy_conv left
     // at the loose default — a tight 1e-10 would hang at MaxIter. See above / gradient.rs:149.
-    let rhf_cfg = RhfConfig::gradient_reference(None);
+    let rhf_cfg = reference_config(step.jk_digest);
     let rhf = solve_rhf_warm(&ctx, mol, &obs, op, &bounds, &rhf_cfg, warm)?;
     if !rhf.converged {
         return Err(FerricError::ScfConvergence {
@@ -220,7 +300,7 @@ pub fn total_rpa_gradient_warm(
     let r: PdepRpaResult = run_pdep_rpa(mol, &obs, &dfbs, op, &rhf, rpa_config)?;
     let e_tot = rhf.energy + r.e_rpa;
 
-    let grad = rpa_correlation_gradient_warm(mol, obs_basis, aux_basis, op, rpa_config, h, warm)?;
+    let grad = fd_correlation_gradient(mol, obs_basis, aux_basis, op, rpa_config, step, warm)?;
     Ok((e_tot, grad))
 }
 
@@ -302,7 +382,42 @@ impl RpaGradientMethod {
     }
 }
 
-/// `(E_RHF + E_c^RPA, dE/dR)` at `mol` by `method`, the reference RHF solved
+/// How an RPA gradient driver evaluates the gradient and solves the
+/// reference RHF it re-solves at each geometry (and, for the finite
+/// difference, at each displaced point): the [`RpaGradientMethod`] and the
+/// reference's J/K digest (CLI `[scf] jk_digest`). A bare
+/// [`RpaGradientMethod`] converts with the digest unset.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct RpaGradientRoute {
+    /// How the gradient is evaluated.
+    pub method: RpaGradientMethod,
+    /// The digest of the reference RHF's direct four-centre J/K builds
+    /// ([`RhfConfig::jk_digest`]), recorded on the Schwarz bounds the RHF,
+    /// and the analytic gradient's response, run on. `None`:
+    /// `FERRIC_JK_DIGEST`, then `pair`.
+    pub jk_digest: Option<JkDigest>,
+}
+
+impl RpaGradientRoute {
+    /// This route with the reference's J/K digest `digest`.
+    pub fn with_jk_digest(mut self, digest: Option<JkDigest>) -> Self {
+        self.jk_digest = digest;
+        self
+    }
+}
+
+impl From<RpaGradientMethod> for RpaGradientRoute {
+    fn from(method: RpaGradientMethod) -> Self {
+        Self {
+            method,
+            jk_digest: None,
+        }
+    }
+}
+
+/// `(E_RHF + E_c^RPA, dE/dR)` at `mol` by `route` (an [`RpaGradientMethod`]
+/// alone, or with the reference's J/K digest), the reference RHF solved
 /// through `warm` (see [`total_rpa_gradient_warm`] and
 /// [`crate::gradient_analytic::rpa_analytic_gradient_warm`]).
 pub fn total_rpa_gradient_by(
@@ -311,16 +426,23 @@ pub fn total_rpa_gradient_by(
     aux_basis: &BasisSet,
     op: Operator,
     rpa_config: &PdepRpaConfig,
-    method: RpaGradientMethod,
+    route: impl Into<RpaGradientRoute>,
     warm: &mut ScfWarmStart,
 ) -> Result<(f64, Array2<f64>), FerricError> {
+    let RpaGradientRoute { method, jk_digest } = route.into();
     match method {
-        RpaGradientMethod::FiniteDifference { h } => {
-            total_rpa_gradient_warm(mol, obs_basis, aux_basis, op, rpa_config, h, warm)
-        }
+        RpaGradientMethod::FiniteDifference { h } => fd_total_gradient(
+            mol,
+            obs_basis,
+            aux_basis,
+            op,
+            rpa_config,
+            FdStep { h, jk_digest },
+            warm,
+        ),
         RpaGradientMethod::Analytic => {
-            let r = crate::gradient_analytic::rpa_analytic_gradient_warm(
-                mol, obs_basis, aux_basis, op, rpa_config, warm,
+            let r = crate::gradient_analytic::analytic_gradient_warm(
+                mol, obs_basis, aux_basis, op, rpa_config, jk_digest, warm,
             )?;
             Ok((r.energy, r.gradient))
         }

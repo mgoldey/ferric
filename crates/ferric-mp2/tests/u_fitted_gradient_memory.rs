@@ -28,7 +28,7 @@ use ferric_mp2::gradient_memory::{
 };
 use ferric_mp2::rimp2::RiMp2Config;
 use ferric_mp2::u_rimp2_gradient::total_u_rimp2_gradient_on;
-use ferric_scf::scf_jk::{ScfJk, ScfJkMode};
+use ferric_scf::scf_jk::ScfJk;
 use ferric_scf::warm_start::ScfWarmStart;
 
 const CHILD: &str = "FERRIC_U_FITTED_GRAD_MEM_CHILD";
@@ -155,10 +155,7 @@ fn child_runs_one_u_fitted_gradient() {
     };
     let obs = basis::bundled("cc-pvdz").unwrap();
     let aux = basis::bundled("cc-pvdz-ri").unwrap();
-    let scf_jk = ScfJk {
-        mode: ScfJkMode::RiJk,
-        aux: Some(JK_AUX.into()),
-    };
+    let scf_jk = ScfJk::rijk(JK_AUX);
     let config = RiMp2Config {
         memory_budget_bytes: explicit,
         ..Default::default()

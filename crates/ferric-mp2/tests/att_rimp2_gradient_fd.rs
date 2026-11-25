@@ -79,7 +79,7 @@ use ferric_mp2::attenuated::{attenuated_ri_mp2, AttenuatedMp2Config, BOHR_INV_PE
 use ferric_mp2::gradient::rimp2_gradient_analytical;
 use ferric_mp2::rimp2::RiMp2Config;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
-use ferric_scf::scf_jk::{ScfJk, ScfJkMode};
+use ferric_scf::scf_jk::ScfJk;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::warm_start::ScfWarmStart;
 use ferric_scf::ScfResult;
@@ -108,10 +108,7 @@ fn att(omega_ang_inv: f64, scaling: f64, frozen_core: usize) -> AttenuatedMp2Con
 }
 
 fn rijk() -> ScfJk {
-    ScfJk {
-        mode: ScfJkMode::RiJk,
-        aux: Some("def2-universal-jkfit".to_string()),
-    }
+    ScfJk::rijk("def2-universal-jkfit")
 }
 
 /// One geometry's prepared bases, Coulomb bounds and tight RHF on `jk`.
@@ -332,7 +329,7 @@ fn att_driver_energy_is_the_attenuated_energy() {
         &case.aux,
         &case.config,
         None,
-        &ferric_mp2::gradient::exact_scf_jk(),
+        &ferric_scf::scf_jk::ScfJk::exact(),
         &mut ScfWarmStart::new(false),
     )
     .unwrap();
