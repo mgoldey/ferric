@@ -1536,8 +1536,12 @@ pub struct LocalCfg {
     /// stream. Default 1e-5.
     pub schwarz_skip: Option<f64>,
     /// Integral-direct only: nearest-atom batches merged per integral pass
-    /// (>= 1). Default 4.
+    /// (>= 1). Only meaningful with `eri3_pass = "batches"` (default 4
+    /// there); the default aux-major pass runs at 1 and rejects larger values.
     pub batch_merge: Option<usize>,
+    /// Integral-direct only: stage-3 integral pass, `"aux-major"` (default)
+    /// or `"batches"`.
+    pub eri3_pass: Option<String>,
     /// Integral-direct only: R⁻⁶ pair-gate calibration constant. Omitted =
     /// gate off (every pair kept).
     pub gate_cal: Option<f64>,
@@ -1590,8 +1594,10 @@ pub struct LocalDirectKnobs {
     /// integral stream, >= 0. Default 1e-5.
     pub schwarz_skip: f64,
     /// `[local] batch_merge`: nearest-atom batches merged per integral pass,
-    /// >= 1. Default 4.
+    /// >= 1 (1 under the aux-major pass, 4 by default under batches).
     pub batch_merge: usize,
+    /// `[local] eri3_pass`: the stage-3 integral pass. Default aux-major.
+    pub eri3_pass: ferric_mp2::lmp2_direct::Eri3Pass,
     /// `[local] gate_cal`: R⁻⁶ pair-gate calibration constant (> 0); `None`
     /// keeps every pair.
     pub gate_cal: Option<f64>,
@@ -1696,6 +1702,7 @@ impl LocalModel {
                 ao_tail: d.ao_tail,
                 schwarz_skip: d.schwarz_skip,
                 batch_merge: d.batch_merge,
+                eri3_pass: d.eri3_pass,
                 virt_schwarz_kappa: d.virt_schwarz_kappa,
                 ..ferric_mp2::lmp2_direct::DirectConfig::production()
             });
@@ -1704,6 +1711,72 @@ impl LocalModel {
 }
 
 impl LocalCfg {
+    /// The integral-direct locality maps: `None` unless `integral_direct = true`
+    /// (and an error if a map key is set without it).
+    fn direct_knobs(&self) -> Result<Option<LocalDirectKnobs>, String> {
+        if self.integral_direct == Some(true) {
+            let pos = |k: &str, v: Option<f64>, d: f64| -> Result<f64, String> {
+                let x = v.unwrap_or(d);
+                if x.is_finite() && x > 0.0 {
+                    Ok(x)
+                } else {
+                    Err(format!("[local] {k} must be finite and > 0 (got {x})"))
+                }
+            };
+            let nonneg = |k: &str, v: Option<f64>, d: f64| -> Result<f64, String> {
+                let x = v.unwrap_or(d);
+                if x.is_finite() && x >= 0.0 {
+                    Ok(x)
+                } else {
+                    Err(format!("[local] {k} must be finite and >= 0 (got {x})"))
+                }
+            };
+            let opt_pos = |k: &str, v: Option<f64>| -> Result<Option<f64>, String> {
+                match v {
+                    Some(x) if !(x.is_finite() && x > 0.0) => {
+                        Err(format!("[local] {k} must be finite and > 0 (got {x})"))
+                    }
+                    other => Ok(other),
+                }
+            };
+            let (eri3_pass, batch_merge) = ferric_mp2::lmp2_direct::DirectConfig::resolve_pass(
+                self.eri3_pass.as_deref(),
+                self.batch_merge,
+            )
+            .map_err(|e| format!("[local] {e}"))?;
+            // The defaults have one home, shared with every other entry
+            // point: `ferric_mp2::lmp2_direct::DirectConfig::production`.
+            let prod = ferric_mp2::lmp2_direct::DirectConfig::production();
+            Ok(Some(LocalDirectKnobs {
+                aux_radius: pos("aux_radius", self.aux_radius, prod.aux_radius_bohr)?,
+                virt_radius: pos(
+                    "virt_radius",
+                    self.virt_radius,
+                    prod.virt_radius_bohr
+                        .expect("production maps carry a virtual radius"),
+                )?,
+                ao_tail: nonneg("ao_tail", self.ao_tail, prod.ao_tail)?,
+                schwarz_skip: nonneg("schwarz_skip", self.schwarz_skip, prod.schwarz_skip)?,
+                batch_merge,
+                eri3_pass,
+                gate_cal: opt_pos("gate_cal", self.gate_cal)?,
+                virt_schwarz_kappa: opt_pos("virt_schwarz_kappa", self.virt_schwarz_kappa)?,
+            }))
+        } else {
+            if self.sets_direct_knobs() {
+                return Err(
+                    "[local] aux_radius / virt_radius / ao_tail / schwarz_skip / \
+                        batch_merge / eri3_pass / gate_cal / virt_schwarz_kappa are the \
+                        integral-direct \
+                        locality maps and are read only with integral_direct = true; \
+                        without it they would be silently ignored"
+                        .to_string(),
+                );
+            }
+            Ok(None)
+        }
+    }
+
     /// `(lambda_boys, fock_screen)` with every key the user left out taken
     /// from the library's production model
     /// (`AmplitudeLmp2Config::production`, the single source of the
@@ -1725,6 +1798,7 @@ impl LocalCfg {
             || self.ao_tail.is_some()
             || self.schwarz_skip.is_some()
             || self.batch_merge.is_some()
+            || self.eri3_pass.is_some()
             || self.gate_cal.is_some()
             || self.virt_schwarz_kappa.is_some()
     }
@@ -1800,6 +1874,7 @@ impl LocalCfg {
                 ("ao_tail", self.ao_tail.is_some()),
                 ("schwarz_skip", self.schwarz_skip.is_some()),
                 ("batch_merge", self.batch_merge.is_some()),
+                ("eri3_pass", self.eri3_pass.is_some()),
                 ("gate_cal", self.gate_cal.is_some()),
                 ("virt_schwarz_kappa", self.virt_schwarz_kappa.is_some()),
                 ("fock_screen", self.fock_screen.is_some()),
@@ -1872,64 +1947,7 @@ impl LocalCfg {
                 (s, true)
             }
         };
-        let direct = if self.integral_direct == Some(true) {
-            let pos = |k: &str, v: Option<f64>, d: f64| -> Result<f64, String> {
-                let x = v.unwrap_or(d);
-                if x.is_finite() && x > 0.0 {
-                    Ok(x)
-                } else {
-                    Err(format!("[local] {k} must be finite and > 0 (got {x})"))
-                }
-            };
-            let nonneg = |k: &str, v: Option<f64>, d: f64| -> Result<f64, String> {
-                let x = v.unwrap_or(d);
-                if x.is_finite() && x >= 0.0 {
-                    Ok(x)
-                } else {
-                    Err(format!("[local] {k} must be finite and >= 0 (got {x})"))
-                }
-            };
-            let opt_pos = |k: &str, v: Option<f64>| -> Result<Option<f64>, String> {
-                match v {
-                    Some(x) if !(x.is_finite() && x > 0.0) => {
-                        Err(format!("[local] {k} must be finite and > 0 (got {x})"))
-                    }
-                    other => Ok(other),
-                }
-            };
-            if self.batch_merge == Some(0) {
-                return Err("[local] batch_merge must be >= 1".to_string());
-            }
-            // The defaults have one home, shared with every other entry
-            // point: `ferric_mp2::lmp2_direct::DirectConfig::production`.
-            let prod = ferric_mp2::lmp2_direct::DirectConfig::production();
-            Some(LocalDirectKnobs {
-                aux_radius: pos("aux_radius", self.aux_radius, prod.aux_radius_bohr)?,
-                virt_radius: pos(
-                    "virt_radius",
-                    self.virt_radius,
-                    prod.virt_radius_bohr
-                        .expect("production maps carry a virtual radius"),
-                )?,
-                ao_tail: nonneg("ao_tail", self.ao_tail, prod.ao_tail)?,
-                schwarz_skip: nonneg("schwarz_skip", self.schwarz_skip, prod.schwarz_skip)?,
-                batch_merge: self.batch_merge.unwrap_or(prod.batch_merge),
-                gate_cal: opt_pos("gate_cal", self.gate_cal)?,
-                virt_schwarz_kappa: opt_pos("virt_schwarz_kappa", self.virt_schwarz_kappa)?,
-            })
-        } else {
-            if self.sets_direct_knobs() {
-                return Err(
-                    "[local] aux_radius / virt_radius / ao_tail / schwarz_skip / \
-                            batch_merge / gate_cal / virt_schwarz_kappa are the \
-                            integral-direct \
-                            locality maps and are read only with integral_direct = true; \
-                            without it they would be silently ignored"
-                        .to_string(),
-                );
-            }
-            None
-        };
+        let direct = self.direct_knobs()?;
         let virtual_space = self.virtual_space()?;
         let (lambda_boys, fock_screen) = self.model_defaults(eps[0]);
         ferric_mp2::boys::check_lambda_boys(lambda_boys).map_err(|e| format!("[local] {e}"))?;
@@ -7207,9 +7225,17 @@ mod compat_guard_tests {
                 p.virt_radius_bohr,
                 p.ao_tail,
                 p.schwarz_skip,
-                p.batch_merge
+                p.batch_merge,
+                p.eri3_pass,
             ),
-            (10.0, Some(20.0), 1e-4, 1e-5, 4)
+            (
+                10.0,
+                Some(20.0),
+                1e-4,
+                1e-5,
+                1,
+                ferric_mp2::lmp2_direct::Eri3Pass::AuxMajor
+            )
         );
         // No drift, field for field: a keyless `[local]` section resolves to
         // the library's production configs exactly. Debug covers every field,
@@ -7237,6 +7263,38 @@ mod compat_guard_tests {
         assert!(d.is_none());
         assert_eq!(l.fock_screen, Some(DIRECT_FOCK_SCREEN_KAPPA));
         assert_eq!(l.lambda_boys, ferric_mp2::boys::LAMBDA_BOYS_DEFAULT);
+    }
+
+    #[test]
+    fn local_eri3_pass_resolution_is_strict() {
+        let model = |body: &str| cfg("drpa", "energy", &format!("[local]\n{body}")).local_model();
+        // eri3_pass: aux-major by default (batch_merge 1); an explicit
+        // batch_merge > 1 with it is a hard error naming eri3_pass = "batches";
+        // picking batches defaults batch_merge to 4.
+        {
+            use ferric_mp2::lmp2_direct::Eri3Pass;
+            let pre = "scheme = \"amplitude-threshold\"\neps = 1e-4\nintegral_direct = true\n";
+            for extra in [
+                "batch_merge = 4",
+                "eri3_pass = \"aux-major\"\nbatch_merge = 2",
+            ] {
+                let e = model(&format!("{pre}{extra}")).unwrap_err();
+                assert!(e.contains("eri3_pass = \"batches\""), "{extra}: {e}");
+            }
+            let d = |extra: &str| {
+                model(&format!("{pre}{extra}"))
+                    .unwrap()
+                    .unwrap()
+                    .direct
+                    .unwrap()
+            };
+            let a = d("eri3_pass = \"aux-major\"\nbatch_merge = 1");
+            assert_eq!((a.eri3_pass, a.batch_merge), (Eri3Pass::AuxMajor, 1));
+            let b = d("eri3_pass = \"batches\"");
+            assert_eq!((b.eri3_pass, b.batch_merge), (Eri3Pass::Batches, 4));
+            let b2 = d("eri3_pass = \"batches\"\nbatch_merge = 2");
+            assert_eq!((b2.eri3_pass, b2.batch_merge), (Eri3Pass::Batches, 2));
+        }
     }
 
     #[test]
@@ -7315,6 +7373,7 @@ mod compat_guard_tests {
             ("ao_tail", "1e-3"),
             ("schwarz_skip", "1e-5"),
             ("batch_merge", "4"),
+            ("eri3_pass", "\"batches\""),
             ("gate_cal", "0.7"),
             ("virt_schwarz_kappa", "1.0"),
         ] {
@@ -7337,7 +7396,8 @@ mod compat_guard_tests {
                 virt_radius: 20.0,
                 ao_tail: 1e-4,
                 schwarz_skip: 1e-5,
-                batch_merge: 4,
+                batch_merge: 1,
+                eri3_pass: ferric_mp2::lmp2_direct::Eri3Pass::AuxMajor,
                 gate_cal: None,
                 virt_schwarz_kappa: None,
             })
@@ -7384,6 +7444,9 @@ mod compat_guard_tests {
             "ao_tail = -1e-3",
             "schwarz_skip = nan",
             "batch_merge = 0",
+            "eri3_pass = \"batches\"\nbatch_merge = 0",
+            "eri3_pass = \"Batches\"",
+            "eri3_pass = \"aux_major\"",
             "gate_cal = 0.0",
             "virt_schwarz_kappa = -1.0",
         ] {

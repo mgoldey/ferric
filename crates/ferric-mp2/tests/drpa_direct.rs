@@ -410,6 +410,7 @@ fn bench_drpa_direct_vs_global() {
         schwarz_skip: 1e-5,
         batch_merge: 4,
         scratch_budget_bytes: 1usize << 30,
+        slab_budget_bytes: ferric_mp2::lmp2_direct::DIRECT_DEFAULT_SLAB_BUDGET_BYTES,
         ..Default::default()
     };
     println!(

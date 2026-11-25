@@ -410,7 +410,7 @@ pub(crate) fn local_correlation_operator(
 /// `result.local["e_corr_canonical_ri"]`. `integral_direct=True` selects the
 /// integral-direct local MP2, which never forms the global 3-index tensor;
 /// its locality maps are `aux_radius` (Bohr, default 10.0), `virt_radius`
-/// (Bohr, 20.0), `ao_tail` (1e-4), `schwarz_skip` (1e-5; 0 disables the cut), `batch_merge` (4), `gate_cal` (pair gate, off) and
+/// (Bohr, 20.0), `ao_tail` (1e-4), `schwarz_skip` (1e-5; 0 disables the cut), `eri3_pass` (`"aux-major"`, or `"batches"`), `batch_merge` (1 under aux-major, which rejects larger values; 4 under batches), `gate_cal` (pair gate, off) and
 /// `virt_schwarz_kappa` (off), the same names and defaults as the CLI's
 /// `[local]` keys. On both the in-core and the integral-direct path,
 /// `fock_screen` (default true) runs the Fock-propagated mask screen, κ = 1;
@@ -475,7 +475,7 @@ pub(crate) fn local_correlation_operator(
 /// place of the solve (`crate::reference_file`; shared with `run_ccsd` and
 /// `run_ccsd_t`).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None, fock_screen=None, att_operator=None, omega=None, att_r0=None, att_omega=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, virtual_space=None, virtual_tau=None, virtual_tau_loose=None, virtual_solve_radius=None, virtual_boys_tau=None, with_gradient=false, scf_eri=None, lambda_boys=None, save_reference=None, read_reference=None, read_reference_other_build=false))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, eri3_pass=None, gate_cal=None, virt_schwarz_kappa=None, fock_screen=None, att_operator=None, omega=None, att_r0=None, att_omega=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, virtual_space=None, virtual_tau=None, virtual_tau_loose=None, virtual_solve_radius=None, virtual_boys_tau=None, with_gradient=false, scf_eri=None, lambda_boys=None, save_reference=None, read_reference=None, read_reference_other_build=false))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_rimp2(
     py: Python<'_>,
@@ -495,6 +495,7 @@ pub(crate) fn run_rimp2(
     ao_tail: Option<f64>,
     schwarz_skip: Option<f64>,
     batch_merge: Option<usize>,
+    eri3_pass: Option<String>,
     gate_cal: Option<f64>,
     virt_schwarz_kappa: Option<f64>,
     fock_screen: Option<bool>,
@@ -550,6 +551,7 @@ pub(crate) fn run_rimp2(
             ao_tail,
             schwarz_skip,
             batch_merge,
+            eri3_pass,
             gate_cal,
             virt_schwarz_kappa,
             fock_screen,

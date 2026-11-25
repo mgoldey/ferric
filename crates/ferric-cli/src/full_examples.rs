@@ -388,6 +388,7 @@ fn keys() -> Vec<Key> {
         key!("local", "ao_tail", "", |_| Off("only with integral_direct = true")),
         key!("local", "schwarz_skip", "", |_| Off("only with integral_direct = true")),
         key!("local", "batch_merge", "", |_| Off("only with integral_direct = true")),
+        key!("local", "eri3_pass", "", |_| Off("only with integral_direct = true")),
         key!("local", "gate_cal", "", |_| Off("only with integral_direct = true")),
         key!("local", "virt_schwarz_kappa", "", |_| Off("only with integral_direct = true")),
         key!("local", "fock_screen", "", |_| Off("only with scheme = \"amplitude-threshold\" (rimp2, att-rimp2, opmp3)")),

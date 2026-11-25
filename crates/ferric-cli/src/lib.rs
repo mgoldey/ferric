@@ -2838,11 +2838,12 @@ fn run_rimp2_local(
     if let Some((d, _)) = &maps {
         println!(
             "  locality maps         = r_aux {} Bohr, r_virt {} Bohr, ao_tail {:.0e}, \
-             schwarz_skip {:.0e}, batch_merge {}, gate_cal {}, virt_schwarz_kappa {}",
+             schwarz_skip {:.0e}, eri3_pass {}, batch_merge {}, gate_cal {}, virt_schwarz_kappa {}",
             d.aux_radius,
             d.virt_radius,
             d.ao_tail,
             d.schwarz_skip,
+            d.eri3_pass.as_config_str(),
             d.batch_merge,
             d.gate_cal.map_or("off".to_string(), |c| format!("{c}")),
             d.virt_schwarz_kappa
@@ -8910,6 +8911,7 @@ mod local_printout_tests {
                 ao_tail: 1e-3,
                 schwarz_skip: 1e-5,
                 batch_merge: 4,
+                eri3_pass: "batches",
                 virt_schwarz_kappa: None,
             }),
             pair_fit: Some(PairFitCounters {
@@ -8968,6 +8970,7 @@ mod local_printout_tests {
         assert!(back["maps"]["virt_schwarz_kappa"].is_null());
         assert_eq!(back["fock_screen"], 1.0);
         assert_eq!(back["maps"]["batch_merge"], 4);
+        assert_eq!(back["maps"]["eri3_pass"], "batches");
         assert_eq!(back["pair_fit"]["n_trsm"], 93);
         assert_eq!(back["build_commit"], ferric_build_info::COMMIT);
         assert_eq!(

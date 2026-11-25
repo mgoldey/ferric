@@ -87,7 +87,9 @@ pub const DIRECT_DEFAULT_VIRT_RADIUS_BOHR: f64 = 20.0;
 pub const DIRECT_DEFAULT_AO_TAIL: f64 = 1e-4;
 /// Production default of [`DirectConfig::schwarz_skip`].
 pub const DIRECT_DEFAULT_SCHWARZ_SKIP: f64 = 1e-5;
-/// Production default of [`DirectConfig::batch_merge`].
+/// Default of [`DirectConfig::batch_merge`] when the user picks the
+/// [`Eri3Pass::Batches`] pass (the production pass is [`Eri3Pass::AuxMajor`],
+/// which has no batches and runs at `batch_merge = 1`).
 pub const DIRECT_DEFAULT_BATCH_MERGE: usize = 4;
 /// Default of [`DirectConfig::scratch_budget_bytes`]: 2 GiB.
 pub const DIRECT_DEFAULT_SCRATCH_BUDGET_BYTES: usize = 2usize << 30;
@@ -198,8 +200,13 @@ pub struct DirectConfig {
 impl DirectConfig {
     /// The locality maps the user-facing integral-direct entry points run
     /// when no map key is given: aux radius 10 Bohr, virtual radius 20 Bohr,
-    /// AO tail 1e-4, Schwarz skip 1e-5, batch merge 4, no ε-linked virtual
-    /// screen. ([`Default`] is instead the exactness-anchor configuration,
+    /// AO tail 1e-4, Schwarz skip 1e-5, the aux-major stage-3 pass
+    /// ([`Eri3Pass::AuxMajor`], `batch_merge = 1`), no ε-linked virtual
+    /// screen. Measured against the batches pass at merge 4 (release, 6
+    /// cores, 6-31G / cc-pVDZ-RI, eps 1e-4, energies identical to 12
+    /// digits): stage 3 1.35 -> 0.27 s (C12), 5.17 -> 1.19 s (C20),
+    /// 15.6 -> 5.6 s (C32); shell triples 11.2M -> 1.2M, 41.8M -> 3.4M,
+    /// 122M -> 8.9M; peak RSS unchanged. ([`Default`] is instead the exactness-anchor configuration,
     /// every map at or near its no-op limit.) The pair gate, the Fock screen
     /// (on, κ = [`DIRECT_FOCK_SCREEN_KAPPA`]) and λ-Boys live on
     /// [`AmplitudeLmp2Config`], not here.
@@ -209,9 +216,37 @@ impl DirectConfig {
             virt_radius_bohr: Some(DIRECT_DEFAULT_VIRT_RADIUS_BOHR),
             ao_tail: DIRECT_DEFAULT_AO_TAIL,
             schwarz_skip: DIRECT_DEFAULT_SCHWARZ_SKIP,
-            batch_merge: DIRECT_DEFAULT_BATCH_MERGE,
+            batch_merge: 1,
+            eri3_pass: Eri3Pass::AuxMajor,
             virt_schwarz_kappa: None,
             ..Self::default()
+        }
+    }
+
+    /// The ONE place a user-facing (pass, batch_merge) pair is resolved, for
+    /// the CLI and Python alike. `pass`: `None` = the production pass
+    /// (aux-major), else [`Eri3Pass::parse_config_str`]. `batch_merge`:
+    /// `None` = the pass's default (1 for aux-major, [`DIRECT_DEFAULT_BATCH_MERGE`]
+    /// for batches). An explicit `batch_merge > 1` with aux-major is an
+    /// error, as is `batch_merge = 0`.
+    pub fn resolve_pass(
+        pass: Option<&str>,
+        batch_merge: Option<usize>,
+    ) -> Result<(Eri3Pass, usize), String> {
+        let pass = match pass {
+            None => Self::production().eri3_pass,
+            Some(s) => Eri3Pass::parse_config_str(s)?,
+        };
+        if batch_merge == Some(0) {
+            return Err("batch_merge must be >= 1".to_string());
+        }
+        match (pass, batch_merge) {
+            (Eri3Pass::AuxMajor, Some(m)) if m > 1 => Err(format!(
+                "batch_merge = {m} needs the batches pass: the aux-major pass \
+                 (the default) has no batches; set eri3_pass = \"batches\" or drop batch_merge"
+            )),
+            (Eri3Pass::AuxMajor, _) => Ok((pass, 1)),
+            (Eri3Pass::Batches, m) => Ok((pass, m.unwrap_or(DIRECT_DEFAULT_BATCH_MERGE))),
         }
     }
 }
@@ -228,8 +263,30 @@ pub enum Eri3Pass {
     Batches,
     /// One task per aux shell, over the union of the supports of the occupieds
     /// that need that shell: each needed triple is evaluated once. Rejects
-    /// `batch_merge > 1`, which has no meaning here.
+    /// `batch_merge > 1`, which has no meaning here. The production pass.
     AuxMajor,
+}
+
+impl Eri3Pass {
+    /// Strict parser for the user-facing spelling: `"aux-major"` or
+    /// `"batches"`; anything else (case, underscores, empty) is an error.
+    pub fn parse_config_str(s: &str) -> Result<Self, String> {
+        match s {
+            "aux-major" => Ok(Self::AuxMajor),
+            "batches" => Ok(Self::Batches),
+            other => Err(format!(
+                "unknown eri3_pass {other:?}: expected \"aux-major\" or \"batches\""
+            )),
+        }
+    }
+
+    /// The user-facing spelling ([`Self::parse_config_str`] round-trips it).
+    pub fn as_config_str(self) -> &'static str {
+        match self {
+            Self::AuxMajor => "aux-major",
+            Self::Batches => "batches",
+        }
+    }
 }
 
 impl Default for DirectConfig {
@@ -4536,6 +4593,57 @@ mod stage_b_tests {
             "{}",
             two.aux_major_in_flight_peak
         );
+    }
+
+    #[test]
+    fn eri3_pass_parser_is_strict() {
+        assert_eq!(
+            Eri3Pass::parse_config_str("aux-major"),
+            Ok(Eri3Pass::AuxMajor)
+        );
+        assert_eq!(Eri3Pass::parse_config_str("batches"), Ok(Eri3Pass::Batches));
+        for bad in ["", "Aux-Major", "aux_major", "auxmajor", "batch", "BATCHES"] {
+            assert!(Eri3Pass::parse_config_str(bad).is_err(), "{bad:?}");
+        }
+        for p in [Eri3Pass::AuxMajor, Eri3Pass::Batches] {
+            assert_eq!(Eri3Pass::parse_config_str(p.as_config_str()), Ok(p));
+        }
+    }
+
+    #[test]
+    fn production_is_aux_major_and_resolution_follows_it() {
+        let p = DirectConfig::production();
+        assert_eq!((p.eri3_pass, p.batch_merge), (Eri3Pass::AuxMajor, 1));
+        // The exactness-anchor config is unchanged.
+        let d = DirectConfig::default();
+        assert_eq!((d.eri3_pass, d.batch_merge), (Eri3Pass::Batches, 1));
+        assert_eq!(
+            DirectConfig::resolve_pass(None, None),
+            Ok((Eri3Pass::AuxMajor, 1))
+        );
+        assert_eq!(
+            DirectConfig::resolve_pass(Some("aux-major"), Some(1)),
+            Ok((Eri3Pass::AuxMajor, 1))
+        );
+        assert_eq!(
+            DirectConfig::resolve_pass(Some("batches"), None),
+            Ok((Eri3Pass::Batches, DIRECT_DEFAULT_BATCH_MERGE))
+        );
+        assert_eq!(DIRECT_DEFAULT_BATCH_MERGE, 4);
+        assert_eq!(
+            DirectConfig::resolve_pass(Some("batches"), Some(2)),
+            Ok((Eri3Pass::Batches, 2))
+        );
+        assert!(DirectConfig::resolve_pass(Some("bogus"), None).is_err());
+        assert!(DirectConfig::resolve_pass(Some("batches"), Some(0)).is_err());
+    }
+
+    #[test]
+    fn resolve_pass_rejects_batch_merge_with_aux_major() {
+        for pass in [None, Some("aux-major")] {
+            let e = DirectConfig::resolve_pass(pass, Some(4)).unwrap_err();
+            assert!(e.contains("eri3_pass = \"batches\""), "{e}");
+        }
     }
 
     #[test]

@@ -5540,6 +5540,7 @@ def run_rimp2(
     ao_tail: float | None = None,
     schwarz_skip: float | None = None,
     batch_merge: int | None = None,
+    eri3_pass: str | None = None,
     gate_cal: float | None = None,
     virt_schwarz_kappa: float | None = None,
     fock_screen: bool | None = None,
@@ -5585,7 +5586,9 @@ def run_rimp2(
     amplitude-threshold local MP2 (closed-shell; eps=0 reproduces the exact
     RI-MP2); `integral_direct=True` its integral-direct variant with the
     locality maps aux_radius/virt_radius (Bohr), ao_tail, schwarz_skip,
-    batch_merge, gate_cal and virt_schwarz_kappa (which needs
+    eri3_pass ("aux-major" default, or "batches"), batch_merge (only with
+    eri3_pass="batches", default 4 there; larger than 1 with aux-major is a
+    ValueError), gate_cal and virt_schwarz_kappa (which needs
     fock_screen=False; it bounds the plain integral mask only). On both paths
     `fock_screen` (default True) runs the Fock-propagated mask screen,
     kappa = 1; False keeps the plain integral mask. Same rules as the CLI

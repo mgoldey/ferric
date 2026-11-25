@@ -36,7 +36,7 @@ definitions, not equations, and the trivial-limit tests check them.
 | Entry point | Location |
 |---|---|
 | Rust | `ferric-mp2/src/lmp2_direct.rs::amplitude_lmp2_direct`, `ferric-mp2/src/lmp2_direct.rs::assemble_ragged_direct_local` |
-| CLI | `[local] scheme = "amplitude-threshold"`, `eps`, `integral_direct = true`, with `aux_radius`, `virt_radius`, `ao_tail`, `schwarz_skip`, `batch_merge`, `gate_cal`, `virt_schwarz_kappa`, `fock_screen` (`examples/alkane8-rimp2-local-direct.toml`) |
+| CLI | `[local] scheme = "amplitude-threshold"`, `eps`, `integral_direct = true`, with `aux_radius`, `virt_radius`, `ao_tail`, `schwarz_skip`, `eri3_pass`, `batch_merge`, `gate_cal`, `virt_schwarz_kappa`, `fock_screen` (`examples/alkane8-rimp2-local-direct.toml`) |
 | Python | `run_rimp2(..., local="amplitude-threshold", eps=..., integral_direct=True)` |
 
 ## The domain-local fit {#integral-direct-domain-local-fit}
@@ -221,15 +221,32 @@ The screen only ever shrinks $V_i\cup V_j$. So every candidate still lies
 in both strips' columns, and a missing column position is a construction
 error that panics.
 
-**Variants of stage 3.** Per-atom batches re-evaluate shell triples that
-neighbouring batches also need. `batch_merge` merges several nearest-atom
+**Variants of stage 3.** Two passes build the same strips to round-off.
+The production pass (`Eri3Pass::AuxMajor`, CLI `[local] eri3_pass =
+"aux-major"`) takes one task per auxiliary shell over the union of the
+supports that need it, so each needed triple is evaluated once. The other
+(`Eri3Pass::Batches`, `eri3_pass = "batches"`) evaluates per occupied batch,
+so a triple that neighbouring batches also need is evaluated once per batch.
+`batch_merge` belongs to that second pass: it merges several nearest-atom
 batches along the molecule's long axis, which evaluates fewer triples at
-the cost of larger scratch slabs. It agrees with $k=1$ to the
+the cost of larger scratch slabs, and agrees with $k=1$ to the
 float-reassociation floor, not bitwise, because the per-occupied transform
-runs over a larger batch union. An alternative pass
-(`Eri3Pass::AuxMajor`) takes one task per auxiliary shell over the union of
-the supports that need it, so each needed triple is evaluated once. Both
-build the same strips to round-off.
+runs over a larger batch union. The aux-major pass has no batches, so it runs
+at `batch_merge = 1` and a larger explicit value is an error that says to set
+`eri3_pass = "batches"`; choosing `batches` without `batch_merge` uses 4.
+
+Measured against the batches pass at merge 4 (release, 6 cores, 6-31G /
+cc-pVDZ-RI, ε = 1e-4, production maps, 2 repeats; energies identical to 12
+digits, peak resident set unchanged):
+
+| alkane | stage 3, batches → aux-major | LMP2 wall | shell triples |
+|---|---|---|---|
+| C12 | 1.35 → 0.27 s | 3.20 → 2.14 s | 11.2 M → 1.2 M |
+| C20 | 5.17 → 1.19 s | 13.5 → 9.4 s | 41.8 M → 3.4 M |
+| C32 | 15.6 → 5.6 s | 50.2 → 39.0 s | 122 M → 8.9 M |
+
+Under the MPI rank stripe (2 ranks, C20) aux-major also wins, 11.5-12.9 s
+against 16.9-18.6 s.
 
 ## How the two kinds of map combine at ε = 0 {#integral-direct-map-errors-eps0}
 
@@ -439,15 +456,16 @@ amount per CH$_2$ is constant.
 | `gate_cal` | none (gate off) | none | the pair gate of equation @eq:amplitude-lmp2-4 |
 | `virt_schwarz_kappa` | none (off) | none | $\varepsilon$-linked virtual-candidate screen: keep $a$ if $q_{ia}q^{\max}_j \ge \kappa\varepsilon$ or the mirror |
 | `fock_screen` | `false` (plain Eq-8 mask) | `true` (κ = 1) | the Fock-propagated screen of section @sec:amplitude-lmp2-fock-screen; inert at $\varepsilon = 0$ |
-| `batch_merge` | 1 | 4 | batches merged per integral pass |
+| `batch_merge` | 1 | 1 (aux-major); 4 if `eri3_pass = "batches"` | batches merged per integral pass; only the batches pass has batches |
+| `eri3_pass` | batches | aux-major | stage-3 integral pass |
 
-The first six rows and `batch_merge` are fields of
+The first six rows, `batch_merge` and `eri3_pass` are fields of
 `ferric-mp2/src/lmp2_direct.rs::DirectConfig`. `gate_cal` and `fock_screen`
 are fields of `ferric-mp2/src/lmp2_amplitude.rs::AmplitudeLmp2Config`
 (`pair_gate_cal`, `fock_screen`), whose Rust default is `None` for both.
 The `DirectConfig` defaults are the trivial limits of its rows except
 `aux_radius_bohr`, which defaults to 10.0 Bohr as in the CLI. They differ from the CLI defaults for `virt_radius`, `ao_tail`,
-`schwarz_skip` and `batch_merge`. `DirectConfig::production()` holds the
+`schwarz_skip`, `batch_merge` and `eri3_pass`. `DirectConfig::production()` holds the
 CLI defaults, and the CLI `[local]` section and Python
 `run_rimp2(integral_direct=True)` both build their configs from it, so the
 two entry points cannot drift apart. The CLI defaults are in
