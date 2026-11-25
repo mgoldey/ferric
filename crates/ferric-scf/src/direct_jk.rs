@@ -1,6 +1,6 @@
 //! Combined direct Coulomb + exchange (J+K) matrix construction from a single quartet pass.
 
-use crate::quartet_scatter::ScatterTimes;
+use crate::quartet_scatter::{JkDigest, ScatterTimes};
 use crate::screening::SchwarzBounds;
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
@@ -564,7 +564,7 @@ impl Walk<'_> {
         k_b: &mut Array2<f64>,
     ) -> Result<usize, FerricError> {
         use crate::quartet_scatter::{
-            build_d_max_shell_spin_sum, scatter_bra_pair, DensityScreen, JkMode,
+            build_d_max_shell_spin_sum, scatter_bra_pair, DensityScreen, JkMode, PairSpec,
         };
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -609,41 +609,63 @@ impl Walk<'_> {
         let n_groups = n_pairs.div_ceil(group_size.max(1)).max(1);
         let screen = DensityScreen::SixPair(&d_max_shell);
 
-        let mut total_j = Array2::<f64>::zeros((nbf, nbf));
-        let mut total_k_a = Array2::<f64>::zeros((nbf, nbf));
-        let mut total_k_b = Array2::<f64>::zeros((nbf, nbf));
         let band_bytes = crate::reduce::resolve_band_bytes(self.mem_budget);
-        crate::reduce::ordered_stream_sum_triple(
-            &mut total_j,
-            &mut total_k_a,
-            &mut total_k_b,
-            n_groups,
-            nbf,
-            band_bytes,
-            |g| {
-                let lo = g * group_size;
-                let hi = (lo + group_size).min(n_pairs);
-                let mut mode = JkMode::new_uhf(nbf, d_a, d_b);
-                let mut local_count = 0usize;
-                for &(s1, s2) in &shell_pairs[lo..hi] {
-                    if ferric_core::INTERRUPT.load(Ordering::Relaxed) {
-                        continue;
-                    }
-                    pool.with(|engine| {
-                        local_count += scatter_bra_pair(
-                            engine, prep, dims, offs, q_table, m_table, x_table, &screen, thresh,
-                            d_total, s1, s2, &mut mode, true,
-                        );
-                    });
+        // One group's bra pairs scattered into `mode`.
+        let run = |g: usize, mut mode: JkMode<'_>| {
+            let lo = g * group_size;
+            let hi = (lo + group_size).min(n_pairs);
+            let mut local_count = 0usize;
+            for &(s1, s2) in &shell_pairs[lo..hi] {
+                if ferric_core::INTERRUPT.load(Ordering::Relaxed) {
+                    continue;
                 }
-                let (local_j, local_k_a, local_k_b) = match mode {
-                    JkMode::Uhf(j, ka, kb, _, _) => (j, ka, kb),
-                    _ => unreachable!("DirectJK::build_uhf always uses JkMode::Uhf"),
-                };
-                computed_quartets.fetch_add(local_count, Ordering::Relaxed);
-                Ok((local_j, local_k_a, local_k_b))
-            },
-        )?;
+                pool.with(|engine| {
+                    local_count += scatter_bra_pair(
+                        engine, prep, dims, offs, q_table, m_table, x_table, &screen, thresh,
+                        d_total, s1, s2, &mut mode, true,
+                    );
+                });
+            }
+            computed_quartets.fetch_add(local_count, Ordering::Relaxed);
+            mode
+        };
+        let (mut total_j, mut total_k_a, mut total_k_b) = match self.bounds.digest.mode()? {
+            JkDigest::Legacy => {
+                let mut total_j = Array2::<f64>::zeros((nbf, nbf));
+                let mut total_k_a = Array2::<f64>::zeros((nbf, nbf));
+                let mut total_k_b = Array2::<f64>::zeros((nbf, nbf));
+                crate::reduce::ordered_stream_sum_triple(
+                    &mut total_j,
+                    &mut total_k_a,
+                    &mut total_k_b,
+                    n_groups,
+                    nbf,
+                    band_bytes,
+                    |g| match run(g, JkMode::new_uhf(nbf, d_a, d_b)) {
+                        JkMode::Uhf(j, ka, kb, _, _) => Ok((j, ka, kb)),
+                        _ => unreachable!("DirectJK::build_uhf's legacy walk uses JkMode::Uhf"),
+                    },
+                )?;
+                (total_j, total_k_a, total_k_b)
+            }
+            JkDigest::Pair => {
+                let spec = PairSpec::uhf(nbf, dims, d_total, d_a, d_b);
+                let mut halves = spec.zeros();
+                crate::reduce::ordered_stream_sum_many(
+                    &mut halves,
+                    n_groups,
+                    nbf,
+                    band_bytes,
+                    |g| Ok(pair_partials(run(g, spec.mode()))),
+                    None,
+                )?;
+                let (j, k) = spec.finish(halves);
+                let [k_a, k_b]: [Array2<f64>; 2] = k
+                    .try_into()
+                    .unwrap_or_else(|_| unreachable!("two spin K matrices"));
+                (j.expect("the open-shell pair digest builds J"), k_a, k_b)
+            }
+        };
 
         // MPI: reduce the rank-LOCAL partials, THEN accumulate. Reducing `j`/`k_a`/
         // `k_b` instead would also sum the caller's pre-existing contents, which on
@@ -669,7 +691,7 @@ impl Walk<'_> {
         j: &mut Array2<f64>,
         k: &mut Array2<f64>,
     ) -> Result<usize, FerricError> {
-        use crate::quartet_scatter::{build_d_max_shell, DensityScreen};
+        use crate::quartet_scatter::{build_d_max_shell, DensityScreen, JkMode, PairSpec};
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         let profile_t0 = ferric_core::timing::enabled().then(std::time::Instant::now);
@@ -740,10 +762,9 @@ impl Walk<'_> {
         let n_groups = n_pairs.div_ceil(group_size.max(1)).max(1);
         let screen = DensityScreen::SixPair(&d_max_shell);
 
-        let mut total_j = Array2::<f64>::zeros((nbf, nbf));
-        let mut total_k = Array2::<f64>::zeros((nbf, nbf));
         let band_bytes = crate::reduce::resolve_band_bytes(self.mem_budget);
-        let profile = profile_t0.map(|t0| BuildProfile::new(t0, n_pairs, n_groups));
+        let digest = self.bounds.digest.mode()?;
+        let profile = profile_t0.map(|t0| BuildProfile::new(t0, n_pairs, n_groups, digest));
         let job = GroupJob {
             pool,
             prep,
@@ -755,21 +776,57 @@ impl Walk<'_> {
             d,
         };
         let mut band_times = crate::reduce::StreamTimes::default();
-        crate::reduce::ordered_stream_sum_pair(
-            &mut total_j,
-            &mut total_k,
-            n_groups,
-            nbf,
-            band_bytes,
-            |g| {
-                let lo = g * group_size;
-                let pairs = &shell_pairs[lo..(lo + group_size).min(n_pairs)];
-                let (local_j, local_k, n) = job.run(pairs, profile.as_ref());
-                computed_quartets.fetch_add(n, Ordering::Relaxed);
-                Ok((local_j, local_k))
-            },
-            profile.as_ref().map(|_| &mut band_times),
-        )?;
+        let (mut total_j, mut total_k) = match digest {
+            JkDigest::Legacy => {
+                let mut total_j = Array2::<f64>::zeros((nbf, nbf));
+                let mut total_k = Array2::<f64>::zeros((nbf, nbf));
+                crate::reduce::ordered_stream_sum_pair(
+                    &mut total_j,
+                    &mut total_k,
+                    n_groups,
+                    nbf,
+                    band_bytes,
+                    |g| {
+                        let lo = g * group_size;
+                        let pairs = &shell_pairs[lo..(lo + group_size).min(n_pairs)];
+                        let (mode, n) =
+                            job.run(pairs, profile.as_ref(), JkMode::new_both(nbf));
+                        computed_quartets.fetch_add(n, Ordering::Relaxed);
+                        match mode {
+                            JkMode::Both(j, k) => Ok((j, k)),
+                            _ => unreachable!("DirectJK::build's legacy walk uses JkMode::Both"),
+                        }
+                    },
+                    profile.as_ref().map(|_| &mut band_times),
+                )?;
+                (total_j, total_k)
+            }
+            JkDigest::Pair => {
+                // Half partials summed in group order, then `finish` (linear,
+                // so it commutes with the rank reduction below).
+                let spec = PairSpec::both(nbf, prep.shell_dims(), d);
+                let mut halves = spec.zeros();
+                crate::reduce::ordered_stream_sum_many(
+                    &mut halves,
+                    n_groups,
+                    nbf,
+                    band_bytes,
+                    |g| {
+                        let lo = g * group_size;
+                        let pairs = &shell_pairs[lo..(lo + group_size).min(n_pairs)];
+                        let (mode, n) = job.run(pairs, profile.as_ref(), spec.mode());
+                        computed_quartets.fetch_add(n, Ordering::Relaxed);
+                        Ok(pair_partials(mode))
+                    },
+                    profile.as_ref().map(|_| &mut band_times),
+                )?;
+                let (j, mut k) = spec.finish(halves);
+                (
+                    j.expect("the J+K pair digest builds J"),
+                    k.pop().expect("the J+K pair digest builds K"),
+                )
+            }
+        };
 
         // MPI: reduce the rank-LOCAL partials, THEN accumulate — NOT the other way
         // round. `build_incremental` delegates here with `j`/`k` already holding
@@ -803,20 +860,21 @@ struct GroupJob<'g> {
 }
 
 impl GroupJob<'_> {
-    /// The bra pairs `pairs` scattered into fresh `nbf × nbf` J and K
-    /// partials, with the number of quartets computed. With `profile`, the
-    /// group's stage times are recorded into it.
-    fn run(
+    /// The bra pairs `pairs` scattered into `mode` (fresh `nbf × nbf`
+    /// partials: `JkMode::Both` for the legacy digest, a `PairSpec`'s mode
+    /// for the pair digest), returned with the number of quartets computed.
+    /// With `profile`, the group's stage times are recorded into it.
+    fn run<'m>(
         &self,
         pairs: &[(usize, usize)],
         profile: Option<&BuildProfile>,
-    ) -> (Array2<f64>, Array2<f64>, usize) {
-        use crate::quartet_scatter::{scatter_bra_pair, scatter_bra_pair_probed, JkMode};
+        mut mode: crate::quartet_scatter::JkMode<'m>,
+    ) -> (crate::quartet_scatter::JkMode<'m>, usize) {
+        use crate::quartet_scatter::{scatter_bra_pair, scatter_bra_pair_probed};
         use std::sync::atomic::Ordering;
         let t_group = std::time::Instant::now();
         let (prep, d) = (self.prep, self.d);
         let (dims, offs) = (prep.shell_dims(), prep.shell_offsets());
-        let mut mode = JkMode::new_both(prep.nbasis());
         let mut count = 0usize;
         let mut times = ScatterTimes::default();
         for &(s1, s2) in pairs {
@@ -845,10 +903,15 @@ impl GroupJob<'_> {
         if let Some(p) = profile {
             p.record_group(t_group, &times);
         }
-        match mode {
-            JkMode::Both(j, k) => (j, k, count),
-            _ => unreachable!("DirectJK::build always uses JkMode::Both"),
-        }
+        (mode, count)
+    }
+}
+
+/// The half partials of a [`JkMode::Pair`](crate::quartet_scatter::JkMode::Pair).
+fn pair_partials(mode: crate::quartet_scatter::JkMode<'_>) -> Vec<Array2<f64>> {
+    match mode {
+        crate::quartet_scatter::JkMode::Pair(p) => p.into_partials(),
+        other => unreachable!("a pair-digest walk got JkMode::{}", other.label()),
     }
 }
 
@@ -878,16 +941,18 @@ struct BuildProfile {
     t0: std::time::Instant,
     n_pairs: usize,
     n_groups: usize,
+    digest: JkDigest,
     /// `(rayon thread, group wall ns, stage times)` per group.
     groups: std::sync::Mutex<Vec<(usize, u64, ScatterTimes)>>,
 }
 
 impl BuildProfile {
-    fn new(t0: std::time::Instant, n_pairs: usize, n_groups: usize) -> Self {
+    fn new(t0: std::time::Instant, n_pairs: usize, n_groups: usize, digest: JkDigest) -> Self {
         BuildProfile {
             t0,
             n_pairs,
             n_groups,
+            digest,
             groups: std::sync::Mutex::new(Vec::with_capacity(n_groups)),
         }
     }
@@ -923,8 +988,8 @@ impl BuildProfile {
             .fold((u64::MAX, 0u64), |(a, b), &v| (a.min(v), b.max(v)));
         eprintln!(
             "[timing] direct-jk build: nbf {nbf} nsh {nsh} bra pairs {} groups {} \
-             threads {threads}",
-            self.n_pairs, self.n_groups
+             threads {threads} digest {}",
+            self.n_pairs, self.n_groups, self.digest
         );
         eprintln!(
             "[timing] direct-jk   wall {wall:.3} s = setup {setup:.3} + groups and folds \

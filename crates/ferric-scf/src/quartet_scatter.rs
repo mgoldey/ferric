@@ -33,7 +33,9 @@
 
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
-use ndarray::{Array2, Array3};
+use ferric_core::FerricError;
+use ndarray::{Array2, Array3, CowArray};
+use std::sync::{Arc, RwLock};
 
 /// What a single quartet-scatter pass accumulates. Each variant carries a
 /// zeroed `nbf×nbf` local partial for exactly the matrices this mode needs —
@@ -72,6 +74,11 @@ pub(crate) enum JkMode<'d> {
     /// `(nbf, nbf, m)` so the per-integral loop over densities is contiguous.
     /// The `d` argument of the scatter is ignored.
     Multi(Box<MultiJk<'d>>),
+    /// The bra-pair-local digest ([`JkDigest::Pair`]): half partials `Jh`,
+    /// `Kb` (and `Kt`) of the densities a [`PairSpec`] prepared, turned into
+    /// J and K by [`PairSpec::finish`] after the ordered group sum. The `d`
+    /// argument of the scatter is ignored. Made by [`PairSpec::mode`].
+    Pair(Box<PairJk<'d>>),
 }
 
 /// The buffers of [`JkMode::Multi`].
@@ -155,6 +162,7 @@ impl<'d> JkMode<'d> {
         match self {
             JkMode::JOnly(_) | JkMode::Both(..) | JkMode::Uhf(..) => true,
             JkMode::Multi(m) => m.jd.dim().2 > 0,
+            JkMode::Pair(p) => p.spec.jd.is_some(),
             JkMode::KOnly(_) => false,
         }
     }
@@ -169,6 +177,7 @@ impl<'d> JkMode<'d> {
             JkMode::Both(..) => "Both",
             JkMode::Uhf(..) => "Uhf",
             JkMode::Multi(..) => "Multi",
+            JkMode::Pair(..) => "Pair",
         }
     }
 
@@ -196,6 +205,7 @@ impl<'d> JkMode<'d> {
                 digest_k(q, b, d_b, 1, k_b, s);
             }
             JkMode::Multi(_) => return false,
+            JkMode::Pair(_) => unreachable!("the pair digest has its own kernel"),
         }
         true
     }
@@ -211,6 +221,7 @@ impl<'d> JkMode<'d> {
             },
             // SAFETY: as above; both stacks are standard-layout (nbf, nbf, m).
             JkMode::Multi(m) => unsafe { add_lane(&mut m.j, row, col, m.jd, la, sg, v) },
+            JkMode::Pair(_) => unreachable!("the pair digest has its own kernel"),
             JkMode::KOnly(_) => {}
         }
     }
@@ -234,6 +245,7 @@ impl<'d> JkMode<'d> {
             },
             // SAFETY: as above; both stacks are standard-layout (nbf, nbf, m).
             JkMode::Multi(m) => unsafe { add_lane(&mut m.k, row, col, m.kd, la, sg, v) },
+            JkMode::Pair(_) => unreachable!("the pair digest has its own kernel"),
             JkMode::JOnly(_) => {}
         }
     }
@@ -616,9 +628,14 @@ pub(crate) fn scatter_bra_pair_probed<const PROBE: bool>(
         )
     });
 
+    // The pair digest's per-bra-pair start (its `end` follows the loop).
+    if let JkMode::Pair(p) = mode {
+        p.begin(dims, offs, s1, s2);
+    }
+
     for s3 in 0..=s1 {
         if check_interrupt && s3 % 100 == 0 && ferric_core::INTERRUPT.load(Ordering::Relaxed) {
-            return local_count;
+            break;
         }
         let s4max = if s3 == s1 { s2 } else { s3 };
         for s4 in 0..=s4max {
@@ -700,6 +717,15 @@ pub(crate) fn scatter_bra_pair_probed<const PROBE: bool>(
                 let (o3, o4) = (offs[s3], offs[s4]);
                 let sym34 = s3 != s4;
                 let sym1234 = (s1, s2) != (s3, s4);
+
+                // The bra-pair-local digest replaces all three branches below.
+                if let JkMode::Pair(p) = mode {
+                    p.quartet(q, dims, offs, s3, s4);
+                    if let Some(t) = t_dig {
+                        times.digest_ns += ns_since(t);
+                    }
+                    continue;
+                }
 
                 // Fast path for STO-3G / small shells (n=1): every index is
                 // fixed, so the scatter collapses to at most 8 scalar adds
@@ -814,6 +840,9 @@ pub(crate) fn scatter_bra_pair_probed<const PROBE: bool>(
             }
         }
     }
+    if let JkMode::Pair(p) = mode {
+        p.end();
+    }
     local_count
 }
 
@@ -877,7 +906,7 @@ impl DigestScratch {
         let dens: [Option<&Array2<f64>>; 2] = match mode {
             JkMode::KOnly(_) | JkMode::Both(..) => [Some(d), None],
             JkMode::Uhf(_, _, _, d_a, d_b) => [Some(*d_a), Some(*d_b)],
-            JkMode::JOnly(_) | JkMode::Multi(_) => [None, None],
+            JkMode::JOnly(_) | JkMode::Multi(_) | JkMode::Pair(_) => [None, None],
         };
         let nsh = dims.len();
         for (k, dk) in dens.iter().enumerate() {
@@ -1162,6 +1191,716 @@ fn digest_k(
         }
         if b.sym12 && b.sym34 {
             scatter_t(k, o2, n2, o4, n4, if own[3] { u24 } else { k24 });
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The digest switch.
+// ---------------------------------------------------------------------------
+
+/// Environment variable selecting the J/K digest where a config left it
+/// unset ([`JkDigest::resolve`]).
+pub const JK_DIGEST_ENV: &str = "FERRIC_JK_DIGEST";
+
+/// How the direct four-centre J/K builders contract each computed quartet
+/// block into J and K.
+///
+/// * `Pair` (the default): the bra-pair-local digest. For each bra pair
+///   `(s1 s2)` the bra J block is a running dot product written once per
+///   bra pair, the ket J block is written once per quartet into a half
+///   matrix `Jh`, and K is accumulated only into the rows of the two bra
+///   shells (`Kb`; against `Dᵀ` into `Kt` for a non-symmetric density).
+///   `J = Jh + Jhᵀ` and `K = Kb + Kbᵀ` (or `Kb + Ktᵀ`) once per build. Same
+///   integrals, same screening, same group partition; only the summation
+///   order differs, so results move at the 1e-14 relative level (energies by
+///   about 1e-12 Ha).
+/// * `Legacy`: the 8-fold image scatter that preceded it, bit for bit.
+///
+/// The closed-shell, open-shell, J-only and K-only direct walks
+/// (`DirectJK`, `DirectJ`, `DirectK`, `rhf::build_jk_with_pool`) follow it.
+/// The block-CPHF multi-density build, the open-shell response build, the
+/// in-core store, LinK, CFMM, density fitting and the gradients keep their
+/// own digests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum JkDigest {
+    /// The bra-pair-local digest. The default.
+    #[default]
+    Pair,
+    /// The 8-fold image scatter of earlier releases, bit for bit.
+    Legacy,
+}
+
+/// `FERRIC_JK_DIGEST`: `pair` or `legacy`, case-insensitive, blanks ignored
+/// (the convention of the `FERRIC_*` switches); anything else is refused.
+static JK_DIGEST: ferric_core::config::ConfigVar<JkDigest> = ferric_core::config::ConfigVar {
+    env_name: JK_DIGEST_ENV,
+    default: JkDigest::Pair,
+    parse: |s| JkDigest::parse_str(&s.trim().to_ascii_lowercase()),
+    validate: ferric_core::config::accept_any,
+};
+
+impl JkDigest {
+    /// The canonical spelling (`pair` / `legacy`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pair => "pair",
+            Self::Legacy => "legacy",
+        }
+    }
+
+    /// Strict parse of a config value (`[scf] jk_digest`): exactly `pair` or
+    /// `legacy`. Anything else, other cases and padded values included, is
+    /// an error.
+    pub fn parse_str(s: &str) -> Result<Self, String> {
+        match s {
+            "pair" => Ok(Self::Pair),
+            "legacy" => Ok(Self::Legacy),
+            _ => Err(format!(
+                "invalid value {s:?}: expected exactly \"pair\" or \"legacy\""
+            )),
+        }
+    }
+
+    /// The digest a build runs: `explicit` (a config's) if set, else
+    /// `FERRIC_JK_DIGEST`, else [`JkDigest::Pair`]. A malformed variable is
+    /// an error naming it.
+    pub fn resolve(explicit: Option<JkDigest>) -> Result<Self, FerricError> {
+        JK_DIGEST
+            .resolve(explicit, ferric_core::config::env_lookup)
+            .map(|r| r.value)
+            .map_err(|e| FerricError::General(format!("{JK_DIGEST_ENV}: {e}")))
+    }
+
+    /// The parsed `FERRIC_JK_DIGEST` of this process (unset = `pair`).
+    pub fn env_setting() -> Result<Self, FerricError> {
+        Self::resolve(None)
+    }
+}
+
+impl std::fmt::Display for JkDigest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The J/K digest a config recorded on one
+/// [`SchwarzBounds`](crate::screening::SchwarzBounds) (its `digest` field).
+///
+/// The SCF drivers record their
+/// [`RhfConfig::jk_digest`](crate::rhf::RhfConfig::jk_digest) here
+/// ([`DigestSlot::set`]), so every direct build on those bounds, or on a
+/// clone of them, or on the rotated bounds of their contraction rotation,
+/// runs the SCF's digest: the SCF's own builders and the Newton, stability
+/// and response builds that follow. Nothing recorded, or a config that left
+/// the field unset, means `FERRIC_JK_DIGEST`, then `pair`
+/// ([`JkDigest::resolve`]); so the variable reaches every build in the
+/// process, bounds an SCF never saw included. Shared by every clone; the
+/// last writer wins.
+#[derive(Clone, Default)]
+pub struct DigestSlot(Arc<RwLock<Option<JkDigest>>>);
+
+impl std::fmt::Debug for DigestSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("DigestSlot").field(&self.recorded()).finish()
+    }
+}
+
+impl DigestSlot {
+    /// Record a config's `jk_digest` (`None`: unset, the variable and the
+    /// default decide).
+    pub fn set(&self, digest: Option<JkDigest>) {
+        if let Ok(mut g) = self.0.write() {
+            *g = digest;
+        }
+    }
+
+    /// What a config recorded (`None`: nothing, or unset).
+    pub fn recorded(&self) -> Option<JkDigest> {
+        self.0.read().map(|g| *g).unwrap_or_default()
+    }
+
+    /// Copy `other`'s record onto these bounds: for a consumer that builds
+    /// its own bounds for an SCF's geometry and should follow its digest.
+    pub fn copy_from(&self, other: &DigestSlot) {
+        self.set(other.recorded());
+    }
+
+    /// The digest the builds on these bounds run ([`JkDigest::resolve`] of
+    /// the record).
+    pub fn mode(&self) -> Result<JkDigest, FerricError> {
+        JkDigest::resolve(self.recorded())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The bra-pair-local digest (`JkDigest::Pair`).
+// ---------------------------------------------------------------------------
+
+/// Relative tolerance of [`is_symmetric_to_roundoff`].
+pub(crate) const PAIR_SYMMETRY_TOL: f64 = 1e-14;
+
+/// Whether `d` is square and symmetric to roundoff:
+/// `max|D − Dᵀ| ≤ PAIR_SYMMETRY_TOL · max(max|D|, 1)`.
+///
+/// The floor of 1 on the scale keeps the incremental `ΔD` builds on the
+/// symmetric kernel: a density difference inherits the absolute rounding
+/// asymmetry of the two O(1) densities it is the difference of (≈1e-16),
+/// which is large RELATIVE to a small `ΔD`. Symmetrising an antisymmetric
+/// part of absolute size ≤ 1e-14 moves each element of K by at most that
+/// times a sum of integrals, below the integral screen.
+pub(crate) fn is_symmetric_to_roundoff(d: &Array2<f64>) -> bool {
+    let n = d.nrows();
+    if d.ncols() != n {
+        return false;
+    }
+    let (mut asym, mut big) = (0.0f64, 0.0f64);
+    for i in 0..n {
+        for j in 0..=i {
+            let (a, b) = (d[(i, j)], d[(j, i)]);
+            asym = asym.max((a - b).abs());
+            big = big.max(a.abs()).max(b.abs());
+        }
+    }
+    // A NaN anywhere fails the test (the comparison is false).
+    asym <= PAIR_SYMMETRY_TOL * big.max(1.0)
+}
+
+/// One exchange density of the pair digest, prepared once per build.
+#[derive(Debug)]
+pub(crate) struct PairDensity {
+    /// The density the kernel reads, standard layout: `½(D + Dᵀ)` (exactly
+    /// symmetric) when `D` is symmetric to roundoff, else `D`.
+    d: Array2<f64>,
+    /// `Dᵀ` in standard layout for a non-symmetric `D`; `None` otherwise.
+    dt: Option<Array2<f64>>,
+}
+
+impl PairDensity {
+    /// `d` prepared: symmetrised explicitly when it is symmetric to roundoff
+    /// ([`is_symmetric_to_roundoff`]), so the result does not depend on which
+    /// triangle the kernel reads and K comes out exactly symmetric; kept
+    /// as is, with its transpose, otherwise (the general kernel).
+    pub(crate) fn prepare(d: &Array2<f64>) -> Self {
+        let n = d.nrows();
+        if is_symmetric_to_roundoff(d) {
+            let mut s = Array2::<f64>::zeros((n, n));
+            for i in 0..n {
+                for j in 0..=i {
+                    let v = 0.5 * (d[(i, j)] + d[(j, i)]);
+                    s[(i, j)] = v;
+                    s[(j, i)] = v;
+                }
+            }
+            PairDensity { d: s, dt: None }
+        } else {
+            let mut dd = Array2::<f64>::zeros(d.raw_dim());
+            dd.assign(d);
+            let mut dt = Array2::<f64>::zeros((d.ncols(), n));
+            dt.assign(&d.t());
+            PairDensity { d: dd, dt: Some(dt) }
+        }
+    }
+
+    /// Whether this density takes the general (non-symmetric) kernel.
+    pub(crate) fn is_general(&self) -> bool {
+        self.dt.is_some()
+    }
+}
+
+/// What one pair-digest build contracts: an optional Coulomb density and up
+/// to two exchange densities, prepared once per build and shared by every
+/// group. [`PairSpec::mode`] makes a group's [`JkMode::Pair`] and
+/// [`PairSpec::finish`] turns the summed half partials into J and K.
+#[derive(Debug)]
+pub(crate) struct PairSpec<'d> {
+    /// Coulomb density (standard layout), `None` for K only.
+    jd: Option<CowArray<'d, f64, ndarray::Ix2>>,
+    /// Exchange densities (0, 1 or 2).
+    kd: Vec<PairDensity>,
+    /// Every exchange channel runs the general kernel (some density was not
+    /// symmetric to roundoff).
+    general: bool,
+    nbf: usize,
+    /// Largest shell dimension (scratch size).
+    max_dim: usize,
+}
+
+impl<'d> PairSpec<'d> {
+    fn new(
+        nbf: usize,
+        dims: &[usize],
+        jd: Option<&'d Array2<f64>>,
+        kd: &[&Array2<f64>],
+    ) -> Self {
+        let jd = jd.map(|d| {
+            if d.is_standard_layout() {
+                CowArray::from(d.view())
+            } else {
+                CowArray::from(d.as_standard_layout().into_owned())
+            }
+        });
+        let kd: Vec<PairDensity> = kd.iter().map(|d| PairDensity::prepare(d)).collect();
+        let general = kd.iter().any(PairDensity::is_general);
+        // A general spec re-prepares any symmetric channel's transpose so
+        // every channel runs the same kernel.
+        let kd = if general {
+            kd.into_iter()
+                .map(|p| match p.dt {
+                    Some(_) => p,
+                    None => {
+                        let dt = p.d.clone();
+                        PairDensity { d: p.d, dt: Some(dt) }
+                    }
+                })
+                .collect()
+        } else {
+            kd
+        };
+        PairSpec {
+            jd,
+            kd,
+            general,
+            nbf,
+            max_dim: dims.iter().copied().max().unwrap_or(1),
+        }
+    }
+
+    /// Closed-shell J and K of `d` (`JkMode::Both`'s job).
+    pub(crate) fn both(nbf: usize, dims: &[usize], d: &'d Array2<f64>) -> Self {
+        Self::new(nbf, dims, Some(d), &[d])
+    }
+
+    /// Open-shell `J[d_total]`, `K[d_a]`, `K[d_b]` (`JkMode::Uhf`'s job). The
+    /// symmetry check runs per spin; if either spin is not symmetric, both
+    /// channels run the general kernel (the symmetric one still symmetrised).
+    pub(crate) fn uhf(
+        nbf: usize,
+        dims: &[usize],
+        d_total: &'d Array2<f64>,
+        d_a: &Array2<f64>,
+        d_b: &Array2<f64>,
+    ) -> Self {
+        Self::new(nbf, dims, Some(d_total), &[d_a, d_b])
+    }
+
+    /// J of `d` only.
+    pub(crate) fn j_only(nbf: usize, dims: &[usize], d: &'d Array2<f64>) -> Self {
+        Self::new(nbf, dims, Some(d), &[])
+    }
+
+    /// K of `d` only.
+    pub(crate) fn k_only(nbf: usize, dims: &[usize], d: &Array2<f64>) -> Self {
+        Self::new(nbf, dims, None, &[d])
+    }
+
+    /// Whether the exchange channels run the general kernel.
+    pub(crate) fn is_general(&self) -> bool {
+        self.general
+    }
+
+    /// Number of half partials a group accumulates: `Jh`, one `Kb` per
+    /// exchange channel and, for the general kernel, one `Kt` per channel.
+    pub(crate) fn n_partials(&self) -> usize {
+        let nk = self.kd.len();
+        usize::from(self.jd.is_some()) + nk + if self.general { nk } else { 0 }
+    }
+
+    /// `n_partials` zeroed `nbf × nbf` matrices (an accumulator for the
+    /// ordered sum).
+    pub(crate) fn zeros(&self) -> Vec<Array2<f64>> {
+        (0..self.n_partials())
+            .map(|_| Array2::zeros((self.nbf, self.nbf)))
+            .collect()
+    }
+
+    /// A fresh group accumulator.
+    pub(crate) fn mode(&self) -> JkMode<'_> {
+        JkMode::Pair(Box::new(PairJk {
+            spec: self,
+            mats: self.zeros(),
+            jb: vec![0.0; self.max_dim * self.max_dim],
+            e12: vec![0.0; self.max_dim * self.max_dim],
+            e34: vec![0.0; self.max_dim * self.max_dim],
+            s34: vec![0.0; self.max_dim * self.max_dim],
+            bra: PairBra::default(),
+        }))
+    }
+
+    /// The summed half partials as `(J, [K per channel])`: `J = Jh + Jhᵀ`
+    /// (`None` for K only), `K = Kb + Kbᵀ` (symmetric kernel) or
+    /// `K = Kb + Ktᵀ` (general), each formed in place in its `Jh` / `Kb`.
+    pub(crate) fn finish(
+        &self,
+        mut mats: Vec<Array2<f64>>,
+    ) -> (Option<Array2<f64>>, Vec<Array2<f64>>) {
+        assert_eq!(mats.len(), self.n_partials(), "pair digest: partial count");
+        let nj = usize::from(self.jd.is_some());
+        let nk = self.kd.len();
+        let kt = if self.general {
+            mats.split_off(nj + nk)
+        } else {
+            Vec::new()
+        };
+        let mut kb = mats.split_off(nj);
+        let j = mats.pop().map(|mut jh| {
+            add_own_transpose(&mut jh);
+            jh
+        });
+        for (c, k) in kb.iter_mut().enumerate() {
+            match kt.get(c) {
+                Some(t) => {
+                    let n = k.nrows();
+                    for r in 0..n {
+                        for col in 0..n {
+                            k[(r, col)] += t[(col, r)];
+                        }
+                    }
+                }
+                None => add_own_transpose(k),
+            }
+        }
+        (j, kb)
+    }
+}
+
+/// `a ← a + aᵀ` in place (exactly symmetric).
+fn add_own_transpose(a: &mut Array2<f64>) {
+    let n = a.nrows();
+    for r in 0..n {
+        for c in 0..r {
+            let s = a[(r, c)] + a[(c, r)];
+            a[(r, c)] = s;
+            a[(c, r)] = s;
+        }
+        a[(r, r)] += a[(r, r)];
+    }
+}
+
+/// The current bra pair of a [`PairJk`].
+#[derive(Debug, Default, Clone, Copy)]
+struct PairBra {
+    n: [usize; 2],
+    o: [usize; 2],
+    s: [usize; 2],
+    sym12: bool,
+}
+
+/// A group accumulator of the pair digest ([`JkMode::Pair`]): the half
+/// partials (layout of [`PairSpec::n_partials`]) and the per-bra-pair
+/// scratch.
+#[derive(Debug)]
+pub(crate) struct PairJk<'d> {
+    spec: &'d PairSpec<'d>,
+    mats: Vec<Array2<f64>>,
+    /// Bra J accumulator `J_bra[μν]`, written once per bra pair.
+    jb: Vec<f64>,
+    /// `E12 = D[μν] (+ D[νμ])` of the current bra pair.
+    e12: Vec<f64>,
+    /// `E34 = D[λσ] (+ D[σλ])` of the current quartet.
+    e34: Vec<f64>,
+    /// Ket J block of the current quartet.
+    s34: Vec<f64>,
+    bra: PairBra,
+}
+
+impl PairJk<'_> {
+    /// The half partials, in [`PairSpec::n_partials`] order.
+    pub(crate) fn into_partials(self) -> Vec<Array2<f64>> {
+        self.mats
+    }
+
+    /// Start bra pair `(s1, s2)`: zero the bra J accumulator and form `E12`.
+    fn begin(&mut self, dims: &[usize], offs: &[usize], s1: usize, s2: usize) {
+        let (n1, n2) = (dims[s1], dims[s2]);
+        let (o1, o2) = (offs[s1], offs[s2]);
+        let sym12 = s1 != s2;
+        self.bra = PairBra {
+            n: [n1, n2],
+            o: [o1, o2],
+            s: [s1, s2],
+            sym12,
+        };
+        if let Some(jd) = &self.spec.jd {
+            self.jb[..n1 * n2].fill(0.0);
+            for a in 0..n1 {
+                for b in 0..n2 {
+                    // SAFETY: o1 + a, o2 + b < nbf by shell offset/dim construction.
+                    let mut v = unsafe { *jd.uget((o1 + a, o2 + b)) };
+                    if sym12 {
+                        v += unsafe { *jd.uget((o2 + b, o1 + a)) };
+                    }
+                    self.e12[a * n2 + b] = v;
+                }
+            }
+        }
+    }
+
+    /// Flush the bra pair's J into `Jh` (0.5 for `s1 = s2`, whose transpose
+    /// image `Jh + Jhᵀ` would otherwise double).
+    fn end(&mut self) {
+        if self.spec.jd.is_none() {
+            return;
+        }
+        let [n1, n2] = self.bra.n;
+        let [o1, o2] = self.bra.o;
+        let w12 = if self.bra.sym12 { 1.0 } else { 0.5 };
+        let jh = &mut self.mats[0];
+        for a in 0..n1 {
+            for b in 0..n2 {
+                // SAFETY: in range by shell construction.
+                unsafe { *jh.uget_mut((o1 + a, o2 + b)) += w12 * self.jb[a * n2 + b] };
+            }
+        }
+    }
+
+    /// Digest one computed block `(s1 s2|s3 s4)` of the current bra pair.
+    fn quartet(&mut self, q: &[f64], dims: &[usize], offs: &[usize], s3: usize, s4: usize) {
+        let spec = self.spec;
+        match (spec.jd.is_some(), spec.kd.len(), spec.general) {
+            (true, 1, false) => self.quartet_t::<true, 1, false>(q, dims, offs, s3, s4),
+            (true, 1, true) => self.quartet_t::<true, 1, true>(q, dims, offs, s3, s4),
+            (true, 2, false) => self.quartet_t::<true, 2, false>(q, dims, offs, s3, s4),
+            (true, 2, true) => self.quartet_t::<true, 2, true>(q, dims, offs, s3, s4),
+            (true, 0, _) => self.quartet_t::<true, 0, false>(q, dims, offs, s3, s4),
+            (false, 1, false) => self.quartet_t::<false, 1, false>(q, dims, offs, s3, s4),
+            (false, 1, true) => self.quartet_t::<false, 1, true>(q, dims, offs, s3, s4),
+            (false, 2, false) => self.quartet_t::<false, 2, false>(q, dims, offs, s3, s4),
+            (false, 2, true) => self.quartet_t::<false, 2, true>(q, dims, offs, s3, s4),
+            (j, nk, g) => unreachable!("pair digest: no kernel for J={j} channels={nk} general={g}"),
+        }
+    }
+
+    #[inline(always)]
+    fn quartet_t<const J: bool, const NK: usize, const GEN: bool>(
+        &mut self,
+        q: &[f64],
+        dims: &[usize],
+        offs: &[usize],
+        s3: usize,
+        s4: usize,
+    ) {
+        let spec = self.spec;
+        let n = spec.nbf;
+        let [n1, n2] = self.bra.n;
+        let (n3, n4) = (dims[s3], dims[s4]);
+        assert!(q.len() >= n1 * n2 * n3 * n4, "pair digest: short block");
+        let g = PairGeom {
+            n: [n1, n2, n3, n4],
+            o: [self.bra.o[0], self.bra.o[1], offs[s3], offs[s4]],
+            sym12: self.bra.sym12,
+            sym34: s3 != s4,
+            sym1234: (self.bra.s[0], self.bra.s[1]) != (s3, s4),
+        };
+        let nj = usize::from(J);
+        let mut kb = [std::ptr::null_mut::<f64>(); 2];
+        let mut kt = [std::ptr::null_mut::<f64>(); 2];
+        let mut dk = [std::ptr::null::<f64>(); 2];
+        let mut dkt = [std::ptr::null::<f64>(); 2];
+        let mut jh = std::ptr::null_mut::<f64>();
+        for (i, m) in self.mats.iter_mut().enumerate() {
+            let p = m.as_mut_ptr();
+            if J && i == 0 {
+                jh = p;
+            } else if i < nj + NK {
+                kb[i - nj] = p;
+            } else {
+                kt[i - nj - NK] = p;
+            }
+        }
+        for (c, kd) in spec.kd.iter().enumerate().take(NK) {
+            dk[c] = kd.d.as_ptr();
+            if GEN {
+                dkt[c] = kd.dt.as_ref().map_or(std::ptr::null(), |t| t.as_ptr());
+            }
+        }
+        let jd = spec.jd.as_ref().map_or(std::ptr::null(), |d| d.as_ptr());
+        let sc = PairScratch {
+            jb: self.jb.as_mut_ptr(),
+            e12: self.e12.as_ptr(),
+            e34: self.e34.as_mut_ptr(),
+            s34: self.s34.as_mut_ptr(),
+        };
+        let p = PairPtrs {
+            n,
+            jd,
+            jh,
+            dk,
+            dkt,
+            kb,
+            kt,
+        };
+        // SAFETY: every index the kernel forms is inside its shell block of an
+        // `nbf × nbf` standard-layout matrix (the half partials, the prepared
+        // densities, `jd`), the scratch holds `max_dim²` entries, and `q` holds
+        // the `n1·n2·n3·n4` integrals of the block (asserted above).
+        unsafe {
+            match n4 {
+                1 => pair_quartet::<1, J, NK, GEN>(q.as_ptr(), &g, &p, &sc),
+                3 => pair_quartet::<3, J, NK, GEN>(q.as_ptr(), &g, &p, &sc),
+                5 => pair_quartet::<5, J, NK, GEN>(q.as_ptr(), &g, &p, &sc),
+                _ => pair_quartet::<0, J, NK, GEN>(q.as_ptr(), &g, &p, &sc),
+            }
+        }
+    }
+}
+
+/// Geometry of one quartet of the pair digest.
+struct PairGeom {
+    n: [usize; 4],
+    o: [usize; 4],
+    sym12: bool,
+    sym34: bool,
+    sym1234: bool,
+}
+
+/// Raw row-major pointers of one pair-digest quartet: the Coulomb density
+/// and `Jh`, and per exchange channel `D`, `Dᵀ` (general kernel), `Kb` and
+/// `Kt` (general kernel). All `n × n`.
+struct PairPtrs {
+    n: usize,
+    jd: *const f64,
+    jh: *mut f64,
+    dk: [*const f64; 2],
+    dkt: [*const f64; 2],
+    kb: [*mut f64; 2],
+    kt: [*mut f64; 2],
+}
+
+/// The per-bra-pair scratch of a [`PairJk`] as raw pointers.
+struct PairScratch {
+    jb: *mut f64,
+    e12: *const f64,
+    e34: *mut f64,
+    s34: *mut f64,
+}
+
+/// `Σ a[i] b[i]` over `N` (or, for `N = 0`, `n`) entries.
+#[inline(always)]
+unsafe fn dotp<const N: usize>(a: *const f64, b: *const f64, n: usize) -> f64 {
+    let n = if N > 0 { N } else { n };
+    let mut s = 0.0;
+    for i in 0..n {
+        s += *a.add(i) * *b.add(i);
+    }
+    s
+}
+
+/// `y[i] += a x[i]` over `N` (or, for `N = 0`, `n`) entries.
+#[inline(always)]
+unsafe fn axpyp<const N: usize>(y: *mut f64, a: f64, x: *const f64, n: usize) {
+    let n = if N > 0 { N } else { n };
+    for i in 0..n {
+        *y.add(i) += a * *x.add(i);
+    }
+}
+
+/// One quartet `(μν|λσ)` of the pair digest. `N4 > 0` fixes `n4` at compile
+/// time; `J` adds the Coulomb terms; `NK` exchange channels; `GEN` the
+/// general-density form (the ket-row images in `Kt` against `Dᵀ`).
+///
+/// Coulomb: `J_bra[μν] += Σ_λσ v E34[λσ]` and, for distinct bra and ket
+/// pairs, `Jh[λσ] += w34 Σ_μν v E12[μν]` (`w34 = ½` for `s3 = s4`, whose
+/// transpose image `Jh + Jhᵀ` would otherwise double).
+///
+/// Exchange, rows μ and ν only: `Kb[μλ] += w D[νσ] v`, `Kb[νλ] += w D[μσ] v`,
+/// `Kb[μσ] += w D[νλ] v`, `Kb[νσ] += w D[μλ] v` (each where the 8-fold loop
+/// writes that image). The ket-row images `K[λμ] += D[σν] v` … are the
+/// transposes of these for a symmetric `D` (`K = Kb + Kbᵀ`); the
+/// self-paired quartet `(s3 s4) = (s1 s2)` has none, so it takes `w = ½`
+/// there. The general form accumulates them, transposed, into `Kt` against
+/// `Dᵀ` (`K = Kb + Ktᵀ`), with `w = 1`.
+///
+/// # Safety
+/// See the call site in [`PairJk::quartet_t`].
+#[inline(always)]
+unsafe fn pair_quartet<const N4: usize, const J: bool, const NK: usize, const GEN: bool>(
+    q: *const f64,
+    g: &PairGeom,
+    p: &PairPtrs,
+    sc: &PairScratch,
+) {
+    let [n1, n2, n3, n4] = g.n;
+    let [o1, o2, o3, o4] = g.o;
+    let n4 = if N4 > 0 { N4 } else { n4 };
+    let n = p.n;
+    let (sym12, sym34, sym1234) = (g.sym12, g.sym34, g.sym1234);
+    let n34 = n3 * n4;
+    if J {
+        for c in 0..n3 {
+            for dd in 0..n4 {
+                let mut v = *p.jd.add((o3 + c) * n + o4 + dd);
+                if sym34 {
+                    v += *p.jd.add((o4 + dd) * n + o3 + c);
+                }
+                *sc.e34.add(c * n4 + dd) = v;
+            }
+        }
+        if sym1234 {
+            for i in 0..n34 {
+                *sc.s34.add(i) = 0.0;
+            }
+        }
+    }
+    let w = if GEN || sym1234 { 1.0 } else { 0.5 };
+    for a in 0..n1 {
+        let mu = o1 + a;
+        for b in 0..n2 {
+            let nu = o2 + b;
+            let ab = a * n2 + b;
+            let e12 = if J { *sc.e12.add(ab) } else { 0.0 };
+            let mut jacc = 0.0;
+            for c in 0..n3 {
+                let la = o3 + c;
+                let r = q.add((ab * n3 + c) * n4);
+                if J {
+                    jacc += dotp::<N4>(r, sc.e34.add(c * n4), n4);
+                    if sym1234 {
+                        axpyp::<N4>(sc.s34.add(c * n4), e12, r, n4);
+                    }
+                }
+                for ch in 0..NK {
+                    let (dmu, dnu) = (p.dk[ch].add(mu * n), p.dk[ch].add(nu * n));
+                    let (kmu, knu) = (p.kb[ch].add(mu * n), p.kb[ch].add(nu * n));
+                    *kmu.add(la) += w * dotp::<N4>(r, dnu.add(o4), n4);
+                    if sym12 {
+                        *knu.add(la) += w * dotp::<N4>(r, dmu.add(o4), n4);
+                    }
+                    if sym34 {
+                        axpyp::<N4>(kmu.add(o4), w * *dnu.add(la), r, n4);
+                        if sym12 {
+                            axpyp::<N4>(knu.add(o4), w * *dmu.add(la), r, n4);
+                        }
+                    }
+                    if GEN && sym1234 {
+                        // Ket-row images K[λμ] += D[σν] v …, stored
+                        // transposed in Kt's bra rows against Dᵀ's rows.
+                        let (tmu, tnu) = (p.kt[ch].add(mu * n), p.kt[ch].add(nu * n));
+                        let (dtmu, dtnu) = (p.dkt[ch].add(mu * n), p.dkt[ch].add(nu * n));
+                        *tmu.add(la) += dotp::<N4>(r, dtnu.add(o4), n4);
+                        if sym12 {
+                            *tnu.add(la) += dotp::<N4>(r, dtmu.add(o4), n4);
+                        }
+                        if sym34 {
+                            axpyp::<N4>(tmu.add(o4), *dtnu.add(la), r, n4);
+                            if sym12 {
+                                axpyp::<N4>(tnu.add(o4), *dtmu.add(la), r, n4);
+                            }
+                        }
+                    }
+                }
+            }
+            if J {
+                *sc.jb.add(ab) += jacc;
+            }
+        }
+    }
+    if J && sym1234 {
+        let w34 = if sym34 { 1.0 } else { 0.5 };
+        for c in 0..n3 {
+            for dd in 0..n4 {
+                *p.jh.add((o3 + c) * n + o4 + dd) += w34 * *sc.s34.add(c * n4 + dd);
+            }
         }
     }
 }

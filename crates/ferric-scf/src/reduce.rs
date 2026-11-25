@@ -425,6 +425,39 @@ where
     )
 }
 
+/// [`ordered_stream_sum_pair`] for any number of matrices per group: group
+/// `g`'s partials `make(g)[i]` are folded onto `accs[i]` in ascending group
+/// order, so the result is bit-identical across thread counts and budgets
+/// (the half partials of the pair J/K digest,
+/// `quartet_scatter::PairSpec`). `make` must return `accs.len()` matrices.
+pub fn ordered_stream_sum_many<F>(
+    accs: &mut [Array2<f64>],
+    n_groups: usize,
+    nbf: usize,
+    band_bytes: usize,
+    make: F,
+    times: Option<&mut StreamTimes>,
+) -> Result<(), FerricError>
+where
+    F: Fn(usize) -> Result<Vec<Array2<f64>>, FerricError> + Sync,
+{
+    let window = band_width(nbf, band_bytes / accs.len().max(1));
+    let mut acc = accs;
+    ordered_stream_sum(
+        &mut acc,
+        n_groups,
+        window,
+        make,
+        |a, parts| {
+            debug_assert_eq!(a.len(), parts.len(), "one partial per accumulator");
+            for (x, p) in a.iter_mut().zip(&parts) {
+                *x += p;
+            }
+        },
+        times,
+    )
+}
+
 /// The engine of [`ordered_stream_sum_pair`]: `fold(acc, make(g))` for
 /// `g = 0, 1, …, n_groups-1` in that order, with the `make` calls run in
 /// parallel and at most `window` partials live at once.

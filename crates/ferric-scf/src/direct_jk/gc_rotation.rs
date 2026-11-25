@@ -253,6 +253,8 @@ impl RotatedJk {
         // The rotated shells are never rotated again (a stage-1 basis still
         // has long columns sharing an exponent list).
         rbounds.gc = GcSlot::inert();
+        // The rotated walk runs the parent's J/K digest: share its record.
+        rbounds.digest = bounds.digest.clone();
         let forward = basis.ao_transpose(DerivRotMutant::None);
         Ok(Some(Self {
             basis,

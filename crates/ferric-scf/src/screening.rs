@@ -90,6 +90,11 @@ pub struct SchwarzBounds {
     /// shared by the SCF and the response builds that follow. Empty by
     /// default; clones share it, as they share `incore`.
     pub gc: crate::direct_jk::gc_rotation::GcSlot,
+    /// The J/K digest a config recorded for the direct builds on these
+    /// bounds ([`crate::quartet_scatter::DigestSlot`]; unrecorded:
+    /// `FERRIC_JK_DIGEST`, then `pair`). Clones share it, and so do the
+    /// rotated bounds of the contraction rotation.
+    pub digest: crate::quartet_scatter::DigestSlot,
 }
 
 impl SchwarzBounds {
@@ -131,6 +136,7 @@ impl SchwarzBounds {
             gc: crate::direct_jk::gc_rotation::GcSlot::owned_by(crate::incore_jk::geometry_key(
                 prep, op,
             )),
+            digest: Default::default(),
         })
     }
 
