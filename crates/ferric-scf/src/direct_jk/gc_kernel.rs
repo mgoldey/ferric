@@ -385,6 +385,9 @@ pub(crate) struct KernelCache<'k> {
     bra: Option<PairId>,
     /// Ket pair → offset of its block in `arena`.
     map: HashMap<u32, usize, IdBuild>,
+    /// The last ket pair looked up and its offset (consecutive survivors
+    /// often share the ket group pair).
+    last: Option<(u32, usize)>,
     arena: Vec<f64>,
     scratch: KernelScratch,
     /// The gathered column quartet (at most 3 integrals).
@@ -407,6 +410,7 @@ impl<'k> KernelCache<'k> {
             kb,
             bra: None,
             map: HashMap::default(),
+            last: None,
             arena: Vec::new(),
             scratch: KernelScratch::default(),
             q: [0.0; 3],
@@ -423,6 +427,7 @@ impl<'k> KernelCache<'k> {
         if self.bra != Some(b) {
             self.bra = Some(b);
             self.map.clear();
+            self.last = None;
             self.arena.clear();
         }
         Some((b, self.kb.shell_l(s1) + self.kb.shell_l(s2)))
@@ -443,8 +448,12 @@ impl<'k> KernelCache<'k> {
             return None;
         };
         let key = ket.index() as u32;
-        let off = match self.map.get(&key) {
-            Some(&o) => o,
+        let hit = match self.last {
+            Some((k, o)) if k == key => Some(o),
+            _ => self.map.get(&key).copied(),
+        };
+        let off = match hit {
+            Some(o) => o,
             None => {
                 let o = self.arena.len();
                 let len = self.kb.block_len(bra, ket);
@@ -457,6 +466,7 @@ impl<'k> KernelCache<'k> {
                 o
             }
         };
+        self.last = Some((key, off));
         let n = self.kb.gather(&self.arena[off..], bra, ket, s, &mut self.q);
         self.counts.quartets += 1;
         Some(n)

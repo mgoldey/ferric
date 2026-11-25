@@ -383,6 +383,12 @@ struct Slot {
     col: u32,
 }
 
+/// libint's pure p order (y, z, x) as Cartesian indices, and the Cartesian
+/// order (x, y, z).
+const P_PURE: u8 = 0;
+const P_CART: u8 = 1;
+const P_MAP: [[usize; 3]; 2] = [[1, 2, 0], [0, 1, 2]];
+
 const NOT_COVERED: u32 = u32::MAX;
 const EMPTY: u32 = u32::MAX - 1;
 
@@ -394,8 +400,13 @@ pub struct GcKernelBasis {
     slot: Vec<Slot>,
     /// Per shell: its `l`.
     shell_l: Vec<i32>,
-    /// Groups with `l <= 1`, and each group's index among them.
-    sp: Vec<u32>,
+    /// Per shell: its group's index among the `l <= 1` groups (`u32::MAX`
+    /// for higher `l`), its column, and its libint function order
+    /// ([`P_PURE`] / [`P_CART`] for p, unused for s).
+    shell_sp: Vec<u32>,
+    shell_col: Vec<u32>,
+    shell_pmap: Vec<u8>,
+    /// Number of groups with `l <= 1`.
     nsp: usize,
     /// `nsp × nsp`: index into `pairs`, or [`NOT_COVERED`] / [`EMPTY`].
     pidx: Vec<u32>,
@@ -574,11 +585,25 @@ impl GcKernelBasis {
             }
         }
         let shell_l = slot.iter().map(|x| groups[x.group as usize].l).collect();
+        let shell_sp = slot.iter().map(|x| sp[x.group as usize]).collect();
+        let shell_col = slot.iter().map(|x| x.col).collect();
+        let shell_pmap = slot
+            .iter()
+            .map(|x| {
+                if groups[x.group as usize].pure {
+                    P_PURE
+                } else {
+                    P_CART
+                }
+            })
+            .collect();
         GcKernelBasis {
             groups,
             slot,
             shell_l,
-            sp,
+            shell_sp,
+            shell_col,
+            shell_pmap,
             nsp,
             pidx,
             pairs,
@@ -623,10 +648,7 @@ impl GcKernelBasis {
     /// of `s1` first).
     #[inline]
     pub fn pair_of(&self, s1: usize, s2: usize) -> PairKind {
-        let (a, b) = (
-            self.sp[self.slot[s1].group as usize],
-            self.sp[self.slot[s2].group as usize],
-        );
+        let (a, b) = (self.shell_sp[s1], self.shell_sp[s2]);
         if a == u32::MAX || b == u32::MAX {
             return PairKind::NotCovered;
         }
@@ -679,38 +701,30 @@ impl GcKernelBasis {
         dst: &mut [f64],
     ) -> usize {
         let (pb, pk) = (&self.pairs[bra.index()], &self.pairs[ket.index()]);
-        let col = |x: usize| self.slot[s[x]].col as usize;
+        let col = |x: usize| self.shell_col[s[x]] as usize;
         let ab = col(0) * pb.mb + col(1);
         let cd = col(2) * pk.mb + col(3);
         let (nfab, nfcd) = (pb.hrr.len(), pk.hrr.len());
         let mcd = pk.mpair();
-        // Per index: function count and the libint → Cartesian map.
-        let map = |x: usize| -> (usize, [usize; 3]) {
-            let g = &self.groups[self.slot[s[x]].group as usize];
-            if g.l == 0 {
-                (1, [0, 0, 0])
-            } else if g.pure {
-                (3, [1, 2, 0])
-            } else {
-                (3, [0, 1, 2])
-            }
-        };
-        let (m0, m1, m2, m3) = (map(0), map(1), map(2), map(3));
         let base = ab * nfab * mcd * nfcd + cd * nfcd;
-        let mut li = 0;
-        for &fa in &m0.1[..m0.0] {
-            for &fb in &m1.1[..m1.0] {
-                let fab = fa * m1.0 + fb;
-                for &fc in &m2.1[..m2.0] {
-                    for &fd in &m3.1[..m3.0] {
-                        let fcd = fc * m3.0 + fd;
-                        dst[li] = block[base + fab * mcd * nfcd + fcd];
-                        li += 1;
-                    }
-                }
-            }
+        if nfab * nfcd == 1 {
+            // (ss|ss): one integral.
+            dst[0] = block[base];
+            return 1;
         }
-        li
+        // One p, at position `x`: its three functions in libint's order.
+        let x = (0..4)
+            .find(|&x| self.shell_l[s[x]] == 1)
+            .expect("a covered quartet that is not (ss|ss) holds one p");
+        let map = &P_MAP[self.shell_pmap[s[x]] as usize];
+        // The p's stride in the block: on the bra, `f_ab` (its Cartesian
+        // index, the other bra index being s) times the ket width; on the
+        // ket, `f_cd` itself.
+        let stride = if x < 2 { mcd * nfcd } else { 1 };
+        for (d, &f) in dst[..3].iter_mut().zip(map) {
+            *d = block[base + f * stride];
+        }
+        3
     }
 }
 
