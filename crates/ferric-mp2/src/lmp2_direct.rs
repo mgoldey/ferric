@@ -1064,11 +1064,12 @@ fn gather_strip_into(
 /// distance domain D_i (stage 5a): `W_i = L_i⁻¹ B_i[D_i, all strip cols]`
 /// with `L_i = chol(V_{D_i D_i})`, so `q_ia = √scale · ‖W_i[:, a]‖ =
 /// √(scale · b_iaᵀ V⁻¹ b_ia)` with no explicit inverse. Returns
-/// `(q per i, qmax per i, W_i per i)`. With `keep_w`, `W_i` is kept because
+/// `(q per i, qmax per i, W_i per i)`; without `keep.q` only `qmax` is
+/// kept (q per i left empty). With `keep.w`, `W_i` is kept because
 /// pair (i,i)'s domain group has domain exactly D_i: [`fit_domain_group`]
 /// reuses its columns there instead of re-solving. The caller pre-flights
 /// the full store (`8·Σ_i |D_i|·|cols_i|`) against the scratch budget and
-/// passes `keep_w = false` over it; otherwise each `W_i` is dropped as soon
+/// passes `keep.w = false` over it; otherwise each `W_i` is dropped as soon
 /// as its q is taken (one worker's `W` at a time). Under a rank stripe
 /// `needed` marks the occupieds with a strip here; the others get an empty
 /// q and `qmax = 0`. `floor` ([`FloorMode`]) adds each occupied's
@@ -1084,7 +1085,7 @@ fn whiten_own_domains(
     metric_blocks: &MetricBlocks,
     dfbs: &PreparedBasis,
     aux_radius_bohr: f64,
-    keep_w: bool,
+    keep: OwnKeep,
     needed: Option<&[bool]>,
     floor: FloorMode,
 ) -> Result<OwnWhitened, FerricError> {
@@ -1103,15 +1104,15 @@ fn whiten_own_domains(
         .map(|i| {
             if needed.is_some_and(|n| !n[i]) {
                 // no strip on this rank, and none of its pairs asks for q_i
-                return Ok((Vec::new(), 0.0, keep_w.then(|| Array2::zeros((0, 0))), None));
+                return Ok((Vec::new(), 0.0, keep.w.then(|| Array2::zeros((0, 0))), None));
             }
-            whiten_one_own(&inputs, i, sq, keep_w, floor)
+            whiten_one_own(&inputs, i, sq, keep, floor)
         })
         .collect();
     let mut out = OwnWhitened {
         q: Vec::with_capacity(no),
         qmax: Vec::with_capacity(no),
-        w: keep_w.then(|| Vec::with_capacity(no)),
+        w: keep.w.then(|| Vec::with_capacity(no)),
         floor: Vec::with_capacity(if floor == FloorMode::No { 0 } else { no }),
     };
     for r in per_i {
@@ -1126,6 +1127,15 @@ fn whiten_own_domains(
         }
     }
     Ok(out)
+}
+
+/// What [`whiten_own_domains`] keeps beside `qmax`: the per-column `q`
+/// (the κ screen reads it; the pair skip reads only `qmax`) and the
+/// whitened strips `W`.
+#[derive(Debug, Clone, Copy)]
+struct OwnKeep {
+    q: bool,
+    w: bool,
 }
 
 /// Whether [`whiten_own_domains`] also computes the pair skip's
@@ -1159,7 +1169,7 @@ fn whiten_one_own(
     w: &OwnInputs,
     i: usize,
     sq: f64,
-    keep_w: bool,
+    keep: OwnKeep,
     floor: FloorMode,
 ) -> Result<OwnPerI, FerricError> {
     let dom = &w.aux_dom[i];
@@ -1188,7 +1198,8 @@ fn whiten_one_own(
         .map(|c| sq * c.dot(&c).sqrt())
         .collect();
     let qm = q.iter().copied().fold(0.0f64, f64::max);
-    Ok((q, qm, keep_w.then_some(wi), own))
+    let q = if keep.q { q } else { Vec::new() };
+    Ok((q, qm, keep.w.then_some(wi), own))
 }
 
 /// One occupied's own-domain metric data for the pair skip
@@ -1280,6 +1291,31 @@ struct OwnWhitened {
     /// Per occupied (empty unless requested): the pair skip's [`OwnFloor`],
     /// `None` for an occupied without a strip on this rank.
     floor: Vec<Option<OwnFloor>>,
+}
+
+#[cfg(test)]
+impl OwnWhitened {
+    /// Heap bytes held: the per-occupied slots and every buffer behind them.
+    fn heap_bytes(&self) -> usize {
+        use std::mem::size_of;
+        let q: usize = self
+            .q
+            .iter()
+            .map(|v| size_of::<Vec<f64>>() + 8 * v.len())
+            .sum();
+        let w: usize = self
+            .w
+            .iter()
+            .flatten()
+            .map(|a| size_of::<Array2<f64>>() + 8 * a.len())
+            .sum();
+        let floor: usize = self
+            .floor
+            .iter()
+            .map(|f| size_of::<Option<OwnFloor>>() + f.as_ref().map_or(0, |f| 8 * f.col.len()))
+            .sum();
+        q + 8 * self.qmax.len() + w + floor
+    }
 }
 
 /// Trim the kept own-domain `W_i` (strip-column order) to the columns its
@@ -1675,6 +1711,10 @@ struct SkipProof {
     g_bound: Vec<f64>,
     /// The dressing the proof used: `Some((κ, w_max))` with the Fock screen.
     fock: Option<(f64, f64)>,
+    /// Heap bytes of the whitening outputs at their peak, measured
+    /// ([`proof_whitening_bytes`] bounds it).
+    #[cfg(test)]
+    whitening_bytes: usize,
 }
 
 /// `‖block‖_F²` of every evaluated metric shell pair, `(sp ≥ sq)` through a
@@ -1977,14 +2017,17 @@ struct SkipGate<'a> {
 }
 
 /// Peak bytes [`prove_empty_pairs`] allocates beside the resident strips,
-/// metric and held `W`: the per-shell-pair metric norms (`8·nsh²`), per
-/// occupied the strip row-shell table and the floor's column norms (`16·nsh`),
-/// per pair its bound and verdict, and per concurrent worker the
-/// largest own-domain workspace (`V_DD`, its copy, `L`, `L⁻¹` and the
-/// shifted test matrix, `5·d²`, plus the gathered and whitened strip,
-/// `2·d·cols`).
+/// metric and held `W`: the per-shell-pair metric norms (`8·nsh²`), the aux
+/// function-to-shell map (`8·naux`), per occupied the strip row-shell table
+/// (`8·nsh` and its slot), the prefilter's two bounds and four occupied masks,
+/// per pair its bound, verdict and two attempt masks, the whitening outputs
+/// ([`proof_whitening_bytes`]), and per concurrent worker the larger of the
+/// own-domain workspace (`V_DD`, its copy, `L`, `L⁻¹` and the shifted test
+/// matrix, `5·d²`, plus the gathered and whitened strip, `2·d·cols`) and a
+/// pair bound's three shell lists (`3·nsh`).
 fn pair_proof_bytes(pre: &StripsAndMetric, dims_df: &[usize], n_pairs: usize) -> usize {
     let (no, nsh) = (pre.aux_dom.len(), pre.metric_blocks.nsh);
+    let naux: usize = dims_df.iter().sum();
     let worker = pre
         .aux_dom
         .iter()
@@ -1993,10 +2036,23 @@ fn pair_proof_bytes(pre: &StripsAndMetric, dims_df: &[usize], n_pairs: usize) ->
             let d: usize = dom.iter().map(|&sh| dims_df[sh]).sum();
             8 * (5 * d * d + 2 * d * st.cols.len())
         })
-        .max()
-        .unwrap_or(0);
+        .fold(24 * nsh, usize::max);
     let workers = rayon::current_num_threads().clamp(1, no.max(1));
-    8 * nsh * nsh + 16 * no * nsh + 9 * n_pairs + workers * worker
+    let tables = 8 * nsh * nsh
+        + 8 * naux
+        + no * (std::mem::size_of::<Vec<f64>>() + 8 * nsh + 16 + 4)
+        + 11 * n_pairs;
+    tables + proof_whitening_bytes(no, nsh) + workers * worker
+}
+
+/// Bytes of the [`OwnWhitened`] stores [`prove_empty_pairs`] holds at once
+/// (no `q` and no `W` kept): up to three (the stage-2 `qmax`, the floor
+/// pass and its complement), each with per occupied a `qmax`, an empty `q`
+/// slot and a floor slot, and one floor column table (`8·nsh`) per occupied
+/// over all of them (the complement's floors are moved, not copied).
+fn proof_whitening_bytes(no: usize, nsh: usize) -> usize {
+    use std::mem::size_of;
+    3 * no * (8 + size_of::<Vec<f64>>() + size_of::<Option<OwnFloor>>()) + 8 * no * nsh
 }
 
 /// Stage 5b, the provable-empty pair skip ([`crate::lmp2_pair_skip`]): the
@@ -2066,7 +2122,7 @@ fn prove_empty_pairs(
             &pre.metric_blocks,
             dfbs,
             aux_radius_bohr,
-            false,
+            OwnKeep { q: false, w: false },
             need,
             floor,
         )
@@ -2090,8 +2146,18 @@ fn prove_empty_pairs(
             Some((a2, had_q, q))
         }
     };
+    // the whitening outputs' heap bytes at their peak (all live together)
+    #[cfg(test)]
+    let whitening_bytes;
     let own = match &attempt {
-        None => whiten_for(needed, FloorMode::Also)?,
+        None => {
+            let own = whiten_for(needed, FloorMode::Also)?;
+            #[cfg(test)]
+            {
+                whitening_bytes = own.heap_bytes();
+            }
+            own
+        }
         Some((a, had_q, q)) => {
             // floors for the attempted pairs' occupieds, reusing stage 2's
             // q; an occupied without one (only a test mutant attempts such
@@ -2100,11 +2166,15 @@ fn prove_empty_pairs(
             let only: Vec<bool> = want.iter().zip(had_q).map(|(&w, &h)| w && h).collect();
             let rest: Vec<bool> = want.iter().zip(had_q).map(|(&w, &h)| w && !h).collect();
             let mut own = whiten_for(Some(&only), FloorMode::Only)?;
-            let fresh = whiten_for(Some(&rest), FloorMode::Also)?;
+            let mut fresh = whiten_for(Some(&rest), FloorMode::Also)?;
+            #[cfg(test)]
+            {
+                whitening_bytes = q.heap_bytes() + own.heap_bytes() + fresh.heap_bytes();
+            }
             own.qmax.clone_from(&q.qmax);
             for i in (0..no).filter(|&i| rest[i]) {
                 own.qmax[i] = fresh.qmax[i];
-                own.floor[i] = fresh.floor[i].clone();
+                own.floor[i] = fresh.floor[i].take();
             }
             own
         }
@@ -2139,6 +2209,8 @@ fn prove_empty_pairs(
         empty,
         g_bound,
         fock,
+        #[cfg(test)]
+        whitening_bytes,
     }))
 }
 
@@ -3944,7 +4016,8 @@ fn schwarz_screen(
         }
         FitPath::Cholesky => {
             stats.own_w_bytes = own_w_store_bytes(&pre.aux_dom, &pre.strips, dims_df);
-            let keep = stats.own_w_bytes <= dcfg.scratch_budget_bytes;
+            let w = stats.own_w_bytes <= dcfg.scratch_budget_bytes;
+            let keep = OwnKeep { q: true, w };
             let (aux_dom, strips) = (&pre.aux_dom, &pre.strips);
             let needed = pre.stripe.as_ref().map(|s| s.needed.as_slice());
             let nf = FloorMode::No;
@@ -7009,7 +7082,7 @@ mod stage_c_tests {
                 &pre.metric_blocks,
                 dfbs,
                 10.0,
-                false,
+                OwnKeep { q: true, w: false },
                 None,
                 FloorMode::No,
             )
@@ -7136,7 +7209,7 @@ mod stage_c_tests {
                             &pre.metric_blocks,
                             &su.dfbs,
                             dcfg.aux_radius_bohr,
-                            false,
+                            OwnKeep { q: true, w: false },
                             None,
                             FloorMode::No,
                         )
@@ -7557,6 +7630,50 @@ mod stage_c_tests {
             same_ragged(&r_off, &r_over),
             "the refused proof changed the system"
         );
+    }
+
+    /// The whitening outputs the proof holds at once, MEASURED, fit what
+    /// [`pair_proof_bytes`] reserves for them (PR #716 review): the proof
+    /// reads only `qmax`, so no per-occupied `q` vector is kept. `Audit`
+    /// whitens every occupied in one pass; `On` holds its three passes
+    /// together. Both must prove a pair (the control: the proof ran).
+    #[test]
+    fn pair_skip_proof_whitening_fits_its_reserved_bytes() {
+        let su = setup("alkane_8.xyz", 8);
+        let (op, eps) = (Operator::erfc(2.0), 1e-2);
+        let dcfg = DirectConfig {
+            aux_radius_bohr: 4.0,
+            ..production_maps(None)
+        };
+        let (mut pre, _) = pre_with(&su, op, eps, None, &dcfg);
+        let no = su.spaces.no;
+        let unique = kept_pairs(&pre.keep, no);
+        let fo: Vec<f64> = (0..no).map(|i| su.spaces.f_oo[(i, i)]).collect();
+        let fv: Vec<f64> = (0..su.spaces.nv).map(|a| su.spaces.f_vv[(a, a)]).collect();
+        let reserved = proof_whitening_bytes(no, su.dfbs.nshells());
+        for mode in [PairSkip::Audit, PairSkip::On] {
+            pre.pair_skip = mode;
+            let gate = SkipGate {
+                scale: 1.0,
+                eps,
+                fock_screen: Some(DIRECT_FOCK_SCREEN_KAPPA),
+                fo: &fo,
+                fv: &fv,
+            };
+            let proof = prove_empty_pairs(&pre, &su.dfbs, &su.spaces, &unique, None, gate, 4.0)
+                .unwrap()
+                .expect("the proof ran");
+            eprintln!(
+                "{mode:?}: whitening {} B, reserved {reserved} B",
+                proof.whitening_bytes
+            );
+            assert!(proof.empty.iter().any(|&e| e), "{mode:?}: nothing proved");
+            assert!(
+                proof.whitening_bytes <= reserved,
+                "{mode:?}: whitening holds {} B over the {reserved} B reserved",
+                proof.whitening_bytes
+            );
+        }
     }
 
     /// Coulomb: the bound still holds (audit) but proves nothing at octane.
