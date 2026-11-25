@@ -3940,6 +3940,71 @@ impl OmittedJk {
     }
 }
 
+/// The kinds whose `optimize` / `frequencies` gradient re-solves its
+/// reference SCF at each geometry from reduced settings (the J/K route and
+/// `[scf] jk_digest`; `ferric_mp2::gradient::solve_rhf_reference`,
+/// `ferric_rpa::gradient::RpaGradientRoute`).
+pub const RESOLVING_GRADIENT_KINDS: [&str; 5] = [
+    "rimp2",
+    "scs-mp2",
+    "att-rimp2",
+    "scs-mp2-2terfc",
+    "pdep-rpa",
+];
+
+impl Config {
+    /// The `[scf]` J/K keys this run sets explicitly that its per-geometry
+    /// gradient reference does not carry: on a [`RESOLVING_GRADIENT_KINDS`]
+    /// `optimize` / `frequencies` run, each of `gc_rotation`, `k_builder`,
+    /// `screening`, `eri` (set) and `integral_thresh` (other than the
+    /// default; an explicit default value is indistinguishable and harmless).
+    /// The run's initial SCF honours them; the SCFs the gradient solves at
+    /// each geometry do not. Empty on every other run.
+    pub fn uncarried_gradient_scf_keys(&self) -> Vec<&'static str> {
+        if !RESOLVING_GRADIENT_KINDS.contains(&self.method.kind.as_str())
+            || !is_gradient_task(&self.method.task)
+        {
+            return Vec::new();
+        }
+        let s = &self.scf;
+        [
+            ("gc_rotation", s.gc_rotation.is_some()),
+            ("k_builder", s.k_builder.is_some()),
+            ("screening", s.screening.is_some()),
+            ("eri", s.eri.is_some()),
+            (
+                "integral_thresh",
+                s.integral_thresh != default_integral_thresh(),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(key, set)| set.then_some(key))
+        .collect()
+    }
+
+    /// The warning for [`Self::uncarried_gradient_scf_keys`], `None` when
+    /// there is nothing to say.
+    pub fn uncarried_gradient_scf_warning(&self) -> Option<String> {
+        let keys = self.uncarried_gradient_scf_keys();
+        if keys.is_empty() {
+            return None;
+        }
+        let list = keys
+            .iter()
+            .map(|k| format!("[scf] {k}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Some(format!(
+            "{list} reach{} only the initial SCF of method.kind = \"{}\" with task = \"{}\": \
+             the gradient re-solves its reference SCF at each geometry from the J/K route and \
+             [scf] jk_digest alone, so those SCFs run the defaults",
+            if keys.len() == 1 { "es" } else { "" },
+            self.method.kind,
+            self.method.task
+        ))
+    }
+}
+
 impl ScfCfg {
     /// The first `[scf]` key set that only the four-centre route reads
     /// (`k_builder`, `eri`, `gc_rotation`, `screening`, `df_increments`,
@@ -11260,6 +11325,59 @@ json = [1, 2]
         }
         for kind in ["rhf", "ksdft", "uhf", "rohf"] {
             assert_eq!(cfg(kind, "optimize").validate_guess_basis_keys(), Ok(()));
+        }
+    }
+
+    /// The `[scf]` J/K keys the re-solving gradient routes do not carry are
+    /// named (in a fixed order) on their `optimize` / `frequencies` runs
+    /// only; `jk_digest`, an unset key and a default `integral_thresh` are
+    /// not, and nothing is said for the energy or for other kinds.
+    #[test]
+    fn uncarried_gradient_scf_keys_are_named_on_the_resolving_gradient_runs() {
+        let cfg = |kind: &str, task: &str, scf: &str| {
+            let src = format!(
+                "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n[basis]\nname = \"sto-3g\"\n\
+                 [method]\nkind = \"{kind}\"\ntask = \"{task}\"\n[scf]\n{scf}"
+            );
+            toml::from_str::<Config>(&src).expect("test config must parse")
+        };
+        let all = "gc_rotation = \"off\"\nk_builder = \"link\"\nscreening = \"csam\"\n\
+                   eri = \"direct\"\nintegral_thresh = 1e-11\njk_digest = \"legacy\"\n";
+        let named = [
+            "gc_rotation",
+            "k_builder",
+            "screening",
+            "eri",
+            "integral_thresh",
+        ];
+        for kind in RESOLVING_GRADIENT_KINDS {
+            for task in ["optimize", "frequencies"] {
+                let c = cfg(kind, task, all);
+                assert_eq!(c.uncarried_gradient_scf_keys(), named, "{kind} {task}");
+                let w = c.uncarried_gradient_scf_warning().unwrap();
+                for key in named {
+                    assert!(w.contains(&format!("[scf] {key}")), "{w}");
+                }
+                assert!(!w.contains("[scf] jk_digest,"), "{w}");
+                assert!(w.contains(kind) && w.contains(task), "{w}");
+                let one = cfg(kind, task, "eri = \"direct\"\n");
+                assert_eq!(one.uncarried_gradient_scf_keys(), ["eri"]);
+                assert!(one
+                    .uncarried_gradient_scf_warning()
+                    .unwrap()
+                    .starts_with("[scf] eri reaches only the initial SCF"));
+                let quiet = cfg(kind, task, "jk_digest = \"pair\"\n");
+                assert!(quiet.uncarried_gradient_scf_keys().is_empty());
+                assert_eq!(quiet.uncarried_gradient_scf_warning(), None);
+            }
+            assert!(cfg(kind, "energy", all)
+                .uncarried_gradient_scf_keys()
+                .is_empty());
+        }
+        for kind in ["rhf", "oo-rimp2", "uhf"] {
+            assert!(cfg(kind, "optimize", all)
+                .uncarried_gradient_scf_keys()
+                .is_empty());
         }
     }
 

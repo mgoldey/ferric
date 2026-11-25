@@ -270,6 +270,27 @@ fn warn_if_epistemically_unproven(method: &str) {
     }
 }
 
+/// Warn (stderr and the run log's `warning` note) about the `[scf]` J/K keys
+/// a re-solving gradient route does not carry to its per-geometry reference
+/// ([`Config::uncarried_gradient_scf_keys`]). Interim, until those routes
+/// carry them (ARCHITECTURE.md, Next 16).
+fn warn_uncarried_gradient_scf_keys(cfg: &Config) {
+    let Some(text) = cfg.uncarried_gradient_scf_warning() else {
+        return;
+    };
+    eprintln!("warning: {text}");
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.note(
+            "warning",
+            serde_json::json!({
+                "kind": "uncarried_gradient_scf_keys",
+                "keys": cfg.uncarried_gradient_scf_keys(),
+                "text": text,
+            }),
+        );
+    }
+}
+
 /// Real entry point for the standalone `ferric`/`ferric-cli` binaries. Reads
 /// the live process argv, which for a native binary is exactly
 /// `[program_name, ...user_args]` -- `run()` below expects that same shape,
@@ -1153,6 +1174,7 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
             }),
         );
     }
+    warn_uncarried_gradient_scf_keys(&cfg);
 
     // Resolve/validate [scf] df_guess_aux up front (config-honesty: a knob
     // that would silently do nothing under df_guess = false is a hard error)
