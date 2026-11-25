@@ -52,6 +52,10 @@
 //! [`gather`](crate::gc_kernel::GcKernelBasis::gather) copies one column
 //! quartet out of it in libint's layout and function order (pure p as y, z,
 //! x).
+//!
+//! The basis loaders make every p shell Cartesian (`pure = false`, libint
+//! order x, y, z); the pure-p order is supported for hand-built bases and
+//! tested with cc-pVDZ's p shells forced pure.
 
 use crate::basis_bridge::PreparedBasis;
 use crate::contraction_rotation::RotatedBasis;
@@ -535,7 +539,9 @@ impl GcKernelBasis {
                     .iter()
                     .position(|x| x.to_bits() == ei.to_bits())
                     .expect("every nonzero exponent is in the union");
-                coef[i * m + col] = ci;
+                // `+=`: a column may list one exponent twice; libint sums
+                // the two primitives.
+                coef[i * m + col] += ci;
             }
         }
         KernelGroup {
