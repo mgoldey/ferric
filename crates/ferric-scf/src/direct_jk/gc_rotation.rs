@@ -381,7 +381,7 @@ pub(crate) fn reserve_collective(
 
 /// Whether `local` holds on every MPI rank of `ctx` (a min all-reduce;
 /// `local` itself at one rank or without the `mpi` feature).
-fn all_ranks_agree(ctx: &ferric_core::parallel::ParallelContext, local: bool) -> bool {
+pub(crate) fn all_ranks_agree(ctx: &ferric_core::parallel::ParallelContext, local: bool) -> bool {
     #[cfg(feature = "mpi")]
     if let Some(world) = ctx.world() {
         use mpi::traits::CommunicatorCollectives;
@@ -456,7 +456,7 @@ impl std::fmt::Debug for GcSlot {
 impl GcSlot {
     /// A slot for the same geometry with nothing recorded and nothing
     /// cached: builds on bounds carrying it run unrotated
-    /// ([`SchwarzBounds::unrotated`]).
+    /// ([`SchwarzBounds::for_guess`]).
     pub(crate) fn detached(&self) -> GcSlot {
         GcSlot(Arc::new(GcSlotInner {
             inert: self.0.inert,

@@ -98,15 +98,24 @@ pub struct SchwarzBounds {
 }
 
 impl SchwarzBounds {
-    /// A copy whose builds run unrotated (`direct_jk::gc_rotation`): the
-    /// same tables and in-core slot, a detached contraction-rotation slot
-    /// (nothing recorded). For the open-shell guess Fock builds, which are a
-    /// starting point, not part of the SCF's J/K route: they stay the
-    /// unrotated builds of every SCF route (a fitted SCF has no four-centre
-    /// route to follow), so the guess is the same whatever the SCF runs.
-    pub(crate) fn unrotated(&self) -> Self {
+    /// The bounds of the open-shell guess Fock builds: the same tables and
+    /// in-core slot, a detached contraction-rotation slot (nothing
+    /// recorded, so the builds run unrotated) and a detached digest slot
+    /// recording [`JkDigest::Legacy`](crate::quartet_scatter::JkDigest).
+    /// The guess is a starting point, not part of the SCF's J/K route: its
+    /// builds are the same whatever the SCF runs (a fitted SCF has no
+    /// four-centre route to follow), whatever its `gc_rotation`,
+    /// `jk_digest` or `FERRIC_JK_DIGEST`. That matters beyond cost: on a
+    /// linear open shell the guess Fock has an exactly degenerate π pair,
+    /// and the last bits of its J and K (which a rotation or another digest
+    /// changes) choose the hole orientation the SCF then keeps; the DFT
+    /// grid splits the orientations by up to ~1e-6 Ha. The legacy digest
+    /// keeps the guess bitwise what it was before the pair digest existed.
+    pub(crate) fn for_guess(&self) -> Self {
         let mut b = self.clone();
         b.gc = self.gc.detached();
+        b.digest = crate::quartet_scatter::DigestSlot::default();
+        b.digest.set(Some(crate::quartet_scatter::JkDigest::Legacy));
         b
     }
 
