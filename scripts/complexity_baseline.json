@@ -5913,7 +5913,7 @@
   },
   "crates/ferric-cli/src/config.rs::local_rimp2_configs_are_the_production_defaults": {
     "cc": 1.0,
-    "mi": 65.2518448816858
+    "mi": 60.12403032338794
   },
   "crates/ferric-cli/src/config.rs::local_section_kind_rules": {
     "cc": 14.0,
@@ -7652,12 +7652,12 @@
     "mi": 84.85661545070354
   },
   "crates/ferric-cli/src/lib.rs::lmp2_timings_json": {
-    "cc": 3.0,
-    "mi": 52.40996168938487
+    "cc": 4.0,
+    "mi": 47.29940439541308
   },
   "crates/ferric-cli/src/lib.rs::lmp2_timings_json::<anonymous>": {
-    "cc": 2.0,
-    "mi": 57.648773745646764
+    "cc": 3.0,
+    "mi": 50.84914705246801
   },
   "crates/ferric-cli/src/lib.rs::lmp2_timings_json_carries_every_field": {
     "cc": 3.0,
@@ -31820,8 +31820,8 @@
     "mi": 102.54453175809323
   },
   "crates/ferric-mp2/src/lmp2_direct.rs::fit_domain_group": {
-    "cc": 8.0,
-    "mi": 72.93418222402893
+    "cc": 11.0,
+    "mi": 67.389450881991
   },
   "crates/ferric-mp2/src/lmp2_direct.rs::fit_domain_group_inverse_oracle": {
     "cc": 19.0,
@@ -32304,8 +32304,8 @@
     "mi": 97.68343186834858
   },
   "crates/ferric-mp2/src/lmp2_direct.rs::strips_and_metric": {
-    "cc": 15.0,
-    "mi": 46.77222997199668
+    "cc": 20.0,
+    "mi": 41.202245651013556
   },
   "crates/ferric-mp2/src/lmp2_direct.rs::strips_and_metric::<anonymous>": {
     "cc": 1.0,

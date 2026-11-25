@@ -1964,26 +1964,42 @@ fn pair_g_bound(
     Some(sc * (g + ro) * (1.0 + 1e-9)).filter(|x| x.is_finite())
 }
 
+/// The retention test [`prove_empty_pairs`] proves pairs against: the
+/// fitted-integral scale and `ε`, the Fock screen's `κ` (`None`: plain Eq-8
+/// mask) and the occupied and virtual orbital energies.
+#[derive(Clone, Copy)]
+struct SkipGate<'a> {
+    scale: f64,
+    eps: f64,
+    fock_screen: Option<f64>,
+    fo: &'a [f64],
+    fv: &'a [f64],
+}
+
 /// Stage 5b, the provable-empty pair skip ([`crate::lmp2_pair_skip`]): the
 /// own-domain fitted norms and eigenvalue floors (one Cholesky, one inverse
 /// and one whitening per occupied), the per-shell strip and metric norm
 /// tables, then one bound per off-diagonal pair of this rank. `None` when
 /// the skip is off, at ε = 0, or when the Fock screen is on and its
 /// denominators admit no bound.
-#[allow(clippy::too_many_arguments)]
 fn prove_empty_pairs(
     pre: &StripsAndMetric,
     dfbs: &PreparedBasis,
     spaces: &LocalizedSpaces,
     unique: &[(usize, usize)],
     mine: Option<&[bool]>,
-    (scale, eps): (f64, f64),
-    fock_screen: Option<f64>,
-    (fo, fv): (&[f64], &[f64]),
+    gate: SkipGate<'_>,
     aux_radius_bohr: f64,
 ) -> Result<Option<SkipProof>, FerricError> {
     use crate::lmp2_pair_skip::{gate_bound, proved_empty, unit_fock_weight};
     use rayon::prelude::*;
+    let SkipGate {
+        scale,
+        eps,
+        fock_screen,
+        fo,
+        fv,
+    } = gate;
     if !pre.pair_skip.evaluates() || !(eps > 0.0) {
         return Ok(None);
     }
@@ -4185,9 +4201,13 @@ fn fit_pair_slots(
             spaces,
             &unique,
             mine,
-            (scale, eps),
-            fock_screen,
-            (&fo, &fv),
+            SkipGate {
+                scale,
+                eps,
+                fock_screen,
+                fo: &fo,
+                fv: &fv,
+            },
             dcfg.aux_radius_bohr,
         )?,
         false => None,
