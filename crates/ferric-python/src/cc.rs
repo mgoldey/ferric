@@ -245,6 +245,7 @@ struct CcsdArgs<'a> {
     ladder: &'a str,
     conv: ScfConv,
     reference_file: Option<ReferenceFile>,
+    relativistic: Option<&'a str>,
 }
 
 /// `run_ccsd` / `run_ccsd_t`: UCCSD(/T) for an open-shell molecule, else the
@@ -257,7 +258,8 @@ fn run_ccsd_level(py: Python<'_>, a: CcsdArgs<'_>, level: CcLevel) -> PyResult<P
     refuse_open_shell_ladder(&raw_mol, a.ladder)?;
     // `k_builder` is parsed in the closures, after the system and fitting
     // basis are prepared: where the SCF refused an unknown spelling.
-    let rhf_config = rhf_config_conv(None, budget_bytes_from_gb(a.memory_budget_gb), a.conv)?;
+    let mut rhf_config = rhf_config_conv(None, budget_bytes_from_gb(a.memory_budget_gb), a.conv)?;
+    rhf_config.relativistic = crate::scf::parse_relativistic(a.relativistic)?;
     let k_builder = a.k_builder;
     let reference_file = a.reference_file.as_ref();
     if raw_mol.multiplicity > 1 {
@@ -355,7 +357,7 @@ fn run_ccsd_level(py: Python<'_>, a: CcsdArgs<'_>, level: CcLevel) -> PyResult<P
 /// converged reference SCF to a file, or read one in place of the solve
 /// (`crate::reference_file`; the files `run_rimp2` writes and reads too).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto", scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, save_reference=None, read_reference=None, read_reference_other_build=false))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto", scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, save_reference=None, read_reference=None, read_reference_other_build=false, relativistic=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_ccsd(
     py: Python<'_>,
@@ -372,6 +374,7 @@ pub(crate) fn run_ccsd(
     save_reference: Option<String>,
     read_reference: Option<String>,
     read_reference_other_build: bool,
+    relativistic: Option<&str>,
 ) -> PyResult<PyCcResult> {
     let conv = ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv);
     let reference_file = ReferenceFile::new(
@@ -390,6 +393,7 @@ pub(crate) fn run_ccsd(
         ladder,
         conv,
         reference_file,
+        relativistic,
     };
     run_ccsd_level(py, args, CcLevel::Ccsd)
 }
@@ -405,7 +409,7 @@ pub(crate) fn run_ccsd(
 /// converged reference SCF to a file, or read one in place of the solve
 /// (`crate::reference_file`; the files `run_rimp2` writes and reads too).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto", scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, save_reference=None, read_reference=None, read_reference_other_build=false))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto", scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, save_reference=None, read_reference=None, read_reference_other_build=false, relativistic=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_ccsd_t(
     py: Python<'_>,
@@ -422,6 +426,7 @@ pub(crate) fn run_ccsd_t(
     save_reference: Option<String>,
     read_reference: Option<String>,
     read_reference_other_build: bool,
+    relativistic: Option<&str>,
 ) -> PyResult<PyCcResult> {
     let conv = ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv);
     let reference_file = ReferenceFile::new(
@@ -440,6 +445,7 @@ pub(crate) fn run_ccsd_t(
         ladder,
         conv,
         reference_file,
+        relativistic,
     };
     run_ccsd_level(py, args, CcLevel::CcsdT)
 }

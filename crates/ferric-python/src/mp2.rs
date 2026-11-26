@@ -480,7 +480,7 @@ pub(crate) fn local_correlation_operator(
 /// place of the solve (`crate::reference_file`; shared with `run_ccsd` and
 /// `run_ccsd_t`).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None, fock_screen=None, att_operator=None, omega=None, att_r0=None, att_omega=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, virtual_space=None, virtual_tau=None, virtual_tau_loose=None, virtual_solve_radius=None, virtual_boys_tau=None, with_gradient=false, scf_eri=None, lambda_boys=None, save_reference=None, read_reference=None, read_reference_other_build=false, eri3_pass=None, pair_skip=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None, fock_screen=None, att_operator=None, omega=None, att_r0=None, att_omega=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, virtual_space=None, virtual_tau=None, virtual_tau_loose=None, virtual_solve_radius=None, virtual_boys_tau=None, with_gradient=false, scf_eri=None, lambda_boys=None, save_reference=None, read_reference=None, read_reference_other_build=false, eri3_pass=None, pair_skip=None, relativistic=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_rimp2(
     py: Python<'_>,
@@ -526,6 +526,7 @@ pub(crate) fn run_rimp2(
     read_reference_other_build: bool,
     eri3_pass: Option<String>,
     pair_skip: Option<String>,
+    relativistic: Option<&str>,
 ) -> PyResult<PyRiMp2Result> {
     let reference_file = ReferenceFile::new(
         "run_rimp2",
@@ -544,6 +545,12 @@ pub(crate) fn run_rimp2(
         scf_ri_j_precision,
     )?;
     rhf_config.eri = crate::scf::parse_eri(scf_eri)?;
+    rhf_config.relativistic = crate::scf::parse_relativistic(relativistic)?;
+    if with_gradient && relativistic.is_some() {
+        return Err(crate::errors::input_err(
+            "run_rimp2: with_gradient=True is not supported with relativistic=\"x2c1e\" (X2C-1e has no analytic nuclear derivative)"
+        ));
+    }
     let model = local_model_from_kwargs(
         "run_rimp2",
         ferric_cli::LocalCfg {
@@ -2525,7 +2532,7 @@ impl PyScsMp2Result {
 /// `run_rhf` (`run_uhf` for an open-shell molecule) solves.
 /// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, c_os=None, c_ss=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, c_os=None, c_ss=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, relativistic=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_scs_mp2(
     py: Python<'_>,
@@ -2543,8 +2550,9 @@ pub(crate) fn run_scs_mp2(
     scf_max_iter: Option<usize>,
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
+    relativistic: Option<&str>,
 ) -> PyResult<PyScsMp2Result> {
-    let (rhf_config, jk) = mp2_exact_default_config(
+    let (mut rhf_config, jk) = mp2_exact_default_config(
         "run_scs_mp2",
         k_builder,
         memory_budget_gb,
@@ -2553,6 +2561,7 @@ pub(crate) fn run_scs_mp2(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
+    rhf_config.relativistic = crate::scf::parse_relativistic(relativistic)?;
     let sys = prepare(py, mol, basis_set)?;
     let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let rhf = sys.solve_reference(&rhf_config).map_err(make_err)?;

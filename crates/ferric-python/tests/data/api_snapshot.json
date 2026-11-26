@@ -3418,6 +3418,9 @@
     "dipole": {
      "kind": "attribute"
     },
+    "dressed_eigenvectors": {
+     "kind": "attribute"
+    },
     "e_rpa": {
      "kind": "attribute"
     },
@@ -3460,6 +3463,9 @@
     "hirshfeld_charges": {
      "kind": "attribute"
     },
+    "inv_dielectric_freq": {
+     "kind": "attribute"
+    },
     "lowdin_charges": {
      "kind": "attribute"
     },
@@ -3497,6 +3503,9 @@
      "kind": "attribute"
     },
     "rhf_energy": {
+     "kind": "attribute"
+    },
+    "route": {
      "kind": "attribute"
     },
     "save_scree_plot": {
@@ -5920,6 +5929,11 @@
     "default": "False",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "read_reference_other_build"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "relativistic"
    }
   ],
   "run_ccsd_t": [
@@ -5984,6 +5998,11 @@
     "default": "False",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "read_reference_other_build"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "relativistic"
    }
   ],
   "run_cdft": [
@@ -9632,6 +9651,11 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "pair_skip"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "relativistic"
    }
   ],
   "run_rks_gamma": [
@@ -10871,6 +10895,11 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "scf_density_conv"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "relativistic"
    }
   ],
   "run_scs_mp2_2terfc": [

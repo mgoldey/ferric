@@ -5584,6 +5584,7 @@ def run_rimp2(
     read_reference_other_build: bool = False,
     eri3_pass: str | None = None,
     pair_skip: str | None = None,
+    relativistic: str | None = None,
 ) -> RiMp2Result:
     """Resolution-of-identity (density-fitted) MP2. Exact by default.
     with_gradient=True adds the analytic gradient of total_energy
@@ -5950,6 +5951,7 @@ def run_scs_mp2(
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
+    relativistic: str | None = None,
 ) -> ScsMp2Result:
     """Spin-component-scaled MP2.
 
@@ -6685,6 +6687,7 @@ def run_ccsd(
     save_reference: str | None = None,
     read_reference: str | None = None,
     read_reference_other_build: bool = False,
+    relativistic: str | None = None,
 ) -> CcResult:
     """Coupled-cluster singles and doubles (CCSD).
 
@@ -6771,6 +6774,7 @@ def run_ccsd_t(
     save_reference: str | None = None,
     read_reference: str | None = None,
     read_reference_other_build: bool = False,
+    relativistic: str | None = None,
 ) -> CcResult:
     """CCSD(T): CCSD plus perturbative triples correction.
 
