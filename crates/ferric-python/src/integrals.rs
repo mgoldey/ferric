@@ -65,6 +65,11 @@ pub(crate) fn resolve_operator(
     })
 }
 
+/// Raw three-centre Coulomb integrals (P|mu nu) transformed to the MO
+/// basis of `c_left` and `c_right`, built blockwise under
+/// `memory_budget_gb`. Returns an array of shape (naux, k_left, k_right).
+/// `operator`, `omega` and `r0` select the (possibly attenuated) Coulomb
+/// kernel, matching `AoIntegrals`.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, aux_basis_set, c_left, c_right, memory_budget_gb=2.0, operator="coulomb", omega=None, r0=None))]
 #[allow(clippy::too_many_arguments)]

@@ -614,6 +614,13 @@ pub(crate) fn parse_relativistic(
         .map_err(crate::errors::input_err)
 }
 
+/// Closed-shell restricted Hartree-Fock (and Kohn-Sham DFT with `xc=`).
+///
+/// Runs the full SCF knob set: DIIS/SOSCF/TRAH, damping, level shifting,
+/// point charges, external fields, smeared charges, IEF-PCM solvent, and
+/// symmetry blocking. `with_gradient=True` adds the analytic nuclear
+/// gradient. Returns an `RhfResult` (or `DftResult`-compatible) with the
+/// converged energy, density, orbitals and certificate.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set,
