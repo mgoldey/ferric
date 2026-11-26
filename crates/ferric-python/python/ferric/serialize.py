@@ -153,7 +153,7 @@ RESULT_SCHEMA: dict[str, ResultSchema] = {
     "DftResult": _s(
         (
             "certificate converged cosx_final_pass dispersion_model "
-            "e_dispersion e_scf e_xc energy exit_reason guess_basis iterations "
+            "e_dispersion e_scf e_xc energy exit_reason fock_hooked guess_basis iterations "
             "one_step_energy_drop precision ri_j_precision ri_k_precision "
             "stationarity_tol total_energy volume_ratios"
         ),

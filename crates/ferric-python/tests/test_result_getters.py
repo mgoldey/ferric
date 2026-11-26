@@ -145,3 +145,12 @@ def test_periodic_gamma_rhf_getters(tmp_path):
     assert {"hcore S/T", "scf J (dense AFT)", "scf K (dense AFT)"} <= set(t["stages"])
     for stage in t["stages"].values():
         assert set(stage) == {"wall_s", "cpu_s", "calls"}
+
+
+def test_dft_result_exposes_fock_hooked():
+    mol = ferric.Molecule.from_xyz_string("3\n\nO 0 0 0.1173\nH 0 0.7572 -0.4692\nH 0 -0.7572 -0.4692")
+    bs = ferric.BasisSet.bundled("sto-3g")
+    plain = ferric.run_dft(mol, bs, "LDA")
+    hooked = ferric.run_dft(mol, bs, "LDA", fock_hook=lambda d: (0.0, d * 0.0))
+    assert plain.fock_hooked is False
+    assert hooked.fock_hooked is True

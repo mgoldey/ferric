@@ -2561,6 +2561,11 @@ class DftResult:
     @property
     def converged(self) -> bool: ...
     @property
+    def fock_hooked(self) -> bool:
+        """Whether the SCF ran with a fock_hook."""
+        ...
+
+    @property
     def e_xc(self) -> float:
         """E_xc[D] of the converged density on the SCF's own XC grid: the
         energy whose density derivative is `vxc()` (semilocal + VV10, no

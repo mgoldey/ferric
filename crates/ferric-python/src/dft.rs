@@ -58,6 +58,7 @@ pub(crate) struct PyDftResult {
     /// this result was solved with; see `PyRhfResult::scf_config`.
     pub(crate) scf_config: Arc<RhfConfig>,
     /// The SCF ran with a `fock_hook` (recorded on the certificate).
+    #[pyo3(get)]
     pub(crate) fock_hooked: bool,
 }
 
