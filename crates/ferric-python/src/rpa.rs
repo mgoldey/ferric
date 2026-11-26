@@ -421,6 +421,9 @@ pub(crate) struct PyPdepRpaResult {
     pub(crate) eigensolver_converged: bool,
     pub(crate) eigenvalues_static: Vec<f64>,
     pub(crate) eigenpotentials: Array2<f64>,
+    pub(crate) dressed_eigenvectors: Array2<f64>,
+    pub(crate) inv_dielectric_freq: Option<Vec<Array2<f64>>>,
+    pub(crate) route: String,
     pub(crate) quad_freqs: Vec<f64>,
     pub(crate) quad_weights: Vec<f64>,
     pub(crate) eigenvalues_freq: Array2<f64>,
@@ -481,6 +484,26 @@ impl PyPdepRpaResult {
     #[getter]
     fn eigenpotentials<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         PyArray2::from_owned_array(py, self.eigenpotentials.clone())
+    }
+    /// Davidson eigenvectors in the V^{-1/2}-dressed RI basis, shape (naux, M).
+    #[getter]
+    fn dressed_eigenvectors<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        PyArray2::from_owned_array(py, self.dressed_eigenvectors.clone())
+    }
+    /// Per-frequency dynamic inverse-dielectric matrices W̃_d(iω_k) in the
+    /// fixed PDEP eigenvector basis (length N_quad, each (M, M)), or None.
+    #[getter]
+    fn inv_dielectric_freq<'py>(&self, py: Python<'py>) -> Option<Vec<Bound<'py, PyArray2<f64>>>> {
+        self.inv_dielectric_freq.as_ref().map(move |vs| {
+            vs.iter()
+                .map(|a| PyArray2::from_owned_array(py, a.clone()))
+                .collect()
+        })
+    }
+    /// Which construction produced `e_rpa` (`AuxBasisLogDet` or `PdepEigen`).
+    #[getter]
+    fn route(&self) -> String {
+        self.route.clone()
     }
     /// Imaginary-frequency quadrature points ω_k.
     #[getter]
@@ -1045,6 +1068,9 @@ pub(crate) fn run_pdep_rpa(
         eigensolver_converged: r.eigensolver_converged,
         eigenvalues_static: r.eigenvalues_static,
         eigenpotentials: r.eigenpotentials,
+        dressed_eigenvectors: r.dressed_eigenvectors,
+        inv_dielectric_freq: r.inv_dielectric_freq,
+        route: format!("{:?}", r.route),
         quad_freqs: r.quad_freqs,
         quad_weights: r.quad_weights,
         eigenvalues_freq: r.eigenvalues_freq,
