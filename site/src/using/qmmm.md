@@ -109,6 +109,25 @@ sys = (ferric.QmmmSystem(symbols, coords, charges, qm_indices=qm)
 
 The parser is strict: an unknown string is an error.
 
+## OpenMM parameters
+
+OpenMM force fields are converted to ferric's explicit-parameter `MmTopology`
+with `ferric.openmm`:
+
+```python
+import ferric.openmm as om
+
+params = om.topology_from_openmm("structure.pdb")
+topo = ferric.MmTopology.from_amber_units(
+    params["charges"], params["sigmas_angstrom"], params["epsilons_kcal"],
+    params["bonds"], params["angles"], params["torsions"],
+)
+```
+
+`topology_from_system(system)` does the same for an already-built
+`openmm.System`. Both return plain AMBER-convention units (kcal/mol,
+Angstrom, degrees) that `MmTopology.from_amber_units` consumes directly.
+
 ## Energies, forces, and optimization
 
 ```python
