@@ -696,6 +696,20 @@ if [[ "${CI_GATE_GPU:-0}" == "1" ]]; then
         || { echo "RESULT: FAIL (gpu_section)"; exit 1; }
 fi
 
+# ---- 2c. optional: cuest feature (CI_GATE_CUEST=1, needs cuEST install) ---
+# Builds the ABI check against the installed cuest.h and runs the tests; the
+# GPU tests SKIP on an unsupported device (see crates/ferric-cuest/README.md).
+if [[ "${CI_GATE_CUEST:-0}" == "1" ]]; then
+    CUEST_ROOT="${CUEST_ROOT:-$HOME/.local/cuest-0.3.0}"
+    if [[ -f "$CUEST_ROOT/include/cuest.h" && -e "$CUEST_ROOT/lib/libcuest.so" ]]; then
+        echo "-- cargo test ferric-cuest (cuest feature, CUEST_ROOT=$CUEST_ROOT) --"
+        CUEST_ROOT="$CUEST_ROOT" OPENBLAS_NUM_THREADS=1 cargo test -p ferric-cuest --features cuest --locked \
+            || { echo "RESULT: FAIL (cuest tests)"; exit 1; }
+    else
+        echo "-- cuest: SKIPPED (no cuEST at $CUEST_ROOT) --"
+    fi
+fi
+
 # ---- 3. complexity regression (CC/MI vs. checked-in baseline) ----------
 # Soft-skip (does not set FAILED) if the tool isn't installed -- this is a
 # machine-local dev tool (`cargo install rust-code-analysis-cli`), not a

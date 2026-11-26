@@ -119,3 +119,7 @@ site/book/
 
 # Book build output (book/src is the source)
 /book/out/
+
+# scripts/cuest/run_gpu_check.sh outputs
+cuest-gpu-check.log
+cuest-oe-report.json
