@@ -309,13 +309,14 @@ RESULT_SCHEMA: dict[str, ResultSchema] = {
             "alpha_atomic alpha_atomic_dynamic alpha_ct alpha_ct_dynamic "
             "alpha_tensor c6_aniso c6_freqs c6_iso c6_molecular_iso "
             "c6_partition c6_source c6_weights certificate chelpg_charges "
-            "density_matrix density_second_moment dipole e_rpa e_rpa_dft_diag "
-            "eigenpotentials eigensolver_converged eigenvalues_freq "
-            "eigenvalues_static electric_field esp_atoms esp_points esp_surface "
-            "hirshfeld_charges lowdin_charges mo_coeffs mulliken_charges "
-            "n_eigenpotentials orbital_centers orbital_energies orbital_spreads "
-            "property_gaps property_warnings quad_freqs quad_weights "
-            "resp_charges rhf_energy total_energy written_files"
+            "density_matrix density_second_moment dipole dressed_eigenvectors "
+            "e_rpa e_rpa_dft_diag eigenpotentials eigensolver_converged "
+            "eigenvalues_freq eigenvalues_static electric_field esp_atoms "
+            "esp_points esp_surface hirshfeld_charges inv_dielectric_freq "
+            "lowdin_charges mo_coeffs mulliken_charges n_eigenpotentials "
+            "orbital_centers orbital_energies orbital_spreads property_gaps "
+            "property_warnings quad_freqs quad_weights resp_charges rhf_energy "
+            "route total_energy written_files"
         ),
         "orbital_energies gradient",
     ),
