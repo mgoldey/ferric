@@ -695,6 +695,13 @@ Not exposed: the Rust-side structs (`PreparedBasis`, `Engine`, screening
 bounds), method intermediates (CC amplitudes, GW self-energies, PDEP
 eigenpairs) and periodic (PBC) integrals. Those stay behind the drivers.
 
+## Time-correlation and finite-difference helpers
+
+`ferric.correlation` provides `velocity_autocorrelation`, `mean_squared_displacement`,
+`diffusion_coefficient` (Green-Kubo) and `diffusion_from_msd` (Einstein) for MD
+trajectories, and `ferric.finite_difference` provides `finite_difference_gradient`
+and `gradient_check` for validating analytic gradients.
+
 ## Memory, threads and MPI
 
 Most drivers accept `memory_budget_gb` (GiB). It sets the same per-allocation
