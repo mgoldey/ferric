@@ -16,6 +16,7 @@ pub type cuestAOShell_t = *mut c_void;
 pub type cuestAOBasis_t = *mut c_void;
 pub type cuestAOPairList_t = *mut c_void;
 pub type cuestOEIntPlan_t = *mut c_void;
+pub type cuestDirectIntPlan_t = *mut c_void;
 /// Every `cuest*Parameters_t` is `void*` in the header.
 pub type cuestParams_t = *mut c_void;
 
@@ -58,6 +59,13 @@ pub const CUEST_OEINTPLAN_PARAMETERS: c_int = 4;
 pub const CUEST_OVERLAPCOMPUTE_PARAMETERS: c_int = 9;
 pub const CUEST_KINETICCOMPUTE_PARAMETERS: c_int = 11;
 pub const CUEST_POTENTIALCOMPUTE_PARAMETERS: c_int = 13;
+pub const CUEST_DIRECTCOULOMBCOMPUTE_PARAMETERS: c_int = 62;
+pub const CUEST_DIRECTINTPLAN_PARAMETERS: c_int = 63;
+pub const CUEST_DIRECTSYMMETRICEXCHANGECOMPUTE_PARAMETERS: c_int = 64;
+
+// cuestDirect{Coulomb,SymmetricExchange}ComputeParametersAttributes_t (double)
+pub const CUEST_DIRECTCOULOMBCOMPUTE_PARAMETERS_DENSITY_SCHWARZ_THRESHOLD: c_int = 1;
+pub const CUEST_DIRECTSYMMETRICEXCHANGECOMPUTE_PARAMETERS_DENSITY_SCHWARZ_THRESHOLD: c_int = 1;
 
 // cuestPotentialComputeParametersAttributes_t / cuestFfloatUsageMode_t
 pub const CUEST_POTENTIALCOMPUTE_PARAMETERS_FFLOAT_USAGE_MODE: c_int = 0;
@@ -215,6 +223,64 @@ extern "C" {
         parameters: cuestParams_t,
         temporary: *mut cuestWorkspace_t,
         outTMatrix: *mut f64,
+    ) -> cuestStatus_t;
+
+    pub fn cuestDirectIntPlanCreateWorkspaceQuery(
+        handle: cuestHandle_t,
+        primaryBasis: cuestAOBasis_t,
+        pairList: cuestAOPairList_t,
+        parameters: cuestParams_t,
+        persistent: *mut cuestWorkspaceDescriptor_t,
+        temporary: *mut cuestWorkspaceDescriptor_t,
+        outPlan: *mut cuestDirectIntPlan_t,
+    ) -> cuestStatus_t;
+    pub fn cuestDirectIntPlanCreate(
+        handle: cuestHandle_t,
+        primaryBasis: cuestAOBasis_t,
+        pairList: cuestAOPairList_t,
+        parameters: cuestParams_t,
+        persistent: *mut cuestWorkspace_t,
+        temporary: *mut cuestWorkspace_t,
+        outPlan: *mut cuestDirectIntPlan_t,
+    ) -> cuestStatus_t;
+    pub fn cuestDirectIntPlanDestroy(plan: cuestDirectIntPlan_t) -> cuestStatus_t;
+
+    pub fn cuestDirectCoulombComputeWorkspaceQuery(
+        handle: cuestHandle_t,
+        plan: cuestDirectIntPlan_t,
+        parameters: cuestParams_t,
+        temporary: *mut cuestWorkspaceDescriptor_t,
+        numDensityMatrices: u64,
+        densityMatrices: *const f64,
+        outCoulombMatrices: *mut f64,
+    ) -> cuestStatus_t;
+    pub fn cuestDirectCoulombCompute(
+        handle: cuestHandle_t,
+        plan: cuestDirectIntPlan_t,
+        parameters: cuestParams_t,
+        temporary: *mut cuestWorkspace_t,
+        numDensityMatrices: u64,
+        densityMatrices: *const f64,
+        outCoulombMatrices: *mut f64,
+    ) -> cuestStatus_t;
+
+    pub fn cuestDirectSymmetricExchangeComputeWorkspaceQuery(
+        handle: cuestHandle_t,
+        plan: cuestDirectIntPlan_t,
+        parameters: cuestParams_t,
+        temporary: *mut cuestWorkspaceDescriptor_t,
+        numDensityMatrices: u64,
+        densityMatrices: *const f64,
+        outExchangeMatrices: *mut f64,
+    ) -> cuestStatus_t;
+    pub fn cuestDirectSymmetricExchangeCompute(
+        handle: cuestHandle_t,
+        plan: cuestDirectIntPlan_t,
+        parameters: cuestParams_t,
+        temporary: *mut cuestWorkspace_t,
+        numDensityMatrices: u64,
+        densityMatrices: *const f64,
+        outExchangeMatrices: *mut f64,
     ) -> cuestStatus_t;
 
     pub fn cuestPotentialComputeWorkspaceQuery(

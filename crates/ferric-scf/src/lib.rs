@@ -130,6 +130,7 @@ pub mod properties;
 
 /// COSMO conductor-like implicit solvation model.
 pub mod cosmo;
+pub mod cuest_route;
 pub(crate) mod driver;
 pub use driver::{closed_shell_level_shift_ramp, open_shell_level_shift_ramp};
 /// J/K builder traits.

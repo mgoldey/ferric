@@ -2179,7 +2179,7 @@ pub(crate) fn phase_table_title_for(
 /// `KsXc` on `config.dft_grid` / `config.nlc_grid` with `config.xc_omega` and
 /// the caller's memory budget. Shared with [`ks_vxc_closed`] so a post-SCF
 /// V_xc is evaluated with exactly the functional and grids the SCF used.
-fn molecular_ks_xc(
+pub(crate) fn molecular_ks_xc(
     mol: &Molecule,
     bs: &ferric_core::basis::BasisSet,
     config: &RhfConfig,

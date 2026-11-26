@@ -103,6 +103,20 @@ impl Params {
         Ok(Self { raw, kind })
     }
 
+    /// Set a `double` attribute (thresholds, fractions).
+    pub fn set_f64(&mut self, attribute: c_int, value: f64) -> Result<()> {
+        // SAFETY: value lives across the call; size matches its type.
+        check("cuestParametersConfigure", unsafe {
+            ffi::cuestParametersConfigure(
+                self.kind,
+                self.raw,
+                attribute,
+                (&value as *const f64).cast::<c_void>(),
+                std::mem::size_of::<f64>(),
+            )
+        })
+    }
+
     /// Set an `int`-sized (enum) attribute.
     pub fn set_enum(&mut self, attribute: c_int, value: c_int) -> Result<()> {
         // SAFETY: value lives across the call; size matches its type.

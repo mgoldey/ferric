@@ -123,3 +123,4 @@ site/book/
 # scripts/cuest/run_gpu_check.sh outputs
 cuest-gpu-check.log
 cuest-oe-report.json
+cuest-scf-report.json

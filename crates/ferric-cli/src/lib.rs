@@ -1298,6 +1298,8 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
     // `Config::dispatch_kind`.
     let method = cfg.dispatch_kind(mol.multiplicity);
 
+    check_cuest_route(&cfg, task, cfg.dispatch_kind(mol.multiplicity))?;
+
     // The runs below return before this function's `run_end`; each writes
     // the whole-run `precision` note instead.
     if task == "optimize" {
@@ -1431,6 +1433,16 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
         )?;
         reference_read = Some((read.record, read.provenance));
         read.result
+    } else if cfg.gpu.cuest_backend() {
+        // `check_cuest_route` admitted only a closed-shell rhf/ksdft energy here.
+        report_cuest_run(ferric_scf::cuest_route::solve_rhf_cuest(
+            ctx,
+            mol,
+            prep,
+            op,
+            bounds,
+            &rhf_config,
+        )?)
     } else if route == ReferenceRoute::Ladder {
         // `[scf] df_guess` is not (yet) composed with the multi-rung
         // convergence ladder — the ladder's own escalation (level shift /
@@ -2526,6 +2538,66 @@ fn open_shell_reference_config(method: &str, rhf_config: &RhfConfig) -> RhfConfi
         uhf_cfg.mom_after_iter = 5;
     }
     uhf_cfg
+}
+
+/// `[gpu] backend = "cuest"`: refuse everything the cuEST route does not run,
+/// before any integral work. It runs `task = "energy"` for the closed-shell
+/// `rhf`/`ksdft` and the open-shell `uhf` dispatch kinds, with cuEST's exact
+/// direct J/K, so the J/K selection keys would be silently replaced.
+fn check_cuest_route(cfg: &Config, task: &str, kind: &str) -> Result<(), CliError> {
+    if !cfg.gpu.cuest_backend() {
+        return Ok(());
+    }
+    let refuse = |why: String| Err(CliError::msg(format!("[gpu] backend = \"cuest\": {why}")));
+    if !ferric_scf::cuest_route::cuest_available() {
+        return refuse(
+            "this ferric was built without cuEST; rebuild with `cargo build --release -p \
+             ferric-cli --features cuest` (CUEST_ROOT set; see crates/ferric-cuest/README.md)"
+                .into(),
+        );
+    }
+    if task != "energy" {
+        return refuse(format!("only task = \"energy\" is wired, got {task:?}"));
+    }
+    if !matches!(kind, "rhf" | "ksdft" | "uhf") {
+        return refuse(format!(
+            "only method.kind = \"rhf\", \"uhf\" and \"ksdft\" are wired, got {kind:?}"
+        ));
+    }
+    if cfg.cdft.is_some() {
+        return refuse("[cdft] is not wired".into());
+    }
+    let scf = &cfg.scf;
+    for (key, set) in [
+        ("jk", scf.jk.is_some()),
+        ("jk_aux", scf.jk_aux.is_some()),
+        ("df_j_aux", scf.df_j_aux.is_some()),
+        ("df_k_aux", scf.df_k_aux.is_some()),
+        ("k_builder", scf.k_builder.is_some()),
+    ] {
+        if set {
+            return refuse(format!(
+                "cuEST builds exact direct J/K, so [scf] {key} would do nothing; remove it"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Print what the cuEST route did and hand back its SCF result.
+fn report_cuest_run(run: ferric_scf::cuest_route::BackendRun) -> ferric_scf::result::ScfResult {
+    eprintln!(
+        "[ferric] SCF: cuEST on the GPU (S, T, V and exact direct J/K; XC, if any, on the CPU grid)"
+    );
+    eprintln!("[ferric] cuEST calibration: {}", run.calibration.summary());
+    eprintln!("[ferric] {}", run.timings);
+    if !run.result.converged {
+        eprintln!(
+            "warning: cuEST SCF did not converge (exit {:?})",
+            run.result.exit
+        );
+    }
+    run.result
 }
 
 /// The UHF reference for an open-shell correlated kind: one that
@@ -6797,8 +6869,14 @@ fn run_uhf(
     rhf_config: &RhfConfig,
 ) -> Result<(), CliError> {
     let (ctx, mol, prep, op, bounds) = (sys.ctx(), sys.mol(), sys.basis(), sys.op(), sys.bounds());
-    log_jk_path(rhf_config, true);
-    let result = solve_uhf(ctx, mol, prep, bounds, rhf_config)?;
+    let result = if cfg.gpu.cuest_backend() {
+        report_cuest_run(ferric_scf::cuest_route::solve_uhf_cuest(
+            ctx, mol, prep, bounds, rhf_config,
+        )?)
+    } else {
+        log_jk_path(rhf_config, true);
+        solve_uhf(ctx, mol, prep, bounds, rhf_config)?
+    };
     let s_ov = ferric_integrals::oneelectron::overlap(prep);
     let nelec = mol.nelec() as i64;
     let two_s = mol.multiplicity as i64 - 1;

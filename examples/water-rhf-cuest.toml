@@ -1,0 +1,18 @@
+# Water RHF/cc-pVDZ with the SCF integrals on an NVIDIA GPU through cuEST:
+# S, T, V and exact (integral-direct) J/K from cuEST, the SCF loop in ferric.
+# Needs `cargo build --release -p ferric-cli --features cuest` (CUEST_ROOT set,
+# LD_LIBRARY_PATH=$CUEST_ROOT/lib at run time) and an sm_86+ GPU.
+# Add `[dft] functional = "PBE0"` for RKS (XC on ferric's CPU grid); set
+# multiplicity/charge for UHF/UKS. See crates/ferric-cuest/README.md.
+
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "rhf"
+
+[gpu]
+backend = "cuest"

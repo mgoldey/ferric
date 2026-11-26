@@ -746,6 +746,7 @@ name = "ferric-scf"
 version = "0.1.0"
 dependencies = [
  "ferric-core",
+ "ferric-cuest",
  "ferric-dft",
  "ferric-integrals",
  "ferric-md",

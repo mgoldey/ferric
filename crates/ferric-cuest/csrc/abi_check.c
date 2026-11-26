@@ -52,6 +52,20 @@ EXPECT_FN(cuestPotentialComputeWorkspaceQuery, cuestStatus_t, P, const P, const 
 EXPECT_FN(cuestPotentialCompute, cuestStatus_t, P, const P, const P, cuestWorkspace_t *,
           uint64_t, const double *, const double *, double *)
 
+EXPECT_FN(cuestDirectIntPlanCreateWorkspaceQuery, cuestStatus_t, P, const P, const P, const P,
+          cuestWorkspaceDescriptor_t *, cuestWorkspaceDescriptor_t *, P *)
+EXPECT_FN(cuestDirectIntPlanCreate, cuestStatus_t, P, const P, const P, const P,
+          cuestWorkspace_t *, cuestWorkspace_t *, P *)
+EXPECT_FN(cuestDirectIntPlanDestroy, cuestStatus_t, P)
+EXPECT_FN(cuestDirectCoulombComputeWorkspaceQuery, cuestStatus_t, P, const P, const P, cuestWorkspaceDescriptor_t *,
+          uint64_t, const double *, double *)
+EXPECT_FN(cuestDirectCoulombCompute, cuestStatus_t, P, const P, const P, cuestWorkspace_t *,
+          uint64_t, const double *, double *)
+EXPECT_FN(cuestDirectSymmetricExchangeComputeWorkspaceQuery, cuestStatus_t, P, const P, const P,
+          cuestWorkspaceDescriptor_t *, uint64_t, const double *, double *)
+EXPECT_FN(cuestDirectSymmetricExchangeCompute, cuestStatus_t, P, const P, const P, cuestWorkspace_t *,
+          uint64_t, const double *, double *)
+
 /* Enum values ffi.rs hard-codes. */
 _Static_assert(sizeof(cuestStatus_t) == sizeof(int), "cuestStatus_t is not int-sized");
 _Static_assert(sizeof(cuestParametersType_t) == sizeof(int), "cuestParametersType_t is not int-sized");
@@ -71,6 +85,11 @@ _Static_assert(CUEST_OEINTPLAN_PARAMETERS == 4, "parameters type");
 _Static_assert(CUEST_OVERLAPCOMPUTE_PARAMETERS == 9, "parameters type");
 _Static_assert(CUEST_KINETICCOMPUTE_PARAMETERS == 11, "parameters type");
 _Static_assert(CUEST_POTENTIALCOMPUTE_PARAMETERS == 13, "parameters type");
+_Static_assert(CUEST_DIRECTCOULOMBCOMPUTE_PARAMETERS == 62, "parameters type");
+_Static_assert(CUEST_DIRECTINTPLAN_PARAMETERS == 63, "parameters type");
+_Static_assert(CUEST_DIRECTSYMMETRICEXCHANGECOMPUTE_PARAMETERS == 64, "parameters type");
+_Static_assert(CUEST_DIRECTCOULOMBCOMPUTE_PARAMETERS_DENSITY_SCHWARZ_THRESHOLD == 1, "direct J attribute");
+_Static_assert(CUEST_DIRECTSYMMETRICEXCHANGECOMPUTE_PARAMETERS_DENSITY_SCHWARZ_THRESHOLD == 1, "direct K attribute");
 _Static_assert(CUEST_POTENTIALCOMPUTE_PARAMETERS_FFLOAT_USAGE_MODE == 0, "potential attribute");
 _Static_assert(CUEST_FFLOAT_USAGE_MODE_OFF == 2, "ffloat mode");
 _Static_assert(sizeof(cuestFfloatUsageMode_t) == sizeof(int), "ffloat mode enum is not int-sized");

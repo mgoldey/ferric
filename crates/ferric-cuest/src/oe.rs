@@ -28,13 +28,17 @@ pub struct OneElectronMatrices {
 }
 
 /// Owned cuEST objects; fields drop in declaration order, so each object is
-/// destroyed before the persistent workspace it lives in.
-struct Session {
-    plan: ffi::cuestOEIntPlan_t,
+/// destroyed before the persistent workspace it lives in. The direct (J/K)
+/// plan is optional: [`compute_one_electron`] does not build it,
+/// [`crate::context::CuestContext`] does.
+pub(crate) struct Session {
+    pub(crate) direct: ffi::cuestDirectIntPlan_t,
+    pub(crate) _direct_ws: Option<Workspace>,
+    pub(crate) plan: ffi::cuestOEIntPlan_t,
     _plan_ws: Workspace,
-    pairs: ffi::cuestAOPairList_t,
+    pub(crate) pairs: ffi::cuestAOPairList_t,
     _pairs_ws: Workspace,
-    basis: ffi::cuestAOBasis_t,
+    pub(crate) basis: ffi::cuestAOBasis_t,
     _basis_ws: Workspace,
     shells: Vec<ffi::cuestAOShell_t>,
 }
@@ -44,6 +48,9 @@ impl Drop for Session {
         // SAFETY: each pointer came from its Create call and is destroyed once,
         // dependents first.
         unsafe {
+            if !self.direct.is_null() {
+                let _ = ffi::cuestDirectIntPlanDestroy(self.direct);
+            }
             if !self.plan.is_null() {
                 let _ = ffi::cuestOEIntPlanDestroy(self.plan);
             }
@@ -72,7 +79,7 @@ impl Drop for ShellGuard {
     }
 }
 
-fn reject_unsupported(mol: &Molecule, bs: &BasisSet) -> Result<()> {
+pub(crate) fn reject_unsupported(mol: &Molecule, bs: &BasisSet) -> Result<()> {
     if mol.atoms.iter().any(|a| a.ghost) {
         return Err(CuestError::Unsupported(
             "ghost atoms (not wired yet)".into(),
@@ -86,11 +93,14 @@ fn reject_unsupported(mol: &Molecule, bs: &BasisSet) -> Result<()> {
     Ok(())
 }
 
-fn build_session(
+/// Shells, basis, pair list and one-electron plan. `pair_threshold` is the
+/// pair-list screening threshold (0 keeps every pair).
+pub(crate) fn build_session(
     h: &CuestHandle,
     mol: &Molecule,
     bs: &BasisSet,
     layout: &AoLayout,
+    pair_threshold: f64,
 ) -> Result<Session> {
     let natoms = mol.atoms.len();
     let shell_params = Params::new(ffi::CUEST_AOSHELL_PARAMETERS)?;
@@ -152,6 +162,8 @@ fn build_session(
     })?;
     // From here the Session owns the shells and the basis.
     let mut sess = Session {
+        direct: std::ptr::null_mut(),
+        _direct_ws: None,
         plan: std::ptr::null_mut(),
         _plan_ws: Workspace::allocate(&Default::default())?,
         pairs: std::ptr::null_mut(),
@@ -180,7 +192,7 @@ fn build_session(
         )));
     }
 
-    // Pair list (threshold 0: keep every pair, to compare against libint exactly).
+    // Pair list.
     let xyz: Vec<f64> = mol.atoms.iter().flat_map(|a| [a.x, a.y, a.zpos]).collect();
     let pair_params = Params::new(ffi::CUEST_AOPAIRLIST_PARAMETERS)?;
     let (mut pd, mut td) = Default::default();
@@ -191,7 +203,7 @@ fn build_session(
             sess.basis,
             natoms as u64,
             xyz.as_ptr(),
-            0.0,
+            pair_threshold,
             pair_params.raw,
             &mut pd,
             &mut td,
@@ -207,7 +219,7 @@ fn build_session(
             sess.basis,
             natoms as u64,
             xyz.as_ptr(),
-            0.0,
+            pair_threshold,
             pair_params.raw,
             &mut sess._pairs_ws.raw,
             &mut tmp.raw,
@@ -247,25 +259,20 @@ fn build_session(
     Ok(sess)
 }
 
-fn download(buf: &DeviceBuffer, nao: usize) -> Result<Array2<f64>> {
+pub(crate) fn download(buf: &DeviceBuffer, nao: usize) -> Result<Array2<f64>> {
     let mut host = vec![0.0; nao * nao];
     buf.copy_to_host(&mut host)?;
     Ok(Array2::from_shape_vec((nao, nao), host).expect("nao*nao"))
 }
 
-/// Compute S, T and V for `mol` in `bs` on GPU 0, in cuEST AO order.
-///
-/// V is computed in fp64 (ffloat explicitly off) so it can be compared with
-/// libint at 1e-10; S and T have no precision knob.
-pub fn compute_one_electron(mol: &Molecule, bs: &BasisSet) -> Result<OneElectronMatrices> {
-    reject_unsupported(mol, bs)?;
-    let layout = AoLayout::new(mol, bs)?;
-    let nao = layout.nao;
-    let t0 = Instant::now();
-    let h = CuestHandle::new()?;
-    let sess = build_session(&h, mol, bs, &layout)?;
+/// S, T, V (cuEST order) on a live session, and the seconds each took.
+pub(crate) fn compute_stv(
+    h: &CuestHandle,
+    sess: &Session,
+    mol: &Molecule,
+    nao: usize,
+) -> Result<([Array2<f64>; 3], [f64; 3])> {
     let out = DeviceBuffer::new(nao * nao * std::mem::size_of::<f64>())?;
-    let setup = t0.elapsed().as_secs_f64();
     let out_ptr = out.ptr().cast::<f64>();
 
     // S
@@ -334,7 +341,22 @@ pub fn compute_one_electron(mol: &Molecule, bs: &BasisSet) -> Result<OneElectron
     })?;
     let v = download(&out, nao)?;
     let t_v = t1.elapsed().as_secs_f64();
+    Ok(([s, t, v], [t_s, t_t, t_v]))
+}
 
+/// Compute S, T and V for `mol` in `bs` on GPU 0, in cuEST AO order.
+///
+/// V is computed in fp64 (ffloat explicitly off) so it can be compared with
+/// libint at 1e-10; S and T have no precision knob. The pair list keeps every
+/// pair (threshold 0), to compare against libint exactly.
+pub fn compute_one_electron(mol: &Molecule, bs: &BasisSet) -> Result<OneElectronMatrices> {
+    reject_unsupported(mol, bs)?;
+    let layout = AoLayout::new(mol, bs)?;
+    let t0 = Instant::now();
+    let h = CuestHandle::new()?;
+    let sess = build_session(&h, mol, bs, &layout, 0.0)?;
+    let setup = t0.elapsed().as_secs_f64();
+    let ([s, t, v], [t_s, t_t, t_v]) = compute_stv(&h, &sess, mol, layout.nao)?;
     drop(sess);
     Ok(OneElectronMatrices {
         s,

@@ -5,10 +5,11 @@
 //! compatibility audit ([`audit`]), the AO-ordering layer ([`layout`]) and the
 //! comparison against stored libint references ([`mod@reference`]).
 //!
-//! With `cuest` on it links `libcuest` (cuEST 0.3.x) and the CUDA runtime, and
-//! `oe::compute_one_electron` builds S, T and V on the GPU. Nothing in ferric's
-//! SCF calls this yet: the first milestone is matching libint's one-electron
-//! matrices (crates/ferric-cuest/tests/oe_vs_libint.rs).
+//! With `cuest` on it links `libcuest` (cuEST 0.3.x) and the CUDA runtime.
+//! `oe::compute_one_electron` builds S, T and V on the GPU (checked against
+//! libint by `tests/gpu.rs`), and `context::CuestContext` keeps a session alive
+//! for an SCF: S, T, V once, then exact direct J and K every iteration.
+//! ferric-scf's `cuest_route` module drives the SCF through it.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
@@ -53,6 +54,8 @@ pub mod pairlist;
 pub mod reference;
 pub mod workspace;
 
+#[cfg(feature = "cuest")]
+pub mod context;
 #[cfg(feature = "cuest")]
 pub mod cuda;
 #[cfg(feature = "cuest")]
