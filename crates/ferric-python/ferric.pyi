@@ -7127,6 +7127,8 @@ def run_double_hybrid(
     scf_ri_j_precision: str | None = None,
     dispersion: str | None = None,
     unrestricted: bool = False,
+    lambda_: float | None = None,
+    omega: float | None = None,
 ) -> DoubleHybridResult:
     """MP2-based double hybrid: kind="b2plyp" (Grimme 2006) or "dsd-pbep86"
     (Kozuch and Martin 2013, no dispersion: 0.72 HF, 0.28 PBE, 0.44 P86,

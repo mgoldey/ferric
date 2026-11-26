@@ -49,6 +49,11 @@ def test_double_hybrid_result(water, bs, aux):
     assert type(r).__name__ == "DoubleHybridResult"
     assert isinstance(r.total_energy, float)
 
+def test_wb97x_l_v_result(water, bs, aux):
+    r = ferric.run_double_hybrid(water, bs, aux, kind="wb97x-l-v", lambda_=0.6, omega=0.1)
+    assert type(r).__name__ == "DoubleHybridResult"
+    assert r.c_os == 0.6
+
 
 def test_mp3_result(water, bs, aux):
     r = ferric.run_mp3(water, bs, aux)

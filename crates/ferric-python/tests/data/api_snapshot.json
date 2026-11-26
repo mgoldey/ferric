@@ -6436,6 +6436,16 @@
     "default": "False",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "unrestricted"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "lambda_"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "omega"
    }
   ],
   "run_drpa": [

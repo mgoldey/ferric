@@ -312,7 +312,8 @@ impl PyDoubleHybridResult {
 
 /// Run an MP2-based double hybrid (B2PLYP or DSD-PBEP86).
 ///
-/// `kind`: "b2plyp" (Grimme 2006) or "dsd-pbep86" (the no-dispersion set of
+/// `kind`: "b2plyp" (Grimme 2006), "dsd-pbep86" (Kozuch and Martin) or
+/// "wb97x-l-v" (omegaB97X-L-V, closed-shell only).
 /// Kozuch and Martin, J. Comput. Chem. 34, 2327 (2013)).
 /// Converges the appropriate DFT reference, then adds scaled MP2 correlation.
 ///
@@ -335,7 +336,7 @@ impl PyDoubleHybridResult {
 /// `run_dft` (`run_uks` for the unrestricted route) solves.
 /// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, kind="b2plyp", frozen_core=None, k_builder=None, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, scf_ri_j_precision=None, dispersion=None, unrestricted=false))]
+#[pyo3(signature = (mol, basis_set, auxbasis, kind="b2plyp", frozen_core=None, k_builder=None, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, scf_ri_j_precision=None, dispersion=None, unrestricted=false, lambda_=None, omega=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_double_hybrid(
     py: Python<'_>,
@@ -352,16 +353,33 @@ pub(crate) fn run_double_hybrid(
     scf_ri_j_precision: Option<&str>,
     dispersion: Option<&str>,
     unrestricted: bool,
+    lambda_: Option<f64>,
+    omega: Option<f64>,
 ) -> PyResult<PyDoubleHybridResult> {
+    let wb97x = kind.to_lowercase().replace(['-', '_'], "") == "wb97xlv";
     let base_kind = match kind.to_lowercase().replace(['-', '_'], "").as_str() {
         "b2plyp" => DoubleHybridKind::B2plyp,
         "dsdpbep86" => DoubleHybridKind::DsdPbep86,
+        "wb97xlv" => DoubleHybridKind::B2plyp, // placeholder, handled separately
         _ => {
             return Err(crate::errors::input_err(format!(
-                "unknown double hybrid kind '{kind}'; expected 'b2plyp' or 'dsd-pbep86'"
+                "unknown double hybrid kind '{kind}'; expected 'b2plyp', 'dsd-pbep86' or 'wb97x-l-v'"
             )))
         }
     };
+    if wb97x && (lambda_.is_some() || omega.is_some()) {
+        // validated below
+    }
+    if !wb97x && (lambda_.is_some() || omega.is_some()) {
+        return Err(crate::errors::input_err(
+            "run_double_hybrid: lambda_/omega are only used by kind='wb97x-l-v'",
+        ));
+    }
+    if wb97x && unrestricted {
+        return Err(crate::errors::input_err(
+            "run_double_hybrid: kind='wb97x-l-v' is closed-shell only",
+        ));
+    }
     let dh_kind = match dispersion.map(|d| d.trim().to_ascii_lowercase()) {
         None => base_kind,
         Some(d) if d == "d3bj" || d == "d3(bj)" => base_kind.with_d3bj(),
@@ -385,6 +403,43 @@ pub(crate) fn run_double_hybrid(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     )?;
     let cfg = ks_jkfit_config(cfg, dh_kind.xc_name(), ri_j_precision);
+
+    if wb97x {
+        if open_shell {
+            return Err(crate::errors::input_err(
+                "run_double_hybrid: kind='wb97x-l-v' is closed-shell only",
+            ));
+        }
+        let mut dh_cfg = ferric_cc::double_hybrid::DoubleHybridConfig {
+            lambda: lambda_.unwrap_or(ferric_cc::double_hybrid::WB97X_L_V_LAMBDA),
+            omega: omega.unwrap_or(ferric_cc::double_hybrid::WB97X_L_V_OMEGA),
+            ..Default::default()
+        };
+        if let Some(fc) = frozen_core {
+            dh_cfg.cc.frozen_core = fc;
+        }
+        dh_cfg.cc.memory_budget_bytes = budget_bytes_from_gb(memory_budget_gb);
+        let (dh, ks) = ferric_cc::double_hybrid::run_wb97x_l_v_on(&dfbs, &cfg, &dh_cfg)
+            .map_err(make_err)?;
+        let reference = reference_certificate(mol, &ks, &cfg, &basis_set.inner);
+        let certificate_data = ferric_cc::certificate::wb97x_l_v_certificate(
+            &reference,
+            &auxbasis.inner.name,
+            &dh_cfg,
+        );
+        return Ok(PyDoubleHybridResult {
+            certificate_data,
+            total_energy: dh.total_energy,
+            e_ks: dh.e_ks,
+            e_corr_scaled: dh.e_c_scaled,
+            e_os: dh.e_c_wft,
+            e_ss: 0.0,
+            e_dispersion: None,
+            c_os: dh.lambda,
+            c_ss: 0.0,
+            reference: "rhf".into(),
+        });
+    }
 
     let (ks, cfg) = if open_shell {
         let ks = sys.solve_uhf(&cfg).and_then(ScfResult::into_converged);
