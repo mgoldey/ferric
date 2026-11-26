@@ -673,16 +673,7 @@ pub(crate) fn extract_element_symbols(elements: &Bound<'_, PyAny>) -> PyResult<V
         .collect()
 }
 
-/// Boltzmann weights from a bare list of energies (Hartree) at
-/// `temperature_k` Kelvin (default 298.15 K).
-///
-/// Free-function form for callers holding energies without a
-/// `ConformerEnsemble` — e.g. weighting results that came from somewhere else.
-/// `w_i = exp(-(E_i - E_min)/kT) / Z`, computed with the `E_min` shift so
-/// absolute electronic energies do not overflow.
-///
-/// Raises `ValueError` on an empty list, a non-finite energy, or a
-/// non-positive/non-finite temperature.
+/// Boltzmann weights from energies (Hartree) at temperature_k (default 298.15 K).
 #[pyfunction]
 #[pyo3(signature = (energies, temperature_k=ferric_core::conformers::DEFAULT_TEMPERATURE_K))]
 pub(crate) fn boltzmann_weights(
@@ -694,20 +685,7 @@ pub(crate) fn boltzmann_weights(
         .map_err(conformer_err)
 }
 
-/// Weighted mean and standard deviation of a **scalar** property across
-/// conformers.
-///
-/// `values[i]` is the property computed on conformer `i`; `weights[i]` its
-/// Boltzmann population (from `boltzmann_weights`). Returns a `WeightedStats`
-/// carrying `mean`, `std_dev`, `min`, `max`.
-///
-/// The variance is computed in the shifted form `Σ w_i (x_i - mean)²`, not
-/// `E[x²] - E[x]²`: the latter loses every significant digit when the values
-/// are large and their spread is small — exactly the regime of absolute
-/// electronic energies.
-///
-/// Raises `ValueError` on a length mismatch, an empty list, or a non-finite
-/// value.
+/// Weighted mean and standard deviation of a scalar property.
 #[pyfunction]
 pub(crate) fn weighted_stats(values: Vec<f64>, weights: Vec<f64>) -> PyResult<PyWeightedStats> {
     ferric_core::conformers::weighted_stats(&values, &weights)
@@ -715,21 +693,7 @@ pub(crate) fn weighted_stats(values: Vec<f64>, weights: Vec<f64>) -> PyResult<Py
         .map_err(conformer_err)
 }
 
-/// Weighted mean and standard deviation of a **vector-valued** property
-/// (a dipole, a per-atom charge array), applied component-wise.
-///
-/// `values[i]` is conformer `i`'s property vector; all must be the same
-/// length. Returns one `WeightedStats` per component.
-///
-/// Component-wise is the right default and the reason the spread is
-/// mandatory: a symmetric ensemble's dipole components can cancel to near
-/// zero while every individual conformer is strongly polar. The mean alone
-/// would report "non-polar"; the per-component `std_dev` exposes the truth.
-/// For the average *magnitude* instead, compute per-conformer magnitudes in
-/// Python and pass them to `weighted_stats` — the two are different physical
-/// questions and this API refuses to conflate them.
-///
-/// Raises `ValueError` on a length mismatch or ragged input.
+/// Weighted mean and standard deviation of a vector-valued property, per component.
 #[pyfunction]
 pub(crate) fn weighted_stats_vector(
     values: Vec<Vec<f64>>,
@@ -740,14 +704,7 @@ pub(crate) fn weighted_stats_vector(
         .map_err(conformer_err)
 }
 
-/// Weighted mean and standard deviation of a **rank-2 tensor** property
-/// (a 3x3 polarizability, a quadrupole), applied element-wise.
-///
-/// `values[i]` is conformer `i`'s `nrow x ncol` tensor; all conformers must
-/// supply the same shape. Returns an `nrow x ncol` nested list of
-/// `WeightedStats`.
-///
-/// Raises `ValueError` on a length mismatch or inconsistent shapes.
+/// Weighted mean and standard deviation of a rank-2 tensor property, per element.
 #[pyfunction]
 pub(crate) fn weighted_stats_tensor(
     values: Vec<Vec<Vec<f64>>>,

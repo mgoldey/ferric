@@ -4,10 +4,7 @@ use super::*;
 
 // ── Raw integral access (for Python-side method prototyping) ──
 
-/// Raw 3-center Coulomb integrals (P|μν) as a numpy array of shape
-/// (naux, n_bf, n_bf). Undressed — pair with `compute_metric_2c` and a
-/// V^{-1/2} (or Cholesky L^{-1}) factor on the Python side to form RI
-/// B-tensors. ECPs are applied to the molecule first, matching `run_rhf`.
+/// Raw 3-center Coulomb integrals (P|mu nu), shape (naux, n_bf, n_bf).
 #[pyfunction]
 pub(crate) fn compute_eri3<'py>(
     py: Python<'py>,
@@ -65,11 +62,7 @@ pub(crate) fn resolve_operator(
     })
 }
 
-/// Raw three-centre Coulomb integrals (P|mu nu) transformed to the MO
-/// basis of `c_left` and `c_right`, built blockwise under
-/// `memory_budget_gb`. Returns an array of shape (naux, k_left, k_right).
-/// `operator`, `omega` and `r0` select the (possibly attenuated) Coulomb
-/// kernel, matching `AoIntegrals`.
+/// Blocked MO-basis 3-center integrals (P|pq), shape (naux, n_left, n_right).
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, aux_basis_set, c_left, c_right, memory_budget_gb=2.0, operator="coulomb", omega=None, r0=None))]
 #[allow(clippy::too_many_arguments)]
@@ -146,10 +139,7 @@ impl PyBoysResult {
     }
 }
 
-/// Boys (Foster-Boys) localization of the given orbitals (columns of
-/// `c_orbs`, shape (n_bf, n_orb) — typically the occupied block of
-/// `mo_coefficients()`). Same Jacobi-sweep implementation the Rust probes
-/// use. Returns BoysResult{c_loc(), centers(), converged, iterations}.
+/// Boys (Foster-Boys) localization of given orbitals.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, c_orbs, max_iter=200))]
 pub(crate) fn boys_localize(
@@ -251,23 +241,24 @@ pub(crate) fn parse_kernel_list(
         .map_err(bad)
 }
 
-/// Choose the mixed-precision kernels for this process (the Python side of
-/// `[precision]`), independently of the device: `mode` is `"f64"` (the
-/// default) or `"mixed"`, `mixed_kernels` a list of kernel names (default: the
-/// kernels this build ships). Strict: an unknown value is a `ValueError`.
+/// Choose the mixed-precision kernels for this process (the Python side
+///     of the ``[precision]`` input section), independently of the device.
 ///
-/// The request is staged, not installed: only the next `configure_gpu(...)`
-/// installs it, together with the device settings (call this first; a
-/// `configure_gpu` `precision` / `mixed_kernels` alias that disagrees with it
-/// is a `ValueError`). Until then every calculation raises `RuntimeError`
-/// ("configure_precision staged a request; call configure_gpu() to install
-/// it"). Call `configure_gpu()` with no
-/// arguments to install and check the combination now: `mode = "mixed"` with
-/// a device kernel needs a GPU mode, and with the GPU off only kernels with a
-/// CPU mixed path are accepted. After the settings are installed or read this
-/// is a `RuntimeError`. Every result then reports what ran in its `precision`
-/// record. Returns the staged request, `{"mode", "mixed_kernels"}` (`None`
-/// for a key not given).
+///     ``mode`` is ``"f64"`` (default) or ``"mixed"``; ``mixed_kernels`` lists
+///     kernel names, one per item (default: the kernels this build ships).
+///     The request is staged; only the next ``configure_gpu(...)`` installs it,
+///     together with the device settings (call this first). Until then every
+///     calculation raises ``RuntimeError("... configure_precision staged a
+///     request; call configure_gpu() to install it")``: a staged request is never
+///     dropped and never resolved implicitly. Call ``configure_gpu()`` with no
+///     arguments to install and check it with the GPU off: only kernels with a
+///     CPU mixed path are accepted then. Returns
+///     ``{"mode": str | None, "mixed_kernels": list[str] | None}``.
+///
+///     Raises:
+///         ValueError: an unknown mode or kernel name, an empty list, a comma
+///             inside a list item, or a key staged twice with different values.
+///         RuntimeError: the settings were already installed or read.
 #[pyfunction]
 #[pyo3(signature = (mode=None, mixed_kernels=None))]
 pub(crate) fn configure_precision<'py>(
@@ -370,11 +361,7 @@ pub(crate) fn configure_gpu<'py>(
     gpu_status(py)
 }
 
-/// Shell geometry of `basis_set` on `mol` (works for orbital AND auxiliary
-/// sets): returns (centers, first_function_offsets, n_functions) with shapes
-/// ((n_shells, 3) in Bohr, (n_shells,), (n_shells,)). Enough to build
-/// geometric fitting domains from Python (aux functions within r_cut of an
-/// orbital center).
+/// Shell geometry: (centers (n_shells,3), offsets (n_shells,), dims (n_shells,)).
 #[pyfunction]
 pub(crate) fn shell_info<'py>(
     py: Python<'py>,
@@ -402,9 +389,7 @@ pub(crate) fn shell_info<'py>(
     ))
 }
 
-/// 2-center metric (P|w|Q) over the auxiliary basis, shape (naux, naux).
-/// Default w = Coulomb; `operator`/`omega`/`r0` follow the same RAW
-/// Bohr-native conventions as `compute_eri3_mo`.
+/// 2-center metric (P|w|Q) over the auxiliary basis (naux, naux).
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, aux_basis_set, operator="coulomb", omega=None, r0=None))]
 pub(crate) fn compute_metric_2c<'py>(
@@ -475,31 +460,35 @@ pub(crate) fn _cli_main(py: Python<'_>) -> PyResult<()> {
     }
 }
 
-/// Which build of ferric is this?
+/// Install the CUDA backend settings for this process (the Python side of
+///     the ``[gpu]`` input section) and return ``gpu_status()``.
 ///
-/// Returns a dict with:
+///     ``preset`` is one of ``"off"``, ``"auto"``, ``"on"``, ``"mixed"``,
+///     ``"auto-mixed"`` and sets ``mode`` and ``precision`` together; ``mode``,
+///     ``precision`` and ``mixed_kernels`` may sit beside it only if they agree.
+///     Arguments given here override ``FERRIC_GPU*`` environment variables.
+///     Unlike ``gpu_status()``, ``mode="on"`` with no usable device (or in a build
+///     without the ``gpu`` feature) is an error.
 ///
-/// - ``version`` (str): the PEP 440 package version, same as
-///   ``ferric.__version__``. A checkout carries a ``.devN`` version; only a
-///   release wheel built from a ``v*`` tag has the plain version.
-/// - ``commit`` (str): full git hash of the source tree the extension was
-///   compiled from, or ``"unknown"`` when that tree was not a git checkout.
-/// - ``dirty`` (bool or None): whether any tracked file differed from
-///   ``commit`` (untracked files never count); ``None`` when unknown.
-/// - ``profile`` (str): cargo build profile, ``"release"`` or ``"debug"``.
-/// - ``libint_version`` (str): version of the libint2 headers the integral
-///   shim was compiled against, or ``"unknown"``.
-/// - ``libint_max_deriv_order`` (int): ``LIBINT2_MAX_DERIV_ORDER`` of that
-///   libint2 (1 = gradients only, 2 = analytic Hessians too).
-/// - ``libint_max_am`` (dict[str, list[int]]): max angular momentum per
-///   integral class (``"eri"``, ``"eri3"``, ``"eri2"``, ``"onebody"``),
-///   entry ``d`` for derivative order ``d``. Tells the PyPI wheel (small
-///   libint) from a conda-forge 2.13.1 build, which share version and commit.
-/// - ``libint_g12_max_am`` (int or None): ``LIBINT2_MAX_AM_R12kG12``.
-/// - ``libint_linkage`` (str): ``"static"`` or ``"shared"`` libint2.
+///     Settings are process-global. Call this once, before ``gpu_status()`` or any
+///     GPU work; a repeated call with identical settings is a no-op, also after
+///     ``gpu_status()``. The preset is not a ``GpuStatus`` field: it is visible
+///     only in the ``FERRIC_GPU_PRESET`` audit line printed to stderr on the first
+///     call. ``mixed_kernels`` takes one kernel name per list item.
 ///
-/// All values are fixed when the extension is compiled, so they describe the
-/// loaded ``.so`` even when it is a symlink into some other checkout.
+///     Raises:
+///         ValueError: unknown or out-of-range value (negative ``device`` /
+///             ``min_flops``, non-positive or non-finite ``memory_gb``), a preset that disagrees with ``mode`` /
+///             ``precision``, mixed precision with no shipped kernel or no device
+///             mode, or ``mode="on"`` that cannot be satisfied. The message names
+///             the keys involved.
+///         RuntimeError: the settings were already installed or read with
+///             different values.
+///
+///     ``precision`` and ``mixed_kernels`` are deprecated aliases of
+///     ``configure_precision(mode=..., mixed_kernels=...)``; a request staged by
+///     ``configure_precision`` is installed with these settings, and an alias
+///     that disagrees with it is a ``ValueError``.
 #[pyfunction]
 pub(crate) fn build_info(py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
     let d = pyo3::types::PyDict::new(py);

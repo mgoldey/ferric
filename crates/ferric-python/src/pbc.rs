@@ -1691,36 +1691,8 @@ fn gamma_open_entry(
     run_open_shell(py, p.s, o, p.start_name)
 }
 
-/// Gamma-point periodic **UHF** (spin state from the Molecule's
-/// multiplicity). Same cell/J-K/units/strictness contract as
-/// `run_rhf_gamma` (lattice rows in Å, omega in Å⁻¹, jk "dense"|"rsgdf",
-/// auxbasis/memory_budget_gb only with rsgdf, max_eri_gb only with dense,
-/// `range_split` = the opt-in RS-GDF range split on an rsgdf ENERGY run:
-/// None/False off, True lambda 1, a number > 0 = lambda; a ValueError with
-/// jk="dense" or with_gradient/with_stress). Every Gamma binding below
-/// shares the `range_split` contract.
-///
-/// `ewald_start` ("staged" | "direct"; exxdiv="ewald" only — passing it with
-/// "none" is a ValueError). Default "staged": converge with exxdiv="none",
-/// then continue with ewald from those MOs (avoids the Gamma Ewald trap,
-/// where a direct ewald SCF from the core guess lands in a hole state).
-/// The result reports the per-spin gaps against the applied Madelung shift
-/// (`gaps_satisfied`).
-///
-/// Hard errors (ValueError): charged cell, incompatible electron
-/// count / multiplicity, and every refusal of the Rust driver.
-///
-/// `with_gradient` / `with_stress` (default False): after the SCF, compute
-/// the analytic Gamma-point nuclear gradient (`result.gradient()`, natoms x 3,
-/// dE/dR in Hartree/Bohr per cell, the molecular `gradient()` convention)
-/// and/or stress (`result.stress()`, 3 x 3 σ = (1/Ω) dE/dε in Hartree/Bohr³)
-/// of the energy the result reports, on the SAME J/K (dense AFT, or RS-GDF
-/// built with its gradient pieces). Each is `None` when not requested. The
-/// SCF must converge (a derivative at a non-stationary density is refused).
-///
-/// Validated (tests/test_pbc_bindings.py vs crates/ferric-pbc/tests/pbc_uhf.rs):
-/// H atom / STO-3G (PySCF digits), a = 4 Bohr cube, PySCF 2.13 pbc.scf.UHF
-/// AFTDF: E = -0.402177788224 (none) / -0.756839973159 (ewald), <S^2> 0.75.
+/// Gamma-point periodic UHF. ewald_start "staged" (default) | "direct",
+///     exxdiv="ewald" only (ValueError with "none").
 #[pyfunction]
 #[pyo3(signature = (
     mol, lattice, basis_set, exxdiv="ewald", ewald_start=None, omega=None,
@@ -1771,20 +1743,8 @@ fn run_uhf_gamma(
     )
 }
 
-/// Gamma-point periodic **ROHF** (Guest-Saunders Roothaan coupling on one
-/// MO set). Same contract as `run_uhf_gamma` (ewald_start, jk, units,
-/// strictness, with_gradient/with_stress), except that `with_stress=True`
-/// with jk="rsgdf" is a ValueError (the ROHF/ROKS stress exists on the dense
-/// AFT J/K only).
-///
-/// KNOWN LIMITATION: ferric's DIIS ROHF does not converge on the periodic
-/// triclinic 4H s+p triplet (the Rust suite's `pbc_rohf.rs` case is
-/// `#[ignore]`d; PySCF converges there to -0.581222768976). A non-converged
-/// SCF stage is an error, never a silently returned energy. ROKS through the
-/// same injected path converges and matches its pins.
-///
-/// Validated: for one electron (H atom, a = 4 Bohr, STO-3G PySCF digits)
-/// ROHF == UHF == the PySCF pins -0.402177788224 / -0.756839973159.
+/// Gamma-point periodic ROHF. KNOWN LIMITATION: does not converge on the
+///     triclinic 4H s+p triplet (non-convergence is an error, not a number).
 #[pyfunction]
 #[pyo3(signature = (
     mol, lattice, basis_set, exxdiv="ewald", ewald_start=None, omega=None,
@@ -1852,37 +1812,22 @@ fn check_gamma_open_ks(s: &PbcSetup, functional: &str, restricted_open: bool) ->
         .map_err(|e| val_err(format!("{}: functional {functional:?}: {e}", s.fname)))
 }
 
-/// Gamma-point periodic **UKS**. `functional`: LDA/GGA/global hybrids
-/// (e.g. "LDA", "PBE", "PBE0") and range-separated (CAM) GGA hybrids (any
-/// libxc one is accepted; "HSE06" and "HYB_GGA_XC_CAM_B3LYP" are pinned,
-/// open-shell "HYB_GGA_XC_WB97X" is accepted, not pinned: J from the Gamma
-/// J/K, the attenuated K per spin from the k = 0 point of the k-point
-/// range-separated exchange, dense AFT or an RS-GDF fit on `auxbasis`;
-/// `with_gradient` / `with_stress` run for HSE06 / CAM-B3LYP on either J/K
-/// (`ferric_pbc::gamma_rsh::gamma_uks_rsh_gradient` / `_stress`, the 1x1x1
-/// k-point UKS force and stress on the SCF's own exchange); either for
-/// another range-separated hybrid, and `range_split`, are ValueErrors;
-/// `exact_exchange_fraction` is the short-range `c_sr`,
-/// `madelung` the mixed constant). The pure meta-GGAs SCAN / r2SCAN run as an
-/// ENERGY on `jk="dense"` (`ferric_pbc::dft::gamma_uks`, per-spin tau); their
-/// `with_gradient` / `with_stress`, the RS-GDF J/K and any other meta-GGA are
-/// ValueErrors (`run_uks_kpts` on a (1, 1, 1) mesh, the Gamma point, has the
-/// SCAN / r2SCAN forces and stress); VV10 and double hybrids are refused. Grid: Treutler-Ahlrichs `n_radial` x
-/// Lebedev `n_angular` per atom with SSF partitioning over periodic images
-/// within `neighbour_cutoff` (Å; None = max(10 Bohr, covering-radius
-/// bound)). `neighbour_switch` W (Å, default 0.0 = the hard cutoff, issue
-/// #495) tapers each image atom's presence to zero over the last W before
-/// the cutoff, so the energy stays continuous as images cross it; the force
-/// and stress carry the taper's derivative. With W > 0 the automatic cutoff
-/// grows by W and an explicit one must exceed the covering bound by W
-/// (`ferric_pbc::dft::PeriodicGridConfig::neighbour_switch`); a negative or
-/// non-finite W is a ValueError. Every KS binding (`run_rks_gamma`,
-/// `run_roks_gamma`, `run_rks_kpts`, `run_uks_kpts`, `run_roks_kpts`) takes
-/// it with this contract. Otherwise the `run_uhf_gamma` contract
-/// (ewald_start, jk, units).
-///
-/// Validated vs crates/ferric-pbc/tests/pbc_uks.rs: H atom, a = 4 Bohr,
-/// STO-3G PySCF digits, SSF 75x302 D = 10 Bohr, ewald: LDA -0.667583328116.
+/// Gamma-point periodic UKS (LDA/GGA/global hybrids, and range-separated
+///     (CAM) GGA hybrids as an energy: any libxc one is accepted, "HSE06" and
+///     "HYB_GGA_XC_CAM_B3LYP" are pinned (open-shell "HYB_GGA_XC_WB97X": accepted,
+///     not pinned); dense or RS-GDF. Their with_gradient runs for HSE06 and
+///     CAM-B3LYP on jk="dense" (the 1x1x1 k-point UKS force on the SCF's
+///     exchange); with_stress, with_gradient on jk="rsgdf" or for wB97X, and
+///     range_split raise). Meta-GGA raises (use run_uks_kpts with mesh
+///     (1, 1, 1)); VV10 raises. neighbour_cutoff in Angstrom (None = max(10
+///     Bohr, covering bound)). neighbour_switch W in Angstrom (default 0.0 = the
+///     hard cutoff): W > 0 tapers each image atom's presence in the grid
+///     partition to zero over the last W before the cutoff, so the energy is
+///     continuous as images cross it (force and stress include the taper's
+///     derivative); the automatic cutoff then grows by W and an explicit one must
+///     exceed the covering bound by W. Negative or non-finite W raises
+///     ValueError. Every KS binding (run_rks_gamma, run_roks_gamma, run_rks_kpts,
+///     run_uks_kpts, run_roks_kpts) takes neighbour_switch with this contract.
 #[pyfunction]
 #[pyo3(signature = (
     mol, lattice, basis_set, functional, exxdiv="ewald", ewald_start=None,
@@ -1945,31 +1890,11 @@ fn run_uks_gamma(
     )
 }
 
-/// Gamma-point periodic **ROKS** (spin-polarized XC, Roothaan coupling on
-/// one MO set). Same functional/grid contract as `run_uks_gamma`, range-
-/// separated hybrids included (`ferric_pbc::gamma_rsh::gamma_roks_any_keep`):
-/// their `with_gradient` runs for HSE06 / CAM-B3LYP on either J/K
-/// (`ferric_pbc::gamma_rsh::gamma_roks_rsh_gradient`, the 1x1x1 k-point ROKS
-/// force on the SCF's own exchange); their `with_stress` is a ValueError (no
-/// Gamma library entry; `run_roks_kpts` on a (1, 1, 1) mesh, the Gamma
-/// point, has it). `with_stress=True` with jk="rsgdf" is a ValueError, as
-/// for ROHF.
-///
-/// KNOWN LIMITATION (shared with `run_rohf_gamma`): the zero-XC ROHF limit
-/// does not converge on the triclinic 4H s+p triplet; ROKS with a real
-/// functional converges there (pinned in crates/ferric-pbc/tests/pbc_rohf.rs).
-///
-/// Validated: for one electron ROKS == UKS (H atom, a = 4 Bohr, SSF 75x302,
-/// LDA -0.667583328116).
-///
-/// The pure meta-GGAs SCAN / r2SCAN run as an ENERGY on `jk="dense"`
-/// (`ferric_pbc::rohf::gamma_roks`, DIIS solver); their `with_gradient` /
-/// `with_stress`, the RS-GDF J/K and any other meta-GGA are ValueErrors.
-///
-/// `max_iter=None` takes the `GammaRoksConfig::new` default: 600 with a
-/// 0.05 Ha ramped level shift for a hybrid (a > 0, a DIIS robustness default
-/// that vanishes at convergence), 200 and no shift otherwise. An explicit
-/// `max_iter` overrides only the iteration cap.
+/// Gamma-point periodic ROKS (functional/grid contract of run_uks_gamma:
+///     range-separated hybrids run as an energy, dense or RS-GDF, and raise with
+///     with_gradient / with_stress / range_split; meta-GGA raises). max_iter=None:
+///     600 with a 0.05 Ha ramped level shift for a hybrid (a > 0 or range-separated),
+///     else 200 and no shift.
 #[pyfunction]
 #[pyo3(signature = (
     mol, lattice, basis_set, functional, exxdiv="ewald", ewald_start=None,
@@ -2186,41 +2111,14 @@ fn gamma_rsh_derivatives(
     Ok(out)
 }
 
-/// Closed-shell Gamma-point periodic **RKS**. Functional and grid contract
-/// as `run_uks_gamma` (no ewald_start: RKS runs one SCF in the requested
-/// exxdiv); cell/J-K/units/strictness as `run_rhf_gamma`. An open shell or
-/// odd electron count is a ValueError (use `run_uks_gamma`).
-///
-/// `with_gradient` / `with_stress` (default False): after the SCF, compute
-/// the analytic Gamma-point nuclear gradient (`result.gradient()`, natoms x 3,
-/// dE/dR in Hartree/Bohr per cell, the molecular `gradient()` convention)
-/// and/or stress (`result.stress()`, 3 x 3 σ = (1/Ω) dE/dε in Hartree/Bohr³)
-/// of the energy the result reports, on the SAME J/K (dense AFT, or RS-GDF
-/// built with its gradient pieces). Each is `None` when not requested. The
-/// SCF must converge (a derivative at a non-stationary density is refused).
-///
-/// Meta-GGA: only the pure SCAN / r2SCAN / TPSS. Their with_gradient /
-/// with_stress route the Gamma SCF through the 1x1x1 k-point force / stress
-/// (`ferric_pbc::gamma_mgga`) on the dense-AFT J; with jk="rsgdf" they are a
-/// ValueError. The extra 1x1x1 kernels (32 nao^4 bytes) count against
-/// `max_eri_gb`.
-///
-/// Range-separated hybrids (HSE06, CAM-B3LYP, wB97X): J from the Gamma J/K,
-/// the attenuated K from the k = 0 point of the k-point range-separated
-/// exchange (dense AFT or an RS-GDF fit on `auxbasis`). `with_gradient` /
-/// `with_stress` (HSE06, CAM-B3LYP) run on either J/K
-/// (`ferric_pbc::gamma_rsh::gamma_rks_rsh_gradient` / `_stress`: the 1x1x1
-/// k-point force and stress on the SCF's own exchange; another
-/// range-separated hybrid is a ValueError). `range_split` with an RSH
-/// functional
-/// is a ValueError (it would shape the Gamma J only), and the
-/// result's `exact_exchange_fraction` is the short-range `c_sr`, `madelung`
-/// the mixed `c_sr v_M + (c_lr - c_sr) v_M^LR(omega)` constant. wB97X-V stays
-/// refused (VV10).
-///
-/// Validated vs crates/ferric-pbc/tests/pbc_rks.rs: H2 / STO-3G (PySCF
-/// digits), a = 4 Bohr, SSF 75x302 D = 10 Bohr, ewald: LDA -1.521871150768,
-/// 36234 grid points.
+/// Closed-shell Gamma-point periodic RKS; open shells raise ValueError.
+///     Meta-GGA: only SCAN / r2SCAN / TPSS; with_gradient / with_stress route the
+///     Gamma SCF through the 1x1x1 k-point force / stress (jk="dense" only).
+///     Range-separated hybrids (HSE06, CAM-B3LYP, wB97X): attenuated K via the
+///     k = 0 point of the k-point RSH exchange (dense or RS-GDF); with_gradient /
+///     with_stress run for HSE06 and CAM-B3LYP on jk="dense" (the 1x1x1 k-point
+///     force and stress on the SCF's exchange) and raise with jk="rsgdf" or any
+///     other range-separated hybrid (wB97X: energy only).
 #[pyfunction]
 #[pyo3(signature = (
     mol, lattice, basis_set, functional, exxdiv="ewald", omega=None,
@@ -2514,20 +2412,8 @@ fn run_gamma_corr(
     })
 }
 
-/// Gamma-point closed-shell **MP2**: Gamma RHF (the `run_rhf_gamma`
-/// assembly) + MP2 in one call.
-///
-/// `exxdiv` (the REFERENCE's exxdiv) and `denominators` are REQUIRED — there
-/// is no default convention. `denominators`: "shifted" (occupied energies
-/// Madelung-shifted, the physical convention; residual vs the molecule
-/// O(a^-3)) or "unshifted" (exxdiv="none" occupied energies; O(1/a)).
-/// Every exxdiv/denominators pair is valid; the shift is applied
-/// consistently. jk="dense" uses exact dense (ia|jb); jk="rsgdf" the fitted
-/// B of the SCF. `memory_budget_gb` (rsgdf only) also bounds the MP2 step.
-///
-/// Validated vs crates/ferric-pbc/tests/pbc_mp2.rs (PySCF 2.13 pbc.mp.RMP2,
-/// AFTDF): H2 / STO-3G (PySCF digits), a = 4 Bohr: -5.891222456423e-3
-/// (unshifted), -3.881428851328e-3 (shifted).
+/// Gamma RHF + MP2 in one call. exxdiv (the reference's) and denominators
+///     ("shifted" | "unshifted") are required.
 #[pyfunction]
 #[pyo3(signature = (
     mol, lattice, basis_set, exxdiv, denominators, omega=None, max_eri_gb=None,
@@ -2571,16 +2457,9 @@ fn run_mp2_gamma(
     run_gamma_corr(py, s, o, denominators)
 }
 
-/// Gamma-point closed-shell **dRPA**: Gamma RHF + dRPA in one call. The
-/// `exxdiv`/`denominators` contract is `run_mp2_gamma`'s.
-///
-/// jk="rsgdf": frequency quadrature on the fitted B, `quad_points` points
-/// (None = 40). jk="dense": the exact plasmon formula on the dense (ia|jb),
-/// which has no quadrature — passing `quad_points` there is a ValueError.
-///
-/// Validated vs crates/ferric-pbc/tests/pbc_drpa.rs (PySCF 2.13 AFTDF pins):
-/// H2 / STO-3G (PySCF digits), a = 4 Bohr: -1.000052013959e-2 (unshifted),
-/// -6.938130614440e-3 (shifted).
+/// Gamma RHF + dRPA in one call. jk="dense" is the exact plasmon formula
+///     (quad_points there is a ValueError); jk="rsgdf" uses frequency quadrature
+///     (quad_points, None = 40).
 #[pyfunction]
 #[pyo3(signature = (
     mol, lattice, basis_set, exxdiv, denominators, omega=None, max_eri_gb=None,
@@ -3112,23 +2991,14 @@ fn krhf_driver(
     Ok((r, madelung, derivs))
 }
 
-/// Closed-shell **k-point RHF** on a `mesh = (n1, n2, n3)` k-mesh.
-///
-/// `centring`: "gamma" (contains Gamma; PySCF `make_kpts(n)`) or "mp"
-/// (Monkhorst-Pack, PySCF `with_gamma_point=False`). Strict. jk="dense":
-/// the toy-scale dense k-point AFT kernels (`2 N_k^2 nao^4 x 16` bytes,
-/// capped by `max_eri_gb`, default 0.5 GiB). jk="rsgdf": per-q RS-GDF,
-/// REQUIRES `auxbasis`, bounded by `memory_budget_gb`. The same
-/// cell/units/strictness contract as `run_rhf_gamma`; SCF convergence by
-/// `energy_conv` (|dE| per cell) AND `grad_conv` (max orbital gradient).
-///
-/// `range_split` (jk="rsgdf" only): the opt-in RS-GDF range split, the
-/// Gamma bindings' contract (None/False off, True lambda 1, a number > 0 =
-/// lambda; ValueError with jk="dense").
-///
-/// Validated vs crates/ferric-pbc/tests/pbc_krhf.rs (PySCF 2.13 KRHF,
-/// AFTDF): H2 / STO-3G (PySCF digits), a = 4 Bohr, Gamma-centred 1x1x2:
-/// -0.902683427348 (none) / -1.354143879961 (ewald).
+/// Closed-shell k-point RHF. centring "gamma" | "mp" (strict).
+///     range_split: the Gamma bindings' opt-in RS-GDF range split (jk="rsgdf").
+///     with_gradient / with_stress (default False) add the analytic forces and
+///     stress of the converged SCF (result.gradient() / result.stress(), units as
+///     the Gamma bindings); range_split with either is a ValueError. The hcore and
+///     J/K the SCF built stay in memory for the derivative and are charged
+///     against memory_budget_gb (jk="rsgdf"), so a derivative run needs the
+///     energy's tensors plus the derivative's own working set.
 #[pyfunction]
 #[pyo3(signature = (
     mol, lattice, basis_set, mesh, exxdiv="ewald", centring="gamma", omega=None,
@@ -3210,16 +3080,9 @@ fn kuhf_driver(
     Ok((r, derivs))
 }
 
-/// **k-point UHF** (spin state from the Molecule's multiplicity; electrons
-/// per cell). Mesh/centring/jk contract as `run_rhf_kpts`; `ewald_start` as
-/// `run_uhf_gamma` (exxdiv="ewald" only; default "staged"). `s2` is
-/// `<S^2>` of the giant (supercell) determinant, NOT per cell.
-///
-/// `range_split` as `run_rhf_kpts`.
-///
-/// Validated vs crates/ferric-pbc/tests/pbc_kuhf.rs (PySCF 2.13 KUHF,
-/// AFTDF): H atom / STO-3G (PySCF digits), a = 4 Bohr, Gamma-centred 1x1x2:
-/// -0.399399818915 (none) / -0.625130045222 (ewald), giant <S^2> = 2.
+/// k-point UHF; s2 is the giant (supercell) determinant's <S^2>.
+///     range_split, with_gradient and with_stress as run_rhf_kpts (the forces and
+///     stress differentiate the final, Ewald, stage).
 #[pyfunction]
 #[pyo3(signature = (
     mol, lattice, basis_set, mesh, exxdiv="ewald", centring="gamma",
@@ -3497,28 +3360,20 @@ fn krks_driver(
     Ok((r, madelung, derivs))
 }
 
-/// Closed-shell **k-point RKS** (LDA / GGA / global hybrids, the pure
-/// meta-GGAs SCAN / r2SCAN / TPSS and range-separated
-/// hybrids) on a `mesh = (n1, n2, n3)` k-mesh. Mesh/centring/jk/SCF-threshold
-/// contract as `run_rhf_kpts`; functional and grid (`n_radial`, `n_angular`,
-/// `neighbour_cutoff` in Å) as `run_rks_gamma`. Refused with a ValueError
-/// naming the gap: an open shell (use `run_uks_kpts` / `run_roks_kpts`),
-/// other meta-GGAs, VV10, TPSS derivatives on `jk="rsgdf"`. Range-separated hybrids (HSE06,
-/// CAM-B3LYP, wB97X; `ferric_pbc::rsh`) run on either J/K; their
-/// `with_gradient` / `with_stress` (HSE06, CAM-B3LYP; other range-separated
-/// hybrids are ValueErrors) run on either J/K (on `jk="rsgdf"` through the
-/// attenuated fit of the SCF's own RS-GDF build). `with_stress=True` computes the analytic
-/// stress (`result.stress()`, Hartree/Bohr³), `with_gradient=True` the analytic
-/// nuclear gradient (`result.gradient()`, natoms x 3, dE/dR in Hartree/Bohr
-/// per cell, the force on ONE copy of each atom of the mesh's supercell; XC on
-/// the energy's own grid; a hybrid uses the SCF's exxdiv) on the J/K the SCF
-/// ran on; `range_split` with it is a ValueError. With `with_gradient` (and
-/// for finite-difference checks) set `neighbour_cutoff` (Å) explicitly: the
-/// default depends on the atom positions in a large sparse cell and the force
-/// omits that dependence. ECP cells are supported, derivatives included. A 1x1x1 Gamma mesh equals
-/// `run_rks_gamma` and an N-point mesh equals the N-fold supercell / N.
-///
-/// Validated vs crates/ferric-pbc/tests/pbc_krks.rs (PySCF 2.13 KRKS).
+/// Closed-shell k-point RKS (LDA / GGA / global hybrids and the pure
+///     meta-GGAs SCAN / r2SCAN / TPSS, and the range-separated
+///     hybrids HSE06, CAM-B3LYP and wB97X with either J/K; with_gradient /
+///     with_stress run for HSE06 and CAM-B3LYP on either J/K, wB97X is
+///     energy only). VV10, hybrid meta-GGAs, and TPSS derivatives on jk="rsgdf"
+///     raise
+///     ValueError naming the unsupported feature; ECP cells are supported,
+///     derivatives included. with_gradient=True gives result.gradient() (the
+///     analytic force, Hartree/Bohr per cell) and with_stress=True result.stress()
+///     (Hartree/Bohr^3), with either jk (TPSS: jk="dense" only); range_split with either is a
+///     ValueError. Set neighbour_cutoff (Angstrom)
+///     explicitly with with_gradient / with_stress or finite differences: the
+///     default depends on the atom positions in a large sparse cell and the
+///     derivative omits that.
 #[pyfunction]
 #[pyo3(signature = (
     mol, lattice, basis_set, functional, mesh, exxdiv="ewald", centring="gamma",
@@ -3731,31 +3586,17 @@ fn kroks_driver(
     Ok((r, derivs))
 }
 
-/// **k-point UKS** (LDA / GGA / global hybrids, plus SCAN / r2SCAN (energy
-/// on either J/K, force and stress on `jk="dense"`) and range-separated (CAM) GGA
-/// hybrids as an energy on either J/K (any libxc one is accepted; "HSE06" and
-/// "HYB_GGA_XC_CAM_B3LYP" are pinned, open-shell "HYB_GGA_XC_WB97X" is
-/// accepted, not pinned) with `with_gradient` / `with_stress` for HSE06 /
-/// CAM-B3LYP on either J/K (`ferric_pbc::kuxcgrad::kpoint_uks_gradient`,
-/// `ferric_pbc::kuxcstress::kpoint_uks_stress`)); spin state from the
-/// Molecule's multiplicity, electrons per cell) on a `mesh = (n1, n2, n3)`
-/// k-mesh. Mesh/centring/jk/SCF-threshold contract as `run_uhf_kpts`
-/// (`ewald_start` too); functional and grid (`n_radial`, `n_angular`,
-/// `neighbour_cutoff` in Å) as `run_rks_kpts`. `result.functional`,
-/// `e_xc`, `exact_exchange_fraction`, `n_grid_points` and `electrons_on_grid`
-/// are set. `with_gradient` / `with_stress` give the analytic nuclear gradient
-/// (`result.gradient()`, natoms x 3, Hartree/Bohr per cell) and stress
-/// (`result.stress()`, 3 x 3, Hartree/Bohr³) of the converged SCF on the J/K
-/// it ran on, XC on the energy's own grid; set `neighbour_cutoff` explicitly
-/// for finite-difference checks. Refused with a ValueError naming the gap:
-/// `with_gradient` / `with_stress` for a range-separated hybrid other than
-/// HSE06 / CAM-B3LYP (wB97X), a meta-GGA force or stress with `jk="rsgdf"`
-/// (the RS-GDF energy runs, `ferric_pbc::kuks::solve_kuks`), other
-/// meta-GGAs, VV10 / double
-/// hybrids, and `range_split` with derivatives. ECP cells are
-/// supported, derivatives included. For a range-separated hybrid
-/// `exact_exchange_fraction` is the short-range `c_sr` and `madelung` the
-/// mixed constant.
+/// k-point UKS (LDA / GGA / global hybrids; spin state from the Molecule's
+///     multiplicity, electrons per cell). Mesh, ewald_start and jk as
+///     run_uhf_kpts, functional and grid as run_rks_kpts. SCAN / r2SCAN (energy
+///     on either J/K; with_gradient and with_stress on jk="dense") and the
+///     range-separated (CAM) GGA hybrids (energy on either J/K; any libxc one is
+///     accepted, "HSE06" and "HYB_GGA_XC_CAM_B3LYP" are pinned, open-shell
+///     "HYB_GGA_XC_WB97X" is accepted, not pinned; with_gradient and with_stress
+///     for HSE06 and CAM-B3LYP on either J/K). Derivatives of wB97X, a meta-GGA
+///     with_gradient / with_stress on jk="rsgdf", TPSS and other meta-GGAs, and
+///     VV10 raise ValueError. with_gradient / with_stress as run_rks_kpts (dense
+///     or RS-GDF J/K) for LDA / GGA / global hybrids.
 #[pyfunction]
 #[pyo3(signature = (
     mol, lattice, basis_set, functional, mesh, exxdiv="ewald", centring="gamma",
@@ -3916,22 +3757,17 @@ fn kpoint_open_entry(
     Ok(out)
 }
 
-/// **k-point ROKS** (restricted open-shell Kohn-Sham; LDA / GGA / global
-/// hybrids, and range-separated (CAM) GGA hybrids on either J/K
-/// (`ferric_pbc::kroks::solve_kroks`), and the pure meta-GGAs SCAN / r2SCAN
-/// on `jk="dense"` with their force and stress (the RS-GDF J/K and TPSS are
-/// ValueErrors); Roothaan effective Fock) on a k-mesh. Arguments and result as
-/// `run_uks_kpts`; `mo_energy` / `mo_energy_beta` are `c† F_σ c` per k in the
-/// Roothaan orbital order. The derivatives run on the dense-AFT and the
-/// unsplit RS-GDF J/K, range-separated hybrids included for HSE06 /
-/// CAM-B3LYP, and on the dense-AFT J/K for SCAN / r2SCAN
-/// (`ferric_pbc::kuxcgrad::kpoint_roks_gradient`,
-/// `ferric_pbc::kuxcstress::kpoint_roks_stress`; wB97X is a ValueError). The
-/// stress gate is the ROHF orbital gradient (converge `grad_conv` well below
-/// 1e-5). `level_shift=None` (default) is the solver's automatic virtual
-/// shift: 0.05 Ha (ramped out at convergence) for a hybrid, 0 otherwise; a
-/// float >= 0 overrides it (0.0 disables it). The applied value is
-/// `result.level_shift`.
+/// k-point ROKS (restricted open-shell Kohn-Sham, Roothaan effective Fock)
+///     with the arguments of run_uks_kpts; LDA / GGA / global hybrids and the
+///     range-separated (CAM) GGA hybrids on either J/K, SCAN / r2SCAN on
+///     jk="dense" only (TPSS, other meta-GGAs and a meta-GGA with jk="rsgdf"
+///     raise). with_gradient / with_stress run with jk="dense" or the unsplit
+///     jk="rsgdf" (range-separated hybrids: HSE06 / CAM-B3LYP, wB97X raises;
+///     SCAN / r2SCAN: jk="dense"); converge grad_conv well below 1e-5 for the
+///     stress (the ROHF orbital-gradient gate). level_shift=None: a 0.05 Ha ramped level shift for a hybrid
+///     (a > 0 or range-separated), else no shift; max_iter stays 200 either way.
+///     A float >= 0 overrides it (0.0 disables it); negative or non-finite
+///     raises ValueError. The applied value is result.level_shift.
 #[pyfunction]
 #[pyo3(signature = (
     mol, lattice, basis_set, functional, mesh, exxdiv="ewald", centring="gamma",
@@ -3992,9 +3828,8 @@ fn run_roks_kpts(
     kpoint_open_entry(py, &a, kw, k, level_shift)
 }
 
-/// **k-point ROHF** (restricted open-shell Hartree-Fock, Roothaan effective
-/// Fock) on a k-mesh: `run_roks_kpts` without a functional (no XC fields on
-/// the result). Dense-AFT J/K derivatives only (see `run_roks_kpts`).
+/// k-point ROHF: run_roks_kpts without a functional (no XC result fields).
+///     Forces and stress run with jk="dense" or the unsplit jk="rsgdf".
 #[pyfunction]
 #[pyo3(signature = (
     mol, lattice, basis_set, mesh, exxdiv="ewald", centring="gamma",
@@ -4334,16 +4169,7 @@ fn run_kcorr(
     Ok(out)
 }
 
-/// **k-point MP2**: k-point RHF + closed-shell KMP2 in one call. Mesh /
-/// centring / jk contract as `run_rhf_kpts`; `exxdiv` (the reference's) and
-/// `denominators` ("shifted" | "unshifted") are REQUIRED, as in
-/// `run_mp2_gamma`. jk="dense" uses exact dense pair tensors (toy scale);
-/// jk="rsgdf" the SCF's own per-q RS-GDF blocks.
-///
-/// Validated vs crates/ferric-pbc/tests/pbc_kcorr.rs (PySCF 2.13 KMP2 on
-/// KRHF, AFTDF): H2 / STO-3G (PySCF digits), a = 4 Bohr, Gamma-centred
-/// 1x1x2: -2.8883196728367e-2 (none/unshifted), -1.8228154905146e-2
-/// (ewald/shifted).
+/// k-point RHF + KMP2 in one call (exxdiv and denominators required).
 #[pyfunction]
 #[pyo3(signature = (
     mol, lattice, basis_set, mesh, exxdiv, denominators, centring="gamma",
@@ -4389,16 +4215,8 @@ fn run_mp2_kpts(
     run_kcorr(py, s, m, o)
 }
 
-/// **k-point dRPA**: k-point RHF + closed-shell k-dRPA in one call. Contract
-/// as `run_mp2_kpts`, plus `energy` ("quadrature" (default): frequency
-/// quadrature with `quad_points` points, None = 40; "plasmon": the exact
-/// plasmon formula; "second-order": the O(Pi^2) term, == direct KMP2).
-/// `quad_points` with "plasmon"/"second-order" is a ValueError (ignored).
-///
-/// Validated: a 1x1x1 mesh reproduces the Gamma dRPA pins of
-/// crates/ferric-pbc/tests/pbc_drpa.rs (H2 / STO-3G, a = 4 Bohr:
-/// -1.000052013959e-2 unshifted, -6.938130614440e-3 shifted), the identity
-/// pinned in pbc_kcorr.rs::one_point_mesh_is_the_gamma_mp2_and_drpa.
+/// k-point RHF + k-dRPA. energy "quadrature" (default) | "plasmon" |
+///     "second-order"; quad_points only with "quadrature".
 #[pyfunction]
 #[pyo3(signature = (
     mol, lattice, basis_set, mesh, exxdiv, denominators, centring="gamma",
@@ -4456,22 +4274,22 @@ fn run_drpa_kpts(
 // ───────────────────────────────────────────────────── auto gdf_omega ──
 
 /// Choose the RS-GDF Ewald split for a Gamma-point RS-GDF energy build of
-/// this cell from a cost model (`ferric_pbc::rsgdf::auto_omega`), without
-/// running it. Pass the returned `omega` (Å⁻¹) as `gdf_omega=` to the
-/// `run_*_gamma` energy bindings; nothing is applied implicitly, and an
-/// explicit `gdf_omega` is never overridden.
+///     this cell from a cost model, without running it (issue #227). Pass the
+///     returned `omega` (1/Angstrom) as `gdf_omega=` to the `run_*_gamma` energy
+///     bindings; nothing is applied implicitly and an explicit `gdf_omega` is
+///     never overridden.
 ///
-/// The model prices the SR 3-centre walk (the build's own triplet count at
-/// each candidate omega, integral-free) against the LR G sum, and leaves the
-/// default 1 Bohr⁻¹ unless a candidate is predicted at least 10% cheaper.
-/// `range_split` / `sr_column_rotation` / `memory_budget_gb` mean what they
-/// do on the run bindings and should match the run. Calibrated for Gamma
-/// energy runs (cc-pVDZ-class bases, 6 threads); not for k-point builds or
-/// forces.
+///     The model prices the SR 3-centre walk (the build's own triplet count at
+///     each candidate omega 0.25..2 Bohr^-1, integral-free and sampled above 1 M
+///     triplets) against the LR G sum and keeps the default 1 Bohr^-1 unless a
+///     candidate is predicted at least 10% cheaper. `range_split`,
+///     `sr_column_rotation` and `memory_budget_gb` mean what they do on the run
+///     bindings and should match the run. Calibrated for Gamma energy runs
+///     (cc-pVDZ-class bases); not for k-point builds or forces.
 ///
-/// Returns a dict: `omega` (Å⁻¹, the value to pass), `omega_bohr`,
-/// `candidates` (list of dicts: `omega` Å⁻¹, `omega_bohr`, `n_sr3`, `n_g`,
-/// `predicted_s`).
+///     Returns a dict: `omega` (1/Angstrom, the value to pass), `omega_bohr`,
+///     `candidates` (list of dicts: `omega`, `omega_bohr`, `n_sr3`, `n_g`,
+///     `predicted_s`).
 #[pyfunction]
 #[pyo3(signature = (
     mol, lattice, basis_set, auxbasis, range_split=None, sr_column_rotation=None,

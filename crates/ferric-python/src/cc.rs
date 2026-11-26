@@ -161,12 +161,12 @@ impl PyCcResult {
     }
 }
 
-/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
-/// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+/// Coupled-cluster doubles (CCD).
 ///
-/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
-/// `run_rhf` solves.
-/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
+///     With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+///     the one `run_rhf` solves.
+///     `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+///     removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
@@ -346,16 +346,40 @@ fn run_ccsd_level(py: Python<'_>, a: CcsdArgs<'_>, level: CcLevel) -> PyResult<P
     })
 }
 
-/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
-/// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+/// Coupled-cluster singles and doubles (CCSD).
 ///
-/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
-/// `run_rhf` (`run_uhf` for an open-shell molecule) solves.
-/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
+///     A closed-shell molecule runs spin-adapted CCSD on an RHF reference. An
+///     open-shell molecule (multiplicity > 1) runs spin-blocked UCCSD on a UHF
+///     reference; ``CcResult.reference`` is then ``"uhf"`` and
+///     ``CcResult.spin_components`` holds the aa / ab / bb energies.
+///     ``frozen_core`` drops the lowest orbitals of each spin.
 ///
-/// `save_reference` / `read_reference` / `read_reference_other_build`: write the
-/// converged reference SCF to a file, or read one in place of the solve
-/// (`crate::reference_file`; the files `run_rimp2` writes and reads too).
+///     ``ladder`` picks how the particle-particle ladder is evaluated:
+///     ``"auto"`` (default: dense when its memory plan fits the budget, RI
+///     otherwise), ``"dense"`` (in-core nv^4, four nv^4 buffers at the peak) or
+///     ``"ri"`` (integral-direct: at most one nv^4-sized panel at full width,
+///     narrower panels when the budget requires; same energy to round-off,
+///     1.3-1.5x slower per iteration). The route taken is on
+///     ``CcResult.ladder_route``. Any other value raises ValueError. An
+///     open-shell molecule accepts ``ladder="auto"`` only.
+///
+///     With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+///     the one `run_rhf` (`run_uhf` for an open-shell molecule) solves.
+///     `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+///     removed its core.
+///     ``save_reference="ref.npz"`` writes the converged reference SCF to that
+///     file (the CLI's ``[scf] save_reference`` checkpoint); ``read_reference``
+///     reads one instead of solving it, so no SCF iteration runs and the
+///     correlated stage gets the stored orbitals bit for bit (its energy is the
+///     saving call's reference's, equal to a fresh call's at the same
+///     thresholds, thread count, ERI route and build). ``run_rimp2``,
+///     ``run_ccsd`` and ``run_ccsd_t`` share the files: a reference saved by
+///     ``run_rimp2(scf_jk="exact")`` is read by ``run_ccsd``. A file is read
+///     only when it is the reference this call would solve (molecule, basis,
+///     spin, every SCF setting that moves its numbers, this build unless
+///     ``read_reference_other_build=True``); anything else, a missing or
+///     corrupted file included, raises ``InputError`` naming why, never a fresh
+///     SCF. CLI and Python files are not interchangeable.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto", scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, save_reference=None, read_reference=None, read_reference_other_build=false, relativistic=None))]
 #[allow(clippy::too_many_arguments)]
@@ -398,16 +422,39 @@ pub(crate) fn run_ccsd(
     run_ccsd_level(py, args, CcLevel::Ccsd)
 }
 
-/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
-/// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+/// CCSD(T): CCSD plus perturbative triples correction.
 ///
-/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
-/// `run_rhf` (`run_uhf` for an open-shell molecule) solves.
-/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
+///     A closed-shell molecule runs spin-adapted CCSD(T) on an RHF reference. An
+///     open-shell molecule (multiplicity > 1) runs spin-blocked UCCSD(T) on a
+///     UHF reference; ``CcResult.spin_components`` then holds the CCSD aa / ab /
+///     bb energies and the four (T) classes.
 ///
-/// `save_reference` / `read_reference` / `read_reference_other_build`: write the
-/// converged reference SCF to a file, or read one in place of the solve
-/// (`crate::reference_file`; the files `run_rimp2` writes and reads too).
+///     ``ladder`` picks how the particle-particle ladder is evaluated:
+///     ``"auto"`` (default: dense when its memory plan fits the budget, RI
+///     otherwise), ``"dense"`` (in-core nv^4, four nv^4 buffers at the peak) or
+///     ``"ri"`` (integral-direct: at most one nv^4-sized panel at full width,
+///     narrower panels when the budget requires; same energy to round-off,
+///     1.3-1.5x slower per iteration). The route taken is on
+///     ``CcResult.ladder_route``. Any other value raises ValueError. An
+///     open-shell molecule accepts ``ladder="auto"`` only.
+///
+///     With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+///     the one `run_rhf` (`run_uhf` for an open-shell molecule) solves.
+///     `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+///     removed its core.
+///     ``save_reference="ref.npz"`` writes the converged reference SCF to that
+///     file (the CLI's ``[scf] save_reference`` checkpoint); ``read_reference``
+///     reads one instead of solving it, so no SCF iteration runs and the
+///     correlated stage gets the stored orbitals bit for bit (its energy is the
+///     saving call's reference's, equal to a fresh call's at the same
+///     thresholds, thread count, ERI route and build). ``run_rimp2``,
+///     ``run_ccsd`` and ``run_ccsd_t`` share the files: a reference saved by
+///     ``run_rimp2(scf_jk="exact")`` is read by ``run_ccsd``. A file is read
+///     only when it is the reference this call would solve (molecule, basis,
+///     spin, every SCF setting that moves its numbers, this build unless
+///     ``read_reference_other_build=True``); anything else, a missing or
+///     corrupted file included, raises ``InputError`` naming why, never a fresh
+///     SCF. CLI and Python files are not interchangeable.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto", scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, save_reference=None, read_reference=None, read_reference_other_build=false, relativistic=None))]
 #[allow(clippy::too_many_arguments)]
@@ -517,14 +564,21 @@ impl PyEomCcsdResult {
     }
 }
 
-/// EE-EOM-CCSD singlet excitation energies on an RHF reference: SCF, then
-/// spin-adapted CCSD (amplitudes converged to |dE| < 1e-10), then the
-/// non-symmetric Davidson. `scf_*` control the reference SCF as in
-/// `run_rhf`; `n_roots`, `conv_tol`, `max_iter`, `max_space` the Davidson.
+/// EE-EOM-CCSD singlet excitation energies on an RHF reference.
 ///
-/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
-/// `run_rhf` solves.
-/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
+///     Spin-adapted CCSD (amplitudes converged to |dE| < 1e-10), then the lowest
+///     ``n_roots`` right eigenpairs of the similarity-transformed Hamiltonian on
+///     the singlet singles+doubles space by a non-symmetric Davidson stopping at
+///     residual ``conv_tol`` (the energy error is first order in it). An
+///     unconverged root raises. ``ladder`` is the CCSD ladder route as in
+///     ``run_ccsd``; the EOM products take the dense nv^4 ladder when its memory
+///     plan fits and an RI-panel one otherwise. No left vectors, so no
+///     oscillator strengths.
+///
+///     With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+///     the one `run_rhf` solves.
+///     `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+///     removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, n_roots=5, conv_tol=1e-6, max_iter=100, max_space=None, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto", scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]

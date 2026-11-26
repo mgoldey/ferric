@@ -189,12 +189,29 @@ fn refuse_pdep_rpa_gradient(s: &GradientScope<'_>) -> PyResult<()> {
     Ok(())
 }
 
-/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
-/// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+/// SR-MP2 + LR-dRPA. omega/terf_omega in Angstrom^-1, r0 in Angstrom.
 ///
-/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
-/// `run_rhf` (`run_uhf` for an open-shell molecule) solves.
-/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
+///     RHF reference for a singlet; UHF reference for multiplicity > 1, with the
+///     spin-summed U-MP2 and U-dRPA (eps = I + Pi_a + Pi_b) and
+///     dMP2 = E_ab + (D_aa + D_bb)/2 (`result.reference` says which).
+///
+///     `scf_jk` / `jk_auxbasis` as in `run_rimp2`, but the default differs: this
+///     entry point has always used RI-JK, so `scf_jk` defaults to "rijk" (on
+///     "def2-universal-jkfit") here, not "exact". A `k_builder` under "rijk" is
+///     a ValueError. The mode used is echoed as `result.scf_jk`.
+///
+///     `omega` (erf split) or `terf_omega` (terf split, at the fixed `r0`) and
+///     `formulation` each accept a list. A list for either returns a list of
+///     results, omega-major in the order given, from ONE reference SCF and one
+///     omega-independent Coulomb stage (each entry is bit-identical to the
+///     separate single-omega call). `omega` as a list with attenuator="terf", or
+///     `terf_omega` as a list with "erf", is a ValueError; empty lists and
+///     repeated formulations are ValueErrors. Scalars return one result.
+///
+///     With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+///     the one `run_rhf` (`run_uhf` for an open-shell molecule) solves.
+///     `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+///     removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, omega=None, frozen_core=None, k_builder=None, formulation=None, attenuator=None, r0=None, terf_omega=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
@@ -815,12 +832,52 @@ impl PyPdepRpaResult {
     }
 }
 
-/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
-/// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+/// PDEP-RPA (dielectric eigendecomposition RPA).
 ///
-/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
-/// `run_rhf` solves.
-/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
+///     point_charges / external_field / solvent embed the REFERENCE RHF, so the
+///     dielectric response is that of the molecule in its environment. Units match
+///     run_rhf: point_charges are (q, x, y, z) with q in e and positions in BOHR
+///     (Molecule.coords() is Angstrom -- convert first); external_field is
+///     (Ex, Ey, Ez) in atomic units (Hartree / (e * Bohr)). solvent and
+///     pcm_lebedev_order are as in run_rhf.
+///
+///     df_j_aux / df_k_aux select density-fitted J / K for the reference SCF, with
+///     run_rhf's spellings. Unset keeps exact four-centre J/K; the CLI's pdep-rpa
+///     reference defaults to RI-JK on "def2-universal-jkfit".
+///
+///     PROPERTIES. properties=True (or export_npz=) also computes the property
+///     bundle the CLI writes under ``[rpa]``, with the TOML key names and defaults
+///     (every compute_* is on except compute_esp_surface; c6_source "ts" by
+///     default, c6_partition unset = the source's default). The arrays appear on
+///     the result under their NPZ names (esp_atoms, alpha_tensor, alpha_atomic,
+///     alpha_ct, c6_iso, ...); one that was not requested or failed is None and a
+///     failure is listed in ``result.property_gaps``. Setting a compute_* /
+///     c6_* / esp_surface_* key without properties=True or export_npz= raises
+///     ValueError, as do unknown c6_source / c6_partition strings (before the SCF).
+///
+///     export_npz=path writes the CLI's NPZ bundle. A requested property that
+///     failed raises RuntimeError AFTER the file is written, unless
+///     allow_partial_npz=True. export_eigpot_prefix=P writes the leading
+///     export_eigpot_count (default 10) eigenpotential densities as
+///     ``P_eigpot_NNN.cube`` on a grid of cube_spacing (0.2) / cube_margin (4.0)
+///     Bohr. Closed-shell only (the property bundle shares the CLI's code).
+///
+///     GRADIENT. with_gradient=True also computes the analytic nuclear gradient of
+///     ``total_energy`` (the Z-vector relaxed RHF + RI-dRPA gradient the CLI's
+///     ``task = "optimize"`` uses), read with ``result.gradient()``: (natoms, 3),
+///     Hartree/Bohr, the Molecule's atom order, the same layout as
+///     ``RiMp2Result.gradient()``. It differentiates the full-rank dense Coulomb
+///     RPA on an exact four-centre closed-shell RHF reference, so an unset
+///     trunc_thresh is 0 (instead of 1e-4) and an unset scf_density_conv is 1e-9.
+///     These raise ValueError before any integral is computed: multiplicity > 1,
+///     a nonzero trunc_thresh, chi0_sparsity other than "dense", k_builder="cosx",
+///     df_j_aux / df_k_aux, point_charges / external_field / solvent, properties /
+///     export_npz / compute_* / export_eigpot_*, and run_diagnostics.
+///
+///     With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+///     the one `run_rhf` solves.
+///     `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+///     removed its core.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, auxbasis,

@@ -775,7 +775,6 @@ pub(crate) fn parse_relativistic(
 ///     selects the SECONDARY SCF's starting point only. The guess can change
 ///     which SCF state the target converges to. The result's guess_basis
 ///     property reports the secondary SCF's iterations, energy and convergence.
-///
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set,
@@ -1637,52 +1636,55 @@ impl PyUhfResult {
     }
 }
 
-/// Unrestricted Hartree-Fock (open-shell). α/β electron counts come from the
-/// molecule's `charge` and `multiplicity` (set via `Molecule.from_xyz_string`).
-/// Exposes the same SCF knob set as `run_rhf`; the convergence aids `level_shift`
-/// and `mom_after_iter` are especially useful for open-shell doublets / radicals
-/// where DIIS plateaus or the occupied set flip-flops.
+/// Unrestricted Hartree-Fock (open-shell). with_gradient=True: the
+///     analytic gradient in result.gradient() under run_rhf's rules (a
+///     fock_hook needs fock_hook_grad; MOM and stability_descent states are
+///     differentiated). fock_hook_grad=grad: as for run_rhf, called as
+///     grad(D_a, D_b, mol) with the converged per-spin densities.
+///     fock_hook=hook adds one
+///     density-dependent term: hook(D_a, D_b) gets the per-spin densities every
+///     iteration and returns (E, V_a, V_b); V_s is added to F_s and E to the
+///     energy, so the result is variational when V_s = dE/dD_s. The exception
+///     and refusal rules are run_rhf's (stability_descent and trah_trigger raise
+///     ValueError with a hook). Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today; non-convergence raises. A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts; with a fock_hook, one more after it when the hook's term eps * sum|D_s*V_s| puts energy_conv below the floor.
 ///
-///   mom_reference     "previous" (default): MOM, when `mom_after_iter` > 0
-///                     arms it, compares against the previous iteration's
-///                     occupied set. "initial": compare against the STARTING
-///                     occupied orbitals (those of `dm0`, or of the guess),
-///                     fixed, from the first iteration: PySCF's
-///                     `scf.addons.mom_occ`. Holds a non-aufbau start such as
-///                     a core hole. Refused with `mom_after_iter` > 0 or
-///                     `stability_descent`.
-///   guess             "minao" (default; "sad" is an alias) or "hcore". The
-///                     bare hcore guess is an explicit opt-in: on some open
-///                     shells (e.g. O2/STO-3G) it converges to a different
-///                     stationary point. An unrecognised value is an error,
-///                     never a silent fallback.
-///   stability_descent False (default). When True, check the converged UHF
-///                     solution's internal stability and, if it is a SADDLE of
-///                     the orbital Hessian, follow the downhill eigenvector and
-///                     re-converge, keeping the lowest state
-///                     (`RhfConfig::check_stability` + `scf_stability_descent`).
-///                     Costs one Davidson eigensolve per solve plus one SCF per
-///                     descent taken. Needed where the default guess lands on a
-///                     saddle: O2 triplet/STO-3G (1.33 mHa above the UHF
-///                     minimum, exactly as PySCF's own default guess does) and
-///                     N2+/6-31G. Before this kwarg the repair was unreachable
-///                     from Python.
-///   trah_trigger    None (default) = off. A positive DIIS-error threshold turns
-///                   on the trust-region augmented-Hessian (TRAH) solver once the
-///                   DIIS error drops below it. A convergence RESCUE: it wins
-///                   iterations but costs wall time. Same as the CLI
-///                   `[scf] trah_trigger`.
-///   soscf, smeared_charges, solvent, pcm_lebedev_order
-///                   As for `run_rhf` (`solve_uhf` honours them; a gradient
-///                   includes the smeared-charge and IEF-PCM terms).
+///     dm0: starting densities, a pair (D_alpha, D_beta) of AO matrices
+///     (nao, nao), such as a previous run's (density_alpha(), density_beta()).
+///     Each spin starts from the natural orbitals of its density, so the first
+///     iteration runs at (D_alpha, D_beta) when each is idempotent (a converged
+///     density) and at its aufbau projection otherwise. Each D_s must be finite,
+///     symmetric to round-off and hold the spin's electron count,
+///     |tr(D_s S) - N_s| <= n^2 eps sum|D_s*S|; a closed-shell total density D
+///     is passed as (D / 2, D / 2). A closed shell (N_alpha = N_beta) has its
+///     beta HOMO and LUMO turned by 0.1 rad, as from any start. dm0 with guess=
+///     or guess_basis= raises ValueError.
 ///
-/// Not offered, because `solve_uhf` cannot honour them
-/// (`ferric_scf::options::entry::ScfEntryPoint::refused`): `diis`,
-/// `smearing_sigma`, `aurora` (closed-shell solver only) and `symmetry` (the
-/// blocked open-shell solve has no Python result type yet).
+///     mom_reference: "previous" (default): MOM, armed by mom_after_iter > 0,
+///     compares each iteration's orbitals with the previous iteration's occupied
+///     set. "initial": it compares them with the STARTING occupied orbitals (the
+///     first N_s natural orbitals of dm0, or the guess's), held fixed and applied
+///     from the first iteration, as PySCF's scf.addons.mom_occ does. This holds
+///     a non-aufbau start, such as a core hole, that aufbau would refill on the
+///     first iteration. With mom_after_iter > 0 or stability_descent=True it
+///     raises ValueError.
 ///
-/// Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today; non-convergence raises.
-/// A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts.
+///
+///     cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit: COSX
+///     knobs, read only with ``k_builder="cosx"`` (any of them with another
+///     ``k_builder`` raises ValueError). A grid is ``(radial, angular)`` or
+///     ``(radial, angular, prune)`` with prune ``"none"`` / ``"sgx"`` /
+///     ``"nwchem"``. The default is the pruned sgx (35, 194) SCF grid plus one
+///     final pass on the sgx (50, 302) grid.
+///     ``guess`` is ``"minao"`` (default; ``"sad"`` is an alias) or ``"hcore"``. ``stability_descent=True``
+///     checks internal stability and follows a downhill orbital-Hessian mode off a
+///     saddle (e.g. O2 triplet/STO-3G, whose default-guess solution is a saddle
+///     1.33 mHa above the UHF minimum).
+///
+///     soscf, smeared_charges, solvent, pcm_lebedev_order: as for run_rhf
+///     (solve_uhf honours them; with_gradient=True includes the smeared-charge
+///     and IEF-PCM terms). Not offered (solve_uhf cannot honour them): diis,
+///     smearing_sigma, aurora (closed-shell solver only) and symmetry (the
+///     blocked open-shell solve has no Python result type yet).
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set,
@@ -1827,27 +1829,27 @@ pub(crate) fn run_uhf(
 
 // ── ROHF (open-shell, spin-pure) ──
 
-/// Restricted Open-Shell Hartree-Fock. α/β occupations come from the
-/// molecule's `charge` and `multiplicity` (set via `Molecule.from_xyz_string`):
-/// `nocc_open = multiplicity - 1` singly-occupied (α) orbitals, the remainder
-/// doubly occupied. Coupling is Guest-Saunders (PySCF default; not a knob).
-/// Returns the same `UhfResult` shape as `run_uhf` — ROHF's `alpha`/`beta`
-/// density and orbital-energy accessors carry the doubly + singly occupied
-/// α set and the doubly-occupied-only β set respectively (single set of
-/// spin-pure MOs, so `mos_alpha`/`mos_beta` coincide internally but the
-/// occupied-orbital semantics differ from UHF). Takes `run_uhf`'s SCF
-/// knobs that `solve_rohf` honours (`guess`, `soscf` (the ROHF Newton step),
-/// `smeared_charges`, `solvent` / `pcm_lebedev_order` and the `cosx_*` knobs
-/// come after `fock_hook_grad`; `solve_rohf` has no COSX final-grid pass, so
-/// the default one is skipped and an explicit `cosx_final_pass=True` or
-/// `cosx_final_grid` is a `RuntimeError` at the solve), not those it cannot: `stability_descent`
-/// (no ROHF stability analysis), `trah_trigger` (no ROHF TRAH step),
-/// `mom_reference` (`"initial"` is UHF/UKS only), `diis`, `smearing_sigma`,
-/// `aurora` and `symmetry` (see
-/// `ferric_scf::options::entry::ScfEntryPoint::refused`).
+/// Restricted Open-Shell Hartree-Fock. with_gradient=True: the analytic
+///     gradient in result.gradient() under run_rhf's rules (a fock_hook needs
+///     fock_hook_grad, called as for run_uhf; the ROHF energy-weighted density
+///     is built from the hooked spin Fock matrices). fock_hook: as for run_uhf; V_a and
+///     V_b enter before the Roothaan effective-Fock combination. Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today. A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts; with a fock_hook, one more after it as for run_uhf.
 ///
-/// Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today.
-/// A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts.
+///     dm0: a pair (D_alpha, D_beta) with run_uhf's checks. The start is one MO
+///     set: the doubly occupied orbitals are the leading natural orbitals of
+///     D_beta, the singly occupied ones those of D_alpha in the rest of the
+///     space, so a converged ROHF pair is reproduced on the first iteration.
+///     dm0 with guess= or guess_basis= raises ValueError.
+///
+///     guess, soscf, smeared_charges, solvent, pcm_lebedev_order and the cosx_*
+///     knobs: as for run_uhf (solve_rohf honours them; soscf is the ROHF Newton
+///     step, with_gradient=True includes the smeared-charge and IEF-PCM terms).
+///     solve_rohf has no COSX final-grid pass: the default one is skipped (the
+///     energy is the SCF-grid energy), and an explicit cosx_final_pass=True or
+///     cosx_final_grid raises RuntimeError at the solve. Not offered (solve_rohf cannot
+///     honour them): stability_descent (no ROHF stability analysis), trah_trigger
+///     (no ROHF TRAH step), mom_reference ("initial" is UHF/UKS only), diis,
+///     smearing_sigma, aurora and symmetry.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set,

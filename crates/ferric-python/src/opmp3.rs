@@ -140,19 +140,25 @@ impl PyOpmp3Result {
     }
 }
 
-/// OP-MP3, SOP-MP3, SSD-OPMP3 (and MP2, MP3, scalar Padé) on an RHF/ROHF
-/// (`reference="hf"`) or RKS/ROKS (`reference=<functional>`) reference, built
-/// on the HF Fock of the reference density with non-Brillouin singles.
-/// `x_ss=None` uses the paper's printed same-spin damping for the reference;
-/// `auxbasis=None` runs exact four-centre integrals (the paper's choice).
-/// `local="amplitude-threshold"` with `eps=` runs the local OP-MP3
-/// (`ferric_mp2::local_opmp3`; RI, closed shell) with the CLI `[local]`
-/// rules and defaults (`fock_screen`, `lambda_boys`, `virtual_space`); it
-/// refuses an ECP basis set, as `run_rimp2(local=...)` does.
+/// OP-MP3, SOP-MP3, SSD-OPMP3 (and MP2, MP3, scalar Pade) on an RHF/ROHF
+///     (``reference="hf"``) or RKS/ROKS (``reference=<functional>``) reference,
+///     built on the HF Fock of the reference density with non-Brillouin
+///     singles. ``x_ss=None`` uses the paper's printed damping for the
+///     reference; ``auxbasis=None`` runs exact four-centre integrals.
 ///
-/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
-/// `run_rhf` / `run_rohf` (`run_dft` / `run_roks` for a functional reference) solves.
-/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
+///     ``local="amplitude-threshold"`` with ``eps=`` (required) runs the local
+///     OP-MP3: both amplitude orders solved on one local-MP2 pattern in
+///     localized orbitals (closed shell, RI: ``auxbasis`` required). The maps
+///     and their defaults are those of ``run_rimp2(local=...)``
+///     (``fock_screen``, ``lambda_boys``, ``virtual_space`` and its
+///     thresholds); ``compute_reference=True`` also runs the canonical OP-MP3
+///     into ``result.local["canonical"]``. The local run refuses an ECP basis set.
+///
+///     With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+///     the one `run_rhf` / `run_rohf` (`run_dft` / `run_roks` for a functional reference)
+///     solves.
+///     `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+///     removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, reference="hf", x_ss=None, auxbasis=None, frozen_core=None, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, local=None, eps=None, compute_reference=None, fock_screen=None, lambda_boys=None, virtual_space=None, virtual_tau=None, virtual_tau_loose=None, virtual_solve_radius=None, virtual_boys_tau=None))]
 #[allow(clippy::too_many_arguments)]

@@ -106,8 +106,10 @@ impl PyCasCiResult {
     }
 }
 
-/// CAS-CI on the canonical RHF orbitals `active_start .. active_start +
-/// n_active`, lowest root of the given `(n_alpha, n_beta)` sector.
+/// CAS-CI on the canonical RHF orbitals ``active_start ..
+///     active_start + n_active`` (exact-J/K RHF; closed-shell reference),
+///     lowest root of the ``(n_alpha, n_beta)`` sector. ``active_start``
+///     defaults to ``(N - n_alpha - n_beta) / 2``.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, n_active, n_elec_active, active_start=None, compute_rdms=true, conv_thresh=1e-9, max_subspace=50, max_iter=200, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
@@ -303,9 +305,38 @@ impl PyCasScfResult {
     }
 }
 
-/// Two-step CASSCF from the canonical RHF orbitals: `n_active` active
-/// orbitals above `n_core` doubly occupied ones, single root of the
-/// `(n_alpha, n_beta)` sector, optionally canonical orbitals on return.
+/// Two-step CASSCF from the canonical exact-J/K RHF orbitals:
+///     ``n_active`` active orbitals above ``n_core`` doubly occupied ones,
+///     lowest root of the ``(n_alpha, n_beta)`` sector (one restricted orbital
+///     set; ``n_alpha != n_beta`` gives the lowest state of that ``M_s``). The
+///     molecule must have an even electron count for the RHF start. Each macro
+///     iteration solves the CAS-CI with RDMs and takes an orbital step:
+///     ``casscf_optimizer="ah"`` (default) is an augmented-Hessian step on the
+///     exact orbital Hessian at fixed RDMs, ``"bfgs"`` inverse BFGS from an
+///     approximate diagonal Hessian (1.4 to 5 times the macro iterations, no
+///     Hessian products). Converged when
+///     ``grad_norm < casscf_grad_tol`` and the energy change is below
+///     ``casscf_energy_tol``; otherwise a ``RuntimeWarning`` is emitted and
+///     ``converged`` is False. ``n_core`` defaults to
+///     ``(N - n_alpha - n_beta) / 2``. ``canonicalize=True`` returns canonical
+///     orbitals (see ``CasScfResult.mo_coeff``) with the CI vector and RDMs in
+///     them, and fills ``mo_energy``. ``casscf_integrals="direct"``
+///     rebuilds J/K and ``(pu|vw)`` from shell quartets every iteration with
+///     Schwarz threshold ``casscf_integral_thresh`` (default 1e-12), with no
+///     ``nbas^4`` array; ``"dense"`` holds the ``nbas^4`` AO block; ``"auto"``
+///     (default) is dense when that block fits in half the memory budget;
+///     ``"ri"`` density-fits the integrals in the bundled auxiliary basis
+///     ``casscf_auxbasis`` (required there and refused elsewhere, e.g.
+///     ``"def2-universal-jkfit"``), holding ``naux * nbas^2`` doubles. RI is an
+///     approximation of the Hamiltonian: the energy differs from the exact one
+///     by the fitting error, and the certificate records it (``ri``) and is
+///     capped to Proven (narrow). ``casscf_stability="check"`` computes the
+///     lowest eigenvalue of the CI-relaxed orbital Hessian at the converged
+///     point (Davidson, one CI linear solve per product; it costs 0.5 to 3
+///     times the CASSCF itself, so the default is ``"off"``); a negative one
+///     makes the point a saddle, emits a ``RuntimeWarning`` and caps the
+///     certificate to ``"ungraded"``. ``"follow"`` then steps along the
+///     negative mode and converges again (at most 5 times).
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, n_active, n_elec_active, n_core=None, casscf_grad_tol=1e-7, casscf_energy_tol=1e-12, casscf_max_iter=300, casscf_max_step=0.2, ci_conv_thresh=1e-10, ci_max_subspace=50, ci_max_iter=200, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, canonicalize=false, casscf_integrals="auto", casscf_integral_thresh=None, casscf_optimizer="ah", casscf_auxbasis=None, casscf_stability="off"))]
 #[allow(clippy::too_many_arguments)]
@@ -527,8 +558,17 @@ impl PyNevpt2Result {
     }
 }
 
-/// SC-NEVPT2 on a CASSCF (default) or CAS-CI reference from the canonical
-/// RHF orbitals. The reference must converge; an unconverged one raises.
+/// Strongly contracted NEVPT2 (Angeli et al., JCP 117, 9138 (2002)) on
+///     a CASSCF (``reference="casscf"``, the ``run_casscf`` settings) or CAS-CI
+///     (``reference="casci"``, on the canonical RHF orbitals) reference from
+///     the exact-J/K RHF; ``casscf_optimizer``, ``casscf_integrals``,
+///     ``casscf_auxbasis`` and ``casscf_stability`` as in ``run_casscf`` (``"ri"`` also density-fits the
+///     SC-NEVPT2 integrals, and is refused with ``reference="casci"``). Dyall
+///     zeroth-order Hamiltonian; core and virtual
+///     orbitals canonical in ``F^I + F^A``, as PySCF ``mrpt.NEVPT``. Raises
+///     when the reference does not converge, for ``n_alpha != n_beta``, and
+///     when the memory budget cannot hold the dense AO integrals and the
+///     ``n_active**6`` intermediates. Single root.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, n_active, n_elec_active, n_core=None, reference="casscf", casscf_grad_tol=1e-7, casscf_energy_tol=1e-12, casscf_max_iter=300, casscf_max_step=0.2, ci_conv_thresh=1e-10, ci_max_subspace=50, ci_max_iter=200, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, casscf_integrals="auto", casscf_integral_thresh=None, casscf_optimizer="ah", casscf_auxbasis=None, casscf_stability="off"))]
 #[allow(clippy::too_many_arguments)]

@@ -311,31 +311,25 @@ impl PyDoubleHybridResult {
     }
 }
 
-/// Run an MP2-based double hybrid (B2PLYP or DSD-PBEP86).
+/// MP2-based double hybrid: kind="b2plyp" (Grimme 2006) or "dsd-pbep86"
+///     (Kozuch and Martin 2013, no dispersion: 0.72 HF, 0.28 PBE, 0.44 P86,
+///     c_os 0.51, c_ss 0.36).
 ///
-/// `kind`: "b2plyp" (Grimme 2006), "dsd-pbep86" (Kozuch and Martin) or
-/// "wb97x-l-v" (omegaB97X-L-V, closed-shell only).
-/// Kozuch and Martin, J. Comput. Chem. 34, 2327 (2013)).
-/// Converges the appropriate DFT reference, then adds scaled MP2 correlation.
+///     ``dispersion="d3bj"`` (or ``"d3(bj)"``) selects the kind's published
+///     D3(BJ) set and adds the D3(BJ) energy: B2PLYP-D3(BJ) keeps B2PLYP's
+///     coefficients; DSD-PBEP86-D3(BJ) is the refit set of Kozuch and Martin
+///     (2013): 0.69 HF, 0.31 PBE, 0.44 P86, c_os 0.52, c_ss 0.22, D3(BJ) s6 0.48,
+///     a1 0, s8 0, a2 5.6. Other values raise ValueError.
 ///
-/// `dispersion="d3bj"` (or `"d3(bj)"`) selects the double hybrid's published
-/// D3(BJ) set and adds its D3(BJ) energy: B2PLYP-D3(BJ) keeps B2PLYP's
-/// coefficients (D3(BJ) row of Goerigk and Grimme, PCCP 13, 6670 (2011));
-/// DSD-PBEP86-D3(BJ) is the refit set of Kozuch and Martin (2013): 0.69 HF,
-/// 0.31 PBE, 0.44 P86, c_os 0.52, c_ss 0.22, D3(BJ) s6 0.48, a1 0, s8 0,
-/// a2 5.6. Any other spelling is an error.
+///     The reference is a UKS when ``mol.multiplicity > 1`` or ``unrestricted``
+///     is True (a singlet UKS equals the RKS route); the PT2 term then uses the
+///     unrestricted RI-MP2 spin components: E_OS = alpha-beta, E_SS =
+///     alpha-alpha + beta-beta.
 ///
-/// The reference is a UKS when `mol.multiplicity > 1` or `unrestricted=True`
-/// (a singlet UKS equals the RKS route); the PT2 term is then
-/// `c_os * E_alpha-beta + c_ss * (E_alpha-alpha + E_beta-beta)` of the
-/// unrestricted RI-MP2 on the UKS orbitals.
-///
-/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
-/// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
-///
-/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
-/// `run_dft` (`run_uks` for the unrestricted route) solves.
-/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
+///     With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+///     the one `run_dft` (`run_uks` for the unrestricted route) solves.
+///     `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+///     removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, kind="b2plyp", frozen_core=None, k_builder=None, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, scf_ri_j_precision=None, dispersion=None, unrestricted=false, lambda_=None, omega=None))]
 #[allow(clippy::too_many_arguments)]
@@ -498,61 +492,122 @@ pub(crate) fn run_double_hybrid(
     })
 }
 
-/// Kohn-Sham DFT (closed-shell). `functional` is an XC name (LDA/PBE/B3LYP/
-/// wB97X-V/…). Convergence aids match the CLI `[scf]` section: `level_shift`
-/// (Ha) and `mom_after_iter` help difficult DFT SCFs converge.
+/// Kohn-Sham DFT (closed-shell). fock_hook: as for run_rhf; with a
+///     hook every convergence-ladder rung runs with the hook applied and SOSCF
+///     off on the rungs that would switch it on (its orbital Hessian does not
+///     include the hook); dispersion and symmetry raise ValueError, and so does
+///     with_gradient=True without fock_hook_grad (as for run_rhf; the KS
+///     gradient of the hooked SCF plus grad(D, mol)). dm0: as for run_rhf; ladder rung 0 starts from it. Note: the final_* residuals, unmet_criteria and the
+///     non-convergence RuntimeWarning are RHF-only today (this result has exit_reason and iterations).
 ///
-/// Note: the final_* residuals, unmet_criteria and non-convergence RuntimeWarning
-/// are RHF-only today (the result has `exit_reason` and `iterations`).
+///     diis_size, integral_thresh, eri, guess, smeared_charges, solvent /
+///     pcm_lebedev_order, stability_descent, aurora, trah_trigger: as for run_rhf
+///     (solve_rhf honours them with a functional too, on every ladder rung).
+///     aurora takes effect only for a hybrid with at least the validated
+///     exact-exchange fraction (the solver keeps other functionals on DIIS);
+///     trah_trigger is skipped for meta-GGAs and range-separated hybrids. dm0
+///     with guess= raises ValueError.
+///     Not offered: diis, smearing_sigma and soscf (the convergence ladder sets
+///     them per rung) and mom_reference ("initial" is UHF/UKS only).
 ///
-/// `symmetry=True`: point-group-blocked closed-shell RKS
-/// (`ferric_scf::symmetric::solve_rhf_symmetric`), returning a
-/// `SymmetricRhfResult` for the symmetrized geometry; `irrep_nelec` pins
-/// electrons per irrep. Refused with `with_gradient` or `dispersion`.
 ///
-/// Density fitting is on by default. `df_j_aux` and `df_k_aux` are set
-/// independently, each defaulting to `def2-universal-jkfit`, so RI-J and
-/// RI-K can use different auxiliary bases with different sizes (`naux_J` and
-/// `naux_K` below):
+///     cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit: COSX
+///     knobs, read only with ``k_builder="cosx"`` (any of them with another
+///     ``k_builder`` raises ValueError). A grid is ``(radial, angular)`` or
+///     ``(radial, angular, prune)`` with prune ``"none"`` / ``"sgx"`` /
+///     ``"nwchem"``. The default is the pruned sgx (35, 194) SCF grid plus one
+///     final pass on the sgx (50, 302) grid.
+///     `dispersion` adds a dispersion correction to the SCF energy (and, with
+///     `with_gradient=True`, its analytic gradient to the gradient):
+///     `"d3bj"` is D3(BJ) with the damping parameters published for
+///     `functional`, `"d3bj(<name>)"` uses `<name>`'s instead; `"mbd"` is
+///     MBD@rsSCS on Hirshfeld volume ratios of the converged density with the
+///     beta published for `functional` (PBE, PBE0, HSE06), `"mbd(<name>)"` uses
+///     `<name>`'s beta. Matching is case-insensitive. The MBD@rsSCS gradient
+///     is exact, including the orbital relaxation of the volumes (Z-vector). `None` (the default) applies no correction and leaves the energy
+///     exactly as it was. Any other value, or a functional with no published
+///     parameters, raises ValueError -- there is no spelling that means "compute
+///     a zero correction".
 ///
-/// - Coulomb: RI-J for every functional. `df_j_aux` names another auxiliary
-///   basis; `df_j_aux=""` selects conventional four-centre J. RI-J keeps the
-///   raw packed `(P|mn)` (f32 when it fits, `ri_j_precision`) of at most
-///   `naux_J * nbf * (nbf + 1) / 2` elements (Schwarz pair screening can
-///   drop AO pairs).
-/// - Exchange, by functional:
+///     `grid_radial` / `grid_angular` / `grid_prune` set the main XC grid. All
+///     `None` (the default) is the production grid: 75x110 pruned with
+///     `"nwchem-radial"` (50 radial shells for H/He, 66 for Li-Ne) and a 1e-14
+///     weight cutoff. A size given alone keeps that scheme at that size. `grid_angular`
+///     must be a supported Lebedev order: 6, 14, 26, 38, 50, 74, 86, 110, 146,
+///     170, 194, 230, 266, 302, 350, 434, 590, 770, 974, 1202, 1454, 1730, 2030,
+///     2354, 2702, 3074, 3470, 3890, 4334, 4802, 5294 or 5810 (every
+///     Lebedev-Laikov rule PySCF has).
+///     `grid_prune="nwchem"` applies NWChem-style radial-region angular pruning
+///     (~23% fewer points at 75x110, ~1e-10 Ha), `"nwchem-radial"` (the
+///     default) also thins light atoms' radial grids; `"none"` is the flat grid;
+///     `"defgrid1"` / `"defgrid2"` / `"defgrid3"` are ORCA's DEFGRIDs, which fix
+///     both grid sizes themselves, so combining one with `grid_radial` or
+///     `grid_angular` raises ValueError. Any other value raises ValueError.
+///     Pruning has no table at `grid_angular=50`. With `with_gradient=True` the analytic gradient
+///     differentiates the grid the SCF ran on (including a pruned one).
+///     `grid_weight_cut` (ORCA's WeightCut, e.g. 1e-14) drops every main-grid
+///     point whose final weight (radial x angular x Becke partition) has
+///     absolute value below it; `None` (the default) is 1e-14, and 0.0 is no
+///     cutoff (the grid is then the uncut one bit for bit), and a negative, NaN or infinite value
+///     raises ValueError. The gradient drops the same points, so it is the
+///     gradient of the cut energy (which jumps where a weight crosses the cutoff
+///     under displacement, by about cutoff x integrand).
+///     With `k_builder="cosx"` and `with_gradient=True` the gradient
+///     differentiates the COSX energy; the overlap fit with a functional is not
+///     differentiable (its response needs the XC Fock nuclear derivative), so
+///     `cosx_overlap_fit=False` is required there and the fitted case raises
+///     ValueError before the SCF.
 ///
-///   - pure (LDA/GGA/meta-GGA): no exact exchange, so no RI-K tensor is
-///     built and `df_k_aux` has no effect.
-///   - global hybrid (B3LYP, PBE0, ...): RI-K, a second three-index tensor
-///     beside RI-J's: the metric-dressed packed `(P|mn)` (f64,
-///     `ri_k_precision`) of `naux_K * nbf * (nbf + 1) / 2` elements
-///     (`naux_K * nbf**2` in a `[gpu]` mode that may build K on the
-///     device). `df_k_aux=""` selects exact four-centre K and builds no
-///     RI-K tensor.
-///   - range-separated hybrid (wB97X-V, CAM-B3LYP, ...): exchange only via
-///     two RI-K fitters (short-range erfc and long-range erf), each its own
-///     dressed tensor; `df_k_aux=""` raises RuntimeError.
-///   - `k_builder="cosx"`: COSX replaces RI-K (RIJCOSX), RI-J stays on;
-///     a named `df_k_aux` next to it raises.
+///     symmetry=True (default False; False is byte-identical to before): blocked
+///     closed-shell RKS. Detects the highest Abelian point group, symmetrizes and
+///     reorients the geometry, builds the KS grid in that frame (where it is
+///     exactly symmetric, so no Fock or density symmetrisation is applied) and
+///     blocks the Fock diagonalization by irrep. Returns a SymmetricRhfResult
+///     (NOT a DftResult): the energy belongs to the SYMMETRIZED geometry and no
+///     density/MO matrices are offered. irrep_nelec={"A1": 4, "B2": 2} pins
+///     electrons per irrep (even counts; requires symmetry=True). A partially
+///     filled degenerate shell (stretched H2, singlet O2) raises ValueError unless
+///     irrep_nelec is given: the grid can split such a shell. with_gradient,
+///     dispersion, k_builder="cosx", point_charges/external_field raise
+///     ValueError with symmetry=True. The blocked SCF is one plain solve (no
+///     convergence ladder); non-convergence returns converged=False with a
+///     RuntimeWarning.
 ///
-/// - `k_builder` (`"direct"`, `"link"`, `"cosx"`) picks the
-///   exact-exchange builder and is honoured only where exchange is not
-///   density-fitted. While RI-K is active (the hybrid default) `"direct"`
-///   and `"link"` are IGNORED with a warning, as is any `k_builder` for a
-///   pure or range-separated functional. For a hybrid, `"direct"` needs
-///   `df_k_aux=""`; `"link"` needs `df_j_aux=""` as well, because LinK
-///   builds J and K in one four-centre pass, which RI-J replaces.
-/// - `BasisSet.n_functions(mol)` gives `nbf` (orbital basis) and the
-///   `naux` of an auxiliary basis, for a memory estimate.
-/// - `diis_size`, `integral_thresh`, `eri`, `guess`, `smeared_charges`,
-///   `solvent` / `pcm_lebedev_order`, `stability_descent`, `aurora`,
-///   `trah_trigger` (after `fock_hook_grad`): as for `run_rhf`; `solve_rhf`
-///   honours them with a functional too, on every ladder rung. `aurora` takes
-///   effect only for a hybrid with at least the validated exact-exchange
-///   fraction; `trah_trigger` is skipped for meta-GGAs and range-separated
-///   hybrids. Not offered: `diis`, `smearing_sigma`, `soscf` (the ladder
-///   sets them per rung) and `mom_reference` (`"initial"` is UHF/UKS only).
+///     Density fitting is on by default. ``df_j_aux`` and ``df_k_aux`` are set
+///     independently, each defaulting to ``def2-universal-jkfit``, so RI-J and
+///     RI-K can use different auxiliary bases with different sizes (``naux_J`` and
+///     ``naux_K`` below):
+///
+///     - Coulomb: RI-J for every functional. ``df_j_aux`` names another auxiliary
+///       basis; ``df_j_aux=""`` selects conventional four-centre J. RI-J keeps the
+///       raw packed ``(P|mn)`` (f32 when it fits, ``ri_j_precision``) of at most
+///       ``naux_J * nbf * (nbf + 1) / 2`` elements (Schwarz pair screening can
+///       drop AO pairs).
+///     - Exchange, by functional:
+///
+///       - pure (LDA/GGA/meta-GGA): no exact exchange, so no RI-K tensor is
+///         built and ``df_k_aux`` has no effect.
+///       - global hybrid (B3LYP, PBE0, ...): RI-K, a SECOND three-index tensor
+///         beside RI-J's: the V^-1/2-dressed packed ``(P|mn)`` (f64,
+///         ``ri_k_precision``) of ``naux_K * nbf * (nbf + 1) / 2`` elements
+///         (``naux_K * nbf**2`` in a ``[gpu]`` mode that may build K on the
+///         device). ``df_k_aux=""`` selects exact four-centre K and builds no
+///         RI-K tensor.
+///       - range-separated hybrid (wB97X-V, CAM-B3LYP, ...): exchange only via
+///         two RI-K fitters (short-range erfc and long-range erf), each its own
+///         dressed tensor; ``df_k_aux=""`` raises RuntimeError.
+///       - ``k_builder="cosx"``: COSX replaces RI-K (RIJCOSX), RI-J stays on;
+///         a named ``df_k_aux`` next to it raises.
+///
+///     - ``k_builder`` (``"direct"``, ``"link"``, ``"cosx"``) picks the
+///       exact-exchange builder and is honoured only where exchange is not
+///       density-fitted. While RI-K is active (the hybrid default) ``"direct"``
+///       and ``"link"`` are IGNORED with a warning, as is any ``k_builder`` for a
+///       pure or range-separated functional. For a hybrid, ``"direct"`` needs
+///       ``df_k_aux=""``; ``"link"`` needs ``df_j_aux=""`` as well, because LinK
+///       builds J and K in one four-centre pass, which RI-J replaces.
+///     - ``BasisSet.n_functions(mol)`` gives ``nbf`` (orbital basis) and the
+///       ``naux`` of an auxiliary basis, for a memory estimate.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, functional=None, k_builder=None, with_gradient=false,
@@ -914,15 +969,11 @@ pub(crate) fn refuse_dft_symmetry_extras(
     Ok(())
 }
 
-/// Number of points in the main KS integration grid `run_dft` would build for
-/// `mol` with the same `grid_*` kwargs (same resolver, same builder). Lets a
-/// caller see what pruning or a weight cutoff saves on their own molecule
-/// without running an SCF. Counts via
-/// `ferric_dft::grid::atomic_grid_point_count`: without `grid_weight_cut` it
-/// resolves the same per-shell angular orders as the builder but never
-/// generates points or Becke weights; WITH a cutoff it must evaluate every
-/// point's Becke weight (streamed, no grid allocated), so it costs about as
-/// much as building the grid.
+/// Number of points in the main XC grid `run_dft` builds with these kwargs.
+///
+///     With the default 1e-14 weight cutoff every point's Becke weight is
+///     evaluated (about the cost of building the grid, without its memory);
+///     with `grid_weight_cut=0.0` it is a closed-form count (no grid is built).
 #[pyfunction]
 #[pyo3(signature = (mol, grid_radial=None, grid_angular=None, grid_prune=None, grid_weight_cut=None))]
 pub(crate) fn dft_grid_point_count(
@@ -937,8 +988,8 @@ pub(crate) fn dft_grid_point_count(
     ferric_dft::grid::atomic_grid_point_count(&mol.inner, &cfg, cfg.prune).map_err(make_err)
 }
 
-/// Number of points in the COSX exchange grid `cosx_grid=` describes for
-/// `mol` (`None` = the default COSX SCF grid), without building it.
+/// Number of points in the COSX exchange grid `cosx_grid` describes for
+///     `mol` (None = the default COSX SCF grid), without building it.
 #[pyfunction]
 #[pyo3(signature = (mol, cosx_grid=None))]
 pub(crate) fn cosx_grid_point_count(
@@ -1098,7 +1149,22 @@ pub(crate) fn evaluate_dispersion(
     }
 }
 
-/// Alias under the spec's canonical name. Same surface as `run_dft`.
+/// Kohn-Sham DFT (closed-shell). Alias of run_dft (same grid_* kwargs,
+///     grid_weight_cut included).
+///
+///     `dispersion` adds a dispersion correction to the SCF energy (and, with
+///     `with_gradient=True`, its analytic gradient to the gradient):
+///     `"d3bj"` is D3(BJ) with the damping parameters published for
+///     `functional`, `"d3bj(<name>)"` uses `<name>`'s instead; `"mbd"` is
+///     MBD@rsSCS on Hirshfeld volume ratios of the converged density with the
+///     beta published for `functional` (PBE, PBE0, HSE06), `"mbd(<name>)"` uses
+///     `<name>`'s beta. Matching is case-insensitive. The MBD@rsSCS gradient
+///     is exact, including the orbital relaxation of the volumes (Z-vector). `None` (the default) applies no correction and leaves the energy
+///     exactly as it was. Any other value, or a functional with no published
+///     parameters, raises ValueError -- there is no spelling that means "compute
+///     a zero correction".
+///     symmetry / irrep_nelec: as for run_dft (blocked RKS, SymmetricRhfResult).
+///     dm0: as for run_dft (ladder rung 0 starts from it).
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, functional=None, k_builder=None, with_gradient=false,
@@ -1440,40 +1506,36 @@ fn run_open_ks(
     Ok(result)
 }
 
-/// Unrestricted Kohn-Sham (open-shell DFT): `solve_uhf` with the functional
-/// `functional` (required; no silent LDA default). α/β electron counts come
-/// from the molecule's `charge` and `multiplicity`; a singlet is allowed (the
-/// unrestricted solution of a closed shell). Returns the `UhfResult` of
-/// `run_uhf`: `energy`, per-spin densities, orbital energies, MO coefficients
-/// and occupations, `certificate`, and `gradient()` when
-/// `with_gradient=True` (the analytic UKS gradient, `ks_gradient_uks`, at the
-/// RI-J precision `f64` unless `ri_j_precision` says otherwise).
+/// Unrestricted Kohn-Sham (open-shell DFT): solve_uhf with RhfConfig.xc set,
+///     the route the CLI takes for kind="ksdft" on an open-shell molecule.
 ///
-/// The SCF settings are `run_dft`'s: RI-J and RI-K through
-/// `def2-universal-jkfit` unless `df_j_aux` / `df_k_aux` say `""` (exact),
-/// the production Becke-Lebedev grid unless `grid_*` say otherwise, the
-/// default `RhfConfig` convergence gates. Range-separated hybrids and
-/// meta-GGAs run (energy and gradient); for a VV10 functional (`wB97X-V`) the
-/// gradient agrees with finite differences of the energy to 6e-6 Ha/Bohr
-/// (NH2/6-31G), against ~1e-7 for the others. `run_dft` stays the
-/// closed-shell entry point and refuses `multiplicity > 1`. With
-/// `k_builder="cosx"` there is no RI-K default (as in `run_dft`), and for HF
-/// exchange and global hybrids COSX builds the exchange (tuned by the
-/// `cosx_*` keywords, as in `run_uhf`); with RI-J left on that is RIJCOSX,
-/// and an explicit `df_j_aux=""` keeps exact J. Pure and range-separated
-/// functionals ignore `k_builder="cosx"` (with a warning).
+///     `functional` is required (no silent LDA default). alpha/beta electron counts
+///     come from the molecule's charge and multiplicity; a singlet is allowed and
+///     equals RKS. Returns run_uhf's UhfResult (per-spin densities, orbital
+///     energies, MO coefficients, occupations, certificate). with_gradient=True:
+///     the analytic UKS gradient in result.gradient() (ks_gradient_uks), at the
+///     RI-J precision f64 unless ri_j_precision says otherwise, as for run_dft.
 ///
-/// The keywords after `relativistic` are `run_uhf`'s, with its meaning
-/// (`solve_uhf` honours them with a functional too): `diis_size`,
-/// `integral_thresh`, `eri`, `soscf` (not for range-separated hybrids, which
-/// stay on DIIS), `smeared_charges`, `solvent` / `pcm_lebedev_order`
-/// (IEF-PCM, with its gradient), `stability_descent` (the UKS stability
-/// analysis; a functional it cannot analyse is skipped with a printed
-/// reason), the `cosx_*` knobs, `trah_trigger` (not for meta-GGAs or
-/// range-separated hybrids), `guess_basis` / `guess_projection`,
-/// `mom_reference` and `fock_hook` / `fock_hook_grad`. Not offered: `diis`,
-/// `smearing_sigma`, `aurora` (closed-shell solver only), `symmetry` (the
-/// blocked open-shell solve has no Python result type yet) and `dispersion`.
+///     The SCF settings are run_dft's: RI-J and RI-K through def2-universal-jkfit
+///     unless df_j_aux / df_k_aux say "" or "none" (exact), the production
+///     Becke-Lebedev grid unless grid_* say otherwise, run_rhf's convergence
+///     defaults. Range-separated hybrids and meta-GGAs run (energy and gradient); the
+///     gradient, VV10 (wB97X-V) included, agrees with finite differences of the
+///     energy to ~2e-7 Ha/Bohr (NH2/6-31G).
+///     dm0 is a pair (D_alpha, D_beta) with run_uhf's checks; guess is
+///     "minao" (default) or "hcore". run_dft raises for multiplicity > 1.
+///
+///     The keywords after relativistic are run_uhf's, with its meaning (solve_uhf
+///     honours them with a functional too): diis_size, integral_thresh, eri,
+///     soscf (range-separated hybrids stay on DIIS), smeared_charges, solvent /
+///     pcm_lebedev_order (IEF-PCM, with its gradient), stability_descent (the UKS
+///     stability analysis; a functional it cannot analyse is skipped with a
+///     printed reason), the cosx_* knobs (with k_builder="cosx"), trah_trigger
+///     (not for meta-GGAs or range-separated hybrids), guess_basis /
+///     guess_projection, mom_reference and fock_hook / fock_hook_grad. Not
+///     offered: diis, smearing_sigma, aurora (closed-shell solver only), symmetry
+///     (the blocked open-shell solve has no Python result type yet) and
+///     dispersion (UhfResult has no dispersion fields).
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, functional, k_builder=None, with_gradient=false,
@@ -1585,17 +1647,18 @@ pub(crate) fn run_uks<'py>(
     run_open_ks(py, OpenKs::Uks, mol, basis_set, kw)
 }
 
-/// Restricted open-shell Kohn-Sham: `solve_rohf` with the functional
-/// `functional` (required). One set of spin-pure MOs: `nocc_open =
-/// multiplicity - 1` singly occupied orbitals, the rest doubly occupied
-/// (Guest-Saunders coupling as in `run_rohf`). Same result, gradient
-/// (`ks_gradient_roks`), settings and exclusions as `run_uks`; `guess=`
-/// (MINAO by default) comes after `relativistic` here. As in `run_rohf`, an
-/// explicit `cosx_final_pass=True` or `cosx_final_grid` is a `RuntimeError`
-/// at the solve (no ROHF/ROKS COSX final-grid pass). Beyond `run_uks`'s
-/// exclusions, `solve_rohf` has no TRAH step, no stability analysis and no
-/// `mom_reference="initial"`, so `trah_trigger`, `stability_descent` and
-/// `mom_reference` are not offered (as in `run_rohf`).
+/// Restricted open-shell Kohn-Sham: solve_rohf with RhfConfig.xc set, the
+///     route the CLI takes for kind="rohf" with [dft] functional.
+///
+///     One set of spin-pure MOs: multiplicity - 1 singly occupied orbitals, the
+///     rest doubly occupied (run_rohf's occupations and Guest-Saunders coupling).
+///     Settings, result, gradient (ks_gradient_roks) and exclusions as for
+///     run_uks; guess= ("minao" default, or "hcore") comes after relativistic
+///     here. dm0 is run_rohf's pair. As in run_rohf, an explicit
+///     cosx_final_pass=True or cosx_final_grid raises RuntimeError at the solve
+///     (no ROHF/ROKS COSX final-grid pass), and solve_rohf has no TRAH step,
+///     no stability analysis and no mom_reference="initial", so trah_trigger,
+///     stability_descent and mom_reference are not offered.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, functional, k_builder=None, with_gradient=false,
@@ -1712,20 +1775,13 @@ pub(crate) fn register_open_shell_scf(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-/// Grimme D3(BJ) dispersion energy for a molecule, in Hartree.
+/// MBD@rsSCS dispersion energy (Ambrosetti et al. 2014), standalone.
 ///
-/// Standalone: this does no SCF, so it is the cheap way to add dispersion to an
-/// energy computed elsewhere, or to inspect the correction on its own.
-///
-/// `functional` names the XC functional whose published D3(BJ) damping
-/// parameters to use -- the correction is FITTED per functional, so this is
-/// required, not a convenience. An unknown functional raises rather than
-/// falling back to a default, and an element outside the D3 parameterisation
-/// raises rather than being silently skipped.
-///
-/// `s9` scales the Axilrod-Teller-Muto three-body term. The default 0.0 (off)
-/// is the reference default for a named functional (simple-dftd3 without
-/// `--atm`); `s9=1.0` gives D3(BJ)-ATM. A non-finite `s9` raises.
+///     `volume_ratios` are per-atom Hirshfeld volume ratios V_A/V_free, one per
+///     atom (`run_dft(dispersion="mbd")` reports those of its converged density
+///     as `DftResult.volume_ratios`). Pass exactly one of `beta` or `functional` (PBE 0.83, PBE0 0.85,
+///     HSE06 0.85); an unlisted functional raises ValueError. Ghost atoms, Z > 54
+///     and a polarization catastrophe raise.
 #[pyfunction]
 #[pyo3(signature = (mol, functional, s9 = 0.0))]
 pub(crate) fn d3bj_energy(mol: &PyMolecule, functional: &str, s9: f64) -> PyResult<f64> {
