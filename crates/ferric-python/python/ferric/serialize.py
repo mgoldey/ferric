@@ -101,7 +101,7 @@ RESULT_SCHEMA: dict[str, ResultSchema] = {
     "AoIntegrals": _s("nao nelec"),
     "AttenuatedMp2Result": _s(
         (
-            "certificate e_os e_ss jk_auxbasis mp2_corr reference rhf_energy "
+            "certificate e_os e_ss jk_auxbasis jk_label mp2_corr reference rhf_energy "
             "scf_jk total_energy"
         ),
     ),
@@ -257,7 +257,7 @@ RESULT_SCHEMA: dict[str, ResultSchema] = {
         "gradient",
     ),
     "LaplaceMp2Result": _s(
-        "certificate e_os e_ss jk_auxbasis mp2_corr scf_jk total_energy"
+        "certificate e_os e_ss jk_auxbasis jk_label mp2_corr scf_jk total_energy"
     ),
     "MbdRsscsResult": _s(
         (
@@ -276,7 +276,7 @@ RESULT_SCHEMA: dict[str, ResultSchema] = {
     "MmTopology": _s(""),
     "Mp2VResult": _s(
         (
-            "att_mp2_corr certificate e_os e_ss jk_auxbasis n_nlc_points "
+            "att_mp2_corr certificate e_os e_ss jk_auxbasis jk_label n_nlc_points "
             "rhf_energy scf_jk total_energy vv10_e_nl"
         ),
     ),
@@ -297,7 +297,7 @@ RESULT_SCHEMA: dict[str, ResultSchema] = {
     ),
     "OoRiMp2Result": _s(
         (
-            "certificate converged grad_norm hf_energy iterations jk_auxbasis "
+            "certificate converged grad_norm hf_energy iterations jk_auxbasis jk_label "
             "mp2_corr scf_jk total_energy"
         ),
         "gradient",
@@ -341,7 +341,7 @@ RESULT_SCHEMA: dict[str, ResultSchema] = {
     ),
     "RiMp2Result": _s(
         (
-            "certificate jk_auxbasis local mp2_corr precision reference "
+            "certificate jk_auxbasis jk_label local mp2_corr precision reference "
             "rhf_energy scf_jk scf_precision total_energy"
         ),
         "gradient",
@@ -349,7 +349,7 @@ RESULT_SCHEMA: dict[str, ResultSchema] = {
     "RsMp2RpaResult": _s(
         (
             "certificate e_corr e_corr_naive e_delta_drpa_full e_delta_drpa_sr "
-            "e_dmp2_lr e_drpa_lr e_lr_mp2 e_mp2_full e_sr_mp2 jk_auxbasis "
+            "e_dmp2_lr e_drpa_lr e_lr_mp2 e_mp2_full e_sr_mp2 jk_auxbasis jk_label "
             "reference rhf_energy scf_jk total_energy"
         ),
     ),
@@ -361,13 +361,13 @@ RESULT_SCHEMA: dict[str, ResultSchema] = {
     ),
     "ScsMp2Result": _s(
         (
-            "certificate e_os e_ss jk_auxbasis reference rhf_energy scf_jk "
+            "certificate e_os e_ss jk_auxbasis jk_label reference rhf_energy scf_jk "
             "scs_corr total_energy"
         ),
     ),
     "SosMp2Result": _s(
         (
-            "c_os certificate e_os formulation jk_auxbasis n_quad rhf_energy "
+            "c_os certificate e_os formulation jk_auxbasis jk_label n_quad rhf_energy "
             "scf_jk sos_corr total_energy"
         ),
     ),

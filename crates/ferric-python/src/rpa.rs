@@ -47,6 +47,7 @@ pub(crate) struct PyRsMp2RpaResult {
     pub(crate) scf_jk: String,
     /// The printout's SCF J/K echo (`ScfJk::label`: names a non-default
     /// exchange builder on the exact path).
+    #[pyo3(get)]
     pub(crate) jk_label: String,
     /// The SCF's JK-fitting basis (`None` for "exact").
     #[pyo3(get)]

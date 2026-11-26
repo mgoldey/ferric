@@ -1997,6 +1997,12 @@ class RiMp2Result:
         """The SCF's JK-fitting basis (None for "exact")."""
         ...
 
+    @property
+    def jk_label(self) -> str:
+        """The printout's SCF J/K echo (names a non-default exchange builder
+        on the exact path)."""
+        ...
+
 class OoRiMp2Result:
     """Result of an orbital-optimized RI-MP2 calculation."""
 
@@ -2034,6 +2040,12 @@ class OoRiMp2Result:
     @property
     def jk_auxbasis(self) -> str | None:
         """The SCF's JK-fitting basis (None for "exact")."""
+        ...
+
+    @property
+    def jk_label(self) -> str:
+        """The printout's SCF J/K echo (names a non-default exchange builder
+        on the exact path)."""
         ...
 
 class Opmp3Result:
@@ -2179,6 +2191,12 @@ class LaplaceMp2Result:
         """The SCF's JK-fitting basis (None for "exact")."""
         ...
 
+    @property
+    def jk_label(self) -> str:
+        """The printout's SCF J/K echo (names a non-default exchange builder
+        on the exact path)."""
+        ...
+
 class SosMp2Result:
     """Result of a Laplace SOS-MP2 calculation."""
 
@@ -2229,6 +2247,12 @@ class SosMp2Result:
         """The SCF's JK-fitting basis (None for "exact")."""
         ...
 
+    @property
+    def jk_label(self) -> str:
+        """The printout's SCF J/K echo (names a non-default exchange builder
+        on the exact path)."""
+        ...
+
 class AttenuatedMp2Result:
     """Result of an attenuated RI-MP2 calculation."""
 
@@ -2266,6 +2290,12 @@ class AttenuatedMp2Result:
         """The SCF's JK-fitting basis (None for "exact")."""
         ...
 
+    @property
+    def jk_label(self) -> str:
+        """The printout's SCF J/K echo (names a non-default exchange builder
+        on the exact path)."""
+        ...
+
 class ScsMp2Result:
     """Result of a spin-component-scaled MP2 calculation."""
 
@@ -2301,6 +2331,12 @@ class ScsMp2Result:
     @property
     def jk_auxbasis(self) -> str | None:
         """The SCF's JK-fitting basis (None for "exact")."""
+        ...
+
+    @property
+    def jk_label(self) -> str:
+        """The printout's SCF J/K echo (names a non-default exchange builder
+        on the exact path)."""
         ...
 
 class Mp2VResult:
@@ -2348,6 +2384,12 @@ class Mp2VResult:
     @property
     def jk_auxbasis(self) -> str | None:
         """The SCF's JK-fitting basis (None for "exact")."""
+        ...
+
+    @property
+    def jk_label(self) -> str:
+        """The printout's SCF J/K echo (names a non-default exchange builder
+        on the exact path)."""
         ...
 
 class RsMp2RpaResult:
@@ -2409,6 +2451,12 @@ class RsMp2RpaResult:
     @property
     def jk_auxbasis(self) -> str | None:
         """The SCF's JK-fitting basis (None for "exact")."""
+        ...
+
+    @property
+    def jk_label(self) -> str:
+        """The printout's SCF J/K echo (names a non-default exchange builder
+        on the exact path)."""
         ...
 
 class DftResult:
@@ -2970,6 +3018,13 @@ class BseResult:
     @property
     def oscillator_strength(self) -> NDArray[np.float64]:
         """Length-gauge oscillator strengths (dimensionless)."""
+        ...
+
+    @property
+    def qp_suspect_mos(self) -> list[int]:
+        """Absolute MO indices whose G0W0 quasiparticle solve is poorly
+        determined and still entered the TDA diagonal (empty in the healthy
+        case)."""
         ...
 
     def lowest_ev(self) -> float:
