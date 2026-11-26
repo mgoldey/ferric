@@ -1668,6 +1668,11 @@ class FrequencyResult:
         """Largest |H_ij - H_ji| in the raw Cartesian Hessian (Hartree/Bohr^2)."""
         ...
 
+    def molecule(self) -> Molecule:
+        """The geometry the frequencies were computed at."""
+        ...
+
+
     @property
     def n_gradient_evaluations(self) -> int:
         """Number of gradient evaluations performed."""
