@@ -90,7 +90,9 @@ def _s(fields: str, arrays: str = "") -> ResultSchema:
 # Getters deliberately kept out of a class's schema: class name -> names. The
 # drift test checks RESULT_SCHEMA[cls] == the class's public getters minus
 # these, so this is the one place to exclude a getter. Empty today.
-NOT_SERIALIZED: dict[str, frozenset[str]] = {}
+NOT_SERIALIZED: dict[str, frozenset[str]] = {
+    "FrequencyResult": frozenset({"molecule"}),
+}
 
 # The result schema (roadmap item 13), generated from the reflected field set
 # of each class so the output did not change. tests/test_serialize_schema.py

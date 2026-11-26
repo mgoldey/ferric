@@ -1640,6 +1640,9 @@
     "exit_reason": {
      "kind": "attribute"
     },
+    "fock_hooked": {
+     "kind": "attribute"
+    },
     "gradient": {
      "kind": "method",
      "signature": [
@@ -1885,6 +1888,9 @@
      ]
     },
     "is_linear": {
+     "kind": "attribute"
+    },
+    "molecule": {
      "kind": "attribute"
     },
     "n_gradient_evaluations": {
