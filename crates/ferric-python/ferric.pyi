@@ -4669,7 +4669,9 @@ def run_rhf(
     fock_hook_grad: None = None,
     gc_rotation: Literal["auto", "rot1", "off"] | None = None,
     gc_kernel: Literal["auto", "off"] | None = None,
-) -> SymmetricRhfResult: ...
+) -> SymmetricRhfResult:
+    """Closed-shell RHF on the symmetrized geometry (symmetry=True)."""
+    ...
 def run_uhf(
     mol: Molecule,
     basis_set: BasisSet,
@@ -6522,7 +6524,9 @@ def run_dft(
     trah_trigger: float | None = None,
     gc_rotation: Literal["auto", "rot1", "off"] | None = None,
     gc_kernel: Literal["auto", "off"] | None = None,
-) -> DftResult | SymmetricRhfResult: ...
+) -> DftResult | SymmetricRhfResult:
+    """Closed-shell Kohn-Sham DFT on the symmetrized geometry (symmetry=True)."""
+    ...
 def dft_grid_point_count(
     mol: Molecule,
     grid_radial: int | None = None,
@@ -6626,7 +6630,9 @@ def run_ksdft(
     ri_j_precision: str | None = None,
     dm0: None = None,
     relativistic: Literal["x2c1e"] | None = None,
-) -> SymmetricRhfResult: ...
+) -> SymmetricRhfResult:
+    """Closed-shell Kohn-Sham DFT on the symmetrized geometry (symmetry=True)."""
+    ...
 @overload
 def run_ksdft(
     mol: Molecule,
@@ -6657,7 +6663,9 @@ def run_ksdft(
     ri_j_precision: str | None = None,
     dm0: NDArray[np.float64] | None = None,
     relativistic: Literal["x2c1e"] | None = None,
-) -> DftResult | SymmetricRhfResult: ...
+) -> DftResult | SymmetricRhfResult:
+    """Closed-shell Kohn-Sham DFT on the symmetrized geometry (symmetry=True)."""
+    ...
 def d3bj_energy(mol: Molecule, functional: str, s9: float = 0.0) -> float:
     """Grimme D3(BJ) dispersion energy in Hartree.
 
