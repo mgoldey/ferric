@@ -2731,6 +2731,23 @@ class PdepRpaResult:
         ...
 
     @property
+    def dressed_eigenvectors(self) -> NDArray[np.float64]:
+        """Davidson eigenvectors in the V^{-1/2}-dressed RI basis, shape
+        (naux, M)."""
+        ...
+
+    @property
+    def inv_dielectric_freq(self) -> list[NDArray[np.float64]] | None:
+        """Per-frequency dynamic inverse-dielectric matrices in the fixed PDEP
+        eigenvector basis (length N_quad, each (M, M)), or None."""
+        ...
+
+    @property
+    def route(self) -> str:
+        """Which construction produced e_rpa (AuxBasisLogDet or PdepEigen)."""
+        ...
+
+    @property
     def quad_freqs(self) -> NDArray[np.float64]:
         """Imaginary-frequency quadrature points."""
         ...

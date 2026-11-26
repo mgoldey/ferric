@@ -761,6 +761,9 @@
     "jk_auxbasis": {
      "kind": "attribute"
     },
+    "jk_label": {
+     "kind": "attribute"
+    },
     "mp2_corr": {
      "kind": "attribute"
     },
@@ -1183,6 +1186,9 @@
      ]
     },
     "energy": {
+     "kind": "attribute"
+    },
+    "hamiltonian_key": {
      "kind": "attribute"
     },
     "iterations": {
@@ -2763,6 +2769,9 @@
     "jk_auxbasis": {
      "kind": "attribute"
     },
+    "jk_label": {
+     "kind": "attribute"
+    },
     "mp2_corr": {
      "kind": "attribute"
     },
@@ -3097,6 +3106,9 @@
     "jk_auxbasis": {
      "kind": "attribute"
     },
+    "jk_label": {
+     "kind": "attribute"
+    },
     "n_nlc_points": {
      "kind": "attribute"
     },
@@ -3267,6 +3279,9 @@
      "kind": "attribute"
     },
     "jk_auxbasis": {
+     "kind": "attribute"
+    },
+    "jk_label": {
      "kind": "attribute"
     },
     "mp2_corr": {
@@ -3989,6 +4004,9 @@
     "jk_auxbasis": {
      "kind": "attribute"
     },
+    "jk_label": {
+     "kind": "attribute"
+    },
     "local": {
      "kind": "attribute"
     },
@@ -4049,6 +4067,9 @@
      "kind": "attribute"
     },
     "jk_auxbasis": {
+     "kind": "attribute"
+    },
+    "jk_label": {
      "kind": "attribute"
     },
     "reference": {
@@ -4124,6 +4145,9 @@
     "jk_auxbasis": {
      "kind": "attribute"
     },
+    "jk_label": {
+     "kind": "attribute"
+    },
     "reference": {
      "kind": "attribute"
     },
@@ -4157,6 +4181,9 @@
      "kind": "attribute"
     },
     "jk_auxbasis": {
+     "kind": "attribute"
+    },
+    "jk_label": {
      "kind": "attribute"
     },
     "n_quad": {
