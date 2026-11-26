@@ -141,8 +141,8 @@ RESULT_SCHEMA: dict[str, ResultSchema] = {
     "CdftCouplingResult": _s("certificate e_a e_b h_ab s_ab"),
     "CdftResult": _s(
         (
-            "certificate converged energy iterations kinds lambda_tol lambdas "
-            "max_constraint_error nocc outer_iterations populations residuals "
+            "certificate converged energy hamiltonian_key iterations kinds lambda_tol "
+            "lambdas max_constraint_error nocc outer_iterations populations residuals "
             "scf_converged targets total_energy"
         ),
         "density_alpha density_beta orbital_energies_alpha orbital_energies_beta",

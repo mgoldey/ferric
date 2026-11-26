@@ -1428,6 +1428,13 @@ class CdftResult:
         """The outer-loop tolerance used."""
         ...
 
+    @property
+    def hamiltonian_key(self) -> str:
+        """Canonical key of the electronic Hamiltonian (functional, J/K
+        fitting, exchange builder, XC grid, external potential); two states
+        whose keys differ cannot be coupled."""
+        ...
+
     def density_alpha(self) -> NDArray[np.float64]:
         """Alpha-spin AO-basis density matrix (n_bf x n_bf)."""
         ...
