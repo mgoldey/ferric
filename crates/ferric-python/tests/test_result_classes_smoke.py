@@ -138,3 +138,13 @@ def test_boltzmann_weights():
 def test_response_modes(water, bs, aux):
     r = ferric.response_modes(water, bs, aux, ferric.run_rhf(water, bs))
     assert type(r).__name__ == "ResponseModes"
+
+
+def test_sos_mp2_result(water, bs, aux):
+    r = ferric.run_laplace_sos_mp2(water, bs, aux)
+    assert type(r).__name__ == "SosMp2Result"
+
+
+def test_mbd_rsscs_result(water):
+    r = ferric.mbd_rsscs_energy(water, [1.0, 1.0, 1.0], functional="PBE")
+    assert type(r).__name__ == "MbdRsscsResult"
