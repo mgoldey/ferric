@@ -505,6 +505,7 @@ fn kept_raw(
         }
         Some(RiJ::Stored(_)) => return Err("the RI-J tensor is stored in f32"),
         Some(RiJ::Split(_)) => return Err("Split-RI-J holds no tensor"),
+        Some(RiJ::Pair(_)) => return Err("the pair-major tensor is dressed, not raw"),
         None => return Err("no RI-J builder"),
     };
     let (naux, packed) = match df_j.as_ref() {

@@ -406,6 +406,13 @@ fn build_df_jk_impl<'a>(
             if ctx.size <= 1 {
                 use ferric_integrals::three_index_source::ThreeIndexSource;
                 let naux = dfbs.nbasis();
+                // Opt-in: one pair-major dressed tensor for both J and K.
+                if let Some(tensor) =
+                    DfK::try_pair_major(op, prep, &dfbs, ooc_budget, j_pair_thresh, k_precision)?
+                {
+                    let df_j = RiJ::Pair(crate::df_pair::PairJ::new(tensor.clone()));
+                    return Ok((Some(df_j), Some(DfK::from_pair_major(tensor, ooc_budget))));
+                }
                 // Leave room for the packed dressed band DF-K will hold beside
                 // the raw tensor (`DfK::packed_band_bytes`).
                 let beside = DfK::packed_band_bytes(naux, prep.nbasis(), k_precision);

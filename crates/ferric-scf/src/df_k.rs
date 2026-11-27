@@ -298,8 +298,9 @@ seam_flag!(
 /// is byte-identical to the serial path.
 pub struct DfK<'a> {
     /// Budget-bounded dressed 3-center source B\[P,μ,ν\] = Σ_Q M_{PQ} (Q|μν)
-    /// — holds only this rank's aux band `[band_p0, band_p1)`.
-    dressed: ThreeIndexSource,
+    /// — holds only this rank's aux band `[band_p0, band_p1)`; or the
+    /// pair-major tensor shared with RI-J ([`crate::df_pair`]).
+    dressed: Dressed,
     /// Parallel context for the final cross-rank K reduction. `None` → serial /
     /// non-MPI (no reduction, full band).
     #[allow(dead_code)]
@@ -322,6 +323,194 @@ pub struct DfK<'a> {
     /// occupied-path build asks for it. See `crate::df_k_gpu`.
     #[cfg(feature = "gpu")]
     device: crate::df_k_gpu::DeviceSlot,
+}
+
+/// Where a [`DfK`] holds its dressed tensor. The pair-major tensor answers
+/// the aux-major streaming calls by unpacking one block at a time, so every
+/// consumer that is not the occupied path (the density path, the CPHF half
+/// transform) reads it unchanged.
+// One per DfK, never in a collection: boxing the common (source) variant
+// would only add an indirection.
+#[allow(clippy::large_enum_variant)]
+enum Dressed {
+    /// The aux-major source (packed, square or spilled).
+    Source(ThreeIndexSource),
+    /// The pair-major tensor shared with RI-J.
+    Pair(std::sync::Arc<crate::df_pair::PairMajor>),
+}
+
+/// Bytes one unpacked block of the pair-major tensor may take.
+const PAIR_UNPACK_BLOCK_BYTES: usize = 256 * 1024 * 1024;
+
+impl Dressed {
+    fn nao(&self) -> usize {
+        match self {
+            Dressed::Source(s) => s.nao(),
+            Dressed::Pair(t) => t.nao(),
+        }
+    }
+
+    fn band_naux(&self) -> usize {
+        match self {
+            Dressed::Source(s) => s.band_naux(),
+            Dressed::Pair(t) => t.naux(),
+        }
+    }
+
+    fn dressed_packed(&self) -> Option<DressedRows<'_>> {
+        match self {
+            Dressed::Source(s) => s.dressed_packed(),
+            Dressed::Pair(_) => None,
+        }
+    }
+
+    fn resident_tensor_bytes(&self) -> usize {
+        match self {
+            Dressed::Source(s) => s.resident_tensor_bytes(),
+            Dressed::Pair(t) => t.bytes(),
+        }
+    }
+
+    fn release_scratch(&mut self) {
+        if let Dressed::Source(s) = self {
+            s.release_scratch();
+        }
+    }
+
+    /// Bytes of streaming scratch held between passes (the pair-major tensor
+    /// keeps none: its unpack block lives for one pass).
+    #[cfg(test)]
+    fn scratch_bytes(&self) -> usize {
+        match self {
+            Dressed::Source(s) => s.scratch_bytes(),
+            Dressed::Pair(_) => 0,
+        }
+    }
+
+    /// Is the tensor the aux-major in-core square band? Never the pair-major one.
+    #[cfg(test)]
+    fn is_incore(&self) -> bool {
+        match self {
+            Dressed::Source(s) => s.is_incore(),
+            Dressed::Pair(_) => false,
+        }
+    }
+
+    /// [`ThreeIndexSource::for_each_block`]; the pair-major tensor is unpacked
+    /// into dense symmetric blocks whose height is a multiple of twice the
+    /// DF-K chunk, so chunks fall as they do for a resident band.
+    fn for_each_block(
+        &mut self,
+        mut f: impl FnMut(ferric_integrals::three_index_source::AuxBlock<'_>) -> Result<(), FerricError>,
+    ) -> Result<(), FerricError> {
+        let t = match self {
+            Dressed::Source(s) => return s.for_each_block(f),
+            Dressed::Pair(t) => t,
+        };
+        let (n, naux) = (t.nao(), t.naux());
+        let grain = 2 * ferric_integrals::three_index_source::df_chunk_width(n);
+        let rows = (PAIR_UNPACK_BLOCK_BYTES / (n * n * 8).max(1) / grain * grain)
+            .max(grain)
+            .min(naux.max(1));
+        let _charge = ferric_core::memory::pool::try_reserve_global(
+            "DF pair-major unpack scratch",
+            rows * n * n * 8,
+        );
+        let mut scratch = Array3::<f64>::zeros((rows, n, n));
+        let mut p0 = 0usize;
+        while p0 < naux {
+            let p1 = (p0 + rows).min(naux);
+            if p1 - p0 != scratch.shape()[0] {
+                scratch = Array3::<f64>::zeros((p1 - p0, n, n));
+            }
+            t.unpack_square(p0, p1, &mut scratch);
+            f(ferric_integrals::three_index_source::AuxBlock {
+                p0,
+                data: scratch.view(),
+            })?;
+            p0 = p1;
+        }
+        Ok(())
+    }
+}
+
+impl DfK<'static> {
+    /// DF-K on the pair-major tensor `tensor` ([`crate::df_pair`]), shared
+    /// with the run's RI-J. Single rank; f64; the Cholesky metric route.
+    pub(crate) fn from_pair_major(
+        tensor: std::sync::Arc<crate::df_pair::PairMajor>,
+        budget_bytes: usize,
+    ) -> Self {
+        DfK {
+            dressed: Dressed::Pair(tensor),
+            ctx: None,
+            budget_bytes,
+            precision: RiKPrecision::F64,
+            layout: DressedLayout::PackedF64,
+            nominal_layout: DressedLayout::PackedF64,
+            metric_route: DfkMetricRoute::Cholesky,
+            #[cfg(feature = "gpu")]
+            device: crate::df_k_gpu::DeviceSlot::default(),
+        }
+    }
+
+    /// The pair-major tensor for an RI-JK run that asks for it
+    /// (`FERRIC_DF_LAYOUT=pair`) and qualifies, else `None` (the caller takes
+    /// the aux-major route): the Coulomb operator, f64 K storage, no device K,
+    /// no geometry task capturing the metric, a metric the Cholesky route
+    /// certifies, and a tensor that fits `budget_bytes`. `thresh` is the
+    /// Schwarz threshold of the pair screen (`[scf] integral_thresh`).
+    pub(crate) fn try_pair_major(
+        op: Operator,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        budget_bytes: usize,
+        thresh: f64,
+        precision: RiKPrecision,
+    ) -> Result<Option<std::sync::Arc<crate::df_pair::PairMajor>>, FerricError> {
+        use crate::df_pair::{PairLayout, PairMajor};
+        use ferric_core::timing::Stage;
+        if !crate::df_pair::pair_layout_requested()? {
+            return Ok(None);
+        }
+        let nao = obs.nbasis();
+        if op.kind != ferric_integrals::operator::OperatorKind::Coulomb
+            || device_may_take_k(nao)
+            || square_forced()
+            || effective_precision(precision) != RiKPrecision::F64
+            || crate::raw_handoff::metric_capture_active()
+            || effective_metric_setting()? != DfkMetricSetting::Auto
+        {
+            return Ok(None);
+        }
+        let v = coulomb_metric_2c(op, dfbs)?;
+        let t = Stage::start("dfk:metric-cholesky");
+        let linv = certified_cholesky_factor(&v);
+        t.end();
+        let Some(linv) = linv else {
+            return Ok(None);
+        };
+        let q_aux_max = v.diag().iter().fold(0.0f64, |m, x| m.max(x.abs().sqrt()));
+        let t = Stage::start("dfpair:schwarz");
+        let layout = PairLayout::schwarz(op, obs, q_aux_max, thresh)?;
+        t.end();
+        if layout.tensor_bytes(dfbs.nbasis()) > budget_bytes {
+            return Ok(None);
+        }
+        let t = Stage::start("dfpair:fill");
+        let mut tensor = PairMajor::fill(op, obs, dfbs, layout)?;
+        t.end();
+        let t = Stage::start("dfpair:dress");
+        tensor.dress(&linv)?;
+        t.end();
+        crate::df_pair::note_pair_major_taken();
+        Ok(Some(std::sync::Arc::new(tensor)))
+    }
+
+    /// Whether this DF-K reads the pair-major tensor.
+    pub fn is_pair_major(&self) -> bool {
+        matches!(self.dressed, Dressed::Pair(_))
+    }
 }
 
 impl<'a> std::fmt::Debug for DfK<'a> {
@@ -1120,7 +1309,7 @@ impl<'a> DfK<'a> {
 
         let ctx = ctx.filter(|c| c.size > 1);
         Ok(DfK {
-            dressed,
+            dressed: Dressed::Source(dressed),
             ctx,
             budget_bytes,
             precision: stored,
@@ -1176,6 +1365,9 @@ impl<'a> DfK<'a> {
     /// [`DfK::packed_band_bytes`] (0 for the square layout, the room a raw
     /// placement reserves), this is the band's own size in every layout.
     pub fn stored_band_bytes(&self) -> usize {
+        if let Dressed::Pair(t) = &self.dressed {
+            return t.bytes();
+        }
         ThreeIndexSource::dressed_band_bytes(
             self.dressed.band_naux(),
             self.dressed.nao(),
@@ -1199,6 +1391,9 @@ impl<'a> DfK<'a> {
     /// counts. When the pool forced the square layout the real band is larger
     /// by at most the square minus the packed size.
     pub fn nominal_band_bytes(&self) -> usize {
+        if let Dressed::Pair(t) = &self.dressed {
+            return t.bytes();
+        }
         ThreeIndexSource::dressed_band_bytes(
             self.dressed.band_naux(),
             self.dressed.nao(),
@@ -1276,7 +1471,10 @@ impl DfK<'_> {
     /// the pool only for a K that can take it.
     #[cfg(feature = "gpu")]
     pub fn device_footprint_bytes(&self) -> usize {
-        if !self.dressed.is_incore() || !device_may_take_k(self.dressed.nao()) {
+        let Dressed::Source(src) = &self.dressed else {
+            return 0;
+        };
+        if !src.is_incore() || !device_may_take_k(src.nao()) {
             return 0;
         }
         crate::df_k_gpu::resident_bytes(self.dressed.band_naux(), self.dressed.nao()).unwrap_or(0)
@@ -1286,7 +1484,10 @@ impl DfK<'_> {
     #[cfg(feature = "gpu")]
     #[doc(hidden)]
     pub fn dressed_incore_flat_for_test(&self) -> Option<ndarray::ArrayView2<'_, f64>> {
-        self.dressed.incore_flat()
+        match &self.dressed {
+            Dressed::Source(src) => src.incore_flat(),
+            Dressed::Pair(_) => None,
+        }
     }
 
     /// Density-based exchange contraction (O(naux·n³)); see [`KBuilder::build`].
@@ -1442,11 +1643,20 @@ impl DfK<'_> {
         // the FERRIC_DFK_FORCE_DENSITY and nocc == 0 shortcuts so the test switch and the
         // empty channel never reach the card. `true` = K written; the cross-rank
         // reduction below is shared with the CPU path.
-        #[cfg(feature = "gpu")]
-        if crate::df_k_gpu::try_build_from_occ(&mut self.device, &self.dressed, self.ctx, c_occ, k)
-        {
+        // The pair-major tensor: one GEMM per AO function, then the
+        // triangular reduction (`crate::df_pair`).
+        if let Dressed::Pair(t) = &self.dressed {
+            t.build_k_occ(c_occ, k)?;
             self.reduce_k_across_ranks(k);
             return Ok(0);
+        }
+
+        #[cfg(feature = "gpu")]
+        if let Dressed::Source(src) = &self.dressed {
+            if crate::df_k_gpu::try_build_from_occ(&mut self.device, src, self.ctx, c_occ, k) {
+                self.reduce_k_across_ranks(k);
+                return Ok(0);
+            }
         }
 
         // Aux-chunk width: same BLAS3-efficiency vs per-task-scratch tradeoff as
