@@ -5331,7 +5331,10 @@ fn run_wb97x_l_v_arm(
             );
         }
     }
-    let (dh, ks) = run_wb97x_l_v_on(&dfbs, rhf_config, &dh_cfg)?;
+    // `ref_cfg` is the reference config of the ladder rung that converged:
+    // the functional itself, RI-JK for an omitted aux key, and that rung's
+    // level shift or smearing, which the certificate must record.
+    let (dh, ks, ref_cfg) = run_wb97x_l_v_on(&dfbs, rhf_config, &dh_cfg)?;
     println!(
         "wB97X-L-V/{} (aux: {}, lambda={:.4}, omega={:.4} Bohr^-1) on {}",
         bs.name, aux_name, dh.lambda, dh.omega, cfg.molecule.xyz
@@ -5345,12 +5348,6 @@ fn run_wb97x_l_v_arm(
     println!("  E_c LinLCCD  = {:.10} Hartree", dh.e_c_wft);
     println!("  lambda*E_c   = {:.10} Hartree", dh.e_c_scaled);
     println!("  Total        = {:.10} Hartree", dh.total_energy);
-    // The reference config `run_wb97x_l_v` solved with: its own functional
-    // and the RI-JK default for an omitted aux key.
-    let mut ref_cfg = rhf_config.clone();
-    ref_cfg.xc = Some(ferric_cc::double_hybrid::WB97X_L_V_NAME.to_string());
-    ref_cfg.df_j_aux = config::jk_aux_or_default(&rhf_config.df_j_aux);
-    ref_cfg.df_k_aux = config::jk_aux_or_default(&rhf_config.df_k_aux);
     let reference = ferric_scf::certificate::with_scf_envelope(
         scf_certificate_stamped(mol, &ks, &ref_cfg, None),
         mol,
@@ -5415,7 +5412,8 @@ fn run_mp2_double_hybrid_arm(
     log_jk_path(&ks_cfg, false);
 
     let open_shell = mol.multiplicity > 1;
-    let ks = solve_double_hybrid_reference(sys, &ks_cfg, method)?;
+    // From here `ks_cfg` is the config of the ladder rung that converged.
+    let (ks, ks_cfg) = solve_double_hybrid_reference(sys, &ks_cfg, method)?;
 
     let mut mp2_cfg = dh_kind.mp2_config();
     mp2_cfg.frozen_core = cfg.mp2.frozen_core.resolve(mol);
@@ -5496,19 +5494,19 @@ fn solve_double_hybrid_reference(
     sys: &PreparedSystem,
     ks_cfg: &RhfConfig,
     method: &str,
-) -> Result<ferric_scf::result::ScfResult, CliError> {
+) -> Result<(ferric_scf::result::ScfResult, RhfConfig), CliError> {
     let (ctx, mol, prep, bounds) = (sys.ctx(), sys.mol(), sys.basis(), sys.bounds());
-    let ks = if mol.multiplicity > 1 {
+    let (ks, reached) = if mol.multiplicity > 1 {
         log_jk_path(ks_cfg, true);
-        solve_uhf(ctx, mol, prep, bounds, ks_cfg).map_err(|e| {
+        let ks = solve_uhf(ctx, mol, prep, bounds, ks_cfg).map_err(|e| {
             CliError::msg(format!(
                 "UKS reference for method.kind = \"{method}\" failed: {e}"
             ))
-        })?
+        })?;
+        (ks, ks_cfg.clone())
     } else {
-        let ladder = ferric_scf::ladder::ksdft_ladder(ks_cfg);
-        ferric_scf::ladder::solve_rhf_ladder(ctx, mol, prep, Operator::coulomb(), bounds, &ladder)?
-            .result
+        let (lr, reached) = ferric_scf::ladder::solve_ksdft_ladder(ctx, mol, prep, bounds, ks_cfg)?;
+        (lr.result, reached)
     };
     if !ks.converged {
         return Err(CliError::msg(format!(
@@ -5516,7 +5514,7 @@ fn solve_double_hybrid_reference(
             method, ks.iterations
         )));
     }
-    Ok(ks)
+    Ok((ks, reached))
 }
 
 /// The D3(BJ) term of a D3 double-hybrid set: a geometry sum with the set's
