@@ -217,3 +217,32 @@ def test_a_force_without_a_ferric_mm_term_is_refused():
     system.addForce(openmm.CMAPTorsionForce())
     with pytest.raises(ValueError, match="CMAPTorsionForce"):
         topology_from_system(system)
+
+
+def _three_particles(charges):
+    system = openmm.System()
+    force = openmm.NonbondedForce()
+    for q in charges:
+        system.addParticle(12.0)
+        force.addParticle(q, 0.3, 0.5)
+    system.addForce(force)
+    return system, force
+
+
+def test_an_exception_on_a_weakly_charged_pair_is_refused():
+    """The tolerance is relative to the pair's own charge product: beside a
+    unit charge, excluding a 1e-4 x 1e-4 pair (1e-8 e^2, which ferric-mm
+    evaluates in full) must not pass as round-off."""
+    system, force = _three_particles([1.0, 1.0e-4, 1.0e-4])
+    topology_from_system(system)
+    force.addException(1, 2, 0.0, 0.3, 0.5)
+    with pytest.raises(ValueError, match=r"atoms \(1, 2\), more than 3 bonds apart"):
+        topology_from_system(system)
+
+
+def test_parameter_offsets_are_refused():
+    system, force = _three_particles([0.5, -0.5, 0.0])
+    force.addGlobalParameter("lambda", 1.0)
+    force.addParticleParameterOffset("lambda", 0, 0.1, 0.0, 0.0)
+    with pytest.raises(ValueError, match="parameter offsets"):
+        topology_from_system(system)

@@ -23,7 +23,14 @@ and scaled 1-4 pairs (Coulomb 1/1.2, Lennard-Jones 1/2) from the bond list,
 so the System's exceptions are not carried over: they are CHECKED against
 that derivation, and a System whose exceptions differ (a hand-added
 exception, other 1-4 scale factors) is refused with `ValueError`, as is a
-System with a force ferric-mm has no term for (CMAP, GBSA, custom forces).
+System with a force ferric-mm has no term for (CMAP, GBSA, custom forces)
+or with NonbondedForce parameter offsets (the parameters would depend on a
+global parameter's value).
+
+The NonbondedForce's method (cutoff, reaction field, PME, switching, the
+dispersion correction) is NOT read or checked: it is how one program sums
+the pairs, not a force-field parameter, and ferric-mm has its own setting
+for it (all pairs by default).
 """
 
 from __future__ import annotations
@@ -66,7 +73,7 @@ def _bond_separations(n_atoms: int, bonds: list[Bond]) -> dict[tuple[int, int], 
 
 
 def _close(got: float, want: float, scale: float) -> bool:
-    return abs(got - want) <= _EXCEPTION_RTOL * max(abs(want), scale)
+    return abs(got - want) <= _EXCEPTION_RTOL * max(abs(want), abs(scale))
 
 
 def _check_exceptions(force, bonds, charges, sigmas_angstrom, epsilons_kcal) -> None:
@@ -76,8 +83,6 @@ def _check_exceptions(force, bonds, charges, sigmas_angstrom, epsilons_kcal) -> 
     from openmm import unit
 
     separation = _bond_separations(len(charges), bonds)
-    q_scale = max((abs(q) for q in charges), default=0.0) ** 2
-    eps_scale = max(epsilons_kcal, default=0.0)
     seen = set()
     for index in range(force.getNumExceptions()):
         i, j, qq, sigma, epsilon = force.getExceptionParameters(index)
@@ -88,10 +93,14 @@ def _check_exceptions(force, bonds, charges, sigmas_angstrom, epsilons_kcal) -> 
         epsilon = epsilon.value_in_unit(unit.kilocalorie_per_mole)
         depth = separation.get(pair)
         s_coul, s_lj = _PAIR_SCALES.get(depth, (1.0, 1.0))
-        want_qq = s_coul * charges[i] * charges[j]
-        want_eps = s_lj * (epsilons_kcal[i] * epsilons_kcal[j]) ** 0.5
+        # Tolerances are relative to this pair's own full interaction, so a
+        # weakly charged pair is held as tightly as a strongly charged one.
+        full_qq = charges[i] * charges[j]
+        full_eps = (epsilons_kcal[i] * epsilons_kcal[j]) ** 0.5
+        want_qq = s_coul * full_qq
+        want_eps = s_lj * full_eps
         want_sigma = 0.5 * (sigmas_angstrom[i] + sigmas_angstrom[j])
-        ok = _close(qq, want_qq, q_scale) and _close(epsilon, want_eps, eps_scale)
+        ok = _close(qq, want_qq, full_qq) and _close(epsilon, want_eps, full_eps)
         if ok and want_eps > 0.0:
             ok = _close(sigma, want_sigma, want_sigma)
         if not ok:
@@ -159,8 +168,10 @@ def topology_from_system(system) -> dict:
     reproduce: one with constraints (a constrained bond has no
     HarmonicBondForce entry, so ferric-mm would derive the wrong exclusions),
     one with a force other than harmonic bonds and angles, periodic torsions
-    and a NonbondedForce (CMMotionRemover and barostats aside), or one whose
-    nonbonded exceptions are not the bond-derived AMBER set.
+    and a NonbondedForce (CMMotionRemover and barostats aside), one whose
+    nonbonded exceptions are not the bond-derived AMBER set, or one with
+    NonbondedForce parameter offsets. The nonbonded method (cutoff, PME) is
+    not read: see the module docstring.
     """
     import openmm
     from openmm import unit
@@ -205,6 +216,16 @@ def topology_from_system(system) -> dict:
                 k_phi_kcal = k_phi.value_in_unit(unit.kilocalorie_per_mole)
                 torsions.append((i, j, k, l, periodicity, k_phi_kcal, phase_deg))
         elif isinstance(force, openmm.NonbondedForce):
+            offsets = (
+                force.getNumParticleParameterOffsets()
+                + force.getNumExceptionParameterOffsets()
+            )
+            if offsets > 0:
+                raise ValueError(
+                    f"NonbondedForce has {offsets} parameter offsets: its charges "
+                    "and Lennard-Jones parameters depend on a global parameter, "
+                    "so the base values read here are not the System's potential."
+                )
             nonbonded.append(force)
             for p in range(force.getNumParticles()):
                 q, sigma, epsilon = force.getParticleParameters(p)

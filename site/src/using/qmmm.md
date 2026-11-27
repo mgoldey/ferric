@@ -132,7 +132,9 @@ Angstrom, degrees) that `MmTopology.from_amber_units` consumes directly.
 and Lennard-Jones, with 1-2 and 1-3 pairs excluded and 1-4 pairs scaled by
 1/1.2 (Coulomb) and 1/2 (Lennard-Jones). A System that does not fit raises
 `ValueError`: one with constraints, with any other energy term (CMAP, GBSA,
-custom forces), or with nonbonded exceptions other than that bond-derived set.
+custom forces), with nonbonded exceptions other than that bond-derived set, or
+with nonbonded parameter offsets. The System's nonbonded method (cutoff, PME)
+is not read: how the pairs are summed is ferric's own setting.
 
 ## Energies, forces, and optimization
 
