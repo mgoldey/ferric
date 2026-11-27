@@ -27,6 +27,9 @@ serde_json = { workspace = true }
 # rebuilt without a ferric-dft dependency); ferric-quadrature depends only
 # on ferric-core, so no cycle.
 ferric-quadrature = { path = "../ferric-quadrature" }
+# Reference-file format for examples/gen_cuest_oe_reference.rs (CPU-only
+# build of ferric-cuest; it depends only on ferric-core, so no cycle).
+ferric-cuest = { path = "../ferric-cuest" }
 
 [features]
 libint2_terf = []

@@ -144,8 +144,9 @@ run_diagnostics = false         # print PDEP diagnostics
 # blas_threads: OpenBLAS threads of the serial sections; unset by default: FERRIC_BLAS_THREADS, else the rayon thread count; machine-dependent, so not written
 
 [gpu]
-preset = "off"  # off | auto | on | mixed | auto-mixed
-mode = "off"    # off | auto | on
+preset = "off"      # off | auto | on | mixed | auto-mixed
+mode = "off"        # off | auto | on
+backend = "ferric"  # ferric | cuest (SCF integrals on NVIDIA cuEST; needs --features cuest)
 # device: not read here: only with mode = "auto" or "on" (default 0)
 # memory_gb: not read here: only with mode = "auto" or "on"
 # min_flops: not read here: only with mode = "auto" or "on"
