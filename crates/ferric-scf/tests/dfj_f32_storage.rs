@@ -786,6 +786,8 @@ fn mutants_fail_the_per_build_check() {
 // ---------------------------------------------------------------- the SCF
 
 fn scf(sys: &System, f32: bool) -> ScfResult {
+    // The stored f32 RI-J tensor belongs to the aux-major route.
+    let _aux = ferric_scf::df_pair::override_pair_layout_for_test(false);
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &sys.obs).unwrap();
     let mut cfg = RhfConfig::default()

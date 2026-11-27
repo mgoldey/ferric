@@ -40,7 +40,9 @@ fn root() -> PathBuf {
         .to_path_buf()
 }
 
-fn run(tag: &str, budget_gb: f64) -> (std::process::Output, f64) {
+/// `layout` is `FERRIC_DF_LAYOUT` for the run: the spill band below belongs to
+/// the aux-major tensors (`aux`); the default (`pair`) holds one tensor.
+fn run(tag: &str, budget_gb: f64, layout: &str) -> (std::process::Output, f64) {
     let dir = std::env::temp_dir().join(format!("ferric_df_guess_mem_{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create scratch dir");
     let (toml, log) = (
@@ -67,6 +69,7 @@ fn run(tag: &str, budget_gb: f64) -> (std::process::Output, f64) {
         .current_dir(root())
         .env("OPENBLAS_NUM_THREADS", "1")
         .env("RAYON_NUM_THREADS", "2")
+        .env("FERRIC_DF_LAYOUT", layout)
         .output()
         .expect("run ferric-cli");
     // The last SCF iteration, since a later correlated stage may refuse a budget
@@ -97,7 +100,7 @@ fn a_tensor_that_fits_the_budget_once_but_not_twice_still_runs_the_guess() {
     let needed = aux.nbasis() * obs.nbasis() * obs.nbasis() * 8;
     let gib = (1u64 << 30) as f64;
 
-    let (ample, e_ample) = run("ample", 1.0);
+    let (ample, e_ample) = run("ample", 1.0, "aux");
     assert!(
         ample.status.success(),
         "{}",
@@ -108,7 +111,7 @@ fn a_tensor_that_fits_the_budget_once_but_not_twice_still_runs_the_guess() {
     // dressed tensor (>= needed) but not the packed raw tensor beside the packed
     // dressed one plus its dressing scratch (~1.02-1.03 x needed for this
     // system). At 1.25 x both packed tensors fit and nothing spills.
-    let (band, e_band) = run("band", needed as f64 * 1.005 / gib);
+    let (band, e_band) = run("band", needed as f64 * 1.005 / gib, "aux");
     let stderr = String::from_utf8_lossy(&band.stderr);
     assert!(!stderr.contains("SCF failed"), "{stderr}");
     assert!(
@@ -122,5 +125,19 @@ fn a_tensor_that_fits_the_budget_once_but_not_twice_still_runs_the_guess() {
     assert!(
         (e_ample - e_band).abs() < 1e-7,
         "{e_ample:.12} vs {e_band:.12}"
+    );
+
+    // The default layout at the same budget: one pair-major tensor (at most
+    // the square tensor's bytes) fits, so the guess runs with nothing spilled.
+    let (pair, e_pair) = run("pair", needed as f64 * 1.005 / gib, "pair");
+    let stderr = String::from_utf8_lossy(&pair.stderr);
+    assert!(!stderr.contains("SCF failed"), "{stderr}");
+    assert!(
+        stderr.contains("SCF: DF-guess pre-stage via"),
+        "guess must run:\n{stderr}"
+    );
+    assert!(
+        (e_ample - e_pair).abs() < 1e-7,
+        "{e_ample:.12} vs {e_pair:.12}"
     );
 }

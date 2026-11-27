@@ -416,13 +416,6 @@ pub(crate) fn with_request_source<T>(source: RiJPrecisionSource, f: impl FnOnce(
     out
 }
 
-/// Whether the RI-J precision of the set-up running on this thread was asked
-/// for explicitly ([`RiJPrecisionSource::Explicit`]) and is not a default.
-/// False outside [`with_request_source`].
-pub(crate) fn request_is_explicit() -> bool {
-    REQUEST_SOURCE.with(std::cell::Cell::get) == Some(RiJPrecisionSource::Explicit)
-}
-
 /// An f32 request that could not be honoured: say so once per builder and
 /// count it in the precision provenance (`f32_range` for a value beyond the
 /// f32 range, `cpu_f64` otherwise).

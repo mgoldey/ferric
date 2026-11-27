@@ -406,13 +406,9 @@ fn build_df_jk_impl<'a>(
             if ctx.size <= 1 {
                 use ferric_integrals::three_index_source::ThreeIndexSource;
                 let naux = dfbs.nbasis();
-                if let Some((df_j, df_k)) = pair_major_fitters(
-                    op,
-                    (prep, &dfbs),
-                    ooc_budget,
-                    j_pair_thresh,
-                    (j_precision, k_precision),
-                )? {
+                if let Some((df_j, df_k)) =
+                    pair_major_fitters(op, (prep, &dfbs), ooc_budget, j_pair_thresh, k_precision)?
+                {
                     return Ok((Some(df_j), Some(df_k)));
                 }
                 // Leave room for the packed dressed band DF-K will hold beside
@@ -549,18 +545,23 @@ fn build_df_jk_impl<'a>(
 /// The default shared RI-JK route: RI-J and DF-K on one pair-major dressed
 /// tensor ([`crate::df_pair`]), or `None` when the run keeps the aux-major
 /// tensors. An explicit `jk_storage` names the aux-major tensors' placement,
-/// so only `auto` takes the pair route; an EXPLICIT f32 RI-J request is a
-/// request for the stored f32 tensor (the pair tensor's J is f64), so it keeps
-/// the aux-major route too; the rest of the gate is [`DfK::try_pair_major`].
+/// so only `auto` takes the pair route; the rest of the gate is
+/// [`DfK::try_pair_major`].
+///
+/// `ri_j_precision` does not gate it: the pair tensor's J is f64 whatever was
+/// asked, exactly as a declined f32 request falls back to f64 on the
+/// aux-major route, and [`RiJ::precision`] reports f64. An f32 request spelled
+/// out (the value an unset key resolves to for an energy task) therefore runs
+/// what the unset key runs; `FERRIC_DF_LAYOUT=aux` brings the stored f32
+/// tensor back.
 fn pair_major_fitters(
     op: Operator,
     (prep, dfbs): (&PreparedBasis, &PreparedBasis),
     budget: usize,
     pair_thresh: f64,
-    (j_precision, k_precision): (RiJPrecision, crate::df_k::RiKPrecision),
+    k_precision: crate::df_k::RiKPrecision,
 ) -> Result<Option<(RiJ<'static>, DfK<'static>)>, FerricError> {
-    let f32_j_asked = j_precision == RiJPrecision::F32 && crate::df_j::request_is_explicit();
-    if jk_storage() != JkStorage::Auto || f32_j_asked {
+    if jk_storage() != JkStorage::Auto {
         return Ok(None);
     }
     Ok(
