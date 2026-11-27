@@ -71,6 +71,46 @@ pub struct RiMp2Config {
     /// cost well under a microhartree; `0.0` keeps everything and is the
     /// exactness anchor.
     pub eri3_screen_thresh: Option<f64>,
+    /// Contraction rotation of the orbital basis for the raw `(P|μν)` build
+    /// ([`rotated_three_index_basis`]): `None` (default) reads
+    /// `FERRIC_GC_ROTATE` (unset = `auto`), as the direct J/K builders do;
+    /// `Some(GcRotate::Off)` is the unrotated build bit for bit. A basis
+    /// with nothing to rotate (def2, Pople) is unaffected either way.
+    pub gc_rotation: Option<ferric_scf::direct_jk::GcRotate>,
+}
+
+/// The column-rotated orbital basis and the MO coefficients on it for an RI
+/// 3-index build whose AO indices are contracted with MO coefficients at once.
+///
+/// With `χ_μ = Σ_m T_μm χ'_m` ([`RotatedBasis`]), an orbital
+/// `φ_i = Σ_μ C_μi χ_μ = Σ_m (TᵀC)_mi χ'_m`, so
+/// `(P|ia) = Σ_mn (TᵀC_occ)_mi (TᵀC_vir)_na (P|m n)'`: the rotated shells are
+/// integrated directly and the back-transform is folded into the
+/// coefficients (an `nbf² · nmo` GEMM) instead of applied to the tensor.
+/// A generally contracted basis (cc-pVXZ, ANO) then evaluates each shared
+/// primitive set once per rotated shell instead of once per contracted
+/// column. The energy moves at the integral-screening level (~1e-12 Eh).
+///
+/// Returns `None` when the rotation is off or nothing rotates; the caller
+/// then builds on `obs` with the original coefficients, bit for bit.
+///
+/// [`RotatedBasis`]: ferric_integrals::contraction_rotation::RotatedBasis
+pub fn rotated_three_index_basis(
+    obs: &PreparedBasis,
+    mode: Option<ferric_scf::direct_jk::GcRotate>,
+    coefs: &[&Array2<f64>],
+) -> Result<Option<(PreparedBasis, Vec<Array2<f64>>)>, FerricError> {
+    use ferric_integrals::contraction_rotation::RotatedBasis;
+    use ferric_scf::direct_jk::GcRotate;
+    let Some(level) = GcRotate::resolve(mode)?.level() else {
+        return Ok(None);
+    };
+    let Some(rot) = RotatedBasis::detect_prepared(obs, level)? else {
+        return Ok(None);
+    };
+    let tt = rot.dense_t().reversed_axes();
+    let rotated = coefs.iter().map(|c| tt.dot(*c)).collect();
+    Ok(Some((rot.prep, rotated)))
 }
 
 impl RiMp2Config {
@@ -1139,6 +1179,19 @@ pub fn ri_mp2_spin_components_fitted(
     // `ThreeIndexSource::build`. The bound is constructed ONCE and handed to the
     // source for its whole lifetime, which is what keeps a rebuilt block
     // bit-identical to the original (see eri3_block_screened's purity note).
+    // Rotated shells for a generally contracted basis (rotated_three_index_basis):
+    // the raw tensor, its screen and the MO transform all live on them.
+    let rotated = rotated_three_index_basis(obs, config.gc_rotation, &[&c_occ, &c_vir])?;
+    let rotated_prep;
+    let (obs, c_occ, c_vir) = match rotated {
+        Some((prep, mut cs)) => {
+            let c_vir = cs.pop().expect("two coefficient blocks");
+            let c_occ = cs.pop().expect("two coefficient blocks");
+            rotated_prep = prep;
+            (&rotated_prep, c_occ, c_vir)
+        }
+        None => (obs, c_occ, c_vir),
+    };
     let qqr_bounds = match config.eri3_screen_thresh {
         Some(t) if t > 0.0 => Some(ferric_integrals::qqr3::QqrBounds3::new(
             src_op, mol, obs, dfbs,
