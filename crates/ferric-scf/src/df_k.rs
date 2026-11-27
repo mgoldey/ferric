@@ -423,7 +423,7 @@ impl Dressed {
             if p1 - p0 != scratch.shape()[0] {
                 scratch = Array3::<f64>::zeros((p1 - p0, n, n));
             }
-            t.unpack_square(p0, p1, &mut scratch);
+            t.unpack_square(p0, p1, &mut scratch)?;
             f(ferric_integrals::three_index_source::AuxBlock {
                 p0,
                 data: scratch.view(),
@@ -468,7 +468,7 @@ impl DfK<'static> {
         thresh: f64,
         precision: RiKPrecision,
     ) -> Result<Option<std::sync::Arc<crate::df_pair::PairMajor>>, FerricError> {
-        use crate::df_pair::{PairLayout, PairMajor};
+        use crate::df_pair::PairMajor;
         use ferric_core::timing::Stage;
         if !crate::df_pair::pair_layout_requested()? {
             return Ok(None);
@@ -491,18 +491,22 @@ impl DfK<'static> {
             return Ok(None);
         };
         let q_aux_max = v.diag().iter().fold(0.0f64, |m, x| m.max(x.abs().sqrt()));
-        let t = Stage::start("dfpair:schwarz");
-        let layout = PairLayout::schwarz(op, obs, q_aux_max, thresh)?;
-        t.end();
-        if layout.tensor_bytes(dfbs.nbasis()) > budget_bytes {
+        // The tensor is held on the column-rotated shells the direct builder
+        // uses (`FERRIC_GC_ROTATE`, default both stages): a generally
+        // contracted basis fills faster and screens more pairs there.
+        let level = crate::direct_jk::GcRotate::env_setting()?.level();
+        let Some(tensor) = PairMajor::build(
+            op,
+            obs,
+            dfbs,
+            &linv,
+            (q_aux_max, thresh),
+            level,
+            budget_bytes,
+        )?
+        else {
             return Ok(None);
-        }
-        let t = Stage::start("dfpair:fill");
-        let mut tensor = PairMajor::fill(op, obs, dfbs, layout)?;
-        t.end();
-        let t = Stage::start("dfpair:dress");
-        tensor.dress(&linv)?;
-        t.end();
+        };
         crate::df_pair::note_pair_major_taken();
         Ok(Some(std::sync::Arc::new(tensor)))
     }

@@ -187,7 +187,7 @@ impl GcRotate {
         Self::resolve(None)
     }
 
-    fn level(self) -> Option<RotationLevel> {
+    pub(crate) fn level(self) -> Option<RotationLevel> {
         match self {
             Self::Auto => Some(RotationLevel::Ogc),
             Self::Rot1 => Some(RotationLevel::Rot1),

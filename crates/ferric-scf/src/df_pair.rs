@@ -262,7 +262,19 @@ pub struct PairMajor {
     data: Vec<f64>,
     /// The half-transformed intermediate of [`Self::build_k_occ`], reused.
     k_scratch: std::sync::Mutex<Vec<f64>>,
+    /// Set when the tensor is held on column-rotated shells: every public
+    /// entry point takes and returns parent-basis matrices.
+    rot: Option<Rotation>,
     _charge: Reservation,
+}
+
+/// The column rotation a [`PairMajor`] tensor is stored under: `χ = T χ'`.
+struct Rotation {
+    basis: ferric_integrals::contraction_rotation::RotatedBasis,
+    /// `D' = Tᵀ D T`.
+    forward: ferric_integrals::contraction_rotation::AoTranspose,
+    /// Dense `T`, for `C' = Tᵀ C`.
+    t: Array2<f64>,
 }
 
 impl std::fmt::Debug for PairMajor {
@@ -362,6 +374,7 @@ impl PairMajor {
             layout,
             data,
             k_scratch: std::sync::Mutex::new(Vec::new()),
+            rot: None,
             _charge: charge,
         })
     }
@@ -463,8 +476,126 @@ impl PairMajor {
     }
 
     /// Write aux rows `[p0, p1)` as the dense symmetric `(p1 − p0, n, n)`
-    /// block the aux-major consumers read; dropped pairs are zero.
-    pub fn unpack_square(&self, p0: usize, p1: usize, out: &mut Array3<f64>) {
+    /// block the aux-major consumers read, in the PARENT AO basis; dropped
+    /// pairs are zero (before the back-transform, when the tensor is held on
+    /// rotated shells).
+    pub fn unpack_square(
+        &self,
+        p0: usize,
+        p1: usize,
+        out: &mut Array3<f64>,
+    ) -> Result<(), FerricError> {
+        let Some(rot) = &self.rot else {
+            self.unpack_square_stored(p0, p1, out);
+            return Ok(());
+        };
+        let (n, w) = (self.layout.nao, p1 - p0);
+        assert_eq!(out.dim(), (w, n, n), "pair-major unpack: block shape");
+        // Pair rows `(μ n + ν, P)`, the layout the rotation's own
+        // back-transform takes: `B_P = T B'_P Tᵀ` for every P at once.
+        let mut rows = vec![0.0f64; n * n * w];
+        for mu in 0..n {
+            let col0 = self.layout.sig_start[mu];
+            for (k, &nu) in self.layout.partners(mu).iter().enumerate() {
+                let src = &self.data[(col0 + k) * self.naux + p0..(col0 + k) * self.naux + p1];
+                let dst = (mu * n + nu as usize) * w;
+                rows[dst..dst + w].copy_from_slice(src);
+            }
+        }
+        rot.basis.back_transform_pair_rows(&mut rows, w)?;
+        for mu in 0..n {
+            for nu in 0..n {
+                let src = (mu * n + nu) * w;
+                for p in 0..w {
+                    out[(p, mu, nu)] = rows[src + p];
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// `J[μν] = Σ_P B[P,μν] g_P`, `g_P = Σ_λσ B[P,λσ] D[λσ]`, for any `D`
+    /// (only its symmetric part contributes). `j` is overwritten. With the
+    /// tensor on rotated shells: `J = T J'(Tᵀ D T) Tᵀ`.
+    pub fn build_j(&self, d: &Array2<f64>, j: &mut Array2<f64>) -> Result<(), FerricError> {
+        let Some(rot) = &self.rot else {
+            return self.build_j_stored(d, j);
+        };
+        let d_rot = rot.forward.matrix(d);
+        let mut j_rot = Array2::<f64>::zeros(j.raw_dim());
+        self.build_j_stored(&d_rot, &mut j_rot)?;
+        j.assign(&rot.basis.back_transform_matrix(&j_rot)?);
+        Ok(())
+    }
+
+    /// `K = Σ_P (B_P C)(B_P C)ᵀ` for an `n × m` factor `C` (occupied orbitals
+    /// with `D = C Cᵀ`, or any factor of a positive semidefinite density).
+    /// `k` is overwritten and exactly symmetric. With the tensor on rotated
+    /// shells: `K = T K'(Tᵀ C) Tᵀ`.
+    pub fn build_k_occ(&self, c: &Array2<f64>, k: &mut Array2<f64>) -> Result<(), FerricError> {
+        let Some(rot) = &self.rot else {
+            return self.build_k_occ_stored(c, k);
+        };
+        if c.nrows() != self.layout.nao {
+            return self.build_k_occ_stored(c, k); // reports the shape error
+        }
+        let c_rot = rot.t.t().dot(c);
+        let mut k_rot = Array2::<f64>::zeros(k.raw_dim());
+        self.build_k_occ_stored(&c_rot, &mut k_rot)?;
+        k.assign(&rot.basis.back_transform_matrix(&k_rot)?);
+        Ok(())
+    }
+
+    /// Whether the tensor is held on column-rotated shells.
+    pub fn is_rotated(&self) -> bool {
+        self.rot.is_some()
+    }
+
+    /// The whole set-up: the pair screen, the fill and the dressing, on the
+    /// column-rotated shells of `obs` when `level` is given and something
+    /// rotates (`ferric_integrals::contraction_rotation`), else on `obs`
+    /// itself. `linv` and `q_aux_max` as in [`PairMajor::dress`] and
+    /// [`PairLayout::schwarz`]. `None` when the tensor would exceed
+    /// `budget_bytes`.
+    pub fn build(
+        op: Operator,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        linv: &Array2<f64>,
+        (q_aux_max, thresh): (f64, f64),
+        level: Option<ferric_integrals::contraction_rotation::RotationLevel>,
+        budget_bytes: usize,
+    ) -> Result<Option<Self>, FerricError> {
+        use ferric_core::timing::Stage;
+        use ferric_integrals::contraction_rotation::{DerivRotMutant, RotatedBasis};
+        let rot = match level {
+            Some(level) => RotatedBasis::detect_prepared(obs, level)?,
+            None => None,
+        };
+        let ints = rot.as_ref().map_or(obs, |r| &r.prep);
+        let t = Stage::start("dfpair:schwarz");
+        let layout = PairLayout::schwarz(op, ints, q_aux_max, thresh)?;
+        t.end();
+        if layout.tensor_bytes(dfbs.nbasis()) > budget_bytes {
+            return Ok(None);
+        }
+        let t = Stage::start("dfpair:fill");
+        let mut tensor = Self::fill(op, ints, dfbs, layout)?;
+        t.end();
+        let t = Stage::start("dfpair:dress");
+        tensor.dress(linv)?;
+        t.end();
+        tensor.rot = rot.map(|basis| Rotation {
+            forward: basis.ao_transpose(DerivRotMutant::None),
+            t: basis.dense_t(),
+            basis,
+        });
+        Ok(Some(tensor))
+    }
+
+    /// The stored tensor's own rows `[p0, p1)`, unpacked (rotated shells
+    /// when [`Self::is_rotated`]).
+    fn unpack_square_stored(&self, p0: usize, p1: usize, out: &mut Array3<f64>) {
         let n = self.layout.nao;
         assert_eq!(out.dim(), (p1 - p0, n, n), "pair-major unpack: block shape");
         out.fill(0.0);
@@ -483,7 +614,7 @@ impl PairMajor {
     /// (only its symmetric part contributes). `j` is overwritten; a dropped
     /// pair's element is zero.
     #[allow(clippy::manual_c_str_literals)]
-    pub fn build_j(&self, d: &Array2<f64>, j: &mut Array2<f64>) -> Result<(), FerricError> {
+    fn build_j_stored(&self, d: &Array2<f64>, j: &mut Array2<f64>) -> Result<(), FerricError> {
         let (n, naux) = (self.layout.nao, self.naux);
         if d.dim() != (n, n) || j.dim() != (n, n) {
             return Err(FerricError::General(format!(
@@ -584,7 +715,7 @@ impl PairMajor {
     /// with `D = C Cᵀ`, or any factor of a positive semidefinite density).
     /// `k` is overwritten and exactly symmetric.
     #[allow(clippy::manual_c_str_literals)]
-    pub fn build_k_occ(&self, c: &Array2<f64>, k: &mut Array2<f64>) -> Result<(), FerricError> {
+    fn build_k_occ_stored(&self, c: &Array2<f64>, k: &mut Array2<f64>) -> Result<(), FerricError> {
         let (n, naux) = (self.layout.nao, self.naux);
         if c.nrows() != n || k.dim() != (n, n) {
             return Err(FerricError::General(format!(
@@ -998,17 +1129,86 @@ mod tests {
         assert!(err <= 1e-11 * max_abs(&ja), "J off by {err:e}");
     }
 
+    /// A tensor held on column-rotated shells (cc-pVDZ: the O s and p
+    /// groups rotate) gives the parent-basis J, K and unpacked blocks.
+    /// Catches a missing or one-sided transform of D, C, J or K, `T` used
+    /// where `Tᵀ` belongs, and an unpack that returns rotated-basis blocks.
+    /// Bar 1e-10 of the largest element: nothing is screened (thresh 0), so
+    /// the two tensors span the same integrals and differ by the rounding of
+    /// `T` (condition number below 2) on top of GEMM reassociation.
+    #[test]
+    fn a_rotated_tensor_gives_the_parent_basis_j_and_k() {
+        use ferric_integrals::contraction_rotation::RotationLevel;
+        let sys = system("cc-pvdz");
+        let n = sys.obs.nbasis();
+        let op = Operator::coulomb();
+        let build = |level| {
+            PairMajor::build(
+                op,
+                &sys.obs,
+                &sys.dfbs,
+                &sys.linv,
+                (sys.q_aux_max, 0.0),
+                level,
+                usize::MAX,
+            )
+            .unwrap()
+            .expect("fits an unbounded budget")
+        };
+        let plain = std::sync::Arc::new(build(None));
+        let c = factor(n, 6);
+        let d = c.dot(&c.t()) + &factor(n, n) * 0.01;
+        let jk = |t: &PairMajor| {
+            let (mut j, mut k) = (Array2::<f64>::zeros((n, n)), Array2::zeros((n, n)));
+            t.build_j(&d, &mut j).unwrap();
+            t.build_k_occ(&c, &mut k).unwrap();
+            (j, k)
+        };
+        let density_k = |t: &std::sync::Arc<PairMajor>| {
+            let mut k = Array2::<f64>::zeros((n, n));
+            DfK::from_pair_major(t.clone(), usize::MAX)
+                .build(&d, &mut k)
+                .unwrap();
+            k
+        };
+        let (j0, k0) = jk(&plain);
+        let kd0 = density_k(&plain);
+        assert!(!plain.is_rotated());
+        for level in [RotationLevel::Rot1, RotationLevel::Ogc] {
+            let rot = std::sync::Arc::new(build(Some(level)));
+            assert!(rot.is_rotated(), "{level:?}: nothing rotated in cc-pVDZ");
+            let (j, k) = jk(&rot);
+            let kd = density_k(&rot);
+            for (what, got, want) in [("J", &j, &j0), ("K", &k, &k0), ("density K", &kd, &kd0)] {
+                let err = max_abs(&(got - want));
+                assert!(max_abs(want) > 1e-2, "vacuous {what}");
+                assert!(
+                    err <= 1e-10 * max_abs(want),
+                    "{level:?}: {what} off by {err:e}"
+                );
+            }
+            assert!(k == k.t() && j == j.t(), "{level:?}: J or K not symmetric");
+        }
+    }
+
     /// The whole RI-JK RHF on the pair-major route reaches the aux-major
-    /// energy. Catches a route that is not taken (the counter), a J or K off
-    /// by a factor, and a first build (the factored guess density) that
-    /// disagrees. Bar 1e-9 Ha: both runs stop at density_conv 1e-9, whose
-    /// energy error is second order, and at integral_thresh 1e-12 no pair of
-    /// this system is dropped.
+    /// energy, on a segmented basis and on a generally contracted one (the
+    /// tensor is then held on rotated shells). Catches a route that is not
+    /// taken (the counter), a J or K off by a factor, and a first build (the
+    /// factored guess density) that disagrees. Bar 1e-9 Ha: both runs stop at
+    /// density_conv 1e-9, whose energy error is second order, and at
+    /// integral_thresh 1e-12 no pair of this system is dropped.
     #[test]
     fn an_ri_jk_rhf_reaches_the_aux_major_energy() {
+        for name in ["def2-svp", "cc-pvdz"] {
+            rhf_matches_the_aux_major_route(name);
+        }
+    }
+
+    fn rhf_matches_the_aux_major_route(name: &str) {
         use crate::rhf::{solve_rhf, RhfConfig};
         let mol = Molecule::parse_xyz(TWO_WATERS, 0, 1).unwrap();
-        let obs = PreparedBasis::new(&mol, &basis::bundled("def2-svp").unwrap()).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled(name).unwrap()).unwrap();
         let op = Operator::coulomb();
         let ctx = ferric_core::parallel::ParallelContext::default();
         let bounds = crate::screening::SchwarzBounds::compute(op, &obs).unwrap();
@@ -1027,11 +1227,17 @@ mod tests {
         };
         let (e_aux, taken_aux) = run(false);
         let (e_pair, taken_pair) = run(true);
-        assert_eq!(taken_aux, 0, "the aux-major run took the pair-major route");
-        assert!(taken_pair >= 1, "the pair-major route was not taken");
+        assert_eq!(
+            taken_aux, 0,
+            "{name}: the aux-major run took the pair route"
+        );
+        assert!(
+            taken_pair >= 1,
+            "{name}: the pair-major route was not taken"
+        );
         assert!(
             (e_aux - e_pair).abs() <= 1e-9,
-            "pair-major {e_pair} vs aux-major {e_aux}"
+            "{name}: pair-major {e_pair} vs aux-major {e_aux}"
         );
     }
 }
