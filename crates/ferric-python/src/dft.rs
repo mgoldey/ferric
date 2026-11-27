@@ -325,9 +325,10 @@ struct Wb97xLVArgs<'a> {
 }
 
 /// `run_double_hybrid(kind="wb97x-l-v")`: the driver the CLI's
-/// `method.kind = "wb97x-l-v"` runs (`run_wb97x_l_v_on`: the functional's own
-/// RKS reference through the KS ladder, then lambda-scaled short-range
-/// LinLCCD(hh)). Closed-shell only, and VV10 is the functional's dispersion,
+/// `method.kind = "wb97x-l-v"` runs (the functional's own RKS reference
+/// through the KS ladder, then `solve_wb97x_l_v`: lambda-scaled short-range
+/// LinLCCD(hh)). The certificate records the config of the ladder rung that
+/// converged. The GIL is released for both stages. Closed-shell only, and VV10 is the functional's dispersion,
 /// so `unrestricted=True`, an open-shell molecule and `dispersion=` raise.
 ///
 /// The result's PT2 fields carry the one correlation term, so
@@ -341,7 +342,7 @@ fn run_wb97x_l_v_kind(
     auxbasis: &PyBasisSet,
     a: Wb97xLVArgs<'_>,
 ) -> PyResult<PyDoubleHybridResult> {
-    use ferric_cc::double_hybrid::{run_wb97x_l_v_on, DoubleHybridConfig, WB97X_L_V_NAME};
+    use ferric_cc::double_hybrid::{solve_wb97x_l_v, DoubleHybridConfig, WB97X_L_V_NAME};
     if a.unrestricted || mol.inner.multiplicity > 1 {
         return Err(crate::errors::input_err(
             "run_double_hybrid: kind='wb97x-l-v' is closed-shell only (RKS reference); \
@@ -370,8 +371,8 @@ fn run_wb97x_l_v_kind(
     let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let mol = sys.mol();
     let budget = budget_bytes_from_gb(a.memory_budget_gb);
-    // The reference config `run_wb97x_l_v_on` solves with: its own functional
-    // on RI-J/RI-K, which is also what the certificate must name.
+    // The reference config of `run_wb97x_l_v`: the functional itself on
+    // RI-J/RI-K, which is also what the certificate must name.
     let cfg = ks_jkfit_config(
         rhf_config_conv(a.k_builder, budget, a.conv)?,
         WB97X_L_V_NAME,
@@ -389,7 +390,10 @@ fn run_wb97x_l_v_kind(
         dh_cfg.cc.frozen_core = fc;
     }
     dh_cfg.cc.memory_budget_bytes = budget;
-    let (dh, ks) = run_wb97x_l_v_on(&dfbs, &cfg, &dh_cfg).map_err(make_err)?;
+    let (ks, cfg) = py.allow_threads(|| ks_ladder_reference(&sys, cfg))?;
+    let dh = py
+        .allow_threads(|| solve_wb97x_l_v(mol, sys.basis(), dfbs.basis(), &ks, &dh_cfg))
+        .map_err(make_err)?;
     let reference = reference_certificate(mol, &ks, &cfg, &basis_set.inner);
     let certificate_data =
         ferric_cc::certificate::wb97x_l_v_certificate(&reference, &auxbasis.inner.name, &dh_cfg);

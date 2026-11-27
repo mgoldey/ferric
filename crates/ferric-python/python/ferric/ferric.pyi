@@ -4692,6 +4692,7 @@ def run_rhf(
 ) -> SymmetricRhfResult:
     """Closed-shell RHF on the symmetrized geometry (symmetry=True)."""
     ...
+
 def run_uhf(
     mol: Molecule,
     basis_set: BasisSet,
@@ -6559,6 +6560,7 @@ def run_dft(
 ) -> DftResult | SymmetricRhfResult:
     """Closed-shell Kohn-Sham DFT on the symmetrized geometry (symmetry=True)."""
     ...
+
 def dft_grid_point_count(
     mol: Molecule,
     grid_radial: int | None = None,
@@ -6665,6 +6667,7 @@ def run_ksdft(
 ) -> SymmetricRhfResult:
     """Closed-shell Kohn-Sham DFT on the symmetrized geometry (symmetry=True)."""
     ...
+
 @overload
 def run_ksdft(
     mol: Molecule,
@@ -6698,6 +6701,7 @@ def run_ksdft(
 ) -> DftResult | SymmetricRhfResult:
     """Closed-shell Kohn-Sham DFT on the symmetrized geometry (symmetry=True)."""
     ...
+
 def d3bj_energy(mol: Molecule, functional: str, s9: float = 0.0) -> float:
     """Grimme D3(BJ) dispersion energy in Hartree.
 

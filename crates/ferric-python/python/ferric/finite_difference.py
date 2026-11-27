@@ -54,12 +54,16 @@ def gradient_check(analytic, numerical, atol=1e-6):
     """Largest absolute difference between two gradient arrays.
 
     Raises ``AssertionError`` naming the worst element when it exceeds
-    ``atol``; ``atol=None`` only measures. Shapes must match (``ValueError``).
+    ``atol`` or when either array holds a non-finite value (a NaN would
+    otherwise compare as within tolerance); ``atol=None`` only measures.
+    Shapes must match (``ValueError``).
     """
     a = np.asarray(analytic, dtype=float)
     n = np.asarray(numerical, dtype=float)
     if a.shape != n.shape:
         raise ValueError(f"shape mismatch: {a.shape} vs {n.shape}")
+    if atol is not None and not (np.isfinite(a).all() and np.isfinite(n).all()):
+        raise AssertionError("gradients hold non-finite values")
     diff = np.abs(a - n)
     worst = float(diff.max()) if diff.size else 0.0
     if atol is not None and worst > atol:

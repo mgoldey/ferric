@@ -49,6 +49,17 @@ def test_gradient_check_measures_and_enforces_atol():
         fd.gradient_check(a, n[:1])
 
 
+def test_gradient_check_refuses_a_nan_rather_than_passing_it():
+    # max() of an array holding a NaN is NaN, and NaN > atol is False.
+    a = np.zeros((1, 3))
+    n = np.array([[np.nan, 1.0, 0.0]])
+    with pytest.raises(AssertionError, match="non-finite"):
+        fd.gradient_check(a, n, atol=1e-6)
+    with pytest.raises(AssertionError, match="non-finite"):
+        fd.gradient_check(n, a, atol=1e-6)
+    assert np.isnan(fd.gradient_check(a, n, atol=None))
+
+
 def test_bad_arguments_raise_value_error():
     with pytest.raises(ValueError, match=r"shape \(N, 3\)"):
         fd.finite_difference_gradient(lambda x: 0.0, np.zeros(3))

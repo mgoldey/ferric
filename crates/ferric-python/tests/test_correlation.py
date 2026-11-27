@@ -95,6 +95,20 @@ def test_einstein_fit_skips_the_ballistic_lags():
             ),
             "fit_fraction must satisfy",
         ),
+        (
+            lambda: c.velocity_autocorrelation(np.zeros((0, 1, 3))),
+            "at least one frame",
+        ),
+        (
+            lambda: c.mean_squared_displacement(np.zeros((4, 0, 3))),
+            "at least one frame",
+        ),
+        (lambda: c.diffusion_coefficient(np.ones((12, 1, 3)), -1.0), "dt must be"),
+        (lambda: c.diffusion_from_msd(np.zeros((40, 1, 3)), 0.0), "dt must be"),
+        (
+            lambda: c.diffusion_coefficient(np.ones((12, 1, 3)), float("nan")),
+            "dt must be",
+        ),
     ],
 )
 def test_bad_input_raises_value_error(call, needle):

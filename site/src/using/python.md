@@ -714,7 +714,8 @@ Three pure-Python modules, none imported by `import ferric`:
   raises `AssertionError` above `atol`. Pass `Molecule.coords_bohr()` to compare
   with ferric's gradients, which are in Hartree/Bohr.
 - `ferric.pdb`: `to_pdb(mol)` / `write_pdb(path, mol)` write one `HETATM` record
-  per atom (Å, no connectivity; ghost atoms are left out).
+  per atom (Å, no connectivity; ghost atoms are left out). Atom names are the
+  element plus a per-element counter (`H1`, `H2`).
 
 ## Memory, threads and MPI
 

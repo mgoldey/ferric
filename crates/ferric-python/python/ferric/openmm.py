@@ -17,11 +17,13 @@ forward direction):
     PeriodicTorsionForce needs no factor-of-2 undo (OpenMM already uses
     E = k(1 + cos(n*phi - delta)), same as ferric-mm).
 
-NonbondedForce's per-particle charge/sigma/epsilon are read directly (no
-1-2/1-3/1-4 exceptions are read back out — `ferric.MmTopology.from_amber_units`
-derives its OWN exclusions/1-4 pairs from the bond list via a BFS, so the
-force field's `createExceptionsFromBonds`-derived exceptions are redundant
-with, not a second source of truth alongside, what ferric-mm computes).
+NonbondedForce's per-particle charge/sigma/epsilon are read directly.
+`ferric.MmTopology.from_amber_units` derives its OWN exclusions (1-2, 1-3)
+and scaled 1-4 pairs (Coulomb 1/1.2, Lennard-Jones 1/2) from the bond list,
+so the System's exceptions are not carried over: they are CHECKED against
+that derivation, and a System whose exceptions differ (a hand-added
+exception, other 1-4 scale factors) is refused with `ValueError`, as is a
+System with a force ferric-mm has no term for (CMAP, GBSA, custom forces).
 """
 
 from __future__ import annotations
@@ -33,6 +35,84 @@ __all__ = ["topology_from_openmm", "topology_from_system"]
 Bond = tuple[int, int, float, float]
 Angle = tuple[int, int, int, float, float]
 Torsion = tuple[int, int, int, int, int, float, float]
+
+_SCALE_COUL_14 = 1.0 / 1.2  # ferric_mm::DEFAULT_SCALE_COUL_14
+_SCALE_LJ_14 = 0.5  # ferric_mm::DEFAULT_SCALE_LJ_14
+# What ferric-mm evaluates for a pair, by bond separation, as fractions
+# (Coulomb, Lennard-Jones) of the full interaction; other pairs get (1, 1).
+_PAIR_SCALES = {1: (0.0, 0.0), 2: (0.0, 0.0), 3: (_SCALE_COUL_14, _SCALE_LJ_14)}
+# amber14-all.xml writes coulomb14scale as 0.8333333 (4e-8 from 1/1.2).
+_EXCEPTION_RTOL = 1.0e-6
+
+
+def _bond_separations(n_atoms: int, bonds: list[Bond]) -> dict[tuple[int, int], int]:
+    """Shortest bond-path length (1, 2 or 3) of every pair ``i < j`` within
+    three bonds, as ferric-mm's `MmTopology::new` classifies them."""
+    neighbours: list[set[int]] = [set() for _ in range(n_atoms)]
+    for i, j, _, _ in bonds:
+        neighbours[i].add(j)
+        neighbours[j].add(i)
+    separation: dict[tuple[int, int], int] = {}
+    for start in range(n_atoms):
+        seen = {start}
+        frontier = {start}
+        for depth in (1, 2, 3):
+            frontier = {b for a in frontier for b in neighbours[a]} - seen
+            seen.update(frontier)
+            for other in frontier:
+                if start < other:
+                    separation[(start, other)] = depth
+    return separation
+
+
+def _close(got: float, want: float, scale: float) -> bool:
+    return abs(got - want) <= _EXCEPTION_RTOL * max(abs(want), scale)
+
+
+def _check_exceptions(force, bonds, charges, sigmas_angstrom, epsilons_kcal) -> None:
+    """Raise `ValueError` unless the NonbondedForce's exceptions are exactly
+    what ferric-mm derives from ``bonds``: 1-2/1-3 pairs excluded, 1-4 pairs
+    scaled by the AMBER factors with Lorentz-Berthelot mixing, no others."""
+    from openmm import unit
+
+    separation = _bond_separations(len(charges), bonds)
+    q_scale = max((abs(q) for q in charges), default=0.0) ** 2
+    eps_scale = max(epsilons_kcal, default=0.0)
+    seen = set()
+    for index in range(force.getNumExceptions()):
+        i, j, qq, sigma, epsilon = force.getExceptionParameters(index)
+        pair = (min(i, j), max(i, j))
+        seen.add(pair)
+        qq = qq.value_in_unit(unit.elementary_charge**2)
+        sigma = sigma.value_in_unit(unit.angstrom)
+        epsilon = epsilon.value_in_unit(unit.kilocalorie_per_mole)
+        depth = separation.get(pair)
+        s_coul, s_lj = _PAIR_SCALES.get(depth, (1.0, 1.0))
+        want_qq = s_coul * charges[i] * charges[j]
+        want_eps = s_lj * (epsilons_kcal[i] * epsilons_kcal[j]) ** 0.5
+        want_sigma = 0.5 * (sigmas_angstrom[i] + sigmas_angstrom[j])
+        ok = _close(qq, want_qq, q_scale) and _close(epsilon, want_eps, eps_scale)
+        if ok and want_eps > 0.0:
+            ok = _close(sigma, want_sigma, want_sigma)
+        if not ok:
+            where = f"{depth} bonds apart" if depth else "more than 3 bonds apart"
+            raise ValueError(
+                f"NonbondedForce exception {index} on atoms ({i}, {j}), {where}, has "
+                f"chargeProd={qq:.6g} e^2, sigma={sigma:.6g} A, epsilon={epsilon:.6g} "
+                f"kcal/mol; ferric-mm would evaluate chargeProd={want_qq:.6g}, "
+                f"sigma={want_sigma:.6g}, epsilon={want_eps:.6g} for that pair "
+                "(1-2/1-3 excluded, 1-4 scaled by 1/1.2 and 1/2), so the converted "
+                "topology would have a different potential."
+            )
+    missing = sorted(set(separation) - seen)
+    if missing:
+        i, j = missing[0]
+        raise ValueError(
+            f"{len(missing)} atom pairs within three bonds have no NonbondedForce "
+            f"exception (first: ({i}, {j}), {separation[(i, j)]} bonds apart); "
+            "ferric-mm would exclude or scale them, so the converted topology "
+            "would have a different potential."
+        )
 
 
 def topology_from_openmm(
@@ -75,8 +155,12 @@ def topology_from_system(system) -> dict:
     """The extraction half of `topology_from_openmm`: read the AMBER-form
     parameters out of an already-built `openmm.System` (same return value).
 
-    Refuses a System with constraints: a constrained bond has no
-    HarmonicBondForce entry, so ferric-mm would derive the wrong exclusions.
+    Refuses (`ValueError`) a System the returned parameters would not
+    reproduce: one with constraints (a constrained bond has no
+    HarmonicBondForce entry, so ferric-mm would derive the wrong exclusions),
+    one with a force other than harmonic bonds and angles, periodic torsions
+    and a NonbondedForce (CMMotionRemover and barostats aside), or one whose
+    nonbonded exceptions are not the bond-derived AMBER set.
     """
     import openmm
     from openmm import unit
@@ -95,6 +179,7 @@ def topology_from_system(system) -> dict:
     bonds: list[Bond] = []
     angles: list[Angle] = []
     torsions: list[Torsion] = []
+    nonbonded = []
 
     for force in system.getForces():
         if isinstance(force, openmm.HarmonicBondForce):
@@ -120,13 +205,24 @@ def topology_from_system(system) -> dict:
                 k_phi_kcal = k_phi.value_in_unit(unit.kilocalorie_per_mole)
                 torsions.append((i, j, k, l, periodicity, k_phi_kcal, phase_deg))
         elif isinstance(force, openmm.NonbondedForce):
+            nonbonded.append(force)
             for p in range(force.getNumParticles()):
                 q, sigma, epsilon = force.getParticleParameters(p)
                 charges[p] = q.value_in_unit(unit.elementary_charge)
                 sigmas_angstrom[p] = sigma.value_in_unit(unit.angstrom)
                 epsilons_kcal[p] = epsilon.value_in_unit(unit.kilocalorie_per_mole)
-        # CMMotionRemover and any other force (CMAP, GBSA, ...) carry no
-        # AMBER-form bonded/nonbonded parameters ferric-mm models; skipped.
+        else:
+            kind = type(force).__name__
+            # These two kinds carry no potential energy; anything else does.
+            if kind != "CMMotionRemover" and "Barostat" not in kind:
+                raise ValueError(
+                    f"System has a {kind}, which ferric-mm has no term for; the "
+                    "converted topology would leave its energy out."
+                )
+    if len(nonbonded) > 1:
+        raise ValueError(f"System has {len(nonbonded)} NonbondedForces; expected one")
+    for force in nonbonded:
+        _check_exceptions(force, bonds, charges, sigmas_angstrom, epsilons_kcal)
 
     return dict(
         n_atoms=n_atoms,

@@ -27,7 +27,16 @@ def _as_3d(name, arr):
         raise ValueError(
             f"{name} must have shape (n_frames, n_atoms, 3), got {a.shape}"
         )
+    if a.shape[0] == 0 or a.shape[1] == 0:
+        raise ValueError(f"{name} needs at least one frame and one atom, got {a.shape}")
     return a
+
+
+def _spacing(dt):
+    dt = float(dt)
+    if not (np.isfinite(dt) and dt > 0.0):
+        raise ValueError(f"dt must be a positive finite frame spacing, got {dt}")
+    return dt
 
 
 def velocity_autocorrelation(velocities, normalize=True):
@@ -65,8 +74,9 @@ def diffusion_coefficient(velocities, dt):
     rule over every recorded lag (the integral is cut at the trajectory
     length). ``diffusion_from_msd`` is the Einstein route from positions.
     """
+    dt = _spacing(dt)
     vacf = velocity_autocorrelation(velocities, normalize=False)
-    integral = float(np.trapezoid(vacf, dx=float(dt)))
+    integral = float(np.trapezoid(vacf, dx=dt))
     return integral / 3.0
 
 
@@ -79,6 +89,7 @@ def diffusion_from_msd(positions, dt, fit_fraction=(0.1, 0.5)):
     ballistic (MSD ~ t^2) and the late ones average over few origins.
     Needs at least two lags inside the window (``ValueError``).
     """
+    dt = _spacing(dt)
     msd = mean_squared_displacement(positions)
     lo, hi = fit_fraction
     if not 0.0 <= lo < hi <= 1.0:
@@ -92,6 +103,6 @@ def diffusion_from_msd(positions, dt, fit_fraction=(0.1, 0.5)):
         raise ValueError(
             f"{n} frames leave fewer than two lags in fit_fraction={fit_fraction}"
         )
-    t = np.arange(first, last + 1) * float(dt)
+    t = np.arange(first, last + 1) * dt
     slope, _ = np.polyfit(t, msd[first : last + 1], 1)
     return float(slope) / 6.0

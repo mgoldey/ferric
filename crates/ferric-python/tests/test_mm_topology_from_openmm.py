@@ -157,3 +157,63 @@ def test_a_constrained_system_is_refused():
     assert system.getNumConstraints() > 0
     with pytest.raises(ValueError, match="constraints"):
         topology_from_system(system)
+
+
+def _ala_ala_system():
+    from openmm import app
+
+    pdb = app.PDBFile(str(FIXTURE))
+    return app.ForceField("amber14-all.xml").createSystem(
+        pdb.topology, nonbondedMethod=app.NoCutoff, constraints=None, rigidWater=False
+    )
+
+
+def _nonbonded(system):
+    return next(f for f in system.getForces() if isinstance(f, openmm.NonbondedForce))
+
+
+def test_an_exception_on_a_distant_pair_is_refused():
+    """ferric-mm derives exclusions from bonds alone, so an exception on a
+    pair more than three bonds apart would be evaluated in full."""
+    system = _ala_ala_system()
+    topology_from_system(system)  # the force field's own exceptions pass
+    _nonbonded(system).addException(0, 22, 0.0, 0.3, 0.0)
+    with pytest.raises(ValueError, match=r"atoms \(0, 22\), more than 3 bonds apart"):
+        topology_from_system(system)
+
+
+def test_other_one_four_scale_factors_are_refused():
+    """ferric-mm scales 1-4 pairs by 1/1.2 (Coulomb) and 1/2 (LJ); a System
+    with another 1-4 charge product would come out with a different energy."""
+    system = _ala_ala_system()
+    force = _nonbonded(system)
+    for index in range(force.getNumExceptions()):
+        i, j, qq, sigma, eps = force.getExceptionParameters(index)
+        if abs(qq._value) > 1e-3:
+            force.setExceptionParameters(index, i, j, 1.2 * qq, sigma, eps)
+            break
+    else:
+        pytest.fail("no 1-4 exception with a charge product")
+    with pytest.raises(ValueError, match="3 bonds apart"):
+        topology_from_system(system)
+
+
+def test_a_missing_exception_is_refused():
+    """A bond added without its exceptions: OpenMM evaluates the pair in
+    full, ferric-mm would exclude it."""
+    system = _ala_ala_system()
+    bonded = next(
+        f for f in system.getForces() if isinstance(f, openmm.HarmonicBondForce)
+    )
+    bonded.addBond(0, 22, 0.15, 1000.0)
+    with pytest.raises(ValueError, match="have no NonbondedForce exception"):
+        topology_from_system(system)
+
+
+def test_a_force_without_a_ferric_mm_term_is_refused():
+    system = _ala_ala_system()
+    system.addForce(openmm.MonteCarloBarostat(1.0, 300.0))
+    topology_from_system(system)  # a barostat carries no energy
+    system.addForce(openmm.CMAPTorsionForce())
+    with pytest.raises(ValueError, match="CMAPTorsionForce"):
+        topology_from_system(system)
