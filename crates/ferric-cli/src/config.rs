@@ -252,6 +252,16 @@ pub struct GpuCfg {
     pub backend: Option<String>,
 }
 
+/// `[gpu] backend`: `"ferric"` or `"cuest"`.
+fn validate_backend(backend: Option<&str>) -> Result<(), String> {
+    match backend {
+        None | Some("ferric" | "cuest") => Ok(()),
+        Some(b) => Err(format!(
+            "[gpu] backend must be \"ferric\" or \"cuest\", got {b:?}"
+        )),
+    }
+}
+
 impl GpuCfg {
     /// Value checks: `mode`, `precision` and `mixed_kernels` parse and `memory_gb` is finite and > 0.
     pub fn validate(&self) -> Result<(), String> {
@@ -277,14 +287,7 @@ impl GpuCfg {
                 .parse::<ferric_core::gpu::MixedKernelSet>()
                 .map_err(|e| format!("[gpu] mixed_kernels: {e}"))?;
         }
-        if let Some(b) = &self.backend {
-            if b != "ferric" && b != "cuest" {
-                return Err(format!(
-                    "[gpu] backend must be \"ferric\" or \"cuest\", got {b:?}"
-                ));
-            }
-        }
-        Ok(())
+        validate_backend(self.backend.as_deref())
     }
 
     /// The typed TOML side of the resolution. Call [`GpuCfg::validate`] first
