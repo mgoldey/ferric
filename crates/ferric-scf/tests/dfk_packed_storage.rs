@@ -170,6 +170,8 @@ fn packed_f64_band_and_k_are_bitwise_the_square_ones() {
 }
 
 fn rhf(sys: &System, precision: Option<RiKPrecision>) -> ferric_scf::ScfResult {
+    // These SCFs compare storage tiers of the aux-major dressed tensor.
+    let _aux = ferric_scf::df_pair::override_pair_layout_for_test(false);
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &sys.obs).unwrap();

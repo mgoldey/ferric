@@ -406,12 +406,14 @@ fn build_df_jk_impl<'a>(
             if ctx.size <= 1 {
                 use ferric_integrals::three_index_source::ThreeIndexSource;
                 let naux = dfbs.nbasis();
-                // Opt-in: one pair-major dressed tensor for both J and K.
-                if let Some(tensor) =
-                    DfK::try_pair_major(op, prep, &dfbs, ooc_budget, j_pair_thresh, k_precision)?
-                {
-                    let df_j = RiJ::Pair(crate::df_pair::PairJ::new(tensor.clone()));
-                    return Ok((Some(df_j), Some(DfK::from_pair_major(tensor, ooc_budget))));
+                if let Some((df_j, df_k)) = pair_major_fitters(
+                    op,
+                    (prep, &dfbs),
+                    ooc_budget,
+                    j_pair_thresh,
+                    (j_precision, k_precision),
+                )? {
+                    return Ok((Some(df_j), Some(df_k)));
                 }
                 // Leave room for the packed dressed band DF-K will hold beside
                 // the raw tensor (`DfK::packed_band_bytes`).
@@ -542,6 +544,31 @@ fn build_df_jk_impl<'a>(
     };
     yield_device_to_k(&mut df_j, &df_k);
     Ok((df_j, df_k))
+}
+
+/// The default shared RI-JK route: RI-J and DF-K on one pair-major dressed
+/// tensor ([`crate::df_pair`]), or `None` when the run keeps the aux-major
+/// tensors. An explicit `jk_storage` names the aux-major tensors' placement,
+/// so only `auto` takes the pair route; an EXPLICIT f32 RI-J request is a
+/// request for the stored f32 tensor (the pair tensor's J is f64), so it keeps
+/// the aux-major route too; the rest of the gate is [`DfK::try_pair_major`].
+fn pair_major_fitters(
+    op: Operator,
+    (prep, dfbs): (&PreparedBasis, &PreparedBasis),
+    budget: usize,
+    pair_thresh: f64,
+    (j_precision, k_precision): (RiJPrecision, crate::df_k::RiKPrecision),
+) -> Result<Option<(RiJ<'static>, DfK<'static>)>, FerricError> {
+    let f32_j_asked = j_precision == RiJPrecision::F32 && crate::df_j::request_is_explicit();
+    if jk_storage() != JkStorage::Auto || f32_j_asked {
+        return Ok(None);
+    }
+    Ok(
+        DfK::try_pair_major(op, prep, dfbs, budget, pair_thresh, k_precision)?.map(|tensor| {
+            let df_j = RiJ::Pair(crate::df_pair::PairJ::new(tensor.clone()));
+            (df_j, DfK::from_pair_major(tensor, budget))
+        }),
+    )
 }
 
 /// What a shared RI-JK set-up's f32 RI-J conversion counts beside it: the
@@ -1142,6 +1169,8 @@ mod tests {
     #[test]
     fn dress_first_is_bitwise_the_resident_route() {
         use crate::df_k::RiKPrecision;
+        // Dress-first is a placement of the aux-major tensors.
+        let _aux = crate::df_pair::override_pair_layout_for_test(false);
         use crate::fock::{JBuilder, KBuilder};
         use ferric_integrals::three_index_source::ThreeIndexSource;
         assert_eq!(

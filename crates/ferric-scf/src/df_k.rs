@@ -463,8 +463,8 @@ impl DfK<'static> {
         }
     }
 
-    /// The pair-major tensor for an RI-JK run that asks for it
-    /// (`FERRIC_DF_LAYOUT=pair`) and qualifies, else `None` (the caller takes
+    /// The pair-major tensor for an RI-JK run that qualifies (and has not
+    /// opted out with `FERRIC_DF_LAYOUT=aux`), else `None` (the caller takes
     /// the aux-major route): the Coulomb operator, f64 K storage, no device K,
     /// no geometry task capturing the metric, a metric the Cholesky route
     /// certifies, and a tensor that fits `budget_bytes`. `thresh` is the

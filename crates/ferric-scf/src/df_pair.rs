@@ -1,5 +1,6 @@
 //! Pair-major, Schwarz-sparse storage of the dressed three-index tensor: one
-//! tensor for RI-J and DF-K (opt-in, `FERRIC_DF_LAYOUT=pair`).
+//! tensor for RI-J and DF-K (the default RI-JK route where it qualifies;
+//! `FERRIC_DF_LAYOUT=aux` opts out).
 //!
 //! The aux-major RI-JK route ([`crate::df_j`], [`crate::df_k`]) holds two
 //! tensors, the raw `(P|μν)` for J and the dressed `B = L⁻¹(P|μν)` for K, each
@@ -829,18 +830,19 @@ impl PairMajor {
     }
 }
 
-/// `FERRIC_DF_LAYOUT`: `aux` (default: the aux-major tensors of
-/// [`crate::df_j`] / [`crate::df_k`]) or `pair` (this module, when the run
-/// qualifies; see `fock_assembly::try_pair_major`). Env-only while the route
-/// is being measured.
+/// `FERRIC_DF_LAYOUT`: `pair` (default: this module, for every RI-JK set-up
+/// that qualifies; see `DfK::try_pair_major`) or `aux` (always the aux-major
+/// tensors of [`crate::df_j`] / [`crate::df_k`], the only route before
+/// 2026-11-27). The two agree to the screening and summation-order level
+/// (measured `|ΔE| ≤ 6e-11` Ha on C4–C20 alkane RHF), not bit for bit.
 static DF_LAYOUT: ferric_core::config::ConfigVar<bool> = ferric_core::config::ConfigVar {
     env_name: "FERRIC_DF_LAYOUT",
-    default: false,
+    default: true,
     parse: |s| match s.trim().to_ascii_lowercase().as_str() {
         "pair" => Ok(true),
         "aux" => Ok(false),
         _ => Err(format!(
-            "invalid value {s:?}: expected \"aux\" or \"pair\" (unset means \"aux\")"
+            "invalid value {s:?}: expected \"aux\" or \"pair\" (unset means \"pair\")"
         )),
     },
     validate: ferric_core::config::accept_any,
