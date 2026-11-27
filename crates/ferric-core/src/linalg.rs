@@ -313,6 +313,18 @@ pub fn par_gemm(
     beta: f64,
     c: &mut Array2<f64>,
 ) {
+    par_gemm_into(alpha, a, b, beta, c.view_mut());
+}
+
+/// [`par_gemm`] into a mutable view (a row band of a larger output, say),
+/// with the same fixed column blocking and so the same bits.
+pub fn par_gemm_into(
+    alpha: f64,
+    a: &ArrayView2<'_, f64>,
+    b: &ArrayView2<'_, f64>,
+    beta: f64,
+    mut c: ndarray::ArrayViewMut2<'_, f64>,
+) {
     use rayon::prelude::*;
     assert_eq!(a.ncols(), b.nrows(), "par_gemm: inner dimensions differ");
     assert_eq!(c.dim(), (a.nrows(), b.ncols()), "par_gemm: output shape");

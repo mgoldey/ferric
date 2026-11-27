@@ -695,6 +695,71 @@ pub fn stream_dressed_mo_band(
     stream_dressed_mo_band_budgeted(src, v_inv_sqrt, c_left, c_right, output_band, None)
 }
 
+/// Row alignment of [`DressRows::chunk`]'s start row, counted from the output
+/// band's first row: a multiple of the OpenBLAS DGEMM register-tile heights,
+/// which keeps the skipped product's bits (checked by
+/// `dress_rows_skip_is_the_dense_product_bit_for_bit`).
+const DRESS_ROW_ALIGN: usize = 32;
+
+/// The rows of a dressing matrix that can be nonzero, column by column, so
+/// the MO stream's `b[P,:] += M[P, Qchunk] · mo[Qchunk,:]` skips the rows that
+/// are zero over a whole chunk. For the Cholesky factor `M = L⁻¹` (lower
+/// triangular, its upper triangle stored as exact zeros) a chunk starting at
+/// `q0` touches only the rows `P ≥ q0`, which halves the dressing GEMM over
+/// the stream; a dense `M` (the eigh/erf `V^{-1/2}`, a fitting identity)
+/// keeps every row.
+///
+/// Exact: a skipped row receives `Σ 0·x = 0` in the dense product, so leaving
+/// it out changes no value. The kept rows run the same GEMM over the same
+/// chunk columns, from a start row aligned to [`DRESS_ROW_ALIGN`], so they
+/// keep the dense call's bits.
+struct DressRows {
+    /// `first[q]` = the first row with `M[row, q] != 0`, or `nrows` if none.
+    first: Vec<usize>,
+}
+
+impl DressRows {
+    fn of(m: &Array2<f64>) -> Self {
+        let first = m
+            .columns()
+            .into_iter()
+            .map(|col| col.iter().position(|&x| x != 0.0).unwrap_or(m.nrows()))
+            .collect();
+        Self { first }
+    }
+
+    /// `b[P - band_p0, :] += m[P, q0..q1] · mo` for the output rows `P` in
+    /// `[band_p0, band_p1)` that can be nonzero for this chunk, through
+    /// [`ferric_core::linalg::par_gemm_into`] (fixed column blocks, so the
+    /// bits do not depend on the thread count).
+    fn chunk(
+        &self,
+        m: &Array2<f64>,
+        (band_p0, band_p1): (usize, usize),
+        (q0, q1): (usize, usize),
+        mo: &Array2<f64>,
+        b: &mut Array2<f64>,
+    ) {
+        let row0 = self.first[q0..q1]
+            .iter()
+            .copied()
+            .min()
+            .unwrap_or(band_p1)
+            .clamp(band_p0, band_p1);
+        if row0 == band_p1 {
+            return;
+        }
+        // Start on a multiple of DRESS_ROW_ALIGN from the band's first row, so
+        // every kept row sits at the same offset inside the BLAS register tile
+        // as in the dense call: a row at another offset can land in an edge
+        // kernel whose summation differs in the last bit.
+        let row0 = band_p0 + (row0 - band_p0) / DRESS_ROW_ALIGN * DRESS_ROW_ALIGN;
+        let msub = m.slice(ndarray::s![row0..band_p1, q0..q1]);
+        let out = b.slice_mut(ndarray::s![row0 - band_p0.., ..]);
+        ferric_core::linalg::par_gemm_into(1.0, &msub, &mo.view(), 1.0, out);
+    }
+}
+
 /// Budget-aware [`stream_dressed_mo_band`].
 ///
 /// `memory_budget_bytes = None` keeps the historical fixed
@@ -733,6 +798,7 @@ pub fn stream_dressed_mo_band_budgeted(
         );
     }
 
+    let dress = DressRows::of(v_inv_sqrt);
     let mut b_flat = Array2::<f64>::zeros((band, width));
     src.for_each_block(|blk| {
         let qb = blk.data.shape()[0];
@@ -780,14 +846,13 @@ pub fn stream_dressed_mo_band_budgeted(
                         .for_each(|(q, row)| mo_transform_row(q, row));
                 });
             }
-            // Dress into only the requested output band, accumulating in place
-            // (beta=1): b_flat[P-band_p0, pq] += V^{-1/2}[band, Qchunk] · mo_blk.
-            // 2·band·chunk·width FLOPs per chunk (~143 GFLOP over a C12/cc-pVTZ
-            // (P|ia) stream), on the main thread: `par_gemm` spreads it over
-            // the rayon pool in fixed column blocks at one BLAS thread each,
-            // so the result does not depend on the thread count.
-            let msub = v_inv_sqrt.slice(ndarray::s![band_p0..band_p1, blk.p0 + q0..blk.p0 + q1]);
-            ferric_core::linalg::par_gemm(1.0, &msub, &mo_blk.view(), 1.0, &mut b_flat);
+            dress.chunk(
+                v_inv_sqrt,
+                (band_p0, band_p1),
+                (blk.p0 + q0, blk.p0 + q1),
+                &mo_blk,
+                &mut b_flat,
+            );
             q0 = q1;
         }
         Ok(())
@@ -2784,6 +2849,56 @@ pub fn ri_mp2_einsum(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A deterministic pseudo-random (rows, cols) matrix in [-1, 1).
+    fn lcg_matrix(rows: usize, cols: usize, seed: u64) -> Array2<f64> {
+        let mut s = seed;
+        Array2::from_shape_fn((rows, cols), |_| {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((s >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+        })
+    }
+
+    /// The row-skipping dressing gives the dense product's bits: for a lower
+    /// triangular `M` (the Cholesky `L⁻¹`) and for a dense one, over chunks
+    /// that straddle the diagonal and output bands that start above, inside
+    /// and below a chunk. FAILS if a skipped row could be nonzero (a wrong
+    /// `first` row) or the kept rows' GEMM changes.
+    #[test]
+    fn dress_rows_skip_is_the_dense_product_bit_for_bit() {
+        let (n, width) = (300, 70);
+        let dense = lcg_matrix(n, n, 1);
+        let mut lower = dense.clone();
+        for i in 0..n {
+            for j in (i + 1)..n {
+                lower[[i, j]] = 0.0;
+            }
+        }
+        let mo_all = lcg_matrix(n, width, 2);
+        for m in [&lower, &dense] {
+            let dress = DressRows::of(m);
+            for band in [(0, n), (1, n - 1), (37, 211), (250, n)] {
+                let mut skip = Array2::<f64>::zeros((band.1 - band.0, width));
+                let mut full = skip.clone();
+                for (q0, q1) in [(0, 64), (64, 91), (91, 256), (256, n)] {
+                    let mo = mo_all.slice(ndarray::s![q0..q1, ..]).to_owned();
+                    dress.chunk(m, band, (q0, q1), &mo, &mut skip);
+                    let msub = m.slice(ndarray::s![band.0..band.1, q0..q1]);
+                    ferric_core::linalg::par_gemm(1.0, &msub, &mo.view(), 1.0, &mut full);
+                }
+                assert!(
+                    skip.iter()
+                        .zip(&full)
+                        .all(|(a, b)| a.to_bits() == b.to_bits()),
+                    "band {band:?}: the row skip changed bits"
+                );
+            }
+        }
+        assert_eq!(DressRows::of(&lower).first[5], 5);
+        assert!(DressRows::of(&dense).first.iter().all(|&r| r == 0));
+    }
     use ferric_core::basis;
     use ferric_core::mol::Molecule;
     use ferric_integrals::basis_bridge::PreparedBasis;
