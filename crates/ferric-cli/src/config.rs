@@ -246,7 +246,7 @@ pub struct GpuCfg {
     /// Integral backend for the SCF: `"ferric"` (default, libint on the CPU)
     /// or `"cuest"` (NVIDIA cuEST on GPU 0: S, T, V and exact direct J/K; XC
     /// stays on the CPU grid). `"cuest"` needs a binary built with
-    /// `--features cuest` and an sm_86+ GPU, and runs only `task = "energy"`
+    /// `--features cuest` and an sm_80+ GPU, and runs only `task = "energy"`
     /// for `rhf`/`uhf`/`ksdft` (pure or global-hybrid functionals); anything
     /// else is a hard error. See crates/ferric-cuest/README.md.
     pub backend: Option<String>,

@@ -21,7 +21,8 @@ pub(crate) fn check(call: &'static str, code: ffi::cudaError_t) -> Result<()> {
     }
 }
 
-/// What the CUDA runtime reports about device 0.
+/// What the CUDA runtime reports about device 0 (the device cuEST runs on
+/// unless the calling thread selected another).
 #[derive(Debug, Clone)]
 pub struct DeviceInfo {
     pub device_count: i32,

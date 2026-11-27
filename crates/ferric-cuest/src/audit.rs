@@ -1,11 +1,10 @@
 //! cuEST compatibility audit for ferric basis sets.
 //!
-//! cuEST imposes three structural rules on a Gaussian basis (see the plan,
-//! §1.1 and §5.2/§5.3):
+//! cuEST imposes three structural rules on a Gaussian basis:
 //!
-//! 1. **Angular-momentum contiguity**: the set of angular momenta `l` present
-//!    in the basis must be contiguous starting at `l = 0` (no holes such as a
-//!    basis that has `s` and `d` but no `p`).
+//! 1. **Angular-momentum contiguity**: on every centre (here, every element)
+//!    the angular momenta present must be contiguous from `l = 0`: a centre
+//!    with `p` needs `s`, one with `d` needs `s` and `p`.
 //! 2. **Uniform representation**: every shell in the basis must use the same
 //!    representation (all spherical `pure = true`, or all Cartesian
 //!    `pure = false`). Mixed spherical/Cartesian within one molecule is not
@@ -13,8 +12,7 @@
 //! 3. **Spherical aux basis**: a density-fitting auxiliary basis must be
 //!    entirely spherical (`pure = true`).
 //!
-//! These checks are pure Rust and require no device, so they can run on the
-//! dev box. They are the CPU-side half of Phase 0.4.
+//! These checks are pure Rust and need no device.
 
 use ferric_core::basis::BasisSet;
 
@@ -30,7 +28,7 @@ pub struct BasisViolation {
 /// The kind of cuEST-compatibility violation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViolationKind {
-    /// The set of angular momenta present has a gap below its maximum.
+    /// An element's angular momenta have a gap below their maximum.
     LContiguityHole,
     /// Both spherical (`pure=true`) and Cartesian (`pure=false`) shells occur.
     MixedRepresentation,
@@ -86,29 +84,26 @@ pub fn audit_basis(bs: &BasisSet) -> BasisAudit {
         });
     }
 
-    // Rule 1: angular-momentum contiguity from 0.
-    // Collect the set of l values present anywhere in the basis.
-    let mut present: std::collections::BTreeSet<i32> = std::collections::BTreeSet::new();
-    for shells in bs.shells.values() {
-        for sh in shells {
-            present.insert(sh.l);
-        }
-    }
-    if let Some(&max_l) = present.iter().next_back() {
-        for l in 0..=max_l {
-            if !present.contains(&l) {
-                // Report which elements actually carry the surrounding momenta
-                // for diagnostics.
-                violations.push(BasisViolation {
-                    kind: ViolationKind::LContiguityHole,
-                    detail: format!(
-                        "basis {:?}: missing angular momentum l={} (present: {:?})",
-                        bs.name,
-                        l,
-                        present.iter().copied().collect::<Vec<_>>()
-                    ),
-                });
-            }
+    // Rule 1: angular-momentum contiguity from 0, per element. cuEST rejects a
+    // centre with a p shell but no s shell (and so on), so the union over
+    // elements is not enough: {s} on one element and {p} on another is a hole.
+    let mut elements: Vec<_> = bs.shells.iter().collect();
+    elements.sort_by_key(|(z, _)| **z);
+    for (z, shells) in elements {
+        let present: std::collections::BTreeSet<i32> = shells.iter().map(|sh| sh.l).collect();
+        let Some(&max_l) = present.iter().next_back() else {
+            continue;
+        };
+        let missing: Vec<i32> = (0..=max_l).filter(|l| !present.contains(l)).collect();
+        if !missing.is_empty() {
+            violations.push(BasisViolation {
+                kind: ViolationKind::LContiguityHole,
+                detail: format!(
+                    "basis {:?}, element Z={z}: missing angular momentum l={missing:?} (present: {:?})",
+                    bs.name,
+                    present.iter().copied().collect::<Vec<_>>()
+                ),
+            });
         }
     }
 

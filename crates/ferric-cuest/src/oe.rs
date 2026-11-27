@@ -35,9 +35,9 @@ pub(crate) struct Session {
     pub(crate) direct: ffi::cuestDirectIntPlan_t,
     pub(crate) _direct_ws: Option<Workspace>,
     pub(crate) plan: ffi::cuestOEIntPlan_t,
-    _plan_ws: Workspace,
+    _plan_ws: Option<Workspace>,
     pub(crate) pairs: ffi::cuestAOPairList_t,
-    _pairs_ws: Workspace,
+    _pairs_ws: Option<Workspace>,
     pub(crate) basis: ffi::cuestAOBasis_t,
     _basis_ws: Workspace,
     shells: Vec<ffi::cuestAOShell_t>,
@@ -160,18 +160,21 @@ pub(crate) fn build_session(
             &mut basis,
         )
     })?;
-    // From here the Session owns the shells and the basis.
+    // From here the Session owns the shells and the basis: nothing fallible
+    // runs between cuestAOBasisCreate and this point, so an error below still
+    // destroys the basis (before its workspace, by field order).
     let mut sess = Session {
         direct: std::ptr::null_mut(),
         _direct_ws: None,
         plan: std::ptr::null_mut(),
-        _plan_ws: Workspace::allocate(&Default::default())?,
+        _plan_ws: None,
         pairs: std::ptr::null_mut(),
-        _pairs_ws: Workspace::allocate(&Default::default())?,
+        _pairs_ws: None,
         basis,
         _basis_ws: basis_ws,
         shells: std::mem::take(&mut guard.0),
     };
+    drop(basis_tmp);
 
     let mut nao_c: u64 = 0;
     // SAFETY: live basis object; out-value sized u64 (documented attribute type).
@@ -210,7 +213,7 @@ pub(crate) fn build_session(
             std::ptr::null_mut(),
         )
     })?;
-    sess._pairs_ws = Workspace::allocate(&pd)?;
+    let pairs_ws = sess._pairs_ws.insert(Workspace::allocate(&pd)?);
     let mut tmp = Workspace::allocate(&td)?;
     // SAFETY: as above.
     check("cuestAOPairListCreate", unsafe {
@@ -221,11 +224,12 @@ pub(crate) fn build_session(
             xyz.as_ptr(),
             pair_threshold,
             pair_params.raw,
-            &mut sess._pairs_ws.raw,
+            &mut pairs_ws.raw,
             &mut tmp.raw,
             &mut sess.pairs,
         )
     })?;
+    drop(tmp);
 
     // One-electron plan.
     let plan_params = Params::new(ffi::CUEST_OEINTPLAN_PARAMETERS)?;
@@ -242,7 +246,7 @@ pub(crate) fn build_session(
             std::ptr::null_mut(),
         )
     })?;
-    sess._plan_ws = Workspace::allocate(&pd)?;
+    let plan_ws = sess._plan_ws.insert(Workspace::allocate(&pd)?);
     let mut tmp = Workspace::allocate(&td)?;
     // SAFETY: as above.
     check("cuestOEIntPlanCreate", unsafe {
@@ -251,7 +255,7 @@ pub(crate) fn build_session(
             sess.basis,
             sess.pairs,
             plan_params.raw,
-            &mut sess._plan_ws.raw,
+            &mut plan_ws.raw,
             &mut tmp.raw,
             &mut sess.plan,
         )
@@ -288,6 +292,7 @@ pub(crate) fn compute_stv(
         ffi::cuestOverlapCompute(h.raw(), sess.plan, p.raw, &mut tmp.raw, out_ptr)
     })?;
     let s = download(&out, nao)?;
+    drop(tmp);
     let t_s = t1.elapsed().as_secs_f64();
 
     // T
@@ -303,6 +308,7 @@ pub(crate) fn compute_stv(
         ffi::cuestKineticCompute(h.raw(), sess.plan, p.raw, &mut tmp.raw, out_ptr)
     })?;
     let t = download(&out, nao)?;
+    drop(tmp);
     let t_t = t1.elapsed().as_secs_f64();
 
     // V: charges -Z at the nuclei. cuestPotentialCompute documents xyz and q
@@ -344,7 +350,10 @@ pub(crate) fn compute_stv(
     Ok(([s, t, v], [t_s, t_t, t_v]))
 }
 
-/// Compute S, T and V for `mol` in `bs` on GPU 0, in cuEST AO order.
+/// Compute S, T and V for `mol` in `bs`, in cuEST AO order, on the calling
+/// thread's current CUDA device (cuEST, like CUDA, uses that device; ferric
+/// never calls `cudaSetDevice`, so it is device 0 of `CUDA_VISIBLE_DEVICES`
+/// unless the caller selected another).
 ///
 /// V is computed in fp64 (ffloat explicitly off) so it can be compared with
 /// libint at 1e-10; S and T have no precision knob. The pair list keeps every

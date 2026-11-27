@@ -1,13 +1,15 @@
 //! SCF on cuEST (GPU) vs ferric's own exact-J/K SCF on the CPU.
 //!
-//! Needs `--features cuest` and an sm_86+ device. Without a usable device the
+//! Needs `--features cuest` and a device cuEST supports (tested on compute
+//! capability 8.0 and newer). Without a usable device the
 //! test prints SKIP and passes, unless FERRIC_CUEST_REQUIRE_DEVICE=1.
 //!
 //!     FERRIC_CUEST_REQUIRE_DEVICE=1 cargo test --release -p ferric-scf --features cuest \
 //!         --test cuest_gpu -- --nocapture --test-threads=1
 //!
 //! Writes `$CARGO_TARGET_TMPDIR/cuest-scf-report.json` (energies, |ΔE|, AO
-//! calibration, cuEST timings) for every case, pass or fail.
+//! calibration, cuEST timings) for every case, pass or fail; when a required
+//! device cannot be set up it holds one `setup` case with the error.
 #![cfg(feature = "cuest")]
 
 use ferric_core::basis;
@@ -116,15 +118,37 @@ fn run_case(name: &str, basis_name: &str, charge: i32, mult: usize, xc: Option<&
     case
 }
 
+fn write_report(cases: &[Case]) -> std::path::PathBuf {
+    let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("cuest-scf-report.json");
+    std::fs::write(&out, serde_json::to_string_pretty(cases).unwrap()).unwrap();
+    println!("REPORT: {}", out.display());
+    out
+}
+
 #[test]
 fn scf_on_cuest_matches_ferric() {
-    match CuestHandle::new() {
-        Ok(_) => {}
+    let setup_error = match CuestHandle::new() {
+        Ok(_) => None,
         Err(CuestError::DeviceUnavailable(why)) if !require_device() => {
             println!("SKIP scf_on_cuest_matches_ferric: {why} (set FERRIC_CUEST_REQUIRE_DEVICE=1 to fail instead)");
             return;
         }
-        Err(e) => panic!("cuEST handle creation failed: {e}"),
+        Err(e) => Some(format!("cuEST handle creation failed: {e}")),
+    };
+    if let Some(why) = setup_error {
+        let out = write_report(&[Case {
+            name: "setup".into(),
+            e_cpu: None,
+            e_cuest: None,
+            abs_de: None,
+            iterations_cpu: None,
+            iterations_cuest: None,
+            calibration: None,
+            cuest_timings: None,
+            error: Some(why.clone()),
+            pass: false,
+        }]);
+        panic!("{why}; send {}", out.display());
     }
     let cases = vec![
         run_case("water/sto-3g RHF", "sto-3g", 0, 1, None),
@@ -151,9 +175,7 @@ fn scf_on_cuest_matches_ferric() {
             c.error
         );
     }
-    let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("cuest-scf-report.json");
-    std::fs::write(&out, serde_json::to_string_pretty(&cases).unwrap()).unwrap();
-    println!("REPORT: {}", out.display());
+    let out = write_report(&cases);
     let failed: Vec<&str> = cases
         .iter()
         .filter(|c| !c.pass)

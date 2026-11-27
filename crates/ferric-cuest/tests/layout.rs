@@ -2,18 +2,24 @@
 //! libint references. These run on any box; they make sure the tool that
 //! will interpret the GPU run is itself right (and fails when it should).
 
-use ferric_cuest::layout::{classify, infer_map, max_abs_diff, AoLayout, AoMap};
-use ferric_cuest::reference::{all_references, OneElectronReference};
+use ferric_cuest::layout::{
+    classify, hypothesis_components, infer_map, max_abs_diff, AoLayout, AoMap,
+};
+use ferric_cuest::reference::{all_references, OneElectronReference, EXPECTED_REFERENCES};
 use ndarray::Array2;
 
 const TOL: f64 = 1e-9;
 
 fn refs() -> Vec<OneElectronReference> {
-    let r: Vec<_> = all_references().into_iter().map(|(_, r)| r).collect();
+    let r: Vec<_> = all_references()
+        .unwrap_or_else(|e| panic!("{e}"))
+        .into_iter()
+        .map(|(_, r)| r)
+        .collect();
     assert_eq!(
         r.len(),
-        4,
-        "expected 4 stored references in testdata/reference/cuest"
+        EXPECTED_REFERENCES.len(),
+        "unexpected extra references"
     );
     r
 }
@@ -96,7 +102,7 @@ fn inference_recovers_the_hypothesis_exactly() {
     }
 }
 
-/// A different, known order with sign flips (Psi4-style m = 0, +1, -1, +2, -2
+/// A different, known order (cuEST's documented m = 0, +1, -1, +2, -2, but
 /// with alternating phases) must be recovered exactly and reported as NOT
 /// matching the hypothesis. This is what a wrong guess looks like on the GPU.
 #[test]
@@ -221,4 +227,66 @@ fn references_are_sane() {
         }
         assert!(max_abs_diff(&s, &s.t().to_owned()) < 1e-14, "{}", r.basis);
     }
+}
+
+/// The guess is the cuEST 0.3 documented order: pure p is z, x, y; pure d is
+/// m = 0, +1, -1, +2, -2 against libint's m = -2..+2.
+#[test]
+fn hypothesis_is_the_documented_cuest_order() {
+    let comps = |l, cp, fp| -> Vec<usize> {
+        hypothesis_components(l, cp, fp)
+            .into_iter()
+            .map(|(j, s)| {
+                assert_eq!(s, 1.0);
+                j
+            })
+            .collect()
+    };
+    assert_eq!(comps(1, true, false), [2, 0, 1]);
+    assert_eq!(comps(2, true, true), [2, 3, 1, 4, 0]);
+    assert_eq!(comps(3, true, true), [3, 4, 2, 5, 1, 6, 0]);
+    assert_eq!(comps(1, false, false), [0, 1, 2]);
+    assert_eq!(comps(2, false, false), [0, 1, 2, 3, 4, 5]);
+}
+
+/// Mutation: two cuEST components that are copies of the same ferric
+/// component each match it cleanly. The class must be refused, not turned
+/// into a map that drops a component.
+#[test]
+fn a_duplicated_component_is_not_a_map() {
+    let r = refs().into_iter().find(|r| r.basis == "cc-pvdz").unwrap();
+    let lay = layout_of(&r);
+    let map = AoMap::hypothesis(&lay);
+    let p_shell = lay.shells.iter().find(|s| s.l == 1).unwrap().offset;
+    let dup = |m: Array2<f64>| {
+        let mut m = map.to_cuest(&m);
+        let row = m.row(p_shell).to_owned();
+        m.row_mut(p_shell + 1).assign(&row);
+        let col = m.column(p_shell).to_owned();
+        m.column_mut(p_shell + 1).assign(&col);
+        m
+    };
+    let (s, t, v) = (dup(r.s_matrix()), dup(r.t_matrix()), dup(r.v_matrix()));
+    let verdicts = infer_with(&r, &lay, [&s, &t, &v]);
+    let p = verdicts.iter().find(|c| c.l == 1).unwrap();
+    assert!(
+        p.components.is_none(),
+        "duplicated p accepted: {:?}",
+        p.components
+    );
+    let why = p.problem.as_deref().unwrap();
+    assert!(why.contains("matched twice"), "{why}");
+}
+
+/// Mutation: a NaN outside the s-column fingerprints is invisible to the
+/// inference, so the error check must catch it.
+#[test]
+fn a_nan_is_never_agreement() {
+    let r = refs().into_iter().find(|r| r.basis == "cc-pvdz").unwrap();
+    let lay = layout_of(&r);
+    let p = lay.shells.iter().find(|s| s.l == 1).unwrap().offset;
+    let mut s = r.s_matrix();
+    s[[p, p + 1]] = f64::NAN;
+    assert_eq!(max_abs_diff(&s, &r.s_matrix()), f64::INFINITY);
+    assert_eq!(max_abs_diff(&r.s_matrix(), &r.s_matrix()), 0.0);
 }

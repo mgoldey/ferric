@@ -40,7 +40,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage
 [features]
 default = []
 # Run the SCF's one-electron matrices and exact J/K through NVIDIA cuEST
-# (crate ferric-cuest, needs a cuEST 0.3 install and an sm_86+ GPU at run time).
+# (crate ferric-cuest, needs a cuEST 0.3 install and an sm_80+ GPU at run time).
 # Without it `cuest_route::solve_{rhf,uhf}_cuest` return a clear error.
 cuest = ["ferric-cuest/cuest"]
 mpi = ["dep:mpi", "ferric-core/mpi"]

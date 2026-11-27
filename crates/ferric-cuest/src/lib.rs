@@ -20,7 +20,7 @@ use thiserror::Error;
 pub enum CuestError {
     #[error("cuEST feature not enabled at build time")]
     FeatureDisabled,
-    /// No CUDA device, or a device cuEST does not support (it needs sm_86+).
+    /// No CUDA device, or a device cuEST does not support (it is tested on sm_80 and newer).
     #[error("cuEST cannot run on this device: {0}")]
     DeviceUnavailable(String),
     /// A cuEST call returned a non-success status.

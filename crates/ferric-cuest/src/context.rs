@@ -2,7 +2,9 @@
 //! exact (integral-direct, no density fitting) Coulomb and exchange matrices
 //! every iteration.
 //!
-//! Everything here is in cuEST's AO order. The caller (ferric-scf's
+//! Runs on the calling thread's current CUDA device (device 0 of
+//! `CUDA_VISIBLE_DEVICES` unless the caller selected another; ferric never
+//! calls `cudaSetDevice`). Everything here is in cuEST's AO order. The caller (ferric-scf's
 //! `cuest_route`) owns the map to ferric's order.
 //!
 //! Conventions, from the cuEST 0.3 headers:
@@ -107,6 +109,7 @@ impl CuestContext {
             )
         })?;
         sess._direct_ws = Some(ws);
+        drop(tmp);
 
         let bytes = nao * nao * std::mem::size_of::<f64>();
         let d_buf = DeviceBuffer::new(bytes)?;

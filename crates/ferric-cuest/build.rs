@@ -38,6 +38,10 @@ fn main() {
     });
     let inc = root.join("include");
     let lib = root.join("lib");
+    // The installed headers are inputs: a cuEST upgrade under the same root
+    // must rerun the version check and the ABI check.
+    println!("cargo:rerun-if-changed={}", inc.join("cuest.h").display());
+    println!("cargo:rerun-if-changed={}", inc.join("cuest").display());
     check_version(&inc.join("cuest.h"));
 
     let cudart_dir = find_cudart(&lib).unwrap_or_else(|| {

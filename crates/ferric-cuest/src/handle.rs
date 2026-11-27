@@ -26,7 +26,8 @@ impl CuestHandle {
     /// Create a handle with default parameters (cuEST allocates its own
     /// stream, cuBLAS and cuSOLVER handles).
     ///
-    /// An unsupported GPU (cuEST needs compute capability 8.6+) comes back as
+    /// An unsupported GPU (cuEST 0.3 is tested on compute capability 8.0 and
+    /// newer) comes back as
     /// [`CuestError::DeviceUnavailable`], so callers can skip rather than fail.
     pub fn new() -> Result<Self> {
         let params = Params::new(ffi::CUEST_HANDLE_PARAMETERS)?;
@@ -38,7 +39,7 @@ impl CuestHandle {
                 .map(|d| format!("sm_{}{}", d.compute_capability.0, d.compute_capability.1))
                 .unwrap_or_else(|e| format!("unknown ({e})"));
             return Err(CuestError::DeviceUnavailable(format!(
-                "cuestCreate returned UNSUPPORTED_ARCHITECTURE: device 0 is {cc}, cuEST needs sm_86 or newer"
+                "cuestCreate returned UNSUPPORTED_ARCHITECTURE: device 0 is {cc}, cuEST 0.3 supports sm_80 and newer"
             )));
         }
         check("cuestCreate", st)?;

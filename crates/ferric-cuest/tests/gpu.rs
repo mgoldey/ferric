@@ -1,4 +1,5 @@
-//! GPU tests: need the `cuest` feature and a device cuEST supports (sm_86+).
+//! GPU tests: need the `cuest` feature and a device cuEST supports (cuEST 0.3
+//! is tested on compute capability 8.0 and newer).
 //!
 //! On an unsupported device (or none) the tests print SKIP and pass, unless
 //! FERRIC_CUEST_REQUIRE_DEVICE=1, which turns a skip into a failure. A GPU
@@ -8,7 +9,8 @@
 //!         --test gpu -- --nocapture --test-threads=1
 //!
 //! `one_electron_matches_libint` writes a JSON report (path printed at the
-//! end) with everything needed to diagnose a mismatch from a single run:
+//! end), pass or fail, including when device setup or the stored references
+//! fail, with everything needed to diagnose a mismatch from a single run:
 //! the AO order and phases cuEST actually uses, any normalization factor,
 //! and the max errors with both our guessed and the data-inferred AO map.
 #![cfg(feature = "cuest")]
@@ -38,17 +40,18 @@ fn require_device() -> bool {
     std::env::var("FERRIC_CUEST_REQUIRE_DEVICE").is_ok_and(|v| v == "1")
 }
 
-/// Ok(handle), or None after printing SKIP (panics if a device is required).
-fn handle_or_skip(test: &str) -> Option<CuestHandle> {
+/// Ok(Some(handle)); Ok(None) after printing SKIP; Err when a usable device
+/// is required (FERRIC_CUEST_REQUIRE_DEVICE=1) or creation failed otherwise.
+fn handle_or_skip(test: &str) -> Result<Option<CuestHandle>, String> {
     match CuestHandle::new() {
-        Ok(h) => Some(h),
+        Ok(h) => Ok(Some(h)),
         Err(CuestError::DeviceUnavailable(why)) if !require_device() => {
             println!(
                 "SKIP {test}: {why} (set FERRIC_CUEST_REQUIRE_DEVICE=1 to make this a failure)"
             );
-            None
+            Ok(None)
         }
-        Err(e) => panic!("{test}: cuEST handle creation failed: {e}"),
+        Err(e) => Err(format!("{test}: cuEST handle creation failed: {e}")),
     }
 }
 
@@ -58,7 +61,8 @@ fn device_probe_and_handle() {
         Ok(d) => println!("CUDA device: {d:?}"),
         Err(e) => println!("CUDA device probe failed: {e}"),
     }
-    let Some(h) = handle_or_skip("device_probe_and_handle") else {
+    let Some(h) = handle_or_skip("device_probe_and_handle").unwrap_or_else(|e| panic!("{e}"))
+    else {
         return;
     };
     let v = h.version().expect("cuestGet*Version");
@@ -89,7 +93,26 @@ struct SystemReport {
 struct Report {
     device: Option<String>,
     cuest_version: Option<(u32, u32, u32)>,
+    /// Why the run stopped before comparing any system (device setup, or the
+    /// stored references); `None` when every system ran.
+    setup_error: Option<String>,
     systems: Vec<SystemReport>,
+}
+
+impl Report {
+    fn write(&self) -> std::path::PathBuf {
+        let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("cuest-oe-report.json");
+        std::fs::write(&out, serde_json::to_string_pretty(self).unwrap()).unwrap();
+        println!("REPORT: {}", out.display());
+        out
+    }
+
+    /// Record a setup failure, write the report, then fail.
+    fn fail_setup(mut self, why: String) -> ! {
+        self.setup_error = Some(why.clone());
+        let out = self.write();
+        panic!("{why}; send {}", out.display());
+    }
 }
 
 fn run_one(file: &str, r: &ferric_cuest::reference::OneElectronReference) -> SystemReport {
@@ -157,16 +180,24 @@ fn run_one(file: &str, r: &ferric_cuest::reference::OneElectronReference) -> Sys
 
 #[test]
 fn one_electron_matches_libint() {
-    let Some(h) = handle_or_skip("one_electron_matches_libint") else {
-        return;
-    };
     let mut report = Report {
         device: DeviceInfo::probe().ok().map(|d| format!("{d:?}")),
-        cuest_version: h.version().ok(),
+        cuest_version: None,
+        setup_error: None,
         systems: vec![],
     };
+    let h = match handle_or_skip("one_electron_matches_libint") {
+        Ok(Some(h)) => h,
+        Ok(None) => return,
+        Err(why) => report.fail_setup(why),
+    };
+    report.cuest_version = h.version().ok();
     drop(h);
-    for (path, r) in all_references() {
+    let refs = match all_references() {
+        Ok(r) => r,
+        Err(why) => report.fail_setup(why),
+    };
+    for (path, r) in refs {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         let rep = run_one(&name, &r);
         println!(
@@ -182,9 +213,7 @@ fn one_electron_matches_libint() {
         }
         report.systems.push(rep);
     }
-    let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("cuest-oe-report.json");
-    std::fs::write(&out, serde_json::to_string_pretty(&report).unwrap()).unwrap();
-    println!("REPORT: {}", out.display());
+    let out = report.write();
     let failed: Vec<&str> = report
         .systems
         .iter()

@@ -110,21 +110,34 @@ impl AoLayout {
 /// (ferric component index, sign) equal to cuEST component `k`.
 pub type ComponentMap = Vec<(usize, f64)>;
 
-/// Our guess at cuEST's component order, per shell class.
+/// Our guess at cuEST's component order, per shell class, from the cuEST 0.3
+/// basis documentation (docs.nvidia.com/cuda/cuest/0.3.0/gaussian_basis.html).
 ///
-/// * l = 0, or Cartesian on both sides: identity. (cuEST and libint are both
-///   documented as using the standard xx, xy, xz, yy, yz, zz Cartesian order;
-///   UNVERIFIED until a GPU run.)
-/// * pure on both sides (l >= 2): identity, i.e. libint's m = -l..l with
-///   libint's phases. UNVERIFIED.
-/// * cuEST pure p vs ferric Cartesian p: libint's m = -1, 0, +1 is y, z, x,
-///   so cuEST component k maps to ferric `[1, 2, 0][k]`. UNVERIFIED.
+/// * l = 0, or Cartesian on both sides: identity. Both codes order Cartesian
+///   components lexically (xx, xy, xz, yy, yz, zz).
+/// * pure on both sides (l >= 2): cuEST orders m as 0, +1, -1, +2, -2, ...;
+///   libint (STANDARD ordering) as -l..+l, so cuEST component k is ferric
+///   component l + m(k). Both use real solid harmonics with Racah
+///   normalization and no Condon-Shortley phase (cuEST's l = 2 table and
+///   ferric's `ao_grid` formulas agree sign for sign), so every sign is +1.
+/// * cuEST pure p vs ferric Cartesian p (ferric never sends pure p): cuEST's
+///   pure p is z, x, y, so cuEST component k maps to ferric `[2, 0, 1][k]`.
+///
+/// Still UNVERIFIED on a device; [`infer_map`] reports the real order.
 pub fn hypothesis_components(l: i32, cuest_pure: bool, ferric_pure: bool) -> ComponentMap {
-    let n = num_functions(l, ferric_pure);
-    if l == 1 && cuest_pure && !ferric_pure {
-        return vec![(1, 1.0), (2, 1.0), (0, 1.0)];
+    if l >= 1 && cuest_pure {
+        // m(k) = 0, +1, -1, +2, -2, ...
+        let m = |k: i32| if k % 2 == 1 { (k + 1) / 2 } else { -(k / 2) };
+        if ferric_pure {
+            return (0..2 * l + 1).map(|k| ((l + m(k)) as usize, 1.0)).collect();
+        }
+        if l == 1 {
+            return vec![(2, 1.0), (0, 1.0), (1, 1.0)];
+        }
     }
-    (0..n).map(|k| (k, 1.0)).collect()
+    (0..num_functions(l, ferric_pure))
+        .map(|k| (k, 1.0))
+        .collect()
 }
 
 /// Full map: `entries[i]` = (ferric AO, sign) for cuEST AO `i`.
@@ -297,6 +310,10 @@ pub fn classify(layout: &AoLayout, inferred: &[InferredAo], tol: f64) -> Vec<Cla
                     continue;
                 }
                 let comp: Vec<(usize, f64)> = rows.iter().map(|r| (r.ferric_component, r.scale.signum())).collect();
+                if let Some(why) = not_a_permutation(&comp, sh.nfunc()) {
+                    problem.get_or_insert(format!("shell {si} (atom {}, l={l}): {why}: {comp:?}", sh.atom));
+                    continue;
+                }
                 match &agreed {
                     None => agreed = Some(comp),
                     Some(a) if *a != comp => {
@@ -320,11 +337,36 @@ pub fn classify(layout: &AoLayout, inferred: &[InferredAo], tol: f64) -> Vec<Cla
         .collect()
 }
 
-/// Largest |a - b| over all elements.
+/// `None` if `comp` maps the `n` components of a shell one-to-one onto
+/// `0..n`, otherwise why not. Two cuEST components can each match the same
+/// ferric component cleanly (a duplicated component); `to_ferric` would then
+/// overwrite one and leave another zero.
+fn not_a_permutation(comp: &[(usize, f64)], n: usize) -> Option<String> {
+    if comp.len() != n {
+        return Some(format!("{} components for a shell of {n}", comp.len()));
+    }
+    let mut seen = vec![false; n];
+    for &(j, _) in comp {
+        if j >= n {
+            return Some(format!("component {j} out of range for a shell of {n}"));
+        }
+        if std::mem::replace(&mut seen[j], true) {
+            return Some(format!("ferric component {j} matched twice"));
+        }
+    }
+    None
+}
+
+/// Largest |a - b| over all elements; +infinity if any difference is not
+/// finite (`f64::max` would otherwise drop a NaN and report agreement).
 pub fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
     assert_eq!(a.dim(), b.dim());
-    a.iter()
-        .zip(b.iter())
-        .map(|(x, y)| (x - y).abs())
-        .fold(0.0, f64::max)
+    a.iter().zip(b.iter()).fold(0.0, |acc, (x, y)| {
+        let d = (x - y).abs();
+        if d.is_finite() {
+            acc.max(d)
+        } else {
+            f64::INFINITY
+        }
+    })
 }

@@ -53,7 +53,7 @@ See [SCF and DFT](../methods/scf.md).
 | File | System / basis | `kind` / `task` | Reference in header | Notes |
 |---|---|---|---|---|
 | `water-rhf.toml` | H2O / STO-3G | `rhf` / energy | — | `water-qmmm.toml`'s header gives this geometry's energy as −74.9631468000. The file is commented to demonstrate `screening`. |
-| `water-rhf-cuest.toml` | H2O / cc-pVDZ | `rhf` / energy | — | `[gpu] backend = "cuest"`: SCF integrals on an NVIDIA GPU through cuEST. Needs a `--features cuest` build and an sm_86+ GPU. |
+| `water-rhf-cuest.toml` | H2O / cc-pVDZ | `rhf` / energy | — | `[gpu] backend = "cuest"`: SCF integrals on an NVIDIA GPU through cuEST. Needs a `--features cuest` build and an sm_80+ GPU. |
 | `benzene-rhf.toml` | benzene / cc-pVDZ | `rhf` | — | Exact 4-index J/K. |
 | `benzene-rhf-dfj.toml` | benzene / cc-pVDZ | `rhf` | — | RI-J only (`cc-pvdz-ri`). |
 | `benzene-rhf-rijk.toml` | benzene / cc-pVDZ | `rhf` | — | RI-JK (`def2-universal-jkfit`). |

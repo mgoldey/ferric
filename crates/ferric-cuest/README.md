@@ -53,14 +53,18 @@ H2O+ UHF and UKS/PBE0. Mutations caught: J/K in a different order than S/T/V
 (energy off by > 1e-3 Ha), and a 5% d-shell normalization error (refused with
 the factor named).
 
-## What only a supported GPU (sm_86+: RTX 30xx/40xx, A100, H100, ...) can verify
+## What only a supported GPU (sm_80+: A100, RTX 30xx/40xx, H100, ...) can verify
 
 `tests/gpu.rs::one_electron_matches_libint` runs on NH3 in a generic
 orientation with STO-3G, 6-31G* (Cartesian d), cc-pVDZ (pure d, so p is sent
 pure) and cc-pVTZ (pure f). For each basis it reports:
 
 - max |cuEST − libint| for S, T and V under the guessed AO map (bars 1e-10
-  for S and T, 1e-9 for V);
+  for S and T, 1e-9 for V). The guess is cuEST 0.3's documented order:
+  Cartesian components lexical as in libint; pure components m = 0, +1, −1,
+  +2, −2, … (pure p is z, x, y) against libint's m = −l…+l, all signs +1
+  (both use Racah-normalized real solid harmonics without the Condon–Shortley
+  phase);
 - the AO order, phases and any normalization factor inferred from the data,
   plus the errors under the inferred map;
 - diag(S) range and timings.

@@ -85,18 +85,47 @@ pub fn reference_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/reference/cuest")
 }
 
-/// Every stored reference, sorted by file name.
-pub fn all_references() -> Vec<(PathBuf, OneElectronReference)> {
-    let mut paths: Vec<PathBuf> = std::fs::read_dir(reference_dir())
-        .map(|rd| rd.filter_map(|e| e.ok().map(|e| e.path())).collect())
-        .unwrap_or_default();
-    paths.retain(|p| p.extension().is_some_and(|e| e == "json"));
+/// The references the GPU check is advertised to cover (NH3 in a generic
+/// orientation, four bases). [`all_references`] errors if any is missing.
+pub const EXPECTED_REFERENCES: [&str; 4] = [
+    "nh3_generic_6-31gstar.json",
+    "nh3_generic_cc-pvdz.json",
+    "nh3_generic_cc-pvtz.json",
+    "nh3_generic_sto-3g.json",
+];
+
+/// Every stored reference, sorted by file name. Errors, rather than returning
+/// fewer, if the directory or an entry cannot be read, a file does not parse,
+/// or one of [`EXPECTED_REFERENCES`] is absent, so a check over the result
+/// cannot pass vacuously.
+pub fn all_references() -> Result<Vec<(PathBuf, OneElectronReference)>, String> {
+    let dir = reference_dir();
+    let mut paths = Vec::new();
+    for entry in std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+        let path = entry.map_err(|e| format!("{}: {e}", dir.display()))?.path();
+        if path.extension().is_some_and(|e| e == "json") {
+            paths.push(path);
+        }
+    }
     paths.sort();
+    let missing: Vec<&str> = EXPECTED_REFERENCES
+        .iter()
+        .copied()
+        .filter(|name| {
+            !paths
+                .iter()
+                .any(|p| p.file_name().is_some_and(|f| f == *name))
+        })
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "{}: missing reference(s) {missing:?}; regenerate with \
+             `cargo run -p ferric-integrals --example gen_cuest_oe_reference`",
+            dir.display()
+        ));
+    }
     paths
         .into_iter()
-        .map(|p| {
-            let r = OneElectronReference::load(&p).unwrap_or_else(|e| panic!("{e}"));
-            (p, r)
-        })
+        .map(|p| OneElectronReference::load(&p).map(|r| (p, r)))
         .collect()
 }

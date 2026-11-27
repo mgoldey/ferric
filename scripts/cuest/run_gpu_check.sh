@@ -45,6 +45,8 @@ fi
 ldd "$CUEST_ROOT/lib/libcuest.so" 2>&1 | grep -E 'not found|cuda|cublas|cusolver|cusparse|nvrtc|nvJitLink' | tee -a "$log"
 
 export OPENBLAS_NUM_THREADS=1
+# Tests write their reports under CARGO_TARGET_TMPDIR = <target dir>/tmp.
+tgt="${CARGO_TARGET_DIR:-target}"
 # Binaries outside ferric-cuest (ferric-scf tests, the CLI) find libcuest here.
 export LD_LIBRARY_PATH="$CUEST_ROOT/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 say "build + CPU tests"
@@ -52,7 +54,7 @@ cargo test -p ferric-cuest --features cuest --release 2>&1 | grep -vE '^\s+Compi
 cpu=${PIPESTATUS[0]}
 
 say "GPU tests (device required)"
-rm -f target/tmp/cuest-oe-report.json cuest-oe-report.json
+rm -f "$tgt/tmp/cuest-oe-report.json" cuest-oe-report.json
 FERRIC_CUEST_REQUIRE_DEVICE=1 cargo test -p ferric-cuest --features cuest --release --test gpu \
   -- --nocapture --test-threads=1 2>&1 | grep -vE '^\s+Compiling' | tee -a "$log"
 gpu=${PIPESTATUS[0]}
@@ -63,19 +65,25 @@ cargo test -p ferric-scf --features cuest --release --test cuest_route \
 scf_cpu=${PIPESTATUS[0]}
 
 say "SCF on cuEST vs ferric CPU (device required)"
-rm -f target/tmp/cuest-scf-report.json cuest-scf-report.json
+rm -f "$tgt/tmp/cuest-scf-report.json" cuest-scf-report.json
 FERRIC_CUEST_REQUIRE_DEVICE=1 cargo test -p ferric-scf --features cuest --release --test cuest_gpu \
   -- --nocapture --test-threads=1 2>&1 | grep -vE '^\s+Compiling' | tee -a "$log"
 scf_gpu=${PIPESTATUS[0]}
 
 say "CLI: examples/water-rhf-cuest.toml"
 cargo build -p ferric-cli --features cuest --release 2>&1 | grep -vE '^\s+Compiling' | tail -3 | tee -a "$log"
-target/release/ferric examples/water-rhf-cuest.toml 2>&1 | tail -25 | tee -a "$log"
+"$tgt/release/ferric" examples/water-rhf-cuest.toml 2>&1 | tail -25 | tee -a "$log"
 cli=${PIPESTATUS[0]}
 
+missing=0
 for r in cuest-oe-report.json cuest-scf-report.json; do
-  [[ -f target/tmp/$r ]] && cp "target/tmp/$r" "$r"
+  if [[ -f "$tgt/tmp/$r" ]]; then
+    cp "$tgt/tmp/$r" "$r"
+  else
+    say "MISSING report $tgt/tmp/$r (the test did not get far enough to write it)"
+    missing=1
+  fi
 done
 say "exit codes: oe_cpu=$cpu oe_gpu=$gpu scf_cpu=$scf_cpu scf_gpu=$scf_gpu cli=$cli"
 say "send back: $log cuest-oe-report.json cuest-scf-report.json"
-exit $(( cpu || gpu || scf_cpu || scf_gpu || cli ))
+exit $(( cpu || gpu || scf_cpu || scf_gpu || cli || missing ))
