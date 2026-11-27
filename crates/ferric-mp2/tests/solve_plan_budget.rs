@@ -3,9 +3,10 @@
 //! plan does not fit the budget falls back to the plan-free
 //! [`matvec_indexed`] path with a bitwise-identical result.
 //!
-//! The plan stores one `(u32, u32)` per gather element visited per matvec,
-//! which with the pair gate OFF grows like `no³ · overlap` (every pair has
-//! ~`2·no` Fock-coupled partners); the indexed path allocates nothing extra.
+//! The plan stores one `(q, coeff)` edge per Fock-coupled partner of every
+//! block (~`2·no` per pair with the pair gate OFF) and, for blocks on the
+//! sparse Fvv product, one `(u32, u32)` per retained element; the indexed
+//! path allocates nothing extra.
 //!
 //! The allocation is MEASURED with a thread-local counting allocator (an
 //! independent construction: it sees the heap, not the formula), so the
