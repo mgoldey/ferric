@@ -388,11 +388,20 @@ impl Dressed {
     }
 
     /// Is the tensor the aux-major in-core square band? Never the pair-major one.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "gpu"))]
     fn is_incore(&self) -> bool {
         match self {
             Dressed::Source(s) => s.is_incore(),
             Dressed::Pair(_) => false,
+        }
+    }
+
+    /// The aux-major in-core square band as `(band_naux × n²)`, else `None`.
+    #[cfg(feature = "gpu")]
+    fn incore_flat(&self) -> Option<ndarray::ArrayView2<'_, f64>> {
+        match self {
+            Dressed::Source(s) => s.incore_flat(),
+            Dressed::Pair(_) => None,
         }
     }
 
@@ -1475,10 +1484,7 @@ impl DfK<'_> {
     /// the pool only for a K that can take it.
     #[cfg(feature = "gpu")]
     pub fn device_footprint_bytes(&self) -> usize {
-        let Dressed::Source(src) = &self.dressed else {
-            return 0;
-        };
-        if !src.is_incore() || !device_may_take_k(src.nao()) {
+        if !self.dressed.is_incore() || !device_may_take_k(self.dressed.nao()) {
             return 0;
         }
         crate::df_k_gpu::resident_bytes(self.dressed.band_naux(), self.dressed.nao()).unwrap_or(0)
@@ -1488,10 +1494,7 @@ impl DfK<'_> {
     #[cfg(feature = "gpu")]
     #[doc(hidden)]
     pub fn dressed_incore_flat_for_test(&self) -> Option<ndarray::ArrayView2<'_, f64>> {
-        match &self.dressed {
-            Dressed::Source(src) => src.incore_flat(),
-            Dressed::Pair(_) => None,
-        }
+        self.dressed.incore_flat()
     }
 
     /// Density-based exchange contraction (O(naux·n³)); see [`KBuilder::build`].
