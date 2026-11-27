@@ -10,11 +10,11 @@
 
 use ferric_core::basis::bundled;
 use ferric_core::mol::{Atom, Molecule};
+use ferric_core::units::ANGSTROM_TO_BOHR;
 use ferric_cuest::reference::{reference_dir, OneElectronReference, RefAtom};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron::{kinetic, nuclear, overlap};
 
-const ANGSTROM_TO_BOHR: f64 = 1.0 / 0.529_177_210_903;
 const BASES: [&str; 4] = ["sto-3g", "6-31g*", "cc-pvdz", "cc-pvtz"];
 
 fn rotate(p: [f64; 3], (a, b, c): (f64, f64, f64)) -> [f64; 3] {
