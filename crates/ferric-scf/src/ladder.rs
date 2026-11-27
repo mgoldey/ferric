@@ -191,6 +191,25 @@ pub fn solve_rhf_ladder(
     })
 }
 
+/// [`solve_rhf_ladder`] over [`ksdft_ladder`]`(cfg)` with the Coulomb
+/// operator, returned with the config of the rung the result comes from
+/// (`rung_reached`). A certificate of that result must be built from this
+/// config, not from `cfg`: the later rungs add a level shift and smearing.
+pub fn solve_ksdft_ladder(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    cfg: &RhfConfig,
+) -> Result<(LadderResult, RhfConfig), FerricError> {
+    let ladder = ksdft_ladder(cfg);
+    let lr = solve_rhf_ladder(ctx, mol, prep, Operator::coulomb(), bounds, &ladder)?;
+    let reached = ladder
+        .get(lr.rung_reached)
+        .map_or_else(|| cfg.clone(), |r| r.config.clone());
+    Ok((lr, reached))
+}
+
 /// The convergence tricks a rung actually turns on, as a short human-readable
 /// list. Used by the ladder's progress log.
 ///
@@ -787,6 +806,29 @@ mod tests {
         assert!(lr.converged);
         assert_eq!(lr.rung_reached, 0);
         assert_eq!(lr.rung_outcomes.len(), 1);
+    }
+
+    /// Rung 0 is given one iteration, so the ladder must escalate: the config
+    /// returned is the escalated rung's (ADIIS, that rung's own `max_iter`),
+    /// not the caller's.
+    #[test]
+    fn solve_ksdft_ladder_returns_the_config_of_the_rung_that_converged() {
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let base = RhfConfig {
+            max_iter: 1,
+            ..Default::default()
+        };
+        let (lr, reached) = solve_ksdft_ladder(&ctx, &mol, &prep, &bounds, &base).unwrap();
+        assert!(lr.converged);
+        assert_eq!(lr.rung_reached, 1, "one iteration cannot converge rung 0");
+        let rung = &ksdft_ladder(&base)[1].config;
+        assert_eq!(reached.diis_flavor, crate::diis::DiisFlavor::Adiis);
+        assert_eq!(reached.max_iter, rung.max_iter);
+        assert_ne!(reached.max_iter, base.max_iter);
     }
 
     #[test]

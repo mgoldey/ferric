@@ -65,6 +65,7 @@ pub(crate) fn resolve_operator(
     })
 }
 
+/// Blocked MO-basis 3-center integrals (P|pq), shape (naux, n_left, n_right).
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, aux_basis_set, c_left, c_right, memory_budget_gb=2.0, operator="coulomb", omega=None, r0=None))]
 #[allow(clippy::too_many_arguments)]

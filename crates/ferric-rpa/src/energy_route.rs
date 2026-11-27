@@ -107,6 +107,14 @@ pub enum RpaEnergyRoute {
 }
 
 impl RpaEnergyRoute {
+    /// Stable short name (the Python `PdepRpaResult.route`).
+    pub fn as_str(&self) -> &'static str {
+        match *self {
+            Self::StaticEigenbasis => "static-eigenbasis",
+            Self::AuxBasisLogDet => "aux-basis-log-det",
+        }
+    }
+
     /// One line for the log and the certificate.
     pub fn describe(&self) -> String {
         match *self {

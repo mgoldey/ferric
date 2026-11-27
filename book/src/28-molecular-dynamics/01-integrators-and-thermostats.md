@@ -544,5 +544,5 @@ AIMD run the SCF at the final geometry is folded in as the reference.
 |---|---|
 | `crates/ferric-md/src/driver.rs`, `crates/ferric-md/src/config.rs`, `crates/ferric-md/src/velocities.rs`, `crates/ferric-md/src/rng.rs` | the integrators, thermostats, velocities, random numbers |
 | `scripts/md_integrators_sympy.py` | verified boxes |
-| `crates/ferric-cli/src/config.rs` (`MdCfg`), `crates/ferric-cli/src/md.rs`, `crates/ferric-python/ferric.pyi` (`run_aimd`, `run_ffmd`, `MdResult`) | the `[md]` keys, defaults and the certificate |
+| `crates/ferric-cli/src/config.rs` (`MdCfg`), `crates/ferric-cli/src/md.rs`, `crates/ferric-python/python/ferric/ferric.pyi` (`run_aimd`, `run_ffmd`, `MdResult`) | the `[md]` keys, defaults and the certificate |
 | `crates/ferric-scf/tests/md_aimd.rs` | the SCF thresholds of the AIMD tests |

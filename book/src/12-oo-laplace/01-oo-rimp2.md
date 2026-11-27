@@ -58,7 +58,7 @@ The plan:
 |---|---|
 | Rust | `ferric-mp2/src/oo_rimp2.rs::oo_ri_mp2`; configuration `OoRiMp2Config` |
 | CLI | `method.kind = "oo-rimp2"`, keys `oo_max_iter`, `oo_grad_conv`, `oo_level_shift`, `oo_diis_size` in `[mp2]` (`examples/water-oo-rimp2.toml`); `task = "optimize"` runs `optimize_geometry_oo_rimp2` |
-| Python | `run_oo_rimp2` (`crates/ferric-python/ferric.pyi`); `run_optimize(method="oo-rimp2")` |
+| Python | `run_oo_rimp2` (`crates/ferric-python/python/ferric/ferric.pyi`); `run_optimize(method="oo-rimp2")` |
 
 The CLI hands an open-shell reference under the same kind to the unrestricted
 driver (section @sec:unrestricted-oo-rimp2). The Python entry point runs closed shell only.

@@ -338,7 +338,7 @@ occupations make the free energy $E - \sigma S$ stationary with respect to the
 occupations (Mermin), not $E$ itself, so two smeared energies at different
 $\sigma$ cannot be compared without the $-\sigma S$ term. In Python, a
 gradient run with `smearing_sigma` is a `ValueError` before the SCF
-(`crates/ferric-python/ferric.pyi`). The stability descent of section @sec:stability
+(`crates/ferric-python/python/ferric/ferric.pyi`). The stability descent of section @sec:stability
 skips a smeared run, because its integer-occupation Hessian does not
 describe fractional occupations.
 

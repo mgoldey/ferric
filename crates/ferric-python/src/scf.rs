@@ -614,6 +614,167 @@ pub(crate) fn parse_relativistic(
         .map_err(crate::errors::input_err)
 }
 
+/// Closed-shell Restricted Hartree-Fock.
+///
+///     relativistic="x2c1e" (default None, nonrelativistic) replaces T + V by the
+///     spin-free X2C-1e core Hamiltonian (PySCF sfx2c1e(); decoupled in the
+///     uncontracted basis, c = 137.036). Same kwarg on run_uhf, run_rohf,
+///     run_dft/run_ksdft, run_uks and run_roks. Energies only: with_gradient=True,
+///     run_optimize(scf_relativistic=) and run_frequencies(scf_relativistic=)
+///     raise, as does an ECP atom. Two-electron and property operators stay
+///     nonrelativistic; the certificate records "x2c1e" and is Ungraded.
+///
+///     gc_rotation="auto" | "rot1" | "off" (default None: FERRIC_GC_ROTATE, then
+///     "auto"; the CLI's [scf] gc_rotation) chooses the internal contraction
+///     rotation of generally contracted bases (cc-pVXZ, ANO) in the exact
+///     four-centre J/K builds: the SCF, its in-core ERI store, the Newton,
+///     stability and response builds on the same geometry, and with
+///     with_gradient=True the gradient's four-centre derivative integrals.
+///     "auto" runs both stages, "rot1" the first only, "off" the unrotated
+///     builds bit for bit; the spelling is exact (lowercase).
+///     It changes energies at the screening-noise level (~1e-11 Ha), never the
+///     AO basis; a basis with nothing to rotate (def2, Pople, STO-3G) is
+///     unaffected. Same kwarg on run_uhf, run_rohf, run_dft, run_uks and
+///     run_roks (not run_ksdft); any other value raises ValueError.
+///
+///     gc_kernel="auto" | "off" (default None: FERRIC_GC_KERNEL, then "off"; the
+///     CLI's [scf] gc_kernel) lets the rotated direct J/K walk take its (ss|ss)
+///     and (ss|sp) quartets from a shared-primitive kernel: each group of
+///     columns sharing primitives is evaluated once per group quartet from one
+///     pass over the union primitives instead of one libint call per column
+///     quartet. It runs only where the rotation is active (gc_rotation not
+///     "off", a generally contracted basis) with the pair J/K digest, in the
+///     SCF's closed- and open-shell direct builds; "off" is the libint walk bit
+///     for bit. Energies move by about 1e-12 Ha. Same kwarg on run_uhf,
+///     run_rohf, run_dft, run_uks and run_roks; any other value raises
+///     ValueError.
+///
+///     with_gradient=True (default False) also returns the analytic nuclear
+///     gradient of the reported energy in result.gradient() (natoms x 3,
+///     Hartree/Bohr). It differentiates the SCF the run built: exact or
+///     density-fitted J/K, COSX exchange (the final-grid pass is dropped, so
+///     energy and gradient share the SCF grid), point charges / smeared charges
+///     / external field and IEF-PCM solvent. A gradient run is a geometry task:
+///     an unset ri_j_precision is "f64" (an explicit one is kept), so pass
+///     ri_j_precision="f64" to energy-only runs that must lie on the same
+///     surface (finite differences, line searches). An unconverged SCF raises
+///     RuntimeError. ValueError before the SCF: symmetry=True / irrep_nelec,
+///     a fock_hook without fock_hook_grad, smearing_sigma, mom_after_iter, and
+///     the COSX setups the gradient cannot differentiate. Ghost atoms raise
+///     RuntimeError.
+///
+///     fock_hook_grad=grad (with fock_hook and with_gradient=True; otherwise
+///     ValueError): grad(D, mol) returns the hook's EXPLICIT nuclear derivative
+///     dE_hook/dR at fixed AO density D (the converged total density), shape
+///     (natoms, 3), Hartree/Bohr; mol is the Molecule being differentiated. The
+///     gradient is the analytic gradient of the hooked SCF plus this term. The
+///     hook's Pulay term is already in it (the energy-weighted density comes
+///     from the hooked orbitals), so grad must NOT include it, nor any change of
+///     D with geometry. It MUST include every dependence of E_hook on the atom
+///     positions at fixed D: integrals over AOs centred on the atoms (for
+///     V = lam * hcore, lam * AoIntegrals.grad_hcore(D)), operator centres on
+///     atoms, classical terms. A hook that depends on D only has grad = zeros.
+///     Derivation: `book/src/07-hartree-fock/06-fock-hooks.md#fock-hooks-equations`.
+///
+///     symmetry=True (default False; False is byte-identical to before): detect
+///     the highest Abelian point group, symmetrize and reorient the geometry, and
+///     block the Fock diagonalization by irrep. Returns a SymmetricRhfResult (NOT
+///     an RhfResult) whose energy belongs to the SYMMETRIZED geometry (shift in
+///     max_symmetrization_shift, <= 1e-4 Bohr) and which has no density/MO
+///     matrices (they would be in the rotated frame; those accessors raise
+///     NotImplementedError). irrep_nelec={"A1": 4, "B2": 2}: pin electrons per
+///     irrep (even counts; requires symmetry=True, else ValueError). Closed-shell
+///     HF only: solvent, point_charges/external_field/smeared_charges, cosx,
+///     stability_descent, soscf, aurora/trah_trigger and the like raise ValueError.
+///     The blocked SCF is one plain solve: no convergence-ladder escalation.
+///
+///     fock_hook=hook adds one density-dependent term: hook(D) is called with the
+///     TOTAL density every iteration and returns (E, V); V is added to the Fock
+///     matrix and E to the energy (outside the 1/2 Tr[D(h+F)] trace, like E_xc),
+///     so the result is variational when V = dE/dD. An exception raised by the
+///     hook propagates unchanged. soscf, stability_descent, symmetry, aurora and
+///     trah_trigger raise ValueError with a hook (their Hessians or blocked solve
+///     do not see it). V must be symmetric to round-off: max |V - V^T| at most
+///     4 n eps ||V||_F (n = nao); the driver then uses (V + V^T)/2. A larger
+///     asymmetry raises ValueError. Round-off in E grows with ||V||: an
+///     energy_conv below it does not converge (site/src/using/python.md,
+///     "Fock hooks and starting densities").
+///
+///     dm0: starting density, the total closed-shell AO density (nao, nao) of
+///     this molecule (for example a previous run's ``density()``). The first Fock
+///     matrix is built from it. It must be finite, symmetric within the bound
+///     above and hold the system's electrons: |tr(D S) - N| at most
+///     n^2 eps sum|D_ij S_ij|; otherwise ValueError. Combining it with guess or
+///     guess_basis raises ValueError.
+///
+///     SCF controls (defaults): max_iter 200 (the iteration cap, the Rust RhfConfig default; reaching it returns
+///     converged=False and emits a RuntimeWarning naming the unmet criteria),
+///     density_conv 1e-6 (RMS density change; the max element is gated at 10x this),
+///     energy_conv 1e-3 (|dE| per iteration, a loose sanity bound; a user-set value
+///     below the estimated noise floor of dE for the system emits one RuntimeWarning
+///     before the SCF starts and changes nothing else), diis_size 8.
+///     The result's exit_reason / final_dp_rms / final_dp_max / final_de /
+///     unmet_criteria / convergence_summary say where the SCF stopped.
+///
+///     cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit: COSX
+///     knobs, read only with ``k_builder="cosx"`` (any of them with another
+///     ``k_builder`` raises ValueError). A grid is ``(radial, angular)`` or
+///     ``(radial, angular, prune)`` with prune ``"none"`` / ``"sgx"`` /
+///     ``"nwchem"``. The default is the pruned sgx (35, 194) SCF grid plus one
+///     final pass on the sgx (50, 302) grid.
+///     stability_descent: when True, check internal (singlet) stability and, at a
+///     saddle of the orbital Hessian, follow the downhill eigenvector and
+///     re-converge, keeping the lowest state. Default False.
+///
+///     df_j_aux / df_k_aux: an aux basis name selects RI-J / RI-K; "" / "exact" /
+///     "none" / "off" / "conventional" select conventional four-centre integrals
+///     (the same spellings run_dft accepts, also for run_uhf / run_rohf).
+///
+///     ri_j_precision: storage of the RI-J three-index tensor, "f32" (the default:
+///     half the memory, f64 accumulation) or "f64" (bit-identical to the default
+///     before 2026-11-07); any other value raises ValueError, and it is ignored
+///     without RI-J. The same setting is ``ri_j_precision`` on run_uhf / run_rohf /
+///     run_dft / run_ksdft / run_qmmm and ``scf_ri_j_precision`` on drivers with
+///     more than one iterative stage (run_cdft, run_frequencies, the MP2 family,
+///     GW, TDDFT, ...). Gradients, Hessians, optimisation and frequencies follow
+///     the SCF's value; ``result.ri_j_precision`` and the certificate's ``ri-j``
+///     entry say what was used and why. The geometry and frequency drivers
+///     (run_optimize, run_optimize_uhf, run_optimize_qmmm, run_frequencies,
+///     run_saddle, run_irc) default to "f64" instead (the f32 energy surface
+///     jitters between nearby geometries); an explicit "f32" is honoured there.
+///
+///     ri_k_precision: storage of the RI-K (DF-K) V^{-1/2}-dressed three-index
+///     tensor, "f64" (default) or "f32" (strict). Both hold
+///     the packed lower triangle and contract K in f64; "f64" gives K bit-for-bit
+///     the former square f64 tensor, "f32" rounds each stored element once (a
+///     quarter of the square tensor's memory). Also accepted by run_uhf,
+///     run_rohf, run_dft and run_ksdft, and as ``scf_ri_k_precision`` by run_cdft and
+///     run_frequencies. Ignored
+///     without RI-K.
+///
+///     solvent: IEF-PCM implicit solvation, as a dielectric constant (> 1.0) or a
+///     solvent name (water, dmso, methanol, ethanol, acetone, dichloromethane,
+///     thf, chloroform, toluene, hexane). None = vacuum.
+///     pcm_lebedev_order: tesserae per atomic sphere (a Lebedev order with
+///         positive weights: any `grid_angular` order except 74, 230, 266).
+///
+///     smeared_charges: list of (q, x, y, z, width) Gaussian-smeared classical
+///     charges (Bohr / Hartree atomic units).
+///
+///     guess_basis / guess_projection: Q-Chem-style BASIS2 guess (also on
+///     run_uhf, run_rohf, run_dft, run_ksdft). guess_basis names a bundled basis;
+///     the same SCF (method, functional, charge, multiplicity, settings) is
+///     converged in it first and projected into basis_set as the starting point.
+///     guess_projection is "fock" (default; Q-Chem FOPPROJECTION: build the
+///     target Fock at the projected density and diagonalise) or "overlap"
+///     (OVPROJECTION: S_bb^-1 S_bs C, re-orthonormalised). Unknown names, a
+///     projection without a basis, or symmetry=True raise ValueError. A
+///     secondary SCF that does not converge does not raise: the target starts
+///     from its default guess, a warning is printed, and the report says
+///     converged=False. With guess_basis set, guess= ("minao"/"sad"/"hcore")
+///     selects the SECONDARY SCF's starting point only. The guess can change
+///     which SCF state the target converges to. The result's guess_basis
+///     property reports the secondary SCF's iterations, energy and convergence.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set,

@@ -42,7 +42,7 @@ The plan for the section:
 |---|---|
 | Rust | `ferric-integrals/src/operator.rs::{Operator,coulomb,erf,erfc,terf,terfc,terfc_with_omega,terf_with_omega}` |
 | CLI | `[mp2] omega` (Å$^{-1}$), `att_operator`, `att_r0` and `att_omega` (Å, Å$^{-1}$), `r0`, `terf_omega`, `r0_bonded`, `r0_nonbonded`; the keys and units are in `site/src/reference/input.md` |
-| Python | the `omega=`, `r0=` and `terf_omega=` keywords of the MP2-family `run_*` functions (`crates/ferric-python/ferric.pyi`) |
+| Python | the `omega=`, `r0=` and `terf_omega=` keywords of the MP2-family `run_*` functions (`crates/ferric-python/python/ferric/ferric.pyi`) |
 
 ## The two pairs {#erf-terf-pairs}
 

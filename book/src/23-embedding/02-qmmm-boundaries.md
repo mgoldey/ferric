@@ -577,5 +577,5 @@ charge-bookkeeping assertions and scheme-swap controls.
 - The CLI `[qmmm]` section reads a PQR only. Smeared charges, the MM force
   field and MM relaxation are Python and Rust only.
 - Combining a boundary scheme with a polarizable site (section @sec:polarizable-embedding) has no
-  finite-difference cross-check yet (`crates/ferric-python/ferric.pyi`,
+  finite-difference cross-check yet (`crates/ferric-python/python/ferric/ferric.pyi`,
   `run_qmmm`).

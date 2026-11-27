@@ -114,7 +114,7 @@ still be a poor target. That choice belongs to the model builder.
 | `site/src/reference/architecture.md`, "Determinism" | the fixed reduction order |
 | `crates/ferric-core/src/blas_threads.rs` | the setters and their precedence |
 | `site/src/reference/input.md`, `[scf] ri_j_precision` | the f32/f64 defaults and the jitter figure |
-| `crates/ferric-python/ferric.pyi`, `run_rhf` | the Python SCF thresholds |
+| `crates/ferric-python/python/ferric/ferric.pyi`, `run_rhf` | the Python SCF thresholds |
 | `site/src/reference/validation.md` | every figure in @sec:reproducibility-and-grades-quantity-carries-grade |
 
 Changes from the sources: none.

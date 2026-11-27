@@ -31,7 +31,7 @@ The plan:
 |---|---|
 | Rust | `ferric-core/src/mol.rs::{Molecule,Atom,parse_xyz,from_atoms,nelec,nuclear_repulsion,auto_frozen_core,apply_ecp}` |
 | CLI | `[molecule]` section, keys `xyz`, `charge`, `multiplicity` (`examples/water-rhf.toml`) |
-| Python | `ferric.Molecule.from_xyz` (`crates/ferric-python/ferric.pyi`) |
+| Python | `ferric.Molecule.from_xyz` (`crates/ferric-python/python/ferric/ferric.pyi`) |
 
 ## Coordinates and units {#molecule-coordinates-units}
 

@@ -89,8 +89,11 @@ def _s(fields: str, arrays: str = "") -> ResultSchema:
 
 # Getters deliberately kept out of a class's schema: class name -> names. The
 # drift test checks RESULT_SCHEMA[cls] == the class's public getters minus
-# these, so this is the one place to exclude a getter. Empty today.
-NOT_SERIALIZED: dict[str, frozenset[str]] = {}
+# these, so this is the one place to exclude a getter. A Molecule-valued
+# getter stays out: to_dict(result.molecule) serializes the geometry.
+NOT_SERIALIZED: dict[str, frozenset[str]] = {
+    "FrequencyResult": frozenset({"molecule"}),
+}
 
 # The result schema (roadmap item 13), generated from the reflected field set
 # of each class so the output did not change. tests/test_serialize_schema.py
@@ -101,7 +104,7 @@ RESULT_SCHEMA: dict[str, ResultSchema] = {
     "AoIntegrals": _s("nao nelec"),
     "AttenuatedMp2Result": _s(
         (
-            "certificate e_os e_ss jk_auxbasis mp2_corr reference rhf_energy "
+            "certificate e_os e_ss jk_auxbasis jk_label mp2_corr reference rhf_energy "
             "scf_jk total_energy"
         ),
     ),
@@ -141,8 +144,8 @@ RESULT_SCHEMA: dict[str, ResultSchema] = {
     "CdftCouplingResult": _s("certificate e_a e_b h_ab s_ab"),
     "CdftResult": _s(
         (
-            "certificate converged energy iterations kinds lambda_tol lambdas "
-            "max_constraint_error nocc outer_iterations populations residuals "
+            "certificate converged energy hamiltonian_key iterations kinds lambda_tol "
+            "lambdas max_constraint_error nocc outer_iterations populations residuals "
             "scf_converged targets total_energy"
         ),
         "density_alpha density_beta orbital_energies_alpha orbital_energies_beta",
@@ -153,7 +156,7 @@ RESULT_SCHEMA: dict[str, ResultSchema] = {
     "DftResult": _s(
         (
             "certificate converged cosx_final_pass dispersion_model "
-            "e_dispersion e_scf e_xc energy exit_reason guess_basis iterations "
+            "e_dispersion e_scf e_xc energy exit_reason fock_hooked guess_basis iterations "
             "one_step_energy_drop precision ri_j_precision ri_k_precision "
             "stationarity_tol total_energy volume_ratios"
         ),
@@ -257,7 +260,7 @@ RESULT_SCHEMA: dict[str, ResultSchema] = {
         "gradient",
     ),
     "LaplaceMp2Result": _s(
-        "certificate e_os e_ss jk_auxbasis mp2_corr scf_jk total_energy"
+        "certificate e_os e_ss jk_auxbasis jk_label mp2_corr scf_jk total_energy"
     ),
     "MbdRsscsResult": _s(
         (
@@ -276,7 +279,7 @@ RESULT_SCHEMA: dict[str, ResultSchema] = {
     "MmTopology": _s(""),
     "Mp2VResult": _s(
         (
-            "att_mp2_corr certificate e_os e_ss jk_auxbasis n_nlc_points "
+            "att_mp2_corr certificate e_os e_ss jk_auxbasis jk_label n_nlc_points "
             "rhf_energy scf_jk total_energy vv10_e_nl"
         ),
     ),
@@ -297,7 +300,7 @@ RESULT_SCHEMA: dict[str, ResultSchema] = {
     ),
     "OoRiMp2Result": _s(
         (
-            "certificate converged grad_norm hf_energy iterations jk_auxbasis "
+            "certificate converged grad_norm hf_energy iterations jk_auxbasis jk_label "
             "mp2_corr scf_jk total_energy"
         ),
         "gradient",
@@ -309,13 +312,14 @@ RESULT_SCHEMA: dict[str, ResultSchema] = {
             "alpha_atomic alpha_atomic_dynamic alpha_ct alpha_ct_dynamic "
             "alpha_tensor c6_aniso c6_freqs c6_iso c6_molecular_iso "
             "c6_partition c6_source c6_weights certificate chelpg_charges "
-            "density_matrix density_second_moment dipole e_rpa e_rpa_dft_diag "
-            "eigenpotentials eigensolver_converged eigenvalues_freq "
-            "eigenvalues_static electric_field esp_atoms esp_points esp_surface "
-            "hirshfeld_charges lowdin_charges mo_coeffs mulliken_charges "
-            "n_eigenpotentials orbital_centers orbital_energies orbital_spreads "
-            "property_gaps property_warnings quad_freqs quad_weights "
-            "resp_charges rhf_energy total_energy written_files"
+            "density_matrix density_second_moment dipole dressed_eigenvectors "
+            "e_rpa e_rpa_dft_diag eigenpotentials eigensolver_converged "
+            "eigenvalues_freq eigenvalues_static electric_field esp_atoms "
+            "esp_points esp_surface hirshfeld_charges inv_dielectric_freq "
+            "lowdin_charges mo_coeffs mulliken_charges n_eigenpotentials "
+            "orbital_centers orbital_energies orbital_spreads property_gaps "
+            "property_warnings quad_freqs quad_weights resp_charges rhf_energy "
+            "route total_energy written_files"
         ),
         "orbital_energies gradient",
     ),
@@ -340,7 +344,7 @@ RESULT_SCHEMA: dict[str, ResultSchema] = {
     ),
     "RiMp2Result": _s(
         (
-            "certificate jk_auxbasis local mp2_corr precision reference "
+            "certificate jk_auxbasis jk_label local mp2_corr precision reference "
             "rhf_energy scf_jk scf_precision total_energy"
         ),
         "gradient",
@@ -348,7 +352,7 @@ RESULT_SCHEMA: dict[str, ResultSchema] = {
     "RsMp2RpaResult": _s(
         (
             "certificate e_corr e_corr_naive e_delta_drpa_full e_delta_drpa_sr "
-            "e_dmp2_lr e_drpa_lr e_lr_mp2 e_mp2_full e_sr_mp2 jk_auxbasis "
+            "e_dmp2_lr e_drpa_lr e_lr_mp2 e_mp2_full e_sr_mp2 jk_auxbasis jk_label "
             "reference rhf_energy scf_jk total_energy"
         ),
     ),
@@ -360,13 +364,13 @@ RESULT_SCHEMA: dict[str, ResultSchema] = {
     ),
     "ScsMp2Result": _s(
         (
-            "certificate e_os e_ss jk_auxbasis reference rhf_energy scf_jk "
+            "certificate e_os e_ss jk_auxbasis jk_label reference rhf_energy scf_jk "
             "scs_corr total_energy"
         ),
     ),
     "SosMp2Result": _s(
         (
-            "c_os certificate e_os formulation jk_auxbasis n_quad rhf_energy "
+            "c_os certificate e_os formulation jk_auxbasis jk_label n_quad rhf_energy "
             "scf_jk sos_corr total_energy"
         ),
     ),

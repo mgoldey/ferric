@@ -1698,7 +1698,7 @@ BOOK_LINK_GLOBS = (
     "crates/*/shim/*.cc",
     "crates/*/shim/*.h",
     "crates/*/*.md",
-    "crates/*/*.pyi",
+    "crates/*/python/*/*.pyi",
     "scripts/**/*.py",
     "site/src/**/*.md",
     "testdata/derivations/*.json",

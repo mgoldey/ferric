@@ -245,6 +245,7 @@ struct CcsdArgs<'a> {
     ladder: &'a str,
     conv: ScfConv,
     reference_file: Option<ReferenceFile>,
+    relativistic: Option<&'a str>,
 }
 
 /// `run_ccsd` / `run_ccsd_t`: UCCSD(/T) for an open-shell molecule, else the
@@ -257,7 +258,8 @@ fn run_ccsd_level(py: Python<'_>, a: CcsdArgs<'_>, level: CcLevel) -> PyResult<P
     refuse_open_shell_ladder(&raw_mol, a.ladder)?;
     // `k_builder` is parsed in the closures, after the system and fitting
     // basis are prepared: where the SCF refused an unknown spelling.
-    let rhf_config = rhf_config_conv(None, budget_bytes_from_gb(a.memory_budget_gb), a.conv)?;
+    let mut rhf_config = rhf_config_conv(None, budget_bytes_from_gb(a.memory_budget_gb), a.conv)?;
+    rhf_config.relativistic = crate::scf::parse_relativistic(a.relativistic)?;
     let k_builder = a.k_builder;
     let reference_file = a.reference_file.as_ref();
     if raw_mol.multiplicity > 1 {
@@ -354,8 +356,13 @@ fn run_ccsd_level(py: Python<'_>, a: CcsdArgs<'_>, level: CcLevel) -> PyResult<P
 /// `save_reference` / `read_reference` / `read_reference_other_build`: write the
 /// converged reference SCF to a file, or read one in place of the solve
 /// (`crate::reference_file`; the files `run_rimp2` writes and reads too).
+///
+/// `relativistic="x2c1e"` (default None, nonrelativistic): the reference SCF
+/// uses the spin-free X2C-1e core Hamiltonian, as in `run_rhf`, and the
+/// correlation energy is evaluated on its orbitals (the CLI's
+/// `[scf] relativistic` for this kind). Energies only; an ECP atom raises.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto", scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, save_reference=None, read_reference=None, read_reference_other_build=false))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto", scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, save_reference=None, read_reference=None, read_reference_other_build=false, relativistic=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_ccsd(
     py: Python<'_>,
@@ -372,6 +379,7 @@ pub(crate) fn run_ccsd(
     save_reference: Option<String>,
     read_reference: Option<String>,
     read_reference_other_build: bool,
+    relativistic: Option<&str>,
 ) -> PyResult<PyCcResult> {
     let conv = ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv);
     let reference_file = ReferenceFile::new(
@@ -390,6 +398,7 @@ pub(crate) fn run_ccsd(
         ladder,
         conv,
         reference_file,
+        relativistic,
     };
     run_ccsd_level(py, args, CcLevel::Ccsd)
 }
@@ -404,8 +413,13 @@ pub(crate) fn run_ccsd(
 /// `save_reference` / `read_reference` / `read_reference_other_build`: write the
 /// converged reference SCF to a file, or read one in place of the solve
 /// (`crate::reference_file`; the files `run_rimp2` writes and reads too).
+///
+/// `relativistic="x2c1e"` (default None, nonrelativistic): the reference SCF
+/// uses the spin-free X2C-1e core Hamiltonian, as in `run_rhf`, and the
+/// correlation energy is evaluated on its orbitals (the CLI's
+/// `[scf] relativistic` for this kind). Energies only; an ECP atom raises.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto", scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, save_reference=None, read_reference=None, read_reference_other_build=false))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto", scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, save_reference=None, read_reference=None, read_reference_other_build=false, relativistic=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_ccsd_t(
     py: Python<'_>,
@@ -422,6 +436,7 @@ pub(crate) fn run_ccsd_t(
     save_reference: Option<String>,
     read_reference: Option<String>,
     read_reference_other_build: bool,
+    relativistic: Option<&str>,
 ) -> PyResult<PyCcResult> {
     let conv = ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv);
     let reference_file = ReferenceFile::new(
@@ -440,6 +455,7 @@ pub(crate) fn run_ccsd_t(
         ladder,
         conv,
         reference_file,
+        relativistic,
     };
     run_ccsd_level(py, args, CcLevel::CcsdT)
 }
@@ -511,14 +527,21 @@ impl PyEomCcsdResult {
     }
 }
 
-/// EE-EOM-CCSD singlet excitation energies on an RHF reference: SCF, then
-/// spin-adapted CCSD (amplitudes converged to |dE| < 1e-10), then the
-/// non-symmetric Davidson. `scf_*` control the reference SCF as in
-/// `run_rhf`; `n_roots`, `conv_tol`, `max_iter`, `max_space` the Davidson.
+/// EE-EOM-CCSD singlet excitation energies on an RHF reference.
 ///
-/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
-/// `run_rhf` solves.
-/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
+///     Spin-adapted CCSD (amplitudes converged to |dE| < 1e-10), then the lowest
+///     ``n_roots`` right eigenpairs of the similarity-transformed Hamiltonian on
+///     the singlet singles+doubles space by a non-symmetric Davidson stopping at
+///     residual ``conv_tol`` (the energy error is first order in it). An
+///     unconverged root raises. ``ladder`` is the CCSD ladder route as in
+///     ``run_ccsd``; the EOM products take the dense nv^4 ladder when its memory
+///     plan fits and an RI-panel one otherwise. No left vectors, so no
+///     oscillator strengths.
+///
+///     With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+///     the one `run_rhf` solves.
+///     `frozen_core` counts orbitals of the valence occupied space, after the ECP has
+///     removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, n_roots=5, conv_tol=1e-6, max_iter=100, max_space=None, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto", scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]

@@ -59,7 +59,22 @@ fn refuse(cond: bool, msg: &str) -> PyResult<()> {
     }
 }
 
-/// See `ferric.pyi` for the contract. `omega_bohr = 0` is the Coulomb fit.
+/// Correlation energy with the omega-RI fitting metric.
+///
+///     The three-index integrals are erfc(omega r)/r-attenuated and the fit uses
+///     the metric V~^-1 V V~^-1 (Glasbrenner, Graf, Ochsenfeld, JCTC 16, 6856
+///     (2020); Luenser, Schurkus, Ochsenfeld, JCTC 13, 1647 (2017)).
+///     ``omega_bohr`` is in Bohr^-1 (the papers recommend 0.1); 0 is the
+///     Coulomb fit. The algebra is dense: the fit changes the energy, not the
+///     cost.
+///
+///     ``method``: ``"rimp2"`` (canonical RI-MP2), ``"cdd-mp2"`` /
+///     ``"cdd-sos-mp2"`` (Laplace MP2 / SOS-MP2 in pivoted-Cholesky pseudo-MOs;
+///     ``n_quad`` in {3, 5, 7}, default 7; ``cdd_tol`` default 0 keeps every
+///     pseudo-MO; ``cdd_schwarz_thresh`` / ``cdd_pair_thresh`` are the paper's
+///     exchange screens, default 0 = none; ``c_os`` default 1.3), or ``"rpa"``
+///     (full-rank PDEP-RPA, closed shell or UHF). A key the chosen method does
+///     not read raises ``ValueError``. The MP2 methods are closed-shell only.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, omega_bohr, method="rimp2", frozen_core=None, n_quad=None, cdd_tol=None, cdd_schwarz_thresh=None, cdd_pair_thresh=None, c_os=None, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]

@@ -109,6 +109,33 @@ sys = (ferric.QmmmSystem(symbols, coords, charges, qm_indices=qm)
 
 The parser is strict: an unknown string is an error.
 
+## OpenMM parameters
+
+OpenMM force fields are converted to ferric's explicit-parameter `MmTopology`
+with `ferric.openmm`:
+
+```python
+import ferric.openmm as om
+
+params = om.topology_from_openmm("structure.pdb")
+topo = ferric.MmTopology.from_amber_units(
+    params["charges"], params["sigmas_angstrom"], params["epsilons_kcal"],
+    params["bonds"], params["angles"], params["torsions"],
+)
+```
+
+`topology_from_system(system)` does the same for an already-built
+`openmm.System`. Both return plain AMBER-convention units (kcal/mol,
+Angstrom, degrees) that `MmTopology.from_amber_units` consumes directly.
+
+`MmTopology` has harmonic bonds and angles, periodic torsions, point charges
+and Lennard-Jones, with 1-2 and 1-3 pairs excluded and 1-4 pairs scaled by
+1/1.2 (Coulomb) and 1/2 (Lennard-Jones). A System that does not fit raises
+`ValueError`: one with constraints, with any other energy term (CMAP, GBSA,
+custom forces), with nonbonded exceptions other than that bond-derived set, or
+with nonbonded parameter offsets. The System's nonbonded method (cutoff, PME)
+is not read: how the pairs are summed is ferric's own setting.
+
 ## Energies, forces, and optimization
 
 ```python

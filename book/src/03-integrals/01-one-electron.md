@@ -27,7 +27,7 @@ The plan:
 | Entry point | Location |
 |---|---|
 | Rust | `ferric-integrals/src/oneelectron.rs::{overlap,kinetic,nuclear,hcore,hcore_ecp,dipole,second_moment,r2_moment}` |
-| Python | `AoIntegrals` (`crates/ferric-python/ferric.pyi`) |
+| Python | `AoIntegrals` (`crates/ferric-python/python/ferric/ferric.pyi`) |
 
 ## Basis functions and the integrals {#one-electron-basis-functions-integrals}
 

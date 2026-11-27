@@ -600,3 +600,11 @@ def test_symbol_spelling_does_not_split_one_hamiltonian():
     )
     b = ferric.run_cdft(lower, _svp(), [ferric.CdftConstraint([1], 1.0)], **kw)
     ferric.cdft_coupling(a, b)  # must not raise
+
+
+def test_cdft_result_exposes_hamiltonian_key():
+    mol = ferric.Molecule.from_xyz_string("2\n\nH 0 0 0\nH 0 0 0.74\n")
+    bs = ferric.BasisSet.bundled("sto-3g")
+    res = ferric.run_cdft(mol, bs, [ferric.CdftConstraint([0], 1.0, "charge")])
+    assert isinstance(res.hamiltonian_key, str)
+    assert "xc=None" in res.hamiltonian_key

@@ -31,7 +31,7 @@ consumer's view of the same charges, with the agreement figures.
 | Rust (weights) | `ferric-dft/src/becke.rs::{becke_weight,becke_weights_all}` |
 | Rust (per-atom bras) | `ferric-rpa/src/properties/per_atom.rs::{becke_bra,hirshfeld_bra}` |
 | CLI | `compute_hirshfeld_charges`, `compute_lowdin_charges`, `compute_mulliken_charges`, `compute_chelpg_charges`, `compute_resp_charges`, `c6_partition` under `[rpa]` |
-| Python | `hirshfeld_charges`, `lowdin_charges`, `mulliken_charges`, `chelpg_charges`, `resp_charges` (`crates/ferric-python/ferric.pyi`) |
+| Python | `hirshfeld_charges`, `lowdin_charges`, `mulliken_charges`, `chelpg_charges`, `resp_charges` (`crates/ferric-python/python/ferric/ferric.pyi`) |
 
 ## What a partition must do {#atomic-partitions-partition-must-do}
 

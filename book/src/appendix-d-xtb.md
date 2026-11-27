@@ -15,7 +15,7 @@ header records that.
 | Rust (calculator) | `ferric-xtb/src/calculator.rs::{XtbCalculator,XtbConfig,XtbMethod,XtbResult}` |
 | Rust (one-shot) | `ferric-xtb/src/calculator.rs::{xtb_singlepoint,gfn2_energy}` |
 | Rust (drivers) | `ferric-xtb/src/driver.rs::{xtb_energy_gradient,optimize_geometry_xtb,harmonic_frequencies_xtb}` |
-| Python | `run_xtb_energy_gradient`, `run_xtb_optimize`, `run_xtb_frequencies` (`crates/ferric-python/ferric.pyi`) |
+| Python | `run_xtb_energy_gradient`, `run_xtb_optimize`, `run_xtb_frequencies` (`crates/ferric-python/python/ferric/ferric.pyi`) |
 | CLI | none: no `method.kind` runs xTB |
 
 ## Build and availability {#appendix-d-build-availability}
@@ -156,4 +156,4 @@ accuracy of GFN-xTB for any chemistry.
 | `crates/ferric-xtb/src/driver.rs` | the optimization and frequency drivers |
 | `crates/ferric-xtb/tests/xtb_singlepoint.rs` | the single-point and gradient bounds |
 | `crates/ferric-xtb/tests/xtb_opt_freq.rs` | the optimization and frequency checks |
-| `crates/ferric-python/ferric.pyi` | the Python signatures and the certificate grade |
+| `crates/ferric-python/python/ferric/ferric.pyi` | the Python signatures and the certificate grade |

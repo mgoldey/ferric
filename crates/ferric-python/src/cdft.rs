@@ -178,11 +178,12 @@ pub(crate) struct PyCdftResult {
     pub(crate) spins: Vec<ferric_dft::cdft::SpinChannel>,
     pub(crate) weight_matrices: Vec<Array2<f64>>,
     pub(crate) overlap: Array2<f64>,
-    // Every run_cdft input that changes the electronic Hamiltonian (functional,
-    // J/K fitting, exchange builder, XC grid, external potential), rendered
-    // exactly (Debug prints f64 in shortest round-trip form). cdft_coupling
-    // refuses two states whose keys differ: the Wu-Van Voorhis formula assumes
-    // one shared H, and the overlap/occupation checks cannot see these inputs.
+    /// Every run_cdft input that changes the electronic Hamiltonian (functional,
+    /// J/K fitting, exchange builder, XC grid, external potential), rendered
+    /// exactly (Debug prints f64 in shortest round-trip form). cdft_coupling
+    /// refuses two states whose keys differ: the Wu-Van Voorhis formula assumes
+    /// one shared H, and the overlap/occupation checks cannot see these inputs.
+    #[pyo3(get)]
     pub(crate) hamiltonian_key: String,
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }

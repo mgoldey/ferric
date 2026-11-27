@@ -47,6 +47,7 @@ pub(crate) struct PyRsMp2RpaResult {
     pub(crate) scf_jk: String,
     /// The printout's SCF J/K echo (`ScfJk::label`: names a non-default
     /// exchange builder on the exact path).
+    #[pyo3(get)]
     pub(crate) jk_label: String,
     /// The SCF's JK-fitting basis (`None` for "exact").
     #[pyo3(get)]
@@ -421,6 +422,9 @@ pub(crate) struct PyPdepRpaResult {
     pub(crate) eigensolver_converged: bool,
     pub(crate) eigenvalues_static: Vec<f64>,
     pub(crate) eigenpotentials: Array2<f64>,
+    pub(crate) dressed_eigenvectors: Array2<f64>,
+    pub(crate) inv_dielectric_freq: Option<Vec<Array2<f64>>>,
+    pub(crate) route: &'static str,
     pub(crate) quad_freqs: Vec<f64>,
     pub(crate) quad_weights: Vec<f64>,
     pub(crate) eigenvalues_freq: Array2<f64>,
@@ -481,6 +485,32 @@ impl PyPdepRpaResult {
     #[getter]
     fn eigenpotentials<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         PyArray2::from_owned_array(py, self.eigenpotentials.clone())
+    }
+    /// Static eigenvectors in the V^{-1/2}-dressed RI basis, shape (naux, M),
+    /// before the back-transformation that gives `eigenpotentials`. Empty
+    /// (0 columns) on the "aux-basis-log-det" route, which runs no eigensolve.
+    #[getter]
+    fn dressed_eigenvectors<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        PyArray2::from_owned_array(py, self.dressed_eigenvectors.clone())
+    }
+    /// Per-frequency dynamic inverse-dielectric matrices W̃_d(iω_k) =
+    /// ε̃_proj⁻¹ − I in the fixed PDEP eigenvector basis (length N_quad, each
+    /// (M, M)). None unless `run_pdep_rpa(with_inv_dielectric_freq=True)`.
+    #[getter]
+    fn inv_dielectric_freq<'py>(&self, py: Python<'py>) -> Option<Vec<Bound<'py, PyArray2<f64>>>> {
+        self.inv_dielectric_freq.as_ref().map(move |vs| {
+            vs.iter()
+                .map(|a| PyArray2::from_owned_array(py, a.clone()))
+                .collect()
+        })
+    }
+    /// Which construction produced `e_rpa`: "static-eigenbasis" (PDEP
+    /// eigensolve of ε(0), frequency loop in the kept modes) or
+    /// "aux-basis-log-det" (ln det(1 + Π) − tr Π per frequency in the
+    /// auxiliary basis, no eigensolve, every mode kept).
+    #[getter]
+    fn route(&self) -> &'static str {
+        self.route
     }
     /// Imaginary-frequency quadrature points ω_k.
     #[getter]
@@ -797,6 +827,10 @@ impl PyPdepRpaResult {
 /// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
 /// `run_rhf` solves.
 /// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
+///
+/// `with_inv_dielectric_freq=True` also returns the per-frequency
+/// inverse-dielectric matrices (`result.inv_dielectric_freq`, N_quad x M x M
+/// doubles). It keeps the static-eigenbasis route (`result.route`).
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, auxbasis,
@@ -817,6 +851,7 @@ impl PyPdepRpaResult {
     c6_partition=None, df_j_aux=None, df_k_aux=None,
     export_eigpot_prefix=None, export_eigpot_count=None,
     cube_spacing=None, cube_margin=None, with_gradient=false,
+    with_inv_dielectric_freq=false,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_pdep_rpa(
@@ -868,6 +903,7 @@ pub(crate) fn run_pdep_rpa(
     cube_spacing: Option<f64>,
     cube_margin: Option<f64>,
     with_gradient: bool,
+    with_inv_dielectric_freq: bool,
 ) -> PyResult<PyPdepRpaResult> {
     use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
     let prop_kwargs = PropertyKwargs {
@@ -974,9 +1010,9 @@ pub(crate) fn run_pdep_rpa(
         chi0_sparsity: ferric_rpa::config::Chi0Sparsity::parse_config_str(chi0_sparsity)
             .map_err(make_err)?,
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        // Python run_pdep_rpa is energy-only; the GW/property paths that consume
-        // the inverse-dielectric stack have their own entry points (M9 gate).
-        need_inv_dielectric_freq: false,
+        // Off by default: the stack is N_quad x M^2 doubles the energy does
+        // not need, and asking for it keeps the static-eigenbasis route.
+        need_inv_dielectric_freq: with_inv_dielectric_freq,
         need_eigenvalues_freq: true,
         verbose: false,
     };
@@ -1045,6 +1081,9 @@ pub(crate) fn run_pdep_rpa(
         eigensolver_converged: r.eigensolver_converged,
         eigenvalues_static: r.eigenvalues_static,
         eigenpotentials: r.eigenpotentials,
+        dressed_eigenvectors: r.dressed_eigenvectors,
+        inv_dielectric_freq: r.inv_dielectric_freq,
+        route: r.route.as_str(),
         quad_freqs: r.quad_freqs,
         quad_weights: r.quad_weights,
         eigenvalues_freq: r.eigenvalues_freq,

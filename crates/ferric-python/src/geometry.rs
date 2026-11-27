@@ -1720,6 +1720,13 @@ impl PyFrequencyResult {
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
         crate::certificate_dict(py, &self.certificate_data)
     }
+    /// The geometry the frequencies were computed at.
+    #[getter]
+    fn molecule(&self) -> PyMolecule {
+        PyMolecule {
+            inner: self.molecule.clone(),
+        }
+    }
     /// RRHO thermochemistry (dict; see the .pyi). Imaginary modes are left
     /// out with a `RuntimeWarning`.
     #[pyo3(signature = (temperature=298.15, pressure=101325.0, symmetry_number=1))]

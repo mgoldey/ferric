@@ -244,14 +244,16 @@ pub fn u_solve_wb97x_l_v(
     Ok(assemble(ks.energy, e_c_scaled, cfg))
 }
 
-/// [`run_wb97x_l_v`] on the system `aux` was prepared on (see [`PreparedAux`]).
+/// [`run_wb97x_l_v`] on the system `aux` was prepared on (see [`PreparedAux`]),
+/// returned with the reference config of the ladder rung that converged: the
+/// config a certificate of the reference must be built from.
 pub fn run_wb97x_l_v_on(
     aux: &PreparedAux<'_>,
     scf_cfg: &ferric_scf::rhf::RhfConfig,
     cfg: &DoubleHybridConfig,
-) -> Result<(DoubleHybridResult, ScfResult), FerricError> {
+) -> Result<(DoubleHybridResult, ScfResult, ferric_scf::rhf::RhfConfig), FerricError> {
     let sys = aux.system();
-    run_wb97x_l_v(
+    run_with_reference_config(
         sys.ctx(),
         sys.mol(),
         sys.basis(),
@@ -281,6 +283,20 @@ pub fn run_wb97x_l_v(
     scf_cfg: &ferric_scf::rhf::RhfConfig,
     cfg: &DoubleHybridConfig,
 ) -> Result<(DoubleHybridResult, ScfResult), FerricError> {
+    let (dh, ks, _) = run_with_reference_config(ctx, mol, obs, dfbs, bounds, scf_cfg, cfg)?;
+    Ok((dh, ks))
+}
+
+/// [`run_wb97x_l_v`], also returning the config of the rung that converged.
+fn run_with_reference_config(
+    ctx: &ferric_core::parallel::ParallelContext,
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    bounds: &ferric_scf::screening::SchwarzBounds,
+    scf_cfg: &ferric_scf::rhf::RhfConfig,
+    cfg: &DoubleHybridConfig,
+) -> Result<(DoubleHybridResult, ScfResult, ferric_scf::rhf::RhfConfig), FerricError> {
     let mut base = scf_cfg.clone();
     base.xc = Some(WB97X_L_V_NAME.to_string());
     if base.df_j_aux.is_none() {
@@ -290,9 +306,7 @@ pub fn run_wb97x_l_v(
         base.df_k_aux = Some("def2-universal-jkfit".to_string());
     }
 
-    let ladder = ferric_scf::ladder::ksdft_ladder(&base);
-    let lr =
-        ferric_scf::ladder::solve_rhf_ladder(ctx, mol, obs, Operator::coulomb(), bounds, &ladder)?;
+    let (lr, reached) = ferric_scf::ladder::solve_ksdft_ladder(ctx, mol, obs, bounds, &base)?;
 
     if !lr.converged {
         return Err(FerricError::ScfConvergence {
@@ -302,5 +316,5 @@ pub fn run_wb97x_l_v(
     }
 
     let dh = solve_wb97x_l_v(mol, obs, dfbs, &lr.result, cfg)?;
-    Ok((dh, lr.result))
+    Ok((dh, lr.result, reached))
 }

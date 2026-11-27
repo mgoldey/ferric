@@ -30,7 +30,7 @@ features ferric does not compute for you.
 The property functions differ from the NPZ path in one way that matters:
 they take the reference you give them, so they work on a Kohn–Sham density.
 The NPZ path always uses its own RHF reference. All of them are signed in
-`crates/ferric-python/ferric.pyi`.
+`crates/ferric-python/python/ferric/ferric.pyi`.
 
 `AoIntegrals` reports AOs in ferric's shell order. `shell_offsets()`,
 `shell_atoms()` and `ao_atoms()` give the map from AO index to shell and to
@@ -132,7 +132,7 @@ reveal.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-python/ferric.pyi` | the Python names, defaults and units; the `pdep-rpa` grade cap |
+| `crates/ferric-python/python/ferric/ferric.pyi` | the Python names, defaults and units; the `pdep-rpa` grade cap |
 | `crates/ferric-python/src/blocks.rs` | the building-block classes |
 | `crates/ferric-python/python/ferric/ase.py`, `crates/ferric-python/python/ferric/qcschema.py` | where the certificate is passed through |
 | `crates/ferric-export/src/cube.rs`, `crates/ferric-rpa/src/property_bundle.rs` | cube contents and defaults |

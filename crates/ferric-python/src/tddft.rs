@@ -136,11 +136,52 @@ impl PyTddftResult {
     }
 }
 
-/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
-/// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+/// Linear response on an RHF/RKS or UHF/UKS reference. functional=None runs on an RHF
+///     reference (CIS for method="tda"/"cis", TDHF for "casida"/"rpa"/"tddft"/
+///     "tdhf"); a functional converges that KS reference (RI-JK,
+///     def2-universal-jkfit) and adds the (ia|f_xc|jb) kernel block to A (and B
+///     for Casida) on the same grid.
 ///
-/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
-/// `run_rhf` / `run_uhf` (`run_dft` / `run_uks` with `functional`) solves.
+///     Grid: the grid_* kwargs mean what they mean in run_dft. With none set, a
+///     meta-GGA (SCAN, r2SCAN, TPSS, or a hybrid such as TPSSh, M06-2X) runs
+///     on 150x434 nwchem-radial (default
+///     weight cut), every other functional on the production 75x110
+///     nwchem-radial grid. On 75x110, r2SCAN water roots sit up to 2.1e-3 eV
+///     from a flat 150x590 grid; on 150x434, within 1e-4 eV. Any grid_* kwarg
+///     replaces that default. With functional=None a grid_* kwarg is a
+///     ValueError. TddftResult.grid reports the grid used.
+///
+///     Range-separated hybrids (e.g. "HYB_GGA_XC_CAM_B3LYP", "HYB_GGA_XC_WB97X")
+///     take c_sr, c_lr and omega from libxc; the long-range exchange in the
+///     response uses a second RI tensor set fitted in the erf(omega r)/r metric.
+///     VV10 functionals raise ValueError (no complete kernel); there is no
+///     kernel-less DFT result.
+///
+///     spin: "singlet" (default) or "triplet" (no Coulomb term, the
+///     f_aa - f_ab kernel, oscillator strengths exactly 0). A triplet Casida
+///     problem with Omega^2 < 0 (a triplet instability of the reference) raises.
+///     Any other value is a ValueError. Coulomb/exchange response
+///     integrals are RI over `auxbasis`. `scf_max_iter`, `scf_energy_conv`,
+///     `scf_density_conv` set the reference SCF as in `run_rhf` (defaults unchanged
+///     when omitted).
+///
+///     solver: "dense" (full A, B and eigh), "davidson" (matrix-free block
+///     Davidson; an unconverged root raises) or "auto" (dense up to
+///     nocc*nvir = 200, Davidson above). Any other value is a ValueError.
+///     TddftResult.solver and .residuals report what ran.
+///
+///     reference: "auto" (default: restricted for a singlet molecule, UHF/UKS
+///     for multiplicity > 1), "restricted" (alias "rhf"/"rks"; a ValueError on an
+///     open-shell molecule) or "unrestricted" (alias "uhf"/"uks"; also accepted
+///     for a closed-shell molecule, where the roots are the restricted singlets
+///     and triplets together). An unrestricted run solves the spin-conserving
+///     alpha/beta problem for every functional class above, including
+///     meta-GGAs and hybrid meta-GGAs, reports <S^2> per root in
+///     TddftResult.s2, and refuses spin="triplet" with a ValueError. ROHF/ROKS
+///     references are not offered.
+///
+///     With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
+///     the one `run_rhf` / `run_uhf` (`run_dft` / `run_uks` with `functional`) solves.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, auxbasis, functional=None, n_roots=3, method="tda",

@@ -15,7 +15,8 @@ cannot handle, deterministically (recorded as `null`). Build info and version
 strings are private (`__version__`, `build_info()` values) and never captured.
 
 The pure-Python submodules (`ferric.serialize`, `.rdkit`, `.qcschema`, `.units`,
-`.molden`, `.fcidump`, `.viz`, `.ase`) go under the top-level key `submodules`:
+`.molden`, `.fcidump`, `.viz`, `.ase`, `.correlation`, `.finite_difference`,
+`.pdb`, `.openmm`) go under the top-level key `submodules`:
 each is captured by its `__all__` with the same function / class / constant
 layout (a function's parameters, a constant's repr). `ferric.ase` imports ASE
 at module level, so it is recorded only when importable, and
@@ -76,6 +77,10 @@ SUBMODULES = (
     "fcidump",
     "viz",
     "ase",
+    "correlation",
+    "finite_difference",
+    "pdb",
+    "openmm",
 )
 
 

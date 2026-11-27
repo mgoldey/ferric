@@ -58,6 +58,7 @@ pub(crate) struct PyDftResult {
     /// this result was solved with; see `PyRhfResult::scf_config`.
     pub(crate) scf_config: Arc<RhfConfig>,
     /// The SCF ran with a `fock_hook` (recorded on the certificate).
+    #[pyo3(get)]
     pub(crate) fock_hooked: bool,
 }
 
@@ -310,11 +311,118 @@ impl PyDoubleHybridResult {
     }
 }
 
-/// Run an MP2-based double hybrid (B2PLYP or DSD-PBEP86).
+/// The `run_double_hybrid` keywords the `kind="wb97x-l-v"` route reads.
+struct Wb97xLVArgs<'a> {
+    frozen_core: Option<usize>,
+    k_builder: Option<&'a str>,
+    memory_budget_gb: Option<f64>,
+    conv: ScfConv,
+    scf_ri_j_precision: Option<&'a str>,
+    dispersion: Option<&'a str>,
+    unrestricted: bool,
+    lambda: Option<f64>,
+    omega: Option<f64>,
+}
+
+/// `run_double_hybrid(kind="wb97x-l-v")`: the driver the CLI's
+/// `method.kind = "wb97x-l-v"` runs (`run_wb97x_l_v_on`: the functional's own
+/// RKS reference through the KS ladder, then lambda-scaled short-range
+/// LinLCCD(hh)). The certificate records the config of the ladder rung that
+/// converged. The GIL is released for the calculation. Closed-shell only, and VV10 is the functional's dispersion,
+/// so `unrestricted=True`, an open-shell molecule and `dispersion=` raise.
+///
+/// The result's PT2 fields carry the one correlation term, so
+/// `total_energy = e_ks + c_os * e_os + c_ss * e_ss` holds as for the MP2
+/// kinds: `e_os` is the unscaled LinLCCD energy (all spin cases), `c_os` is
+/// lambda, `e_ss = c_ss = 0`.
+fn run_wb97x_l_v_kind(
+    py: Python<'_>,
+    mol: &PyMolecule,
+    basis_set: &PyBasisSet,
+    auxbasis: &PyBasisSet,
+    a: Wb97xLVArgs<'_>,
+) -> PyResult<PyDoubleHybridResult> {
+    use ferric_cc::double_hybrid::{run_wb97x_l_v_on, DoubleHybridConfig, WB97X_L_V_NAME};
+    if a.unrestricted || mol.inner.multiplicity > 1 {
+        return Err(crate::errors::input_err(
+            "run_double_hybrid: kind='wb97x-l-v' is closed-shell only (RKS reference); \
+             unrestricted=True and multiplicity > 1 are not available",
+        ));
+    }
+    if let Some(d) = a.dispersion {
+        return Err(crate::errors::input_err(format!(
+            "run_double_hybrid: dispersion={d:?} is not available for kind='wb97x-l-v': \
+             VV10 inside the functional is its dispersion. Omit dispersion."
+        )));
+    }
+    if a.lambda.is_some_and(|l| !(0.0..=1.0).contains(&l)) {
+        return Err(crate::errors::input_err(format!(
+            "run_double_hybrid: lambda_ must lie in [0, 1]; got {}",
+            a.lambda.unwrap_or(f64::NAN)
+        )));
+    }
+    if a.omega.is_some_and(|w| !(w.is_finite() && w > 0.0)) {
+        return Err(crate::errors::input_err(format!(
+            "run_double_hybrid: omega must be a positive number of Bohr^-1; got {}",
+            a.omega.unwrap_or(f64::NAN)
+        )));
+    }
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
+    let mol = sys.mol();
+    let budget = budget_bytes_from_gb(a.memory_budget_gb);
+    // The reference config of `run_wb97x_l_v`: the functional itself on
+    // RI-J/RI-K, which is also what the certificate must name.
+    let cfg = ks_jkfit_config(
+        rhf_config_conv(a.k_builder, budget, a.conv)?,
+        WB97X_L_V_NAME,
+        parse_ri_j_precision(a.scf_ri_j_precision)?,
+    );
+    // Published lambda / omega unless overridden, as the CLI's `[dft]` keys.
+    let mut dh_cfg = DoubleHybridConfig::default();
+    if let Some(lambda) = a.lambda {
+        dh_cfg.lambda = lambda;
+    }
+    if let Some(omega) = a.omega {
+        dh_cfg.omega = omega;
+    }
+    if let Some(fc) = a.frozen_core {
+        dh_cfg.cc.frozen_core = fc;
+    }
+    dh_cfg.cc.memory_budget_bytes = budget;
+    let (dh, ks, cfg) = py
+        .allow_threads(|| run_wb97x_l_v_on(&dfbs, &cfg, &dh_cfg))
+        .map_err(make_err)?;
+    let reference = reference_certificate(mol, &ks, &cfg, &basis_set.inner);
+    let certificate_data =
+        ferric_cc::certificate::wb97x_l_v_certificate(&reference, &auxbasis.inner.name, &dh_cfg);
+    Ok(PyDoubleHybridResult {
+        certificate_data,
+        total_energy: dh.total_energy,
+        e_ks: dh.e_ks,
+        e_corr_scaled: dh.e_c_scaled,
+        e_os: dh.e_c_wft,
+        e_ss: 0.0,
+        e_dispersion: None,
+        reference: "restricted",
+        c_os: dh.lambda,
+        c_ss: 0.0,
+    })
+}
+
+/// Run a double hybrid: MP2-based (B2PLYP, DSD-PBEP86) or wB97X-L-V.
 ///
 /// `kind`: "b2plyp" (Grimme 2006) or "dsd-pbep86" (the no-dispersion set of
 /// Kozuch and Martin, J. Comput. Chem. 34, 2327 (2013)).
 /// Converges the appropriate DFT reference, then adds scaled MP2 correlation.
+///
+/// `kind="wb97x-l-v"` is the CLI's `method.kind = "wb97x-l-v"`: the
+/// functional's own RKS reference, then lambda-scaled short-range LinLCCD(hh)
+/// with erfc(omega r)/r. `lambda_` (default 0.6, in [0, 1]) and `omega`
+/// (default 0.1 Bohr^-1) override the published parameters and raise for the
+/// MP2 kinds. Closed-shell only; `dispersion=` raises (VV10 is in the
+/// functional). The result reports the one correlation term as `e_os` with
+/// `c_os = lambda_` and `e_ss = c_ss = 0`.
 ///
 /// `dispersion="d3bj"` (or `"d3(bj)"`) selects the double hybrid's published
 /// D3(BJ) set and adds its D3(BJ) energy: B2PLYP-D3(BJ) keeps B2PLYP's
@@ -335,7 +443,7 @@ impl PyDoubleHybridResult {
 /// `run_dft` (`run_uks` for the unrestricted route) solves.
 /// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, kind="b2plyp", frozen_core=None, k_builder=None, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, scf_ri_j_precision=None, dispersion=None, unrestricted=false))]
+#[pyo3(signature = (mol, basis_set, auxbasis, kind="b2plyp", frozen_core=None, k_builder=None, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, scf_ri_j_precision=None, dispersion=None, unrestricted=false, lambda_=None, omega=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_double_hybrid(
     py: Python<'_>,
@@ -352,13 +460,42 @@ pub(crate) fn run_double_hybrid(
     scf_ri_j_precision: Option<&str>,
     dispersion: Option<&str>,
     unrestricted: bool,
+    lambda_: Option<f64>,
+    omega: Option<f64>,
 ) -> PyResult<PyDoubleHybridResult> {
-    let base_kind = match kind.to_lowercase().replace(['-', '_'], "").as_str() {
+    let kind_key = kind.to_lowercase().replace(['-', '_'], "");
+    if kind_key == "wb97xlv" {
+        return run_wb97x_l_v_kind(
+            py,
+            mol,
+            basis_set,
+            auxbasis,
+            Wb97xLVArgs {
+                frozen_core,
+                k_builder,
+                memory_budget_gb,
+                conv: ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
+                scf_ri_j_precision,
+                dispersion,
+                unrestricted,
+                lambda: lambda_,
+                omega,
+            },
+        );
+    }
+    if lambda_.is_some() || omega.is_some() {
+        return Err(crate::errors::input_err(format!(
+            "run_double_hybrid: lambda_ / omega are read by kind='wb97x-l-v' only; got \
+             kind='{kind}'"
+        )));
+    }
+    let base_kind = match kind_key.as_str() {
         "b2plyp" => DoubleHybridKind::B2plyp,
         "dsdpbep86" => DoubleHybridKind::DsdPbep86,
         _ => {
             return Err(crate::errors::input_err(format!(
-                "unknown double hybrid kind '{kind}'; expected 'b2plyp' or 'dsd-pbep86'"
+                "unknown double hybrid kind '{kind}'; expected 'b2plyp', 'dsd-pbep86' or \
+                 'wb97x-l-v'"
             )))
         }
     };
@@ -881,8 +1018,8 @@ pub(crate) fn dft_grid_point_count(
     ferric_dft::grid::atomic_grid_point_count(&mol.inner, &cfg, cfg.prune).map_err(make_err)
 }
 
-/// Number of points in the COSX exchange grid `cosx_grid=` describes for
-/// `mol` (`None` = the default COSX SCF grid), without building it.
+/// Number of points in the COSX exchange grid `cosx_grid` describes for
+///     `mol` (None = the default COSX SCF grid), without building it.
 #[pyfunction]
 #[pyo3(signature = (mol, cosx_grid=None))]
 pub(crate) fn cosx_grid_point_count(
@@ -1042,7 +1179,22 @@ pub(crate) fn evaluate_dispersion(
     }
 }
 
-/// Alias under the spec's canonical name. Same surface as `run_dft`.
+/// Kohn-Sham DFT (closed-shell). Alias of run_dft (same grid_* kwargs,
+///     grid_weight_cut included).
+///
+///     `dispersion` adds a dispersion correction to the SCF energy (and, with
+///     `with_gradient=True`, its analytic gradient to the gradient):
+///     `"d3bj"` is D3(BJ) with the damping parameters published for
+///     `functional`, `"d3bj(<name>)"` uses `<name>`'s instead; `"mbd"` is
+///     MBD@rsSCS on Hirshfeld volume ratios of the converged density with the
+///     beta published for `functional` (PBE, PBE0, HSE06), `"mbd(<name>)"` uses
+///     `<name>`'s beta. Matching is case-insensitive. The MBD@rsSCS gradient
+///     is exact, including the orbital relaxation of the volumes (Z-vector). `None` (the default) applies no correction and leaves the energy
+///     exactly as it was. Any other value, or a functional with no published
+///     parameters, raises ValueError -- there is no spelling that means "compute
+///     a zero correction".
+///     symmetry / irrep_nelec: as for run_dft (blocked RKS, SymmetricRhfResult).
+///     dm0: as for run_dft (ladder rung 0 starts from it).
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, functional=None, k_builder=None, with_gradient=false,
@@ -1529,17 +1681,18 @@ pub(crate) fn run_uks<'py>(
     run_open_ks(py, OpenKs::Uks, mol, basis_set, kw)
 }
 
-/// Restricted open-shell Kohn-Sham: `solve_rohf` with the functional
-/// `functional` (required). One set of spin-pure MOs: `nocc_open =
-/// multiplicity - 1` singly occupied orbitals, the rest doubly occupied
-/// (Guest-Saunders coupling as in `run_rohf`). Same result, gradient
-/// (`ks_gradient_roks`), settings and exclusions as `run_uks`; `guess=`
-/// (MINAO by default) comes after `relativistic` here. As in `run_rohf`, an
-/// explicit `cosx_final_pass=True` or `cosx_final_grid` is a `RuntimeError`
-/// at the solve (no ROHF/ROKS COSX final-grid pass). Beyond `run_uks`'s
-/// exclusions, `solve_rohf` has no TRAH step, no stability analysis and no
-/// `mom_reference="initial"`, so `trah_trigger`, `stability_descent` and
-/// `mom_reference` are not offered (as in `run_rohf`).
+/// Restricted open-shell Kohn-Sham: solve_rohf with RhfConfig.xc set, the
+///     route the CLI takes for kind="rohf" with [dft] functional.
+///
+///     One set of spin-pure MOs: multiplicity - 1 singly occupied orbitals, the
+///     rest doubly occupied (run_rohf's occupations and Guest-Saunders coupling).
+///     Settings, result, gradient (ks_gradient_roks) and exclusions as for
+///     run_uks; guess= ("minao" default, or "hcore") comes after relativistic
+///     here. dm0 is run_rohf's pair. As in run_rohf, an explicit
+///     cosx_final_pass=True or cosx_final_grid raises RuntimeError at the solve
+///     (no ROHF/ROKS COSX final-grid pass), and solve_rohf has no TRAH step,
+///     no stability analysis and no mom_reference="initial", so trah_trigger,
+///     stability_descent and mom_reference are not offered.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, functional, k_builder=None, with_gradient=false,

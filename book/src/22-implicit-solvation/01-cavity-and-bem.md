@@ -27,7 +27,7 @@ tesserae (@sec:cavity-and-bem-cavity) and two of those matrices, $S$ and $D$ (@s
 |---|---|
 | Rust | `ferric-pcm/src/cavity.rs::build_cavity`, `ferric-pcm/src/matrices.rs::{build_s_d,build_s_d_kind,gaussian_xi_table}`, `ferric-pcm/src/lib.rs::PcmContext` |
 | CLI | `[pcm]` with `solvent` or `epsilon`, and `lebedev_order` (`examples/water-pcm.toml`) |
-| Python | `solvent=` and `pcm_lebedev_order=` on `run_rhf` and the other SCF drivers (`crates/ferric-python/ferric.pyi`) |
+| Python | `solvent=` and `pcm_lebedev_order=` on `run_rhf` and the other SCF drivers (`crates/ferric-python/python/ferric/ferric.pyi`) |
 
 Units are Hartree atomic units throughout the chapter: Bohr, Hartree, and
 charge in units of $e$. $N$ is the number of tesserae.

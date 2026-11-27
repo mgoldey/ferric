@@ -158,7 +158,7 @@ SCF convergence along the run, not the labels.
 | Source | Used for |
 |---|---|
 | `site/src/reference/validation.md`, "CLI `method.kind` matrix" and "Anchors" | which kinds have gradients and Hessians, and every figure here |
-| `crates/ferric-python/ferric.pyi`, `run_frequencies` and `FrequencyResult` | the Hessian choice, attributes, warm-start advice |
+| `crates/ferric-python/python/ferric/ferric.pyi`, `run_frequencies` and `FrequencyResult` | the Hessian choice, attributes, warm-start advice |
 | `crates/ferric-scf/src/noise_floor.rs` | the energy noise floor |
 | `crates/ferric-scf/src/gradient.rs` | the ghost-atom refusal |
 | `crates/ferric-rpa/src/gradient.rs`, `crates/ferric-rpa/src/gradient_analytic.rs` | the PDEP-RPA gradient routes and the default choice |
