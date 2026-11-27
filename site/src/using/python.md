@@ -594,7 +594,11 @@ approximations and grades the run Ungraded. It is for energies only:
 `with_gradient=True`, and `scf_relativistic=` on `run_optimize` and
 `run_frequencies`, raise `ValueError`, and post-SCF methods that rebuild the
 nonrelativistic core Hamiltonian (orbital-optimized MP2) refuse an X2C
-reference. The same SCF runs from the block through a constant Fock hook,
+reference. `run_rimp2`, `run_scs_mp2`, `run_ccsd` and `run_ccsd_t` take the
+same `relativistic="x2c1e"`: their reference SCF uses the X2C core
+Hamiltonian and the correlation energy is evaluated on its orbitals (the
+kinds the CLI's `[scf] relativistic` runs). The same SCF runs from the block
+through a constant Fock hook,
 which must return `Tr[D dH]` as its energy (not half of it):
 
 <!-- doctest -->
@@ -695,12 +699,22 @@ Not exposed: the Rust-side structs (`PreparedBasis`, `Engine`, screening
 bounds), method intermediates (CC amplitudes, GW self-energies, PDEP
 eigenpairs) and periodic (PBC) integrals. Those stay behind the drivers.
 
-## Time-correlation and finite-difference helpers
+## Trajectory, finite-difference and PDB helpers
 
-`ferric.correlation` provides `velocity_autocorrelation`, `mean_squared_displacement`,
-`diffusion_coefficient` (Green-Kubo) and `diffusion_from_msd` (Einstein) for MD
-trajectories, and `ferric.finite_difference` provides `finite_difference_gradient`
-and `gradient_check` for validating analytic gradients.
+Three pure-Python modules, none imported by `import ferric`:
+
+- `ferric.correlation`: `velocity_autocorrelation`, `mean_squared_displacement`,
+  `diffusion_coefficient` (Green-Kubo, from velocities) and `diffusion_from_msd`
+  (Einstein, from unwrapped positions) on `(n_frames, n_atoms, 3)` arrays such as
+  `MdResult.velocities` and `MdResult.positions_angstrom`. No units are
+  converted: those inputs give a diffusion coefficient in Å²/fs.
+- `ferric.finite_difference`: `finite_difference_gradient(energy, coords, h)`
+  is the central difference of a callable over an `(N, 3)` array, and
+  `gradient_check(analytic, numerical, atol)` returns the largest difference and
+  raises `AssertionError` above `atol`. Pass `Molecule.coords_bohr()` to compare
+  with ferric's gradients, which are in Hartree/Bohr.
+- `ferric.pdb`: `to_pdb(mol)` / `write_pdb(path, mol)` write one `HETATM` record
+  per atom (Å, no connectivity; ghost atoms are left out).
 
 ## Memory, threads and MPI
 
@@ -752,6 +766,8 @@ also exports two constants: `DEFAULT_TEMPERATURE_K` (298.15) and
 block of `#[pymodule] fn ferric` in `crates/ferric-python/src/lib.rs`, and each
 purpose line is condensed from that item's doc comment, or from its code where
 it has none. `help(ferric.<name>)` shows the full docstring and signature.
+The installed package also carries its type stubs (`ferric/ferric.pyi` beside
+a `py.typed` marker), so editors and type checkers see every signature.
 
 "CLI" gives the matching `method.kind`, task or TOML section, or "—" when the
 capability is Python-only. How well each one is validated is on
@@ -808,7 +824,7 @@ See [Constrained DFT](../methods/cdft.md) for a worked example.
 | `run_saddle` | First-order saddle-point (transition-state) search by P-RFO; closed-shell. `hessian="fd"` (default) / `"analytic"` / `"auto"`; `.hessian_source` reports which ran. `scf_warm_start=False` re-guesses every step's SCF instead of warm-starting it (the FD Hessians are always cold). | — |
 | `run_irc` | Intrinsic reaction coordinate in both directions from a saddle; closed-shell. `scf_warm_start=False` re-guesses every point's SCF. | — |
 | `OptimizeResult` | `energy`, `converged`, `steps`, `energy_trace`, `mol()`. | |
-| `FrequencyResult` | Frequencies in cm⁻¹ (negative = imaginary), normal modes, `cartesian_hessian`, `asymmetry` diagnostic, `hessian_source`. | |
+| `FrequencyResult` | Frequencies in cm⁻¹ (negative = imaginary), normal modes, `cartesian_hessian`, `asymmetry` diagnostic, `hessian_source`, `molecule` (the geometry). | |
 | `SaddleResult` | Outcome of a P-RFO search: geometry (Å), `n_imaginary`, `imaginary_mode`, `is_transition_state()`. | |
 | `IrcResult` | Both directions of an IRC, plus the saddle they came from. | |
 | `IrcBranch` | One direction of an IRC walk. | |
@@ -845,10 +861,10 @@ See [QM/MM](./qmmm.md) for a worked example.
 | `run_mp3` | MP3 on an RHF reference, with RI integrals. | `mp3` |
 | `run_attenuated_rimp2` | RI-MP2 with the erfc-attenuated operator; ω in Å⁻¹, default 0.420. | `att-rimp2` |
 | `run_terfc_rimp2` | RI-MP2 with the exact tempered-erfc operator at one cutoff `r0` (Å); needs the terfc tables. | — |
-| `run_scs_mp2` | Spin-component-scaled MP2 (defaults c_OS = 6/5, c_SS = 1/3). | `scs-mp2` |
+| `run_scs_mp2` | Spin-component-scaled MP2 (defaults c_OS = 6/5, c_SS = 1/3). `relativistic="x2c1e"` for an X2C reference. | `scs-mp2` |
 | `run_scs_mp2_2terfc` | Dual-attenuated SCS-MP2(2terfc); needs the terfc tables. | `scs-mp2-2terfc` |
 | `run_mp2_v` | MP2-V: attenuated MP2 plus damped VV10 nonlocal correlation. | `mp2-v` |
-| `run_double_hybrid` | B2PLYP or DSD-PBEP86 double hybrid; UKS reference for `multiplicity > 1` or `unrestricted=True`; `dispersion="d3bj"` selects the kind's D3(BJ) set; the result carries a `certificate` (Proven). | `b2plyp`, `dsd-pbep86` |
+| `run_double_hybrid` | B2PLYP or DSD-PBEP86 double hybrid; UKS reference for `multiplicity > 1` or `unrestricted=True`; `dispersion="d3bj"` selects the kind's D3(BJ) set; the result carries a `certificate` (Proven). `kind="wb97x-l-v"` runs ωB97X-L-V (closed-shell; `lambda_` / `omega` override the published 0.6 and 0.1 Bohr⁻¹; `dispersion=` raises). | `b2plyp`, `dsd-pbep86`, `wb97x-l-v` |
 | `run_laplace_mp2` | Laplace-transform RI-MP2 (default 7 quadrature points). | `laplace-mp2` |
 | `run_laplace_sos_mp2` | Laplace-transform SOS-MP2, `E = c_os · E_OS`; MO, AO or AO-sparse formulations. | `laplace-sos-mp2` |
 | `RiMp2Result` | Result of `run_rimp2` and `run_terfc_rimp2`: `total_energy`, `rhf_energy` (the reference SCF energy, RHF or UHF), `mp2_corr`, `reference`, `local` (`None` for the exact method, else the local model dict) and `gradient()`. | |
@@ -859,7 +875,7 @@ See [QM/MM](./qmmm.md) for a worked example.
 | `Mp2VResult` | MP2-V total, attenuated MP2 part and VV10 part. | |
 | `LaplaceMp2Result` | Laplace MP2 total, correlation and spin components. | |
 | `SosMp2Result` | Scaled and unscaled OS energy, `c_os`, `n_quad` and `formulation` echoed back. | |
-| `DoubleHybridResult` | Result of `run_double_hybrid`: `total_energy`, `e_ks`, `e_corr_scaled`, `e_os`, `e_ss`, `c_os`, `c_ss`, `certificate`. | |
+| `DoubleHybridResult` | Result of `run_double_hybrid`: `total_energy`, `e_ks`, `e_corr_scaled`, `e_os`, `e_ss`, `c_os`, `c_ss`, `certificate`. For `kind="wb97x-l-v"`, `e_os` is the unscaled short-range LinLCCD energy, `c_os` is λ and `e_ss = c_ss = 0`. | |
 
 `run_rimp2`, `run_oo_rimp2`, `run_attenuated_rimp2`, `run_terfc_rimp2`,
 `run_scs_mp2`, `run_scs_mp2_2terfc`, `run_mp2_v`, `run_laplace_mp2`,
@@ -916,8 +932,8 @@ reference.
 | Name | Purpose | CLI |
 |---|---|---|
 | `run_ccd` | CCD correlation energy. | `ccd` |
-| `run_ccsd` | Spin-adapted closed-shell CCSD. | `ccsd` |
-| `run_ccsd_t` | CCSD plus the spin-adapted (T) correction. | `ccsd(t)` |
+| `run_ccsd` | Spin-adapted closed-shell CCSD. `relativistic="x2c1e"` for an X2C reference. | `ccsd` |
+| `run_ccsd_t` | CCSD plus the spin-adapted (T) correction. `relativistic="x2c1e"` for an X2C reference. | `ccsd(t)` |
 | `CcResult` | `correlation_energy` and `t_correction` (`None` without triples). No reference energy. | |
 | `run_eom_ccsd` | EE-EOM-CCSD singlet excitation energies on the spin-adapted CCSD. | `eom-ccsd` |
 | `EomCcsdResult` | `excitation_energies`, `residuals`, `singles_weight`, `r1(k)` / `r2(k)` (right eigenvectors), `rhf_energy`, `ccsd_correlation_energy`, `certificate`. | |
@@ -946,7 +962,7 @@ All start from the canonical exact-J/K RHF orbitals of a closed-shell molecule.
 | `run_bse_tda` | BSE-TDA singlet excitation energies on a closed-shell RHF reference. | `bse-tda` |
 | `run_tdhf_static_polarizability` | RPAx@KS static (ω = 0) polarizability on a closed-shell KS reference. | `tdhf-static-polarizability` |
 | `run_tddft` | TDA or Casida excitations on an HF (CIS/TDHF) or KS reference, restricted or unrestricted, with the f_xc kernel and `<S^2>` per root. | `tda`, `tddft` |
-| `PdepRpaResult` | `total_energy`, `e_rpa`, `eigensolver_converged`, eigenvalues and quadrature grid. | |
+| `PdepRpaResult` | `total_energy`, `e_rpa`, `eigensolver_converged`, eigenvalues and quadrature grid, `route`, `eigenpotentials`, `dressed_eigenvectors`, and `inv_dielectric_freq` (with `with_inv_dielectric_freq=True`). | |
 | `RsMp2RpaResult` | SR-MP2, LR-MP2 and dRPA pieces; which fields are set depends on `formulation`. | |
 | `GwResult` | `eps_qp`, `eps_mf`, `sigma_x`, `sigma_c`, `z_factor`, `outer_converged`, `qp_converged`. | |
 | `UGwResult` | α and β versions of the `GwResult` fields. | |

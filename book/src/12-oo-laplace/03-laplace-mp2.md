@@ -42,7 +42,7 @@ The plan:
 |---|---|
 | Rust | `ferric-mp2/src/laplace.rs::laplace_ri_mp2` (full MP2); `ferric-mp2/src/laplace.rs::laplace_sos_mp2`, `laplace_sos_mp2_with_basis` (SOS) |
 | CLI | `method.kind = "laplace-mp2"` (`examples/water-laplace-rimp2.toml`); `method.kind = "laplace-sos-mp2"` (`examples/water-laplace-sos-mp2.toml`); keys `n_quad`, `frozen_core`, `c_os`, `sos_formulation`, `domain_cutoff_bohr` in `[mp2]`, `[memory] budget_gb` |
-| Python | `run_laplace_mp2`, `run_laplace_sos_mp2` (`crates/ferric-python/ferric.pyi`) |
+| Python | `run_laplace_mp2`, `run_laplace_sos_mp2` (`crates/ferric-python/python/ferric/ferric.pyi`) |
 
 ## The quadrature {#laplace-mp2-quadrature}
 

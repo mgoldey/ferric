@@ -384,7 +384,7 @@ class QmmmSystem:
 class MmTopology:
     """Explicit-parameter AMBER-form MM force field topology (ferric-mm). Assigns no
     parameters of its own -- every number is caller-supplied data (see
-    scripts/validation/mm_topology.py::topology_from_openmm for one source of that data).
+    ``ferric.openmm.topology_from_openmm`` for one source of that data).
     """
 
     @staticmethod
@@ -1428,6 +1428,13 @@ class CdftResult:
         """The outer-loop tolerance used."""
         ...
 
+    @property
+    def hamiltonian_key(self) -> str:
+        """Canonical key of the electronic Hamiltonian (functional, J/K
+        fitting, exchange builder, XC grid, external potential); two states
+        whose keys differ cannot be coupled."""
+        ...
+
     def density_alpha(self) -> NDArray[np.float64]:
         """Alpha-spin AO-basis density matrix (n_bf x n_bf)."""
         ...
@@ -1659,6 +1666,11 @@ class FrequencyResult:
     @property
     def asymmetry(self) -> float:
         """Largest |H_ij - H_ji| in the raw Cartesian Hessian (Hartree/Bohr^2)."""
+        ...
+
+    @property
+    def molecule(self) -> Molecule:
+        """The geometry the frequencies were computed at."""
         ...
 
     @property
@@ -1997,6 +2009,12 @@ class RiMp2Result:
         """The SCF's JK-fitting basis (None for "exact")."""
         ...
 
+    @property
+    def jk_label(self) -> str:
+        """The printout's SCF J/K echo (names a non-default exchange builder
+        on the exact path)."""
+        ...
+
 class OoRiMp2Result:
     """Result of an orbital-optimized RI-MP2 calculation."""
 
@@ -2034,6 +2052,12 @@ class OoRiMp2Result:
     @property
     def jk_auxbasis(self) -> str | None:
         """The SCF's JK-fitting basis (None for "exact")."""
+        ...
+
+    @property
+    def jk_label(self) -> str:
+        """The printout's SCF J/K echo (names a non-default exchange builder
+        on the exact path)."""
         ...
 
 class Opmp3Result:
@@ -2179,6 +2203,12 @@ class LaplaceMp2Result:
         """The SCF's JK-fitting basis (None for "exact")."""
         ...
 
+    @property
+    def jk_label(self) -> str:
+        """The printout's SCF J/K echo (names a non-default exchange builder
+        on the exact path)."""
+        ...
+
 class SosMp2Result:
     """Result of a Laplace SOS-MP2 calculation."""
 
@@ -2229,6 +2259,12 @@ class SosMp2Result:
         """The SCF's JK-fitting basis (None for "exact")."""
         ...
 
+    @property
+    def jk_label(self) -> str:
+        """The printout's SCF J/K echo (names a non-default exchange builder
+        on the exact path)."""
+        ...
+
 class AttenuatedMp2Result:
     """Result of an attenuated RI-MP2 calculation."""
 
@@ -2266,6 +2302,12 @@ class AttenuatedMp2Result:
         """The SCF's JK-fitting basis (None for "exact")."""
         ...
 
+    @property
+    def jk_label(self) -> str:
+        """The printout's SCF J/K echo (names a non-default exchange builder
+        on the exact path)."""
+        ...
+
 class ScsMp2Result:
     """Result of a spin-component-scaled MP2 calculation."""
 
@@ -2301,6 +2343,12 @@ class ScsMp2Result:
     @property
     def jk_auxbasis(self) -> str | None:
         """The SCF's JK-fitting basis (None for "exact")."""
+        ...
+
+    @property
+    def jk_label(self) -> str:
+        """The printout's SCF J/K echo (names a non-default exchange builder
+        on the exact path)."""
         ...
 
 class Mp2VResult:
@@ -2348,6 +2396,12 @@ class Mp2VResult:
     @property
     def jk_auxbasis(self) -> str | None:
         """The SCF's JK-fitting basis (None for "exact")."""
+        ...
+
+    @property
+    def jk_label(self) -> str:
+        """The printout's SCF J/K echo (names a non-default exchange builder
+        on the exact path)."""
         ...
 
 class RsMp2RpaResult:
@@ -2409,6 +2463,12 @@ class RsMp2RpaResult:
     @property
     def jk_auxbasis(self) -> str | None:
         """The SCF's JK-fitting basis (None for "exact")."""
+        ...
+
+    @property
+    def jk_label(self) -> str:
+        """The printout's SCF J/K echo (names a non-default exchange builder
+        on the exact path)."""
         ...
 
 class DftResult:
@@ -2505,6 +2565,11 @@ class DftResult:
 
     @property
     def converged(self) -> bool: ...
+    @property
+    def fock_hooked(self) -> bool:
+        """Whether the SCF ran with a fock_hook."""
+        ...
+
     @property
     def e_xc(self) -> float:
         """E_xc[D] of the converged density on the SCF's own XC grid: the
@@ -2673,6 +2738,29 @@ class PdepRpaResult:
         """PDEP eigenpotential coefficients (naux, M): column alpha is the charge
         density sum_P c_P chi_P(r) whose Coulomb potential is the eigenpotential
         (see response_modes)."""
+        ...
+
+    @property
+    def dressed_eigenvectors(self) -> NDArray[np.float64]:
+        """Static eigenvectors in the V^{-1/2}-dressed RI basis, shape
+        (naux, M), before the back-transformation that gives
+        ``eigenpotentials``. Empty (0 columns) on the "aux-basis-log-det"
+        route, which runs no eigensolve."""
+        ...
+
+    @property
+    def inv_dielectric_freq(self) -> list[NDArray[np.float64]] | None:
+        """Per-frequency dynamic inverse-dielectric matrices eps^-1 - 1 in the
+        fixed PDEP eigenvector basis (length N_quad, each (M, M)). None
+        unless ``run_pdep_rpa(with_inv_dielectric_freq=True)``."""
+        ...
+
+    @property
+    def route(self) -> Literal["static-eigenbasis", "aux-basis-log-det"]:
+        """Which construction produced e_rpa: "static-eigenbasis" (PDEP
+        eigensolve of eps(0), frequency loop in the kept modes) or
+        "aux-basis-log-det" (ln det(1 + Pi) - tr Pi per frequency in the
+        auxiliary basis, no eigensolve, every mode kept)."""
         ...
 
     @property
@@ -2972,6 +3060,13 @@ class BseResult:
         """Length-gauge oscillator strengths (dimensionless)."""
         ...
 
+    @property
+    def qp_suspect_mos(self) -> list[int]:
+        """Absolute MO indices whose G0W0 quasiparticle solve is poorly
+        determined and still entered the TDA diagonal (empty in the healthy
+        case)."""
+        ...
+
     def lowest_ev(self) -> float:
         """Lowest singlet excitation energy in eV."""
         ...
@@ -3120,11 +3215,13 @@ class TddftResult:
         ...
 
 class DoubleHybridResult:
-    """Result of an MP2-based double hybrid (B2PLYP / DSD-PBEP86)."""
+    """Result of ``run_double_hybrid``: an MP2-based double hybrid (B2PLYP /
+    DSD-PBEP86) or wB97X-L-V. For every kind
+    total_energy = e_ks + c_os * e_os + c_ss * e_ss (+ e_dispersion)."""
 
     @property
     def total_energy(self) -> float:
-        """E_KS + scaled MP2 correlation (Hartree)."""
+        """E_KS + scaled correlation (+ D3(BJ) when requested), Hartree."""
         ...
 
     @property
@@ -3140,13 +3237,14 @@ class DoubleHybridResult:
     @property
     def e_os(self) -> float:
         """Unscaled opposite-spin RI-MP2 energy on the KS orbitals (alpha-beta
-        for a UKS reference)."""
+        for a UKS reference). For kind="wb97x-l-v": the unscaled short-range
+        LinLCCD(hh) correlation energy, all spin cases."""
         ...
 
     @property
     def e_ss(self) -> float:
         """Unscaled same-spin RI-MP2 energy (alpha-alpha + beta-beta for a UKS
-        reference)."""
+        reference). 0 for kind="wb97x-l-v"."""
         ...
 
     @property
@@ -3161,9 +3259,15 @@ class DoubleHybridResult:
         ...
 
     @property
-    def c_os(self) -> float: ...
+    def c_os(self) -> float:
+        """Coefficient of e_os (lambda for kind="wb97x-l-v")."""
+        ...
+
     @property
-    def c_ss(self) -> float: ...
+    def c_ss(self) -> float:
+        """Coefficient of e_ss (0 for kind="wb97x-l-v")."""
+        ...
+
     @property
     def certificate(self) -> dict[str, Any]:
         """Validation certificate (same fields as ``RhfResult.certificate``):
@@ -4585,7 +4689,9 @@ def run_rhf(
     fock_hook_grad: None = None,
     gc_rotation: Literal["auto", "rot1", "off"] | None = None,
     gc_kernel: Literal["auto", "off"] | None = None,
-) -> SymmetricRhfResult: ...
+) -> SymmetricRhfResult:
+    """Closed-shell RHF on the symmetrized geometry (symmetry=True)."""
+    ...
 def run_uhf(
     mol: Molecule,
     basis_set: BasisSet,
@@ -5584,6 +5690,7 @@ def run_rimp2(
     read_reference_other_build: bool = False,
     eri3_pass: str | None = None,
     pair_skip: str | None = None,
+    relativistic: Literal["x2c1e"] | None = None,
 ) -> RiMp2Result:
     """Resolution-of-identity (density-fitted) MP2. Exact by default.
     with_gradient=True adds the analytic gradient of total_energy
@@ -5656,6 +5763,12 @@ def run_rimp2(
     every MP2-family entry point. Strict: an unknown mode, `jk_auxbasis` with
     "exact", or a `k_builder` the mode overrides raise ValueError. Echoed as
     `result.scf_jk` / `result.jk_auxbasis`.
+
+    relativistic="x2c1e" (default None, nonrelativistic): the reference SCF
+    uses the spin-free X2C-1e core Hamiltonian, as in run_rhf, and the
+    correlation energy is evaluated on its orbitals (the CLI's
+    [scf] relativistic for this kind). Energies only (with_gradient=True
+    raises ValueError), and an ECP atom raises.
 
     With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
     the one `run_rhf` (`run_uhf` for an open-shell molecule) solves.
@@ -5950,11 +6063,18 @@ def run_scs_mp2(
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
+    relativistic: Literal["x2c1e"] | None = None,
 ) -> ScsMp2Result:
     """Spin-component-scaled MP2.
 
     RHF reference for a singlet; UHF reference for multiplicity > 1, with
     e_os = E_ab and e_ss = E_aa + E_bb (`result.reference` says which).
+
+    relativistic="x2c1e" (default None, nonrelativistic): the reference SCF
+    uses the spin-free X2C-1e core Hamiltonian, as in run_rhf, and the
+    correlation energy is evaluated on its orbitals (the CLI's
+    [scf] relativistic for this kind). Energies only; an ECP atom raises
+    ValueError.
 
     With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
     the one `run_rhf` (`run_uhf` for an open-shell molecule) solves.
@@ -6436,7 +6556,9 @@ def run_dft(
     trah_trigger: float | None = None,
     gc_rotation: Literal["auto", "rot1", "off"] | None = None,
     gc_kernel: Literal["auto", "off"] | None = None,
-) -> DftResult | SymmetricRhfResult: ...
+) -> DftResult | SymmetricRhfResult:
+    """Closed-shell Kohn-Sham DFT on the symmetrized geometry (symmetry=True)."""
+    ...
 def dft_grid_point_count(
     mol: Molecule,
     grid_radial: int | None = None,
@@ -6540,7 +6662,9 @@ def run_ksdft(
     ri_j_precision: str | None = None,
     dm0: None = None,
     relativistic: Literal["x2c1e"] | None = None,
-) -> SymmetricRhfResult: ...
+) -> SymmetricRhfResult:
+    """Closed-shell Kohn-Sham DFT on the symmetrized geometry (symmetry=True)."""
+    ...
 @overload
 def run_ksdft(
     mol: Molecule,
@@ -6571,7 +6695,9 @@ def run_ksdft(
     ri_j_precision: str | None = None,
     dm0: NDArray[np.float64] | None = None,
     relativistic: Literal["x2c1e"] | None = None,
-) -> DftResult | SymmetricRhfResult: ...
+) -> DftResult | SymmetricRhfResult:
+    """Closed-shell Kohn-Sham DFT on the symmetrized geometry (symmetry=True)."""
+    ...
 def d3bj_energy(mol: Molecule, functional: str, s9: float = 0.0) -> float:
     """Grimme D3(BJ) dispersion energy in Hartree.
 
@@ -6685,6 +6811,7 @@ def run_ccsd(
     save_reference: str | None = None,
     read_reference: str | None = None,
     read_reference_other_build: bool = False,
+    relativistic: Literal["x2c1e"] | None = None,
 ) -> CcResult:
     """Coupled-cluster singles and doubles (CCSD).
 
@@ -6702,6 +6829,12 @@ def run_ccsd(
     1.3-1.5x slower per iteration). The route taken is on
     ``CcResult.ladder_route``. Any other value raises ValueError. An
     open-shell molecule accepts ``ladder="auto"`` only.
+
+    relativistic="x2c1e" (default None, nonrelativistic): the reference SCF
+    uses the spin-free X2C-1e core Hamiltonian, as in run_rhf, and the
+    correlation energy is evaluated on its orbitals (the CLI's
+    [scf] relativistic for this kind). Energies only; an ECP atom raises
+    ValueError.
 
     With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
     the one `run_rhf` (`run_uhf` for an open-shell molecule) solves.
@@ -6771,6 +6904,7 @@ def run_ccsd_t(
     save_reference: str | None = None,
     read_reference: str | None = None,
     read_reference_other_build: bool = False,
+    relativistic: Literal["x2c1e"] | None = None,
 ) -> CcResult:
     """CCSD(T): CCSD plus perturbative triples correction.
 
@@ -6787,6 +6921,12 @@ def run_ccsd_t(
     1.3-1.5x slower per iteration). The route taken is on
     ``CcResult.ladder_route``. Any other value raises ValueError. An
     open-shell molecule accepts ``ladder="auto"`` only.
+
+    relativistic="x2c1e" (default None, nonrelativistic): the reference SCF
+    uses the spin-free X2C-1e core Hamiltonian, as in run_rhf, and the
+    correlation energy is evaluated on its orbitals (the CLI's
+    [scf] relativistic for this kind). Energies only; an ECP atom raises
+    ValueError.
 
     With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
     the one `run_rhf` (`run_uhf` for an open-shell molecule) solves.
@@ -6856,6 +6996,7 @@ def run_pdep_rpa(
     cube_spacing: float | None = None,
     cube_margin: float | None = None,
     with_gradient: bool = False,
+    with_inv_dielectric_freq: bool = False,
 ) -> PdepRpaResult:
     """PDEP-RPA (dielectric eigendecomposition RPA).
 
@@ -6898,6 +7039,11 @@ def run_pdep_rpa(
     a nonzero trunc_thresh, chi0_sparsity other than "dense", k_builder="cosx",
     df_j_aux / df_k_aux, point_charges / external_field / solvent, properties /
     export_npz / compute_* / export_eigpot_*, and run_diagnostics.
+
+    with_inv_dielectric_freq=True also returns the per-frequency
+    inverse-dielectric matrices (``result.inv_dielectric_freq``,
+    N_quad x M x M doubles). It keeps the static-eigenbasis route
+    (``result.route``).
 
     With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
     the one `run_rhf` solves.
@@ -7123,10 +7269,22 @@ def run_double_hybrid(
     scf_ri_j_precision: str | None = None,
     dispersion: str | None = None,
     unrestricted: bool = False,
+    lambda_: float | None = None,
+    omega: float | None = None,
 ) -> DoubleHybridResult:
-    """MP2-based double hybrid: kind="b2plyp" (Grimme 2006) or "dsd-pbep86"
+    """Double hybrid. MP2-based: kind="b2plyp" (Grimme 2006) or "dsd-pbep86"
     (Kozuch and Martin 2013, no dispersion: 0.72 HF, 0.28 PBE, 0.44 P86,
     c_os 0.51, c_ss 0.36).
+
+    kind="wb97x-l-v" is the CLI's method.kind = "wb97x-l-v": the functional's
+    own RKS reference, then lambda-scaled short-range LinLCCD(hh) with
+    erfc(omega r)/r. ``lambda_`` (default 0.6, in [0, 1]) and ``omega``
+    (default 0.1 Bohr^-1) override the published parameters; they raise
+    ValueError for the MP2 kinds. Closed-shell only (unrestricted=True or
+    multiplicity > 1 raises), and dispersion= raises: VV10 inside the
+    functional is its dispersion. The result reports the one correlation
+    term as e_os with c_os = lambda_ and e_ss = c_ss = 0, so
+    total_energy = e_ks + c_os * e_os + c_ss * e_ss for every kind.
 
     ``dispersion="d3bj"`` (or ``"d3(bj)"``) selects the kind's published
     D3(BJ) set and adds the D3(BJ) energy: B2PLYP-D3(BJ) keeps B2PLYP's

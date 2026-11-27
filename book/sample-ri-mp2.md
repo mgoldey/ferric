@@ -23,7 +23,7 @@ factors and the pair loop described here.
 |---|---|
 | Rust | `ferric-mp2/src/rimp2.rs::ri_mp2`, `ferric-mp2/src/rimp2.rs::ri_mp2_spin_components` |
 | CLI | `method.kind = "rimp2"`, section `[mp2]` (`examples/water-rimp2.toml`) |
-| Python | `run_rimp2` (`crates/ferric-python/ferric.pyi`) |
+| Python | `run_rimp2` (`crates/ferric-python/python/ferric/ferric.pyi`) |
 
 This section covers a closed-shell RHF reference with canonical orbitals. An
 open-shell molecule under the same CLI kind runs unrestricted RI-MP2

@@ -9033,6 +9033,11 @@
     "default": "False",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "with_gradient"
+   },
+   {
+    "default": "False",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "with_inv_dielectric_freq"
    }
   ],
   "run_qmmm": [
@@ -12577,6 +12582,54 @@
    "constants": {},
    "functions": {}
   },
+  "correlation": {
+   "classes": {},
+   "constants": {},
+   "functions": {
+    "diffusion_coefficient": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "velocities"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "dt"
+     }
+    ],
+    "diffusion_from_msd": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "positions"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "dt"
+     },
+     {
+      "default": "(0.1, 0.5)",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "fit_fraction"
+     }
+    ],
+    "mean_squared_displacement": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "positions"
+     }
+    ],
+    "velocity_autocorrelation": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "velocities"
+     },
+     {
+      "default": "True",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "normalize"
+     }
+    ]
+   }
+  },
   "fcidump": {
    "classes": {},
    "constants": {},
@@ -12667,6 +12720,42 @@
     ]
    }
   },
+  "finite_difference": {
+   "classes": {},
+   "constants": {},
+   "functions": {
+    "finite_difference_gradient": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "energy"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "coords"
+     },
+     {
+      "default": "0.001",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "h"
+     }
+    ],
+    "gradient_check": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "analytic"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "numerical"
+     },
+     {
+      "default": "1e-06",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "atol"
+     }
+    ]
+   }
+  },
   "molden": {
    "classes": {},
    "constants": {},
@@ -12751,6 +12840,51 @@
       "default": "None",
       "kind": "POSITIONAL_OR_KEYWORD",
       "name": "title"
+     }
+    ]
+   }
+  },
+  "openmm": {
+   "classes": {},
+   "constants": {},
+   "functions": {
+    "topology_from_openmm": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "pdb_path"
+     },
+     {
+      "default": "('amber14-all.xml',)",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "forcefield"
+     }
+    ],
+    "topology_from_system": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "system"
+     }
+    ]
+   }
+  },
+  "pdb": {
+   "classes": {},
+   "constants": {},
+   "functions": {
+    "to_pdb": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mol"
+     }
+    ],
+    "write_pdb": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "path"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mol"
      }
     ]
    }

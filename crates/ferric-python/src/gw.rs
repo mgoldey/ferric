@@ -178,15 +178,20 @@ fn gw_config(
 
 /// Closed-shell G0W0/COHSEX/evGW0/evGW on an RHF or RKS reference.
 ///
-///     Defaults: n_quad = 40 Gauss-Legendre points for W (GW's own default; the
-///     RPA energy paths use 20), trunc_thresh = 1e-4, ev_conv_thresh = 1e-4 Ha.
-///     Calibrated against the validated settings (n_quad = 100, trunc_thresh = 0):
-///     HOMO/LUMO within 10 meV (G0W0@PBE worst 5.7 meV; @HF starts < 0.1 meV).
+/// `method`: "g0w0" (default) | "cohsex" | "evgw0" | "evgw" (case-insensitive;
+/// unknown values are a hard `ValueError`, matching this repo's strict-config
+/// convention elsewhere). `qp_mos`: optional `(lo, hi)` absolute-MO range;
+/// unset uses the library default `{HOMO-2..LUMO+2}`. `xc`: `None` (default)
+/// runs an HF reference; setting it (e.g. `"pbe"`) runs the closed-shell
+/// KS-DFT solver first and folds Σx−vxc into the QP self-consistency (see
+/// `ferric_gw::vxc_mo::vxc_diagonal_mo`).
 ///
-///     With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
-///     the one `run_rhf` (`run_dft` with `xc`) solves.
-///     `frozen_core` counts orbitals of the valence occupied space, after the ECP has
-///     removed its core.
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
+/// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` (`run_dft` with `xc`) solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, auxbasis,
@@ -445,14 +450,20 @@ impl PyUGwResult {
     }
 }
 
-/// Open-shell U-G0W0/U-COHSEX/U-evGW0/U-evGW on a UHF/ROHF reference.
+/// Open-shell U-G0W0/U-COHSEX/U-evGW0/U-evGW on a UHF/UKS or ROHF reference.
 ///
-///     Same defaults as run_gw (n_quad = 40, trunc_thresh = 1e-4).
+/// `reference`: "uhf" (default) | "rohf" (case-insensitive; unknown values
+/// are a hard `ValueError`). `method`/`xc`/`qp_mos`/... mirror `run_gw`'s
+/// kwarg shape exactly; `xc` set runs the open-shell KS-DFT ladder (UKS) and
+/// passes the per-spin v_xc diagonals to `ferric_gw::run_u_gw`, which puts
+/// Σx−vxc inside each spin channel's QP equation (same contract as `run_gw`).
 ///
-///     With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
-///     the one `run_uhf` / `run_rohf` (`run_uks` / `run_roks` with `xc`) solves.
-///     `frozen_core` counts orbitals of the valence occupied space, after the ECP has
-///     removed its core.
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
+/// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_uhf` / `run_rohf` (`run_uks` / `run_roks` with `xc`) solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, auxbasis,
@@ -732,12 +743,25 @@ impl PyBseResult {
     }
 }
 
-/// BSE-TDA singlet excitation energies on a closed-shell RHF reference.
+/// BSE-TDA singlet excitation energies on a closed-shell (RHF) reference.
 ///
-///     With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
-///     the one `run_rhf` solves.
-///     `frozen_core` counts orbitals of the valence occupied space, after the ECP has
-///     removed its core.
+/// Computes G0W0@HF quasiparticle energies internally for every MO (so every
+/// particle–hole pair in the active window has a real QP energy), builds the
+/// static-screened TDA matrix, and returns its eigenvalues. Closed-shell
+/// only — `ferric_gw::bse::run_bse_tda` hard-errors on a non-restricted
+/// reference; there is no `reference`/UHF kwarg (mirrors `run_gw`'s HF-only
+/// default path, not `run_u_gw`). Kwargs mirror `run_gw`'s `[rpa]`-equivalent
+/// shape (n_quad/quadrature/u0/trunc_thresh/eigensolver_conv_thresh/
+/// k_builder/chi0_sparsity/memory_budget_gb) plus `frozen_core`, which is
+/// threaded to both the PDEP (W) build and the internal GW self-energy build
+/// for consistency, exactly like the CLI's `"bse-tda"` dispatch arm.
+///
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
+/// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, auxbasis,
@@ -866,16 +890,38 @@ impl PyTdhfStaticPolarizabilityResult {
     }
 }
 
-/// RPAx@KS static polarizability (omega=0). xc is REQUIRED.
+/// RPAx@KS **static** polarizability (omega=0) on a closed-shell KS reference.
 ///
-///     Not validated: water/cc-pVDZ/PBE at scissor=0.36 gives 5.20 a.u. vs DOSD
-///     9.64 (46% low). At the default scissor=0.0 the kernel is often unstable
-///     and the call raises on a negative alpha diagonal; use scissor ~0.3-0.4 Ha.
+/// **Scope: static polarizability only.** Do not use this method, or its
+/// output, for C6/dispersion — see the module doc above and
+/// `ferric_gw::bse::run_rpax_static_polarizability`'s doc comment for the
+/// full negative-result caveat (site/src/reference/validation.md, "Known
+/// limits and negatives": C6 built
+/// from this same kernel's dynamic alpha(iw) stays ~63% low regardless of
+/// the HOMO-LUMO gap, worse than ferric's production dRPA/PDEP C6 pipeline).
 ///
-///     With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
-///     the one `run_dft` solves.
-///     `frozen_core` counts orbitals of the valence occupied space, after the ECP has
-///     removed its core.
+/// `xc` is REQUIRED (e.g. `"pbe"`): the path is wired and checked for a KS
+/// reference only, so there is no HF-default fallback here (unlike
+/// `run_gw`'s `xc=None` HF default). Static alpha is NOT validated: on
+/// water/cc-pVDZ/PBE with `scissor=0.36` it is 5.20 a.u. against the DOSD
+/// reference 9.64 (46% low). The earlier "9.24 vs 9.64" figure came from
+/// `scissor=0.0`, whose tensor had a negative diagonal element, and is
+/// retracted. `scissor` (Hartree, default 0.0) is added to every virtual
+/// orbital energy before assembling the diagonal — a cheap proxy for
+/// widening the KS gap toward a GW-level gap (0.36 Ha matches water's GW gap
+/// at PBE/cc-pVDZ). At 0.0 the kernel is often excitonically unstable and
+/// the call raises on the resulting negative alpha diagonal; ~0.3-0.4 Ha is
+/// the remedy.
+/// Other kwargs mirror `run_bse_tda`'s `[rpa]`-equivalent shape (n_quad/
+/// quadrature/u0/trunc_thresh/eigensolver_conv_thresh/k_builder/
+/// chi0_sparsity/memory_budget_gb) plus `frozen_core`.
+///
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
+/// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_dft` solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, auxbasis, xc,

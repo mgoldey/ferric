@@ -22,7 +22,7 @@ a rotation or translation (@sec:npz-bundle-keys), and how to switch keys on and 
 | Rust (assembly) | `ferric-rpa/src/property_bundle.rs::compute_pdep_properties`, `ferric-rpa/src/property_bundle.rs::write_pdep_npz` |
 | Rust (writer) | `ferric-export/src/ml.rs::export_npz`, `ferric-export/src/ml.rs::NpzBundle` |
 | CLI | `method.kind = "pdep-rpa"`, `[rpa] export_npz = "<path>"` |
-| Python | `run_pdep_rpa(..., properties=True)` or `export_npz="<path>"` (`crates/ferric-python/ferric.pyi`) |
+| Python | `run_pdep_rpa(..., properties=True)` or `export_npz="<path>"` (`crates/ferric-python/python/ferric/ferric.pyi`) |
 
 The bundle is closed-shell only. It is built from a converged RHF reference,
 after the PDEP-RPA correlation energy.
@@ -254,7 +254,7 @@ the result object, because the NPZ does not carry it.
 |---|---|
 | `crates/ferric-export/src/ml.rs` | key names, dtypes, layout, the `esp_surface`/`esp_points` pairing |
 | `crates/ferric-rpa/src/property_bundle.rs` | what each key is computed from, `coords`, defaults |
-| `crates/ferric-python/ferric.pyi`, `run_pdep_rpa` and `PdepRpaResult` | the Python defaults and the reference J/K difference |
+| `crates/ferric-python/python/ferric/ferric.pyi`, `run_pdep_rpa` and `PdepRpaResult` | the Python defaults and the reference J/K difference |
 | `site/src/reference/validation.md`, rows "NPZ export" and "NPZ export against PySCF" | the layout and knob checks |
 | `crates/ferric-scf/src/properties.rs` | the effective nuclear charge in the ESP, field, dipole and charges |
 

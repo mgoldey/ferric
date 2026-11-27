@@ -148,9 +148,78 @@ def test_periodic_gamma_rhf_getters(tmp_path):
 
 
 def test_dft_result_exposes_fock_hooked():
-    mol = ferric.Molecule.from_xyz_string("3\n\nO 0 0 0.1173\nH 0 0.7572 -0.4692\nH 0 -0.7572 -0.4692")
+    mol = ferric.Molecule.from_xyz_string(
+        "3\n\nO 0 0 0.1173\nH 0 0.7572 -0.4692\nH 0 -0.7572 -0.4692"
+    )
     bs = ferric.BasisSet.bundled("sto-3g")
     plain = ferric.run_dft(mol, bs, "LDA")
     hooked = ferric.run_dft(mol, bs, "LDA", fock_hook=lambda d: (0.0, d * 0.0))
     assert plain.fock_hooked is False
     assert hooked.fock_hooked is True
+
+
+def test_frequency_result_carries_the_geometry_it_was_computed_at():
+    h2 = ferric.Molecule.from_xyz_string("2\n\nH 0 0 0\nH 0.1 -0.2 0.74\n")
+    res = ferric.run_frequencies(h2, "sto-3g")
+    assert isinstance(res.molecule, ferric.Molecule)
+    assert res.molecule.symbols() == h2.symbols()
+    assert res.molecule.coords_bohr() == h2.coords_bohr()
+
+
+def test_mp2_family_jk_label_echoes_the_reference_scf_jk():
+    water = ferric.Molecule.from_xyz_string(WATER)
+    bs = ferric.BasisSet.bundled("sto-3g")
+    aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+    exact = ferric.run_rimp2(water, bs, aux)
+    assert (exact.scf_jk, exact.jk_label, exact.jk_auxbasis) == ("exact", "exact", None)
+    # The label names a non-default exchange builder; scf_jk stays the route.
+    link = ferric.run_rimp2(water, bs, aux, k_builder="link")
+    assert link.scf_jk == "exact"
+    assert link.jk_label != "exact" and "link" in link.jk_label.lower()
+    rijk = ferric.run_scs_mp2(water, bs, aux, scf_jk="rijk")
+    assert rijk.scf_jk == "rijk"
+    assert rijk.jk_label.startswith("rijk")
+    assert rijk.jk_auxbasis is not None
+
+
+@pytest.fixture(scope="module")
+def pdep_runs():
+    water = ferric.Molecule.from_xyz_string(WATER)
+    bs = ferric.BasisSet.bundled("sto-3g")
+    aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+    return (
+        ferric.run_pdep_rpa(water, bs, aux),
+        ferric.run_pdep_rpa(water, bs, aux, with_inv_dielectric_freq=True),
+        aux,
+    )
+
+
+def test_pdep_rpa_result_exposes_the_route_and_dressed_eigenvectors(pdep_runs):
+    np = pytest.importorskip("numpy")
+    r, _, _ = pdep_runs
+    assert r.route == "static-eigenbasis"
+    u = np.asarray(r.dressed_eigenvectors)
+    m = r.n_eigenpotentials
+    assert u.shape == (np.asarray(r.eigenpotentials).shape[0], m)
+    # Eigenvectors of the symmetric dressed chi0: orthonormal columns.
+    np.testing.assert_allclose(u.T @ u, np.eye(m), atol=1e-8)
+
+
+def test_pdep_rpa_inverse_dielectric_stack_is_opt_in_and_consistent(pdep_runs):
+    np = pytest.importorskip("numpy")
+    plain, full, _ = pdep_runs
+    assert plain.inv_dielectric_freq is None
+    stack = full.inv_dielectric_freq
+    m = full.n_eigenpotentials
+    assert len(stack) == len(full.quad_freqs)
+    assert full.e_rpa == pytest.approx(plain.e_rpa, abs=1e-12)
+    lam = np.asarray(full.eigenvalues_freq)
+    for k, w in enumerate(stack):
+        w = np.asarray(w)
+        assert w.shape == (m, m)
+        np.testing.assert_allclose(w, w.T, atol=1e-10)
+        # eigenvalues_freq holds the eigenvalues eps_a >= 1 of the projected
+        # dielectric matrix at this frequency, and W = eps^-1 - 1 shares them.
+        np.testing.assert_allclose(
+            np.sort(np.linalg.eigvalsh(w)), np.sort(1.0 / lam[k] - 1.0), atol=1e-8
+        )

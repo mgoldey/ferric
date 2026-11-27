@@ -34,7 +34,7 @@ import pytest
 
 CRATE = Path(__file__).resolve().parents[1]
 SRC = CRATE / "src"
-PYI = CRATE / "ferric.pyi"
+PYI = CRATE / "python" / "ferric" / "ferric.pyi"
 
 # Top-level stub names that exist only for type checkers and are deliberately
 # NOT registered by the module (TypedDict return types, TypeAliases, Protocols,

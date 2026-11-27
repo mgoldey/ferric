@@ -25,7 +25,7 @@ engine returns a block and what the caller must check.
 |---|---|
 | Rust | `ferric-integrals/src/engine.rs::Engine` (`new_2e`, `compute_quartet`, `new_3center`, `compute_eri3`, `new_2center`, `compute_eri2`) |
 | Rust, whole tensors | `ferric-integrals/src/threeindex.rs::{eri3_tensor,coulomb_metric_2c}` |
-| Python | `compute_eri3`, `compute_metric_2c` (`crates/ferric-python/ferric.pyi`) |
+| Python | `compute_eri3`, `compute_metric_2c` (`crates/ferric-python/python/ferric/ferric.pyi`) |
 
 ## What an engine computes, and which engine serves which kernel {#two-electron-engine-computes-engine-serves}
 

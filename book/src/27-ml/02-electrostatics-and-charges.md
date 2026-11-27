@@ -279,7 +279,7 @@ a reference value for them.
 | `crates/ferric-scf/src/properties.rs` | (@eq:electrostatics-and-charges-1)–(@eq:electrostatics-and-charges-mulliken), the lattice and restraint environment variables, the effective-$Z$ pairing, the excerpt in @sec:electrostatics-and-charges-potential-field-nuclei |
 | `crates/ferric-scf/src/properties/hirshfeld_grid.rs` | (@eq:electrostatics-and-charges-hirshfeld), the grid, the proatoms and the rescaling |
 | `crates/ferric-pcm/src/radii.rs` | the Bondi radii |
-| `crates/ferric-python/ferric.pyi` | the Python names, `esp_on_surface` and argument units |
+| `crates/ferric-python/python/ferric/ferric.pyi` | the Python names, `esp_on_surface` and argument units |
 | `site/src/reference/validation.md` | the agreement figures in @sec:electrostatics-and-charges-well-these-checked |
 
 Changes from the sources: none. The derivations of the charge schemes are

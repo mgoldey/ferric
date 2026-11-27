@@ -22,7 +22,7 @@ is the one that section @sec:npz-bundle points to.
 | Rust (NPZ writer) | `ferric-export/src/ml.rs::export_npz`, `ferric-export/src/ml.rs::NpzBundle` |
 | Rust (cube writers) | `ferric-export/src/cube.rs::{export_cube,export_mo_cubes}` |
 | CLI | `method.kind = "pdep-rpa"`, `[rpa] export_npz = "<path>"`, `[rpa] export_eigpot_prefix` |
-| Python | `run_pdep_rpa(..., properties=True)` or `export_npz=`; `write_cube` (`crates/ferric-python/ferric.pyi`) |
+| Python | `run_pdep_rpa(..., properties=True)` or `export_npz=`; `write_cube` (`crates/ferric-python/python/ferric/ferric.pyi`) |
 
 ## From quantity to key {#export-schemas-quantity-key}
 

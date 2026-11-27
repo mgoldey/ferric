@@ -1,4 +1,4 @@
-"""Tests for scripts/validation/mm_topology.py::topology_from_openmm — the
+"""Tests for ferric.openmm.topology_from_openmm — the
 parameter ASSIGNMENT path (a real force field, amber14-all.xml, applied to a
 real structure) feeding ferric-mm's explicit-parameter MmTopology.
 
@@ -8,7 +8,6 @@ Skips itself with an actionable message if OpenMM is not importable, per the
 repo convention for optional-dependency test files.
 """
 
-import sys
 from pathlib import Path
 
 import pytest
@@ -20,8 +19,8 @@ openmm = pytest.importorskip(
     reason="OpenMM not installed — see scripts/gen_openmm_mm_refs.py docstring",
 )
 
-sys.path.insert(0, str(REPO / "scripts" / "validation"))
-from mm_topology import topology_from_openmm, topology_from_system  # noqa: E402
+pytest.importorskip("ferric")
+from ferric.openmm import topology_from_openmm, topology_from_system  # noqa: E402
 
 FIXTURE = REPO / "testdata/molecules/validation/mm/ala_ala.pdb"
 

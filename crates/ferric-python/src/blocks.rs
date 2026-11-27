@@ -3240,15 +3240,23 @@ pub(crate) fn refuse_symmetric_dft(
     super::refuse_dft_symmetry_extras(symmetry, with_gradient, dispersion)
 }
 
-/// Contraction on ferric's GEMM engine (the einsum! macro's).
+/// Tensor contraction with ferric's GEMM engine (the one behind the
+/// `einsum!` macro in ferric's MP2/CC code), returning `scale * result`.
 ///
-///     Two operands: one binary contraction. Three or more: a fixed left-to-right
-///     chain of binary contractions ``((A.B).C)``, in the order written, no
-///     contraction-order search; an index shared by the running result and the
-///     next operand is summed there unless a later operand or the output still
-///     carries it. Explicit '->', no repeated index within a term, no implicit
-///     single-operand sums; the output lists batch, then left-free, then
-///     right-free indices of the last step. Scalar specs return float.
+/// Two operands are one binary contraction. Three or more are a FIXED
+/// left-to-right chain of binary contractions, `((A.B).C).D`, in the order
+/// written (no contraction-order search); an index shared by the running
+/// result and the next operand is summed there unless a later operand or the
+/// output still carries it.
+///
+/// Spec rules (stricter than `numpy.einsum`, and an error, not a fallback,
+/// when broken): an explicit `->`; each binary step sums an index shared by
+/// both sides unless it is also kept, in which case it is a batch
+/// (element-wise) index; no index may repeat within one term; an index in
+/// only one side of a step must be kept (no implicit single-operand sums);
+/// the output lists batch indices, then the running result's free indices,
+/// then the last operand's (any order within each group). A scalar spec
+/// (`"ij,ij->"`) returns a float.
 #[pyfunction]
 #[pyo3(signature = (spec, *operands, scale=1.0))]
 fn einsum(

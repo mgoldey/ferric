@@ -30,7 +30,7 @@ import pytest
 
 ferric = pytest.importorskip("ferric", reason="the compiled extension is not built")
 
-PYI = Path(__file__).resolve().parents[1] / "ferric.pyi"
+PYI = Path(__file__).resolve().parents[1] / "python" / "ferric" / "ferric.pyi"
 
 #: Entry points whose absence from the stub is a real defect. Deliberately a
 #: list of what MUST be there rather than a scan of everything the module

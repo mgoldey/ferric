@@ -6,7 +6,7 @@
 |---|---|
 | Rust | `ferric-mp2/src/rimp2.rs::ri_mp2_spin_components` |
 | CLI | `method.kind = "rimp2"`, sections `[mp2]` and `[memory]` |
-| Python | `run_rimp2` (`crates/ferric-python/ferric.pyi`) |
+| Python | `run_rimp2` (`crates/ferric-python/python/ferric/ferric.pyi`) |
 
 An RI-MP2 run spends its time in one place and its memory in another. The
 time goes into forming $(ia|jb)$ for every pair of occupied orbitals, which

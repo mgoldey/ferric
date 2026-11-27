@@ -514,35 +514,54 @@ impl PyQmmmResult {
     }
 }
 
-/// Embedded SCF ("rhf" default, "uhf", "rks" or "uks") energy + QM gradient + MM forces + full gradient.
+/// Embedded SCF energy plus gradients for a `QmmmSystem` in one call.
 ///
-///     xc is required for "rks"/"uks" and rejected for "rhf"/"uhf".
+/// `method` is `"rhf"` (default), `"uhf"`, `"rks"` or `"uks"`. The SCF knobs
+/// mirror `run_rhf`/`run_ksdft`: `xc` selects the functional for `"rks"`/
+/// `"uks"` (required for those methods; RI-J/RI-K aux is set to
+/// `def2-universal-jkfit` automatically, matching `run_ksdft`) and is
+/// rejected for `"rhf"`/`"uhf"` (passing a functional to a method that
+/// ignores it would silently produce a plain-HF result). No MM force field
+/// is involved (unless `mm_topology=` is given): the energy is `E_QM` in
+/// the field of the fixed charges (plus the classical charge-nuclear term),
+/// and the gradients are its exact derivatives.
 ///
-///     mm_topology, if given, adds ferric-mm's AMBER-form force field under the additive QM/MM
-///     convention (MM-MM bonded/nonbonded + QM-MM Lennard-Jones; no QM-MM Coulomb, already inside
-///     the embedding). QM-MM Lennard-Jones follows the topology's own exclusion rules across the
-///     cut: pairs 1-2/1-3 apart through its bond list are skipped and 1-4 pairs are scaled by its
-///     LJ 1-4 factor (AMBER 0.5). Omitting it is bit-identical to a topology with zero energy/gradient
-///     everywhere (QmmmResult.mm_energy reports all-zero, not absent).
-///
-///     thole_a controls Thole damping for polarizable sites (system built with
-///     polarizabilities_angstrom3=): None/omitted = the standard default 2.1304;
-///     0.0 disables damping (bare point-dipole tensor); ignored when no atom is
-///     polarizable. QmmmResult.e_pol/.induced_dipoles() report the result. The
-///     QM gradient's polarizable Fock-term contribution is included for all
-///     four methods ("rhf"/"uhf"/"rks"/"uks"). full_gradient() DOES include
-///     every polarizable force term (a site's own dE_pol/dR_site plus the
-///     reaction force every embedding charge feels from the other sites'
-///     induced dipoles) for every method -- verified against finite differences
-///     on a colocated charge+alpha MM atom and a two-site mutual-induction case.
-///     Boundary charges (RC/RCD) combined with a polarizable site have no FD
-///     cross-check yet.
-///
-///     polarization_exclusions: "molecule" (None = default) -- a site feels neither
-///     the permanent charges nor the induced dipoles of its own molecule, labelled
-///     by the system's residue_ids, else by the bonds of mm_topology; with neither,
-///     ValueError. "none" -- no exclusions (isolated sites such as ions only; an
-///     unexcluded TIP3P oxygen is polarized by its own hydrogens).
+/// **Thole-damped polarizable embedding**: if `system` was built with
+/// `polarizabilities_angstrom3=` (any nonzero entry among the MM atoms),
+/// `thole_a` sets the Thole damping parameter (`None`/omitted = the
+/// standard default `2.1304`; pass `0.0` to disable damping entirely — the
+/// bare point-dipole tensor). `polarization_exclusions` is `"molecule"`
+/// (default): a site feels neither the charges nor the induced dipoles of
+/// its own molecule, taken from the system's `residue_ids` or else from the
+/// bonds of `mm_topology`; with neither, `ValueError`. `"none"` turns
+/// exclusions off (isolated sites such as ions only: an unexcluded TIP3P
+/// oxygen is polarized by its own hydrogens, about -0.12 Ha at 1.44 A^3).
+/// `QmmmResult.e_pol`/`.induced_dipoles()`
+/// report the polarisation energy and converged dipoles. The QM gradient
+/// correctly includes the polarizable Fock-term contribution for ALL FOUR
+/// methods (`"rhf"`/`"uhf"`/`"rks"`/`"uks"`, via `rhf_gradient_with_polarizable`/
+/// `uhf_gradient_with_polarizable`/`ks_gradient_closed_with_polarizable`/
+/// `ks_gradient_uks_with_polarizable` — see `ferric_scf::polarizable`'s Task
+/// B3/B4 gradients; the term is a fixed-mu Hellmann-Feynman contraction
+/// depending only on the total spin-summed density, so it applies
+/// identically to every SCF variant, see `polarizable_gradient_term`'s
+/// doc). **`mm_forces()`/`full_gradient()` DO include every
+/// polarizable-embedding force term as of Lane B5**: a polarizable site's
+/// own `dE_pol/dR_site` (`ferric_scf::qmmm::polarizable_site_gradient`) AND
+/// the reaction force every embedding charge feels from the OTHER sites'
+/// induced dipoles (`ferric_scf::qmmm::polarizable_charge_gradient_rows`,
+/// wired via `ferric_scf::polarizable::charge_gradient_contribution` — see
+/// that function's doc for why this is a distinct term from the site's own
+/// row) are both added into `full_gradient()`'s output here, for every
+/// method. Verified against central finite differences of the fully
+/// reconverged total energy on a colocated charge+alpha MM atom (the
+/// realistic force-field case) and a two-site mutual-induction case — see
+/// `crates/ferric-scf/tests/qmmm_polarizable_forces.rs`. Boundary charges
+/// (RC/RCD) combined with a polarizable site are NOT covered by an FD test
+/// (documented gap in that same test file, not a silent one) — the
+/// arithmetic (half the reaction force onto each host) is implemented and
+/// follows the same convention `full_gradient` already uses for
+/// `mm_forces`, but is unverified in combination.
 #[pyfunction]
 #[pyo3(signature = (system, basis_name, method=None, xc=None, max_iter=None, energy_conv=None, density_conv=None, level_shift=None, mom_after_iter=None, guess=None, mm_topology=None, thole_a=None, ri_j_precision=None, polarization_exclusions=None))]
 #[allow(clippy::too_many_arguments)]
@@ -902,28 +921,24 @@ impl PyQmmmOptimizeResult {
     }
 }
 
-/// Optimize a QmmmSystem's geometry. Real QM atoms always move; MM atoms move per move_mm.
+/// Optimize a `QmmmSystem`'s geometry: real QM atoms always move; MM atoms
+/// move per `move_mm`.
 ///
-///     move_mm: "none" (default, only QM atoms move), "all" (every MM atom moves too),
-///     ("within", radius_angstrom) (MM atoms within that distance of any QM atom, measured once
-///     at the starting geometry), or ("residues", [residue_id, ...]) (requires the system to have
-///     been built with residue_ids=; ValueError otherwise). Any value other than "none"/None
-///     requires mm_topology (ValueError otherwise).
+/// `move_mm`: `"none"` (default — only QM atoms move), `"all"` (every MM
+/// atom moves too), `("within", radius_angstrom)` (MM atoms within that
+/// distance of any QM atom, measured once at the starting geometry), or
+/// `("residues", [residue_id, ...])` (requires the system to have been built
+/// with `residue_ids=`, i.e. whole-residue QM selection — `ValueError`
+/// otherwise). Any `move_mm` other than `"none"` requires `mm_topology`
+/// (moving MM atoms with no force field holding their own geometry together
+/// is meaningless).
 ///
-///     method/xc follow run_qmmm's convention: "rhf" (default), "uhf", "rks", "uks"; xc is
-///     required for the KS variants and rejected otherwise.
+/// `method`/`xc` follow `run_qmmm`'s convention: `"rhf"` (default), `"uhf"`,
+/// `"rks"`, `"uks"`; `xc` required for the KS variants, rejected otherwise.
 ///
-///     `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the SCF at every
-///     step (names and defaults of `run_rhf`'s `max_iter`, `energy_conv`, `density_conv`).
-///     `scf_warm_start`: as in `run_optimize` (default True).
-///     `scf_ri_j_precision`: RI-J tensor storage, "f32" or "f64"; unset is "f64" here
-///     (geometry task: the f32 surface jitters between nearby geometries), an explicit
-///     "f32" is honoured.
-///     `initial_hessian`: "lindh" (default; the Lindh model Hessian of the whole structure,
-///     QM and MM atoms, restricted to the free atoms) or "simple" (the identity).
-///     `trust_update`: "ratio" (default) or "fixed". The search is Cartesian; the certificate
-///     records all three as `optimizer-coordinates`, `optimizer-initial-hessian` and
-///     `optimizer-trust-update`. Anything else raises ValueError.
+/// `initial_hessian`: `"lindh"` (default; the Lindh model of the whole
+/// structure, restricted to the free atoms) or `"simple"` (the identity);
+/// `trust_update`: `"ratio"` (default) or `"fixed"`. The search is Cartesian.
 #[pyfunction]
 #[pyo3(signature = (system, basis_name, method=None, xc=None, move_mm=None, mm_topology=None, max_steps=None, e_conv=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, scf_warm_start=None, scf_ri_j_precision=None, initial_hessian=None, trust_update=None))]
 #[allow(clippy::too_many_arguments)]

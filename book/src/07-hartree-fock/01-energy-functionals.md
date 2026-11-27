@@ -29,7 +29,7 @@ tests of chapter @sec:convergence check.
 |---|---|
 | Rust | `ferric-scf/src/rhf.rs::solve_rhf`, `ferric-scf/src/uhf.rs::solve_uhf`, `ferric-scf/src/rohf.rs::solve_rohf` |
 | CLI | `method.kind = "rhf"`, `"uhf"`, `"rohf"` (`examples/water-rhf.toml`, `examples/h_uhf.toml`) |
-| Python | `run_rhf`, `run_uhf`, `run_rohf` (`crates/ferric-python/ferric.pyi`) |
+| Python | `run_rhf`, `run_uhf`, `run_rohf` (`crates/ferric-python/python/ferric/ferric.pyi`) |
 
 Spin and charge belong to the molecule, not to the solver call. A
 multiplicity above one under `kind = "rhf"` is refused.

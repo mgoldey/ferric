@@ -21,7 +21,7 @@ tested.
 | Entry point | Location |
 |---|---|
 | Rust | `ferric-scf/src/rhf.rs::{solve_rhf_with_hook,validate_fock_hook}`, `ferric-scf/src/uhf.rs::solve_uhf_with_hook`, `ferric-scf/src/rohf.rs::solve_rohf_with_hook` |
-| Python | `fock_hook=` on `run_rhf`, `run_dft`, `run_uhf`, `run_rohf`; `fock_hook_grad=` with `with_gradient=True` (`crates/ferric-python/ferric.pyi`) |
+| Python | `fock_hook=` on `run_rhf`, `run_dft`, `run_uhf`, `run_rohf`; `fock_hook_grad=` with `with_gradient=True` (`crates/ferric-python/python/ferric/ferric.pyi`) |
 | CLI | none |
 
 | Solver | Hook signature |
@@ -130,5 +130,5 @@ where the hook enters the loop, and what is refused.
 | Source | Used for |
 |---|---|
 | `crates/ferric-scf/src/rhf.rs` | the entry point and the refusal list |
-| `crates/ferric-python/ferric.pyi` | the Python signatures |
+| `crates/ferric-python/python/ferric/ferric.pyi` | the Python signatures |
 | section @sec:fock-hook-gradient | the gradient derivation and its proof |

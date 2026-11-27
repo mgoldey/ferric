@@ -4,7 +4,9 @@
  "light_speed": 137.03599967994,
  "conv_tol": 1e-11,
  "conv_tol_grad": 1e-07,
- "settings": "scf.RHF(mol).sfx2c1e(), approx='1e', xuncontract=True, cart=False; mp2: pyscf.mp.dfmp2.DFMP2, all electrons, auxbasis cc-pvdz-ri",
+ "settings": "scf.RHF(mol).sfx2c1e(), approx='1e', xuncontract=True, cart=False; mp2: pyscf.mp.dfmp2.DFMP2, all electrons, auxbasis cc-pvdz-ri; ccsd: pyscf.cc.dfccsd.RCCSD + ccsd_t(), all electrons, auxbasis cc-pvdz-ri",
+ "cc_conv_tol": 1e-10,
+ "cc_conv_tol_normt": 1e-08,
  "systems": {
   "HBr": {
    "xyz_angstrom": "H 0 0 0\nBr 0 0 1.414",
@@ -12,16 +14,22 @@
     "cc-pvdz": {
      "nao": 32,
      "e_nr": -2572.9702413818623,
-     "e_x2c": -2597.626992829152,
+     "e_x2c": -2597.626992829153,
      "mp2": {
       "e_corr_nr": -0.14706132419362614,
-      "e_corr_x2c": -0.14575724150684774
+      "e_corr_x2c": -0.14575724150684505
+     },
+     "ccsd": {
+      "e_corr_nr": -0.16012890636855187,
+      "e_t_nr": -0.0027650042255489195,
+      "e_corr_x2c": -0.15884923354672942,
+      "e_t_x2c": -0.002718432349685328
      }
     },
     "unc-cc-pvdz": {
      "nao": 84,
      "e_nr": -2572.9734699758756,
-     "e_x2c": -2604.9997473097615
+     "e_x2c": -2604.999747309761
     }
    }
   },
@@ -31,12 +39,12 @@
     "cc-pvdz": {
      "nao": 37,
      "e_nr": -2400.9646377909876,
-     "e_x2c": -2422.877047680681
+     "e_x2c": -2422.8770476806812
     },
     "unc-cc-pvdz": {
      "nao": 91,
      "e_nr": -2400.968359067664,
-     "e_x2c": -2429.2144172926223
+     "e_x2c": -2429.2144172926246
     }
    }
   }

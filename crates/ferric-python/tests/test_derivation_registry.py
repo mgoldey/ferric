@@ -14,7 +14,7 @@ The method list is DERIVED from the code, never hand-listed:
 * ``md:<kind>`` for every entry of ``MD_KINDS``
   (``crates/ferric-cli/src/config.rs``), the kinds ``task = "md"`` runs;
 * ``py:<name>`` for every top-level ``def run_*`` or ``def tune_*`` in
-  ``crates/ferric-python/ferric.pyi``, plus every top-level response,
+  ``crates/ferric-python/python/ferric/ferric.pyi``, plus every top-level response,
   derivative or coupling function (name containing ``polariz``,
   ``gradient``, ``hessian`` or ``coupling``) or ending in ``_energy``;
 * ``py-gradient:<name>`` and ``py-stress:<name>`` for every periodic entry
@@ -44,7 +44,7 @@ REGISTRY = ROOT / "testdata" / "derivations" / "registry.json"
 CLI_LIB = ROOT / "crates" / "ferric-cli" / "src" / "lib.rs"
 CLI_CONFIG = ROOT / "crates" / "ferric-cli" / "src" / "config.rs"
 CLI_PERIODIC = ROOT / "crates" / "ferric-cli" / "src" / "periodic.rs"
-PYI = ROOT / "crates" / "ferric-python" / "ferric.pyi"
+PYI = ROOT / "crates" / "ferric-python" / "python" / "ferric" / "ferric.pyi"
 TESTS = Path(__file__).resolve().parent
 
 

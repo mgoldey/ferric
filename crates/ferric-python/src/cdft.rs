@@ -311,15 +311,61 @@ pub(crate) fn cdft_hamiltonian_key(emol: &Molecule, config: &RhfConfig) -> Strin
     )
 }
 
-/// Constrained UHF/UKS (Wu-Van Voorhis cDFT) with Becke fragment populations.
+/// Constrained UHF / UKS (Wu–Van Voorhis cDFT): minimize the energy subject to
+/// fragment population constraints, via a nested lambda-Newton loop around an
+/// ordinary UHF/UKS solve with `sum_C lambda_C W^C` added to the Fock matrix.
 ///
-///     ``functional`` None or ``"HF"`` = UHF (the validated path); any other name = UKS.
-///     ``lambda_tol`` (default 1e-5 electrons) and ``max_outer`` (default 30) control the
-///     outer lambda-Newton loop; exceeding ``max_outer`` raises ``RuntimeError``.
-///     ``stability_descent`` defaults to True (unlike ``run_uhf``): a constrained saddle is
-///     descended from and the lower constraint-satisfying state kept (skipped for UKS).
-///     The weight grid defaults to 99 x 302. Unset SCF knobs take the Rust ``RhfConfig``
-///     defaults (``max_iter`` 200); ``df_*_aux`` unset = exact J/K.
+///   constraints       non-empty list of `CdftConstraint`. Each `target` is a
+///                     Becke fragment POPULATION in electrons (N_a + N_b for
+///                     kind="charge", N_a - N_b for kind="spin"), not a net
+///                     charge. Validated here: atom indices in range, a charge
+///                     target in [0, N_elec], |spin target| <= N_elec, and no
+///                     two constraints on the same fragment and kind (their
+///                     Jacobian would be singular). Only single-constraint
+///                     solves (k = 1) are exercised by the Rust suite and
+///                     carry the bracket safeguard; k > 1 runs the plain
+///                     k x k Newton.
+///   functional        None or "HF" (default) = UHF. Any other name = UKS with
+///                     that libxc functional (validated up front). The Rust
+///                     cDFT tests validate the UHF path only; UKS-cDFT is
+///                     smoke-level, and the stability descent is SKIPPED on a
+///                     KS reference (it would need the f_xc kernel).
+///   lambda_tol        stop when max |N_C - target_C| < lambda_tol (electrons).
+///                     Default 1e-5. A flat stretch of N(lambda) (e.g. He2+ at
+///                     the localized-hole plateau, dN/dlambda ~ 7e-5) costs
+///                     outer iterations, not accuracy: the six validated He2+
+///                     diabats converge there at 1e-10 from lambda = 0. Loosen
+///                     it only to buy iterations, and read what is returned --
+///                     a looser tolerance accepts a lambda further from the
+///                     root, and on a plateau that is a large distance in
+///                     lambda for a small one in N.
+///   max_outer         outer lambda-Newton iteration cap. Default 30. Exceeding
+///                     it raises RuntimeError; nothing unconverged is returned.
+///                     The default covers a lambda = 0 start on the validated
+///                     He2+ points (deepest 21 iterations); because the Newton
+///                     step is clamped to 1 per iteration, a start far from the
+///                     root needs at least |lambda_root| iterations to arrive.
+///   stability_descent True (default, as in the Rust driver): after the outer
+///                     loop converges, check the lambda-augmented orbital
+///                     Hessian and, if the constrained solution is a saddle,
+///                     descend and re-converge, keeping the lower state that
+///                     still meets the constraint. NOTE the default differs
+///                     from run_uhf's stability_descent (False), which is the
+///                     UNCONSTRAINED descent; see RhfConfig for why.
+///   grid_radial /     Becke/Lebedev grid for the weight operator. Both unset
+///   grid_angular      (default) = 99 x 302 for W (the XC grid, if any, keeps
+///                     its 75 x 110 default). Setting either uses the given
+///                     grid for BOTH W and XC, the unset one defaulting to
+///                     99 / 302. The weight quadrature must resolve
+///                     populations below lambda_tol (75 x 110 floors at ~1e-4).
+///
+/// The SCF knobs (`scf_max_iter`, `scf_energy_conv`, `scf_density_conv`,
+/// `diis_size` .. `guess`) mean what they do in `run_uhf`; unset ones take the
+/// Rust `RhfConfig` defaults the cDFT suite is validated with (so
+/// `scf_max_iter` defaults to 200 here, as in `run_uhf`). `max_iter`,
+/// `energy_conv`, `density_conv` are deprecated aliases (they warn) of the
+/// `scf_` spellings; `max_outer` is the multiplier loop. `df_j_aux` /
+/// `df_k_aux` unset = exact J/K, as in `run_uhf`.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, constraints,
@@ -664,114 +710,26 @@ impl PyCdftCouplingResult {
     }
 }
 
-/// Geometry optimization on any surface with an analytic or finite-difference gradient.
+/// Wu–Van Voorhis electron-transfer coupling H_ab between two `run_cdft`
+/// diabats (J. Chem. Phys. 125, 164105 (2006)):
 ///
-///     `method` picks the surface:
+///   H_ab = [H_raw - (E_a + E_b) S_ab / 2] / (1 - S_ab^2),
+///   H_raw = ½[(F_b S_ab - λ_b <a|W_b|b>) + (F_a S_ab - λ_a <a|W_a|b>)],
+///   F_x   = E_x + λ_x N_x,   N_x = <x|W_x|x> (the state's own population),
 ///
-///     - "scf" (default): HF, or Kohn-Sham with `xc`. `reference` is "rhf", "uhf" or
-///       "rohf" (with `xc`: RKS, UKS, ROKS); unset, "rhf" for a singlet and "uhf" for an
-///       open-shell molecule. `dispersion` (needs `xc`; "d3bj", "d3(bj)", "d3bj(<name>)",
-///       "mbd", "mbd(<name>)" as in `run_dft`) optimizes KS + dispersion, energy and
-///       gradient from one set of parameters. `df_j_aux` / `df_k_aux` density-fit J / K as
-///       in `run_frequencies` (unset: exact four-centre J/K for HF; with `xc`,
-///       RI-J/RI-K on def2-universal-jkfit for RKS, UKS and ROKS as in the CLI);
-///       `scf_ri_j_precision` (unset: "f64" on geometry tasks) / `scf_ri_k_precision`.
-///     - "rimp2": RI-MP2 (analytic Z-vector gradient): RHF + RI-MP2 on a singlet, UHF +
-///       unrestricted RI-MP2 on an open-shell molecule or with `reference="uhf"`
-///       (`reference="rohf"` raises: the gradient needs a UHF reference). Needs `auxbasis` (the
-///       RI basis name, e.g. "cc-pvdz-ri"); `scf_jk` "rijk" or "exact" on `jk_auxbasis`.
-///       Unset, `scf_jk` resolves as the CLI's omitted `[scf] jk`: "rijk" on the JK-fit
-///       set matched to the orbital basis (cc-pvtz-jkfit for cc-pVDZ / cc-pVTZ,
-///       def2-universal-jkfit for a basis without one); `jk_auxbasis` without `scf_jk`
-///       raises. The RI-JK gradient checks its declared peak memory against
-///       `memory_budget_gb` (unset: the auto-detected budget) before the reference SCF
-///       and raises with the breakdown when it does not fit. `frozen_core`,
-///       `memory_budget_gb` as in `run_rimp2`. The gradient driver solves its reference
-///       RHF / UHF at density_conv 1e-9, so the `scf_*` convergence kwargs raise.
-///     - "oo-rimp2": closed-shell OO-RI-MP2 (zero-response gradient at converged orbitals).
-///       Needs `auxbasis`; `scf_jk` "rijk" or "exact" with the default of "rimp2"
-///       (four-centre when `scf_eri` is set) on `jk_auxbasis`, whose fitted J/K the
-///       orbital steps and the gradient reuse (RI-J stored in f64);
-///       `frozen_core` must be 0; `oo_max_iter` / `oo_grad_conv` control the orbital loop, the `scf_*` kwargs its starting RHF. An
-///       orbital optimization that does not converge at some geometry raises.
-///     - "scs-mp2": closed-shell SCS-MP2, E_HF + c_os E_os + c_ss E_ss (analytic Z-vector
-///       gradient of that energy). `c_os` / `c_ss` default to 6/5 and 1/3 as in
-///       `run_scs_mp2`; the other kwargs as for "rimp2".
-///     - "att-rimp2": attenuated RI-MP2, E_HF + E_c[erfc(ωr)/r] on a Coulomb RHF, or on a
-///       Coulomb UHF for an open shell (reference="uhf", the default at multiplicity > 1;
-///       reference="rohf" raises as for "rimp2"), with the analytic Z-vector gradient of
-///       the `run_attenuated_rimp2` energy. `omega` in Å⁻¹ (default 0.420; it raises for
-///       every other method); the other kwargs as for "rimp2". `att_operator="terfc"`
-///       replaces erfc with terfc(r; r0)/r, the `run_terfc_rimp2` energy on an RHF or UHF:
-///       `r0` in Å (default: the basis default of `run_terfc_rimp2`), and `omega` raises.
-///       `att_operator` and `r0` raise for every other method.
-///     - "scs-mp2-2terfc": SCS-MP2(2terfc), the `run_scs_mp2_2terfc` energy
-///       E_HF + c_os E_OS[terfc r0(1)] + c_ss (E_SS[terfc r0(2)] - E_SS[terfc r0(1)]), on a
-///       Coulomb RHF for a singlet or a Coulomb UHF for an open shell (the reference follows
-///       the multiplicity; reference="uhf" on a singlet and "rohf" raise). `r0_bonded` /
-///       `r0_nonbonded` in Å and `c_os` / `c_ss` with the defaults and basis rules of
-///       `run_scs_mp2_2terfc`; the other kwargs as for "rimp2". `r0_bonded` and
-///       `r0_nonbonded` raise for every other method.
-///     - "pdep-rpa": closed-shell RHF + RI-dRPA (Coulomb), the CLI's `[rpa]` optimize
-///       route. Needs `auxbasis`; `frozen_core`, `memory_budget_gb`, `n_quad` (default 16),
-///       `quadrature` (default "gauss-legendre") as in `run_pdep_rpa`. The reference RHF is
-///       exact four-centre, solved at density_conv 1e-9, so the `scf_*`, `scf_jk`,
-///       `point_charges` and `external_field` kwargs raise. `rpa_gradient` picks the gradient:
-///       "analytic" is the RI-dRPA Z-vector gradient (full-rank PDEP basis, dense chi0,
-///       Coulomb only; with a nonzero `trunc_thresh` it raises); "fd" is the 3-point central
-///       difference of RHF + RPA at h = 5e-4 Bohr (6 N_atoms energies). Unset, the analytic
-///       gradient runs whenever it applies, and finite differences otherwise, with the reason
-///       recorded in the certificate's `gradient` entry. `trunc_thresh` unset is 0 for the
-///       analytic gradient and 1e-4 for an explicit "fd". `rpa_gradient`, `n_quad`,
-///       `quadrature` and `trunc_thresh` raise for every other method.
+/// with each state's energy, λ and W taken from its own result. The F form is
+/// invariant under the empty redefinition W -> W - c·N̂ (target N -> N - c·N_e);
+/// the form with E in place of F is not. No two-electron <a|H|b> is built.
 ///
-///     "rimp2", "att-rimp2" and "scs-mp2-2terfc" also run open shells; the other
-///     correlated methods are closed-shell only. None takes `xc`, `dispersion` or
-///     `solvent`; any kwarg a method does not read raises ValueError.
-///
-///     `solvent`, `pcm_lebedev_order` ("scf" only): IEF-PCM implicit solvation, as in
-///     `run_rhf`. The optimizer follows the analytic IEF-PCM gradient (cavity and
-///     reaction-field terms), and the certificate lists an `scf pcm` approximation. COSMO has
-///     no analytic gradient and is refused by the gradient dispatchers. `point_charges` /
-///     `external_field` work with every method.
-///
-///     `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the SCF run at
-///     every geometry (names and defaults of `run_rhf`'s `max_iter`, `energy_conv`,
-///     `density_conv`). `max_steps` / `e_conv` are the geometry steps and energy criterion.
-///
-///     `scf_warm_start` (default True): start each geometry's SCF from the previous
-///     geometry's converged orbitals, re-orthonormalized in the new overlap, instead of the
-///     MINAO guess. Falls back to the cold guess on the first step, on a poor orbital overlap
-///     (large step) and after a failed warm-started SCF. Energies agree with a cold start to
-///     SCF convergence tolerance, not bitwise; False restores the from-scratch guess.
-///
-///     `coordinates` (default "cartesian"): the coordinates of the BFGS step, as the CLI's
-///     `[optimize] coordinates`, for every method. "internal" uses redundant internal
-///     coordinates (bonds, angles, dihedrals) with a Schlegel initial Hessian; it often
-///     needs fewer steps on floppy molecules, and falls back to Cartesian with a printed
-///     warning if the coordinates cannot be built. Any other value raises ValueError. The
-///     certificate's `optimizer` approximation names the requested coordinates.
-///
-///     `initial_hessian`, `trust_update`: as the CLI's `[optimize]` keys. "simple" starts
-///     BFGS from the identity (Cartesian) or the Schlegel diagonal (internal); "lindh" from
-///     the Lindh (1995) model Hessian. "fixed" keeps the trust radius and accepts every
-///     step; "ratio" moves the radius with the actual/predicted energy ratio and rejects a
-///     step that raises the energy. Unset is "lindh" and "ratio"; "simple" with "fixed"
-///     reproduces the search before these options existed. Any other value raises
-///     ValueError.
-///
-///     `fock_hook` / `fock_hook_grad` ("scf" only, both or neither): optimize the
-///     hooked surface (run_rhf's fock_hook and fock_hook_grad). The geometry moves,
-///     so both are called with the step's Molecule as their LAST argument:
-///     closed-shell hook(D, mol) -> (E, V) and grad(D, mol); open-shell
-///     hook(D_a, D_b, mol) -> (E, V_a, V_b) and grad(D_a, D_b, mol). Each step's SCF
-///     starts from the default guess (scf_warm_start=True raises); dispersion raises.
-///     The certificate's reference is the hooked SCF at the returned geometry and
-///     lists an `scf fock-hook` approximation.
-///
-///     Each route calls the library driver the CLI's `task = "optimize"` calls for the same
-///     `method.kind`. The certificate's capability is "optimize:<kind>" (rhf, ksdft, uhf,
-///     rohf, rimp2, scs-mp2, att-rimp2, oo-rimp2, pdep-rpa).
+/// Requirements (ValueError otherwise): each state has EXACTLY ONE constraint
+/// and it is kind="charge" (the Rust kernel applies one operator to both spins
+/// and takes a single λ), both states are `converged`, and both come from the
+/// same molecule, geometry, basis, charge and multiplicity (checked through the
+/// AO overlap matrix and the occupations) AND the same Hamiltonian: nuclei
+/// (element, ghost flag, ECP, exact coordinates, charge), functional,
+/// df_j_aux/df_k_aux, k_builder, XC grid, point_charges and external_field must
+/// all match. Two (near-)identical states
+/// (|S_ab| -> 1) make the coupling undefined and also raise.
 #[pyfunction]
 pub(crate) fn cdft_coupling(
     state_a: &PyCdftResult,

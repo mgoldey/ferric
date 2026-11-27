@@ -189,29 +189,12 @@ fn refuse_pdep_rpa_gradient(s: &GradientScope<'_>) -> PyResult<()> {
     Ok(())
 }
 
-/// SR-MP2 + LR-dRPA. omega/terf_omega in Angstrom^-1, r0 in Angstrom.
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
+/// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 ///
-///     RHF reference for a singlet; UHF reference for multiplicity > 1, with the
-///     spin-summed U-MP2 and U-dRPA (eps = I + Pi_a + Pi_b) and
-///     dMP2 = E_ab + (D_aa + D_bb)/2 (`result.reference` says which).
-///
-///     `scf_jk` / `jk_auxbasis` as in `run_rimp2`, but the default differs: this
-///     entry point has always used RI-JK, so `scf_jk` defaults to "rijk" (on
-///     "def2-universal-jkfit") here, not "exact". A `k_builder` under "rijk" is
-///     a ValueError. The mode used is echoed as `result.scf_jk`.
-///
-///     `omega` (erf split) or `terf_omega` (terf split, at the fixed `r0`) and
-///     `formulation` each accept a list. A list for either returns a list of
-///     results, omega-major in the order given, from ONE reference SCF and one
-///     omega-independent Coulomb stage (each entry is bit-identical to the
-///     separate single-omega call). `omega` as a list with attenuator="terf", or
-///     `terf_omega` as a list with "erf", is a ValueError; empty lists and
-///     repeated formulations are ValueErrors. Scalars return one result.
-///
-///     With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
-///     the one `run_rhf` (`run_uhf` for an open-shell molecule) solves.
-///     `frozen_core` counts orbitals of the valence occupied space, after the ECP has
-///     removed its core.
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` (`run_uhf` for an open-shell molecule) solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, omega=None, frozen_core=None, k_builder=None, formulation=None, attenuator=None, r0=None, terf_omega=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
@@ -441,7 +424,7 @@ pub(crate) struct PyPdepRpaResult {
     pub(crate) eigenpotentials: Array2<f64>,
     pub(crate) dressed_eigenvectors: Array2<f64>,
     pub(crate) inv_dielectric_freq: Option<Vec<Array2<f64>>>,
-    pub(crate) route: String,
+    pub(crate) route: &'static str,
     pub(crate) quad_freqs: Vec<f64>,
     pub(crate) quad_weights: Vec<f64>,
     pub(crate) eigenvalues_freq: Array2<f64>,
@@ -503,13 +486,16 @@ impl PyPdepRpaResult {
     fn eigenpotentials<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         PyArray2::from_owned_array(py, self.eigenpotentials.clone())
     }
-    /// Davidson eigenvectors in the V^{-1/2}-dressed RI basis, shape (naux, M).
+    /// Static eigenvectors in the V^{-1/2}-dressed RI basis, shape (naux, M),
+    /// before the back-transformation that gives `eigenpotentials`. Empty
+    /// (0 columns) on the "aux-basis-log-det" route, which runs no eigensolve.
     #[getter]
     fn dressed_eigenvectors<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         PyArray2::from_owned_array(py, self.dressed_eigenvectors.clone())
     }
-    /// Per-frequency dynamic inverse-dielectric matrices W̃_d(iω_k) in the
-    /// fixed PDEP eigenvector basis (length N_quad, each (M, M)), or None.
+    /// Per-frequency dynamic inverse-dielectric matrices W̃_d(iω_k) =
+    /// ε̃_proj⁻¹ − I in the fixed PDEP eigenvector basis (length N_quad, each
+    /// (M, M)). None unless `run_pdep_rpa(with_inv_dielectric_freq=True)`.
     #[getter]
     fn inv_dielectric_freq<'py>(&self, py: Python<'py>) -> Option<Vec<Bound<'py, PyArray2<f64>>>> {
         self.inv_dielectric_freq.as_ref().map(move |vs| {
@@ -518,10 +504,13 @@ impl PyPdepRpaResult {
                 .collect()
         })
     }
-    /// Which construction produced `e_rpa` (`AuxBasisLogDet` or `PdepEigen`).
+    /// Which construction produced `e_rpa`: "static-eigenbasis" (PDEP
+    /// eigensolve of ε(0), frequency loop in the kept modes) or
+    /// "aux-basis-log-det" (ln det(1 + Π) − tr Π per frequency in the
+    /// auxiliary basis, no eigensolve, every mode kept).
     #[getter]
-    fn route(&self) -> String {
-        self.route.clone()
+    fn route(&self) -> &'static str {
+        self.route
     }
     /// Imaginary-frequency quadrature points ω_k.
     #[getter]
@@ -832,52 +821,16 @@ impl PyPdepRpaResult {
     }
 }
 
-/// PDEP-RPA (dielectric eigendecomposition RPA).
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
+/// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 ///
-///     point_charges / external_field / solvent embed the REFERENCE RHF, so the
-///     dielectric response is that of the molecule in its environment. Units match
-///     run_rhf: point_charges are (q, x, y, z) with q in e and positions in BOHR
-///     (Molecule.coords() is Angstrom -- convert first); external_field is
-///     (Ex, Ey, Ez) in atomic units (Hartree / (e * Bohr)). solvent and
-///     pcm_lebedev_order are as in run_rhf.
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 ///
-///     df_j_aux / df_k_aux select density-fitted J / K for the reference SCF, with
-///     run_rhf's spellings. Unset keeps exact four-centre J/K; the CLI's pdep-rpa
-///     reference defaults to RI-JK on "def2-universal-jkfit".
-///
-///     PROPERTIES. properties=True (or export_npz=) also computes the property
-///     bundle the CLI writes under ``[rpa]``, with the TOML key names and defaults
-///     (every compute_* is on except compute_esp_surface; c6_source "ts" by
-///     default, c6_partition unset = the source's default). The arrays appear on
-///     the result under their NPZ names (esp_atoms, alpha_tensor, alpha_atomic,
-///     alpha_ct, c6_iso, ...); one that was not requested or failed is None and a
-///     failure is listed in ``result.property_gaps``. Setting a compute_* /
-///     c6_* / esp_surface_* key without properties=True or export_npz= raises
-///     ValueError, as do unknown c6_source / c6_partition strings (before the SCF).
-///
-///     export_npz=path writes the CLI's NPZ bundle. A requested property that
-///     failed raises RuntimeError AFTER the file is written, unless
-///     allow_partial_npz=True. export_eigpot_prefix=P writes the leading
-///     export_eigpot_count (default 10) eigenpotential densities as
-///     ``P_eigpot_NNN.cube`` on a grid of cube_spacing (0.2) / cube_margin (4.0)
-///     Bohr. Closed-shell only (the property bundle shares the CLI's code).
-///
-///     GRADIENT. with_gradient=True also computes the analytic nuclear gradient of
-///     ``total_energy`` (the Z-vector relaxed RHF + RI-dRPA gradient the CLI's
-///     ``task = "optimize"`` uses), read with ``result.gradient()``: (natoms, 3),
-///     Hartree/Bohr, the Molecule's atom order, the same layout as
-///     ``RiMp2Result.gradient()``. It differentiates the full-rank dense Coulomb
-///     RPA on an exact four-centre closed-shell RHF reference, so an unset
-///     trunc_thresh is 0 (instead of 1e-4) and an unset scf_density_conv is 1e-9.
-///     These raise ValueError before any integral is computed: multiplicity > 1,
-///     a nonzero trunc_thresh, chi0_sparsity other than "dense", k_builder="cosx",
-///     df_j_aux / df_k_aux, point_charges / external_field / solvent, properties /
-///     export_npz / compute_* / export_eigpot_*, and run_diagnostics.
-///
-///     With an ECP basis set the ECP is applied to the molecule, so the reference SCF is
-///     the one `run_rhf` solves.
-///     `frozen_core` counts orbitals of the valence occupied space, after the ECP has
-///     removed its core.
+/// `with_inv_dielectric_freq=True` also returns the per-frequency
+/// inverse-dielectric matrices (`result.inv_dielectric_freq`, N_quad x M x M
+/// doubles). It keeps the static-eigenbasis route (`result.route`).
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, auxbasis,
@@ -898,6 +851,7 @@ impl PyPdepRpaResult {
     c6_partition=None, df_j_aux=None, df_k_aux=None,
     export_eigpot_prefix=None, export_eigpot_count=None,
     cube_spacing=None, cube_margin=None, with_gradient=false,
+    with_inv_dielectric_freq=false,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_pdep_rpa(
@@ -949,6 +903,7 @@ pub(crate) fn run_pdep_rpa(
     cube_spacing: Option<f64>,
     cube_margin: Option<f64>,
     with_gradient: bool,
+    with_inv_dielectric_freq: bool,
 ) -> PyResult<PyPdepRpaResult> {
     use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
     let prop_kwargs = PropertyKwargs {
@@ -1055,9 +1010,9 @@ pub(crate) fn run_pdep_rpa(
         chi0_sparsity: ferric_rpa::config::Chi0Sparsity::parse_config_str(chi0_sparsity)
             .map_err(make_err)?,
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        // Python run_pdep_rpa is energy-only; the GW/property paths that consume
-        // the inverse-dielectric stack have their own entry points (M9 gate).
-        need_inv_dielectric_freq: false,
+        // Off by default: the stack is N_quad x M^2 doubles the energy does
+        // not need, and asking for it keeps the static-eigenbasis route.
+        need_inv_dielectric_freq: with_inv_dielectric_freq,
         need_eigenvalues_freq: true,
         verbose: false,
     };
@@ -1128,7 +1083,7 @@ pub(crate) fn run_pdep_rpa(
         eigenpotentials: r.eigenpotentials,
         dressed_eigenvectors: r.dressed_eigenvectors,
         inv_dielectric_freq: r.inv_dielectric_freq,
-        route: format!("{:?}", r.route),
+        route: r.route.as_str(),
         quad_freqs: r.quad_freqs,
         quad_weights: r.quad_weights,
         eigenvalues_freq: r.eigenvalues_freq,

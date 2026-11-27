@@ -27,7 +27,7 @@ three builders differ in what they give up:
 |---|---|
 | Rust | `ferric-scf/src/link_k.rs::LinkK`, `ferric-scf/src/cosx_k.rs::CosxK`, `ferric-scf/src/cfmm.rs::CfmmJ` |
 | CLI | `[scf] k_builder = "link"` or `"cosx"`, `cosx_grid`, `cosx_final_pass`, `cosx_final_grid` |
-| Python | `k_builder=` and the `cosx_*` keywords on the SCF entry points (`crates/ferric-python/ferric.pyi`) |
+| Python | `k_builder=` and the `cosx_*` keywords on the SCF entry points (`crates/ferric-python/python/ferric/ferric.pyi`) |
 
 ## LinK and COSX {#link-cosx-cfmm-link-cosx}
 

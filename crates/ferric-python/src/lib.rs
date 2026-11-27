@@ -1372,24 +1372,38 @@ fn parse_saddle_hessian(
     Ok(method)
 }
 
-/// Partitioned rational function optimization to a first-order saddle.
+/// Search for a first-order saddle point by P-RFO.
 ///
-///     Closed-shell references only. Starting with no negative projected Hessian
-///     eigenvalue is a hard error naming that eigenvalue, rather than a converged
-///     minimum labelled as a transition state.
+/// Costs `2 * (6N + 1) + (n_steps + 1)` gradient evaluations (MEASURED): two
+/// Hessians -- each 6N DISPLACED central-difference evaluations plus one at the
+/// undisplaced geometry -- and one gradient per step plus one before the first.
+/// At N = 20 the Hessians dominate until n_steps exceeds ~240, which is why
+/// they are built twice and carried by a Bofill update in between.
 ///
-///     `hessian`: `"fd"` (default) central-differences the analytic gradient and
-///     honours `delta`; `"analytic"` uses the analytic RHF Hessian and raises when
-///     it does not apply (KS `xc`, point charges / field, basis too high in
-///     angular momentum); `"auto"` uses it where it applies (with `xc`, the
-///     analytic moving-grid Kohn-Sham Hessian of `run_frequencies`) and otherwise
-///     falls back to FD. `delta=` with `"analytic"` or `"auto"` raises. The result's
-///     `hessian_source` reports which ran. `scf_max_iter`, `scf_energy_conv`,
-///     `scf_density_conv` control every SCF of the search (gradients and Hessians).
-///     `scf_warm_start` (default True) starts each step's SCF from the previous
-///     step's orbitals; False re-guesses them. The FD Hessians stay cold.
-///     `scf_ri_j_precision` ("f32" or "f64"; RI-J runs with `xc`): unset is "f64",
-///     as for every geometry task; an explicit "f32" is honoured.
+/// Raises if the starting geometry has NO negative projected mode -- P-RFO from
+/// a minimum's basin has nothing to climb, and returning a result from there
+/// would be a minimum labelled as a transition state.
+///
+/// `hessian`: "fd" (default, unchanged behaviour) builds every Hessian by
+/// central differences of the analytic gradient, honouring `delta`. "analytic"
+/// uses the analytic closed-shell RHF Hessian (one SCF plus CPHF per Hessian,
+/// no displaced gradients) and raises, naming the reason, when it does not
+/// apply (KS `xc`, point charges / external field, ECP, a basis above the
+/// libint second-derivative limit). "auto" uses the analytic Hessian where it
+/// applies (with `xc=`, the analytic moving-grid Kohn-Sham Hessian of
+/// `run_frequencies`) and otherwise falls back to "fd"; `.hessian_source` says
+/// which ran.
+/// `delta` is only meaningful with "fd": combining it with "auto" or
+/// "analytic" raises rather than being silently ignored.
+///
+/// `scf_warm_start` (default True): each step's SCF starts from the previous
+/// step's converged orbitals (`ferric_scf::warm_start`); False re-guesses
+/// every step's SCF. The finite-difference Hessians stay cold (as in
+/// `run_frequencies`, warm FD Hessians are noisier at equal convergence).
+///
+/// `scf_ri_j_precision` (`"f32"` or `"f64"`; RI-J runs with `xc`): unset is
+/// `"f64"`, as for every geometry task (the f32 RI-J surface jitters between
+/// nearby geometries); an explicit `"f32"` is honoured.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_name, xc=None, multiplicity=None,
@@ -1631,18 +1645,31 @@ fn run_saddle(
     })
 }
 
-/// Follow the intrinsic reaction coordinate both ways from a saddle.
+/// Follow the intrinsic reaction coordinate off a saddle, both directions.
 ///
-///     `mode` is the imaginary-mode VECTOR (3N, e.g. `SaddleResult.imaginary_mode`),
-///     not an index. Walk it in the SAME field the saddle was found in: a
-///     gas-phase walk from an embedded saddle descends a different surface.
+/// Answers the question `run_saddle` cannot: **which two minima does this
+/// saddle connect?** One imaginary mode proves a geometry is a first-order
+/// saddle; it does not prove it is the saddle you meant. A methyl rotor gives
+/// one imaginary mode exactly as a bond-breaking coordinate does.
 ///
-///     `scf_max_iter`, `scf_energy_conv`, `scf_density_conv` control the SCF at every
-///     point (as in `run_optimize`); an unconverged SCF raises. `scf_warm_start`
-///     (default True) starts each point's SCF from the previous point's orbitals;
-///     False re-guesses every SCF. `scf_ri_j_precision` ("f32" or "f64"; RI-J runs
-///     with `xc`): unset is "f64", as for every geometry task; an explicit "f32" is
-///     honoured.
+/// `mode` is the 3N Cartesian eigenvector -- pass `SaddleResult.imaginary_mode`
+/// straight through. It is mass-weighted and normalised internally, so its
+/// input scale does not matter; its DIRECTION does, and `forward` is `+mode`.
+///
+/// Cost: MEASURED ~71 gradients per branch on NH3 inversion, so ~142 for the
+/// pair. That is over half a TS search again -- budget the two together.
+///
+/// Closed-shell only, matching `run_saddle`: the callbacks here are the same
+/// restricted ones, so an open-shell request is refused rather than answered
+/// with the wrong reference.
+///
+/// `scf_warm_start` (default True): each point's SCF starts from the previous
+/// point's converged orbitals (`ferric_scf::warm_start`); False re-guesses
+/// every SCF.
+///
+/// `scf_ri_j_precision` (`"f32"` or `"f64"`; RI-J runs with `xc`): unset is
+/// `"f64"`, as for every geometry task (the f32 RI-J surface jitters between
+/// nearby geometries); an explicit `"f32"` is honoured.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_name, mode, xc=None, multiplicity=None,

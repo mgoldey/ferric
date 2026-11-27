@@ -194,7 +194,7 @@ Spin densities are $D^\sigma = \sum_{i \in \sigma} C^\sigma_{\mu i} C^\sigma_{\n
 with $D = D^\alpha + D^\beta$.
 
 This is what the code builds, what the Python surface documents (`AoIntegrals`
-in `crates/ferric-python/ferric.pyi`: "`jk()` takes the TOTAL density"), and
+in `crates/ferric-python/python/ferric/ferric.pyi`: "`jk()` takes the TOTAL density"), and
 what the DFT pages assume (`site/src/methods/dft-derivations.md`, "Closed
 shell, total density matrix"). From `ferric-scf/src/rhf.rs::take_orbitals`:
 
@@ -370,9 +370,9 @@ atomic units. The user surfaces do not all agree:
 | TOML `[mp2] att_r0` and the other $r_0$ keys | $r_0$ | Å | `ferric-cli/src/config.rs::att_rimp2_operator` |
 | TOML `[dft] omega` (`wb97x-l-v`) | $\omega$ | Bohr$^{-1}$ | `site/src/reference/input.md`, `[dft]` |
 | TOML `[cell] omega`, `gdf_omega` (Ewald splits) | $\omega$ | inverse of `[cell] unit`, Å$^{-1}$ by default | `site/src/reference/input.md`, `[cell]` |
-| Python `run_attenuated_rimp2(omega=)` and the other MP2 entry points | $\omega$ | Å$^{-1}$ | `run_attenuated_rimp2` in `crates/ferric-python/ferric.pyi` |
-| Python `AoIntegrals` `operator='erf'/'erfc'` | $\omega$ | Bohr$^{-1}$ | `AoIntegrals` in `crates/ferric-python/ferric.pyi` |
-| Python range-separated functional property `omega` | $\omega$ | Bohr$^{-1}$ | `TddftResult.omega` in `crates/ferric-python/ferric.pyi` |
+| Python `run_attenuated_rimp2(omega=)` and the other MP2 entry points | $\omega$ | Å$^{-1}$ | `run_attenuated_rimp2` in `crates/ferric-python/python/ferric/ferric.pyi` |
+| Python `AoIntegrals` `operator='erf'/'erfc'` | $\omega$ | Bohr$^{-1}$ | `AoIntegrals` in `crates/ferric-python/python/ferric/ferric.pyi` |
+| Python range-separated functional property `omega` | $\omega$ | Bohr$^{-1}$ | `TddftResult.omega` in `crates/ferric-python/python/ferric/ferric.pyi` |
 | Dissertation | $\omega$, $r_0$ | Å$^{-1}$, Å | `dissertation.txt:1538`, `:3739` (the text extraction drops the exponent of Å$^{-1}$) |
 
 The conversion is one constant. An inverse length in Å$^{-1}$ times
@@ -435,13 +435,13 @@ gradients in Hartree/Bohr. Real orbitals throughout. One Hartree is about
 Lengths change unit at the API boundary. You give a geometry in Å, in an XYZ
 file or a Python constructor, and the code stores and computes in Bohr.
 `Molecule.coords()` returns Å and `Molecule.coords_bohr()` returns the
-internal Bohr values (`crates/ferric-python/ferric.pyi`). A length or inverse
+internal Bohr values (`crates/ferric-python/python/ferric/ferric.pyi`). A length or inverse
 length passed through a TOML key or Python keyword is in the unit the table
 below gives for that surface.
 
 | Quantity | Internal | At the TOML and Python surface | Reference |
 |---|---|---|---|
-| Coordinates | Bohr | Å in XYZ files and Python constructors | `ferric-core/src/mol.rs::Molecule::parse_xyz`, `Molecule` in `crates/ferric-python/ferric.pyi` |
+| Coordinates | Bohr | Å in XYZ files and Python constructors | `ferric-core/src/mol.rs::Molecule::parse_xyz`, `Molecule` in `crates/ferric-python/python/ferric/ferric.pyi` |
 | Bohr radius | 0.52917721092 Å (CODATA 2010) | | `ferric-core/src/units.rs::BOHR_RADIUS_ANGSTROM` |
 | Attenuation $\omega$, $r_0$ | Bohr$^{-1}$, Bohr | see section @sec:notation-attenuated-coulomb-operators | |
 | $\kappa_{\mathrm{reg}}$ | Ha$^{-1}$ | Ha$^{-1}$ | `ferric-mp2/src/rimp2.rs::RiMp2Config` |

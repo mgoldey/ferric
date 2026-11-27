@@ -111,7 +111,8 @@ fn on_density_without_gil<T: Send>(
     .map_err(make_err)
 }
 
-/// Electrostatic potential at each nucleus (Hartree atomic units).
+/// Electrostatic potential at each nucleus, in Hartree atomic units (e/Bohr).
+/// `result` is an `RhfResult` or `DftResult` from a converged SCF.
 #[pyfunction]
 pub(crate) fn esp_at_atoms(
     py: Python<'_>,
@@ -124,7 +125,16 @@ pub(crate) fn esp_at_atoms(
     })
 }
 
-/// Electrostatic potential at arbitrary points (N,3) in Bohr.
+/// Electrostatic potential at ARBITRARY points, in Hartree atomic units
+/// (e/Bohr). `points` is an (N, 3) array of Cartesian positions in **Bohr**.
+///
+/// This is the primitive behind CHELPG/RESP and is what you want for an ESP on
+/// a molecular surface (vdW shell, solvent-accessible grid, ...). Prefer it
+/// over reconstructing the surface potential from partial charges plus induced
+/// dipoles: that is a point-multipole approximation to a quantity computed
+/// here exactly from the density.
+///
+/// `result` is an `RhfResult` or `DftResult` from a converged SCF.
 #[pyfunction]
 pub(crate) fn esp_at_points(
     py: Python<'_>,
@@ -148,13 +158,14 @@ pub(crate) fn esp_at_points(
     .map_err(make_err)
 }
 
-/// Electrostatic potential on a van der Waals surface.
+/// Electrostatic potential on a molecular van der Waals surface.
 ///
-///     A Lebedev sphere of `n_angular` points sits at `vdw_scale` x the Bondi
-///     radius of every atom; points inside another atom's scaled radius are
-///     dropped. Returns `(points, esp, n_buried)`: points (M,3) in Bohr, ESP in
-///     Hartree/e, and the number of sample points dropped as buried (0 for an
-///     isolated atom).
+/// A Lebedev sphere of `n_angular` points is placed at `vdw_scale` x the Bondi
+/// radius of every atom; points inside another atom's scaled radius are
+/// dropped. Returns `(points, esp, n_buried)`: `points` is an (M, 3) array in
+/// **Bohr**, `esp` the potential there in Hartree/e (same sign convention as
+/// `esp_at_points`), and `n_buried` the number of sample points dropped as
+/// buried. `result` is an `RhfResult` or `DftResult` from a converged SCF.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, result, vdw_scale=1.4, n_angular=110))]
 pub(crate) fn esp_on_surface<'py>(
@@ -178,13 +189,20 @@ pub(crate) fn esp_on_surface<'py>(
     Ok((PyArray2::from_array(py, &arr), esp, n_buried))
 }
 
-/// Hirshfeld partial charges (units of e).
+/// Hirshfeld partial charges (units of e). `result` is an `RhfResult` or
+/// `DftResult` from a converged SCF.
 ///
-///     proatom="scf" (default): free-atom SCF densities in the molecule's basis,
-///     solved with the same SCF settings as `result` -- the proatom the CLI's
-///     `[rpa] compute_hirshfeld_charges` uses. proatom="slater": a
-///     single-exponential Slater proatom (qualitative; warns). Any other value
-///     raises ValueError.
+/// `proatom` selects the free-atom reference density:
+///   "scf"    (default) free-atom SCF densities in the molecule's own basis,
+///            solved with the same SCF settings as `result` (method, functional,
+///            density fitting, thresholds) — the proatom ferric-cli's
+///            `[rpa] compute_hirshfeld_charges` uses
+///            (`ferric_scf::properties::scf_proatom_provider`). An atom whose
+///            free-atom SCF fails falls back to the Slater proatom, with a warning.
+///   "slater" a single-exponential Slater proatom (xi = 1 / Bragg-Slater
+///            radius). Qualitative: 0.23-0.72 e from "scf" on H2O, CO and
+///            CH3OH. Prints a warning.
+/// Any other value raises ValueError.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, result, proatom="scf"))]
 pub(crate) fn hirshfeld_charges(
@@ -263,7 +281,10 @@ pub(crate) fn hirshfeld_with_proatoms(
     ferric_rpa::properties::hirshfeld_charges(mol, bs, density, Some(provider))
 }
 
-/// Per-orbital centroids and spatial spreads. Restricted only.
+/// Per-orbital centroids <p|r|p> (Bohr, list of [x,y,z]) and spatial spreads
+/// sigma_p = sqrt(<r^2> - |<r>|^2) (Bohr) for the converged restricted MOs.
+/// Mirrors Q-Chem 7's "second moments of orbitals" property; the spreads are
+/// the pair-gate inputs of the amplitude-threshold local-correlation family.
 #[pyfunction]
 pub(crate) fn orbital_moments(
     mol: &PyMolecule,
@@ -286,7 +307,8 @@ pub(crate) fn orbital_moments(
     Ok((c, spreads))
 }
 
-/// Density second-moment tensor (3x3, Bohr^2) about the origin.
+/// Electronic-density second-moment tensor (3x3 nested list, Bohr^2) about
+/// the origin: M_xy = sum_uv D_uv <u|x y|v>; trace = <r^2> of the density.
 #[pyfunction]
 pub(crate) fn density_second_moment(
     mol: &PyMolecule,
@@ -339,8 +361,11 @@ pub(crate) fn density_from_ao_values(d: &Array2<f64>, chi: &Array2<f64>) -> Vec<
         .collect()
 }
 
-/// AO values chi_mu(r) at arbitrary points: (N, nbasis) array, Bohr^-3/2.
-///     `points` is (N, 3) in Bohr.
+/// Atomic orbital values chi_mu(r) at arbitrary points, as an (N, nbasis)
+/// array (PySCF `eval_gto(...)` layout, transposed from ferric's internal
+/// (nbasis, N)). `points` is an (N, 3) array of Cartesian positions in
+/// **Bohr**; values are in Bohr^(-3/2). Column order is the basis-function
+/// order of the SCF (`result.mo_coefficients` rows).
 #[pyfunction]
 pub(crate) fn eval_ao_on_points<'py>(
     py: Python<'py>,
@@ -353,7 +378,9 @@ pub(crate) fn eval_ao_on_points<'py>(
     Ok(PyArray2::from_array(py, &chi.t().to_owned()))
 }
 
-/// Total electron density at arbitrary points (N,3) in Bohr; e/Bohr^3.
+/// Electron density rho(r) = sum_{mu nu} D_{mu nu} chi_mu(r) chi_nu(r)
+/// (total, alpha + beta) at arbitrary points, in e/Bohr^3. `points` is an
+/// (N, 3) array in **Bohr**. `result` is an `RhfResult` or `DftResult`.
 #[pyfunction]
 pub(crate) fn eval_density_on_points(
     mol: &PyMolecule,
@@ -371,8 +398,11 @@ pub(crate) fn eval_density_on_points(
     Ok(density_from_ao_values(result.density(), &chi))
 }
 
-/// Restricted MO values at points (N,3) in Bohr: (N, len(mo_indices)),
-///     Bohr^-3/2. mo_indices are 0-based columns of mo_coefficients.
+/// Restricted molecular orbital psi_i(r) = sum_mu C_{mu i} chi_mu(r) at
+/// arbitrary points: returns an (N, len(mo_indices)) array in Bohr^(-3/2).
+/// `mo_indices` are 0-based columns of `result.mo_coefficients` (energy
+/// order). `points` is an (N, 3) array in **Bohr**. Restricted (RHF/RKS)
+/// results only; orbital signs are the SCF's arbitrary phase.
 #[pyfunction]
 pub(crate) fn eval_mo_on_points<'py>(
     py: Python<'py>,
@@ -457,10 +487,16 @@ pub(crate) fn cube_grid_spec(
     })
 }
 
-/// Write a Gaussian cube file of the density (e/Bohr^3) or a restricted MO
-///     (what="mo", needs mo_index). All lengths in Bohr. Grid is axis-aligned with
-///     isotropic `spacing`; omitted origin/shape come from the atoms' bounding box
-///     plus `padding`. Returns the (origin, shape) used.
+/// Write a Gaussian cube file of the total electron density or one
+/// restricted MO on an axis-aligned regular grid.
+///
+/// `what` is `"density"` (e/Bohr^3) or `"mo"` (psi_i, Bohr^(-3/2); needs
+/// `mo_index`, 0-based, restricted results only). All lengths are **Bohr**,
+/// matching the cube format (positive voxel counts mean Bohr). The grid is
+/// `shape = (nx, ny, nz)` points starting at `origin` with isotropic
+/// `spacing`; when `origin`/`shape` are omitted they are derived from the
+/// atoms' bounding box plus `padding`. Returns `(origin, shape)` actually
+/// used. `result` is an `RhfResult` or `DftResult`.
 #[pyfunction]
 #[pyo3(signature = (path, mol, basis_set, result, what="density", mo_index=None, spacing=0.3, padding=4.0, origin=None, shape=None))]
 #[allow(clippy::too_many_arguments)]
@@ -560,7 +596,9 @@ pub(crate) fn write_cube(
     Ok((origin, shape))
 }
 
-/// Lowdin (symmetric-orthogonalization) partial charges (units of e).
+/// Löwdin (symmetric-orthogonalization) partial charges (units of e).
+/// Closed-shell only. `result` is an `RhfResult` or `DftResult` from a
+/// converged SCF.
 #[pyfunction]
 pub(crate) fn lowdin_charges(
     py: Python<'_>,
@@ -573,7 +611,11 @@ pub(crate) fn lowdin_charges(
     })
 }
 
-/// Mulliken partial charges (units of e).
+/// Mulliken partial charges (units of e), the standard textbook population
+/// analysis. Known to be more basis-set-sensitive than Löwdin (prefer
+/// `lowdin_charges` for a more basis-stable partition); included as the
+/// standard baseline every QC package provides. Closed-shell only. `result`
+/// is an `RhfResult` or `DftResult` from a converged SCF.
 #[pyfunction]
 pub(crate) fn mulliken_charges(
     py: Python<'_>,
@@ -586,7 +628,14 @@ pub(crate) fn mulliken_charges(
     })
 }
 
-/// CHELPG (ESP-fitted) partial charges (units of e).
+/// CHELPG (CHarges from Electrostatic Potentials, Grid-based) partial
+/// charges (units of e). Structurally different from
+/// `hirshfeld_charges`/`lowdin_charges`/`mulliken_charges`: those split the
+/// electron density directly among atoms (population partition); CHELPG
+/// instead fits atom-centered point charges to best reproduce the molecular
+/// electrostatic potential on a grid around the molecule (Breneman & Wiberg,
+/// J. Comput. Chem. 11, 361 (1990)). Closed-shell only. `result` is an
+/// `RhfResult` or `DftResult` from a converged SCF.
 #[pyfunction]
 pub(crate) fn chelpg_charges(
     py: Python<'_>,
@@ -599,7 +648,14 @@ pub(crate) fn chelpg_charges(
     })
 }
 
-/// RESP (restrained ESP-fitted) partial charges (units of e).
+/// RESP (Restrained ElectroStatic Potential) partial charges (units of e).
+/// Same ESP grid-fitting as `chelpg_charges`, plus a hyperbolic restraint
+/// damping non-hydrogen atomic charges toward zero (Bayly, Cieplak,
+/// Cornell, Kollman, J. Phys. Chem. 97, 10269 (1993)). This is a
+/// single-stage restrained fit with the standard literature weight/
+/// tightness parameters — NOT the full multi-stage/multi-conformer RESP
+/// averaging procedure. Closed-shell only. `result` is an `RhfResult` or
+/// `DftResult` from a converged SCF.
 #[pyfunction]
 pub(crate) fn resp_charges(
     py: Python<'_>,
@@ -612,7 +668,18 @@ pub(crate) fn resp_charges(
     })
 }
 
-/// Per-atom Hirshfeld-partitioned static dipole polarizability (natoms, 3, 3) in Bohr^3.
+/// Per-atom Hirshfeld-partitioned static dipole polarizability tensors
+/// (Bohr^3), via true PDEP-RPA α(ω=0) on a real-space Becke/Hirshfeld grid.
+/// Closed-shell (Restricted) only — `result` must come from `run_rhf` or
+/// `run_dft` on a closed-shell molecule. `auxbasis` is the RI auxiliary basis
+/// (e.g. a `*-rifit`/`*-ri` bundled set, NOT the SCF's own `df_j_aux`).
+///
+/// This is materially more expensive than `esp_at_atoms`/`hirshfeld_charges`/
+/// `lowdin_charges`: it builds RI intermediates plus an AO-value grid over
+/// the whole molecule (`FERRIC_HIRSHFELD_SPACING`/`FERRIC_HIRSHFELD_MARGIN`
+/// env vars control resolution vs. memory; the grid is budget-checked
+/// against `memory_budget_gb`, auto-resolved to 80% of available RAM when
+/// omitted — see `ferric_core::memory::resolve_budget_bytes`).
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, result, memory_budget_gb=None))]
 pub(crate) fn hirshfeld_polarizability<'py>(

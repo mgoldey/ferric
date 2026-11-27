@@ -515,53 +515,115 @@ pub(crate) fn parse_gamma_options(
     })
 }
 
-/// Closed-shell Gamma-point periodic RHF.
+/// Closed-shell **Gamma-point periodic RHF** (3-D periodic, one k-point).
 ///
-///     jk="dense" (default): the toy-scale dense pure-AFT nao^4 ERI oracle,
-///     hard-capped by max_eri_gb (default 0.5 GiB). jk="rsgdf": range-separated
-///     Gaussian density fitting; REQUIRES auxbasis (BasisSet or bundled name,
-///     e.g. "cc-pvdz-ri"), bounded by memory_budget_gb (None = ferric's unified
-///     budget). auxbasis/memory_budget_gb with "dense", or max_eri_gb with
-///     "rsgdf", raise ValueError. lattice: 3x3 rows in Angstrom; omega in
-///     1/Angstrom; exxdiv "ewald" | "none" and jk (strict). Charged cells, open
-///     shells and odd (valence) electron counts raise ValueError. An ECP basis
-///     (e.g. def2-* for Z > 36, *-pp) is applied to the cell's molecule as in
-///     run_rhf, and the lattice-summed V_ECP enters the periodic hcore.
+/// Two J/K builders, chosen by `jk` (strict; default `"dense"`):
 ///
-///     with_gradient / with_stress (default False) add the analytic nuclear
-///     gradient (result.gradient(): natoms x 3, dE/dR in Hartree/Bohr) and stress
-///     (result.stress(): 3 x 3 in Hartree/Bohr^3) of the reported energy, on the
-///     SCF's own J/K (both jk values). The SCF must converge.
+///   "dense"  TOY-SCALE ORACLE. The dense pure-AFT ERI (`ferric_pbc::dense_aft`):
+///            an `8 * nao^4`-byte tensor, HARD-capped by `max_eri_gb` (default
+///            0.5 GiB, i.e. nao <= ~90). An oversize cell is a `ValueError`
+///            raised before any integral work. Exact to the AFT precision.
+///   "rsgdf"  Range-separated Gaussian density fitting (`ferric_pbc::rsgdf`,
+///            PySCF RSGDF convention, omega_gdf = 1 Bohr⁻¹ unless
+///            `gdf_omega` is given, lindep 1e-10).
+///            REQUIRES `auxbasis`: a `BasisSet` or a bundled name (e.g.
+///            `"cc-pvdz-ri"`, `"def2-universal-jkfit"`). There is no default
+///            aux basis: the fitting error depends on the aux/orbital pairing
+///            (H2/STO-3G: -2.0e-6 Ha with cc-pvdz-ri, -4.5e-6 with
+///            def2-universal-jkfit), so an implicit choice would hide it.
+///            Memory is gated by ferric's unified budget: `memory_budget_gb`
+///            (None = `FERRIC_MEM_BUDGET_GB` / 0.8 x available RAM).
 ///
-///     range_split (default None): opt-in RS-GDF range split. None/False = off
-///     (the unsplit build bit for bit), True = lambda 1, a number > 0 = lambda.
-///     Moves the short-range blocks whose Fourier transform converges in the
-///     long-range G sphere to G space (lambda <= 1 adds no G vectors). rsgdf
-///     ENERGY only: ValueError with jk="dense" or with_gradient/with_stress.
-///     Every Gamma binding below takes the same range_split.
+/// `auxbasis`/`memory_budget_gb` with `jk="dense"`, or `max_eri_gb` with
+/// `jk="rsgdf"`, is a `ValueError` (a knob the chosen path ignores would be a
+/// silent no-op).
 ///
-///     gdf_omega (default None): the RS-GDF Ewald split omega_gdf in 1/Angstrom
-///     (like omega; finite, > 0). None = 1/Bohr (the default build, bit for
-///     bit). Any value gives the same energy up to the fit's truncation; it moves
-///     work between the short-range lattice sums and the long-range G sphere
-///     (timings["counters"]["rsgdf LR half-G"]). With omega=None the default
-///     nuclear-attraction split's cap follows it. rsgdf only: ValueError with
-///     jk="dense". Every periodic binding below takes the same gdf_omega.
+/// Units (the ferric Python convention):
+///   mol       `Molecule` whose atoms are the reference cell; its coordinates
+///             are Ångström on input (`from_xyz_string`), Bohr internally.
+///   lattice   3x3 lattice vectors as ROWS, in **Ångström**
+///             (`[[ax, ay, az], [bx, by, bz], [cx, cy, cz]]`), converted with
+///             the same factor the XYZ parser uses.
+///   omega     nuclear-attraction Ewald split in **Å⁻¹** (numerical knob;
+///             any value > 0 gives the same energy to ~1e-9 Ha). None =
+///             `min(2.5 sqrt(pi) / volume^(1/3), 0.9636 Bohr^-1)`
+///             (`ferric_pbc::hcore::default_hcore_omega`, converted to
+///             Å⁻¹ in `result.omega`; with `gdf_omega` given, the cap
+///             follows it: `ferric_pbc::hcore::default_hcore_omega_for_gdf`).
+///             Not the RS-GDF split, which is `gdf_omega`.
+///   energies  Hartree per cell.
 ///
-///     sr_column_rotation (default None = auto): column rotation of generally
-///     contracted shells (cc-pVXZ-style s/p columns) in the Gamma hcore SR
-///     attraction and RS-GDF SR 3-centre walks, back-transformed exactly. Same
-///     energy to the screening precision (<= 1.5e-11 Ha/cell measured at
-///     gdf_omega >= 0.7) with fewer SR integral calls
-///     (timings["counters"]["hcore SR rotated columns"] and ["rsgdf SR3 rotated
-///     columns"], present whenever the rotation was on, 0 = nothing in the basis
-///     rotates; absent when it was off). with_gradient / with_stress
-///     differentiate the same rotated walks (forces/stress equal the unrotated
-///     ones to the screening precision). None: ON for a jk="rsgdf" run, OFF with
-///     jk="dense". False: off (the unrotated build bit for bit). True: on;
-///     ValueError with jk="dense".
-///     Every Gamma binding below takes it; the k-point bindings do not
-///     (TypeError; their RS-GDF energy builds run the library default, rotated).
+/// Arguments:
+///   exxdiv       "ewald" (default; Madelung-corrected exchange, PySCF
+///                `exxdiv='ewald'`, converges as L^-3) or "none" (drop G=0,
+///                converges as 1/L). Strict: anything else is a ValueError.
+///   jk           "dense" (default) or "rsgdf". Strict.
+///   auxbasis     RS-GDF aux basis (BasisSet or bundled name); rsgdf only.
+///   max_eri_gb   cap on the dense ERI tensor in GiB (> 0; default 0.5);
+///                dense only.
+///   memory_budget_gb  RS-GDF memory budget in GiB (> 0); rsgdf only.
+///   max_iter, density_conv   SCF controls (defaults 200, 1e-10). The guess
+///                is the core-Hamiltonian guess on the lattice S/h (the
+///                molecular SAD guess is not periodic).
+///   with_gradient  (default False) also compute the analytic nuclear
+///                gradient: `result.gradient()`, natoms x 3, dE/dR in
+///                Hartree/Bohr per cell (the molecular `gradient()`
+///                convention). `None` when not requested.
+///   with_stress  (default False) also compute the analytic stress:
+///                `result.stress()`, 3 x 3, σ = (1/Ω) dE/dε in Hartree/Bohr³
+///                (strain of lattice rows AND atoms). Both run on the SCF's
+///                own J/K (rsgdf: B built with its gradient pieces, bitwise
+///                the energy's) and need a converged SCF.
+///   range_split  (default None) opt-in RS-GDF range split
+///                (`ferric_pbc::rsgdf::RangeSplit`): None/False = off (the
+///                unsplit build bit for bit), True = lambda 1 (the rigorous
+///                default), a number > 0 = lambda. Moves the SR blocks whose
+///                FT converges in the LR sphere (orbital primitive exponent
+///                <= lambda*omega_gdf^2/2, aux <= lambda*omega_gdf^2) to G
+///                space; lambda <= 1 adds no G vectors. The split's
+///                primitive counters appear in `timings["counters"]`
+///                ("rsgdf split ..."). rsgdf ENERGY only: with jk="dense" or
+///                with_gradient/with_stress it is a ValueError.
+///   gdf_omega    (default None) the RS-GDF Ewald split omega_gdf in **Å⁻¹**
+///                (like `omega`; finite, > 0). None = 1 Bohr⁻¹
+///                (`ferric_pbc::rsgdf::DEFAULT_RSGDF_OMEGA`), the default
+///                build bit for bit. Any value gives the same energy up to the
+///                fit's truncation; it moves work between the SR lattice sums
+///                (radii ~ 1/omega_gdf) and the LR G sphere (|G| <=
+///                2 omega_gdf sqrt(ln(1/1e-13)); `timings["counters"]["rsgdf
+///                LR half-G"]`). The range split's thresholds and the
+///                gradient/stress follow it. rsgdf only: with jk="dense" it is
+///                a ValueError. Every periodic binding takes the same kwarg.
+///   sr_column_rotation (default None = auto) column rotation of generally
+///                contracted shells (cc-pVXZ-style s/p columns) in the Gamma
+///                hcore SR attraction and RS-GDF SR 3-centre walks
+///                (`ferric_pbc::SrColumnRotation`), back-transformed exactly.
+///                Same energy to the screening precision, fewer SR integral
+///                calls; with_gradient / with_stress differentiate the same
+///                rotated walks (forces/stress equal the unrotated ones to the
+///                screening precision). None: ON for a jk="rsgdf" run, OFF
+///                with jk="dense". False: off (the unrotated build bit for
+///                bit, as is any setting on a basis with nothing to rotate).
+///                True: on, a ValueError with jk="dense". Counters
+///                `timings["counters"]["hcore SR rotated columns"]` and
+///                `["rsgdf SR3 rotated columns"]` (present whenever the
+///                rotation was on, 0 = nothing in the basis rotates; absent
+///                when it was off). The Gamma bindings take it; the k-point
+///                bindings do not take the kwarg, and their RS-GDF energy
+///                builds run the library default (rotated, counter
+///                `["k rsgdf SR3 rotated columns"]`).
+///
+/// Hard errors (ValueError): charged cell (charge != 0; no neutralising-
+/// background correction for electrons), multiplicity != 1 or an odd
+/// electron count (RHF only; counted after the ECP), a non-3x3 or singular lattice,
+/// a bad `exxdiv`/`jk`, an unknown bundled `auxbasis`, a knob given to the
+/// path that ignores it, non-positive `omega`/`max_eri_gb`/`memory_budget_gb`,
+/// an oversize dense cell.
+///
+/// Validated (crates/ferric-python/tests/test_pbc_gamma.py, and the Rust
+/// `pbc_dense_aft_scf` / `pbc_rsgdf` suites): H2/STO-3G in a 4 Bohr cube vs
+/// PySCF 2.13 AFTDF, E = -1.658327061049 (ewald) / -0.949002691179 (none),
+/// to 1e-8 (dense); RS-GDF fitting error E_rsgdf - E_dense vs the Rust suite.
 #[pyfunction]
 #[pyo3(signature = (
     mol, lattice, basis_set, exxdiv="ewald", omega=None, max_eri_gb=None,

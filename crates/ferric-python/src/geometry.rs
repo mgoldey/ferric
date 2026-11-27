@@ -326,14 +326,12 @@ pub(crate) fn run_optimize(
     }
 }
 
-/// Geometry optimization (UHF): `run_optimize(..., reference="uhf")`.
+/// Optimize an OPEN-SHELL geometry with a UHF reference:
+/// `run_optimize(..., reference="uhf")` with the same kwargs.
 ///
-///     `solvent`, `pcm_lebedev_order`: IEF-PCM implicit solvation, as in `run_optimize`.
-///
-///     The spin state comes from the `Molecule`'s multiplicity, as in `run_uhf`.
-///     `scf_max_iter`, `scf_energy_conv`, `scf_density_conv` control the SCF at every
-///     geometry, `scf_warm_start` the guess and `coordinates` the step coordinates, as in
-///     `run_optimize`.
+/// The spin state comes from the `Molecule` (its multiplicity), exactly as in
+/// `run_uhf` -- there is no `multiplicity` kwarg here, and passing a
+/// closed-shell molecule simply runs UHF on a singlet.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_name, max_steps=None, e_conv=None, point_charges=None, external_field=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, solvent=None, pcm_lebedev_order=None, scf_warm_start=None, coordinates=None))]
 #[allow(clippy::too_many_arguments)]
@@ -1725,7 +1723,9 @@ impl PyFrequencyResult {
     /// The geometry the frequencies were computed at.
     #[getter]
     fn molecule(&self) -> PyMolecule {
-        PyMolecule { inner: self.molecule.clone() }
+        PyMolecule {
+            inner: self.molecule.clone(),
+        }
     }
     /// RRHO thermochemistry (dict; see the .pyi). Imaginary modes are left
     /// out with a `RuntimeWarning`.
@@ -1817,112 +1817,82 @@ impl PyFrequencyResult {
     }
 }
 
-/// Harmonic vibrational frequencies.
+/// Harmonic vibrational frequencies, mass-weighted with translations and
+/// rotations projected out.
 ///
-///     `method="pdep-rpa"`: closed-shell RHF + RI-dRPA frequencies, central differences
-///     (`delta`, `scf_warm_start`) of the RPA nuclear gradient (6 N_atoms gradients,
-///     `.hessian_source` "finite-difference"). Needs `auxbasis`; `frozen_core`,
-///     `rpa_gradient`, `n_quad`, `quadrature` and `trunc_thresh` are as in
-///     `run_optimize(method="pdep-rpa")`, including the default that runs the analytic
-///     gradient wherever it applies. Every SCF-route kwarg (`reference`, `xc`, `hessian`,
-///     `dispersion`, `multiplicity`, `point_charges`, `external_field`, the SCF controls and
-///     the density-fitting kwargs) raises. The RPA kwargs raise for `method="scf"`.
+/// `df_j_aux` / `df_k_aux` density-fit the Coulomb and exchange of every SCF
+/// the run does, with `run_rhf`'s spellings. Unset is exact J/K for HF and,
+/// with `xc`, RI-J and RI-K on def2-universal-jkfit for every reference (the
+/// CLI's default; `"none"` for exact). The analytic
+/// RHF, UHF and ROHF Hessians then differentiate the fitted energy (RI-J,
+/// RI-K or both; ferric_scf::hessian_df / hessian_df_k), and the
+/// finite-difference path differences the fitted analytic gradient. RI with
+/// `point_charges` / `external_field` takes the finite-difference path under
+/// "auto" (`"analytic"` raises).
 ///
-///     `method="att-rimp2"`: RHF (UHF when the molecule's multiplicity is above 1) + attenuated RI-MP2
-///     (erfc(omega r)/r correlation) frequencies, central differences of its analytic nuclear gradient
-///     (`ferric_mp2::att_rimp2_gradient`), as the CLI's `kind = "att-rimp2"`,
-///     `task = "frequencies"`. Needs `auxbasis`; `frozen_core` (default 0), `omega`
-///     (inverse Angstrom, default 0.420), `scf_jk` ("exact" or "rijk"; unset is RI-JK
-///     on the matched JK-fit basis, or four-centre with `scf_eri`), `jk_auxbasis` and
-///     `memory_budget_gb` are as in `run_optimize(method="att-rimp2")`, and so are
-///     `att_operator` / `r0` (`"terfc"` on an RHF or UHF). The SCF-route
-///     kwargs raise, `omega`, `att_operator`, `r0`, `scf_jk`, `jk_auxbasis` and
-///     `memory_budget_gb` raise for the other methods; `reference="rohf"` raises. No IR
-///     intensities.
+/// `hessian`: "auto" (default) uses the analytic Hessian for RHF (closed
+/// shell) or UHF (any multiplicity) with exact J/K, with or without an ECP,
+/// or ROHF with exact J/K and no external potential (an ECP is analytic for all three, also with RI-J / RI-K),
+/// and a basis up to f functions and fixed external point charges or a uniform field (QM/MM, RHF and UHF only,
+/// QM-QM block; this binding takes `point_charges=` / `external_field=` only,
+/// the Gaussian-smeared charges the Hessian also covers are reachable from the
+/// CLI and Rust API) (one SCF plus CPHF); for Kohn-Sham (`xc=` with
+/// `reference="rhf"` or `"uhf"`) the "analytic-moving-grid" Hessian below
+/// wherever it applies; and a finite difference of the ANALYTIC gradient (6N
+/// gradient evaluations) otherwise (ROKS, meta-GGA, VV10, range-separated
+/// hybrids, external potentials with `xc=`, MBD@rsSCS `dispersion=`, and large
+/// systems whose response AO table -- basis functions x grid points x 4 for
+/// a GGA, 8 bytes each -- exceeds 2 GiB: on the default grid a GGA above
+/// about 8,100 basis functions x atoms). The choice is made before the SCF;
+/// an error an analytic path raises after it (a non-converged SCF; for ROHF a
+/// Fock-consistency failure from a loose convergence threshold; a
+/// non-converging response, non-positive curvature) is raised, not retried
+/// with finite differences. "analytic" raises if the Hartree-Fock analytic Hessian does not
+/// apply (it never covers KS); "fd" always differences gradients.
+/// `.hessian_source` says which ran.
+/// "analytic-moving-grid" is the analytic RKS or UKS Hessian on the
+/// production (moving) grid, Becke weight response included: the Hessian of
+/// the surface the KS gradient differentiates, so it agrees with "fd" to the
+/// finite-difference error. It needs `xc=` (LDA/GGA, pure or global hybrid)
+/// and `reference="rhf"` or `"uhf"`, and raises before the SCF for
+/// Hartree-Fock, "rohf" (ROKS), meta-GGA, VV10, range-separated hybrids,
+/// `point_charges=`/`external_field=` and MBD@rsSCS `dispersion=`. An ECP
+/// (shells up to f) and D3(BJ) `dispersion=` are supported.
 ///
-///     `method="rimp2"`, `"scs-mp2"`, `"oo-rimp2"`, `"scs-mp2-2terfc"`: central differences
-///     of the analytic nuclear gradient of RHF + RI-MP2, SCS-MP2, orbital-optimized RI-MP2
-///     and SCS-MP2(2terfc), as the CLI's
-///     `task = "frequencies"` for those kinds (`ferric_mp2::gradient`,
-///     `ferric_mp2::optimize::oo_rimp2_energy_gradient`). Need `auxbasis`; `frozen_core`
-///     (default 0; must be 0 for `"oo-rimp2"`), `scf_jk`, `jk_auxbasis` and
-///     `memory_budget_gb` are as in `run_optimize` for the same method, `c_os` / `c_ss`
-///     (defaults 6/5 and 1/3) read by `"scs-mp2"` and `"scs-mp2-2terfc"` (whose defaults and
-///     `r0_bonded` / `r0_nonbonded` are those of `run_scs_mp2_2terfc`), `oo_max_iter` /
-///     `oo_grad_conv` by `"oo-rimp2"` only. `"rimp2"` and `"scs-mp2-2terfc"` on an
-///     open-shell molecule run a UHF reference with the unrestricted gradient (the
-///     molecule's multiplicity picks it; `reference="rohf"` raises); `"scs-mp2"` and
-///     `"oo-rimp2"` are closed shell only. The SCF-route kwargs
-///     (`xc`, `hessian`, `dispersion`, `multiplicity`, `point_charges`, `external_field`,
-///     the SCF controls, `scf_eri` and the density-fitting kwargs) and the other methods'
-///     kwargs raise. No IR intensities.
+/// `reference` selects the SCF: "rhf" (default), "uhf", or "rohf". Setting
+/// `xc` promotes it to the matching KS variant (RKS/UKS/ROKS).
 ///
-///     `scf_max_iter`, `scf_energy_conv`, `scf_density_conv` control every SCF of the run
-///     (`run_rhf`'s `max_iter`, `energy_conv`, `density_conv`); the bare spellings are
-///     deprecated aliases that warn.
+/// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: SCF controls of every
+/// SCF the run does (defaults 200, 1e-3, 1e-6, as in `run_rhf`'s `max_iter`,
+/// `energy_conv`, `density_conv`; those bare names are deprecated aliases). A finite-difference
+/// Hessian differentiates SCF gradients, so its noise floor is the SCF's.
 ///
-///     `scf_ri_j_precision`: RI-J tensor storage, "f32" or "f64"; unset is "f64" here
-///     (frequency task: the f32 surface jitters between nearby geometries, which a
-///     finite-difference Hessian differences), an explicit "f32" is honoured. The
-///     certificate's `ri-j` entry records which and why.
+/// `delta` is the central-difference displacement in Bohr (default 5e-3). It is
+/// a real accuracy knob that degrades silently -- too large adds truncation
+/// error, too small amplifies SCF noise. Check `.asymmetry` rather than
+/// assuming.
 ///
-///     `scf_warm_start` (default False, opt-in): a finite-difference Hessian
-///     starts every displaced SCF from the undisplaced geometry's converged
-///     orbitals (anchored, never chained). At equal `scf_density_conv` the warm
-///     Hessian is noisier, so pair it with a ~100x tighter `scf_density_conv`.
+/// `scf_warm_start` (default False, opt-in): a finite-difference Hessian
+/// starts every displaced SCF from the undisplaced geometry's converged
+/// orbitals (anchored at the reference, never chained from the previous
+/// displacement; `[frequencies] scf_warm_start`). At equal `scf_density_conv`
+/// the warm Hessian is noisier (warm SCFs stop nearer the threshold; propane
+/// def2-SVP: 9.4 cm^-1 on a soft mode at 1e-6 against 0.03 cold), so pair it
+/// with a ~100x tighter `scf_density_conv`. No effect on an analytic Hessian.
 ///
-///     `df_j_aux` / `df_k_aux` density-fit every SCF of the
-///     run as in `run_rhf`. Unset means exact J/K for HF and, for KS (`xc=`),
-///     RI-J and RI-K in def2-universal-jkfit for every reference (RKS, UKS,
-///     ROKS: the CLI's default); pass `"none"` for exact. The analytic RHF/UHF/ROHF Hessian differentiates
-///     the fitted energy (RI-J, RI-K or both) and `"fd"` differences the fitted
-///     analytic gradient. RI with point charges / a field takes the
-///     finite-difference path under "auto" (`"analytic"` raises).
-///
-///     `hessian="auto"` uses the analytic Hessian for RHF (closed shell) or UHF
-///     (any multiplicity) with exact J/K, with or without an ECP, or ROHF with
-///     exact J/K and no ECP or external potential (`point_charges` /
-///     `external_field` are analytic for RHF and UHF only), and a basis up to f
-///     functions; for Kohn-Sham (`xc` with `reference="rhf"` or `"uhf"`) the
-///     `"analytic-moving-grid"` Hessian below wherever it applies; and a finite
-///     difference of analytic gradients otherwise (ROKS, meta-GGA, VV10,
-///     range-separated hybrids, external potentials with `xc`, MBD@rsSCS
-///     `dispersion`, and large systems whose response AO table -- basis
-///     functions x grid points x 4 for a GGA, 8 bytes each -- exceeds 2 GiB: on
-///     the default grid a GGA above about 8,100 basis functions x atoms). The
-///     choice is made before the SCF; an error an analytic path raises after it
-///     (a non-converged SCF; for ROHF a Fock-consistency failure from a loose
-///     convergence threshold; a non-converging response, non-positive curvature)
-///     is raised, not retried with finite differences; `"analytic"` raises if the Hartree-Fock
-///     analytic Hessian does not apply (it never covers KS); `"fd"` always
-///     differences gradients. `.hessian_source` says which ran.
-///
-///     `hessian="analytic-moving-grid"` is
-///     the analytic RKS or UKS Hessian on the production (moving) grid, Becke
-///     weight response included: the Hessian of the surface the KS gradient
-///     differentiates, so it agrees with `"fd"` to the finite-difference error.
-///     It needs `xc` (LDA/GGA, pure or global hybrid) and `reference="rhf"` or
-///     `"uhf"`, and raises before the SCF for Hartree-Fock, `"rohf"` (ROKS),
-///     meta-GGA, VV10, range-separated hybrids, `point_charges` /
-///     `external_field` and MBD@rsSCS `dispersion`. An ECP is supported (shells
-///     up to f), as is D3(BJ) `dispersion` (its analytic Hessian is added).
-///
-///     `max_iter`, `energy_conv`, `density_conv` are the SCF controls of every
-///     SCF the run does (defaults 200, 1e-3, 1e-6, as in `run_rhf`); a
-///     finite-difference Hessian's noise floor is the SCF's.
-///
-///     `point_charges` ((q, x, y, z) in Bohr) and `external_field` embed the QM
-///     region in an MM field, the same way `run_optimize` does.
-///
-///     `dispersion` ("d3bj", "d3(bj)", "d3bj(<functional>)", "mbd",
-///     "mbd(<functional>)", as in `run_dft`) requires `xc` and works on every
-///     reference (RKS, UKS, ROKS). D3(BJ) depends on the geometry only: wherever
-///     the run without dispersion would use an analytic Hessian, the Hessian is
-///     that one plus the analytic D3(BJ) Hessian; otherwise the finite difference
-///     of the KS + D3(BJ) analytic gradient. MBD@rsSCS follows the density: its
-///     Hessian is always the finite difference of the KS + MBD analytic gradient,
-///     so `hessian="analytic"` and `hessian="analytic-moving-grid"` raise with
-///     it.
+/// `dispersion`: the same strict spellings as `run_dft` ("d3bj", "d3(bj)",
+/// "d3bj(<functional>)", "mbd", "mbd(<functional>)"). Requires `xc`; any
+/// reference ("rhf", "uhf", "rohf", i.e. RKS, UKS or ROKS). D3(BJ) depends
+/// on the geometry only: wherever the run without dispersion would use an
+/// analytic Hessian, the Hessian is that one plus the analytic D3(BJ) Hessian;
+/// otherwise the central difference of the corrected analytic gradient. With
+/// MBD@rsSCS the Hessian is always the central difference of the corrected
+/// analytic gradient (KS + dispersion), each from the SCF converged at that
+/// displaced geometry, so `hessian="analytic"` and "analytic-moving-grid"
+/// raise and "auto" runs finite differences. MBD@rsSCS
+/// enters through its exact gradient, including the orbital relaxation of its
+/// Hirshfeld volumes (the reference's own Z-vector: RKS, UKS or ROKS). `.energy` is then the corrected total and
+/// `.e_dispersion` the dispersion part.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_name, reference=None, xc=None, delta=None, multiplicity=None,
@@ -2901,11 +2871,13 @@ pub(crate) fn xtb_unavailable() -> PyErr {
     )
 }
 
-/// GFN-xTB energy (Hartree) and gradient (Hartree/Bohr, one row per atom).
+/// GFN-xTB energy (Hartree) and gradient (Hartree/Bohr, one `[x, y, z]` row
+/// per atom) at the molecule's geometry. `method`: "gfn1", "gfn2" (default) or
+/// "gfnff". Charge and multiplicity come from the `Molecule`.
 ///
-///     `method`: "gfn1", "gfn2" (default) or "gfnff". `scc_max_iter` bounds the SCC
-///     iterations (ignored by GFN-FF); an unconverged SCC raises. Needs a build with
-///     the `xtb` cargo feature (libxtb); otherwise raises RuntimeError.
+/// `accuracy` (xtb scale, 1.0 default), `scc_max_iter` (SCC iterations,
+/// default 250; ignored by GFN-FF) and `electronic_temp` (K, default 300)
+/// are xtb's own controls. An SCC that does not converge raises.
 #[pyfunction]
 #[pyo3(signature = (mol, method="gfn2", accuracy=None, scc_max_iter=None, electronic_temp=None))]
 #[cfg_attr(not(feature = "xtb"), allow(unused_variables))]
@@ -2930,11 +2902,12 @@ pub(crate) fn run_xtb_energy_gradient(
     Err(xtb_unavailable())
 }
 
-/// Geometry optimization on a GFN-xTB surface with the `run_optimize` BFGS driver.
-///
-///     `max_steps` are geometry steps; `scc_max_iter` bounds the SCC at each geometry
-///     and an unconverged SCC raises. The certificate is `not graded`. Needs the `xtb`
-///     cargo feature.
+/// Geometry optimization on a GFN-xTB surface, using the same BFGS driver as
+/// `run_optimize` (`max_steps` geometry steps, `e_conv` energy criterion;
+/// `g_max_thresh` / `g_rms_thresh` gradient criteria in Hartree/Bohr).
+/// The SCC at every geometry is controlled by `scc_max_iter`; an unconverged
+/// SCC raises instead of continuing the search. Returns an `OptimizeResult`
+/// whose certificate is `not graded` (no validation grade exists for xTB).
 #[pyfunction]
 #[pyo3(signature = (
     mol, method="gfn2", max_steps=None, e_conv=None, g_max_thresh=None, g_rms_thresh=None,
@@ -2984,9 +2957,11 @@ pub(crate) fn run_xtb_optimize(
     Err(xtb_unavailable())
 }
 
-/// Harmonic frequencies on a GFN-xTB surface (central differences of the xTB
-///     gradient, `delta` in Bohr, default 5e-3). Input should be an xTB minimum;
-///     check `.asymmetry`. Needs the `xtb` cargo feature.
+/// Harmonic frequencies on a GFN-xTB surface: central differences (`delta`,
+/// Bohr, default 5e-3) of the analytic xTB gradient (`6N` evaluations), then
+/// the mass-weighting and translation/rotation projection `run_frequencies`
+/// uses. Input should be an xTB minimum (e.g. from `run_xtb_optimize`);
+/// check `.asymmetry`. An unconverged SCC raises.
 #[pyfunction]
 #[pyo3(signature = (mol, method="gfn2", delta=None, accuracy=None, scc_max_iter=None, electronic_temp=None))]
 #[cfg_attr(not(feature = "xtb"), allow(unused_variables))]

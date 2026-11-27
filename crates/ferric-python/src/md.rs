@@ -269,19 +269,22 @@ fn parse_aimd_reference(reference: Option<&str>, mol: &Molecule) -> PyResult<fer
     }
 }
 
-/// Born-Oppenheimer molecular dynamics on the SCF surface (HF, or KS with `xc`).
+/// Born-Oppenheimer molecular dynamics on the SCF surface (Hartree-Fock, or
+/// Kohn-Sham with `xc=`), the driver of the CLI's `task = "md"`.
 ///
-///     `thermostat`: `"nve"` (velocity Verlet), `"berendsen"` (needs `tau_fs` and
-///     `temperature_k`; equilibration only, not canonical) or `"langevin"` (BAOAB;
-///     needs `friction_per_ps` and `temperature_k`). A parameter of a thermostat that
-///     was not chosen raises `ValueError`. Initial velocities are Maxwell-Boltzmann at
-///     `init_temperature_k` (unset: `temperature_k`; neither: zero) from `seed`,
-///     rescaled to that temperature exactly. `reference`, `xc`, `dispersion`,
-///     `df_j_aux`/`df_k_aux` and the `scf_*` kwargs as in `run_optimize`;
-///     `scf_warm_start` (default True) starts each SCF from the previous step's
-///     orbitals. `masses_amu` overrides the standard masses (required beyond Z = 54).
-///     `trajectory_path` / `energies_path` write a multi-frame XYZ (Angstrom) and an
-///     energy CSV as the run proceeds. The CLI equivalent is `task = "md"`.
+/// `thermostat` is `"nve"` (velocity Verlet), `"berendsen"` (needs `tau_fs`
+/// and `temperature_k`; equilibration only, it does not sample the canonical
+/// ensemble) or `"langevin"` (BAOAB; needs `friction_per_ps` and
+/// `temperature_k`). A parameter of a thermostat that was not chosen raises.
+/// Initial velocities are Maxwell-Boltzmann at `init_temperature_k` (unset:
+/// `temperature_k`; neither: zero) from `seed`, with the centre-of-mass
+/// motion removed (`remove_com_motion`) and rescaled to that temperature
+/// exactly. Every `stride`-th step is recorded. `reference`, `xc`,
+/// `dispersion`, `df_j_aux` / `df_k_aux` and the `scf_*` kwargs as in
+/// `run_optimize`; each step's SCF starts from the previous step's orbitals
+/// unless `scf_warm_start=False`. `masses_amu` overrides the standard masses
+/// (needed beyond Z = 54). `trajectory_path` / `energies_path` write a
+/// multi-frame XYZ (Angstrom) and a CSV of the energies as the run goes.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_name, n_steps, dt_fs=0.5, thermostat="nve", temperature_k=None,
@@ -424,13 +427,15 @@ fn aimd(
     )
 }
 
-/// Molecular dynamics on the AMBER-form force field of an `MmTopology`.
+/// Molecular dynamics on the AMBER-form force field of `topology` (an
+/// `MmTopology`, e.g. from `MmTopology.from_amber_units`).
 ///
-///     `symbols` and `coords_angstrom` give the atoms in topology order; the masses
-///     come from the symbols unless `masses_amu` is given (the topology carries none).
-///     `cutoff_angstrom` switches the nonbonded sum to OpenMM's `CutoffNonPeriodic`
-///     (reaction-field Coulomb, truncated LJ); unset sums every pair. The MD kwargs
-///     and the output files as in `run_aimd`. Python only (no CLI task).
+/// `symbols` and `coords_angstrom` (`(n_atoms, 3)`, Angstrom) give the atoms
+/// in topology order; the topology carries no masses, so they come from the
+/// symbols' standard atomic masses unless `masses_amu` is given.
+/// `cutoff_angstrom` switches the nonbonded sum to OpenMM's
+/// `CutoffNonPeriodic` (reaction-field Coulomb, truncated LJ); unset sums
+/// every pair. The MD kwargs and the output files as in `run_aimd`.
 #[pyfunction]
 #[pyo3(signature = (
     topology, symbols, coords_angstrom, n_steps, dt_fs=1.0, thermostat="nve",

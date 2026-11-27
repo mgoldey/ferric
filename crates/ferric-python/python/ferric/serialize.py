@@ -89,7 +89,8 @@ def _s(fields: str, arrays: str = "") -> ResultSchema:
 
 # Getters deliberately kept out of a class's schema: class name -> names. The
 # drift test checks RESULT_SCHEMA[cls] == the class's public getters minus
-# these, so this is the one place to exclude a getter. Empty today.
+# these, so this is the one place to exclude a getter. A Molecule-valued
+# getter stays out: to_dict(result.molecule) serializes the geometry.
 NOT_SERIALIZED: dict[str, frozenset[str]] = {
     "FrequencyResult": frozenset({"molecule"}),
 }

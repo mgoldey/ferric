@@ -288,4 +288,4 @@ this section and to `scripts/fock_hook_gradient_sympy.py`.
 | `scripts/fock_hook_gradient_sympy.py`, claims K1 to K3 | verified equation @eq:scf-hook-gradient |
 | `crates/ferric-scf/tests/fock_hook_gradient.rs` | the point-charge anchor and its mutations |
 | `crates/ferric-python/tests/test_fock_hook_gradient.py` | the exactness anchor and the error cases |
-| `crates/ferric-python/ferric.pyi`, the `FockHook` and `FockHookGrad` aliases | the Python call signatures |
+| `crates/ferric-python/python/ferric/ferric.pyi`, the `FockHook` and `FockHookGrad` aliases | the Python call signatures |

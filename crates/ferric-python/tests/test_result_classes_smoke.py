@@ -1,4 +1,8 @@
-"""Smoke coverage for result classes that previously had no test."""
+"""Each driver returns its own result class.
+
+One cheap run per driver whose result class no other test constructs: a
+binding that returns the wrong class, or stops registering it, fails here.
+Numbers are checked in the per-method test files."""
 
 from __future__ import annotations
 
@@ -21,7 +25,9 @@ def _water():
 
 
 def _oh():
-    return ferric.Molecule.from_xyz_string("2\n\nO 0 0 0\nH 0 0 0.97\n", charge=0, multiplicity=2)
+    return ferric.Molecule.from_xyz_string(
+        "2\n\nO 0 0 0\nH 0 0 0.97\n", charge=0, multiplicity=2
+    )
 
 
 @pytest.fixture(scope="module")
@@ -48,11 +54,6 @@ def test_double_hybrid_result(water, bs, aux):
     r = ferric.run_double_hybrid(water, bs, aux, kind="b2plyp")
     assert type(r).__name__ == "DoubleHybridResult"
     assert isinstance(r.total_energy, float)
-
-def test_wb97x_l_v_result(water, bs, aux):
-    r = ferric.run_double_hybrid(water, bs, aux, kind="wb97x-l-v", lambda_=0.6, omega=0.1)
-    assert type(r).__name__ == "DoubleHybridResult"
-    assert r.c_os == 0.6
 
 
 def test_mp3_result(water, bs, aux):
@@ -123,9 +124,7 @@ def test_ugw_result(oh, bs, aux):
     assert type(r).__name__ == "UGwResult"
 
 
-def test_bse_result(water, bs):
-    # bse needs gw? run_bse_tda requires auxbasis? check signature
-    aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+def test_bse_result(water, bs, aux):
     r = ferric.run_bse_tda(water, bs, aux)
     assert type(r).__name__ == "BseResult"
 

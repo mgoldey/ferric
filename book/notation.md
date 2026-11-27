@@ -150,7 +150,7 @@ with $D = D^\alpha + D^\beta$.
 
 This is what the code builds (`crates/ferric-scf/src/rhf.rs:3738`,
 `D = 2·C_occ·C_occᵀ`), what the Python surface documents
-(`crates/ferric-python/ferric.pyi:567`), and what the DFT pages assume
+(`crates/ferric-python/python/ferric/ferric.pyi:567`), and what the DFT pages assume
 (`site/src/methods/dft-derivations.md:13-15`).
 
 Reduced density matrices of a CAS wavefunction follow
@@ -288,9 +288,9 @@ atomic units. The user surfaces do not all agree:
 | TOML `[mp2] att_r0` and the other $r_0$ keys | $r_0$ | Å | `crates/ferric-cli/src/config.rs:1981-1983` |
 | TOML `[dft] omega` (`wb97x-l-v`) | $\omega$ | Bohr$^{-1}$ | `site/src/reference/input.md:152` |
 | TOML `[cell] omega`, `gdf_omega` (Ewald splits) | $\omega$ | inverse of `[cell] unit`, Å$^{-1}$ by default | `site/src/reference/input.md:632`, `:639-640` |
-| Python `run_attenuated_rimp2(omega=)` and the other MP2 entry points | $\omega$ | Å$^{-1}$ | `crates/ferric-python/ferric.pyi:5039` |
-| Python `AoIntegrals` `operator='erf'/'erfc'` | $\omega$ | Bohr$^{-1}$ | `crates/ferric-python/ferric.pyi:568` |
-| Python range-separated functional property `omega` | $\omega$ | Bohr$^{-1}$ | `crates/ferric-python/ferric.pyi:2685` |
+| Python `run_attenuated_rimp2(omega=)` and the other MP2 entry points | $\omega$ | Å$^{-1}$ | `crates/ferric-python/python/ferric/ferric.pyi:5039` |
+| Python `AoIntegrals` `operator='erf'/'erfc'` | $\omega$ | Bohr$^{-1}$ | `crates/ferric-python/python/ferric/ferric.pyi:568` |
+| Python range-separated functional property `omega` | $\omega$ | Bohr$^{-1}$ | `crates/ferric-python/python/ferric/ferric.pyi:2685` |
 | Dissertation | $\omega$, $r_0$ | Å$^{-1}$, Å | `dissertation.txt:1538`, `:3739` (the text extraction drops the exponent of Å$^{-1}$) |
 
 The conversion is one constant. An inverse length in Å$^{-1}$ times
@@ -326,7 +326,7 @@ gradients in Hartree/Bohr. Real orbitals throughout.
 
 | Quantity | Internal | At the TOML and Python surface | Reference |
 |---|---|---|---|
-| Coordinates | Bohr | Å in XYZ files and Python constructors | `crates/ferric-core/src/mol.rs:196-198`, `crates/ferric-python/ferric.pyi:180` |
+| Coordinates | Bohr | Å in XYZ files and Python constructors | `crates/ferric-core/src/mol.rs:196-198`, `crates/ferric-python/python/ferric/ferric.pyi:180` |
 | Bohr radius | 0.52917721092 Å (CODATA 2010) | | `crates/ferric-core/src/units.rs:17` |
 | Attenuation $\omega$, $r_0$ | Bohr$^{-1}$, Bohr | see section 8 | |
 | $\kappa_{\mathrm{reg}}$ | Ha$^{-1}$ | Ha$^{-1}$ | `crates/ferric-mp2/src/rimp2.rs:56` |

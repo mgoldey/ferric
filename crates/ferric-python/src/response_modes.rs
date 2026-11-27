@@ -81,13 +81,14 @@ fn to_3x3(py: Python<'_>, a: [[f64; 3]; 3]) -> Bound<'_, PyArray2<f64>> {
     ndarray::Array2::from_shape_fn((3, 3), |(i, j)| a[i][j]).into_pyarray(py)
 }
 
-/// Leading n_modes eigenmodes of the closed-shell RPA dielectric built on
-///     `result` (RHF or RKS, run in `basis_set`), by a dense eigensolve in the
-///     `auxbasis` (e.g. "cc-pvdz-ri"). omega is an imaginary frequency in Hartree.
-///     The static modes are the PDEP eigenpotentials of run_pdep_rpa.
+/// Leading `n_modes` eigenmodes of the closed-shell RPA dielectric
+/// ε(iω) = 1 − v χ₀(iω) built on `result` (an RHF or RKS result for `mol` in
+/// `basis_set`), with `auxbasis` the RI fitting basis. `omega` is an imaginary
+/// frequency in Hartree (0 = static). Each mode is a charge density in the aux
+/// basis; see `ResponseModes`.
 ///
-///     With an ECP basis set the occupied count is the valence one, as in a `result` from
-///     `run_rhf` / `run_dft` on that basis.
+/// With an ECP basis set the occupied count is the valence one, as in a `result` from `run_rhf` /
+/// `run_dft` on that basis.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, result, n_modes=10, omega=0.0, memory_budget_gb=None))]
 #[allow(clippy::too_many_arguments)]
@@ -129,9 +130,11 @@ fn response_modes(
     Ok(PyResponseModes { inner })
 }
 
-/// Write mode `index` as a Gaussian cube file (Bohr). normalization "l2"
-///     scales to integral rho^2 = 1 (orbital-like isovalues); "coulomb" writes the
-///     stored coefficients. Grid arguments as in write_cube; returns (origin, shape).
+/// Write mode `index` of `modes` (from `response_modes` with this `auxbasis`)
+/// as a Gaussian cube file. `normalization` is "l2" (∫ρ² dr = 1, isovalues
+/// comparable to an orbital's) or "coulomb" (the stored coefficients, unit
+/// Coulomb self-energy). Grid arguments as in `write_cube` (Bohr). Returns the
+/// (origin, shape) used.
 #[pyfunction]
 #[pyo3(signature = (path, mol, auxbasis, modes, index, normalization="l2", spacing=0.3, padding=4.0, origin=None, shape=None))]
 #[allow(clippy::too_many_arguments)]

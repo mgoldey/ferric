@@ -28,7 +28,7 @@ This section derives the orthogonalizer (@sec:orthogonalization-and-guesses-equa
 |---|---|
 | Rust | `ferric-scf/src/rhf.rs::canonical_orthogonalizer`, `ferric-scf/src/guess.rs::{hcore_guess,minao_projection_guess}` |
 | CLI | `[scf] guess = "minao"` (default; alias `"sad"`) or `"hcore"`; `[scf] guess_basis` |
-| Python | `run_rhf(guess=..., guess_basis=..., dm0=...)` and the open-shell analogues (`crates/ferric-python/ferric.pyi`) |
+| Python | `run_rhf(guess=..., guess_basis=..., dm0=...)` and the open-shell analogues (`crates/ferric-python/python/ferric/ferric.pyi`) |
 
 ## The equations {#orthogonalization-and-guesses-equations}
 
