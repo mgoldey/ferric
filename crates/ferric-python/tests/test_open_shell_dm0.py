@@ -235,7 +235,8 @@ def test_zero_hook_leaves_the_floor_advisories_unchanged():
     def zero(d):
         return 0.0, np.zeros_like(d)
 
-    plain, m_plain = _messages(lambda: ferric.run_rhf(mol, bs, **kw))
+    # df_guess=False: a hook skips the DF pre-stage, so the plain run must too.
+    plain, m_plain = _messages(lambda: ferric.run_rhf(mol, bs, df_guess=False, **kw))
     hooked, m_hooked = _messages(lambda: ferric.run_rhf(mol, bs, fock_hook=zero, **kw))
     assert any("noise floor" in m for m in m_plain), m_plain
     assert "noise floor" in plain.convergence_summary

@@ -46,7 +46,9 @@ def bases():
 
 @functools.cache
 def rhf():
-    return ferric.run_rhf(hi(), bases()[0])
+    # df_guess=False: the correlated drivers solve their reference without the
+    # DF pre-stage, and the bars below are tighter than two SCF routes agree.
+    return ferric.run_rhf(hi(), bases()[0], df_guess=False)
 
 
 @functools.cache

@@ -31,7 +31,7 @@ use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_mp2::lmp2_amplitude::{amplitude_lmp2, AmplitudeLmp2Config};
+use ferric_mp2::lmp2_amplitude::{amplitude_lmp2, AmplitudeLmp2Config, CgEnergyTarget};
 use ferric_mp2::lmp2_direct::{amplitude_lmp2_direct, DirectConfig};
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 #[allow(dead_code)]
@@ -128,6 +128,8 @@ fn run(su: &Setup, eps: f64, kappa: Option<f64>, fc: usize, d: &DirectConfig) ->
         eps,
         frozen_core: fc,
         fock_screen: kappa,
+        // The eps = 0 checks compare with canonical RI-MP2 at 1e-10 Eh.
+        cg_energy_target: CgEnergyTarget::Strict,
         ..Default::default()
     };
     let (r, _) = amplitude_lmp2_direct(
@@ -182,6 +184,8 @@ fn run_incore(su: &Setup, eps: f64, kappa: Option<f64>, fc: usize) -> f64 {
         eps,
         frozen_core: fc,
         fock_screen: kappa,
+        // The eps = 0 checks compare with canonical RI-MP2 at 1e-10 Eh.
+        cg_energy_target: CgEnergyTarget::Strict,
         ..Default::default()
     };
     let r = amplitude_lmp2(

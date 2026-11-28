@@ -265,7 +265,8 @@ def gen_eig_bar(a, s, n):
 
 
 def anchor_hook0(sys_: System, **kw) -> bool:
-    plain = ferric.run_rhf(sys_.mol, sys_.basis, **kw)
+    # df_guess=False: a hook skips the DF pre-stage, so the plain run must too.
+    plain = ferric.run_rhf(sys_.mol, sys_.basis, df_guess=False, **kw)
     n = sys_.ints.nao
 
     def hook(d):

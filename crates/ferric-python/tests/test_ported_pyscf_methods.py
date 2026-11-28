@@ -81,7 +81,7 @@ def test_rimp2_port_matches_run_rimp2(water_dz):
 
 def test_cis_port_matches_run_tddft_tda(water_dz):
     mol, bs, ints, _, aux = water_dz
-    mf = cis_mod.orbitals_of(ferric.run_rhf(mol, bs), ints.nelec // 2)
+    mf = cis_mod.orbitals_of(ferric.run_rhf(mol, bs, df_guess=False), ints.nelec // 2)
     w = cis_mod.cis_singlets(ints, mf, 4, aux)
     ref = ferric.run_tddft(mol, bs, aux, functional=None, n_roots=4, method="tda")
     np.testing.assert_allclose(

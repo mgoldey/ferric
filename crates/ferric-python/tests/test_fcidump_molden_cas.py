@@ -142,7 +142,8 @@ def test_pyscf_fci_on_the_file_reproduces_casci(name, tmp_path):
     xyz, basis, nact, nel = CASES[name]
     mol, bs = _mol(xyz), ferric.BasisSet.bundled(basis)
     ci = ferric.run_casci(mol, bs, nact, nel, compute_rdms=False)
-    rhf = ferric.run_rhf(mol, bs)
+    # run_casci solves its reference without the DF pre-stage.
+    rhf = ferric.run_rhf(mol, bs, df_guess=False)
     n_core = ci.active_start
     path = tmp_path / "casci.fcidump"
     fcidump.write(path, mol, bs, rhf.mo_coefficients(), n_core, nact, sum(nel), 0)

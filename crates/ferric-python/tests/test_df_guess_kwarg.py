@@ -36,7 +36,9 @@ def plain(water, dz):
     return ferric.run_rhf(water, dz, df_guess=False, **EXACT, **TIGHT)
 
 
-def test_true_runs_the_pre_stage_at_the_same_energy_in_fewer_exact_builds(water, dz, plain):
+def test_true_runs_the_pre_stage_at_the_same_energy_in_fewer_exact_builds(
+    water, dz, plain
+):
     on = ferric.run_rhf(water, dz, df_guess=True, **EXACT, **TIGHT)
     assert plain.converged and on.converged
     assert on.df_guess["ran"] and on.df_guess["df_iterations"] > 0
@@ -61,7 +63,10 @@ def test_unset_follows_the_default(water, dz, plain):
         ({"guess": "hcore"}, "core-Hamiltonian"),
         ({"guess_basis": "sto-3g"}, "secondary-basis"),
         ({"mom_after_iter": 3}, "MOM"),
-        ({"df_j_aux": "def2-universal-jkfit", "df_k_aux": "def2-universal-jkfit"}, "no four-centre"),
+        (
+            {"df_j_aux": "def2-universal-jkfit", "df_k_aux": "def2-universal-jkfit"},
+            "no four-centre",
+        ),
         ({"fock_hook": lambda d: (0.0, np.zeros_like(d))}, "fock_hook"),
         ({"with_gradient": True}, "with_gradient"),
     ],
@@ -81,7 +86,9 @@ def test_dm0_keeps_unset_off(water, dz, plain):
     r = ferric.run_rhf(water, dz, dm0=np.asarray(plain.density()), **EXACT, **TIGHT)
     assert r.df_guess["ran"] is False and "starting density" in r.df_guess["reason"]
     with pytest.raises(ValueError, match="starting density"):
-        ferric.run_rhf(water, dz, dm0=np.asarray(plain.density()), df_guess=True, **EXACT, **TIGHT)
+        ferric.run_rhf(
+            water, dz, dm0=np.asarray(plain.density()), df_guess=True, **EXACT, **TIGHT
+        )
 
 
 def test_symmetry_refuses_true(water, dz):

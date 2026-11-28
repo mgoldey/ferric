@@ -32,7 +32,8 @@ def water(tmp_path_factory):
     p.write_text(WATER_XYZ)
     mol = ferric.Molecule.from_xyz(str(p))
     bs = ferric.BasisSet.bundled("cc-pvdz")
-    return mol, bs, ferric.run_rhf(mol, bs)
+    # The pinned sum is the Rust test's, which solves without the DF pre-stage.
+    return mol, bs, ferric.run_rhf(mol, bs, df_guess=False)
 
 
 def test_matches_the_rust_surface_esp(water):
