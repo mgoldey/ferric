@@ -60,6 +60,8 @@ pub(crate) struct PyDftResult {
     /// The SCF ran with a `fock_hook` (recorded on the certificate).
     #[pyo3(get)]
     pub(crate) fock_hooked: bool,
+    /// The DF-guess decision and pre-stage outcome (`df_guess` getter).
+    pub(crate) df_guess_info: Option<crate::scf::DfGuessInfo>,
 }
 
 impl PyDftResult {
@@ -105,6 +107,12 @@ impl MethodResult for PyDftResult {
 
 #[pymethods]
 impl PyDftResult {
+    /// The DF-guess pre-stage (`df_guess=`), as `RhfResult.df_guess`;
+    /// `iterations` counts the ladder's exact-stage iterations only.
+    #[getter]
+    fn df_guess(&self, py: Python<'_>) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
+        crate::scf::df_guess_dict(py, self.df_guess_info.as_ref())
+    }
     #[doc = alias_doc!(total_energy)]
     #[getter]
     fn energy(&self) -> f64 {
@@ -649,7 +657,7 @@ pub(crate) fn run_double_hybrid(
     diis_size=None, integral_thresh=None, eri=None, guess=None,
     smeared_charges=None, solvent=None, pcm_lebedev_order=None,
     stability_descent=None, aurora=None, trah_trigger=None,
-    gc_rotation=None, gc_kernel=None,
+    gc_rotation=None, gc_kernel=None, df_guess=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_dft(
@@ -700,6 +708,7 @@ pub(crate) fn run_dft(
     trah_trigger: Option<f64>,
     gc_rotation: Option<&str>,
     gc_kernel: Option<&str>,
+    df_guess: Option<bool>,
 ) -> PyResult<PyObject> {
     refuse_dm0_with_guess("run_dft", dm0.is_some(), guess, guess_basis)?;
     let hook = crate::scf::parse_fock_hook("run_dft", fock_hook, fock_hook_grad, with_gradient)?;
@@ -803,6 +812,7 @@ pub(crate) fn run_dft(
         functional,
         dft_grid,
         dispersion: dispersion.is_some(),
+        df_guess: df_guess.is_some(),
         ..ScfKwargs::default()
     };
     let options = scf_options_from_kwargs(ScfEntryPoint::Dft, kw)?;
@@ -812,6 +822,11 @@ pub(crate) fn run_dft(
     cfg.gc_rotation = crate::scf::parse_gc_rotation(gc_rotation)?;
     cfg.gc_kernel = crate::scf::parse_gc_kernel(gc_kernel)?;
     if cfg.symmetry {
+        // The blocked solver has no pre-stage: an explicit df_guess=True is
+        // refused (the plan names symmetry), an unset one stays off.
+        if df_guess == Some(true) {
+            crate::scf::plan_df_guess("run_dft", df_guess, &cfg, &sys, None)?;
+        }
         return solve_symmetric_outcome(py, "run_dft", &sys, &cfg);
     }
     // The gradient below goes through `restricted_scf_gradient`, which
@@ -847,7 +862,15 @@ pub(crate) fn run_dft(
     // `ladder` is built above), so nothing Python-borrowed crosses the
     // closure boundary.
     let fock_hooked = fock_hook.is_some();
-    let (rhf, rung_cfg) = blocks::solve_ks_ladder(
+    let caller_blocker = if fock_hooked {
+        Some("a fock_hook is set")
+    } else if with_gradient {
+        Some(crate::scf::WITH_GRADIENT_BLOCKER)
+    } else {
+        None
+    };
+    let plan = crate::scf::plan_df_guess("run_dft", df_guess, &cfg, &sys, caller_blocker)?;
+    let (rhf, rung_cfg, pre) = blocks::solve_ks_ladder(
         py,
         &sys,
         &ladder,
@@ -858,7 +881,9 @@ pub(crate) fn run_dft(
                 dispersion.is_some(),
             )
         }),
+        &plan,
     )?;
+    let df_guess_info = crate::scf::DfGuessInfo { plan, pre };
     if !rhf.converged {
         return Err(make_err(ferric_core::FerricError::ScfConvergence {
             iterations: rhf.iterations,
@@ -963,6 +988,7 @@ pub(crate) fn run_dft(
         scf_data: Arc::new(rhf),
         scf_config: Arc::new(rung_cfg),
         fock_hooked,
+        df_guess_info: Some(df_guess_info),
     };
     Ok(Py::new(py, result)?.into_any())
 }
@@ -1276,6 +1302,7 @@ pub(crate) fn run_ksdft(
         None,
         // run_ksdft is the frozen pre-6b surface: none of run_dft's later
         // keywords.
+        None,
         None,
         None,
         None,

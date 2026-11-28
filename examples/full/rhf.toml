@@ -34,25 +34,27 @@ kind = "rhf"     # the method (required) [minimal input]
 task = "energy"  # energy | optimize | frequencies | md
 
 [scf]
-max_iter = 200             # SCF iteration cap
-energy_conv = 1e-3         # energy-change bound, a sanity bound and not the convergence signal
-density_conv = 1e-6        # density-change threshold, the convergence signal
-diis_size = 8              # DIIS subspace size
-diis = "pulay"             # pulay | adiis | ediis
-guess = "minao"            # minao | sad (alias of minao) | hcore
-soscf = false              # second-order (Newton) step in the SCF tail
-aurora = false             # AURORA auxiliary-curvature accelerator
-integral_thresh = 1e-12    # integral screening threshold
-eri_precision = 1e-20      # libint primitive-screening precision, 0 to 1e-8 (omitted: FERRIC_ERI_PRECISION, else 1e-20)
-k_builder = "direct"       # exchange builder: direct | link | cosx
-screening = "schwarz"      # four-centre screening: schwarz | csb | csam
-eri = "auto"               # four-centre J/K build: auto | direct | incore
-level_shift = 0.0          # virtual-block level shift, Hartree
-mom_after_iter = 0         # maximum-overlap pinning after this many iterations; 0 = aufbau
-verbose = false            # one line per SCF iteration
-check_stability = false    # diagnostic orbital-Hessian check of the converged SCF
-stability_descent = false  # follow a downhill mode at a saddle and re-converge
-symmetry = false           # point-group-blocked closed-shell RHF/RKS
+max_iter = 200                         # SCF iteration cap
+energy_conv = 1e-3                     # energy-change bound, a sanity bound and not the convergence signal
+density_conv = 1e-6                    # density-change threshold, the convergence signal
+diis_size = 8                          # DIIS subspace size
+diis = "pulay"                         # pulay | adiis | ediis
+guess = "minao"                        # minao | sad (alias of minao) | hcore
+soscf = false                          # second-order (Newton) step in the SCF tail
+aurora = false                         # AURORA auxiliary-curvature accelerator
+integral_thresh = 1e-12                # integral screening threshold
+eri_precision = 1e-20                  # libint primitive-screening precision, 0 to 1e-8 (omitted: FERRIC_ERI_PRECISION, else 1e-20)
+k_builder = "direct"                   # exchange builder: direct | link | cosx
+screening = "schwarz"                  # four-centre screening: schwarz | csb | csam
+eri = "auto"                           # four-centre J/K build: auto | direct | incore
+level_shift = 0.0                      # virtual-block level shift, Hartree
+mom_after_iter = 0                     # maximum-overlap pinning after this many iterations; 0 = aufbau
+verbose = false                        # one line per SCF iteration
+df_guess = true                        # two-stage SCF: DF first, then exact
+df_guess_aux = "def2-universal-jkfit"  # aux basis of the DF-guess pre-stage
+check_stability = false                # diagnostic orbital-Hessian check of the converged SCF
+stability_descent = false              # follow a downhill mode at a saddle and re-converge
+symmetry = false                       # point-group-blocked closed-shell RHF/RKS
 # diis_switch_thresh: error level where ADIIS/EDIIS hand over to Pulay; not read here: only with diis = "adiis" or "ediis" (default 1e-1)
 # smearing_sigma: Fermi-Dirac smearing width, Hartree; unset by default: integer occupations
 # guess_basis: secondary-basis guess: converge in this basis first, then project; unset by default: no secondary-basis guess
@@ -79,9 +81,7 @@ symmetry = false           # point-group-blocked closed-shell RHF/RKS
 # jk: reference J/K route of the MP2 family: exact | rijk | rijcosx; not read here: MP2-family kinds only
 # jk_aux: JK-fit basis of jk = rijk/rijcosx; not read here: only with jk
 # mom_reference: previous | initial; not read here: UHF/UKS only
-# df_guess: two-stage SCF: DF first, then exact; not read here: not composed with the rhf/ksdft convergence ladder
-# df_guess_aux: aux basis of the DF-guess pre-stage; not read here: only with df_guess
-# df_increments: DF-corrected incremental Fock SCF; not read here: same scope as df_guess
+# df_increments: DF-corrected incremental Fock SCF; not read here: closed-shell correlated kinds only
 # df_increments_aux: aux basis of df_increments; not read here: only with df_increments = true (default def2-universal-jkfit)
 # irrep_nelec: electrons per irrep; not read here: only with symmetry = true
 # save_reference: write the converged reference SCF to this file; not read here: correlated kinds with task = "energy" only

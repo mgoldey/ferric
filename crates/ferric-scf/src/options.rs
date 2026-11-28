@@ -929,6 +929,7 @@ mod tests {
             dft_grid: if hf { None } else { k.dft_grid.clone() },
             // Post-SCF; no `RhfConfig` field to compare.
             dispersion: false,
+            df_guess: false,
         }
     }
 

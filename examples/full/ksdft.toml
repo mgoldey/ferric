@@ -79,9 +79,9 @@ symmetry = false                   # point-group-blocked closed-shell RHF/RKS
 # jk: reference J/K route of the MP2 family: exact | rijk | rijcosx; not read here: MP2-family kinds only
 # jk_aux: JK-fit basis of jk = rijk/rijcosx; not read here: only with jk
 # mom_reference: previous | initial; not read here: UHF/UKS only
-# df_guess: two-stage SCF: DF first, then exact; not read here: not composed with the rhf/ksdft convergence ladder
+# df_guess: two-stage SCF: DF first, then exact; not read here: unset stays off: the SCF fits J and K
 # df_guess_aux: aux basis of the DF-guess pre-stage; not read here: only with df_guess
-# df_increments: DF-corrected incremental Fock SCF; not read here: same scope as df_guess
+# df_increments: DF-corrected incremental Fock SCF; not read here: closed-shell correlated kinds only
 # df_increments_aux: aux basis of df_increments; not read here: only with df_increments = true (default def2-universal-jkfit)
 # irrep_nelec: electrons per irrep; not read here: only with symmetry = true
 # save_reference: write the converged reference SCF to this file; not read here: correlated kinds with task = "energy" only

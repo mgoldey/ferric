@@ -3646,11 +3646,13 @@ pub struct ScfCfg {
     /// Set `false` to restore the pre-feature path, which is byte-identical to
     /// before this existed (no DF pre-stage is constructed at all).
     ///
-    /// SCOPE — this is why the default is safe to flip: the pre-stage only
-    /// engages on the closed-shell, non-laddered path (`rimp2` and friends,
-    /// `mol.multiplicity == 1`). `rhf`/`ksdft` go through the convergence
-    /// ladder, which does not compose with `df_guess` and warns rather than
-    /// silently ignoring it; open-shell falls through untouched.
+    /// SCOPE: closed shell only (`mol.multiplicity == 1`; open-shell falls
+    /// through untouched). The correlated kinds (`rimp2` and friends) run it
+    /// before their reference SCF. `rhf`/`ksdft` run it once before the
+    /// convergence ladder (`ferric_scf::ladder::solve_rhf_ladder_with_df_guess`),
+    /// decided by `ferric_scf::ladder::DfGuessPlan::decide`: unset runs it
+    /// only where the SCF has a four-centre build to save and no starting
+    /// point of its own; an explicit `true` that cannot apply is an error.
     /// `None` = not set by the user (defaults ON — see `df_guess_enabled`).
     ///
     /// Deliberately `Option<bool>` rather than `bool`: once `df_guess` defaults

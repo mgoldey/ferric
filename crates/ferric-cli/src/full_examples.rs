@@ -193,6 +193,11 @@ impl Ctx {
     fn reference_io(&self) -> bool {
         self.energy() && !self.own_start() && !self.scf_kind() && !self.double_hybrid()
     }
+    /// The `rhf` energy, exact J/K by default: the DF-guess pre-stage runs
+    /// before its convergence ladder when `df_guess` is on.
+    fn ladder_df_guess(&self) -> bool {
+        self.is(&["rhf"]) && self.energy() && self.mult == 1
+    }
     /// The closed-shell, non-laddered SCF path that runs the DF-guess
     /// pre-stage.
     fn df_guess_path(&self) -> bool {
@@ -307,10 +312,10 @@ fn keys() -> Vec<Key> {
         key!("scf", "mom_reference", "previous | initial", |c| if c.is(&["uhf"]) { s("previous") } else { Off("UHF/UKS only") }),
         key!("scf", "verbose", "one line per SCF iteration", |_| n("false")),
         key!("scf", "df_guess", "two-stage SCF: DF first, then exact", |c| {
-            if c.df_guess_path() { n("true") } else if c.is(&["rhf", "ksdft"]) { Off("not composed with the rhf/ksdft convergence ladder") } else if c.fitted_jk() { Off("skipped: the reference already fits J and K") } else { Off("closed-shell correlated kinds only") }
+            if c.df_guess_path() { n("true") } else if c.ladder_df_guess() { n(if ferric_scf::ladder::DF_GUESS_DEFAULT_ON { "true" } else { "false" }) } else if c.is(&["ksdft"]) && c.energy() { Off("unset stays off: the SCF fits J and K") } else if c.is(&["rhf", "ksdft"]) { Off("energy task only") } else if c.fitted_jk() { Off("skipped: the reference already fits J and K") } else { Off("closed-shell correlated kinds only") }
         }),
-        key!("scf", "df_guess_aux", "aux basis of the DF-guess pre-stage", |c| if c.df_guess_path() { s(DEFAULT_SCF_JK_AUX) } else { Off("only with df_guess") }),
-        key!("scf", "df_increments", "DF-corrected incremental Fock SCF", |c| if c.df_guess_path() { n("false") } else { Off("same scope as df_guess") }),
+        key!("scf", "df_guess_aux", "aux basis of the DF-guess pre-stage", |c| if c.df_guess_path() || (c.ladder_df_guess() && ferric_scf::ladder::DF_GUESS_DEFAULT_ON) { s(DEFAULT_SCF_JK_AUX) } else { Off("only with df_guess") }),
+        key!("scf", "df_increments", "DF-corrected incremental Fock SCF", |c| if c.df_guess_path() { n("false") } else if c.is(&["rhf", "ksdft"]) { Off("closed-shell correlated kinds only") } else { Off("same scope as df_guess") }),
         key!("scf", "df_increments_aux", "aux basis of df_increments", |_| Off("only with df_increments = true (default def2-universal-jkfit)")),
         key!("scf", "check_stability", "diagnostic orbital-Hessian check of the converged SCF", |c| if c.double_hybrid() { Off("the double hybrid's own SCF") } else { n("false") }),
         key!("scf", "stability_descent", "follow a downhill mode at a saddle and re-converge", |c| if c.is(&["rhf", "uhf", "ksdft"]) && c.energy() { n("false") } else { Off("rhf, uhf and ksdft energies only") }),

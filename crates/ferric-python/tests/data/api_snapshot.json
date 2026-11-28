@@ -1622,6 +1622,9 @@
       }
      ]
     },
+    "df_guess": {
+     "kind": "attribute"
+    },
     "dispersion_model": {
      "kind": "attribute"
     },
@@ -3917,6 +3920,9 @@
        "name": "self"
       }
      ]
+    },
+    "df_guess": {
+     "kind": "attribute"
     },
     "energy": {
      "kind": "attribute"
@@ -6405,6 +6411,11 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "gc_kernel"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "df_guess"
    }
   ],
   "run_double_hybrid": [
@@ -9323,6 +9334,11 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "gc_kernel"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "df_guess"
    }
   ],
   "run_rhf_gamma": [

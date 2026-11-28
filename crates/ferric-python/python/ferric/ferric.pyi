@@ -1180,6 +1180,15 @@ class RhfResult:
         ...
 
     @property
+    def df_guess(self) -> dict[str, float | int | str | bool | None] | None:
+        """The DF-guess pre-stage (``df_guess=``): ``{"ran", "reason", "aux",
+        "df_iterations", "df_converged", "df_energy", "fallback"}``. ``ran``
+        says whether the exact SCF started from the density-fitted
+        pre-stage's density and ``reason`` why not; ``iterations`` counts the
+        exact stage only."""
+        ...
+
+    @property
     def guess_basis(self) -> dict[str, float | int | str | bool | None] | None:
         """The secondary-basis guess (``guess_basis=``): ``{"basis",
         "projection", "iterations", "energy", "nbasis_guess",
@@ -2561,6 +2570,12 @@ class DftResult:
         """MBD@rsSCS only: per-atom Hirshfeld volume ratios v_A / v_A^free of
         the converged density (the input `mbd_rsscs_energy` takes). None for
         D3(BJ) or no dispersion."""
+        ...
+
+    @property
+    def df_guess(self) -> dict[str, float | int | str | bool | None] | None:
+        """The DF-guess pre-stage (``df_guess=``), as ``RhfResult.df_guess``;
+        ``iterations`` counts the exact stage only."""
         ...
 
     @property
@@ -4478,6 +4493,7 @@ def run_rhf(
     fock_hook_grad: FockHookGrad | None = None,
     gc_rotation: Literal["auto", "rot1", "off"] | None = None,
     gc_kernel: Literal["auto", "off"] | None = None,
+    df_guess: bool | None = None,
 ) -> RhfResult:
     """Closed-shell Restricted Hartree-Fock.
 
@@ -4513,6 +4529,20 @@ def run_rhf(
     for bit. Energies move by about 1e-12 Ha. Same kwarg on run_uhf,
     run_rohf, run_dft, run_uks and run_roks; any other value raises
     ValueError.
+
+    df_guess=None | True | False (the CLI's [scf] df_guess) runs a
+    density-fitted SCF on def2-universal-jkfit first and starts the exact SCF
+    from its density (Psi4's DF_SCF_GUESS): a fitted iteration costs a few
+    percent of an exact four-centre one, so the exact stage needs fewer
+    builds; the reported energy and orbitals are the exact stage's. None
+    (default) runs it when it applies: some J or K build is four-centre
+    (run_rhf's default, or LinK), the JK-fit set covers every element, and
+    there is no dm0, guess_basis, guess="hcore", MOM, symmetry=True,
+    fock_hook or with_gradient=True. True raises ValueError
+    where it does not apply; False never runs it. result.df_guess says what
+    ran and why; result.iterations counts the exact stage only. Same kwarg on
+    run_dft (whose default fitted J/K leaves it off). Open-shell run_uhf /
+    run_rohf have no pre-stage.
 
     with_gradient=True (default False) also returns the analytic nuclear
     gradient of the reported energy in result.gradient() (natoms x 3,
@@ -4689,6 +4719,7 @@ def run_rhf(
     fock_hook_grad: None = None,
     gc_rotation: Literal["auto", "rot1", "off"] | None = None,
     gc_kernel: Literal["auto", "off"] | None = None,
+    df_guess: Literal[False] | None = None,
 ) -> SymmetricRhfResult:
     """Closed-shell RHF on the symmetrized geometry (symmetry=True)."""
     ...
@@ -6298,6 +6329,7 @@ def run_dft(
     trah_trigger: float | None = None,
     gc_rotation: Literal["auto", "rot1", "off"] | None = None,
     gc_kernel: Literal["auto", "off"] | None = None,
+    df_guess: bool | None = None,
 ) -> DftResult:
     """Kohn-Sham DFT (closed-shell). fock_hook: as for run_rhf; with a
     hook every convergence-ladder rung runs with the hook applied and SOSCF
@@ -6467,6 +6499,7 @@ def run_dft(
     trah_trigger: float | None = None,
     gc_rotation: Literal["auto", "rot1", "off"] | None = None,
     gc_kernel: Literal["auto", "off"] | None = None,
+    df_guess: Literal[False] | None = None,
 ) -> SymmetricRhfResult:
     """Point-group-blocked closed-shell RKS (see the ``symmetry=True``
     paragraph of the DftResult overload). Same density-fitting defaults:
@@ -6557,6 +6590,7 @@ def run_dft(
     trah_trigger: float | None = None,
     gc_rotation: Literal["auto", "rot1", "off"] | None = None,
     gc_kernel: Literal["auto", "off"] | None = None,
+    df_guess: bool | None = None,
 ) -> DftResult | SymmetricRhfResult:
     """Closed-shell Kohn-Sham DFT on the symmetrized geometry (symmetry=True)."""
     ...

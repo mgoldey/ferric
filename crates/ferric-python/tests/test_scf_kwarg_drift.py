@@ -412,6 +412,7 @@ VALUES = {
     "grid_angular": 110,
     "grid_prune": "none",
     "grid_weight_cut": 1e-14,
+    "df_guess": True,
 }
 
 

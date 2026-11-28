@@ -414,6 +414,59 @@ impl PreparedSystem {
         )
     }
 
+    /// [`solve_rhf`](Self::solve_rhf), or with `plan.run` the same SCF behind
+    /// the DF-guess pre-stage
+    /// ([`solve_rhf_with_df_guess`](crate::ladder::solve_rhf_with_df_guess))
+    /// on `plan.aux`. The second value is the pre-stage's outcome when it ran.
+    pub fn solve_rhf_planned(
+        &self,
+        config: &RhfConfig,
+        plan: &crate::ladder::DfGuessPlan,
+    ) -> Result<(ScfResult, Option<crate::ladder::DfGuessed<()>>), FerricError> {
+        if !plan.run {
+            return Ok((self.solve_rhf(config)?, None));
+        }
+        self.check_screening(config)?;
+        let g = crate::ladder::solve_rhf_with_df_guess(
+            &self.ctx,
+            &self.mol,
+            &self.basis,
+            self.op(),
+            &self.bounds,
+            config,
+            Some(&plan.aux),
+        )?;
+        let (r, pre) = g.split();
+        Ok((r, Some(pre)))
+    }
+
+    /// [`solve_rhf_ladder`](Self::solve_rhf_ladder), or with `plan.run` the
+    /// same ladder behind the DF-guess pre-stage
+    /// ([`solve_rhf_ladder_with_df_guess`](crate::ladder::solve_rhf_ladder_with_df_guess)).
+    pub fn solve_rhf_ladder_planned(
+        &self,
+        ladder: &[Rung],
+        plan: &crate::ladder::DfGuessPlan,
+    ) -> Result<(LadderResult, Option<crate::ladder::DfGuessed<()>>), FerricError> {
+        if !plan.run {
+            return Ok((self.solve_rhf_ladder(ladder)?, None));
+        }
+        for rung in ladder {
+            self.check_screening(&rung.config)?;
+        }
+        let g = crate::ladder::solve_rhf_ladder_with_df_guess(
+            &self.ctx,
+            &self.mol,
+            &self.basis,
+            self.op(),
+            &self.bounds,
+            ladder,
+            Some(&plan.aux),
+        )?;
+        let (r, pre) = g.split();
+        Ok((r, Some(pre)))
+    }
+
     /// [`solve_uhf`](crate::uhf::solve_uhf) on this system; a config
     /// whose screening is not the system's is an error.
     pub fn solve_uhf(&self, config: &RhfConfig) -> Result<ScfResult, FerricError> {

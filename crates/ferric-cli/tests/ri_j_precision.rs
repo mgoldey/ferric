@@ -34,8 +34,11 @@ fn workspace_root() -> PathBuf {
 
 const SCF: &str = "max_iter = 200\nenergy_conv = 1e-12\ndensity_conv = 1e-10\n";
 
+/// An energy input. Its exact K keeps a four-centre build, so the default
+/// DF-guess pre-stage would run before the ladder and the run would no
+/// longer be the library's plain `solve_rhf`; `df_guess = false` pins that.
 fn input(tag: &str, scf_extra: &str) -> PathBuf {
-    input_task(tag, "energy", scf_extra)
+    input_task(tag, "energy", &format!("df_guess = false\n{scf_extra}"))
 }
 
 fn input_task(tag: &str, task: &str, scf_extra: &str) -> PathBuf {
