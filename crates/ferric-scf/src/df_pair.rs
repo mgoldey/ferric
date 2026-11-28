@@ -811,13 +811,17 @@ impl PairMajor {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let KScratch { buf, charge } = &mut *guard;
-        if buf.len() < n * nocc * rows {
+        let need = n * nocc * rows;
+        if buf.len() < need {
             *charge = None; // release before asking for the larger size
+                            // `reserve_exact`, then charge what the allocator actually gave:
+                            // `resize` alone may over-allocate past the charged length.
+            buf.reserve_exact(need - buf.len());
+            buf.resize(need, 0.0);
             *charge = ferric_core::memory::pool::try_reserve_global(
                 "DF pair-major half-transformed T[mu][i][P]",
-                n * nocc * rows * 8,
+                buf.capacity() * 8,
             );
-            buf.resize(n * nocc * rows, 0.0);
         }
         let t: &mut [f64] = buf;
         let (one, zero) = (1.0f64, 0.0f64);
@@ -1083,6 +1087,19 @@ mod tests {
         a.iter().fold(0.0f64, |m, v| m.max(v.abs()))
     }
 
+    /// Panics unless `got` matches a finite, non-vacuous `want` to `rel` of
+    /// its largest element. A non-finite element on EITHER side fails (an
+    /// infinite error against an infinite scale must not pass).
+    fn assert_close(what: &str, got: &Array2<f64>, want: &Array2<f64>, rel: f64) {
+        let (scale, err) = (max_abs(want), max_abs(&(got - want)));
+        assert!(scale.is_finite(), "{what}: non-finite reference");
+        assert!(scale > 1e-2, "{what}: vacuous reference ({scale:e})");
+        assert!(
+            err.is_finite() && err <= rel * scale,
+            "{what}: off by {err:e} (largest element {scale:e})"
+        );
+    }
+
     /// Catches: a wrong column position in the fill, a dressing by `L⁻ᵀ` or
     /// the wrong triangle, a mirror from the wrong column, a J that drops the
     /// off-diagonal weight, a K reduction that reads the wrong block of `T`,
@@ -1123,19 +1140,8 @@ mod tests {
             let (mut j, mut k) = (Array2::<f64>::zeros((n, n)), Array2::zeros((n, n)));
             t.build_j(&d, &mut j).unwrap();
             t.build_k_occ(&c, &mut k).unwrap();
-            assert!(
-                max_abs(&k_ref) > 1e-2 && max_abs(&j_ref) > 1e-2,
-                "vacuous reference"
-            );
-            let (ej, ek) = (max_abs(&(&j - &j_ref)), max_abs(&(&k - &k_ref)));
-            assert!(
-                ej <= 1e-11 * max_abs(&j_ref),
-                "thresh {thresh:e}: J off by {ej:e}"
-            );
-            assert!(
-                ek <= 1e-11 * max_abs(&k_ref),
-                "thresh {thresh:e}: K off by {ek:e}"
-            );
+            assert_close(&format!("thresh {thresh:e}: J"), &j, &j_ref, 1e-11);
+            assert_close(&format!("thresh {thresh:e}: K"), &k, &k_ref, 1e-11);
             assert!(k == k.t(), "K is not exactly symmetric");
             assert!(j == j.t(), "J is not exactly symmetric");
         }
@@ -1242,15 +1248,12 @@ mod tests {
         };
         for occ in [false, true] {
             let (a, b) = (build_k(&mut aux_k, occ), build_k(&mut pair_k, occ));
-            let err = max_abs(&(&a - &b));
-            assert!(max_abs(&a) > 1e-2, "vacuous K");
-            assert!(err <= 1e-11 * max_abs(&a), "occ={occ}: K off by {err:e}");
+            assert_close(&format!("occ={occ}: K"), &b, &a, 1e-11);
         }
         let (mut ja, mut jp) = (Array2::<f64>::zeros((n, n)), Array2::zeros((n, n)));
         aux_j.build(&d, &mut ja).unwrap();
         pair_j.build(&d, &mut jp).unwrap();
-        let err = max_abs(&(&ja - &jp));
-        assert!(err <= 1e-11 * max_abs(&ja), "J off by {err:e}");
+        assert_close("J", &jp, &ja, 1e-11);
     }
 
     /// A tensor held on column-rotated shells (cc-pVDZ: the O s and p
@@ -1304,12 +1307,7 @@ mod tests {
             let (j, k) = jk(&rot);
             let kd = density_k(&rot);
             for (what, got, want) in [("J", &j, &j0), ("K", &k, &k0), ("density K", &kd, &kd0)] {
-                let err = max_abs(&(got - want));
-                assert!(max_abs(want) > 1e-2, "vacuous {what}");
-                assert!(
-                    err <= 1e-10 * max_abs(want),
-                    "{level:?}: {what} off by {err:e}"
-                );
+                assert_close(&format!("{level:?}: {what}"), got, want, 1e-10);
             }
             assert!(k == k.t() && j == j.t(), "{level:?}: J or K not symmetric");
         }

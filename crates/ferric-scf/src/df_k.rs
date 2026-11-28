@@ -422,18 +422,34 @@ impl Dressed {
         // the same size (its pair rows, back-transformed); both count against
         // the block bound and the pool.
         let per_row = n * n * 8 * if t.is_rotated() { 2 } else { 1 };
-        let rows = (PAIR_UNPACK_BLOCK_BYTES / per_row.max(1) / grain * grain)
+        let mut rows = (PAIR_UNPACK_BLOCK_BYTES / per_row.max(1) / grain * grain)
             .max(grain)
             .min(naux.max(1));
-        let _charge = ferric_core::memory::pool::try_reserve_global(
-            "DF pair-major unpack scratch",
-            rows * per_row,
-        );
+        // A pool that refuses the block gets a smaller one (halved down to
+        // one grain, still a multiple of it, so chunks fall the same way);
+        // only the minimum block may run uncharged, as the aux-major unpack
+        // scratch does when its soft charge is refused.
+        let reserve = |rows: usize| {
+            ferric_core::memory::pool::try_reserve_global(
+                "DF pair-major unpack scratch",
+                rows * per_row,
+            )
+        };
+        let mut _charge = reserve(rows);
+        while _charge.is_none() && rows > grain {
+            rows = (rows / 2 / grain * grain).max(grain);
+            _charge = reserve(rows);
+        }
         let mut scratch = Array3::<f64>::zeros((rows, n, n));
         let mut p0 = 0usize;
         while p0 < naux {
             let p1 = (p0 + rows).min(naux);
             if p1 - p0 != scratch.shape()[0] {
+                // Drop the full-size block before allocating the short one.
+                drop(std::mem::replace(
+                    &mut scratch,
+                    Array3::<f64>::zeros((0, 0, 0)),
+                ));
                 scratch = Array3::<f64>::zeros((p1 - p0, n, n));
             }
             t.unpack_square(p0, p1, &mut scratch)?;
