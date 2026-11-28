@@ -8,6 +8,7 @@ edition = "2021"
 workspace = true
 
 [dependencies]
+ferric-cuest = { path = "../ferric-cuest" }
 ferric-core = { path = "../ferric-core" }
 ferric-md = { path = "../ferric-md" }
 ferric-dft = { path = "../ferric-dft" }
@@ -38,6 +39,10 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage
 
 [features]
 default = []
+# Run the SCF's one-electron matrices and exact J/K through NVIDIA cuEST
+# (crate ferric-cuest, needs a cuEST 0.3 install and an sm_80+ GPU at run time).
+# Without it `cuest_route::solve_{rhf,uhf}_cuest` return a clear error.
+cuest = ["ferric-cuest/cuest"]
 mpi = ["dep:mpi", "ferric-core/mpi"]
 # Device-resident DF-K occupied path (df_k_gpu). Additive; default builds unchanged.
 gpu = ["ferric-core/gpu", "ferric-dft/gpu"]

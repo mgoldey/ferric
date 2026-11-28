@@ -518,6 +518,7 @@ fn keys() -> Vec<Key> {
         key!("gpu", "min_flops", "", |_| Off("only with mode = \"auto\" or \"on\"")),
         key!("gpu", "precision", "", |_| Off("deprecated alias of [precision] mode")),
         key!("gpu", "mixed_kernels", "", |_| Off("deprecated alias of [precision] mixed_kernels")),
+        key!("gpu", "backend", "ferric | cuest (SCF integrals on NVIDIA cuEST; needs --features cuest)", |_| s("ferric")),
         key!("precision", "mode", "f64 | mixed", |_| s("f64")),
         key!("precision", "mixed_kernels", "", |_| Off("only with mode = \"mixed\"")),
         key!("output", "json", "run-log path; true = <input-stem>.ferric.jsonl beside the input, false = off", |_| n("true")),

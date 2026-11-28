@@ -243,6 +243,23 @@ pub struct GpuCfg {
     pub precision: Option<String>,
     /// Kernels allowed to run in mixed precision; requires `precision = "mixed"`.
     pub mixed_kernels: Option<Vec<String>>,
+    /// Integral backend for the SCF: `"ferric"` (default, libint on the CPU)
+    /// or `"cuest"` (NVIDIA cuEST on GPU 0: S, T, V and exact direct J/K; XC
+    /// stays on the CPU grid). `"cuest"` needs a binary built with
+    /// `--features cuest` and an sm_80+ GPU, and runs only `task = "energy"`
+    /// for `rhf`/`uhf`/`ksdft` (pure or global-hybrid functionals); anything
+    /// else is a hard error. See crates/ferric-cuest/README.md.
+    pub backend: Option<String>,
+}
+
+/// `[gpu] backend`: `"ferric"` or `"cuest"`.
+fn validate_backend(backend: Option<&str>) -> Result<(), String> {
+    match backend {
+        None | Some("ferric" | "cuest") => Ok(()),
+        Some(b) => Err(format!(
+            "[gpu] backend must be \"ferric\" or \"cuest\", got {b:?}"
+        )),
+    }
 }
 
 impl GpuCfg {
@@ -270,7 +287,7 @@ impl GpuCfg {
                 .parse::<ferric_core::gpu::MixedKernelSet>()
                 .map_err(|e| format!("[gpu] mixed_kernels: {e}"))?;
         }
-        Ok(())
+        validate_backend(self.backend.as_deref())
     }
 
     /// The typed TOML side of the resolution. Call [`GpuCfg::validate`] first
@@ -393,6 +410,10 @@ impl GpuSection {
     }
     pub fn explicit(&self) -> ferric_core::gpu::GpuSettingsExplicit {
         self.as_cfg().explicit()
+    }
+    /// `[gpu] backend = "cuest"`.
+    pub fn cuest_backend(&self) -> bool {
+        self.as_cfg().backend.as_deref() == Some("cuest")
     }
 }
 

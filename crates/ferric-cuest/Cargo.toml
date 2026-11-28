@@ -1,0 +1,29 @@
+[package]
+name = "ferric-cuest"
+version = "0.1.0"
+license.workspace = true
+edition = "2021"
+description = "Optional NVIDIA cuEST backend (GPU Gaussian-basis matrix quantities) for ferric"
+
+[lints]
+workspace = true
+
+[features]
+# Default: the crate compiles without CUDA/cuEST (CPU-side conversion,
+# audit and diagnostics only), so `cargo build --workspace` stays green.
+default = []
+# Link the real cuEST library (libcuest.so, cuEST 0.3.x) and the CUDA runtime.
+# Needs CUEST_ROOT (or a conda env) holding include/cuest.h + lib/libcuest.so.
+# build.rs compiles csrc/abi_check.c against the installed header, so a
+# mismatch between ffi.rs and cuest.h is a build error, not a runtime crash.
+cuest = []
+
+[dependencies]
+ferric-core = { path = "../ferric-core" }
+thiserror = { workspace = true }
+ndarray = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[build-dependencies]
+cc = { workspace = true }

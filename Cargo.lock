@@ -506,6 +506,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferric-cuest"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "ferric-core",
+ "ndarray",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "ferric-d3"
 version = "0.1.0"
 dependencies = [
@@ -576,6 +588,7 @@ dependencies = [
  "bytemuck",
  "cc",
  "ferric-core",
+ "ferric-cuest",
  "ferric-quadrature",
  "ferric-testkit",
  "libc",
@@ -733,6 +746,7 @@ name = "ferric-scf"
 version = "0.1.0"
 dependencies = [
  "ferric-core",
+ "ferric-cuest",
  "ferric-dft",
  "ferric-integrals",
  "ferric-md",
