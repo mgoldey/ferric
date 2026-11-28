@@ -847,7 +847,17 @@ pub struct KsXc {
 /// With no pool installed there is nothing better available, so the historical
 /// `available_budget_now` reading is kept -- that path is unchanged, which is
 /// what keeps the unbudgeted limit bit-identical.
+///
+/// # Free heap is handed back first
+///
+/// Both the auto ceiling (`MemAvailable`) and the no-pool RSS subtraction read
+/// the allocator's retained free pages as in use, twice over, so an earlier
+/// SCF in the same process (a repeat, a ladder rung, a DF-guess pre-stage, a
+/// geometry step) could push the AO blocks to recompute. See
+/// [`ferric_core::memory::sys::release_free_heap`] for the measurement. The
+/// storage choice it can move is bit-identical either way.
 fn grid_working_budget(memory_budget_bytes: Option<usize>) -> usize {
+    ferric_core::memory::sys::release_free_heap();
     let ceiling = ferric_core::memory::resolve_budget_bytes(memory_budget_bytes);
     match ferric_core::memory::pool::global() {
         // Deterministic: capacity minus what THIS job has reserved.
