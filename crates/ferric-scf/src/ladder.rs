@@ -460,7 +460,7 @@ pub fn solve_rhf_with_df_guess(
     base: &RhfConfig,
     df_aux: Option<&str>,
 ) -> Result<DfGuessResult, FerricError> {
-    with_df_pre_stage(ctx, mol, prep, op, bounds, base, df_aux, |seed| {
+    with_df_pre_stage(ctx, mol, prep, op, bounds, (base, df_aux), |seed| {
         let exact_cfg = seed.map_or_else(|| base.clone(), |df| seeded_from_df(base, df));
         let result = solve_rhf(ctx, mol, prep, op, bounds, &exact_cfg)?;
         // The secondary-basis guess (if any) ran inside the DF pre-stage; the
@@ -493,16 +493,24 @@ pub fn solve_rhf_ladder_with_df_guess(
     let Some(rung0) = ladder.first() else {
         return Err(FerricError::General("empty SCF ladder".into()));
     };
-    with_df_pre_stage(ctx, mol, prep, op, bounds, &rung0.config, df_aux, |seed| {
-        let Some(df) = seed else {
-            return solve_rhf_ladder(ctx, mol, prep, op, bounds, ladder);
-        };
-        let mut seeded = ladder.to_vec();
-        seeded[0].config = seeded_from_df(&rung0.config, df);
-        let mut lr = solve_rhf_ladder(ctx, mol, prep, op, bounds, &seeded)?;
-        lr.result = crate::basis2::carry_report(lr.result, df.guess_basis.clone());
-        Ok(lr)
-    })
+    with_df_pre_stage(
+        ctx,
+        mol,
+        prep,
+        op,
+        bounds,
+        (&rung0.config, df_aux),
+        |seed| {
+            let Some(df) = seed else {
+                return solve_rhf_ladder(ctx, mol, prep, op, bounds, ladder);
+            };
+            let mut seeded = ladder.to_vec();
+            seeded[0].config = seeded_from_df(&rung0.config, df);
+            let mut lr = solve_rhf_ladder(ctx, mol, prep, op, bounds, &seeded)?;
+            lr.result = crate::basis2::carry_report(lr.result, df.guess_basis.clone());
+            Ok(lr)
+        },
+    )
 }
 
 /// `base` started from the DF pre-stage's density. `init_guess_density`
@@ -520,15 +528,13 @@ fn seeded_from_df(base: &RhfConfig, df: &ScfResult) -> RhfConfig {
 /// the SCF ([`df_guess_repeats_the_scf`]), else run it and call `exact` with
 /// its result; on [`FerricError::MemoryExhausted`] (single rank) warn, log and
 /// call `exact(None)`, which starts from `base`'s own guess.
-#[allow(clippy::too_many_arguments)]
 fn with_df_pre_stage<T>(
     ctx: &ParallelContext,
     mol: &Molecule,
     prep: &PreparedBasis,
     op: Operator,
     bounds: &SchwarzBounds,
-    base: &RhfConfig,
-    df_aux: Option<&str>,
+    (base, df_aux): (&RhfConfig, Option<&str>),
     exact: impl FnOnce(Option<&ScfResult>) -> Result<T, FerricError>,
 ) -> Result<DfGuessed<T>, FerricError> {
     if df_guess_repeats_the_scf(base, df_aux) {
