@@ -59,6 +59,43 @@ pub mod trace;
 /// process's RSS / peak RSS, and its CPU time.
 pub mod sys;
 
+/// Smallest buffer [`advise_huge_pages`] advises: below it the 4 KiB page
+/// faults and the `munmap` cost little next to the buffer's own work.
+pub const HUGE_PAGE_ADVICE_MIN_BYTES: usize = 64 * 1024 * 1024;
+
+/// Ask the kernel to back the not yet touched buffer `buf` with transparent
+/// huge pages (Linux `madvise(MADV_HUGEPAGE)` over its 2 MiB-aligned
+/// interior), for a large tensor that is zero-allocated and then filled once.
+///
+/// With THP in `madvise` mode (the usual distribution default) a calloc'd
+/// tensor is otherwise faulted in and unmapped 4 KiB at a time: on the
+/// RI-MP2 `(P|μν)` tensor of C12H26/cc-pVDZ (736 MB) that was about 12% of
+/// the fill's wall time and a 45 ms serial `munmap` on drop. The advice
+/// changes no value: the pages are zero either way. A buffer below
+/// [`HUGE_PAGE_ADVICE_MIN_BYTES`], another platform, or a kernel that refuses
+/// the advice leaves the default paging.
+pub fn advise_huge_pages(buf: &mut [f64]) {
+    let len = std::mem::size_of_val(buf);
+    if len < HUGE_PAGE_ADVICE_MIN_BYTES {
+        return;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        const HUGE: usize = 2 << 20;
+        let ptr = buf.as_mut_ptr() as usize;
+        let start = ptr.next_multiple_of(HUGE);
+        let end = (ptr + len) / HUGE * HUGE;
+        if end > start {
+            // SAFETY: [start, end) lies inside `buf`, which this call borrows
+            // mutably; MADV_HUGEPAGE only changes how the kernel backs the
+            // range and never its contents. The return value is advice-only.
+            unsafe {
+                libc::madvise(start as *mut libc::c_void, end - start, libc::MADV_HUGEPAGE);
+            }
+        }
+    }
+}
+
 /// Final fallback budget when nothing else resolves: 2 GiB.
 pub const DEFAULT_BUDGET_BYTES: usize = 2 * 1024 * 1024 * 1024;
 
@@ -772,6 +809,22 @@ fn clamp_u64_to_usize(v: u64) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The advice keeps a zero-allocated buffer zero and writable, above and
+    /// below the size cutoff, and on an unaligned start.
+    #[test]
+    fn huge_page_advice_changes_no_value() {
+        let n = HUGE_PAGE_ADVICE_MIN_BYTES / 8 + 3;
+        for len in [n, 1000] {
+            let mut v = vec![0.0f64; len];
+            advise_huge_pages(&mut v[1..]);
+            assert!(v.iter().all(|&x| x == 0.0));
+            for (i, x) in v.iter_mut().enumerate() {
+                *x = i as f64;
+            }
+            assert!(v.iter().enumerate().all(|(i, &x)| x == i as f64));
+        }
+    }
 
     /// A collapse prints once per (what, full, budget), again for another
     /// budget, and again after a reset.

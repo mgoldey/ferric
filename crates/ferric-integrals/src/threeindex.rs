@@ -16,9 +16,9 @@ const PAR_METRIC_SHELL_THRESHOLD: usize = 64;
 /// Build the 2-center Coulomb metric (P|Q), shape (naux, naux).
 ///
 /// Parallelized over the outer aux-shell index `sp` (independent row bands)
-/// once `nsh` clears `PAR_METRIC_SHELL_THRESHOLD`; each rayon worker builds
-/// its own `Engine` via `for_each_init` (never per-item — construction runs
-/// under a global ctor mutex). For a fixed `sp`, the write set is
+/// once `nsh` clears `PAR_METRIC_SHELL_THRESHOLD`, with one pooled `Engine`
+/// per rayon worker (`for_each_with_engine`: construction runs under a global
+/// ctor mutex, so never per item or per rayon split). For a fixed `sp`, the write set is
 /// `{(offs[sp]+p, offs[sq]+q), (offs[sq]+q, offs[sp]+p) : sq ≤ sp}` — every
 /// written row index lies in `[offs[sp], offs[sp]+np)` (directly, or via the
 /// transposed form using the same range), so distinct `sp` values own disjoint
@@ -30,40 +30,14 @@ pub fn coulomb_metric_2c(op: Operator, dfbs: &PreparedBasis) -> Result<Array2<f6
     let nsh = dfbs.nshells();
     let dims = dfbs.shell_dims();
     let offs = dfbs.shell_offsets();
-    let mut v = Array2::zeros((naux, naux));
-
-    if nsh < PAR_METRIC_SHELL_THRESHOLD {
-        let mut eng = Engine::new_2center(op, dfbs, 1e-14)?;
-        for sp in 0..nsh {
-            for sq in 0..=sp {
-                let block = eng.compute_eri2(dfbs, sp, sq);
-                let np = dims[sp];
-                let nq = dims[sq];
-                for p in 0..np {
-                    for q in 0..nq {
-                        let val = block[p * nq + q];
-                        v[(offs[sp] + p, offs[sq] + q)] = val;
-                        v[(offs[sq] + q, offs[sp] + p)] = val;
-                    }
-                }
-            }
-        }
-        return Ok(v);
-    }
-
-    use rayon::prelude::*;
-
-    // Surface any engine-construction error up front (serial, cheap) — see
-    // eri3_tensor's rationale: FerricError is not Clone so per-worker rebuilds
-    // below must `.expect()`.
-    Engine::new_2center(op, dfbs, 1e-14)?;
-
+    let mut v = Array2::<f64>::zeros((naux, naux));
     let v_ptr = v.as_mut_ptr() as usize;
     let stride = naux; // row-major (naux, naux)
-
-    (0..nsh).into_par_iter().for_each_init(
-        || Engine::new_2center(op, dfbs, 1e-14).expect("2-center engine (pre-validated)"),
-        |eng, sp| {
+    for_each_with_engine(
+        nsh >= PAR_METRIC_SHELL_THRESHOLD,
+        nsh,
+        || Engine::new_2center(op, dfbs, 1e-14),
+        |eng, sp| -> Result<(), FerricError> {
             let np = dims[sp];
             let o_p = offs[sp];
             for sq in 0..=sp {
@@ -75,9 +49,9 @@ pub fn coulomb_metric_2c(op: Operator, dfbs: &PreparedBasis) -> Result<Array2<f6
                         let val = block[p * nq + q];
                         let r = o_p + p;
                         let c = o_q + q;
-                        // SAFETY: rayon workers write to disjoint (sp, sq)
-                        // shell-pair blocks; the symmetric (r,c)/(c,r) write
-                        // stays within the same block's triangle.
+                        // SAFETY: each `sp` owns the row band [o_p, o_p + np);
+                        // the symmetric (r,c)/(c,r) write stays within the
+                        // same block's triangle, written by this task only.
                         unsafe {
                             let base = v_ptr as *mut f64;
                             *base.add(r * stride + c) = val;
@@ -86,8 +60,9 @@ pub fn coulomb_metric_2c(op: Operator, dfbs: &PreparedBasis) -> Result<Array2<f6
                     }
                 }
             }
+            Ok(())
         },
-    );
+    )?;
     Ok(v)
 }
 
@@ -139,24 +114,56 @@ fn fill_aux_shell(
     sp: usize,
     eri_ptr: usize,
 ) {
+    fill_aux_shell_band(eng, obs, dfbs, sp, (0, dfbs.nbasis()), None, eri_ptr);
+}
+
+/// [`fill_aux_shell`] into a `(band_p1 - band_p0, nbas, nbas)` tensor holding
+/// the global aux rows `[band_p0, band_p1)`: the rows of `sp` outside the band
+/// are skipped, and so is every triple whose QQR-3 estimate is below the
+/// `screen` threshold (it stays zero).
+fn fill_aux_shell_band(
+    eng: &mut Engine,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    sp: usize,
+    (band_p0, band_p1): (usize, usize),
+    screen: Option<(&crate::qqr3::QqrBounds3, f64)>,
+    eri_ptr: usize,
+) {
     let nbas = obs.nbasis();
     let (dims_obs, offs_obs) = (obs.shell_dims(), obs.shell_offsets());
     let (np, p0) = (dfbs.shell_dims()[sp], dfbs.shell_offsets()[sp]);
+    if p0 + np <= band_p0 || p0 >= band_p1 {
+        return;
+    }
     for s1 in 0..obs.nshells() {
         for s2 in 0..=s1 {
+            // QQR-3 distance screen, from a bound that is deterministic in
+            // (op, obs, dfbs): the skipped set is identical on every rebuild
+            // (see eri3_block_screened's purity contract).
+            if let Some((bounds, thresh)) = screen {
+                if bounds.estimate3(sp, s1, s2) < thresh {
+                    continue;
+                }
+            }
             let Some(block) = eng.compute_eri3(obs, dfbs, sp, s1, s2) else {
                 continue;
             };
             let (n1, n2) = (dims_obs[s1], dims_obs[s2]);
             for p in 0..np {
+                let pg = p0 + p;
+                if pg < band_p0 || pg >= band_p1 {
+                    continue;
+                }
+                let row = (pg - band_p0) * nbas * nbas;
                 for i in 0..n1 {
                     for j in 0..n2 {
                         let val = block[(p * n1 + i) * n2 + j];
-                        let row = (p0 + p) * nbas * nbas;
                         let (mm, nn) = (offs_obs[s1] + i, offs_obs[s2] + j);
                         // SAFETY: each aux shell `sp` owns the disjoint aux
                         // row band [p0, p0 + np) (one task per `sp`); the
-                        // μ↔ν mirror stays in that band. Indices < naux·nbas².
+                        // μ↔ν mirror stays in that band. Indices are below
+                        // (band_p1 - band_p0)·nbas².
                         unsafe {
                             let base = eri_ptr as *mut f64;
                             *base.add(row + mm * nbas + nn) = val;
@@ -172,9 +179,9 @@ fn fill_aux_shell(
 /// Build raw (P|μν) for aux rows [p0, p1) only, returned as (p1-p0, nbas, nbas).
 /// Same values as the corresponding slice of `eri3_tensor`.
 ///
-/// Parallelized over aux shells `sp` exactly like [`eri3_tensor`] (one `Engine`
-/// per rayon worker via `for_each_init`, disjoint aux-row-band raw-pointer
-/// scatter). Only aux shells overlapping `[p0, p1)` do any work; each such `sp`
+/// Parallelized over aux shells `sp` exactly like [`eri3_tensor`] (one pooled
+/// `Engine` per rayon worker, `for_each_with_engine`; serial below
+/// [`PAR_ERI3_TRIPLE_THRESHOLD`]; disjoint aux-row-band raw-pointer scatter). Only aux shells overlapping `[p0, p1)` do any work; each such `sp`
 /// owns a distinct band of local rows `pl = offs_df[sp] + p − p0`, so writes
 /// from distinct workers never overlap and every element is written exactly
 /// once — the output is bit-identical to the serial fill.
@@ -221,83 +228,24 @@ pub fn eri3_block_screened(
     p1: usize,
     screen: Option<(&crate::qqr3::QqrBounds3, f64)>,
 ) -> Result<Array3<f64>, FerricError> {
-    use rayon::prelude::*;
-
     let nbas = obs.nbasis();
     let nsh_obs = obs.nshells();
     let nsh_df = dfbs.nshells();
-    let dims_obs = obs.shell_dims();
-    let offs_obs = obs.shell_offsets();
-    let dims_df = dfbs.shell_dims();
-    let offs_df = dfbs.shell_offsets();
-
-    // Surface any engine-construction error up front (serial, cheap). After this
-    // succeeds the per-worker rebuilds below cannot fail for the same args, so
-    // they `.expect()` — `FerricError` is not `Clone`, so we cannot thread the
-    // error out of the per-worker init closure. (See eri3_tensor.)
-    Engine::new_3center(op, obs, dfbs, 1e-14)?;
-
     let mut eri = Array3::<f64>::zeros((p1 - p0, nbas, nbas));
-
-    // Raw-pointer scatter: each aux shell `sp` writes a disjoint band of local
-    // aux rows, so the `(pl, mu, nu)` regions written by distinct workers never
-    // overlap.
+    if let Some(buf) = eri.as_slice_mut() {
+        ferric_core::memory::advise_huge_pages(buf);
+    }
     let eri_ptr = eri.as_mut_ptr() as usize;
-    let stride0 = nbas * nbas; // pl-stride
-    let stride1 = nbas; // mu-stride
-
-    (0..nsh_df).into_par_iter().for_each_init(
-        || Engine::new_3center(op, obs, dfbs, 1e-14).expect("3-center engine (pre-validated)"),
-        |eng, sp| {
-            let pbase = offs_df[sp];
-            let np = dims_df[sp];
-            // Skip aux shells entirely outside [p0, p1).
-            if pbase + np <= p0 || pbase >= p1 {
-                return;
-            }
-            for s1 in 0..nsh_obs {
-                let n1 = dims_obs[s1];
-                let m0 = offs_obs[s1];
-                for s2 in 0..=s1 {
-                    // QQR-3 distance screen. Evaluated per (sp, s1, s2) from a
-                    // bound that is deterministic in (op, obs, dfbs), so the
-                    // skipped set is identical on every rebuild — see the
-                    // purity contract on this function.
-                    if let Some((bounds, thresh)) = screen {
-                        if bounds.estimate3(sp, s1, s2) < thresh {
-                            continue;
-                        }
-                    }
-                    if let Some(block) = eng.compute_eri3(obs, dfbs, sp, s1, s2) {
-                        let n2 = dims_obs[s2];
-                        let n0 = offs_obs[s2];
-                        for p in 0..np {
-                            let pg = pbase + p;
-                            if pg < p0 || pg >= p1 {
-                                continue;
-                            }
-                            let pl = pg - p0;
-                            for i in 0..n1 {
-                                for j in 0..n2 {
-                                    let val = block[(p * n1 + i) * n2 + j];
-                                    let mm = m0 + i;
-                                    let nn = n0 + j;
-                                    // SAFETY: same disjoint-write argument as
-                                    // the full-tensor path; pl is the chunk-local
-                                    // aux index within the current P-block.
-                                    unsafe {
-                                        let base = eri_ptr as *mut f64;
-                                        *base.add(pl * stride0 + mm * stride1 + nn) = val;
-                                        *base.add(pl * stride0 + nn * stride1 + mm) = val;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+    let parallel = nsh_df * nsh_obs * (nsh_obs + 1) / 2 >= PAR_ERI3_TRIPLE_THRESHOLD;
+    for_each_with_engine(
+        parallel,
+        nsh_df,
+        || Engine::new_3center(op, obs, dfbs, 1e-14),
+        |eng, sp| -> Result<(), FerricError> {
+            fill_aux_shell_band(eng, obs, dfbs, sp, (p0, p1), screen, eri_ptr);
+            Ok(())
         },
-    );
+    )?;
     Ok(eri)
 }
 

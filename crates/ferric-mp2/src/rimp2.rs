@@ -800,6 +800,9 @@ pub fn stream_dressed_mo_band_budgeted(
 
     let dress = DressRows::of(v_inv_sqrt);
     let mut b_flat = Array2::<f64>::zeros((band, width));
+    if let Some(buf) = b_flat.as_slice_mut() {
+        ferric_core::memory::advise_huge_pages(buf);
+    }
     src.for_each_block(|blk| {
         let qb = blk.data.shape()[0];
         let mut q0 = 0;

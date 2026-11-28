@@ -296,12 +296,22 @@ pub(crate) fn rimp2_energies(
     with_gradient: bool,
     reference_file: Option<&ReferenceFile>,
 ) -> Result<Rimp2Energies, DriverError> {
+    // `FERRIC_TIMING` table of the whole call: with a read reference, the
+    // `reference` row is the file read and its Tr[D h] check, not an SCF.
+    let mut acc = ferric_core::timing::PhaseAccumulator::new().report_on_drop("run_rimp2 driver");
+    let tok = acc.begin("prepare system (basis + Schwarz)");
     let sys = PreparedSystem::new(mol, basis_set)?;
+    acc.stop(tok);
+    let tok = acc.begin("prepare aux basis");
     let dfbs = sys.prepare_aux(auxbasis)?;
+    acc.stop(tok);
     let (mol, op) = (sys.mol(), sys.op());
+    let tok = acc.begin("reference (solve or read)");
     let (scf, read_from) = solve_reference(reference_file, &sys, rhf_config, || {
         sys.solve_reference(rhf_config)
     })?;
+    acc.stop(tok);
+    let tok = acc.begin("RI-MP2 energy (ri_mp2_on)");
     let (mp2_corr, total_energy, precision) = if scf.spin == ferric_scf::Spin::Unrestricted {
         let u = ferric_mp2::u_rimp2::u_ri_mp2_on(&dfbs, &scf, mp2_config)?;
         (u.mp2_corr, u.total_energy, u.precision)
@@ -309,6 +319,8 @@ pub(crate) fn rimp2_energies(
         let mp2 = ferric_mp2::rimp2::ri_mp2_on(&dfbs, &scf, mp2_config)?;
         (mp2.mp2_corr, mp2.total_energy, mp2.precision)
     };
+    acc.stop(tok);
+    let tok = acc.begin("gradient + certificate");
     // Closed shell only: `run_rimp2` refuses an open-shell gradient first.
     let gradient = with_gradient
         .then(|| {
@@ -337,6 +349,7 @@ pub(crate) fn rimp2_energies(
         basis_set,
         auxbasis,
     );
+    acc.stop(tok);
     Ok(Rimp2Energies {
         certificate,
         gradient,
