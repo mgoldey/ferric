@@ -114,6 +114,9 @@ extern "C" {
     );
 }
 
+/// Pool label of the resident tensor.
+const PAIR_TENSOR_LABEL: &str = "DF pair-major dressed B[mu][nu][P]";
+
 /// Rows of the half-transformed intermediate one K-reduction DSYRK reads.
 /// Fixed (never the thread count): the chunks set K's summation order.
 pub const K_REDUCE_ROWS: usize = 2048;
@@ -143,6 +146,9 @@ pub struct PairLayout {
     /// Per shell `s1`: its kept partner shells, ascending, and for each the
     /// position of its first function inside `sig(μ)` of any `μ ∈ s1`.
     shell_partners: Vec<Vec<(u32, u32)>>,
+    /// The shell sizes and AO offsets the layout was built for.
+    shell_dims: Vec<usize>,
+    shell_offs: Vec<usize>,
     kept_shell_pairs: usize,
     thresh: f64,
 }
@@ -216,9 +222,21 @@ impl PairLayout {
             sig_start,
             n_lower,
             shell_partners,
+            shell_dims: dims.to_vec(),
+            shell_offs: offs[..nsh].to_vec(),
             kept_shell_pairs,
             thresh,
         }
+    }
+
+    /// Whether this layout was built for exactly `obs`'s shell partition
+    /// (sizes and AO offsets, shell by shell): what makes every column
+    /// position [`PairMajor::fill`] writes lie inside its function's list.
+    pub fn matches(&self, obs: &PreparedBasis) -> bool {
+        let nsh = obs.nshells();
+        self.shell_dims.as_slice() == obs.shell_dims()
+            && obs.shell_offsets().len() >= nsh
+            && self.shell_offs.as_slice() == &obs.shell_offsets()[..nsh]
     }
 
     /// AO functions.
@@ -262,11 +280,18 @@ pub struct PairMajor {
     /// `data[(sig_start[μ] + k)·naux + P] = B[P, μ, sig(μ)[k]]`.
     data: Vec<f64>,
     /// The half-transformed intermediate of [`Self::build_k_occ`], reused.
-    k_scratch: std::sync::Mutex<Vec<f64>>,
+    k_scratch: std::sync::Mutex<KScratch>,
     /// Set when the tensor is held on column-rotated shells: every public
     /// entry point takes and returns parent-basis matrices.
     rot: Option<Rotation>,
     _charge: Reservation,
+}
+
+/// The retained K workspace and the pool charge for its capacity.
+#[derive(Default)]
+struct KScratch {
+    buf: Vec<f64>,
+    charge: Option<Reservation>,
 }
 
 /// The column rotation a [`PairMajor`] tensor is stored under: `χ = T χ'`.
@@ -315,17 +340,35 @@ impl PairMajor {
         layout: PairLayout,
     ) -> Result<Self, FerricError> {
         let naux = dfbs.nbasis();
-        if layout.nao != obs.nbasis() {
-            return Err(FerricError::General(format!(
-                "pair-major fill: the layout has {} functions, the orbital basis {}",
-                layout.nao,
-                obs.nbasis()
-            )));
-        }
         let charge = ferric_core::memory::pool::reserve_global(
-            "DF pair-major dressed B[mu][nu][P]",
+            PAIR_TENSOR_LABEL,
             layout.tensor_bytes(naux),
         )?;
+        Self::fill_charged(op, obs, dfbs, layout, charge)
+    }
+
+    /// [`Self::fill`] with the tensor's pool charge already taken.
+    fn fill_charged(
+        op: Operator,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        layout: PairLayout,
+        charge: Reservation,
+    ) -> Result<Self, FerricError> {
+        let naux = dfbs.nbasis();
+        // The raw-pointer scatter below trusts the layout's column positions,
+        // so a layout built for another shell partition (equal AO counts are
+        // not enough) is refused before any worker starts.
+        if layout.nao != obs.nbasis() || !layout.matches(obs) {
+            return Err(FerricError::General(format!(
+                "pair-major fill: the layout ({} functions, {} shells) was not built for \
+                 this orbital basis ({} functions, {} shells)",
+                layout.nao,
+                layout.shell_dims.len(),
+                obs.nbasis(),
+                obs.nshells()
+            )));
+        }
         let mut data = vec![0.0f64; layout.stored() * naux];
         let base = SharedMut(data.as_mut_ptr());
         let (dims, offs) = (obs.shell_dims(), obs.shell_offsets());
@@ -374,7 +417,7 @@ impl PairMajor {
             naux,
             layout,
             data,
-            k_scratch: std::sync::Mutex::new(Vec::new()),
+            k_scratch: std::sync::Mutex::new(KScratch::default()),
             rot: None,
             _charge: charge,
         })
@@ -534,15 +577,28 @@ impl PairMajor {
     /// `k` is overwritten and exactly symmetric. With the tensor on rotated
     /// shells: `K = T K'(Tᵀ C) Tᵀ`.
     pub fn build_k_occ(&self, c: &Array2<f64>, k: &mut Array2<f64>) -> Result<(), FerricError> {
+        self.build_k_occ_banded(c, k, crate::reduce::default_band_bytes())
+    }
+
+    /// [`Self::build_k_occ`] with the live-set budget of the reduction's
+    /// partials given (`reduce::resolve_band_bytes` of the builder's budget,
+    /// as the aux-major occupied path sizes its band). K does not depend on
+    /// it.
+    pub fn build_k_occ_banded(
+        &self,
+        c: &Array2<f64>,
+        k: &mut Array2<f64>,
+        band_bytes: usize,
+    ) -> Result<(), FerricError> {
         let Some(rot) = &self.rot else {
-            return self.build_k_occ_stored(c, k);
+            return self.build_k_occ_stored(c, k, band_bytes);
         };
         if c.nrows() != self.layout.nao {
-            return self.build_k_occ_stored(c, k); // reports the shape error
+            return self.build_k_occ_stored(c, k, band_bytes); // reports the shape error
         }
         let c_rot = rot.t.t().dot(c);
         let mut k_rot = Array2::<f64>::zeros(k.raw_dim());
-        self.build_k_occ_stored(&c_rot, &mut k_rot)?;
+        self.build_k_occ_stored(&c_rot, &mut k_rot, band_bytes)?;
         k.assign(&rot.basis.back_transform_matrix(&k_rot)?);
         Ok(())
     }
@@ -580,8 +636,16 @@ impl PairMajor {
         if layout.tensor_bytes(dfbs.nbasis()) > budget_bytes {
             return Ok(None);
         }
+        // A pool that cannot hold the tensor is a reason to take the
+        // aux-major route (which can spill or recompute), not to end the run.
+        let Some(charge) = ferric_core::memory::pool::try_reserve_global(
+            PAIR_TENSOR_LABEL,
+            layout.tensor_bytes(dfbs.nbasis()),
+        ) else {
+            return Ok(None);
+        };
         let t = Stage::start("dfpair:fill");
-        let mut tensor = Self::fill(op, ints, dfbs, layout)?;
+        let mut tensor = Self::fill_charged(op, ints, dfbs, layout, charge)?;
         t.end();
         let t = Stage::start("dfpair:dress");
         tensor.dress(linv)?;
@@ -716,7 +780,12 @@ impl PairMajor {
     /// with `D = C Cᵀ`, or any factor of a positive semidefinite density).
     /// `k` is overwritten and exactly symmetric.
     #[allow(clippy::manual_c_str_literals)]
-    fn build_k_occ_stored(&self, c: &Array2<f64>, k: &mut Array2<f64>) -> Result<(), FerricError> {
+    fn build_k_occ_stored(
+        &self,
+        c: &Array2<f64>,
+        k: &mut Array2<f64>,
+        band_bytes: usize,
+    ) -> Result<(), FerricError> {
         let (n, naux) = (self.layout.nao, self.naux);
         if c.nrows() != n || k.dim() != (n, n) {
             return Err(FerricError::General(format!(
@@ -731,22 +800,26 @@ impl PairMajor {
             return Ok(());
         }
         let rows = half_transform_rows(n, nocc, naux);
-        let _scratch = ferric_core::memory::pool::try_reserve_global(
-            "DF pair-major half-transformed T[mu][i][P]",
-            n * nocc * rows * 8,
-        );
         // Kept between builds: a fresh 100+ MB zeroed buffer per build cost a
         // fifth of a steady K at n-dodecane / cc-pVDZ. Every element read is
-        // written first (each block's GEMMs fill `t[..n·ld]`).
+        // written first (each block's GEMMs fill `t[..n·ld]`). The pool charge
+        // lives with the buffer, for as long as it is retained (soft: a
+        // refused charge leaves the buffer uncounted, as the aux-major
+        // scratch charges do, rather than failing a K build).
         let mut guard = self
             .k_scratch
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if guard.len() < n * nocc * rows {
-            guard.resize(n * nocc * rows, 0.0);
+        let KScratch { buf, charge } = &mut *guard;
+        if buf.len() < n * nocc * rows {
+            *charge = None; // release before asking for the larger size
+            *charge = ferric_core::memory::pool::try_reserve_global(
+                "DF pair-major half-transformed T[mu][i][P]",
+                n * nocc * rows * 8,
+            );
+            buf.resize(n * nocc * rows, 0.0);
         }
-        let t: &mut [f64] = &mut guard;
-        let band_bytes = crate::reduce::default_band_bytes();
+        let t: &mut [f64] = buf;
         let (one, zero) = (1.0f64, 0.0f64);
         let mut p0 = 0usize;
         while p0 < naux {
@@ -884,17 +957,22 @@ pub fn pair_layout_requested() -> Result<bool, FerricError> {
         .map_err(|e| FerricError::General(format!("FERRIC_DF_LAYOUT: {e}")))
 }
 
-static PAIR_MAJOR_TAKEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-/// Record that an RI-JK set-up took the pair-major route.
-pub(crate) fn note_pair_major_taken() {
-    PAIR_MAJOR_TAKEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+thread_local! {
+    /// RI-JK set-ups on THIS thread that took the pair-major route.
+    /// Thread-local, like [`override_pair_layout_for_test`], so a test reads
+    /// only its own solves and never a sibling test's.
+    static PAIR_MAJOR_TAKEN: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// How many RI-JK set-ups in this process took the pair-major route. Test hook.
+/// Record that an RI-JK set-up on this thread took the pair-major route.
+pub(crate) fn note_pair_major_taken() {
+    PAIR_MAJOR_TAKEN.with(|c| c.set(c.get() + 1));
+}
+
+/// How many RI-JK set-ups on this thread took the pair-major route. Test hook.
 #[doc(hidden)]
 pub fn pair_major_count_for_test() -> usize {
-    PAIR_MAJOR_TAKEN.load(std::sync::atomic::Ordering::SeqCst)
+    PAIR_MAJOR_TAKEN.with(std::cell::Cell::get)
 }
 
 /// RI-J on the shared pair-major tensor.
@@ -996,7 +1074,12 @@ mod tests {
         })
     }
 
+    /// The largest |element|, or infinity when any element is not finite
+    /// (`f64::max` would drop a NaN and let a comparison pass).
     fn max_abs(a: &Array2<f64>) -> f64 {
+        if a.iter().any(|v| !v.is_finite()) {
+            return f64::INFINITY;
+        }
         a.iter().fold(0.0f64, |m, v| m.max(v.abs()))
     }
 
@@ -1056,6 +1139,45 @@ mod tests {
             assert!(k == k.t(), "K is not exactly symmetric");
             assert!(j == j.t(), "J is not exactly symmetric");
         }
+    }
+
+    /// A layout built for another shell partition is refused before the
+    /// raw-pointer fill, including one with the SAME number of functions
+    /// (shell sizes permuted): its column positions would land outside the
+    /// lists of this basis's functions.
+    #[test]
+    fn a_layout_for_another_shell_partition_is_refused() {
+        let sys = system("sto-3g");
+        let op = Operator::coulomb();
+        let dims = sys.obs.shell_dims();
+        let nsh = dims.len();
+        // Two waters in STO-3G are [1, 1, 3, 1, 1] twice (a palindrome), so
+        // rotate the shell sizes instead of reversing them.
+        let mut permuted: Vec<usize> = dims.to_vec();
+        permuted.rotate_left(2);
+        assert_ne!(
+            permuted.as_slice(),
+            dims,
+            "fixture needs unequal shell sizes"
+        );
+        let mut offs = vec![0usize; nsh];
+        for s in 1..nsh {
+            offs[s] = offs[s - 1] + permuted[s - 1];
+        }
+        let q = Array2::from_elem((nsh, nsh), 1.0);
+        let wrong = PairLayout::from_shell_bounds(&q, &permuted, &offs, 1.0, 0.0);
+        assert_eq!(
+            wrong.nao(),
+            sys.obs.nbasis(),
+            "same AO count by construction"
+        );
+        assert!(!wrong.matches(&sys.obs));
+        let err = PairMajor::fill(op, &sys.obs, &sys.dfbs, wrong)
+            .expect_err("must be refused")
+            .to_string();
+        assert!(err.contains("was not built for"), "{err}");
+        let right = PairLayout::schwarz(op, &sys.obs, sys.q_aux_max, 0.0).unwrap();
+        assert!(right.matches(&sys.obs));
     }
 
     /// Catches a K (or J) whose bits depend on the rayon pool: a reduction

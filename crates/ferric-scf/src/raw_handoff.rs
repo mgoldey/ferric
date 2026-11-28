@@ -505,6 +505,10 @@ fn kept_raw(
         }
         Some(RiJ::Stored(_)) => return Err("the RI-J tensor is stored in f32"),
         Some(RiJ::Split(_)) => return Err("Split-RI-J holds no tensor"),
+        // Not reached by a solver that carries a hand-off: the pair-major
+        // route is declined while a hand-off captures the metric
+        // (`DfK::try_pair_major`, `metric_capture_active`), so a gradient
+        // that reuses the SCF's tensor always finds the aux-major one.
         Some(RiJ::Pair(_)) => return Err("the pair-major tensor is dressed, not raw"),
         None => return Err("no RI-J builder"),
     };

@@ -418,12 +418,16 @@ impl Dressed {
         };
         let (n, naux) = (t.nao(), t.naux());
         let grain = 2 * ferric_integrals::three_index_source::df_chunk_width(n);
-        let rows = (PAIR_UNPACK_BLOCK_BYTES / (n * n * 8).max(1) / grain * grain)
+        // A tensor on rotated shells unpacks through a second dense block of
+        // the same size (its pair rows, back-transformed); both count against
+        // the block bound and the pool.
+        let per_row = n * n * 8 * if t.is_rotated() { 2 } else { 1 };
+        let rows = (PAIR_UNPACK_BLOCK_BYTES / per_row.max(1) / grain * grain)
             .max(grain)
             .min(naux.max(1));
         let _charge = ferric_core::memory::pool::try_reserve_global(
             "DF pair-major unpack scratch",
-            rows * n * n * 8,
+            rows * per_row,
         );
         let mut scratch = Array3::<f64>::zeros((rows, n, n));
         let mut p0 = 0usize;
@@ -465,7 +469,8 @@ impl DfK<'static> {
 
     /// The pair-major tensor for an RI-JK run that qualifies (and has not
     /// opted out with `FERRIC_DF_LAYOUT=aux`), else `None` (the caller takes
-    /// the aux-major route): the Coulomb operator, f64 K storage, no device K,
+    /// the aux-major route): the plain (not composite) Coulomb operator, f64 K
+    /// storage, no device K,
     /// no geometry task capturing the metric, a metric the Cholesky route
     /// certifies, and a tensor that fits `budget_bytes`. `thresh` is the
     /// Schwarz threshold of the pair screen (`[scf] integral_thresh`).
@@ -484,6 +489,7 @@ impl DfK<'static> {
         }
         let nao = obs.nbasis();
         if op.kind != ferric_integrals::operator::OperatorKind::Coulomb
+            || op.is_composite()
             || device_may_take_k(nao)
             || square_forced()
             || effective_precision(precision) != RiKPrecision::F64
@@ -1653,7 +1659,8 @@ impl DfK<'_> {
         // The pair-major tensor: one GEMM per AO function, then the
         // triangular reduction (`crate::df_pair`).
         if let Dressed::Pair(t) = &self.dressed {
-            t.build_k_occ(c_occ, k)?;
+            let band = crate::reduce::resolve_band_bytes(self.budget_bytes);
+            t.build_k_occ_banded(c_occ, k, band)?;
             self.reduce_k_across_ranks(k);
             return Ok(0);
         }

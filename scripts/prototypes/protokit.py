@@ -17,6 +17,9 @@ prototype starts at the kernel under study.
         t = bench(lambda: my_k(ints, ref.c_occ), reps=5)
     print(t.median, jk_error(t.result, ref.k))
 
+Needs numpy, scipy, PySCF and threadpoolctl (`pip install threadpoolctl`; it
+is not a ferric dependency), and, for `ferric_inputs`, an importable ferric.
+
 Cache: `scripts/queue/out/protokit-cache/` (gitignored), or $PROTOKIT_CACHE.
 Entries are keyed on the molecule (atoms, coordinates, basis), the auxiliary
 basis and a per-builder version tag; delete the directory to start clean.
@@ -145,7 +148,7 @@ def alkane(n_carbon: int, basis: str, **kw):
 
 
 def mol_key(mol) -> str:
-    """Stable digest of atoms, coordinates, basis, charge and spin."""
+    """Stable digest of atoms, coordinates, basis, ECPs, charge and spin."""
     h = hashlib.sha256()
     h.update(
         repr(
@@ -158,6 +161,9 @@ def mol_key(mol) -> str:
     h.update(
         repr((sorted(mol._basis.items()), mol.charge, mol.spin, mol.cart)).encode()
     )
+    # ECPs live outside `_basis` and change the effective nuclear charges.
+    if mol._ecp:
+        h.update(repr(sorted(mol._ecp.items())).encode())
     return h.hexdigest()[:16]
 
 
