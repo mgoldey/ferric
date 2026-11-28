@@ -1453,8 +1453,13 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
             log_jk_path(&rung0.config, false);
         }
         let plan = match ladder.first() {
+            // An unset `df_guess` resolves as `ScfSection::df_guess_enabled`
+            // does: `df_increments = true` (ignored on this route, warned
+            // above) still turns the DEFAULTED pre-stage off.
             Some(rung0) => ferric_scf::ladder::DfGuessPlan::decide(
-                cfg.scf.df_guess,
+                cfg.scf
+                    .df_guess
+                    .or((!cfg.scf.df_guess_enabled()).then_some(false)),
                 &rung0.config,
                 mol,
                 df_guess_aux.as_deref(),

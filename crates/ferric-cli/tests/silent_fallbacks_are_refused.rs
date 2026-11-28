@@ -999,6 +999,19 @@ fn df_guess_warnings_fire_only_when_the_user_asked_for_df_guess() {
     let rhf_explicit = stderr("dfg_rhf_explicit", 1, "rhf", explicit);
     assert!(!rhf_explicit.contains("df_guess"), "{rhf_explicit}");
     assert!(rhf_explicit.contains(pre_stage), "{rhf_explicit}");
+    // `df_increments = true` is ignored on the ladder route (and warned), but
+    // it still turns the DEFAULTED pre-stage off (`df_guess_enabled`).
+    let rhf_increments = stderr(
+        "dfg_rhf_increments",
+        1,
+        "rhf",
+        "[scf]\ndf_increments = true\n",
+    );
+    assert!(
+        rhf_increments.contains("df_increments is not yet composed"),
+        "{rhf_increments}"
+    );
+    assert!(!rhf_increments.contains(pre_stage), "{rhf_increments}");
 
     let uhf_default = stderr("dfg_rimp2_triplet_default", 3, "rimp2", aux);
     assert!(!uhf_default.contains("df_guess"), "{uhf_default}");
