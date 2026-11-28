@@ -81,10 +81,13 @@ pub enum ScfKnob {
     /// not an `ScfOptions` field, listed so the refusal table covers every
     /// keyword of the six signatures.
     Dispersion,
+    /// `df_guess=` ([`ScfKwargs::df_guess`]): the DF pre-stage, decided by
+    /// `ladder::DfGuessPlan` rather than lowered into `ScfOptions`.
+    DfGuess,
 }
 
 /// Every [`ScfKnob`], for checks that walk them all.
-pub const ALL_SCF_KNOBS: [ScfKnob; 11] = [
+pub const ALL_SCF_KNOBS: [ScfKnob; 12] = [
     ScfKnob::Diis,
     ScfKnob::SmearingSigma,
     ScfKnob::Soscf,
@@ -96,6 +99,7 @@ pub const ALL_SCF_KNOBS: [ScfKnob; 11] = [
     ScfKnob::Functional,
     ScfKnob::DftGrid,
     ScfKnob::Dispersion,
+    ScfKnob::DfGuess,
 ];
 
 impl ScfKnob {
@@ -118,6 +122,7 @@ impl ScfKnob {
                 "grid_weight_cut",
             ],
             ScfKnob::Dispersion => &["dispersion"],
+            ScfKnob::DfGuess => &["df_guess"],
         }
     }
 
@@ -136,6 +141,7 @@ impl ScfKnob {
             ScfKnob::Functional => kw.functional.is_some(),
             ScfKnob::DftGrid => kw.dft_grid.is_some(),
             ScfKnob::Dispersion => kw.dispersion,
+            ScfKnob::DfGuess => kw.df_guess,
         }
     }
 }
@@ -165,6 +171,9 @@ const HF_NO_FUNCTIONAL: &str = "Hartree-Fock has no exchange-correlation functio
 const HF_NO_GRID: &str = "Hartree-Fock has no Kohn-Sham integration grid";
 const HF_NO_DISPERSION: &str =
     "a dispersion correction is parameterised per functional; Hartree-Fock has none";
+const DF_GUESS_CLOSED_SHELL: &str =
+    "the DF-guess pre-stage (ladder::solve_rhf_with_df_guess) seeds the closed-shell solve only; \
+     the open-shell solvers have no fitted pre-stage";
 const DISPERSION_RESULT: &str =
     "UhfResult has no e_scf / e_dispersion / dispersion_model fields to report a dispersion \
      correction in";
@@ -211,6 +220,7 @@ impl ScfEntryPoint {
                 (K::Functional, HF_NO_FUNCTIONAL),
                 (K::DftGrid, HF_NO_GRID),
                 (K::Dispersion, HF_NO_DISPERSION),
+                (K::DfGuess, DF_GUESS_CLOSED_SHELL),
             ],
             ScfEntryPoint::Rohf => &[
                 (K::Diis, DIIS_RHF_ONLY),
@@ -223,6 +233,7 @@ impl ScfEntryPoint {
                 (K::Functional, HF_NO_FUNCTIONAL),
                 (K::DftGrid, HF_NO_GRID),
                 (K::Dispersion, HF_NO_DISPERSION),
+                (K::DfGuess, DF_GUESS_CLOSED_SHELL),
             ],
             ScfEntryPoint::Dft => &[
                 (K::Diis, LADDER_OWNS),
@@ -236,6 +247,7 @@ impl ScfEntryPoint {
                 (K::Aurora, AURORA_RHF_ONLY),
                 (K::Symmetry, SYMMETRY_OPEN),
                 (K::Dispersion, DISPERSION_RESULT),
+                (K::DfGuess, DF_GUESS_CLOSED_SHELL),
             ],
             ScfEntryPoint::Roks => &[
                 (K::Diis, DIIS_RHF_ONLY),
@@ -246,6 +258,7 @@ impl ScfEntryPoint {
                 (K::StabilityDescent, STABILITY_NOT_ROHF),
                 (K::MomReference, MOM_REFERENCE_UHF_ONLY),
                 (K::Dispersion, DISPERSION_RESULT),
+                (K::DfGuess, DF_GUESS_CLOSED_SHELL),
             ],
         }
     }
@@ -326,6 +339,7 @@ impl ScfEntryPoint {
             // Post-SCF (run_dft applies it after the SCF); only the refusal
             // check above reads it.
             dispersion: _,
+            df_guess: _,
         } = kw;
         let ks = self.is_kohn_sham();
         let xc = self.functional(functional)?.map(str::to_string);
@@ -477,6 +491,10 @@ pub struct ScfKwargs<'a> {
     /// correction is applied after the SCF; this is here so
     /// [`ScfEntryPoint::refused`] covers every keyword of the signatures.
     pub dispersion: bool,
+    /// `df_guess=` was passed (`run_rhf` / `run_dft` only). Not lowered:
+    /// the binding decides the pre-stage with `ladder::DfGuessPlan`; this is
+    /// here so [`ScfEntryPoint::refused`] covers every keyword.
+    pub df_guess: bool,
 }
 
 /// [`ScfEntryPoint::options`]'s refusal.
@@ -569,6 +587,7 @@ mod tests {
                 kw.dft_grid = Some(ferric_dft::grid::AtomicGridConfig::production())
             }
             ScfKnob::Dispersion => kw.dispersion = true,
+            ScfKnob::DfGuess => kw.df_guess = true,
         };
         for entry in ALL {
             for &(knob, reason) in entry.refused() {

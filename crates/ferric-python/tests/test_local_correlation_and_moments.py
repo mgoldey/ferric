@@ -113,6 +113,8 @@ def test_rimp2_is_exact_by_default_and_local_eps_zero_matches(water_631g):
         local="amplitude-threshold",
         eps=0.0,
         compute_reference=True,
+        # the anchor is tighter than the 1e-7 Ha default target guarantees
+        cg_energy_target="strict",
     )
     loc = lo.local
     assert loc["scheme"] == "amplitude-threshold" and loc["eps"] == 0.0
@@ -128,12 +130,14 @@ def test_rimp2_local_lambda_boys_kwarg(water_631g):
     """lambda_boys: default 10 recorded in result.local, 0 = plain Boys, the
     eps=0 energy does not depend on it, and bad values / the exact method raise."""
     mol, obs, aux = water_631g
-    kw = dict(frozen_core=1, local="amplitude-threshold", eps=0.0)
+    kw = dict(
+        frozen_core=1, local="amplitude-threshold", eps=0.0, cg_energy_target="strict"
+    )
     d = ferric.run_rimp2(mol, obs, aux, **kw)
     z = ferric.run_rimp2(mol, obs, aux, lambda_boys=0.0, **kw)
     assert d.local["lambda_boys"] == 10.0 and d.local["lambda_boys_sweeps"] >= 1
     assert z.local["lambda_boys"] == 0.0 and z.local["lambda_boys_sweeps"] == 0
-    # both PCG solves stop at the adaptive default (bound 1e-10 Ha each)
+    # both PCG solves stop at the strict rule (bound 1e-10 Ha each)
     assert abs(d.mp2_corr - z.mp2_corr) < 2e-10
     for bad in (-1.0, float("nan"), float("inf")):
         with pytest.raises(ValueError, match="lambda_boys"):
@@ -183,6 +187,7 @@ def test_rimp2_integral_direct_trivial_maps_match_canonical(water_631g):
         ao_tail=0.0,
         schwarz_skip=0.0,
         batch_merge=1,
+        cg_energy_target="strict",
     )
     loc = r.local
     assert loc["integral_direct"] is True
@@ -247,6 +252,7 @@ def test_rimp2_virtual_space_dense_and_local_report_the_build(water_631g):
         ao_tail=0.0,
         schwarz_skip=0.0,
         batch_merge=1,
+        cg_energy_target="strict",
     )
     dense = ferric.run_rimp2(mol, obs, aux, **kw)
     local = ferric.run_rimp2(mol, obs, aux, virtual_space="local", **kw)

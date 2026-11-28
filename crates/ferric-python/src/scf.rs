@@ -177,12 +177,75 @@ pub(crate) struct PyRhfResult {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
     /// `dE/dR` (natoms x 3, Hartree/Bohr) when solved with `with_gradient=True`.
     pub(crate) gradient_data: Option<Array2<f64>>,
+    /// The DF-guess decision and pre-stage outcome (`df_guess` getter).
+    pub(crate) df_guess_info: Option<DfGuessInfo>,
 }
 
 stored_method_result!(PyRhfResult, total_energy: energy, certificate: certificate_data);
 
+/// A closed-shell run's DF-guess decision and, when the pre-stage ran, its
+/// outcome: the `df_guess` getter of `RhfResult` and `DftResult`.
+#[derive(Clone, Debug)]
+pub(crate) struct DfGuessInfo {
+    pub(crate) plan: ferric_scf::ladder::DfGuessPlan,
+    pub(crate) pre: Option<ferric_scf::ladder::DfGuessed<()>>,
+}
+
+/// Decide the DF-guess pre-stage of `config` on `sys` for `who`'s `df_guess=`
+/// (`requested`); `caller_blocker` is a condition of the call itself (a Fock
+/// hook, a gradient). An explicit `True` that cannot apply is a ValueError.
+pub(crate) fn plan_df_guess(
+    who: &str,
+    requested: Option<bool>,
+    config: &RhfConfig,
+    sys: &PreparedSystem,
+    caller_blocker: Option<&str>,
+) -> PyResult<ferric_scf::ladder::DfGuessPlan> {
+    ferric_scf::ladder::DfGuessPlan::decide(requested, config, sys.mol(), None, caller_blocker)
+        .map_err(|e| crate::errors::input_err(format!("{who}: {e}")))
+}
+
+/// The `df_guess` getter's dict: `{"ran", "reason", "aux", "df_iterations",
+/// "df_converged", "df_energy", "fallback"}`. `ran` is whether the exact SCF
+/// started from the pre-stage's density; `reason` says why not when it did
+/// not run.
+pub(crate) fn df_guess_dict(
+    py: Python<'_>,
+    info: Option<&DfGuessInfo>,
+) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
+    let Some(info) = info else {
+        return Ok(None);
+    };
+    let d = pyo3::types::PyDict::new(py);
+    let pre = info.pre.as_ref();
+    let ran = pre.is_some_and(|p| !p.skipped && p.fallback.is_none());
+    let reason = match pre {
+        Some(p) if p.skipped => Some("the SCF already fits J and K on the pre-stage aux".into()),
+        Some(p) => p.fallback.clone(),
+        None => info.plan.reason.clone(),
+    };
+    d.set_item("ran", ran)?;
+    d.set_item("reason", reason)?;
+    d.set_item("aux", &info.plan.aux)?;
+    d.set_item("df_iterations", pre.map_or(0, |p| p.df_iterations))?;
+    d.set_item("df_converged", pre.is_some_and(|p| p.df_converged))?;
+    d.set_item("df_energy", pre.filter(|_| ran).map(|p| p.df_energy))?;
+    d.set_item("fallback", pre.and_then(|p| p.fallback.clone()))?;
+    Ok(Some(d.unbind()))
+}
+
 #[pymethods]
 impl PyRhfResult {
+    /// The DF-guess pre-stage (`df_guess=`): `{"ran", "reason", "aux",
+    /// "df_iterations", "df_converged", "df_energy", "fallback"}`. `ran`
+    /// says whether the exact SCF started from the density-fitted
+    /// pre-stage's density, `reason` why not, and `iterations` counts the
+    /// exact stage only. `None` for a result that never decided (a solve
+    /// other than run_rhf's).
+    #[getter]
+    fn df_guess(&self, py: Python<'_>) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
+        df_guess_dict(py, self.df_guess_info.as_ref())
+    }
     #[doc = alias_doc!(energy)]
     #[getter]
     fn total_energy(&self) -> f64 {
@@ -790,7 +853,7 @@ pub(crate) fn parse_relativistic(
     fock_hook=None,
     guess_basis=None, guess_projection=None, ri_j_precision=None, dm0=None,
     with_gradient=false, eri=None, relativistic=None, fock_hook_grad=None,
-    gc_rotation=None, gc_kernel=None,
+    gc_rotation=None, gc_kernel=None, df_guess=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_rhf(
@@ -838,6 +901,7 @@ pub(crate) fn run_rhf(
     fock_hook_grad: Option<&Bound<'_, PyAny>>,
     gc_rotation: Option<&str>,
     gc_kernel: Option<&str>,
+    df_guess: Option<bool>,
 ) -> PyResult<PyObject> {
     refuse_dm0_with_guess("run_rhf", dm0.is_some(), guess, guess_basis)?;
     let hook = parse_fock_hook("run_rhf", fock_hook, fock_hook_grad, with_gradient)?;
@@ -908,6 +972,7 @@ pub(crate) fn run_rhf(
         relativistic,
         aurora,
         trah_trigger,
+        df_guess: df_guess.is_some(),
         ..ScfKwargs::default()
     };
     let options = scf_options_from_kwargs(ScfEntryPoint::Rhf, kw)?;
@@ -941,6 +1006,15 @@ pub(crate) fn run_rhf(
     );
     let user_set = energy_conv.is_some();
     if with_gradient {
+        // The gradient differentiates a plain solve: an explicit
+        // df_guess=True is refused here, an unset one stays off.
+        let plan = plan_df_guess(
+            "run_rhf",
+            df_guess,
+            &config,
+            &sys,
+            Some(WITH_GRADIENT_BLOCKER),
+        )?;
         let hooked = hook.as_ref().and_then(|h| {
             h.grad().map(|grad| RhfGradientHook {
                 hook: h.callable(),
@@ -952,11 +1026,15 @@ pub(crate) fn run_rhf(
             sys: &sys,
             config,
             hooked,
+            df_guess: plan,
         };
         return solve_rhf_with_gradient(py, args);
     }
-    solve_rhf_outcome(py, &sys, config, fock_hook, user_set)
+    solve_rhf_outcome(py, &sys, config, fock_hook, user_set, df_guess)
 }
+
+/// The DF-guess blocker of a `with_gradient=True` run.
+pub(crate) const WITH_GRADIENT_BLOCKER: &str = "with_gradient=True (a gradient task)";
 
 /// Which SCF a `with_gradient=True` run differentiates.
 #[derive(Clone, Copy)]
@@ -1072,6 +1150,8 @@ pub(crate) struct RhfGradientArgs<'a, 'py> {
     /// `Some`: the solve is the hooked one and the gradient gains the hook's
     /// explicit term.
     pub(crate) hooked: Option<RhfGradientHook<'a, 'py>>,
+    /// The DF-guess decision (never runs here: reported by `df_guess`).
+    pub(crate) df_guess: ferric_scf::ladder::DfGuessPlan,
 }
 
 /// `run_rhf(with_gradient=True)`: the closed-shell solve (the refusals of
@@ -1084,6 +1164,7 @@ pub(crate) fn solve_rhf_with_gradient(
         sys,
         config,
         hooked,
+        df_guess,
     } = args;
     let (mol, prep) = (sys.mol(), sys.basis());
     let r = match &hooked {
@@ -1105,6 +1186,10 @@ pub(crate) fn solve_rhf_with_gradient(
     let basis = prep.basis_set();
     let mut result = PyRhfResult::from_scf(mol, basis, r, config, hooked.is_some());
     result.gradient_data = Some(g);
+    result.df_guess_info = Some(DfGuessInfo {
+        plan: df_guess,
+        pre: None,
+    });
     Ok(Py::new(py, result)?.into_any())
 }
 
@@ -1219,15 +1304,20 @@ pub(crate) fn solve_symmetric_outcome(
 /// `SymmetricRhfResult`. A `fock_hook` takes the hooked solve
 /// (`blocks::solve_rhf_hooked`), which refuses symmetry itself, and is
 /// followed by the hook's noise-floor advisory ([`warn_hook_noise_floor`];
-/// `user_set_energy_conv` says whether `energy_conv` was passed).
+/// `user_set_energy_conv` says whether `energy_conv` was passed). The plain
+/// path runs behind the DF-guess pre-stage when `df_guess` (the kwarg) and
+/// [`ferric_scf::ladder::DfGuessPlan::decide`] say so.
 pub(crate) fn solve_rhf_outcome(
     py: Python<'_>,
     sys: &PreparedSystem,
     config: RhfConfig,
     fock_hook: Option<&Bound<'_, PyAny>>,
     user_set_energy_conv: bool,
+    df_guess: Option<bool>,
 ) -> PyResult<PyObject> {
     let (mol, prep) = (sys.mol(), sys.basis());
+    let hooked = fock_hook.is_some().then_some("a fock_hook is set");
+    let plan = plan_df_guess("run_rhf", df_guess, &config, sys, hooked)?;
     if let Some(hook) = fock_hook {
         let (r, term) = blocks::solve_rhf_hooked(py, sys, &config, hook)?;
         warn_hook_noise_floor(
@@ -1240,7 +1330,8 @@ pub(crate) fn solve_rhf_outcome(
             &config,
             term,
         );
-        return wrap_rhf_result(py, mol, prep.basis_set(), r, config, true);
+        let info = DfGuessInfo { plan, pre: None };
+        return wrap_rhf_result(py, mol, prep.basis_set(), r, config, true, Some(info));
     }
     if config.irrep_nelec.is_some() && !config.symmetry {
         return Err(crate::errors::input_err(
@@ -1250,10 +1341,11 @@ pub(crate) fn solve_rhf_outcome(
     if config.symmetry {
         return solve_symmetric_outcome(py, "run_rhf", sys, &config);
     }
-    let r = py
-        .allow_threads(|| sys.solve_rhf(&config))
+    let (r, pre) = py
+        .allow_threads(|| sys.solve_rhf_planned(&config, &plan))
         .map_err(make_err)?;
-    wrap_rhf_result(py, mol, prep.basis_set(), r, config, false)
+    let info = DfGuessInfo { plan, pre };
+    wrap_rhf_result(py, mol, prep.basis_set(), r, config, false, Some(info))
 }
 
 /// Warn if unconverged and wrap a closed-shell solve on the orbital basis
@@ -1265,13 +1357,12 @@ pub(crate) fn wrap_rhf_result(
     r: ScfResult,
     config: RhfConfig,
     fock_hooked: bool,
+    df_guess_info: Option<DfGuessInfo>,
 ) -> PyResult<PyObject> {
     warn_rhf_not_converged(py, &r, &config);
-    Ok(Py::new(
-        py,
-        PyRhfResult::from_scf(mol, basis, r, config, fock_hooked),
-    )?
-    .into_any())
+    let mut result = PyRhfResult::from_scf(mol, basis, r, config, fock_hooked);
+    result.df_guess_info = df_guess_info;
+    Ok(Py::new(py, result)?.into_any())
 }
 
 impl PyRhfResult {
@@ -1294,6 +1385,7 @@ impl PyRhfResult {
             scf_config: Arc::new(config),
             certificate_data,
             gradient_data: None,
+            df_guess_info: None,
         }
     }
 }

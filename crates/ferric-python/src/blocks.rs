@@ -3113,7 +3113,12 @@ pub(crate) fn solve_ks_ladder(
     sys: &PreparedSystem,
     ladder: &[ferric_scf::ladder::Rung],
     hooked: Option<(&Bound<'_, PyAny>, bool, bool)>,
-) -> PyResult<(ferric_scf::result::ScfResult, ferric_scf::rhf::RhfConfig)> {
+    plan: &ferric_scf::ladder::DfGuessPlan,
+) -> PyResult<(
+    ferric_scf::result::ScfResult,
+    ferric_scf::rhf::RhfConfig,
+    Option<ferric_scf::ladder::DfGuessed<()>>,
+)> {
     let refuse = |what: &str| {
         Err(crate::errors::input_err(format!(
             "run_dft: fock_hook cannot be combined with {what}"
@@ -3121,18 +3126,21 @@ pub(crate) fn solve_ks_ladder(
     };
     match hooked {
         None => {
-            let lr = py
-                .allow_threads(|| sys.solve_rhf_ladder(ladder))
+            let (lr, pre) = py
+                .allow_threads(|| sys.solve_rhf_ladder_planned(ladder, plan))
                 .map_err(make_err)?;
             let cfg = ladder
                 .get(lr.rung_reached)
                 .map(|r| r.config.clone())
                 .ok_or_else(|| make_err("SCF ladder reported a rung it does not have"))?;
-            Ok((lr.result, cfg))
+            Ok((lr.result, cfg, pre))
         }
         Some((_, true, _)) => refuse(KS_HOOK_GRADIENT_REFUSAL),
         Some((_, _, true)) => refuse("dispersion"),
-        Some((hook, false, false)) => solve_hooked_ladder(py, sys, ladder, hook),
+        Some((hook, false, false)) => {
+            let (r, cfg) = solve_hooked_ladder(py, sys, ladder, hook)?;
+            Ok((r, cfg, None))
+        }
     }
 }
 

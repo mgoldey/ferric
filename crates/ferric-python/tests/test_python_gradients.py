@@ -197,7 +197,8 @@ def test_oo_rimp2_gradient_matches_fd_of_its_energy(sto3g):
 
 
 def test_gradient_is_none_without_the_flag_and_the_energy_is_unchanged(sto3g):
-    plain = ferric.run_rhf(_mol(WATER), sto3g, **TIGHT)
+    # The gradient differentiates a plain solve (no DF-guess pre-stage).
+    plain = ferric.run_rhf(_mol(WATER), sto3g, df_guess=False, **TIGHT)
     assert plain.gradient() is None
     assert ferric.run_uhf(_mol(NH2, 2), sto3g).gradient() is None
     with_g = ferric.run_rhf(_mol(WATER), sto3g, with_gradient=True, **TIGHT)

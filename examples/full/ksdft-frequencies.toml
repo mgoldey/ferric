@@ -78,9 +78,9 @@ check_stability = false            # diagnostic orbital-Hessian check of the con
 # jk: reference J/K route of the MP2 family: exact | rijk | rijcosx; not read here: MP2-family kinds only
 # jk_aux: JK-fit basis of jk = rijk/rijcosx; not read here: only with jk
 # mom_reference: previous | initial; not read here: UHF/UKS only
-# df_guess: two-stage SCF: DF first, then exact; not read here: not composed with the rhf/ksdft convergence ladder
+# df_guess: two-stage SCF: DF first, then exact; not read here: energy task only
 # df_guess_aux: aux basis of the DF-guess pre-stage; not read here: only with df_guess
-# df_increments: DF-corrected incremental Fock SCF; not read here: same scope as df_guess
+# df_increments: DF-corrected incremental Fock SCF; not read here: closed-shell correlated kinds only
 # df_increments_aux: aux basis of df_increments; not read here: only with df_increments = true (default def2-universal-jkfit)
 # stability_descent: follow a downhill mode at a saddle and re-converge; not read here: rhf, uhf and ksdft energies only
 # symmetry: point-group-blocked closed-shell RHF/RKS; not read here: closed-shell rhf/ksdft energies only

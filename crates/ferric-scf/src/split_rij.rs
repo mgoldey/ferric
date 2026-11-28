@@ -2209,6 +2209,8 @@ pub enum RiJ<'a> {
     Stored(crate::df_j::DfJ<'a>),
     /// Direct Split-RI-J.
     Split(Box<SplitRiJ>),
+    /// The pair-major dressed tensor shared with DF-K ([`crate::df_pair`]).
+    Pair(crate::df_pair::PairJ),
 }
 
 impl<'a> RiJ<'a> {
@@ -2217,7 +2219,7 @@ impl<'a> RiJ<'a> {
     pub fn precision(&self) -> crate::df_j::RiJPrecision {
         match self {
             RiJ::Stored(s) => s.precision(),
-            RiJ::Split(_) => crate::df_j::RiJPrecision::F64,
+            RiJ::Split(_) | RiJ::Pair(_) => crate::df_j::RiJPrecision::F64,
         }
     }
 
@@ -2225,7 +2227,7 @@ impl<'a> RiJ<'a> {
     pub fn as_stored_mut(&mut self) -> Option<&mut crate::df_j::DfJ<'a>> {
         match self {
             RiJ::Stored(s) => Some(s),
-            RiJ::Split(_) => None,
+            RiJ::Split(_) | RiJ::Pair(_) => None,
         }
     }
 }
@@ -2235,6 +2237,7 @@ impl std::fmt::Debug for RiJ<'_> {
         match self {
             RiJ::Stored(s) => s.fmt(f),
             RiJ::Split(s) => s.fmt(f),
+            RiJ::Pair(s) => s.fmt(f),
         }
     }
 }
@@ -2244,6 +2247,7 @@ impl JBuilder for RiJ<'_> {
         match self {
             RiJ::Stored(s) => s.build(d, j),
             RiJ::Split(s) => s.build(d, j),
+            RiJ::Pair(s) => s.build(d, j),
         }
     }
 
@@ -2251,6 +2255,7 @@ impl JBuilder for RiJ<'_> {
         match self {
             RiJ::Stored(s) => s.reset(),
             RiJ::Split(s) => s.reset(),
+            RiJ::Pair(s) => s.reset(),
         }
     }
 }

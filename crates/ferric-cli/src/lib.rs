@@ -26,7 +26,7 @@ use crate::error::CliError;
 use config::{load_config, Config};
 /// The `[local]` model types, re-exported for the Python bindings, which
 /// apply the SAME rules to their `local=`/`eps=` kwargs.
-pub use config::{LocalCfg, LocalDirectKnobs, LocalModel, LocalScheme, Mp2Cfg};
+pub use config::{CgEnergyTargetSpec, LocalCfg, LocalDirectKnobs, LocalModel, LocalScheme, Mp2Cfg};
 use ferric_cc::ccd::ccd_on;
 use ferric_cc::ccsd_closed_shell::ccsd_closed_shell_on;
 use ferric_cc::ccsd_t_closed_shell::ccsd_t_closed_shell_on;
@@ -465,8 +465,8 @@ fn scf_jk_route_line(
 }
 
 /// One stderr line saying what the DF-guess stage actually did.
-fn print_df_guess_outcome(
-    dfg: &ferric_scf::ladder::DfGuessResult,
+fn print_df_guess_outcome<T>(
+    dfg: &ferric_scf::ladder::DfGuessed<T>,
     aux: Option<&str>,
     jk_mode: impl std::fmt::Display,
 ) {
@@ -1432,20 +1432,13 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
         reference_read = Some((read.record, read.provenance));
         read.result
     } else if route == ReferenceRoute::Ladder {
-        // `[scf] df_guess` is not (yet) composed with the multi-rung
-        // convergence ladder — the ladder's own escalation (level shift /
-        // ADIIS / smearing) is a different mechanism aimed at hard-to-
-        // converge systems, and interleaving a DF pre-stage into every rung
-        // needs its own design (which rung(s) get it, whether DIIS state
-        // should reset between the ladder's *own* rungs the same way). Warn
-        // rather than silently ignore, per the config-honesty convention.
-        // Only an EXPLICIT `df_guess = true`: the knob defaults on, so
-        // df_guess_enabled() would warn on every plain rhf/ksdft run.
-        if cfg.scf.df_guess == Some(true) {
-            eprintln!(
-                "warning: [scf] df_guess is not yet composed with the {method} convergence ladder; ignored here (use kind = \"rimp2\" or another non-laddered method to use it)"
-            );
-        }
+        // `[scf] df_guess` runs ONE DF pre-stage before the ladder, on rung
+        // 0's config, and rung 0 starts from its density; the ladder's own
+        // escalation is unchanged (`ladder::solve_rhf_ladder_with_df_guess`).
+        // Whether it runs is `DfGuessPlan::decide`'s rule, shared with the
+        // Python run_rhf / run_dft: unset follows the default where the SCF
+        // has a four-centre build to save; an explicit `true` that cannot
+        // apply is an error naming why.
         if cfg.scf.df_increments {
             eprintln!(
                 "warning: [scf] df_increments is not yet composed with the {method} convergence ladder; ignored here (use kind = \"rimp2\" or another non-laddered method to use it)"
@@ -1459,8 +1452,43 @@ pub fn try_run(args: Vec<String>) -> Result<(), CliError> {
         if let Some(rung0) = ladder.first() {
             log_jk_path(&rung0.config, false);
         }
-        let lr = ferric_scf::ladder::solve_rhf_ladder(ctx, mol, prep, op, bounds, &ladder)
+        let plan = match ladder.first() {
+            // An unset `df_guess` resolves as `ScfSection::df_guess_enabled`
+            // does: `df_increments = true` (ignored on this route, warned
+            // above) still turns the DEFAULTED pre-stage off.
+            Some(rung0) => ferric_scf::ladder::DfGuessPlan::decide(
+                cfg.scf
+                    .df_guess
+                    .or((!cfg.scf.df_guess_enabled()).then_some(false)),
+                &rung0.config,
+                mol,
+                df_guess_aux.as_deref(),
+                None,
+            )
+            .map_err(|e| CliError::msg(format!("[scf] {e}")))?,
+            None => ferric_scf::ladder::DfGuessPlan {
+                run: false,
+                reason: Some("empty ladder".into()),
+                aux: String::new(),
+            },
+        };
+        let lr = if plan.run {
+            let dfg = ferric_scf::ladder::solve_rhf_ladder_with_df_guess(
+                ctx,
+                mol,
+                prep,
+                op,
+                bounds,
+                &ladder,
+                Some(&plan.aux),
+            )
             .map_err(|e| CliError::msg(format!("SCF ladder failed: {e:?}")))?;
+            print_df_guess_outcome(&dfg, Some(&plan.aux), jk_route.mode);
+            dfg.result
+        } else {
+            ferric_scf::ladder::solve_rhf_ladder(ctx, mol, prep, op, bounds, &ladder)
+                .map_err(|e| CliError::msg(format!("SCF ladder failed: {e:?}")))?
+        };
         if !lr.converged {
             eprintln!(
                 "warning: SCF did not fully converge (best rung {}, exit {:?})",

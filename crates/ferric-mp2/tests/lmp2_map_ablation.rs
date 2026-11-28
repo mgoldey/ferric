@@ -31,7 +31,7 @@ use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config;
+use ferric_mp2::lmp2_amplitude::{AmplitudeLmp2Config, CgEnergyTarget};
 use ferric_mp2::lmp2_direct::{amplitude_lmp2_direct, DirectConfig};
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 #[allow(dead_code)]
@@ -157,6 +157,8 @@ fn anchor(xyz: &str, basis_name: &str) {
         compute_reference: true,
         eps: 0.0,
         frozen_core: fc,
+        // 1e-9 against canonical RI-MP2: below what the 1e-7 Ha default target guarantees
+        cg_energy_target: CgEnergyTarget::Strict,
         ..Default::default()
     };
     let (r, st) = amplitude_lmp2_direct(

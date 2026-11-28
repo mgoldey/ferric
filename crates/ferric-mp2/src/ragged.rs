@@ -125,14 +125,16 @@ impl Ragged {
         match &self.share {
             None => dot_blocks(x, y),
             Some(s) => {
-                let local = x
-                    .iter()
-                    .zip(y)
-                    .zip(&s.owned)
+                // per-block products in parallel, summed in block order:
+                // bitwise the serial sum over the owned blocks
+                let per_block: Vec<f64> = x
+                    .par_iter()
+                    .zip(y.par_iter())
+                    .zip(s.owned.par_iter())
                     .filter(|(_, &own)| own)
                     .map(|((a, b), _)| (a * b).sum())
-                    .sum();
-                self.sum_over_ranks(local)
+                    .collect();
+                self.sum_over_ranks(per_block.into_iter().sum())
             }
         }
     }
@@ -671,9 +673,16 @@ pub fn kept_fraction(rg: &Ragged, no: usize, nv: usize) -> f64 {
     kept as f64 / total as f64
 }
 
-/// Element-wise dot product summed over a slice of block matrices.
+/// Element-wise dot product summed over a slice of block matrices: each
+/// block's `(a * b).sum()` in parallel, then summed in block order (bitwise
+/// the serial loop).
 pub fn dot_blocks(x: &[Array2<f64>], y: &[Array2<f64>]) -> f64 {
-    x.iter().zip(y).map(|(a, b)| (a * b).sum()).sum()
+    let per_block: Vec<f64> = x
+        .par_iter()
+        .zip(y.par_iter())
+        .map(|(a, b)| (a * b).sum())
+        .collect();
+    per_block.into_iter().sum()
 }
 
 /// Ragged PCG on the fixed pattern: solve P A P t = −P J.
@@ -1133,13 +1142,19 @@ where
             trace,
         };
     }
+    // The vector updates below run in parallel over blocks, each block with
+    // the per-element expression of the serial loop, so they are bitwise
+    // that loop (measured 2026-11: serial, they were ~1/3 of the C16 solve).
     let precond_into = |r: &[Array2<f64>], z: &mut [Array2<f64>]| {
-        for ((zb, rb), pb) in z.iter_mut().zip(r).zip(&rg.pairs) {
-            Zip::from(zb)
-                .and(rb)
-                .and(&pb.denom)
-                .for_each(|zv, &rv, &dv| *zv = rv / dv);
-        }
+        z.par_iter_mut()
+            .zip(r.par_iter())
+            .zip(rg.pairs.par_iter())
+            .for_each(|((zb, rb), pb)| {
+                Zip::from(zb)
+                    .and(rb)
+                    .and(&pb.denom)
+                    .for_each(|zv, &rv, &dv| *zv = rv / dv);
+            });
     };
     let mut flops_total = 0u64;
     let mut t = zeros.clone();
@@ -1161,13 +1176,15 @@ where
                 let rz_new = rg.dot(&r, &z);
                 let beta = rz_new / rz;
                 trace.betas.push(beta);
-                for (k, (pk, zk)) in p.iter_mut().zip(&z).enumerate() {
-                    if rg.owns(k) {
+                p.par_iter_mut()
+                    .zip(z.par_iter())
+                    .enumerate()
+                    .filter(|(k, _)| rg.owns(*k))
+                    .for_each(|(_, (pk, zk))| {
                         Zip::from(pk)
                             .and(zk)
                             .for_each(|pv, &zv| *pv = zv + beta * *pv);
-                    }
-                }
+                    });
                 rg.spread(&mut p);
                 rz = rz_new;
             }
@@ -1175,10 +1192,15 @@ where
             matvec_into(&p, &mut ap, &mut flops_total);
             let alpha = rz / rg.dot(&p, &ap);
             trace.alphas.push(alpha);
-            for k in (0..p.len()).filter(|&k| rg.owns(k)) {
-                t[k].scaled_add(alpha, &p[k]);
-                r[k].scaled_add(-alpha, &ap[k]);
-            }
+            t.par_iter_mut()
+                .zip(r.par_iter_mut())
+                .zip(p.par_iter().zip(ap.par_iter()))
+                .enumerate()
+                .filter(|(k, _)| rg.owns(*k))
+                .for_each(|(_, ((tk, rk), (pk, apk)))| {
+                    tk.scaled_add(alpha, pk);
+                    rk.scaled_add(-alpha, apk);
+                });
             relres = rg.dot(&r, &r).sqrt() / bnorm;
             if relres < target {
                 reached = true;
@@ -1277,26 +1299,33 @@ pub fn matvec_indexed_into(
     *flops += fl;
 }
 
-/// One Fock-coupling edge of an output pair's matvec, pre-resolved from the
-/// pattern: source pair `q`, coefficient `-f_oo[..]`, and the
-/// `(destination, source)` flat-index pairs [`gather_into`] would visit, in
-/// its order.
+/// One Fock-coupling edge of an output pair's matvec: source pair `q` and
+/// coefficient `-f_oo[..]`. The index intersection is resolved by
+/// [`gather_into`] on each call (as contiguous column runs, a cost linear in
+/// the domain sizes), so the plan holds no per-element indices.
 #[derive(Debug, Clone)]
 struct PlanEdge {
     q: usize,
     coeff: f64,
-    idx: Vec<(u32, u32)>,
 }
 
 fn flat_u32(k: usize) -> u32 {
     u32::try_from(k).expect("pair block larger than 2^32 elements")
 }
 
-/// The hoisted gather plan of [`matvec_indexed`] for a FIXED pattern and
-/// `f_oo`: every edge's index intersections (recomputed on every call and
-/// every CG iteration by [`gather_into`]) resolved once. Edges with a zero
-/// Fock coupling are dropped at build time, exactly as the indexed matvec
-/// skips them; the edge order is by_j then by_i, as there.
+/// The hoisted plan of [`matvec_indexed`] for a FIXED pattern and `f_oo`:
+/// every output block's Fock-coupled partners and their coefficients,
+/// resolved once. Edges with a zero Fock coupling are dropped at build time,
+/// exactly as the indexed matvec skips them; the edge order is by_j then
+/// by_i, as there. Each edge's gather runs through the same [`gather_into`]
+/// as the indexed matvec, so with every Fvv product dense the two are
+/// bitwise the same.
+///
+/// (Until 2026-11 the plan also stored one `(u32, u32)` index pair per
+/// gathered element: 9.0 GB at C16H34/cc-pVDZ, ε = 3·10⁻⁵, which pushed
+/// such solves onto the indexed fallback. [`gather_into`] now resolves the
+/// intersection per call as contiguous column runs, faster than streaming
+/// those indices.)
 ///
 /// It also fixes each block's Fvv product mode ([`SolvePlan::with_fvv_threshold`]).
 ///
@@ -1344,22 +1373,6 @@ fn plan_partners(rg: &Ragged, f_oo: &Array2<f64>, p: usize) -> Vec<(usize, f64)>
     out
 }
 
-/// Gather elements of one edge: the matched rows times the matched columns
-/// (the loop in [`gather_into`] visits exactly their product).
-fn edge_len(dst: &PairBlock, src: &PairBlock) -> usize {
-    let rows = dst
-        .da
-        .iter()
-        .filter(|&&a| src.pos_da[a] != usize::MAX)
-        .count();
-    let cols = dst
-        .db
-        .iter()
-        .filter(|&&b| src.pos_db[b] != usize::MAX)
-        .count();
-    rows * cols
-}
-
 /// `Some(kept)` when block `p` takes the sparse Fvv product at threshold
 /// `rho_star` (retained density `kept / (|Da|·|Db|)` strictly below it);
 /// `None` for a block this rank does not own.
@@ -1378,32 +1391,24 @@ impl SolvePlan {
     }
 
     /// Heap bytes [`SolvePlan::with_fvv_threshold`] on `(rg, f_oo, rho_star)`
-    /// holds, computed WITHOUT building it: one `(u32, u32)` per gather
-    /// element of every nonzero-coupled edge, plus the per-edge and per-pair
-    /// vector headers, plus the per-pair Fvv-mode slot and one `(u32, u32)`
-    /// per retained element of every sparse-Fvv block. The plan sizes every
-    /// vector exactly, so this is its allocation, not a bound (pinned by
-    /// `tests/solve_plan_budget.rs` against a counting allocator). With the
-    /// pair gate off it grows like `no³ · overlap`; [`matvec_indexed`] needs
-    /// none of it. Under a [`RaggedShare`] the edges and Fvv lists are those
-    /// of the owned blocks only; the per-pair headers cover every block.
+    /// holds, computed WITHOUT building it: one `(q, coeff)` edge per
+    /// nonzero-coupled edge, plus the per-pair edge-vector header, plus the
+    /// per-pair Fvv-mode slot and one `(u32, u32)` per retained element of
+    /// every sparse-Fvv block. The plan sizes every vector exactly, so this
+    /// is its allocation, not a bound (pinned by `tests/solve_plan_budget.rs`
+    /// against a counting allocator). Under a [`RaggedShare`] the edges and
+    /// Fvv lists are those of the owned blocks only; the per-pair headers
+    /// cover every block.
     pub fn bytes_for_with_threshold(rg: &Ragged, f_oo: &Array2<f64>, rho_star: f64) -> usize {
         let idx = std::mem::size_of::<(u32, u32)>();
         let edge = std::mem::size_of::<PlanEdge>();
         let outer = std::mem::size_of::<Vec<PlanEdge>>();
         let slot = std::mem::size_of::<Option<Vec<(u32, u32)>>>();
-        rg.pairs
-            .par_iter()
-            .enumerate()
-            .map(|(p, pb)| {
+        (0..rg.pairs.len())
+            .into_par_iter()
+            .map(|p| {
                 let sparse = fvv_sparse_kept(rg, p, rho_star).map_or(0, |kept| idx * kept);
-                outer
-                    + slot
-                    + sparse
-                    + plan_partners(rg, f_oo, p)
-                        .iter()
-                        .map(|&(q, _)| edge + idx * edge_len(pb, &rg.pairs[q]))
-                        .sum::<usize>()
+                outer + slot + sparse + edge * plan_partners(rg, f_oo, p).len()
             })
             .sum()
     }
@@ -1450,33 +1455,12 @@ impl SolvePlan {
     }
 
     fn build_edges(rg: &Ragged, f_oo: &Array2<f64>) -> Vec<Vec<PlanEdge>> {
-        let edge = |dst: &PairBlock, q: usize, f: f64| -> PlanEdge {
-            let src = &rg.pairs[q];
-            let nb_src = src.db.len();
-            let nb = dst.db.len();
-            let mut idx = Vec::with_capacity(edge_len(dst, src));
-            for (r, &a) in dst.da.iter().enumerate() {
-                let sr = src.pos_da[a];
-                if sr == usize::MAX {
-                    continue;
-                }
-                for (c, &b) in dst.db.iter().enumerate() {
-                    let sc = src.pos_db[b];
-                    if sc == usize::MAX {
-                        continue;
-                    }
-                    idx.push((flat_u32(r * nb + c), flat_u32(sr * nb_src + sc)));
-                }
-            }
-            PlanEdge { q, coeff: -f, idx }
-        };
-        rg.pairs
-            .par_iter()
-            .enumerate()
-            .map(|(p, pb)| {
+        (0..rg.pairs.len())
+            .into_par_iter()
+            .map(|p| {
                 plan_partners(rg, f_oo, p)
                     .iter()
-                    .map(|&(q, f)| edge(pb, q, f))
+                    .map(|&(q, f)| PlanEdge { q, coeff: -f })
                     .collect()
             })
             .collect()
@@ -1528,17 +1512,8 @@ pub fn matvec_planned(
                     (nz.len() * (na + nb)) as u64,
                 ),
             };
-            if !r.is_standard_layout() {
-                r = r.as_standard_layout().into_owned();
-            }
-            let rs = r.as_slice_mut().expect("standard layout");
             for e in &plan.edges[p_idx] {
-                let src_std = t[e.q].as_standard_layout();
-                let src = src_std.as_slice().expect("standard layout");
-                for &(d, s) in &e.idx {
-                    rs[d as usize] += e.coeff * src[s as usize];
-                }
-                fl += e.idx.len() as u64;
+                gather_into(&mut r, &rg.pairs[e.q], pb, e.coeff, &t[e.q], &mut fl);
             }
             apply_pattern(&mut r, &pb.pat, nb);
             *slot = r;
@@ -1571,7 +1546,33 @@ fn fvv_product_sparse(pb: &PairBlock, t: &Array2<f64>, nz: &[(u32, u32)]) -> Arr
     r
 }
 
-/// Gather and accumulate a sub-block of the ring product into `out`.
+/// The columns of `dst` that `src` also holds, as maximal runs
+/// `(dst column, src column, length)` along which both positions advance by
+/// one, in ascending `dst` column order.
+fn column_runs(dst: &PairBlock, src: &PairBlock) -> Vec<(usize, usize, usize)> {
+    let mut runs: Vec<(usize, usize, usize)> = Vec::new();
+    for (c, &b) in dst.db.iter().enumerate() {
+        let sc = src.pos_db[b];
+        if sc == usize::MAX {
+            continue;
+        }
+        match runs.last_mut() {
+            Some((c0, s0, len)) if *c0 + *len == c && *s0 + *len == sc => *len += 1,
+            _ => runs.push((c, sc, 1)),
+        }
+    }
+    runs
+}
+
+/// Gather and accumulate a sub-block of the ring product into `out`:
+/// `out[r, c] += coeff · tq[sr, sc]` over every row and column of `dst`
+/// that `src` also holds (`sr`, `sc` their positions in `src`).
+///
+/// The matched columns are resolved once per call, as contiguous runs
+/// (`column_runs`), and each matched row adds one slice per run, so the
+/// inner loop is a contiguous axpy instead of a position lookup per element.
+/// Every output element still receives its single `+= coeff · tq[..]` in the
+/// same row-then-column order, so the result is bitwise the element loop's.
 pub fn gather_into(
     out: &mut Array2<f64>,
     src: &PairBlock,
@@ -1580,22 +1581,34 @@ pub fn gather_into(
     tq: &Array2<f64>,
     flops: &mut u64,
 ) {
-    let mut n = 0u64;
+    let runs = column_runs(dst, src);
+    if runs.is_empty() {
+        return;
+    }
+    let ncols: usize = runs.iter().map(|&(_, _, len)| len).sum();
+    if !out.is_standard_layout() {
+        *out = out.as_standard_layout().into_owned();
+    }
+    let (nb, nbs) = (out.ncols(), tq.ncols());
+    let src_std = tq.as_standard_layout();
+    let s = src_std.as_slice().expect("standard layout");
+    let o = out.as_slice_mut().expect("standard layout");
+    let mut rows = 0usize;
     for (r, &a) in dst.da.iter().enumerate() {
         let sr = src.pos_da[a];
         if sr == usize::MAX {
             continue;
         }
-        for (c, &b) in dst.db.iter().enumerate() {
-            let sc = src.pos_db[b];
-            if sc == usize::MAX {
-                continue;
+        rows += 1;
+        let orow = &mut o[r * nb..(r + 1) * nb];
+        let srow = &s[sr * nbs..(sr + 1) * nbs];
+        for &(c0, s0, len) in &runs {
+            for (x, &y) in orow[c0..c0 + len].iter_mut().zip(&srow[s0..s0 + len]) {
+                *x += coeff * y;
             }
-            out[(r, c)] += coeff * tq[(sr, sc)];
-            n += 1;
         }
     }
-    *flops += n;
+    *flops += (rows * ncols) as u64;
 }
 
 /// One (i,k,j) contributing triple to an output pair's ring-product sum,
@@ -1955,6 +1968,133 @@ mod tests {
             by_j: HashMap::from([(0, vec![0])]),
             share: None,
         }
+    }
+
+    /// A block on global domains `da` × `db` of an `nv`-virtual space (only
+    /// the index fields matter to a gather).
+    fn index_block(da: Vec<usize>, db: Vec<usize>, nv: usize) -> PairBlock {
+        let mut pos_da = vec![usize::MAX; nv];
+        for (k, &a) in da.iter().enumerate() {
+            pos_da[a] = k;
+        }
+        let mut pos_db = vec![usize::MAX; nv];
+        for (k, &b) in db.iter().enumerate() {
+            pos_db[b] = k;
+        }
+        let (na, nb) = (da.len(), db.len());
+        PairBlock {
+            i: 0,
+            j: 0,
+            pat: vec![true; na * nb],
+            fvv_aa: Array2::zeros((na, na)),
+            fvv_bb: Array2::zeros((nb, nb)),
+            j_blk: Array2::zeros((na, nb)),
+            denom: Array2::ones((na, nb)),
+            da,
+            db,
+            pos_da,
+            pos_db,
+        }
+    }
+
+    /// The gather as it was before the column runs: one position lookup per
+    /// element, row-major. The oracle of the test below.
+    fn gather_elementwise(
+        out: &mut Array2<f64>,
+        src: &PairBlock,
+        dst: &PairBlock,
+        coeff: f64,
+        tq: &Array2<f64>,
+    ) -> u64 {
+        let mut n = 0u64;
+        for (r, &a) in dst.da.iter().enumerate() {
+            let sr = src.pos_da[a];
+            if sr == usize::MAX {
+                continue;
+            }
+            for (c, &b) in dst.db.iter().enumerate() {
+                let sc = src.pos_db[b];
+                if sc == usize::MAX {
+                    continue;
+                }
+                out[(r, c)] += coeff * tq[(sr, sc)];
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// The run-based [`gather_into`] is bitwise the element-by-element
+    /// gather, flop count included: random domain subsets of a 60-virtual
+    /// space (runs of every length, gaps, a disjoint pair, a full overlap),
+    /// accumulating onto a nonzero output, also from a column-major output.
+    #[test]
+    fn run_gather_is_bitwise_the_elementwise_gather() {
+        let nv = 60;
+        let mut seed = 7u64;
+        let mut rnd = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut subset = |keep: f64| -> Vec<usize> { (0..nv).filter(|_| rnd() < keep).collect() };
+        let mut cases: Vec<(Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>)> = Vec::new();
+        for keep in [0.2, 0.5, 0.8, 0.95] {
+            cases.push((subset(keep), subset(keep), subset(keep), subset(keep)));
+        }
+        let all: Vec<usize> = (0..nv).collect();
+        cases.push((all.clone(), all.clone(), all.clone(), all.clone()));
+        cases.push((
+            (0..20).collect(),
+            (0..20).collect(),
+            (30..50).collect(),
+            (30..50).collect(),
+        ));
+        let mut seed2 = 99u64;
+        let mut val = || {
+            seed2 = seed2
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((seed2 >> 11) as f64 / (1u64 << 53) as f64) - 0.5
+        };
+        let mut checked = 0u64;
+        for (dda, ddb, sda, sdb) in cases {
+            let dst = index_block(dda, ddb, nv);
+            let src = index_block(sda, sdb, nv);
+            let tq = Array2::from_shape_fn((src.da.len(), src.db.len()), |_| val());
+            let out0 = Array2::from_shape_fn((dst.da.len(), dst.db.len()), |_| val());
+            let coeff = -0.37;
+            let mut want = out0.clone();
+            let n_want = gather_elementwise(&mut want, &src, &dst, coeff, &tq);
+            let mut got = out0.clone();
+            let mut n_got = 0u64;
+            gather_into(&mut got, &src, &dst, coeff, &tq, &mut n_got);
+            assert_eq!(n_got, n_want);
+            assert!(want
+                .iter()
+                .zip(&got)
+                .all(|(a, b)| a.to_bits() == b.to_bits()));
+            // a column-major output and source: same bits
+            use ndarray::ShapeBuilder;
+            let mut got_f = Array2::<f64>::zeros(out0.dim().f());
+            got_f.assign(&out0);
+            let mut tq_f = Array2::<f64>::zeros(tq.dim().f());
+            tq_f.assign(&tq);
+            assert!(got_f.nrows() <= 1 || got_f.ncols() <= 1 || !got_f.is_standard_layout());
+            let mut n_f = 0u64;
+            gather_into(&mut got_f, &src, &dst, coeff, &tq_f, &mut n_f);
+            assert_eq!(n_f, n_want);
+            assert!(want
+                .iter()
+                .zip(&got_f)
+                .all(|(a, b)| a.to_bits() == b.to_bits()));
+            checked += n_want;
+        }
+        assert!(
+            checked > 5_000,
+            "the cases gathered only {checked} elements"
+        );
     }
 
     /// `kept_fraction` counts retained entries over the FULL `(no·nv)²`

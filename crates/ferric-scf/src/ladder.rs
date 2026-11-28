@@ -260,17 +260,19 @@ pub fn rung_tricks(c: &RhfConfig) -> String {
 /// separate from RPA/MP2 aux (see `ferric-jk-aux-convention`).
 pub const DF_GUESS_DEFAULT_AUX: &str = crate::options::DEFAULT_JK_AUX;
 
-/// Outcome of a [`solve_rhf_with_df_guess`] run: the exact-stage `ScfResult`
-/// plus enough of the DF stage's own outcome to audit that it actually ran
+/// Outcome of a run behind the DF-guess pre-stage: the exact stage's result
+/// `T` plus enough of the DF stage's own outcome to audit that it actually ran
 /// (iteration count, convergence, energy) without re-exposing a whole second
-/// `ScfResult`.
+/// `ScfResult`. `T` is the [`ScfResult`] of [`solve_rhf_with_df_guess`]
+/// ([`DfGuessResult`]) or the [`LadderResult`] of
+/// [`solve_rhf_ladder_with_df_guess`].
 #[derive(Debug, Clone)]
 #[must_use]
-pub struct DfGuessResult {
+pub struct DfGuessed<T> {
     /// The exact-integral stage's result. This is what callers should treat
     /// as "the" SCF result — the DF stage is purely a density generator and
     /// never contributes to the returned energy/orbitals.
-    pub result: ScfResult,
+    pub result: T,
     /// Iteration count of the DF (fitted J/K) pre-stage.
     pub df_iterations: usize,
     /// Whether the DF pre-stage satisfied its own (loose) convergence gate.
@@ -293,10 +295,13 @@ pub struct DfGuessResult {
     pub skipped: bool,
 }
 
-impl DfGuessResult {
+/// [`solve_rhf_with_df_guess`]'s outcome: the exact stage's `ScfResult`.
+pub type DfGuessResult = DfGuessed<ScfResult>;
+
+impl<T> DfGuessed<T> {
     /// The result of a run whose pre-stage was skipped
     /// ([`df_guess_repeats_the_scf`]): `result` is the SCF itself.
-    fn pre_stage_skipped(result: ScfResult) -> Self {
+    fn pre_stage_skipped(result: T) -> Self {
         Self {
             result,
             df_iterations: 0,
@@ -305,6 +310,28 @@ impl DfGuessResult {
             fallback: None,
             skipped: true,
         }
+    }
+
+    /// The exact stage's result, and the pre-stage's outcome with no result
+    /// of its own.
+    pub fn split(self) -> (T, DfGuessed<()>) {
+        let DfGuessed {
+            result,
+            df_iterations,
+            df_converged,
+            df_energy,
+            fallback,
+            skipped,
+        } = self;
+        let pre = DfGuessed {
+            result: (),
+            df_iterations,
+            df_converged,
+            df_energy,
+            fallback,
+            skipped,
+        };
+        (result, pre)
     }
 }
 
@@ -433,13 +460,105 @@ pub fn solve_rhf_with_df_guess(
     base: &RhfConfig,
     df_aux: Option<&str>,
 ) -> Result<DfGuessResult, FerricError> {
+    with_df_pre_stage(ctx, mol, prep, op, bounds, (base, df_aux), |seed| {
+        let exact_cfg = seed.map_or_else(|| base.clone(), |df| seeded_from_df(base, df));
+        let result = solve_rhf(ctx, mol, prep, op, bounds, &exact_cfg)?;
+        // The secondary-basis guess (if any) ran inside the DF pre-stage; the
+        // exact stage starts from the DF density, so carry the report forward.
+        Ok(match seed {
+            Some(df) => crate::basis2::carry_report(result, df.guess_basis.clone()),
+            None => result,
+        })
+    })
+}
+
+/// [`solve_rhf_ladder`] behind the DF-guess pre-stage: the pre-stage runs on
+/// rung 0's config (the same pre-stage [`solve_rhf_with_df_guess`] runs), and
+/// rung 0 starts from its density; later rungs carry density forward as
+/// [`solve_rhf_ladder`] always does. Every rung is otherwise unchanged, so the
+/// ladder's escalation is what it is without the pre-stage.
+///
+/// The out-of-memory fallback and the fitted-SCF skip are those of
+/// [`solve_rhf_with_df_guess`]. An empty ladder is the same error as in
+/// [`solve_rhf_ladder`].
+pub fn solve_rhf_ladder_with_df_guess(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    ladder: &[Rung],
+    df_aux: Option<&str>,
+) -> Result<DfGuessed<LadderResult>, FerricError> {
+    let Some(rung0) = ladder.first() else {
+        return Err(FerricError::General("empty SCF ladder".into()));
+    };
+    with_df_pre_stage(
+        ctx,
+        mol,
+        prep,
+        op,
+        bounds,
+        (&rung0.config, df_aux),
+        |seed| {
+            let Some(df) = seed else {
+                return solve_rhf_ladder(ctx, mol, prep, op, bounds, ladder);
+            };
+            let mut seeded = ladder.to_vec();
+            seeded[0].config = seeded_from_df(&rung0.config, df);
+            let mut lr = solve_rhf_ladder(ctx, mol, prep, op, bounds, &seeded)?;
+            lr.result = crate::basis2::carry_report(lr.result, df.guess_basis.clone());
+            Ok(lr)
+        },
+    )
+}
+
+/// `base` started from the DF pre-stage's density. `init_guess_density`
+/// already outranks `use_sad_guess` in `solve_rhf`; clearing the latter makes
+/// the precedence explicit.
+fn seeded_from_df(base: &RhfConfig, df: &ScfResult) -> RhfConfig {
+    let mut exact_cfg = base.clone();
+    exact_cfg.init_guess_density = Some(df.density_total.clone());
+    exact_cfg.use_sad_guess = false;
+    exact_cfg
+}
+
+/// The one driver behind [`solve_rhf_with_df_guess`] and
+/// [`solve_rhf_ladder_with_df_guess`]: skip the pre-stage when it would repeat
+/// the SCF ([`df_guess_repeats_the_scf`]), else run it and call `exact` with
+/// its result; on [`FerricError::MemoryExhausted`] (single rank) warn, log and
+/// call `exact(None)`, which starts from `base`'s own guess.
+fn with_df_pre_stage<T>(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    (base, df_aux): (&RhfConfig, Option<&str>),
+    exact: impl FnOnce(Option<&ScfResult>) -> Result<T, FerricError>,
+) -> Result<DfGuessed<T>, FerricError> {
     if df_guess_repeats_the_scf(base, df_aux) {
-        return solve_rhf(ctx, mol, prep, op, bounds, base).map(DfGuessResult::pre_stage_skipped);
+        return exact(None).map(DfGuessed::pre_stage_skipped);
     }
     match run_df_guess_pre_stage(ctx, mol, prep, op, bounds, base, df_aux) {
-        Ok(df) => solve_rhf_from_df_density(ctx, mol, prep, op, bounds, base, df),
+        Ok(df) => Ok(DfGuessed {
+            result: exact(Some(&df))?,
+            df_iterations: df.iterations,
+            df_converged: df.converged,
+            df_energy: df.energy,
+            fallback: None,
+            skipped: false,
+        }),
         Err(FerricError::MemoryExhausted(reason)) if ctx.size <= 1 => {
-            solve_rhf_without_df_guess(ctx, mol, prep, op, bounds, base, reason)
+            warn_df_guess_fallback(base, &reason);
+            Ok(DfGuessed {
+                result: exact(None)?,
+                df_iterations: 0,
+                df_converged: false,
+                df_energy: f64::NAN,
+                fallback: Some(reason),
+                skipped: false,
+            })
         }
         Err(e) => Err(e),
     }
@@ -473,46 +592,9 @@ pub fn df_guess_repeats_the_scf(base: &RhfConfig, df_aux: Option<&str>) -> bool 
     fitted_on_pre_stage_aux(&base.df_j_aux) && fitted_on_pre_stage_aux(&base.df_k_aux)
 }
 
-/// The exact stage, started from the DF pre-stage's density.
-fn solve_rhf_from_df_density(
-    ctx: &ParallelContext,
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    op: Operator,
-    bounds: &SchwarzBounds,
-    base: &RhfConfig,
-    df_result: ScfResult,
-) -> Result<DfGuessResult, FerricError> {
-    let mut exact_cfg = base.clone();
-    exact_cfg.init_guess_density = Some(df_result.density_total.clone());
-    exact_cfg.use_sad_guess = false;
-
-    let result = solve_rhf(ctx, mol, prep, op, bounds, &exact_cfg)?;
-    // The secondary-basis guess (if any) ran inside the DF pre-stage; the
-    // exact stage starts from the DF density, so carry the report forward.
-    let result = crate::basis2::carry_report(result, df_result.guess_basis.clone());
-
-    Ok(DfGuessResult {
-        result,
-        df_iterations: df_result.iterations,
-        df_converged: df_result.converged,
-        df_energy: df_result.energy,
-        fallback: None,
-        skipped: false,
-    })
-}
-
-/// The exact stage alone, from the guess `base` would otherwise use, after the
-/// DF pre-stage ran out of memory. Warns and logs what actually ran.
-fn solve_rhf_without_df_guess(
-    ctx: &ParallelContext,
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    op: Operator,
-    bounds: &SchwarzBounds,
-    base: &RhfConfig,
-    reason: String,
-) -> Result<DfGuessResult, FerricError> {
+/// Warn and log that the DF pre-stage ran out of memory and the exact stage
+/// starts from the guess `base` would otherwise use.
+fn warn_df_guess_fallback(base: &RhfConfig, reason: &str) {
     let guess = if base.init_guess_density.is_some() {
         "the supplied density"
     } else if base.guess_basis.is_some() {
@@ -533,14 +615,6 @@ fn solve_rhf_without_df_guess(
             serde_json::json!({ "reason": reason, "guess": guess }),
         );
     }
-    Ok(DfGuessResult {
-        result: solve_rhf(ctx, mol, prep, op, bounds, base)?,
-        df_iterations: 0,
-        df_converged: false,
-        df_energy: f64::NAN,
-        fallback: Some(reason),
-        skipped: false,
-    })
 }
 
 /// Shared DF pre-stage construction: builds the loosened DF-J/DF-K `RhfConfig`
@@ -567,6 +641,10 @@ pub(crate) fn run_df_guess_pre_stage(
     // The fitted pre-stage has no in-core route; `[scf] eri` applies to the
     // exact stage after it.
     df_cfg.eri = crate::incore_jk::EriMode::Auto;
+    // The fitted K replaces any pluggable exchange builder of the exact
+    // stage: COSX next to a named df_k_aux is refused, and LinK is skipped
+    // with a warning, so neither belongs in the pre-stage.
+    df_cfg.k_builder = None;
 
     // MEASURED: running the DF pre-stage to its STALL POINT (rather than to a
     // loosened threshold) is a win at both bases, benzene, 4 threads, idle box:
@@ -622,6 +700,138 @@ pub(crate) fn run_df_guess_pre_stage(
     df_cfg.init_guess_density = None;
 
     solve_rhf(ctx, mol, prep, op, bounds, &df_cfg)
+}
+
+/// Whether an unset `df_guess` (Python `df_guess=None`, the CLI `rhf`/`ksdft`
+/// ladder without `[scf] df_guess`) runs the pre-stage where
+/// [`df_guess_blocker`] finds nothing against it.
+pub const DF_GUESS_DEFAULT_ON: bool = true;
+
+/// Why the DF-guess pre-stage does not apply to the closed-shell SCF `base`
+/// on `mol`, or `None` when it does. It applies only where it can save
+/// something and changes nothing else the caller asked for:
+///
+/// - some J or K build is four-centre (exact J, or exact HF/global-hybrid
+///   exchange including LinK), so a fitted iteration is cheaper than an exact
+///   one; a fully fitted or COSX-only SCF has nothing to save;
+/// - the pre-stage aux (`df_aux`, default [`DF_GUESS_DEFAULT_AUX`]) is bundled
+///   and covers every element of `mol`;
+/// - no starting point of the caller's own: no `init_guess_density` (`dm0`),
+///   no secondary-basis guess, no core-Hamiltonian guess, no MOM (it follows
+///   the guess orbitals);
+/// - point-group blocking is off (the blocked solver has no pre-stage).
+///
+/// Caller-level conditions (a Python `fock_hook`, a gradient or geometry
+/// task) are checked by the caller, which knows them.
+pub fn df_guess_blocker(base: &RhfConfig, mol: &Molecule, df_aux: Option<&str>) -> Option<String> {
+    if base.symmetry {
+        return Some("point-group symmetry blocking is on".into());
+    }
+    if base.init_guess_density.is_some() {
+        return Some("a starting density (dm0) was supplied".into());
+    }
+    if base.guess_basis.is_some() {
+        return Some("a secondary-basis guess was requested".into());
+    }
+    if !base.use_sad_guess {
+        return Some("the core-Hamiltonian guess was requested".into());
+    }
+    if base.mom_enabled() {
+        return Some("MOM follows the guess orbitals".into());
+    }
+    let exchange = crate::fock_assembly::JkExchange::from_config(base);
+    let route = match crate::fock_assembly::resolve_jk_route(
+        base,
+        exchange,
+        crate::result::Spin::Restricted,
+    ) {
+        Ok(r) => r,
+        Err(e) => return Some(format!("the J/K route does not resolve: {e}")),
+    };
+    let exact_k = route.k_consumed && route.omega == 0.0 && !route.cosx_k && !route.k_df_routed;
+    if route.j_aux.is_some() && !exact_k {
+        return Some("no four-centre J or K build (J/K are density-fitted or COSX)".into());
+    }
+    let aux = df_aux.unwrap_or(DF_GUESS_DEFAULT_AUX);
+    let aux_set = match ferric_core::basis::bundled(aux) {
+        Ok(b) => b,
+        Err(e) => return Some(format!("the pre-stage aux {aux:?} does not load: {e}")),
+    };
+    if let Some(a) = mol
+        .atoms
+        .iter()
+        .find(|a| aux_set.for_element(a.z).is_none())
+    {
+        return Some(format!(
+            "the pre-stage aux {aux:?} has no shells for {}",
+            a.symbol
+        ));
+    }
+    None
+}
+
+/// Whether a closed-shell SCF runs the DF-guess pre-stage, and why.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DfGuessPlan {
+    /// The pre-stage runs.
+    pub run: bool,
+    /// Why it does not run (`None` when it does).
+    pub reason: Option<String>,
+    /// The pre-stage's aux basis.
+    pub aux: String,
+}
+
+impl DfGuessPlan {
+    /// Decide for `base` on `mol`: `requested` is the caller's `df_guess`
+    /// (`None` = unset, which follows [`DF_GUESS_DEFAULT_ON`]), and
+    /// `caller_blocker` a condition only the caller knows (a Fock hook, a
+    /// gradient task). An explicit `Some(true)` that cannot apply is an
+    /// error naming the reason; unset, the pre-stage is off for that reason.
+    /// The decision is noted in the run log (`df_guess` record) when one is
+    /// installed.
+    pub fn decide(
+        requested: Option<bool>,
+        base: &RhfConfig,
+        mol: &Molecule,
+        df_aux: Option<&str>,
+        caller_blocker: Option<&str>,
+    ) -> Result<Self, FerricError> {
+        let aux = df_aux.unwrap_or(DF_GUESS_DEFAULT_AUX).to_string();
+        let blocker = || {
+            caller_blocker
+                .map(str::to_string)
+                .or_else(|| df_guess_blocker(base, mol, df_aux))
+        };
+        let reason = match requested {
+            Some(false) => Some("df_guess is off".to_string()),
+            Some(true) => match blocker() {
+                Some(why) => {
+                    return Err(FerricError::General(format!(
+                        "df_guess = true does not apply here: {why}"
+                    )))
+                }
+                None => None,
+            },
+            None if !DF_GUESS_DEFAULT_ON => Some("df_guess is unset (default off)".to_string()),
+            None => blocker(),
+        };
+        let plan = Self {
+            run: reason.is_none(),
+            reason,
+            aux,
+        };
+        if let Some(rl) = crate::runlog::log() {
+            rl.note(
+                "df_guess",
+                serde_json::json!({
+                    "run": plan.run,
+                    "reason": plan.reason,
+                    "aux": plan.aux,
+                }),
+            );
+        }
+        Ok(plan)
+    }
 }
 
 /// Built-in default ladder: stall/divergence abort on every rung, level-shift

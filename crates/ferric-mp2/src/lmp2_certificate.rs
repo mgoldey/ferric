@@ -541,12 +541,16 @@ fn solver_warnings(o: &CgRtolOutcome, bound: f64, true_relres: f64, relres: f64)
              at the strict cg_rtol = {:.0e}",
             o.rtol_used
         )),
-        CgRtolSource::AdaptiveDefault if o.target_met == Some(false) => w.push(format!(
-            "PCG energy-error target NOT met: bound {bound:.2e} Ha > {:.0e} Ha at true relres \
+        CgRtolSource::AdaptiveDefault | CgRtolSource::EnergyBound
+            if o.target_met == Some(false) =>
+        {
+            w.push(format!(
+                "PCG energy-error target NOT met: bound {bound:.2e} Ha > {:.0e} Ha at true relres \
              {true_relres:.2e}, recursive {relres:.2e} (cg_rtol {:.0e}; floor or residual drift)",
-            o.target_ha.unwrap_or(f64::NAN),
-            o.rtol_used
-        )),
+                o.target_ha.unwrap_or(f64::NAN),
+                o.rtol_used
+            ))
+        }
         CgRtolSource::Explicit if bound.is_nan() => w.push(format!(
             "explicit cg_rtol = {:.0e}: no positive orbital gap, the PCG energy-error bound is \
              undefined",
@@ -588,6 +592,9 @@ mod tests {
         let w = solver_warnings(&outcome(AdaptiveDefault, Some(false)), 1e-9, 5e-7, 5e-7);
         assert!(w.len() == 1 && w[0].contains("NOT met"), "{w:?}");
         assert!(!w[0].contains("iteration limit"), "{w:?}");
+        assert!(solver_warnings(&outcome(EnergyBound, Some(true)), 1e-9, 5e-5, 5e-5).is_empty());
+        let w = solver_warnings(&outcome(EnergyBound, Some(false)), 1e-6, 5e-5, 5e-5);
+        assert!(w.len() == 1 && w[0].contains("NOT met"), "{w:?}");
         let w = solver_warnings(&outcome(StrictNoGap, None), f64::NAN, 1e-12, 1e-12);
         assert!(w.len() == 1 && w[0].contains("undefined"), "{w:?}");
         let w = solver_warnings(&outcome(Explicit, None), 1e-9, 5e-7, 5e-7);

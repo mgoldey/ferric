@@ -39,6 +39,8 @@ const AMPLE: usize = 1 << 34;
 
 /// The SCF energy and how many Split-RI-J builders it constructed.
 fn run(xc: &str, storage: JkStorage, budget: usize) -> (f64, usize) {
+    // `auto` against the explicit placements of the aux-major tensors.
+    let _aux = ferric_scf::df_pair::override_pair_layout_for_test(false);
     let mol = Molecule::load_xyz("../../testdata/molecules/benzene.xyz").unwrap();
     let obs = PreparedBasis::new(&mol, &basis::bundled("def2-svp").unwrap()).unwrap();
     let op = Operator::coulomb();

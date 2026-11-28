@@ -187,7 +187,11 @@ impl GcRotate {
         Self::resolve(None)
     }
 
-    fn level(self) -> Option<RotationLevel> {
+    /// The rotation stages this setting runs, or `None` for
+    /// [`GcRotate::Off`]. Shared by every builder that follows the setting
+    /// (the direct J/K walk, the pair-major RI-JK tensor, RI-MP2's 3-index
+    /// build).
+    pub fn level(self) -> Option<RotationLevel> {
         match self {
             Self::Auto => Some(RotationLevel::Ogc),
             Self::Rot1 => Some(RotationLevel::Rot1),

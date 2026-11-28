@@ -155,7 +155,7 @@ RESULT_SCHEMA: dict[str, ResultSchema] = {
     "DfJk": _s("naux"),
     "DftResult": _s(
         (
-            "certificate converged cosx_final_pass dispersion_model "
+            "certificate converged cosx_final_pass df_guess dispersion_model "
             "e_dispersion e_scf e_xc energy exit_reason fock_hooked guess_basis iterations "
             "one_step_energy_drop precision ri_j_precision ri_k_precision "
             "stationarity_tol total_energy volume_ratios"
@@ -335,7 +335,7 @@ RESULT_SCHEMA: dict[str, ResultSchema] = {
     "RhfResult": _s(
         (
             "certificate computed_quartets conv_thresholds converged "
-            "convergence_summary cosx_final_pass energy exit_reason final_de "
+            "convergence_summary cosx_final_pass df_guess energy exit_reason final_de "
             "final_diis_err_max final_dp_max final_dp_rms guess_basis "
             "iterations one_step_energy_drop precision ri_j_precision "
             "ri_k_precision stationarity_tol total_energy unmet_criteria"

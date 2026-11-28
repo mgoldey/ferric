@@ -18,7 +18,8 @@ Hartree.
 ``run_tddft`` converges its own RHF at ``run_rhf``'s default thresholds, and
 CIS roots move to first order with the orbitals (5e-8 Ha between that SCF and
 a 1e-11 one on water/cc-pVDZ). The driver comparison therefore takes its
-orbitals from ``run_rhf`` at the same defaults (``orbitals_of``).
+orbitals from ``run_rhf`` at the same defaults (``orbitals_of``), with
+``df_guess=False`` because ``run_tddft``'s own RHF has no DF pre-stage.
 """
 
 from __future__ import annotations
@@ -104,7 +105,10 @@ def main() -> None:
     aux = ferric.BasisSet.bundled("cc-pvdz-ri")
     ints = ferric.AoIntegrals(mol, bs)
     w_df = cis_singlets(
-        ints, orbitals_of(ferric.run_rhf(mol, bs), ints.nelec // 2), 3, aux
+        ints,
+        orbitals_of(ferric.run_rhf(mol, bs, df_guess=False), ints.nelec // 2),
+        3,
+        aux,
     )
     ref = np.asarray(
         ferric.run_tddft(

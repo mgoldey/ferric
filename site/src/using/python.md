@@ -153,9 +153,22 @@ print(f"RHF: {rhf.energy:.10f} Ha, converged={rhf.converged}")
 ```
 
 ```text
-RHF Energy: -74.9631468000 Ha (converged: true, 8 iterations)
+RHF Energy: -74.9631468000 Ha (converged: true, 5 iterations)
 RHF: -74.9631468000 Ha, converged=True
 ```
+
+`run_rhf` builds J and K from four-centre integrals. Before that SCF it
+converges a density-fitted one on `def2-universal-jkfit` and starts from its
+density (`df_guess=None`, the default; Psi4's `DF_SCF_GUESS`): a fitted
+iteration costs a few percent of an exact one, so the exact stage needs
+fewer, at the same energy (benzene/def2-TZVP: 6 exact builds instead of 11,
+15.6 s instead of 26.5 s on 4 threads). `rhf.iterations` counts the exact
+stage only, and `rhf.df_guess` says whether the pre-stage ran and, if not,
+why. It is skipped when the call brings its own start (`dm0`, `guess_basis`,
+`guess="hcore"`, MOM), with `symmetry=True`, a `fock_hook` or
+`with_gradient=True`, and when nothing is four-centre; `df_guess=False`
+turns it off, and `df_guess=True` raises where it cannot run. `run_dft`
+takes the same keyword; its default fitted J/K leaves it off.
 
 Open shell, using the triplet `o2` built above:
 

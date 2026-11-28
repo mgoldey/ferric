@@ -156,6 +156,8 @@ fn dress_first_scf_is_bitwise_the_resident_run() {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ctx = ParallelContext::default();
     let run = |budget: usize| {
+        // Dress-first is a placement of the aux-major tensors.
+        let _aux = ferric_scf::df_pair::override_pair_layout_for_test(false);
         let mut cfg = RhfConfig::default()
             .with_energy_conv(1e-3)
             .with_density_conv(1e-8)

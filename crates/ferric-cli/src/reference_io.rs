@@ -242,6 +242,7 @@ pub fn read(
     let surface = plan.surface;
     let key = surface.key("read_reference");
     let fail = |e: String| CliError::msg(format!("{key} {path:?}: {e}"));
+    let st = ferric_core::timing::Stage::start("reference read: file + checksum + identity");
     let ck = Checkpoint::read(Path::new(path)).map_err(|e| fail(e.to_string()))?;
     let verdict = ck
         .check(
@@ -266,6 +267,7 @@ pub fn read(
             };
             fail(format!("{e}{hint}"))
         })?;
+    st.end();
     let state = ck
         .final_state
         .as_ref()
@@ -277,7 +279,9 @@ pub fn read(
     let result = ck
         .into_result(plan.config)
         .map_err(|e| fail(e.to_string()))?;
+    let st = ferric_core::timing::Stage::start("reference read: Tr[D h] check (hcore)");
     let (e1, vnn) = energy_pieces(sys, &result.density_total);
+    st.end();
     if e1.to_bits() != stored_e1.to_bits() || vnn.to_bits() != stored_vnn.to_bits() {
         return Err(fail(format!(
             "the stored density does not reproduce its one-electron energy on this run's \

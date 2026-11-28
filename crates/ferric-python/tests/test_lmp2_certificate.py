@@ -86,15 +86,17 @@ def test_certificate_fields_round_trip_direct(water):
     assert loc["fock_screen"] == 1.0  # on by default on both paths
     assert loc["precision"] == "f64"
     assert loc["frozen_core"] == 1
-    assert loc["cg_converged"] is True and 0.0 <= loc["cg_relres"] < 1e-6
-    assert loc["cg_rtol"] == 1e-6 and loc["cg_relres"] < loc["cg_rtol"]
-    assert 0.0 < loc["cg_true_relres"] < 1e-5
+    # the default stop: the 1e-7 Ha energy target, between the 1e-11 floor
+    # and the 1e-4 ceiling
+    assert loc["cg_converged"] is True and 0.0 <= loc["cg_relres"] < loc["cg_rtol"]
+    assert 1e-11 <= loc["cg_rtol"] <= 1e-4
+    assert loc["cg_true_relres"] > 0.0
     assert loc["solver_warnings"] == []
-    assert loc["cg_rtol_source"] == "adaptive-default"
+    assert loc["cg_rtol_source"] == "energy-bound"
     assert loc["cg_tightened"] is False
-    assert loc["cg_energy_error_target"] == 1e-10
+    assert loc["cg_energy_error_target"] == 1e-7
     assert loc["cg_energy_target_met"] is True
-    assert 0.0 <= loc["cg_energy_error_bound"] <= 1e-10
+    assert 0.0 <= loc["cg_energy_error_bound"] <= 1e-7
     assert 0.0 < loc["keep_fraction"] <= 1.0 and 0.0 < loc["pair_fraction"] <= 1.0
     assert isinstance(loc["n_pairs_gated"], int)
     assert sorted(loc["maps"]) == sorted(MAP_KEYS)
@@ -119,6 +121,50 @@ def test_certificate_fields_round_trip_direct(water):
     commit, dirty = _build_stamp()
     assert loc["build_commit"] == commit and loc["build_dirty"] == dirty
     assert loc["gate_on"] is True and loc["n_pairs_unique"] > 0
+
+    # cg_energy_target="strict": the rule before the energy target was the
+    # default (relres 1e-6, tightened while the bound exceeds 1e-10 Ha)
+    s = ferric.run_rimp2(
+        mol,
+        obs,
+        aux,
+        frozen_core=1,
+        local="amplitude-threshold",
+        eps=1e-4,
+        integral_direct=True,
+        gate_cal=0.7,
+        batch_merge=2,
+        eri3_pass="batches",
+        cg_energy_target="strict",
+    ).local
+    assert s["cg_converged"] is True and 0.0 <= s["cg_relres"] < 1e-6
+    assert s["cg_rtol"] == 1e-6 and s["cg_relres"] < s["cg_rtol"]
+    assert 0.0 < s["cg_true_relres"] < 1e-5
+    assert s["solver_warnings"] == []
+    assert s["cg_rtol_source"] == "adaptive-default"
+    assert s["cg_tightened"] is False
+    assert s["cg_energy_error_target"] == 1e-10
+    assert s["cg_energy_target_met"] is True
+    assert 0.0 <= s["cg_energy_error_bound"] <= 1e-10
+    assert s["keep_fraction"] == loc["keep_fraction"]
+
+
+def test_cg_energy_target_kwarg_takes_an_energy_or_strict(water):
+    """`cg_energy_target=` is the CLI's `[local] cg_energy_target`: a float
+    (Hartree, > 0) sets the target, "strict" the earlier rule; a bool, another
+    word or a non-positive energy is a ValueError, and so is the kwarg on the
+    exact method."""
+    mol, obs, aux = water
+    kw = dict(frozen_core=1, local="amplitude-threshold", eps=1e-4)
+    loc = ferric.run_rimp2(mol, obs, aux, cg_energy_target=1e-9, **kw).local
+    assert loc["cg_rtol_source"] == "energy-bound"
+    assert loc["cg_energy_error_target"] == 1e-9
+    assert loc["cg_energy_error_bound"] <= 1e-9
+    for bad in [True, "loose", 0.0, -1e-7, float("nan")]:
+        with pytest.raises(ValueError, match="cg_energy_target"):
+            ferric.run_rimp2(mol, obs, aux, cg_energy_target=bad, **kw)
+    with pytest.raises(ValueError, match="cg_energy_target"):
+        ferric.run_rimp2(mol, obs, aux, frozen_core=1, cg_energy_target="strict")
 
 
 def test_certificate_in_core_exact_limit(water):

@@ -126,7 +126,8 @@ def _zero_hook(d):
 
 def test_zero_hook_is_bit_identical_to_no_hook():
     mol, bs, _ = _water("cc-pvdz")
-    plain = ferric.run_rhf(mol, bs, **TIGHT)
+    # A hook keeps the default DF-guess pre-stage off; so does the reference.
+    plain = ferric.run_rhf(mol, bs, df_guess=False, **TIGHT)
     hooked = ferric.run_rhf(mol, bs, fock_hook=_zero_hook, **TIGHT)
     assert hooked.energy == plain.energy
     assert hooked.iterations == plain.iterations

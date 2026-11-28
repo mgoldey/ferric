@@ -153,9 +153,44 @@ pub fn own_cpu_seconds() -> Option<f64> {
     imp::own_cpu_seconds()
 }
 
+/// Give the allocator's free pages back to the OS, so that [`own_rss_bytes`]
+/// and [`available_ram_bytes`] count only memory this process is using.
+/// Returns whether anything was released. glibc Linux only (`malloc_trim(0)`,
+/// every arena); a no-op returning `false` elsewhere.
+///
+/// # Why a budget gate needs it
+///
+/// glibc keeps freed blocks below its mmap threshold in its arenas, so RSS
+/// does not fall when a stage frees them. A budget resolved later in the same
+/// process then counts those pages twice: once because `MemAvailable` already
+/// excludes them, once more when the gate subtracts RSS. MEASURED, n-hexadecane
+/// / cc-pVDZ PBE, two `run_dft` calls in one Python process, 4 threads: the
+/// first call left RSS at 6.0 GB with all of it free heap, the second call's
+/// grid budget fell below the 5.84 GB of screened AO blocks and recomputed them
+/// every Fock build, 31.6 s -> 87.8 s (`malloc_trim` between the calls: 6.0 ->
+/// 0.18 GB RSS in 0.30 s, second call 32.0 s, same energy).
+///
+/// It costs about 50 ms per GB released and the pages fault back in on reuse,
+/// so call it once per budget decision, never per iteration.
+pub fn release_free_heap() -> bool {
+    imp::release_free_heap()
+}
+
 #[cfg(target_os = "linux")]
 mod imp {
     use super::{parse_proc_stat_cpu_seconds, parse_status_kb_field};
+
+    #[cfg(target_env = "gnu")]
+    pub(super) fn release_free_heap() -> bool {
+        // SAFETY: `malloc_trim` takes no pointers and only returns free pages to
+        // the kernel; it is thread-safe (it locks each arena it trims).
+        unsafe { libc::malloc_trim(0) != 0 }
+    }
+
+    #[cfg(not(target_env = "gnu"))]
+    pub(super) fn release_free_heap() -> bool {
+        false
+    }
 
     fn read(path: &str) -> Option<String> {
         std::fs::read_to_string(path).ok()
@@ -225,6 +260,10 @@ mod imp {
 
     pub(super) fn total_ram_bytes() -> Option<usize> {
         sysctl_u64(c"hw.memsize").map(|b| usize::try_from(b).unwrap_or(usize::MAX))
+    }
+
+    pub(super) fn release_free_heap() -> bool {
+        false
     }
 
     pub(super) fn available_ram_bytes() -> Option<usize> {
@@ -318,6 +357,10 @@ mod imp {
         usize::try_from(v).unwrap_or(usize::MAX)
     }
 
+    pub(super) fn release_free_heap() -> bool {
+        false
+    }
+
     pub(super) fn available_ram_bytes() -> Option<usize> {
         memory_status().map(|s| to_usize(s.ullAvailPhys))
     }
@@ -361,6 +404,10 @@ mod imp {
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 mod imp {
+    pub(super) fn release_free_heap() -> bool {
+        false
+    }
+
     pub(super) fn available_ram_bytes() -> Option<usize> {
         None
     }

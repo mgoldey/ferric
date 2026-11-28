@@ -182,6 +182,8 @@ pub mod df_j_gpu;
 pub mod df_k;
 #[cfg(feature = "gpu")]
 pub mod df_k_gpu;
+/// Pair-major, Schwarz-sparse dressed 3-index tensor shared by RI-J and DF-K.
+pub mod df_pair;
 /// DIIS convergence accelerator for SCF iterations.
 pub mod diis;
 /// Initial guess generators: core Hamiltonian, SAD, read-in.

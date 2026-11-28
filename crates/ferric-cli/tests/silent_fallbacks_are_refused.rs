@@ -971,12 +971,13 @@ fn b2plyp_honours_scf_df_j_aux() {
     );
 }
 
-/// The df_guess warnings fire only for an EXPLICIT `[scf] df_guess = true`.
-/// df_guess defaults on, so a condition on `df_guess_enabled()` printed the
-/// "ignored" warning on every plain `rhf` run (ladder path) and every
-/// open-shell run (UHF path) although the user asked for nothing. Restoring
-/// `df_guess_enabled()` in either condition fails the "default" asserts; a
-/// condition that never fires fails the "explicit" ones.
+/// The open-shell df_guess warning fires only for an EXPLICIT `[scf] df_guess
+/// = true`: df_guess defaults on, so a condition on `df_guess_enabled()`
+/// printed the "ignored" warning on every open-shell run (UHF path) although
+/// the user asked for nothing. On the closed-shell `rhf` ladder the pre-stage
+/// runs (`ladder::solve_rhf_ladder_with_df_guess`) and says so in one line,
+/// by default on its four-centre route and when asked for; no word of a
+/// `df_guess` warning either way.
 #[test]
 fn df_guess_warnings_fire_only_when_the_user_asked_for_df_guess() {
     let water = "testdata/molecules/water.xyz";
@@ -987,13 +988,30 @@ fn df_guess_warnings_fire_only_when_the_user_asked_for_df_guess() {
     let aux = "[mp2]\nauxbasis = \"cc-pvdz-ri\"\n";
     let explicit = "[scf]\ndf_guess = true\n";
 
+    let pre_stage = "SCF: DF-guess pre-stage via def2-universal-jkfit";
     let rhf_default = stderr("dfg_rhf_default", 1, "rhf", "");
     assert!(!rhf_default.contains("df_guess"), "{rhf_default}");
-    let rhf_explicit = stderr("dfg_rhf_explicit", 1, "rhf", explicit);
-    assert!(
-        rhf_explicit.contains("df_guess is not yet composed with the rhf convergence ladder"),
-        "{rhf_explicit}"
+    assert_eq!(
+        rhf_default.contains(pre_stage),
+        ferric_scf::ladder::DF_GUESS_DEFAULT_ON,
+        "{rhf_default}"
     );
+    let rhf_explicit = stderr("dfg_rhf_explicit", 1, "rhf", explicit);
+    assert!(!rhf_explicit.contains("df_guess"), "{rhf_explicit}");
+    assert!(rhf_explicit.contains(pre_stage), "{rhf_explicit}");
+    // `df_increments = true` is ignored on the ladder route (and warned), but
+    // it still turns the DEFAULTED pre-stage off (`df_guess_enabled`).
+    let rhf_increments = stderr(
+        "dfg_rhf_increments",
+        1,
+        "rhf",
+        "[scf]\ndf_increments = true\n",
+    );
+    assert!(
+        rhf_increments.contains("df_increments is not yet composed"),
+        "{rhf_increments}"
+    );
+    assert!(!rhf_increments.contains(pre_stage), "{rhf_increments}");
 
     let uhf_default = stderr("dfg_rimp2_triplet_default", 3, "rimp2", aux);
     assert!(!uhf_default.contains("df_guess"), "{uhf_default}");

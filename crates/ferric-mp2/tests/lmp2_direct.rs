@@ -10,7 +10,7 @@ use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_mp2::lmp2_amplitude::{amplitude_lmp2, AmplitudeLmp2Config};
+use ferric_mp2::lmp2_amplitude::{amplitude_lmp2, AmplitudeLmp2Config, CgEnergyTarget};
 use ferric_mp2::lmp2_direct::{amplitude_lmp2_direct, DirectConfig, Eri3Pass};
 #[allow(dead_code)]
 #[path = "common/bench_rhf_cache.rs"]
@@ -127,6 +127,8 @@ fn trivial_limit_matches_global_domain_fit_and_canonical() {
         compute_reference: true,
         eps: 0.0,
         frozen_core: 1,
+        // 1e-9 against canonical RI-MP2: below what the 1e-7 Ha default target guarantees
+        cg_energy_target: CgEnergyTarget::Strict,
         ..Default::default()
     };
     let glob_cfg = AmplitudeLmp2Config {
@@ -179,6 +181,8 @@ fn trivial_limit_holds_for_erfc() {
         compute_reference: true,
         eps: 0.0,
         frozen_core: 0,
+        // 1e-9 against canonical RI-MP2: below what the 1e-7 Ha default target guarantees
+        cg_energy_target: CgEnergyTarget::Strict,
         ..Default::default()
     };
     let (dir, _) = amplitude_lmp2_direct(
@@ -590,6 +594,8 @@ fn terfc_direct_probe() {
             compute_reference: true,
             eps: 0.0,
             frozen_core: fc,
+            // 1e-9 against canonical RI-MP2: below what the 1e-7 Ha default target guarantees
+            cg_energy_target: CgEnergyTarget::Strict,
             ..Default::default()
         };
         let (coul, _) = amplitude_lmp2_direct(
@@ -823,6 +829,8 @@ fn aux_major_trivial_limit_matches_canonical() {
             eps: 0.0,
             frozen_core: 4,
             compute_reference: true,
+            // 1e-9 against canonical RI-MP2: below what the 1e-7 Ha default target guarantees
+            cg_energy_target: CgEnergyTarget::Strict,
             ..Default::default()
         };
         let dcfg = DirectConfig {
@@ -2213,8 +2221,9 @@ fn fvv_sparse_rho_rejects_nan_and_negative() {
 
 // ---- the adaptive PCG tolerance ----
 
-/// One row of the tolerance claim: the default against an explicit 1e-11 from
-/// the same code. `check` asserts |ΔE| <= reported bound <= 1e-10 Ha, no
+/// One row of the tolerance claim: the strict rule (`CgEnergyTarget::Strict`,
+/// the default before the 1e-7 Ha energy target) against an explicit 1e-11
+/// from the same code. `check` asserts |ΔE| <= reported bound <= 1e-10 Ha, no
 /// tightening, and the certificate-facing outcome. Matvecs = iterations + 1
 /// (the Hylleraas energy's own). Artifact hypothesis: a bound or energy that
 /// did not track the residual would break |ΔE| <= bound on some row, and an
@@ -2235,6 +2244,7 @@ fn rtol_row(xyz: &str, fc: usize, opn: &str, op: Operator, cal: f64, in_core: bo
         frozen_core: fc,
         pair_gate_cal: Some(cal),
         cg_rtol: rtol,
+        cg_energy_target: CgEnergyTarget::Strict,
         ..Default::default()
     };
     let run_direct = |rtol| {
@@ -2424,6 +2434,195 @@ fn unreachable_target_is_reported() {
     assert!(bound > 1e-40 && b.solve.relres > 1e-11);
 }
 
+/// The energy-target stop starts AT the residual its target derives (a
+/// quarter of the target on the bound), clamped to [floor, ceiling]; it meets
+/// the target on the true residual, and its energy is within the bound of a
+/// 1e-13 solve. The default target (1e-7 Ha) stops earlier than the strict
+/// rule; a huge target is held at the ceiling, never above it.
+/// Mutants seen to fail: the start ignoring the target (always the ceiling);
+/// the ceiling clamp dropped.
+#[test]
+fn energy_target_stop_starts_at_its_derived_residual_and_meets_its_target() {
+    use ferric_mp2::lmp2_amplitude::{
+        hylleraas_energy, operator_lambda_min_lower_bound, pattern_rhs_norm,
+        rtol_for_energy_target, solve_under_rtol_policy, CgRtolPolicy, CgRtolSource, PolicySolve,
+        LMP2_CG_RTOL_CEILING, LMP2_CG_RTOL_STRICT,
+    };
+    let (rg, f_oo, f_vv) = production_ragged_op("alkane_4.xyz", 4, 1e-4, Operator::coulomb(), 0.7);
+    let run = |p| solve_under_rtol_policy(&rg, &f_oo, &f_vv, p, 400, usize::MAX, 0.0).unwrap();
+    let reference = run(adaptive(1e-13, 1e-13, 1.0)).budgeted;
+    let e_ref = hylleraas_energy(&rg, &f_oo, reference.plan(), &reference.solve.t).unwrap();
+    let lam = operator_lambda_min_lower_bound(&f_oo, &f_vv).unwrap();
+    let bnorm = pattern_rhs_norm(&rg);
+    let strict = run(CgRtolPolicy::from_settings(None, CgEnergyTarget::Strict));
+    let mut iters_at = Vec::new();
+    for target in [1e-6, 1e-7, 1e-9] {
+        let PolicySolve {
+            budgeted: b,
+            outcome: o,
+            bound,
+            e_hylleraas,
+            ..
+        } = run(CgRtolPolicy::from_settings(
+            None,
+            CgEnergyTarget::Ha(target),
+        ));
+        let de = e_hylleraas - e_ref;
+        eprintln!(
+            "ENERGY-TARGET {target:.0e}: rtol {:.3e} iters {} (strict {}) bound {bound:.3e} \
+             dE {de:+.3e}",
+            o.rtol_used, b.solve.iterations, strict.budgeted.solve.iterations
+        );
+        let derived = rtol_for_energy_target(bnorm, lam, target);
+        assert_eq!(derived, 0.5 * (target * lam / 3.0).sqrt() / bnorm);
+        assert_eq!(o.source, CgRtolSource::EnergyBound);
+        assert_eq!(o.source.as_str(), "energy-bound");
+        assert_eq!(
+            o.rtol_used,
+            derived.clamp(LMP2_CG_RTOL_STRICT, LMP2_CG_RTOL_CEILING)
+        );
+        assert!(!o.tightened, "the derived start already meets the target");
+        assert_eq!(o.target_ha, Some(target));
+        assert_eq!(o.target_met, Some(true));
+        assert!(b.solve.converged && bound <= target);
+        assert!(de.abs() <= bound + 1e-14, "dE {de:.3e} bound {bound:.3e}");
+        iters_at.push(b.solve.iterations);
+    }
+    // a looser target takes no more iterations; 1e-7 stops before strict
+    assert!(iters_at.windows(2).all(|w| w[0] <= w[1]), "{iters_at:?}");
+    assert!(iters_at[1] < strict.budgeted.solve.iterations);
+    // a target no residual reaches on this scale is held at the ceiling
+    let huge = run(CgRtolPolicy::from_settings(None, CgEnergyTarget::Ha(1e6)));
+    assert!(rtol_for_energy_target(bnorm, lam, 1e6) > LMP2_CG_RTOL_CEILING);
+    assert_eq!(huge.outcome.rtol_used, LMP2_CG_RTOL_CEILING);
+    assert!(huge.budgeted.solve.relres <= LMP2_CG_RTOL_CEILING);
+}
+
+/// The default stop is the 1e-7 Ha energy target, in the library default and
+/// the production config alike, and `CgEnergyTarget::Strict` is the earlier
+/// adaptive policy exactly (the same policy value, so the same code path:
+/// iterations, amplitudes and energy bits; `local_family_bits` in ferric-cc
+/// pins the bits recorded before the default changed through this setting).
+/// An explicit `cg_rtol` still wins, and a bad target or keyword is refused.
+/// Through the driver, the default stops earlier than strict and stays within
+/// its bound of the strict energy.
+#[test]
+fn strict_setting_reproduces_the_old_rule_and_the_default_is_the_1e7_target() {
+    use ferric_mp2::lmp2_amplitude::{
+        AmplitudeLmp2Config, CgRtolPolicy, CgRtolSource, LMP2_CG_ENERGY_ERROR_TARGET,
+        LMP2_CG_ENERGY_TARGET_DEFAULT, LMP2_CG_RTOL_CEILING, LMP2_CG_RTOL_DEFAULT,
+        LMP2_CG_RTOL_STRICT,
+    };
+    assert_eq!(LMP2_CG_ENERGY_TARGET_DEFAULT, 1e-7);
+    let default_target = CgEnergyTarget::Ha(LMP2_CG_ENERGY_TARGET_DEFAULT);
+    assert_eq!(CgEnergyTarget::default(), default_target);
+    assert_eq!(
+        AmplitudeLmp2Config::default().cg_energy_target,
+        default_target
+    );
+    let prod = AmplitudeLmp2Config::production(1e-4, 4, None);
+    assert_eq!(prod.cg_energy_target, default_target);
+    assert_eq!(
+        CgRtolPolicy::from_settings(prod.cg_rtol, prod.cg_energy_target),
+        CgRtolPolicy::EnergyBound {
+            target_ha: 1e-7,
+            floor: LMP2_CG_RTOL_STRICT,
+            ceiling: LMP2_CG_RTOL_CEILING,
+        }
+    );
+    // the rule before the default changed, literally
+    let old = CgRtolPolicy::Adaptive {
+        start: LMP2_CG_RTOL_DEFAULT,
+        floor: LMP2_CG_RTOL_STRICT,
+        target_ha: LMP2_CG_ENERGY_ERROR_TARGET,
+    };
+    assert_eq!(
+        (LMP2_CG_RTOL_DEFAULT, LMP2_CG_ENERGY_ERROR_TARGET),
+        (1e-6, 1e-10)
+    );
+    assert_eq!(
+        CgRtolPolicy::from_settings(None, CgEnergyTarget::Strict),
+        old
+    );
+    // the other PCG consumers' policy is untouched
+    assert_eq!(CgRtolPolicy::from_config(None), old);
+    assert_eq!(
+        CgRtolPolicy::from_settings(Some(1e-8), default_target),
+        CgRtolPolicy::Explicit(1e-8)
+    );
+    for bad in [0.0, -1e-7, f64::NAN, f64::INFINITY] {
+        assert!(CgEnergyTarget::Ha(bad).validate().is_err(), "{bad}");
+        assert!(CgEnergyTarget::from_ha(bad).is_err(), "{bad}");
+    }
+    assert!(CgEnergyTarget::Strict.validate().is_ok());
+    assert_eq!(
+        CgEnergyTarget::from_keyword("strict").unwrap(),
+        CgEnergyTarget::Strict
+    );
+    assert_eq!(
+        CgEnergyTarget::from_keyword(" Strict ").unwrap(),
+        CgEnergyTarget::Strict
+    );
+    let e = CgEnergyTarget::from_keyword("loose")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        e.contains("unknown value \"loose\"") && e.contains("strict"),
+        "{e}"
+    );
+
+    let su = setup("alkane_4.xyz");
+    let run = |cfg: &AmplitudeLmp2Config| {
+        amplitude_lmp2(
+            &su.mol,
+            &su.obs,
+            &su.obs_bs,
+            &su.dfbs,
+            Operator::coulomb(),
+            &su.rhf,
+            cfg,
+        )
+    };
+    let strict_cfg = AmplitudeLmp2Config {
+        cg_energy_target: CgEnergyTarget::Strict,
+        ..prod.clone()
+    };
+    let s1 = run(&strict_cfg).unwrap();
+    let s2 = run(&strict_cfg).unwrap();
+    assert_eq!(s1.cg_rtol_outcome.source, CgRtolSource::AdaptiveDefault);
+    assert_eq!(s1.cg_rtol_outcome.rtol_used, LMP2_CG_RTOL_DEFAULT);
+    assert_eq!(
+        s1.cg_rtol_outcome.target_ha,
+        Some(LMP2_CG_ENERGY_ERROR_TARGET)
+    );
+    assert_eq!(s1.cg_iterations, s2.cg_iterations);
+    assert_eq!(s1.e_corr.to_bits(), s2.e_corr.to_bits());
+    let d = run(&prod).unwrap();
+    assert_eq!(d.cg_rtol_outcome.source, CgRtolSource::EnergyBound);
+    assert_eq!(d.cg_rtol_outcome.target_ha, Some(1e-7));
+    assert_eq!(d.cg_rtol_outcome.target_met, Some(true));
+    assert!(d.cg_energy_error_bound <= 1e-7);
+    assert!(
+        d.cg_iterations < s1.cg_iterations,
+        "{} vs {}",
+        d.cg_iterations,
+        s1.cg_iterations
+    );
+    let de = (d.e_corr - s1.e_corr).abs();
+    assert!(
+        de <= d.cg_energy_error_bound + s1.cg_energy_error_bound,
+        "dE {de:.3e} bounds {:.3e} + {:.3e}",
+        d.cg_energy_error_bound,
+        s1.cg_energy_error_bound
+    );
+    let bad = AmplitudeLmp2Config {
+        cg_energy_target: CgEnergyTarget::Ha(0.0),
+        ..prod
+    };
+    let e = run(&bad).unwrap_err().to_string();
+    assert!(e.contains("cg_energy_target"), "{e}");
+}
+
 /// Running out of iterations while tightening fails the solve, and the message
 /// carries the numbers of that solve, rebuilt here from the same iterates. A
 /// limit that lets the floor be reached is still an `Ok`, target unmet.
@@ -2562,8 +2761,9 @@ fn out_of_iterations_at_the_first_tolerance_is_an_error() {
     assert!(msg.contains(": ragged CG failed to converge"), "{msg}");
 }
 
-/// With no positive gap the bound is undefined: the adaptive policy runs at
-/// the strict tolerance from the start and never reports a met target.
+/// With no positive gap the bound is undefined: the strict rule and the
+/// default energy target both run at the 1e-11 tolerance from the start and
+/// never report a met target.
 #[test]
 fn no_gap_uses_the_strict_tolerance() {
     use ferric_mp2::lmp2_amplitude::{
@@ -2573,26 +2773,28 @@ fn no_gap_uses_the_strict_tolerance() {
     let (rg, f_oo, f_vv) = production_ragged_op("alkane_4.xyz", 4, 1e-4, Operator::coulomb(), 0.7);
     // only the bound reads f_vv: the operator lives in the pair blocks
     let closed = &f_vv - &(ndarray::Array2::<f64>::eye(f_vv.nrows()) * 100.0);
-    let PolicySolve {
-        budgeted: b,
-        outcome: o,
-        bound,
-        ..
-    } = solve_under_rtol_policy(
-        &rg,
-        &f_oo,
-        &closed,
-        CgRtolPolicy::from_config(None),
-        400,
-        usize::MAX,
-        0.0,
-    )
-    .unwrap();
-    assert_eq!(o.source, CgRtolSource::StrictNoGap);
-    assert_eq!(o.rtol_used, 1e-11);
-    assert!(!o.tightened && o.target_met.is_none() && bound.is_nan());
     let straight = solve_ragged_budgeted_with(&rg, &f_oo, 1e-11, 400, usize::MAX, 0.0);
-    assert!(bits_equal(&b.solve.t, &straight.solve.t));
+    for target in [CgEnergyTarget::Strict, CgEnergyTarget::default()] {
+        let PolicySolve {
+            budgeted: b,
+            outcome: o,
+            bound,
+            ..
+        } = solve_under_rtol_policy(
+            &rg,
+            &f_oo,
+            &closed,
+            CgRtolPolicy::from_settings(None, target),
+            400,
+            usize::MAX,
+            0.0,
+        )
+        .unwrap();
+        assert_eq!(o.source, CgRtolSource::StrictNoGap);
+        assert_eq!(o.rtol_used, 1e-11);
+        assert!(!o.tightened && o.target_met.is_none() && bound.is_nan());
+        assert!(bits_equal(&b.solve.t, &straight.solve.t));
+    }
 }
 
 /// An explicit tolerance is literal: the driver stops at it even with the
@@ -2912,7 +3114,12 @@ fn production_lambda_boys_converges_on_the_s22_benzene_dimer() {
         .unwrap()
         .0
     };
-    let prod = AmplitudeLmp2Config::production(1e-4, fc, None);
+    // the 1e-9 entry-point agreement and the eps = 0 anchor are below what the
+    // 1e-7 Ha default target guarantees: the strict stop
+    let prod = AmplitudeLmp2Config {
+        cg_energy_target: CgEnergyTarget::Strict,
+        ..AmplitudeLmp2Config::production(1e-4, fc, None)
+    };
     let a = run(&prod, &DirectConfig::production());
     let lb = &a.lambda_boys;
     eprintln!(
