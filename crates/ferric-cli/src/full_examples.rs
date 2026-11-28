@@ -410,6 +410,7 @@ fn keys() -> Vec<Key> {
         key!("local", "virtual_solve_radius", "", |_| Off("only with virtual_space = \"local\"")),
         key!("local", "virtual_boys_tau", "", |_| Off("only with virtual_space = \"local\"")),
         key!("local", "lambda_boys", "", |_| Off("only with scheme = \"amplitude-threshold\" (rimp2, att-rimp2, opmp3)")),
+        key!("local", "cg_energy_target", "stop of the amplitude PCG: energy-error target, Ha (default 1e-7), or \"strict\" (relres 1e-6 tightened to a 1e-10 Ha bound)", |_| Off("only with scheme = \"amplitude-threshold\" (rimp2, att-rimp2)")),
         // ---- [cc] / [eom]
         key!("cc", "ladder", "particle-particle ladder: auto | dense | ri", |_| s("auto")),
         key!("eom", "n_roots", "lowest singlet excitations", |_| n("5")),

@@ -28,7 +28,7 @@ use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config;
+use ferric_mp2::lmp2_amplitude::{AmplitudeLmp2Config, CgEnergyTarget};
 use ferric_mp2::lmp2_direct::{amplitude_lmp2_direct, DirectConfig};
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
@@ -120,6 +120,8 @@ fn direct_e(su: &Setup, op: Operator, eps: f64, fc: usize, maps: &DirectConfig) 
         eps,
         frozen_core: fc,
         compute_reference: false,
+        // the eps = 0 bar (1e-9 vs ri_mp2) is below the 1e-7 Ha default target
+        cg_energy_target: CgEnergyTarget::Strict,
         ..Default::default()
     };
     let (r, _) = amplitude_lmp2_direct(

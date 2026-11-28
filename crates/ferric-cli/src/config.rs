@@ -1581,6 +1581,50 @@ pub struct LocalCfg {
     /// occupied localization (finite, >= 0). Default
     /// [`ferric_mp2::boys::LAMBDA_BOYS_DEFAULT`]; 0 = plain Boys.
     pub lambda_boys: Option<f64>,
+    /// `kind = "rimp2"` / `"att-rimp2"` only: the stopping rule of the
+    /// local-MP2 PCG
+    /// (`ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config::cg_energy_target`):
+    /// an energy target in Hartree (finite and > 0), or `"strict"` for the
+    /// earlier relres 1e-6 / 1e-10 Ha rule, bit-identical. Omitted = the 1e-7
+    /// Ha energy target
+    /// (`ferric_mp2::lmp2_amplitude::LMP2_CG_ENERGY_TARGET_DEFAULT`).
+    pub cg_energy_target: Option<CgEnergyTargetSpec>,
+}
+
+/// The `[local] cg_energy_target` key (and Python's `cg_energy_target=`): an
+/// energy or a keyword, one key rather than two, the way `frozen_core` takes
+/// a count or `"auto"`.
+///
+/// ```toml
+/// [local]
+/// cg_energy_target = 1e-8       # stop when the solver-error bound is under 1e-8 Ha
+/// cg_energy_target = "strict"   # the relres 1e-6 / 1e-10 Ha rule
+/// ```
+///
+/// Omitted means the 1e-7 Ha default. A non-positive or non-finite energy
+/// and any other word are errors, never a silent fall-through to a default.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(untagged)]
+pub enum CgEnergyTargetSpec {
+    /// An energy target in Hartree.
+    Ha(f64),
+    /// A keyword; only `"strict"` is accepted.
+    Keyword(String),
+}
+
+impl CgEnergyTargetSpec {
+    /// The library stopping rule this spells, validated.
+    pub fn resolve(&self) -> Result<ferric_mp2::lmp2_amplitude::CgEnergyTarget, String> {
+        use ferric_mp2::lmp2_amplitude::CgEnergyTarget;
+        match self {
+            CgEnergyTargetSpec::Ha(t) => CgEnergyTarget::from_ha(*t),
+            CgEnergyTargetSpec::Keyword(w) => CgEnergyTarget::from_keyword(w),
+        }
+        .map_err(|e| match e {
+            ferric_core::error::FerricError::General(m) => m,
+            e => e.to_string(),
+        })
+    }
 }
 
 /// The integral-direct locality knobs of a local MP2 run, with their
@@ -1656,6 +1700,9 @@ pub struct LocalModel {
     /// `None` with `fock_screen = false` (local MP2 only; the dRPA and
     /// LinLCCD paths refuse the key and run the plain mask).
     pub fock_screen: Option<f64>,
+    /// `[local] cg_energy_target`, resolved: the 1e-7 Ha energy target when
+    /// omitted (local MP2 only; the other kinds refuse the key).
+    pub cg_energy_target: ferric_mp2::lmp2_amplitude::CgEnergyTarget,
 }
 
 impl LocalModel {
@@ -1673,6 +1720,7 @@ impl LocalModel {
             fock_screen: self.fock_screen,
             virtual_space: self.virtual_space.clone(),
             lambda_boys: self.lambda_boys,
+            cg_energy_target: self.cg_energy_target,
             ..ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config::production(
                 self.eps[0],
                 frozen_core,
@@ -1900,6 +1948,7 @@ impl LocalCfg {
                 ("virtual_solve_radius", self.virtual_solve_radius.is_some()),
                 ("virtual_boys_tau", self.virtual_boys_tau.is_some()),
                 ("lambda_boys", self.lambda_boys.is_some()),
+                ("cg_energy_target", self.cg_energy_target.is_some()),
             ]
             .into_iter()
             .filter_map(|(k, set)| set.then_some(k))
@@ -1969,6 +2018,11 @@ impl LocalCfg {
         ferric_mp2::boys::check_lambda_boys(lambda_boys).map_err(|e| format!("[local] {e}"))?;
         let fock_on = fock_screen.is_some();
         refuse_kappa_under_fock_screen(fock_on, direct.as_ref())?;
+        let cg_energy_target = self
+            .cg_energy_target
+            .as_ref()
+            .map_or(Ok(Default::default()), CgEnergyTargetSpec::resolve)
+            .map_err(|e| format!("[local] {e}"))?;
         Ok(Some(LocalModel {
             eps,
             is_sweep,
@@ -1977,6 +2031,7 @@ impl LocalCfg {
             virtual_space,
             lambda_boys,
             fock_screen,
+            cg_energy_target,
         }))
     }
 }
@@ -5437,12 +5492,18 @@ impl Config {
         if kind != "rimp2" && kind != "att-rimp2" {
             if let Some(l) = self.local.as_ref() {
                 // (key set?, key, what it selects, what the other kinds do instead)
-                let mp2_only: [(bool, &str, &str, &str); 4] = [
+                let mp2_only: [(bool, &str, &str, &str); 5] = [
                     (
                         l.integral_direct.is_some(),
                         "integral_direct",
                         "is the integral-direct local MP2",
                         "",
+                    ),
+                    (
+                        l.cg_energy_target.is_some(),
+                        "cg_energy_target",
+                        "sets the energy-error stop of the local-MP2 amplitude solve",
+                        ", which solves to its own tolerance",
                     ),
                     (
                         l.virtual_space.is_some() && !maps_kind,
@@ -5464,7 +5525,7 @@ impl Config {
                     ),
                 ];
                 if let Some((_, key, what, instead)) = mp2_only.iter().find(|r| r.0) {
-                    let kinds = if *key == "integral_direct" {
+                    let kinds = if matches!(*key, "integral_direct" | "cg_energy_target") {
                         "\"rimp2\" or \"att-rimp2\""
                     } else {
                         "\"rimp2\", \"att-rimp2\" or \"opmp3\""
@@ -7771,6 +7832,84 @@ mod compat_guard_tests {
         for kind in ["drpa", "linlccd"] {
             let e = ok(kind).expect_err(kind);
             assert!(e.contains("lambda_boys") && e.contains("plain Boys"), "{e}");
+        }
+    }
+
+    /// `[local] cg_energy_target` is the stopping rule of the local-MP2 PCG:
+    /// omitted, the 1e-7 Ha energy target (the library default); an energy
+    /// or `"strict"` reaches the library config unchanged; a non-positive or
+    /// non-finite energy, any other word, a boolean, the exact method, and
+    /// every non-MP2 kind refuse it.
+    #[test]
+    fn local_cg_energy_target_defaults_to_1e7_takes_strict_and_is_mp2_only() {
+        use ferric_mp2::lmp2_amplitude::{CgEnergyTarget, LMP2_CG_ENERGY_TARGET_DEFAULT};
+        let at = "[local]\nscheme = \"amplitude-threshold\"\neps = 1e-4\n";
+        let model =
+            |kind: &str, extra: &str| cfg(kind, "energy", &format!("{at}{extra}")).local_model();
+        let lib = |m: Result<Option<LocalModel>, String>| {
+            m.unwrap()
+                .unwrap()
+                .rimp2_configs(0, None)
+                .0
+                .cg_energy_target
+        };
+        assert_eq!(
+            lib(model("rimp2", "")),
+            CgEnergyTarget::Ha(LMP2_CG_ENERGY_TARGET_DEFAULT)
+        );
+        assert_eq!(LMP2_CG_ENERGY_TARGET_DEFAULT, 1e-7);
+        assert_eq!(
+            lib(model("rimp2", "cg_energy_target = 1e-8\n")),
+            CgEnergyTarget::Ha(1e-8)
+        );
+        assert_eq!(
+            lib(model("rimp2", "cg_energy_target = \"strict\"\n")),
+            CgEnergyTarget::Strict
+        );
+        for bad in ["0.0", "-1e-7", "nan", "inf"] {
+            let e = model("rimp2", &format!("cg_energy_target = {bad}\n")).unwrap_err();
+            assert!(
+                e.contains("cg_energy_target") && e.contains("> 0") && e.contains("strict"),
+                "{bad}: {e}"
+            );
+        }
+        let e = model("rimp2", "cg_energy_target = \"loose\"\n").unwrap_err();
+        assert!(
+            e.contains("unknown value \"loose\"") && e.contains("strict"),
+            "{e}"
+        );
+        let src = format!(
+            "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n[basis]\nname = \"sto-3g\"\n\
+             [method]\nkind = \"rimp2\"\ntask = \"energy\"\n{at}cg_energy_target = true\n"
+        );
+        assert!(
+            toml::from_str::<Config>(&src).is_err(),
+            "a boolean is not a target"
+        );
+        for set in ["1e-7", "\"strict\""] {
+            let e = cfg(
+                "rimp2",
+                "energy",
+                &format!("[local]\nscheme = \"none\"\ncg_energy_target = {set}\n"),
+            )
+            .local_model()
+            .unwrap_err();
+            assert!(
+                e.contains("cg_energy_target") && e.contains("scheme = \"none\""),
+                "{e}"
+            );
+            let ok = |kind: &str| {
+                cfg(kind, "energy", &format!("{at}cg_energy_target = {set}\n"))
+                    .validate_task_compat()
+            };
+            assert_eq!(ok("rimp2"), Ok(()));
+            for kind in ["drpa", "linlccd", "opmp3"] {
+                let e = ok(kind).expect_err(kind);
+                assert!(
+                    e.contains("cg_energy_target") && e.contains("\"rimp2\" or \"att-rimp2\""),
+                    "{e}"
+                );
+            }
         }
     }
 

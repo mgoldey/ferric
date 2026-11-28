@@ -20,7 +20,7 @@ use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::drpa_amplitude::{amplitude_drpa, amplitude_drpa_direct, AmplitudeDrpaConfig};
-use ferric_mp2::lmp2_amplitude::{amplitude_lmp2, AmplitudeLmp2Config};
+use ferric_mp2::lmp2_amplitude::{amplitude_lmp2, AmplitudeLmp2Config, CgEnergyTarget};
 use ferric_mp2::lmp2_direct::DirectConfig;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -112,7 +112,12 @@ fn local_family_energies_are_bit_identical_to_the_recorded_base() {
                 &dfbs,
                 op,
                 &rhf,
-                &AmplitudeLmp2Config::default(),
+                // the stop of the recorded run; the default is now the
+                // 1e-7 Ha energy target, which moves e_corr by < 1e-7 Ha
+                &AmplitudeLmp2Config {
+                    cg_energy_target: CgEnergyTarget::Strict,
+                    ..AmplitudeLmp2Config::default()
+                },
             )
             .unwrap()
             .e_corr,

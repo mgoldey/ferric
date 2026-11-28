@@ -117,6 +117,27 @@ impl PyRiMp2Result {
     }
 }
 
+/// `cg_energy_target=` of `run_rimp2`: a float (Hartree) or the string
+/// `"strict"`, as the CLI's `[local] cg_energy_target`, validated there. A
+/// bool is refused rather than read as 1.0 / 0.0 Ha.
+fn parse_cg_energy_target(
+    v: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Option<ferric_cli::CgEnergyTargetSpec>> {
+    use ferric_cli::CgEnergyTargetSpec;
+    let Some(v) = v else { return Ok(None) };
+    if !v.is_instance_of::<pyo3::types::PyBool>() {
+        if let Ok(w) = v.extract::<String>() {
+            return Ok(Some(CgEnergyTargetSpec::Keyword(w)));
+        }
+        if let Ok(x) = v.extract::<f64>() {
+            return Ok(Some(CgEnergyTargetSpec::Ha(x)));
+        }
+    }
+    Err(crate::errors::input_err(
+        "cg_energy_target must be an energy in Hartree (float > 0) or \"strict\"",
+    ))
+}
+
 /// Resolve the `local=` / `eps=` / `compute_reference=` / `integral_direct=`
 /// (+ integral-direct knobs) kwargs of `run_rimp2` / `run_drpa` /
 /// `run_linlccd` with the SAME rules as the CLI's `[local]` section
@@ -437,6 +458,14 @@ pub(crate) fn local_correlation_operator(
 /// `ValueError` on the exact method (use `run_terfc_rimp2` /
 /// `run_attenuated_rimp2` there).
 ///
+/// Local runs only: `cg_energy_target` (the CLI's `[local] cg_energy_target`)
+/// is the stopping rule of the amplitude PCG. Omitted (default): a 1e-7 Ha
+/// energy target, stopping at the residual that puts the solver-error bound
+/// at a quarter of the target, never above relres 1e-4. A float (Hartree,
+/// finite and > 0) sets another target; `"strict"` is the earlier rule,
+/// relres 1e-6 tightened while the bound exceeds 1e-10 Ha (bit-identical).
+/// A `ValueError` on the exact method.
+///
 /// The reference follows the molecule's multiplicity: RHF + closed-shell
 /// RI-MP2 for a singlet, UHF + unrestricted RI-MP2 (UMP2, as PySCF's
 /// `mp.MP2(uhf)`) for multiplicity > 1. `result.reference` says which.
@@ -487,7 +516,7 @@ pub(crate) fn local_correlation_operator(
 /// `[scf] relativistic` for this kind). Energies only (`with_gradient=True`
 /// raises); an ECP atom raises.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None, fock_screen=None, att_operator=None, omega=None, att_r0=None, att_omega=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, virtual_space=None, virtual_tau=None, virtual_tau_loose=None, virtual_solve_radius=None, virtual_boys_tau=None, with_gradient=false, scf_eri=None, lambda_boys=None, save_reference=None, read_reference=None, read_reference_other_build=false, eri3_pass=None, pair_skip=None, relativistic=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None, fock_screen=None, att_operator=None, omega=None, att_r0=None, att_omega=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, virtual_space=None, virtual_tau=None, virtual_tau_loose=None, virtual_solve_radius=None, virtual_boys_tau=None, with_gradient=false, scf_eri=None, lambda_boys=None, save_reference=None, read_reference=None, read_reference_other_build=false, eri3_pass=None, pair_skip=None, relativistic=None, cg_energy_target=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_rimp2(
     py: Python<'_>,
@@ -534,7 +563,9 @@ pub(crate) fn run_rimp2(
     eri3_pass: Option<String>,
     pair_skip: Option<String>,
     relativistic: Option<&str>,
+    cg_energy_target: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyRiMp2Result> {
+    let cg_energy_target = parse_cg_energy_target(cg_energy_target)?;
     let reference_file = ReferenceFile::new(
         "run_rimp2",
         save_reference,
@@ -583,6 +614,7 @@ pub(crate) fn run_rimp2(
             virtual_solve_radius,
             virtual_boys_tau,
             lambda_boys,
+            cg_energy_target,
         },
     )?;
     if with_gradient {

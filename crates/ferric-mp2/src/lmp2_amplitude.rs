@@ -27,13 +27,24 @@
 //!
 //! The energy is the stationary Hylleraas form, so its solver error is second
 //! order in the residual and bounded per run by
-//! [`cg_energy_error_bound`](crate::lmp2_amplitude::cg_energy_error_bound). The
-//! default solve therefore stops at relres 1e-6 and continues, on the same
-//! Krylov sequence, only if the bound at the achieved residual exceeds 1e-10
-//! Ha ([`CgRtolPolicy`](crate::lmp2_amplitude::CgRtolPolicy)). Running out of
-//! iterations at either stage is an error. ferric-cc's
-//! LinLCCD and ferric-pbc's Gamma LMP2 share the PCG but use the LINEAR energy,
-//! whose error is first order, and keep their own 1e-11.
+//! [`cg_energy_error_bound`](crate::lmp2_amplitude::cg_energy_error_bound).
+//! The default stop (`AmplitudeLmp2Config::cg_energy_target`, a
+//! [`CgEnergyTarget`](crate::lmp2_amplitude::CgEnergyTarget)) is an energy
+//! target of
+//! [`LMP2_CG_ENERGY_TARGET_DEFAULT`](crate::lmp2_amplitude::LMP2_CG_ENERGY_TARGET_DEFAULT)
+//! = 1e-7 Ha: the solve stops at the residual that puts the bound at a quarter
+//! of the target, never above relres
+//! [`LMP2_CG_RTOL_CEILING`](crate::lmp2_amplitude::LMP2_CG_RTOL_CEILING) and
+//! never below the 1e-11 floor, and continues on the same Krylov sequence if
+//! the bound on the true residual misses the target. `CgEnergyTarget::Strict`
+//! (`"strict"` on the CLI and in Python) keeps the earlier rule: stop at relres
+//! 1e-6 and continue only if the bound exceeds 1e-10 Ha
+//! ([`CgRtolPolicy`](crate::lmp2_amplitude::CgRtolPolicy)). Running out of
+//! iterations at either stage is an error. Only the two
+//! local-MP2 energy drivers read these settings. dRPA (its own fixed-point `fp_rtol`), local OP-MP3
+//! (`cg_rtol` or its own constant), ferric-cc's LinLCCD and ferric-pbc's
+//! Gamma LMP2 share the PCG under their own fixed tolerances; the last two use
+//! the LINEAR energy, whose error is first order, and keep 1e-11.
 //!
 //! # Documented deviations from the paper (match the Python rig's wiki note)
 //!
@@ -82,11 +93,86 @@ use ferric_integrals::threeindex::coulomb_metric_2c;
 /// energy's solver error is second order in the residual, so this is enough
 /// while the per-run bound holds ([`LMP2_CG_ENERGY_ERROR_TARGET`]).
 pub const LMP2_CG_RTOL_DEFAULT: f64 = 1e-6;
-/// The tightest tolerance the default policy goes to, and the one it uses when
-/// the bound is undefined (no positive gap).
+/// The tightest tolerance the adaptive policies go to, and the one they use
+/// when the bound is undefined (no positive gap).
 pub const LMP2_CG_RTOL_STRICT: f64 = 1e-11;
-/// The Hylleraas solver-error bound (Ha) the default policy keeps a run under.
+/// The Hylleraas solver-error bound (Ha) the adaptive policy
+/// ([`CgEnergyTarget::Strict`], and the other PCG consumers' `cg_rtol: None`)
+/// keeps a run under.
 pub const LMP2_CG_ENERGY_ERROR_TARGET: f64 = 1e-10;
+/// The default local-MP2 energy target (Ha) of [`CgEnergyTarget::default`].
+/// Measured 2026-11-27 on C8-C16 n-alkanes / cc-pVDZ at ε = 1e-4 … 1e-5: 8-9
+/// PCG iterations instead of 11-13, solver error at most 3.4e-9 Ha (the bound
+/// over-estimates it 7.0-7.5x).
+pub const LMP2_CG_ENERGY_TARGET_DEFAULT: f64 = 1e-7;
+/// The loosest relative residual the energy-target stop accepts, whatever the
+/// bound allows: a solve is never declared converged above it.
+pub const LMP2_CG_RTOL_CEILING: f64 = 1e-4;
+
+/// The stopping rule of the local-MP2 amplitude PCG
+/// ([`AmplitudeLmp2Config::cg_energy_target`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CgEnergyTarget {
+    /// Stop at the relative residual that puts [`cg_energy_error_bound`] at a
+    /// quarter of this energy (Hartree, finite and > 0;
+    /// [`rtol_for_energy_target`]), clamped to [[`LMP2_CG_RTOL_STRICT`],
+    /// [`LMP2_CG_RTOL_CEILING`]]; check the bound on the true residual and
+    /// tighten on the same Krylov sequence if it misses. The default is
+    /// `Ha(`[`LMP2_CG_ENERGY_TARGET_DEFAULT`]`)`.
+    Ha(f64),
+    /// The rule before the energy target became the default: relres
+    /// [`LMP2_CG_RTOL_DEFAULT`], tightened while the bound exceeds
+    /// [`LMP2_CG_ENERGY_ERROR_TARGET`], never below [`LMP2_CG_RTOL_STRICT`].
+    /// Bit-identical to it (energies and iteration counts). Spelled
+    /// `cg_energy_target = "strict"` on the CLI and in Python.
+    Strict,
+}
+
+impl Default for CgEnergyTarget {
+    fn default() -> Self {
+        CgEnergyTarget::Ha(LMP2_CG_ENERGY_TARGET_DEFAULT)
+    }
+}
+
+impl CgEnergyTarget {
+    /// The keyword that selects [`CgEnergyTarget::Strict`] on the CLI and in
+    /// Python.
+    pub const STRICT_KEYWORD: &'static str = "strict";
+
+    /// A user-written target: an energy (validated, finite and > 0) ...
+    pub fn from_ha(target_ha: f64) -> Result<Self, FerricError> {
+        let t = CgEnergyTarget::Ha(target_ha);
+        t.validate()?;
+        Ok(t)
+    }
+
+    /// ... or the keyword [`Self::STRICT_KEYWORD`]; anything else is an error.
+    pub fn from_keyword(word: &str) -> Result<Self, FerricError> {
+        if word.trim().eq_ignore_ascii_case(Self::STRICT_KEYWORD) {
+            Ok(CgEnergyTarget::Strict)
+        } else {
+            Err(FerricError::General(format!(
+                "cg_energy_target: unknown value \"{word}\"; expected an energy > 0 \
+                 (Hartree) or \"{}\" (the relres 1e-6 / 1e-10 Ha rule)",
+                Self::STRICT_KEYWORD
+            )))
+        }
+    }
+
+    /// An `Ha` target must be a finite energy > 0 (Hartree).
+    pub fn validate(&self) -> Result<(), FerricError> {
+        match *self {
+            CgEnergyTarget::Ha(t) if !(t.is_finite() && t > 0.0) => {
+                Err(FerricError::General(format!(
+                    "cg_energy_target must be a finite energy > 0 (Hartree) or \"{}\", got {t}",
+                    Self::STRICT_KEYWORD
+                )))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
 /// Safety factor on the residual when tightening: the bound lands at a quarter
 /// of the target instead of on it.
 const CG_TIGHTEN_SAFETY: f64 = 0.5;
@@ -104,8 +190,17 @@ pub struct AmplitudeLmp2Config {
     /// [`cg_energy_error_bound`] at the achieved residual exceeds
     /// [`LMP2_CG_ENERGY_ERROR_TARGET`], never tighter than
     /// [`LMP2_CG_RTOL_STRICT`]. `Some(x)` runs at exactly `x` with no
-    /// tightening. Rust API only: the CLI and Python do not expose it.
+    /// tightening (and wins over `cg_energy_target`). Rust API only: the CLI
+    /// and Python do not expose it.
     pub cg_rtol: Option<f64>,
+    /// The PCG stopping rule when `cg_rtol` is `None`. Default (in
+    /// [`Default`] and [`AmplitudeLmp2Config::production`]):
+    /// `CgEnergyTarget::Ha(`[`LMP2_CG_ENERGY_TARGET_DEFAULT`]`)`, the 1e-7 Ha
+    /// energy target. [`CgEnergyTarget::Strict`] is the earlier relres 1e-6 /
+    /// 1e-10 Ha rule, bit-identical. Also `[local] cg_energy_target` (CLI)
+    /// and `cg_energy_target=` (Python `run_rimp2`), each taking an energy or
+    /// `"strict"`.
+    pub cg_energy_target: CgEnergyTarget,
     /// Iteration limit over the whole solve, tightening included.
     pub cg_max_iter: usize,
     /// 3-index working-memory budget; `None` → the shared rimp2 default.
@@ -197,6 +292,7 @@ impl Default for AmplitudeLmp2Config {
             eps: 1e-4,
             frozen_core: 0,
             cg_rtol: None,
+            cg_energy_target: CgEnergyTarget::default(),
             cg_max_iter: 400,
             eri3_budget_bytes: None,
             pair_gate_cal: None,
@@ -365,6 +461,9 @@ pub struct AmplitudeLmp2Result {
 pub enum CgRtolSource {
     /// The adaptive default, with its bound defined.
     AdaptiveDefault,
+    /// The opt-in energy-target stop (`AmplitudeLmp2Config::cg_energy_target`),
+    /// with its bound defined.
+    EnergyBound,
     /// The adaptive default with no positive gap: the bound is undefined, so
     /// the solve ran at [`LMP2_CG_RTOL_STRICT`].
     StrictNoGap,
@@ -374,10 +473,11 @@ pub enum CgRtolSource {
 
 impl CgRtolSource {
     /// Kebab-case label for printouts (`"adaptive-default"`,
-    /// `"strict-no-gap"`, `"explicit"`).
+    /// `"energy-bound"`, `"strict-no-gap"`, `"explicit"`).
     pub fn as_str(self) -> &'static str {
         match self {
             CgRtolSource::AdaptiveDefault => "adaptive-default",
+            CgRtolSource::EnergyBound => "energy-bound",
             CgRtolSource::StrictNoGap => "strict-no-gap",
             CgRtolSource::Explicit => "explicit",
         }
@@ -419,6 +519,19 @@ pub enum CgRtolPolicy {
         /// Target (Hartree) for [`cg_energy_error_bound`].
         target_ha: f64,
     },
+    /// Start at the residual that puts [`cg_energy_error_bound`] at a quarter
+    /// of `target_ha` ([`rtol_for_energy_target`]), clamped to
+    /// `[floor, ceiling]`, and tighten from there exactly as
+    /// [`CgRtolPolicy::Adaptive`] does; with no positive gap the solve runs
+    /// at `floor`. `ceiling` is the loosest residual ever accepted.
+    EnergyBound {
+        /// Target (Hartree) for [`cg_energy_error_bound`].
+        target_ha: f64,
+        /// Tightest relative-residual tolerance the policy will use.
+        floor: f64,
+        /// Loosest relative-residual tolerance the policy will accept.
+        ceiling: f64,
+    },
 }
 
 impl CgRtolPolicy {
@@ -426,14 +539,28 @@ impl CgRtolPolicy {
     /// default ([`LMP2_CG_RTOL_DEFAULT`] → [`LMP2_CG_RTOL_STRICT`],
     /// target [`LMP2_CG_ENERGY_ERROR_TARGET`]).
     pub fn from_config(cg_rtol: Option<f64>) -> Self {
-        cg_rtol.map_or(
-            CgRtolPolicy::Adaptive {
+        Self::from_settings(cg_rtol, CgEnergyTarget::Strict)
+    }
+
+    /// The policy of `AmplitudeLmp2Config::{cg_rtol, cg_energy_target}`: an
+    /// explicit `cg_rtol` wins; else `CgEnergyTarget::Ha(t)` is
+    /// [`CgRtolPolicy::EnergyBound`] at `t` between [`LMP2_CG_RTOL_STRICT`]
+    /// and [`LMP2_CG_RTOL_CEILING`]; else (`Strict`) the adaptive policy of
+    /// [`CgRtolPolicy::from_config`].
+    pub fn from_settings(cg_rtol: Option<f64>, cg_energy_target: CgEnergyTarget) -> Self {
+        match (cg_rtol, cg_energy_target) {
+            (Some(x), _) => CgRtolPolicy::Explicit(x),
+            (None, CgEnergyTarget::Strict) => CgRtolPolicy::Adaptive {
                 start: LMP2_CG_RTOL_DEFAULT,
                 floor: LMP2_CG_RTOL_STRICT,
                 target_ha: LMP2_CG_ENERGY_ERROR_TARGET,
             },
-            CgRtolPolicy::Explicit,
-        )
+            (None, CgEnergyTarget::Ha(target_ha)) => CgRtolPolicy::EnergyBound {
+                target_ha,
+                floor: LMP2_CG_RTOL_STRICT,
+                ceiling: LMP2_CG_RTOL_CEILING,
+            },
+        }
     }
 }
 
@@ -1999,9 +2126,15 @@ pub fn tightened_cg_rtol(
     if cg_energy_error_bound(rhs_norm, relres, lambda_min) <= target_ha {
         return None;
     }
-    let needed = CG_TIGHTEN_SAFETY * (target_ha * lambda_min / 3.0).sqrt() / rhs_norm;
-    let next = needed.max(floor);
+    let next = rtol_for_energy_target(rhs_norm, lambda_min, target_ha).max(floor);
     (relres >= next).then_some(next)
+}
+
+/// The relative residual at which [`cg_energy_error_bound`] is a quarter of
+/// `target_ha`: `0.5·√(target·λ_min/3)/‖PJ‖` (residual safety factor 0.5).
+/// `+∞` when `‖PJ‖ = 0`.
+pub fn rtol_for_energy_target(rhs_norm: f64, lambda_min: f64, target_ha: f64) -> f64 {
+    CG_TIGHTEN_SAFETY * (target_ha * lambda_min / 3.0).sqrt() / rhs_norm
 }
 
 /// What [`solve_under_rtol_policy`] returns; its PCG always converged.
@@ -2046,9 +2179,20 @@ pub fn solve_under_rtol_policy(
     let rhs_norm = pattern_rhs_norm(rg);
     let (start, source, governing) = match policy {
         CgRtolPolicy::Explicit(x) => (x, CgRtolSource::Explicit, None),
-        CgRtolPolicy::Adaptive { floor, .. } if lambda_min.is_nan() => {
+        CgRtolPolicy::Adaptive { floor, .. } | CgRtolPolicy::EnergyBound { floor, .. }
+            if lambda_min.is_nan() =>
+        {
             (floor, CgRtolSource::StrictNoGap, None)
         }
+        CgRtolPolicy::EnergyBound {
+            target_ha,
+            floor,
+            ceiling,
+        } => (
+            rtol_for_energy_target(rhs_norm, lambda_min, target_ha).clamp(floor, ceiling),
+            CgRtolSource::EnergyBound,
+            Some((floor, target_ha)),
+        ),
         CgRtolPolicy::Adaptive {
             start,
             floor,
@@ -2585,6 +2729,10 @@ pub(crate) fn solve_and_count(
     who: &str,
 ) -> Result<AmplitudeLmp2Result, FerricError> {
     validate_fvv_sparse_rho(cfg.fvv_sparse_rho)?;
+    cfg.cg_energy_target.validate().map_err(|e| match e {
+        FerricError::General(m) => FerricError::General(format!("{who}: {m}")),
+        e => e,
+    })?;
     // fail fast, before the solve (hylleraas_energy checks it again)
     check_swap_closed(rg).map_err(|e| {
         FerricError::General(format!(
@@ -2603,7 +2751,7 @@ pub(crate) fn solve_and_count(
         rg,
         f_oo,
         f_vv,
-        CgRtolPolicy::from_config(cfg.cg_rtol),
+        CgRtolPolicy::from_settings(cfg.cg_rtol, cfg.cg_energy_target),
         cfg.cg_max_iter,
         budget,
         cfg.fvv_sparse_rho,

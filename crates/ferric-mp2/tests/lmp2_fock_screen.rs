@@ -11,7 +11,7 @@ use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_mp2::lmp2_amplitude::{amplitude_lmp2, AmplitudeLmp2Config};
+use ferric_mp2::lmp2_amplitude::{amplitude_lmp2, AmplitudeLmp2Config, CgEnergyTarget};
 use ferric_mp2::lmp2_direct::{amplitude_lmp2_direct, DirectConfig};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -71,6 +71,8 @@ fn screen_on_at_eps_zero_matches_canonical_on_both_paths() {
         eps: 0.0,
         frozen_core: 1,
         fock_screen: Some(1.0),
+        // 1e-9 against canonical RI-MP2: below what the 1e-7 Ha default target guarantees
+        cg_energy_target: CgEnergyTarget::Strict,
         ..Default::default()
     };
     let op = Operator::coulomb();
@@ -113,6 +115,8 @@ fn vacuous_screen_at_finite_eps_matches_canonical() {
         eps: 1e-3,
         frozen_core: 1,
         fock_screen: Some(1e-300),
+        // 1e-9 against canonical RI-MP2: below what the 1e-7 Ha default target guarantees
+        cg_energy_target: CgEnergyTarget::Strict,
         ..Default::default()
     };
     let (d, _) = amplitude_lmp2_direct(

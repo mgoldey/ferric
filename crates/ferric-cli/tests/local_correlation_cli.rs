@@ -463,7 +463,10 @@ fn rimp2_local_logs_the_virtual_space_build() {
         let lo = ok_run(
             tag,
             "rimp2",
-            &local(&format!("eps = 0.0\nintegral_direct = true\n{vs}")),
+            // the 1e-9 agreement is tighter than the 1e-7 Ha default target
+            &local(&format!(
+                "eps = 0.0\nintegral_direct = true\ncg_energy_target = \"strict\"\n{vs}"
+            )),
         );
         let l = &lo.results[0]["components"]["local"];
         let line = l["virtual_space_log"].as_str().unwrap().to_string();

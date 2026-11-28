@@ -150,6 +150,7 @@ scheme = "none"  # none | amplitude-threshold
 # virtual_solve_radius: not read here: only with virtual_space = "local"
 # virtual_boys_tau: not read here: only with virtual_space = "local"
 # lambda_boys: not read here: only with scheme = "amplitude-threshold" (rimp2, att-rimp2, opmp3)
+# cg_energy_target: stop of the amplitude PCG: energy-error target, Ha (default 1e-7), or "strict" (relres 1e-6 tightened to a 1e-10 Ha bound); not read here: only with scheme = "amplitude-threshold" (rimp2, att-rimp2)
 
 [ri]
 metric = "coulomb"  # coulomb | erfc

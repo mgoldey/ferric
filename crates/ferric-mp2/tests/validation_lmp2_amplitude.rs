@@ -80,7 +80,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::lmp2_amplitude::{
     amplitude_lmp2, amplitude_lmp2_with_virtuals, build_vvhv, AmplitudeLmp2Config,
-    AmplitudeLmp2Result, VvHv,
+    AmplitudeLmp2Result, CgEnergyTarget, VvHv,
 };
 use ferric_mp2::lmp2_direct::{
     amplitude_lmp2_direct, amplitude_lmp2_direct_with_virtuals, DirectConfig,
@@ -249,6 +249,15 @@ fn lcfg(eps: f64, frozen_core: usize, fit_radius_bohr: Option<f64>) -> Amplitude
     }
 }
 
+/// `cfg` under the strict PCG stop: the ε = 0 anchor bar (TOL_ANCHOR, 1e-10)
+/// is far below what the default 1e-7 Ha energy target guarantees.
+fn strict(cfg: AmplitudeLmp2Config) -> AmplitudeLmp2Config {
+    AmplitudeLmp2Config {
+        cg_energy_target: CgEnergyTarget::Strict,
+        ..cfg
+    }
+}
+
 /// Every integral-direct locality map at its no-op limit.
 fn trivial_maps() -> DirectConfig {
     DirectConfig {
@@ -333,9 +342,9 @@ fn anchor(system: &str, basis_name: &str) {
 
     for (idx, &(fc, e_ref)) in refs.iter().enumerate() {
         let ctx = format!("{}/fc={fc}", su.ctx);
-        let glob = in_core(&su, &lcfg(0.0, fc, None));
-        let dfit = in_core(&su, &lcfg(0.0, fc, Some(TRIVIAL_RADIUS)));
-        let dir = direct(&su, &lcfg(0.0, fc, None), &trivial_maps());
+        let glob = in_core(&su, &strict(lcfg(0.0, fc, None)));
+        let dfit = in_core(&su, &strict(lcfg(0.0, fc, Some(TRIVIAL_RADIUS))));
+        let dir = direct(&su, &strict(lcfg(0.0, fc, None)), &trivial_maps());
         for (name, x) in [
             ("in-core global fit", &glob),
             ("in-core domain fit (trivial)", &dfit),
@@ -541,8 +550,9 @@ fn orca_dlpno_ballpark_c8h18_ccpvdz() {
 }
 
 /// The size rows of the PCG tolerance claim (the small rows are
-/// `lmp2_direct::default_rtol_energy_is_within_its_bound`): the default against
-/// an explicit 1e-11 from the same code, ε = 1e-4, production maps, 6-31G /
+/// `lmp2_direct::default_rtol_energy_is_within_its_bound`): the strict rule
+/// (`CgEnergyTarget::Strict`, the default before the 1e-7 Ha energy target)
+/// against an explicit 1e-11 from the same code, ε = 1e-4, production maps, 6-31G /
 /// cc-pVDZ-RI. Whether tightening fires is what the row reports; |ΔE| ≤ bound
 /// ≤ 1e-10 Ha is asserted either way.
 #[test]
@@ -578,6 +588,7 @@ fn default_cg_rtol_size_rows_are_within_their_bound() {
                     frozen_core: carbons,
                     pair_gate_cal: Some(cal),
                     cg_rtol: rtol,
+                    cg_energy_target: CgEnergyTarget::Strict,
                     ..Default::default()
                 };
                 amplitude_lmp2_direct(

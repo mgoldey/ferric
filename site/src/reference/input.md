@@ -370,6 +370,7 @@ scheme, `eps` and kept fraction. See
 | `virtual_solve_radius` | float | `30.0` | Bohr, > 0 | `virtual_space = "local"` only. Neighbourhood radius of the domain-local projected-minimal solves; a radius larger than the molecule is one global solve. |
 | `virtual_boys_tau` | float | `1e-8` | ≥ 0 | `virtual_space = "local"` only. Boys pair screen; `0` rotates every pair. |
 | `lambda_boys` | float | `10.0` | Bohr²/Ha², finite, ≥ 0 | `rimp2` / `att-rimp2` / `opmp3` only (an error on `drpa` / `linlccd`, which localize with plain Boys). Weight λ of Σᵢ Fᵢᵢ² in the λ-Boys occupied localization, started from the converged Boys orbitals; `0` is plain Boys. The ε = 0 energy does not depend on it. The printout's `occupied localization` line and the run log's `local.lambda_boys*` fields record it. |
+| `cg_energy_target` | float or `"strict"` | `1e-7` | Ha, finite, > 0; or `"strict"` | `rimp2` / `att-rimp2` only (an error on the other kinds). Stop of the amplitude PCG: the relative residual that puts the solver-error bound `3‖PJ‖²·relres²/λ_min` at a quarter of this energy, never above relres 1e-4. `"strict"` is the earlier rule (relres 1e-6, tightened while the bound exceeds 1e-10 Ha), bit-identical to it ([MP2: local](../methods/mp2.md)). Python `cg_energy_target=`. |
 
 ## `[rpa]`
 

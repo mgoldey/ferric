@@ -499,21 +499,38 @@ and C32 at `eps = 1e-4`
 Every printout and run-log record of a local run states `eps` and the
 fraction of amplitudes kept.
 
-The amplitude equations are solved by preconditioned conjugate gradients to a
-relative residual of 1e-6 by default. The energy is the stationary Hylleraas
-form, so its solver error is second order in that residual. Using that form with
-a loose stop comes from the method's authors: Wang et al. (JCTC 19, 7577, 2023;
-Eq. 10 and Sec. 3.1) stop at an absolute `‖r‖ < 2.5·√eps`, and the 2025 follow-up
-(ChemRxiv preprint of JCTC 21, 10910) at `5·√eps`. ferric uses a fixed relative tolerance instead and
-gates it on a per-run bound, `3‖PJ‖²·relres²/λ_min` with
-`λ_min ≥ 2(ε_LUMO − ε_HOMO)`. The bound holds for the true residual, up to rounding,
-so it is evaluated on `‖J + At‖` from the energy's own matvec, not on the solver's
-recursive residual. If the bound at the solver's stop exceeds 1e-10 Ha, the solve
-continues from where it stopped to a tighter tolerance, never past 1e-11; with no
-positive orbital gap the bound is undefined and the solve runs at 1e-11 from the
-start. Running out of iterations before the tolerance being sought, first or
-tighter, stops the run with an error; `cg_max_iter` and an explicit `cg_rtol` are
-fields of the Rust `AmplitudeLmp2Config`, not CLI or Python options. The certificate (`result.local` in Python, `"local"` in the CLI JSON) records
+The amplitude equations are solved by preconditioned conjugate gradients, and
+the stop is set by an energy target, 1e-7 Ha by default. The energy is the
+stationary Hylleraas form, so its solver error is second order in the residual.
+Using that form with a loose stop comes from the method's authors: Wang et al.
+(JCTC 19, 7577, 2023; Eq. 10 and Sec. 3.1) stop at an absolute `‖r‖ < 2.5·√eps`,
+and the 2025 follow-up (ChemRxiv preprint of JCTC 21, 10910) at `5·√eps`. ferric
+stops on a per-run bound instead, `3‖PJ‖²·relres²/λ_min` with
+`λ_min ≥ 2(ε_LUMO − ε_HOMO)`. The solve runs to the relative residual that puts
+the bound at a quarter of the target, never above 1e-4 and never below 1e-11.
+The bound holds for the true residual, up to rounding, so it is then evaluated
+on `‖J + At‖` from the energy's own matvec, not on the solver's recursive
+residual; if it exceeds the target, the solve continues from where it stopped
+to a tighter tolerance, never past 1e-11. With no positive orbital gap the bound
+is undefined and the solve runs at 1e-11 from the start. Running out of
+iterations before the tolerance being sought, first or tighter, stops the run
+with an error; `cg_max_iter` and an explicit `cg_rtol` are fields of the Rust
+`AmplitudeLmp2Config`, not CLI or Python options.
+
+The target is `[local] cg_energy_target` (CLI, `rimp2` / `att-rimp2`),
+`cg_energy_target=` (Python `run_rimp2`) or
+`AmplitudeLmp2Config::cg_energy_target` (Rust, a `CgEnergyTarget`): an energy in
+Hartree, or `"strict"` (`CgEnergyTarget::Strict`) for the rule ferric used
+before. That rule is a relative residual of 1e-6, continued while the bound
+exceeds 1e-10 Ha, and it reproduces those runs bit for bit; the certificate's
+`cg_rtol_source` is `adaptive-default` under it and `energy-bound` under a
+target. On C8–C16 n-alkanes / cc-pVDZ at ε = 1e-4 … 1e-5 the default takes 8–9
+PCG iterations where `"strict"` takes 11–13, cuts the solve time by 1.3–1.4x,
+and moves the correlation energy by at most 3.4e-9 Ha (the bound over-estimates
+that by 7.0–7.5x), against an ε truncation error of 0.07–6.8 mEh. Use
+`"strict"` to compare with canonical RI-MP2 at `eps = 0` below the 1e-8 Ha level.
+
+The certificate (`result.local` in Python, `"local"` in the CLI JSON) records
 `cg_rtol`, `cg_rtol_source`, `cg_tightened`, `cg_relres`, `cg_true_relres`,
 `cg_energy_error_bound`, `cg_energy_error_target` and `cg_energy_target_met`, and
 `solver_warnings` says if a converged solve did not meet the target, because the

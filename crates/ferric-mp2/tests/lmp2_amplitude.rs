@@ -10,7 +10,8 @@ use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::lmp2_amplitude::{
-    amplitude_lmp2, amplitude_lmp2_with_virtuals, build_vvhv, check_vvhv, AmplitudeLmp2Config, VvHv,
+    amplitude_lmp2, amplitude_lmp2_with_virtuals, build_vvhv, check_vvhv, AmplitudeLmp2Config,
+    CgEnergyTarget, VvHv,
 };
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -71,6 +72,8 @@ fn eps_zero_matches_canonical_ri_mp2() {
         compute_reference: true,
         eps: 0.0,
         frozen_core: 1,
+        // anchor bar below what the 1e-7 Ha default target guarantees
+        cg_energy_target: CgEnergyTarget::Strict,
         ..Default::default()
     };
     let r = amplitude_lmp2(
@@ -196,6 +199,8 @@ fn eps_zero_anchor_holds_for_erfc_with_no_frozen_core() {
         compute_reference: true,
         eps: 0.0,
         frozen_core: 0,
+        // anchor bar below what the 1e-7 Ha default target guarantees
+        cg_energy_target: CgEnergyTarget::Strict,
         ..Default::default()
     };
     let r = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg).unwrap();
@@ -221,6 +226,8 @@ fn ragged_masked_solve_matches_naive_dense_reference() {
     let cfg = AmplitudeLmp2Config {
         eps: 1e-4,
         frozen_core: 1,
+        // 1e-10 against an exact dense solve: below the 1e-7 Ha default target
+        cg_energy_target: CgEnergyTarget::Strict,
         ..Default::default()
     };
     let vvhv = build_vvhv(&su.mol, &su.obs, &su.obs_bs, &su.rhf).unwrap();
@@ -443,6 +450,8 @@ fn domain_fit_trivial_limit_matches_global() {
         compute_reference: true,
         eps: 0.0,
         frozen_core: 1,
+        // anchor bar below what the 1e-7 Ha default target guarantees
+        cg_energy_target: CgEnergyTarget::Strict,
         ..Default::default()
     };
     let glob = amplitude_lmp2(

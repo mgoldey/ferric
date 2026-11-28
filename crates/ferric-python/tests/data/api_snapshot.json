@@ -9720,6 +9720,11 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "relativistic"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "cg_energy_target"
    }
   ],
   "run_rks_gamma": [

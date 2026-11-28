@@ -5723,6 +5723,7 @@ def run_rimp2(
     eri3_pass: str | None = None,
     pair_skip: str | None = None,
     relativistic: Literal["x2c1e"] | None = None,
+    cg_energy_target: float | str | None = None,
 ) -> RiMp2Result:
     """Resolution-of-identity (density-fitted) MP2. Exact by default.
     with_gradient=True adds the analytic gradient of total_energy
@@ -5787,6 +5788,19 @@ def run_rimp2(
     sweeps), `["lambda_boys_newton_iters"]`, `["lambda_boys_max_grad"]`,
     `["lambda_boys_newton_step"]` (last Newton step, the predicted distance
     to the maximum in radians) and `["lambda_boys_t_s"]` record it.
+
+    Local runs only: `cg_energy_target` (the CLI's `[local]
+    cg_energy_target`) is the stopping rule of the amplitude PCG. Omitted
+    (the default): a 1e-7 Ha energy target. The solve stops at the relative
+    residual that puts the solver-error bound 3*|PJ|^2*relres^2/lambda_min at
+    a quarter of the target, never above relres 1e-4, and checks the bound on
+    the true residual; `result.local["cg_rtol_source"]` is "energy-bound". A
+    float (Hartree, finite and > 0) sets another target. "strict" is the
+    earlier rule, bit-identical: relres 1e-6, tightened while the bound
+    exceeds 1e-10 Ha (`cg_rtol_source` "adaptive-default"). Measured on
+    C8-C16 alkanes (cc-pVDZ, eps 1e-4 to 1e-5), the default takes 8-9 PCG
+    iterations where "strict" takes 11-13 and moves the energy by at most
+    3.4e-9 Ha. A ValueError on the exact method.
 
     `scf_jk` sets how the reference SCF builds J/K: "exact" (default,
     four-centre), "rijk" (RI-J + RI-K) or "rijcosx" (RI-J + COSX K), fitted on
