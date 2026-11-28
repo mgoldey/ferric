@@ -86,11 +86,12 @@ Prerequisites:
 - the CUDA toolkit runtime libraries (cudart, cublas, cusolver, cusparse,
   nvrtc, nvJitLink);
 - Rust 1.87+;
-- `build-essential`, `libeigen3-dev`, `libopenblas-dev`, `liblapack-dev`;
+- `build-essential`, `libeigen3-dev`, `libopenblas-dev`, `liblapack-dev`,
+  `libboost-dev` (libint2's headers include Boost.Preprocessor);
 - `curl`, `unzip`, `python3`, `zstd`, `patchelf`, and `tar` with zstd.
 
 On Debian/Ubuntu: `sudo apt install build-essential libeigen3-dev
-libopenblas-dev liblapack-dev curl unzip python3 zstd patchelf`.
+libopenblas-dev liblapack-dev libboost-dev curl unzip python3 zstd patchelf`.
 
 The runner installs libint2 (conda-forge prebuilt 2.13.1, a few seconds, via
 `scripts/install-libint.sh`) into `~/.local/libint2-2.13.1` unless

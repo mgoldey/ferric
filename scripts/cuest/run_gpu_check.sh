@@ -28,6 +28,13 @@ say "host"
 { uname -srm; nvidia-smi --query-gpu=name,compute_cap,driver_version,memory.total --format=csv 2>&1;
   rustc --version; cargo --version; git rev-parse HEAD; } 2>&1 | tee -a "$log"
 
+# libint2's headers include Boost.Preprocessor; without it ferric-integrals
+# fails deep inside its build script, so check up front.
+if ! echo '#include <boost/preprocessor.hpp>' | "${CXX:-c++}" -E -x c++ - >/dev/null 2>&1; then
+  say "MISSING Boost headers (boost/preprocessor.hpp): sudo apt install libboost-dev"
+  exit 1
+fi
+
 if [[ -z "${CUEST_ROOT:-}" ]]; then
   export CUEST_ROOT="$HOME/.local/cuest-0.3.0"
   if [[ ! -f "$CUEST_ROOT/include/cuest.h" ]]; then
